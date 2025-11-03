@@ -34,7 +34,11 @@ use crate::network::{Network, NetworkFamily};
 
 const ENV_SIGNER_TYPE: &str = "SIGNER_TYPE";
 const ENV_EVM_PRIVATE_KEY: &str = "EVM_PRIVATE_KEY";
+const ENV_EVM_PRIVATE_KEY_MAINNET: &str = "EVM_PRIVATE_KEY_MAINNET";
+const ENV_EVM_PRIVATE_KEY_TESTNET: &str = "EVM_PRIVATE_KEY_TESTNET";
 const ENV_SOLANA_PRIVATE_KEY: &str = "SOLANA_PRIVATE_KEY";
+const ENV_SOLANA_PRIVATE_KEY_MAINNET: &str = "SOLANA_PRIVATE_KEY_MAINNET";
+const ENV_SOLANA_PRIVATE_KEY_TESTNET: &str = "SOLANA_PRIVATE_KEY_TESTNET";
 const ENV_RPC_BASE: &str = "RPC_URL_BASE";
 const ENV_RPC_BASE_SEPOLIA: &str = "RPC_URL_BASE_SEPOLIA";
 const ENV_RPC_XDC: &str = "RPC_URL_XDC";
@@ -93,6 +97,12 @@ impl ProviderCache {
     ///
     /// Fails if required env vars are missing or if the provider cannot connect.
     pub async fn from_env() -> Result<Self, Box<dyn std::error::Error>> {
+        // Pre-load wallets for mainnet and testnet
+        let evm_mainnet_wallet = Self::load_evm_wallet(false)?;
+        let evm_testnet_wallet = Self::load_evm_wallet(true)?;
+        let solana_mainnet_wallet = Self::load_solana_wallet(false)?;
+        let solana_testnet_wallet = Self::load_solana_wallet(true)?;
+
         let mut providers = HashMap::new();
         for network in Network::variants() {
             let env_var = match network {
@@ -133,28 +143,43 @@ impl ProviderCache {
                 let family: NetworkFamily = (*network).into();
                 match family {
                     NetworkFamily::Evm => {
-                        let wallet = SignerType::from_env()?.make_evm_wallet()?;
+                        // Select wallet based on network environment
+                        let wallet = if network.is_testnet() {
+                            evm_testnet_wallet.clone()
+                        } else {
+                            evm_mainnet_wallet.clone()
+                        };
                         let provider =
                             EvmProvider::try_new(wallet, &rpc_url, is_eip1559, *network).await?;
                         let provider = NetworkProvider::Evm(provider);
                         let signer_address = provider.signer_address();
                         providers.insert(*network, provider);
                         tracing::info!(
-                            "Initialized provider for {} at {} using {}",
+                            "Initialized provider for {} ({}) at {} using {}",
                             network,
+                            if network.is_testnet() { "testnet" } else { "mainnet" },
                             rpc_url,
                             signer_address
                         );
                     }
                     NetworkFamily::Solana => {
-                        let keypair = SignerType::from_env()?.make_solana_wallet()?;
+                        // Select keypair based on network environment
+                        let keypair_arc = if network.is_testnet() {
+                            solana_testnet_wallet.clone()
+                        } else {
+                            solana_mainnet_wallet.clone()
+                        };
+                        // Clone the keypair from its bytes (Keypair doesn't implement Clone)
+                        let keypair = Keypair::from_bytes(&keypair_arc.to_bytes())
+                            .map_err(|e| format!("Failed to clone Solana keypair: {}", e))?;
                         let provider = SolanaProvider::try_new(keypair, rpc_url.clone(), *network)?;
                         let provider = NetworkProvider::Solana(provider);
                         let signer_address = provider.signer_address();
                         providers.insert(*network, provider);
                         tracing::info!(
-                            "Initialized provider for {} at {} using {}",
+                            "Initialized provider for {} ({}) at {} using {}",
                             network,
+                            if network.is_testnet() { "testnet" } else { "mainnet" },
                             rpc_url,
                             signer_address
                         );
@@ -166,6 +191,89 @@ impl ProviderCache {
         }
 
         Ok(Self { providers })
+    }
+
+    /// Load EVM wallet for mainnet or testnet.
+    /// Tries network-specific env vars first, falls back to generic `EVM_PRIVATE_KEY`.
+    fn load_evm_wallet(is_testnet: bool) -> Result<EthereumWallet, Box<dyn std::error::Error>> {
+        let env_var = if is_testnet {
+            ENV_EVM_PRIVATE_KEY_TESTNET
+        } else {
+            ENV_EVM_PRIVATE_KEY_MAINNET
+        };
+
+        // Try network-specific key first
+        let raw_keys = match env::var(env_var) {
+            Ok(keys) if !keys.is_empty() => {
+                tracing::info!("Using {} for {} networks", env_var, if is_testnet { "testnet" } else { "mainnet" });
+                keys
+            }
+            _ => {
+                // Fall back to generic EVM_PRIVATE_KEY for backward compatibility
+                tracing::warn!(
+                    "{} not set, falling back to {} (not recommended for production)",
+                    env_var,
+                    ENV_EVM_PRIVATE_KEY
+                );
+                env::var(ENV_EVM_PRIVATE_KEY)
+                    .map_err(|_| format!("Neither {} nor {} is set", env_var, ENV_EVM_PRIVATE_KEY))?
+            }
+        };
+
+        // Parse the wallet from the key string
+        let signers = raw_keys
+            .split(',')
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty())
+            .map(PrivateKeySigner::from_str)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
+
+        if signers.is_empty() {
+            return Err(format!("Private key string for {} did not contain any valid keys", env_var).into());
+        }
+
+        let mut iter = signers.into_iter();
+        let first_signer = iter
+            .next()
+            .expect("iterator contains at least one element by construction");
+        let mut wallet = EthereumWallet::from(first_signer);
+
+        for signer in iter {
+            wallet.register_signer(signer);
+        }
+
+        Ok(wallet)
+    }
+
+    /// Load Solana wallet for mainnet or testnet.
+    fn load_solana_wallet(is_testnet: bool) -> Result<std::sync::Arc<Keypair>, Box<dyn std::error::Error>> {
+        let env_var = if is_testnet {
+            ENV_SOLANA_PRIVATE_KEY_TESTNET
+        } else {
+            ENV_SOLANA_PRIVATE_KEY_MAINNET
+        };
+
+        // Try network-specific key first
+        let private_key = match env::var(env_var) {
+            Ok(key) if !key.is_empty() => {
+                tracing::info!("Using {} for Solana {} networks", env_var, if is_testnet { "testnet" } else { "mainnet" });
+                key
+            }
+            _ => {
+                // Fall back to generic SOLANA_PRIVATE_KEY for backward compatibility
+                tracing::warn!(
+                    "{} not set, falling back to {} (not recommended for production)",
+                    env_var,
+                    ENV_SOLANA_PRIVATE_KEY
+                );
+                env::var(ENV_SOLANA_PRIVATE_KEY)
+                    .map_err(|_| format!("Neither {} nor {} is set", env_var, ENV_SOLANA_PRIVATE_KEY))?
+            }
+        };
+
+        let keypair = Keypair::from_base58_string(private_key.as_str());
+        Ok(std::sync::Arc::new(keypair))
     }
 }
 

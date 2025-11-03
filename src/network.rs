@@ -130,6 +130,25 @@ impl Network {
             Network::OptimismSepolia,
         ]
     }
+
+    /// Returns true if this network is a testnet environment.
+    pub fn is_testnet(&self) -> bool {
+        matches!(
+            self,
+            Network::BaseSepolia
+                | Network::AvalancheFuji
+                | Network::SolanaDevnet
+                | Network::PolygonAmoy
+                | Network::CeloSepolia
+                | Network::HyperEvmTestnet
+                | Network::OptimismSepolia
+        )
+    }
+
+    /// Returns true if this network is a mainnet environment.
+    pub fn is_mainnet(&self) -> bool {
+        !self.is_testnet()
+    }
 }
 
 /// Lazily initialized known USDC deployment on Base Sepolia as [`USDCDeployment`].

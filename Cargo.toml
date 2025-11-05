@@ -14,7 +14,7 @@ categories = ["cryptography", "finance", "network-programming", "web-programming
 
 [dependencies]
 axum = { version = "0.8.4" }
-tokio = { version = "1.45.0", features = ["full"] }
+tokio = { version = "1.45.0", features = ["rt-multi-thread", "net", "macros", "time", "fs", "signal"] }
 dotenvy = { version = "0.15.7" }
 serde_json = { version = "1.0.140" }
 tower-http = { version = "0.6.3", features = ["trace", "cors"] }
@@ -28,15 +28,15 @@ base64 = { version = "0.22.1" }
 rust_decimal = { version = "1.37.1" }
 async-trait = "0.1.88"
 dashmap = "6.1.0"
-chrono = "0.4"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
-# Solana
-solana-sdk = { version = "2.3.1", features = ["full"] }
-solana-commitment-config = { version = "2.2.1" } # Older version due to compatibility with solana-sdk
-bincode = { version = "1.3.3" } # Older version due to compatibility with solana-sdk
+# Solana (minimal features - no validator stack)
+solana-sdk = { version = "2.3.1" }
+solana-commitment-config = { version = "2.2.1" }
+bincode = { version = "1.3.3" }
 spl-token = { version = "8.0.0" }
 spl-token-2022 = { version = "9.0.0" }
-solana-client = { version = "2.3.7" }
+solana-client = { version = "2.3.7", default-features = false }
 
 # Tracing and OpenTelemetry
 tracing = { version = "0.1.41" }

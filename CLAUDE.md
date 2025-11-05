@@ -2,6 +2,76 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## File Organization
+
+This repository maintains a strict file organization structure. When creating new files, place them in the appropriate directory:
+
+**Root directory** - Essential documentation only:
+- `README.md` - Project overview and quick start
+- `CHANGELOG.md` - Version history
+- `CLAUDE.md` - Claude Code instructions (this file)
+- `DEPLOYMENT.md` - Deployment procedures
+- `CUSTOMIZATIONS.md` - Customization tracking
+- `Cargo.toml`, `Dockerfile`, `docker-compose.yml` - Build files
+- `.env.example`, `.gitignore` - Configuration templates
+
+**Documentation** (`docs/`):
+- All technical documentation (`.md` files)
+- Implementation guides, migration docs, architecture decisions
+- Bug reports in `docs/bug-reports/`
+- Examples: `EXTRACTION_MASTER_PLAN.md`, `WALLET_ROTATION.md`, `BLACKLIST_*.md`
+
+**Logs** (`logs/`):
+- All log files (`.log`)
+- Build logs, debug logs, deployment logs
+- Never commit logs to git (add to .gitignore if needed)
+
+**Infrastructure** (`terraform/`):
+- Terraform configuration files
+- Task definitions (`.json`) in `terraform/task-definitions/`
+- Environment-specific configs in `terraform/environments/`
+
+**Static assets** (`static/`):
+- Landing page HTML and documentation
+- Images in `static/images/`
+- Setup guides specific to static assets
+
+**Temporary/Archive** (`.unused/`):
+- Backup files, deprecated code
+- Temporary debug files
+- Files scheduled for deletion
+- Never commit this directory
+
+**Configuration** (`config/`):
+- JSON configuration files (e.g., `blacklist.json`)
+- Configuration examples and templates
+
+**Scripts** (`scripts/`):
+- Python utility scripts (`.py`)
+- Shell scripts (`.sh`, `.ps1`, `.bat`)
+
+**Source code** (`src/`, `crates/`):
+- Rust source files only
+- No logs, docs, or config files
+
+**Tests** (`tests/`):
+- Test code and test fixtures
+- Test data in `tests/fixtures/`
+- Integration test payloads in `tests/x402/payloads/`
+
+**Planning/Strategy** (`plans/`):
+- Strategic planning documents
+- Architecture decision records
+- Not tracked in git (optional local use)
+
+**IMPORTANT**: When creating new files:
+- `.md` files → `docs/` (unless essential root-level doc)
+- `.log` files → `logs/` (and add to .gitignore)
+- `.json` config → `config/` or appropriate module directory
+- `.json` task definitions → `terraform/task-definitions/`
+- Temporary files → `.unused/`
+- Scripts → `scripts/`
+
 ## Project Overview
 
 This is the **x402-rs Payment Facilitator** - a standalone Rust-based service enabling gasless micropayments across 14+ blockchain networks using the HTTP 402 Payment Required protocol. The facilitator acts as a settlement intermediary, verifying EIP-3009 payment authorizations and submitting them on-chain.

@@ -43,8 +43,9 @@ use tokio::sync::Mutex;
 use tracing::{Instrument, debug, error, info, instrument};
 use tracing_core::Level;
 
-use crate::chain::{FacilitatorLocalError, NetworkProviderOps};
+use crate::chain::{FacilitatorLocalError, FromEnvByNetworkBuild, NetworkProviderOps};
 use crate::facilitator::Facilitator;
+use crate::from_env;
 use crate::network::{Network, USDCDeployment};
 use crate::timestamp::UnixTimestamp;
 use crate::types::{
@@ -531,6 +532,38 @@ impl EvmProvider {
         tx.get_receipt()
             .await
             .map_err(|e| FacilitatorLocalError::ContractCall(format!("{e:?}")))
+    }
+}
+
+impl FromEnvByNetworkBuild for EvmProvider {
+    async fn from_env(network: Network) -> Result<Option<Self>, Box<dyn std::error::Error>> {
+        let env_var = from_env::rpc_env_name_from_network(network);
+        let rpc_url = match std::env::var(env_var).ok() {
+            Some(rpc_url) => rpc_url,
+            None => {
+                tracing::warn!(network=%network, "no RPC URL configured, skipping");
+                return Ok(None);
+            }
+        };
+        let wallet = from_env::SignerType::from_env()?.make_evm_wallet()?;
+        let is_eip1559 = match network {
+            Network::BaseSepolia => true,
+            Network::Base => true,
+            Network::AvalancheFuji => true,
+            Network::Avalanche => true,
+            Network::Solana => false,
+            Network::SolanaDevnet => false,
+            Network::PolygonAmoy => true,
+            Network::Polygon => true,
+            Network::Celo => true,
+            Network::CeloSepolia => true,
+            Network::HyperEvm => true,
+            Network::HyperEvmTestnet => true,
+            Network::Optimism => true,
+            Network::OptimismSepolia => true,
+        };
+        let provider = EvmProvider::try_new(wallet, &rpc_url, is_eip1559, network).await?;
+        Ok(Some(provider))
     }
 }
 

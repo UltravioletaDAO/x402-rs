@@ -22,6 +22,12 @@ pub const ENV_RPC_POLYGON_AMOY: &str = "RPC_URL_POLYGON_AMOY";
 pub const ENV_RPC_POLYGON: &str = "RPC_URL_POLYGON";
 pub const ENV_RPC_SEI: &str = "RPC_URL_SEI";
 pub const ENV_RPC_SEI_TESTNET: &str = "RPC_URL_SEI_TESTNET";
+pub const ENV_RPC_CELO: &str = "RPC_URL_CELO";
+pub const ENV_RPC_CELO_SEPOLIA: &str = "RPC_URL_CELO_SEPOLIA";
+pub const ENV_RPC_HYPEREVM: &str = "RPC_URL_HYPEREVM";
+pub const ENV_RPC_HYPEREVM_TESTNET: &str = "RPC_URL_HYPEREVM_TESTNET";
+pub const ENV_RPC_OPTIMISM: &str = "RPC_URL_OPTIMISM";
+pub const ENV_RPC_OPTIMISM_SEPOLIA: &str = "RPC_URL_OPTIMISM_SEPOLIA";
 
 pub fn rpc_env_name_from_network(network: Network) -> &'static str {
     match network {
@@ -36,6 +42,12 @@ pub fn rpc_env_name_from_network(network: Network) -> &'static str {
         Network::Polygon => ENV_RPC_POLYGON,
         Network::Sei => ENV_RPC_SEI,
         Network::SeiTestnet => ENV_RPC_SEI_TESTNET,
+        Network::Celo => ENV_RPC_CELO,
+        Network::CeloSepolia => ENV_RPC_CELO_SEPOLIA,
+        Network::HyperEvm => ENV_RPC_HYPEREVM,
+        Network::HyperEvmTestnet => ENV_RPC_HYPEREVM_TESTNET,
+        Network::Optimism => ENV_RPC_OPTIMISM,
+        Network::OptimismSepolia => ENV_RPC_OPTIMISM_SEPOLIA,
     }
 }
 

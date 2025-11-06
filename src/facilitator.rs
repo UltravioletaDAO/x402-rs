@@ -3,13 +3,11 @@
 //! Implementors of this trait are responsible for validating incoming payment payloads
 //! against specified requirements [`Facilitator::verify`] and executing on-chain transfers [`Facilitator::settle`].
 
-use std::fmt::{Debug, Display};
-use std::future::Future;
-
 use crate::types::{
-    BlacklistInfoResponse, SettleRequest, SettleResponse, SupportedPaymentKindsResponse,
-    VerifyRequest, VerifyResponse,
+    SettleRequest, SettleResponse, SupportedPaymentKindsResponse, VerifyRequest, VerifyResponse,
 };
+use std::fmt::{Debug, Display};
+use std::sync::Arc;
 
 /// Trait defining the asynchronous interface for x402 payment facilitators.
 ///
@@ -58,21 +56,28 @@ pub trait Facilitator {
     fn supported(
         &self,
     ) -> impl Future<Output = Result<SupportedPaymentKindsResponse, Self::Error>> + Send;
+}
 
-    /// Returns runtime blacklist information for security auditing and verification.
-    ///
-    /// This endpoint provides visibility into which addresses are currently blocked
-    /// from using the facilitator. Essential for confirming blacklist enforcement
-    /// is functioning correctly.
-    ///
-    /// # Returns
-    ///
-    /// A [`BlacklistInfoResponse`] containing blocked address counts and entries.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Self::Error`] if blacklist information cannot be retrieved.
-    fn blacklist_info(
+impl<T: Facilitator> Facilitator for Arc<T> {
+    type Error = T::Error;
+
+    fn verify(
         &self,
-    ) -> impl Future<Output = Result<BlacklistInfoResponse, Self::Error>> + Send;
+        request: &VerifyRequest,
+    ) -> impl Future<Output = Result<VerifyResponse, Self::Error>> + Send {
+        self.as_ref().verify(request)
+    }
+
+    fn settle(
+        &self,
+        request: &SettleRequest,
+    ) -> impl Future<Output = Result<SettleResponse, Self::Error>> + Send {
+        self.as_ref().settle(request)
+    }
+
+    fn supported(
+        &self,
+    ) -> impl Future<Output = Result<SupportedPaymentKindsResponse, Self::Error>> + Send {
+        self.as_ref().supported()
+    }
 }

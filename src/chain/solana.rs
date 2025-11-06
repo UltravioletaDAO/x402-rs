@@ -14,6 +14,7 @@ use tracing_core::Level;
 
 use crate::chain::{FacilitatorLocalError, FromEnvByNetworkBuild, NetworkProviderOps};
 use crate::facilitator::Facilitator;
+use crate::from_env;
 use crate::network::Network;
 use crate::types::{
     Base64Bytes, ExactPaymentPayload, FacilitatorErrorReason, MixedAddress, PaymentRequirements,
@@ -21,7 +22,6 @@ use crate::types::{
     SupportedPaymentKindsResponse, TokenAmount, TransactionHash, VerifyRequest, VerifyResponse,
 };
 use crate::types::{Scheme, X402Version};
-use crate::from_env;
 
 const ATA_PROGRAM_PUBKEY: Pubkey = pubkey!("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
 
@@ -39,16 +39,13 @@ impl TryFrom<Network> for SolanaChain {
             Network::SolanaDevnet => Ok(Self { network: value }),
             Network::BaseSepolia => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::Base => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
+            Network::XdcMainnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::AvalancheFuji => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::Avalanche => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::PolygonAmoy => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::Polygon => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
-            Network::Celo => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
-            Network::CeloSepolia => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
-            Network::HyperEvm => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
-            Network::HyperEvmTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
-            Network::Optimism => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
-            Network::OptimismSepolia => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
+            Network::Sei => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
+            Network::SeiTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
         }
     }
 }
@@ -573,7 +570,6 @@ impl Facilitator for SolanaProvider {
     async fn settle(&self, request: &SettleRequest) -> Result<SettleResponse, Self::Error> {
         let verification = self.verify_transfer(request).await?;
         let tx = TransactionInt::new(verification.transaction).sign(&self.keypair)?;
-
         // Verify if fully signed
         if !tx.is_fully_signed() {
             tracing::event!(Level::WARN, status = "failed", "undersigned transaction");
@@ -585,51 +581,17 @@ impl Facilitator for SolanaProvider {
                 network: self.network(),
             });
         }
-
-        // Log transaction submission
-        tracing::info!(
-            "Submitting Solana transaction for settlement. Network: {}, Payer: {}",
-            self.network(),
-            verification.payer.pubkey
-        );
-
-        // Send and confirm with timeout
-        let tx_sig_result = tx
+        let tx_sig = tx
             .send_and_confirm(&self.rpc_client, CommitmentConfig::confirmed())
-            .await;
-
-        match tx_sig_result {
-            Ok(tx_sig) => {
-                tracing::info!(
-                    "Transaction confirmed successfully! Signature: {}",
-                    tx_sig
-                );
-                tracing::info!("Explorer: https://solscan.io/tx/{}", tx_sig);
-
-                let settle_response = SettleResponse {
-                    success: true,
-                    error_reason: None,
-                    payer: verification.payer.into(),
-                    transaction: Some(TransactionHash::Solana(*tx_sig.as_array())),
-                    network: self.network(),
-                };
-                Ok(settle_response)
-            }
-            Err(e) => {
-                tracing::error!(
-                    "Transaction settlement failed. Error: {}",
-                    e
-                );
-                // Return failure response instead of propagating error
-                Ok(SettleResponse {
-                    success: false,
-                    error_reason: Some(FacilitatorErrorReason::UnexpectedSettleError),
-                    payer: verification.payer.into(),
-                    transaction: None,
-                    network: self.network(),
-                })
-            }
-        }
+            .await?;
+        let settle_response = SettleResponse {
+            success: true,
+            error_reason: None,
+            payer: verification.payer.into(),
+            transaction: Some(TransactionHash::Solana(*tx_sig.as_array())),
+            network: self.network(),
+        };
+        Ok(settle_response)
     }
 
     async fn supported(&self) -> Result<SupportedPaymentKindsResponse, Self::Error> {
@@ -642,10 +604,6 @@ impl Facilitator for SolanaProvider {
             }),
         }];
         Ok(SupportedPaymentKindsResponse { kinds })
-    }
-
-    async fn blacklist_info(&self) -> Result<crate::types::BlacklistInfoResponse, Self::Error> {
-        Err(FacilitatorLocalError::UnsupportedNetwork(None))
     }
 }
 
@@ -785,36 +743,14 @@ impl TransactionInt {
         commitment_config: CommitmentConfig,
     ) -> Result<Signature, FacilitatorLocalError> {
         let tx_sig = self.send(rpc_client).await?;
-
-        // Add timeout for confirmation (60 seconds)
-        let timeout = Duration::from_secs(60);
-        let start = std::time::Instant::now();
-
         loop {
-            // Check timeout
-            if start.elapsed() > timeout {
-                tracing::error!(
-                    "Transaction confirmation timeout after 60s. Signature: {}",
-                    tx_sig
-                );
-                tracing::error!("Explorer: https://solscan.io/tx/{}", tx_sig);
-                return Err(FacilitatorLocalError::ContractCall(
-                    format!(
-                        "Transaction {} not confirmed after 60s. Check https://solscan.io/tx/{}",
-                        tx_sig, tx_sig
-                    )
-                ));
-            }
-
             let confirmed = rpc_client
                 .confirm_transaction_with_commitment(&tx_sig, commitment_config)
                 .await
                 .map_err(|e| FacilitatorLocalError::ContractCall(format!("{e}")))?;
-
             if confirmed.value {
                 return Ok(tx_sig);
             }
-
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
     }

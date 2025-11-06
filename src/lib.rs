@@ -21,6 +21,7 @@ pub mod chain;
 pub mod debug_utils;
 pub mod facilitator;
 pub mod facilitator_local;
+pub mod from_env;
 pub mod network;
 pub mod provider_cache;
 pub mod telemetry;

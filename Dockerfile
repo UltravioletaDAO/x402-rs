@@ -21,6 +21,7 @@ COPY examples/x402-reqwest-example/Cargo.toml examples/x402-reqwest-example/Carg
 # Create dummy source files to build dependencies
 RUN mkdir -p src && \
     echo "fn main() {}" > src/main.rs && \
+    echo "pub fn dummy() {}" > src/lib.rs && \
     mkdir -p crates/x402-axum/src && \
     echo "pub fn dummy() {}" > crates/x402-axum/src/lib.rs && \
     mkdir -p crates/x402-reqwest/src && \
@@ -32,7 +33,7 @@ RUN mkdir -p src && \
 
 # Build dependencies only (this step caches until Cargo.toml/lock changes)
 # Expected time: 3-5 minutes, but CACHED on subsequent builds
-RUN cargo build --release --bin x402-rs && rm -rf src target/release/x402-rs*
+RUN cargo build --release --bin x402-rs && rm -rf src target/release/x402-rs* target/release/deps/libx402_rs*
 
 # Now copy actual source code
 COPY src ./src

@@ -1,4 +1,0 @@
-─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────> is there a way to create a json of blacklisted addresses to prevent using the facilitator? this wallet is draining all the gas in a few seconds looks like a bot, i would like to be   
-  i wanna be able to have a json list where if an address is added there, the facilitator wont process the payment, it could be something like [{"account_type": "solana", "wallet":
-  "41fx2QjU8qCEPPDLWnypgxaHaDJ3dFVi8BhfUmTEQ3az", "reason":"spam"},{"account_type": "evm", "wallet": "", reason: "" }] please implement everything and let me know when you are ready    
-  to push 

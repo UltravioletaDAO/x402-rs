@@ -124,4 +124,7 @@ pub enum FacilitatorLocalError {
     /// The payload decoding failed.
     #[error("Decoding error: {0}")]
     DecodingError(String),
+    /// Address is blocked by blacklist.
+    #[error("Blocked address: {1}")]
+    BlockedAddress(MixedAddress, String),
 }

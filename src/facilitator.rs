@@ -56,6 +56,29 @@ pub trait Facilitator {
     fn supported(
         &self,
     ) -> impl Future<Output = Result<SupportedPaymentKindsResponse, Self::Error>> + Send;
+
+    /// Returns information about the current blacklist configuration.
+    ///
+    /// This method provides visibility into which addresses are blocked from
+    /// using the facilitator. The default implementation returns an empty response.
+    ///
+    /// # Returns
+    ///
+    /// A JSON value containing blacklist statistics and entries.
+    fn blacklist_info(
+        &self,
+    ) -> impl Future<Output = Result<serde_json::Value, Self::Error>> + Send {
+        async {
+            Ok(serde_json::json!({
+                "total_blocked": 0,
+                "evm_count": 0,
+                "solana_count": 0,
+                "entries": [],
+                "source": "none",
+                "loaded_at_startup": false
+            }))
+        }
+    }
 }
 
 impl<T: Facilitator> Facilitator for Arc<T> {
@@ -79,5 +102,11 @@ impl<T: Facilitator> Facilitator for Arc<T> {
         &self,
     ) -> impl Future<Output = Result<SupportedPaymentKindsResponse, Self::Error>> + Send {
         self.as_ref().supported()
+    }
+
+    fn blacklist_info(
+        &self,
+    ) -> impl Future<Output = Result<serde_json::Value, Self::Error>> + Send {
+        self.as_ref().blacklist_info()
     }
 }

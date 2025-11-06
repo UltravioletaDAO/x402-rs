@@ -1,52 +1,5 @@
-# Development files
-.env
-.env.*
-.vscode/
-.idea/
-*.swp
-*.swo
-.DS_Store
-
-# Documentation (not needed in Docker image)
-*.md
-docs/
-CHANGELOG
-LICENSE
-
-# Tests (not needed for production build)
-tests/
-*.test.*
-
-# Build artifacts (will be rebuilt in Docker)
 target/
-Cargo.lock.backup
-**/*.rs.bk
-
-# Git
 .git/
-.gitignore
-.gitattributes
-
-# CI/CD
-.github/
-.gitlab-ci.yml
-.circleci/
-
-# Scripts (not needed in image)
-scripts/
-*.sh
-*.py
-
-# Terraform
-terraform/
-*.tf
-*.tfvars
-
-# Temporary files
-tmp/
-temp/
-*.tmp
+*.rs.bk
 *.log
-
-# Task definitions
-task-def-*.json
+.env

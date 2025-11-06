@@ -15,7 +15,8 @@ If no valid payment is provided, a `402 Payment Required` response is returned w
 
 - Built for [Axum](https://github.com/tokio-rs/axum)
 - Fluent builder API for composing payment requirements and prices
-- Enforces on-chain payment before executing protected handlers
+- Enforces on-chain payment verification before executing protected handlers
+- Configurable settlement timing (before or after request execution)
 - Returns standards-compliant `402 Payment Required` responses
 - Emits rich tracing spans with optional OpenTelemetry integration (`telemetry` feature)
 - Compatible with any x402 facilitator (remote or in-process)
@@ -24,12 +25,12 @@ If no valid payment is provided, a `402 Payment Required` response is returned w
 Add to your `Cargo.toml`:
 
 ```toml
-x402-axum = "0.3"
+x402-axum = "0.6"
 ```
 
 If you want to enable tracing and OpenTelemetry support, use the telemetry feature (make sure to register a tracing subscriber in your application):
 ```toml
-x402-axum = { version = "0.3", features = ["telemetry"] }
+x402-axum = { version = "0.6", features = ["telemetry"] }
 ```
 
 ## Specifying Prices
@@ -139,6 +140,20 @@ let app: Router = Router::new()
     );
 ```
 
+## Settlement Timing
+
+By default, the middleware settles payments **after** request execution. You can control this behavior with `settle_before_execution`.
+
+```rust
+let x402 = X402Middleware::try_from("https://x402.org/facilitator/").unwrap()
+    .settle_before_execution();
+```
+
+This is useful when you want to:
+- Avoid failed settlements requiring external retry mechanisms
+- Prevent payment authorization expiration before final settlement
+- Ensure payment is settled before granting access to the resource
+
 ## Example
 
 ```rust
@@ -191,6 +206,98 @@ If no valid payment is included, the middleware responds with:
 }
 ```
 
+## Configuring Input and Output Schemas
+
+You can provide detailed metadata about your API endpoints using `with_input_schema()` and `with_output_schema()`. These schemas are embedded in the `PaymentRequirements.outputSchema` field and can be used by discovery services, documentation generators, or clients to understand your API.
+
+### Input Schema
+
+The input schema describes the expected request format, including HTTP method, query parameters, headers, and whether the endpoint is publicly discoverable:
+
+```rust
+use serde_json::json;
+
+let x402 = X402Middleware::try_from("https://x402.org/facilitator/").unwrap();
+
+let app = Router::new().route(
+    "/api/weather",
+    get(handler).layer(
+        x402.with_description("Weather API")
+            .with_input_schema(json!({
+                "type": "http",
+                "method": "GET",
+                "discoverable": true,  // Endpoint appears in discovery services
+                "queryParams": {
+                    "location": {
+                        "type": "string",
+                        "description": "City name or coordinates",
+                        "required": true
+                    },
+                    "units": {
+                        "type": "string",
+                        "enum": ["metric", "imperial"],
+                        "default": "metric"
+                    }
+                }
+            }))
+            .with_price_tag(usdc.amount("0.001").unwrap())
+    ),
+);
+```
+
+### Output Schema
+
+The output schema describes the response format:
+
+```rust
+let app = Router::new().route(
+    "/api/weather",
+    get(handler).layer(
+        x402.with_output_schema(json!({
+            "type": "object",
+            "properties": {
+                "temperature": { "type": "number", "description": "Current temperature" },
+                "conditions": { "type": "string", "description": "Weather conditions" },
+                "humidity": { "type": "number", "description": "Humidity percentage" }
+            },
+            "required": ["temperature", "conditions"]
+        }))
+        .with_price_tag(usdc.amount("0.001").unwrap())
+    ),
+);
+```
+
+### Discoverable vs Private Endpoints
+
+You can control whether your endpoint appears in public discovery services by setting the `discoverable` flag:
+
+```rust
+// Public endpoint - will appear in x402 Bazaar
+x402.with_input_schema(json!({
+    "type": "http",
+    "method": "GET",
+    "discoverable": true,
+    "description": "Public weather API"
+}))
+
+// Private endpoint - direct access only
+x402.with_input_schema(json!({
+    "type": "http",
+    "method": "GET",
+    "discoverable": false,
+    "description": "Internal admin API - private access only"
+}))
+```
+
+The combined input and output schemas are automatically embedded in `PaymentRequirements.outputSchema` as:
+
+```json
+{
+  "input": { /* your input schema */ },
+  "output": { /* your output schema */ }
+}
+```
+
 ## Optional Telemetry
 
 If the `telemetry` feature is enabled, the middleware emits structured tracing spans such as:
@@ -204,7 +311,7 @@ To enable:
 
 ```toml
 [dependencies]
-x402-axum = { version = "0.3", features = ["telemetry"] }
+x402-axum = { version = "0.6", features = ["telemetry"] }
 ```
 
 ## Related Crates	

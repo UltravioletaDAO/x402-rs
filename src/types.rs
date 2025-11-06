@@ -787,11 +787,11 @@ impl<'de> Deserialize<'de> for TransactionHash {
         }
 
         // Solana: base58 string, decodes to exactly 64 bytes
-        if let Ok(bytes) = bs58::decode(&s).into_vec() {
-            if bytes.len() == 64 {
-                let array: [u8; 64] = bytes.try_into().unwrap(); // safe after length check
-                return Ok(TransactionHash::Solana(array));
-            }
+        if let Ok(bytes) = bs58::decode(&s).into_vec()
+            && bytes.len() == 64
+        {
+            let array: [u8; 64] = bytes.try_into().unwrap(); // safe after length check
+            return Ok(TransactionHash::Solana(array));
         }
 
         Err(serde::de::Error::custom("Invalid transaction hash format"))
@@ -1415,37 +1415,6 @@ pub struct SupportedPaymentKindExtra {
 #[allow(dead_code)] // Public for consumption by downstream crates.
 pub struct SupportedPaymentKindsResponse {
     pub kinds: Vec<SupportedPaymentKind>,
-}
-
-/// Response for the `/blacklist` endpoint, providing runtime visibility into
-/// the blacklist configuration currently being enforced by the facilitator.
-///
-/// This is critical for security auditing and verifying that blacklist protection
-/// is functioning correctly in production.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BlacklistInfoResponse {
-    /// Total number of blocked addresses (EVM + Solana)
-    pub total_blocked: usize,
-    /// Number of blocked EVM addresses
-    pub evm_count: usize,
-    /// Number of blocked Solana addresses
-    pub solana_count: usize,
-    /// Full list of blacklist entries with reasons
-    pub entries: Vec<BlacklistEntry>,
-    /// Source file path for the blacklist
-    pub source: String,
-    /// Whether the blacklist was successfully loaded at startup
-    pub loaded_at_startup: bool,
-}
-
-/// Individual blacklist entry (re-exported from blocklist module for API response)
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub struct BlacklistEntry {
-    pub account_type: String,
-    pub wallet: String,
-    pub reason: String,
 }
 
 sol!(

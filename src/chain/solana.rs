@@ -44,6 +44,12 @@ impl TryFrom<Network> for SolanaChain {
             Network::Avalanche => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::PolygonAmoy => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::Polygon => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
+            Network::Optimism => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
+            Network::OptimismSepolia => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
+            Network::Celo => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
+            Network::CeloSepolia => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
+            Network::HyperEvm => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
+            Network::HyperEvmTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::Sei => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::SeiTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
         }

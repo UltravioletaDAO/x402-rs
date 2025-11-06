@@ -2,6 +2,26 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## File Organization
+
+This repository maintains a strict file organization structure. The root directory contains ONLY:
+
+**Essential files in root:**
+- `README.md` - Project overview
+- `CLAUDE.md` - This file (Claude Code instructions)
+- Build configuration: `Cargo.toml`, `Dockerfile`, `docker-compose.yml`, `.env.example`, `.gitignore`, etc.
+
+**All other files organized in directories:**
+- `docs/` - ALL documentation (CHANGELOG.md, CUSTOMIZATIONS.md, DEPLOYMENT.md, etc.)
+- `static/` - Landing page HTML, images, assets
+- `scripts/` - Python scripts, shell scripts, deployment tools
+- `config/` - Configuration files (blacklist.json, prometheus.yml, etc.)
+- `terraform/` - Infrastructure as code, task definitions
+- `src/` - Rust source code
+- `crates/` - Workspace crates
+- `tests/` - Test suites
+- `.unused/` - **IGNORED** (contains secrets, never commit!)
+
 ## Project Overview
 
 This is the **x402-rs Payment Facilitator** - a standalone Rust-based service enabling gasless micropayments across 14+ blockchain networks using the HTTP 402 Payment Required protocol. The facilitator acts as a settlement intermediary, verifying EIP-3009 payment authorizations and submitting them on-chain.
@@ -10,7 +30,7 @@ This is the **x402-rs Payment Facilitator** - a standalone Rust-based service en
 - Production-ready service deployed on AWS ECS
 - Supports 7 mainnets + 7 testnets (EVM: Base, Avalanche, Celo, HyperEVM, Polygon, Optimism; Non-EVM: Solana)
 - Custom Ultravioleta DAO branding (landing page, logos)
-- Forked from upstream [polyphene/x402-rs](https://github.com/polyphene/x402-rs)
+- Forked from upstream [x402-rs/x402-rs](https://github.com/x402-rs/x402-rs)
 
 ## Development Commands
 
@@ -129,7 +149,7 @@ python scripts/compare_usdc_contracts.py
 
 **src/timestamp.rs**: EIP-3009 timestamp utilities
 - Handles `validAfter`/`validBefore` timestamp validation
-- See `EIP3009_TIMESTAMP_BEST_PRACTICES.md` for context
+- See `docs/EIP3009_TIMESTAMP_BEST_PRACTICES.md` for context
 
 **src/types.rs**: Protocol types and serialization
 - `PaymentPayload`, `TokenAsset`, `TokenDeployment`
@@ -171,11 +191,12 @@ This is a Cargo workspace with multiple crates:
    - Solana mainnet/devnet
    - **Merge strategy**: Preserve ALL custom networks when pulling upstream
 
-5. **Dockerfile** - Custom Rust nightly setup
-   - Uses `rustup default nightly` for Rust Edition 2024 features
-   - Upstream may use stable Rust
+5. **Rust Edition** - Using edition 2021 for compatibility
+   - Currently on Rust edition 2021 (compatible with Rust 1.82+)
+   - Upstream uses edition 2024 (requires Rust 1.86+)
+   - Downgraded in v0.9.1 merge for broader compatibility
 
-See `CUSTOMIZATIONS.md` for complete documentation of all customizations and merge strategies.
+See `docs/CUSTOMIZATIONS.md` for complete documentation of all customizations and merge strategies.
 
 ## Configuration
 
@@ -283,13 +304,14 @@ Located in `tests/x402/`:
 
 ## Important Documentation
 
-- **CUSTOMIZATIONS.md** - Detailed inventory of all customizations vs upstream
-- **FACILITATOR_READY.md** - Extraction checklist and deployment guide
+- **docs/CUSTOMIZATIONS.md** - Detailed inventory of all customizations vs upstream
+- **docs/CHANGELOG.md** - Version history and release notes
+- **docs/DEPLOYMENT.md** - Deployment procedures and infrastructure guide
 - **docs/TESTING.md** - Complete testing guide
 - **docs/WALLET_ROTATION.md** - Security procedures for rotating facilitator keys
 - **docs/UPSTREAM_MERGE_STRATEGY.md** - How to safely merge upstream changes without losing branding
 - **docs/EXTRACTION_MASTER_PLAN.md** - History of extracting facilitator from karmacadabra monorepo
-- **EIP3009_TIMESTAMP_BEST_PRACTICES.md** - Timestamp handling for payment authorizations
+- **docs/EIP3009_TIMESTAMP_BEST_PRACTICES.md** - Timestamp handling for payment authorizations
 
 ## Troubleshooting
 
@@ -316,24 +338,39 @@ python scripts/compare_domain_separator.py
 
 ## Upstream Relationship
 
-**Upstream**: https://github.com/polyphene/x402-rs
-**Current fork base**: v0.9.0
+**Upstream**: https://github.com/x402-rs/x402-rs (golden source)
+**Your Fork**: https://github.com/UltravioletaDAO/x402-rs
+**Current fork base**: v0.9.1 (merged 2025-11-06)
+**Current version**: v1.2.0
 **Sync frequency**: Quarterly review for features, within 1 week for security patches
+
+**Git Remotes:**
+- `origin` - Your fork (UltravioletaDAO/x402-rs)
+- `upstream` - Golden source (x402-rs/x402-rs)
 
 **Before merging upstream changes**:
 1. Backup `static/` directory
 2. Review changes to `handlers.rs`, `network.rs`, `Dockerfile`
-3. Follow merge strategy in `CUSTOMIZATIONS.md`
+3. Follow merge strategy in `docs/CUSTOMIZATIONS.md`
 4. Test branding: `curl http://localhost:8080/ | grep Ultravioleta`
 5. Test custom networks: `curl http://localhost:8080/supported | jq`
+
+**To sync with upstream:**
+```bash
+git fetch upstream
+git log HEAD..upstream/main  # Review changes
+git merge upstream/main      # Follow docs/CUSTOMIZATIONS.md strategy
+```
 
 ## Security Notes
 
 - **NEVER** commit `.env` file with actual private keys
+- **NEVER** commit `.unused/` directory - it's in `.gitignore` and CONTAINS SECRETS
 - Use testnet keys for local development only
 - Production keys stored in AWS Secrets Manager
 - Rotate facilitator wallets regularly (see `docs/WALLET_ROTATION.md`)
 - Facilitator wallet needs native tokens (ETH/AVAX) for gas, not payment tokens
+- If you accidentally commit secrets, rotate them IMMEDIATELY and use `git-filter-repo` to clean history
 
 ## Common Pitfalls
 
@@ -384,5 +421,11 @@ python scripts/compare_domain_separator.py
 3. Verify `src/handlers.rs::get_index()` still uses `include_str!()`
 4. Rebuild: `cargo build --release`
 5. Test: `curl http://localhost:8080/ | grep "New Branding"`
-- never ever add any emotes to rust, it will break
-- never use the rust nightly build, we know for sure it doesnt work
+
+### Important Notes
+
+- **Never add emojis to Rust code** - it will break compilation
+- **Rust Edition**: Currently using **edition 2021** for compatibility with Rust 1.82
+  - Upstream uses edition 2024 (requires Rust 1.86+)
+  - Can upgrade to edition 2024 when ready to require Rust 1.86+
+  - See v0.9.1 merge for details (commit 75b37e6)

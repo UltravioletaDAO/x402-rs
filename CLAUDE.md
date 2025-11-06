@@ -80,7 +80,7 @@ This is the **x402-rs Payment Facilitator** - a standalone Rust-based service en
 - Production-ready service deployed on AWS ECS
 - Supports 7 mainnets + 7 testnets (EVM: Base, Avalanche, Celo, HyperEVM, Polygon, Optimism; Non-EVM: Solana)
 - Custom Ultravioleta DAO branding (landing page, logos)
-- Forked from upstream [polyphene/x402-rs](https://github.com/polyphene/x402-rs)
+- Forked from upstream [x402-rs/x402-rs](https://github.com/x402-rs/x402-rs)
 
 ## Development Commands
 
@@ -386,7 +386,7 @@ python scripts/compare_domain_separator.py
 
 ## Upstream Relationship
 
-**Upstream**: https://github.com/polyphene/x402-rs
+**Upstream**: https://github.com/x402-rs/x402-rs
 **Current fork base**: v0.9.0
 **Sync frequency**: Quarterly review for features, within 1 week for security patches
 

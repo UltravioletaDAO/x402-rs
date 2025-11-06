@@ -1,4 +1,3 @@
-use std::future::Future;
 use std::time::SystemTimeError;
 
 use crate::chain::evm::EvmProvider;
@@ -6,8 +5,8 @@ use crate::chain::solana::SolanaProvider;
 use crate::facilitator::Facilitator;
 use crate::network::{Network, NetworkFamily};
 use crate::types::{
-    BlacklistInfoResponse, MixedAddress, Scheme, SettleRequest, SettleResponse,
-    SupportedPaymentKindsResponse, VerifyRequest, VerifyResponse,
+    MixedAddress, Scheme, SettleRequest, SettleResponse, SupportedPaymentKindsResponse,
+    VerifyRequest, VerifyResponse,
 };
 
 pub mod evm;
@@ -85,10 +84,6 @@ impl Facilitator for NetworkProvider {
             NetworkProvider::Solana(provider) => provider.supported().await,
         }
     }
-
-    async fn blacklist_info(&self) -> Result<BlacklistInfoResponse, Self::Error> {
-        Err(FacilitatorLocalError::UnsupportedNetwork(None))
-    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -129,7 +124,4 @@ pub enum FacilitatorLocalError {
     /// The payload decoding failed.
     #[error("Decoding error: {0}")]
     DecodingError(String),
-    /// The payer or recipient address is blacklisted.
-    #[error("Blacklisted address: {0} - Reason: {1}")]
-    BlockedAddress(MixedAddress, String),
 }

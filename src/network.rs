@@ -24,6 +24,9 @@ pub enum Network {
     /// Base mainnet (chain ID 8453).
     #[serde(rename = "base")]
     Base,
+    /// XDC mainnet (chain ID 50).
+    #[serde(rename = "xdc")]
+    XdcMainnet,
     /// Avalanche Fuji testnet (chain ID 43113)
     #[serde(rename = "avalanche-fuji")]
     AvalancheFuji,
@@ -45,6 +48,9 @@ pub enum Network {
     /// Optimism mainnet (chain ID 10).
     #[serde(rename = "optimism")]
     Optimism,
+    /// Optimism Sepolia testnet (chain ID 11155420).
+    #[serde(rename = "optimism-sepolia")]
+    OptimismSepolia,
     /// Celo mainnet (chain ID 42220).
     #[serde(rename = "celo")]
     Celo,
@@ -57,9 +63,12 @@ pub enum Network {
     /// HyperEVM testnet (chain ID 333).
     #[serde(rename = "hyperevm-testnet")]
     HyperEvmTestnet,
-    /// Optimism Sepolia testnet (chain ID 11155420).
-    #[serde(rename = "optimism-sepolia")]
-    OptimismSepolia,
+    /// Sei mainnet (chain ID 1329).
+    #[serde(rename = "sei")]
+    Sei,
+    /// Sei testnet (chain ID 1328).
+    #[serde(rename = "sei-testnet")]
+    SeiTestnet,
 }
 
 impl Display for Network {
@@ -67,6 +76,7 @@ impl Display for Network {
         match self {
             Network::BaseSepolia => write!(f, "base-sepolia"),
             Network::Base => write!(f, "base"),
+            Network::XdcMainnet => write!(f, "xdc"),
             Network::AvalancheFuji => write!(f, "avalanche-fuji"),
             Network::Avalanche => write!(f, "avalanche"),
             Network::Solana => write!(f, "solana"),
@@ -74,11 +84,13 @@ impl Display for Network {
             Network::PolygonAmoy => write!(f, "polygon-amoy"),
             Network::Polygon => write!(f, "polygon"),
             Network::Optimism => write!(f, "optimism"),
+            Network::OptimismSepolia => write!(f, "optimism-sepolia"),
             Network::Celo => write!(f, "celo"),
             Network::CeloSepolia => write!(f, "celo-sepolia"),
             Network::HyperEvm => write!(f, "hyperevm"),
             Network::HyperEvmTestnet => write!(f, "hyperevm-testnet"),
-            Network::OptimismSepolia => write!(f, "optimism-sepolia"),
+            Network::Sei => write!(f, "sei"),
+            Network::SeiTestnet => write!(f, "sei-testnet"),
         }
     }
 }
@@ -94,6 +106,7 @@ impl From<Network> for NetworkFamily {
         match value {
             Network::BaseSepolia => NetworkFamily::Evm,
             Network::Base => NetworkFamily::Evm,
+            Network::XdcMainnet => NetworkFamily::Evm,
             Network::AvalancheFuji => NetworkFamily::Evm,
             Network::Avalanche => NetworkFamily::Evm,
             Network::Solana => NetworkFamily::Solana,
@@ -101,11 +114,13 @@ impl From<Network> for NetworkFamily {
             Network::PolygonAmoy => NetworkFamily::Evm,
             Network::Polygon => NetworkFamily::Evm,
             Network::Optimism => NetworkFamily::Evm,
+            Network::OptimismSepolia => NetworkFamily::Evm,
             Network::Celo => NetworkFamily::Evm,
             Network::CeloSepolia => NetworkFamily::Evm,
             Network::HyperEvm => NetworkFamily::Evm,
             Network::HyperEvmTestnet => NetworkFamily::Evm,
-            Network::OptimismSepolia => NetworkFamily::Evm,
+            Network::Sei => NetworkFamily::Evm,
+            Network::SeiTestnet => NetworkFamily::Evm,
         }
     }
 }
@@ -116,6 +131,7 @@ impl Network {
         &[
             Network::BaseSepolia,
             Network::Base,
+            Network::XdcMainnet,
             Network::AvalancheFuji,
             Network::Avalanche,
             Network::Solana,
@@ -123,11 +139,13 @@ impl Network {
             Network::PolygonAmoy,
             Network::Polygon,
             Network::Optimism,
+            Network::OptimismSepolia,
             Network::Celo,
             Network::CeloSepolia,
             Network::HyperEvm,
             Network::HyperEvmTestnet,
-            Network::OptimismSepolia,
+            Network::Sei,
+            Network::SeiTestnet,
         ]
     }
 
@@ -139,9 +157,10 @@ impl Network {
                 | Network::AvalancheFuji
                 | Network::SolanaDevnet
                 | Network::PolygonAmoy
+                | Network::OptimismSepolia
                 | Network::CeloSepolia
                 | Network::HyperEvmTestnet
-                | Network::OptimismSepolia
+                | Network::SeiTestnet
         )
     }
 
@@ -176,6 +195,21 @@ static USDC_BASE: Lazy<USDCDeployment> = Lazy::new(|| {
         decimals: 6,
         eip712: Some(TokenDeploymentEip712 {
             name: "USD Coin".into(),
+            version: "2".into(),
+        }),
+    })
+});
+
+/// Lazily initialized known USDC deployment on XDC mainnet as [`USDCDeployment`].
+static USDC_XDC: Lazy<USDCDeployment> = Lazy::new(|| {
+    USDCDeployment(TokenDeployment {
+        asset: TokenAsset {
+            address: address!("0x2A8E898b6242355c290E1f4Fc966b8788729A4D4").into(),
+            network: Network::XdcMainnet,
+        },
+        decimals: 6,
+        eip712: Some(TokenDeploymentEip712 {
+            name: "Bridged USDC(XDC)".into(),
             version: "2".into(),
         }),
     })
@@ -284,6 +318,22 @@ static USDC_OPTIMISM: Lazy<USDCDeployment> = Lazy::new(|| {
     })
 });
 
+/// Lazily initialized known USDC deployment on Optimism Sepolia testnet as [`USDCDeployment`].
+static USDC_OPTIMISM_SEPOLIA: Lazy<USDCDeployment> = Lazy::new(|| {
+    USDCDeployment(TokenDeployment {
+        asset: TokenAsset {
+            address: address!("0x5fd84259d66Cd46123540766Be93DFE6D43130D7").into(),
+            network: Network::OptimismSepolia,
+        },
+        decimals: 6,
+        eip712: Some(TokenDeploymentEip712 {
+            name: "USDC".into(),
+            version: "2".into(),
+        }),
+    })
+});
+
+/// Lazily initialized known USDC deployment on Celo mainnet as [`USDCDeployment`].
 static USDC_CELO: Lazy<USDCDeployment> = Lazy::new(|| {
     USDCDeployment(TokenDeployment {
         asset: TokenAsset {
@@ -298,6 +348,7 @@ static USDC_CELO: Lazy<USDCDeployment> = Lazy::new(|| {
     })
 });
 
+/// Lazily initialized known USDC deployment on Celo Sepolia testnet as [`USDCDeployment`].
 static USDC_CELO_SEPOLIA: Lazy<USDCDeployment> = Lazy::new(|| {
     USDCDeployment(TokenDeployment {
         asset: TokenAsset {
@@ -312,6 +363,7 @@ static USDC_CELO_SEPOLIA: Lazy<USDCDeployment> = Lazy::new(|| {
     })
 });
 
+/// Lazily initialized known USDC deployment on HyperEVM mainnet as [`USDCDeployment`].
 static USDC_HYPEREVM: Lazy<USDCDeployment> = Lazy::new(|| {
     USDCDeployment(TokenDeployment {
         asset: TokenAsset {
@@ -326,6 +378,7 @@ static USDC_HYPEREVM: Lazy<USDCDeployment> = Lazy::new(|| {
     })
 });
 
+/// Lazily initialized known USDC deployment on HyperEVM testnet as [`USDCDeployment`].
 static USDC_HYPEREVM_TESTNET: Lazy<USDCDeployment> = Lazy::new(|| {
     USDCDeployment(TokenDeployment {
         asset: TokenAsset {
@@ -340,11 +393,25 @@ static USDC_HYPEREVM_TESTNET: Lazy<USDCDeployment> = Lazy::new(|| {
     })
 });
 
-static USDC_OPTIMISM_SEPOLIA: Lazy<USDCDeployment> = Lazy::new(|| {
+static USDC_SEI: Lazy<USDCDeployment> = Lazy::new(|| {
     USDCDeployment(TokenDeployment {
         asset: TokenAsset {
-            address: address!("0x5fd84259d66Cd46123540766Be93DFE6D43130D7").into(),
-            network: Network::OptimismSepolia,
+            address: address!("0xe15fC38F6D8c56aF07bbCBe3BAf5708A2Bf42392").into(),
+            network: Network::Sei,
+        },
+        decimals: 6,
+        eip712: Some(TokenDeploymentEip712 {
+            name: "USDC".into(),
+            version: "2".into(),
+        }),
+    })
+});
+
+static USDC_SEI_TESTNET: Lazy<USDCDeployment> = Lazy::new(|| {
+    USDCDeployment(TokenDeployment {
+        asset: TokenAsset {
+            address: address!("0x4fCF1784B31630811181f670Aea7A7bEF803eaED").into(),
+            network: Network::Sei,
         },
         decimals: 6,
         eip712: Some(TokenDeploymentEip712 {
@@ -392,6 +459,7 @@ impl USDCDeployment {
         match network.borrow() {
             Network::BaseSepolia => &USDC_BASE_SEPOLIA,
             Network::Base => &USDC_BASE,
+            Network::XdcMainnet => &USDC_XDC,
             Network::AvalancheFuji => &USDC_AVALANCHE_FUJI,
             Network::Avalanche => &USDC_AVALANCHE,
             Network::Solana => &USDC_SOLANA,
@@ -399,11 +467,13 @@ impl USDCDeployment {
             Network::PolygonAmoy => &USDC_POLYGON_AMOY,
             Network::Polygon => &USDC_POLYGON,
             Network::Optimism => &USDC_OPTIMISM,
+            Network::OptimismSepolia => &USDC_OPTIMISM_SEPOLIA,
             Network::Celo => &USDC_CELO,
             Network::CeloSepolia => &USDC_CELO_SEPOLIA,
             Network::HyperEvm => &USDC_HYPEREVM,
             Network::HyperEvmTestnet => &USDC_HYPEREVM_TESTNET,
-            Network::OptimismSepolia => &USDC_OPTIMISM_SEPOLIA,
+            Network::Sei => &USDC_SEI,
+            Network::SeiTestnet => &USDC_SEI_TESTNET,
         }
     }
 }

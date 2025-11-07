@@ -332,6 +332,16 @@
             box-shadow: 0 8px 24px rgba(255, 4, 32, 0.3);
         }
 
+        .network-badge.ethereum {
+            border-color: #627eea;
+            box-shadow: 0 0 20px rgba(98, 126, 234, 0.2);
+        }
+
+        .network-badge.ethereum:hover {
+            border-color: #627eea;
+            box-shadow: 0 8px 24px rgba(98, 126, 234, 0.3);
+        }
+
         .network-dot {
             width: 12px;
             height: 12px;
@@ -870,6 +880,16 @@
                         </div>
                         <div style="font-size: 0.7rem; color: var(--text-muted);">ETH Balance</div>
                     </div>
+                    <div class="network-badge ethereum" style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%;">
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
+                            <img src="/ethereum.png" alt="Ethereum" style="width: 32px; height: 32px; object-fit: contain;">
+                            <span style="font-weight: 700;">Ethereum</span>
+                        </div>
+                        <div class="balance-amount" data-balance="ethereum-mainnet" style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
+                            Loading...
+                        </div>
+                        <div style="font-size: 0.7rem; color: var(--text-muted);">ETH Balance</div>
+                    </div>
                 </div>
                 </div>
 
@@ -929,6 +949,16 @@
                             <span style="font-weight: 700;">Optimism Sepolia</span>
                         </div>
                         <div class="balance-amount" data-balance="optimism-testnet" style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
+                            Loading...
+                        </div>
+                        <div style="font-size: 0.7rem; color: var(--text-muted);">ETH</div>
+                    </div>
+                    <div class="network-badge ethereum" style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%;">
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
+                            <img src="/ethereum.png" alt="Ethereum" style="width: 32px; height: 32px; object-fit: contain;">
+                            <span style="font-weight: 700;">Ethereum Sepolia</span>
+                        </div>
+                        <div class="balance-amount" data-balance="ethereum-testnet" style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
                             Loading...
                         </div>
                         <div style="font-size: 0.7rem; color: var(--text-muted);">ETH</div>

@@ -28,6 +28,8 @@ pub const ENV_RPC_HYPEREVM: &str = "RPC_URL_HYPEREVM";
 pub const ENV_RPC_HYPEREVM_TESTNET: &str = "RPC_URL_HYPEREVM_TESTNET";
 pub const ENV_RPC_OPTIMISM: &str = "RPC_URL_OPTIMISM";
 pub const ENV_RPC_OPTIMISM_SEPOLIA: &str = "RPC_URL_OPTIMISM_SEPOLIA";
+pub const ENV_RPC_ETHEREUM: &str = "RPC_URL_ETHEREUM";
+pub const ENV_RPC_ETHEREUM_SEPOLIA: &str = "RPC_URL_ETHEREUM_SEPOLIA";
 
 pub fn rpc_env_name_from_network(network: Network) -> &'static str {
     match network {
@@ -48,6 +50,8 @@ pub fn rpc_env_name_from_network(network: Network) -> &'static str {
         Network::HyperEvmTestnet => ENV_RPC_HYPEREVM_TESTNET,
         Network::Optimism => ENV_RPC_OPTIMISM,
         Network::OptimismSepolia => ENV_RPC_OPTIMISM_SEPOLIA,
+        Network::Ethereum => ENV_RPC_ETHEREUM,
+        Network::EthereumSepolia => ENV_RPC_ETHEREUM_SEPOLIA,
     }
 }
 

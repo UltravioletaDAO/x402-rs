@@ -370,6 +370,8 @@ impl FromEnvByNetworkBuild for EvmProvider {
             Network::HyperEvmTestnet => true,
             Network::Sei => true,
             Network::SeiTestnet => true,
+            Network::Ethereum => true,
+            Network::EthereumSepolia => true,
         };
         let provider = EvmProvider::try_new(wallet, &rpc_url, is_eip1559, network).await?;
         Ok(Some(provider))

@@ -1,0 +1,12 @@
+[
+  {
+    "account_type": "solana",
+    "wallet": "",
+    "reason": "spam"
+  },
+  {
+    "account_type": "evm",
+    "wallet": "0x0000000000000000000000000000000000000000",
+    "reason": "example blocked address"
+  }
+]

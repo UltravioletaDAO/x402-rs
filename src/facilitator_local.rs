@@ -9,8 +9,10 @@
 //! - Contract interaction using Alloy
 //! - Network-specific configuration via [`ProviderCache`] and [`USDCDeployment`]
 
+use std::sync::Arc;
 use tracing::instrument;
 
+use crate::blocklist::{Blacklist, SharedBlacklist};
 use crate::chain::FacilitatorLocalError;
 use crate::facilitator::Facilitator;
 use crate::provider_cache::ProviderMap;
@@ -25,14 +27,16 @@ use crate::types::{
 /// which enables testing or customization beyond the default [`ProviderCache`].
 pub struct FacilitatorLocal<A> {
     provider_map: A,
+    blacklist: SharedBlacklist,
 }
 
 impl<A> FacilitatorLocal<A> {
-    /// Creates a new [`FacilitatorLocal`] with the given provider cache.
+    /// Creates a new [`FacilitatorLocal`] with the given provider cache and blacklist.
     ///
     /// The provider cache is used to resolve the appropriate EVM provider for each payment's target network.
-    pub fn new(provider_map: A) -> Self {
-        FacilitatorLocal { provider_map }
+    /// The blacklist is used to block addresses from using the facilitator.
+    pub fn new(provider_map: A, blacklist: SharedBlacklist) -> Self {
+        FacilitatorLocal { provider_map, blacklist }
     }
 }
 
@@ -63,6 +67,27 @@ where
     /// - unsupported network.
     #[instrument(skip_all, err, fields(network = %request.payment_payload.network))]
     async fn verify(&self, request: &VerifyRequest) -> Result<VerifyResponse, Self::Error> {
+        use crate::types::{ExactPaymentPayload, MixedAddress};
+
+        // Check blacklist before processing
+        match &request.payment_payload.payload {
+            ExactPaymentPayload::Evm(evm_payload) => {
+                let from_address = format!("{:?}", evm_payload.authorization.from);
+                if let Some(reason) = self.blacklist.is_evm_blocked(&from_address) {
+                    return Err(FacilitatorLocalError::BlockedAddress(
+                        MixedAddress::Evm(evm_payload.authorization.from),
+                        reason,
+                    ));
+                }
+            }
+            ExactPaymentPayload::Solana(_solana_payload) => {
+                // For Solana, we would need to parse the transaction to extract the signer
+                // This is more complex and may require decoding the base64 transaction
+                // For now, we'll skip Solana blacklist checking in verify()
+                // TODO: Implement Solana address extraction and blacklist check
+            }
+        }
+
         let network = request.network();
         let provider = self
             .provider_map
@@ -102,5 +127,16 @@ where
             kinds.append(&mut supported_kinds);
         }
         Ok(SupportedPaymentKindsResponse { kinds })
+    }
+
+    async fn blacklist_info(&self) -> Result<serde_json::Value, Self::Error> {
+        Ok(serde_json::json!({
+            "total_blocked": self.blacklist.total_blocked(),
+            "evm_count": self.blacklist.evm_count(),
+            "solana_count": self.blacklist.solana_count(),
+            "entries": self.blacklist.entries(),
+            "source": "config/blacklist.json",
+            "loaded_at_startup": true
+        }))
     }
 }

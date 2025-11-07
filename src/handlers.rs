@@ -72,6 +72,17 @@ where
         .route("/settle", post(post_settle::<A>))
         .route("/health", get(get_health::<A>))
         .route("/supported", get(get_supported::<A>))
+        .route("/blacklist", get(get_blacklist::<A>))
+        .route("/logo.png", get(get_logo))
+        .route("/favicon.ico", get(get_favicon))
+        .route("/celo-colombia.png", get(get_celo_colombia_logo))
+        .route("/avalanche.png", get(get_avalanche_logo))
+        .route("/base.png", get(get_base_logo))
+        .route("/celo.png", get(get_celo_logo))
+        .route("/hyperevm.png", get(get_hyperevm_logo))
+        .route("/polygon.png", get(get_polygon_logo))
+        .route("/solana.png", get(get_solana_logo))
+        .route("/optimism.png", get(get_optimism_logo))
 }
 
 /// `GET /`: Returns the Ultravioleta DAO branded landing page.

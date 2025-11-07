@@ -83,6 +83,7 @@ where
         .route("/polygon.png", get(get_polygon_logo))
         .route("/solana.png", get(get_solana_logo))
         .route("/optimism.png", get(get_optimism_logo))
+        .route("/ethereum.png", get(get_ethereum_logo))
 }
 
 /// `GET /`: Returns the Ultravioleta DAO branded landing page.
@@ -204,6 +205,17 @@ pub async fn get_solana_logo() -> impl IntoResponse {
 #[instrument(skip_all)]
 pub async fn get_optimism_logo() -> impl IntoResponse {
     let bytes = include_bytes!("../static/optimism.png");
+    (
+        StatusCode::OK,
+        [("content-type", "image/png")],
+        bytes.as_slice(),
+    )
+}
+
+/// `GET /ethereum.png`: Returns Ethereum logo.
+#[instrument(skip_all)]
+pub async fn get_ethereum_logo() -> impl IntoResponse {
+    let bytes = include_bytes!("../static/ethereum.png");
     (
         StatusCode::OK,
         [("content-type", "image/png")],

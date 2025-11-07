@@ -27,11 +27,13 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tower_http::cors;
 
+use crate::blocklist::Blacklist;
 use crate::facilitator_local::FacilitatorLocal;
 use crate::provider_cache::ProviderCache;
 use crate::sig_down::SigDown;
 use crate::telemetry::Telemetry;
 
+mod blocklist;
 mod chain;
 mod facilitator;
 mod facilitator_local;
@@ -71,7 +73,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(1);
         }
     };
-    let facilitator = FacilitatorLocal::new(provider_cache);
+
+    // Load blacklist from config/blacklist.json
+    let blacklist = match Blacklist::load_from_file("config/blacklist.json") {
+        Ok(blacklist) => {
+            tracing::info!("Successfully loaded blacklist from config/blacklist.json");
+            Arc::new(blacklist)
+        }
+        Err(e) => {
+            tracing::warn!("Failed to load blacklist: {}. Using empty blacklist.", e);
+            Arc::new(Blacklist::empty())
+        }
+    };
+
+    let facilitator = FacilitatorLocal::new(provider_cache, blacklist);
     let axum_state = Arc::new(facilitator);
 
     let http_endpoints = Router::new()

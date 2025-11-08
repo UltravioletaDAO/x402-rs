@@ -140,6 +140,8 @@ impl TryFrom<Network> for EvmChain {
             Network::HyperEvmTestnet => Ok(EvmChain::new(value, 333)),
             Network::Sei => Ok(EvmChain::new(value, 1329)),
             Network::SeiTestnet => Ok(EvmChain::new(value, 1328)),
+            Network::Ethereum => Ok(EvmChain::new(value, 1)),
+            Network::EthereumSepolia => Ok(EvmChain::new(value, 11155111)),
         }
     }
 }

@@ -12,7 +12,7 @@
 use std::sync::Arc;
 use tracing::instrument;
 
-use crate::blocklist::{Blacklist, SharedBlacklist};
+use crate::blocklist::SharedBlacklist;
 use crate::chain::FacilitatorLocalError;
 use crate::facilitator::Facilitator;
 use crate::provider_cache::ProviderMap;

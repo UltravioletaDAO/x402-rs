@@ -231,6 +231,61 @@ Leave `EVM_PRIVATE_KEY` and `SOLANA_PRIVATE_KEY` empty in `.env`. The facilitato
 Secret names (configured in infrastructure):
 - `facilitator-evm-private-key`
 - `facilitator-solana-keypair`
+- `facilitator-rpc-mainnet` - Contains all mainnet RPC URLs (Base, Avalanche, Polygon, Optimism, HyperEVM, Solana, Ethereum, Arbitrum, Celo)
+- `facilitator-rpc-testnet` - Contains all testnet RPC URLs (Solana Devnet, Arbitrum Sepolia)
+
+### ⚠️ CRITICAL SECURITY: RPC URLs with API Keys
+
+**NEVER** put RPC URLs containing API keys directly in ECS Task Definition environment variables. This is a CRITICAL security vulnerability because:
+
+1. Task definitions are stored in plaintext and accessible to anyone with ECS read permissions
+2. Task definition history is preserved, exposing keys even after rotation
+3. API keys in URLs are visible in AWS Console, CLI output, and logs
+
+**ALWAYS use AWS Secrets Manager references for RPC URLs with API keys:**
+
+❌ **WRONG** (Exposes API key):
+```json
+{
+  "name": "RPC_URL_ARBITRUM",
+  "value": "https://node-name.arbitrum-mainnet.quiknode.pro/API_KEY_HERE/"
+}
+```
+
+✅ **CORRECT** (Secure reference):
+```json
+{
+  "name": "RPC_URL_ARBITRUM",
+  "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-rpc-mainnet-5QJ8PN:arbitrum::"
+}
+```
+
+**When adding a new network with premium RPC:**
+
+1. Add the RPC URL to the appropriate secret in AWS Secrets Manager:
+   ```bash
+   # For mainnet
+   aws secretsmanager update-secret \
+     --secret-id facilitator-rpc-mainnet \
+     --region us-east-2 \
+     --secret-string '{"network-name": "https://rpc-url-with-api-key"}'
+
+   # For testnet
+   aws secretsmanager update-secret \
+     --secret-id facilitator-rpc-testnet \
+     --region us-east-2 \
+     --secret-string '{"network-name": "https://rpc-url"}'
+   ```
+
+2. Add the secret reference to the task definition's `secrets` array (NOT `environment`):
+   ```json
+   {
+     "name": "RPC_URL_NETWORK_NAME",
+     "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT:secret:SECRET_NAME:KEY::"
+   }
+   ```
+
+3. Public/free RPC endpoints (without API keys) can go directly in `environment` variables or `.env.example`
 
 ## Deployment
 

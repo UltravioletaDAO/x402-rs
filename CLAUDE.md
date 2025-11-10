@@ -204,9 +204,15 @@ See `docs/CUSTOMIZATIONS.md` for complete documentation of all customizations an
 
 Copy `.env.example` to `.env` and configure:
 
-**Required**:
-- `EVM_PRIVATE_KEY` - Facilitator wallet private key for EVM chains (leave empty for AWS Secrets Manager)
-- `SOLANA_PRIVATE_KEY` - Facilitator wallet keypair for Solana (leave empty for AWS Secrets Manager)
+**Required** (Separate wallets per environment - RECOMMENDED):
+- `EVM_PRIVATE_KEY_MAINNET` - Facilitator wallet for mainnet EVM chains (leave empty for AWS Secrets Manager)
+- `EVM_PRIVATE_KEY_TESTNET` - Facilitator wallet for testnet EVM chains (leave empty for AWS Secrets Manager)
+- `SOLANA_PRIVATE_KEY_MAINNET` - Facilitator wallet for Solana mainnet (leave empty for AWS Secrets Manager)
+- `SOLANA_PRIVATE_KEY_TESTNET` - Facilitator wallet for Solana devnet (leave empty for AWS Secrets Manager)
+
+**Backward Compatibility** (DEPRECATED):
+- `EVM_PRIVATE_KEY` - Generic wallet for ALL EVM chains (only used if network-specific keys are not set)
+- `SOLANA_PRIVATE_KEY` - Generic wallet for ALL Solana networks (only used if network-specific keys are not set)
 
 **RPC URLs** (defaults provided, override for premium endpoints):
 - `RPC_URL_BASE_MAINNET`, `RPC_URL_BASE_SEPOLIA`
@@ -226,13 +232,21 @@ Copy `.env.example` to `.env` and configure:
 
 ### AWS Secrets Manager (Production)
 
-Leave `EVM_PRIVATE_KEY` and `SOLANA_PRIVATE_KEY` empty in `.env`. The facilitator will fetch them from AWS Secrets Manager if running on ECS with appropriate IAM permissions.
+Leave wallet environment variables empty in `.env`. The facilitator will fetch them from AWS Secrets Manager if running on ECS with appropriate IAM permissions.
+
+**IMPORTANT**: As of v1.3.0, the facilitator uses separate wallets for mainnet and testnet environments. This prevents the critical bug where testnet transactions were signed with mainnet keys.
 
 Secret names (configured in infrastructure):
-- `facilitator-evm-private-key`
-- `facilitator-solana-keypair`
+- `facilitator-evm-private-key-mainnet` - Mainnet EVM wallet
+- `facilitator-evm-private-key-testnet` - Testnet EVM wallet
+- `facilitator-solana-keypair-mainnet` - Solana mainnet wallet
+- `facilitator-solana-keypair-testnet` - Solana devnet wallet
 - `facilitator-rpc-mainnet` - Contains all mainnet RPC URLs (Base, Avalanche, Polygon, Optimism, HyperEVM, Solana, Ethereum, Arbitrum, Celo)
 - `facilitator-rpc-testnet` - Contains all testnet RPC URLs (Solana Devnet, Arbitrum Sepolia)
+
+**Legacy secrets** (deprecated, kept for backward compatibility):
+- `facilitator-evm-private-key` - Generic EVM wallet (not recommended)
+- `facilitator-solana-keypair` - Generic Solana wallet (not recommended)
 
 ### ⚠️ CRITICAL SECURITY: RPC URLs with API Keys
 

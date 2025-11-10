@@ -88,7 +88,14 @@ curl http://localhost:8080/
 See `.env.example` for full configuration. Key variables:
 
 ```bash
-# Blockchain Keys (REQUIRED - leave empty for AWS Secrets Manager)
+# Blockchain Keys - RECOMMENDED: Separate keys per environment
+# (Leave empty for AWS Secrets Manager in production)
+EVM_PRIVATE_KEY_MAINNET=
+EVM_PRIVATE_KEY_TESTNET=
+SOLANA_PRIVATE_KEY_MAINNET=
+SOLANA_PRIVATE_KEY_TESTNET=
+
+# Legacy keys (deprecated - only used if network-specific keys not set)
 EVM_PRIVATE_KEY=
 SOLANA_PRIVATE_KEY=
 

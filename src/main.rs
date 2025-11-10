@@ -27,11 +27,13 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tower_http::cors;
 
-use crate::blocklist::Blacklist;
 use crate::facilitator_local::FacilitatorLocal;
 use crate::provider_cache::ProviderCache;
 use crate::sig_down::SigDown;
 use crate::telemetry::Telemetry;
+
+// Compliance module
+use x402_compliance::ComplianceCheckerBuilder;
 
 mod blocklist;
 mod chain;
@@ -74,19 +76,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    // Load blacklist from config/blacklist.json
-    let blacklist = match Blacklist::load_from_file("config/blacklist.json") {
-        Ok(blacklist) => {
-            tracing::info!("Successfully loaded blacklist from config/blacklist.json");
-            Arc::new(blacklist)
+    // Initialize compliance checker (OFAC + blacklist)
+    tracing::info!("Initializing compliance checker...");
+    let compliance_checker = ComplianceCheckerBuilder::new()
+        .with_ofac(true)
+        .with_blacklist("config/blacklist.json")
+        .build()
+        .await;
+
+    let compliance_checker = match compliance_checker {
+        Ok(checker) => {
+            tracing::info!("Compliance checker initialized successfully");
+            Arc::new(checker)
         }
         Err(e) => {
-            tracing::warn!("Failed to load blacklist: {}. Using empty blacklist.", e);
-            Arc::new(Blacklist::empty())
+            tracing::error!("Failed to initialize compliance checker: {}", e);
+            tracing::error!("This is a critical error. Exiting to prevent sanctions violations.");
+            std::process::exit(1);
         }
     };
 
-    let facilitator = FacilitatorLocal::new(provider_cache, blacklist);
+    let facilitator = FacilitatorLocal::new(provider_cache, compliance_checker);
     let axum_state = Arc::new(facilitator);
 
     let http_endpoints = Router::new()

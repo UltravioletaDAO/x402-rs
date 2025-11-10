@@ -30,6 +30,9 @@ rust_decimal = { version = "1.37.1" }
 async-trait = { version = "0.1.88" }
 dashmap = { version = "6.1.0" }
 
+# Compliance
+x402-compliance = { path = "crates/x402-compliance", features = ["solana"] }
+
 # Solana
 solana-sdk = { version = "2.3.1", features = ["full"] }
 solana-commitment-config = { version = "2.2.1" } # Older version due to compatibility with solana-sdk

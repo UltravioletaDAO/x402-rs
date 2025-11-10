@@ -9,6 +9,8 @@ use std::str::FromStr;
 
 pub const ENV_SIGNER_TYPE: &str = "SIGNER_TYPE";
 pub const ENV_EVM_PRIVATE_KEY: &str = "EVM_PRIVATE_KEY";
+pub const ENV_EVM_PRIVATE_KEY_MAINNET: &str = "EVM_PRIVATE_KEY_MAINNET";
+pub const ENV_EVM_PRIVATE_KEY_TESTNET: &str = "EVM_PRIVATE_KEY_TESTNET";
 pub const ENV_SOLANA_PRIVATE_KEY: &str = "SOLANA_PRIVATE_KEY";
 
 pub const ENV_RPC_BASE: &str = "RPC_URL_BASE";
@@ -78,12 +80,22 @@ impl SignerType {
     ///
     /// Currently only supports [`SignerType::PrivateKey`] variant, based on the following environment variables:
     /// - `SIGNER_TYPE` — currently only `"private-key"` is supported
-    /// - `EVM_PRIVATE_KEY` — comma-separated list of private keys used to sign transactions
-    pub fn make_evm_wallet(&self) -> Result<EthereumWallet, Box<dyn std::error::Error>> {
+    /// - `EVM_PRIVATE_KEY_MAINNET` — comma-separated list of private keys for mainnet networks
+    /// - `EVM_PRIVATE_KEY_TESTNET` — comma-separated list of private keys for testnet networks
+    /// - `EVM_PRIVATE_KEY` — fallback for all networks if network-specific keys are not set
+    pub fn make_evm_wallet(&self, network: Network) -> Result<EthereumWallet, Box<dyn std::error::Error>> {
         match self {
             SignerType::PrivateKey => {
-                let raw_keys = env::var(ENV_EVM_PRIVATE_KEY)
-                    .map_err(|_| format!("env {ENV_EVM_PRIVATE_KEY} not set"))?;
+                // Try network-specific key first, then fall back to generic EVM_PRIVATE_KEY
+                let raw_keys = if network.is_testnet() {
+                    env::var(ENV_EVM_PRIVATE_KEY_TESTNET)
+                        .or_else(|_| env::var(ENV_EVM_PRIVATE_KEY))
+                        .map_err(|_| format!("env {} or {} not set", ENV_EVM_PRIVATE_KEY_TESTNET, ENV_EVM_PRIVATE_KEY))?
+                } else {
+                    env::var(ENV_EVM_PRIVATE_KEY_MAINNET)
+                        .or_else(|_| env::var(ENV_EVM_PRIVATE_KEY))
+                        .map_err(|_| format!("env {} or {} not set", ENV_EVM_PRIVATE_KEY_MAINNET, ENV_EVM_PRIVATE_KEY))?
+                };
                 let signers = raw_keys
                     .split(',')
                     .map(str::trim)
@@ -173,7 +185,7 @@ mod tests {
 
         let signer_type = SignerType::from_env().expect("SIGNER_TYPE");
         let wallet = signer_type
-            .make_evm_wallet()
+            .make_evm_wallet(Network::Base)  // Use any mainnet for testing
             .expect("wallet constructed from env");
 
         let expected_primary = PrivateKeySigner::from_str(KEY_1)

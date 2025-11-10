@@ -142,6 +142,8 @@ impl TryFrom<Network> for EvmChain {
             Network::SeiTestnet => Ok(EvmChain::new(value, 1328)),
             Network::Ethereum => Ok(EvmChain::new(value, 1)),
             Network::EthereumSepolia => Ok(EvmChain::new(value, 11155111)),
+            Network::Arbitrum => Ok(EvmChain::new(value, 42161)),
+            Network::ArbitrumSepolia => Ok(EvmChain::new(value, 421614)),
         }
     }
 }
@@ -311,23 +313,29 @@ impl MetaEvmProvider for EvmProvider {
             .with_input(tx.calldata);
         if !self.eip1559 {
             let provider = &self.inner;
+            tracing::debug!("Fetching gas price for legacy transaction");
             let gas: u128 = provider
                 .get_gas_price()
                 .instrument(tracing::info_span!("get_gas_price"))
                 .await
                 .map_err(|e| FacilitatorLocalError::ContractCall(format!("{e:?}")))?;
+            tracing::debug!("Gas price fetched: {}", gas);
             txr.set_gas_price(gas);
         }
+        tracing::debug!("Sending transaction to {:?}", tx.to);
         let pending_tx = self
             .inner
             .send_transaction(txr)
             .await
             .map_err(|e| FacilitatorLocalError::ContractCall(format!("{e:?}")))?;
-        pending_tx
+        tracing::debug!("Transaction sent, waiting for {} confirmations", tx.confirmations);
+        let receipt = pending_tx
             .with_required_confirmations(tx.confirmations)
             .get_receipt()
             .await
-            .map_err(|e| FacilitatorLocalError::ContractCall(format!("{e:?}")))
+            .map_err(|e| FacilitatorLocalError::ContractCall(format!("{e:?}")))?;
+        tracing::debug!("Transaction confirmed: tx_hash={:?}, status={}", receipt.transaction_hash, receipt.status());
+        Ok(receipt)
     }
 }
 
@@ -374,6 +382,8 @@ impl FromEnvByNetworkBuild for EvmProvider {
             Network::SeiTestnet => true,
             Network::Ethereum => true,
             Network::EthereumSepolia => true,
+            Network::Arbitrum => true,
+            Network::ArbitrumSepolia => true,
         };
         let provider = EvmProvider::try_new(wallet, &rpc_url, is_eip1559, network).await?;
         Ok(Some(provider))
@@ -712,6 +722,7 @@ async fn assert_enough_balance<P: Provider>(
     sender: &EvmAddress,
     max_amount_required: U256,
 ) -> Result<(), FacilitatorLocalError> {
+    tracing::debug!("Checking balance for sender={}, required={}", sender, max_amount_required);
     let balance = usdc_contract
         .balanceOf(sender.0)
         .call()
@@ -725,7 +736,9 @@ async fn assert_enough_balance<P: Provider>(
         .await
         .map_err(|e| FacilitatorLocalError::ContractCall(format!("{e:?}")))?;
 
+    tracing::debug!("Balance check result: sender={}, balance={}, required={}", sender, balance, max_amount_required);
     if balance < max_amount_required {
+        tracing::warn!("Insufficient balance: sender={}, balance={}, required={}", sender, balance, max_amount_required);
         Err(FacilitatorLocalError::InsufficientFunds((*sender).into()))
     } else {
         Ok(())
@@ -766,6 +779,7 @@ async fn is_contract_deployed<P: Provider>(
     provider: P,
     address: &Address,
 ) -> Result<bool, FacilitatorLocalError> {
+    tracing::debug!("Checking if contract is deployed at address={}", address);
     let bytes = provider
         .get_code_at(*address)
         .into_future()
@@ -775,7 +789,9 @@ async fn is_contract_deployed<P: Provider>(
         ))
         .await
         .map_err(|e| FacilitatorLocalError::ContractCall(format!("{e:?}")))?;
-    Ok(!bytes.is_empty())
+    let is_deployed = !bytes.is_empty();
+    tracing::debug!("Contract deployment check: address={}, is_deployed={}", address, is_deployed);
+    Ok(is_deployed)
 }
 
 /// Constructs the correct EIP-712 domain for signature verification.

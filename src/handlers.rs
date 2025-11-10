@@ -16,7 +16,7 @@ use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{Json, Router, response::IntoResponse};
 use serde_json::json;
-use tracing::{error, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 use crate::chain::FacilitatorLocalError;
 use crate::facilitator::Facilitator;
@@ -84,6 +84,7 @@ where
         .route("/solana.png", get(get_solana_logo))
         .route("/optimism.png", get(get_optimism_logo))
         .route("/ethereum.png", get(get_ethereum_logo))
+        .route("/arbitrum.png", get(get_arbitrum_logo))
 }
 
 /// `GET /`: Returns the Ultravioleta DAO branded landing page.
@@ -223,6 +224,15 @@ pub async fn get_ethereum_logo() -> impl IntoResponse {
     )
 }
 
+pub async fn get_arbitrum_logo() -> impl IntoResponse {
+    let bytes = include_bytes!("../static/arbitrum.png");
+    (
+        StatusCode::OK,
+        [("content-type", "image/png")],
+        bytes.as_slice(),
+    )
+}
+
 /// `GET /supported`: Lists the x402 payment schemes and networks supported by this facilitator.
 ///
 /// Facilitators may expose this to help clients dynamically configure their payment requests
@@ -340,38 +350,38 @@ where
         }
     };
 
-    error!("=== SETTLE REQUEST DEBUG ===");
-    error!("Raw JSON body: {}", body_str);
+    debug!("=== SETTLE REQUEST DEBUG ===");
+    debug!("Raw JSON body: {}", body_str);
 
     // Attempt to deserialize the SettleRequest
     let body: SettleRequest = match serde_json::from_str::<SettleRequest>(body_str) {
         Ok(req) => {
             // Deserialization succeeded - log the parsed authorization details with types
-            error!("✓ Deserialization SUCCEEDED");
-            error!("Parsed SettleRequest:");
-            error!("  - x402_version: {:?}", req.x402_version);
-            error!("  - payment_payload.scheme: {:?}", req.payment_payload.scheme);
-            error!("  - payment_payload.network: {:?}", req.payment_payload.network);
+            debug!("✓ Deserialization SUCCEEDED");
+            debug!("Parsed SettleRequest:");
+            debug!("  - x402_version: {:?}", req.x402_version);
+            debug!("  - payment_payload.scheme: {:?}", req.payment_payload.scheme);
+            debug!("  - payment_payload.network: {:?}", req.payment_payload.network);
 
             // Log the authorization details based on payload type
             match &req.payment_payload.payload {
                 crate::types::ExactPaymentPayload::Evm(evm_payload) => {
-                    error!("  - payload type: EVM");
-                    error!("  - authorization.from: {} (type: EvmAddress)", evm_payload.authorization.from);
-                    error!("  - authorization.to: {} (type: EvmAddress)", evm_payload.authorization.to);
-                    error!("  - authorization.value: {} (type: TokenAmount/U256 string)", evm_payload.authorization.value);
-                    error!("  - authorization.validAfter: {} (type: UnixTimestamp u64 string, parsed to: {})",
+                    debug!("  - payload type: EVM");
+                    debug!("  - authorization.from: {} (type: EvmAddress)", evm_payload.authorization.from);
+                    debug!("  - authorization.to: {} (type: EvmAddress)", evm_payload.authorization.to);
+                    debug!("  - authorization.value: {} (type: TokenAmount/U256 string)", evm_payload.authorization.value);
+                    debug!("  - authorization.validAfter: {} (type: UnixTimestamp u64 string, parsed to: {})",
                         evm_payload.authorization.valid_after.seconds_since_epoch(),
                         evm_payload.authorization.valid_after.seconds_since_epoch());
-                    error!("  - authorization.validBefore: {} (type: UnixTimestamp u64 string, parsed to: {})",
+                    debug!("  - authorization.validBefore: {} (type: UnixTimestamp u64 string, parsed to: {})",
                         evm_payload.authorization.valid_before.seconds_since_epoch(),
                         evm_payload.authorization.valid_before.seconds_since_epoch());
-                    error!("  - authorization.nonce: {:?} (type: HexEncodedNonce, 32-byte hex string)", evm_payload.authorization.nonce);
-                    error!("  - signature: {:?} (type: EvmSignature, hex bytes)", evm_payload.signature);
+                    debug!("  - authorization.nonce: {:?} (type: HexEncodedNonce, 32-byte hex string)", evm_payload.authorization.nonce);
+                    debug!("  - signature: {:?} (type: EvmSignature, hex bytes)", evm_payload.signature);
                 }
                 crate::types::ExactPaymentPayload::Solana(solana_payload) => {
-                    error!("  - payload type: Solana");
-                    error!("  - transaction: {} (truncated)", &solana_payload.transaction[..solana_payload.transaction.len().min(100)]);
+                    debug!("  - payload type: Solana");
+                    debug!("  - transaction: {} (truncated)", &solana_payload.transaction[..solana_payload.transaction.len().min(100)]);
                 }
             }
 
@@ -466,7 +476,7 @@ where
                 }
             }
 
-            error!("=== END SETTLE REQUEST DEBUG ===");
+            debug!("=== END SETTLE REQUEST DEBUG ===");
 
             return (
                 StatusCode::BAD_REQUEST,
@@ -478,12 +488,45 @@ where
         }
     };
 
-    error!("=== END SETTLE REQUEST DEBUG ===");
+    debug!("=== END SETTLE REQUEST DEBUG ===");
 
     // Proceed with normal settlement logic
+    info!("Attempting to settle payment on network: {:?}", body.payment_payload.network);
+
     match facilitator.settle(&body).await {
-        Ok(valid_response) => (StatusCode::OK, Json(valid_response)).into_response(),
+        Ok(valid_response) => {
+            // Log successful settlement with details
+            if valid_response.success {
+                if let Some(ref tx_hash) = valid_response.transaction {
+                    info!(
+                        "✓ SETTLEMENT SUCCESSFUL - network={:?}, payer={:?}, tx_hash={:?}",
+                        valid_response.network,
+                        valid_response.payer,
+                        tx_hash
+                    );
+                } else {
+                    warn!(
+                        "Settlement marked successful but no transaction hash - network={:?}, payer={:?}",
+                        valid_response.network,
+                        valid_response.payer
+                    );
+                }
+            } else {
+                error!(
+                    "✗ SETTLEMENT FAILED (success=false) - network={:?}, payer={:?}, error_reason={:?}",
+                    valid_response.network,
+                    valid_response.payer,
+                    valid_response.error_reason
+                );
+            }
+            (StatusCode::OK, Json(valid_response)).into_response()
+        },
         Err(error) => {
+            error!(
+                "✗ SETTLEMENT ERROR - error={:?}, network={:?}",
+                error,
+                body.payment_payload.network
+            );
             warn!(
                 error = ?error,
                 body = %serde_json::to_string(&body).unwrap_or_else(|_| "<can-not-serialize>".to_string()),

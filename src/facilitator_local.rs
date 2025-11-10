@@ -9,7 +9,6 @@
 //! - Contract interaction using Alloy
 //! - Network-specific configuration via [`ProviderCache`] and [`USDCDeployment`]
 
-use std::sync::Arc;
 use tracing::instrument;
 
 use crate::blocklist::SharedBlacklist;
@@ -69,11 +68,15 @@ where
     async fn verify(&self, request: &VerifyRequest) -> Result<VerifyResponse, Self::Error> {
         use crate::types::{ExactPaymentPayload, MixedAddress};
 
+        tracing::debug!("Verifying payment for network={}", request.payment_payload.network);
+
         // Check blacklist before processing
         match &request.payment_payload.payload {
             ExactPaymentPayload::Evm(evm_payload) => {
                 let from_address = format!("{:?}", evm_payload.authorization.from);
+                tracing::debug!("Checking blacklist for EVM address={}", from_address);
                 if let Some(reason) = self.blacklist.is_evm_blocked(&from_address) {
+                    tracing::warn!("Blocked EVM address={}, reason={}", from_address, reason);
                     return Err(FacilitatorLocalError::BlockedAddress(
                         MixedAddress::Evm(evm_payload.authorization.from),
                         reason,
@@ -85,15 +88,26 @@ where
                 // This is more complex and may require decoding the base64 transaction
                 // For now, we'll skip Solana blacklist checking in verify()
                 // TODO: Implement Solana address extraction and blacklist check
+                tracing::debug!("Skipping blacklist check for Solana (not implemented)");
             }
         }
 
         let network = request.network();
+        tracing::debug!("Resolving provider for network={}", network);
         let provider = self
             .provider_map
             .by_network(network)
             .ok_or(FacilitatorLocalError::UnsupportedNetwork(None))?;
+        tracing::debug!("Provider resolved, calling verify on network provider");
         let verify_response = provider.verify(request).await?;
+        match &verify_response {
+            VerifyResponse::Valid { payer } => {
+                tracing::debug!("Verification complete: Valid, payer={:?}", payer);
+            }
+            VerifyResponse::Invalid { reason, payer } => {
+                tracing::debug!("Verification complete: Invalid, reason={:?}, payer={:?}", reason, payer);
+            }
+        }
         Ok(verify_response)
     }
 
@@ -111,11 +125,23 @@ where
     #[instrument(skip_all, err, fields(network = %request.payment_payload.network))]
     async fn settle(&self, request: &SettleRequest) -> Result<SettleResponse, Self::Error> {
         let network = request.network();
+        tracing::debug!("Settlement request received for network={}", network);
+        tracing::debug!("Resolving provider for settlement on network={}", network);
         let provider = self
             .provider_map
             .by_network(network)
-            .ok_or(FacilitatorLocalError::UnsupportedNetwork(None))?;
+            .ok_or_else(|| {
+                tracing::error!("No provider found for network={}", network);
+                FacilitatorLocalError::UnsupportedNetwork(None)
+            })?;
+        tracing::debug!("Provider resolved, initiating settlement on network={}", network);
         let settle_response = provider.settle(request).await?;
+        tracing::debug!(
+            "Settlement response received: success={}, tx_hash={:?}, network={:?}",
+            settle_response.success,
+            settle_response.transaction,
+            settle_response.network
+        );
         Ok(settle_response)
     }
 

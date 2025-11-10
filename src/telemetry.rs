@@ -269,7 +269,7 @@ impl Telemetry {
                     // trace spans and events with higher verbosity levels, consider using
                     // per-layer filtering to target the telemetry layer specifically,
                     // e.g. by target matching.
-                    .with(tracing_subscriber::filter::LevelFilter::INFO)
+                    .with(tracing_subscriber::filter::LevelFilter::DEBUG)
                     .with(tracing_subscriber::fmt::layer())
                     .with(MetricsLayer::new(meter_provider.clone()))
                     .with(OpenTelemetryLayer::new(tracer))

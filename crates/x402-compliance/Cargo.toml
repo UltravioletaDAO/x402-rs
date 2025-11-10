@@ -1,0 +1,42 @@
+[package]
+name = "x402-compliance"
+version = "0.1.0"
+edition = "2021"
+authors = ["Ultravioleta DAO <dev@ultravioletadao.xyz>"]
+description = "Modular compliance screening for x402 payment facilitators"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/UltravioletaDAO/x402-rs"
+
+[dependencies]
+# Core
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+async-trait = "0.1"
+thiserror = "1.0"
+
+# Logging
+tracing = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+
+# Hashing
+sha2 = "0.10"
+
+# Encoding
+base64 = "0.21"
+bincode = "1.3"
+
+# Blockchain (optional features)
+solana-sdk = { version = "2.3", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+tokio-test = "0.4"
+
+[features]
+default = ["ofac"]
+solana = ["dep:solana-sdk"]
+ofac = []
+un = []
+uk = []
+eu = []

@@ -361,7 +361,7 @@ impl FromEnvByNetworkBuild for EvmProvider {
                 return Ok(None);
             }
         };
-        let wallet = from_env::SignerType::from_env()?.make_evm_wallet()?;
+        let wallet = from_env::SignerType::from_env()?.make_evm_wallet(network)?;
         let is_eip1559 = match network {
             Network::BaseSepolia => true,
             Network::Base => true,

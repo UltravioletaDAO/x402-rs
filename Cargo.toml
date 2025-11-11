@@ -54,6 +54,7 @@ opentelemetry-stdout = { version = "0.30.0", features = ["trace", "metrics"] }
 
 [features]
 telemetry = []
+solana = ["x402-compliance/solana"]
 
 [workspace]
 members = [

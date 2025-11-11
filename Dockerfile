@@ -1,5 +1,7 @@
 FROM --platform=$BUILDPLATFORM rust:bullseye AS builder
 
+ARG FACILITATOR_VERSION=dev
+ENV FACILITATOR_VERSION=${FACILITATOR_VERSION}
 ENV PORT=8080
 
 WORKDIR /app
@@ -10,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && rm -rf /var/lib/apt/lists/*
 
 COPY . ./
-RUN cargo build --release --locked
+RUN cargo build --release --locked --features solana
 
 # --- Stage 2 ---
 FROM --platform=$BUILDPLATFORM debian:bullseye-slim

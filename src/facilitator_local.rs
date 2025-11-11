@@ -20,7 +20,9 @@ use crate::types::{
 };
 
 // Compliance module
-use x402_compliance::{ComplianceChecker, TransactionContext, ScreeningDecision};
+use x402_compliance::{ComplianceChecker, TransactionContext, ScreeningDecision, EvmExtractor};
+#[cfg(feature = "solana")]
+use x402_compliance::SolanaExtractor;
 
 /// A concrete [`Facilitator`] implementation that verifies and settles x402 payments
 /// using a network-aware provider cache.
@@ -166,7 +168,13 @@ where
             }).collect::<Vec<_>>()
         }))
     }
+}
 
+// Private helper methods
+impl<A> FacilitatorLocal<A>
+where
+    A: ProviderMap + Sync,
+{
     /// Private helper: Perform compliance screening for payment payload
     ///
     /// This method screens both payer and payee addresses against OFAC, UN, UK, EU sanctions lists
@@ -180,8 +188,6 @@ where
 
         match payload {
             ExactPaymentPayload::Evm(evm_payload) => {
-                use x402_compliance::extractors::EvmExtractor;
-
                 // Extract payer and payee addresses
                 let (payer, payee) = EvmExtractor::extract_addresses(
                     &evm_payload.authorization.from,
@@ -226,10 +232,10 @@ where
                 Ok(())
             }
             ExactPaymentPayload::Solana(solana_payload) => {
-                use x402_compliance::extractors::SolanaExtractor;
-
-                // Extract Solana addresses from transaction
-                match SolanaExtractor::extract_addresses(&solana_payload.transaction) {
+                #[cfg(feature = "solana")]
+                {
+                    // Extract Solana addresses from transaction
+                    match SolanaExtractor::extract_addresses(&solana_payload.transaction) {
                     Ok((payer, payee)) => {
                         tracing::debug!("Extracted Solana addresses: payer={}, payee={}", payer, payee);
 
@@ -275,6 +281,14 @@ where
                             e
                         )))
                     }
+                    }
+                }
+
+                #[cfg(not(feature = "solana"))]
+                {
+                    Err(FacilitatorLocalError::Other(
+                        "Solana support not enabled".to_string()
+                    ))
                 }
             }
         }

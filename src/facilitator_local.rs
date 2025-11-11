@@ -69,107 +69,15 @@ where
     /// - unsupported network.
     #[instrument(skip_all, err, fields(network = %request.payment_payload.network))]
     async fn verify(&self, request: &VerifyRequest) -> Result<VerifyResponse, Self::Error> {
-        use crate::types::{ExactPaymentPayload, MixedAddress};
-
         tracing::debug!("Verifying payment for network={}", request.payment_payload.network);
 
-        // Perform compliance screening (OFAC + blacklist) before processing
-        match &request.payment_payload.payload {
-            ExactPaymentPayload::Evm(evm_payload) => {
-                use x402_compliance::extractors::EvmExtractor;
-
-                // Extract payer and payee addresses
-                let (payer, payee) = EvmExtractor::extract_addresses(
-                    &evm_payload.authorization.from,
-                    &evm_payload.authorization.to
-                ).map_err(|e| FacilitatorLocalError::Other(format!("Address extraction failed: {}", e)))?;
-
-                // Create transaction context for audit logging
-                let context = TransactionContext {
-                    amount: evm_payload.authorization.value.to_string(),
-                    currency: "USDC".to_string(), // TODO: Extract from network config
-                    network: format!("{:?}", request.payment_payload.network),
-                    transaction_id: None,
-                };
-
-                // Screen both payer and payee
-                tracing::debug!("Screening EVM payment: payer={}, payee={}", payer, payee);
-                let screening_result = self.compliance_checker
-                    .screen_payment(&payer, &payee, &context)
-                    .await
-                    .map_err(|e| FacilitatorLocalError::Other(format!("Compliance screening failed: {}", e)))?;
-
-                match screening_result.decision {
-                    ScreeningDecision::Block { reason } => {
-                        tracing::warn!("Payment blocked by compliance: {}", reason);
-                        return Err(FacilitatorLocalError::BlockedAddress(
-                            MixedAddress::Evm(evm_payload.authorization.from),
-                            reason,
-                        ));
-                    }
-                    ScreeningDecision::Review { reason } => {
-                        tracing::warn!("Payment requires manual review: {}", reason);
-                        // For now, treat Review as Block (can be configured differently later)
-                        return Err(FacilitatorLocalError::BlockedAddress(
-                            MixedAddress::Evm(evm_payload.authorization.from),
-                            format!("Manual review required: {}", reason),
-                        ));
-                    }
-                    ScreeningDecision::Clear => {
-                        tracing::debug!("Payment cleared compliance screening");
-                    }
-                }
-            }
-            ExactPaymentPayload::Solana(solana_payload) => {
-                use x402_compliance::extractors::SolanaExtractor;
-
-                // Extract Solana addresses from transaction
-                match SolanaExtractor::extract_addresses(&solana_payload.transaction) {
-                    Ok((payer, payee)) => {
-                        tracing::debug!("Extracted Solana addresses: payer={}, payee={}", payer, payee);
-
-                        let context = TransactionContext {
-                            amount: "unknown".to_string(), // Solana amount requires parsing
-                            currency: "SOL/SPL".to_string(),
-                            network: format!("{:?}", request.payment_payload.network),
-                            transaction_id: None,
-                        };
-
-                        let screening_result = self.compliance_checker
-                            .screen_payment(&payer, &payee, &context)
-                            .await
-                            .map_err(|e| FacilitatorLocalError::Other(format!("Compliance screening failed: {}", e)))?;
-
-                        match screening_result.decision {
-                            ScreeningDecision::Block { reason } => {
-                                tracing::warn!("Solana payment blocked by compliance: {}", reason);
-                                return Err(FacilitatorLocalError::Other(format!(
-                                    "Payment blocked: {}",
-                                    reason
-                                )));
-                            }
-                            ScreeningDecision::Review { reason } => {
-                                tracing::warn!("Solana payment requires manual review: {}", reason);
-                                return Err(FacilitatorLocalError::Other(format!(
-                                    "Manual review required: {}",
-                                    reason
-                                )));
-                            }
-                            ScreeningDecision::Clear => {
-                                tracing::debug!("Solana payment cleared compliance screening");
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to extract Solana addresses for screening: {}", e);
-                        // Fail-open: continue without screening for Solana
-                        // TODO: Make this configurable (fail-open vs fail-closed)
-                    }
-                }
-            }
-        }
-
         let network = request.network();
+
+        // Perform compliance screening before verification
+        tracing::debug!("Performing compliance screening for verification");
+        self.perform_compliance_screening(&request.payment_payload.payload, network).await?;
+        tracing::debug!("Compliance screening passed for verification");
+
         tracing::debug!("Resolving provider for network={}", network);
         let provider = self
             .provider_map
@@ -201,8 +109,16 @@ where
     /// in the response on success or failure.
     #[instrument(skip_all, err, fields(network = %request.payment_payload.network))]
     async fn settle(&self, request: &SettleRequest) -> Result<SettleResponse, Self::Error> {
+        use crate::types::ExactPaymentPayload;
+
         let network = request.network();
         tracing::debug!("Settlement request received for network={}", network);
+
+        // CRITICAL: Re-screen compliance before settlement (don't trust prior verify call)
+        tracing::debug!("Performing compliance screening before settlement");
+        self.perform_compliance_screening(&request.payment_payload.payload, network).await?;
+        tracing::debug!("Compliance screening passed for settlement");
+
         tracing::debug!("Resolving provider for settlement on network={}", network);
         let provider = self
             .provider_map
@@ -233,13 +149,134 @@ where
     }
 
     async fn blacklist_info(&self) -> Result<serde_json::Value, Self::Error> {
+        // Get compliance checker metadata
+        let metadata = self.compliance_checker.list_metadata();
+
         Ok(serde_json::json!({
-            "total_blocked": self.blacklist.total_blocked(),
-            "evm_count": self.blacklist.evm_count(),
-            "solana_count": self.blacklist.solana_count(),
-            "entries": self.blacklist.entries(),
-            "source": "config/blacklist.json",
-            "loaded_at_startup": true
+            "status": "loaded",
+            "compliance_enabled": true,
+            "lists": metadata.into_iter().map(|(name, meta)| {
+                serde_json::json!({
+                    "name": name,
+                    "enabled": meta.enabled,
+                    "record_count": meta.record_count,
+                    "last_updated": meta.last_updated,
+                    "source_url": meta.source_url
+                })
+            }).collect::<Vec<_>>()
         }))
+    }
+
+    /// Private helper: Perform compliance screening for payment payload
+    ///
+    /// This method screens both payer and payee addresses against OFAC, UN, UK, EU sanctions lists
+    /// and custom blacklist. Used by both verify() and settle() to ensure compliance.
+    async fn perform_compliance_screening(
+        &self,
+        payload: &crate::types::ExactPaymentPayload,
+        network: crate::network::Network,
+    ) -> Result<(), Self::Error> {
+        use crate::types::{ExactPaymentPayload, MixedAddress};
+
+        match payload {
+            ExactPaymentPayload::Evm(evm_payload) => {
+                use x402_compliance::extractors::EvmExtractor;
+
+                // Extract payer and payee addresses
+                let (payer, payee) = EvmExtractor::extract_addresses(
+                    &evm_payload.authorization.from,
+                    &evm_payload.authorization.to
+                ).map_err(|e| FacilitatorLocalError::Other(format!("Address extraction failed: {}", e)))?;
+
+                // Create transaction context for audit logging
+                let context = TransactionContext {
+                    amount: evm_payload.authorization.value.to_string(),
+                    currency: "USDC".to_string(),
+                    network: format!("{:?}", network),
+                    transaction_id: None,
+                };
+
+                // Screen both payer and payee
+                tracing::debug!("Screening EVM payment: payer={}, payee={}", payer, payee);
+                let screening_result = self.compliance_checker
+                    .screen_payment(&payer, &payee, &context)
+                    .await
+                    .map_err(|e| FacilitatorLocalError::Other(format!("Compliance screening failed: {}", e)))?;
+
+                match screening_result.decision {
+                    ScreeningDecision::Block { reason } => {
+                        tracing::warn!("Payment blocked by compliance: {}", reason);
+                        return Err(FacilitatorLocalError::BlockedAddress(
+                            MixedAddress::Evm(evm_payload.authorization.from),
+                            reason,
+                        ));
+                    }
+                    ScreeningDecision::Review { reason } => {
+                        tracing::warn!("Payment requires manual review: {}", reason);
+                        return Err(FacilitatorLocalError::BlockedAddress(
+                            MixedAddress::Evm(evm_payload.authorization.from),
+                            format!("Manual review required: {}", reason),
+                        ));
+                    }
+                    ScreeningDecision::Clear => {
+                        tracing::debug!("Payment cleared compliance screening");
+                    }
+                }
+
+                Ok(())
+            }
+            ExactPaymentPayload::Solana(solana_payload) => {
+                use x402_compliance::extractors::SolanaExtractor;
+
+                // Extract Solana addresses from transaction
+                match SolanaExtractor::extract_addresses(&solana_payload.transaction) {
+                    Ok((payer, payee)) => {
+                        tracing::debug!("Extracted Solana addresses: payer={}, payee={}", payer, payee);
+
+                        let context = TransactionContext {
+                            amount: "unknown".to_string(),
+                            currency: "SOL/SPL".to_string(),
+                            network: format!("{:?}", network),
+                            transaction_id: None,
+                        };
+
+                        let screening_result = self.compliance_checker
+                            .screen_payment(&payer, &payee, &context)
+                            .await
+                            .map_err(|e| FacilitatorLocalError::Other(format!("Compliance screening failed: {}", e)))?;
+
+                        match screening_result.decision {
+                            ScreeningDecision::Block { reason } => {
+                                tracing::warn!("Solana payment blocked by compliance: {}", reason);
+                                return Err(FacilitatorLocalError::Other(format!(
+                                    "Payment blocked: {}",
+                                    reason
+                                )));
+                            }
+                            ScreeningDecision::Review { reason } => {
+                                tracing::warn!("Solana payment requires manual review: {}", reason);
+                                return Err(FacilitatorLocalError::Other(format!(
+                                    "Manual review required: {}",
+                                    reason
+                                )));
+                            }
+                            ScreeningDecision::Clear => {
+                                tracing::debug!("Solana payment cleared compliance screening");
+                            }
+                        }
+
+                        Ok(())
+                    }
+                    Err(e) => {
+                        // FAIL-CLOSED: Cannot verify compliance for Solana transaction
+                        tracing::error!("Failed to extract Solana addresses for screening: {}", e);
+                        Err(FacilitatorLocalError::Other(format!(
+                            "Cannot verify compliance for Solana transaction: {}. Transaction rejected for security.",
+                            e
+                        )))
+                    }
+                }
+            }
+        }
     }
 }

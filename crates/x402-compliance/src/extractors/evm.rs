@@ -24,12 +24,12 @@ impl EvmExtractor {
     ///     &authorization.to
     /// )?;
     /// ```
-    pub fn extract_addresses<T: std::fmt::Debug>(
+    pub fn extract_addresses<T: std::fmt::Display>(
         from_address: &T,
         to_address: &T,
     ) -> Result<(String, String)> {
-        let payer = format!("{:?}", from_address);
-        let payee = format!("{:?}", to_address);
+        let payer = format!("{}", from_address);
+        let payee = format!("{}", to_address);
 
         // Basic validation: check that addresses look like Ethereum addresses
         if !Self::is_valid_eth_address(&payer) {
@@ -56,8 +56,8 @@ impl EvmExtractor {
     }
 
     /// Extract single address from Display type
-    pub fn extract_single_address<T: std::fmt::Debug>(address: &T) -> Result<String> {
-        let addr = format!("{:?}", address);
+    pub fn extract_single_address<T: std::fmt::Display>(address: &T) -> Result<String> {
+        let addr = format!("{}", address);
 
         if !Self::is_valid_eth_address(&addr) {
             return Err(ComplianceError::AddressExtraction(format!(

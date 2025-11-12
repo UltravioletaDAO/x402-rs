@@ -373,6 +373,7 @@ Located in `tests/x402/`:
 
 ## Important Documentation
 
+- **guides/ADDING_NEW_CHAINS.md** - Complete checklist and guide for adding new blockchain networks
 - **docs/CUSTOMIZATIONS.md** - Detailed inventory of all customizations vs upstream
 - **docs/CHANGELOG.md** - Version history and release notes
 - **docs/DEPLOYMENT.md** - Deployment procedures and infrastructure guide
@@ -474,14 +475,30 @@ git merge upstream/main      # Follow docs/CUSTOMIZATIONS.md strategy
 
 ### Adding a New Network
 
+**See the comprehensive guide**: `guides/ADDING_NEW_CHAINS.md`
+
+This complete checklist covers:
+- Backend integration (Network enum, chain IDs, USDC contracts, RPC configuration)
+- Frontend integration (logo, network cards, CSS styling, balance loading)
+- AWS Secrets Manager configuration for premium RPCs
+- Wallet funding requirements (mainnet and testnet separation)
+- Docker build and deployment process
+- Verification and troubleshooting steps
+
+**Quick summary** (refer to guide for full details):
 1. Add enum variant to `Network` in `src/network.rs`
-2. Add to `Network::variants()` array
-3. Add display name to `Display` impl
-4. Add to `NetworkFamily` mapping
-5. Add token deployment constants (USDC addresses)
-6. Add RPC URL to `.env.example`
-7. Update `static/index.html` network grid (if customer-facing)
-8. Test: `cargo build && curl http://localhost:8080/supported`
+2. Add USDC deployment constants and chain ID mappings
+3. Add RPC environment variables to `src/from_env.rs`
+4. Update `src/chain/evm.rs` or `src/chain/solana.rs`
+5. Add logo PNG file to `static/` directory
+6. Add logo handler to `src/handlers.rs`
+7. Update `static/index.html` with network cards and CSS styling
+8. Configure AWS Secrets Manager with premium mainnet RPC
+9. Fund both mainnet and testnet facilitator wallets with native tokens
+10. Build Docker image, push to ECR, and deploy to ECS
+11. Verify in `/supported` endpoint and test frontend
+
+**Total work**: ~155 lines of code + 1 logo file + AWS config + wallet funding
 
 ### Updating Branding
 

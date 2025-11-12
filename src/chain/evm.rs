@@ -20,6 +20,7 @@ use alloy::network::{
     Ethereum as AlloyEthereum, EthereumWallet, NetworkWallet, TransactionBuilder,
 };
 use alloy::primitives::{Address, Bytes, FixedBytes, U256, address};
+use std::future::{Future, IntoFuture};
 use alloy::providers::ProviderBuilder;
 use alloy::providers::bindings::IMulticall3;
 use alloy::providers::fillers::NonceManager;

@@ -183,7 +183,7 @@ where
         &self,
         payload: &crate::types::ExactPaymentPayload,
         network: crate::network::Network,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), FacilitatorLocalError> {
         use crate::types::{ExactPaymentPayload, MixedAddress};
 
         match payload {

@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl:*)",
+      "Bash(aws ecs list-tasks:*)",
+      "Bash(aws logs tail:*)",
+      "Bash(aws logs filter-log-events:*)",
+      "Bash(python fetch_logs.py:*)",
+      "Bash(aws ecs describe-tasks:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

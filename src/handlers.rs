@@ -71,6 +71,7 @@ where
         .route("/settle", get(get_settle_info))
         .route("/settle", post(post_settle::<A>))
         .route("/health", get(get_health::<A>))
+        .route("/version", get(get_version))
         .route("/supported", get(get_supported::<A>))
         .route("/blacklist", get(get_blacklist::<A>))
         .route("/logo.png", get(get_logo))
@@ -256,6 +257,18 @@ where
     A::Error: IntoResponse,
 {
     get_supported(State(facilitator)).await
+}
+
+/// `GET /version`: Returns the current version of the facilitator.
+///
+/// This endpoint returns the Docker image tag / release version for operational visibility.
+/// The version is set via the FACILITATOR_VERSION environment variable at build time.
+#[instrument(skip_all)]
+pub async fn get_version() -> impl IntoResponse {
+    let version = option_env!("FACILITATOR_VERSION").unwrap_or("dev");
+    Json(json!({
+        "version": version
+    }))
 }
 
 /// `GET /blacklist`: Returns the current blacklist configuration being enforced.
@@ -624,6 +637,16 @@ impl IntoResponse for FacilitatorLocalError {
                     StatusCode::FORBIDDEN,
                     Json(ErrorResponse {
                         error: format!("Address blocked: {}", reason),
+                    }),
+                )
+                    .into_response()
+            }
+            FacilitatorLocalError::Other(ref e) => {
+                tracing::error!(error = %e, "Other facilitator error");
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: format!("{}", e),
                     }),
                 )
                     .into_response()

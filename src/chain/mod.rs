@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::time::SystemTimeError;
 
 use crate::chain::evm::EvmProvider;
@@ -127,4 +128,7 @@ pub enum FacilitatorLocalError {
     /// Address is blocked by blacklist.
     #[error("Blocked address: {1}")]
     BlockedAddress(MixedAddress, String),
+    /// Other errors.
+    #[error("{0}")]
+    Other(String),
 }

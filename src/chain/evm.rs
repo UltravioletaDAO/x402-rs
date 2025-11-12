@@ -145,6 +145,8 @@ impl TryFrom<Network> for EvmChain {
             Network::EthereumSepolia => Ok(EvmChain::new(value, 11155111)),
             Network::Arbitrum => Ok(EvmChain::new(value, 42161)),
             Network::ArbitrumSepolia => Ok(EvmChain::new(value, 421614)),
+            Network::Unichain => Ok(EvmChain::new(value, 130)),
+            Network::UnichainSepolia => Ok(EvmChain::new(value, 1301)),
         }
     }
 }
@@ -385,6 +387,8 @@ impl FromEnvByNetworkBuild for EvmProvider {
             Network::EthereumSepolia => true,
             Network::Arbitrum => true,
             Network::ArbitrumSepolia => true,
+            Network::Unichain => true,
+            Network::UnichainSepolia => true,
         };
         let provider = EvmProvider::try_new(wallet, &rpc_url, is_eip1559, network).await?;
         Ok(Some(provider))

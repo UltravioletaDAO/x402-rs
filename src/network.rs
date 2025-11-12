@@ -81,6 +81,12 @@ pub enum Network {
     /// Arbitrum Sepolia testnet (chain ID 421614).
     #[serde(rename = "arbitrum-sepolia")]
     ArbitrumSepolia,
+    /// Unichain mainnet (chain ID 130).
+    #[serde(rename = "unichain")]
+    Unichain,
+    /// Unichain Sepolia testnet (chain ID 1301).
+    #[serde(rename = "unichain-sepolia")]
+    UnichainSepolia,
 }
 
 impl Display for Network {
@@ -107,6 +113,8 @@ impl Display for Network {
             Network::EthereumSepolia => write!(f, "ethereum-sepolia"),
             Network::Arbitrum => write!(f, "arbitrum"),
             Network::ArbitrumSepolia => write!(f, "arbitrum-sepolia"),
+            Network::Unichain => write!(f, "unichain"),
+            Network::UnichainSepolia => write!(f, "unichain-sepolia"),
         }
     }
 }
@@ -141,6 +149,8 @@ impl From<Network> for NetworkFamily {
             Network::EthereumSepolia => NetworkFamily::Evm,
             Network::Arbitrum => NetworkFamily::Evm,
             Network::ArbitrumSepolia => NetworkFamily::Evm,
+            Network::Unichain => NetworkFamily::Evm,
+            Network::UnichainSepolia => NetworkFamily::Evm,
         }
     }
 }
@@ -170,6 +180,8 @@ impl Network {
             Network::EthereumSepolia,
             Network::Arbitrum,
             Network::ArbitrumSepolia,
+            Network::Unichain,
+            Network::UnichainSepolia,
         ]
     }
 
@@ -187,6 +199,7 @@ impl Network {
                 | Network::SeiTestnet
                 | Network::EthereumSepolia
                 | Network::ArbitrumSepolia
+                | Network::UnichainSepolia
         )
     }
 
@@ -507,6 +520,36 @@ static USDC_ARBITRUM_SEPOLIA: Lazy<USDCDeployment> = Lazy::new(|| {
     })
 });
 
+/// Lazily initialized known USDC deployment on Unichain mainnet as [`USDCDeployment`].
+static USDC_UNICHAIN: Lazy<USDCDeployment> = Lazy::new(|| {
+    USDCDeployment(TokenDeployment {
+        asset: TokenAsset {
+            address: address!("0x078D782b760474a361dDA0AF3839290b0EF57AD6").into(),
+            network: Network::Unichain,
+        },
+        decimals: 6,
+        eip712: Some(TokenDeploymentEip712 {
+            name: "USD Coin".into(),
+            version: "2".into(),
+        }),
+    })
+});
+
+/// Lazily initialized known USDC deployment on Unichain Sepolia testnet as [`USDCDeployment`].
+static USDC_UNICHAIN_SEPOLIA: Lazy<USDCDeployment> = Lazy::new(|| {
+    USDCDeployment(TokenDeployment {
+        asset: TokenAsset {
+            address: address!("0x31d0220469e10c4E71834a79b1f276d740d3768F").into(),
+            network: Network::UnichainSepolia,
+        },
+        decimals: 6,
+        eip712: Some(TokenDeploymentEip712 {
+            name: "USDC".into(),
+            version: "2".into(),
+        }),
+    })
+});
+
 /// A known USDC deployment as a wrapper around [`TokenDeployment`].
 #[derive(Clone, Debug)]
 pub struct USDCDeployment(pub TokenDeployment);
@@ -564,6 +607,8 @@ impl USDCDeployment {
             Network::EthereumSepolia => &USDC_ETHEREUM_SEPOLIA,
             Network::Arbitrum => &USDC_ARBITRUM,
             Network::ArbitrumSepolia => &USDC_ARBITRUM_SEPOLIA,
+            Network::Unichain => &USDC_UNICHAIN,
+            Network::UnichainSepolia => &USDC_UNICHAIN_SEPOLIA,
         }
     }
 }

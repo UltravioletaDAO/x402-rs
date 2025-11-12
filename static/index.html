@@ -910,6 +910,16 @@
                         </div>
                         <div style="font-size: 0.7rem; color: var(--text-muted);">ETH Balance</div>
                     </div>
+                    <div class="network-badge unichain" style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;" onclick="window.open('https://uniscan.xyz/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
+                            <img src="/unichain.png" alt="Unichain" style="width: 32px; height: 32px; object-fit: contain;">
+                            <span style="font-weight: 700;">Unichain</span>
+                        </div>
+                        <div class="balance-amount" data-balance="unichain-mainnet" style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
+                            Loading...
+                        </div>
+                        <div style="font-size: 0.7rem; color: var(--text-muted);">ETH Balance</div>
+                    </div>
                 </div>
                 </div>
 
@@ -989,6 +999,16 @@
                             <span style="font-weight: 700;">Arbitrum Sepolia</span>
                         </div>
                         <div class="balance-amount" data-balance="arbitrum-testnet" style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
+                            Loading...
+                        </div>
+                        <div style="font-size: 0.7rem; color: var(--text-muted);">ETH</div>
+                    </div>
+                    <div class="network-badge unichain" style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;" onclick="window.open('https://sepolia.uniscan.xyz/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
+                            <img src="/unichain.png" alt="Unichain" style="width: 32px; height: 32px; object-fit: contain;">
+                            <span style="font-weight: 700;">Unichain Sepolia</span>
+                        </div>
+                        <div class="balance-amount" data-balance="unichain-testnet" style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
                             Loading...
                         </div>
                         <div style="font-size: 0.7rem; color: var(--text-muted);">ETH</div>
@@ -1340,6 +1360,14 @@ app.<span class="code-function">use</span>(<span class="code-function">paymentMi
                 },
                 'arbitrum-testnet': {
                     rpc: 'https://arbitrum-sepolia-rpc.publicnode.com',
+                    address: TESTNET_ADDRESS
+                },
+                'unichain-mainnet': {
+                    rpc: 'https://unichain-rpc.publicnode.com',
+                    address: MAINNET_ADDRESS
+                },
+                'unichain-testnet': {
+                    rpc: 'https://unichain-sepolia.drpc.org',
                     address: TESTNET_ADDRESS
                 }
             };

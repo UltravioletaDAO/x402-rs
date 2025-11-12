@@ -787,11 +787,11 @@ impl<'de> Deserialize<'de> for TransactionHash {
         }
 
         // Solana: base58 string, decodes to exactly 64 bytes
-        if let Ok(bytes) = bs58::decode(&s).into_vec()
-            && bytes.len() == 64
-        {
-            let array: [u8; 64] = bytes.try_into().unwrap(); // safe after length check
-            return Ok(TransactionHash::Solana(array));
+        if let Ok(bytes) = bs58::decode(&s).into_vec() {
+            if bytes.len() == 64 {
+                let array: [u8; 64] = bytes.try_into().unwrap(); // safe after length check
+                return Ok(TransactionHash::Solana(array));
+            }
         }
 
         Err(serde::de::Error::custom("Invalid transaction hash format"))

@@ -7,6 +7,7 @@ use crate::types::{
     SettleRequest, SettleResponse, SupportedPaymentKindsResponse, VerifyRequest, VerifyResponse,
 };
 use std::fmt::{Debug, Display};
+use std::future::Future;
 use std::sync::Arc;
 
 /// Trait defining the asynchronous interface for x402 payment facilitators.

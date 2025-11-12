@@ -34,6 +34,8 @@ pub const ENV_RPC_ETHEREUM: &str = "RPC_URL_ETHEREUM";
 pub const ENV_RPC_ETHEREUM_SEPOLIA: &str = "RPC_URL_ETHEREUM_SEPOLIA";
 pub const ENV_RPC_ARBITRUM: &str = "RPC_URL_ARBITRUM";
 pub const ENV_RPC_ARBITRUM_SEPOLIA: &str = "RPC_URL_ARBITRUM_SEPOLIA";
+pub const ENV_RPC_UNICHAIN: &str = "RPC_URL_UNICHAIN";
+pub const ENV_RPC_UNICHAIN_SEPOLIA: &str = "RPC_URL_UNICHAIN_SEPOLIA";
 
 pub fn rpc_env_name_from_network(network: Network) -> &'static str {
     match network {
@@ -58,6 +60,8 @@ pub fn rpc_env_name_from_network(network: Network) -> &'static str {
         Network::EthereumSepolia => ENV_RPC_ETHEREUM_SEPOLIA,
         Network::Arbitrum => ENV_RPC_ARBITRUM,
         Network::ArbitrumSepolia => ENV_RPC_ARBITRUM_SEPOLIA,
+        Network::Unichain => ENV_RPC_UNICHAIN,
+        Network::UnichainSepolia => ENV_RPC_UNICHAIN_SEPOLIA,
     }
 }
 

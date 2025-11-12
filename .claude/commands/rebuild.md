@@ -11,7 +11,7 @@ Recompile the Rust code and rebuild the Docker image locally:
 3. Format all code: `just format-all`
 4. Run clippy linter: `just clippy-all` - report any warnings or errors
 5. Build the Rust binary in release mode: `cargo build --release`
-6. Build the Docker image: `docker build --platform linux/amd64 -t facilitator-test .`
+6. Build the Docker image with version tag: `docker build --platform linux/amd64 --build-arg FACILITATOR_VERSION=dev-local -t facilitator-test .`
 7. Report build status and image size (should be ~105MB)
 
 **Expected Build Times:**

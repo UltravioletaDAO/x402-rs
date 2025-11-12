@@ -12,8 +12,8 @@ IMAGE_TAG="${1:-latest}"
 echo "🐳 Building facilitator Docker image..."
 echo "   Tag: ${IMAGE_TAG}"
 
-# Build image
-docker build -t ${ECR_REPOSITORY}:${IMAGE_TAG} .
+# Build image with version information
+docker build --build-arg FACILITATOR_VERSION=${IMAGE_TAG} -t ${ECR_REPOSITORY}:${IMAGE_TAG} .
 
 # Tag for ECR
 docker tag ${ECR_REPOSITORY}:${IMAGE_TAG} \

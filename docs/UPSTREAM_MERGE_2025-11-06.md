@@ -59,7 +59,7 @@ All Ultravioleta DAO custom networks preserved with full integration:
 - Sepolia testnet (chain ID 44787): `0x01C5C0122039549AD1493B8220cABEdD739BC44E`
 
 **HyperEVM**:
-- Mainnet (chain ID 998): `0xb88339cb7199b77e23db6e890353e22632ba630f`
+- Mainnet (chain ID 999): `0xb88339cb7199b77e23db6e890353e22632ba630f`
 - Testnet (chain ID 333): `0x2B3370eE501B4a559b57D449569354196457D8Ab`
 
 ### 2. Branding Assets (100% Intact)

@@ -36,7 +36,6 @@ pub const ENV_RPC_ARBITRUM: &str = "RPC_URL_ARBITRUM";
 pub const ENV_RPC_ARBITRUM_SEPOLIA: &str = "RPC_URL_ARBITRUM_SEPOLIA";
 pub const ENV_RPC_UNICHAIN: &str = "RPC_URL_UNICHAIN";
 pub const ENV_RPC_UNICHAIN_SEPOLIA: &str = "RPC_URL_UNICHAIN_SEPOLIA";
-pub const ENV_RPC_BSC: &str = "RPC_URL_BSC";
 
 pub fn rpc_env_name_from_network(network: Network) -> &'static str {
     match network {
@@ -63,7 +62,6 @@ pub fn rpc_env_name_from_network(network: Network) -> &'static str {
         Network::ArbitrumSepolia => ENV_RPC_ARBITRUM_SEPOLIA,
         Network::Unichain => ENV_RPC_UNICHAIN,
         Network::UnichainSepolia => ENV_RPC_UNICHAIN_SEPOLIA,
-        Network::Bsc => ENV_RPC_BSC,
     }
 }
 

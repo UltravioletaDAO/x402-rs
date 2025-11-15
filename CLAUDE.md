@@ -184,7 +184,7 @@ This is a Cargo workspace with multiple crates:
    - Never overwrite from upstream
 
 4. **src/network.rs** - Custom networks added beyond upstream
-   - HyperEVM mainnet/testnet (Chain IDs: 998, 333)
+   - HyperEVM mainnet/testnet (Chain IDs: 999, 333)
    - Polygon mainnet/Amoy testnet (Chain IDs: 137, 80002)
    - Optimism mainnet/Sepolia testnet (Chain IDs: 10, 11155420)
    - Celo mainnet/Sepolia testnet (Chain IDs: 42220, 44787)

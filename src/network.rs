@@ -87,9 +87,6 @@ pub enum Network {
     /// Unichain Sepolia testnet (chain ID 1301).
     #[serde(rename = "unichain-sepolia")]
     UnichainSepolia,
-    /// BSC mainnet (chain ID 56).
-    #[serde(rename = "bsc")]
-    Bsc,
 }
 
 impl Display for Network {
@@ -118,7 +115,6 @@ impl Display for Network {
             Network::ArbitrumSepolia => write!(f, "arbitrum-sepolia"),
             Network::Unichain => write!(f, "unichain"),
             Network::UnichainSepolia => write!(f, "unichain-sepolia"),
-            Network::Bsc => write!(f, "bsc"),
         }
     }
 }
@@ -155,7 +151,6 @@ impl From<Network> for NetworkFamily {
             Network::ArbitrumSepolia => NetworkFamily::Evm,
             Network::Unichain => NetworkFamily::Evm,
             Network::UnichainSepolia => NetworkFamily::Evm,
-            Network::Bsc => NetworkFamily::Evm,
         }
     }
 }
@@ -187,7 +182,6 @@ impl Network {
             Network::ArbitrumSepolia,
             Network::Unichain,
             Network::UnichainSepolia,
-            Network::Bsc,
         ]
     }
 
@@ -556,21 +550,6 @@ static USDC_UNICHAIN_SEPOLIA: Lazy<USDCDeployment> = Lazy::new(|| {
     })
 });
 
-/// Lazily initialized known USDC deployment on BSC mainnet as [`USDCDeployment`].
-static USDC_BSC: Lazy<USDCDeployment> = Lazy::new(|| {
-    USDCDeployment(TokenDeployment {
-        asset: TokenAsset {
-            address: address!("0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d").into(),
-            network: Network::Bsc,
-        },
-        decimals: 18,
-        eip712: Some(TokenDeploymentEip712 {
-            name: "USD Coin".into(),
-            version: "2".into(),
-        }),
-    })
-});
-
 /// A known USDC deployment as a wrapper around [`TokenDeployment`].
 #[derive(Clone, Debug)]
 pub struct USDCDeployment(pub TokenDeployment);
@@ -630,7 +609,6 @@ impl USDCDeployment {
             Network::ArbitrumSepolia => &USDC_ARBITRUM_SEPOLIA,
             Network::Unichain => &USDC_UNICHAIN,
             Network::UnichainSepolia => &USDC_UNICHAIN_SEPOLIA,
-            Network::Bsc => &USDC_BSC,
         }
     }
 }

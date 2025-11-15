@@ -87,7 +87,6 @@ where
         .route("/ethereum.png", get(get_ethereum_logo))
         .route("/arbitrum.png", get(get_arbitrum_logo))
         .route("/unichain.png", get(get_unichain_logo))
-        .route("/bsc.png", get(get_bsc_logo))
 }
 
 /// `GET /`: Returns the Ultravioleta DAO branded landing page.
@@ -238,15 +237,6 @@ pub async fn get_arbitrum_logo() -> impl IntoResponse {
 
 pub async fn get_unichain_logo() -> impl IntoResponse {
     let bytes = include_bytes!("../static/unichain.png");
-    (
-        StatusCode::OK,
-        [("content-type", "image/png")],
-        bytes.as_slice(),
-    )
-}
-
-pub async fn get_bsc_logo() -> impl IntoResponse {
-    let bytes = include_bytes!("../static/bsc.png");
     (
         StatusCode::OK,
         [("content-type", "image/png")],

@@ -494,10 +494,6 @@ resource "aws_ecs_task_definition" "facilitator" {
           value = "0.0.0.0"
         },
         {
-          name  = "TX_RECEIPT_TIMEOUT_SECS"
-          value = "120"
-        },
-        {
           name  = "RPC_URL_CELO"
           value = "https://rpc.celocolombia.org"
         },

@@ -1,143 +1,162 @@
 {
-    "containerDefinitions": [
+    "name": "facilitator",
+    "image": "518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator:v1.3.5",
+    "cpu": 0,
+    "portMappings": [
         {
-            "name": "facilitator",
-            "image": "518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator:v1.2.1-blacklist-fix",
-            "cpu": 0,
-            "portMappings": [
-                {
-                    "containerPort": 8080,
-                    "hostPort": 8080,
-                    "protocol": "tcp"
-                }
-            ],
-            "essential": true,
-            "environment": [
-                {
-                    "name": "RPC_URL_HYPEREVM_TESTNET",
-                    "value": "https://rpc.hyperliquid-testnet.xyz/evm"
-                },
-                {
-                    "name": "BLACKLIST_REQUIRED",
-                    "value": "true"
-                },
-                {
-                    "name": "SIGNER_TYPE",
-                    "value": "private-key"
-                },
-                {
-                    "name": "PORT",
-                    "value": "8080"
-                },
-                {
-                    "name": "RPC_URL_CELO",
-                    "value": "https://rpc.celocolombia.org"
-                },
-                {
-                    "name": "RPC_URL_BASE_SEPOLIA",
-                    "value": "https://sepolia.base.org"
-                },
-                {
-                    "name": "RPC_URL_OPTIMISM_SEPOLIA",
-                    "value": "https://sepolia.optimism.io"
-                },
-                {
-                    "name": "RUST_LOG",
-                    "value": "info"
-                },
-                {
-                    "name": "HOST",
-                    "value": "0.0.0.0"
-                },
-                {
-                    "name": "RPC_URL_POLYGON_AMOY",
-                    "value": "https://polygon-amoy.drpc.org"
-                },
-                {
-                    "name": "RPC_URL_CELO_SEPOLIA",
-                    "value": "https://rpc.ankr.com/celo_sepolia"
-                },
-                {
-                    "name": "RPC_URL_AVALANCHE_FUJI",
-                    "value": "https://avalanche-fuji-c-chain-rpc.publicnode.com"
-                }
-            ],
-            "mountPoints": [],
-            "volumesFrom": [],
-            "secrets": [
-                {
-                    "name": "EVM_PRIVATE_KEY",
-                    "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-evm-private-key-sFr9Ip:private_key::"
-                },
-                {
-                    "name": "SOLANA_PRIVATE_KEY",
-                    "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-solana-keypair-uVuDZE:private_key::"
-                },
-                {
-                    "name": "RPC_URL_BASE",
-                    "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-rpc-mainnet-5QJ8PN:base::"
-                },
-                {
-                    "name": "RPC_URL_AVALANCHE",
-                    "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-rpc-mainnet-5QJ8PN:avalanche::"
-                },
-                {
-                    "name": "RPC_URL_POLYGON",
-                    "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-rpc-mainnet-5QJ8PN:polygon::"
-                },
-                {
-                    "name": "RPC_URL_OPTIMISM",
-                    "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-rpc-mainnet-5QJ8PN:optimism::"
-                },
-                {
-                    "name": "RPC_URL_HYPEREVM",
-                    "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-rpc-mainnet-5QJ8PN:hyperevm::"
-                },
-                {
-                    "name": "RPC_URL_SOLANA",
-                    "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-rpc-mainnet-5QJ8PN:solana::"
-                },
-                {
-                    "name": "RPC_URL_SOLANA_DEVNET",
-                    "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-rpc-testnet-bcODyg:solana-devnet::"
-                },
-                {
-                    "name": "EVM_PRIVATE_KEY_MAINNET",
-                    "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-evm-mainnet-private-key-LXjGDT:private_key::"
-                },
-                {
-                    "name": "EVM_PRIVATE_KEY_TESTNET",
-                    "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-evm-testnet-private-key-m6kPKa:private_key::"
-                },
-                {
-                    "name": "SOLANA_PRIVATE_KEY_MAINNET",
-                    "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-solana-mainnet-keypair-m7E128:private_key::"
-                },
-                {
-                    "name": "SOLANA_PRIVATE_KEY_TESTNET",
-                    "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-solana-testnet-keypair-J3S5rj:private_key::"
-                }
-            ],
-            "logConfiguration": {
-                "logDriver": "awslogs",
-                "options": {
-                    "awslogs-group": "/ecs/facilitator-production",
-                    "awslogs-region": "us-east-2",
-                    "awslogs-stream-prefix": "ecs"
-                }
-            },
-            "healthCheck": {
-                "command": [
-                    "CMD-SHELL",
-                    "curl -f http://localhost:8080/health || exit 1"
-                ],
-                "interval": 30,
-                "timeout": 5,
-                "retries": 3,
-                "startPeriod": 60
-            },
-            "systemControls": []
+            "containerPort": 8080,
+            "hostPort": 8080,
+            "protocol": "tcp"
         }
     ],
-    "taskDefinitionArn": "arn:aws:ecs:us-east-2:518898403364:task-definition/facilitator-production:14"
+    "essential": true,
+    "environment": [
+        {
+            "name": "RPC_URL_UNICHAIN_SEPOLIA",
+            "value": "https://unichain-sepolia.drpc.org"
+        },
+        {
+            "name": "BLACKLIST_REQUIRED",
+            "value": "true"
+        },
+        {
+            "name": "SIGNER_TYPE",
+            "value": "private-key"
+        },
+        {
+            "name": "PORT",
+            "value": "8080"
+        },
+        {
+            "name": "RPC_URL_CELO",
+            "value": "https://rpc.celocolombia.org"
+        },
+        {
+            "name": "RPC_URL_OPTIMISM_SEPOLIA",
+            "value": "https://sepolia.optimism.io"
+        },
+        {
+            "name": "RUST_LOG",
+            "value": "info"
+        },
+        {
+            "name": "HOST",
+            "value": "0.0.0.0"
+        },
+        {
+            "name": "RPC_URL_CELO_SEPOLIA",
+            "value": "https://rpc.ankr.com/celo_sepolia"
+        },
+        {
+            "name": "RPC_URL_AVALANCHE_FUJI",
+            "value": "https://avalanche-fuji-c-chain-rpc.publicnode.com"
+        },
+        {
+            "name": "RPC_URL_HYPEREVM_TESTNET",
+            "value": "https://rpc.hyperliquid-testnet.xyz/evm"
+        },
+        {
+            "name": "RPC_URL_BASE_SEPOLIA",
+            "value": "https://sepolia.base.org"
+        },
+        {
+            "name": "RPC_URL_POLYGON_AMOY",
+            "value": "https://polygon-amoy.drpc.org"
+        },
+        {
+            "name": "RPC_URL_ETHEREUM_SEPOLIA",
+            "value": "https://ethereum-sepolia-rpc.publicnode.com"
+        }
+    ],
+    "mountPoints": [],
+    "volumesFrom": [],
+    "secrets": [
+        {
+            "name": "EVM_PRIVATE_KEY",
+            "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-evm-private-key-sFr9Ip:private_key::"
+        },
+        {
+            "name": "SOLANA_PRIVATE_KEY",
+            "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-solana-keypair-uVuDZE:private_key::"
+        },
+        {
+            "name": "RPC_URL_BASE",
+            "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-rpc-mainnet-5QJ8PN:base::"
+        },
+        {
+            "name": "RPC_URL_AVALANCHE",
+            "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-rpc-mainnet-5QJ8PN:avalanche::"
+        },
+        {
+            "name": "RPC_URL_POLYGON",
+            "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-rpc-mainnet-5QJ8PN:polygon::"
+        },
+        {
+            "name": "RPC_URL_OPTIMISM",
+            "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-rpc-mainnet-5QJ8PN:optimism::"
+        },
+        {
+            "name": "RPC_URL_HYPEREVM",
+            "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-rpc-mainnet-5QJ8PN:hyperevm::"
+        },
+        {
+            "name": "RPC_URL_SOLANA",
+            "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-rpc-mainnet-5QJ8PN:solana::"
+        },
+        {
+            "name": "RPC_URL_SOLANA_DEVNET",
+            "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-rpc-testnet-bcODyg:solana-devnet::"
+        },
+        {
+            "name": "EVM_PRIVATE_KEY_MAINNET",
+            "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-evm-mainnet-private-key-LXjGDT:private_key::"
+        },
+        {
+            "name": "EVM_PRIVATE_KEY_TESTNET",
+            "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-evm-testnet-private-key-m6kPKa:private_key::"
+        },
+        {
+            "name": "SOLANA_PRIVATE_KEY_MAINNET",
+            "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-solana-mainnet-keypair-m7E128:private_key::"
+        },
+        {
+            "name": "SOLANA_PRIVATE_KEY_TESTNET",
+            "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-solana-testnet-keypair-J3S5rj:private_key::"
+        },
+        {
+            "name": "RPC_URL_ETHEREUM",
+            "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-rpc-mainnet-5QJ8PN:ethereum::"
+        },
+        {
+            "name": "RPC_URL_ARBITRUM",
+            "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-rpc-mainnet-5QJ8PN:arbitrum::"
+        },
+        {
+            "name": "RPC_URL_ARBITRUM_SEPOLIA",
+            "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-rpc-testnet-bcODyg:arbitrum-sepolia::"
+        },
+        {
+            "name": "RPC_URL_UNICHAIN",
+            "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-rpc-mainnet-5QJ8PN:unichain::"
+        }
+    ],
+    "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+            "awslogs-group": "/ecs/facilitator-production",
+            "awslogs-region": "us-east-2",
+            "awslogs-stream-prefix": "ecs"
+        }
+    },
+    "healthCheck": {
+        "command": [
+            "CMD-SHELL",
+            "curl -f http://localhost:8080/health || exit 1"
+        ],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 60
+    },
+    "systemControls": []
 }

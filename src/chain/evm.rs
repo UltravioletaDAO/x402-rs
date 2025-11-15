@@ -20,6 +20,7 @@ use alloy::network::{
     Ethereum as AlloyEthereum, EthereumWallet, NetworkWallet, TransactionBuilder,
 };
 use alloy::primitives::{Address, Bytes, FixedBytes, U256, address};
+use std::future::{Future, IntoFuture};
 use alloy::providers::ProviderBuilder;
 use alloy::providers::bindings::IMulticall3;
 use alloy::providers::fillers::NonceManager;
@@ -136,7 +137,7 @@ impl TryFrom<Network> for EvmChain {
             Network::OptimismSepolia => Ok(EvmChain::new(value, 11155420)),
             Network::Celo => Ok(EvmChain::new(value, 42220)),
             Network::CeloSepolia => Ok(EvmChain::new(value, 44787)),
-            Network::HyperEvm => Ok(EvmChain::new(value, 998)),
+            Network::HyperEvm => Ok(EvmChain::new(value, 999)),
             Network::HyperEvmTestnet => Ok(EvmChain::new(value, 333)),
             Network::Sei => Ok(EvmChain::new(value, 1329)),
             Network::SeiTestnet => Ok(EvmChain::new(value, 1328)),
@@ -363,12 +364,17 @@ impl MetaEvmProvider for EvmProvider {
         };
 
         // Get receipt with timeout and error handling for nonce reset
-        // Default timeout of 30 seconds is reasonable for most EVM chains
+        // Base mainnet requires longer timeout (60s) due to network congestion
+        // Other EVM chains use default 30s timeout
+        let default_timeout = match self.chain.network {
+            Network::Base => 60,
+            _ => 30,
+        };
         let timeout = std::time::Duration::from_secs(
             std::env::var("TX_RECEIPT_TIMEOUT_SECS")
                 .ok()
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(30)
+                .unwrap_or(default_timeout)
         );
 
         let watcher = pending_tx
@@ -408,7 +414,7 @@ impl FromEnvByNetworkBuild for EvmProvider {
                 return Ok(None);
             }
         };
-        let wallet = from_env::SignerType::from_env()?.make_evm_wallet()?;
+        let wallet = from_env::SignerType::from_env()?.make_evm_wallet(network)?;
         let is_eip1559 = match network {
             Network::BaseSepolia => true,
             Network::Base => true,
@@ -419,8 +425,20 @@ impl FromEnvByNetworkBuild for EvmProvider {
             Network::SolanaDevnet => false,
             Network::PolygonAmoy => true,
             Network::Polygon => true,
+            Network::Optimism => true,
+            Network::OptimismSepolia => true,
+            Network::Celo => true,
+            Network::CeloSepolia => true,
+            Network::HyperEvm => true,
+            Network::HyperEvmTestnet => true,
             Network::Sei => true,
             Network::SeiTestnet => true,
+            Network::Ethereum => true,
+            Network::EthereumSepolia => true,
+            Network::Arbitrum => true,
+            Network::ArbitrumSepolia => true,
+            Network::Unichain => true,
+            Network::UnichainSepolia => true,
         };
         let provider = EvmProvider::try_new(wallet, &rpc_url, is_eip1559, network).await?;
         Ok(Some(provider))

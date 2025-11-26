@@ -5,8 +5,8 @@ edition = "2021"
 publish = false
 
 [dependencies]
-x402-reqwest = { version = "0.4" }
-x402-rs = { version = "0.9" }
+x402-reqwest = { path = "../../crates/x402-reqwest" }
+x402-rs = { path = "../.." }
 alloy = { version = "1.0.12" }
 reqwest = { version = "0.12.20" }
 tokio = { version = "1.45.1" }

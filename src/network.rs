@@ -554,7 +554,7 @@ static USDC_UNICHAIN: Lazy<USDCDeployment> = Lazy::new(|| {
         },
         decimals: 6,
         eip712: Some(TokenDeploymentEip712 {
-            name: "USD Coin".into(),
+            name: "USDC".into(),
             version: "2".into(),
         }),
     })

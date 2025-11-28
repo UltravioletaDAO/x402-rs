@@ -1,5 +1,3 @@
-use tokio::signal::unix::signal;
-use tokio::signal::unix::SignalKind;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
@@ -17,21 +15,53 @@ impl SigDown {
     ///
     /// Returns an error if signal registration fails.
     pub fn try_new() -> Result<Self, std::io::Error> {
-        let mut sigterm = signal(SignalKind::terminate())?;
-        let mut sigint = signal(SignalKind::interrupt())?;
         let inner = CancellationToken::new();
         let outer = inner.clone();
         let task_tracker = TaskTracker::new();
+        
         task_tracker.spawn(async move {
-            tokio::select! {
-                _ = sigterm.recv() => {
-                    inner.cancel();
-                },
-                _ = sigint.recv() => {
-                    inner.cancel();
+            #[cfg(unix)]
+            {
+                use tokio::signal::unix::{signal, SignalKind};
+                
+                let mut sigterm = match signal(SignalKind::terminate()) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("Failed to register SIGTERM handler: {}", e);
+                        return;
+                    }
+                };
+                let mut sigint = match signal(SignalKind::interrupt()) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("Failed to register SIGINT handler: {}", e);
+                        return;
+                    }
+                };
+
+                tokio::select! {
+                    _ = sigterm.recv() => {
+                        inner.cancel();
+                    },
+                    _ = sigint.recv() => {
+                        inner.cancel();
+                    }
+                }
+            }
+
+            #[cfg(not(unix))]
+            {
+                match tokio::signal::ctrl_c().await {
+                    Ok(()) => {
+                        inner.cancel();
+                    },
+                    Err(err) => {
+                        eprintln!("Unable to listen for shutdown signal: {}", err);
+                    },
                 }
             }
         });
+        
         task_tracker.close();
         Ok(Self {
             _task_tracker: task_tracker,

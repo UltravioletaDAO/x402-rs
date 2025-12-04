@@ -1,18 +1,24 @@
 //! NEAR Protocol payment provider implementation.
 //!
-//! This module implements NEAR payments using signed transactions.
-//! The facilitator receives pre-signed transactions from users and submits them on-chain.
+//! This module implements NEAR payments using NEP-366 meta-transactions.
+//! Users sign a DelegateAction off-chain, and the facilitator wraps it in a
+//! transaction, paying the gas fees on behalf of the user.
 //!
-//! Note: NEP-366 meta-transactions require near-primitives 0.27+ which is not yet
-//! compatible with near-jsonrpc-client 0.13. This implementation uses a simpler
-//! pre-signed transaction model.
+//! Flow:
+//! 1. User creates and signs a DelegateAction -> SignedDelegateAction
+//! 2. User sends SignedDelegateAction to facilitator (base64 encoded)
+//! 3. Facilitator wraps it in Action::Delegate and creates a Transaction
+//! 4. Facilitator signs the Transaction with its own key (pays gas)
+//! 5. Facilitator submits to NEAR network
+//! 6. NEAR executes the inner actions as if user submitted them
 
-use near_crypto::{PublicKey, SecretKey};
+use near_crypto::{InMemorySigner, PublicKey, SecretKey, Signer};
 use near_jsonrpc_client::{methods, JsonRpcClient};
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
+use near_primitives::action::delegate::SignedDelegateAction;
 use near_primitives::hash::CryptoHash;
-use near_primitives::transaction::SignedTransaction;
-use near_primitives::types::{AccountId, BlockReference, Finality, Gas, Nonce};
+use near_primitives::transaction::{Action, Transaction, TransactionV0};
+use near_primitives::types::{AccountId, BlockReference, Finality, Nonce};
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Formatter};
 use std::str::FromStr;
@@ -23,15 +29,10 @@ use crate::facilitator::Facilitator;
 use crate::from_env;
 use crate::network::Network;
 use crate::types::{
-    ExactPaymentPayload, FacilitatorErrorReason, MixedAddress, PaymentRequirements, Scheme,
-    SettleRequest, SettleResponse, SupportedPaymentKind, SupportedPaymentKindExtra,
-    SupportedPaymentKindsResponse, TokenAmount, TransactionHash, VerifyRequest, VerifyResponse,
-    X402Version,
+    ExactPaymentPayload, FacilitatorErrorReason, MixedAddress, Scheme, SettleRequest,
+    SettleResponse, SupportedPaymentKind, SupportedPaymentKindExtra, SupportedPaymentKindsResponse,
+    TransactionHash, VerifyRequest, VerifyResponse, X402Version,
 };
-
-/// Gas limit for ft_transfer calls (30 TGas is typically sufficient)
-#[allow(dead_code)]
-const FT_TRANSFER_GAS: Gas = 30_000_000_000_000;
 
 /// NEAR network chain configuration
 #[derive(Clone, Debug)]
@@ -111,13 +112,13 @@ pub struct FtTransferArgs {
 
 /// NEAR Protocol payment provider
 ///
-/// Implements USDC payments on NEAR by relaying pre-signed transactions.
-/// The facilitator submits user-signed transactions on-chain.
+/// Implements USDC payments on NEAR using NEP-366 meta-transactions.
+/// The facilitator receives SignedDelegateAction from users and wraps them
+/// in transactions, paying the gas fees.
 #[derive(Clone)]
 pub struct NearProvider {
-    /// The relayer's secret key for signing transactions (for future meta-tx support)
-    #[allow(dead_code)]
-    secret_key: Arc<SecretKey>,
+    /// The relayer's signer for signing transactions
+    signer: Arc<Signer>,
     /// The relayer's account ID
     account_id: AccountId,
     /// NEAR RPC client
@@ -147,16 +148,19 @@ impl NearProvider {
         let account_id = AccountId::from_str(&account_id)
             .map_err(|e| FacilitatorLocalError::InvalidAddress(format!("Invalid account ID: {e}")))?;
 
+        // Create an in-memory signer for the relayer and convert to Signer enum
+        let signer: Signer = InMemorySigner::from_secret_key(account_id.clone(), secret_key).into();
+
         tracing::info!(
             network = %network,
             account_id = %account_id,
-            "Initialized NEAR provider"
+            "Initialized NEAR provider with NEP-366 meta-transaction support"
         );
 
         let rpc_client = JsonRpcClient::connect(&rpc_url);
 
         Ok(Self {
-            secret_key: Arc::new(secret_key),
+            signer: Arc::new(signer),
             account_id,
             rpc_client: Arc::new(rpc_client),
             chain,
@@ -165,7 +169,7 @@ impl NearProvider {
 
     /// Get the relayer's public key
     pub fn public_key(&self) -> PublicKey {
-        self.secret_key.public_key()
+        self.signer.public_key()
     }
 
     /// Get the relayer's account ID as a MixedAddress
@@ -173,8 +177,7 @@ impl NearProvider {
         MixedAddress::Near(self.account_id.to_string())
     }
 
-    /// Query the current nonce for an access key
-    #[allow(dead_code)]
+    /// Query the current nonce for the relayer's access key
     async fn get_nonce(&self) -> Result<Nonce, FacilitatorLocalError> {
         let public_key = self.public_key();
         let request = methods::query::RpcQueryRequest {
@@ -200,7 +203,6 @@ impl NearProvider {
     }
 
     /// Get the latest block hash for transaction construction
-    #[allow(dead_code)]
     async fn get_block_hash(&self) -> Result<CryptoHash, FacilitatorLocalError> {
         let request = methods::block::RpcBlockRequest {
             block_reference: BlockReference::Finality(Finality::Final),
@@ -215,27 +217,45 @@ impl NearProvider {
         Ok(response.header.hash)
     }
 
-    /// Decode a signed transaction from base64
-    fn decode_signed_transaction(
+    /// Decode a SignedDelegateAction from base64
+    fn decode_signed_delegate_action(
         &self,
         encoded: &str,
-    ) -> Result<SignedTransaction, FacilitatorLocalError> {
+    ) -> Result<SignedDelegateAction, FacilitatorLocalError> {
         // Decode from base64
         let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)
             .map_err(|e| {
                 FacilitatorLocalError::DecodingError(format!(
-                    "Failed to decode signed transaction from base64: {e}"
+                    "Failed to decode SignedDelegateAction from base64: {e}"
                 ))
             })?;
 
         // Deserialize using borsh
-        let signed_tx: SignedTransaction = borsh::from_slice(&bytes).map_err(|e| {
+        let signed_delegate_action: SignedDelegateAction = borsh::from_slice(&bytes).map_err(|e| {
             FacilitatorLocalError::DecodingError(format!(
-                "Failed to deserialize SignedTransaction: {e}"
+                "Failed to deserialize SignedDelegateAction: {e}"
             ))
         })?;
 
-        Ok(signed_tx)
+        Ok(signed_delegate_action)
+    }
+
+    /// Verify a SignedDelegateAction
+    fn verify_delegate_action(
+        &self,
+        signed_delegate_action: &SignedDelegateAction,
+    ) -> Result<(), FacilitatorLocalError> {
+        // Verify the signature
+        if !signed_delegate_action.verify() {
+            let sender_address =
+                MixedAddress::Near(signed_delegate_action.delegate_action.sender_id.to_string());
+            return Err(FacilitatorLocalError::InvalidSignature(
+                sender_address,
+                "Invalid SignedDelegateAction signature".to_string(),
+            ));
+        }
+
+        Ok(())
     }
 
     /// Verify a payment request
@@ -278,14 +298,17 @@ impl NearProvider {
             ));
         }
 
-        // Decode the signed transaction (field is called signed_delegate_action for now,
-        // but contains a serialized SignedTransaction in this simplified implementation)
-        let signed_tx = self.decode_signed_transaction(&near_payload.signed_delegate_action)?;
+        // Decode the SignedDelegateAction
+        let signed_delegate_action =
+            self.decode_signed_delegate_action(&near_payload.signed_delegate_action)?;
 
-        // Extract payer from the transaction's signer
-        let payer = NearAddress::new(signed_tx.transaction.signer_id().clone());
+        // Verify the signature
+        self.verify_delegate_action(&signed_delegate_action)?;
 
-        // Verify the transaction is for the USDC contract
+        // Extract payer from the delegate action's sender
+        let payer = NearAddress::new(signed_delegate_action.delegate_action.sender_id.clone());
+
+        // Verify the delegate action targets the USDC contract
         let usdc_contract = match &requirements.asset {
             MixedAddress::Near(contract) => contract.clone(),
             _ => {
@@ -295,36 +318,78 @@ impl NearProvider {
             }
         };
 
-        if signed_tx.transaction.receiver_id().to_string() != usdc_contract {
+        if signed_delegate_action.delegate_action.receiver_id.to_string() != usdc_contract {
             return Err(FacilitatorLocalError::ContractCall(format!(
-                "Transaction receiver {} does not match USDC contract {}",
-                signed_tx.transaction.receiver_id(),
-                usdc_contract
+                "DelegateAction receiver {} does not match USDC contract {}",
+                signed_delegate_action.delegate_action.receiver_id, usdc_contract
             )));
         }
 
-        Ok(VerifyPaymentResult { payer, signed_tx })
+        Ok(VerifyPaymentResult {
+            payer,
+            signed_delegate_action,
+        })
     }
 
-    /// Submit a signed transaction
-    async fn submit_transaction(
+    /// Submit a meta-transaction (NEP-366)
+    ///
+    /// Wraps the SignedDelegateAction in a Transaction with Action::Delegate,
+    /// signs it with the relayer's key, and submits to the network.
+    /// The relayer pays the gas fees.
+    async fn submit_meta_transaction(
         &self,
-        signed_tx: SignedTransaction,
+        signed_delegate_action: SignedDelegateAction,
     ) -> Result<CryptoHash, FacilitatorLocalError> {
+        // Get current nonce and block hash for the relayer's account
+        let nonce = self.get_nonce().await? + 1;
+        let block_hash = self.get_block_hash().await?;
+
+        // The receiver of the outer transaction is the sender of the delegate action
+        // This is because the delegate action is executed "as if" the sender submitted it
+        let receiver_id = signed_delegate_action.delegate_action.sender_id.clone();
+
+        // Create the Action::Delegate wrapping the SignedDelegateAction
+        let actions = vec![Action::Delegate(Box::new(signed_delegate_action))];
+
+        // Create the transaction using TransactionV0 - the relayer is the signer (pays gas)
+        let transaction = Transaction::V0(TransactionV0 {
+            signer_id: self.account_id.clone(),
+            public_key: self.public_key(),
+            nonce,
+            receiver_id,
+            block_hash,
+            actions,
+        });
+
+        // Sign the transaction with the relayer's key
+        let signed_tx = transaction.sign(&*self.signer);
+
+        tracing::info!(
+            relayer = %self.account_id,
+            nonce = nonce,
+            "Submitting NEP-366 meta-transaction (relayer pays gas)"
+        );
+
+        // Submit the transaction
         let request =
             methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest { signed_transaction: signed_tx };
 
         let response = self.rpc_client.call(request).await.map_err(|e| {
-            FacilitatorLocalError::ContractCall(format!("Failed to submit transaction: {e}"))
+            FacilitatorLocalError::ContractCall(format!("Failed to submit meta-transaction: {e}"))
         })?;
 
         // Check for execution errors
         if let near_primitives::views::FinalExecutionStatus::Failure(err) = response.status {
             return Err(FacilitatorLocalError::ContractCall(format!(
-                "Transaction failed: {:?}",
+                "Meta-transaction failed: {:?}",
                 err
             )));
         }
+
+        tracing::info!(
+            tx_hash = %response.transaction.hash,
+            "NEP-366 meta-transaction submitted successfully"
+        );
 
         Ok(response.transaction.hash)
     }
@@ -333,7 +398,7 @@ impl NearProvider {
 /// Result of verifying a NEAR payment
 pub struct VerifyPaymentResult {
     pub payer: NearAddress,
-    pub signed_tx: SignedTransaction,
+    pub signed_delegate_action: SignedDelegateAction,
 }
 
 impl FromEnvByNetworkBuild for NearProvider {
@@ -376,11 +441,14 @@ impl Facilitator for NearProvider {
     async fn settle(&self, request: &SettleRequest) -> Result<SettleResponse, Self::Error> {
         let verification = self.verify_payment(request).await?;
 
-        // Submit the transaction
-        let tx_hash = match self.submit_transaction(verification.signed_tx).await {
+        // Submit the meta-transaction (relayer pays gas!)
+        let tx_hash = match self
+            .submit_meta_transaction(verification.signed_delegate_action)
+            .await
+        {
             Ok(hash) => hash,
             Err(e) => {
-                tracing::error!(error = %e, "Failed to submit NEAR transaction");
+                tracing::error!(error = %e, "Failed to submit NEAR meta-transaction");
                 return Ok(SettleResponse {
                     success: false,
                     error_reason: Some(FacilitatorErrorReason::UnexpectedSettleError),

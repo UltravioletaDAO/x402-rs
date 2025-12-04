@@ -293,13 +293,11 @@ where
 
 /// `GET /version`: Returns the current version of the facilitator.
 ///
-/// This endpoint returns the Docker image tag / release version for operational visibility.
-/// The version is set via the FACILITATOR_VERSION environment variable at build time.
+/// This endpoint returns the version from Cargo.toml for operational visibility.
 #[instrument(skip_all)]
 pub async fn get_version() -> impl IntoResponse {
-    let version = option_env!("FACILITATOR_VERSION").unwrap_or("dev");
     Json(json!({
-        "version": version
+        "version": env!("CARGO_PKG_VERSION")
     }))
 }
 

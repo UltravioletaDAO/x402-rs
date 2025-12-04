@@ -93,6 +93,12 @@ pub enum Network {
     /// Monad mainnet (chain ID 143).
     #[serde(rename = "monad")]
     Monad,
+    /// NEAR Protocol mainnet.
+    #[serde(rename = "near")]
+    Near,
+    /// NEAR Protocol testnet.
+    #[serde(rename = "near-testnet")]
+    NearTestnet,
 }
 
 impl Display for Network {
@@ -123,6 +129,8 @@ impl Display for Network {
             Network::Unichain => write!(f, "unichain"),
             Network::UnichainSepolia => write!(f, "unichain-sepolia"),
             Network::Monad => write!(f, "monad"),
+            Network::Near => write!(f, "near"),
+            Network::NearTestnet => write!(f, "near-testnet"),
         }
     }
 }
@@ -131,6 +139,7 @@ impl Display for Network {
 pub enum NetworkFamily {
     Evm,
     Solana,
+    Near,
 }
 
 impl From<Network> for NetworkFamily {
@@ -161,6 +170,8 @@ impl From<Network> for NetworkFamily {
             Network::Unichain => NetworkFamily::Evm,
             Network::UnichainSepolia => NetworkFamily::Evm,
             Network::Monad => NetworkFamily::Evm,
+            Network::Near => NetworkFamily::Near,
+            Network::NearTestnet => NetworkFamily::Near,
         }
     }
 }
@@ -194,6 +205,8 @@ impl Network {
             Network::Unichain,
             Network::UnichainSepolia,
             Network::Monad,
+            Network::Near,
+            Network::NearTestnet,
         ]
     }
 
@@ -212,6 +225,7 @@ impl Network {
                 | Network::EthereumSepolia
                 | Network::ArbitrumSepolia
                 | Network::UnichainSepolia
+                | Network::NearTestnet
         )
     }
 
@@ -590,6 +604,35 @@ static USDC_MONAD: Lazy<USDCDeployment> = Lazy::new(|| {
     })
 });
 
+/// Lazily initialized known USDC deployment on NEAR Protocol mainnet as [`USDCDeployment`].
+/// NEAR uses native Circle USDC (not bridged).
+static USDC_NEAR: Lazy<USDCDeployment> = Lazy::new(|| {
+    USDCDeployment(TokenDeployment {
+        asset: TokenAsset {
+            address: MixedAddress::Near(
+                "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1".to_string(),
+            ),
+            network: Network::Near,
+        },
+        decimals: 6,
+        eip712: None, // NEAR uses borsh serialization, not EIP-712
+    })
+});
+
+/// Lazily initialized known USDC deployment on NEAR Protocol testnet as [`USDCDeployment`].
+static USDC_NEAR_TESTNET: Lazy<USDCDeployment> = Lazy::new(|| {
+    USDCDeployment(TokenDeployment {
+        asset: TokenAsset {
+            address: MixedAddress::Near(
+                "3e2210e1184b45b64c8a434c0a7e7b23cc04ea7eb7a6c3c32520d03d4afcb8af".to_string(),
+            ),
+            network: Network::NearTestnet,
+        },
+        decimals: 6,
+        eip712: None,
+    })
+});
+
 /// A known USDC deployment as a wrapper around [`TokenDeployment`].
 #[derive(Clone, Debug)]
 pub struct USDCDeployment(pub TokenDeployment);
@@ -651,6 +694,8 @@ impl USDCDeployment {
             Network::Unichain => &USDC_UNICHAIN,
             Network::UnichainSepolia => &USDC_UNICHAIN_SEPOLIA,
             Network::Monad => &USDC_MONAD,
+            Network::Near => &USDC_NEAR,
+            Network::NearTestnet => &USDC_NEAR_TESTNET,
         }
     }
 }

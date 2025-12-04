@@ -12,6 +12,12 @@ pub const ENV_EVM_PRIVATE_KEY: &str = "EVM_PRIVATE_KEY";
 pub const ENV_EVM_PRIVATE_KEY_MAINNET: &str = "EVM_PRIVATE_KEY_MAINNET";
 pub const ENV_EVM_PRIVATE_KEY_TESTNET: &str = "EVM_PRIVATE_KEY_TESTNET";
 pub const ENV_SOLANA_PRIVATE_KEY: &str = "SOLANA_PRIVATE_KEY";
+pub const ENV_NEAR_PRIVATE_KEY: &str = "NEAR_PRIVATE_KEY";
+pub const ENV_NEAR_PRIVATE_KEY_MAINNET: &str = "NEAR_PRIVATE_KEY_MAINNET";
+pub const ENV_NEAR_PRIVATE_KEY_TESTNET: &str = "NEAR_PRIVATE_KEY_TESTNET";
+pub const ENV_NEAR_ACCOUNT_ID: &str = "NEAR_ACCOUNT_ID";
+pub const ENV_NEAR_ACCOUNT_ID_MAINNET: &str = "NEAR_ACCOUNT_ID_MAINNET";
+pub const ENV_NEAR_ACCOUNT_ID_TESTNET: &str = "NEAR_ACCOUNT_ID_TESTNET";
 
 pub const ENV_RPC_BASE: &str = "RPC_URL_BASE";
 pub const ENV_RPC_BASE_SEPOLIA: &str = "RPC_URL_BASE_SEPOLIA";
@@ -38,6 +44,8 @@ pub const ENV_RPC_ARBITRUM_SEPOLIA: &str = "RPC_URL_ARBITRUM_SEPOLIA";
 pub const ENV_RPC_UNICHAIN: &str = "RPC_URL_UNICHAIN";
 pub const ENV_RPC_UNICHAIN_SEPOLIA: &str = "RPC_URL_UNICHAIN_SEPOLIA";
 pub const ENV_RPC_MONAD: &str = "RPC_URL_MONAD";
+pub const ENV_RPC_NEAR: &str = "RPC_URL_NEAR";
+pub const ENV_RPC_NEAR_TESTNET: &str = "RPC_URL_NEAR_TESTNET";
 
 pub fn rpc_env_name_from_network(network: Network) -> &'static str {
     match network {
@@ -66,6 +74,8 @@ pub fn rpc_env_name_from_network(network: Network) -> &'static str {
         Network::Unichain => ENV_RPC_UNICHAIN,
         Network::UnichainSepolia => ENV_RPC_UNICHAIN_SEPOLIA,
         Network::Monad => ENV_RPC_MONAD,
+        Network::Near => ENV_RPC_NEAR,
+        Network::NearTestnet => ENV_RPC_NEAR_TESTNET,
     }
 }
 
@@ -154,6 +164,72 @@ impl SignerType {
                     .map_err(|_| format!("env {ENV_SOLANA_PRIVATE_KEY} not set"))?;
                 let keypair = Keypair::from_base58_string(private_key.as_str());
                 Ok(keypair)
+            }
+        }
+    }
+
+    /// Constructs a NEAR signer based on the [`SignerType`] selected from environment.
+    ///
+    /// Environment variables:
+    /// - `NEAR_PRIVATE_KEY_MAINNET` — ed25519 private key for mainnet (base58 or hex)
+    /// - `NEAR_PRIVATE_KEY_TESTNET` — ed25519 private key for testnet (base58 or hex)
+    /// - `NEAR_PRIVATE_KEY` — fallback for all networks if network-specific keys are not set
+    /// - `NEAR_ACCOUNT_ID_MAINNET` — NEAR account ID for mainnet (implicit or named)
+    /// - `NEAR_ACCOUNT_ID_TESTNET` — NEAR account ID for testnet (implicit or named)
+    /// - `NEAR_ACCOUNT_ID` — fallback account ID for all networks
+    pub fn make_near_signer(
+        &self,
+        network: Network,
+    ) -> Result<(near_crypto::SecretKey, String), Box<dyn std::error::Error>> {
+        match self {
+            SignerType::PrivateKey => {
+                // Get private key based on network type
+                let private_key_str = if network.is_testnet() {
+                    env::var(ENV_NEAR_PRIVATE_KEY_TESTNET)
+                        .or_else(|_| env::var(ENV_NEAR_PRIVATE_KEY))
+                        .map_err(|_| {
+                            format!(
+                                "env {} or {} not set",
+                                ENV_NEAR_PRIVATE_KEY_TESTNET, ENV_NEAR_PRIVATE_KEY
+                            )
+                        })?
+                } else {
+                    env::var(ENV_NEAR_PRIVATE_KEY_MAINNET)
+                        .or_else(|_| env::var(ENV_NEAR_PRIVATE_KEY))
+                        .map_err(|_| {
+                            format!(
+                                "env {} or {} not set",
+                                ENV_NEAR_PRIVATE_KEY_MAINNET, ENV_NEAR_PRIVATE_KEY
+                            )
+                        })?
+                };
+
+                // Get account ID based on network type
+                let account_id = if network.is_testnet() {
+                    env::var(ENV_NEAR_ACCOUNT_ID_TESTNET)
+                        .or_else(|_| env::var(ENV_NEAR_ACCOUNT_ID))
+                        .map_err(|_| {
+                            format!(
+                                "env {} or {} not set",
+                                ENV_NEAR_ACCOUNT_ID_TESTNET, ENV_NEAR_ACCOUNT_ID
+                            )
+                        })?
+                } else {
+                    env::var(ENV_NEAR_ACCOUNT_ID_MAINNET)
+                        .or_else(|_| env::var(ENV_NEAR_ACCOUNT_ID))
+                        .map_err(|_| {
+                            format!(
+                                "env {} or {} not set",
+                                ENV_NEAR_ACCOUNT_ID_MAINNET, ENV_NEAR_ACCOUNT_ID
+                            )
+                        })?
+                };
+
+                // Parse the private key - supports ed25519:base58 format
+                let secret_key = near_crypto::SecretKey::from_str(&private_key_str)
+                    .map_err(|e| format!("Failed to parse NEAR private key: {}", e))?;
+
+                Ok((secret_key, account_id))
             }
         }
     }

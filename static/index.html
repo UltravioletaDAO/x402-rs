@@ -381,6 +381,16 @@
             box-shadow: 0 8px 24px rgba(124, 58, 237, 0.3);
         }
 
+        .network-badge.near {
+            border-color: #00ec97;
+            box-shadow: 0 0 20px rgba(0, 236, 151, 0.2);
+        }
+
+        .network-badge.near:hover {
+            border-color: #00ec97;
+            box-shadow: 0 8px 24px rgba(0, 236, 151, 0.3);
+        }
+
         .network-dot {
             width: 12px;
             height: 12px;
@@ -959,6 +969,16 @@
                         </div>
                         <div style="font-size: 0.7rem; color: var(--text-muted);">MON Balance</div>
                     </div>
+                    <div class="network-badge near" style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;" onclick="window.open('https://nearblocks.io/address/e56b8ad45e17e03ee75f9a3f055b5620260a42bc568c476e2de3bcb133a62775', '_blank')">
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
+                            <img src="/near.png" alt="NEAR" style="width: 32px; height: 32px; object-fit: contain;">
+                            <span style="font-weight: 700;">NEAR</span>
+                        </div>
+                        <div class="balance-amount" data-balance="near-mainnet" style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
+                            Loading...
+                        </div>
+                        <div style="font-size: 0.7rem; color: var(--text-muted);">NEAR Balance</div>
+                    </div>
 
                 </div>
                 </div>
@@ -1052,6 +1072,16 @@
                             Loading...
                         </div>
                         <div style="font-size: 0.7rem; color: var(--text-muted);">ETH</div>
+                    </div>
+                    <div class="network-badge near" style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;" onclick="window.open('https://testnet.nearblocks.io/address/dfa01b04a412050021f51d6c59312775f4f1e2b1ce7ec7da38cee9e0a63e7a3a', '_blank')">
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
+                            <img src="/near.png" alt="NEAR" style="width: 32px; height: 32px; object-fit: contain;">
+                            <span style="font-weight: 700;">NEAR Testnet</span>
+                        </div>
+                        <div class="balance-amount" data-balance="near-testnet" style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
+                            Loading...
+                        </div>
+                        <div style="font-size: 0.7rem; color: var(--text-muted);">NEAR</div>
                     </div>
                 </div>
                 </div>
@@ -1414,6 +1444,16 @@ app.<span class="code-function">use</span>(<span class="code-function">paymentMi
                     rpc: 'https://rpc.monad.xyz',
                     address: MAINNET_ADDRESS
                 },
+                'near-mainnet': {
+                    rpc: 'https://rpc.mainnet.near.org',
+                    address: 'e56b8ad45e17e03ee75f9a3f055b5620260a42bc568c476e2de3bcb133a62775',
+                    isNear: true
+                },
+                'near-testnet': {
+                    rpc: 'https://rpc.testnet.near.org',
+                    address: 'dfa01b04a412050021f51d6c59312775f4f1e2b1ce7ec7da38cee9e0a63e7a3a',
+                    isNear: true
+                },
                 };
 
         // Fetch balance for each network
@@ -1438,6 +1478,35 @@ app.<span class="code-function">use</span>(<span class="code-function">paymentMi
                             const balanceLamports = data.result.value;
                             const balanceSOL = balanceLamports / 1e9;
                             const formatted = balanceSOL.toFixed(4);
+
+                            const balanceEl = document.querySelector(`[data-balance="${network}"]`);
+                            if (balanceEl) {
+                                balanceEl.textContent = formatted;
+                            }
+                        }
+                    } else if (config.isNear) {
+                        // NEAR uses JSON-RPC with view_account method
+                        const response = await fetch(config.rpc, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                jsonrpc: '2.0',
+                                method: 'query',
+                                params: {
+                                    request_type: 'view_account',
+                                    finality: 'final',
+                                    account_id: config.address
+                                },
+                                id: 1
+                            })
+                        });
+
+                        const data = await response.json();
+                        if (data.result && data.result.amount !== undefined) {
+                            // NEAR balance is in yoctoNEAR (1 NEAR = 1e24 yoctoNEAR)
+                            const balanceYocto = BigInt(data.result.amount);
+                            const balanceNEAR = Number(balanceYocto) / 1e24;
+                            const formatted = balanceNEAR.toFixed(4);
 
                             const balanceEl = document.querySelector(`[data-balance="${network}"]`);
                             if (balanceEl) {

@@ -88,6 +88,7 @@ where
         .route("/arbitrum.png", get(get_arbitrum_logo))
         .route("/unichain.png", get(get_unichain_logo))
         .route("/monad.png", get(get_monad_logo))
+        .route("/near.png", get(get_near_logo))
 }
 
 /// `GET /`: Returns the Ultravioleta DAO branded landing page.
@@ -247,6 +248,17 @@ pub async fn get_unichain_logo() -> impl IntoResponse {
 
 pub async fn get_monad_logo() -> impl IntoResponse {
     let bytes = include_bytes!("../static/monad.png");
+    (
+        StatusCode::OK,
+        [("content-type", "image/png")],
+        bytes.as_slice(),
+    )
+}
+
+/// `GET /near.png`: Returns NEAR Protocol logo.
+#[instrument(skip_all)]
+pub async fn get_near_logo() -> impl IntoResponse {
+    let bytes = include_bytes!("../static/near.png");
     (
         StatusCode::OK,
         [("content-type", "image/png")],
@@ -436,6 +448,13 @@ where
                     debug!(
                         "  - transaction: {} (truncated)",
                         &solana_payload.transaction[..solana_payload.transaction.len().min(100)]
+                    );
+                }
+                crate::types::ExactPaymentPayload::Near(near_payload) => {
+                    debug!("  - payload type: NEAR");
+                    debug!(
+                        "  - signed_delegate_action: {} (truncated)",
+                        &near_payload.signed_delegate_action[..near_payload.signed_delegate_action.len().min(100)]
                     );
                 }
             }

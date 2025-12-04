@@ -281,11 +281,20 @@ pub struct ExactSolanaPayload {
     pub transaction: String,
 }
 
+/// NEAR payment payload containing a base64-encoded SignedDelegateAction (NEP-366).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExactNearPayload {
+    /// Base64-encoded borsh-serialized SignedDelegateAction
+    pub signed_delegate_action: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ExactPaymentPayload {
     Evm(ExactEvmPayload),
     Solana(ExactSolanaPayload),
+    Near(ExactNearPayload),
 }
 
 /// Describes a signed request to transfer a specific amount of funds on-chain.
@@ -635,7 +644,7 @@ impl From<u64> for TokenAmount {
     }
 }
 
-/// Represents either an EVM address (0x...), or an off-chain address, or Solana address.
+/// Represents either an EVM address (0x...), or an off-chain address, Solana address, or NEAR account.
 /// The format is used for routing settlement.
 #[derive(Debug, Hash, Clone, PartialEq, Eq)]
 pub enum MixedAddress {
@@ -644,6 +653,8 @@ pub enum MixedAddress {
     /// Off-chain address in `^[A-Za-z0-9][A-Za-z0-9-]{0,34}[A-Za-z0-9]$` format.
     Offchain(String),
     Solana(Pubkey),
+    /// NEAR Protocol account ID (e.g., "alice.near" or implicit hex account)
+    Near(String),
 }
 
 #[macro_export]
@@ -682,6 +693,7 @@ impl TryFrom<MixedAddress> for alloy::primitives::Address {
             MixedAddress::Evm(address) => Ok(address.into()),
             MixedAddress::Offchain(_) => Err(MixedAddressError::NotEvmAddress),
             MixedAddress::Solana(_) => Err(MixedAddressError::NotEvmAddress),
+            MixedAddress::Near(_) => Err(MixedAddressError::NotEvmAddress),
         }
     }
 }
@@ -708,6 +720,7 @@ impl TryInto<EvmAddress> for MixedAddress {
             MixedAddress::Evm(address) => Ok(address),
             MixedAddress::Offchain(_) => Err(MixedAddressError::NotEvmAddress),
             MixedAddress::Solana(_) => Err(MixedAddressError::NotEvmAddress),
+            MixedAddress::Near(_) => Err(MixedAddressError::NotEvmAddress),
         }
     }
 }
@@ -718,6 +731,7 @@ impl Display for MixedAddress {
             MixedAddress::Evm(address) => write!(f, "{address}"),
             MixedAddress::Offchain(address) => write!(f, "{address}"),
             MixedAddress::Solana(pubkey) => write!(f, "{pubkey}"),
+            MixedAddress::Near(account_id) => write!(f, "{account_id}"),
         }
     }
 }
@@ -732,6 +746,12 @@ impl<'de> Deserialize<'de> for MixedAddress {
                 .expect("Invalid regex for offchain address")
         });
 
+        // NEAR account ID regex: implicit (64 hex chars) or named (.near, .testnet, etc.)
+        static NEAR_ACCOUNT_REGEX: Lazy<Regex> = Lazy::new(|| {
+            Regex::new(r"^([a-f0-9]{64}|([a-z0-9_-]+\.)+([a-z0-9_-]+))$")
+                .expect("Invalid regex for NEAR account")
+        });
+
         let s = String::deserialize(deserializer)?;
         // 1) EVM address (e.g., 0x... 20 bytes, hex)
         if let Ok(addr) = EvmAddress::from_str(&s) {
@@ -741,7 +761,11 @@ impl<'de> Deserialize<'de> for MixedAddress {
         if let Ok(pk) = Pubkey::from_str(&s) {
             return Ok(MixedAddress::Solana(pk));
         }
-        // 3) Off-chain address by regex
+        // 3) NEAR account ID (implicit 64 hex or named like "alice.near")
+        if NEAR_ACCOUNT_REGEX.is_match(&s) {
+            return Ok(MixedAddress::Near(s));
+        }
+        // 4) Off-chain address by regex
         if OFFCHAIN_ADDRESS_REGEX.is_match(&s) {
             return Ok(MixedAddress::Offchain(s));
         }
@@ -758,6 +782,7 @@ impl Serialize for MixedAddress {
             MixedAddress::Evm(addr) => serializer.serialize_str(&addr.to_string()),
             MixedAddress::Offchain(s) => serializer.serialize_str(s),
             MixedAddress::Solana(pubkey) => serializer.serialize_str(pubkey.to_string().as_str()),
+            MixedAddress::Near(account_id) => serializer.serialize_str(account_id),
         }
     }
 }
@@ -767,6 +792,8 @@ pub enum TransactionHash {
     /// A 32-byte EVM transaction hash, encoded as 0x-prefixed hex string.
     Evm([u8; 32]),
     Solana([u8; 64]),
+    /// A 32-byte NEAR transaction hash (CryptoHash), encoded as base58.
+    Near([u8; 32]),
 }
 
 impl<'de> Deserialize<'de> for TransactionHash {
@@ -792,6 +819,11 @@ impl<'de> Deserialize<'de> for TransactionHash {
                 let array: [u8; 64] = bytes.try_into().unwrap(); // safe after length check
                 return Ok(TransactionHash::Solana(array));
             }
+            // NEAR: base58 string, decodes to exactly 32 bytes (CryptoHash)
+            if bytes.len() == 32 {
+                let array: [u8; 32] = bytes.try_into().unwrap(); // safe after length check
+                return Ok(TransactionHash::Near(array));
+            }
         }
 
         Err(serde::de::Error::custom("Invalid transaction hash format"))
@@ -809,6 +841,10 @@ impl Serialize for TransactionHash {
                 let b58_string = bs58::encode(bytes).into_string();
                 serializer.serialize_str(&b58_string)
             }
+            TransactionHash::Near(bytes) => {
+                let b58_string = bs58::encode(bytes).into_string();
+                serializer.serialize_str(&b58_string)
+            }
         }
     }
 }
@@ -820,6 +856,9 @@ impl Display for TransactionHash {
                 write!(f, "0x{}", hex::encode(bytes))
             }
             TransactionHash::Solana(bytes) => {
+                write!(f, "{}", bs58::encode(bytes).into_string())
+            }
+            TransactionHash::Near(bytes) => {
                 write!(f, "{}", bs58::encode(bytes).into_string())
             }
         }

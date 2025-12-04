@@ -329,6 +329,24 @@ where
                     ))
                 }
             }
+            ExactPaymentPayload::Near(_near_payload) => {
+                #[cfg(feature = "near")]
+                {
+                    // Extract NEAR addresses from delegate action
+                    // For now, allow NEAR transactions through (compliance will be added later)
+                    tracing::debug!(
+                        "NEAR payment compliance check: allowing transaction (TODO: implement NEAR compliance)"
+                    );
+                    Ok(())
+                }
+
+                #[cfg(not(feature = "near"))]
+                {
+                    Err(FacilitatorLocalError::Other(
+                        "NEAR support not enabled".to_string(),
+                    ))
+                }
+            }
         }
     }
 }

@@ -149,6 +149,8 @@ impl TryFrom<Network> for EvmChain {
             Network::Unichain => Ok(EvmChain::new(value, 130)),
             Network::UnichainSepolia => Ok(EvmChain::new(value, 1301)),
             Network::Monad => Ok(EvmChain::new(value, 143)),
+            Network::Near => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
+            Network::NearTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
         }
     }
 }
@@ -446,6 +448,8 @@ impl FromEnvByNetworkBuild for EvmProvider {
             Network::Unichain => true,
             Network::UnichainSepolia => true,
             Network::Monad => true,
+            Network::Near => false, // NEAR is not an EVM chain
+            Network::NearTestnet => false, // NEAR is not an EVM chain
         };
         let provider = EvmProvider::try_new(wallet, &rpc_url, is_eip1559, network).await?;
         Ok(Some(provider))
@@ -938,6 +942,9 @@ async fn assert_valid_payment<P: Provider>(
     let payment_payload = match &payload.payload {
         ExactPaymentPayload::Evm(payload) => payload,
         ExactPaymentPayload::Solana(_) => {
+            return Err(FacilitatorLocalError::UnsupportedNetwork(None));
+        }
+        ExactPaymentPayload::Near(_) => {
             return Err(FacilitatorLocalError::UnsupportedNetwork(None));
         }
     };

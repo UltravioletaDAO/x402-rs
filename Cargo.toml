@@ -23,7 +23,7 @@ serde = { version = "1.0.219", features = ["derive"] }
 once_cell = { version = "1.21.3" }
 regex = { version = "1.11.1" }
 url = { version = "2.5.4", features = ["serde"] }
-alloy = { version = "1.0.7" }
+alloy = { version = "1.0.12" }
 thiserror = { version = "2.0.12" }
 base64 = { version = "0.22.1" }
 rust_decimal = { version = "1.37.1" }
@@ -41,6 +41,16 @@ spl-token = { version = "8.0.0" }
 spl-token-2022 = { version = "9.0.0" }
 solana-client = { version = "2.3.7" }
 
+# NEAR Protocol
+near-jsonrpc-client = { version = "0.13" }
+near-jsonrpc-primitives = { version = "0.26" }
+near-primitives = { version = "0.26" }
+near-crypto = { version = "0.26" }
+borsh = { version = "1.5" }
+bs58 = { version = "0.5" }
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+rand = { version = "0.8" }
+
 # Tracing and OpenTelemetry
 tracing = { version = "0.1.41" }
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
@@ -55,6 +65,7 @@ opentelemetry-stdout = { version = "0.30.0", features = ["trace", "metrics"] }
 [features]
 telemetry = []
 solana = ["x402-compliance/solana"]
+near = []
 
 [workspace]
 members = [

@@ -7,18 +7,21 @@
 //! Flow:
 //! 1. User creates and signs a DelegateAction -> SignedDelegateAction
 //! 2. User sends SignedDelegateAction to facilitator (base64 encoded)
-//! 3. Facilitator wraps it in Action::Delegate and creates a Transaction
-//! 4. Facilitator signs the Transaction with its own key (pays gas)
-//! 5. Facilitator submits to NEAR network
-//! 6. NEAR executes the inner actions as if user submitted them
+//! 3. Facilitator checks if USDC recipient is registered (storage_balance_of)
+//! 4. If not registered, facilitator calls storage_deposit (pays ~0.00125 NEAR)
+//! 5. Facilitator wraps SignedDelegateAction in Action::Delegate
+//! 6. Facilitator signs the Transaction with its own key (pays gas)
+//! 7. Facilitator submits to NEAR network
+//! 8. NEAR executes the inner actions as if user submitted them
 
 use near_crypto::{InMemorySigner, PublicKey, SecretKey, Signer};
 use near_jsonrpc_client::{methods, JsonRpcClient};
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
-use near_primitives::action::delegate::SignedDelegateAction;
+use near_primitives::action::delegate::{NonDelegateAction, SignedDelegateAction};
 use near_primitives::hash::CryptoHash;
-use near_primitives::transaction::{Action, Transaction, TransactionV0};
-use near_primitives::types::{AccountId, BlockReference, Finality, Nonce};
+use near_primitives::transaction::{Action, FunctionCallAction, Transaction, TransactionV0};
+use near_primitives::types::{AccountId, BlockReference, Finality, Gas, Nonce};
+use near_token::NearToken;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Formatter};
 use std::str::FromStr;
@@ -33,6 +36,12 @@ use crate::types::{
     SettleResponse, SupportedPaymentKind, SupportedPaymentKindExtra, SupportedPaymentKindsResponse,
     TransactionHash, VerifyRequest, VerifyResponse, X402Version,
 };
+
+/// Storage deposit amount in yoctoNEAR (0.00125 NEAR = 1.25e21 yoctoNEAR)
+const STORAGE_DEPOSIT_AMOUNT: NearToken = NearToken::from_yoctonear(1_250_000_000_000_000_000_000);
+
+/// Gas for storage_deposit call (5 TGas should be enough)
+const STORAGE_DEPOSIT_GAS: Gas = Gas::from_gas(5_000_000_000_000);
 
 /// NEAR network chain configuration
 #[derive(Clone, Debug)]
@@ -110,11 +119,31 @@ pub struct FtTransferArgs {
     pub memo: Option<String>,
 }
 
+/// NEP-141 storage_deposit arguments
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageDepositArgs {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub registration_only: Option<bool>,
+}
+
+/// NEP-141 storage_balance_of response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageBalance {
+    pub total: String,
+    pub available: String,
+}
+
 /// NEAR Protocol payment provider
 ///
 /// Implements USDC payments on NEAR using NEP-366 meta-transactions.
 /// The facilitator receives SignedDelegateAction from users and wraps them
 /// in transactions, paying the gas fees.
+///
+/// Features:
+/// - Auto-registration: If the USDC recipient is not registered on the token
+///   contract, the facilitator will call storage_deposit before the transfer.
 #[derive(Clone)]
 pub struct NearProvider {
     /// The relayer's signer for signing transactions
@@ -154,7 +183,7 @@ impl NearProvider {
         tracing::info!(
             network = %network,
             account_id = %account_id,
-            "Initialized NEAR provider with NEP-366 meta-transaction support"
+            "Initialized NEAR provider with NEP-366 meta-transaction support and auto-registration"
         );
 
         let rpc_client = JsonRpcClient::connect(&rpc_url);
@@ -215,6 +244,191 @@ impl NearProvider {
             .map_err(|e| FacilitatorLocalError::ContractCall(format!("Failed to get block: {e}")))?;
 
         Ok(response.header.hash)
+    }
+
+    /// Extract the USDC receiver from a SignedDelegateAction
+    ///
+    /// Parses the ft_transfer action args to get the actual recipient of the USDC.
+    fn extract_usdc_receiver(
+        &self,
+        signed_delegate_action: &SignedDelegateAction,
+    ) -> Result<AccountId, FacilitatorLocalError> {
+        // Look for ft_transfer action in the delegate actions
+        for non_delegate_action in &signed_delegate_action.delegate_action.actions {
+            // Convert NonDelegateAction to Action to pattern match
+            let action: Action = non_delegate_action.clone().into();
+            if let Action::FunctionCall(func_call) = action {
+                if func_call.method_name == "ft_transfer" {
+                    // Parse the args as JSON to get receiver_id
+                    let args: FtTransferArgs = serde_json::from_slice(&func_call.args).map_err(|e| {
+                        FacilitatorLocalError::DecodingError(format!(
+                            "Failed to parse ft_transfer args: {e}"
+                        ))
+                    })?;
+
+                    let receiver_id = AccountId::from_str(&args.receiver_id).map_err(|e| {
+                        FacilitatorLocalError::InvalidAddress(format!(
+                            "Invalid receiver_id in ft_transfer: {e}"
+                        ))
+                    })?;
+
+                    return Ok(receiver_id);
+                }
+            }
+        }
+
+        Err(FacilitatorLocalError::DecodingError(
+            "No ft_transfer action found in SignedDelegateAction".to_string(),
+        ))
+    }
+
+    /// Check if an account is registered on a NEP-141 token contract
+    ///
+    /// Calls storage_balance_of view method. Returns true if registered, false otherwise.
+    async fn is_account_registered(
+        &self,
+        token_contract: &AccountId,
+        account_id: &AccountId,
+    ) -> Result<bool, FacilitatorLocalError> {
+        let args = serde_json::json!({
+            "account_id": account_id.to_string()
+        });
+
+        let request = methods::query::RpcQueryRequest {
+            block_reference: BlockReference::Finality(Finality::Final),
+            request: near_primitives::views::QueryRequest::CallFunction {
+                account_id: token_contract.clone(),
+                method_name: "storage_balance_of".to_string(),
+                args: near_primitives::types::FunctionArgs::from(args.to_string().into_bytes()),
+            },
+        };
+
+        let response = self.rpc_client.call(request).await.map_err(|e| {
+            FacilitatorLocalError::ContractCall(format!("Failed to call storage_balance_of: {e}"))
+        })?;
+
+        match response.kind {
+            QueryResponseKind::CallResult(result) => {
+                // If the result is "null" or empty, account is not registered
+                let result_str = String::from_utf8_lossy(&result.result);
+                let is_registered = result_str != "null" && !result_str.is_empty();
+
+                tracing::debug!(
+                    token_contract = %token_contract,
+                    account_id = %account_id,
+                    is_registered = is_registered,
+                    "Checked storage balance"
+                );
+
+                Ok(is_registered)
+            }
+            _ => Err(FacilitatorLocalError::ContractCall(
+                "Unexpected query response kind for storage_balance_of".to_string(),
+            )),
+        }
+    }
+
+    /// Register an account on a NEP-141 token contract by calling storage_deposit
+    ///
+    /// The facilitator pays the storage deposit (~0.00125 NEAR).
+    async fn register_account(
+        &self,
+        token_contract: &AccountId,
+        account_id: &AccountId,
+    ) -> Result<CryptoHash, FacilitatorLocalError> {
+        let nonce = self.get_nonce().await? + 1;
+        let block_hash = self.get_block_hash().await?;
+
+        // Prepare storage_deposit args
+        let args = StorageDepositArgs {
+            account_id: Some(account_id.to_string()),
+            registration_only: Some(true),
+        };
+        let args_json = serde_json::to_vec(&args).map_err(|e| {
+            FacilitatorLocalError::DecodingError(format!("Failed to serialize storage_deposit args: {e}"))
+        })?;
+
+        // Create storage_deposit action
+        let actions = vec![Action::FunctionCall(Box::new(FunctionCallAction {
+            method_name: "storage_deposit".to_string(),
+            args: args_json,
+            gas: STORAGE_DEPOSIT_GAS,
+            deposit: STORAGE_DEPOSIT_AMOUNT,
+        }))];
+
+        // Create and sign transaction
+        let transaction = Transaction::V0(TransactionV0 {
+            signer_id: self.account_id.clone(),
+            public_key: self.public_key(),
+            nonce,
+            receiver_id: token_contract.clone(),
+            block_hash,
+            actions,
+        });
+
+        let signed_tx = transaction.sign(&*self.signer);
+
+        tracing::info!(
+            relayer = %self.account_id,
+            token_contract = %token_contract,
+            account_to_register = %account_id,
+            deposit_near = "0.00125",
+            "Registering account on token contract (storage_deposit)"
+        );
+
+        // Submit the transaction
+        let request =
+            methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest { signed_transaction: signed_tx };
+
+        let response = self.rpc_client.call(request).await.map_err(|e| {
+            FacilitatorLocalError::ContractCall(format!("Failed to submit storage_deposit: {e}"))
+        })?;
+
+        // Check for execution errors
+        if let near_primitives::views::FinalExecutionStatus::Failure(err) = response.status {
+            return Err(FacilitatorLocalError::ContractCall(format!(
+                "storage_deposit failed: {:?}",
+                err
+            )));
+        }
+
+        tracing::info!(
+            tx_hash = %response.transaction.hash,
+            account_registered = %account_id,
+            "Account registered successfully on token contract"
+        );
+
+        Ok(response.transaction.hash)
+    }
+
+    /// Ensure the USDC recipient is registered on the token contract
+    ///
+    /// If not registered, automatically calls storage_deposit (facilitator pays).
+    async fn ensure_recipient_registered(
+        &self,
+        signed_delegate_action: &SignedDelegateAction,
+    ) -> Result<(), FacilitatorLocalError> {
+        // Get the token contract (receiver of the delegate action)
+        let token_contract = &signed_delegate_action.delegate_action.receiver_id;
+
+        // Extract the USDC recipient from ft_transfer args
+        let usdc_receiver = self.extract_usdc_receiver(signed_delegate_action)?;
+
+        // Check if the recipient is registered
+        let is_registered = self.is_account_registered(token_contract, &usdc_receiver).await?;
+
+        if !is_registered {
+            tracing::warn!(
+                token_contract = %token_contract,
+                usdc_receiver = %usdc_receiver,
+                "USDC recipient not registered, auto-registering..."
+            );
+
+            // Register the recipient (facilitator pays storage deposit)
+            self.register_account(token_contract, &usdc_receiver).await?;
+        }
+
+        Ok(())
     }
 
     /// Decode a SignedDelegateAction from base64
@@ -440,6 +654,22 @@ impl Facilitator for NearProvider {
 
     async fn settle(&self, request: &SettleRequest) -> Result<SettleResponse, Self::Error> {
         let verification = self.verify_payment(request).await?;
+
+        // IMPORTANT: Ensure recipient is registered BEFORE submitting meta-transaction
+        // This prevents the "account not registered" error and avoids wasting the user's nonce
+        if let Err(e) = self
+            .ensure_recipient_registered(&verification.signed_delegate_action)
+            .await
+        {
+            tracing::error!(error = %e, "Failed to ensure recipient registration");
+            return Ok(SettleResponse {
+                success: false,
+                error_reason: Some(FacilitatorErrorReason::UnexpectedSettleError),
+                payer: verification.payer.into(),
+                transaction: None,
+                network: self.network(),
+            });
+        }
 
         // Submit the meta-transaction (relayer pays gas!)
         let tx_hash = match self

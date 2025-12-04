@@ -1,189 +1,149 @@
-# x402-rs Payment Facilitator
+# x402-rs
 
-> Multi-chain payment facilitator supporting gasless micropayments via HTTP 402 protocol
+**Gasless multi-chain payment facilitator**
 
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](https://www.rust-lang.org/)
-[![Docker](https://img.shields.io/badge/docker-ready-blue.svg)](https://www.docker.com/)
+```
+ _  _  _  _  ___  ____      ____  ____
+( \/ )/ )( \(__ \(  _ \ ___(  _ \/ ___)
+ )  ( ) __ ( / _/ )   /(___))   /\___ \
+(_/\_)\_)(_/(____)(__\_)   (__\_)(____/
+```
 
-## Overview
+[![Live](https://img.shields.io/badge/live-facilitator.ultravioletadao.xyz-00d4aa)](https://facilitator.ultravioletadao.xyz)
+[![Version](https://img.shields.io/badge/version-1.6.2-blue)](https://github.com/UltravioletaDAO/x402-rs)
+[![Rust](https://img.shields.io/badge/rust-2021-orange)](https://www.rust-lang.org/)
 
-The x402-rs facilitator is a production-ready payment settlement service that enables gasless micropayments across 17 blockchain networks using the HTTP 402 Payment Required protocol. Built with Rust for high performance and reliability.
+---
 
-### Key Features
+## What is this?
 
-- 🌐 **17 Blockchain Networks** (7 mainnets + 10 testnets)
-- ⚡ **Gasless Payments** via EIP-3009 transferWithAuthorization
-- 🔒 **Trustless** - No custody, users sign payment authorizations off-chain
-- 🚀 **High Performance** - Rust + Axum, handles 100+ transactions/second
-- 📊 **Production Ready** - Battle-tested on AWS ECS, custom Ultravioleta DAO branding
-- 🔧 **Self-Contained** - Standalone deployment, no external dependencies
+A payment settlement service implementing the [HTTP 402](https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/402) protocol. Users sign payment authorizations off-chain, the facilitator submits them on-chain and pays gas fees.
 
-### Supported Networks
+**No custody. No trust. Just payments.**
 
-| Network | Mainnet | Testnet | Token |
-|---------|---------|---------|-------|
-| **Base** | ✅ | ✅ Base Sepolia | USDC |
-| **Avalanche** | ✅ | ✅ Fuji | USDC |
-| **Celo** | ✅ | ✅ Alfajores | cUSD |
-| **HyperEVM** | ✅ | ✅ Testnet | USDC |
-| **Polygon** | ✅ | ✅ Amoy | USDC |
-| **Solana** | ✅ | ✅ Devnet | USDC |
-| **Optimism** | ✅ | ✅ Sepolia | USDC |
-| **Sei** | ✅ | ✅ Testnet | - |
-| **XDC** | ✅ | - | - |
+---
 
-**Total**: 7 mainnets, 10 testnets
+## Supported Networks
+
+### Mainnets (10)
+
+| Network | Chain ID | Token | Explorer |
+|---------|----------|-------|----------|
+| **Base** | 8453 | USDC | [basescan.org](https://basescan.org) |
+| **Optimism** | 10 | USDC | [optimistic.etherscan.io](https://optimistic.etherscan.io) |
+| **Polygon** | 137 | USDC | [polygonscan.com](https://polygonscan.com) |
+| **Avalanche** | 43114 | USDC | [snowtrace.io](https://snowtrace.io) |
+| **Celo** | 42220 | cUSD | [celoscan.io](https://celoscan.io) |
+| **Solana** | - | USDC | [solscan.io](https://solscan.io) |
+| **NEAR** | - | USDC | [nearblocks.io](https://nearblocks.io) |
+| **HyperEVM** | 999 | USDC | [hyperliquid.xyz](https://hyperliquid.xyz) |
+| **Unichain** | 130 | USDC | [uniscan.xyz](https://uniscan.xyz) |
+| **Monad** | 10143 | MON | [monad.xyz](https://monad.xyz) |
+
+### Testnets (8)
+
+| Network | Chain ID | Faucet |
+|---------|----------|--------|
+| Base Sepolia | 84532 | [faucet.circle.com](https://faucet.circle.com) |
+| Optimism Sepolia | 11155420 | [faucet.circle.com](https://faucet.circle.com) |
+| Polygon Amoy | 80002 | [faucet.polygon.technology](https://faucet.polygon.technology) |
+| Avalanche Fuji | 43113 | [faucet.avax.network](https://faucet.avax.network) |
+| Celo Sepolia | 44787 | [faucet.celo.org](https://faucet.celo.org) |
+| Solana Devnet | - | [solfaucet.com](https://solfaucet.com) |
+| NEAR Testnet | - | [near-faucet.io](https://near-faucet.io) |
+| HyperEVM Testnet | 333 | - |
 
 ---
 
 ## Quick Start
 
-### Prerequisites
-
-- **Rust** 1.75+ (stable or nightly)
-- **Docker** 20.10+ (optional)
-- **curl** (for testing)
-
-### Local Development
-
 ```bash
-# Clone repository
-git clone <repository-url>
-cd facilitator
+# Clone
+git clone https://github.com/UltravioletaDAO/x402-rs.git
+cd x402-rs
 
-# Configure environment
+# Configure
 cp .env.example .env
-# Edit .env with your private keys (testnet recommended)
+# Add your private keys (use testnet keys for development)
 
-# Build and run
-cargo build --release
-cargo run --release
+# Run
+cargo run --release --features solana,near
 
 # Test
 curl http://localhost:8080/health
-# Expected: {"status":"healthy"}
+curl http://localhost:8080/supported | jq '.kinds | length'
+# => 18
 ```
 
-### Docker Deployment
+### Docker
 
 ```bash
-# Start facilitator
 docker-compose up -d
-
-# View logs
-docker-compose logs -f facilitator
-
-# Test
 curl http://localhost:8080/
-# Expected: Ultravioleta DAO landing page
+```
+
+---
+
+## API
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/` | GET | Landing page |
+| `/health` | GET | Health check |
+| `/version` | GET | Current version |
+| `/supported` | GET | List all networks |
+| `/verify` | POST | Verify payment authorization |
+| `/settle` | POST | Submit payment on-chain |
+
+### Example: Check supported networks
+
+```bash
+curl -s https://facilitator.ultravioletadao.xyz/supported | jq '.kinds[].network'
+```
+
+### Example: Settle a payment
+
+```bash
+curl -X POST https://facilitator.ultravioletadao.xyz/settle \
+  -H "Content-Type: application/json" \
+  -d '{"payload": "...", "network": "base"}'
 ```
 
 ---
 
 ## Configuration
 
-### Environment Variables
-
-See `.env.example` for full configuration. Key variables:
-
 ```bash
-# Blockchain Keys - RECOMMENDED: Separate keys per environment
-# (Leave empty for AWS Secrets Manager in production)
+# Wallet keys (leave empty for AWS Secrets Manager)
 EVM_PRIVATE_KEY_MAINNET=
 EVM_PRIVATE_KEY_TESTNET=
 SOLANA_PRIVATE_KEY_MAINNET=
 SOLANA_PRIVATE_KEY_TESTNET=
+NEAR_PRIVATE_KEY_MAINNET=
+NEAR_ACCOUNT_ID_MAINNET=
 
-# Legacy keys (deprecated - only used if network-specific keys not set)
-EVM_PRIVATE_KEY=
-SOLANA_PRIVATE_KEY=
-
-# RPC URLs (defaults provided)
-RPC_URL_BASE_MAINNET=https://mainnet.base.org
-RPC_URL_AVALANCHE_FUJI=https://api.avax-test.network/ext/bc/C/rpc
-# ... (17 networks total, see .env.example)
-
-# Optional
-RUST_LOG=info
-OTEL_EXPORTER_OTLP_ENDPOINT=
-```
-
-### Security
-
-- ⚠️ **NEVER commit .env file**
-- ✅ Use AWS Secrets Manager in production
-- ✅ Rotate keys regularly (see `docs/WALLET_ROTATION.md`)
-
-### Address Blocklist
-
-The facilitator supports blocking specific wallet addresses from processing payments. This is useful for preventing spam or malicious actors from using the service.
-
-**Configuration**: Create a `config/blocklist.json` file:
-
-```json
-[
-  {
-    "account_type": "solana",
-    "wallet": "41fx2QjU8qCEPPDLWnypgxaHaDJ3dFVi8BhfUmTEQ3az",
-    "reason": "spam"
-  },
-  {
-    "account_type": "evm",
-    "wallet": "0x0000000000000000000000000000000000000000",
-    "reason": "test blocked address"
-  }
-]
-```
-
-**Behavior**:
-- Blocked addresses are rejected during the `/verify` endpoint with a `BlockedAddress` error
-- The `/settle` endpoint will complete but log a warning if called directly
-- Address matching is case-insensitive
-- The blocklist is loaded at startup (graceful fallback to empty list if file missing)
-- Changes to `config/blocklist.json` require a facilitator restart
-
-**Fields**:
-- `account_type`: Either `"evm"` or `"solana"`
-- `wallet`: The wallet address to block (case-insensitive)
-- `reason`: Human-readable explanation for why the address is blocked
-
----
-
-## API Endpoints
-
-### Health Check
-```bash
-GET /health
-Response: {"status":"healthy"}
-```
-
-### Networks List
-```bash
-GET /networks
-Response: {"networks":[...]}  # 17 networks
-```
-
-### Settle Payment
-```bash
-POST /settle
-Body: {EIP-3009 authorization}
-Response: {"success":true,"tx_hash":"0x..."}
+# RPC URLs (premium recommended for production)
+RPC_URL_BASE=https://mainnet.base.org
+RPC_URL_NEAR_MAINNET=https://rpc.mainnet.near.org
+# ... see .env.example for all networks
 ```
 
 ---
 
-## Testing
+## Architecture
 
-```bash
-# Integration tests
-cd tests/integration
-python test_usdc_payment.py --network base-sepolia
-
-# Load test
-cd tests/load
-k6 run --vus 100 --duration 5m k6_load_test.js
 ```
+┌─────────────┐     ┌─────────────────┐     ┌──────────────┐
+│   Client    │────▶│   Facilitator   │────▶│  Blockchain  │
+│  (signs)    │     │  (pays gas)     │     │  (settles)   │
+└─────────────┘     └─────────────────┘     └──────────────┘
+```
+
+**Payment Flow:**
+1. User signs EIP-3009 authorization (EVM) or NEP-366 delegate action (NEAR)
+2. User sends signed payload to facilitator
+3. Facilitator verifies signature and submits on-chain
+4. Facilitator pays gas, user pays nothing
 
 ---
 
@@ -191,88 +151,49 @@ k6 run --vus 100 --duration 5m k6_load_test.js
 
 ### AWS ECS (Production)
 
-See `docs/DEPLOYMENT.md` for detailed instructions.
-
 ```bash
-cd terraform/environments/production
-terraform init
-terraform apply
+# Build & push
+docker build -t facilitator:v1.6.2 .
+docker push 518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator:v1.6.2
 
-# Build and push
-scripts/build-and-push.sh v1.0.0
-
-# Update service
-aws ecs update-service --cluster facilitator-prod --service facilitator-prod --force-new-deployment
+# Deploy
+aws ecs update-service --cluster facilitator-production \
+  --service facilitator-production --force-new-deployment
 ```
 
-**Cost**: ~$41-51/month (optimized)
+**Infrastructure:** Terraform configs in `terraform/environments/production/`
+
+**Cost:** ~$45/month (Fargate 1vCPU/2GB + ALB)
 
 ---
 
-## Customization
+## Development
 
-### Custom Branding
-
-**⚠️ CRITICAL**: Protected files (NEVER overwrite):
-- `static/index.html` (57KB Ultravioleta DAO landing page)
-- `static/*.png` (logos)
-- `src/handlers.rs` (custom get_root handler)
-
-See `docs/UPSTREAM_MERGE_STRATEGY.md` for safe upgrade procedures.
-
----
-
-## Documentation
-
-- **[TESTING.md](docs/TESTING.md)** - Testing guide
-- **[DEPLOYMENT.md](docs/DEPLOYMENT.md)** - AWS deployment (to be created)
-- **[WALLET_ROTATION.md](docs/WALLET_ROTATION.md)** - Security procedures
-- **[UPSTREAM_MERGE_STRATEGY.md](docs/UPSTREAM_MERGE_STRATEGY.md)** - Branding protection
-- **[EXTRACTION_MASTER_PLAN.md](docs/EXTRACTION_MASTER_PLAN.md)** - Repository history
-
----
-
-## Troubleshooting
-
-### "Invalid signature"
 ```bash
-python scripts/diagnose_payment.py --network base-mainnet
-python scripts/compare_domain_separator.py
+# Format
+cargo fmt
+
+# Lint
+cargo clippy --features solana,near
+
+# Test
+cd tests/integration && python test_facilitator.py
 ```
 
-### "RPC timeout"
-- Use premium RPC (QuickNode, Alchemy)
-- Set `QUICKNODE_BASE_RPC` in `.env`
+---
 
-See `tests/x402/TROUBLESHOOTING.md` for more.
+## Links
+
+- **Live:** https://facilitator.ultravioletadao.xyz
+- **Upstream:** https://github.com/x402-rs/x402-rs
+- **x402 Protocol:** https://www.x402.org
 
 ---
 
 ## License
 
-**Apache License 2.0** - see [LICENSE](LICENSE)
-
-**Upstream**: [polyphene/x402-rs](https://github.com/polyphene/x402-rs)
+Apache 2.0
 
 ---
 
-## Credits
-
-**Developed by**: [Ultravioleta DAO](https://ultravioletadao.xyz)
-
-**Original x402 Protocol**: [polyphene/x402-rs](https://github.com/polyphene/x402-rs)
-
----
-
-## Changelog
-
-**v1.0.0** (2025-11-01)
-- Initial standalone release
-- Extracted from karmacadabra monorepo
-- 17 networks supported
-- Custom Ultravioleta DAO branding
-- Production-ready AWS deployment
-
----
-
-**Made with ❤️ by Ultravioleta DAO**
+**Built by [Ultravioleta DAO](https://ultravioletadao.xyz)**

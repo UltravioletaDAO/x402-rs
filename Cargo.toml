@@ -1,6 +1,6 @@
 [package]
 name = "x402-rs"
-version = "1.6.1"
+version = "1.6.2"
 authors = ["Sergey Ukustov <sergey@ukstv.me>"]
 edition = "2021"
 license = "Apache-2.0"
@@ -47,6 +47,7 @@ near-jsonrpc-primitives = { version = "0.34" }
 near-primitives = { version = "0.34" }
 near-crypto = { version = "0.34" }
 near-chain-configs = { version = "0.34" }
+near-token = { version = "0.3" }
 borsh = { version = "1.5" }
 bs58 = { version = "0.5" }
 ed25519-dalek = { version = "2.1", features = ["rand_core"] }

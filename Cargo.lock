@@ -9732,7 +9732,7 @@ dependencies = [
 
 [[package]]
 name = "x402-rs"
-version = "1.6.1"
+version = "1.6.2"
 dependencies = [
  "alloy",
  "async-trait",
@@ -9749,6 +9749,7 @@ dependencies = [
  "near-jsonrpc-client",
  "near-jsonrpc-primitives",
  "near-primitives",
+ "near-token",
  "once_cell",
  "opentelemetry",
  "opentelemetry-otlp",

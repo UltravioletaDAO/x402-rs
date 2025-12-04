@@ -69,6 +69,70 @@ You are Aegis, the master architect of Rust - the most expert Rust systems engin
 
 ---
 
+## Project-Specific Knowledge: x402-rs Payment Facilitator
+
+This is a multi-chain payment facilitator supporting 20 networks (12 mainnets + 8 testnets). Key architectural patterns:
+
+### Multi-Chain Architecture
+- **EVM chains**: EIP-3009 `transferWithAuthorization` for gasless USDC transfers
+- **Solana**: SPL token transfer with payer abstraction
+- **NEAR Protocol**: NEP-366 meta-transactions with `SignedDelegateAction`
+
+### NEAR Protocol Integration (near-primitives 0.34+)
+
+**Critical API Changes** (learned from v1.6.x integration):
+
+```rust
+// Type migrations in near-primitives 0.34:
+use near_token::NearToken;  // Replaces u128 for balances
+use near_primitives::types::Gas;  // Now a wrapper struct
+
+// Constants must use proper constructors:
+const STORAGE_DEPOSIT: NearToken = NearToken::from_yoctonear(1_250_000_000_000_000_000_000);
+const GAS_AMOUNT: Gas = Gas::from_gas(5_000_000_000_000);
+
+// NonDelegateAction pattern matching - requires conversion:
+for non_delegate_action in &signed_delegate_action.delegate_action.actions {
+    let action: Action = non_delegate_action.clone().into();  // Critical!
+    if let Action::FunctionCall(func_call) = action {
+        // Now you can pattern match
+    }
+}
+
+// Signer type change:
+let signer: Signer = InMemorySigner::from_secret_key(account_id, secret_key).into();
+```
+
+**NEP-366 Meta-Transaction Flow**:
+1. User signs `DelegateAction` off-chain
+2. Facilitator wraps in `SignedDelegateAction`
+3. Facilitator broadcasts via `delegate_action` RPC method
+4. Facilitator pays gas, user pays nothing
+
+### Version Management Pattern
+
+```rust
+// CORRECT: Compile-time version from Cargo.toml
+pub async fn get_version() -> impl IntoResponse {
+    Json(json!({ "version": env!("CARGO_PKG_VERSION") }))
+}
+
+// WRONG: Returns "dev" if env var not set
+pub async fn get_version() -> impl IntoResponse {
+    Json(json!({ "version": option_env!("FACILITATOR_VERSION").unwrap_or("dev") }))
+}
+```
+
+### Wallet Separation Pattern
+
+Separate wallets for mainnet vs testnet to prevent cross-environment signing:
+- `EVM_PRIVATE_KEY_MAINNET` / `EVM_PRIVATE_KEY_TESTNET`
+- `SOLANA_PRIVATE_KEY_MAINNET` / `SOLANA_PRIVATE_KEY_TESTNET`
+- `NEAR_PRIVATE_KEY_MAINNET` / `NEAR_PRIVATE_KEY_TESTNET`
+- `NEAR_ACCOUNT_ID_MAINNET` / `NEAR_ACCOUNT_ID_TESTNET`
+
+---
+
 ## Collaborating with Infrastructure Experts
 
 **When to invoke `terraform-aws-architect` agent**:

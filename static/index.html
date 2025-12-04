@@ -1116,6 +1116,22 @@
                             <span style="font-weight: 600;">Devnet:</span> <a href="https://solscan.io/account/6xNPewUdKRbEZDReQdpyfNUdgNg8QRc8Mt263T5GZSRv?cluster=devnet" target="_blank" style="font-family: 'JetBrains Mono', monospace; color: var(--accent); text-decoration: none; transition: opacity 0.2s;" onmouseover="this.style.opacity='0.7'" onmouseout="this.style.opacity='1'">6xNPewUdKRbEZDReQdpyfNUdgNg8QRc8Mt263T5GZSRv</a>
                         </div>
                     </div>
+
+                    <!-- Divider -->
+                    <div style="height: 1px; background: rgba(255,255,255,0.05); margin: 0.25rem 0;"></div>
+
+                    <!-- NEAR Wallets -->
+                    <div style="display: flex; flex-direction: column; gap: 0.5rem;">
+                        <div style="text-align: center; font-size: 0.75rem; color: var(--accent); font-weight: 600; margin-bottom: 0.25rem;">
+                            NEAR Wallets
+                        </div>
+                        <div style="text-align: center; font-size: 0.7rem; color: var(--text-muted);">
+                            <span style="font-weight: 600;">Mainnet:</span> <a href="https://nearblocks.io/address/uvd-facilitator.near" target="_blank" style="font-family: 'JetBrains Mono', monospace; color: var(--accent); text-decoration: none; transition: opacity 0.2s;" onmouseover="this.style.opacity='0.7'" onmouseout="this.style.opacity='1'">uvd-facilitator.near</a>
+                        </div>
+                        <div style="text-align: center; font-size: 0.7rem; color: var(--text-muted);">
+                            <span style="font-weight: 600;">Testnet:</span> <a href="https://testnet.nearblocks.io/address/uvd-facilitator.testnet" target="_blank" style="font-family: 'JetBrains Mono', monospace; color: var(--accent); text-decoration: none; transition: opacity 0.2s;" onmouseover="this.style.opacity='0.7'" onmouseout="this.style.opacity='1'">uvd-facilitator.testnet</a>
+                        </div>
+                    </div>
                 </div>
             </section>
 
@@ -1445,12 +1461,12 @@ app.<span class="code-function">use</span>(<span class="code-function">paymentMi
                     address: MAINNET_ADDRESS
                 },
                 'near-mainnet': {
-                    rpc: 'https://rpc.mainnet.near.org',
+                    api: 'https://api.nearblocks.io/v1/account/uvd-facilitator.near',
                     address: 'uvd-facilitator.near',
                     isNear: true
                 },
                 'near-testnet': {
-                    rpc: 'https://rpc.testnet.near.org',
+                    api: 'https://api-testnet.nearblocks.io/v1/account/uvd-facilitator.testnet',
                     address: 'uvd-facilitator.testnet',
                     isNear: true
                 },
@@ -1485,26 +1501,13 @@ app.<span class="code-function">use</span>(<span class="code-function">paymentMi
                             }
                         }
                     } else if (config.isNear) {
-                        // NEAR uses JSON-RPC with view_account method
-                        const response = await fetch(config.rpc, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                jsonrpc: '2.0',
-                                method: 'query',
-                                params: {
-                                    request_type: 'view_account',
-                                    finality: 'final',
-                                    account_id: config.address
-                                },
-                                id: 1
-                            })
-                        });
-
+                        // NEAR uses NearBlocks API (CORS-enabled)
+                        const response = await fetch(config.api);
                         const data = await response.json();
-                        if (data.result && data.result.amount !== undefined) {
+
+                        if (data.account && data.account.length > 0 && data.account[0].amount) {
                             // NEAR balance is in yoctoNEAR (1 NEAR = 1e24 yoctoNEAR)
-                            const balanceYocto = BigInt(data.result.amount);
+                            const balanceYocto = BigInt(data.account[0].amount);
                             const balanceNEAR = Number(balanceYocto) / 1e24;
                             const formatted = balanceNEAR.toFixed(4);
 

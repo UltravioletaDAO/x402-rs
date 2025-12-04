@@ -25,11 +25,13 @@ A payment settlement service implementing the [HTTP 402](https://developer.mozil
 
 ## Supported Networks
 
-### Mainnets (10)
+### Mainnets (12)
 
 | Network | Chain ID | Token | Explorer |
 |---------|----------|-------|----------|
+| **Ethereum** | 1 | USDC | [etherscan.io](https://etherscan.io) |
 | **Base** | 8453 | USDC | [basescan.org](https://basescan.org) |
+| **Arbitrum** | 42161 | USDC | [arbiscan.io](https://arbiscan.io) |
 | **Optimism** | 10 | USDC | [optimistic.etherscan.io](https://optimistic.etherscan.io) |
 | **Polygon** | 137 | USDC | [polygonscan.com](https://polygonscan.com) |
 | **Avalanche** | 43114 | USDC | [snowtrace.io](https://snowtrace.io) |
@@ -72,7 +74,7 @@ cargo run --release --features solana,near
 # Test
 curl http://localhost:8080/health
 curl http://localhost:8080/supported | jq '.kinds | length'
-# => 18
+# => 20
 ```
 
 ### Docker

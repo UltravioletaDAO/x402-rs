@@ -1,15 +1,14 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
     <!-- Google tag (gtag.js) -->
     <script async src="https://www.googletagmanager.com/gtag/js?id=G-4FSNQNPMZX"></script>
     <script>
-        window.dataLayer = window.dataLayer || [];
-        function gtag() { dataLayer.push(arguments); }
-        gtag('js', new Date());
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
 
-        gtag('config', 'G-4FSNQNPMZX');
+      gtag('config', 'G-4FSNQNPMZX');
     </script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -17,9 +16,7 @@
     <link rel="icon" href="/favicon.ico" type="image/x-icon">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link
-        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap"
-        rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <style>
         * {
             margin: 0;
@@ -68,13 +65,8 @@
         }
 
         @keyframes gridMove {
-            0% {
-                transform: translate(0, 0);
-            }
-
-            100% {
-                transform: translate(50px, 50px);
-            }
+            0% { transform: translate(0, 0); }
+            100% { transform: translate(50px, 50px); }
         }
 
         .container {
@@ -123,17 +115,8 @@
         }
 
         @keyframes pulse {
-
-            0%,
-            100% {
-                transform: scale(1);
-                opacity: 1;
-            }
-
-            50% {
-                transform: scale(1.05);
-                opacity: 0.9;
-            }
+            0%, 100% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.05); opacity: 0.9; }
         }
 
         h1 {
@@ -208,17 +191,8 @@
         }
 
         @keyframes heroGlow {
-
-            0%,
-            100% {
-                opacity: 0.5;
-                transform: translate(-50%, -50%) scale(1);
-            }
-
-            50% {
-                opacity: 0.8;
-                transform: translate(-50%, -50%) scale(1.1);
-            }
+            0%, 100% { opacity: 0.5; transform: translate(-50%, -50%) scale(1); }
+            50% { opacity: 0.8; transform: translate(-50%, -50%) scale(1.1); }
         }
 
         .hero-title {
@@ -240,15 +214,8 @@
         }
 
         @keyframes gradientShift {
-
-            0%,
-            100% {
-                background-position: 0% 50%;
-            }
-
-            50% {
-                background-position: 100% 50%;
-            }
+            0%, 100% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
         }
 
         .hero-description {
@@ -291,7 +258,7 @@
             left: -100%;
             width: 100%;
             height: 100%;
-            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent);
             transition: left 0.5s;
         }
 
@@ -583,25 +550,11 @@
             font-family: 'JetBrains Mono', monospace;
         }
 
-        .code-comment {
-            color: #6b7280;
-        }
-
-        .code-keyword {
-            color: #c084fc;
-        }
-
-        .code-string {
-            color: #34d399;
-        }
-
-        .code-function {
-            color: #60a5fa;
-        }
-
-        .code-number {
-            color: #f59e0b;
-        }
+        .code-comment { color: #6b7280; }
+        .code-keyword { color: #c084fc; }
+        .code-string { color: #34d399; }
+        .code-function { color: #60a5fa; }
+        .code-number { color: #f59e0b; }
 
         /* Endpoints */
         .endpoints {
@@ -866,15 +819,8 @@
 
         /* Loading animation */
         @keyframes fadeIn {
-            from {
-                opacity: 0;
-                transform: translateY(20px);
-            }
-
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
         }
 
         .fade-in {
@@ -882,7 +828,6 @@
         }
     </style>
 </head>
-
 <body>
     <div class="bg-grid"></div>
 
@@ -902,12 +847,10 @@
         <main>
             <section class="hero fade-in">
                 <h2 class="hero-title">
-                    <span class="gradient-text" data-i18n="hero.title">Gasless Micropayments for the Agentic
-                        Economy</span>
+                    <span class="gradient-text" data-i18n="hero.title">Gasless Micropayments for the Agentic Economy</span>
                 </h2>
                 <p class="hero-description" data-i18n="hero.description">
-                    Enable AI agents to transact autonomously without gas fees. Built on x402 protocol with EIP-3009
-                    meta-transactions.
+                    Enable AI agents to transact autonomously without gas fees. Built on x402 protocol with EIP-3009 meta-transactions.
                 </p>
 
                 <!-- Network Tabs -->
@@ -918,381 +861,273 @@
 
                 <!-- Mainnets Tab -->
                 <div id="mainnet-tab" class="tab-content active">
-                    <div style="margin-bottom: 1rem; text-align: center;">
-                        <span
-                            style="color: var(--text-muted); font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 1px;">Mainnets</span>
+                <div style="margin-bottom: 1rem; text-align: center;">
+                    <span style="color: var(--text-muted); font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 1px;">Mainnets</span>
+                </div>
+                <div class="networks" style="gap: 2rem; margin-bottom: 2.5rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); justify-items: center;">
+                    <div class="network-badge avalanche" style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;" onclick="window.open('https://snowtrace.io/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
+                            <img src="/avalanche.png" alt="Avalanche" style="width: 32px; height: 32px; object-fit: contain;">
+                            <span style="font-weight: 700;">Avalanche C-Chain</span>
+                        </div>
+                        <div class="balance-amount" data-balance="avalanche-mainnet" style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
+                            Loading...
+                        </div>
+                        <div style="font-size: 0.7rem; color: var(--text-muted);">AVAX Balance</div>
                     </div>
-                    <div class="networks"
-                        style="gap: 2rem; margin-bottom: 2.5rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); justify-items: center;">
-                        <div class="network-badge avalanche"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://snowtrace.io/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/avalanche.png" alt="Avalanche"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Avalanche C-Chain</span>
-                            </div>
-                            <div class="balance-amount" data-balance="avalanche-mainnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">AVAX Balance</div>
+                    <div class="network-badge base" style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;" onclick="window.open('https://basescan.org/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
+                            <img src="/base.png" alt="Base" style="width: 32px; height: 32px; object-fit: contain;">
+                            <span style="font-weight: 700;">Base</span>
                         </div>
-                        <div class="network-badge base"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://basescan.org/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/base.png" alt="Base" style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Base</span>
-                            </div>
-                            <div class="balance-amount" data-balance="base-mainnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">ETH Balance</div>
+                        <div class="balance-amount" data-balance="base-mainnet" style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
+                            Loading...
                         </div>
-                        <div class="network-badge celo"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://celoscan.io/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/celo.png" alt="Celo" style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Celo</span>
-                            </div>
-                            <div class="balance-amount" data-balance="celo-mainnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">CELO Balance</div>
-                            <a href="https://www.celocolombia.org/" target="_blank"
-                                style="display: flex; flex-direction: column; align-items: center; justify-content: center; margin-top: 0.5rem; text-decoration: none; transition: all 0.2s ease; gap: 0.25rem;">
-                                <span style="font-size: 0.65rem; color: var(--text-muted); font-weight: 500;">Powered
-                                    by</span>
-                                <img src="/celo-colombia.png" alt="Celo Colombia"
-                                    style="width: 64px; height: 32px; object-fit: contain; opacity: 0.7;"
-                                    onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'">
-                            </a>
+                        <div style="font-size: 0.7rem; color: var(--text-muted);">ETH Balance</div>
+                    </div>
+                    <div class="network-badge celo" style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;" onclick="window.open('https://celoscan.io/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
+                            <img src="/celo.png" alt="Celo" style="width: 32px; height: 32px; object-fit: contain;">
+                            <span style="font-weight: 700;">Celo</span>
                         </div>
-                        <div class="network-badge hyperevm"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://hyperevmscan.io/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/hyperevm.png" alt="HyperEVM"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">HyperEVM</span>
-                            </div>
-                            <div class="balance-amount" data-balance="hyperevm-mainnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">HYPE Balance</div>
+                        <div class="balance-amount" data-balance="celo-mainnet" style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
+                            Loading...
                         </div>
-                        <div class="network-badge polygon"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://polygonscan.com/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/polygon.png" alt="Polygon"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Polygon</span>
-                            </div>
-                            <div class="balance-amount" data-balance="polygon-mainnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">POL Balance</div>
+                        <div style="font-size: 0.7rem; color: var(--text-muted);">CELO Balance</div>
+                        <a href="https://www.celocolombia.org/" target="_blank" style="display: flex; flex-direction: column; align-items: center; justify-content: center; margin-top: 0.5rem; text-decoration: none; transition: all 0.2s ease; gap: 0.25rem;">
+                            <span style="font-size: 0.65rem; color: var(--text-muted); font-weight: 500;">Powered by</span>
+                            <img src="/celo-colombia.png" alt="Celo Colombia" style="width: 64px; height: 32px; object-fit: contain; opacity: 0.7;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'">
+                        </a>
+                    </div>
+                    <div class="network-badge hyperevm" style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;" onclick="window.open('https://hyperevmscan.io/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
+                            <img src="/hyperevm.png" alt="HyperEVM" style="width: 32px; height: 32px; object-fit: contain;">
+                            <span style="font-weight: 700;">HyperEVM</span>
                         </div>
-                        <div class="network-badge solana"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://solscan.io/account/F742C4VfFLQ9zRQyithoj5229ZgtX2WqKCSFKgH2EThq', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/solana.png" alt="Solana"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Solana</span>
-                            </div>
-                            <div class="balance-amount" data-balance="solana-mainnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">SOL Balance</div>
+                        <div class="balance-amount" data-balance="hyperevm-mainnet" style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
+                            Loading...
                         </div>
-                        <div class="network-badge optimism"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://optimistic.etherscan.io/address/0x103040545ac5031a11e8c03dd11324c7333a13c7', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/optimism.png" alt="Optimism"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Optimism</span>
-                            </div>
-                            <div class="balance-amount" data-balance="optimism-mainnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">ETH Balance</div>
+                        <div style="font-size: 0.7rem; color: var(--text-muted);">HYPE Balance</div>
+                    </div>
+                    <div class="network-badge polygon" style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;" onclick="window.open('https://polygonscan.com/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
+                            <img src="/polygon.png" alt="Polygon" style="width: 32px; height: 32px; object-fit: contain;">
+                            <span style="font-weight: 700;">Polygon</span>
                         </div>
-                        <div class="network-badge ethereum"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://etherscan.io/address/0x103040545ac5031a11e8c03dd11324c7333a13c7', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/ethereum.png" alt="Ethereum"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Ethereum</span>
-                            </div>
-                            <div class="balance-amount" data-balance="ethereum-mainnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">ETH Balance</div>
+                        <div class="balance-amount" data-balance="polygon-mainnet" style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
+                            Loading...
                         </div>
-                        <div class="network-badge arbitrum"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://arbiscan.io/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/arbitrum.png" alt="Arbitrum"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Arbitrum</span>
-                            </div>
-                            <div class="balance-amount" data-balance="arbitrum-mainnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">ETH Balance</div>
+                        <div style="font-size: 0.7rem; color: var(--text-muted);">POL Balance</div>
+                    </div>
+                    <div class="network-badge solana" style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;" onclick="window.open('https://solscan.io/account/F742C4VfFLQ9zRQyithoj5229ZgtX2WqKCSFKgH2EThq', '_blank')">
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
+                            <img src="/solana.png" alt="Solana" style="width: 32px; height: 32px; object-fit: contain;">
+                            <span style="font-weight: 700;">Solana</span>
                         </div>
-                        <div class="network-badge unichain"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://uniscan.xyz/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/unichain.png" alt="Unichain"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Unichain</span>
-                            </div>
-                            <div class="balance-amount" data-balance="unichain-mainnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">ETH Balance</div>
+                        <div class="balance-amount" data-balance="solana-mainnet" style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
+                            Loading...
                         </div>
-                        <div class="network-badge monad"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://monad.socialscan.io/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/monad.png" alt="Monad"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Monad</span>
-                            </div>
-                            <div class="balance-amount" data-balance="monad-mainnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">MON Balance</div>
+                        <div style="font-size: 0.7rem; color: var(--text-muted);">SOL Balance</div>
+                    </div>
+                    <div class="network-badge optimism" style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;" onclick="window.open('https://optimistic.etherscan.io/address/0x103040545ac5031a11e8c03dd11324c7333a13c7', '_blank')">
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
+                            <img src="/optimism.png" alt="Optimism" style="width: 32px; height: 32px; object-fit: contain;">
+                            <span style="font-weight: 700;">Optimism</span>
                         </div>
-                        <div class="network-badge near"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://nearblocks.io/address/uvd-facilitator.near', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/near.png" alt="NEAR" style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">NEAR</span>
-                            </div>
-                            <div class="balance-amount" data-balance="near-mainnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">NEAR Balance</div>
+                        <div class="balance-amount" data-balance="optimism-mainnet" style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
+                            Loading...
                         </div>
-                        <div class="network-badge fogo"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://fogoscan.com/account/F742C4VfFLQ9zRQyithoj5229ZgtX2WqKCSFKgH2EThq', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/fogo.png" alt="Fogo" style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Fogo</span>
-                            </div>
-                            <div class="balance-amount" data-balance="fogo-mainnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">FOGO Balance</div>
+                        <div style="font-size: 0.7rem; color: var(--text-muted);">ETH Balance</div>
+                    </div>
+                    <div class="network-badge ethereum" style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;" onclick="window.open('https://etherscan.io/address/0x103040545ac5031a11e8c03dd11324c7333a13c7', '_blank')">
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
+                            <img src="/ethereum.png" alt="Ethereum" style="width: 32px; height: 32px; object-fit: contain;">
+                            <span style="font-weight: 700;">Ethereum</span>
                         </div>
+                        <div class="balance-amount" data-balance="ethereum-mainnet" style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
+                            Loading...
+                        </div>
+                        <div style="font-size: 0.7rem; color: var(--text-muted);">ETH Balance</div>
+                    </div>
+                    <div class="network-badge arbitrum" style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;" onclick="window.open('https://arbiscan.io/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
+                            <img src="/arbitrum.png" alt="Arbitrum" style="width: 32px; height: 32px; object-fit: contain;">
+                            <span style="font-weight: 700;">Arbitrum</span>
+                        </div>
+                        <div class="balance-amount" data-balance="arbitrum-mainnet" style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
+                            Loading...
+                        </div>
+                        <div style="font-size: 0.7rem; color: var(--text-muted);">ETH Balance</div>
+                    </div>
+                    <div class="network-badge unichain" style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;" onclick="window.open('https://uniscan.xyz/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
+                            <img src="/unichain.png" alt="Unichain" style="width: 32px; height: 32px; object-fit: contain;">
+                            <span style="font-weight: 700;">Unichain</span>
+                        </div>
+                        <div class="balance-amount" data-balance="unichain-mainnet" style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
+                            Loading...
+                        </div>
+                        <div style="font-size: 0.7rem; color: var(--text-muted);">ETH Balance</div>
+                    </div>
+                    <div class="network-badge monad" style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;" onclick="window.open('https://monad.socialscan.io/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
+                            <img src="/monad.png" alt="Monad" style="width: 32px; height: 32px; object-fit: contain;">
+                            <span style="font-weight: 700;">Monad</span>
+                        </div>
+                        <div class="balance-amount" data-balance="monad-mainnet" style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
+                            Loading...
+                        </div>
+                        <div style="font-size: 0.7rem; color: var(--text-muted);">MON Balance</div>
+                    </div>
+                    <div class="network-badge near" style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;" onclick="window.open('https://nearblocks.io/address/uvd-facilitator.near', '_blank')">
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
+                            <img src="/near.png" alt="NEAR" style="width: 32px; height: 32px; object-fit: contain;">
+                            <span style="font-weight: 700;">NEAR</span>
+                        </div>
+                        <div class="balance-amount" data-balance="near-mainnet" style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
+                            Loading...
+                        </div>
+                        <div style="font-size: 0.7rem; color: var(--text-muted);">NEAR Balance</div>
+                    </div>
+                    <div class="network-badge fogo" style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;" onclick="window.open('https://fogoscan.com/account/F742C4VfFLQ9zRQyithoj5229ZgtX2WqKCSFKgH2EThq', '_blank')">
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
+                            <img src="/fogo.png" alt="Fogo" style="width: 32px; height: 32px; object-fit: contain;">
+                            <span style="font-weight: 700;">Fogo</span>
+                        </div>
+                        <div class="balance-amount" data-balance="fogo-mainnet" style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
+                                Loading...
+                        </div>
+                    <div style="font-size: 0.7rem; color: var(--text-muted);">FOGO Balance</div>
+                    </div>
 
-                    </div>
+                </div>
                 </div>
 
                 <!-- Testnets Tab -->
                 <div id="testnet-tab" class="tab-content">
-                    <div style="margin-bottom: 1rem; text-align: center;">
-                        <span
-                            style="color: var(--text-muted); font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 1px;">Testnets</span>
+                <div style="margin-bottom: 1rem; text-align: center;">
+                    <span style="color: var(--text-muted); font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 1px;">Testnets</span>
+                </div>
+                <div class="networks" style="gap: 2rem; margin-bottom: 2rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); justify-items: center;">
+                    <div class="network-badge avalanche" style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;" onclick="window.open('https://testnet.snowtrace.io/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
+                            <img src="/avalanche.png" alt="Avalanche" style="width: 32px; height: 32px; object-fit: contain;">
+                            <span style="font-weight: 700;">Avalanche Fuji</span>
+                        </div>
+                        <div class="balance-amount" data-balance="avalanche-testnet" style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
+                            Loading...
+                        </div>
+                        <div style="font-size: 0.7rem; color: var(--text-muted);">AVAX</div>
                     </div>
-                    <div class="networks"
-                        style="gap: 2rem; margin-bottom: 2rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); justify-items: center;">
-                        <div class="network-badge avalanche"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://testnet.snowtrace.io/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/avalanche.png" alt="Avalanche"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Avalanche Fuji</span>
-                            </div>
-                            <div class="balance-amount" data-balance="avalanche-testnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">AVAX</div>
+                    <div class="network-badge base" style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;" onclick="window.open('https://sepolia.basescan.org/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
+                            <img src="/base.png" alt="Base" style="width: 32px; height: 32px; object-fit: contain;">
+                            <span style="font-weight: 700;">Base Sepolia</span>
                         </div>
-                        <div class="network-badge base"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://sepolia.basescan.org/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/base.png" alt="Base" style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Base Sepolia</span>
-                            </div>
-                            <div class="balance-amount" data-balance="base-testnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">ETH</div>
+                        <div class="balance-amount" data-balance="base-testnet" style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
+                            Loading...
                         </div>
-                        <div class="network-badge celo"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://alfajores.celoscan.io/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/celo.png" alt="Celo" style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Celo Sepolia</span>
-                            </div>
-                            <div class="balance-amount" data-balance="celo-testnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">CELO</div>
-                            <a href="https://www.celocolombia.org/" target="_blank"
-                                style="display: flex; flex-direction: column; align-items: center; justify-content: center; margin-top: 0.5rem; text-decoration: none; transition: all 0.2s ease; gap: 0.25rem;">
-                                <span style="font-size: 0.65rem; color: var(--text-muted); font-weight: 500;">Powered
-                                    by</span>
-                                <img src="/celo-colombia.png" alt="Celo Colombia"
-                                    style="width: 64px; height: 32px; object-fit: contain; opacity: 0.7;"
-                                    onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'">
-                            </a>
-                        </div>
-                        <div class="network-badge polygon"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://amoy.polygonscan.com/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/polygon.png" alt="Polygon"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Polygon Amoy</span>
-                            </div>
-                            <div class="balance-amount" data-balance="polygon-testnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">POL</div>
-                        </div>
-                        <div class="network-badge optimism"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://sepolia-optimism.etherscan.io/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/optimism.png" alt="Optimism"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Optimism Sepolia</span>
-                            </div>
-                            <div class="balance-amount" data-balance="optimism-testnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">ETH</div>
-                        </div>
-                        <div class="network-badge ethereum"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://sepolia.etherscan.io/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/ethereum.png" alt="Ethereum"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Ethereum Sepolia</span>
-                            </div>
-                            <div class="balance-amount" data-balance="ethereum-testnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">ETH</div>
-                        </div>
-                        <div class="network-badge arbitrum"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://sepolia.arbiscan.io/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/arbitrum.png" alt="Arbitrum"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Arbitrum Sepolia</span>
-                            </div>
-                            <div class="balance-amount" data-balance="arbitrum-testnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">ETH</div>
-                        </div>
-                        <div class="network-badge unichain"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://sepolia.uniscan.xyz/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/unichain.png" alt="Unichain"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Unichain Sepolia</span>
-                            </div>
-                            <div class="balance-amount" data-balance="unichain-testnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">ETH</div>
-                        </div>
-                        <div class="network-badge near"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://testnet.nearblocks.io/address/uvd-facilitator.testnet', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/near.png" alt="NEAR" style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">NEAR Testnet</span>
-                            </div>
-                            <div class="balance-amount" data-balance="near-testnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">NEAR</div>
-                        </div>
-                        <div class="network-badge fogo"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://fogoscan.com/account/6xNPewUdKRbEZDReQdpyfNUdgNg8QRc8Mt263T5GZSRv?cluster=testnet', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/fogo.png" alt="Fogo" style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Fogo Testnet</span>
-                            </div>
-                            <div class="balance-amount" data-balance="fogo-testnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">FOGO</div>
-                        </div>
+                        <div style="font-size: 0.7rem; color: var(--text-muted);">ETH</div>
                     </div>
+                    <div class="network-badge celo" style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;" onclick="window.open('https://alfajores.celoscan.io/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
+                            <img src="/celo.png" alt="Celo" style="width: 32px; height: 32px; object-fit: contain;">
+                            <span style="font-weight: 700;">Celo Sepolia</span>
+                        </div>
+                        <div class="balance-amount" data-balance="celo-testnet" style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
+                            Loading...
+                        </div>
+                        <div style="font-size: 0.7rem; color: var(--text-muted);">CELO</div>
+                        <a href="https://www.celocolombia.org/" target="_blank" style="display: flex; flex-direction: column; align-items: center; justify-content: center; margin-top: 0.5rem; text-decoration: none; transition: all 0.2s ease; gap: 0.25rem;">
+                            <span style="font-size: 0.65rem; color: var(--text-muted); font-weight: 500;">Powered by</span>
+                            <img src="/celo-colombia.png" alt="Celo Colombia" style="width: 64px; height: 32px; object-fit: contain; opacity: 0.7;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'">
+                        </a>
+                    </div>
+                    <div class="network-badge polygon" style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;" onclick="window.open('https://amoy.polygonscan.com/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
+                            <img src="/polygon.png" alt="Polygon" style="width: 32px; height: 32px; object-fit: contain;">
+                            <span style="font-weight: 700;">Polygon Amoy</span>
+                        </div>
+                        <div class="balance-amount" data-balance="polygon-testnet" style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
+                            Loading...
+                        </div>
+                        <div style="font-size: 0.7rem; color: var(--text-muted);">POL</div>
+                    </div>
+                    <div class="network-badge optimism" style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;" onclick="window.open('https://sepolia-optimism.etherscan.io/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
+                            <img src="/optimism.png" alt="Optimism" style="width: 32px; height: 32px; object-fit: contain;">
+                            <span style="font-weight: 700;">Optimism Sepolia</span>
+                        </div>
+                        <div class="balance-amount" data-balance="optimism-testnet" style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
+                            Loading...
+                        </div>
+                        <div style="font-size: 0.7rem; color: var(--text-muted);">ETH</div>
+                    </div>
+                    <div class="network-badge ethereum" style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;" onclick="window.open('https://sepolia.etherscan.io/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
+                            <img src="/ethereum.png" alt="Ethereum" style="width: 32px; height: 32px; object-fit: contain;">
+                            <span style="font-weight: 700;">Ethereum Sepolia</span>
+                        </div>
+                        <div class="balance-amount" data-balance="ethereum-testnet" style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
+                            Loading...
+                        </div>
+                        <div style="font-size: 0.7rem; color: var(--text-muted);">ETH</div>
+                    </div>
+                    <div class="network-badge arbitrum" style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;" onclick="window.open('https://sepolia.arbiscan.io/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
+                            <img src="/arbitrum.png" alt="Arbitrum" style="width: 32px; height: 32px; object-fit: contain;">
+                            <span style="font-weight: 700;">Arbitrum Sepolia</span>
+                        </div>
+                        <div class="balance-amount" data-balance="arbitrum-testnet" style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
+                            Loading...
+                        </div>
+                        <div style="font-size: 0.7rem; color: var(--text-muted);">ETH</div>
+                    </div>
+                    <div class="network-badge unichain" style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;" onclick="window.open('https://sepolia.uniscan.xyz/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
+                            <img src="/unichain.png" alt="Unichain" style="width: 32px; height: 32px; object-fit: contain;">
+                            <span style="font-weight: 700;">Unichain Sepolia</span>
+                        </div>
+                        <div class="balance-amount" data-balance="unichain-testnet" style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
+                            Loading...
+                        </div>
+                        <div style="font-size: 0.7rem; color: var(--text-muted);">ETH</div>
+                    </div>
+                    <div class="network-badge near" style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;" onclick="window.open('https://testnet.nearblocks.io/address/uvd-facilitator.testnet', '_blank')">
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
+                            <img src="/near.png" alt="NEAR" style="width: 32px; height: 32px; object-fit: contain;">
+                            <span style="font-weight: 700;">NEAR Testnet</span>
+                        </div>
+                        <div class="balance-amount" data-balance="near-testnet" style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
+                            Loading...
+                        </div>
+                        <div style="font-size: 0.7rem; color: var(--text-muted);">NEAR</div>
+                    </div>
+                    <div class="network-badge fogo" style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;" onclick="window.open('https://fogoscan.com/account/6xNPewUdKRbEZDReQdpyfNUdgNg8QRc8Mt263T5GZSRv?cluster=testnet', '_blank')">
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
+                            <img src="/fogo.png" alt="Fogo" style="width: 32px; height: 32px; object-fit: contain;">
+                            <span style="font-weight: 700;">Fogo Testnet</span>
+                        </div>
+                        <div class="balance-amount" data-balance="fogo-testnet" style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
+                                Loading...
+                        </div>
+                        <div style="font-size: 0.7rem; color: var(--text-muted);">FOGO</div>
+                    </div>
+                </div>
                 </div>
 
                 <!-- Wallet Addresses -->
-                <div
-                    style="display: flex; flex-direction: column; gap: 1rem; margin: 0 auto 2.5rem; max-width: 800px; padding: 1.25rem 1.5rem; background: rgba(255,255,255,0.02); border-radius: 8px; border: 1px solid rgba(255,255,255,0.05);">
+                <div style="display: flex; flex-direction: column; gap: 1rem; margin: 0 auto 2.5rem; max-width: 800px; padding: 1.25rem 1.5rem; background: rgba(255,255,255,0.02); border-radius: 8px; border: 1px solid rgba(255,255,255,0.05);">
                     <!-- EVM Wallets -->
                     <div style="display: flex; flex-direction: column; gap: 0.5rem;">
-                        <div
-                            style="text-align: center; font-size: 0.75rem; color: var(--accent); font-weight: 600; margin-bottom: 0.25rem;">
+                        <div style="text-align: center; font-size: 0.75rem; color: var(--accent); font-weight: 600; margin-bottom: 0.25rem;">
                             EVM Wallets
                         </div>
                         <div style="text-align: center; font-size: 0.7rem; color: var(--text-muted);">
-                            <span style="font-weight: 600;">Mainnet:</span> <a
-                                href="https://debank.com/profile/0x103040545AC5031A11E8C03dd11324C7333a13C7"
-                                target="_blank"
-                                style="font-family: 'JetBrains Mono', monospace; color: var(--accent); text-decoration: none; transition: opacity 0.2s;"
-                                onmouseover="this.style.opacity='0.7'"
-                                onmouseout="this.style.opacity='1'">0x103040545AC5031A11E8C03dd11324C7333a13C7</a>
+                            <span style="font-weight: 600;">Mainnet:</span> <a href="https://debank.com/profile/0x103040545AC5031A11E8C03dd11324C7333a13C7" target="_blank" style="font-family: 'JetBrains Mono', monospace; color: var(--accent); text-decoration: none; transition: opacity 0.2s;" onmouseover="this.style.opacity='0.7'" onmouseout="this.style.opacity='1'">0x103040545AC5031A11E8C03dd11324C7333a13C7</a>
                         </div>
                         <div style="text-align: center; font-size: 0.7rem; color: var(--text-muted);">
-                            <span style="font-weight: 600;">Testnet:</span> <a
-                                href="https://debank.com/profile/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8"
-                                target="_blank"
-                                style="font-family: 'JetBrains Mono', monospace; color: var(--accent); text-decoration: none; transition: opacity 0.2s;"
-                                onmouseover="this.style.opacity='0.7'"
-                                onmouseout="this.style.opacity='1'">0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8</a>
+                            <span style="font-weight: 600;">Testnet:</span> <a href="https://debank.com/profile/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8" target="_blank" style="font-family: 'JetBrains Mono', monospace; color: var(--accent); text-decoration: none; transition: opacity 0.2s;" onmouseover="this.style.opacity='0.7'" onmouseout="this.style.opacity='1'">0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8</a>
                         </div>
                     </div>
 
@@ -1301,25 +1136,14 @@
 
                     <!-- Solana Wallets -->
                     <div style="display: flex; flex-direction: column; gap: 0.5rem;">
-                        <div
-                            style="text-align: center; font-size: 0.75rem; color: var(--accent); font-weight: 600; margin-bottom: 0.25rem;">
+                        <div style="text-align: center; font-size: 0.75rem; color: var(--accent); font-weight: 600; margin-bottom: 0.25rem;">
                             Solana Wallets
                         </div>
                         <div style="text-align: center; font-size: 0.7rem; color: var(--text-muted);">
-                            <span style="font-weight: 600;">Mainnet:</span> <a
-                                href="https://solscan.io/account/F742C4VfFLQ9zRQyithoj5229ZgtX2WqKCSFKgH2EThq"
-                                target="_blank"
-                                style="font-family: 'JetBrains Mono', monospace; color: var(--accent); text-decoration: none; transition: opacity 0.2s;"
-                                onmouseover="this.style.opacity='0.7'"
-                                onmouseout="this.style.opacity='1'">F742C4VfFLQ9zRQyithoj5229ZgtX2WqKCSFKgH2EThq</a>
+                            <span style="font-weight: 600;">Mainnet:</span> <a href="https://solscan.io/account/F742C4VfFLQ9zRQyithoj5229ZgtX2WqKCSFKgH2EThq" target="_blank" style="font-family: 'JetBrains Mono', monospace; color: var(--accent); text-decoration: none; transition: opacity 0.2s;" onmouseover="this.style.opacity='0.7'" onmouseout="this.style.opacity='1'">F742C4VfFLQ9zRQyithoj5229ZgtX2WqKCSFKgH2EThq</a>
                         </div>
                         <div style="text-align: center; font-size: 0.7rem; color: var(--text-muted);">
-                            <span style="font-weight: 600;">Devnet:</span> <a
-                                href="https://solscan.io/account/6xNPewUdKRbEZDReQdpyfNUdgNg8QRc8Mt263T5GZSRv?cluster=devnet"
-                                target="_blank"
-                                style="font-family: 'JetBrains Mono', monospace; color: var(--accent); text-decoration: none; transition: opacity 0.2s;"
-                                onmouseover="this.style.opacity='0.7'"
-                                onmouseout="this.style.opacity='1'">6xNPewUdKRbEZDReQdpyfNUdgNg8QRc8Mt263T5GZSRv</a>
+                            <span style="font-weight: 600;">Devnet:</span> <a href="https://solscan.io/account/6xNPewUdKRbEZDReQdpyfNUdgNg8QRc8Mt263T5GZSRv?cluster=devnet" target="_blank" style="font-family: 'JetBrains Mono', monospace; color: var(--accent); text-decoration: none; transition: opacity 0.2s;" onmouseover="this.style.opacity='0.7'" onmouseout="this.style.opacity='1'">6xNPewUdKRbEZDReQdpyfNUdgNg8QRc8Mt263T5GZSRv</a>
                         </div>
                     </div>
 
@@ -1352,23 +1176,14 @@
 
                     <!-- NEAR Wallets -->
                     <div style="display: flex; flex-direction: column; gap: 0.5rem;">
-                        <div
-                            style="text-align: center; font-size: 0.75rem; color: var(--accent); font-weight: 600; margin-bottom: 0.25rem;">
+                        <div style="text-align: center; font-size: 0.75rem; color: var(--accent); font-weight: 600; margin-bottom: 0.25rem;">
                             NEAR Wallets
                         </div>
                         <div style="text-align: center; font-size: 0.7rem; color: var(--text-muted);">
-                            <span style="font-weight: 600;">Mainnet:</span> <a
-                                href="https://nearblocks.io/address/uvd-facilitator.near" target="_blank"
-                                style="font-family: 'JetBrains Mono', monospace; color: var(--accent); text-decoration: none; transition: opacity 0.2s;"
-                                onmouseover="this.style.opacity='0.7'"
-                                onmouseout="this.style.opacity='1'">uvd-facilitator.near</a>
+                            <span style="font-weight: 600;">Mainnet:</span> <a href="https://nearblocks.io/address/uvd-facilitator.near" target="_blank" style="font-family: 'JetBrains Mono', monospace; color: var(--accent); text-decoration: none; transition: opacity 0.2s;" onmouseover="this.style.opacity='0.7'" onmouseout="this.style.opacity='1'">uvd-facilitator.near</a>
                         </div>
                         <div style="text-align: center; font-size: 0.7rem; color: var(--text-muted);">
-                            <span style="font-weight: 600;">Testnet:</span> <a
-                                href="https://testnet.nearblocks.io/address/uvd-facilitator.testnet" target="_blank"
-                                style="font-family: 'JetBrains Mono', monospace; color: var(--accent); text-decoration: none; transition: opacity 0.2s;"
-                                onmouseover="this.style.opacity='0.7'"
-                                onmouseout="this.style.opacity='1'">uvd-facilitator.testnet</a>
+                            <span style="font-weight: 600;">Testnet:</span> <a href="https://testnet.nearblocks.io/address/uvd-facilitator.testnet" target="_blank" style="font-family: 'JetBrains Mono', monospace; color: var(--accent); text-decoration: none; transition: opacity 0.2s;" onmouseover="this.style.opacity='0.7'" onmouseout="this.style.opacity='1'">uvd-facilitator.testnet</a>
                         </div>
                     </div>
                 </div>
@@ -1394,24 +1209,21 @@
                     <span class="feature-icon">⚡</span>
                     <h3 data-i18n="features.gasless.title">Gasless Transactions</h3>
                     <p data-i18n="features.gasless.description">
-                        Agents never need AVAX or ETH for gas. The facilitator executes transferWithAuthorization via
-                        EIP-3009.
+                        Agents never need AVAX or ETH for gas. The facilitator executes transferWithAuthorization via EIP-3009.
                     </p>
                 </div>
                 <div class="feature-card">
                     <span class="feature-icon">🔐</span>
                     <h3 data-i18n="features.trustless.title">Trustless by Design</h3>
                     <p data-i18n="features.trustless.description">
-                        EIP-712 signature verification ensures cryptographically valid payments before on-chain
-                        execution.
+                        EIP-712 signature verification ensures cryptographically valid payments before on-chain execution.
                     </p>
                 </div>
                 <div class="feature-card">
                     <span class="feature-icon">🌐</span>
                     <h3 data-i18n="features.networks.title">Multi-Network Support</h3>
                     <p data-i18n="features.networks.description">
-                        Supports Avalanche (Fuji testnet and C-Chain mainnet), Base (Sepolia testnet and mainnet), and
-                        Celo (Sepolia testnet and mainnet).
+                        Supports Avalanche (Fuji testnet and C-Chain mainnet), Base (Sepolia testnet and mainnet), and Celo (Sepolia testnet and mainnet).
                     </p>
                 </div>
                 <div class="feature-card">
@@ -1451,9 +1263,7 @@ app.<span class="code-function">use</span>(<span class="code-function">paymentMi
             <section class="section fade-in">
                 <h3 class="section-title" data-i18n="what.title">What is x402?</h3>
                 <p class="section-description" data-i18n="what.description">
-                    x402 is a protocol for stateless, per-request payments over HTTP. Clients attach a signed payment
-                    payload to each request. The facilitator verifies it, executes the on-chain transfer, and grants
-                    access to protected resources—all without accounts, wallets, or user registration.
+                    x402 is a protocol for stateless, per-request payments over HTTP. Clients attach a signed payment payload to each request. The facilitator verifies it, executes the on-chain transfer, and grants access to protected resources—all without accounts, wallets, or user registration.
                 </p>
             </section>
 
@@ -1467,20 +1277,17 @@ app.<span class="code-function">use</span>(<span class="code-function">paymentMi
                 <div class="endpoint">
                     <span class="method get">GET</span>
                     <span class="endpoint-path">/supported</span>
-                    <span class="endpoint-desc" data-i18n="endpoints.supported">List supported payment schemes and
-                        networks</span>
+                    <span class="endpoint-desc" data-i18n="endpoints.supported">List supported payment schemes and networks</span>
                 </div>
                 <div class="endpoint">
                     <span class="method post">POST</span>
                     <span class="endpoint-path">/verify</span>
-                    <span class="endpoint-desc" data-i18n="endpoints.verify">Verify payment signature and
-                        requirements</span>
+                    <span class="endpoint-desc" data-i18n="endpoints.verify">Verify payment signature and requirements</span>
                 </div>
                 <div class="endpoint">
                     <span class="method post">POST</span>
                     <span class="endpoint-path">/settle</span>
-                    <span class="endpoint-desc" data-i18n="endpoints.settle">Execute payment on-chain via
-                        EIP-3009</span>
+                    <span class="endpoint-desc" data-i18n="endpoints.settle">Execute payment on-chain via EIP-3009</span>
                 </div>
             </section>
         </main>
@@ -1489,8 +1296,7 @@ app.<span class="code-function">use</span>(<span class="code-function">paymentMi
             <div class="footer-content">
                 <div>
                     <span data-i18n="footer.powered">Powered by</span>
-                    <a href="https://ultravioletadao.xyz" target="_blank" style="margin-left: 0.5rem;">Ultravioleta
-                        DAO</a>
+                    <a href="https://ultravioletadao.xyz" target="_blank" style="margin-left: 0.5rem;">Ultravioleta DAO</a>
                 </div>
                 <div class="footer-links">
                     <a href="https://x402.org" target="_blank">Protocol</a>
@@ -1728,9 +1534,9 @@ app.<span class="code-function">use</span>(<span class="code-function">paymentMi
                     address: '6xNPewUdKRbEZDReQdpyfNUdgNg8QRc8Mt263T5GZSRv',
                     isSolana: true
                 },
-            };
+                };
 
-            // Fetch balance for each network
+        // Fetch balance for each network
             for (const [network, config] of Object.entries(networks)) {
                 try {
                     if (config.isSolana) {
@@ -1812,7 +1618,7 @@ app.<span class="code-function">use</span>(<span class="code-function">paymentMi
         }
 
         // Tab switching function (global scope for onclick attributes)
-        window.switchTab = function (tab) {
+        window.switchTab = function(tab) {
             // Update button states
             document.querySelectorAll('.tab-button').forEach(btn => {
                 btn.classList.remove('active');
@@ -1833,5 +1639,4 @@ app.<span class="code-function">use</span>(<span class="code-function">paymentMi
         setInterval(fetchWalletBalances, 30000);
     </script>
 </body>
-
 </html>

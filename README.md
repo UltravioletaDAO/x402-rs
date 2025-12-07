@@ -37,6 +37,7 @@ A payment settlement service implementing the [HTTP 402](https://developer.mozil
 | **Avalanche** | 43114 | USDC | [snowtrace.io](https://snowtrace.io) |
 | **Celo** | 42220 | cUSD | [celoscan.io](https://celoscan.io) |
 | **Solana** | - | USDC | [solscan.io](https://solscan.io) |
+| **Fogo** | - | USDC | [fogoscan.com](https://fogoscan.com) |
 | **NEAR** | - | USDC | [nearblocks.io](https://nearblocks.io) |
 | **HyperEVM** | 999 | USDC | [hyperliquid.xyz](https://hyperliquid.xyz) |
 | **Unichain** | 130 | USDC | [uniscan.xyz](https://uniscan.xyz) |
@@ -52,6 +53,7 @@ A payment settlement service implementing the [HTTP 402](https://developer.mozil
 | Avalanche Fuji | 43113 | [faucet.avax.network](https://faucet.avax.network) |
 | Celo Sepolia | 44787 | [faucet.celo.org](https://faucet.celo.org) |
 | Solana Devnet | - | [solfaucet.com](https://solfaucet.com) |
+| Fogo Testnet | - | [fogoscan.com](https://fogoscan.com/?cluster=testnet) |
 | NEAR Testnet | - | [near-faucet.io](https://near-faucet.io) |
 | HyperEVM Testnet | 333 | - |
 

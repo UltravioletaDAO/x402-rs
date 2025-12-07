@@ -63,6 +63,8 @@ impl TryFrom<Network> for SolanaChain {
             Network::Monad => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::Near => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::NearTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
+            Network::Fogo => Ok(Self { network: value }),
+            Network::FogoTestnet => Ok(Self { network: value }),
         }
     }
 }
@@ -127,6 +129,8 @@ impl SolanaProvider {
         let suffix = match network {
             Network::Solana => "SOLANA",
             Network::SolanaDevnet => "SOLANA_DEVNET",
+            Network::Fogo => "FOGO",
+            Network::FogoTestnet => "FOGO_TESTNET",
             _ => return 200_000, // fallback (shouldn't be used)
         };
 
@@ -137,6 +141,8 @@ impl SolanaProvider {
             .unwrap_or(match network {
                 Network::Solana => 400_000,
                 Network::SolanaDevnet => 200_000,
+                Network::Fogo => 400_000,
+                Network::FogoTestnet => 200_000,
                 _ => 200_000,
             })
     }
@@ -145,6 +151,8 @@ impl SolanaProvider {
         let suffix = match network {
             Network::Solana => "SOLANA",
             Network::SolanaDevnet => "SOLANA_DEVNET",
+            Network::Fogo => "FOGO",
+            Network::FogoTestnet => "FOGO_TESTNET",
             _ => return 100_000, // fallback (shouldn't be used)
         };
 
@@ -155,6 +163,8 @@ impl SolanaProvider {
             .unwrap_or(match network {
                 Network::Solana => 1_000_000,
                 Network::SolanaDevnet => 100_000,
+                Network::Fogo => 1_000_000,
+                Network::FogoTestnet => 100_000,
                 _ => 100_000,
             })
     }

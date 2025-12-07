@@ -99,6 +99,12 @@ pub enum Network {
     /// NEAR Protocol testnet.
     #[serde(rename = "near-testnet")]
     NearTestnet,
+    /// Fogo mainnet (Solana Virtual Machine).
+    #[serde(rename = "fogo")]
+    Fogo,
+    /// Fogo testnet (Solana Virtual Machine).
+    #[serde(rename = "fogo-testnet")]
+    FogoTestnet,
 }
 
 impl Display for Network {
@@ -131,6 +137,8 @@ impl Display for Network {
             Network::Monad => write!(f, "monad"),
             Network::Near => write!(f, "near"),
             Network::NearTestnet => write!(f, "near-testnet"),
+            Network::Fogo => write!(f, "fogo"),
+            Network::FogoTestnet => write!(f, "fogo-testnet"),
         }
     }
 }
@@ -172,6 +180,8 @@ impl From<Network> for NetworkFamily {
             Network::Monad => NetworkFamily::Evm,
             Network::Near => NetworkFamily::Near,
             Network::NearTestnet => NetworkFamily::Near,
+            Network::Fogo => NetworkFamily::Solana,
+            Network::FogoTestnet => NetworkFamily::Solana,
         }
     }
 }
@@ -203,10 +213,12 @@ impl Network {
             Network::Arbitrum,
             Network::ArbitrumSepolia,
             Network::Unichain,
-            Network::UnichainSepolia,
+            Network::UnichainSepolia,            
             Network::Monad,
             Network::Near,
             Network::NearTestnet,
+            Network::Fogo,
+            Network::FogoTestnet,
         ]
     }
 
@@ -224,8 +236,9 @@ impl Network {
                 | Network::SeiTestnet
                 | Network::EthereumSepolia
                 | Network::ArbitrumSepolia
-                | Network::UnichainSepolia
+                | Network::UnichainSepolia               
                 | Network::NearTestnet
+                | Network::FogoTestnet
         )
     }
 
@@ -633,6 +646,34 @@ static USDC_NEAR_TESTNET: Lazy<USDCDeployment> = Lazy::new(|| {
     })
 });
 
+/// Lazily initialized known USDC deployment on Fogo mainnet as [`USDCDeployment`].
+static USDC_FOGO: Lazy<USDCDeployment> = Lazy::new(|| {
+    USDCDeployment(TokenDeployment {
+        asset: TokenAsset {
+            address: MixedAddress::Solana(
+                Pubkey::from_str("uSd2czE61Evaf76RNbq4KPpXnkiL3irdzgLFUMe3NoG").unwrap(),
+            ),
+            network: Network::Fogo,
+        },
+        decimals: 6,
+        eip712: None,
+    })
+});
+
+/// Lazily initialized known USDC deployment on Fogo testnet as [`USDCDeployment`].
+static USDC_FOGO_TESTNET: Lazy<USDCDeployment> = Lazy::new(|| {
+    USDCDeployment(TokenDeployment {
+        asset: TokenAsset {
+            address: MixedAddress::Solana(
+                Pubkey::from_str("ELNbJ1RtERV2fjtuZjbTscDekWhVzkQ1LjmiPsxp5uND").unwrap(),
+            ),
+            network: Network::FogoTestnet,
+        },
+        decimals: 6,
+        eip712: None,
+    })
+});
+
 /// A known USDC deployment as a wrapper around [`TokenDeployment`].
 #[derive(Clone, Debug)]
 pub struct USDCDeployment(pub TokenDeployment);
@@ -696,6 +737,8 @@ impl USDCDeployment {
             Network::Monad => &USDC_MONAD,
             Network::Near => &USDC_NEAR,
             Network::NearTestnet => &USDC_NEAR_TESTNET,
+            Network::Fogo => &USDC_FOGO,
+            Network::FogoTestnet => &USDC_FOGO_TESTNET,
         }
     }
 }

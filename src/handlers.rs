@@ -89,6 +89,7 @@ where
         .route("/unichain.png", get(get_unichain_logo))
         .route("/monad.png", get(get_monad_logo))
         .route("/near.png", get(get_near_logo))
+        .route("/fogo.png", get(get_fogo_logo))
 }
 
 /// `GET /`: Returns the Ultravioleta DAO branded landing page.
@@ -259,6 +260,15 @@ pub async fn get_monad_logo() -> impl IntoResponse {
 #[instrument(skip_all)]
 pub async fn get_near_logo() -> impl IntoResponse {
     let bytes = include_bytes!("../static/near.png");
+    (
+        StatusCode::OK,
+        [("content-type", "image/png")],
+        bytes.as_slice(),
+    )
+}
+
+pub async fn get_fogo_logo() -> impl IntoResponse {
+    let bytes = include_bytes!("../static/fogo.png");
     (
         StatusCode::OK,
         [("content-type", "image/png")],

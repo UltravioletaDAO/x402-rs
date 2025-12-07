@@ -46,6 +46,8 @@ pub const ENV_RPC_UNICHAIN_SEPOLIA: &str = "RPC_URL_UNICHAIN_SEPOLIA";
 pub const ENV_RPC_MONAD: &str = "RPC_URL_MONAD";
 pub const ENV_RPC_NEAR: &str = "RPC_URL_NEAR";
 pub const ENV_RPC_NEAR_TESTNET: &str = "RPC_URL_NEAR_TESTNET";
+pub const ENV_RPC_FOGO: &str = "RPC_URL_FOGO";
+pub const ENV_RPC_FOGO_TESTNET: &str = "RPC_URL_FOGO_TESTNET";
 
 pub fn rpc_env_name_from_network(network: Network) -> &'static str {
     match network {
@@ -76,6 +78,8 @@ pub fn rpc_env_name_from_network(network: Network) -> &'static str {
         Network::Monad => ENV_RPC_MONAD,
         Network::Near => ENV_RPC_NEAR,
         Network::NearTestnet => ENV_RPC_NEAR_TESTNET,
+        Network::Fogo => ENV_RPC_FOGO,
+        Network::FogoTestnet => ENV_RPC_FOGO_TESTNET,
     }
 }
 

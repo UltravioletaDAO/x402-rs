@@ -151,6 +151,8 @@ impl TryFrom<Network> for EvmChain {
             Network::Monad => Ok(EvmChain::new(value, 143)),
             Network::Near => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::NearTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
+            Network::Fogo => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
+            Network::FogoTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
         }
     }
 }
@@ -450,6 +452,8 @@ impl FromEnvByNetworkBuild for EvmProvider {
             Network::Monad => true,
             Network::Near => false, // NEAR is not an EVM chain
             Network::NearTestnet => false, // NEAR is not an EVM chain
+            Network::Fogo => false, // Fogo is a Solana network, not EVM
+            Network::FogoTestnet => false, // Fogo is a Solana network, not EVM
         };
         let provider = EvmProvider::try_new(wallet, &rpc_url, is_eip1559, network).await?;
         Ok(Some(provider))

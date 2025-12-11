@@ -89,6 +89,7 @@ where
         .route("/unichain.png", get(get_unichain_logo))
         .route("/monad.png", get(get_monad_logo))
         .route("/near.png", get(get_near_logo))
+        .route("/stellar.png", get(get_stellar_logo))
         .route("/fogo.png", get(get_fogo_logo))
 }
 
@@ -267,6 +268,18 @@ pub async fn get_near_logo() -> impl IntoResponse {
     )
 }
 
+/// `GET /stellar.png`: Returns Stellar logo.
+#[instrument(skip_all)]
+pub async fn get_stellar_logo() -> impl IntoResponse {
+    let bytes = include_bytes!("../static/stellar.png");
+    (
+        StatusCode::OK,
+        [("content-type", "image/png")],
+        bytes.as_slice(),
+    )
+}
+
+/// `GET /fogo.png`: Returns FOGO logo.
 pub async fn get_fogo_logo() -> impl IntoResponse {
     let bytes = include_bytes!("../static/fogo.png");
     (
@@ -463,6 +476,21 @@ where
                     debug!(
                         "  - signed_delegate_action: {} (truncated)",
                         &near_payload.signed_delegate_action[..near_payload.signed_delegate_action.len().min(100)]
+                    );
+                }
+                crate::types::ExactPaymentPayload::Stellar(stellar_payload) => {
+                    debug!("  - payload type: Stellar");
+                    debug!(
+                        "  - from: {}",
+                        stellar_payload.from
+                    );
+                    debug!(
+                        "  - to: {}",
+                        stellar_payload.to
+                    );
+                    debug!(
+                        "  - amount: {}",
+                        stellar_payload.amount
                     );
                 }
             }

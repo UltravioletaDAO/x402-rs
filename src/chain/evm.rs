@@ -151,6 +151,8 @@ impl TryFrom<Network> for EvmChain {
             Network::Monad => Ok(EvmChain::new(value, 143)),
             Network::Near => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::NearTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
+            Network::Stellar => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
+            Network::StellarTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::Fogo => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::FogoTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
         }
@@ -452,6 +454,8 @@ impl FromEnvByNetworkBuild for EvmProvider {
             Network::Monad => true,
             Network::Near => false, // NEAR is not an EVM chain
             Network::NearTestnet => false, // NEAR is not an EVM chain
+            Network::Stellar => false, // Stellar is not an EVM chain
+            Network::StellarTestnet => false, // Stellar is not an EVM chain
             Network::Fogo => false, // Fogo is a Solana network, not EVM
             Network::FogoTestnet => false, // Fogo is a Solana network, not EVM
         };
@@ -949,6 +953,9 @@ async fn assert_valid_payment<P: Provider>(
             return Err(FacilitatorLocalError::UnsupportedNetwork(None));
         }
         ExactPaymentPayload::Near(_) => {
+            return Err(FacilitatorLocalError::UnsupportedNetwork(None));
+        }
+        ExactPaymentPayload::Stellar(_) => {
             return Err(FacilitatorLocalError::UnsupportedNetwork(None));
         }
     };

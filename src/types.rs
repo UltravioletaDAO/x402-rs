@@ -289,12 +289,33 @@ pub struct ExactNearPayload {
     pub signed_delegate_action: String,
 }
 
+/// Payload for Stellar/Soroban payments using pre-signed authorization entries.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExactStellarPayload {
+    /// Stellar account paying (G... address)
+    pub from: String,
+    /// Stellar account receiving payment (G... address)
+    pub to: String,
+    /// Payment amount in stroops (1 USDC = 10^7 stroops for Stellar)
+    pub amount: String,
+    /// Token contract address (C... for USDC SAC contract)
+    pub token_contract: String,
+    /// Pre-authorized invocation signature (base64-encoded XDR)
+    pub authorization_entry_xdr: String,
+    /// Client-provided nonce (for replay protection)
+    pub nonce: u64,
+    /// Signature expiration ledger number
+    pub signature_expiration_ledger: u32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ExactPaymentPayload {
     Evm(ExactEvmPayload),
     Solana(ExactSolanaPayload),
     Near(ExactNearPayload),
+    Stellar(ExactStellarPayload),
 }
 
 /// Describes a signed request to transfer a specific amount of funds on-chain.
@@ -655,6 +676,8 @@ pub enum MixedAddress {
     Solana(Pubkey),
     /// NEAR Protocol account ID (e.g., "alice.near" or implicit hex account)
     Near(String),
+    /// Stellar contract ID (C...) or account ID (G...)
+    Stellar(String),
 }
 
 #[macro_export]
@@ -694,6 +717,7 @@ impl TryFrom<MixedAddress> for alloy::primitives::Address {
             MixedAddress::Offchain(_) => Err(MixedAddressError::NotEvmAddress),
             MixedAddress::Solana(_) => Err(MixedAddressError::NotEvmAddress),
             MixedAddress::Near(_) => Err(MixedAddressError::NotEvmAddress),
+            MixedAddress::Stellar(_) => Err(MixedAddressError::NotEvmAddress),
         }
     }
 }
@@ -721,6 +745,7 @@ impl TryInto<EvmAddress> for MixedAddress {
             MixedAddress::Offchain(_) => Err(MixedAddressError::NotEvmAddress),
             MixedAddress::Solana(_) => Err(MixedAddressError::NotEvmAddress),
             MixedAddress::Near(_) => Err(MixedAddressError::NotEvmAddress),
+            MixedAddress::Stellar(_) => Err(MixedAddressError::NotEvmAddress),
         }
     }
 }
@@ -732,6 +757,7 @@ impl Display for MixedAddress {
             MixedAddress::Offchain(address) => write!(f, "{address}"),
             MixedAddress::Solana(pubkey) => write!(f, "{pubkey}"),
             MixedAddress::Near(account_id) => write!(f, "{account_id}"),
+            MixedAddress::Stellar(address) => write!(f, "{address}"),
         }
     }
 }
@@ -752,6 +778,11 @@ impl<'de> Deserialize<'de> for MixedAddress {
                 .expect("Invalid regex for NEAR account")
         });
 
+        // Stellar address regex: G... (accounts) or C... (contracts), 56 chars base32
+        static STELLAR_ADDRESS_REGEX: Lazy<Regex> = Lazy::new(|| {
+            Regex::new(r"^[GC][A-Z2-7]{55}$").expect("Invalid regex for Stellar address")
+        });
+
         let s = String::deserialize(deserializer)?;
         // 1) EVM address (e.g., 0x... 20 bytes, hex)
         if let Ok(addr) = EvmAddress::from_str(&s) {
@@ -765,7 +796,11 @@ impl<'de> Deserialize<'de> for MixedAddress {
         if NEAR_ACCOUNT_REGEX.is_match(&s) {
             return Ok(MixedAddress::Near(s));
         }
-        // 4) Off-chain address by regex
+        // 4) Stellar address (G... accounts or C... contracts, 56 chars base32)
+        if STELLAR_ADDRESS_REGEX.is_match(&s) {
+            return Ok(MixedAddress::Stellar(s));
+        }
+        // 5) Off-chain address by regex
         if OFFCHAIN_ADDRESS_REGEX.is_match(&s) {
             return Ok(MixedAddress::Offchain(s));
         }
@@ -783,6 +818,7 @@ impl Serialize for MixedAddress {
             MixedAddress::Offchain(s) => serializer.serialize_str(s),
             MixedAddress::Solana(pubkey) => serializer.serialize_str(pubkey.to_string().as_str()),
             MixedAddress::Near(account_id) => serializer.serialize_str(account_id),
+            MixedAddress::Stellar(address) => serializer.serialize_str(address),
         }
     }
 }
@@ -794,6 +830,8 @@ pub enum TransactionHash {
     Solana([u8; 64]),
     /// A 32-byte NEAR transaction hash (CryptoHash), encoded as base58.
     Near([u8; 32]),
+    /// A 32-byte Stellar transaction hash, encoded as 64-character hex string.
+    Stellar([u8; 32]),
 }
 
 impl<'de> Deserialize<'de> for TransactionHash {
@@ -811,6 +849,19 @@ impl<'de> Deserialize<'de> for TransactionHash {
                 serde::de::Error::custom("Transaction hash must be exactly 32 bytes")
             })?;
             return Ok(TransactionHash::Evm(array));
+        }
+
+        // Stellar: 64-character hex string (no 0x prefix, 32 bytes)
+        static STELLAR_TX_HASH_REGEX: Lazy<Regex> =
+            Lazy::new(|| Regex::new(r"^[0-9a-fA-F]{64}$").expect("invalid regex"));
+
+        if STELLAR_TX_HASH_REGEX.is_match(&s) {
+            let bytes = hex::decode(&s)
+                .map_err(|_| serde::de::Error::custom("Invalid hex in Stellar transaction hash"))?;
+            let array: [u8; 32] = bytes.try_into().map_err(|_| {
+                serde::de::Error::custom("Stellar transaction hash must be exactly 32 bytes")
+            })?;
+            return Ok(TransactionHash::Stellar(array));
         }
 
         // Solana: base58 string, decodes to exactly 64 bytes
@@ -845,6 +896,10 @@ impl Serialize for TransactionHash {
                 let b58_string = bs58::encode(bytes).into_string();
                 serializer.serialize_str(&b58_string)
             }
+            TransactionHash::Stellar(bytes) => {
+                // Stellar uses hex encoding without 0x prefix
+                serializer.serialize_str(&hex::encode(bytes))
+            }
         }
     }
 }
@@ -860,6 +915,9 @@ impl Display for TransactionHash {
             }
             TransactionHash::Near(bytes) => {
                 write!(f, "{}", bs58::encode(bytes).into_string())
+            }
+            TransactionHash::Stellar(bytes) => {
+                write!(f, "{}", hex::encode(bytes))
             }
         }
     }

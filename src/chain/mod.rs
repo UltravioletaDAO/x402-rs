@@ -4,6 +4,7 @@ use std::time::SystemTimeError;
 use crate::chain::evm::EvmProvider;
 use crate::chain::near::NearProvider;
 use crate::chain::solana::SolanaProvider;
+use crate::chain::stellar::StellarProvider;
 use crate::facilitator::Facilitator;
 use crate::network::{Network, NetworkFamily};
 use crate::types::{
@@ -14,11 +15,13 @@ use crate::types::{
 pub mod evm;
 pub mod near;
 pub mod solana;
+pub mod stellar;
 
 pub enum NetworkProvider {
     Evm(EvmProvider),
     Solana(SolanaProvider),
     Near(NearProvider),
+    Stellar(StellarProvider),
 }
 
 pub trait FromEnvByNetworkBuild: Sized {
@@ -43,6 +46,10 @@ impl FromEnvByNetworkBuild for NetworkProvider {
                 let provider = NearProvider::from_env(network).await?;
                 provider.map(NetworkProvider::Near)
             }
+            NetworkFamily::Stellar => {
+                let provider = StellarProvider::from_env(network).await?;
+                provider.map(NetworkProvider::Stellar)
+            }
         };
         Ok(provider)
     }
@@ -59,6 +66,7 @@ impl NetworkProviderOps for NetworkProvider {
             NetworkProvider::Evm(provider) => provider.signer_address(),
             NetworkProvider::Solana(provider) => provider.signer_address(),
             NetworkProvider::Near(provider) => provider.signer_address(),
+            NetworkProvider::Stellar(provider) => provider.signer_address(),
         }
     }
 
@@ -67,6 +75,7 @@ impl NetworkProviderOps for NetworkProvider {
             NetworkProvider::Evm(provider) => provider.network(),
             NetworkProvider::Solana(provider) => provider.network(),
             NetworkProvider::Near(provider) => provider.network(),
+            NetworkProvider::Stellar(provider) => provider.network(),
         }
     }
 }
@@ -79,6 +88,7 @@ impl Facilitator for NetworkProvider {
             NetworkProvider::Evm(provider) => provider.verify(request).await,
             NetworkProvider::Solana(provider) => provider.verify(request).await,
             NetworkProvider::Near(provider) => provider.verify(request).await,
+            NetworkProvider::Stellar(provider) => provider.verify(request).await,
         }
     }
 
@@ -87,6 +97,7 @@ impl Facilitator for NetworkProvider {
             NetworkProvider::Evm(provider) => provider.settle(request).await,
             NetworkProvider::Solana(provider) => provider.settle(request).await,
             NetworkProvider::Near(provider) => provider.settle(request).await,
+            NetworkProvider::Stellar(provider) => provider.settle(request).await,
         }
     }
 
@@ -95,6 +106,7 @@ impl Facilitator for NetworkProvider {
             NetworkProvider::Evm(provider) => provider.supported().await,
             NetworkProvider::Solana(provider) => provider.supported().await,
             NetworkProvider::Near(provider) => provider.supported().await,
+            NetworkProvider::Stellar(provider) => provider.supported().await,
         }
     }
 }

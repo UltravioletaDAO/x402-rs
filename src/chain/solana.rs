@@ -63,6 +63,8 @@ impl TryFrom<Network> for SolanaChain {
             Network::Monad => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::Near => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::NearTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
+            Network::Stellar => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
+            Network::StellarTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::Fogo => Ok(Self { network: value }),
             Network::FogoTestnet => Ok(Self { network: value }),
         }
@@ -91,9 +93,12 @@ impl TryFrom<MixedAddress> for SolanaAddress {
 
     fn try_from(value: MixedAddress) -> Result<Self, Self::Error> {
         match value {
-            MixedAddress::Evm(_) | MixedAddress::Offchain(_) | MixedAddress::Near(_) => Err(
-                FacilitatorLocalError::InvalidAddress("expected Solana address".to_string()),
-            ),
+            MixedAddress::Evm(_)
+            | MixedAddress::Offchain(_)
+            | MixedAddress::Near(_)
+            | MixedAddress::Stellar(_) => Err(FacilitatorLocalError::InvalidAddress(
+                "expected Solana address".to_string(),
+            )),
             MixedAddress::Solana(pubkey) => Ok(Self { pubkey }),
         }
     }
@@ -487,6 +492,9 @@ impl SolanaProvider {
                 return Err(FacilitatorLocalError::UnsupportedNetwork(None));
             }
             ExactPaymentPayload::Near(..) => {
+                return Err(FacilitatorLocalError::UnsupportedNetwork(None));
+            }
+            ExactPaymentPayload::Stellar(..) => {
                 return Err(FacilitatorLocalError::UnsupportedNetwork(None));
             }
             ExactPaymentPayload::Solana(payload) => payload,

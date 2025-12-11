@@ -347,6 +347,23 @@ where
                     ))
                 }
             }
+            ExactPaymentPayload::Stellar(_stellar_payload) => {
+                #[cfg(feature = "stellar")]
+                {
+                    // For now, allow Stellar transactions through (compliance will be added later)
+                    tracing::debug!(
+                        "Stellar payment compliance check: allowing transaction (TODO: implement Stellar compliance)"
+                    );
+                    Ok(())
+                }
+
+                #[cfg(not(feature = "stellar"))]
+                {
+                    Err(FacilitatorLocalError::Other(
+                        "Stellar support not enabled".to_string(),
+                    ))
+                }
+            }
         }
     }
 }

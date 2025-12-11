@@ -19,6 +19,11 @@ pub const ENV_NEAR_ACCOUNT_ID: &str = "NEAR_ACCOUNT_ID";
 pub const ENV_NEAR_ACCOUNT_ID_MAINNET: &str = "NEAR_ACCOUNT_ID_MAINNET";
 pub const ENV_NEAR_ACCOUNT_ID_TESTNET: &str = "NEAR_ACCOUNT_ID_TESTNET";
 
+// Stellar environment variables
+pub const ENV_STELLAR_PRIVATE_KEY: &str = "STELLAR_PRIVATE_KEY";
+pub const ENV_STELLAR_PRIVATE_KEY_MAINNET: &str = "STELLAR_PRIVATE_KEY_MAINNET";
+pub const ENV_STELLAR_PRIVATE_KEY_TESTNET: &str = "STELLAR_PRIVATE_KEY_TESTNET";
+
 pub const ENV_RPC_BASE: &str = "RPC_URL_BASE";
 pub const ENV_RPC_BASE_SEPOLIA: &str = "RPC_URL_BASE_SEPOLIA";
 pub const ENV_RPC_XDC: &str = "RPC_URL_XDC";
@@ -46,6 +51,10 @@ pub const ENV_RPC_UNICHAIN_SEPOLIA: &str = "RPC_URL_UNICHAIN_SEPOLIA";
 pub const ENV_RPC_MONAD: &str = "RPC_URL_MONAD";
 pub const ENV_RPC_NEAR: &str = "RPC_URL_NEAR";
 pub const ENV_RPC_NEAR_TESTNET: &str = "RPC_URL_NEAR_TESTNET";
+
+// Stellar RPC (Horizon/Soroban) URLs
+pub const ENV_RPC_STELLAR: &str = "RPC_URL_STELLAR";
+pub const ENV_RPC_STELLAR_TESTNET: &str = "RPC_URL_STELLAR_TESTNET";
 pub const ENV_RPC_FOGO: &str = "RPC_URL_FOGO";
 pub const ENV_RPC_FOGO_TESTNET: &str = "RPC_URL_FOGO_TESTNET";
 
@@ -78,6 +87,8 @@ pub fn rpc_env_name_from_network(network: Network) -> &'static str {
         Network::Monad => ENV_RPC_MONAD,
         Network::Near => ENV_RPC_NEAR,
         Network::NearTestnet => ENV_RPC_NEAR_TESTNET,
+        Network::Stellar => ENV_RPC_STELLAR,
+        Network::StellarTestnet => ENV_RPC_STELLAR_TESTNET,
         Network::Fogo => ENV_RPC_FOGO,
         Network::FogoTestnet => ENV_RPC_FOGO_TESTNET,
     }
@@ -234,6 +245,54 @@ impl SignerType {
                     .map_err(|e| format!("Failed to parse NEAR private key: {}", e))?;
 
                 Ok((secret_key, account_id))
+            }
+        }
+    }
+
+    /// Retrieves Stellar secret key from environment variables.
+    ///
+    /// Environment variables:
+    /// - `STELLAR_PRIVATE_KEY_MAINNET` — Stellar secret key for mainnet (S... format)
+    /// - `STELLAR_PRIVATE_KEY_TESTNET` — Stellar secret key for testnet (S... format)
+    /// - `STELLAR_PRIVATE_KEY` — fallback for all networks if network-specific keys are not set
+    ///
+    /// Returns the raw secret key string. Parsing into the Stellar SDK keypair
+    /// is done in the StellarProvider to avoid adding stellar-sdk dependency here.
+    pub fn get_stellar_secret_key(
+        &self,
+        network: Network,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        match self {
+            SignerType::PrivateKey => {
+                let secret_key = if network.is_testnet() {
+                    env::var(ENV_STELLAR_PRIVATE_KEY_TESTNET)
+                        .or_else(|_| env::var(ENV_STELLAR_PRIVATE_KEY))
+                        .map_err(|_| {
+                            format!(
+                                "env {} or {} not set",
+                                ENV_STELLAR_PRIVATE_KEY_TESTNET, ENV_STELLAR_PRIVATE_KEY
+                            )
+                        })?
+                } else {
+                    env::var(ENV_STELLAR_PRIVATE_KEY_MAINNET)
+                        .or_else(|_| env::var(ENV_STELLAR_PRIVATE_KEY))
+                        .map_err(|_| {
+                            format!(
+                                "env {} or {} not set",
+                                ENV_STELLAR_PRIVATE_KEY_MAINNET, ENV_STELLAR_PRIVATE_KEY
+                            )
+                        })?
+                };
+
+                // Basic validation: Stellar secret keys start with 'S'
+                if !secret_key.starts_with('S') {
+                    return Err(format!(
+                        "Invalid Stellar secret key format: must start with 'S'"
+                    )
+                    .into());
+                }
+
+                Ok(secret_key)
             }
         }
     }

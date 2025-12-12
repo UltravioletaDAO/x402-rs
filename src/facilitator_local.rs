@@ -9,14 +9,17 @@
 //! - Contract interaction using Alloy
 //! - Network-specific configuration via [`ProviderCache`] and [`USDCDeployment`]
 
+use std::str::FromStr;
 use std::sync::Arc;
 use tracing::instrument;
 
 use crate::chain::FacilitatorLocalError;
 use crate::facilitator::Facilitator;
+use crate::network::Network;
 use crate::provider_cache::ProviderMap;
 use crate::types::{
-    SettleRequest, SettleResponse, SupportedPaymentKindsResponse, VerifyRequest, VerifyResponse,
+    SettleRequest, SettleResponse, SupportedPaymentKind, SupportedPaymentKindsResponse,
+    VerifyRequest, VerifyResponse, X402Version,
 };
 
 // Compliance module
@@ -159,6 +162,24 @@ where
             let mut supported_kinds = supported.map(|k| k.kinds).unwrap_or_default();
             kinds.append(&mut supported_kinds);
         }
+
+        // Add v2 entries with CAIP-2 network identifiers for each v1 entry
+        let v2_kinds: Vec<SupportedPaymentKind> = kinds
+            .iter()
+            .filter_map(|v1_kind| {
+                // Parse the v1 network string to get the Network enum
+                Network::from_str(&v1_kind.network).ok().map(|network| {
+                    SupportedPaymentKind {
+                        x402_version: X402Version::V2,
+                        scheme: v1_kind.scheme.clone(),
+                        network: network.to_caip2(),
+                        extra: v1_kind.extra.clone(),
+                    }
+                })
+            })
+            .collect();
+
+        kinds.extend(v2_kinds);
         Ok(SupportedPaymentKindsResponse { kinds })
     }
 

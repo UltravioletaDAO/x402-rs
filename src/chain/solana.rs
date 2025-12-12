@@ -616,7 +616,7 @@ impl FromEnvByNetworkBuild for SolanaProvider {
                 return Ok(None);
             }
         };
-        let keypair = from_env::SignerType::from_env()?.make_solana_wallet()?;
+        let keypair = from_env::SignerType::from_env()?.make_solana_wallet(network)?;
         let max_compute_unit_limit = Self::max_compute_unit_limit_from_env(network);
         let max_compute_unit_price = Self::max_compute_unit_price_from_env(network);
         let provider = SolanaProvider::try_new(

@@ -34,9 +34,10 @@ You are working on the x402-rs Payment Facilitator infrastructure located at `z:
 - **Route53**: DNS records for facilitator.ultravioletadao.xyz
 - **Cost**: ~$43-48/month optimized configuration
 
-**Supported Networks** (20 total):
-- **12 Mainnets**: Ethereum, Base, Arbitrum, Optimism, Polygon, Avalanche, Celo, Solana, NEAR, HyperEVM, Unichain, Monad
-- **8 Testnets**: Base Sepolia, Optimism Sepolia, Polygon Amoy, Avalanche Fuji, Celo Sepolia, Solana Devnet, NEAR Testnet, HyperEVM Testnet
+**Supported Networks** (20+ total, expanding):
+- **12+ Mainnets**: Ethereum, Base, Arbitrum, Optimism, Polygon, Avalanche, Celo, Solana, NEAR, HyperEVM, Unichain, Monad
+- **8+ Testnets**: Base Sepolia, Optimism Sepolia, Polygon Amoy, Avalanche Fuji, Celo Sepolia, Solana Devnet, NEAR Testnet, HyperEVM Testnet
+- **Planned**: Stellar (mainnet + testnet), Algorand (mainnet + testnet)
 
 **Key Infrastructure Characteristics**:
 - Uses NAT instance instead of NAT Gateway to save ~$32/month
@@ -71,6 +72,22 @@ You are working on the x402-rs Payment Facilitator infrastructure located at `z:
   }
   ```
 - `facilitator-rpc-testnet-bcODyg` - Testnet RPC URLs
+
+**Planned Secrets for Stellar/Algorand**:
+- `facilitator-stellar-keypair-mainnet` - Stellar mainnet (S... secret key)
+- `facilitator-stellar-keypair-testnet` - Stellar testnet
+- `facilitator-algorand-keypair-mainnet` - Algorand mainnet (base64 Ed25519)
+- `facilitator-algorand-keypair-testnet` - Algorand testnet
+
+**Planned RPC additions to `facilitator-rpc-mainnet`**:
+```json
+{
+  "stellar": "https://soroban-mainnet.stellar.org",
+  "stellar-horizon": "https://horizon.stellar.org",
+  "algorand-algod": "https://mainnet-api.algonode.cloud",
+  "algorand-indexer": "https://mainnet-idx.algonode.cloud"
+}
+```
 
 **Critical IAM Pattern**: When adding new secrets, the ECS execution role policy MUST be updated:
 ```json
@@ -235,3 +252,169 @@ If you encounter issues or questions related to:
 - Observability strategy - Rust tracing/logging + AWS CloudWatch configuration
 - Security architecture - Rust crypto implementation + AWS Secrets Manager integration
 - Deployment pipeline optimization - Rust build performance + ECR/ECS deployment mechanics
+
+---
+
+## Stellar/Algorand Infrastructure Planning
+
+**Reference Documentation**:
+- `docs/STELLAR_IMPLEMENTATION_PLAN.md`
+- `docs/ALGORAND_IMPLEMENTATION_PLAN.md`
+- `docs/NON_EVM_CHAIN_RESEARCH.md`
+
+### Stellar Infrastructure Requirements
+
+**New Environment Variables** (task definition):
+```json
+{
+  "name": "RPC_URL_STELLAR_MAINNET",
+  "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-rpc-mainnet-XXXXX:stellar::"
+},
+{
+  "name": "RPC_URL_STELLAR_TESTNET",
+  "value": "https://soroban-testnet.stellar.org"
+},
+{
+  "name": "STELLAR_PRIVATE_KEY_MAINNET",
+  "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-stellar-keypair-mainnet-XXXXX:private_key::"
+},
+{
+  "name": "STELLAR_PRIVATE_KEY_TESTNET",
+  "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-stellar-keypair-testnet-XXXXX:private_key::"
+}
+```
+
+**Facilitator Wallet Funding**:
+- Mainnet: Minimum 10 XLM (recommended 100 XLM)
+- Testnet: Use Friendbot (free XLM faucet)
+- Fee per transaction: ~0.0001 XLM
+
+**CloudWatch Alarms (Stellar-specific)**:
+```hcl
+resource "aws_cloudwatch_metric_alarm" "stellar_balance_low" {
+  alarm_name          = "facilitator-stellar-balance-low"
+  comparison_operator = "LessThanThreshold"
+  evaluation_periods  = "1"
+  metric_name         = "stellar_facilitator_balance_xlm"
+  namespace           = "Facilitator"
+  period              = "300"
+  statistic           = "Average"
+  threshold           = "10"  # 10 XLM warning threshold
+  alarm_description   = "Stellar facilitator balance below 10 XLM"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+}
+```
+
+### Algorand Infrastructure Requirements
+
+**New Environment Variables** (task definition):
+```json
+{
+  "name": "ALGOD_URL_MAINNET",
+  "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-rpc-mainnet-XXXXX:algorand-algod::"
+},
+{
+  "name": "INDEXER_URL_MAINNET",
+  "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-rpc-mainnet-XXXXX:algorand-indexer::"
+},
+{
+  "name": "ALGOD_URL_TESTNET",
+  "value": "https://testnet-api.algonode.cloud"
+},
+{
+  "name": "INDEXER_URL_TESTNET",
+  "value": "https://testnet-idx.algonode.cloud"
+},
+{
+  "name": "ALGORAND_PRIVATE_KEY_MAINNET",
+  "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-algorand-keypair-mainnet-XXXXX:private_key::"
+},
+{
+  "name": "ALGORAND_PRIVATE_KEY_TESTNET",
+  "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-algorand-keypair-testnet-XXXXX:private_key::"
+}
+```
+
+**Important**: Algorand requires BOTH algod and indexer endpoints. Indexer is used for replay protection (checking if tx already exists).
+
+**Facilitator Wallet Funding**:
+- Mainnet: Minimum 0.1 ALGO (account minimum), recommended 10 ALGO
+- Testnet: Use Algorand Dispenser (free ALGO faucet)
+- Fee per transaction: 0.001 ALGO
+
+**CloudWatch Alarms (Algorand-specific)**:
+```hcl
+resource "aws_cloudwatch_metric_alarm" "algorand_balance_low" {
+  alarm_name          = "facilitator-algorand-balance-low"
+  comparison_operator = "LessThanThreshold"
+  evaluation_periods  = "1"
+  metric_name         = "algorand_facilitator_balance_algo"
+  namespace           = "Facilitator"
+  period              = "300"
+  statistic           = "Average"
+  threshold           = "1"  # 1 ALGO warning threshold (low due to cheap fees)
+  alarm_description   = "Algorand facilitator balance below 1 ALGO"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+}
+```
+
+### IAM Policy Updates for New Chains
+
+When adding Stellar and Algorand, update the execution role policy:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["secretsmanager:GetSecretValue"],
+      "Resource": [
+        "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-stellar-keypair-mainnet-*",
+        "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-stellar-keypair-testnet-*",
+        "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-algorand-keypair-mainnet-*",
+        "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-algorand-keypair-testnet-*"
+      ]
+    }
+  ]
+}
+```
+
+### RPC Provider Recommendations
+
+| Chain | Free Tier | Premium Option |
+|-------|-----------|----------------|
+| **Stellar** | soroban.stellar.org (~10 req/s) | QuickNode, Blockdaemon |
+| **Algorand** | algonode.cloud (~10 req/s) | PureStake, Algorand Foundation |
+
+**Note**: Free tiers are sufficient for development/testing. Production with >100 TPS should use premium providers.
+
+### Balance API Patterns (Frontend)
+
+For displaying facilitator wallet balances on the landing page:
+
+**Stellar Balance** (CORS-enabled):
+```javascript
+// Horizon API (public, CORS-enabled)
+const response = await fetch('https://horizon.stellar.org/accounts/GXXX...');
+const data = await response.json();
+const xlmBalance = data.balances.find(b => b.asset_type === 'native').balance;
+```
+
+**Algorand Balance** (CORS-enabled):
+```javascript
+// AlgoNode public API (CORS-enabled)
+const response = await fetch('https://mainnet-idx.algonode.cloud/v2/accounts/ALGO_ADDRESS');
+const data = await response.json();
+const algoBalance = data.account.amount / 1_000_000;  // Convert from microALGO
+```
+
+### Cost Impact Assessment
+
+Adding Stellar and Algorand should have **minimal cost impact**:
+- No new AWS services required (uses existing ECS, Secrets Manager)
+- Free RPC tiers sufficient for moderate volume
+- ~4 new secrets in Secrets Manager (~$0.40/month per secret = $1.60/month total)
+- Wallet funding: ~$50 initial for both chains (XLM + ALGO)
+
+**Estimated total cost increase**: ~$2/month AWS + ~$50 one-time wallet funding

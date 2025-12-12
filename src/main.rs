@@ -48,6 +48,7 @@ mod sig_down;
 mod telemetry;
 mod timestamp;
 mod types;
+mod types_v2;
 
 /// Initializes the x402 facilitator server.
 ///

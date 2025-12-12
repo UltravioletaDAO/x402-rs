@@ -209,6 +209,13 @@ impl Caip2NetworkId {
             None
         }
     }
+
+    /// Parse a CAIP-2 string into a Caip2NetworkId.
+    ///
+    /// This is a convenience wrapper around `FromStr::from_str`.
+    pub fn parse(s: &str) -> Result<Self, Caip2ParseError> {
+        s.parse()
+    }
 }
 
 impl Display for Caip2NetworkId {

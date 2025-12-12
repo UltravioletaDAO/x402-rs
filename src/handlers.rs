@@ -421,7 +421,7 @@ where
     let body: SettleRequest = match serde_json::from_str::<SettleRequest>(body_str) {
         Ok(req) => {
             // Deserialization succeeded - log the parsed authorization details with types
-            debug!("✓ Deserialization SUCCEEDED");
+            debug!("[OK] Deserialization SUCCEEDED");
             debug!("Parsed SettleRequest:");
             debug!("  - x402_version: {:?}", req.x402_version);
             debug!(
@@ -499,7 +499,7 @@ where
         }
         Err(e) => {
             // Deserialization failed - log detailed error information
-            error!("✗ Deserialization FAILED");
+            error!("[FAIL] Deserialization FAILED");
             error!("Serde error: {}", e);
             error!("Error details:");
             error!("  - Error message: {}", e.to_string());
@@ -507,13 +507,13 @@ where
             // Try to extract more specific information about the error
             let error_msg = e.to_string();
             if error_msg.contains("invalid type") {
-                error!("  ⚠ TYPE MISMATCH detected");
+                error!("  [WARN] TYPE MISMATCH detected");
             }
             if error_msg.contains("missing field") {
-                error!("  ⚠ MISSING FIELD detected");
+                error!("  [WARN] MISSING FIELD detected");
             }
             if error_msg.contains("unknown field") {
-                error!("  ⚠ UNKNOWN/EXTRA FIELD detected");
+                error!("  [WARN] UNKNOWN/EXTRA FIELD detected");
             }
 
             // Try to parse as generic JSON to identify which field is problematic
@@ -549,22 +549,22 @@ where
                                     // Highlight specific problematic fields
                                     if key == "validAfter" || key == "validBefore" {
                                         if value.is_number() {
-                                            error!("    ⚠ EXPECTED: string, RECEIVED: number");
-                                            error!("    ⚠ This field should be a STRING like \"1732406400\", not a number");
+                                            error!("    [WARN] EXPECTED: string, RECEIVED: number");
+                                            error!("    [WARN] This field should be a STRING like \"1732406400\", not a number");
                                         }
                                     }
                                     if key == "value" {
                                         if value.is_number() {
-                                            error!("    ⚠ EXPECTED: string, RECEIVED: number");
-                                            error!("    ⚠ This field should be a STRING like \"10000\", not a number");
+                                            error!("    [WARN] EXPECTED: string, RECEIVED: number");
+                                            error!("    [WARN] This field should be a STRING like \"10000\", not a number");
                                         }
                                     }
                                     if key == "nonce" {
                                         if let Some(s) = value.as_str() {
                                             if !s.starts_with("0x") || s.len() != 66 {
-                                                error!("    ⚠ EXPECTED: 0x-prefixed 64-char hex string (66 chars total)");
+                                                error!("    [WARN] EXPECTED: 0x-prefixed 64-char hex string (66 chars total)");
                                                 error!(
-                                                    "    ⚠ RECEIVED: string with length {}",
+                                                    "    [WARN] RECEIVED: string with length {}",
                                                     s.len()
                                                 );
                                             }
@@ -618,7 +618,7 @@ where
             if valid_response.success {
                 if let Some(ref tx_hash) = valid_response.transaction {
                     info!(
-                        "✓ SETTLEMENT SUCCESSFUL - network={:?}, payer={:?}, tx_hash={:?}",
+                        "[OK] SETTLEMENT SUCCESSFUL - network={:?}, payer={:?}, tx_hash={:?}",
                         valid_response.network, valid_response.payer, tx_hash
                     );
                 } else {
@@ -630,7 +630,7 @@ where
                 }
             } else {
                 error!(
-                    "✗ SETTLEMENT FAILED (success=false) - network={:?}, payer={:?}, error_reason={:?}",
+                    "[FAIL] SETTLEMENT FAILED (success=false) - network={:?}, payer={:?}, error_reason={:?}",
                     valid_response.network,
                     valid_response.payer,
                     valid_response.error_reason
@@ -640,7 +640,7 @@ where
         }
         Err(error) => {
             error!(
-                "✗ SETTLEMENT ERROR - error={:?}, network={:?}",
+                "[FAIL] SETTLEMENT ERROR - error={:?}, network={:?}",
                 error, body.payment_payload.network
             );
             warn!(

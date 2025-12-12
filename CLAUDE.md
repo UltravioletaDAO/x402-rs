@@ -449,6 +449,7 @@ git merge upstream/main      # Follow docs/CUSTOMIZATIONS.md strategy
 3. **Network naming** - Use exact enum names from `src/network.rs` (e.g., "avalanche-fuji", not "fuji" or "avalanche-fuji:43113")
 4. **RPC rate limits** - Free RPC endpoints may throttle; use premium for production
 5. **Gas funds vs payment funds** - Facilitator wallet needs native tokens (ETH/AVAX/SOL) for gas, not payment tokens (USDC)
+6. **NEVER use emojis in Rust code** - No emojis in log messages, comments, or string literals. Use plain text like `[OK]`, `[FAIL]`, `[WARN]` instead of ✓, ✗, ⚠. Emojis cause encoding issues in CloudWatch logs and terminal output.
 
 ## API Endpoints Reference
 

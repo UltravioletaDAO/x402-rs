@@ -29,26 +29,38 @@ use url::Url;
 use crate::network::Network;
 use crate::timestamp::UnixTimestamp;
 
-/// Represents the protocol version. Currently only version 1 is supported.
-#[derive(Debug, Copy, Clone)]
+/// Represents the protocol version. Supports both v1 and v2 of the x402 protocol.
+///
+/// # Protocol Versions
+/// - **V1**: Original x402 protocol with network enum names (e.g., "base", "solana")
+/// - **V2**: Updated protocol using CAIP-2 network identifiers (e.g., "eip155:8453")
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum X402Version {
-    /// Version `1`.
+    /// Version `1` - Legacy format with network enum names
     V1,
+    /// Version `2` - CAIP-2 network identifiers and ResourceInfo separation
+    V2,
+}
+
+impl X402Version {
+    /// Returns the numeric value of the protocol version
+    pub fn as_u8(&self) -> u8 {
+        match self {
+            X402Version::V1 => 1,
+            X402Version::V2 => 2,
+        }
+    }
 }
 
 impl Serialize for X402Version {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match self {
-            X402Version::V1 => serializer.serialize_u8(1),
-        }
+        serializer.serialize_u8(self.as_u8())
     }
 }
 
 impl Display for X402Version {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            X402Version::V1 => write!(f, "1"),
-        }
+        write!(f, "{}", self.as_u8())
     }
 }
 
@@ -69,6 +81,7 @@ impl TryFrom<u8> for X402Version {
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
             1 => Ok(X402Version::V1),
+            2 => Ok(X402Version::V2),
             _ => Err(X402VersionError(value)),
         }
     }

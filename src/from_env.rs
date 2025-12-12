@@ -12,6 +12,8 @@ pub const ENV_EVM_PRIVATE_KEY: &str = "EVM_PRIVATE_KEY";
 pub const ENV_EVM_PRIVATE_KEY_MAINNET: &str = "EVM_PRIVATE_KEY_MAINNET";
 pub const ENV_EVM_PRIVATE_KEY_TESTNET: &str = "EVM_PRIVATE_KEY_TESTNET";
 pub const ENV_SOLANA_PRIVATE_KEY: &str = "SOLANA_PRIVATE_KEY";
+pub const ENV_SOLANA_PRIVATE_KEY_MAINNET: &str = "SOLANA_PRIVATE_KEY_MAINNET";
+pub const ENV_SOLANA_PRIVATE_KEY_TESTNET: &str = "SOLANA_PRIVATE_KEY_TESTNET";
 pub const ENV_NEAR_PRIVATE_KEY: &str = "NEAR_PRIVATE_KEY";
 pub const ENV_NEAR_PRIVATE_KEY_MAINNET: &str = "NEAR_PRIVATE_KEY_MAINNET";
 pub const ENV_NEAR_PRIVATE_KEY_TESTNET: &str = "NEAR_PRIVATE_KEY_TESTNET";
@@ -172,11 +174,37 @@ impl SignerType {
         }
     }
 
-    pub fn make_solana_wallet(&self) -> Result<Keypair, Box<dyn std::error::Error>> {
+    /// Constructs a Solana [`Keypair`] based on the [`SignerType`] selected from environment.
+    ///
+    /// Environment variables:
+    /// - `SOLANA_PRIVATE_KEY_MAINNET` — base58 private key for mainnet networks
+    /// - `SOLANA_PRIVATE_KEY_TESTNET` — base58 private key for testnet networks
+    /// - `SOLANA_PRIVATE_KEY` — fallback for all networks if network-specific keys are not set
+    pub fn make_solana_wallet(
+        &self,
+        network: Network,
+    ) -> Result<Keypair, Box<dyn std::error::Error>> {
         match self {
             SignerType::PrivateKey => {
-                let private_key = env::var(ENV_SOLANA_PRIVATE_KEY)
-                    .map_err(|_| format!("env {ENV_SOLANA_PRIVATE_KEY} not set"))?;
+                let private_key = if network.is_testnet() {
+                    env::var(ENV_SOLANA_PRIVATE_KEY_TESTNET)
+                        .or_else(|_| env::var(ENV_SOLANA_PRIVATE_KEY))
+                        .map_err(|_| {
+                            format!(
+                                "env {} or {} not set",
+                                ENV_SOLANA_PRIVATE_KEY_TESTNET, ENV_SOLANA_PRIVATE_KEY
+                            )
+                        })?
+                } else {
+                    env::var(ENV_SOLANA_PRIVATE_KEY_MAINNET)
+                        .or_else(|_| env::var(ENV_SOLANA_PRIVATE_KEY))
+                        .map_err(|_| {
+                            format!(
+                                "env {} or {} not set",
+                                ENV_SOLANA_PRIVATE_KEY_MAINNET, ENV_SOLANA_PRIVATE_KEY
+                            )
+                        })?
+                };
                 let keypair = Keypair::from_base58_string(private_key.as_str());
                 Ok(keypair)
             }

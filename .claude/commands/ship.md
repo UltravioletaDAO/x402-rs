@@ -1,10 +1,18 @@
 Full automated deployment pipeline - from uncommitted changes to production verification:
 
+**Phase 0: Secrets Validation (CRITICAL - DO NOT SKIP)**
+1. Validate all secrets exist before ANY deployment:
+   ```bash
+   cd terraform/environments/production && bash validate_secrets.sh us-east-2
+   ```
+   **STOP IMMEDIATELY if validation fails** - this prevents broken production deployments
+
 **Phase 1: Pre-flight Checks**
-1. Run `git status` to check for uncommitted changes
-2. Run `git log -1` to see last commit
-3. Check if there are any uncommitted changes to deploy
-4. Verify `.dockerignore` exists and Cargo.toml is optimized
+2. Check current deployed version: `curl -s https://facilitator.ultravioletadao.xyz/version`
+3. Run `git status` to check for uncommitted changes
+4. Run `git log -1` to see last commit
+5. Check if there are any uncommitted changes to deploy
+6. Verify `.dockerignore` exists and Cargo.toml is optimized
 
 **Phase 2: Commit Changes (if uncommitted changes exist)**
 5. Run `git diff` to analyze what changed
@@ -14,9 +22,11 @@ Full automated deployment pipeline - from uncommitted changes to production veri
 9. Confirm commit was successful
 
 **Phase 3: Version Tagging**
-10. Ask user for version tag (e.g., v1.2.1, v1.4.0) OR auto-suggest incrementing the last tag
-11. Run: `git tag [version]`
-12. Optional: `git push && git push --tags` (ask user if they want to push to remote)
+10. Ask user for version tag (e.g., v1.2.1, v1.4.0) OR auto-suggest incrementing from DEPLOYED version (not local)
+11. **CRITICAL**: Update Cargo.toml version to match (without 'v' prefix, e.g., "1.7.9")
+12. Commit the version bump: `git add Cargo.toml && git commit -m "chore: bump version to [version]"`
+13. Run: `git tag [version]`
+14. Optional: `git push && git push --tags` (ask user if they want to push to remote)
 
 **Phase 4: Build & Push**
 13. Format code: `just format-all` (optional, report if fails)
@@ -51,7 +61,12 @@ Full automated deployment pipeline - from uncommitted changes to production veri
     ```
 29. Run health check: `curl https://facilitator.ultravioletadao.xyz/health`
 30. Verify branding: `curl https://facilitator.ultravioletadao.xyz/ | grep -i "Ultravioleta"`
-31. Check supported networks: `curl https://facilitator.ultravioletadao.xyz/supported | jq '.kinds | length'`
+31. **CRITICAL**: Verify ALL network families are present (not just count):
+    ```bash
+    curl -s https://facilitator.ultravioletadao.xyz/supported | jq '.kinds[].network' | sort
+    ```
+    Must include: EVM networks (18), Solana/Fogo (4), NEAR (2), Stellar (2) = 26 total
+    **If ANY family is missing (especially NEAR or Stellar), deployment FAILED - check logs**
 32. Verify blacklist loaded: `curl https://facilitator.ultravioletadao.xyz/blacklist | jq '{totalBlocked,loadedAtStartup}'`
 
 **Phase 7: Final Report**
@@ -89,3 +104,13 @@ If ANY step fails, STOP immediately and report the error with specific troublesh
 - Testnets must use testnet wallet (0x34033041...)
 - Mainnets must use mainnet wallet (0x103040...)
 - Total blocked addresses should be > 0
+- **ALL 26 networks must be present** (EVM + Solana + NEAR + Stellar)
+- NEAR must show feePayer: `uvd-facilitator.near` / `uvd-facilitator.testnet`
+- Stellar must show public key starting with `G...`
+
+**If networks are missing after deployment:**
+1. Check logs: `aws logs tail /ecs/facilitator-production --since 5m --region us-east-2 | grep -i "skipping\|warn"`
+2. Look for "no RPC URL configured" messages
+3. Verify task definition has all secrets: `aws ecs describe-task-definition --task-definition facilitator-production --region us-east-2 | jq '.taskDefinition.containerDefinitions[0].secrets[].name' | sort`
+4. Re-run secrets validation: `cd terraform/environments/production && bash validate_secrets.sh us-east-2`
+5. See `terraform/environments/production/SECRETS_MANAGEMENT.md` for fixing

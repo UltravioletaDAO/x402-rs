@@ -1,5 +1,92 @@
 # Changelog
 
+## [1.8.0] - 2025-12-12
+
+### Added - x402 Protocol v2 Support
+
+This release adds full support for the x402 Protocol v2 specification, enabling CAIP-2 chain-agnostic network identifiers while maintaining complete backward compatibility with v1 clients.
+
+#### New Features
+
+- **CAIP-2 Network Identifiers**: Networks can now be specified using the [CAIP-2 standard](https://github.com/ChainAgnostic/CAIPs/blob/main/CAIPs/caip-2.md)
+  - EVM chains: `eip155:{chainId}` (e.g., `eip155:8453` for Base)
+  - Solana: `solana:{genesisHash}` (e.g., `solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp`)
+  - NEAR: `near:mainnet` / `near:testnet`
+  - Stellar: `stellar:pubnet` / `stellar:testnet`
+
+- **Dual Protocol Support on `/verify` and `/settle`**:
+  - Auto-detects v1 vs v2 request format from request body
+  - V1 requests use network strings: `"network": "base-mainnet"`
+  - V2 requests use CAIP-2: `"network": "eip155:8453"`
+  - Both formats processed identically after parsing
+
+- **Enhanced `/supported` Endpoint**:
+  - Returns both v1 and v2 entries for each network
+  - V1 entry: `{ "x402Version": 1, "network": "base-mainnet", "scheme": "exact" }`
+  - V2 entry: `{ "x402Version": 2, "network": "eip155:8453", "scheme": "exact" }`
+  - Clients can filter by `x402Version` to find their preferred format
+
+#### New Files
+
+- `src/caip2.rs` - CAIP-2 parsing and validation
+  - `Namespace` enum: `Eip155`, `Solana`, `Near`, `Stellar`, `Fogo`
+  - `Caip2NetworkId` struct with parsing, display, and serde support
+  - Validation rules per namespace (chain ID, genesis hash, network name)
+
+- `src/types_v2.rs` - v2 protocol types
+  - `ResourceInfo` - Separated resource metadata
+  - `PaymentRequirementsV2` - Requirements with CAIP-2 network
+  - `PaymentPayloadV2` - Payload with extensions support
+  - `VerifyRequestEnvelope` / `SettleRequestEnvelope` - Dual v1/v2 request handling
+  - Conversion traits between v1 and v2 types
+
+#### Modified Files
+
+- `src/network.rs` - Added `FromStr`, `to_caip2()`, `from_caip2()` methods
+- `src/handlers.rs` - Updated verify/settle handlers for dual protocol support
+- `src/facilitator_local.rs` - `/supported` returns both v1 and v2 entries
+- `src/lib.rs` - Exported new modules
+
+#### Backward Compatibility
+
+- **No breaking changes** - All existing v1 clients continue to work unchanged
+- V1 network strings (`base-mainnet`) still fully supported
+- V1 response formats unchanged
+- Existing integrations require no modifications
+
+#### Example Requests
+
+**V1 Request (unchanged):**
+```json
+{
+  "x402Version": 1,
+  "paymentPayload": {
+    "network": "base-mainnet",
+    ...
+  }
+}
+```
+
+**V2 Request (new):**
+```json
+{
+  "x402Version": 2,
+  "paymentPayload": {
+    "network": "eip155:8453",
+    ...
+  }
+}
+```
+
+---
+
+## [1.7.9] - 2025-12-11
+
+### Fixed
+- Removed emojis from Rust log messages to prevent CloudWatch encoding issues
+
+---
+
 ## [Unreleased] - 2025-10-28
 
 ### Updated - 2025-10-28 (Evening)

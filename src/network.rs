@@ -151,6 +151,52 @@ impl Display for Network {
     }
 }
 
+/// Error type for parsing Network from string.
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("Unknown network: {0}")]
+pub struct NetworkParseError(pub String);
+
+impl FromStr for Network {
+    type Err = NetworkParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "base-sepolia" => Ok(Network::BaseSepolia),
+            "base" => Ok(Network::Base),
+            "xdc" => Ok(Network::XdcMainnet),
+            "avalanche-fuji" => Ok(Network::AvalancheFuji),
+            "avalanche" => Ok(Network::Avalanche),
+            "xrpl-evm" => Ok(Network::XrplEvm),
+            "solana" => Ok(Network::Solana),
+            "solana-devnet" => Ok(Network::SolanaDevnet),
+            "polygon-amoy" => Ok(Network::PolygonAmoy),
+            "polygon" => Ok(Network::Polygon),
+            "optimism" => Ok(Network::Optimism),
+            "optimism-sepolia" => Ok(Network::OptimismSepolia),
+            "celo" => Ok(Network::Celo),
+            "celo-sepolia" => Ok(Network::CeloSepolia),
+            "hyperevm" => Ok(Network::HyperEvm),
+            "hyperevm-testnet" => Ok(Network::HyperEvmTestnet),
+            "sei" => Ok(Network::Sei),
+            "sei-testnet" => Ok(Network::SeiTestnet),
+            "ethereum" => Ok(Network::Ethereum),
+            "ethereum-sepolia" => Ok(Network::EthereumSepolia),
+            "arbitrum" => Ok(Network::Arbitrum),
+            "arbitrum-sepolia" => Ok(Network::ArbitrumSepolia),
+            "unichain" => Ok(Network::Unichain),
+            "unichain-sepolia" => Ok(Network::UnichainSepolia),
+            "monad" => Ok(Network::Monad),
+            "near" => Ok(Network::Near),
+            "near-testnet" => Ok(Network::NearTestnet),
+            "stellar" => Ok(Network::Stellar),
+            "stellar-testnet" => Ok(Network::StellarTestnet),
+            "fogo" => Ok(Network::Fogo),
+            "fogo-testnet" => Ok(Network::FogoTestnet),
+            _ => Err(NetworkParseError(s.to_string())),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum NetworkFamily {
     Evm,

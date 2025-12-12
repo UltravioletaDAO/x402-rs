@@ -14,24 +14,11 @@ data "aws_route53_zone" "main" {
   private_zone = false
 }
 
-# Secrets for facilitator
-data "aws_secretsmanager_secret" "evm_private_key" {
-  name = var.evm_secret_name
-}
-
-data "aws_secretsmanager_secret" "solana_keypair" {
-  name = var.solana_secret_name
-}
-
-# RPC endpoints secret (QuickNode mainnet endpoints)
-data "aws_secretsmanager_secret" "rpc_mainnet" {
-  name = "facilitator-rpc-mainnet"
-}
-
-# RPC endpoints secret (testnet endpoints)
-data "aws_secretsmanager_secret" "rpc_testnet" {
-  name = "facilitator-rpc-testnet"
-}
+# ============================================================================
+# Secrets Manager References
+# ============================================================================
+# All secret data sources are now defined in secrets.tf
+# This ensures consistency and makes it easy to add new networks
 
 # ============================================================================
 # VPC and Networking
@@ -388,6 +375,7 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution" {
 }
 
 # Policy for accessing secrets
+# Uses local.all_secret_arns from secrets.tf to ensure all secrets are accessible
 resource "aws_iam_role_policy" "secrets_access" {
   name = "secrets-access"
   role = aws_iam_role.ecs_task_execution.id
@@ -400,12 +388,7 @@ resource "aws_iam_role_policy" "secrets_access" {
         Action = [
           "secretsmanager:GetSecretValue"
         ]
-        Resource = [
-          data.aws_secretsmanager_secret.evm_private_key.arn,
-          data.aws_secretsmanager_secret.solana_keypair.arn,
-          data.aws_secretsmanager_secret.rpc_mainnet.arn,
-          data.aws_secretsmanager_secret.rpc_testnet.arn
-        ]
+        Resource = local.all_secret_arns
       }
     ]
   })
@@ -523,44 +506,9 @@ resource "aws_ecs_task_definition" "facilitator" {
         }
       ]
 
-      secrets = [
-        {
-          name      = "EVM_PRIVATE_KEY"
-          valueFrom = "${data.aws_secretsmanager_secret.evm_private_key.arn}:private_key::"
-        },
-        {
-          name      = "SOLANA_PRIVATE_KEY"
-          valueFrom = "${data.aws_secretsmanager_secret.solana_keypair.arn}:private_key::"
-        },
-        {
-          name      = "RPC_URL_BASE"
-          valueFrom = "${data.aws_secretsmanager_secret.rpc_mainnet.arn}:base::"
-        },
-        {
-          name      = "RPC_URL_AVALANCHE"
-          valueFrom = "${data.aws_secretsmanager_secret.rpc_mainnet.arn}:avalanche::"
-        },
-        {
-          name      = "RPC_URL_POLYGON"
-          valueFrom = "${data.aws_secretsmanager_secret.rpc_mainnet.arn}:polygon::"
-        },
-        {
-          name      = "RPC_URL_OPTIMISM"
-          valueFrom = "${data.aws_secretsmanager_secret.rpc_mainnet.arn}:optimism::"
-        },
-        {
-          name      = "RPC_URL_HYPEREVM"
-          valueFrom = "${data.aws_secretsmanager_secret.rpc_mainnet.arn}:hyperevm::"
-        },
-        {
-          name      = "RPC_URL_SOLANA"
-          valueFrom = "${data.aws_secretsmanager_secret.rpc_mainnet.arn}:solana::"
-        },
-        {
-          name      = "RPC_URL_SOLANA_DEVNET"
-          valueFrom = "${data.aws_secretsmanager_secret.rpc_testnet.arn}:solana-devnet::"
-        }
-      ]
+      # All secrets are defined in secrets.tf (local.all_task_secrets)
+      # This ensures consistency and makes it impossible to forget a secret
+      secrets = local.all_task_secrets
 
       logConfiguration = {
         logDriver = "awslogs"

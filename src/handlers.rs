@@ -22,7 +22,10 @@ use crate::chain::FacilitatorLocalError;
 use crate::facilitator::Facilitator;
 use crate::types::{
     ErrorResponse, FacilitatorErrorReason, MixedAddress, SettleRequest, VerifyRequest,
-    VerifyResponse,
+    VerifyResponse, X402Version,
+};
+use crate::types_v2::{
+    SettleRequestEnvelope, VerifyRequestEnvelope,
 };
 
 /// `GET /verify`: Returns a machine-readable description of the `/verify` endpoint.
@@ -365,24 +368,188 @@ where
 /// [`PaymentRequirements`], including signature validity, scheme match, and fund sufficiency.
 ///
 /// Responds with a [`VerifyResponse`] indicating whether the payment can be accepted.
+///
+/// Supports both x402 v1 and v2 protocol formats. The version is auto-detected from the
+/// request body structure.
 #[instrument(skip_all)]
 pub async fn post_verify<A>(
     State(facilitator): State<A>,
-    Json(body): Json<VerifyRequest>,
+    raw_body: Bytes,
 ) -> impl IntoResponse
 where
     A: Facilitator,
     A::Error: IntoResponse,
 {
-    match facilitator.verify(&body).await {
+    // Parse the raw body as UTF-8
+    let body_str = match std::str::from_utf8(&raw_body) {
+        Ok(s) => s,
+        Err(e) => {
+            error!("Failed to decode verify body as UTF-8: {}", e);
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "Invalid UTF-8 in request body"
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    // Try to deserialize as envelope (supports both v1 and v2)
+    let envelope: VerifyRequestEnvelope = match serde_json::from_str(body_str) {
+        Ok(env) => env,
+        Err(e) => {
+            // Try legacy v1 format directly
+            match serde_json::from_str::<VerifyRequest>(body_str) {
+                Ok(v1_req) => VerifyRequestEnvelope::V1(v1_req),
+                Err(_) => {
+                    error!("Failed to deserialize VerifyRequest (v1 or v2): {}", e);
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({
+                            "error": format!("Failed to deserialize VerifyRequest: {}", e)
+                        })),
+                    )
+                        .into_response();
+                }
+            }
+        }
+    };
+
+    // Extract version and convert to v1 request for processing
+    let (version, v1_request) = match &envelope {
+        VerifyRequestEnvelope::V1(req) => {
+            debug!("Processing x402 v1 verify request");
+            (X402Version::V1, req.clone())
+        }
+        VerifyRequestEnvelope::V2(req) => {
+            debug!("Processing x402 v2 verify request with CAIP-2 network: {}", req.network());
+            match req.to_v1() {
+                Ok(v1_req) => (X402Version::V2, v1_req),
+                Err(e) => {
+                    error!("Failed to convert v2 request to v1: {}", e);
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({
+                            "error": format!("Failed to process v2 request: {}", e)
+                        })),
+                    )
+                        .into_response();
+                }
+            }
+        }
+    };
+
+    info!(
+        version = ?version,
+        network = ?v1_request.payment_payload.network,
+        "Verifying payment"
+    );
+
+    match facilitator.verify(&v1_request).await {
         Ok(valid_response) => (StatusCode::OK, Json(valid_response)).into_response(),
         Err(error) => {
             tracing::warn!(
                 error = ?error,
-                body = %serde_json::to_string(&body).unwrap_or_else(|_| "<can-not-serialize>".to_string()),
+                version = ?version,
+                body = %serde_json::to_string(&v1_request).unwrap_or_else(|_| "<can-not-serialize>".to_string()),
                 "Verification failed"
             );
             error.into_response()
+        }
+    }
+}
+
+/// Helper function to log detailed deserialization errors for settle requests.
+/// This extracts field-level information from the raw JSON to help debug malformed requests.
+fn log_settle_deserialization_error(body_str: &str, e: &serde_json::Error) {
+    error!("Error details:");
+    error!("  - Error message: {}", e.to_string());
+
+    // Try to extract more specific information about the error
+    let error_msg = e.to_string();
+    if error_msg.contains("invalid type") {
+        error!("  [WARN] TYPE MISMATCH detected");
+    }
+    if error_msg.contains("missing field") {
+        error!("  [WARN] MISSING FIELD detected");
+    }
+    if error_msg.contains("unknown field") {
+        error!("  [WARN] UNKNOWN/EXTRA FIELD detected");
+    }
+
+    // Try to parse as generic JSON to identify which field is problematic
+    match serde_json::from_str::<serde_json::Value>(body_str) {
+        Ok(json_value) => {
+            error!("Raw JSON parsed successfully as generic Value. Checking structure...");
+
+            // Check paymentPayload.payload.authorization fields
+            if let Some(payment_payload) = json_value.get("paymentPayload") {
+                error!("Found paymentPayload");
+
+                if let Some(payload) = payment_payload.get("payload") {
+                    error!("Found paymentPayload.payload");
+
+                    if let Some(authorization) = payload.get("authorization") {
+                        error!("Found paymentPayload.payload.authorization");
+                        error!("Authorization fields:");
+
+                        // Check each field and its type
+                        for (key, value) in
+                            authorization.as_object().unwrap_or(&serde_json::Map::new())
+                        {
+                            let value_type = match value {
+                                serde_json::Value::String(_) => "string",
+                                serde_json::Value::Number(_) => "number",
+                                serde_json::Value::Bool(_) => "bool",
+                                serde_json::Value::Array(_) => "array",
+                                serde_json::Value::Object(_) => "object",
+                                serde_json::Value::Null => "null",
+                            };
+                            error!("  - {}: {} = {:?}", key, value_type, value);
+
+                            // Highlight specific problematic fields
+                            if key == "validAfter" || key == "validBefore" {
+                                if value.is_number() {
+                                    error!("    [WARN] EXPECTED: string, RECEIVED: number");
+                                    error!("    [WARN] This field should be a STRING like \"1732406400\", not a number");
+                                }
+                            }
+                            if key == "value" {
+                                if value.is_number() {
+                                    error!("    [WARN] EXPECTED: string, RECEIVED: number");
+                                    error!("    [WARN] This field should be a STRING like \"10000\", not a number");
+                                }
+                            }
+                            if key == "nonce" {
+                                if let Some(s) = value.as_str() {
+                                    if !s.starts_with("0x") || s.len() != 66 {
+                                        error!("    [WARN] EXPECTED: 0x-prefixed 64-char hex string (66 chars total)");
+                                        error!(
+                                            "    [WARN] RECEIVED: string with length {}",
+                                            s.len()
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        error!("Missing paymentPayload.payload.authorization");
+                    }
+
+                    // Also log signature if present
+                    if let Some(signature) = payload.get("signature") {
+                        error!("Found paymentPayload.payload.signature: {:?}", signature);
+                    }
+                } else {
+                    error!("Missing paymentPayload.payload");
+                }
+            } else {
+                error!("Missing paymentPayload field in root");
+            }
+        }
+        Err(json_err) => {
+            error!("Raw JSON is malformed and cannot be parsed: {}", json_err);
         }
     }
 }
@@ -393,6 +560,9 @@ where
 /// via ERC-3009 `transferWithAuthorization`, and returns a [`SettleResponse`] with transaction details.
 ///
 /// This endpoint is typically called after a successful `/verify` step.
+///
+/// Supports both x402 v1 and v2 protocol formats. The version is auto-detected from the
+/// request body structure.
 #[instrument(skip_all)]
 pub async fn post_settle<A>(State(facilitator): State<A>, raw_body: Bytes) -> impl IntoResponse
 where
@@ -417,192 +587,132 @@ where
     debug!("=== SETTLE REQUEST DEBUG ===");
     debug!("Raw JSON body: {}", body_str);
 
-    // Attempt to deserialize the SettleRequest
-    let body: SettleRequest = match serde_json::from_str::<SettleRequest>(body_str) {
-        Ok(req) => {
-            // Deserialization succeeded - log the parsed authorization details with types
-            debug!("[OK] Deserialization SUCCEEDED");
-            debug!("Parsed SettleRequest:");
-            debug!("  - x402_version: {:?}", req.x402_version);
-            debug!(
-                "  - payment_payload.scheme: {:?}",
-                req.payment_payload.scheme
-            );
-            debug!(
-                "  - payment_payload.network: {:?}",
-                req.payment_payload.network
-            );
-
-            // Log the authorization details based on payload type
-            match &req.payment_payload.payload {
-                crate::types::ExactPaymentPayload::Evm(evm_payload) => {
-                    debug!("  - payload type: EVM");
-                    debug!(
-                        "  - authorization.from: {} (type: EvmAddress)",
-                        evm_payload.authorization.from
-                    );
-                    debug!(
-                        "  - authorization.to: {} (type: EvmAddress)",
-                        evm_payload.authorization.to
-                    );
-                    debug!(
-                        "  - authorization.value: {} (type: TokenAmount/U256 string)",
-                        evm_payload.authorization.value
-                    );
-                    debug!("  - authorization.validAfter: {} (type: UnixTimestamp u64 string, parsed to: {})",
-                        evm_payload.authorization.valid_after.seconds_since_epoch(),
-                        evm_payload.authorization.valid_after.seconds_since_epoch());
-                    debug!("  - authorization.validBefore: {} (type: UnixTimestamp u64 string, parsed to: {})",
-                        evm_payload.authorization.valid_before.seconds_since_epoch(),
-                        evm_payload.authorization.valid_before.seconds_since_epoch());
-                    debug!(
-                        "  - authorization.nonce: {:?} (type: HexEncodedNonce, 32-byte hex string)",
-                        evm_payload.authorization.nonce
-                    );
-                    debug!(
-                        "  - signature: {:?} (type: EvmSignature, hex bytes)",
-                        evm_payload.signature
-                    );
-                }
-                crate::types::ExactPaymentPayload::Solana(solana_payload) => {
-                    debug!("  - payload type: Solana");
-                    debug!(
-                        "  - transaction: {} (truncated)",
-                        &solana_payload.transaction[..solana_payload.transaction.len().min(100)]
-                    );
-                }
-                crate::types::ExactPaymentPayload::Near(near_payload) => {
-                    debug!("  - payload type: NEAR");
-                    debug!(
-                        "  - signed_delegate_action: {} (truncated)",
-                        &near_payload.signed_delegate_action[..near_payload.signed_delegate_action.len().min(100)]
-                    );
-                }
-                crate::types::ExactPaymentPayload::Stellar(stellar_payload) => {
-                    debug!("  - payload type: Stellar");
-                    debug!(
-                        "  - from: {}",
-                        stellar_payload.from
-                    );
-                    debug!(
-                        "  - to: {}",
-                        stellar_payload.to
-                    );
-                    debug!(
-                        "  - amount: {}",
-                        stellar_payload.amount
-                    );
-                }
-            }
-
-            req
-        }
+    // Try to deserialize as envelope (supports both v1 and v2)
+    let envelope: SettleRequestEnvelope = match serde_json::from_str(body_str) {
+        Ok(env) => env,
         Err(e) => {
-            // Deserialization failed - log detailed error information
-            error!("[FAIL] Deserialization FAILED");
-            error!("Serde error: {}", e);
-            error!("Error details:");
-            error!("  - Error message: {}", e.to_string());
-
-            // Try to extract more specific information about the error
-            let error_msg = e.to_string();
-            if error_msg.contains("invalid type") {
-                error!("  [WARN] TYPE MISMATCH detected");
-            }
-            if error_msg.contains("missing field") {
-                error!("  [WARN] MISSING FIELD detected");
-            }
-            if error_msg.contains("unknown field") {
-                error!("  [WARN] UNKNOWN/EXTRA FIELD detected");
-            }
-
-            // Try to parse as generic JSON to identify which field is problematic
-            match serde_json::from_str::<serde_json::Value>(body_str) {
-                Ok(json_value) => {
-                    error!("Raw JSON parsed successfully as generic Value. Checking structure...");
-
-                    // Check paymentPayload.payload.authorization fields
-                    if let Some(payment_payload) = json_value.get("paymentPayload") {
-                        error!("Found paymentPayload");
-
-                        if let Some(payload) = payment_payload.get("payload") {
-                            error!("Found paymentPayload.payload");
-
-                            if let Some(authorization) = payload.get("authorization") {
-                                error!("Found paymentPayload.payload.authorization");
-                                error!("Authorization fields:");
-
-                                // Check each field and its type
-                                for (key, value) in
-                                    authorization.as_object().unwrap_or(&serde_json::Map::new())
-                                {
-                                    let value_type = match value {
-                                        serde_json::Value::String(_) => "string",
-                                        serde_json::Value::Number(_) => "number",
-                                        serde_json::Value::Bool(_) => "bool",
-                                        serde_json::Value::Array(_) => "array",
-                                        serde_json::Value::Object(_) => "object",
-                                        serde_json::Value::Null => "null",
-                                    };
-                                    error!("  - {}: {} = {:?}", key, value_type, value);
-
-                                    // Highlight specific problematic fields
-                                    if key == "validAfter" || key == "validBefore" {
-                                        if value.is_number() {
-                                            error!("    [WARN] EXPECTED: string, RECEIVED: number");
-                                            error!("    [WARN] This field should be a STRING like \"1732406400\", not a number");
-                                        }
-                                    }
-                                    if key == "value" {
-                                        if value.is_number() {
-                                            error!("    [WARN] EXPECTED: string, RECEIVED: number");
-                                            error!("    [WARN] This field should be a STRING like \"10000\", not a number");
-                                        }
-                                    }
-                                    if key == "nonce" {
-                                        if let Some(s) = value.as_str() {
-                                            if !s.starts_with("0x") || s.len() != 66 {
-                                                error!("    [WARN] EXPECTED: 0x-prefixed 64-char hex string (66 chars total)");
-                                                error!(
-                                                    "    [WARN] RECEIVED: string with length {}",
-                                                    s.len()
-                                                );
-                                            }
-                                        }
-                                    }
-                                }
-                            } else {
-                                error!("Missing paymentPayload.payload.authorization");
-                            }
-
-                            // Also log signature if present
-                            if let Some(signature) = payload.get("signature") {
-                                error!("Found paymentPayload.payload.signature: {:?}", signature);
-                            }
-                        } else {
-                            error!("Missing paymentPayload.payload");
-                        }
-                    } else {
-                        error!("Missing paymentPayload field in root");
-                    }
-                }
-                Err(json_err) => {
-                    error!("Raw JSON is malformed and cannot be parsed: {}", json_err);
+            // Try legacy v1 format directly
+            match serde_json::from_str::<SettleRequest>(body_str) {
+                Ok(v1_req) => SettleRequestEnvelope::V1(v1_req),
+                Err(deser_err) => {
+                    // Log detailed error for debugging
+                    error!("[FAIL] Deserialization FAILED for both v1 and v2 formats");
+                    error!("v2 Serde error: {}", e);
+                    error!("v1 Serde error: {}", deser_err);
+                    log_settle_deserialization_error(body_str, &deser_err);
+                    debug!("=== END SETTLE REQUEST DEBUG ===");
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({
+                            "error": format!("Failed to deserialize SettleRequest: {}", deser_err),
+                            "details": "Check server logs for detailed field-by-field analysis"
+                        })),
+                    )
+                        .into_response();
                 }
             }
-
-            debug!("=== END SETTLE REQUEST DEBUG ===");
-
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error": format!("Failed to deserialize SettleRequest: {}", e),
-                    "details": "Check server logs for detailed field-by-field analysis"
-                })),
-            )
-                .into_response();
         }
     };
+
+    // Extract version and convert to v1 request for processing
+    let (version, body) = match &envelope {
+        SettleRequestEnvelope::V1(req) => {
+            debug!("Processing x402 v1 settle request");
+            (X402Version::V1, req.clone())
+        }
+        SettleRequestEnvelope::V2(req) => {
+            debug!("Processing x402 v2 settle request with CAIP-2 network: {}", req.network());
+            match req.to_v1() {
+                Ok(v1_req) => (X402Version::V2, v1_req),
+                Err(e) => {
+                    error!("Failed to convert v2 settle request to v1: {}", e);
+                    debug!("=== END SETTLE REQUEST DEBUG ===");
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({
+                            "error": format!("Failed to process v2 settle request: {}", e)
+                        })),
+                    )
+                        .into_response();
+                }
+            }
+        }
+    };
+
+    // Log the parsed request details
+    debug!("[OK] Deserialization SUCCEEDED (version: {:?})", version);
+    debug!("Parsed SettleRequest:");
+    debug!("  - x402_version: {:?}", body.x402_version);
+    debug!(
+        "  - payment_payload.scheme: {:?}",
+        body.payment_payload.scheme
+    );
+    debug!(
+        "  - payment_payload.network: {:?}",
+        body.payment_payload.network
+    );
+
+    // Log the authorization details based on payload type
+    match &body.payment_payload.payload {
+        crate::types::ExactPaymentPayload::Evm(evm_payload) => {
+            debug!("  - payload type: EVM");
+            debug!(
+                "  - authorization.from: {} (type: EvmAddress)",
+                evm_payload.authorization.from
+            );
+            debug!(
+                "  - authorization.to: {} (type: EvmAddress)",
+                evm_payload.authorization.to
+            );
+            debug!(
+                "  - authorization.value: {} (type: TokenAmount/U256 string)",
+                evm_payload.authorization.value
+            );
+            debug!("  - authorization.validAfter: {} (type: UnixTimestamp u64 string, parsed to: {})",
+                evm_payload.authorization.valid_after.seconds_since_epoch(),
+                evm_payload.authorization.valid_after.seconds_since_epoch());
+            debug!("  - authorization.validBefore: {} (type: UnixTimestamp u64 string, parsed to: {})",
+                evm_payload.authorization.valid_before.seconds_since_epoch(),
+                evm_payload.authorization.valid_before.seconds_since_epoch());
+            debug!(
+                "  - authorization.nonce: {:?} (type: HexEncodedNonce, 32-byte hex string)",
+                evm_payload.authorization.nonce
+            );
+            debug!(
+                "  - signature: {:?} (type: EvmSignature, hex bytes)",
+                evm_payload.signature
+            );
+        }
+        crate::types::ExactPaymentPayload::Solana(solana_payload) => {
+            debug!("  - payload type: Solana");
+            debug!(
+                "  - transaction: {} (truncated)",
+                &solana_payload.transaction[..solana_payload.transaction.len().min(100)]
+            );
+        }
+        crate::types::ExactPaymentPayload::Near(near_payload) => {
+            debug!("  - payload type: NEAR");
+            debug!(
+                "  - signed_delegate_action: {} (truncated)",
+                &near_payload.signed_delegate_action[..near_payload.signed_delegate_action.len().min(100)]
+            );
+        }
+        crate::types::ExactPaymentPayload::Stellar(stellar_payload) => {
+            debug!("  - payload type: Stellar");
+            debug!(
+                "  - from: {}",
+                stellar_payload.from
+            );
+            debug!(
+                "  - to: {}",
+                stellar_payload.to
+            );
+            debug!(
+                "  - amount: {}",
+                stellar_payload.amount
+            );
+        }
+    }
 
     debug!("=== END SETTLE REQUEST DEBUG ===");
 

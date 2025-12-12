@@ -17,6 +17,7 @@
 //! - [`types`] — all shared x402 protocol structures and payload formats.
 
 pub mod blocklist;
+pub mod caip2;
 pub mod chain;
 pub mod facilitator;
 pub mod facilitator_local;
@@ -28,6 +29,7 @@ pub mod sig_down;
 pub mod telemetry;
 pub mod timestamp;
 pub mod types;
+pub mod types_v2;
 
 // Hidden re-exports just for macro expansion.
 #[doc(hidden)]

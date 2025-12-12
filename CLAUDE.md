@@ -455,12 +455,25 @@ git merge upstream/main      # Follow docs/CUSTOMIZATIONS.md strategy
 
 - `GET /` - Ultravioleta DAO landing page (HTML)
 - `GET /health` - Health check: `{"status":"healthy"}`
-- `GET /supported` - List supported networks/schemes
+- `GET /supported` - List supported networks/schemes (returns both v1 and v2 formats)
 - `GET /verify` - Verification schema
-- `POST /verify` - Verify payment authorization (does not settle)
+- `POST /verify` - Verify payment authorization (accepts both v1 and v2 request formats)
 - `GET /settle` - Settlement schema
-- `POST /settle` - Settle payment on-chain (requires valid EIP-3009 authorization)
+- `POST /settle` - Settle payment on-chain (accepts both v1 and v2 request formats)
 - Asset endpoints: `/logo.png`, `/favicon.ico`, `/avalanche.png`, etc.
+
+### x402 Protocol v2 Support (v1.8.0+)
+
+The facilitator supports both x402 v1 and v2 protocol formats:
+
+- **V1 networks**: `"network": "base-mainnet"` (string enum)
+- **V2 networks**: `"network": "eip155:8453"` (CAIP-2 format)
+
+Both formats are auto-detected and processed identically. Existing v1 clients work unchanged.
+
+Key files for v2 support:
+- `src/caip2.rs` - CAIP-2 parsing and validation
+- `src/types_v2.rs` - v2 protocol types and conversion traits
 
 ## Development Workflow
 

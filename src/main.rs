@@ -36,6 +36,7 @@ use crate::telemetry::Telemetry;
 use x402_compliance::ComplianceCheckerBuilder;
 
 mod blocklist;
+mod caip2;
 mod chain;
 mod facilitator;
 mod facilitator_local;

@@ -260,6 +260,100 @@ impl Network {
     pub fn is_mainnet(&self) -> bool {
         !self.is_testnet()
     }
+
+    /// Convert this network to a CAIP-2 identifier string.
+    ///
+    /// Format: `{namespace}:{reference}`
+    /// - EVM chains: `eip155:{chain_id}`
+    /// - Solana: `solana:{genesis_hash}`
+    /// - NEAR: `near:{network_name}`
+    /// - Stellar: `stellar:{network_name}`
+    /// - Fogo: `fogo:{network_name}`
+    pub fn to_caip2(&self) -> String {
+        match self {
+            // EVM chains - eip155:{chain_id}
+            Network::Ethereum => "eip155:1".to_string(),
+            Network::EthereumSepolia => "eip155:11155111".to_string(),
+            Network::Base => "eip155:8453".to_string(),
+            Network::BaseSepolia => "eip155:84532".to_string(),
+            Network::Arbitrum => "eip155:42161".to_string(),
+            Network::ArbitrumSepolia => "eip155:421614".to_string(),
+            Network::Optimism => "eip155:10".to_string(),
+            Network::OptimismSepolia => "eip155:11155420".to_string(),
+            Network::Polygon => "eip155:137".to_string(),
+            Network::PolygonAmoy => "eip155:80002".to_string(),
+            Network::Avalanche => "eip155:43114".to_string(),
+            Network::AvalancheFuji => "eip155:43113".to_string(),
+            Network::Celo => "eip155:42220".to_string(),
+            Network::CeloSepolia => "eip155:44787".to_string(),
+            Network::HyperEvm => "eip155:999".to_string(),
+            Network::HyperEvmTestnet => "eip155:333".to_string(),
+            Network::Sei => "eip155:1329".to_string(),
+            Network::SeiTestnet => "eip155:1328".to_string(),
+            Network::Unichain => "eip155:130".to_string(),
+            Network::UnichainSepolia => "eip155:1301".to_string(),
+            Network::Monad => "eip155:143".to_string(),
+            Network::XdcMainnet => "eip155:50".to_string(),
+            Network::XrplEvm => "eip155:1440000".to_string(),
+            // Solana - solana:{genesis_hash}
+            Network::Solana => "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp".to_string(),
+            Network::SolanaDevnet => "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1".to_string(),
+            // NEAR - near:{network_name}
+            Network::Near => "near:mainnet".to_string(),
+            Network::NearTestnet => "near:testnet".to_string(),
+            // Stellar - stellar:{network_name}
+            Network::Stellar => "stellar:pubnet".to_string(),
+            Network::StellarTestnet => "stellar:testnet".to_string(),
+            // Fogo - fogo:{network_name}
+            Network::Fogo => "fogo:mainnet".to_string(),
+            Network::FogoTestnet => "fogo:testnet".to_string(),
+        }
+    }
+
+    /// Parse a CAIP-2 identifier string into a Network.
+    ///
+    /// Returns `None` if the CAIP-2 identifier is not recognized.
+    pub fn from_caip2(caip2: &str) -> Option<Self> {
+        match caip2 {
+            // EVM chains
+            "eip155:1" => Some(Network::Ethereum),
+            "eip155:11155111" => Some(Network::EthereumSepolia),
+            "eip155:8453" => Some(Network::Base),
+            "eip155:84532" => Some(Network::BaseSepolia),
+            "eip155:42161" => Some(Network::Arbitrum),
+            "eip155:421614" => Some(Network::ArbitrumSepolia),
+            "eip155:10" => Some(Network::Optimism),
+            "eip155:11155420" => Some(Network::OptimismSepolia),
+            "eip155:137" => Some(Network::Polygon),
+            "eip155:80002" => Some(Network::PolygonAmoy),
+            "eip155:43114" => Some(Network::Avalanche),
+            "eip155:43113" => Some(Network::AvalancheFuji),
+            "eip155:42220" => Some(Network::Celo),
+            "eip155:44787" => Some(Network::CeloSepolia),
+            "eip155:999" => Some(Network::HyperEvm),
+            "eip155:333" => Some(Network::HyperEvmTestnet),
+            "eip155:1329" => Some(Network::Sei),
+            "eip155:1328" => Some(Network::SeiTestnet),
+            "eip155:130" => Some(Network::Unichain),
+            "eip155:1301" => Some(Network::UnichainSepolia),
+            "eip155:143" => Some(Network::Monad),
+            "eip155:50" => Some(Network::XdcMainnet),
+            "eip155:1440000" => Some(Network::XrplEvm),
+            // Solana
+            "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp" => Some(Network::Solana),
+            "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1" => Some(Network::SolanaDevnet),
+            // NEAR
+            "near:mainnet" => Some(Network::Near),
+            "near:testnet" => Some(Network::NearTestnet),
+            // Stellar
+            "stellar:pubnet" => Some(Network::Stellar),
+            "stellar:testnet" => Some(Network::StellarTestnet),
+            // Fogo
+            "fogo:mainnet" => Some(Network::Fogo),
+            "fogo:testnet" => Some(Network::FogoTestnet),
+            _ => None,
+        }
+    }
 }
 
 /// Lazily initialized known USDC deployment on Base Sepolia as [`USDCDeployment`].

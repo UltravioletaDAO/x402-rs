@@ -71,12 +71,43 @@ You are Aegis, the master architect of Rust - the most expert Rust systems engin
 
 ## Project-Specific Knowledge: x402-rs Payment Facilitator
 
-This is a multi-chain payment facilitator supporting 20 networks (12 mainnets + 8 testnets). Key architectural patterns:
+This is a multi-chain payment facilitator supporting 20+ networks (12+ mainnets + 8+ testnets). Key architectural patterns:
 
 ### Multi-Chain Architecture
 - **EVM chains**: EIP-3009 `transferWithAuthorization` for gasless USDC transfers
 - **Solana**: SPL token transfer with payer abstraction
 - **NEAR Protocol**: NEP-366 meta-transactions with `SignedDelegateAction`
+- **Stellar (Planned)**: Soroban `require_auth` with pre-signed authorization entries
+- **Algorand (Planned)**: Atomic Transfers with pre-signed ASA transfers
+
+### NetworkFamily Pattern
+
+The codebase uses a `NetworkFamily` enum to group chains with similar authorization models:
+
+```rust
+pub enum NetworkFamily {
+    Evm,       // EIP-3009 transferWithAuthorization
+    Solana,    // SPL token transfer
+    Near,      // NEP-366 meta-transactions
+    Stellar,   // Soroban authorization entries (planned)
+    Algorand,  // Atomic transfers (planned)
+}
+
+// Each family has its own provider implementing these traits:
+pub trait Facilitator {
+    async fn verify(&self, request: &VerifyRequest) -> Result<VerifyResponse, Error>;
+    async fn settle(&self, request: &SettleRequest) -> Result<SettleResponse, Error>;
+}
+
+pub trait NetworkProviderOps {
+    fn signer_address(&self) -> String;
+    fn network(&self) -> Network;
+}
+
+pub trait FromEnvByNetworkBuild {
+    async fn from_env(network: Network) -> Result<Option<Self>, Error>;
+}
+```
 
 ### NEAR Protocol Integration (near-primitives 0.34+)
 
@@ -130,6 +161,253 @@ Separate wallets for mainnet vs testnet to prevent cross-environment signing:
 - `SOLANA_PRIVATE_KEY_MAINNET` / `SOLANA_PRIVATE_KEY_TESTNET`
 - `NEAR_PRIVATE_KEY_MAINNET` / `NEAR_PRIVATE_KEY_TESTNET`
 - `NEAR_ACCOUNT_ID_MAINNET` / `NEAR_ACCOUNT_ID_TESTNET`
+- `STELLAR_PRIVATE_KEY_MAINNET` / `STELLAR_PRIVATE_KEY_TESTNET` (planned)
+- `ALGORAND_PRIVATE_KEY_MAINNET` / `ALGORAND_PRIVATE_KEY_TESTNET` (planned)
+
+---
+
+## Stellar/Soroban Integration (Planned)
+
+**Reference**: `docs/STELLAR_IMPLEMENTATION_PLAN.md`
+
+### Authorization Model
+
+Stellar uses Soroban's native `require_auth` with pre-signed authorization entries:
+
+```rust
+// Authorization Entry Structure (from soroban_sdk)
+pub struct SorobanAuthorizationEntry {
+    credentials: Credentials {
+        address: Address,              // User's G... address
+        nonce: u64,                    // Replay protection
+        signature_expiration_ledger: u32  // Ledger-based expiration
+    },
+    root_invocation: InvokedFunction {
+        contract_id: Hash,             // USDC contract
+        function_name: String,         // "transfer"
+        args: Vec<ScVal>               // [from, to, amount]
+    },
+    signature: Signature               // Ed25519
+}
+```
+
+**Key Differences from EVM**:
+- Ledger-based expiration (not Unix timestamps)
+- XDR encoding (not RLP/ABI)
+- Mandatory simulation before submission
+- 7 decimals for USDC (not 6)
+
+### Recommended Crates
+
+```toml
+stellar-sdk = "0.12"       # High-level SDK (Server, Keypair, Transaction)
+soroban-sdk = "22.0"       # XDR types, auth verification
+stellar-strkey = "0.0.8"   # Address validation (G... format)
+ed25519-dalek = "2.1"      # Signature verification
+```
+
+### Provider Structure
+
+```rust
+pub struct StellarProvider {
+    server: stellar_sdk::Server,          // Soroban RPC client
+    facilitator_keypair: Keypair,
+    network: Network,
+    nonce_store: Arc<RwLock<HashMap<(String, u64), u32>>>,
+    usdc_contract_id: String,
+}
+
+// USDC Contract IDs
+pub const USDC_STELLAR: &str = "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75";
+pub const USDC_STELLAR_TESTNET: &str = "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA";
+```
+
+### Verification Flow
+
+```rust
+async fn verify(&self, payload: &ExactStellarPayload) -> Result<()> {
+    // 1. Decode XDR authorization entry
+    let auth_entry = decode_xdr(&payload.authorization_entry_xdr)?;
+
+    // 2. Validate expiration (ledger-based)
+    let current_ledger = self.server.get_latest_ledger().await?.sequence;
+    if auth_entry.credentials.signature_expiration_ledger <= current_ledger {
+        return Err(StellarError::AuthExpired);
+    }
+
+    // 3. Verify Ed25519 signature
+    verify_signature(&auth_entry, &payload.from)?;
+
+    // 4. Check nonce unused
+    self.check_nonce_unused(&payload.from, auth_entry.credentials.nonce).await?;
+
+    // 5. MANDATORY: Simulate transaction
+    self.simulate_transfer(&auth_entry, payload).await?;
+
+    Ok(())
+}
+```
+
+### Replay Protection
+
+Stellar nonces are ledger-scoped and can be cleaned up after expiration:
+
+```rust
+// Key: (from_address, nonce), Value: expiration_ledger
+nonce_store: Arc<RwLock<HashMap<(String, u64), u32>>>
+
+async fn cleanup_expired_nonces(&self, current_ledger: u32) {
+    let mut store = self.nonce_store.write().await;
+    store.retain(|_, expiry| *expiry > current_ledger);
+}
+```
+
+---
+
+## Algorand Integration (Planned)
+
+**Reference**: `docs/ALGORAND_IMPLEMENTATION_PLAN.md`
+
+### Authorization Model (Two-Stage Protocol REQUIRED)
+
+Algorand lacks native delegation - uses **Atomic Transfers** for gasless payments:
+
+```
+Atomic Transfer Group:
+[
+    Tx0: Client's ASA Transfer (pre-signed by client)
+    Tx1: Facilitator's Fee Payment (signed by facilitator)
+]
+Group ID = SHA-512/256("TG" || Tx0.id || Tx1.id)
+```
+
+**CRITICAL**: Client cannot compute group ID because they don't know the facilitator's transaction. This requires a **two-stage protocol**:
+
+1. **Stage 1 - Prepare**: Client calls `/algorand/prepare` with payment details
+2. Facilitator builds BOTH transactions, computes group ID
+3. Facilitator returns unsigned client tx WITH group ID embedded
+4. **Stage 2 - Sign & Settle**: Client signs, submits to `/settle`
+
+**This is NOT optional** - the client cannot construct the group ID alone.
+
+### Recommended Crates
+
+```toml
+algonaut = "0.4"           # High-level SDK (Algod, Indexer)
+algonaut-core = "0.4"      # Transaction, Address types
+algonaut-crypto = "0.4"    # Ed25519, hashing
+algonaut-encoding = "0.4"  # MessagePack encoding
+```
+
+### Provider Structure
+
+```rust
+pub struct AlgorandProvider {
+    algod: algonaut::algod::v2::Algod,
+    indexer: algonaut::indexer::v2::Indexer,
+    facilitator_keypair: ed25519_dalek::SigningKey,
+    facilitator_address: Address,
+    network: Network,
+    usdc_asset_id: u64,
+    tx_cache: Arc<RwLock<HashMap<String, u64>>>,  // tx_id -> expiry_round
+    genesis_id: String,
+    genesis_hash: [u8; 32],
+}
+
+// USDC ASA IDs
+pub const USDC_ALGORAND_MAINNET: u64 = 31566704;
+pub const USDC_ALGORAND_TESTNET: u64 = 10458941;
+```
+
+### Payload Structure
+
+```rust
+#[derive(Serialize, Deserialize)]
+pub struct ExactAlgorandPayload {
+    pub from: String,                  // Sender address
+    pub to: String,                    // Recipient address
+    pub amount: u64,                   // micro-USDC (6 decimals)
+    pub asset_id: u64,                 // 31566704 for mainnet USDC
+    pub signed_transaction: String,   // Base64 msgpack
+    pub tx_id: String,                 // Transaction ID
+    pub first_valid: u64,             // Round-based validity
+    pub last_valid: u64,
+    pub group_id: String,             // Base64, 32 bytes
+}
+```
+
+### Multi-Layer Replay Protection
+
+Algorand requires more aggressive replay checking due to round-based validity:
+
+```rust
+async fn check_tx_not_submitted(&self, tx_id: &str) -> Result<()> {
+    // Layer 1: Local cache
+    if self.tx_cache.read().await.contains_key(tx_id) {
+        return Err(AlgorandError::TransactionReplay);
+    }
+
+    // Layer 2: Indexer (confirmed transactions)
+    if self.indexer.transaction_information(tx_id).await.is_ok() {
+        return Err(AlgorandError::TransactionReplay);
+    }
+
+    // Layer 3: Pending pool
+    if let Ok(pending) = self.algod.pending_transaction_information(tx_id).await {
+        if pending.pool_error.is_none() {
+            return Err(AlgorandError::TransactionReplay);
+        }
+    }
+
+    Ok(())
+}
+```
+
+### Group ID Computation
+
+```rust
+fn compute_group_id(transactions: &[Transaction]) -> [u8; 32] {
+    use sha2::{Sha512_256, Digest};
+
+    let mut hasher = Sha512_256::new();
+    hasher.update(b"TG");  // "Transaction Group" prefix
+    for tx in transactions {
+        hasher.update(tx.id());
+    }
+    hasher.finalize().into()
+}
+```
+
+---
+
+## Cross-Chain Authorization Comparison
+
+| Aspect | EVM | NEAR | Stellar | Algorand |
+|--------|-----|------|---------|----------|
+| **Mechanism** | EIP-3009 | NEP-366 | Soroban Auth | Atomic Transfers |
+| **Expiration** | Unix timestamp | Block height | Ledger number | Round window |
+| **Replay** | Nonce in contract | Nonce in contract | Facilitator tracks | TX ID cache + indexer |
+| **Encoding** | RLP/ABI | Borsh | XDR | MessagePack |
+| **Signature** | ECDSA secp256k1 | Ed25519 | Ed25519 | Ed25519 |
+| **USDC Decimals** | 6 | 6 | 7 | 6 |
+| **Native Delegation** | Yes | Yes | Yes | No (uses groups) |
+
+---
+
+## Web Wallet vs Programmatic Payments (Critical Lesson)
+
+**Learned from NEAR integration**: Web wallet support should NOT block chain integration.
+
+**Research findings** (December 2025):
+- **NEAR**: MyNearWallet and Meteor don't expose `signDelegateAction` - but programmatic usage works fine
+- **Algorand**: Pera/MyAlgo deliberately refuse LogicSig signing - but atomic transfers work programmatically
+- **Stellar**: Freighter has `signAuthEntry` - good wallet support AND programmatic
+
+**Recommendation**: Always design for programmatic usage first. Web wallet support is a "nice to have" for chains targeting end-users, but NOT required for:
+- API/CLI payments
+- Server-to-server settlements
+- Interbank/institutional use cases (XRP target market)
+- Background automated payments
 
 ---
 

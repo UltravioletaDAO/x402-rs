@@ -18,8 +18,8 @@ use crate::facilitator::Facilitator;
 use crate::network::Network;
 use crate::provider_cache::ProviderMap;
 use crate::types::{
-    SettleRequest, SettleResponse, SupportedPaymentKind, SupportedPaymentKindsResponse,
-    VerifyRequest, VerifyResponse, X402Version,
+    Scheme, SettleRequest, SettleResponse, SupportedPaymentKind, SupportedPaymentKindExtra,
+    SupportedPaymentKindsResponse, VerifyRequest, VerifyResponse, X402Version,
 };
 
 // Compliance module
@@ -180,6 +180,24 @@ where
             .collect();
 
         kinds.extend(v2_kinds);
+
+        // Add FHE transfer scheme support (proxied to Zama Lambda)
+        // Zama FHEVM on Ethereum Sepolia testnet
+        // Note: extra is None because FHE requests are proxied to the Zama Lambda facilitator
+        // which handles its own fee_payer and token configuration (ERC7984 standard)
+        kinds.push(SupportedPaymentKind {
+            x402_version: X402Version::V1,
+            scheme: Scheme::FheTransfer,
+            network: "ethereum-sepolia".to_string(),
+            extra: None, // FHE proxy handles fee_payer internally
+        });
+        kinds.push(SupportedPaymentKind {
+            x402_version: X402Version::V2,
+            scheme: Scheme::FheTransfer,
+            network: "eip155:11155111".to_string(), // CAIP-2 for Sepolia
+            extra: None, // FHE proxy handles fee_payer internally
+        });
+
         Ok(SupportedPaymentKindsResponse { kinds })
     }
 

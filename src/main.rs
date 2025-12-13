@@ -40,6 +40,7 @@ mod caip2;
 mod chain;
 mod facilitator;
 mod facilitator_local;
+mod fhe_proxy;
 mod from_env;
 mod handlers;
 mod network;

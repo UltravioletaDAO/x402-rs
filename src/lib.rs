@@ -21,6 +21,7 @@ pub mod caip2;
 pub mod chain;
 pub mod facilitator;
 pub mod facilitator_local;
+pub mod fhe_proxy;
 pub mod from_env;
 pub mod handlers;
 pub mod network;

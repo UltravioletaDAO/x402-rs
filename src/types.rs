@@ -102,13 +102,18 @@ impl<'de> Deserialize<'de> for X402Version {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Scheme {
+    /// Standard exact amount transfer (EIP-3009)
     Exact,
+    /// Fully Homomorphic Encryption transfer using Zama FHEVM (ERC7984)
+    #[serde(rename = "fhe-transfer")]
+    FheTransfer,
 }
 
 impl Display for Scheme {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
             Scheme::Exact => "exact",
+            Scheme::FheTransfer => "fhe-transfer",
         };
         write!(f, "{s}")
     }

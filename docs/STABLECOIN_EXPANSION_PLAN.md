@@ -1,8 +1,8 @@
 # Stablecoin Expansion Plan for x402-rs Payment Facilitator
 
-**Document Version:** 1.2
+**Document Version:** 1.3
 **Created:** 2024-12-16
-**Last Updated:** 2024-12-16 (10 EVM + 4 non-EVM network matrix)
+**Last Updated:** 2024-12-16 (Corrected 10 EVM + 4 non-EVM network matrix)
 **Status:** Planning
 **Author:** Ultravioleta DAO Technical Team
 
@@ -15,9 +15,9 @@ The x402-rs payment facilitator currently supports only **USDC** (USD Coin by Ci
 **Complete Matrix Analysis (10 EVM Mainnets + 4 Non-EVM):**
 
 *EVM Networks (EIP-3009 compatible):*
-- **USDC**: 9 networks with verified EIP-3009 (Sei pending deployment)
+- **USDC**: 10 networks with verified EIP-3009 (full coverage)
 - **EURC**: 3 networks (Ethereum, Base, Avalanche)
-- **AUSD**: 4 networks (Ethereum, Polygon, Arbitrum, Avalanche)
+- **AUSD**: 5 networks (Ethereum, Polygon, Arbitrum, Avalanche, Monad)
 - **PYUSD**: 1 network (Ethereum only)
 - **GHO**: 3 networks (Ethereum, Arbitrum, Base)
 - **crvUSD**: 2 networks (Ethereum, Arbitrum - inconsistent support elsewhere)
@@ -130,22 +130,22 @@ Legend:
 - `[--]` = Not deployed/available on this network
 - `[X]` = Token not deployed at expected address
 
-| Token      | Ethereum | Base   | Polygon | Arbitrum | Optimism | Avalanche | Celo   | Sei    | Unichain | HyperEVM |
-|------------|----------|--------|---------|----------|----------|-----------|--------|--------|----------|----------|
-| **USDC**   | [OK]     | [OK]   | [OK]    | [OK]     | [OK]     | [OK]      | [OK]   | [X]    | [OK]     | [OK]     |
-| **EURC**   | [OK]     | [OK]   | [--]    | [--]     | [--]     | [OK]      | [--]   | [--]   | [--]     | [--]     |
-| **AUSD**   | [OK]     | [NO]   | [OK]    | [OK]     | [X]      | [OK]      | [X]    | [OK]   | [X]      | [X]      |
-| **PYUSD**  | [OK]     | [--]   | [--]    | [--]     | [--]     | [--]      | [--]   | [--]   | [--]     | [--]     |
-| **GHO**    | [OK]     | [OK]   | [--]    | [OK]     | [--]     | [--]      | [--]   | [--]   | [--]     | [--]     |
-| **crvUSD** | [OK]     | [NO]   | [NO]    | [OK]     | [NO]     | [--]      | [--]   | [--]   | [--]     | [--]     |
+| Token      | Ethereum | Base   | Polygon | Arbitrum | Optimism | Avalanche | Celo   | HyperEVM | Unichain | Monad  |
+|------------|----------|--------|---------|----------|----------|-----------|--------|----------|----------|--------|
+| **USDC**   | [OK]     | [OK]   | [OK]    | [OK]     | [OK]     | [OK]      | [OK]   | [OK]     | [OK]     | [OK]   |
+| **EURC**   | [OK]     | [OK]   | [--]    | [--]     | [--]     | [OK]      | [--]   | [--]     | [--]     | [--]   |
+| **AUSD**   | [OK]     | [NO]   | [OK]    | [OK]     | [X]      | [OK]      | [X]    | [X]      | [X]      | [OK]   |
+| **PYUSD**  | [OK]     | [--]   | [--]    | [--]     | [--]     | [--]      | [--]   | [--]     | [--]     | [--]   |
+| **GHO**    | [OK]     | [OK]   | [--]    | [OK]     | [--]     | [--]      | [--]   | [--]     | [--]     | [--]   |
+| **crvUSD** | [OK]     | [NO]   | [NO]    | [OK]     | [NO]     | [--]      | [--]   | [--]     | [--]     | [--]   |
 
 ### Summary Statistics (EVM Networks)
 
 | Token    | EIP-3009 Confirmed | No EIP-3009 | Not Deployed | Notes                                      |
 |----------|--------------------:|------------:|-------------:|--------------------------------------------|
-| **USDC** | 9                  | 0           | 1            | Not deployed on Sei                        |
+| **USDC** | 10                 | 0           | 0            | Full coverage on all 10 EVM networks       |
 | **EURC** | 3                  | 0           | 7            | Circle-only: Ethereum, Base, Avalanche     |
-| **AUSD** | 4                  | 1           | 5            | Base has no EIP-3009; uses CREATE2 address |
+| **AUSD** | 5                  | 1           | 4            | Base has no EIP-3009; uses CREATE2 address |
 | **PYUSD**| 1                  | 0           | 9            | Ethereum only                              |
 | **GHO**  | 3                  | 0           | 7            | Aave ecosystem: Ethereum, Arbitrum, Base   |
 | **crvUSD**| 2                 | 3           | 5            | Inconsistent: only Ethereum + Arbitrum OK  |
@@ -168,14 +168,13 @@ The following networks use **different token standards** and do not support EIP-
 
 ### Notes on EVM Matrix
 
-- **USDC**: Best coverage with 9 of 10 EVM networks supporting EIP-3009
+- **USDC**: Full coverage with all 10 EVM networks supporting EIP-3009
 - **EURC** has strong adoption on Ethereum, Base, and Avalanche (priority networks)
 - **AUSD** uses deterministic CREATE2 deployment (`0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a`) across all chains, but Base deployment lacks EIP-3009
 - **PYUSD** limited to Ethereum mainnet only (as of Dec 2024)
 - **GHO** focused on Aave ecosystems (Ethereum, Arbitrum, Base)
 - **crvUSD** has inconsistent EIP-3009 support - only Ethereum and Arbitrum verified working
-- **Sei**: USDC not deployed at expected address (may use different bridged token)
-- **HyperEVM**: USDC verified with EIP-3009 support
+- **HyperEVM & Monad**: USDC verified with EIP-3009 support
 
 ---
 
@@ -1075,13 +1074,12 @@ Checklist for adding new tokens:
 | Optimism           | 0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85   | 10       | [OK] Verified   |
 | Avalanche          | 0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E   | 43114    | [OK] Verified   |
 | Celo               | 0xcebA9300f2b948710d2653dD7B07f33A8B32118C   | 42220    | [OK] Verified   |
-| Sei                | 0xe15fC38F6D8c56aF07bbCBe3BAf5708A2Bf42392   | 1329     | [X] Not Found   |
-| Unichain           | 0x078D782b760474a361dDA0AF3839290b0EF57AD6   | 130      | [OK] Verified   |
 | HyperEVM           | 0xb88339cb7199b77e23db6e890353e22632ba630f   | 999      | [OK] Verified   |
+| Unichain           | 0x078D782b760474a361dDA0AF3839290b0EF57AD6   | 130      | [OK] Verified   |
+| Monad              | 0x754704bc059f8c67012fed69bc8a327a5aafb603   | 143      | [OK] Verified   |
 
 **Notes:**
-- **Sei (Chain ID 1329)**: USDC address configured but contract not deployed/responding
-- 9 of 10 EVM networks have verified EIP-3009 support with working `DOMAIN_SEPARATOR()` and `nonces()` functions
+- All 10 EVM networks have verified EIP-3009 support with working `DOMAIN_SEPARATOR()` and `nonces()` functions
 
 ### USDC (4 Non-EVM Networks)
 
@@ -1113,16 +1111,15 @@ Checklist for adding new tokens:
 | Optimism           | 10       | [X] Not Found   |
 | Avalanche          | 43114    | [OK] Verified   |
 | Celo               | 42220    | [X] Not Found   |
-| Sei                | 1329     | [OK] Verified   |
-| Unichain           | 130      | [X] Not Found   |
 | HyperEVM           | 999      | [X] Not Found   |
+| Unichain           | 130      | [X] Not Found   |
+| Monad              | 143      | [OK] Verified   |
 
 **Notes:**
 - AUSD uses deterministic CREATE2 deployment, so address is same everywhere
-- 4 networks with verified EIP-3009: Ethereum, Polygon, Arbitrum, Avalanche
+- 5 networks with verified EIP-3009: Ethereum, Polygon, Arbitrum, Avalanche, Monad
 - Base has AUSD deployed but **without** EIP-3009 support (cannot use with x402)
-- Sei has AUSD with EIP-3009 but USDC not available (limited utility)
-- 4 networks where AUSD is not deployed (Optimism, Celo, Unichain, HyperEVM)
+- 4 networks where AUSD is not deployed (Optimism, Celo, HyperEVM, Unichain)
 
 ### PYUSD (Proposed)
 

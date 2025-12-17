@@ -479,6 +479,173 @@ impl SolanaProvider {
         Ok(transfer_checked_instruction)
     }
 
+    /// Find and verify the transfer instruction by scanning all instructions.
+    /// Returns the index and parsed transfer instruction.
+    /// This is flexible about instruction positions - Phantom may add extra instructions.
+    async fn find_transfer_instruction(
+        &self,
+        transaction: &VersionedTransaction,
+        requirements: &PaymentRequirements,
+    ) -> Result<(usize, TransferCheckedInstruction), FacilitatorLocalError> {
+        let instructions = transaction.message.instructions();
+        let static_keys = transaction.message.static_account_keys();
+
+        // Scan for transfer instruction by looking for spl_token or spl_token_2022 program
+        for (idx, instruction) in instructions.iter().enumerate() {
+            let program_id = instruction.program_id(static_keys);
+
+            // Check if this is a token program instruction
+            if *program_id != spl_token::ID && *program_id != spl_token_2022::ID {
+                continue;
+            }
+
+            // Try to parse as TransferChecked
+            let data = instruction.data.as_slice();
+            if data.is_empty() {
+                continue;
+            }
+
+            // TransferChecked discriminator is 12 for both spl_token and spl_token_2022
+            if data[0] != 12 {
+                continue;
+            }
+
+            // Check if there's a CreateATA instruction before this one
+            let has_dest_ata = self.has_create_ata_before(transaction, idx, requirements);
+
+            // Try to verify this as the transfer instruction
+            match self
+                .verify_transfer_instruction(transaction, idx, requirements, has_dest_ata)
+                .await
+            {
+                Ok(transfer_instruction) => {
+                    tracing::debug!(
+                        instruction_index = idx,
+                        "Found valid transfer instruction"
+                    );
+                    return Ok((idx, transfer_instruction));
+                }
+                Err(e) => {
+                    tracing::debug!(
+                        instruction_index = idx,
+                        error = %e,
+                        "Instruction at index is not the expected transfer"
+                    );
+                    continue;
+                }
+            }
+        }
+
+        Err(FacilitatorLocalError::DecodingError(
+            "no_valid_transfer_instruction_found".to_string(),
+        ))
+    }
+
+    /// Check if there's a CreateATA instruction before the given index
+    /// that creates the ATA for the payee
+    fn has_create_ata_before(
+        &self,
+        transaction: &VersionedTransaction,
+        transfer_idx: usize,
+        requirements: &PaymentRequirements,
+    ) -> bool {
+        let instructions = transaction.message.instructions();
+
+        for idx in 0..transfer_idx {
+            if let Some(instruction) = instructions.get(idx) {
+                let program_id =
+                    instruction.program_id(transaction.message.static_account_keys());
+                if *program_id == ATA_PROGRAM_PUBKEY {
+                    // Verify it's creating the right ATA
+                    if self
+                        .verify_create_ata_instruction(transaction, idx, requirements)
+                        .is_ok()
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Verify compute budget instructions exist and are within limits.
+    /// Flexible about exact positions - just needs to find them.
+    fn verify_compute_budget_instructions(
+        &self,
+        transaction: &VersionedTransaction,
+    ) -> Result<(), FacilitatorLocalError> {
+        let instructions = transaction.message.instructions();
+        let static_keys = transaction.message.static_account_keys();
+        let compute_budget_id = solana_sdk::compute_budget::ID;
+
+        let mut found_limit = false;
+        let mut found_price = false;
+
+        for (idx, instruction) in instructions.iter().enumerate() {
+            let program_id = instruction.program_id(static_keys);
+            if *program_id != compute_budget_id {
+                continue;
+            }
+
+            let data = instruction.data.as_slice();
+            if data.is_empty() {
+                continue;
+            }
+
+            match data[0] {
+                2 if data.len() == 5 => {
+                    // SetComputeUnitLimit
+                    let mut buf = [0u8; 4];
+                    buf.copy_from_slice(&data[1..5]);
+                    let compute_units = u32::from_le_bytes(buf);
+                    if compute_units > self.max_compute_unit_limit {
+                        return Err(FacilitatorLocalError::DecodingError(
+                            "compute unit limit exceeds facilitator maximum".to_string(),
+                        ));
+                    }
+                    tracing::debug!(
+                        instruction_index = idx,
+                        compute_units = compute_units,
+                        "Found compute unit limit instruction"
+                    );
+                    found_limit = true;
+                }
+                3 if data.len() == 9 => {
+                    // SetComputeUnitPrice
+                    let mut buf = [0u8; 8];
+                    buf.copy_from_slice(&data[1..]);
+                    let microlamports = u64::from_le_bytes(buf);
+                    if microlamports > self.max_compute_unit_price {
+                        return Err(FacilitatorLocalError::DecodingError(
+                            "compute unit price exceeds facilitator maximum".to_string(),
+                        ));
+                    }
+                    tracing::debug!(
+                        instruction_index = idx,
+                        microlamports = microlamports,
+                        "Found compute unit price instruction"
+                    );
+                    found_price = true;
+                }
+                _ => {}
+            }
+        }
+
+        if !found_limit {
+            return Err(FacilitatorLocalError::DecodingError(
+                "missing_compute_unit_limit_instruction".to_string(),
+            ));
+        }
+        if !found_price {
+            return Err(FacilitatorLocalError::DecodingError(
+                "missing_compute_unit_price_instruction".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
     async fn verify_transfer(
         &self,
         request: &VerifyRequest,
@@ -520,6 +687,9 @@ impl SolanaProvider {
                 payload.scheme,
             ));
         }
+
+        // Decode the transaction exactly as the user signed it
+        // This preserves all instructions including any added by Phantom
         let transaction_b64_string = payment_payload.transaction.clone();
         let bytes = Base64Bytes::from(transaction_b64_string.as_bytes())
             .decode()
@@ -527,34 +697,24 @@ impl SolanaProvider {
         let transaction = bincode::deserialize::<VersionedTransaction>(bytes.as_slice())
             .map_err(|e| FacilitatorLocalError::DecodingError(format!("{e}")))?;
 
-        // perform transaction introspection to validate the transaction structure and details
-        let instructions = transaction.message.instructions();
-        let compute_units = self.verify_compute_limit_instruction(&transaction, 0)?;
-        if compute_units > self.max_compute_unit_limit {
-            return Err(FacilitatorLocalError::DecodingError(
-                "compute unit limit exceeds facilitator maximum".to_string(),
-            ));
-        }
-        tracing::debug!(compute_units = compute_units, "Verified compute unit limit");
-        self.verify_compute_price_instruction(&transaction, 1)?;
-        let transfer_instruction = if instructions.len() == 3 {
-            // verify that the transfer instruction is valid
-            // this expects the destination ATA to already exist
-            self.verify_transfer_instruction(&transaction, 2, requirements, false)
-                .await?
-        } else if instructions.len() == 4 {
-            // verify that the transfer instruction is valid
-            // this expects the destination ATA to be created in the same transaction
-            self.verify_create_ata_instruction(&transaction, 2, requirements)?;
-            self.verify_transfer_instruction(&transaction, 3, requirements, true)
-                .await?
-        } else {
-            return Err(FacilitatorLocalError::DecodingError(
-                "invalid_exact_svm_payload_transaction_instructions_count".to_string(),
-            ));
-        };
+        tracing::debug!(
+            num_instructions = transaction.message.instructions().len(),
+            num_signatures = transaction.signatures.len(),
+            "Decoded user-signed transaction"
+        );
 
-        // Rule 2: Fee payer safety check
+        // Flexible verification: find instructions by program ID, not fixed positions
+        // This allows Phantom to add extra instructions while we still validate the critical ones
+
+        // 1. Verify compute budget instructions exist and are within limits
+        self.verify_compute_budget_instructions(&transaction)?;
+
+        // 2. Find and verify the transfer instruction (can be at any position)
+        let (_transfer_idx, transfer_instruction) = self
+            .find_transfer_instruction(&transaction, requirements)
+            .await?;
+
+        // 3. Fee payer safety check
         // Verify that the fee payer is not included in any instruction's accounts
         // This single check covers all cases: authority, source, or any other role
         let fee_payer_pubkey = self.keypair.pubkey();
@@ -576,12 +736,13 @@ impl SolanaProvider {
             }
         }
 
+        // 4. Simulate the transaction (with our signature added)
         let tx = TransactionInt::new(transaction.clone()).sign(&self.keypair)?;
         let cfg = RpcSimulateTransactionConfig {
             sig_verify: false,
             replace_recent_blockhash: false,
             commitment: Some(CommitmentConfig::confirmed()),
-            encoding: None, // optional; client handles encoding
+            encoding: None,
             accounts: None,
             inner_instructions: false,
             min_context_slot: None,
@@ -592,10 +753,16 @@ impl SolanaProvider {
             .await
             .map_err(|e| FacilitatorLocalError::ContractCall(format!("{e}")))?;
         if sim.value.err.is_some() {
+            tracing::warn!(
+                error = ?sim.value.err,
+                logs = ?sim.value.logs,
+                "Transaction simulation failed"
+            );
             return Err(FacilitatorLocalError::DecodingError(
                 "invalid_exact_svm_payload_transaction_simulation_failed".to_string(),
             ));
         }
+
         let payer: SolanaAddress = transfer_instruction.authority.into();
         Ok(VerifyTransferResult { payer, transaction })
     }
@@ -666,11 +833,29 @@ impl Facilitator for SolanaProvider {
     }
 
     async fn settle(&self, request: &SettleRequest) -> Result<SettleResponse, Self::Error> {
+        // Verify the transaction first - this validates the transfer and fee payer safety
         let verification = self.verify_transfer(request).await?;
+
+        tracing::info!(
+            network = %self.network(),
+            payer = %verification.payer.pubkey,
+            num_instructions = verification.transaction.message.instructions().len(),
+            "Processing Solana settlement"
+        );
+
+        // The transaction comes from the user exactly as they signed it.
+        // User's signature is already in place (typically at index 1).
+        // We just add our signature as fee payer (at index 0).
         let tx = TransactionInt::new(verification.transaction).sign(&self.keypair)?;
-        // Verify if fully signed
+
+        // Verify all required signatures are present
         if !tx.is_fully_signed() {
-            tracing::event!(Level::WARN, status = "failed", "undersigned transaction");
+            tracing::warn!(
+                network = %self.network(),
+                num_signatures = tx.inner.signatures.len(),
+                num_required = tx.inner.message.header().num_required_signatures,
+                "Transaction is not fully signed - missing user signature?"
+            );
             return Ok(SettleResponse {
                 success: false,
                 error_reason: Some(FacilitatorErrorReason::UnexpectedSettleError),
@@ -679,9 +864,18 @@ impl Facilitator for SolanaProvider {
                 network: self.network(),
             });
         }
+
+        // Submit the transaction to the network
         let tx_sig = tx
             .send_and_confirm(&self.rpc_client, CommitmentConfig::confirmed())
             .await?;
+
+        tracing::info!(
+            network = %self.network(),
+            tx_signature = %tx_sig,
+            "Solana settlement successful"
+        );
+
         let settle_response = SettleResponse {
             success: true,
             error_reason: None,
@@ -797,27 +991,61 @@ impl TransactionInt {
         true
     }
 
+    /// Sign the transaction as the fee payer.
+    /// The user's signature should already be in place at the appropriate index.
+    /// This function adds the facilitator signature at the fee payer's position (typically index 0).
     pub fn sign(self, keypair: &Keypair) -> Result<Self, FacilitatorLocalError> {
         let mut tx = self.inner.clone();
         let msg_bytes = tx.message.serialize();
         let signature = keypair
             .try_sign_message(msg_bytes.as_slice())
             .map_err(|e| FacilitatorLocalError::ContractCall(format!("{e}")))?;
+
         // Required signatures are the first N account keys
         let num_required = tx.message.header().num_required_signatures as usize;
         let static_keys = tx.message.static_account_keys();
-        // Find signer’s position
+
+        // Find signer's position in the account keys
         let pos = static_keys[..num_required]
             .iter()
             .position(|k| *k == keypair.pubkey())
-            .ok_or(FacilitatorLocalError::DecodingError(
-                "invalid_exact_svm_payload_transaction_simulation_failed".to_string(),
-            ))?;
+            .ok_or_else(|| {
+                tracing::error!(
+                    fee_payer = %keypair.pubkey(),
+                    num_required = num_required,
+                    account_keys = ?static_keys[..num_required].iter().map(|k| k.to_string()).collect::<Vec<_>>(),
+                    "Fee payer not found in transaction's required signers"
+                );
+                FacilitatorLocalError::DecodingError(
+                    "fee_payer_not_in_transaction_signers".to_string(),
+                )
+            })?;
+
         // Ensure signature vector is large enough, then place the signature
         if tx.signatures.len() < num_required {
             tx.signatures.resize(num_required, Signature::default());
         }
-        // tx.signatures.push(signature);
+
+        // Log signature placement for debugging
+        let default_sig = Signature::default();
+        let existing_sigs: Vec<_> = tx
+            .signatures
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                if *s == default_sig {
+                    format!("[{}]: empty", i)
+                } else {
+                    format!("[{}]: present", i)
+                }
+            })
+            .collect();
+        tracing::debug!(
+            fee_payer_position = pos,
+            existing_signatures = ?existing_sigs,
+            "Adding fee payer signature"
+        );
+
         tx.signatures[pos] = signature;
         Ok(Self { inner: tx })
     }
@@ -828,6 +1056,7 @@ impl TransactionInt {
                 &self.inner,
                 RpcSendTransactionConfig {
                     skip_preflight: true,
+                    max_retries: Some(5),
                     ..RpcSendTransactionConfig::default()
                 },
             )

@@ -444,6 +444,17 @@
             box-shadow: 0 8px 24px rgba(255, 61, 0, 0.3);
         }
 
+        .network-badge.zama {
+            border-color: #ffcc00;
+            box-shadow: 0 0 20px rgba(255, 204, 0, 0.2);
+            background: linear-gradient(135deg, rgba(255, 204, 0, 0.1) 0%, var(--bg-card) 100%);
+        }
+
+        .network-badge.zama:hover {
+            border-color: #ffcc00;
+            box-shadow: 0 8px 24px rgba(255, 204, 0, 0.3);
+        }
+
         .network-dot {
             width: 12px;
             height: 12px;
@@ -1317,6 +1328,40 @@
                             </div>
                             <div style="font-size: 0.7rem; color: var(--text-muted);">SOL</div>
                         </div>
+                        <!-- Zama FHE Special Card -->
+                        <div class="network-badge zama"
+                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
+                            onclick="window.open('https://zama-facilitator.ultravioletadao.xyz', '_blank')">
+                            <div style="display: flex; align-items: center; gap: 0.75rem;">
+                                <svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                    <circle cx="16" cy="16" r="14" stroke="#ffcc00" stroke-width="2" fill="none"/>
+                                    <path d="M10 16L14 20L22 12" stroke="#ffcc00" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+                                    <circle cx="16" cy="16" r="6" stroke="#ffcc00" stroke-width="1.5" fill="none" opacity="0.5"/>
+                                </svg>
+                                <span style="font-weight: 700;">Zama FHE</span>
+                                <span style="font-size: 0.6rem; background: linear-gradient(135deg, #ffcc00, #ff9900); color: #000; padding: 0.2rem 0.5rem; border-radius: 4px; font-weight: 700;">ENCRYPTED</span>
+                            </div>
+                            <div style="font-size: 0.85rem; color: rgba(255,255,255,0.8); text-align: center;">
+                                Confidential Payments on Ethereum Sepolia
+                            </div>
+                            <div style="font-size: 0.7rem; color: var(--text-muted);">fhEVM + ERC7984</div>
+                            <div style="display: flex; gap: 0.5rem; margin-top: 0.25rem;">
+                                <a href="https://x402-fhe-docs.vercel.app/" target="_blank"
+                                   onclick="event.stopPropagation();"
+                                   style="font-size: 0.65rem; color: #ffcc00; text-decoration: none; padding: 0.25rem 0.5rem; border: 1px solid #ffcc00; border-radius: 4px; transition: all 0.2s;"
+                                   onmouseover="this.style.background='#ffcc00'; this.style.color='#000';"
+                                   onmouseout="this.style.background='transparent'; this.style.color='#ffcc00';">
+                                    Docs
+                                </a>
+                                <a href="https://github.com/tomi204/x402-zama" target="_blank"
+                                   onclick="event.stopPropagation();"
+                                   style="font-size: 0.65rem; color: #ffcc00; text-decoration: none; padding: 0.25rem 0.5rem; border: 1px solid #ffcc00; border-radius: 4px; transition: all 0.2s;"
+                                   onmouseover="this.style.background='#ffcc00'; this.style.color='#000';"
+                                   onmouseout="this.style.background='transparent'; this.style.color='#ffcc00';">
+                                    GitHub
+                                </a>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
@@ -1503,27 +1548,89 @@
 
             <section class="code-section fade-in">
                 <h3 data-i18n="code.title">Integrate in Minutes</h3>
-                <pre><code><span class="code-keyword">import</span> { Hono } <span class="code-keyword">from</span> <span class="code-string">"hono"</span>;
-<span class="code-keyword">import</span> { paymentMiddleware, Network } <span class="code-keyword">from</span> <span class="code-string">"x402-hono"</span>;
+                <p style="color: var(--text-muted); margin-bottom: 1.5rem; text-align: center; max-width: 700px; margin-left: auto; margin-right: auto;">
+                    Our SDKs handle payload construction, signature verification, and multichain settlement automatically.
+                    By default, all requests use our facilitator - no configuration needed.
+                </p>
 
-<span class="code-keyword">const</span> app = <span class="code-keyword">new</span> <span class="code-function">Hono</span>();
+                <!-- SDK Tabs -->
+                <div class="tab-buttons" style="margin-bottom: 1rem;">
+                    <button class="tab-button active" onclick="switchSdkTab('typescript')">TypeScript</button>
+                    <button class="tab-button" onclick="switchSdkTab('python')">Python</button>
+                </div>
 
-<span class="code-comment">// Configure payment middleware</span>
-app.<span class="code-function">use</span>(<span class="code-function">paymentMiddleware</span>(
-  <span class="code-string">"0xYourAddress"</span>,
-  {
-    <span class="code-string">"/protected-route"</span>: {
-      price: <span class="code-string">"$0.01"</span>,
-      network: <span class="code-string">"any-supported-network"</span>,
-      config: {
-        description: <span class="code-string">"Access to premium content"</span>
-      }
-    }
-  },
-  {
-    url: <span class="code-string">'https://facilitator.ultravioletadao.xyz'</span> <span class="code-comment">// 👈 This facilitator</span>
-  }
-));</code></pre>
+                <!-- TypeScript Tab -->
+                <div id="typescript-tab" class="sdk-tab-content" style="display: block;">
+                    <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem;">
+                        <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1rem;">
+                            <span style="font-size: 1.5rem;">📦</span>
+                            <span style="font-weight: 600; color: var(--text);">Installation</span>
+                        </div>
+                        <pre style="margin: 0; background: #1a1a24; padding: 1rem; border-radius: 8px;"><code style="color: #14f195;">npm install uvd-x402-sdk</code></pre>
+                    </div>
+                    <pre><code><span class="code-comment">// Client: Make a paid request (handles 402 automatically)</span>
+<span class="code-keyword">import</span> { wrapFetchWithPayment } <span class="code-keyword">from</span> <span class="code-string">"uvd-x402-sdk"</span>;
+
+<span class="code-keyword">const</span> paidFetch = <span class="code-function">wrapFetchWithPayment</span>(wallet);
+<span class="code-keyword">const</span> response = <span class="code-keyword">await</span> <span class="code-function">paidFetch</span>(<span class="code-string">"https://api.example.com/premium"</span>);
+
+<span class="code-comment">// Server: Protect an endpoint</span>
+<span class="code-keyword">import</span> { verifyPayment } <span class="code-keyword">from</span> <span class="code-string">"uvd-x402-sdk"</span>;
+
+<span class="code-keyword">const</span> result = <span class="code-keyword">await</span> <span class="code-function">verifyPayment</span>(
+  request.headers[<span class="code-string">"X-PAYMENT"</span>],
+  { maxPrice: <span class="code-string">"0.01"</span>, recipient: <span class="code-string">"0xYourWallet"</span> }
+);</code></pre>
+                    <div style="display: flex; gap: 0.75rem; margin-top: 1rem; justify-content: center;">
+                        <a href="https://www.npmjs.com/package/uvd-x402-sdk" target="_blank" style="font-size: 0.8rem; color: var(--accent); text-decoration: none; padding: 0.5rem 1rem; border: 1px solid var(--accent); border-radius: 6px;">npm</a>
+                        <a href="https://github.com/UltravioletaDAO/uvd-x402-sdk-typescript" target="_blank" style="font-size: 0.8rem; color: var(--accent); text-decoration: none; padding: 0.5rem 1rem; border: 1px solid var(--accent); border-radius: 6px;">GitHub</a>
+                    </div>
+                </div>
+
+                <!-- Python Tab -->
+                <div id="python-tab" class="sdk-tab-content" style="display: none;">
+                    <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem;">
+                        <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1rem;">
+                            <span style="font-size: 1.5rem;">📦</span>
+                            <span style="font-weight: 600; color: var(--text);">Installation</span>
+                        </div>
+                        <pre style="margin: 0; background: #1a1a24; padding: 1rem; border-radius: 8px;"><code style="color: #14f195;">pip install uvd-x402-sdk</code></pre>
+                    </div>
+                    <pre><code><span class="code-comment"># Client: Make a paid request</span>
+<span class="code-keyword">from</span> uvd_x402_sdk <span class="code-keyword">import</span> X402Client
+
+client = <span class="code-function">X402Client</span>(wallet=your_wallet)
+response = client.<span class="code-function">paid_request</span>(<span class="code-string">"https://api.example.com/premium"</span>)
+
+<span class="code-comment"># Server: Verify payment</span>
+<span class="code-keyword">from</span> uvd_x402_sdk <span class="code-keyword">import</span> verify_payment
+
+result = <span class="code-function">verify_payment</span>(
+    request.headers[<span class="code-string">"X-PAYMENT"</span>],
+    recipient=<span class="code-string">"0xYourWallet"</span>,
+    max_price=<span class="code-string">"0.01"</span>
+)</code></pre>
+                    <div style="display: flex; gap: 0.75rem; margin-top: 1rem; justify-content: center;">
+                        <a href="https://pypi.org/project/uvd-x402-sdk/" target="_blank" style="font-size: 0.8rem; color: var(--accent); text-decoration: none; padding: 0.5rem 1rem; border: 1px solid var(--accent); border-radius: 6px;">PyPI</a>
+                        <a href="https://github.com/UltravioletaDAO/uvd-x402-sdk-python" target="_blank" style="font-size: 0.8rem; color: var(--accent); text-decoration: none; padding: 0.5rem 1rem; border: 1px solid var(--accent); border-radius: 6px;">GitHub</a>
+                    </div>
+                </div>
+
+                <!-- SDK Features -->
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-top: 2rem;">
+                    <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; text-align: center;">
+                        <span style="font-size: 1.25rem;">🔧</span>
+                        <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.5rem;">No payload construction needed</p>
+                    </div>
+                    <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; text-align: center;">
+                        <span style="font-size: 1.25rem;">🌐</span>
+                        <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.5rem;">14+ networks supported</p>
+                    </div>
+                    <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; text-align: center;">
+                        <span style="font-size: 1.25rem;">⚡</span>
+                        <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.5rem;">Default facilitator configured</p>
+                    </div>
+                </div>
             </section>
 
             <section class="section fade-in">
@@ -1934,6 +2041,22 @@ app.<span class="code-function">use</span>(<span class="code-function">paymentMi
                 content.classList.remove('active');
             });
             document.getElementById(tab + '-tab').classList.add('active');
+        };
+
+        // SDK Tab switching function
+        window.switchSdkTab = function (sdk) {
+            // Update button states in the SDK section only
+            const sdkSection = document.querySelector('.code-section');
+            sdkSection.querySelectorAll('.tab-button').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            event.target.classList.add('active');
+
+            // Update SDK content visibility
+            document.querySelectorAll('.sdk-tab-content').forEach(content => {
+                content.style.display = 'none';
+            });
+            document.getElementById(sdk + '-tab').style.display = 'block';
         };
 
         // Fetch balances on page load

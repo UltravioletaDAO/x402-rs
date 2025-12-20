@@ -1338,7 +1338,8 @@ impl Facilitator for StellarProvider {
             scheme: Scheme::Exact,
             x402_version: X402Version::V1,
             extra: Some(SupportedPaymentKindExtra {
-                fee_payer: self.signer_address(),
+                fee_payer: Some(self.signer_address()),
+                tokens: None, // TODO: Add Stellar token support
             }),
         }];
         Ok(SupportedPaymentKindsResponse { kinds })

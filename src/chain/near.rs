@@ -707,7 +707,8 @@ impl Facilitator for NearProvider {
             scheme: Scheme::Exact,
             x402_version: X402Version::V1,
             extra: Some(SupportedPaymentKindExtra {
-                fee_payer: self.signer_address(),
+                fee_payer: Some(self.signer_address()),
+                tokens: None, // TODO: Add NEAR token support
             }),
         }];
         Ok(SupportedPaymentKindsResponse { kinds })

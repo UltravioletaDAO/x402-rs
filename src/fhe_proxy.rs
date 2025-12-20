@@ -199,6 +199,7 @@ mod tests {
     fn test_default_config() {
         let config = FheProxyConfig::default();
         assert!(config.endpoint.contains("zama-facilitator"));
-        assert_eq!(config.timeout_secs, 30);
+        // FHE decryption takes longer; 90s accounts for Lambda cold starts
+        assert_eq!(config.timeout_secs, 90);
     }
 }

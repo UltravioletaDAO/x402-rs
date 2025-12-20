@@ -78,7 +78,7 @@ where
         .route("/verify", post(post_verify::<A>))
         .route("/settle", get(get_settle_info))
         .route("/settle", post(post_settle::<A>))
-        .route("/health", get(get_health::<A>))
+        .route("/health", get(get_health))
         .route("/version", get(get_version))
         .route("/supported", get(get_supported::<A>))
         .route("/blacklist", get(get_blacklist::<A>))
@@ -313,13 +313,15 @@ where
     }
 }
 
+/// `GET /health`: Health check endpoint for load balancers and monitoring.
+///
+/// Returns a simple JSON response indicating the service is healthy.
+/// This is used by AWS ALB health checks and monitoring tools.
 #[instrument(skip_all)]
-pub async fn get_health<A>(State(facilitator): State<A>) -> impl IntoResponse
-where
-    A: Facilitator,
-    A::Error: IntoResponse,
-{
-    get_supported(State(facilitator)).await
+pub async fn get_health() -> impl IntoResponse {
+    Json(json!({
+        "status": "healthy"
+    }))
 }
 
 /// `GET /version`: Returns the current version of the facilitator.

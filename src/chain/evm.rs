@@ -45,13 +45,17 @@ use tracing_core::Level;
 use crate::chain::{FacilitatorLocalError, FromEnvByNetworkBuild, NetworkProviderOps};
 use crate::facilitator::Facilitator;
 use crate::from_env;
-use crate::network::{Network, USDCDeployment};
+use crate::network::{
+    get_token_deployment, supported_tokens_for_network, AUSDDeployment, CrvUSDDeployment,
+    EURCDeployment, GHODeployment, Network, PYUSDDeployment, USDCDeployment,
+};
 use crate::timestamp::UnixTimestamp;
 use crate::types::{
     EvmAddress, EvmSignature, ExactPaymentPayload, FacilitatorErrorReason, HexEncodedNonce,
     MixedAddress, PaymentPayload, PaymentRequirements, Scheme, SettleRequest, SettleResponse,
-    SupportedPaymentKind, SupportedPaymentKindsResponse, TokenAmount, TransactionHash,
-    TransferWithAuthorization, VerifyRequest, VerifyResponse, X402Version,
+    SupportedPaymentKind, SupportedPaymentKindExtra, SupportedPaymentKindsResponse,
+    SupportedTokenInfo, TokenAmount, TransactionHash, TransferWithAuthorization, VerifyRequest,
+    VerifyResponse, X402Version,
 };
 
 sol!(
@@ -713,11 +717,34 @@ where
 
     /// Report payment kinds supported by this provider on its current network.
     async fn supported(&self) -> Result<SupportedPaymentKindsResponse, Self::Error> {
+        let network = self.chain().network();
+
+        // Build list of supported tokens for this network
+        let tokens: Vec<SupportedTokenInfo> = supported_tokens_for_network(network)
+            .into_iter()
+            .filter_map(|token_type| {
+                get_token_deployment(network, token_type).map(|deployment| SupportedTokenInfo {
+                    token: token_type,
+                    address: deployment.address(),
+                    decimals: deployment.decimals,
+                })
+            })
+            .collect();
+
+        let extra = if tokens.is_empty() {
+            None
+        } else {
+            Some(SupportedPaymentKindExtra {
+                fee_payer: None, // Set at FacilitatorLocal level
+                tokens: Some(tokens),
+            })
+        };
+
         let kinds = vec![SupportedPaymentKind {
-            network: self.chain().network().to_string(),
+            network: network.to_string(),
             x402_version: X402Version::V1,
             scheme: Scheme::Exact,
-            extra: None,
+            extra,
         }];
         Ok(SupportedPaymentKindsResponse { kinds })
     }
@@ -865,7 +892,7 @@ async fn is_contract_deployed<P: Provider>(
 /// Constructs the correct EIP-712 domain for signature verification.
 ///
 /// Resolves the `name` and `version` based on:
-/// - Static metadata from [`USDCDeployment`] (if available),
+/// - Static metadata from known token deployments (USDC, EURC, AUSD, PYUSD, GHO, crvUSD),
 /// - Or by calling `version()` on the token contract if not matched statically.
 #[instrument(skip_all, err, fields(
     network = %payload.network,
@@ -878,12 +905,14 @@ async fn assert_domain<P: Provider>(
     asset_address: &Address,
     requirements: &PaymentRequirements,
 ) -> Result<Eip712Domain, FacilitatorLocalError> {
-    let usdc = USDCDeployment::by_network(payload.network);
+    // Try to find EIP-712 metadata from known token deployments
+    let known_eip712 = find_known_eip712_metadata(payload.network, asset_address);
+
     let name = requirements
         .extra
         .as_ref()
         .and_then(|e| e.get("name")?.as_str().map(str::to_string))
-        .or_else(|| usdc.eip712.clone().map(|e| e.name));
+        .or_else(|| known_eip712.as_ref().map(|(name, _)| name.clone()));
     let name = if let Some(name) = name {
         name
     } else {
@@ -903,14 +932,8 @@ async fn assert_domain<P: Provider>(
         .extra
         .as_ref()
         .and_then(|extra| extra.get("version"))
-        .and_then(|version| version.as_str().map(|s| s.to_string()));
-    let version = if let Some(extra_version) = version {
-        Some(extra_version)
-    } else if usdc.address() == (*asset_address).into() {
-        usdc.eip712.clone().map(|e| e.version)
-    } else {
-        None
-    };
+        .and_then(|version| version.as_str().map(|s| s.to_string()))
+        .or_else(|| known_eip712.map(|(_, version)| version));
     let version = if let Some(version) = version {
         version
     } else {
@@ -932,6 +955,72 @@ async fn assert_domain<P: Provider>(
         verifying_contract: *asset_address,
     };
     Ok(domain)
+}
+
+/// Find EIP-712 metadata (name, version) for a known token deployment.
+///
+/// Checks all supported stablecoin deployments (USDC, EURC, AUSD, PYUSD, GHO, crvUSD)
+/// and returns the EIP-712 domain name and version if the asset address matches.
+fn find_known_eip712_metadata(
+    network: Network,
+    asset_address: &Address,
+) -> Option<(String, String)> {
+    let asset_mixed: MixedAddress = (*asset_address).into();
+
+    // Check USDC (always available on all networks)
+    let usdc = USDCDeployment::by_network(network);
+    if usdc.address() == asset_mixed {
+        if let Some(eip712) = &usdc.eip712 {
+            return Some((eip712.name.clone(), eip712.version.clone()));
+        }
+    }
+
+    // Check EURC
+    if let Some(eurc) = EURCDeployment::by_network(network) {
+        if eurc.address() == asset_mixed {
+            if let Some(eip712) = &eurc.eip712 {
+                return Some((eip712.name.clone(), eip712.version.clone()));
+            }
+        }
+    }
+
+    // Check AUSD
+    if let Some(ausd) = AUSDDeployment::by_network(network) {
+        if ausd.address() == asset_mixed {
+            if let Some(eip712) = &ausd.eip712 {
+                return Some((eip712.name.clone(), eip712.version.clone()));
+            }
+        }
+    }
+
+    // Check PYUSD
+    if let Some(pyusd) = PYUSDDeployment::by_network(network) {
+        if pyusd.address() == asset_mixed {
+            if let Some(eip712) = &pyusd.eip712 {
+                return Some((eip712.name.clone(), eip712.version.clone()));
+            }
+        }
+    }
+
+    // Check GHO
+    if let Some(gho) = GHODeployment::by_network(network) {
+        if gho.address() == asset_mixed {
+            if let Some(eip712) = &gho.eip712 {
+                return Some((eip712.name.clone(), eip712.version.clone()));
+            }
+        }
+    }
+
+    // Check crvUSD
+    if let Some(crvusd) = CrvUSDDeployment::by_network(network) {
+        if crvusd.address() == asset_mixed {
+            if let Some(eip712) = &crvusd.eip712 {
+                return Some((eip712.name.clone(), eip712.version.clone()));
+            }
+        }
+    }
+
+    None
 }
 
 /// Runs all preconditions needed for a successful payment:

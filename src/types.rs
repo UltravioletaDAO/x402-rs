@@ -119,6 +119,195 @@ impl Display for Scheme {
     }
 }
 
+/// Enumerates supported stablecoin token types for payment.
+///
+/// The x402 protocol supports multiple EIP-3009 compatible stablecoins.
+/// Each token may have different decimal precision and EIP-712 domain parameters.
+///
+/// # Decimal Precision
+/// - 6 decimals: USDC, EURC, AUSD, PYUSD (1_000_000 = $1.00)
+/// - 18 decimals: GHO, crvUSD (1_000_000_000_000_000_000 = $1.00)
+///
+/// # Default Behavior
+/// When `token_type` is not specified in a payment request, USDC is used
+/// for backward compatibility with existing clients.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TokenType {
+    /// USD Coin by Circle (6 decimals) - Default token
+    #[default]
+    #[serde(rename = "usdc")]
+    Usdc,
+    /// Euro Coin by Circle (6 decimals)
+    #[serde(rename = "eurc")]
+    Eurc,
+    /// Agora USD by Agora Finance (6 decimals)
+    #[serde(rename = "ausd")]
+    Ausd,
+    /// PayPal USD by PayPal/Paxos (6 decimals)
+    #[serde(rename = "pyusd")]
+    Pyusd,
+    /// GHO stablecoin by Aave (18 decimals)
+    #[serde(rename = "gho")]
+    Gho,
+    /// crvUSD by Curve Finance (18 decimals)
+    #[serde(rename = "crvusd")]
+    CrvUsd,
+}
+
+impl TokenType {
+    /// Returns the number of decimal places for this token.
+    ///
+    /// Most stablecoins use 6 decimals (like USDC), but some DeFi-native
+    /// tokens like GHO and crvUSD use 18 decimals.
+    #[must_use]
+    pub const fn decimals(&self) -> u8 {
+        match self {
+            TokenType::Usdc => 6,
+            TokenType::Eurc => 6,
+            TokenType::Ausd => 6,
+            TokenType::Pyusd => 6,
+            TokenType::Gho => 18,
+            TokenType::CrvUsd => 18,
+        }
+    }
+
+    /// Returns the ticker symbol for this token (e.g., "USDC", "EURC").
+    #[must_use]
+    pub const fn symbol(&self) -> &'static str {
+        match self {
+            TokenType::Usdc => "USDC",
+            TokenType::Eurc => "EURC",
+            TokenType::Ausd => "AUSD",
+            TokenType::Pyusd => "PYUSD",
+            TokenType::Gho => "GHO",
+            TokenType::CrvUsd => "crvUSD",
+        }
+    }
+
+    /// Returns the full display name for this token.
+    #[must_use]
+    pub const fn display_name(&self) -> &'static str {
+        match self {
+            TokenType::Usdc => "USD Coin",
+            TokenType::Eurc => "Euro Coin",
+            TokenType::Ausd => "Agora USD",
+            TokenType::Pyusd => "PayPal USD",
+            TokenType::Gho => "GHO",
+            TokenType::CrvUsd => "Curve USD",
+        }
+    }
+
+    /// Returns the currency symbol for display purposes.
+    #[must_use]
+    pub const fn currency_symbol(&self) -> &'static str {
+        match self {
+            TokenType::Usdc => "$",
+            TokenType::Eurc => "EUR", // Euro symbol
+            TokenType::Ausd => "$",
+            TokenType::Pyusd => "$",
+            TokenType::Gho => "$",
+            TokenType::CrvUsd => "$",
+        }
+    }
+
+    /// Returns whether this token is fiat-backed (vs algorithmic/DeFi-native).
+    #[must_use]
+    pub const fn is_fiat_backed(&self) -> bool {
+        match self {
+            TokenType::Usdc => true,
+            TokenType::Eurc => true,
+            TokenType::Ausd => true,
+            TokenType::Pyusd => true,
+            TokenType::Gho => false,    // Algorithmic, minted via Aave
+            TokenType::CrvUsd => false, // Algorithmic, LLAMMA mechanism
+        }
+    }
+
+    /// Returns a list of all supported token types.
+    #[must_use]
+    pub const fn all() -> &'static [TokenType] {
+        &[
+            TokenType::Usdc,
+            TokenType::Eurc,
+            TokenType::Ausd,
+            TokenType::Pyusd,
+            TokenType::Gho,
+            TokenType::CrvUsd,
+        ]
+    }
+
+    /// Returns the EIP-712 domain name for this token.
+    ///
+    /// This is used in EIP-3009 `transferWithAuthorization` signatures.
+    /// The domain name must match exactly what the token contract returns.
+    #[must_use]
+    pub const fn eip712_name(&self) -> &'static str {
+        match self {
+            TokenType::Usdc => "USD Coin",
+            TokenType::Eurc => "Euro Coin",
+            TokenType::Ausd => "AUSD",
+            TokenType::Pyusd => "PayPal USD",
+            TokenType::Gho => "Gho Token",
+            TokenType::CrvUsd => "Curve.Fi USD Stablecoin",
+        }
+    }
+
+    /// Returns the EIP-712 domain version for this token.
+    ///
+    /// This is used in EIP-3009 `transferWithAuthorization` signatures.
+    /// The version must match exactly what the token contract returns.
+    #[must_use]
+    pub const fn eip712_version(&self) -> &'static str {
+        match self {
+            TokenType::Usdc => "2",
+            TokenType::Eurc => "2",
+            TokenType::Ausd => "1",
+            TokenType::Pyusd => "1",
+            TokenType::Gho => "1",
+            TokenType::CrvUsd => "1",
+        }
+    }
+
+    /// Returns the EIP-712 domain info for this token as a `TokenDeploymentEip712`.
+    ///
+    /// Returns `None` for non-EVM tokens that don't use EIP-712.
+    #[must_use]
+    pub fn eip712_domain(&self) -> TokenDeploymentEip712 {
+        TokenDeploymentEip712 {
+            name: self.eip712_name().to_string(),
+            version: self.eip712_version().to_string(),
+        }
+    }
+}
+
+impl Display for TokenType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.symbol())
+    }
+}
+
+impl FromStr for TokenType {
+    type Err = TokenTypeParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "usdc" => Ok(TokenType::Usdc),
+            "eurc" => Ok(TokenType::Eurc),
+            "ausd" => Ok(TokenType::Ausd),
+            "pyusd" => Ok(TokenType::Pyusd),
+            "gho" => Ok(TokenType::Gho),
+            "crvusd" => Ok(TokenType::CrvUsd),
+            _ => Err(TokenTypeParseError(s.to_string())),
+        }
+    }
+}
+
+/// Error returned when parsing an invalid token type string.
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("Unknown token type: {0}. Supported: usdc, eurc, ausd, pyusd, gho, crvusd")]
+pub struct TokenTypeParseError(pub String);
+
 /// Represents an EVM signature used in EIP-712 typed data.
 /// Serialized as 0x-prefixed hex string.
 /// Used to authorize an ERC-3009 transferWithAuthorization.
@@ -1519,10 +1708,27 @@ pub struct SupportedPaymentKind {
     pub extra: Option<SupportedPaymentKindExtra>,
 }
 
+/// Information about a supported token in the /supported endpoint response.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SupportedTokenInfo {
+    /// Token type (usdc, eurc, ausd, pyusd, gho, crvusd)
+    pub token: TokenType,
+    /// Contract address on this network
+    pub address: MixedAddress,
+    /// Token decimals (6 for most stablecoins, 18 for GHO/crvUSD)
+    pub decimals: u8,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SupportedPaymentKindExtra {
-    pub fee_payer: MixedAddress,
+    /// Facilitator address that pays gas fees
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fee_payer: Option<MixedAddress>,
+    /// List of supported tokens on this network
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<Vec<SupportedTokenInfo>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

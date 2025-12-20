@@ -1435,3 +1435,292 @@ pub fn supported_networks_for_token(token_type: TokenType) -> Vec<Network> {
         TokenType::CrvUsd => CrvUSDDeployment::supported_networks().to_vec(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::EvmAddress;
+    use alloy::primitives::address;
+
+    // ============================================================
+    // USDC Deployment Tests
+    // ============================================================
+
+    #[test]
+    fn test_usdc_available_on_all_networks() {
+        // USDC should be available on all networks
+        for network in Network::variants() {
+            assert!(
+                is_token_supported(*network, TokenType::Usdc),
+                "USDC should be supported on {:?}",
+                network
+            );
+            assert!(
+                get_token_deployment(*network, TokenType::Usdc).is_some(),
+                "USDC deployment should exist for {:?}",
+                network
+            );
+        }
+    }
+
+    #[test]
+    fn test_usdc_decimals() {
+        for network in Network::variants() {
+            let deployment = get_token_deployment(*network, TokenType::Usdc).unwrap();
+            // Most networks use 6 decimals, but Stellar uses 7
+            let expected_decimals = match network {
+                Network::Stellar | Network::StellarTestnet => 7,
+                _ => 6,
+            };
+            assert_eq!(
+                deployment.decimals, expected_decimals,
+                "USDC should have {} decimals on {:?}",
+                expected_decimals, network
+            );
+        }
+    }
+
+    #[test]
+    fn test_usdc_base_address() {
+        let deployment = get_token_deployment(Network::Base, TokenType::Usdc).unwrap();
+        assert_eq!(
+            deployment.asset.address,
+            MixedAddress::Evm(address!("833589fCD6eDb6E08f4c7C32D4f71b54bdA02913").into())
+        );
+    }
+
+    // ============================================================
+    // EURC Deployment Tests
+    // ============================================================
+
+    #[test]
+    fn test_eurc_supported_networks() {
+        let networks = EURCDeployment::supported_networks();
+        assert!(networks.contains(&Network::Ethereum));
+        assert!(networks.contains(&Network::Base));
+        assert!(networks.contains(&Network::Avalanche));
+        assert_eq!(networks.len(), 3);
+    }
+
+    #[test]
+    fn test_eurc_not_on_unsupported_networks() {
+        assert!(!is_token_supported(Network::Polygon, TokenType::Eurc));
+        assert!(!is_token_supported(Network::Optimism, TokenType::Eurc));
+        assert!(get_token_deployment(Network::Polygon, TokenType::Eurc).is_none());
+    }
+
+    #[test]
+    fn test_eurc_ethereum_address() {
+        let deployment = get_token_deployment(Network::Ethereum, TokenType::Eurc).unwrap();
+        assert_eq!(
+            deployment.asset.address,
+            MixedAddress::Evm(address!("1aBaEA1f7C830bD89Acc67eC4af516284b1bC33c").into())
+        );
+        assert_eq!(deployment.decimals, 6);
+    }
+
+    // ============================================================
+    // AUSD Deployment Tests (CREATE2 - same address all chains)
+    // ============================================================
+
+    #[test]
+    fn test_ausd_same_address_all_networks() {
+        let expected_address: EvmAddress = address!("00000000eFE302BEAA2b3e6e1b18d08D69a9012a").into();
+        let networks = AUSDDeployment::supported_networks();
+
+        for network in networks {
+            let deployment = get_token_deployment(*network, TokenType::Ausd).unwrap();
+            assert_eq!(
+                deployment.asset.address,
+                MixedAddress::Evm(expected_address.clone()),
+                "AUSD should have same CREATE2 address on {:?}",
+                network
+            );
+        }
+    }
+
+    #[test]
+    fn test_ausd_supported_networks() {
+        let networks = AUSDDeployment::supported_networks();
+        assert!(networks.contains(&Network::Ethereum));
+        assert!(networks.contains(&Network::Polygon));
+        assert!(networks.contains(&Network::Arbitrum));
+        assert!(networks.contains(&Network::Avalanche));
+    }
+
+    // ============================================================
+    // PYUSD Deployment Tests (Ethereum only)
+    // ============================================================
+
+    #[test]
+    fn test_pyusd_ethereum_only() {
+        let networks = PYUSDDeployment::supported_networks();
+        assert_eq!(networks.len(), 1);
+        assert_eq!(networks[0], Network::Ethereum);
+    }
+
+    #[test]
+    fn test_pyusd_not_on_other_networks() {
+        assert!(!is_token_supported(Network::Base, TokenType::Pyusd));
+        assert!(!is_token_supported(Network::Polygon, TokenType::Pyusd));
+        assert!(get_token_deployment(Network::Base, TokenType::Pyusd).is_none());
+    }
+
+    #[test]
+    fn test_pyusd_ethereum_address() {
+        let deployment = get_token_deployment(Network::Ethereum, TokenType::Pyusd).unwrap();
+        assert_eq!(
+            deployment.asset.address,
+            MixedAddress::Evm(address!("6c3ea9036406852006290770BEdFcAbA0e23A0e8").into())
+        );
+        assert_eq!(deployment.decimals, 6);
+    }
+
+    // ============================================================
+    // GHO Deployment Tests (18 decimals)
+    // ============================================================
+
+    #[test]
+    fn test_gho_has_18_decimals() {
+        let networks = GHODeployment::supported_networks();
+        for network in networks {
+            let deployment = get_token_deployment(*network, TokenType::Gho).unwrap();
+            assert_eq!(
+                deployment.decimals, 18,
+                "GHO should have 18 decimals on {:?}",
+                network
+            );
+        }
+    }
+
+    #[test]
+    fn test_gho_supported_networks() {
+        let networks = GHODeployment::supported_networks();
+        assert!(networks.contains(&Network::Ethereum));
+        assert!(networks.contains(&Network::Arbitrum));
+        assert!(networks.contains(&Network::Base));
+        assert_eq!(networks.len(), 3);
+    }
+
+    #[test]
+    fn test_gho_ethereum_address() {
+        let deployment = get_token_deployment(Network::Ethereum, TokenType::Gho).unwrap();
+        assert_eq!(
+            deployment.asset.address,
+            MixedAddress::Evm(address!("40D16FC0246aD3160Ccc09B8D0D3A2cD28aE6C2f").into())
+        );
+    }
+
+    // ============================================================
+    // crvUSD Deployment Tests (18 decimals)
+    // ============================================================
+
+    #[test]
+    fn test_crvusd_has_18_decimals() {
+        let networks = CrvUSDDeployment::supported_networks();
+        for network in networks {
+            let deployment = get_token_deployment(*network, TokenType::CrvUsd).unwrap();
+            assert_eq!(
+                deployment.decimals, 18,
+                "crvUSD should have 18 decimals on {:?}",
+                network
+            );
+        }
+    }
+
+    #[test]
+    fn test_crvusd_supported_networks() {
+        let networks = CrvUSDDeployment::supported_networks();
+        assert!(networks.contains(&Network::Ethereum));
+        assert!(networks.contains(&Network::Arbitrum));
+        assert_eq!(networks.len(), 2);
+    }
+
+    #[test]
+    fn test_crvusd_ethereum_address() {
+        let deployment = get_token_deployment(Network::Ethereum, TokenType::CrvUsd).unwrap();
+        assert_eq!(
+            deployment.asset.address,
+            MixedAddress::Evm(address!("f939E0A03FB07F59A73314E73794Be0E57ac1b4E").into())
+        );
+    }
+
+    // ============================================================
+    // Helper Function Tests
+    // ============================================================
+
+    #[test]
+    fn test_supported_tokens_for_ethereum() {
+        // Ethereum supports all tokens
+        let tokens = supported_tokens_for_network(Network::Ethereum);
+        assert_eq!(tokens.len(), 6);
+        assert!(tokens.contains(&TokenType::Usdc));
+        assert!(tokens.contains(&TokenType::Eurc));
+        assert!(tokens.contains(&TokenType::Ausd));
+        assert!(tokens.contains(&TokenType::Pyusd));
+        assert!(tokens.contains(&TokenType::Gho));
+        assert!(tokens.contains(&TokenType::CrvUsd));
+    }
+
+    #[test]
+    fn test_supported_tokens_for_base() {
+        // Base supports USDC, EURC, GHO
+        let tokens = supported_tokens_for_network(Network::Base);
+        assert!(tokens.contains(&TokenType::Usdc));
+        assert!(tokens.contains(&TokenType::Eurc));
+        assert!(tokens.contains(&TokenType::Gho));
+        assert!(!tokens.contains(&TokenType::Pyusd));
+        assert!(!tokens.contains(&TokenType::Ausd));
+    }
+
+    #[test]
+    fn test_supported_tokens_for_polygon() {
+        // Polygon supports USDC, AUSD
+        let tokens = supported_tokens_for_network(Network::Polygon);
+        assert!(tokens.contains(&TokenType::Usdc));
+        assert!(tokens.contains(&TokenType::Ausd));
+        assert!(!tokens.contains(&TokenType::Eurc));
+        assert!(!tokens.contains(&TokenType::Gho));
+    }
+
+    #[test]
+    fn test_supported_tokens_for_solana() {
+        // Solana only supports USDC (non-EVM)
+        let tokens = supported_tokens_for_network(Network::Solana);
+        assert_eq!(tokens.len(), 1);
+        assert!(tokens.contains(&TokenType::Usdc));
+    }
+
+    #[test]
+    fn test_supported_networks_for_usdc() {
+        let networks = supported_networks_for_token(TokenType::Usdc);
+        // USDC is on all networks
+        assert_eq!(networks.len(), Network::variants().len());
+    }
+
+    #[test]
+    fn test_supported_networks_for_eurc() {
+        let networks = supported_networks_for_token(TokenType::Eurc);
+        assert_eq!(networks.len(), 3);
+        assert!(networks.contains(&Network::Ethereum));
+        assert!(networks.contains(&Network::Base));
+        assert!(networks.contains(&Network::Avalanche));
+    }
+
+    #[test]
+    fn test_get_token_deployment_returns_correct_type() {
+        // Verify the deployment contains correct token info
+        let usdc = get_token_deployment(Network::Base, TokenType::Usdc).unwrap();
+        assert_eq!(usdc.decimals, 6);
+
+        let gho = get_token_deployment(Network::Ethereum, TokenType::Gho).unwrap();
+        assert_eq!(gho.decimals, 18);
+    }
+
+    #[test]
+    fn test_token_deployment_address_method() {
+        let deployment = get_token_deployment(Network::Base, TokenType::Usdc).unwrap();
+        let address = deployment.address();
+        assert!(matches!(address, MixedAddress::Evm(_)));
+    }
+}

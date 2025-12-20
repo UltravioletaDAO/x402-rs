@@ -1758,3 +1758,207 @@ sol!(
         bytes32 nonce;
     }
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ============================================================
+    // TokenType Tests
+    // ============================================================
+
+    #[test]
+    fn test_token_type_default_is_usdc() {
+        let token: TokenType = Default::default();
+        assert_eq!(token, TokenType::Usdc);
+    }
+
+    #[test]
+    fn test_token_type_decimals() {
+        // Standard 6 decimal tokens
+        assert_eq!(TokenType::Usdc.decimals(), 6);
+        assert_eq!(TokenType::Eurc.decimals(), 6);
+        assert_eq!(TokenType::Ausd.decimals(), 6);
+        assert_eq!(TokenType::Pyusd.decimals(), 6);
+
+        // DeFi-native 18 decimal tokens
+        assert_eq!(TokenType::Gho.decimals(), 18);
+        assert_eq!(TokenType::CrvUsd.decimals(), 18);
+    }
+
+    #[test]
+    fn test_token_type_symbol() {
+        assert_eq!(TokenType::Usdc.symbol(), "USDC");
+        assert_eq!(TokenType::Eurc.symbol(), "EURC");
+        assert_eq!(TokenType::Ausd.symbol(), "AUSD");
+        assert_eq!(TokenType::Pyusd.symbol(), "PYUSD");
+        assert_eq!(TokenType::Gho.symbol(), "GHO");
+        assert_eq!(TokenType::CrvUsd.symbol(), "crvUSD");
+    }
+
+    #[test]
+    fn test_token_type_all() {
+        let all = TokenType::all();
+        assert_eq!(all.len(), 6);
+        assert!(all.contains(&TokenType::Usdc));
+        assert!(all.contains(&TokenType::Eurc));
+        assert!(all.contains(&TokenType::Ausd));
+        assert!(all.contains(&TokenType::Pyusd));
+        assert!(all.contains(&TokenType::Gho));
+        assert!(all.contains(&TokenType::CrvUsd));
+    }
+
+    #[test]
+    fn test_token_type_serde_serialization() {
+        // Serialize each token type
+        assert_eq!(serde_json::to_string(&TokenType::Usdc).unwrap(), "\"usdc\"");
+        assert_eq!(serde_json::to_string(&TokenType::Eurc).unwrap(), "\"eurc\"");
+        assert_eq!(serde_json::to_string(&TokenType::Ausd).unwrap(), "\"ausd\"");
+        assert_eq!(serde_json::to_string(&TokenType::Pyusd).unwrap(), "\"pyusd\"");
+        assert_eq!(serde_json::to_string(&TokenType::Gho).unwrap(), "\"gho\"");
+        assert_eq!(serde_json::to_string(&TokenType::CrvUsd).unwrap(), "\"crvusd\"");
+    }
+
+    #[test]
+    fn test_token_type_serde_deserialization() {
+        // Deserialize each token type
+        assert_eq!(
+            serde_json::from_str::<TokenType>("\"usdc\"").unwrap(),
+            TokenType::Usdc
+        );
+        assert_eq!(
+            serde_json::from_str::<TokenType>("\"eurc\"").unwrap(),
+            TokenType::Eurc
+        );
+        assert_eq!(
+            serde_json::from_str::<TokenType>("\"ausd\"").unwrap(),
+            TokenType::Ausd
+        );
+        assert_eq!(
+            serde_json::from_str::<TokenType>("\"pyusd\"").unwrap(),
+            TokenType::Pyusd
+        );
+        assert_eq!(
+            serde_json::from_str::<TokenType>("\"gho\"").unwrap(),
+            TokenType::Gho
+        );
+        assert_eq!(
+            serde_json::from_str::<TokenType>("\"crvusd\"").unwrap(),
+            TokenType::CrvUsd
+        );
+    }
+
+    #[test]
+    fn test_token_type_invalid_deserialization() {
+        // Invalid token should fail to deserialize
+        let result = serde_json::from_str::<TokenType>("\"invalid\"");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_token_type_display() {
+        // Display uses symbol() which returns uppercase
+        assert_eq!(format!("{}", TokenType::Usdc), "USDC");
+        assert_eq!(format!("{}", TokenType::Eurc), "EURC");
+        assert_eq!(format!("{}", TokenType::Ausd), "AUSD");
+        assert_eq!(format!("{}", TokenType::Pyusd), "PYUSD");
+        assert_eq!(format!("{}", TokenType::Gho), "GHO");
+        assert_eq!(format!("{}", TokenType::CrvUsd), "crvUSD");
+    }
+
+    #[test]
+    fn test_token_type_from_str() {
+        assert_eq!("usdc".parse::<TokenType>().unwrap(), TokenType::Usdc);
+        assert_eq!("eurc".parse::<TokenType>().unwrap(), TokenType::Eurc);
+        assert_eq!("ausd".parse::<TokenType>().unwrap(), TokenType::Ausd);
+        assert_eq!("pyusd".parse::<TokenType>().unwrap(), TokenType::Pyusd);
+        assert_eq!("gho".parse::<TokenType>().unwrap(), TokenType::Gho);
+        assert_eq!("crvusd".parse::<TokenType>().unwrap(), TokenType::CrvUsd);
+    }
+
+    #[test]
+    fn test_token_type_from_str_case_insensitive() {
+        // Should work with uppercase
+        assert_eq!("USDC".parse::<TokenType>().unwrap(), TokenType::Usdc);
+        assert_eq!("EURC".parse::<TokenType>().unwrap(), TokenType::Eurc);
+        assert_eq!("GHO".parse::<TokenType>().unwrap(), TokenType::Gho);
+
+        // Mixed case
+        assert_eq!("Usdc".parse::<TokenType>().unwrap(), TokenType::Usdc);
+        assert_eq!("CrvUSD".parse::<TokenType>().unwrap(), TokenType::CrvUsd);
+    }
+
+    #[test]
+    fn test_token_type_from_str_invalid() {
+        assert!("invalid".parse::<TokenType>().is_err());
+        assert!("".parse::<TokenType>().is_err());
+        assert!("usdt".parse::<TokenType>().is_err()); // Not supported
+        assert!("dai".parse::<TokenType>().is_err()); // Not supported
+    }
+
+    // ============================================================
+    // SupportedTokenInfo Tests
+    // ============================================================
+
+    #[test]
+    fn test_supported_token_info_serialization() {
+        let info = SupportedTokenInfo {
+            token: TokenType::Usdc,
+            address: MixedAddress::Evm(
+                alloy::primitives::address!("833589fCD6eDb6E08f4c7C32D4f71b54bdA02913").into(),
+            ),
+            decimals: 6,
+        };
+
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"token\":\"usdc\""));
+        assert!(json.contains("\"decimals\":6"));
+        // Address is checksummed (mixed case)
+        assert!(json.to_lowercase().contains("0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"));
+    }
+
+    #[test]
+    fn test_supported_payment_kind_extra_with_tokens() {
+        let extra = SupportedPaymentKindExtra {
+            fee_payer: None,
+            tokens: Some(vec![
+                SupportedTokenInfo {
+                    token: TokenType::Usdc,
+                    address: MixedAddress::Evm(
+                        alloy::primitives::address!("833589fCD6eDb6E08f4c7C32D4f71b54bdA02913")
+                            .into(),
+                    ),
+                    decimals: 6,
+                },
+                SupportedTokenInfo {
+                    token: TokenType::Gho,
+                    address: MixedAddress::Evm(
+                        alloy::primitives::address!("6Bb7a212910682DCFdbd5BCBb3e28FB4E8da10Ee")
+                            .into(),
+                    ),
+                    decimals: 18,
+                },
+            ]),
+        };
+
+        let json = serde_json::to_string(&extra).unwrap();
+        // fee_payer should be omitted (skip_serializing_if = None)
+        assert!(!json.contains("feePayer"));
+        // tokens should be present
+        assert!(json.contains("\"tokens\""));
+        assert!(json.contains("\"usdc\""));
+        assert!(json.contains("\"gho\""));
+    }
+
+    #[test]
+    fn test_supported_payment_kind_extra_empty() {
+        let extra = SupportedPaymentKindExtra {
+            fee_payer: None,
+            tokens: None,
+        };
+
+        let json = serde_json::to_string(&extra).unwrap();
+        // Both should be omitted
+        assert_eq!(json, "{}");
+    }
+}

@@ -901,6 +901,78 @@
         .fade-in {
             animation: fadeIn 0.6s ease-out forwards;
         }
+
+        /* Token support badges */
+        .token-badges {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.35rem;
+            margin-top: 0.5rem;
+        }
+
+        .token-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+            padding: 0.2rem 0.5rem;
+            border-radius: 9999px;
+            font-size: 0.6rem;
+            font-weight: 600;
+            font-family: 'JetBrains Mono', monospace;
+            text-transform: uppercase;
+            letter-spacing: 0.02em;
+            border: 1px solid transparent;
+            transition: all 0.2s ease;
+        }
+
+        .token-pill.usdc {
+            background: rgba(39, 117, 202, 0.15);
+            color: #2775ca;
+            border-color: rgba(39, 117, 202, 0.3);
+        }
+
+        .token-pill.eurc {
+            background: rgba(0, 51, 153, 0.15);
+            color: #6699ff;
+            border-color: rgba(0, 51, 153, 0.3);
+        }
+
+        .token-pill.ausd {
+            background: rgba(16, 185, 129, 0.15);
+            color: #10b981;
+            border-color: rgba(16, 185, 129, 0.3);
+        }
+
+        .token-pill.pyusd {
+            background: rgba(0, 112, 186, 0.15);
+            color: #0070ba;
+            border-color: rgba(0, 112, 186, 0.3);
+        }
+
+        .token-pill.gho {
+            background: rgba(180, 128, 255, 0.15);
+            color: #b480ff;
+            border-color: rgba(180, 128, 255, 0.3);
+        }
+
+        .token-pill.crvusd {
+            background: rgba(255, 193, 7, 0.15);
+            color: #ffc107;
+            border-color: rgba(255, 193, 7, 0.3);
+        }
+
+        .token-pill:hover {
+            transform: scale(1.05);
+            filter: brightness(1.2);
+        }
+
+        .tokens-label {
+            font-size: 0.55rem;
+            color: var(--text-muted);
+            margin-top: 0.25rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
     </style>
 </head>
 
@@ -946,7 +1018,7 @@
                     <div class="networks"
                         style="gap: 2rem; margin-bottom: 2.5rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); justify-items: center;">
                         <div class="network-badge avalanche"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
+                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://snowtrace.io/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
                                 <img src="/avalanche.png" alt="Avalanche"
@@ -958,9 +1030,10 @@
                                 Loading...
                             </div>
                             <div style="font-size: 0.7rem; color: var(--text-muted);">AVAX Balance</div>
+                            <div data-tokens="avalanche-mainnet"></div>
                         </div>
                         <div class="network-badge base"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
+                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://basescan.org/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
                                 <img src="/base.png" alt="Base" style="width: 32px; height: 32px; object-fit: contain;">
@@ -971,9 +1044,10 @@
                                 Loading...
                             </div>
                             <div style="font-size: 0.7rem; color: var(--text-muted);">ETH Balance</div>
+                            <div data-tokens="base-mainnet"></div>
                         </div>
                         <div class="network-badge celo"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
+                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://celoscan.io/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
                                 <img src="/celo.png" alt="Celo" style="width: 32px; height: 32px; object-fit: contain;">
@@ -984,8 +1058,10 @@
                                 Loading...
                             </div>
                             <div style="font-size: 0.7rem; color: var(--text-muted);">CELO Balance</div>
+                            <div data-tokens="celo-mainnet"></div>
                             <a href="https://www.celocolombia.org/" target="_blank"
-                                style="display: flex; flex-direction: column; align-items: center; justify-content: center; margin-top: 0.5rem; text-decoration: none; transition: all 0.2s ease; gap: 0.25rem;">
+                                style="display: flex; flex-direction: column; align-items: center; justify-content: center; margin-top: 0.5rem; text-decoration: none; transition: all 0.2s ease; gap: 0.25rem;"
+                                onclick="event.stopPropagation();">
                                 <span style="font-size: 0.65rem; color: var(--text-muted); font-weight: 500;">Powered
                                     by</span>
                                 <img src="/celo-colombia.png" alt="Celo Colombia"
@@ -994,7 +1070,7 @@
                             </a>
                         </div>
                         <div class="network-badge hyperevm"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
+                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://hyperevmscan.io/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
                                 <img src="/hyperevm.png" alt="HyperEVM"
@@ -1006,9 +1082,10 @@
                                 Loading...
                             </div>
                             <div style="font-size: 0.7rem; color: var(--text-muted);">HYPE Balance</div>
+                            <div data-tokens="hyperevm-mainnet"></div>
                         </div>
                         <div class="network-badge polygon"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
+                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://polygonscan.com/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
                                 <img src="/polygon.png" alt="Polygon"
@@ -1020,9 +1097,10 @@
                                 Loading...
                             </div>
                             <div style="font-size: 0.7rem; color: var(--text-muted);">POL Balance</div>
+                            <div data-tokens="polygon-mainnet"></div>
                         </div>
                         <div class="network-badge solana"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
+                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://solscan.io/account/F742C4VfFLQ9zRQyithoj5229ZgtX2WqKCSFKgH2EThq', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
                                 <img src="/solana.png" alt="Solana"
@@ -1034,9 +1112,10 @@
                                 Loading...
                             </div>
                             <div style="font-size: 0.7rem; color: var(--text-muted);">SOL Balance</div>
+                            <div data-tokens="solana-mainnet"></div>
                         </div>
                         <div class="network-badge optimism"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
+                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://optimistic.etherscan.io/address/0x103040545ac5031a11e8c03dd11324c7333a13c7', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
                                 <img src="/optimism.png" alt="Optimism"
@@ -1048,9 +1127,10 @@
                                 Loading...
                             </div>
                             <div style="font-size: 0.7rem; color: var(--text-muted);">ETH Balance</div>
+                            <div data-tokens="optimism-mainnet"></div>
                         </div>
                         <div class="network-badge ethereum"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
+                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://etherscan.io/address/0x103040545ac5031a11e8c03dd11324c7333a13c7', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
                                 <img src="/ethereum.png" alt="Ethereum"
@@ -1062,9 +1142,10 @@
                                 Loading...
                             </div>
                             <div style="font-size: 0.7rem; color: var(--text-muted);">ETH Balance</div>
+                            <div data-tokens="ethereum-mainnet"></div>
                         </div>
                         <div class="network-badge arbitrum"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
+                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://arbiscan.io/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
                                 <img src="/arbitrum.png" alt="Arbitrum"
@@ -1076,9 +1157,10 @@
                                 Loading...
                             </div>
                             <div style="font-size: 0.7rem; color: var(--text-muted);">ETH Balance</div>
+                            <div data-tokens="arbitrum-mainnet"></div>
                         </div>
                         <div class="network-badge unichain"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
+                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://uniscan.xyz/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
                                 <img src="/unichain.png" alt="Unichain"
@@ -1090,9 +1172,10 @@
                                 Loading...
                             </div>
                             <div style="font-size: 0.7rem; color: var(--text-muted);">ETH Balance</div>
+                            <div data-tokens="unichain-mainnet"></div>
                         </div>
                         <div class="network-badge monad"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
+                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://monad.socialscan.io/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
                                 <img src="/monad.png" alt="Monad"
@@ -1104,9 +1187,10 @@
                                 Loading...
                             </div>
                             <div style="font-size: 0.7rem; color: var(--text-muted);">MON Balance</div>
+                            <div data-tokens="monad-mainnet"></div>
                         </div>
                         <div class="network-badge near"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
+                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://nearblocks.io/address/uvd-facilitator.near', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
                                 <img src="/near.png" alt="NEAR" style="width: 32px; height: 32px; object-fit: contain;">
@@ -1117,9 +1201,10 @@
                                 Loading...
                             </div>
                             <div style="font-size: 0.7rem; color: var(--text-muted);">NEAR Balance</div>
+                            <div data-tokens="near-mainnet"></div>
                         </div>
                         <div class="network-badge stellar"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
+                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://stellar.expert/explorer/public/account/GAKAR646FIX2Z7QFBG7AHIWPKTGFMH3X5U34CJOKTI2YORCIFH5YC5AA', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
                                 <img src="/stellar.png" alt="Stellar"
@@ -1131,9 +1216,10 @@
                                 Loading...
                             </div>
                             <div style="font-size: 0.7rem; color: var(--text-muted);">XLM Balance</div>
+                            <div data-tokens="stellar-mainnet"></div>
                         </div>
                         <div class="network-badge fogo"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
+                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://fogoscan.com/account/F742C4VfFLQ9zRQyithoj5229ZgtX2WqKCSFKgH2EThq', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
                                 <img src="/fogo.png" alt="Fogo" style="width: 32px; height: 32px; object-fit: contain;">
@@ -2064,6 +2150,71 @@ result = <span class="code-function">verify_payment</span>(
 
         // Refresh balances every 30 seconds
         setInterval(fetchWalletBalances, 30000);
+
+        // Token support configuration per network (based on EIP-3009 verification)
+        // See docs/STABLECOIN_EXPANSION_PLAN.md for verification details
+        const TOKEN_SUPPORT = {
+            // Mainnets
+            'ethereum-mainnet': ['usdc', 'eurc', 'ausd', 'pyusd', 'gho', 'crvusd'],
+            'base-mainnet': ['usdc', 'eurc', 'gho'],
+            'avalanche-mainnet': ['usdc', 'eurc', 'ausd'],
+            'polygon-mainnet': ['usdc', 'ausd'],
+            'arbitrum-mainnet': ['usdc', 'ausd', 'gho', 'crvusd'],
+            'optimism-mainnet': ['usdc'],
+            'celo-mainnet': ['usdc'],
+            'hyperevm-mainnet': ['usdc'],
+            'unichain-mainnet': ['usdc'],
+            'monad-mainnet': ['usdc', 'ausd'],
+            // Testnets (USDC only for now)
+            'ethereum-testnet': ['usdc'],
+            'base-testnet': ['usdc'],
+            'avalanche-testnet': ['usdc'],
+            'polygon-testnet': ['usdc'],
+            'arbitrum-testnet': ['usdc'],
+            'optimism-testnet': ['usdc'],
+            'celo-testnet': ['usdc'],
+            'unichain-testnet': ['usdc'],
+            // Non-EVM (Solana/NEAR/Stellar use different standards)
+            'solana-mainnet': ['usdc'],
+            'solana-devnet': ['usdc'],
+            'near-mainnet': ['usdc'],
+            'near-testnet': ['usdc'],
+            'stellar-mainnet': ['usdc'],
+            'stellar-testnet': ['usdc'],
+        };
+
+        const TOKEN_INFO = {
+            'usdc': { name: 'USDC', decimals: 6 },
+            'eurc': { name: 'EURC', decimals: 6 },
+            'ausd': { name: 'AUSD', decimals: 6 },
+            'pyusd': { name: 'PYUSD', decimals: 6 },
+            'gho': { name: 'GHO', decimals: 18 },
+            'crvusd': { name: 'crvUSD', decimals: 18 },
+        };
+
+        // Display supported tokens for each network card
+        function displayTokenSupport() {
+            // Find all elements with data-tokens attribute
+            document.querySelectorAll('[data-tokens]').forEach(container => {
+                const network = container.getAttribute('data-tokens');
+                const tokens = TOKEN_SUPPORT[network] || [];
+
+                if (tokens.length > 0) {
+                    const badgesHtml = tokens.map(token => {
+                        const info = TOKEN_INFO[token];
+                        return `<span class="token-pill ${token}" title="${info.name} (${info.decimals} decimals)">${info.name}</span>`;
+                    }).join('');
+
+                    container.innerHTML = `
+                        <div class="tokens-label">Supported Stablecoins</div>
+                        <div class="token-badges">${badgesHtml}</div>
+                    `;
+                }
+            });
+        }
+
+        // Display token support on page load
+        displayTokenSupport();
     </script>
 </body>
 

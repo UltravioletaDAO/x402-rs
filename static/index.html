@@ -949,18 +949,6 @@
             border-color: rgba(0, 112, 186, 0.3);
         }
 
-        .token-pill.gho {
-            background: rgba(180, 128, 255, 0.15);
-            color: #b480ff;
-            border-color: rgba(180, 128, 255, 0.3);
-        }
-
-        .token-pill.crvusd {
-            background: rgba(255, 193, 7, 0.15);
-            color: #ffc107;
-            border-color: rgba(255, 193, 7, 0.3);
-        }
-
         .token-pill:hover {
             transform: scale(1.05);
             filter: brightness(1.2);
@@ -1230,6 +1218,7 @@
                                 Loading...
                             </div>
                             <div style="font-size: 0.7rem; color: var(--text-muted);">FOGO Balance</div>
+                            <div data-tokens="fogo-mainnet"></div>
                         </div>
 
                     </div>
@@ -1256,6 +1245,7 @@
                                 Loading...
                             </div>
                             <div style="font-size: 0.7rem; color: var(--text-muted);">AVAX</div>
+                            <div data-tokens="avalanche-testnet"></div>
                         </div>
                         <div class="network-badge base"
                             style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
@@ -1269,6 +1259,7 @@
                                 Loading...
                             </div>
                             <div style="font-size: 0.7rem; color: var(--text-muted);">ETH</div>
+                            <div data-tokens="base-testnet"></div>
                         </div>
                         <div class="network-badge celo"
                             style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
@@ -1290,6 +1281,7 @@
                                     style="width: 64px; height: 32px; object-fit: contain; opacity: 0.7;"
                                     onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'">
                             </a>
+                            <div data-tokens="celo-testnet"></div>
                         </div>
                         <div class="network-badge polygon"
                             style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
@@ -1304,6 +1296,7 @@
                                 Loading...
                             </div>
                             <div style="font-size: 0.7rem; color: var(--text-muted);">POL</div>
+                            <div data-tokens="polygon-testnet"></div>
                         </div>
                         <div class="network-badge optimism"
                             style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
@@ -1318,6 +1311,7 @@
                                 Loading...
                             </div>
                             <div style="font-size: 0.7rem; color: var(--text-muted);">ETH</div>
+                            <div data-tokens="optimism-testnet"></div>
                         </div>
                         <div class="network-badge ethereum"
                             style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
@@ -1332,6 +1326,7 @@
                                 Loading...
                             </div>
                             <div style="font-size: 0.7rem; color: var(--text-muted);">ETH</div>
+                            <div data-tokens="ethereum-testnet"></div>
                         </div>
                         <div class="network-badge arbitrum"
                             style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
@@ -1346,6 +1341,7 @@
                                 Loading...
                             </div>
                             <div style="font-size: 0.7rem; color: var(--text-muted);">ETH</div>
+                            <div data-tokens="arbitrum-testnet"></div>
                         </div>
                         <div class="network-badge unichain"
                             style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
@@ -1360,6 +1356,22 @@
                                 Loading...
                             </div>
                             <div style="font-size: 0.7rem; color: var(--text-muted);">ETH</div>
+                            <div data-tokens="unichain-testnet"></div>
+                        </div>
+                        <div class="network-badge hyperevm"
+                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
+                            onclick="window.open('https://testnet.purrsec.com/address/0x3403a86805e98a917fB580A16F11aD2ac4db2C83', '_blank')">
+                            <div style="display: flex; align-items: center; gap: 0.75rem;">
+                                <img src="/hyperevm.png" alt="HyperEVM"
+                                    style="width: 32px; height: 32px; object-fit: contain;">
+                                <span style="font-weight: 700;">HyperEVM Testnet</span>
+                            </div>
+                            <div class="balance-amount" data-balance="hyperevm-testnet"
+                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
+                                Loading...
+                            </div>
+                            <div style="font-size: 0.7rem; color: var(--text-muted);">HYPE</div>
+                            <div data-tokens="hyperevm-testnet"></div>
                         </div>
                         <div class="network-badge near"
                             style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
@@ -1373,6 +1385,7 @@
                                 Loading...
                             </div>
                             <div style="font-size: 0.7rem; color: var(--text-muted);">NEAR</div>
+                            <div data-tokens="near-testnet"></div>
                         </div>
                         <div class="network-badge stellar"
                             style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
@@ -1387,6 +1400,7 @@
                                 Loading...
                             </div>
                             <div style="font-size: 0.7rem; color: var(--text-muted);">XLM</div>
+                            <div data-tokens="stellar-testnet"></div>
                         </div>
                         <div class="network-badge fogo"
                             style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
@@ -1400,6 +1414,7 @@
                                 Loading...
                             </div>
                             <div style="font-size: 0.7rem; color: var(--text-muted);">FOGO</div>
+                            <div data-tokens="fogo-testnet"></div>
                         </div>
                         <div class="network-badge solana"
                             style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
@@ -1413,6 +1428,7 @@
                                 Loading...
                             </div>
                             <div style="font-size: 0.7rem; color: var(--text-muted);">SOL</div>
+                            <div data-tokens="solana-devnet"></div>
                         </div>
                         <!-- Zama FHE Special Card -->
                         <div class="network-badge zama"
@@ -1654,18 +1670,21 @@
                         </div>
                         <pre style="margin: 0; background: #1a1a24; padding: 1rem; border-radius: 8px;"><code style="color: #14f195;">npm install uvd-x402-sdk</code></pre>
                     </div>
-                    <pre><code><span class="code-comment">// Client: Make a paid request (handles 402 automatically)</span>
-<span class="code-keyword">import</span> { wrapFetchWithPayment } <span class="code-keyword">from</span> <span class="code-string">"uvd-x402-sdk"</span>;
+                    <pre><code><span class="code-comment">// Client: Create payment with any stablecoin</span>
+<span class="code-keyword">import</span> { createPayment } <span class="code-keyword">from</span> <span class="code-string">"uvd-x402-sdk"</span>;
 
-<span class="code-keyword">const</span> paidFetch = <span class="code-function">wrapFetchWithPayment</span>(wallet);
-<span class="code-keyword">const</span> response = <span class="code-keyword">await</span> <span class="code-function">paidFetch</span>(<span class="code-string">"https://api.example.com/premium"</span>);
+<span class="code-keyword">const</span> payment = <span class="code-keyword">await</span> <span class="code-function">createPayment</span>(wallet, {
+  recipient: <span class="code-string">"0xYourWallet"</span>,
+  amount: <span class="code-string">"10.00"</span>,
+  tokenType: <span class="code-string">"eurc"</span>  <span class="code-comment">// usdc | eurc | ausd | pyusd</span>
+});
 
-<span class="code-comment">// Server: Protect an endpoint</span>
+<span class="code-comment">// Server: Verify payment</span>
 <span class="code-keyword">import</span> { verifyPayment } <span class="code-keyword">from</span> <span class="code-string">"uvd-x402-sdk"</span>;
 
 <span class="code-keyword">const</span> result = <span class="code-keyword">await</span> <span class="code-function">verifyPayment</span>(
   request.headers[<span class="code-string">"X-PAYMENT"</span>],
-  { maxPrice: <span class="code-string">"0.01"</span>, recipient: <span class="code-string">"0xYourWallet"</span> }
+  { maxPrice: <span class="code-string">"10.00"</span>, recipient: <span class="code-string">"0xYourWallet"</span> }
 );</code></pre>
                     <div style="display: flex; gap: 0.75rem; margin-top: 1rem; justify-content: center;">
                         <a href="https://www.npmjs.com/package/uvd-x402-sdk" target="_blank" style="font-size: 0.8rem; color: var(--accent); text-decoration: none; padding: 0.5rem 1rem; border: 1px solid var(--accent); border-radius: 6px;">npm</a>
@@ -1682,11 +1701,14 @@
                         </div>
                         <pre style="margin: 0; background: #1a1a24; padding: 1rem; border-radius: 8px;"><code style="color: #14f195;">pip install uvd-x402-sdk</code></pre>
                     </div>
-                    <pre><code><span class="code-comment"># Client: Make a paid request</span>
-<span class="code-keyword">from</span> uvd_x402_sdk <span class="code-keyword">import</span> X402Client
+                    <pre><code><span class="code-comment"># Query multi-stablecoin support</span>
+<span class="code-keyword">from</span> uvd_x402_sdk <span class="code-keyword">import</span> get_supported_tokens, get_token_config
 
-client = <span class="code-function">X402Client</span>(wallet=your_wallet)
-response = client.<span class="code-function">paid_request</span>(<span class="code-string">"https://api.example.com/premium"</span>)
+tokens = <span class="code-function">get_supported_tokens</span>(<span class="code-string">"ethereum"</span>)
+<span class="code-comment"># ['usdc', 'eurc', 'ausd', 'pyusd']</span>
+
+eurc = <span class="code-function">get_token_config</span>(<span class="code-string">"base"</span>, <span class="code-string">"eurc"</span>)
+<span class="code-comment"># TokenConfig(address="0x60a3...", decimals=6)</span>
 
 <span class="code-comment"># Server: Verify payment</span>
 <span class="code-keyword">from</span> uvd_x402_sdk <span class="code-keyword">import</span> verify_payment
@@ -1694,7 +1716,7 @@ response = client.<span class="code-function">paid_request</span>(<span class="c
 result = <span class="code-function">verify_payment</span>(
     request.headers[<span class="code-string">"X-PAYMENT"</span>],
     recipient=<span class="code-string">"0xYourWallet"</span>,
-    max_price=<span class="code-string">"0.01"</span>
+    max_price=<span class="code-string">"10.00"</span>
 )</code></pre>
                     <div style="display: flex; gap: 0.75rem; margin-top: 1rem; justify-content: center;">
                         <a href="https://pypi.org/project/uvd-x402-sdk/" target="_blank" style="font-size: 0.8rem; color: var(--accent); text-decoration: none; padding: 0.5rem 1rem; border: 1px solid var(--accent); border-radius: 6px;">PyPI</a>
@@ -1975,6 +1997,10 @@ result = <span class="code-function">verify_payment</span>(
                     rpc: 'https://unichain-sepolia.drpc.org',
                     address: TESTNET_ADDRESS
                 },
+                'hyperevm-testnet': {
+                    rpc: 'https://rpc.hyperliquid-testnet.xyz/evm',
+                    address: TESTNET_ADDRESS
+                },
                 'monad-mainnet': {
                     rpc: 'https://rpc.monad.xyz',
                     address: MAINNET_ADDRESS
@@ -2155,11 +2181,11 @@ result = <span class="code-function">verify_payment</span>(
         // See docs/STABLECOIN_EXPANSION_PLAN.md for verification details
         const TOKEN_SUPPORT = {
             // Mainnets
-            'ethereum-mainnet': ['usdc', 'eurc', 'ausd', 'pyusd', 'gho', 'crvusd'],
-            'base-mainnet': ['usdc', 'eurc', 'gho'],
+            'ethereum-mainnet': ['usdc', 'eurc', 'ausd', 'pyusd'],
+            'base-mainnet': ['usdc', 'eurc'],
             'avalanche-mainnet': ['usdc', 'eurc', 'ausd'],
             'polygon-mainnet': ['usdc', 'ausd'],
-            'arbitrum-mainnet': ['usdc', 'ausd', 'gho', 'crvusd'],
+            'arbitrum-mainnet': ['usdc', 'ausd'],
             'optimism-mainnet': ['usdc'],
             'celo-mainnet': ['usdc'],
             'hyperevm-mainnet': ['usdc'],
@@ -2174,9 +2200,12 @@ result = <span class="code-function">verify_payment</span>(
             'optimism-testnet': ['usdc'],
             'celo-testnet': ['usdc'],
             'unichain-testnet': ['usdc'],
-            // Non-EVM (Solana/NEAR/Stellar use different standards)
+            'hyperevm-testnet': ['usdc'],
+            // Non-EVM (Solana/Fogo/NEAR/Stellar use different standards)
             'solana-mainnet': ['usdc'],
             'solana-devnet': ['usdc'],
+            'fogo-mainnet': ['usdc'],
+            'fogo-testnet': ['usdc'],
             'near-mainnet': ['usdc'],
             'near-testnet': ['usdc'],
             'stellar-mainnet': ['usdc'],
@@ -2188,8 +2217,6 @@ result = <span class="code-function">verify_payment</span>(
             'eurc': { name: 'EURC', decimals: 6 },
             'ausd': { name: 'AUSD', decimals: 6 },
             'pyusd': { name: 'PYUSD', decimals: 6 },
-            'gho': { name: 'GHO', decimals: 18 },
-            'crvusd': { name: 'crvUSD', decimals: 18 },
         };
 
         // Display supported tokens for each network card

@@ -948,6 +948,7 @@ static EURC_ETHEREUM: Lazy<EURCDeployment> = Lazy::new(|| {
 });
 
 /// EURC deployment on Base mainnet.
+/// NOTE: Base EURC uses "EURC" as EIP-712 domain name (NOT "Euro Coin" like on Ethereum/Avalanche)
 static EURC_BASE: Lazy<EURCDeployment> = Lazy::new(|| {
     EURCDeployment(TokenDeployment {
         asset: TokenAsset {
@@ -956,7 +957,7 @@ static EURC_BASE: Lazy<EURCDeployment> = Lazy::new(|| {
         },
         decimals: 6,
         eip712: Some(TokenDeploymentEip712 {
-            name: "Euro Coin".into(),
+            name: "EURC".into(),
             version: "2".into(),
         }),
     })
@@ -1196,166 +1197,6 @@ impl PYUSDDeployment {
 }
 
 // ============================================================================
-// GHO Deployments - Aave
-// Note: GHO uses 18 decimals (not 6 like USDC)
-// ============================================================================
-
-/// GHO deployment on Ethereum mainnet.
-static GHO_ETHEREUM: Lazy<GHODeployment> = Lazy::new(|| {
-    GHODeployment(TokenDeployment {
-        asset: TokenAsset {
-            address: address!("0x40D16FC0246aD3160Ccc09B8D0D3A2cD28aE6C2f").into(),
-            network: Network::Ethereum,
-        },
-        decimals: 18,
-        eip712: Some(TokenDeploymentEip712 {
-            name: "Gho Token".into(),
-            version: "1".into(),
-        }),
-    })
-});
-
-/// GHO deployment on Arbitrum mainnet.
-static GHO_ARBITRUM: Lazy<GHODeployment> = Lazy::new(|| {
-    GHODeployment(TokenDeployment {
-        asset: TokenAsset {
-            address: address!("0x7dfF72693f6A4149b17e7C6314655f6A9F7c8B33").into(),
-            network: Network::Arbitrum,
-        },
-        decimals: 18,
-        eip712: Some(TokenDeploymentEip712 {
-            name: "Gho Token".into(),
-            version: "1".into(),
-        }),
-    })
-});
-
-/// GHO deployment on Base mainnet.
-static GHO_BASE: Lazy<GHODeployment> = Lazy::new(|| {
-    GHODeployment(TokenDeployment {
-        asset: TokenAsset {
-            address: address!("0x6Bb7a212910682DCFdbd5BCBb3e28FB4E8da10Ee").into(),
-            network: Network::Base,
-        },
-        decimals: 18,
-        eip712: Some(TokenDeploymentEip712 {
-            name: "Gho Token".into(),
-            version: "1".into(),
-        }),
-    })
-});
-
-/// A known GHO deployment as a wrapper around [`TokenDeployment`].
-#[derive(Clone, Debug)]
-pub struct GHODeployment(pub TokenDeployment);
-
-impl Deref for GHODeployment {
-    type Target = TokenDeployment;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl From<&GHODeployment> for TokenDeployment {
-    fn from(deployment: &GHODeployment) -> Self {
-        deployment.0.clone()
-    }
-}
-
-impl GHODeployment {
-    /// Return the known GHO deployment for the given network.
-    ///
-    /// Returns `None` if GHO is not deployed on the specified network.
-    pub fn by_network<N: Borrow<Network>>(network: N) -> Option<&'static GHODeployment> {
-        match network.borrow() {
-            Network::Ethereum => Some(&GHO_ETHEREUM),
-            Network::Arbitrum => Some(&GHO_ARBITRUM),
-            Network::Base => Some(&GHO_BASE),
-            _ => None,
-        }
-    }
-
-    /// Return all networks where GHO is deployed.
-    pub fn supported_networks() -> &'static [Network] {
-        &[Network::Ethereum, Network::Arbitrum, Network::Base]
-    }
-}
-
-// ============================================================================
-// crvUSD Deployments - Curve Finance
-// Note: crvUSD uses 18 decimals (not 6 like USDC)
-// Only Ethereum and Arbitrum have verified EIP-3009 support
-// ============================================================================
-
-/// crvUSD deployment on Ethereum mainnet.
-static CRVUSD_ETHEREUM: Lazy<CrvUSDDeployment> = Lazy::new(|| {
-    CrvUSDDeployment(TokenDeployment {
-        asset: TokenAsset {
-            address: address!("0xf939E0A03FB07F59A73314E73794Be0E57ac1b4E").into(),
-            network: Network::Ethereum,
-        },
-        decimals: 18,
-        eip712: Some(TokenDeploymentEip712 {
-            name: "Curve.Fi USD Stablecoin".into(),
-            version: "1".into(),
-        }),
-    })
-});
-
-/// crvUSD deployment on Arbitrum mainnet.
-static CRVUSD_ARBITRUM: Lazy<CrvUSDDeployment> = Lazy::new(|| {
-    CrvUSDDeployment(TokenDeployment {
-        asset: TokenAsset {
-            address: address!("0x498Bf2B1e120FeD3ad3D42EA2165E9b73f99C1e5").into(),
-            network: Network::Arbitrum,
-        },
-        decimals: 18,
-        eip712: Some(TokenDeploymentEip712 {
-            name: "Curve.Fi USD Stablecoin".into(),
-            version: "1".into(),
-        }),
-    })
-});
-
-/// A known crvUSD deployment as a wrapper around [`TokenDeployment`].
-#[derive(Clone, Debug)]
-pub struct CrvUSDDeployment(pub TokenDeployment);
-
-impl Deref for CrvUSDDeployment {
-    type Target = TokenDeployment;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl From<&CrvUSDDeployment> for TokenDeployment {
-    fn from(deployment: &CrvUSDDeployment) -> Self {
-        deployment.0.clone()
-    }
-}
-
-impl CrvUSDDeployment {
-    /// Return the known crvUSD deployment for the given network.
-    ///
-    /// Returns `None` if crvUSD is not deployed on the specified network.
-    /// Note: Only Ethereum and Arbitrum have verified EIP-3009 support.
-    pub fn by_network<N: Borrow<Network>>(network: N) -> Option<&'static CrvUSDDeployment> {
-        match network.borrow() {
-            Network::Ethereum => Some(&CRVUSD_ETHEREUM),
-            Network::Arbitrum => Some(&CRVUSD_ARBITRUM),
-            _ => None,
-        }
-    }
-
-    /// Return all networks where crvUSD is deployed with EIP-3009 support.
-    pub fn supported_networks() -> &'static [Network] {
-        &[Network::Ethereum, Network::Arbitrum]
-    }
-}
-
-// ============================================================================
 // Generic Token Deployment Lookup
 // ============================================================================
 
@@ -1378,8 +1219,6 @@ pub fn get_token_deployment(network: Network, token_type: TokenType) -> Option<T
         TokenType::Eurc => EURCDeployment::by_network(network).map(|d| d.0.clone()),
         TokenType::Ausd => AUSDDeployment::by_network(network).map(|d| d.0.clone()),
         TokenType::Pyusd => PYUSDDeployment::by_network(network).map(|d| d.0.clone()),
-        TokenType::Gho => GHODeployment::by_network(network).map(|d| d.0.clone()),
-        TokenType::CrvUsd => CrvUSDDeployment::by_network(network).map(|d| d.0.clone()),
     }
 }
 
@@ -1405,7 +1244,7 @@ pub fn is_token_supported(network: Network, token_type: TokenType) -> bool {
 /// use x402_rs::network::{supported_tokens_for_network, Network};
 ///
 /// let tokens = supported_tokens_for_network(Network::Ethereum);
-/// // Returns [USDC, EURC, AUSD, PYUSD, GHO, crvUSD] for Ethereum
+/// // Returns [USDC, EURC, AUSD, PYUSD] for Ethereum
 /// ```
 pub fn supported_tokens_for_network(network: Network) -> Vec<TokenType> {
     TokenType::all()
@@ -1431,8 +1270,6 @@ pub fn supported_networks_for_token(token_type: TokenType) -> Vec<Network> {
         TokenType::Eurc => EURCDeployment::supported_networks().to_vec(),
         TokenType::Ausd => AUSDDeployment::supported_networks().to_vec(),
         TokenType::Pyusd => PYUSDDeployment::supported_networks().to_vec(),
-        TokenType::Gho => GHODeployment::supported_networks().to_vec(),
-        TokenType::CrvUsd => CrvUSDDeployment::supported_networks().to_vec(),
     }
 }
 
@@ -1577,75 +1414,6 @@ mod tests {
     }
 
     // ============================================================
-    // GHO Deployment Tests (18 decimals)
-    // ============================================================
-
-    #[test]
-    fn test_gho_has_18_decimals() {
-        let networks = GHODeployment::supported_networks();
-        for network in networks {
-            let deployment = get_token_deployment(*network, TokenType::Gho).unwrap();
-            assert_eq!(
-                deployment.decimals, 18,
-                "GHO should have 18 decimals on {:?}",
-                network
-            );
-        }
-    }
-
-    #[test]
-    fn test_gho_supported_networks() {
-        let networks = GHODeployment::supported_networks();
-        assert!(networks.contains(&Network::Ethereum));
-        assert!(networks.contains(&Network::Arbitrum));
-        assert!(networks.contains(&Network::Base));
-        assert_eq!(networks.len(), 3);
-    }
-
-    #[test]
-    fn test_gho_ethereum_address() {
-        let deployment = get_token_deployment(Network::Ethereum, TokenType::Gho).unwrap();
-        assert_eq!(
-            deployment.asset.address,
-            MixedAddress::Evm(address!("40D16FC0246aD3160Ccc09B8D0D3A2cD28aE6C2f").into())
-        );
-    }
-
-    // ============================================================
-    // crvUSD Deployment Tests (18 decimals)
-    // ============================================================
-
-    #[test]
-    fn test_crvusd_has_18_decimals() {
-        let networks = CrvUSDDeployment::supported_networks();
-        for network in networks {
-            let deployment = get_token_deployment(*network, TokenType::CrvUsd).unwrap();
-            assert_eq!(
-                deployment.decimals, 18,
-                "crvUSD should have 18 decimals on {:?}",
-                network
-            );
-        }
-    }
-
-    #[test]
-    fn test_crvusd_supported_networks() {
-        let networks = CrvUSDDeployment::supported_networks();
-        assert!(networks.contains(&Network::Ethereum));
-        assert!(networks.contains(&Network::Arbitrum));
-        assert_eq!(networks.len(), 2);
-    }
-
-    #[test]
-    fn test_crvusd_ethereum_address() {
-        let deployment = get_token_deployment(Network::Ethereum, TokenType::CrvUsd).unwrap();
-        assert_eq!(
-            deployment.asset.address,
-            MixedAddress::Evm(address!("f939E0A03FB07F59A73314E73794Be0E57ac1b4E").into())
-        );
-    }
-
-    // ============================================================
     // Helper Function Tests
     // ============================================================
 
@@ -1653,22 +1421,19 @@ mod tests {
     fn test_supported_tokens_for_ethereum() {
         // Ethereum supports all tokens
         let tokens = supported_tokens_for_network(Network::Ethereum);
-        assert_eq!(tokens.len(), 6);
+        assert_eq!(tokens.len(), 4);
         assert!(tokens.contains(&TokenType::Usdc));
         assert!(tokens.contains(&TokenType::Eurc));
         assert!(tokens.contains(&TokenType::Ausd));
         assert!(tokens.contains(&TokenType::Pyusd));
-        assert!(tokens.contains(&TokenType::Gho));
-        assert!(tokens.contains(&TokenType::CrvUsd));
     }
 
     #[test]
     fn test_supported_tokens_for_base() {
-        // Base supports USDC, EURC, GHO
+        // Base supports USDC, EURC
         let tokens = supported_tokens_for_network(Network::Base);
         assert!(tokens.contains(&TokenType::Usdc));
         assert!(tokens.contains(&TokenType::Eurc));
-        assert!(tokens.contains(&TokenType::Gho));
         assert!(!tokens.contains(&TokenType::Pyusd));
         assert!(!tokens.contains(&TokenType::Ausd));
     }
@@ -1680,7 +1445,6 @@ mod tests {
         assert!(tokens.contains(&TokenType::Usdc));
         assert!(tokens.contains(&TokenType::Ausd));
         assert!(!tokens.contains(&TokenType::Eurc));
-        assert!(!tokens.contains(&TokenType::Gho));
     }
 
     #[test]
@@ -1713,8 +1477,8 @@ mod tests {
         let usdc = get_token_deployment(Network::Base, TokenType::Usdc).unwrap();
         assert_eq!(usdc.decimals, 6);
 
-        let gho = get_token_deployment(Network::Ethereum, TokenType::Gho).unwrap();
-        assert_eq!(gho.decimals, 18);
+        let eurc = get_token_deployment(Network::Ethereum, TokenType::Eurc).unwrap();
+        assert_eq!(eurc.decimals, 6);
     }
 
     #[test]

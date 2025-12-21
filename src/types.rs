@@ -122,11 +122,10 @@ impl Display for Scheme {
 /// Enumerates supported stablecoin token types for payment.
 ///
 /// The x402 protocol supports multiple EIP-3009 compatible stablecoins.
-/// Each token may have different decimal precision and EIP-712 domain parameters.
+/// Each token may have different EIP-712 domain parameters.
 ///
 /// # Decimal Precision
-/// - 6 decimals: USDC, EURC, AUSD, PYUSD (1_000_000 = $1.00)
-/// - 18 decimals: GHO, crvUSD (1_000_000_000_000_000_000 = $1.00)
+/// All supported stablecoins use 6 decimals (1_000_000 = $1.00).
 ///
 /// # Default Behavior
 /// When `token_type` is not specified in a payment request, USDC is used
@@ -147,19 +146,12 @@ pub enum TokenType {
     /// PayPal USD by PayPal/Paxos (6 decimals)
     #[serde(rename = "pyusd")]
     Pyusd,
-    /// GHO stablecoin by Aave (18 decimals)
-    #[serde(rename = "gho")]
-    Gho,
-    /// crvUSD by Curve Finance (18 decimals)
-    #[serde(rename = "crvusd")]
-    CrvUsd,
 }
 
 impl TokenType {
     /// Returns the number of decimal places for this token.
     ///
-    /// Most stablecoins use 6 decimals (like USDC), but some DeFi-native
-    /// tokens like GHO and crvUSD use 18 decimals.
+    /// All supported stablecoins use 6 decimals.
     #[must_use]
     pub const fn decimals(&self) -> u8 {
         match self {
@@ -167,8 +159,6 @@ impl TokenType {
             TokenType::Eurc => 6,
             TokenType::Ausd => 6,
             TokenType::Pyusd => 6,
-            TokenType::Gho => 18,
-            TokenType::CrvUsd => 18,
         }
     }
 
@@ -180,8 +170,6 @@ impl TokenType {
             TokenType::Eurc => "EURC",
             TokenType::Ausd => "AUSD",
             TokenType::Pyusd => "PYUSD",
-            TokenType::Gho => "GHO",
-            TokenType::CrvUsd => "crvUSD",
         }
     }
 
@@ -193,8 +181,6 @@ impl TokenType {
             TokenType::Eurc => "Euro Coin",
             TokenType::Ausd => "Agora USD",
             TokenType::Pyusd => "PayPal USD",
-            TokenType::Gho => "GHO",
-            TokenType::CrvUsd => "Curve USD",
         }
     }
 
@@ -206,12 +192,10 @@ impl TokenType {
             TokenType::Eurc => "EUR", // Euro symbol
             TokenType::Ausd => "$",
             TokenType::Pyusd => "$",
-            TokenType::Gho => "$",
-            TokenType::CrvUsd => "$",
         }
     }
 
-    /// Returns whether this token is fiat-backed (vs algorithmic/DeFi-native).
+    /// Returns whether this token is fiat-backed.
     #[must_use]
     pub const fn is_fiat_backed(&self) -> bool {
         match self {
@@ -219,8 +203,6 @@ impl TokenType {
             TokenType::Eurc => true,
             TokenType::Ausd => true,
             TokenType::Pyusd => true,
-            TokenType::Gho => false,    // Algorithmic, minted via Aave
-            TokenType::CrvUsd => false, // Algorithmic, LLAMMA mechanism
         }
     }
 
@@ -232,8 +214,6 @@ impl TokenType {
             TokenType::Eurc,
             TokenType::Ausd,
             TokenType::Pyusd,
-            TokenType::Gho,
-            TokenType::CrvUsd,
         ]
     }
 
@@ -248,8 +228,6 @@ impl TokenType {
             TokenType::Eurc => "Euro Coin",
             TokenType::Ausd => "AUSD",
             TokenType::Pyusd => "PayPal USD",
-            TokenType::Gho => "Gho Token",
-            TokenType::CrvUsd => "Curve.Fi USD Stablecoin",
         }
     }
 
@@ -264,8 +242,6 @@ impl TokenType {
             TokenType::Eurc => "2",
             TokenType::Ausd => "1",
             TokenType::Pyusd => "1",
-            TokenType::Gho => "1",
-            TokenType::CrvUsd => "1",
         }
     }
 
@@ -296,8 +272,6 @@ impl FromStr for TokenType {
             "eurc" => Ok(TokenType::Eurc),
             "ausd" => Ok(TokenType::Ausd),
             "pyusd" => Ok(TokenType::Pyusd),
-            "gho" => Ok(TokenType::Gho),
-            "crvusd" => Ok(TokenType::CrvUsd),
             _ => Err(TokenTypeParseError(s.to_string())),
         }
     }
@@ -305,7 +279,7 @@ impl FromStr for TokenType {
 
 /// Error returned when parsing an invalid token type string.
 #[derive(Debug, Clone, thiserror::Error)]
-#[error("Unknown token type: {0}. Supported: usdc, eurc, ausd, pyusd, gho, crvusd")]
+#[error("Unknown token type: {0}. Supported: usdc, eurc, ausd, pyusd")]
 pub struct TokenTypeParseError(pub String);
 
 /// Represents an EVM signature used in EIP-712 typed data.
@@ -1712,11 +1686,11 @@ pub struct SupportedPaymentKind {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SupportedTokenInfo {
-    /// Token type (usdc, eurc, ausd, pyusd, gho, crvusd)
+    /// Token type (usdc, eurc, ausd, pyusd)
     pub token: TokenType,
     /// Contract address on this network
     pub address: MixedAddress,
-    /// Token decimals (6 for most stablecoins, 18 for GHO/crvUSD)
+    /// Token decimals (6 for all supported stablecoins)
     pub decimals: u8,
 }
 
@@ -1780,10 +1754,6 @@ mod tests {
         assert_eq!(TokenType::Eurc.decimals(), 6);
         assert_eq!(TokenType::Ausd.decimals(), 6);
         assert_eq!(TokenType::Pyusd.decimals(), 6);
-
-        // DeFi-native 18 decimal tokens
-        assert_eq!(TokenType::Gho.decimals(), 18);
-        assert_eq!(TokenType::CrvUsd.decimals(), 18);
     }
 
     #[test]
@@ -1792,20 +1762,16 @@ mod tests {
         assert_eq!(TokenType::Eurc.symbol(), "EURC");
         assert_eq!(TokenType::Ausd.symbol(), "AUSD");
         assert_eq!(TokenType::Pyusd.symbol(), "PYUSD");
-        assert_eq!(TokenType::Gho.symbol(), "GHO");
-        assert_eq!(TokenType::CrvUsd.symbol(), "crvUSD");
     }
 
     #[test]
     fn test_token_type_all() {
         let all = TokenType::all();
-        assert_eq!(all.len(), 6);
+        assert_eq!(all.len(), 4);
         assert!(all.contains(&TokenType::Usdc));
         assert!(all.contains(&TokenType::Eurc));
         assert!(all.contains(&TokenType::Ausd));
         assert!(all.contains(&TokenType::Pyusd));
-        assert!(all.contains(&TokenType::Gho));
-        assert!(all.contains(&TokenType::CrvUsd));
     }
 
     #[test]
@@ -1815,8 +1781,6 @@ mod tests {
         assert_eq!(serde_json::to_string(&TokenType::Eurc).unwrap(), "\"eurc\"");
         assert_eq!(serde_json::to_string(&TokenType::Ausd).unwrap(), "\"ausd\"");
         assert_eq!(serde_json::to_string(&TokenType::Pyusd).unwrap(), "\"pyusd\"");
-        assert_eq!(serde_json::to_string(&TokenType::Gho).unwrap(), "\"gho\"");
-        assert_eq!(serde_json::to_string(&TokenType::CrvUsd).unwrap(), "\"crvusd\"");
     }
 
     #[test]
@@ -1838,14 +1802,6 @@ mod tests {
             serde_json::from_str::<TokenType>("\"pyusd\"").unwrap(),
             TokenType::Pyusd
         );
-        assert_eq!(
-            serde_json::from_str::<TokenType>("\"gho\"").unwrap(),
-            TokenType::Gho
-        );
-        assert_eq!(
-            serde_json::from_str::<TokenType>("\"crvusd\"").unwrap(),
-            TokenType::CrvUsd
-        );
     }
 
     #[test]
@@ -1862,8 +1818,6 @@ mod tests {
         assert_eq!(format!("{}", TokenType::Eurc), "EURC");
         assert_eq!(format!("{}", TokenType::Ausd), "AUSD");
         assert_eq!(format!("{}", TokenType::Pyusd), "PYUSD");
-        assert_eq!(format!("{}", TokenType::Gho), "GHO");
-        assert_eq!(format!("{}", TokenType::CrvUsd), "crvUSD");
     }
 
     #[test]
@@ -1872,8 +1826,6 @@ mod tests {
         assert_eq!("eurc".parse::<TokenType>().unwrap(), TokenType::Eurc);
         assert_eq!("ausd".parse::<TokenType>().unwrap(), TokenType::Ausd);
         assert_eq!("pyusd".parse::<TokenType>().unwrap(), TokenType::Pyusd);
-        assert_eq!("gho".parse::<TokenType>().unwrap(), TokenType::Gho);
-        assert_eq!("crvusd".parse::<TokenType>().unwrap(), TokenType::CrvUsd);
     }
 
     #[test]
@@ -1881,11 +1833,11 @@ mod tests {
         // Should work with uppercase
         assert_eq!("USDC".parse::<TokenType>().unwrap(), TokenType::Usdc);
         assert_eq!("EURC".parse::<TokenType>().unwrap(), TokenType::Eurc);
-        assert_eq!("GHO".parse::<TokenType>().unwrap(), TokenType::Gho);
+        assert_eq!("PYUSD".parse::<TokenType>().unwrap(), TokenType::Pyusd);
 
         // Mixed case
         assert_eq!("Usdc".parse::<TokenType>().unwrap(), TokenType::Usdc);
-        assert_eq!("CrvUSD".parse::<TokenType>().unwrap(), TokenType::CrvUsd);
+        assert_eq!("Ausd".parse::<TokenType>().unwrap(), TokenType::Ausd);
     }
 
     #[test]
@@ -1931,12 +1883,12 @@ mod tests {
                     decimals: 6,
                 },
                 SupportedTokenInfo {
-                    token: TokenType::Gho,
+                    token: TokenType::Eurc,
                     address: MixedAddress::Evm(
-                        alloy::primitives::address!("6Bb7a212910682DCFdbd5BCBb3e28FB4E8da10Ee")
+                        alloy::primitives::address!("60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42")
                             .into(),
                     ),
-                    decimals: 18,
+                    decimals: 6,
                 },
             ]),
         };
@@ -1947,7 +1899,7 @@ mod tests {
         // tokens should be present
         assert!(json.contains("\"tokens\""));
         assert!(json.contains("\"usdc\""));
-        assert!(json.contains("\"gho\""));
+        assert!(json.contains("\"eurc\""));
     }
 
     #[test]

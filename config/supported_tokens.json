@@ -1,0 +1,270 @@
+{
+  "_comment": "Source of truth for all supported networks and tokens. Update this file when adding new chains or tokens.",
+  "_lastUpdated": "2025-12-20",
+  "_version": "1.10.2",
+
+  "evm_mainnets": {
+    "ethereum": {
+      "chainId": 1,
+      "tokens": ["usdc", "eurc", "ausd", "pyusd", "gho", "crvusd"],
+      "explorer": "https://etherscan.io",
+      "facilitatorWallet": "0x10300D3e2C7c8399D394b7F0D95Da8e886c10d4a"
+    },
+    "base": {
+      "chainId": 8453,
+      "tokens": ["usdc", "eurc", "gho"],
+      "explorer": "https://basescan.org",
+      "facilitatorWallet": "0x10300D3e2C7c8399D394b7F0D95Da8e886c10d4a"
+    },
+    "polygon": {
+      "chainId": 137,
+      "tokens": ["usdc", "ausd"],
+      "explorer": "https://polygonscan.com",
+      "facilitatorWallet": "0x10300D3e2C7c8399D394b7F0D95Da8e886c10d4a"
+    },
+    "arbitrum": {
+      "chainId": 42161,
+      "tokens": ["usdc", "ausd", "gho", "crvusd"],
+      "explorer": "https://arbiscan.io",
+      "facilitatorWallet": "0x10300D3e2C7c8399D394b7F0D95Da8e886c10d4a"
+    },
+    "optimism": {
+      "chainId": 10,
+      "tokens": ["usdc"],
+      "explorer": "https://optimistic.etherscan.io",
+      "facilitatorWallet": "0x10300D3e2C7c8399D394b7F0D95Da8e886c10d4a"
+    },
+    "avalanche": {
+      "chainId": 43114,
+      "tokens": ["usdc", "eurc", "ausd"],
+      "explorer": "https://snowtrace.io",
+      "facilitatorWallet": "0x10300D3e2C7c8399D394b7F0D95Da8e886c10d4a"
+    },
+    "celo": {
+      "chainId": 42220,
+      "tokens": ["usdc"],
+      "explorer": "https://celoscan.io",
+      "facilitatorWallet": "0x10300D3e2C7c8399D394b7F0D95Da8e886c10d4a"
+    },
+    "hyperevm": {
+      "chainId": 999,
+      "tokens": ["usdc"],
+      "explorer": "https://purrsec.com",
+      "facilitatorWallet": "0x10300D3e2C7c8399D394b7F0D95Da8e886c10d4a"
+    },
+    "unichain": {
+      "chainId": 130,
+      "tokens": ["usdc"],
+      "explorer": "https://uniscan.xyz",
+      "facilitatorWallet": "0x10300D3e2C7c8399D394b7F0D95Da8e886c10d4a"
+    },
+    "monad": {
+      "chainId": 143,
+      "tokens": ["usdc", "ausd"],
+      "explorer": "https://monad.socialscan.io",
+      "facilitatorWallet": "0x10300D3e2C7c8399D394b7F0D95Da8e886c10d4a"
+    }
+  },
+
+  "evm_testnets": {
+    "ethereum-sepolia": {
+      "chainId": 11155111,
+      "tokens": ["usdc"],
+      "explorer": "https://sepolia.etherscan.io",
+      "facilitatorWallet": "0x3403a86805e98a917fB580A16F11aD2ac4db2C83"
+    },
+    "base-sepolia": {
+      "chainId": 84532,
+      "tokens": ["usdc"],
+      "explorer": "https://sepolia.basescan.org",
+      "facilitatorWallet": "0x3403a86805e98a917fB580A16F11aD2ac4db2C83"
+    },
+    "polygon-amoy": {
+      "chainId": 80002,
+      "tokens": ["usdc"],
+      "explorer": "https://amoy.polygonscan.com",
+      "facilitatorWallet": "0x3403a86805e98a917fB580A16F11aD2ac4db2C83"
+    },
+    "arbitrum-sepolia": {
+      "chainId": 421614,
+      "tokens": ["usdc"],
+      "explorer": "https://sepolia.arbiscan.io",
+      "facilitatorWallet": "0x3403a86805e98a917fB580A16F11aD2ac4db2C83"
+    },
+    "optimism-sepolia": {
+      "chainId": 11155420,
+      "tokens": ["usdc"],
+      "explorer": "https://sepolia-optimism.etherscan.io",
+      "facilitatorWallet": "0x3403a86805e98a917fB580A16F11aD2ac4db2C83"
+    },
+    "avalanche-fuji": {
+      "chainId": 43113,
+      "tokens": ["usdc"],
+      "explorer": "https://testnet.snowtrace.io",
+      "facilitatorWallet": "0x3403a86805e98a917fB580A16F11aD2ac4db2C83"
+    },
+    "celo-sepolia": {
+      "chainId": 44787,
+      "tokens": ["usdc"],
+      "explorer": "https://alfajores.celoscan.io",
+      "facilitatorWallet": "0x3403a86805e98a917fB580A16F11aD2ac4db2C83"
+    },
+    "hyperevm-testnet": {
+      "chainId": 333,
+      "tokens": ["usdc"],
+      "explorer": "https://testnet.purrsec.com",
+      "facilitatorWallet": "0x3403a86805e98a917fB580A16F11aD2ac4db2C83"
+    },
+    "unichain-sepolia": {
+      "chainId": 1301,
+      "tokens": ["usdc"],
+      "explorer": "https://sepolia.uniscan.xyz",
+      "facilitatorWallet": "0x3403a86805e98a917fB580A16F11aD2ac4db2C83"
+    }
+  },
+
+  "svm_networks": {
+    "solana": {
+      "tokens": ["usdc"],
+      "explorer": "https://solscan.io",
+      "facilitatorWallet": "HVNxtvCJqunhbAHcS1H7Fb6PHMikhfC2gfGmFT8Cq95G",
+      "usdcMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+    },
+    "solana-devnet": {
+      "tokens": ["usdc"],
+      "explorer": "https://solscan.io",
+      "facilitatorWallet": "7eqGsjLvjXMxJBEA3zzRdrcWNxyPNbvxKC4YNpjcCLat",
+      "usdcMint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
+    },
+    "fogo": {
+      "tokens": ["usdc"],
+      "explorer": "https://fogoscan.com",
+      "facilitatorWallet": "F742C4VfFLQ9zRQyithoj5229ZgtX2WqKCSFKgH2EThq",
+      "usdcMint": "uSd2czE61Evaf76RNbq4KPpXnkiL3irdzgLFUMe3NoG"
+    },
+    "fogo-testnet": {
+      "tokens": ["usdc"],
+      "explorer": "https://fogoscan.com",
+      "facilitatorWallet": "6xNPewUdKRbEZDReQdpyfNUdgNg8QRc8Mt263T5GZSRv",
+      "usdcMint": "uSd2czE61Evaf76RNbq4KPpXnkiL3irdzgLFUMe3NoG"
+    }
+  },
+
+  "near_networks": {
+    "near": {
+      "tokens": ["usdc"],
+      "explorer": "https://nearblocks.io",
+      "facilitatorWallet": "uvd-facilitator.near",
+      "usdcContract": "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1"
+    },
+    "near-testnet": {
+      "tokens": ["usdc"],
+      "explorer": "https://testnet.nearblocks.io",
+      "facilitatorWallet": "uvd-facilitator.testnet",
+      "usdcContract": "usdc.fakes.testnet"
+    }
+  },
+
+  "stellar_networks": {
+    "stellar": {
+      "tokens": ["usdc"],
+      "explorer": "https://stellar.expert/explorer/public",
+      "facilitatorWallet": "GAQPB3GN4VQSM3XU6MNLXJDXLCOJTEOD74GMLRDJSAWB76YNWPQ6MGOH",
+      "usdcContract": "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75"
+    },
+    "stellar-testnet": {
+      "tokens": ["usdc"],
+      "explorer": "https://stellar.expert/explorer/testnet",
+      "facilitatorWallet": "GAQPB3GN4VQSM3XU6MNLXJDXLCOJTEOD74GMLRDJSAWB76YNWPQ6MGOH",
+      "usdcContract": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA"
+    }
+  },
+
+  "token_info": {
+    "usdc": {
+      "name": "USDC",
+      "fullName": "USD Coin",
+      "decimals": 6,
+      "issuer": "Circle"
+    },
+    "eurc": {
+      "name": "EURC",
+      "fullName": "Euro Coin",
+      "decimals": 6,
+      "issuer": "Circle"
+    },
+    "ausd": {
+      "name": "AUSD",
+      "fullName": "Agora USD",
+      "decimals": 6,
+      "issuer": "Agora Finance"
+    },
+    "pyusd": {
+      "name": "PYUSD",
+      "fullName": "PayPal USD",
+      "decimals": 6,
+      "issuer": "PayPal/Paxos"
+    },
+    "gho": {
+      "name": "GHO",
+      "fullName": "GHO Stablecoin",
+      "decimals": 18,
+      "issuer": "Aave"
+    },
+    "crvusd": {
+      "name": "crvUSD",
+      "fullName": "Curve USD",
+      "decimals": 18,
+      "issuer": "Curve Finance"
+    }
+  },
+
+  "token_contracts": {
+    "usdc": {
+      "ethereum": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+      "base": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "polygon": "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
+      "arbitrum": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+      "optimism": "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
+      "avalanche": "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
+      "celo": "0xcebA9300f2b948710d2653dD7B07f33A8B32118C",
+      "hyperevm": "0xb88339CB7199b77E23DB6E890353E22632Ba630f",
+      "unichain": "0x078d782b760474a361dda0af3839290b0ef57ad6",
+      "monad": "0x754704bc059f8c67012fed69bc8a327a5aafb603"
+    },
+    "eurc": {
+      "ethereum": "0x1aBaEA1f7C830bD89Acc67eC4af516284b1bC33c",
+      "base": "0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42",
+      "avalanche": "0xC891EB4cbdEFf6e073e859e987815Ed1505c2ACD"
+    },
+    "ausd": {
+      "ethereum": "0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a",
+      "polygon": "0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a",
+      "arbitrum": "0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a",
+      "avalanche": "0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a",
+      "monad": "0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a"
+    },
+    "pyusd": {
+      "ethereum": "0x6c3ea9036406852006290770BEdFcAbA0e23A0e8"
+    },
+    "gho": {
+      "ethereum": "0x40D16FC0246aD3160Ccc09B8D0D3A2cD28aE6C2f",
+      "arbitrum": "0x7dfF72693f6A4149b17e7C6314655f6A9F7c8B33",
+      "base": "0x6Bb7a212910682DCFdbd5BCBb3e28FB4E8da10Ee"
+    },
+    "crvusd": {
+      "ethereum": "0xf939E0A03FB07F59A73314E73794Be0E57ac1b4E",
+      "arbitrum": "0x498Bf2B1e120FeD3ad3D42EA2165E9b73f99C1e5"
+    }
+  },
+
+  "summary": {
+    "total_networks": 28,
+    "evm_mainnets": 10,
+    "evm_testnets": 9,
+    "svm_networks": 4,
+    "near_networks": 2,
+    "stellar_networks": 2,
+    "total_stablecoins": 6
+  }
+}

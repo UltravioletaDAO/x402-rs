@@ -47,7 +47,7 @@ use crate::facilitator::Facilitator;
 use crate::from_env;
 use crate::network::{
     get_token_deployment, supported_tokens_for_network, AUSDDeployment, EURCDeployment, Network,
-    PYUSDDeployment, USDCDeployment,
+    PYUSDDeployment, USDCDeployment, USDTDeployment,
 };
 use crate::timestamp::UnixTimestamp;
 use crate::types::{
@@ -1152,6 +1152,15 @@ fn find_known_eip712_metadata(
     if let Some(pyusd) = PYUSDDeployment::by_network(network) {
         if pyusd.address() == asset_mixed {
             if let Some(eip712) = &pyusd.eip712 {
+                return Some((eip712.name.clone(), eip712.version.clone()));
+            }
+        }
+    }
+
+    // Check USDT (USDT0 omnichain stablecoin)
+    if let Some(usdt) = USDTDeployment::by_network(network) {
+        if usdt.address() == asset_mixed {
+            if let Some(eip712) = &usdt.eip712 {
                 return Some((eip712.name.clone(), eip712.version.clone()));
             }
         }

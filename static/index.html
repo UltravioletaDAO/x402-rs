@@ -949,6 +949,12 @@
             border-color: rgba(0, 112, 186, 0.3);
         }
 
+        .token-pill.usdt {
+            background: rgba(80, 175, 149, 0.15);
+            color: #50af95;
+            border-color: rgba(80, 175, 149, 0.3);
+        }
+
         .token-pill:hover {
             transform: scale(1.05);
             filter: brightness(1.2);
@@ -2185,9 +2191,9 @@ result = <span class="code-function">verify_payment</span>(
             'base-mainnet': ['usdc', 'eurc'],
             'avalanche-mainnet': ['usdc', 'eurc', 'ausd'],
             'polygon-mainnet': ['usdc', 'ausd'],
-            'arbitrum-mainnet': ['usdc', 'ausd'],
-            'optimism-mainnet': ['usdc'],
-            'celo-mainnet': ['usdc'],
+            'arbitrum-mainnet': ['usdc', 'ausd', 'usdt'],
+            'optimism-mainnet': ['usdc', 'usdt'],
+            'celo-mainnet': ['usdc', 'usdt'],
             'hyperevm-mainnet': ['usdc'],
             'unichain-mainnet': ['usdc'],
             'monad-mainnet': ['usdc', 'ausd'],
@@ -2217,6 +2223,7 @@ result = <span class="code-function">verify_payment</span>(
             'eurc': { name: 'EURC', decimals: 6 },
             'ausd': { name: 'AUSD', decimals: 6 },
             'pyusd': { name: 'PYUSD', decimals: 6 },
+            'usdt': { name: 'USDT', decimals: 6 },
         };
 
         // Display supported tokens for each network card

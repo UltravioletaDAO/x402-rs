@@ -1197,6 +1197,103 @@ impl PYUSDDeployment {
 }
 
 // ============================================================================
+// USDT (Tether USD / USDT0) Deployments - Tether via LayerZero OFT
+// ============================================================================
+
+/// USDT0 deployment on Arbitrum mainnet.
+/// Contract: 0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9
+/// EIP-712 name: "USD₮0" (with TUGRIK SIGN Unicode character)
+static USDT_ARBITRUM: Lazy<USDTDeployment> = Lazy::new(|| {
+    USDTDeployment(TokenDeployment {
+        asset: TokenAsset {
+            address: address!("0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9").into(),
+            network: Network::Arbitrum,
+        },
+        decimals: 6,
+        eip712: Some(TokenDeploymentEip712 {
+            name: "USD\u{20AE}0".into(), // USD₮0 (TUGRIK SIGN)
+            version: "1".into(),
+        }),
+    })
+});
+
+/// USDT deployment on Celo mainnet.
+/// Contract: 0x48065fbBE25f71C9282ddf5e1cD6D6A887483D5e
+/// EIP-712 name: "Tether USD" (standard Tether name on Celo)
+static USDT_CELO: Lazy<USDTDeployment> = Lazy::new(|| {
+    USDTDeployment(TokenDeployment {
+        asset: TokenAsset {
+            address: address!("0x48065fbBE25f71C9282ddf5e1cD6D6A887483D5e").into(),
+            network: Network::Celo,
+        },
+        decimals: 6,
+        eip712: Some(TokenDeploymentEip712 {
+            name: "Tether USD".into(),
+            version: "1".into(),
+        }),
+    })
+});
+
+/// USDT0 deployment on Optimism mainnet.
+/// Contract: 0x01bff41798a0bcf287b996046ca68b395dbc1071
+/// EIP-712 name: "USD₮0" (with TUGRIK SIGN Unicode character)
+static USDT_OPTIMISM: Lazy<USDTDeployment> = Lazy::new(|| {
+    USDTDeployment(TokenDeployment {
+        asset: TokenAsset {
+            address: address!("0x01bff41798a0bcf287b996046ca68b395dbc1071").into(),
+            network: Network::Optimism,
+        },
+        decimals: 6,
+        eip712: Some(TokenDeploymentEip712 {
+            name: "USD\u{20AE}0".into(), // USD₮0 (TUGRIK SIGN)
+            version: "1".into(),
+        }),
+    })
+});
+
+/// A known USDT (Tether USD / USDT0) deployment as a wrapper around [`TokenDeployment`].
+///
+/// USDT0 is Tether's omnichain stablecoin launched in January 2025 using LayerZero OFT.
+/// It supports EIP-3009 `transferWithAuthorization` for gasless transfers.
+#[derive(Clone, Debug)]
+pub struct USDTDeployment(pub TokenDeployment);
+
+impl Deref for USDTDeployment {
+    type Target = TokenDeployment;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl From<&USDTDeployment> for TokenDeployment {
+    fn from(deployment: &USDTDeployment) -> Self {
+        deployment.0.clone()
+    }
+}
+
+impl USDTDeployment {
+    /// Return the known USDT deployment for the given network.
+    ///
+    /// Returns `None` if USDT is not deployed on the specified network.
+    /// Note: USDT0 (EIP-3009 compatible) is only on Arbitrum, Celo, and Optimism.
+    /// Legacy USDT on Ethereum does NOT support EIP-3009.
+    pub fn by_network<N: Borrow<Network>>(network: N) -> Option<&'static USDTDeployment> {
+        match network.borrow() {
+            Network::Arbitrum => Some(&USDT_ARBITRUM),
+            Network::Celo => Some(&USDT_CELO),
+            Network::Optimism => Some(&USDT_OPTIMISM),
+            _ => None,
+        }
+    }
+
+    /// Return all networks where USDT0 is deployed with EIP-3009 support.
+    pub fn supported_networks() -> &'static [Network] {
+        &[Network::Arbitrum, Network::Celo, Network::Optimism]
+    }
+}
+
+// ============================================================================
 // Generic Token Deployment Lookup
 // ============================================================================
 
@@ -1219,6 +1316,7 @@ pub fn get_token_deployment(network: Network, token_type: TokenType) -> Option<T
         TokenType::Eurc => EURCDeployment::by_network(network).map(|d| d.0.clone()),
         TokenType::Ausd => AUSDDeployment::by_network(network).map(|d| d.0.clone()),
         TokenType::Pyusd => PYUSDDeployment::by_network(network).map(|d| d.0.clone()),
+        TokenType::Usdt => USDTDeployment::by_network(network).map(|d| d.0.clone()),
     }
 }
 
@@ -1270,6 +1368,7 @@ pub fn supported_networks_for_token(token_type: TokenType) -> Vec<Network> {
         TokenType::Eurc => EURCDeployment::supported_networks().to_vec(),
         TokenType::Ausd => AUSDDeployment::supported_networks().to_vec(),
         TokenType::Pyusd => PYUSDDeployment::supported_networks().to_vec(),
+        TokenType::Usdt => USDTDeployment::supported_networks().to_vec(),
     }
 }
 
@@ -1414,6 +1513,62 @@ mod tests {
     }
 
     // ============================================================
+    // USDT (Tether USD / USDT0) Deployment Tests
+    // ============================================================
+
+    #[test]
+    fn test_usdt_supported_networks() {
+        let networks = USDTDeployment::supported_networks();
+        assert_eq!(networks.len(), 3);
+        assert!(networks.contains(&Network::Arbitrum));
+        assert!(networks.contains(&Network::Celo));
+        assert!(networks.contains(&Network::Optimism));
+    }
+
+    #[test]
+    fn test_usdt_not_on_ethereum() {
+        // Legacy USDT on Ethereum does NOT support EIP-3009
+        assert!(!is_token_supported(Network::Ethereum, TokenType::Usdt));
+        assert!(get_token_deployment(Network::Ethereum, TokenType::Usdt).is_none());
+    }
+
+    #[test]
+    fn test_usdt_arbitrum_address() {
+        let deployment = get_token_deployment(Network::Arbitrum, TokenType::Usdt).unwrap();
+        assert_eq!(
+            deployment.asset.address,
+            MixedAddress::Evm(address!("Fd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9").into())
+        );
+        assert_eq!(deployment.decimals, 6);
+        // Check EIP-712 name (USD₮0 with Unicode TUGRIK SIGN)
+        assert_eq!(deployment.eip712.as_ref().unwrap().name, "USD\u{20AE}0");
+    }
+
+    #[test]
+    fn test_usdt_celo_address() {
+        let deployment = get_token_deployment(Network::Celo, TokenType::Usdt).unwrap();
+        assert_eq!(
+            deployment.asset.address,
+            MixedAddress::Evm(address!("48065fbBE25f71C9282ddf5e1cD6D6A887483D5e").into())
+        );
+        assert_eq!(deployment.decimals, 6);
+        // Celo uses "Tether USD" as EIP-712 name
+        assert_eq!(deployment.eip712.as_ref().unwrap().name, "Tether USD");
+    }
+
+    #[test]
+    fn test_usdt_optimism_address() {
+        let deployment = get_token_deployment(Network::Optimism, TokenType::Usdt).unwrap();
+        assert_eq!(
+            deployment.asset.address,
+            MixedAddress::Evm(address!("01bff41798a0bcf287b996046ca68b395dbc1071").into())
+        );
+        assert_eq!(deployment.decimals, 6);
+        // Check EIP-712 name (USD₮0 with Unicode TUGRIK SIGN)
+        assert_eq!(deployment.eip712.as_ref().unwrap().name, "USD\u{20AE}0");
+    }
+
+    // ============================================================
     // Helper Function Tests
     // ============================================================
 
@@ -1436,6 +1591,7 @@ mod tests {
         assert!(tokens.contains(&TokenType::Eurc));
         assert!(!tokens.contains(&TokenType::Pyusd));
         assert!(!tokens.contains(&TokenType::Ausd));
+        assert!(!tokens.contains(&TokenType::Usdt));
     }
 
     #[test]
@@ -1445,6 +1601,38 @@ mod tests {
         assert!(tokens.contains(&TokenType::Usdc));
         assert!(tokens.contains(&TokenType::Ausd));
         assert!(!tokens.contains(&TokenType::Eurc));
+        assert!(!tokens.contains(&TokenType::Usdt));
+    }
+
+    #[test]
+    fn test_supported_tokens_for_arbitrum() {
+        // Arbitrum supports USDC, AUSD, USDT
+        let tokens = supported_tokens_for_network(Network::Arbitrum);
+        assert!(tokens.contains(&TokenType::Usdc));
+        assert!(tokens.contains(&TokenType::Ausd));
+        assert!(tokens.contains(&TokenType::Usdt));
+        assert!(!tokens.contains(&TokenType::Eurc));
+        assert!(!tokens.contains(&TokenType::Pyusd));
+    }
+
+    #[test]
+    fn test_supported_tokens_for_optimism() {
+        // Optimism supports USDC, USDT
+        let tokens = supported_tokens_for_network(Network::Optimism);
+        assert!(tokens.contains(&TokenType::Usdc));
+        assert!(tokens.contains(&TokenType::Usdt));
+        assert!(!tokens.contains(&TokenType::Eurc));
+        assert!(!tokens.contains(&TokenType::Pyusd));
+    }
+
+    #[test]
+    fn test_supported_tokens_for_celo() {
+        // Celo supports USDC, USDT
+        let tokens = supported_tokens_for_network(Network::Celo);
+        assert!(tokens.contains(&TokenType::Usdc));
+        assert!(tokens.contains(&TokenType::Usdt));
+        assert!(!tokens.contains(&TokenType::Eurc));
+        assert!(!tokens.contains(&TokenType::Pyusd));
     }
 
     #[test]
@@ -1469,6 +1657,17 @@ mod tests {
         assert!(networks.contains(&Network::Ethereum));
         assert!(networks.contains(&Network::Base));
         assert!(networks.contains(&Network::Avalanche));
+    }
+
+    #[test]
+    fn test_supported_networks_for_usdt() {
+        let networks = supported_networks_for_token(TokenType::Usdt);
+        assert_eq!(networks.len(), 3);
+        assert!(networks.contains(&Network::Arbitrum));
+        assert!(networks.contains(&Network::Celo));
+        assert!(networks.contains(&Network::Optimism));
+        // USDT not on Ethereum (legacy contract doesn't support EIP-3009)
+        assert!(!networks.contains(&Network::Ethereum));
     }
 
     #[test]

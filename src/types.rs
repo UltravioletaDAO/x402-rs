@@ -146,6 +146,9 @@ pub enum TokenType {
     /// PayPal USD by PayPal/Paxos (6 decimals)
     #[serde(rename = "pyusd")]
     Pyusd,
+    /// Tether USD (USDT0) by Tether (6 decimals)
+    #[serde(rename = "usdt")]
+    Usdt,
 }
 
 impl TokenType {
@@ -159,6 +162,7 @@ impl TokenType {
             TokenType::Eurc => 6,
             TokenType::Ausd => 6,
             TokenType::Pyusd => 6,
+            TokenType::Usdt => 6,
         }
     }
 
@@ -170,6 +174,7 @@ impl TokenType {
             TokenType::Eurc => "EURC",
             TokenType::Ausd => "AUSD",
             TokenType::Pyusd => "PYUSD",
+            TokenType::Usdt => "USDT",
         }
     }
 
@@ -181,6 +186,7 @@ impl TokenType {
             TokenType::Eurc => "Euro Coin",
             TokenType::Ausd => "Agora USD",
             TokenType::Pyusd => "PayPal USD",
+            TokenType::Usdt => "Tether USD",
         }
     }
 
@@ -192,6 +198,7 @@ impl TokenType {
             TokenType::Eurc => "EUR", // Euro symbol
             TokenType::Ausd => "$",
             TokenType::Pyusd => "$",
+            TokenType::Usdt => "$",
         }
     }
 
@@ -203,6 +210,7 @@ impl TokenType {
             TokenType::Eurc => true,
             TokenType::Ausd => true,
             TokenType::Pyusd => true,
+            TokenType::Usdt => true,
         }
     }
 
@@ -214,6 +222,7 @@ impl TokenType {
             TokenType::Eurc,
             TokenType::Ausd,
             TokenType::Pyusd,
+            TokenType::Usdt,
         ]
     }
 
@@ -228,6 +237,9 @@ impl TokenType {
             TokenType::Eurc => "Euro Coin",
             TokenType::Ausd => "AUSD",
             TokenType::Pyusd => "PayPal USD",
+            // Note: USDT0 uses different names per network - "USD₮0" (Arbitrum/Optimism) or "Tether USD" (Celo)
+            // The network-specific name is stored in TokenDeployment.eip712
+            TokenType::Usdt => "USD\u{20AE}0", // USD₮0 (Unicode TUGRIK SIGN)
         }
     }
 
@@ -242,6 +254,7 @@ impl TokenType {
             TokenType::Eurc => "2",
             TokenType::Ausd => "1",
             TokenType::Pyusd => "1",
+            TokenType::Usdt => "1",
         }
     }
 
@@ -272,6 +285,7 @@ impl FromStr for TokenType {
             "eurc" => Ok(TokenType::Eurc),
             "ausd" => Ok(TokenType::Ausd),
             "pyusd" => Ok(TokenType::Pyusd),
+            "usdt" => Ok(TokenType::Usdt),
             _ => Err(TokenTypeParseError(s.to_string())),
         }
     }
@@ -279,7 +293,7 @@ impl FromStr for TokenType {
 
 /// Error returned when parsing an invalid token type string.
 #[derive(Debug, Clone, thiserror::Error)]
-#[error("Unknown token type: {0}. Supported: usdc, eurc, ausd, pyusd")]
+#[error("Unknown token type: {0}. Supported: usdc, eurc, ausd, pyusd, usdt")]
 pub struct TokenTypeParseError(pub String);
 
 /// Represents an EVM signature used in EIP-712 typed data.
@@ -1754,6 +1768,7 @@ mod tests {
         assert_eq!(TokenType::Eurc.decimals(), 6);
         assert_eq!(TokenType::Ausd.decimals(), 6);
         assert_eq!(TokenType::Pyusd.decimals(), 6);
+        assert_eq!(TokenType::Usdt.decimals(), 6);
     }
 
     #[test]
@@ -1762,16 +1777,18 @@ mod tests {
         assert_eq!(TokenType::Eurc.symbol(), "EURC");
         assert_eq!(TokenType::Ausd.symbol(), "AUSD");
         assert_eq!(TokenType::Pyusd.symbol(), "PYUSD");
+        assert_eq!(TokenType::Usdt.symbol(), "USDT");
     }
 
     #[test]
     fn test_token_type_all() {
         let all = TokenType::all();
-        assert_eq!(all.len(), 4);
+        assert_eq!(all.len(), 5);
         assert!(all.contains(&TokenType::Usdc));
         assert!(all.contains(&TokenType::Eurc));
         assert!(all.contains(&TokenType::Ausd));
         assert!(all.contains(&TokenType::Pyusd));
+        assert!(all.contains(&TokenType::Usdt));
     }
 
     #[test]
@@ -1781,6 +1798,7 @@ mod tests {
         assert_eq!(serde_json::to_string(&TokenType::Eurc).unwrap(), "\"eurc\"");
         assert_eq!(serde_json::to_string(&TokenType::Ausd).unwrap(), "\"ausd\"");
         assert_eq!(serde_json::to_string(&TokenType::Pyusd).unwrap(), "\"pyusd\"");
+        assert_eq!(serde_json::to_string(&TokenType::Usdt).unwrap(), "\"usdt\"");
     }
 
     #[test]
@@ -1802,6 +1820,10 @@ mod tests {
             serde_json::from_str::<TokenType>("\"pyusd\"").unwrap(),
             TokenType::Pyusd
         );
+        assert_eq!(
+            serde_json::from_str::<TokenType>("\"usdt\"").unwrap(),
+            TokenType::Usdt
+        );
     }
 
     #[test]
@@ -1818,6 +1840,7 @@ mod tests {
         assert_eq!(format!("{}", TokenType::Eurc), "EURC");
         assert_eq!(format!("{}", TokenType::Ausd), "AUSD");
         assert_eq!(format!("{}", TokenType::Pyusd), "PYUSD");
+        assert_eq!(format!("{}", TokenType::Usdt), "USDT");
     }
 
     #[test]
@@ -1826,6 +1849,7 @@ mod tests {
         assert_eq!("eurc".parse::<TokenType>().unwrap(), TokenType::Eurc);
         assert_eq!("ausd".parse::<TokenType>().unwrap(), TokenType::Ausd);
         assert_eq!("pyusd".parse::<TokenType>().unwrap(), TokenType::Pyusd);
+        assert_eq!("usdt".parse::<TokenType>().unwrap(), TokenType::Usdt);
     }
 
     #[test]
@@ -1834,18 +1858,20 @@ mod tests {
         assert_eq!("USDC".parse::<TokenType>().unwrap(), TokenType::Usdc);
         assert_eq!("EURC".parse::<TokenType>().unwrap(), TokenType::Eurc);
         assert_eq!("PYUSD".parse::<TokenType>().unwrap(), TokenType::Pyusd);
+        assert_eq!("USDT".parse::<TokenType>().unwrap(), TokenType::Usdt);
 
         // Mixed case
         assert_eq!("Usdc".parse::<TokenType>().unwrap(), TokenType::Usdc);
         assert_eq!("Ausd".parse::<TokenType>().unwrap(), TokenType::Ausd);
+        assert_eq!("Usdt".parse::<TokenType>().unwrap(), TokenType::Usdt);
     }
 
     #[test]
     fn test_token_type_from_str_invalid() {
         assert!("invalid".parse::<TokenType>().is_err());
         assert!("".parse::<TokenType>().is_err());
-        assert!("usdt".parse::<TokenType>().is_err()); // Not supported
-        assert!("dai".parse::<TokenType>().is_err()); // Not supported
+        assert!("dai".parse::<TokenType>().is_err()); // Not supported (EIP-2612 only)
+        assert!("gho".parse::<TokenType>().is_err()); // Not supported (EIP-2612 only)
     }
 
     // ============================================================

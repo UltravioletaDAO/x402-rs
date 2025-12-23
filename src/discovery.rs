@@ -1,6 +1,6 @@
 //! Bazaar Discovery Registry for x402 v2.
 //!
-//! This module implements an in-memory registry for discoverable paid API endpoints.
+//! This module implements a persistent registry for discoverable paid API endpoints.
 //! Resource providers can register their endpoints, and clients can query the registry
 //! to find available paid services.
 //!
@@ -14,33 +14,50 @@
 //!
 //! # Architecture
 //!
-//! The registry uses `Arc<RwLock<HashMap>>` for thread-safe concurrent access:
-//! - Reads (discovery queries) can happen concurrently
-//! - Writes (registration) acquire exclusive lock briefly
+//! The registry uses a hybrid approach for fast reads with persistent storage:
+//!
+//! ```text
+//! Client Request
+//!       |
+//!       v
+//! In-Memory Cache (Arc<RwLock<HashMap>>) <-- Fast reads (~1ms)
+//!       |
+//!       v (on writes, async)
+//! DiscoveryStore (S3/DynamoDB/Postgres) <-- Persistent storage
+//! ```
+//!
+//! - Reads: Always from in-memory cache (fast, concurrent)
+//! - Writes: Update cache immediately, persist to store asynchronously
+//! - Startup: Load all resources from store into cache
 //!
 //! # Example
 //!
 //! ```rust,ignore
 //! use x402_rs::discovery::DiscoveryRegistry;
+//! use x402_rs::discovery_store::S3Store;
 //! use x402_rs::types_v2::{DiscoveryResource, RegisterResourceRequest};
 //!
+//! // Create with S3 persistence
+//! let store = S3Store::from_env().await?;
+//! let registry = DiscoveryRegistry::with_store(store).await?;
+//!
+//! // Or create without persistence (in-memory only)
 //! let registry = DiscoveryRegistry::new();
 //!
-//! // Register a resource
+//! // Register a resource (persisted automatically)
 //! registry.register(resource).await?;
 //!
-//! // Query resources
+//! // Query resources (from memory, fast)
 //! let response = registry.list(10, 0, None).await;
 //! ```
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
-use crate::types_v2::{
-    DiscoveryFilters, DiscoveryResource, DiscoveryResponse, Pagination,
-};
+use crate::discovery_store::{DiscoveryStore, NoOpStore, StoreError};
+use crate::types_v2::{DiscoveryFilters, DiscoveryResource, DiscoveryResponse, Pagination};
 
 // ============================================================================
 // Error Types
@@ -68,20 +85,38 @@ pub enum DiscoveryError {
     /// No payment methods specified
     #[error("At least one payment method must be specified in 'accepts'")]
     NoPaymentMethods,
+
+    /// Storage error
+    #[error("Storage error: {0}")]
+    StorageError(#[from] StoreError),
 }
 
 // ============================================================================
 // Discovery Registry
 // ============================================================================
 
-/// In-memory registry for discoverable paid resources.
+/// Persistent registry for discoverable paid resources.
+///
+/// Uses in-memory cache for fast reads with optional persistent storage
+/// for durability across restarts.
 ///
 /// Thread-safe using `Arc<RwLock>` for concurrent read access with
 /// exclusive write access during registration.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct DiscoveryRegistry {
-    /// Map of URL -> DiscoveryResource
+    /// In-memory cache: Map of URL -> DiscoveryResource
     resources: Arc<RwLock<HashMap<String, DiscoveryResource>>>,
+    /// Persistent storage backend
+    store: Arc<dyn DiscoveryStore>,
+}
+
+impl Clone for DiscoveryRegistry {
+    fn clone(&self) -> Self {
+        Self {
+            resources: Arc::clone(&self.resources),
+            store: Arc::clone(&self.store),
+        }
+    }
 }
 
 impl Default for DiscoveryRegistry {
@@ -91,15 +126,83 @@ impl Default for DiscoveryRegistry {
 }
 
 impl DiscoveryRegistry {
-    /// Create a new empty discovery registry.
+    /// Create a new empty discovery registry without persistence.
+    ///
+    /// Use `with_store()` for persistent storage.
     pub fn new() -> Self {
-        info!("Initializing Bazaar discovery registry");
+        info!("Initializing Bazaar discovery registry (no persistence)");
         Self {
             resources: Arc::new(RwLock::new(HashMap::new())),
+            store: Arc::new(NoOpStore::new()),
         }
     }
 
+    /// Create a new discovery registry with persistent storage.
+    ///
+    /// Loads existing resources from the store on creation.
+    pub async fn with_store<S: DiscoveryStore + 'static>(
+        store: S,
+    ) -> Result<Self, DiscoveryError> {
+        let store_type = store.store_type();
+        info!(store_type = store_type, "Initializing Bazaar discovery registry with persistence");
+
+        // Load existing resources from store
+        let existing = store.load_all().await?;
+        let count = existing.len();
+
+        // Populate cache
+        let mut cache = HashMap::new();
+        for resource in existing {
+            cache.insert(resource.url.to_string(), resource);
+        }
+
+        info!(
+            store_type = store_type,
+            loaded_count = count,
+            "Loaded discovery resources from persistent storage"
+        );
+
+        Ok(Self {
+            resources: Arc::new(RwLock::new(cache)),
+            store: Arc::new(store),
+        })
+    }
+
+    /// Get the store type for diagnostics.
+    pub fn store_type(&self) -> &'static str {
+        self.store.store_type()
+    }
+
+    /// Persist a resource to the store asynchronously.
+    ///
+    /// This spawns a background task to avoid blocking the caller.
+    fn persist_async(&self, resource: DiscoveryResource) {
+        let store = Arc::clone(&self.store);
+        tokio::spawn(async move {
+            if let Err(e) = store.save(&resource).await {
+                error!(
+                    url = %resource.url,
+                    error = %e,
+                    "Failed to persist resource to store"
+                );
+            }
+        });
+    }
+
+    /// Delete a resource from the store asynchronously.
+    fn delete_from_store_async(&self, url: String) {
+        let store = Arc::clone(&self.store);
+        tokio::spawn(async move {
+            if let Err(e) = store.delete(&url).await {
+                error!(url = %url, error = %e, "Failed to delete resource from store");
+            }
+        });
+    }
+
     /// Register a new resource in the registry.
+    ///
+    /// The resource is immediately added to the in-memory cache and
+    /// persisted to storage asynchronously.
     ///
     /// # Errors
     ///
@@ -122,16 +225,27 @@ impl DiscoveryRegistry {
             url = %url_key,
             resource_type = %resource.resource_type,
             accepts_count = resource.accepts.len(),
+            store_type = self.store.store_type(),
             "Registered new resource in discovery registry"
         );
 
+        // Clone for persistence before moving into cache
+        let resource_for_store = resource.clone();
         resources.insert(url_key, resource);
+
+        // Release lock before async persistence
+        drop(resources);
+
+        // Persist asynchronously
+        self.persist_async(resource_for_store);
+
         Ok(())
     }
 
     /// Update an existing resource in the registry.
     ///
     /// If the resource doesn't exist, it will be created (upsert behavior).
+    /// The update is immediately applied to cache and persisted asynchronously.
     pub async fn update(&self, resource: DiscoveryResource) -> Result<(), DiscoveryError> {
         self.validate_resource(&resource)?;
 
@@ -140,6 +254,8 @@ impl DiscoveryRegistry {
         let mut resources = self.resources.write().await;
         let existed = resources.contains_key(&url_key);
 
+        // Clone for persistence
+        let resource_for_store = resource.clone();
         resources.insert(url_key.clone(), resource);
 
         if existed {
@@ -148,10 +264,19 @@ impl DiscoveryRegistry {
             info!(url = %url_key, "Created new resource via update (upsert)");
         }
 
+        // Release lock before async persistence
+        drop(resources);
+
+        // Persist asynchronously
+        self.persist_async(resource_for_store);
+
         Ok(())
     }
 
     /// Remove a resource from the registry.
+    ///
+    /// The resource is immediately removed from cache and deleted from
+    /// storage asynchronously.
     ///
     /// # Errors
     ///
@@ -162,6 +287,13 @@ impl DiscoveryRegistry {
         match resources.remove(url) {
             Some(resource) => {
                 info!(url = %url, "Unregistered resource from discovery registry");
+
+                // Release lock before async deletion
+                drop(resources);
+
+                // Delete from store asynchronously
+                self.delete_from_store_async(url.to_string());
+
                 Ok(resource)
             }
             None => {

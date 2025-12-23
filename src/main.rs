@@ -42,6 +42,7 @@ mod blocklist;
 mod caip2;
 mod chain;
 mod discovery;
+mod discovery_store;
 mod facilitator;
 mod facilitator_local;
 mod fhe_proxy;
@@ -56,6 +57,9 @@ mod types;
 mod types_v2;
 
 use discovery::DiscoveryRegistry;
+use discovery_store::S3Store;
+#[allow(unused_imports)]
+use discovery_store::DiscoveryStore;
 
 /// Initializes the x402 facilitator server.
 ///
@@ -108,9 +112,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let facilitator = FacilitatorLocal::new(provider_cache, compliance_checker);
     let axum_state = Arc::new(facilitator);
 
-    // Initialize Bazaar discovery registry
+    // Initialize Bazaar discovery registry with optional S3 persistence
     tracing::info!("Initializing Bazaar discovery registry...");
-    let discovery_registry = Arc::new(DiscoveryRegistry::new());
+    let discovery_registry = if std::env::var("DISCOVERY_S3_BUCKET").is_ok() {
+        // S3 persistence configured
+        match S3Store::from_env().await {
+            Ok(store) => {
+                match DiscoveryRegistry::with_store(store).await {
+                    Ok(registry) => {
+                        tracing::info!("Discovery registry initialized with S3 persistence");
+                        Arc::new(registry)
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to initialize S3 store, falling back to in-memory: {}", e);
+                        Arc::new(DiscoveryRegistry::new())
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to create S3 store, falling back to in-memory: {}", e);
+                Arc::new(DiscoveryRegistry::new())
+            }
+        }
+    } else {
+        // No persistence configured, use in-memory only
+        tracing::info!("No DISCOVERY_S3_BUCKET configured, using in-memory registry");
+        Arc::new(DiscoveryRegistry::new())
+    };
 
     // Self-registration: register this facilitator as a discoverable resource
     // Only if FACILITATOR_URL is set (indicates production deployment)
@@ -154,7 +182,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    tracing::info!("Discovery registry initialized ({} resources)", discovery_registry.count().await);
+    tracing::info!(
+        "Discovery registry initialized (store={}, {} resources)",
+        discovery_registry.store_type(),
+        discovery_registry.count().await
+    );
 
     let http_endpoints = Router::new()
         .merge(handlers::routes().with_state(axum_state))

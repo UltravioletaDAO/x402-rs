@@ -602,6 +602,219 @@ pub enum NetworkParseError {
 }
 
 // ============================================================================
+// Discovery API Types (Bazaar)
+// ============================================================================
+
+/// Metadata for a discoverable resource in the Bazaar registry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveryMetadata {
+    /// Category for filtering (e.g., "finance", "ai", "data")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+
+    /// Provider name or organization
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+
+    /// Tags for search and discovery
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+}
+
+impl Default for DiscoveryMetadata {
+    fn default() -> Self {
+        Self {
+            category: None,
+            provider: None,
+            tags: Vec::new(),
+        }
+    }
+}
+
+/// A discoverable paid resource in the Bazaar registry.
+///
+/// Represents an API endpoint or service that accepts x402 payments.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveryResource {
+    /// The URL of the paid resource
+    pub url: Url,
+
+    /// Type of resource ("http", "mcp", "a2a")
+    #[serde(rename = "type")]
+    pub resource_type: String,
+
+    /// x402 protocol version this resource supports
+    pub x402_version: u8,
+
+    /// Human-readable description of the resource
+    pub description: String,
+
+    /// Accepted payment methods
+    pub accepts: Vec<PaymentRequirementsV2>,
+
+    /// Unix timestamp of last registration/update
+    pub last_updated: u64,
+
+    /// Optional metadata for categorization and search
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<DiscoveryMetadata>,
+}
+
+impl DiscoveryResource {
+    /// Create a new discovery resource
+    pub fn new(
+        url: Url,
+        resource_type: String,
+        description: String,
+        accepts: Vec<PaymentRequirementsV2>,
+    ) -> Self {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        Self {
+            url,
+            resource_type,
+            x402_version: 2,
+            description,
+            accepts,
+            last_updated: now,
+            metadata: None,
+        }
+    }
+
+    /// Set metadata for the resource
+    pub fn with_metadata(mut self, metadata: DiscoveryMetadata) -> Self {
+        self.metadata = Some(metadata);
+        self
+    }
+}
+
+/// Pagination information for discovery responses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Pagination {
+    /// Maximum number of items per page
+    pub limit: u32,
+
+    /// Number of items to skip
+    pub offset: u32,
+
+    /// Total number of matching items
+    pub total: u32,
+}
+
+impl Pagination {
+    pub fn new(limit: u32, offset: u32, total: u32) -> Self {
+        Self { limit, offset, total }
+    }
+}
+
+/// Response from GET /discovery/resources endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveryResponse {
+    /// x402 protocol version
+    pub x402_version: u8,
+
+    /// List of discoverable resources
+    pub items: Vec<DiscoveryResource>,
+
+    /// Pagination information
+    pub pagination: Pagination,
+}
+
+impl DiscoveryResponse {
+    pub fn new(items: Vec<DiscoveryResource>, pagination: Pagination) -> Self {
+        Self {
+            x402_version: 2,
+            items,
+            pagination,
+        }
+    }
+
+    pub fn empty() -> Self {
+        Self {
+            x402_version: 2,
+            items: Vec::new(),
+            pagination: Pagination::new(10, 0, 0),
+        }
+    }
+}
+
+/// Request to register a resource with the discovery service.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisterResourceRequest {
+    /// The URL of the paid resource
+    pub url: Url,
+
+    /// Type of resource ("http", "mcp", "a2a")
+    #[serde(rename = "type")]
+    pub resource_type: String,
+
+    /// Human-readable description
+    pub description: String,
+
+    /// Accepted payment methods
+    pub accepts: Vec<PaymentRequirementsV2>,
+
+    /// Optional metadata for categorization
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<DiscoveryMetadata>,
+}
+
+impl RegisterResourceRequest {
+    /// Convert to a DiscoveryResource
+    pub fn into_resource(self) -> DiscoveryResource {
+        let resource = DiscoveryResource::new(
+            self.url,
+            self.resource_type,
+            self.description,
+            self.accepts,
+        );
+        match self.metadata {
+            Some(meta) => resource.with_metadata(meta),
+            None => resource,
+        }
+    }
+}
+
+/// Query parameters for filtering discovery results.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveryFilters {
+    /// Filter by category
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+
+    /// Filter by network (CAIP-2 format)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
+
+    /// Filter by provider name
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+
+    /// Filter by tag
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+}
+
+impl DiscoveryFilters {
+    pub fn is_empty(&self) -> bool {
+        self.category.is_none()
+            && self.network.is_none()
+            && self.provider.is_none()
+            && self.tag.is_none()
+    }
+}
+
+// ============================================================================
 // Unit Tests
 // ============================================================================
 

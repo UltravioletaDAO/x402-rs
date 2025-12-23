@@ -10,7 +10,7 @@
 //! and is compatible with official x402 client SDKs.
 
 use axum::body::Bytes;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::Response;
 use axum::routing::{get, post};
@@ -18,7 +18,11 @@ use axum::{response::IntoResponse, Json, Router};
 use serde_json::json;
 use tracing::{debug, error, info, instrument, warn};
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use crate::chain::FacilitatorLocalError;
+use crate::discovery::{DiscoveryError, DiscoveryRegistry};
 use crate::fhe_proxy::FheProxy;
 use crate::facilitator::Facilitator;
 use crate::types::{
@@ -26,7 +30,8 @@ use crate::types::{
     VerifyResponse, X402Version,
 };
 use crate::types_v2::{
-    SettleRequestEnvelope, VerifyRequestEnvelope,
+    DiscoveryFilters, RegisterResourceRequest, SettleRequestEnvelope,
+    SupportedPaymentKindsResponseV1ToV2, VerifyRequestEnvelope,
 };
 
 // Global FHE proxy instance (lazy initialized)
@@ -99,6 +104,206 @@ where
         .route("/near.png", get(get_near_logo))
         .route("/stellar.png", get(get_stellar_logo))
         .route("/fogo.png", get(get_fogo_logo))
+}
+
+/// Discovery API routes for the Bazaar feature.
+///
+/// These routes are separate from the main facilitator routes because they use
+/// a different state type (DiscoveryRegistry).
+pub fn discovery_routes() -> Router<Arc<DiscoveryRegistry>> {
+    Router::new()
+        .route("/discovery/resources", get(get_discovery_resources))
+        .route("/discovery/register", post(post_discovery_register))
+}
+
+// ============================================================================
+// Discovery Handlers (Bazaar)
+// ============================================================================
+
+/// Query parameters for GET /discovery/resources
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveryQueryParams {
+    /// Maximum number of resources to return (default: 10, max: 100)
+    #[serde(default = "default_limit")]
+    pub limit: u32,
+
+    /// Number of resources to skip (default: 0)
+    #[serde(default)]
+    pub offset: u32,
+
+    /// Filter by category
+    pub category: Option<String>,
+
+    /// Filter by network (CAIP-2 format, e.g., "eip155:8453")
+    pub network: Option<String>,
+
+    /// Filter by provider name
+    pub provider: Option<String>,
+
+    /// Filter by tag
+    pub tag: Option<String>,
+}
+
+fn default_limit() -> u32 {
+    10
+}
+
+impl From<DiscoveryQueryParams> for Option<DiscoveryFilters> {
+    fn from(params: DiscoveryQueryParams) -> Self {
+        if params.category.is_none()
+            && params.network.is_none()
+            && params.provider.is_none()
+            && params.tag.is_none()
+        {
+            None
+        } else {
+            Some(DiscoveryFilters {
+                category: params.category,
+                network: params.network,
+                provider: params.provider,
+                tag: params.tag,
+            })
+        }
+    }
+}
+
+/// `GET /discovery/resources`: List discoverable paid resources.
+///
+/// Supports pagination via `limit` and `offset` query parameters.
+/// Supports filtering by `category`, `network`, `provider`, and `tag`.
+///
+/// # Example
+/// ```text
+/// GET /discovery/resources?limit=10&offset=0&category=finance&network=eip155:8453
+/// ```
+#[instrument(skip_all, fields(limit, offset, category, network))]
+pub async fn get_discovery_resources(
+    State(registry): State<Arc<DiscoveryRegistry>>,
+    Query(params): Query<DiscoveryQueryParams>,
+) -> impl IntoResponse {
+    debug!(
+        limit = params.limit,
+        offset = params.offset,
+        category = ?params.category,
+        network = ?params.network,
+        "Discovery resources query"
+    );
+
+    let filters: Option<DiscoveryFilters> = params.clone().into();
+    let response = registry.list(params.limit, params.offset, filters).await;
+
+    info!(
+        total = response.pagination.total,
+        returned = response.items.len(),
+        "Discovery query completed"
+    );
+
+    (StatusCode::OK, Json(response))
+}
+
+/// `POST /discovery/register`: Register a new paid resource.
+///
+/// Registers a resource in the discovery registry so it can be discovered
+/// by clients via GET /discovery/resources.
+///
+/// # Request Body
+/// ```json
+/// {
+///   "url": "https://api.example.com/premium-data",
+///   "type": "http",
+///   "description": "Premium market data API",
+///   "accepts": [{
+///     "scheme": "exact",
+///     "network": "eip155:8453",
+///     "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+///     "amount": "10000",
+///     "payTo": "0x...",
+///     "maxTimeoutSeconds": 60
+///   }],
+///   "metadata": {
+///     "category": "finance",
+///     "provider": "Example Corp",
+///     "tags": ["market-data", "real-time"]
+///   }
+/// }
+/// ```
+#[instrument(skip_all, fields(url))]
+pub async fn post_discovery_register(
+    State(registry): State<Arc<DiscoveryRegistry>>,
+    Json(request): Json<RegisterResourceRequest>,
+) -> impl IntoResponse {
+    let url = request.url.to_string();
+    info!(url = %url, resource_type = %request.resource_type, "Registering new resource");
+
+    let resource = request.into_resource();
+
+    match registry.register(resource).await {
+        Ok(()) => {
+            info!(url = %url, "Resource registered successfully");
+            (
+                StatusCode::CREATED,
+                Json(json!({
+                    "success": true,
+                    "message": "Resource registered successfully",
+                    "url": url
+                })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            warn!(url = %url, error = %e, "Failed to register resource");
+            discovery_error_response(e)
+        }
+    }
+}
+
+/// Convert a DiscoveryError to an HTTP response.
+fn discovery_error_response(error: DiscoveryError) -> Response {
+    match error {
+        DiscoveryError::AlreadyExists(url) => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "Resource already registered",
+                "url": url,
+                "hint": "Use PUT /discovery/resources/{url} to update an existing resource"
+            })),
+        )
+            .into_response(),
+        DiscoveryError::NotFound(url) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "error": "Resource not found",
+                "url": url
+            })),
+        )
+            .into_response(),
+        DiscoveryError::InvalidUrl(msg) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "Invalid URL",
+                "details": msg
+            })),
+        )
+            .into_response(),
+        DiscoveryError::InvalidResourceType(t) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "Invalid resource type",
+                "received": t,
+                "expected": ["http", "mcp", "a2a"]
+            })),
+        )
+            .into_response(),
+        DiscoveryError::NoPaymentMethods => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "No payment methods specified",
+                "hint": "The 'accepts' array must contain at least one payment method"
+            })),
+        )
+            .into_response(),
+    }
 }
 
 /// `GET /`: Returns the Ultravioleta DAO branded landing page.
@@ -301,6 +506,11 @@ pub async fn get_fogo_logo() -> impl IntoResponse {
 ///
 /// Facilitators may expose this to help clients dynamically configure their payment requests
 /// based on available network and scheme support.
+///
+/// Returns v2 format response with:
+/// - `kinds`: List of supported payment schemes/networks (both v1 and CAIP-2 formats)
+/// - `extensions`: List of supported extensions (includes "bazaar" for discovery API)
+/// - `signers`: Map of namespace to facilitator signer addresses (currently empty, reserved for future use)
 #[instrument(skip_all)]
 pub async fn get_supported<A>(State(facilitator): State<A>) -> impl IntoResponse
 where
@@ -308,7 +518,15 @@ where
     A::Error: IntoResponse,
 {
     match facilitator.supported().await {
-        Ok(supported) => (StatusCode::OK, Json(json!(supported))).into_response(),
+        Ok(supported) => {
+            // Convert v1 response to v2 with bazaar extension
+            let extensions = vec!["bazaar".to_string()];
+            // Signers map is empty for now - will be populated in future version
+            // when we add a method to get signer addresses from the facilitator
+            let signers: HashMap<String, Vec<String>> = HashMap::new();
+            let v2_response = supported.to_v2(extensions, signers);
+            (StatusCode::OK, Json(json!(v2_response))).into_response()
+        }
         Err(error) => error.into_response(),
     }
 }

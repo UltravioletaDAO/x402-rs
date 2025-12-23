@@ -26,11 +26,14 @@ use dotenvy::dotenv;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tower_http::cors;
+use url::Url;
 
+use crate::facilitator::Facilitator;
 use crate::facilitator_local::FacilitatorLocal;
 use crate::provider_cache::ProviderCache;
 use crate::sig_down::SigDown;
 use crate::telemetry::Telemetry;
+use crate::types_v2::{DiscoveryMetadata, DiscoveryResource};
 
 // Compliance module
 use x402_compliance::ComplianceCheckerBuilder;
@@ -38,6 +41,7 @@ use x402_compliance::ComplianceCheckerBuilder;
 mod blocklist;
 mod caip2;
 mod chain;
+mod discovery;
 mod facilitator;
 mod facilitator_local;
 mod fhe_proxy;
@@ -50,6 +54,8 @@ mod telemetry;
 mod timestamp;
 mod types;
 mod types_v2;
+
+use discovery::DiscoveryRegistry;
 
 /// Initializes the x402 facilitator server.
 ///
@@ -102,8 +108,57 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let facilitator = FacilitatorLocal::new(provider_cache, compliance_checker);
     let axum_state = Arc::new(facilitator);
 
+    // Initialize Bazaar discovery registry
+    tracing::info!("Initializing Bazaar discovery registry...");
+    let discovery_registry = Arc::new(DiscoveryRegistry::new());
+
+    // Self-registration: register this facilitator as a discoverable resource
+    // Only if FACILITATOR_URL is set (indicates production deployment)
+    if let Ok(facilitator_url) = std::env::var("FACILITATOR_URL") {
+        match Url::parse(&facilitator_url) {
+            Ok(url) => {
+                // Get supported networks to include in description
+                let supported = axum_state.supported().await;
+                let network_count = supported.as_ref().map(|s| s.kinds.len()).unwrap_or(0);
+
+                let facilitator_resource = DiscoveryResource::new(
+                    url,
+                    "facilitator".to_string(),
+                    format!(
+                        "Ultravioleta DAO x402 Payment Facilitator - supports {} networks for gasless micropayments",
+                        network_count / 2 // Divide by 2 because we list both v1 and v2 (CAIP-2) formats
+                    ),
+                    vec![], // Facilitators don't require payments, they process them
+                ).with_metadata(DiscoveryMetadata {
+                    category: Some("payment-facilitator".to_string()),
+                    provider: Some("Ultravioleta DAO".to_string()),
+                    tags: vec![
+                        "x402".to_string(),
+                        "facilitator".to_string(),
+                        "gasless".to_string(),
+                        "micropayments".to_string(),
+                        "evm".to_string(),
+                        "solana".to_string(),
+                    ],
+                });
+
+                if let Err(e) = discovery_registry.register(facilitator_resource).await {
+                    tracing::warn!("Failed to self-register facilitator: {}", e);
+                } else {
+                    tracing::info!("Self-registered facilitator at {}", facilitator_url);
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Invalid FACILITATOR_URL '{}': {}", facilitator_url, e);
+            }
+        }
+    }
+
+    tracing::info!("Discovery registry initialized ({} resources)", discovery_registry.count().await);
+
     let http_endpoints = Router::new()
         .merge(handlers::routes().with_state(axum_state))
+        .merge(handlers::discovery_routes().with_state(discovery_registry))
         .layer(telemetry.http_tracing())
         .layer(
             cors::CorsLayer::new()

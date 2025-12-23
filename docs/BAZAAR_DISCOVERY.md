@@ -129,15 +129,29 @@ When set, the facilitator:
 
 ### Storage
 
-The registry uses in-memory storage with thread-safe access:
+The registry uses a hybrid approach: in-memory cache for fast reads with optional persistent storage:
 
 ```rust
 pub struct DiscoveryRegistry {
-    resources: Arc<RwLock<HashMap<String, DiscoveryResource>>>,
+    resources: Arc<RwLock<HashMap<String, DiscoveryResource>>>,  // Fast cache
+    store: Arc<dyn DiscoveryStore>,                              // Persistence
 }
 ```
 
-**Note:** Resources are lost on service restart. Future versions may add persistent storage.
+**Storage Backends:**
+
+| Backend | Use Case | Configuration |
+|---------|----------|---------------|
+| In-Memory (NoOp) | Development, testing | Default (no config) |
+| S3 | Production MVP | `DISCOVERY_S3_BUCKET` |
+| DynamoDB | Future (high scale) | Not yet implemented |
+| PostgreSQL | Future (complex queries) | Not yet implemented |
+
+**How it works:**
+1. **Startup**: Load all resources from persistent store into memory
+2. **Reads**: Always from in-memory cache (~1ms)
+3. **Writes**: Update cache immediately, persist async in background
+4. **Restart**: Reload from persistent store (no data loss)
 
 ### Data Types
 
@@ -172,6 +186,8 @@ pub struct DiscoveryResponse {
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `FACILITATOR_URL` | No | Public URL for self-registration |
+| `DISCOVERY_S3_BUCKET` | No | S3 bucket for persistent storage |
+| `DISCOVERY_S3_KEY` | No | S3 object key (default: `bazaar/resources.json`) |
 
 ### ECS Task Definition
 
@@ -180,6 +196,32 @@ Add to the `environment` section:
 {
   "name": "FACILITATOR_URL",
   "value": "https://facilitator.ultravioletadao.xyz"
+},
+{
+  "name": "DISCOVERY_S3_BUCKET",
+  "value": "facilitator-discovery-prod"
+},
+{
+  "name": "DISCOVERY_S3_KEY",
+  "value": "bazaar/resources.json"
+}
+```
+
+### IAM Permissions
+
+The ECS task role needs S3 permissions:
+```json
+{
+  "Effect": "Allow",
+  "Action": [
+    "s3:GetObject",
+    "s3:PutObject",
+    "s3:HeadBucket"
+  ],
+  "Resource": [
+    "arn:aws:s3:::facilitator-discovery-prod",
+    "arn:aws:s3:::facilitator-discovery-prod/*"
+  ]
 }
 ```
 
@@ -250,12 +292,14 @@ curl -X POST https://facilitator.ultravioletadao.xyz/discovery/register \
 | File | Purpose |
 |------|---------|
 | `src/discovery.rs` | DiscoveryRegistry implementation |
+| `src/discovery_store.rs` | Storage trait and S3 implementation |
 | `src/types_v2.rs` | Discovery types and serialization |
 | `src/handlers.rs` | HTTP endpoint handlers |
-| `src/main.rs` | Self-registration logic |
+| `src/main.rs` | Self-registration and store initialization |
 
 ## Version History
 
 | Version | Changes |
 |---------|---------|
 | v1.12.0 | Initial Bazaar Discovery implementation |
+| v1.13.0 | Added S3 persistent storage support |

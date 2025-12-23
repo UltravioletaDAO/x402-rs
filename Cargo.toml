@@ -1,6 +1,6 @@
 [package]
 name = "x402-rs"
-version = "1.12.0"
+version = "1.13.0"
 authors = ["Sergey Ukustov <sergey@ukstv.me>"]
 edition = "2021"
 license = "Apache-2.0"
@@ -58,6 +58,10 @@ reqwest = { version = "0.12", features = ["json"] }
 stellar-strkey = { version = "0.0.10" }  # Stellar address encoding/decoding
 stellar-xdr = { version = "=21.2.0", default-features = false, features = ["std", "curr"] }  # Stellar XDR types
 sha2 = { version = "0.10" }  # SHA-256 for Stellar signature hashing
+
+# AWS SDK (for Bazaar discovery persistence)
+aws-config = { version = "1.5" }
+aws-sdk-s3 = { version = "1.65" }
 
 # Tracing and OpenTelemetry
 tracing = { version = "0.1.41" }

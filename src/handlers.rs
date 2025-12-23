@@ -303,6 +303,14 @@ fn discovery_error_response(error: DiscoveryError) -> Response {
             })),
         )
             .into_response(),
+        DiscoveryError::StorageError(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "error": "Storage error",
+                "details": e.to_string()
+            })),
+        )
+            .into_response(),
     }
 }
 

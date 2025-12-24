@@ -10,7 +10,7 @@
 ```
 
 [![Live](https://img.shields.io/badge/live-facilitator.ultravioletadao.xyz-00d4aa)](https://facilitator.ultravioletadao.xyz)
-[![Version](https://img.shields.io/badge/version-1.6.2-blue)](https://github.com/UltravioletaDAO/x402-rs)
+[![Version](https://img.shields.io/badge/version-1.14.1-blue)](https://github.com/UltravioletaDAO/x402-rs)
 [![Rust](https://img.shields.io/badge/rust-2021-orange)](https://www.rust-lang.org/)
 
 ---
@@ -97,7 +97,10 @@ curl http://localhost:8080/
 | `/version` | GET | Current version |
 | `/supported` | GET | List all networks |
 | `/verify` | POST | Verify payment authorization |
-| `/settle` | POST | Submit payment on-chain |
+| `/settle` | POST | Submit payment on-chain (supports escrow with `refund` extension) |
+| `/blacklist` | GET | OFAC sanctioned addresses |
+| `/discovery/resources` | GET | List registered paid APIs |
+| `/discovery/register` | POST | Register a paid endpoint |
 
 ### Example: Check supported networks
 
@@ -112,6 +115,53 @@ curl -X POST https://facilitator.ultravioletadao.xyz/settle \
   -H "Content-Type: application/json" \
   -d '{"payload": "...", "network": "base"}'
 ```
+
+---
+
+## x402r Escrow Extension
+
+The facilitator supports the [x402r extension](https://github.com/coinbase/x402/issues/864) for trustless refunds via escrow contracts.
+
+### How it works
+
+When a payment includes a `refund` extension, the facilitator:
+
+1. Computes a deterministic DepositRelay proxy address using CREATE3 (via CreateX)
+2. Verifies the proxy is deployed on-chain
+3. Settles payment to the escrow proxy instead of direct to merchant
+4. Funds are held in escrow with a refund window (e.g., 24 hours)
+
+### Usage
+
+Add the `refund` extension to your payment requirements:
+
+```json
+{
+  "paymentRequirements": {
+    "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "amount": "1000000",
+    "receiver": "0xMerchantAddress...",
+    "extensions": {
+      "refund": {
+        "window": 86400
+      }
+    }
+  }
+}
+```
+
+### Supported Networks
+
+Currently supported on:
+- Base mainnet (Chain ID: 8453)
+- Base Sepolia (Chain ID: 84532)
+
+### Contracts
+
+- **CreateX Deployer:** `0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed`
+- **DepositRelayFactory:** Deployed via CreateX on supported networks
+
+For contract details, see: https://github.com/BackTrackCo/x402r-contracts
 
 ---
 
@@ -157,8 +207,8 @@ RPC_URL_NEAR_MAINNET=https://rpc.mainnet.near.org
 
 ```bash
 # Build & push
-docker build -t facilitator:v1.6.2 .
-docker push 518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator:v1.6.2
+docker build -t facilitator:v1.14.1 .
+docker push 518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator:v1.14.1
 
 # Deploy
 aws ecs update-service --cluster facilitator-production \

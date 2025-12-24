@@ -43,6 +43,7 @@ mod caip2;
 mod chain;
 mod discovery;
 mod discovery_store;
+mod escrow;
 mod facilitator;
 mod facilitator_local;
 mod fhe_proxy;

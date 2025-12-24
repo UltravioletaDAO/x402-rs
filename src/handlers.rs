@@ -21,10 +21,11 @@ use tracing::{debug, error, info, instrument, warn};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::chain::FacilitatorLocalError;
+use crate::chain::{FacilitatorLocalError, NetworkProvider};
 use crate::discovery::{DiscoveryError, DiscoveryRegistry};
 use crate::fhe_proxy::FheProxy;
 use crate::facilitator::Facilitator;
+use crate::provider_cache::{HasProviderMap, ProviderMap};
 use crate::types::{
     ErrorResponse, FacilitatorErrorReason, MixedAddress, SettleRequest, VerifyRequest,
     VerifyResponse, X402Version,
@@ -74,8 +75,9 @@ pub async fn get_settle_info() -> impl IntoResponse {
 
 pub fn routes<A>() -> Router<A>
 where
-    A: Facilitator + Clone + Send + Sync + 'static,
+    A: Facilitator + HasProviderMap + Clone + Send + Sync + 'static,
     A::Error: IntoResponse,
+    A::Map: ProviderMap<Value = NetworkProvider>,
 {
     Router::new()
         .route("/", get(get_root))
@@ -832,11 +834,14 @@ fn log_settle_deserialization_error(body_str: &str, e: &serde_json::Error) {
 ///
 /// Supports both x402 v1 and v2 protocol formats. The version is auto-detected from the
 /// request body structure.
+///
+/// Also supports x402r escrow settlement when the `refund` extension is present.
 #[instrument(skip_all)]
 pub async fn post_settle<A>(State(facilitator): State<A>, raw_body: Bytes) -> impl IntoResponse
 where
-    A: Facilitator,
+    A: Facilitator + HasProviderMap,
     A::Error: IntoResponse,
+    A::Map: ProviderMap<Value = NetworkProvider>,
 {
     // Log the raw JSON body
     let body_str = match std::str::from_utf8(&raw_body) {
@@ -882,6 +887,48 @@ where
                         })),
                     )
                         .into_response();
+                }
+            }
+        }
+
+        // Check for x402r escrow/refund extension
+        if let Some(extensions) = json_value
+            .get("paymentPayload")
+            .and_then(|pp| pp.get("extensions"))
+            .and_then(|ext| ext.as_object())
+        {
+            if extensions.contains_key("refund") {
+                // Check if escrow feature is enabled
+                if !crate::escrow::is_escrow_enabled() {
+                    warn!("Escrow settlement requested but ENABLE_ESCROW is not set to true");
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({
+                            "success": false,
+                            "errorReason": "Escrow settlement is disabled. Set ENABLE_ESCROW=true to enable."
+                        })),
+                    )
+                        .into_response();
+                }
+
+                info!("Detected x402r refund extension, routing to escrow settlement");
+
+                match crate::escrow::settle_with_escrow(body_str, &facilitator).await {
+                    Ok(escrow_response) => {
+                        info!("Escrow settlement complete");
+                        return (StatusCode::OK, Json(escrow_response)).into_response();
+                    }
+                    Err(e) => {
+                        error!(error = %e, "Escrow settlement failed");
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(json!({
+                                "success": false,
+                                "errorReason": format!("Escrow error: {}", e)
+                            })),
+                        )
+                            .into_response();
+                    }
                 }
             }
         }

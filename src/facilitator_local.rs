@@ -16,7 +16,7 @@ use tracing::instrument;
 use crate::chain::FacilitatorLocalError;
 use crate::facilitator::Facilitator;
 use crate::network::Network;
-use crate::provider_cache::ProviderMap;
+use crate::provider_cache::{HasProviderMap, ProviderMap};
 use crate::types::{
     Scheme, SettleRequest, SettleResponse, SupportedPaymentKind, SupportedPaymentKindExtra,
     SupportedPaymentKindsResponse, VerifyRequest, VerifyResponse, X402Version,
@@ -47,6 +47,23 @@ impl<A> FacilitatorLocal<A> {
             provider_map,
             compliance_checker,
         }
+    }
+
+    /// Returns a reference to the underlying provider map.
+    ///
+    /// This is used by the escrow module to access network-specific providers
+    /// for x402r escrow settlement.
+    pub fn provider_map(&self) -> &A {
+        &self.provider_map
+    }
+}
+
+// Implement HasProviderMap to allow escrow module to access providers
+impl<A: ProviderMap> HasProviderMap for FacilitatorLocal<A> {
+    type Map = A;
+
+    fn provider_map(&self) -> &Self::Map {
+        &self.provider_map
     }
 }
 

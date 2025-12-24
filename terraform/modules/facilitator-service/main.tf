@@ -242,6 +242,10 @@ resource "aws_ecs_task_definition" "agents" {
         {
           name  = "WAVAX_FUJI_ADDRESS"
           value = "0xd00ae08403B9bbb9124bB305C09058E32C39A48c"
+        },
+        {
+          name  = "ENABLE_ESCROW"
+          value = "true"
         }
       ] : [
         {

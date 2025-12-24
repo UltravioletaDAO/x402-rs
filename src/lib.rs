@@ -21,6 +21,7 @@ pub mod caip2;
 pub mod chain;
 pub mod discovery;
 pub mod discovery_store;
+pub mod escrow;
 pub mod facilitator;
 pub mod facilitator_local;
 pub mod fhe_proxy;

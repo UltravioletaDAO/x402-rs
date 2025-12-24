@@ -20,6 +20,7 @@
 
 use std::borrow::Borrow;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::chain::FromEnvByNetworkBuild;
 use crate::chain::NetworkProvider;
@@ -47,6 +48,28 @@ pub trait ProviderMap {
 
     /// An iterator visiting all values in arbitrary order.
     fn values(&self) -> impl Iterator<Item = &Self::Value> + Send;
+}
+
+/// Trait for types that provide access to an underlying [`ProviderMap`].
+///
+/// This is used by the escrow module to access network-specific providers
+/// for x402r escrow settlement without coupling to the FacilitatorLocal type.
+pub trait HasProviderMap {
+    /// The type of the underlying provider map.
+    type Map: ProviderMap;
+
+    /// Returns a reference to the underlying provider map.
+    fn provider_map(&self) -> &Self::Map;
+}
+
+// Blanket implementation for Arc<T> where T: HasProviderMap
+// This allows Arc<FacilitatorLocal<ProviderCache>> to be used in handlers
+impl<T: HasProviderMap> HasProviderMap for Arc<T> {
+    type Map = T::Map;
+
+    fn provider_map(&self) -> &Self::Map {
+        (**self).provider_map()
+    }
 }
 
 impl<'a> IntoIterator for &'a ProviderCache {

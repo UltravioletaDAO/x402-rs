@@ -243,10 +243,14 @@ pub fn is_escrow_enabled() -> bool {
 }
 
 // ============================================================================
-// CREATE3 Address Computation
+// CREATE3 Address Computation (DEPRECATED - use on-chain verification instead)
 // ============================================================================
 
 /// Compute deterministic proxy address using CREATE3
+///
+/// **DEPRECATED**: Per Ali's recommendation, prefer querying the factory contract
+/// via `getMerchantFromRelay()` instead of computing addresses locally.
+/// Local computation is kept for reference/testing but is NOT used in settlement.
 ///
 /// The address is computed as:
 /// 1. salt = keccak256(factory || merchant)
@@ -254,6 +258,7 @@ pub fn is_escrow_enabled() -> bool {
 /// 3. proxy = CREATE3(CreateX, guardedSalt)
 ///
 /// This matches the Solidity implementation in DepositRelayFactory.sol
+#[deprecated(note = "Use verify_proxy_onchain() instead - query factory contract directly")]
 pub fn compute_proxy_address(factory: Address, merchant_payout: Address) -> Address {
     // Step 1: Compute raw salt = keccak256(factory || merchant)
     // Per DepositRelayFactory.sol: salt = keccak256(abi.encodePacked(address(this), merchantPayout))
@@ -429,7 +434,12 @@ fn extract_evm_payload(
 // ============================================================================
 
 /// Verify proxy address matches deterministic computation
+///
+/// **DEPRECATED**: Per Ali's recommendation, prefer `verify_proxy_onchain()` which
+/// queries the factory contract directly. Local CREATE3 computation is error-prone.
+#[deprecated(note = "Use verify_proxy_onchain() instead")]
 #[instrument(skip_all, err)]
+#[allow(dead_code)]
 pub fn verify_proxy_deterministic(request: &EscrowSettleRequest) -> Result<(), EscrowError> {
     let computed = compute_proxy_address(request.factory_address, request.merchant_payout);
 
@@ -561,15 +571,20 @@ where
         _ => return Err(EscrowError::NonEvmNetwork),
     };
 
-    // Verify proxy address (deterministic computation)
-    verify_proxy_deterministic(&request)?;
+    // Verify proxy on-chain (PRIMARY verification - query the factory contract)
+    // Per Ali's recommendation: Don't compute CREATE3 locally, get it from the factory.
+    // This is more reliable and avoids potential math errors.
+    verify_proxy_onchain(&request, evm_provider).await?;
 
-    // Verify proxy on-chain (optional but recommended for security)
-    if let Err(e) = verify_proxy_onchain(&request, evm_provider).await {
-        warn!(error = %e, "On-chain proxy verification failed, continuing with deterministic verification only");
-        // Continue anyway since deterministic verification passed
-        // In strict mode, we could return the error here
-    }
+    // Skip deterministic verification - on-chain check is authoritative
+    // The factory's getMerchantFromRelay() confirms:
+    // 1. The proxy is deployed
+    // 2. The merchant mapping is correct
+    debug!(
+        proxy = ?request.proxy_address,
+        merchant = ?request.merchant_payout,
+        "Proxy verified via factory contract (skipping local CREATE3 computation)"
+    );
 
     // Execute deposit on proxy contract
     let tx_hash = execute_escrow_deposit(&request, evm_provider).await?;

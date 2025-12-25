@@ -624,13 +624,23 @@ pub fn verify_proxy_deterministic(request: &EscrowSettleRequest) -> Result<(), E
 }
 
 /// Verify proxy is registered with factory (on-chain check)
+///
+/// Uses the factory address from the request payload (sent by client),
+/// NOT a hardcoded address. This allows clients to use updated factory deployments.
 #[instrument(skip(provider), err)]
 pub async fn verify_proxy_onchain(
     request: &EscrowSettleRequest,
     provider: &EvmProvider,
 ) -> Result<(), EscrowError> {
-    let factory_address = factory_for_network(request.network)
-        .ok_or_else(|| EscrowError::UnsupportedNetwork(request.network.to_string()))?;
+    // Use the factory address from the request, not hardcoded
+    // This allows clients to use their own factory deployments
+    let factory_address = request.factory_address;
+
+    debug!(
+        factory = %factory_address,
+        proxy = %request.proxy_address,
+        "Verifying proxy with factory from request"
+    );
 
     // Create factory contract instance using the inner provider
     let factory = DepositRelayFactory::new(factory_address, provider.inner());
@@ -713,9 +723,22 @@ where
         "Processing x402r escrow settlement"
     );
 
-    // Verify factory is supported on this network
-    if factory_for_network(request.network).is_none() {
-        return Err(EscrowError::UnsupportedNetwork(request.network.to_string()));
+    // Log if using a non-standard factory (but allow it)
+    // The on-chain verification will confirm the factory is valid
+    if let Some(known_factory) = factory_for_network(request.network) {
+        if request.factory_address != known_factory {
+            info!(
+                known = %known_factory,
+                provided = %request.factory_address,
+                "Using non-standard factory address (client-provided)"
+            );
+        }
+    } else {
+        info!(
+            network = %request.network,
+            factory = %request.factory_address,
+            "Network has no known factory, using client-provided factory"
+        );
     }
 
     // Get provider

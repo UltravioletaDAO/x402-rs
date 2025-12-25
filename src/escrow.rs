@@ -38,8 +38,11 @@ use crate::chain::evm::{EvmProvider, MetaEvmProvider, MetaTransaction};
 use crate::chain::{FacilitatorLocalError, NetworkProvider};
 use crate::network::Network;
 use crate::provider_cache::{HasProviderMap, ProviderMap};
-use crate::types::{EvmAddress, MixedAddress, SettleResponse, TransactionHash};
-use crate::types_v2::{PaymentPayloadV2, SettleRequestV2};
+use crate::types::{EvmAddress, ExactPaymentPayload, MixedAddress, SettleResponse, TransactionHash};
+use crate::types_v2::{
+    PaymentPayloadV2, PaymentRequirementsV2, ResourceInfo, SettleRequestV2,
+    X402rPayload, X402rPaymentPayloadNested,
+};
 
 // ============================================================================
 // Contract Bindings
@@ -125,7 +128,33 @@ pub struct RefundInfo {
     /// Map of proxy addresses to merchant payout addresses
     /// Key: proxy address (where client sends payment)
     /// Value: merchant payout address (final recipient after escrow)
-    pub proxies: HashMap<Address, Address>,
+    /// Note: x402r spec uses "merchantPayouts" as the field name
+    pub merchant_payouts: HashMap<Address, Address>,
+}
+
+/// Raw escrow settle request matching Ali's SDK format
+///
+/// Ali's format has resource/accepted INSIDE paymentPayload, not at top level:
+/// ```json
+/// {
+///   "x402Version": 2,
+///   "paymentPayload": {
+///     "x402Version": 2,
+///     "resource": {...},
+///     "accepted": {...},
+///     "payload": { "authorization": {...}, "signature": "..." },
+///     "extensions": { "refund": {...} }
+///   },
+///   "paymentRequirements": {...}
+/// }
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EscrowSettleRequestRaw {
+    pub x402_version: u8,
+    pub payment_payload: X402rPaymentPayloadNested,
+    #[serde(default)]
+    pub payment_requirements: Option<PaymentRequirementsV2>,
 }
 
 /// Parsed escrow settlement request
@@ -242,10 +271,14 @@ pub fn is_escrow_enabled() -> bool {
 }
 
 // ============================================================================
-// CREATE3 Address Computation
+// CREATE3 Address Computation (DEPRECATED - use on-chain verification instead)
 // ============================================================================
 
 /// Compute deterministic proxy address using CREATE3
+///
+/// **DEPRECATED**: Per Ali's recommendation, prefer querying the factory contract
+/// via `getMerchantFromRelay()` instead of computing addresses locally.
+/// Local computation is kept for reference/testing but is NOT used in settlement.
 ///
 /// The address is computed as:
 /// 1. salt = keccak256(factory || merchant)
@@ -253,6 +286,7 @@ pub fn is_escrow_enabled() -> bool {
 /// 3. proxy = CREATE3(CreateX, guardedSalt)
 ///
 /// This matches the Solidity implementation in DepositRelayFactory.sol
+#[deprecated(note = "Use verify_proxy_onchain() instead - query factory contract directly")]
 pub fn compute_proxy_address(factory: Address, merchant_payout: Address) -> Address {
     // Step 1: Compute raw salt = keccak256(factory || merchant)
     // Per DepositRelayFactory.sol: salt = keccak256(abi.encodePacked(address(this), merchantPayout))
@@ -326,12 +360,142 @@ fn compute_create3_address(createx: Address, salt: B256) -> Address {
 // ============================================================================
 
 /// Parse escrow settlement request from raw JSON body
+///
+/// Supports two formats:
+/// 1. Ali's SDK format: resource/accepted nested inside paymentPayload
+/// 2. Standard v2 format: resource/accepted at top level
 #[instrument(skip(body), err)]
 pub fn parse_escrow_request(body: &str) -> Result<EscrowSettleRequest, EscrowError> {
-    // Parse as V2 settle request
+    // Try Ali's nested format first (resource/accepted inside paymentPayload)
+    if let Ok(raw_req) = serde_json::from_str::<EscrowSettleRequestRaw>(body) {
+        debug!("Parsed escrow request using nested format (Ali's SDK)");
+        return parse_from_nested_format(raw_req);
+    }
+
+    // Fall back to standard v2 format (resource/accepted at top level)
+    debug!("Trying standard v2 format for escrow request");
     let settle_req: SettleRequestV2 =
         serde_json::from_str(body).map_err(|e| EscrowError::Json(e))?;
 
+    parse_from_v2_format(settle_req)
+}
+
+/// Parse escrow request from Ali's nested format
+fn parse_from_nested_format(raw_req: EscrowSettleRequestRaw) -> Result<EscrowSettleRequest, EscrowError> {
+    use alloy::hex;
+    use std::str::FromStr;
+
+    let inner = &raw_req.payment_payload;
+
+    // Extract refund extension
+    let refund_ext_value = inner
+        .extensions
+        .get("refund")
+        .ok_or(EscrowError::MissingRefundExtension)?;
+
+    let refund_ext: RefundExtension = serde_json::from_value(refund_ext_value.clone())
+        .map_err(|e| EscrowError::InvalidExtensionFormat(e.to_string()))?;
+
+    // Get proxy address from payTo (in accepted)
+    let proxy_address: Address = match &inner.accepted.pay_to {
+        MixedAddress::Evm(addr) => addr.0,
+        _ => return Err(EscrowError::NonEvmPayTo),
+    };
+
+    // Lookup merchant from merchantPayouts map
+    let merchant_payout = *refund_ext
+        .info
+        .merchant_payouts
+        .get(&proxy_address)
+        .ok_or(EscrowError::UnknownProxy(proxy_address))?;
+
+    // Parse network from CAIP-2
+    let network = Network::from_caip2(&inner.accepted.network.to_string())
+        .ok_or_else(|| EscrowError::UnsupportedNetwork(inner.accepted.network.to_string()))?;
+
+    // Parse authorization fields from X402rPayload strings
+    let auth = &inner.payload.authorization;
+
+    let payer = Address::from_str(&auth.from)
+        .map_err(|_| EscrowError::InvalidEvmPayload)?;
+    let amount = U256::from_str(&auth.value)
+        .map_err(|_| EscrowError::InvalidEvmPayload)?;
+    let valid_after = U256::from_str(&auth.valid_after)
+        .map_err(|_| EscrowError::InvalidEvmPayload)?;
+    let valid_before = U256::from_str(&auth.valid_before)
+        .map_err(|_| EscrowError::InvalidEvmPayload)?;
+
+    // Parse nonce (32 bytes hex)
+    let nonce_str = auth.nonce.trim_start_matches("0x");
+    let nonce_bytes = hex::decode(nonce_str)
+        .map_err(|_| EscrowError::InvalidEvmPayload)?;
+    let nonce_array: [u8; 32] = nonce_bytes
+        .try_into()
+        .map_err(|_| EscrowError::InvalidEvmPayload)?;
+    let nonce = FixedBytes(nonce_array);
+
+    // Parse signature
+    let sig_str = inner.payload.signature.trim_start_matches("0x");
+    let sig_bytes = hex::decode(sig_str)
+        .map_err(|_| EscrowError::InvalidEvmPayload)?;
+
+    if sig_bytes.len() < 65 {
+        return Err(EscrowError::InvalidEvmPayload);
+    }
+
+    let sig_r = FixedBytes::from_slice(&sig_bytes[0..32]);
+    let sig_s = FixedBytes::from_slice(&sig_bytes[32..64]);
+    let sig_v = sig_bytes[64];
+
+    // Build a PaymentPayloadV2 for compatibility
+    // (needed for some downstream functions)
+    let resource = inner.resource.clone().unwrap_or_else(|| ResourceInfo {
+        url: url::Url::parse("https://x402r.escrow/resource").unwrap(),
+        description: "x402r escrow payment".to_string(),
+        mime_type: "application/json".to_string(),
+    });
+
+    // Convert X402rPayload to ExactEvmPayload
+    let evm_authorization = crate::types::ExactEvmPayloadAuthorization {
+        from: EvmAddress(payer),
+        to: EvmAddress(Address::from_str(&auth.to).map_err(|_| EscrowError::InvalidEvmPayload)?),
+        value: crate::types::TokenAmount(amount),
+        valid_after: crate::timestamp::UnixTimestamp(valid_after.try_into().unwrap_or(0)),
+        valid_before: crate::timestamp::UnixTimestamp(valid_before.try_into().unwrap_or(u64::MAX)),
+        nonce: crate::types::HexEncodedNonce(nonce_array),
+    };
+    let evm_payload = crate::types::ExactEvmPayload {
+        authorization: evm_authorization,
+        signature: crate::types::EvmSignature(sig_bytes),
+    };
+
+    let payment_payload_v2 = PaymentPayloadV2 {
+        x402_version: 2,
+        resource,
+        accepted: inner.accepted.clone(),
+        payload: ExactPaymentPayload::Evm(evm_payload),
+        extensions: inner.extensions.clone(),
+    };
+
+    Ok(EscrowSettleRequest {
+        payment_payload_v2,
+        proxy_address,
+        merchant_payout,
+        factory_address: refund_ext.info.factory_address,
+        network,
+        payer,
+        amount,
+        valid_after,
+        valid_before,
+        nonce,
+        sig_v,
+        sig_r,
+        sig_s,
+    })
+}
+
+/// Parse escrow request from standard v2 format
+fn parse_from_v2_format(settle_req: SettleRequestV2) -> Result<EscrowSettleRequest, EscrowError> {
     let payment_payload = settle_req.payment_payload;
 
     // Extract refund extension
@@ -349,10 +513,10 @@ pub fn parse_escrow_request(body: &str) -> Result<EscrowSettleRequest, EscrowErr
         _ => return Err(EscrowError::NonEvmPayTo),
     };
 
-    // Lookup merchant from proxies map
+    // Lookup merchant from merchantPayouts map
     let merchant_payout = *refund_ext
         .info
-        .proxies
+        .merchant_payouts
         .get(&proxy_address)
         .ok_or(EscrowError::UnknownProxy(proxy_address))?;
 
@@ -428,7 +592,12 @@ fn extract_evm_payload(
 // ============================================================================
 
 /// Verify proxy address matches deterministic computation
+///
+/// **DEPRECATED**: Per Ali's recommendation, prefer `verify_proxy_onchain()` which
+/// queries the factory contract directly. Local CREATE3 computation is error-prone.
+#[deprecated(note = "Use verify_proxy_onchain() instead")]
 #[instrument(skip_all, err)]
+#[allow(dead_code)]
 pub fn verify_proxy_deterministic(request: &EscrowSettleRequest) -> Result<(), EscrowError> {
     let computed = compute_proxy_address(request.factory_address, request.merchant_payout);
 
@@ -560,15 +729,20 @@ where
         _ => return Err(EscrowError::NonEvmNetwork),
     };
 
-    // Verify proxy address (deterministic computation)
-    verify_proxy_deterministic(&request)?;
+    // Verify proxy on-chain (PRIMARY verification - query the factory contract)
+    // Per Ali's recommendation: Don't compute CREATE3 locally, get it from the factory.
+    // This is more reliable and avoids potential math errors.
+    verify_proxy_onchain(&request, evm_provider).await?;
 
-    // Verify proxy on-chain (optional but recommended for security)
-    if let Err(e) = verify_proxy_onchain(&request, evm_provider).await {
-        warn!(error = %e, "On-chain proxy verification failed, continuing with deterministic verification only");
-        // Continue anyway since deterministic verification passed
-        // In strict mode, we could return the error here
-    }
+    // Skip deterministic verification - on-chain check is authoritative
+    // The factory's getMerchantFromRelay() confirms:
+    // 1. The proxy is deployed
+    // 2. The merchant mapping is correct
+    debug!(
+        proxy = ?request.proxy_address,
+        merchant = ?request.merchant_payout,
+        "Proxy verified via factory contract (skipping local CREATE3 computation)"
+    );
 
     // Execute deposit on proxy contract
     let tx_hash = execute_escrow_deposit(&request, evm_provider).await?;
@@ -712,7 +886,7 @@ mod tests {
         let json = r#"{
             "info": {
                 "factoryAddress": "0x41Cc4D337FEC5E91ddcf4C363700FC6dB5f3A814",
-                "proxies": {
+                "merchantPayouts": {
                     "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
                 }
             }
@@ -723,7 +897,7 @@ mod tests {
             ext.info.factory_address,
             address!("41Cc4D337FEC5E91ddcf4C363700FC6dB5f3A814")
         );
-        assert_eq!(ext.info.proxies.len(), 1);
+        assert_eq!(ext.info.merchant_payouts.len(), 1);
     }
 
     #[test]

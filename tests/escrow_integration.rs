@@ -116,7 +116,7 @@ fn test_refund_extension_parsing() {
     let json = r#"{
         "info": {
             "factoryAddress": "0x41Cc4D337FEC5E91ddcf4C363700FC6dB5f3A814",
-            "proxies": {
+            "merchantPayouts": {
                 "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
                 "0xcccccccccccccccccccccccccccccccccccccccc": "0xdddddddddddddddddddddddddddddddddddddddd"
             }
@@ -129,11 +129,11 @@ fn test_refund_extension_parsing() {
         ext.info.factory_address,
         address!("41Cc4D337FEC5E91ddcf4C363700FC6dB5f3A814")
     );
-    assert_eq!(ext.info.proxies.len(), 2);
+    assert_eq!(ext.info.merchant_payouts.len(), 2);
 
     // Check proxy -> merchant mappings
     let proxy1 = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-    let merchant1 = ext.info.proxies.get(&proxy1).unwrap();
+    let merchant1 = ext.info.merchant_payouts.get(&proxy1).unwrap();
     assert_eq!(*merchant1, address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
 }
 

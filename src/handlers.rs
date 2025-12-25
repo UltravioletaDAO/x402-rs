@@ -11,10 +11,11 @@
 
 use axum::body::Bytes;
 use axum::extract::{Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{response::IntoResponse, Json, Router};
+use base64::Engine;
 use serde_json::json;
 use tracing::{debug, error, info, instrument, warn};
 
@@ -606,29 +607,85 @@ where
 ///
 /// Supports both x402 v1 and v2 protocol formats. The version is auto-detected from the
 /// request body structure.
+///
+/// **x402 v2 Header Support**: If the `PAYMENT-SIGNATURE` header is present, the payload
+/// is extracted from the base64-decoded header value instead of the request body.
 #[instrument(skip_all)]
 pub async fn post_verify<A>(
     State(facilitator): State<A>,
+    headers: HeaderMap,
     raw_body: Bytes,
 ) -> impl IntoResponse
 where
     A: Facilitator,
     A::Error: IntoResponse,
 {
-    // Parse the raw body as UTF-8
-    let body_str = match std::str::from_utf8(&raw_body) {
-        Ok(s) => s,
-        Err(e) => {
-            error!("Failed to decode verify body as UTF-8: {}", e);
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error": "Invalid UTF-8 in request body"
-                })),
-            )
-                .into_response();
+    // x402 v2: Check for PAYMENT-SIGNATURE header (base64-encoded JSON)
+    // If present, decode and use it instead of the body
+    let body_str: String = if let Some(payment_sig) = headers.get("payment-signature") {
+        match payment_sig.to_str() {
+            Ok(header_value) => {
+                // Base64 decode the header value
+                match base64::engine::general_purpose::STANDARD.decode(header_value) {
+                    Ok(decoded_bytes) => {
+                        match String::from_utf8(decoded_bytes) {
+                            Ok(decoded_str) => {
+                                info!("Using PAYMENT-SIGNATURE header (x402 v2 format)");
+                                debug!("Decoded payload length: {} bytes", decoded_str.len());
+                                decoded_str
+                            }
+                            Err(e) => {
+                                error!("PAYMENT-SIGNATURE header is not valid UTF-8: {}", e);
+                                return (
+                                    StatusCode::BAD_REQUEST,
+                                    Json(json!({
+                                        "error": "PAYMENT-SIGNATURE header is not valid UTF-8"
+                                    })),
+                                )
+                                    .into_response();
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to base64 decode PAYMENT-SIGNATURE header: {}", e);
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(json!({
+                                "error": format!("Failed to decode PAYMENT-SIGNATURE header: {}", e)
+                            })),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+            Err(e) => {
+                error!("PAYMENT-SIGNATURE header contains invalid characters: {}", e);
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": "PAYMENT-SIGNATURE header contains invalid characters"
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    } else {
+        // Fall back to reading from body (v1 style or direct POST)
+        match std::str::from_utf8(&raw_body) {
+            Ok(s) => s.to_string(),
+            Err(e) => {
+                error!("Failed to decode verify body as UTF-8: {}", e);
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": "Invalid UTF-8 in request body"
+                    })),
+                )
+                    .into_response();
+            }
         }
     };
+    let body_str = body_str.as_str();
 
     // Check for FHE scheme BEFORE trying to parse as standard types
     // FHE requests may have different payload structures that don't match standard x402 types
@@ -670,6 +727,13 @@ where
                 Ok(v1_req) => VerifyRequestEnvelope::V1(v1_req),
                 Err(_) => {
                     error!("Failed to deserialize VerifyRequest (v1 or v2): {}", e);
+                    // Log first 2000 chars of the payload for debugging
+                    let truncated = if body_str.len() > 2000 {
+                        format!("{}... (truncated)", &body_str[..2000])
+                    } else {
+                        body_str.to_string()
+                    };
+                    warn!("Received payload: {}", truncated);
                     return (
                         StatusCode::BAD_REQUEST,
                         Json(json!({
@@ -683,26 +747,35 @@ where
     };
 
     // Extract version and convert to v1 request for processing
-    let (version, v1_request) = match &envelope {
-        VerifyRequestEnvelope::V1(req) => {
-            debug!("Processing x402 v1 verify request");
-            (X402Version::V1, req.clone())
-        }
+    let version = envelope.version();
+    let format_name = match &envelope {
+        VerifyRequestEnvelope::V1(_) => "v1",
         VerifyRequestEnvelope::V2(req) => {
             debug!("Processing x402 v2 verify request with CAIP-2 network: {}", req.network());
-            match req.to_v1() {
-                Ok(v1_req) => (X402Version::V2, v1_req),
-                Err(e) => {
-                    error!("Failed to convert v2 request to v1: {}", e);
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(json!({
-                            "error": format!("Failed to process v2 request: {}", e)
-                        })),
-                    )
-                        .into_response();
-                }
-            }
+            "v2"
+        }
+        VerifyRequestEnvelope::X402r(req) => {
+            debug!("Processing x402r verify request with CAIP-2 network: {}", req.network());
+            "x402r"
+        }
+        VerifyRequestEnvelope::X402rNested(req) => {
+            debug!("Processing x402r-nested verify request with CAIP-2 network: {}", req.network());
+            "x402r-nested"
+        }
+    };
+    debug!("Processing x402 {} verify request", format_name);
+
+    let v1_request = match envelope.to_v1() {
+        Ok(v1_req) => v1_req,
+        Err(e) => {
+            error!("Failed to convert {} request to v1: {}", format_name, e);
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": format!("Failed to process {} request: {}", format_name, e)
+                })),
+            )
+                .into_response();
         }
     };
 
@@ -836,27 +909,86 @@ fn log_settle_deserialization_error(body_str: &str, e: &serde_json::Error) {
 /// request body structure.
 ///
 /// Also supports x402r escrow settlement when the `refund` extension is present.
+///
+/// **x402 v2 Header Support**: If the `PAYMENT-SIGNATURE` header is present, the payload
+/// is extracted from the base64-decoded header value instead of the request body.
 #[instrument(skip_all)]
-pub async fn post_settle<A>(State(facilitator): State<A>, raw_body: Bytes) -> impl IntoResponse
+pub async fn post_settle<A>(
+    State(facilitator): State<A>,
+    headers: HeaderMap,
+    raw_body: Bytes,
+) -> impl IntoResponse
 where
     A: Facilitator + HasProviderMap,
     A::Error: IntoResponse,
     A::Map: ProviderMap<Value = NetworkProvider>,
 {
-    // Log the raw JSON body
-    let body_str = match std::str::from_utf8(&raw_body) {
-        Ok(s) => s,
-        Err(e) => {
-            error!("Failed to decode body as UTF-8: {}", e);
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error": "Invalid UTF-8 in request body"
-                })),
-            )
-                .into_response();
+    // x402 v2: Check for PAYMENT-SIGNATURE header (base64-encoded JSON)
+    // If present, decode and use it instead of the body
+    let body_str: String = if let Some(payment_sig) = headers.get("payment-signature") {
+        match payment_sig.to_str() {
+            Ok(header_value) => {
+                // Base64 decode the header value
+                match base64::engine::general_purpose::STANDARD.decode(header_value) {
+                    Ok(decoded_bytes) => {
+                        match String::from_utf8(decoded_bytes) {
+                            Ok(decoded_str) => {
+                                info!("Using PAYMENT-SIGNATURE header for settle (x402 v2 format)");
+                                debug!("Decoded payload length: {} bytes", decoded_str.len());
+                                decoded_str
+                            }
+                            Err(e) => {
+                                error!("PAYMENT-SIGNATURE header is not valid UTF-8: {}", e);
+                                return (
+                                    StatusCode::BAD_REQUEST,
+                                    Json(json!({
+                                        "error": "PAYMENT-SIGNATURE header is not valid UTF-8"
+                                    })),
+                                )
+                                    .into_response();
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to base64 decode PAYMENT-SIGNATURE header: {}", e);
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(json!({
+                                "error": format!("Failed to decode PAYMENT-SIGNATURE header: {}", e)
+                            })),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+            Err(e) => {
+                error!("PAYMENT-SIGNATURE header contains invalid characters: {}", e);
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": "PAYMENT-SIGNATURE header contains invalid characters"
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    } else {
+        // Fall back to reading from body (v1 style or direct POST)
+        match std::str::from_utf8(&raw_body) {
+            Ok(s) => s.to_string(),
+            Err(e) => {
+                error!("Failed to decode body as UTF-8: {}", e);
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": "Invalid UTF-8 in request body"
+                    })),
+                )
+                    .into_response();
+            }
         }
     };
+    let body_str = body_str.as_str();
 
     debug!("=== SETTLE REQUEST DEBUG ===");
     debug!("Raw JSON body: {}", body_str);
@@ -962,27 +1094,36 @@ where
     };
 
     // Extract version and convert to v1 request for processing
-    let (version, body) = match &envelope {
-        SettleRequestEnvelope::V1(req) => {
-            debug!("Processing x402 v1 settle request");
-            (X402Version::V1, req.clone())
-        }
+    let version = envelope.version();
+    let format_name = match &envelope {
+        SettleRequestEnvelope::V1(_) => "v1",
         SettleRequestEnvelope::V2(req) => {
             debug!("Processing x402 v2 settle request with CAIP-2 network: {}", req.network());
-            match req.to_v1() {
-                Ok(v1_req) => (X402Version::V2, v1_req),
-                Err(e) => {
-                    error!("Failed to convert v2 settle request to v1: {}", e);
-                    debug!("=== END SETTLE REQUEST DEBUG ===");
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(json!({
-                            "error": format!("Failed to process v2 settle request: {}", e)
-                        })),
-                    )
-                        .into_response();
-                }
-            }
+            "v2"
+        }
+        SettleRequestEnvelope::X402r(req) => {
+            debug!("Processing x402r settle request with CAIP-2 network: {}", req.network());
+            "x402r"
+        }
+        SettleRequestEnvelope::X402rNested(req) => {
+            debug!("Processing x402r-nested settle request with CAIP-2 network: {}", req.network());
+            "x402r-nested"
+        }
+    };
+    debug!("Processing x402 {} settle request", format_name);
+
+    let body = match envelope.to_v1() {
+        Ok(v1_req) => v1_req,
+        Err(e) => {
+            error!("Failed to convert {} settle request to v1: {}", format_name, e);
+            debug!("=== END SETTLE REQUEST DEBUG ===");
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": format!("Failed to process {} settle request: {}", format_name, e)
+                })),
+            )
+                .into_response();
         }
     };
 

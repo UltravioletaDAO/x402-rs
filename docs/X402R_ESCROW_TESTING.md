@@ -100,7 +100,7 @@ The x402r escrow extension enables trustless refunds via escrow proxy contracts.
       "refund": {
         "info": {
           "factoryAddress": "0xf981D813842eE78d18ef8ac825eef8e2C8A8BaC2",
-          "proxies": {
+          "merchantPayouts": {
             "0xProxyAddress...": "0xMerchantPayoutAddress..."
           }
         }
@@ -115,7 +115,7 @@ The x402r escrow extension enables trustless refunds via escrow proxy contracts.
 | Field | Standard | Escrow |
 |-------|----------|--------|
 | `payTo` | Merchant address | Proxy address |
-| `extensions.refund` | Not present | Required with factory and proxies |
+| `extensions.refund` | Not present | Required with factory and merchantPayouts |
 | Signature target | Merchant | Proxy |
 
 ## Testing Examples
@@ -196,7 +196,7 @@ curl -X POST https://facilitator.ultravioletadao.xyz/settle \
         "refund": {
           "info": {
             "factoryAddress": "0xf981D813842eE78d18ef8ac825eef8e2C8A8BaC2",
-            "proxies": {
+            "merchantPayouts": {
               "0xCOMPUTED_PROXY_ADDRESS": "0xMERCHANT_PAYOUT_ADDRESS"
             }
           }

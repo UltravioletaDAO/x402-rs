@@ -15,17 +15,19 @@
 //! During the transition period, both v1 and v2 payloads are supported through
 //! envelope types that auto-detect the version and route appropriately.
 
+use alloy::hex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fmt::{self, Display};
 use url::Url;
 
 use crate::caip2::{Caip2NetworkId, Namespace};
 use crate::network::Network;
+use crate::timestamp::UnixTimestamp;
 use crate::types::{
-    ExactPaymentPayload, FacilitatorErrorReason, MixedAddress, PaymentPayload,
-    PaymentRequirements, Scheme, SupportedPaymentKind, SupportedPaymentKindExtra,
-    SupportedPaymentKindsResponse, TokenAmount, VerifyRequest, X402Version,
+    EvmAddress, EvmSignature, ExactEvmPayload, ExactEvmPayloadAuthorization, ExactPaymentPayload,
+    FacilitatorErrorReason, HexEncodedNonce, MixedAddress, PaymentPayload, PaymentRequirements,
+    Scheme, SupportedPaymentKindExtra, SupportedPaymentKindsResponse, TokenAmount, VerifyRequest,
+    X402Version,
 };
 
 // ============================================================================
@@ -347,7 +349,7 @@ impl PaymentPayloadEnvelope {
 // Request/Response Versioning
 // ============================================================================
 
-/// x402 v2 verify request
+/// x402 v2 verify request (standard format)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VerifyRequestV2 {
@@ -355,6 +357,266 @@ pub struct VerifyRequestV2 {
     pub payment_payload: PaymentPayloadV2,
     pub resource: ResourceInfo,
     pub accepted: PaymentRequirementsV2,
+}
+
+// ============================================================================
+// x402r Format Support (from x402r SDK)
+// ============================================================================
+
+/// x402r authorization structure (inner payload)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct X402rAuthorization {
+    pub from: String,
+    pub to: String,
+    pub value: String,
+    pub valid_after: String,
+    pub valid_before: String,
+    pub nonce: String,
+}
+
+/// x402r payload structure (authorization + signature)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct X402rPayload {
+    pub authorization: X402rAuthorization,
+    pub signature: String,
+}
+
+/// x402r verify request format (from x402r SDK) - top-level payload variant
+///
+/// This is an alternative format used by the x402r SDK for refundable payments.
+/// Key differences from standard v2:
+/// - Uses `payload` instead of `paymentPayload`
+/// - `payload` contains `authorization` + `signature` directly
+/// - No nested duplication of `resource`/`accepted` inside payload
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifyRequestX402r {
+    pub x402_version: u8, // Always 2
+    pub payload: X402rPayload,
+    pub resource: ResourceInfo,
+    pub accepted: PaymentRequirementsV2,
+}
+
+// ============================================================================
+// x402r Nested Format (Ali's SDK format)
+// ============================================================================
+
+/// Inner payment payload for x402r nested format
+///
+/// Ali's SDK sends: paymentPayload.payload.authorization
+/// This struct represents the inner paymentPayload object.
+/// Note: resource may be missing in some SDK versions, so it's optional.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct X402rPaymentPayloadNested {
+    pub x402_version: u8,
+    pub payload: X402rPayload,
+    #[serde(default)]
+    pub extensions: HashMap<String, serde_json::Value>,
+    /// Resource info - optional since some SDK versions don't include it
+    #[serde(default)]
+    pub resource: Option<ResourceInfo>,
+    pub accepted: PaymentRequirementsV2,
+}
+
+/// x402r verify request format with nested paymentPayload (Ali's SDK actual format)
+///
+/// Ali's SDK sends this structure:
+/// ```json
+/// {
+///   "x402Version": 2,
+///   "paymentPayload": {
+///     "x402Version": 2,
+///     "payload": { "authorization": {...}, "signature": "..." },
+///     "extensions": { "refund": {...} },
+///     "accepted": {...}
+///   },
+///   "resource": {...},  // May be at top level or inside paymentPayload
+///   "paymentRequirements": {...}
+/// }
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifyRequestX402rNested {
+    pub x402_version: u8,
+    pub payment_payload: X402rPaymentPayloadNested,
+    pub payment_requirements: PaymentRequirementsV2,
+    /// Resource info - may be at top level (checked first) or inside paymentPayload
+    #[serde(default)]
+    pub resource: Option<ResourceInfo>,
+}
+
+impl VerifyRequestX402rNested {
+    pub fn network(&self) -> &Caip2NetworkId {
+        &self.payment_payload.accepted.network
+    }
+
+    /// Convert nested x402r format to v1 VerifyRequest for processing
+    pub fn to_v1(&self) -> Result<VerifyRequest, NetworkParseError> {
+        use alloy::primitives::{Address, U256};
+        use std::str::FromStr;
+
+        let inner = &self.payment_payload;
+
+        // Parse the authorization values
+        let from = Address::from_str(&inner.payload.authorization.from)
+            .map_err(|_| NetworkParseError::InvalidCaip2(inner.payload.authorization.from.clone()))?;
+        let to = Address::from_str(&inner.payload.authorization.to)
+            .map_err(|_| NetworkParseError::InvalidCaip2(inner.payload.authorization.to.clone()))?;
+        let value = U256::from_str(&inner.payload.authorization.value)
+            .map_err(|_| NetworkParseError::InvalidCaip2(inner.payload.authorization.value.clone()))?;
+        let valid_after = U256::from_str(&inner.payload.authorization.valid_after)
+            .map_err(|_| NetworkParseError::InvalidCaip2(inner.payload.authorization.valid_after.clone()))?;
+        let valid_before = U256::from_str(&inner.payload.authorization.valid_before)
+            .map_err(|_| NetworkParseError::InvalidCaip2(inner.payload.authorization.valid_before.clone()))?;
+
+        // Parse nonce (32 bytes hex)
+        let nonce_str = inner.payload.authorization.nonce.trim_start_matches("0x");
+        let nonce_bytes = hex::decode(nonce_str)
+            .map_err(|_| NetworkParseError::InvalidCaip2(inner.payload.authorization.nonce.clone()))?;
+
+        // Parse signature
+        let sig_str = inner.payload.signature.trim_start_matches("0x");
+        let sig_bytes = hex::decode(sig_str)
+            .map_err(|_| NetworkParseError::InvalidCaip2(inner.payload.signature.clone()))?;
+
+        // Get network from accepted (inside paymentPayload)
+        let network = Network::from_caip2(&inner.accepted.network.to_string())
+            .ok_or_else(|| NetworkParseError::InvalidCaip2(inner.accepted.network.to_string()))?;
+
+        // Convert U256 timestamps to u64 for UnixTimestamp
+        let valid_after_u64: u64 = valid_after.try_into()
+            .map_err(|_| NetworkParseError::InvalidCaip2("valid_after too large".to_string()))?;
+        let valid_before_u64: u64 = valid_before.try_into()
+            .map_err(|_| NetworkParseError::InvalidCaip2("valid_before too large".to_string()))?;
+
+        // Convert nonce bytes to [u8; 32]
+        let nonce_array: [u8; 32] = nonce_bytes.try_into()
+            .map_err(|_| NetworkParseError::InvalidCaip2("nonce must be 32 bytes".to_string()))?;
+
+        let evm_authorization = ExactEvmPayloadAuthorization {
+            from: EvmAddress(from),
+            to: EvmAddress(to),
+            value: TokenAmount(value),
+            valid_after: UnixTimestamp(valid_after_u64),
+            valid_before: UnixTimestamp(valid_before_u64),
+            nonce: HexEncodedNonce(nonce_array),
+        };
+
+        let evm_payload = ExactEvmPayload {
+            authorization: evm_authorization,
+            signature: EvmSignature(sig_bytes),
+        };
+
+        let payment_payload = PaymentPayload {
+            x402_version: X402Version::V2,
+            network,
+            scheme: inner.accepted.scheme,
+            payload: ExactPaymentPayload::Evm(evm_payload),
+        };
+
+        // Get resource from: top-level, inner paymentPayload, or create default
+        let resource = self.resource.clone()
+            .or_else(|| inner.resource.clone())
+            .unwrap_or_else(|| {
+                // Create a minimal ResourceInfo if none provided
+                ResourceInfo {
+                    url: Url::parse("https://x402r.escrow/resource").unwrap(),
+                    description: "x402r escrow payment".to_string(),
+                    mime_type: "application/json".to_string(),
+                }
+            });
+
+        // Build v1 PaymentRequirements from inner.accepted
+        let payment_requirements = inner.accepted.to_v1(&resource)?;
+
+        Ok(VerifyRequest {
+            x402_version: X402Version::V1,
+            payment_payload,
+            payment_requirements,
+        })
+    }
+}
+
+impl VerifyRequestX402r {
+    pub fn network(&self) -> &Caip2NetworkId {
+        &self.accepted.network
+    }
+
+    /// Convert x402r format to v1 VerifyRequest for processing
+    pub fn to_v1(&self) -> Result<VerifyRequest, NetworkParseError> {
+        use alloy::primitives::{Address, U256};
+        use std::str::FromStr;
+
+        // Parse the authorization values
+        let from = Address::from_str(&self.payload.authorization.from)
+            .map_err(|_| NetworkParseError::InvalidCaip2(self.payload.authorization.from.clone()))?;
+        let to = Address::from_str(&self.payload.authorization.to)
+            .map_err(|_| NetworkParseError::InvalidCaip2(self.payload.authorization.to.clone()))?;
+        let value = U256::from_str(&self.payload.authorization.value)
+            .map_err(|_| NetworkParseError::InvalidCaip2(self.payload.authorization.value.clone()))?;
+        let valid_after = U256::from_str(&self.payload.authorization.valid_after)
+            .map_err(|_| NetworkParseError::InvalidCaip2(self.payload.authorization.valid_after.clone()))?;
+        let valid_before = U256::from_str(&self.payload.authorization.valid_before)
+            .map_err(|_| NetworkParseError::InvalidCaip2(self.payload.authorization.valid_before.clone()))?;
+
+        // Parse nonce (32 bytes hex)
+        let nonce_str = self.payload.authorization.nonce.trim_start_matches("0x");
+        let nonce_bytes = hex::decode(nonce_str)
+            .map_err(|_| NetworkParseError::InvalidCaip2(self.payload.authorization.nonce.clone()))?;
+
+        // Parse signature
+        let sig_str = self.payload.signature.trim_start_matches("0x");
+        let sig_bytes = hex::decode(sig_str)
+            .map_err(|_| NetworkParseError::InvalidCaip2(self.payload.signature.clone()))?;
+
+        // Get network
+        let network = Network::from_caip2(&self.accepted.network.to_string())
+            .ok_or_else(|| NetworkParseError::InvalidCaip2(self.accepted.network.to_string()))?;
+
+        // Build v1 PaymentPayload
+        // Convert U256 timestamps to u64 for UnixTimestamp
+        let valid_after_u64: u64 = valid_after.try_into()
+            .map_err(|_| NetworkParseError::InvalidCaip2("valid_after too large".to_string()))?;
+        let valid_before_u64: u64 = valid_before.try_into()
+            .map_err(|_| NetworkParseError::InvalidCaip2("valid_before too large".to_string()))?;
+
+        // Convert nonce bytes to [u8; 32]
+        let nonce_array: [u8; 32] = nonce_bytes.try_into()
+            .map_err(|_| NetworkParseError::InvalidCaip2("nonce must be 32 bytes".to_string()))?;
+
+        let evm_authorization = ExactEvmPayloadAuthorization {
+            from: EvmAddress(from),
+            to: EvmAddress(to),
+            value: TokenAmount(value),
+            valid_after: UnixTimestamp(valid_after_u64),
+            valid_before: UnixTimestamp(valid_before_u64),
+            nonce: HexEncodedNonce(nonce_array),
+        };
+
+        let evm_payload = ExactEvmPayload {
+            authorization: evm_authorization,
+            signature: EvmSignature(sig_bytes),
+        };
+
+        let payment_payload = PaymentPayload {
+            x402_version: X402Version::V2,
+            network,
+            scheme: self.accepted.scheme,
+            payload: ExactPaymentPayload::Evm(evm_payload),
+        };
+
+        // Build v1 PaymentRequirements
+        let payment_requirements = self.accepted.to_v1(&self.resource)?;
+
+        Ok(VerifyRequest {
+            x402_version: X402Version::V1,
+            payment_payload,
+            payment_requirements,
+        })
+    }
 }
 
 impl VerifyRequestV2 {
@@ -375,11 +637,18 @@ impl VerifyRequestV2 {
     }
 }
 
-/// Unified verify request supporting both v1 and v2
+/// Unified verify request supporting v1, v2, x402r, and x402r-nested formats
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum VerifyRequestEnvelope {
+    /// x402r nested format (Ali's SDK) - paymentPayload.payload.authorization
+    /// MUST be first to try parsing nested format before standard v2
+    X402rNested(VerifyRequestX402rNested),
+    /// Standard v2 format with paymentPayload
     V2(VerifyRequestV2),
+    /// x402r format with top-level payload (authorization + signature)
+    X402r(VerifyRequestX402r),
+    /// Legacy v1 format
     V1(VerifyRequest),
 }
 
@@ -389,6 +658,8 @@ impl VerifyRequestEnvelope {
         match self {
             VerifyRequestEnvelope::V1(_) => X402Version::V1,
             VerifyRequestEnvelope::V2(_) => X402Version::V2,
+            VerifyRequestEnvelope::X402r(_) => X402Version::V2,
+            VerifyRequestEnvelope::X402rNested(_) => X402Version::V2,
         }
     }
 
@@ -400,6 +671,24 @@ impl VerifyRequestEnvelope {
                 Network::from_caip2(&req.network().to_string())
                     .ok_or_else(|| NetworkParseError::InvalidCaip2(req.network().to_string()))
             }
+            VerifyRequestEnvelope::X402r(req) => {
+                Network::from_caip2(&req.network().to_string())
+                    .ok_or_else(|| NetworkParseError::InvalidCaip2(req.network().to_string()))
+            }
+            VerifyRequestEnvelope::X402rNested(req) => {
+                Network::from_caip2(&req.network().to_string())
+                    .ok_or_else(|| NetworkParseError::InvalidCaip2(req.network().to_string()))
+            }
+        }
+    }
+
+    /// Convert to v1 VerifyRequest for processing
+    pub fn to_v1(&self) -> Result<VerifyRequest, NetworkParseError> {
+        match self {
+            VerifyRequestEnvelope::V1(req) => Ok(req.clone()),
+            VerifyRequestEnvelope::V2(req) => req.to_v1(),
+            VerifyRequestEnvelope::X402r(req) => req.to_v1(),
+            VerifyRequestEnvelope::X402rNested(req) => req.to_v1(),
         }
     }
 }

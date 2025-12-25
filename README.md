@@ -10,7 +10,7 @@
 ```
 
 [![Live](https://img.shields.io/badge/live-facilitator.ultravioletadao.xyz-00d4aa)](https://facilitator.ultravioletadao.xyz)
-[![Version](https://img.shields.io/badge/version-1.14.1-blue)](https://github.com/UltravioletaDAO/x402-rs)
+[![Version](https://img.shields.io/badge/version-1.14.9-blue)](https://github.com/UltravioletaDAO/x402-rs)
 [![Rust](https://img.shields.io/badge/rust-2021-orange)](https://www.rust-lang.org/)
 
 ---
@@ -118,50 +118,120 @@ curl -X POST https://facilitator.ultravioletadao.xyz/settle \
 
 ---
 
-## x402r Escrow Extension
+## x402r Escrow Extension (Trustless Refunds)
 
 The facilitator supports the [x402r extension](https://github.com/coinbase/x402/issues/864) for trustless refunds via escrow contracts.
 
-### How it works
+### Architecture Overview
 
-When a payment includes a `refund` extension, the facilitator:
+```
+                           STANDARD PAYMENT FLOW
+  ┌──────────┐    ┌───────────────┐    ┌────────────┐    ┌──────────┐
+  │  Buyer   │───>│  Facilitator  │───>│   USDC     │───>│ Merchant │
+  │ (signs)  │    │  (pays gas)   │    │ (on-chain) │    │(receives)│
+  └──────────┘    └───────────────┘    └────────────┘    └──────────┘
+       │                 │
+       │  EIP-3009       │  transferWithAuthorization()
+       │  signature      │
 
-1. Computes a deterministic DepositRelay proxy address using CREATE3 (via CreateX)
-2. Verifies the proxy is deployed on-chain
-3. Settles payment to the escrow proxy instead of direct to merchant
-4. Funds are held in escrow with a refund window (e.g., 24 hours)
+                           ESCROW PAYMENT FLOW (x402r)
+  ┌──────────┐    ┌───────────────┐    ┌──────────────┐    ┌──────────┐
+  │  Buyer   │───>│  Facilitator  │───>│ DepositRelay │───>│  Escrow  │
+  │ (signs)  │    │  (pays gas)   │    │   (proxy)    │    │ (holds)  │
+  └──────────┘    └───────────────┘    └──────────────┘    └──────────┘
+       │                 │                    │                  │
+       │  EIP-3009       │  executeDeposit()  │  deposit()       │
+       │  to PROXY       │                    │                  │
+       │                 │                    │                  ▼
+       │                 │                    │            ┌──────────┐
+       │                 │                    │            │ Merchant │
+       │                 │                    └───────────>│(after    │
+       │                 │                      release()  │ window)  │
+       │                 │                                 └──────────┘
+       │                 │
+       └─────────────────┴───── Buyer can request refund within window
+```
 
-### Usage
+### How It Works
 
-Add the `refund` extension to your payment requirements:
+**Standard Flow** (no escrow):
+1. Buyer signs EIP-3009 authorization to merchant address
+2. Facilitator calls `transferWithAuthorization()` on USDC
+3. Merchant receives funds immediately
+
+**Escrow Flow** (with `refund` extension):
+1. Merchant registers with Escrow contract (one-time)
+2. Factory deploys deterministic DepositRelay proxy for merchant
+3. Buyer signs EIP-3009 authorization to **proxy address** (not merchant)
+4. Facilitator detects `refund` extension and routes to escrow
+5. Facilitator verifies proxy address via CREATE3 computation
+6. Facilitator calls `executeDeposit()` on proxy
+7. Proxy forwards tokens to Escrow with deposit record
+8. Funds held until release (merchant) or refund (buyer/arbiter)
+
+### Supported Networks
+
+| Network | Chain ID | Factory | Escrow | Status |
+|---------|----------|---------|--------|--------|
+| Base | 8453 | `0x41Cc...A814` | `0xC409...f6bC` | Production |
+| Base Sepolia | 84532 | `0xf981...BaC2` | `0xF7F2...0E58` | Testnet |
+
+### Configuration
+
+Enable escrow settlement:
+
+```bash
+export ENABLE_ESCROW=true
+```
+
+### Request Format
 
 ```json
 {
-  "paymentRequirements": {
-    "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-    "amount": "1000000",
-    "receiver": "0xMerchantAddress...",
+  "x402Version": 2,
+  "paymentPayload": {
+    "x402Version": 2,
+    "resource": {"url": "https://api.example.com/premium", "mimeType": "application/json"},
+    "accepted": {
+      "scheme": "exact",
+      "network": "eip155:8453",
+      "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "amount": "10000",
+      "payTo": "0xPROXY_ADDRESS"
+    },
+    "payload": {
+      "authorization": {"from": "0xBUYER", "to": "0xPROXY_ADDRESS", "value": "10000", ...},
+      "signature": "0x..."
+    },
     "extensions": {
       "refund": {
-        "window": 86400
+        "info": {
+          "factoryAddress": "0x41Cc4D337FEC5E91ddcf4C363700FC6dB5f3A814",
+          "merchantPayouts": {
+            "0xPROXY_ADDRESS": "0xMERCHANT_PAYOUT_ADDRESS"
+          }
+        }
       }
     }
   }
 }
 ```
 
-### Supported Networks
+### Contract Addresses
 
-Currently supported on:
-- Base mainnet (Chain ID: 8453)
-- Base Sepolia (Chain ID: 84532)
+| Contract | Base Mainnet | Base Sepolia |
+|----------|--------------|--------------|
+| CreateX | `0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed` | Same |
+| Factory | `0x41Cc4D337FEC5E91ddcf4C363700FC6dB5f3A814` | `0xf981D813842eE78d18ef8ac825eef8e2C8A8BaC2` |
+| Escrow | `0xC409e6da89E54253fbA86C1CE3E553d24E03f6bC` | `0xF7F2Bc463d79Bd3E5Cb693944B422c39114De058` |
+| Implementation | `0x55eEC2951Da58118ebf32fD925A9bBB13096e828` | `0x740785D15a77caCeE72De645f1bAeed880E2E99B` |
 
-### Contracts
+### Documentation
 
-- **CreateX Deployer:** `0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed`
-- **DepositRelayFactory:** Deployed via CreateX on supported networks
-
-For contract details, see: https://github.com/BackTrackCo/x402r-contracts
+- **Technical Deep-Dive:** [`docs/X402R_ESCROW.md`](docs/X402R_ESCROW.md)
+- **Testing Guide:** [`docs/X402R_ESCROW_TESTING.md`](docs/X402R_ESCROW_TESTING.md)
+- **x402r Proposal:** https://github.com/coinbase/x402/issues/864
+- **x402r Contracts:** https://github.com/BackTrackCo/x402r-contracts
 
 ---
 

@@ -407,6 +407,7 @@ pub struct VerifyRequestX402r {
 ///
 /// Ali's SDK sends: paymentPayload.payload.authorization
 /// This struct represents the inner paymentPayload object.
+/// Note: resource may be missing in some SDK versions, so it's optional.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct X402rPaymentPayloadNested {
@@ -414,7 +415,9 @@ pub struct X402rPaymentPayloadNested {
     pub payload: X402rPayload,
     #[serde(default)]
     pub extensions: HashMap<String, serde_json::Value>,
-    pub resource: ResourceInfo,
+    /// Resource info - optional since some SDK versions don't include it
+    #[serde(default)]
+    pub resource: Option<ResourceInfo>,
     pub accepted: PaymentRequirementsV2,
 }
 
@@ -428,9 +431,9 @@ pub struct X402rPaymentPayloadNested {
 ///     "x402Version": 2,
 ///     "payload": { "authorization": {...}, "signature": "..." },
 ///     "extensions": { "refund": {...} },
-///     "resource": {...},
 ///     "accepted": {...}
 ///   },
+///   "resource": {...},  // May be at top level or inside paymentPayload
 ///   "paymentRequirements": {...}
 /// }
 /// ```
@@ -440,6 +443,9 @@ pub struct VerifyRequestX402rNested {
     pub x402_version: u8,
     pub payment_payload: X402rPaymentPayloadNested,
     pub payment_requirements: PaymentRequirementsV2,
+    /// Resource info - may be at top level (checked first) or inside paymentPayload
+    #[serde(default)]
+    pub resource: Option<ResourceInfo>,
 }
 
 impl VerifyRequestX402rNested {
@@ -511,8 +517,20 @@ impl VerifyRequestX402rNested {
             payload: ExactPaymentPayload::Evm(evm_payload),
         };
 
+        // Get resource from: top-level, inner paymentPayload, or create default
+        let resource = self.resource.clone()
+            .or_else(|| inner.resource.clone())
+            .unwrap_or_else(|| {
+                // Create a minimal ResourceInfo if none provided
+                ResourceInfo {
+                    url: Url::parse("https://x402r.escrow/resource").unwrap(),
+                    description: "x402r escrow payment".to_string(),
+                    mime_type: "application/json".to_string(),
+                }
+            });
+
         // Build v1 PaymentRequirements from inner.accepted
-        let payment_requirements = inner.accepted.to_v1(&inner.resource)?;
+        let payment_requirements = inner.accepted.to_v1(&resource)?;
 
         Ok(VerifyRequest {
             x402_version: X402Version::V1,

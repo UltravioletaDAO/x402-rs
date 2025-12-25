@@ -125,7 +125,8 @@ pub struct RefundInfo {
     /// Map of proxy addresses to merchant payout addresses
     /// Key: proxy address (where client sends payment)
     /// Value: merchant payout address (final recipient after escrow)
-    pub proxies: HashMap<Address, Address>,
+    /// Note: x402r spec uses "merchantPayouts" as the field name
+    pub merchant_payouts: HashMap<Address, Address>,
 }
 
 /// Parsed escrow settlement request
@@ -349,10 +350,10 @@ pub fn parse_escrow_request(body: &str) -> Result<EscrowSettleRequest, EscrowErr
         _ => return Err(EscrowError::NonEvmPayTo),
     };
 
-    // Lookup merchant from proxies map
+    // Lookup merchant from merchantPayouts map
     let merchant_payout = *refund_ext
         .info
-        .proxies
+        .merchant_payouts
         .get(&proxy_address)
         .ok_or(EscrowError::UnknownProxy(proxy_address))?;
 
@@ -712,7 +713,7 @@ mod tests {
         let json = r#"{
             "info": {
                 "factoryAddress": "0x41Cc4D337FEC5E91ddcf4C363700FC6dB5f3A814",
-                "proxies": {
+                "merchantPayouts": {
                     "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
                 }
             }
@@ -723,7 +724,7 @@ mod tests {
             ext.info.factory_address,
             address!("41Cc4D337FEC5E91ddcf4C363700FC6dB5f3A814")
         );
-        assert_eq!(ext.info.proxies.len(), 1);
+        assert_eq!(ext.info.merchant_payouts.len(), 1);
     }
 
     #[test]

@@ -285,7 +285,9 @@ impl AlgorandProvider {
             .unwrap_or(chain.default_algod_url());
 
         // Create algod client
-        let algod = Algod::new(effective_url, "").map_err(|e| {
+        // Use placeholder token - algonode.cloud doesn't require auth but algonaut needs valid format
+        let placeholder_token = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let algod = Algod::new(effective_url, placeholder_token).map_err(|e| {
             FacilitatorLocalError::Other(format!("Failed to create Algod client: {}", e))
         })?;
 

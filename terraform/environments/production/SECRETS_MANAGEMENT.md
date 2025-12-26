@@ -53,7 +53,7 @@ All wallet secrets are JSON objects with a `private_key` field (except Stellar w
 
 **Stellar secrets** are plain strings (not JSON):
 ```
-S<REDACTED_STELLAR_SECRET_KEY>
+S<YOUR_STELLAR_SECRET_KEY_HERE>
 ```
 
 #### RPC URL Secrets

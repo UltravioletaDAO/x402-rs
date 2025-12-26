@@ -607,21 +607,20 @@ impl AlgorandProvider {
         signed_group: &[SignedTransaction],
     ) -> Result<(), AlgorandError> {
         // Encode each signed transaction to msgpack then base64
-        let txn_objects: Vec<serde_json::Value> = signed_group
+        // The simulate API expects an array of base64 strings, not objects with "txn" keys
+        let txn_strings: Vec<String> = signed_group
             .iter()
             .map(|stxn| {
                 let encoded = rmp_serde::to_vec_named(stxn)
                     .map_err(|e| AlgorandError::InvalidEncoding(format!("Msgpack encode: {}", e)))?;
-                Ok(serde_json::json!({
-                    "txn": BASE64.encode(&encoded)
-                }))
+                Ok(BASE64.encode(&encoded))
             })
             .collect::<Result<Vec<_>, AlgorandError>>()?;
 
         let request_body = serde_json::json!({
             "txn-groups": [
                 {
-                    "txns": txn_objects
+                    "txns": txn_strings
                 }
             ],
             "allow-empty-signatures": false,

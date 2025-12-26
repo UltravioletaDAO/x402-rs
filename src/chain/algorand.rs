@@ -715,6 +715,7 @@ pub struct VerifyGroupResult {
     pub current_round: u64,
 }
 
+
 // =============================================================================
 // Trait Implementations
 // =============================================================================
@@ -753,12 +754,6 @@ impl Facilitator for AlgorandProvider {
     async fn verify(&self, request: &VerifyRequest) -> Result<VerifyResponse, Self::Error> {
         let payload = &request.payment_payload;
 
-        // Extract Algorand payload
-        let algorand_payload = match &payload.payload {
-            ExactPaymentPayload::Algorand(p) => p,
-            _ => return Err(FacilitatorLocalError::UnsupportedNetwork(None)),
-        };
-
         // Verify network matches
         if payload.network != self.network() {
             return Err(FacilitatorLocalError::NetworkMismatch(
@@ -768,23 +763,22 @@ impl Facilitator for AlgorandProvider {
             ));
         }
 
-        let verification = self
-            .verify_payment_group(algorand_payload)
-            .await
-            .map_err(FacilitatorLocalError::from)?;
-
-        Ok(VerifyResponse::valid(verification.payer.into()))
+        // Handle Algorand atomic group payload (GoPlausible x402-avm spec)
+        match &payload.payload {
+            ExactPaymentPayload::Algorand(p) => {
+                let verification = self
+                    .verify_payment_group(p)
+                    .await
+                    .map_err(FacilitatorLocalError::from)?;
+                Ok(VerifyResponse::valid(verification.payer.into()))
+            }
+            _ => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
+        }
     }
 
     async fn settle(&self, request: &SettleRequest) -> Result<SettleResponse, Self::Error> {
         let payload = &request.payment_payload;
 
-        // Extract Algorand payload
-        let algorand_payload = match &payload.payload {
-            ExactPaymentPayload::Algorand(p) => p,
-            _ => return Err(FacilitatorLocalError::UnsupportedNetwork(None)),
-        };
-
         // Verify network matches
         if payload.network != self.network() {
             return Err(FacilitatorLocalError::NetworkMismatch(
@@ -794,50 +788,56 @@ impl Facilitator for AlgorandProvider {
             ));
         }
 
-        tracing::info!("Algorand settle: Verifying payment group");
-        let verification = self
-            .verify_payment_group(algorand_payload)
-            .await
-            .map_err(FacilitatorLocalError::from)?;
+        // Handle Algorand atomic group payload (GoPlausible x402-avm spec)
+        match &payload.payload {
+            ExactPaymentPayload::Algorand(algorand_payload) => {
+                tracing::info!("Algorand settle: Verifying payment group");
+                let verification = self
+                    .verify_payment_group(algorand_payload)
+                    .await
+                    .map_err(FacilitatorLocalError::from)?;
 
-        tracing::info!(
-            payer = %verification.payer.address,
-            amount = verification.amount,
-            recipient = %verification.recipient,
-            "Algorand settle: Verification successful, submitting group"
-        );
-
-        // Submit the transaction group
-        let tx_id = match self.submit_group(&verification, algorand_payload).await {
-            Ok(id) => {
                 tracing::info!(
-                    tx_id = %id,
-                    "Algorand settle: Transaction submitted successfully"
+                    payer = %verification.payer.address,
+                    amount = verification.amount,
+                    recipient = %verification.recipient,
+                    "Algorand settle: Verification successful, submitting group"
                 );
-                id
-            }
-            Err(e) => {
-                tracing::error!(
-                    error = %e,
-                    "Algorand settle: Failed to submit transaction"
-                );
-                return Ok(SettleResponse {
-                    success: false,
-                    error_reason: Some(FacilitatorErrorReason::UnexpectedSettleError),
-                    payer: verification.payer.into(),
-                    transaction: None,
-                    network: self.network(),
-                });
-            }
-        };
 
-        Ok(SettleResponse {
-            success: true,
-            error_reason: None,
-            payer: verification.payer.into(),
-            transaction: Some(TransactionHash::Algorand(tx_id)),
-            network: self.network(),
-        })
+                // Submit the transaction group
+                let tx_id = match self.submit_group(&verification, algorand_payload).await {
+                    Ok(id) => {
+                        tracing::info!(
+                            tx_id = %id,
+                            "Algorand settle: Transaction submitted successfully"
+                        );
+                        id
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            error = %e,
+                            "Algorand settle: Failed to submit transaction"
+                        );
+                        return Ok(SettleResponse {
+                            success: false,
+                            error_reason: Some(FacilitatorErrorReason::UnexpectedSettleError),
+                            payer: verification.payer.into(),
+                            transaction: None,
+                            network: self.network(),
+                        });
+                    }
+                };
+
+                Ok(SettleResponse {
+                    success: true,
+                    error_reason: None,
+                    payer: verification.payer.into(),
+                    transaction: Some(TransactionHash::Algorand(tx_id)),
+                    network: self.network(),
+                })
+            }
+            _ => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
+        }
     }
 
     async fn supported(&self) -> Result<SupportedPaymentKindsResponse, Self::Error> {

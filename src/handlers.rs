@@ -1213,7 +1213,7 @@ where
         }
         #[cfg(feature = "algorand")]
         crate::types::ExactPaymentPayload::Algorand(algorand_payload) => {
-            debug!("  - payload type: Algorand");
+            debug!("  - payload type: Algorand (atomic group)");
             debug!(
                 "  - payment_index: {}",
                 algorand_payload.payment_index

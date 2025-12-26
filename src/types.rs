@@ -505,17 +505,29 @@ pub struct ExactStellarPayload {
 }
 
 /// Payload for Algorand payments using atomic transaction groups.
-/// The client signs a standard ASA transfer, and the facilitator co-signs
-/// a fee-paying transaction to enable gasless payments via fee pooling.
+///
+/// Implements the GoPlausible x402-avm specification for gasless payments:
+/// 1. Client creates an atomic transaction group: [fee_tx, asa_transfer]
+/// 2. Client signs only the ASA transfer (index 1) with their wallet
+/// 3. Client sends the partially-signed group to facilitator
+/// 4. Facilitator verifies the ASA transfer and signs the fee transaction
+/// 5. Facilitator submits the complete atomic group
+///
+/// Key benefits of atomic groups:
+/// - Gasless: User pays ZERO ALGO (facilitator pays all fees via fee pooling)
+/// - Atomic: Both transactions succeed or both fail
+/// - Secure: Facilitator only signs a zero-value fee transaction
 #[cfg(feature = "algorand")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExactAlgorandPayload {
     /// Index of the payment transaction within the atomic group (typically 1).
+    /// The fee transaction is at index 0, signed by the facilitator.
     pub payment_index: usize,
     /// Array of base64-encoded msgpack transactions forming the atomic group.
-    /// Usually: [unsigned_fee_tx, signed_asa_transfer]
-    /// The facilitator will sign payment_group[0] and submit the entire group.
+    /// Format: [unsigned_fee_tx, signed_asa_transfer]
+    /// - payment_group[0]: Unsigned fee transaction (facilitator will sign)
+    /// - payment_group[1]: Signed ASA transfer (client already signed)
     pub payment_group: Vec<String>,
 }
 

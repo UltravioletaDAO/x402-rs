@@ -113,7 +113,7 @@ pub enum Network {
     FogoTestnet,
     /// Algorand mainnet.
     #[cfg(feature = "algorand")]
-    #[serde(rename = "algorand-mainnet")]
+    #[serde(rename = "algorand")]
     Algorand,
     /// Algorand testnet.
     #[cfg(feature = "algorand")]
@@ -156,7 +156,7 @@ impl Display for Network {
             Network::Fogo => write!(f, "fogo"),
             Network::FogoTestnet => write!(f, "fogo-testnet"),
             #[cfg(feature = "algorand")]
-            Network::Algorand => write!(f, "algorand-mainnet"),
+            Network::Algorand => write!(f, "algorand"),
             #[cfg(feature = "algorand")]
             Network::AlgorandTestnet => write!(f, "algorand-testnet"),
         }
@@ -205,7 +205,7 @@ impl FromStr for Network {
             "fogo" => Ok(Network::Fogo),
             "fogo-testnet" => Ok(Network::FogoTestnet),
             #[cfg(feature = "algorand")]
-            "algorand-mainnet" => Ok(Network::Algorand),
+            "algorand" | "algorand-mainnet" => Ok(Network::Algorand),
             #[cfg(feature = "algorand")]
             "algorand-testnet" => Ok(Network::AlgorandTestnet),
             _ => Err(NetworkParseError(s.to_string())),

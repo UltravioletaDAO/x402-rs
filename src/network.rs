@@ -1206,6 +1206,22 @@ static AUSD_MONAD: Lazy<AUSDDeployment> = Lazy::new(|| {
     })
 });
 
+/// AUSD deployment on Solana mainnet (Token2022).
+/// Address: AUSD1jCcCyPLybk1YnvPWsHQSrZ46dxwoMniN4N2UEB9
+/// Uses Token2022 with extensions: PermanentDelegate, TransferHook, Metadata.
+static AUSD_SOLANA: Lazy<AUSDDeployment> = Lazy::new(|| {
+    AUSDDeployment(TokenDeployment {
+        asset: TokenAsset {
+            address: MixedAddress::Solana(
+                Pubkey::from_str("AUSD1jCcCyPLybk1YnvPWsHQSrZ46dxwoMniN4N2UEB9").unwrap(),
+            ),
+            network: Network::Solana,
+        },
+        decimals: 6,
+        eip712: None, // Not needed for Solana - uses fee-payer model
+    })
+});
+
 /// A known AUSD (Agora USD) deployment as a wrapper around [`TokenDeployment`].
 #[derive(Clone, Debug)]
 pub struct AUSDDeployment(pub TokenDeployment);
@@ -1236,11 +1252,13 @@ impl AUSDDeployment {
             Network::Arbitrum => Some(&AUSD_ARBITRUM),
             Network::Avalanche => Some(&AUSD_AVALANCHE),
             Network::Monad => Some(&AUSD_MONAD),
+            Network::Solana => Some(&AUSD_SOLANA),
             _ => None,
         }
     }
 
-    /// Return all networks where AUSD is deployed with EIP-3009 support.
+    /// Return all networks where AUSD is deployed.
+    /// EVM chains use EIP-3009, Solana uses Token2022 fee-payer model.
     pub fn supported_networks() -> &'static [Network] {
         &[
             Network::Ethereum,
@@ -1248,6 +1266,7 @@ impl AUSDDeployment {
             Network::Arbitrum,
             Network::Avalanche,
             Network::Monad,
+            Network::Solana,
         ]
     }
 }
@@ -1567,16 +1586,23 @@ mod tests {
     }
 
     // ============================================================
-    // AUSD Deployment Tests (CREATE2 - same address all chains)
+    // AUSD Deployment Tests (CREATE2 - same address on EVM chains)
     // ============================================================
 
     #[test]
-    fn test_ausd_same_address_all_networks() {
+    fn test_ausd_same_address_all_evm_networks() {
         let expected_address: EvmAddress = address!("00000000eFE302BEAA2b3e6e1b18d08D69a9012a").into();
-        let networks = AUSDDeployment::supported_networks();
+        // Only check EVM networks - Solana has different address format
+        let evm_networks = [
+            Network::Ethereum,
+            Network::Polygon,
+            Network::Arbitrum,
+            Network::Avalanche,
+            Network::Monad,
+        ];
 
-        for network in networks {
-            let deployment = get_token_deployment(*network, TokenType::Ausd).unwrap();
+        for network in evm_networks {
+            let deployment = get_token_deployment(network, TokenType::Ausd).unwrap();
             assert_eq!(
                 deployment.asset.address,
                 MixedAddress::Evm(expected_address.clone()),
@@ -1593,6 +1619,15 @@ mod tests {
         assert!(networks.contains(&Network::Polygon));
         assert!(networks.contains(&Network::Arbitrum));
         assert!(networks.contains(&Network::Avalanche));
+        assert!(networks.contains(&Network::Monad));
+        assert!(networks.contains(&Network::Solana));
+    }
+
+    #[test]
+    fn test_ausd_solana_address() {
+        let deployment = get_token_deployment(Network::Solana, TokenType::Ausd).unwrap();
+        assert!(matches!(deployment.asset.address, MixedAddress::Solana(_)));
+        assert_eq!(deployment.decimals, 6);
     }
 
     // ============================================================
@@ -1748,10 +1783,11 @@ mod tests {
 
     #[test]
     fn test_supported_tokens_for_solana() {
-        // Solana only supports USDC (non-EVM)
+        // Solana supports USDC and AUSD (Token2022)
         let tokens = supported_tokens_for_network(Network::Solana);
-        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens.len(), 2);
         assert!(tokens.contains(&TokenType::Usdc));
+        assert!(tokens.contains(&TokenType::Ausd));
     }
 
     #[test]

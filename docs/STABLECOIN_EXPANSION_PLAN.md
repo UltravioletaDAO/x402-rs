@@ -17,13 +17,13 @@ The x402-rs payment facilitator currently supports only **USDC** (USD Coin by Ci
 *EVM Networks (EIP-3009 compatible):*
 - **USDC**: 10 networks with verified EIP-3009 (full coverage)
 - **EURC**: 3 networks (Ethereum, Base, Avalanche)
-- **AUSD**: 5 networks (Ethereum, Polygon, Arbitrum, Avalanche, Monad)
+- **AUSD**: 6 networks (Ethereum, Polygon, Arbitrum, Avalanche, Monad, **Solana**)
 - **PYUSD**: 1 network (Ethereum only)
 - **GHO**: 3 networks (Ethereum, Arbitrum, Base)
 - **crvUSD**: 2 networks (Ethereum, Arbitrum - inconsistent support elsewhere)
 
 *Non-EVM Networks (chain-specific token standards):*
-- **Solana**: SPL Token (USDC, USDT, PYUSD available)
+- **Solana**: SPL Token / Token2022 (USDC, USDT, PYUSD, **AUSD** available)
 - **NEAR**: NEP-141 (bridged USDC available)
 - **Stellar**: Stellar Assets (native USDC available)
 - **Fogo**: SPL Token (Solana-based, TBD)
@@ -145,7 +145,7 @@ Legend:
 |----------|--------------------:|------------:|-------------:|--------------------------------------------|
 | **USDC** | 10                 | 0           | 0            | Full coverage on all 10 EVM networks       |
 | **EURC** | 3                  | 0           | 7            | Circle-only: Ethereum, Base, Avalanche     |
-| **AUSD** | 5                  | 1           | 4            | Base has no EIP-3009; uses CREATE2 address |
+| **AUSD** | 5 (+1 Solana)      | 1           | 4            | Base has no EIP-3009; CREATE2 + Solana Token2022 |
 | **PYUSD**| 1                  | 0           | 9            | Ethereum only                              |
 | **GHO**  | 3                  | 0           | 7            | Aave ecosystem: Ethereum, Arbitrum, Base   |
 | **crvUSD**| 2                 | 3           | 5            | Inconsistent: only Ethereum + Arbitrum OK  |
@@ -156,15 +156,21 @@ The following networks use **different token standards** and do not support EIP-
 
 | Network   | Token Standard           | USDC Available | Other Stablecoins           |
 |-----------|--------------------------|----------------|-----------------------------|
-| **Solana**| SPL Token                | Yes (native)   | USDT, PYUSD                 |
+| **Solana**| SPL Token / Token2022    | Yes (native)   | USDT, PYUSD, **AUSD**       |
 | **NEAR**  | NEP-141 (Fungible Token) | Yes (bridged)  | USN (deprecated), USDT      |
 | **Stellar**| Stellar Assets          | Yes (native)   | Various anchored assets     |
 | **Fogo**  | SPL Token (Solana-based) | TBD            | TBD                         |
 
 **Note:** Non-EVM stablecoins require chain-specific authorization mechanisms:
-- **Solana**: Uses SPL Token with memo/transfer instructions
+- **Solana**: Uses SPL Token / Token2022 with fee-payer model (facilitator pays SOL gas)
 - **NEAR**: Uses NEP-141 with function call access keys
 - **Stellar**: Uses Stellar assets with transaction signatures
+
+**AUSD on Solana (Token2022):**
+- Token Address: `AUSD1jCcCyPLybk1YnvPWsHQSrZ46dxwoMniN4N2UEB9`
+- Uses Token2022 with extensions: PermanentDelegate, TransferHook, Metadata
+- ~$25M market cap, $5.6M DEX liquidity
+- **Implemented in v1.15.4** - no additional work needed, existing Token2022 support handles it
 
 ### Notes on EVM Matrix
 
@@ -844,7 +850,7 @@ The primary risks are **operational** (liquidity, adoption) rather than technica
 
 **Total funding needed (if supporting EURC + AUSD):**
 - EURC: 3 networks × $300 = $900
-- AUSD: 5 networks × $300 = $1,500
+- AUSD: 5 EVM networks × $300 = $1,500 (Solana already funded for USDC)
 - **TOTAL: ~$2,400** (one-time, reusable across many transactions)
 
 ### 9.4 Ongoing Operational Costs

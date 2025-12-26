@@ -444,6 +444,16 @@
             box-shadow: 0 8px 24px rgba(255, 61, 0, 0.3);
         }
 
+        .network-badge.algorand {
+            border-color: #000000;
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.2);
+        }
+
+        .network-badge.algorand:hover {
+            border-color: #000000;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+        }
+
         .network-badge.zama {
             border-color: #ffcc00;
             box-shadow: 0 0 20px rgba(255, 204, 0, 0.2);
@@ -1257,6 +1267,21 @@
                             <div data-tokens="fogo-mainnet"></div>
                         </div>
 
+                        <div class="network-badge algorand"
+                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
+                            onclick="window.open('https://allo.info/account/KIMS5H6QLCUDL65L5UBTOXDPWLMTS7N3AAC3I6B2NCONEI5QIVK7LH2C2I', '_blank')">
+                            <div style="display: flex; align-items: center; gap: 0.75rem;">
+                                <img src="/algorand.png" alt="Algorand" style="width: 32px; height: 32px; object-fit: contain;">
+                                <span style="font-weight: 700;">Algorand</span>
+                            </div>
+                            <div class="balance-amount" data-balance="algorand-mainnet"
+                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
+                                Loading...
+                            </div>
+                            <div style="font-size: 0.7rem; color: var(--text-muted);">ALGO Balance</div>
+                            <div data-tokens="algorand-mainnet"></div>
+                        </div>
+
                     </div>
                 </div>
 
@@ -1452,6 +1477,20 @@
                             <div style="font-size: 0.7rem; color: var(--text-muted);">FOGO</div>
                             <div data-tokens="fogo-testnet"></div>
                         </div>
+                        <div class="network-badge algorand"
+                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
+                            onclick="window.open('https://testnet.allo.info/account/5DPPDQNYUPCTXRZWRYSF3WPYU6RKAUR25F3YG4EKXQRHV5AUAI62H5GXL4', '_blank')">
+                            <div style="display: flex; align-items: center; gap: 0.75rem;">
+                                <img src="/algorand.png" alt="Algorand" style="width: 32px; height: 32px; object-fit: contain;">
+                                <span style="font-weight: 700;">Algorand Testnet</span>
+                            </div>
+                            <div class="balance-amount" data-balance="algorand-testnet"
+                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
+                                Loading...
+                            </div>
+                            <div style="font-size: 0.7rem; color: var(--text-muted);">ALGO</div>
+                            <div data-tokens="algorand-testnet"></div>
+                        </div>
                         <div class="network-badge solana"
                             style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://solscan.io/account/6xNPewUdKRbEZDReQdpyfNUdgNg8QRc8Mt263T5GZSRv?cluster=devnet', '_blank')">
@@ -1630,6 +1669,33 @@
                                 style="font-family: 'JetBrains Mono', monospace; color: var(--accent); text-decoration: none; transition: opacity 0.2s;"
                                 onmouseover="this.style.opacity='0.7'"
                                 onmouseout="this.style.opacity='1'">GBBFZMLUJEZVI32EN4XA2KPP445XIBTMTRBLYWFIL556RDTHS2OWFQ2Z</a>
+                        </div>
+                    </div>
+
+                    <!-- Divider -->
+                    <div style="height: 1px; background: rgba(255,255,255,0.05); margin: 0.25rem 0;"></div>
+
+                    <!-- Algorand Wallets -->
+                    <div style="display: flex; flex-direction: column; gap: 0.5rem;">
+                        <div
+                            style="text-align: center; font-size: 0.75rem; color: var(--accent); font-weight: 600; margin-bottom: 0.25rem;">
+                            Algorand Wallets
+                        </div>
+                        <div style="text-align: center; font-size: 0.7rem; color: var(--text-muted);">
+                            <span style="font-weight: 600;">Mainnet:</span> <a
+                                href="https://allo.info/account/KIMS5H6QLCUDL65L5UBTOXDPWLMTS7N3AAC3I6B2NCONEI5QIVK7LH2C2I"
+                                target="_blank"
+                                style="font-family: 'JetBrains Mono', monospace; color: var(--accent); text-decoration: none; transition: opacity 0.2s;"
+                                onmouseover="this.style.opacity='0.7'"
+                                onmouseout="this.style.opacity='1'">KIMS5H6QLCUDL65L5UBTOXDPWLMTS7N3AAC3I6B2NCONEI5QIVK7LH2C2I</a>
+                        </div>
+                        <div style="text-align: center; font-size: 0.7rem; color: var(--text-muted);">
+                            <span style="font-weight: 600;">Testnet:</span> <a
+                                href="https://testnet.allo.info/account/5DPPDQNYUPCTXRZWRYSF3WPYU6RKAUR25F3YG4EKXQRHV5AUAI62H5GXL4"
+                                target="_blank"
+                                style="font-family: 'JetBrains Mono', monospace; color: var(--accent); text-decoration: none; transition: opacity 0.2s;"
+                                onmouseover="this.style.opacity='0.7'"
+                                onmouseout="this.style.opacity='1'">5DPPDQNYUPCTXRZWRYSF3WPYU6RKAUR25F3YG4EKXQRHV5AUAI62H5GXL4</a>
                         </div>
                     </div>
                 </div>
@@ -2177,6 +2243,16 @@ result = <span class="code-function">verify_payment</span>(
                     address: '6xNPewUdKRbEZDReQdpyfNUdgNg8QRc8Mt263T5GZSRv',
                     isSolana: true
                 },
+                'algorand-mainnet': {
+                    api: 'https://mainnet-api.algonode.cloud/v2/accounts/KIMS5H6QLCUDL65L5UBTOXDPWLMTS7N3AAC3I6B2NCONEI5QIVK7LH2C2I',
+                    address: 'KIMS5H6QLCUDL65L5UBTOXDPWLMTS7N3AAC3I6B2NCONEI5QIVK7LH2C2I',
+                    isAlgorand: true
+                },
+                'algorand-testnet': {
+                    api: 'https://testnet-api.algonode.cloud/v2/accounts/5DPPDQNYUPCTXRZWRYSF3WPYU6RKAUR25F3YG4EKXQRHV5AUAI62H5GXL4',
+                    address: '5DPPDQNYUPCTXRZWRYSF3WPYU6RKAUR25F3YG4EKXQRHV5AUAI62H5GXL4',
+                    isAlgorand: true
+                },
             };
 
             // Fetch balance for each network
@@ -2234,6 +2310,21 @@ result = <span class="code-function">verify_payment</span>(
                             // Stellar balance is already in XLM (7 decimal precision)
                             const balanceXLM = parseFloat(nativeBalance.balance);
                             const formatted = balanceXLM.toFixed(4);
+
+                            const balanceEl = document.querySelector(`[data-balance="${network}"]`);
+                            if (balanceEl) {
+                                balanceEl.textContent = formatted;
+                            }
+                        }
+                    } else if (config.isAlgorand) {
+                        // Algorand uses Algod API
+                        const response = await fetch(config.api);
+                        const data = await response.json();
+
+                        if (data.amount !== undefined) {
+                            // Algorand balance is in microAlgos (1 ALGO = 1e6 microAlgos)
+                            const balanceALGO = data.amount / 1e6;
+                            const formatted = balanceALGO.toFixed(4);
 
                             const balanceEl = document.querySelector(`[data-balance="${network}"]`);
                             if (balanceEl) {

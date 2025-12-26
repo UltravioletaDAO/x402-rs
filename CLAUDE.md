@@ -466,6 +466,20 @@ git merge upstream/main      # Follow docs/CUSTOMIZATIONS.md strategy
 
 ## Security Notes
 
+### CRITICAL: NEVER PUT SECRETS IN DOCUMENTATION
+
+**This rule is absolute and has no exceptions:**
+
+- **NEVER** put actual private keys, secret keys, seed phrases, or API keys in ANY documentation file (*.md, *.txt, *.rst)
+- **NEVER** use real secrets as "examples" in documentation - always use obvious placeholders like `YOUR_SECRET_KEY_HERE` or `S<PLACEHOLDER>`
+- **NEVER** copy-paste secrets from AWS Secrets Manager, wallets, or .env files into documentation
+- **ALWAYS** assume documentation files will be committed to git and become public
+- **IF YOU SEE A SECRET IN DOCS**: Treat it as a critical security incident - rotate the key immediately, use `git-filter-repo` to purge history, and force push
+
+**Why this matters**: On December 2025, a Stellar mainnet private key was accidentally committed to `SECRETS_MANAGEMENT.md` as a "format example". This exposed production credentials in git history for 14 days. The key had to be rotated and history rewritten.
+
+### Other Security Rules
+
 - **NEVER** commit `.env` file with actual private keys
 - **NEVER** commit `.unused/` directory - it's in `.gitignore` and CONTAINS SECRETS
 - Use testnet keys for local development only

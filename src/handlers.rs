@@ -108,6 +108,7 @@ where
         .route("/stellar.png", get(get_stellar_logo))
         .route("/fogo.png", get(get_fogo_logo))
         .route("/algorand.png", get(get_algorand_logo))
+        .route("/bsc.png", get(get_bsc_logo))
 }
 
 /// Discovery API routes for the Bazaar feature.
@@ -517,6 +518,16 @@ pub async fn get_fogo_logo() -> impl IntoResponse {
 /// `GET /algorand.png`: Returns Algorand logo.
 pub async fn get_algorand_logo() -> impl IntoResponse {
     let bytes = include_bytes!("../static/algorand.png");
+    (
+        StatusCode::OK,
+        [("content-type", "image/png")],
+        bytes.as_slice(),
+    )
+}
+
+/// `GET /bsc.png`: Returns BSC (BNB Smart Chain) logo.
+pub async fn get_bsc_logo() -> impl IntoResponse {
+    let bytes = include_bytes!("../static/bsc.png");
     (
         StatusCode::OK,
         [("content-type", "image/png")],

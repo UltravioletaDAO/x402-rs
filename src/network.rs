@@ -93,6 +93,9 @@ pub enum Network {
     /// Monad mainnet (chain ID 143).
     #[serde(rename = "monad")]
     Monad,
+    /// BSC (BNB Smart Chain) mainnet (chain ID 56).
+    #[serde(rename = "bsc")]
+    Bsc,
     /// NEAR Protocol mainnet.
     #[serde(rename = "near")]
     Near,
@@ -149,6 +152,7 @@ impl Display for Network {
             Network::Unichain => write!(f, "unichain"),
             Network::UnichainSepolia => write!(f, "unichain-sepolia"),
             Network::Monad => write!(f, "monad"),
+            Network::Bsc => write!(f, "bsc"),
             Network::Near => write!(f, "near"),
             Network::NearTestnet => write!(f, "near-testnet"),
             Network::Stellar => write!(f, "stellar"),
@@ -198,6 +202,7 @@ impl FromStr for Network {
             "unichain" => Ok(Network::Unichain),
             "unichain-sepolia" => Ok(Network::UnichainSepolia),
             "monad" => Ok(Network::Monad),
+            "bsc" | "bnb" | "binance" => Ok(Network::Bsc),
             "near" => Ok(Network::Near),
             "near-testnet" => Ok(Network::NearTestnet),
             "stellar" => Ok(Network::Stellar),
@@ -251,6 +256,7 @@ impl From<Network> for NetworkFamily {
             Network::Unichain => NetworkFamily::Evm,
             Network::UnichainSepolia => NetworkFamily::Evm,
             Network::Monad => NetworkFamily::Evm,
+            Network::Bsc => NetworkFamily::Evm,
             Network::Near => NetworkFamily::Near,
             Network::NearTestnet => NetworkFamily::Near,
             Network::Stellar => NetworkFamily::Stellar,
@@ -295,6 +301,7 @@ impl Network {
             Network::Unichain,
             Network::UnichainSepolia,
             Network::Monad,
+            Network::Bsc,
             Network::Near,
             Network::NearTestnet,
             Network::Stellar,
@@ -335,6 +342,7 @@ impl Network {
             Network::Unichain,
             Network::UnichainSepolia,
             Network::Monad,
+            Network::Bsc,
             Network::Near,
             Network::NearTestnet,
             Network::Stellar,
@@ -406,6 +414,7 @@ impl Network {
             Network::Unichain => "eip155:130".to_string(),
             Network::UnichainSepolia => "eip155:1301".to_string(),
             Network::Monad => "eip155:143".to_string(),
+            Network::Bsc => "eip155:56".to_string(),
             Network::XdcMainnet => "eip155:50".to_string(),
             Network::XrplEvm => "eip155:1440000".to_string(),
             // Solana - solana:{genesis_hash}
@@ -455,6 +464,7 @@ impl Network {
             "eip155:130" => Some(Network::Unichain),
             "eip155:1301" => Some(Network::UnichainSepolia),
             "eip155:143" => Some(Network::Monad),
+            "eip155:56" => Some(Network::Bsc),
             "eip155:50" => Some(Network::XdcMainnet),
             "eip155:1440000" => Some(Network::XrplEvm),
             // Solana
@@ -848,6 +858,21 @@ static USDC_MONAD: Lazy<USDCDeployment> = Lazy::new(|| {
     })
 });
 
+/// USDC deployment on BSC mainnet.
+/// NOTE: BSC USDC (0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d) uses 18 decimals
+/// and does NOT support EIP-3009. This is a placeholder for network completeness.
+/// Only AUSD supports gasless payments on BSC.
+static USDC_BSC: Lazy<USDCDeployment> = Lazy::new(|| {
+    USDCDeployment(TokenDeployment {
+        asset: TokenAsset {
+            address: address!("0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d").into(),
+            network: Network::Bsc,
+        },
+        decimals: 18, // BSC USDC uses 18 decimals, not 6
+        eip712: None, // No EIP-3009 support - gasless payments not available
+    })
+});
+
 /// Lazily initialized known USDC deployment on NEAR Protocol mainnet as [`USDCDeployment`].
 /// NEAR uses native Circle USDC (not bridged).
 static USDC_NEAR: Lazy<USDCDeployment> = Lazy::new(|| {
@@ -1025,6 +1050,7 @@ impl USDCDeployment {
             Network::Unichain => &USDC_UNICHAIN,
             Network::UnichainSepolia => &USDC_UNICHAIN_SEPOLIA,
             Network::Monad => &USDC_MONAD,
+            Network::Bsc => &USDC_BSC,
             Network::Near => &USDC_NEAR,
             Network::NearTestnet => &USDC_NEAR_TESTNET,
             Network::Stellar => &USDC_STELLAR,
@@ -1206,6 +1232,22 @@ static AUSD_MONAD: Lazy<AUSDDeployment> = Lazy::new(|| {
     })
 });
 
+/// AUSD deployment on BSC mainnet.
+/// Note: On-chain EIP-712 domain uses "Agora Dollar" as the name.
+static AUSD_BSC: Lazy<AUSDDeployment> = Lazy::new(|| {
+    AUSDDeployment(TokenDeployment {
+        asset: TokenAsset {
+            address: address!("0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a").into(),
+            network: Network::Bsc,
+        },
+        decimals: 6,
+        eip712: Some(TokenDeploymentEip712 {
+            name: "Agora Dollar".into(),
+            version: "1".into(),
+        }),
+    })
+});
+
 /// AUSD deployment on Solana mainnet (Token2022).
 /// Address: AUSD1jCcCyPLybk1YnvPWsHQSrZ46dxwoMniN4N2UEB9
 /// Uses Token2022 with extensions: PermanentDelegate, TransferHook, Metadata.
@@ -1252,6 +1294,7 @@ impl AUSDDeployment {
             Network::Arbitrum => Some(&AUSD_ARBITRUM),
             Network::Avalanche => Some(&AUSD_AVALANCHE),
             Network::Monad => Some(&AUSD_MONAD),
+            Network::Bsc => Some(&AUSD_BSC),
             Network::Solana => Some(&AUSD_SOLANA),
             _ => None,
         }
@@ -1266,6 +1309,7 @@ impl AUSDDeployment {
             Network::Arbitrum,
             Network::Avalanche,
             Network::Monad,
+            Network::Bsc,
             Network::Solana,
         ]
     }

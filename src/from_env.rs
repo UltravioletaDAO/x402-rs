@@ -56,6 +56,7 @@ pub const ENV_RPC_ARBITRUM_SEPOLIA: &str = "RPC_URL_ARBITRUM_SEPOLIA";
 pub const ENV_RPC_UNICHAIN: &str = "RPC_URL_UNICHAIN";
 pub const ENV_RPC_UNICHAIN_SEPOLIA: &str = "RPC_URL_UNICHAIN_SEPOLIA";
 pub const ENV_RPC_MONAD: &str = "RPC_URL_MONAD";
+pub const ENV_RPC_BSC: &str = "RPC_URL_BSC";
 pub const ENV_RPC_NEAR: &str = "RPC_URL_NEAR";
 pub const ENV_RPC_NEAR_TESTNET: &str = "RPC_URL_NEAR_TESTNET";
 
@@ -96,6 +97,7 @@ pub fn rpc_env_name_from_network(network: Network) -> &'static str {
         Network::Unichain => ENV_RPC_UNICHAIN,
         Network::UnichainSepolia => ENV_RPC_UNICHAIN_SEPOLIA,
         Network::Monad => ENV_RPC_MONAD,
+        Network::Bsc => ENV_RPC_BSC,
         Network::Near => ENV_RPC_NEAR,
         Network::NearTestnet => ENV_RPC_NEAR_TESTNET,
         Network::Stellar => ENV_RPC_STELLAR,

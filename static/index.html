@@ -454,6 +454,16 @@
             box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
         }
 
+        .network-badge.bsc {
+            border-color: #F0B90B;
+            box-shadow: 0 0 20px rgba(240, 185, 11, 0.2);
+        }
+
+        .network-badge.bsc:hover {
+            border-color: #F0B90B;
+            box-shadow: 0 8px 24px rgba(240, 185, 11, 0.3);
+        }
+
         .network-badge.zama {
             border-color: #ffcc00;
             box-shadow: 0 0 20px rgba(255, 204, 0, 0.2);
@@ -1280,6 +1290,21 @@
                             </div>
                             <div style="font-size: 0.7rem; color: var(--text-muted);">ALGO Balance</div>
                             <div data-tokens="algorand-mainnet"></div>
+                        </div>
+
+                        <div class="network-badge bsc"
+                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
+                            onclick="window.open('https://bscscan.com/address/0x103040454E7c923B4c65Bca7b0C76D73f1F19dBa', '_blank')">
+                            <div style="display: flex; align-items: center; gap: 0.75rem;">
+                                <img src="/bsc.png" alt="BSC" style="width: 32px; height: 32px; object-fit: contain;">
+                                <span style="font-weight: 700;">BNB Chain</span>
+                            </div>
+                            <div class="balance-amount" data-balance="bsc-mainnet"
+                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
+                                Loading...
+                            </div>
+                            <div style="font-size: 0.7rem; color: var(--text-muted);">BNB Balance</div>
+                            <div data-tokens="bsc-mainnet"></div>
                         </div>
 
                     </div>
@@ -2253,6 +2278,10 @@ result = <span class="code-function">verify_payment</span>(
                     address: '5DPPDQNYUPCTXRZWRYSF3WPYU6RKAUR25F3YG4EKXQRHV5AUAI62H5GXL4',
                     isAlgorand: true
                 },
+                'bsc-mainnet': {
+                    rpc: 'https://bsc-dataseed.binance.org/',
+                    address: '0x103040454E7c923B4c65Bca7b0C76D73f1F19dBa'
+                },
             };
 
             // Fetch balance for each network
@@ -2419,6 +2448,7 @@ result = <span class="code-function">verify_payment</span>(
             'hyperevm-mainnet': ['usdc'],
             'unichain-mainnet': ['usdc'],
             'monad-mainnet': ['usdc', 'ausd'],
+            'bsc-mainnet': ['ausd'],
             // Testnets (USDC only for now)
             'ethereum-testnet': ['usdc'],
             'base-testnet': ['usdc'],

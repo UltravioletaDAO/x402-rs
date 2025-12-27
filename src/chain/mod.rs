@@ -61,8 +61,6 @@ impl FromEnvByNetworkBuild for NetworkProvider {
                 let provider = AlgorandProvider::from_env(network).await?;
                 provider.map(NetworkProvider::Algorand)
             }
-            #[cfg(not(feature = "algorand"))]
-            NetworkFamily::Algorand => None,
         };
         Ok(provider)
     }

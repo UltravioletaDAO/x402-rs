@@ -2234,18 +2234,21 @@ result = <span class="code-function">verify_payment</span>(
                     address: MAINNET_ADDRESS
                 },
                 'near-mainnet': {
-                    apis: [
-                        'https://api.nearblocks.io/v1/account/uvd-facilitator.near',
-                        'https://api3.nearblocks.io/v1/account/uvd-facilitator.near',
-                        'https://api-beta.nearblocks.io/v1/account/uvd-facilitator.near'
+                    rpcs: [
+                        'https://free.rpc.fastnear.com',
+                        'https://near.lava.build',
+                        'https://near.drpc.org',
+                        'https://near.blockpi.network/v1/rpc/public'
                     ],
                     address: 'uvd-facilitator.near',
                     isNear: true
                 },
                 'near-testnet': {
-                    apis: [
-                        'https://api-testnet.nearblocks.io/v1/account/uvd-facilitator.testnet',
-                        'https://api3-testnet.nearblocks.io/v1/account/uvd-facilitator.testnet'
+                    rpcs: [
+                        'https://test.rpc.fastnear.com',
+                        'https://rpc.testnet.fastnear.com',
+                        'https://neart.lava.build',
+                        'https://near-testnet.drpc.org'
                     ],
                     address: 'uvd-facilitator.testnet',
                     isNear: true
@@ -2320,20 +2323,34 @@ result = <span class="code-function">verify_payment</span>(
                             }
                         }
                     } else if (config.isNear) {
-                        // NEAR uses NearBlocks API with multi-RPC rotation
-                        const apis = config.apis || [config.api];
+                        // NEAR uses RPC view_account with multi-RPC rotation
+                        const rpcs = config.rpcs || [config.rpc];
                         let success = false;
                         let lastError = null;
 
-                        for (const apiUrl of apis) {
+                        for (const rpcUrl of rpcs) {
                             try {
-                                const response = await fetch(apiUrl, { signal: AbortSignal.timeout(5000) });
+                                const response = await fetch(rpcUrl, {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({
+                                        jsonrpc: '2.0',
+                                        id: 'balance',
+                                        method: 'query',
+                                        params: {
+                                            request_type: 'view_account',
+                                            finality: 'final',
+                                            account_id: config.address
+                                        }
+                                    }),
+                                    signal: AbortSignal.timeout(5000)
+                                });
                                 if (!response.ok) continue;
                                 const data = await response.json();
 
-                                if (data.account && data.account.length > 0 && data.account[0].amount) {
+                                if (data.result && data.result.amount) {
                                     // NEAR balance is in yoctoNEAR (1 NEAR = 1e24 yoctoNEAR)
-                                    const balanceYocto = BigInt(data.account[0].amount);
+                                    const balanceYocto = BigInt(data.result.amount);
                                     const balanceNEAR = Number(balanceYocto) / 1e24;
                                     const formatted = balanceNEAR.toFixed(4);
 

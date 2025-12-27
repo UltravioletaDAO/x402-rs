@@ -23,10 +23,12 @@ use stellar_strkey::{
     ed25519::PrivateKey as StellarPrivateKey, ed25519::PublicKey as StellarPublicKey, Contract,
 };
 use stellar_xdr::curr::{
-    DecoratedSignature, Hash, HostFunction, InvokeHostFunctionOp, Limits, Memo, MuxedAccount,
-    Operation, OperationBody, Preconditions, ReadXdr, SequenceNumber, SorobanAuthorizationEntry,
-    SorobanAuthorizedFunction, SorobanCredentials, SorobanTransactionData, Transaction,
-    TransactionEnvelope, TransactionExt, TransactionV1Envelope, Uint256, VecM, WriteXdr,
+    DecoratedSignature, Hash, HashIdPreimage, HashIdPreimageSorobanAuthorization, HostFunction,
+    InvokeHostFunctionOp, Limits, Memo, MuxedAccount, Operation, OperationBody, Preconditions,
+    ReadXdr, SequenceNumber, SorobanAddressCredentials, SorobanAuthorizationEntry,
+    SorobanAuthorizedFunction, SorobanAuthorizedInvocation, SorobanCredentials,
+    SorobanTransactionData, Transaction, TransactionEnvelope, TransactionExt,
+    TransactionV1Envelope, Uint256, VecM, WriteXdr,
 };
 use tokio::sync::RwLock;
 
@@ -559,17 +561,37 @@ impl StellarProvider {
         };
 
         // Get the signature from credentials
+        // Stellar supports two signature formats:
+        // 1. ScVal::Bytes - single ed25519 signature (64 bytes)
+        // 2. ScVal::Vec - multi-sig with AccountEd25519Signature entries
         let signature_bytes = match &credentials.signature {
             stellar_xdr::curr::ScVal::Bytes(bytes) => bytes.as_slice(),
             stellar_xdr::curr::ScVal::Vec(Some(vec)) if !vec.is_empty() => {
-                // Handle map format { public_key, signature }
-                // For now, we'll accept if there's valid structure
-                tracing::debug!("Authorization uses Vec signature format");
-                return Ok(()); // Accept for now, full validation requires more context
+                // Multi-sig format: Vec<AccountEd25519Signature>
+                // Each entry is a Map with "public_key" (32 bytes) and "signature" (64 bytes)
+                // We need to find a signature from the expected address and verify it
+                tracing::debug!(
+                    "Authorization uses Vec signature format (multi-sig), {} entries",
+                    vec.len()
+                );
+                return self.verify_multisig_authorization(vec, expected_address, auth_entry);
             }
-            _ => {
-                tracing::warn!("Unexpected signature format in authorization entry");
-                return Ok(()); // Be permissive for now
+            stellar_xdr::curr::ScVal::Vec(None) | stellar_xdr::curr::ScVal::Vec(Some(_)) => {
+                // Empty Vec is invalid
+                tracing::warn!("Empty Vec signature format - rejecting");
+                return Err(StellarError::InvalidSignature {
+                    address: expected_address.to_string(),
+                });
+            }
+            other => {
+                // SECURITY: Reject unknown signature formats
+                tracing::warn!(
+                    "Unexpected signature format in authorization entry: {:?} - rejecting",
+                    std::mem::discriminant(other)
+                );
+                return Err(StellarError::InvalidSignature {
+                    address: expected_address.to_string(),
+                });
             }
         };
 
@@ -592,8 +614,8 @@ impl StellarProvider {
             }
         })?;
 
-        // Compute the signature preimage
-        let preimage = self.compute_auth_entry_preimage(auth_entry)?;
+        // Compute the signature preimage using credentials and invocation
+        let preimage = self.compute_auth_entry_preimage(credentials, &auth_entry.root_invocation)?;
 
         // Verify the signature
         let signature =
@@ -608,29 +630,159 @@ impl StellarProvider {
             })
     }
 
+    /// Verify multi-sig authorization (Vec<AccountEd25519Signature> format)
+    ///
+    /// In Stellar multi-sig, the signature is a Vec of AccountEd25519Signature entries.
+    /// Each entry contains a public_key (32 bytes) and signature (64 bytes).
+    /// We need to find an entry matching the expected address and verify it.
+    fn verify_multisig_authorization(
+        &self,
+        signatures: &stellar_xdr::curr::VecM<stellar_xdr::curr::ScVal>,
+        expected_address: &str,
+        auth_entry: &SorobanAuthorizationEntry,
+    ) -> Result<(), StellarError> {
+        use stellar_xdr::curr::ScVal;
+
+        // Extract credentials to get nonce and expiration for preimage
+        let credentials = match &auth_entry.credentials {
+            SorobanCredentials::Address(addr_creds) => addr_creds,
+            SorobanCredentials::SourceAccount => {
+                return Err(StellarError::InvalidSignature {
+                    address: expected_address.to_string(),
+                });
+            }
+        };
+
+        // Get the expected public key bytes from the address
+        let expected_pubkey = StellarPublicKey::from_string(expected_address)
+            .map_err(|_| StellarError::InvalidSignature {
+                address: expected_address.to_string(),
+            })?
+            .0;
+
+        // Compute the preimage hash for signature verification
+        let preimage = self.compute_auth_entry_preimage(credentials, &auth_entry.root_invocation)?;
+
+        // Search through all signature entries for one matching our expected address
+        for (idx, entry) in signatures.iter().enumerate() {
+            // Each entry should be a Map with "public_key" and "signature" keys
+            let map = match entry {
+                ScVal::Map(Some(map)) => map,
+                _ => {
+                    tracing::debug!("Signature entry {} is not a Map, skipping", idx);
+                    continue;
+                }
+            };
+
+            let mut found_pubkey: Option<[u8; 32]> = None;
+            let mut found_sig: Option<[u8; 64]> = None;
+
+            // Extract public_key and signature from the map
+            for pair in map.iter() {
+                let key_name = match &pair.key {
+                    ScVal::Symbol(sym) => sym.to_string(),
+                    _ => continue,
+                };
+
+                match key_name.as_str() {
+                    "public_key" => {
+                        if let ScVal::Bytes(bytes) = &pair.val {
+                            if bytes.len() == 32 {
+                                let mut arr = [0u8; 32];
+                                arr.copy_from_slice(bytes.as_slice());
+                                found_pubkey = Some(arr);
+                            }
+                        }
+                    }
+                    "signature" => {
+                        if let ScVal::Bytes(bytes) = &pair.val {
+                            if bytes.len() == 64 {
+                                let mut arr = [0u8; 64];
+                                arr.copy_from_slice(bytes.as_slice());
+                                found_sig = Some(arr);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            // Check if this entry matches our expected address
+            if let (Some(pubkey), Some(sig)) = (found_pubkey, found_sig) {
+                if pubkey == expected_pubkey {
+                    tracing::debug!(
+                        "Found matching signature entry for address {}",
+                        expected_address
+                    );
+
+                    // Verify the ed25519 signature
+                    let verifying_key = VerifyingKey::from_bytes(&pubkey).map_err(|_| {
+                        StellarError::InvalidSignature {
+                            address: expected_address.to_string(),
+                        }
+                    })?;
+
+                    let signature = Signature::from_slice(&sig).map_err(|_| {
+                        StellarError::InvalidSignature {
+                            address: expected_address.to_string(),
+                        }
+                    })?;
+
+                    return verifying_key
+                        .verify(&preimage, &signature)
+                        .map_err(|_| StellarError::InvalidSignature {
+                            address: expected_address.to_string(),
+                        });
+                }
+            }
+        }
+
+        // No matching signature found for the expected address
+        tracing::warn!(
+            "No valid signature found for address {} in {} multi-sig entries",
+            expected_address,
+            signatures.len()
+        );
+        Err(StellarError::InvalidSignature {
+            address: expected_address.to_string(),
+        })
+    }
+
     /// Compute the preimage for authorization entry signing
+    ///
+    /// The preimage is SHA256 of the XDR-encoded HashIdPreimageSorobanAuthorization,
+    /// which contains:
+    /// - network_id: The network passphrase hash
+    /// - nonce: The authorization nonce
+    /// - signature_expiration_ledger: When the signature expires
+    /// - invocation: The authorized function invocation (without the signature)
+    ///
+    /// IMPORTANT: This does NOT include the signature itself - you cannot verify
+    /// a signature against data containing that signature.
     fn compute_auth_entry_preimage(
         &self,
-        auth_entry: &SorobanAuthorizationEntry,
+        credentials: &SorobanAddressCredentials,
+        invocation: &SorobanAuthorizedInvocation,
     ) -> Result<Vec<u8>, StellarError> {
-        // The preimage is: network_id + ENVELOPE_TYPE_SOROBAN_AUTHORIZATION + auth_entry_xdr
-        let mut preimage = Vec::new();
+        // Build the HashIdPreimageSorobanAuthorization structure
+        // This is what the Stellar SDK signs when creating authorization signatures
+        let preimage_data = HashIdPreimageSorobanAuthorization {
+            network_id: self.chain.network_id(),
+            nonce: credentials.nonce,
+            signature_expiration_ledger: credentials.signature_expiration_ledger,
+            invocation: invocation.clone(),
+        };
 
-        // Add network ID (32 bytes)
-        preimage.extend_from_slice(&self.chain.network_id().0);
+        // Wrap in HashIdPreimage enum for proper XDR encoding
+        let preimage = HashIdPreimage::SorobanAuthorization(preimage_data);
 
-        // Add envelope type (4 bytes, big-endian)
-        // ENVELOPE_TYPE_SOROBAN_AUTHORIZATION = 10
-        preimage.extend_from_slice(&10u32.to_be_bytes());
-
-        // Add the authorization entry XDR
-        let auth_xdr = auth_entry
+        // Encode to XDR
+        let preimage_xdr = preimage
             .to_xdr(Limits::none())
-            .map_err(|e| StellarError::InvalidXdr(format!("Failed to encode auth entry: {}", e)))?;
-        preimage.extend_from_slice(&auth_xdr);
+            .map_err(|e| StellarError::InvalidXdr(format!("Failed to encode preimage: {}", e)))?;
 
-        // Hash the preimage
-        let hash = Sha256::digest(&preimage);
+        // Hash the XDR-encoded preimage
+        let hash = Sha256::digest(&preimage_xdr);
         Ok(hash.to_vec())
     }
 

@@ -1516,9 +1516,23 @@
                             <div style="font-size: 0.7rem; color: var(--text-muted);">ALGO</div>
                             <div data-tokens="algorand-testnet"></div>
                         </div>
+                        <div class="network-badge bsc"
+                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
+                            onclick="window.open('https://testnet.bscscan.com/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
+                            <div style="display: flex; align-items: center; gap: 0.75rem;">
+                                <img src="/bsc.png" alt="BSC" style="width: 32px; height: 32px; object-fit: contain;">
+                                <span style="font-weight: 700;">BSC Testnet</span>
+                            </div>
+                            <div class="balance-amount" data-balance="bsc-testnet"
+                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
+                                Loading...
+                            </div>
+                            <div style="font-size: 0.7rem; color: var(--text-muted);">tBNB</div>
+                            <div data-tokens="bsc-testnet"></div>
+                        </div>
                         <div class="network-badge solana"
                             style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://solscan.io/account/6xNPewUdKRbEZDReQdpyfNUdgNg8QRc8Mt263T5GZSRv?cluster=devnet', '_blank')">
+                            onclick="window.open('https://solscan.io/account/6xNPewUdKRbEZDReQdpyfNUdgNg8QRc8Mt263T5GZSRv?cluster=devnet', '_blank'">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
                                 <img src="/solana.png" alt="Solana" style="width: 32px; height: 32px; object-fit: contain;">
                                 <span style="font-weight: 700;">Solana Devnet</span>
@@ -2282,6 +2296,10 @@ result = <span class="code-function">verify_payment</span>(
                     rpc: 'https://bsc-dataseed.binance.org/',
                     address: '0x103040454E7c923B4c65Bca7b0C76D73f1F19dBa'
                 },
+                'bsc-testnet': {
+                    rpc: 'https://data-seed-prebsc-1-s1.binance.org:8545/',
+                    address: '0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8'
+                },
             };
 
             // Fetch balance for each network
@@ -2459,6 +2477,7 @@ result = <span class="code-function">verify_payment</span>(
             'celo-testnet': ['usdc'],
             'unichain-testnet': ['usdc'],
             'hyperevm-testnet': ['usdc'],
+            'bsc-testnet': ['ausd'],
             // Non-EVM (Solana/Fogo/NEAR/Stellar use different standards)
             'solana-mainnet': ['usdc', 'ausd'],
             'solana-devnet': ['usdc'],

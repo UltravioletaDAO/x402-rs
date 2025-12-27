@@ -1294,7 +1294,7 @@
 
                         <div class="network-badge bsc"
                             style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://bscscan.com/address/0x103040454E7c923B4c65Bca7b0C76D73f1F19dBa', '_blank')">
+                            onclick="window.open('https://bscscan.com/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
                                 <img src="/bsc.png" alt="BSC" style="width: 32px; height: 32px; object-fit: contain;">
                                 <span style="font-weight: 700;">BNB Chain</span>
@@ -1515,20 +1515,6 @@
                             </div>
                             <div style="font-size: 0.7rem; color: var(--text-muted);">ALGO</div>
                             <div data-tokens="algorand-testnet"></div>
-                        </div>
-                        <div class="network-badge bsc"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://testnet.bscscan.com/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/bsc.png" alt="BSC" style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">BSC Testnet</span>
-                            </div>
-                            <div class="balance-amount" data-balance="bsc-testnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">tBNB</div>
-                            <div data-tokens="bsc-testnet"></div>
                         </div>
                         <div class="network-badge solana"
                             style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
@@ -2248,12 +2234,19 @@ result = <span class="code-function">verify_payment</span>(
                     address: MAINNET_ADDRESS
                 },
                 'near-mainnet': {
-                    api: 'https://api.nearblocks.io/v1/account/uvd-facilitator.near',
+                    apis: [
+                        'https://api.nearblocks.io/v1/account/uvd-facilitator.near',
+                        'https://api3.nearblocks.io/v1/account/uvd-facilitator.near',
+                        'https://api-beta.nearblocks.io/v1/account/uvd-facilitator.near'
+                    ],
                     address: 'uvd-facilitator.near',
                     isNear: true
                 },
                 'near-testnet': {
-                    api: 'https://api-testnet.nearblocks.io/v1/account/uvd-facilitator.testnet',
+                    apis: [
+                        'https://api-testnet.nearblocks.io/v1/account/uvd-facilitator.testnet',
+                        'https://api3-testnet.nearblocks.io/v1/account/uvd-facilitator.testnet'
+                    ],
                     address: 'uvd-facilitator.testnet',
                     isNear: true
                 },
@@ -2294,11 +2287,7 @@ result = <span class="code-function">verify_payment</span>(
                 },
                 'bsc-mainnet': {
                     rpc: 'https://bsc-dataseed.binance.org/',
-                    address: '0x103040454E7c923B4c65Bca7b0C76D73f1F19dBa'
-                },
-                'bsc-testnet': {
-                    rpc: 'https://data-seed-prebsc-1-s1.binance.org:8545/',
-                    address: '0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8'
+                    address: MAINNET_ADDRESS
                 },
             };
 
@@ -2331,20 +2320,37 @@ result = <span class="code-function">verify_payment</span>(
                             }
                         }
                     } else if (config.isNear) {
-                        // NEAR uses NearBlocks API (CORS-enabled)
-                        const response = await fetch(config.api);
-                        const data = await response.json();
+                        // NEAR uses NearBlocks API with multi-RPC rotation
+                        const apis = config.apis || [config.api];
+                        let success = false;
+                        let lastError = null;
 
-                        if (data.account && data.account.length > 0 && data.account[0].amount) {
-                            // NEAR balance is in yoctoNEAR (1 NEAR = 1e24 yoctoNEAR)
-                            const balanceYocto = BigInt(data.account[0].amount);
-                            const balanceNEAR = Number(balanceYocto) / 1e24;
-                            const formatted = balanceNEAR.toFixed(4);
+                        for (const apiUrl of apis) {
+                            try {
+                                const response = await fetch(apiUrl, { signal: AbortSignal.timeout(5000) });
+                                if (!response.ok) continue;
+                                const data = await response.json();
 
-                            const balanceEl = document.querySelector(`[data-balance="${network}"]`);
-                            if (balanceEl) {
-                                balanceEl.textContent = formatted;
+                                if (data.account && data.account.length > 0 && data.account[0].amount) {
+                                    // NEAR balance is in yoctoNEAR (1 NEAR = 1e24 yoctoNEAR)
+                                    const balanceYocto = BigInt(data.account[0].amount);
+                                    const balanceNEAR = Number(balanceYocto) / 1e24;
+                                    const formatted = balanceNEAR.toFixed(4);
+
+                                    const balanceEl = document.querySelector(`[data-balance="${network}"]`);
+                                    if (balanceEl) {
+                                        balanceEl.textContent = formatted;
+                                    }
+                                    success = true;
+                                    break;
+                                }
+                            } catch (e) {
+                                lastError = e;
+                                continue; // Try next RPC
                             }
+                        }
+                        if (!success && lastError) {
+                            throw lastError;
                         }
                     } else if (config.isStellar) {
                         // Stellar uses Horizon API
@@ -2477,7 +2483,6 @@ result = <span class="code-function">verify_payment</span>(
             'celo-testnet': ['usdc'],
             'unichain-testnet': ['usdc'],
             'hyperevm-testnet': ['usdc'],
-            'bsc-testnet': ['ausd'],
             // Non-EVM (Solana/Fogo/NEAR/Stellar use different standards)
             'solana-mainnet': ['usdc', 'ausd'],
             'solana-devnet': ['usdc'],

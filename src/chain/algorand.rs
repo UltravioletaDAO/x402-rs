@@ -19,10 +19,10 @@
 #![cfg(feature = "algorand")]
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use once_cell::sync::OnceCell;
 use std::fmt::{Debug, Formatter};
 use std::str::FromStr;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 
 use algonaut::algod::v2::Algod;
 use algonaut::core::Address as AlgoAddress;
@@ -33,6 +33,7 @@ use crate::chain::{FacilitatorLocalError, FromEnvByNetworkBuild, NetworkProvider
 use crate::facilitator::Facilitator;
 use crate::from_env;
 use crate::network::Network;
+use crate::nonce_store::{algorand_nonce_key, algorand_ttl_seconds, NonceStore, NonceStoreError};
 use crate::types::{
     ExactAlgorandPayload, ExactPaymentPayload, FacilitatorErrorReason, MixedAddress, Scheme,
     SettleRequest, SettleResponse, SupportedPaymentKind, SupportedPaymentKindExtra,
@@ -237,6 +238,24 @@ impl From<AlgorandAddress> for MixedAddress {
 ///
 /// Implements USDC payments on Algorand using atomic transaction groups.
 /// The facilitator receives partially-signed atomic groups, verifies them,
+/// Global nonce store for replay protection across all Algorand providers.
+/// Initialized lazily on first use.
+static GLOBAL_NONCE_STORE: OnceCell<Arc<dyn NonceStore>> = OnceCell::new();
+
+/// Get or initialize the global nonce store.
+/// Uses DynamoDB if NONCE_STORE_TABLE_NAME is configured, otherwise falls back to memory.
+async fn get_global_nonce_store() -> Arc<dyn NonceStore> {
+    // If already initialized, return it
+    if let Some(store) = GLOBAL_NONCE_STORE.get() {
+        return store.clone();
+    }
+
+    // Initialize and store
+    let store = crate::nonce_store::create_nonce_store().await;
+    let _ = GLOBAL_NONCE_STORE.set(store.clone());
+    store
+}
+
 /// signs the fee transaction, and submits the complete group.
 #[derive(Clone)]
 pub struct AlgorandProvider {
@@ -252,8 +271,6 @@ pub struct AlgorandProvider {
     http_client: reqwest::Client,
     /// Network configuration
     chain: AlgorandChain,
-    /// Nonce store for replay protection (group_id -> confirmation_round)
-    nonce_store: Arc<RwLock<std::collections::HashMap<[u8; 32], u64>>>,
 }
 
 impl Debug for AlgorandProvider {
@@ -266,6 +283,38 @@ impl Debug for AlgorandProvider {
 }
 
 impl AlgorandProvider {
+    /// Get the chain name for nonce store keys.
+    fn chain_name(&self) -> &'static str {
+        match self.chain.network {
+            Network::Algorand => "algorand",
+            Network::AlgorandTestnet => "algorand-testnet",
+            _ => "algorand-unknown",
+        }
+    }
+
+    /// Atomically check if group_id is unused and mark it as used.
+    /// Must be called BEFORE submitting transaction to blockchain.
+    async fn check_and_mark_group_used(
+        &self,
+        group_id: &[u8; 32],
+        current_round: u64,
+        last_valid_round: u64,
+    ) -> Result<(), AlgorandError> {
+        let store = get_global_nonce_store().await;
+        let key = algorand_nonce_key(self.chain_name(), group_id);
+        let ttl = algorand_ttl_seconds(current_round, last_valid_round);
+
+        store
+            .check_and_mark_used(&key, ttl)
+            .await
+            .map_err(|e| match e {
+                NonceStoreError::NonceAlreadyUsed(_) => AlgorandError::InvalidAtomicGroup(
+                    "Transaction group already processed (replay attempt)".to_string(),
+                ),
+                other => AlgorandError::RpcError(format!("Nonce store error: {}", other)),
+            })
+    }
+
     /// Create a new Algorand provider
     pub fn try_new(
         mnemonic: String,
@@ -309,7 +358,6 @@ impl AlgorandProvider {
             algod_url: effective_url.to_string(),
             http_client,
             chain,
-            nonce_store: Arc::new(RwLock::new(std::collections::HashMap::new())),
         })
     }
 
@@ -493,6 +541,7 @@ impl AlgorandProvider {
             amount,
             recipient: receiver.to_string(),
             current_round,
+            last_valid_round,
         })
     }
 
@@ -502,6 +551,15 @@ impl AlgorandProvider {
         verification: &VerifyGroupResult,
         payload: &ExactAlgorandPayload,
     ) -> Result<String, AlgorandError> {
+        // CRITICAL: Atomically check and mark group_id as used BEFORE submitting to blockchain
+        // This prevents replay attacks even if the facilitator crashes after submission
+        self.check_and_mark_group_used(
+            &verification.group_id,
+            verification.current_round,
+            verification.last_valid_round,
+        )
+        .await?;
+
         // Sign the fee transaction
         let signed_fee = self
             .account
@@ -550,11 +608,8 @@ impl AlgorandProvider {
         // Wait for confirmation
         self.wait_for_confirmation(&tx_id).await?;
 
-        // Store group ID to prevent replay
-        {
-            let mut store = self.nonce_store.write().await;
-            store.insert(verification.group_id, verification.current_round);
-        }
+        // Note: group_id was already marked as used at the start of submit_group()
+        // via check_and_mark_group_used(), stored in persistent DynamoDB
 
         Ok(tx_id)
     }
@@ -714,6 +769,7 @@ pub struct VerifyGroupResult {
     pub amount: u64,
     pub recipient: String,
     pub current_round: u64,
+    pub last_valid_round: u64,
 }
 
 

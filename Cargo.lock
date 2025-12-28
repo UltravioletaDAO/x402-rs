@@ -1312,6 +1312,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-dynamodb"
+version = "1.101.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6f98cd9e5f2fc790aff1f393bc3c8680deea31c05d3c6f23b625cdc50b1b6b4"
+dependencies = [
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 0.2.12",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-s3"
 version = "1.118.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10888,12 +10910,13 @@ dependencies = [
 
 [[package]]
 name = "x402-rs"
-version = "1.15.15"
+version = "1.15.16"
 dependencies = [
  "algonaut",
  "alloy",
  "async-trait",
  "aws-config",
+ "aws-sdk-dynamodb",
  "aws-sdk-s3",
  "axum",
  "base64 0.22.1",
@@ -10903,6 +10926,7 @@ dependencies = [
  "dashmap 6.1.0",
  "dotenvy",
  "ed25519-dalek 2.2.0",
+ "hex",
  "near-chain-configs",
  "near-crypto",
  "near-jsonrpc-client",

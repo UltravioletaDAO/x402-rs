@@ -14,9 +14,9 @@
 use alloy::hex;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 use stellar_strkey::{
@@ -30,9 +30,9 @@ use stellar_xdr::curr::{
     SorobanTransactionData, Transaction, TransactionEnvelope, TransactionExt,
     TransactionV1Envelope, Uint256, VecM, WriteXdr,
 };
-use tokio::sync::RwLock;
 
 use crate::chain::{FacilitatorLocalError, FromEnvByNetworkBuild, NetworkProviderOps};
+use crate::nonce_store::{stellar_nonce_key, stellar_ttl_seconds, NonceStore, NonceStoreError};
 use crate::facilitator::Facilitator;
 use crate::from_env;
 use crate::network::Network;
@@ -352,6 +352,24 @@ struct HorizonAccount {
 /// Stellar payment provider
 ///
 /// Implements USDC payments on Stellar using Soroban smart contract
+/// Global nonce store for replay protection across all Stellar providers.
+/// Initialized lazily on first use.
+static GLOBAL_NONCE_STORE: OnceCell<Arc<dyn NonceStore>> = OnceCell::new();
+
+/// Get or initialize the global nonce store.
+/// Uses DynamoDB if NONCE_STORE_TABLE_NAME is configured, otherwise falls back to memory.
+async fn get_global_nonce_store() -> Arc<dyn NonceStore> {
+    // If already initialized, return it
+    if let Some(store) = GLOBAL_NONCE_STORE.get() {
+        return store.clone();
+    }
+
+    // Initialize and store
+    let store = crate::nonce_store::create_nonce_store().await;
+    let _ = GLOBAL_NONCE_STORE.set(store.clone());
+    store
+}
+
 /// authorization entries. The facilitator receives pre-signed authorization
 /// entries and wraps them in transactions, paying the fees.
 #[derive(Clone)]
@@ -366,9 +384,6 @@ pub struct StellarProvider {
     chain: StellarChain,
     /// Custom RPC URL (from environment) or None to use defaults
     rpc_url: Option<String>,
-    /// Nonce store for replay protection
-    /// Key: (from_address, nonce), Value: expiration_ledger
-    nonce_store: Arc<RwLock<HashMap<(String, u64), u32>>>,
 }
 
 impl Debug for StellarProvider {
@@ -412,7 +427,6 @@ impl StellarProvider {
             http_client: Arc::new(reqwest::Client::new()),
             chain,
             rpc_url,
-            nonce_store: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -786,29 +800,61 @@ impl StellarProvider {
         Ok(hash.to_vec())
     }
 
-    /// Check if a nonce has been used
+    /// Get the chain name for nonce store keys
+    fn chain_name(&self) -> &'static str {
+        match self.chain.network {
+            Network::Stellar => "stellar",
+            Network::StellarTestnet => "stellar-testnet",
+            _ => "stellar-unknown",
+        }
+    }
+
+    /// Check if a nonce has been used (read-only, for verification)
     async fn check_nonce_unused(&self, from: &str, nonce: u64) -> Result<(), StellarError> {
-        let store = self.nonce_store.read().await;
-        if store.contains_key(&(from.to_string(), nonce)) {
-            return Err(StellarError::NonceReused {
+        let store = get_global_nonce_store().await;
+        let key = stellar_nonce_key(self.chain_name(), from, nonce);
+
+        match store.is_used(&key).await {
+            Ok(true) => Err(StellarError::NonceReused {
                 from: from.to_string(),
                 nonce,
-            });
+            }),
+            Ok(false) => Ok(()),
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to check nonce store, allowing (fail-open)");
+                Ok(())
+            }
         }
-        Ok(())
     }
 
-    /// Mark a nonce as used
-    async fn mark_nonce_used(&self, from: &str, nonce: u64, expiry_ledger: u32) {
-        let mut store = self.nonce_store.write().await;
-        store.insert((from.to_string(), nonce), expiry_ledger);
-    }
+    /// Atomically check and mark a nonce as used (for settlement)
+    /// Returns error if nonce was already used (replay attempt)
+    async fn check_and_mark_nonce_used(
+        &self,
+        from: &str,
+        nonce: u64,
+        current_ledger: u32,
+        expiry_ledger: u32,
+    ) -> Result<(), StellarError> {
+        let store = get_global_nonce_store().await;
+        let key = stellar_nonce_key(self.chain_name(), from, nonce);
+        let ttl = stellar_ttl_seconds(current_ledger, expiry_ledger);
 
-    /// Clean up expired nonces
-    #[allow(dead_code)]
-    async fn cleanup_expired_nonces(&self, current_ledger: u32) {
-        let mut store = self.nonce_store.write().await;
-        store.retain(|_, expiry| *expiry > current_ledger);
+        match store.check_and_mark_used(&key, ttl).await {
+            Ok(()) => Ok(()),
+            Err(NonceStoreError::NonceAlreadyUsed(_)) => {
+                Err(StellarError::NonceReused {
+                    from: from.to_string(),
+                    nonce,
+                })
+            }
+            Err(e) => {
+                // For other errors, log and fail-open to avoid blocking legitimate payments
+                // This is a tradeoff: potential replay vs service availability
+                tracing::error!(error = %e, "Nonce store error, failing open");
+                Ok(())
+            }
+        }
     }
 
     /// Verify a payment request
@@ -1110,6 +1156,18 @@ impl StellarProvider {
         &self,
         verification: &VerifyPaymentResult,
     ) -> Result<[u8; 32], FacilitatorLocalError> {
+        // Atomically check and mark nonce as used BEFORE submitting to blockchain
+        // This prevents concurrent replay attempts
+        let current_ledger = self.get_latest_ledger().await.map_err(FacilitatorLocalError::from)?;
+        self.check_and_mark_nonce_used(
+            &verification.payer.address,
+            verification.nonce,
+            current_ledger,
+            verification.expiry_ledger,
+        )
+        .await
+        .map_err(FacilitatorLocalError::from)?;
+
         tracing::info!("submit_transaction: Getting facilitator account sequence");
         // Get facilitator's account sequence number
         let account_sequence = self
@@ -1296,14 +1354,6 @@ impl StellarProvider {
 
         // Poll for transaction result
         let tx_hash = self.wait_for_transaction(&send_result.hash).await?;
-
-        // Mark nonce as used
-        self.mark_nonce_used(
-            &verification.payer.address,
-            verification.nonce,
-            verification.expiry_ledger,
-        )
-        .await;
 
         Ok(tx_hash)
     }

@@ -28,6 +28,7 @@ pub mod fhe_proxy;
 pub mod from_env;
 pub mod handlers;
 pub mod network;
+pub mod nonce_store;
 pub mod provider_cache;
 pub mod sig_down;
 pub mod telemetry;

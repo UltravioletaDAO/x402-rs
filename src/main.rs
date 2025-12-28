@@ -50,6 +50,7 @@ mod fhe_proxy;
 mod from_env;
 mod handlers;
 mod network;
+mod nonce_store;
 mod provider_cache;
 mod sig_down;
 mod telemetry;

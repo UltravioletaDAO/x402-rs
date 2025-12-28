@@ -416,6 +416,49 @@ resource "aws_iam_role" "ecs_task" {
   }
 }
 
+# DynamoDB table for nonce/replay protection (Stellar, Algorand)
+resource "aws_dynamodb_table" "nonce_store" {
+  name         = "facilitator-nonces"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "nonce_key"
+
+  attribute {
+    name = "nonce_key"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "expires_at"
+    enabled        = true
+  }
+
+  tags = {
+    Name        = "facilitator-nonces"
+    Environment = var.environment
+  }
+}
+
+# Policy for DynamoDB nonce store access (task role)
+resource "aws_iam_role_policy" "dynamodb_nonce_access" {
+  name = "DynamoDBNonceStoreAccess"
+  role = aws_iam_role.ecs_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:PutItem",
+          "dynamodb:GetItem",
+          "dynamodb:DescribeTable"
+        ]
+        Resource = aws_dynamodb_table.nonce_store.arn
+      }
+    ]
+  })
+}
+
 # ============================================================================
 # ECS Cluster
 # ============================================================================
@@ -503,6 +546,10 @@ resource "aws_ecs_task_definition" "facilitator" {
         {
           name  = "RPC_URL_OPTIMISM_SEPOLIA"
           value = "https://sepolia.optimism.io"
+        },
+        {
+          name  = "NONCE_STORE_TABLE_NAME"
+          value = aws_dynamodb_table.nonce_store.name
         }
       ]
 

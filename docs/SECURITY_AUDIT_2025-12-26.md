@@ -12,7 +12,7 @@
 The x402-rs payment facilitator underwent a comprehensive security audit. The codebase demonstrates strong security practices including proper mainnet/testnet key separation, AWS Secrets Manager integration, and comprehensive EIP-3009 signature verification for EVM chains.
 
 **Critical vulnerabilities found:** 0
-**High severity issues:** 3 (2 resolved, 1 pending)
+**High severity issues:** 3 (all resolved)
 **Medium severity issues:** 4
 **Low severity issues:** 3
 
@@ -24,7 +24,7 @@ The x402-rs payment facilitator underwent a comprehensive security audit. The co
 |----|----------|-------|--------|------|
 | HIGH-1 | 🟠 HIGH | IAM Policy Wrong Secret Prefix | ✅ RESOLVED | `terraform/modules/facilitator-service/` |
 | HIGH-2 | 🟠 HIGH | Stellar Signature Verification Bypass | ✅ RESOLVED (compiled, tested) | `src/chain/stellar.rs` |
-| HIGH-3 | 🟠 HIGH | In-Memory Nonce Store (Stellar/Algorand) | ⏳ PENDING | `src/chain/stellar.rs`, `src/chain/algorand.rs` |
+| HIGH-3 | 🟠 HIGH | In-Memory Nonce Store (Stellar/Algorand) | ✅ RESOLVED | `src/nonce_store.rs`, `src/chain/stellar.rs`, `src/chain/algorand.rs` |
 | MEDIUM-1 | 🟡 MEDIUM | Algorand Lease Field Not Enforced | ⏳ PENDING | `src/chain/algorand.rs` |
 | MEDIUM-2 | 🟡 MEDIUM | 6-Second Timestamp Grace Buffer | ℹ️ ACCEPTED | `src/chain/evm.rs` |
 | MEDIUM-3 | 🟡 MEDIUM | EVM Nonce Reset on Failure | ℹ️ ACCEPTED | `src/chain/evm.rs` |
@@ -156,45 +156,97 @@ cargo test     # OK - 96 tests passed
 
 ### HIGH-3: In-Memory Nonce Store (Stellar/Algorand)
 
-**Status:** ⏳ PENDING
+**Status:** ✅ RESOLVED (v1.15.16, task-def revision 123)
 **Location:**
-- `src/chain/stellar.rs:369` - `nonce_store: Arc<RwLock<HashMap<(String, u64), u32>>>`
-- `src/chain/algorand.rs:256` - `nonce_store: Arc<RwLock<HashMap<[u8; 32], u64>>>`
+- `src/nonce_store.rs` - NEW: NonceStore trait and DynamoDB implementation
+- `src/chain/stellar.rs` - Updated to use persistent store
+- `src/chain/algorand.rs` - Updated to use persistent store
 
-**Issue:**
-Both Stellar and Algorand providers use in-memory HashMap for replay protection. If the facilitator restarts, all nonce records are lost.
+**Original Issue:**
+Both Stellar and Algorand providers used in-memory HashMap for replay protection. If the facilitator restarted, all nonce records were lost.
 
-**Impact:**
-After a restart, previously-used authorization entries could potentially be replayed within their validity window. This is partially mitigated by:
-- Stellar: ledger-based expiration prevents replay after `signature_expiration_ledger`
-- Algorand: `last_valid` round prevents replay after that round
+**Fix Applied (2025-12-28):**
 
-**Risk Assessment:**
-- **Low volume:** Acceptable risk - restart window is small
-- **High volume:** Should implement persistent storage
+1. **Created `src/nonce_store.rs`** with:
+   - `NonceStore` trait with atomic `check_and_mark_used()` operation
+   - `DynamoNonceStore` - production implementation with conditional puts
+   - `MemoryNonceStore` - development/testing fallback
+   - TTL calculation helpers for automatic cleanup
 
-**Proposed Fix Options:**
+2. **Updated Stellar provider:**
+   - Removed in-memory HashMap
+   - Added `check_and_mark_nonce_used()` method
+   - **CRITICAL:** Nonce check-and-mark happens BEFORE blockchain submission
+   - Uses global OnceCell for shared store across all providers
 
-1. **Redis/ElastiCache** (Recommended for production)
-   - Add Redis client dependency
-   - Store nonces with TTL matching authorization expiry
-   - Survives restarts, distributed across instances
-   - Cost: ~$15-25/month for ElastiCache
+3. **Updated Algorand provider:**
+   - Removed in-memory HashMap
+   - Added `check_and_mark_group_used()` method
+   - **CRITICAL:** Group ID check-and-mark happens BEFORE transaction submission
 
-2. **DynamoDB**
+4. **Key format:**
+   - Stellar: `{chain}#{address}#{nonce}` (e.g., `stellar#GABC...#12345`)
+   - Algorand: `{chain}#group#{group_id_hex}`
+
+**Remaining Infrastructure Work:**
+
+To fully enable persistent storage, need to configure DynamoDB:
+
+1. **Create DynamoDB table:**
+   ```bash
+   aws dynamodb create-table \
+     --table-name facilitator-nonces \
+     --attribute-definitions AttributeName=pk,AttributeType=S \
+     --key-schema AttributeName=pk,KeyType=HASH \
+     --billing-mode PAY_PER_REQUEST \
+     --region us-east-2
+   ```
+
+2. **Enable TTL for automatic cleanup:**
+   ```bash
+   aws dynamodb update-time-to-live \
+     --table-name facilitator-nonces \
+     --time-to-live-specification Enabled=true,AttributeName=expires_at \
+     --region us-east-2
+   ```
+
+3. **Add environment variable to task definition:**
+   ```json
+   {"name": "NONCE_STORE_TABLE_NAME", "value": "facilitator-nonces"}
+   ```
+
+4. **Ensure IAM permissions** (ECS task role needs dynamodb:PutItem, GetItem, DescribeTable)
+
+**Current State:**
+- Code deployed in v1.15.16
+- DynamoDB table `facilitator-nonces` created with TTL enabled
+- Task definition revision 123 includes `NONCE_STORE_TABLE_NAME=facilitator-nonces`
+- Nonce store initializes lazily on first Stellar/Algorand payment
+
+**Verification (after DynamoDB setup):**
+```bash
+# Check logs show DynamoDB initialization
+aws logs filter-log-events --log-group-name /ecs/facilitator-production \
+  --filter-pattern "DynamoDB nonce store"
+
+# Make test Stellar/Algorand payment and verify nonce recorded
+```
+
+**Original Proposed Fix Options:**
+
+1. ~~**Redis/ElastiCache**~~ - Not chosen
+2. **DynamoDB** ✅ - Implemented
    - Serverless, scales automatically
    - TTL feature for automatic cleanup
+   - Conditional puts for atomic operations
    - Cost: Pay per request, likely <$5/month
 
-3. **Local SQLite with WAL**
-   - Persists to disk
-   - No additional infrastructure
-   - Only works for single-instance deployments
+3. ~~**Local SQLite with WAL**~~ - Not chosen
 
-**Implementation Plan (Redis):**
+**Legacy Implementation Plan (archived):**
 
 ```rust
-// Add to Cargo.toml
+// Old proposal - not used
 redis = { version = "0.24", features = ["tokio-comp", "connection-manager"] }
 
 // Stellar nonce store interface

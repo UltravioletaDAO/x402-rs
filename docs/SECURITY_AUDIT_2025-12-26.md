@@ -1,9 +1,9 @@
 # Security Audit Report - x402-rs Payment Facilitator
 
-**Audit Date:** December 26, 2025
+**Audit Date:** December 26-28, 2025
 **Auditor:** Claude Opus 4.5 (Security Specialist Agent)
-**Codebase Version:** v1.15.7 (commit 73b3ef7)
-**Status:** IN PROGRESS
+**Codebase Version:** v1.15.7 -> v1.15.16 (all HIGH issues resolved)
+**Status:** HIGH ISSUES RESOLVED - Medium/Low pending
 
 ---
 
@@ -188,102 +188,47 @@ Both Stellar and Algorand providers used in-memory HashMap for replay protection
    - Stellar: `{chain}#{address}#{nonce}` (e.g., `stellar#GABC...#12345`)
    - Algorand: `{chain}#group#{group_id_hex}`
 
-**Remaining Infrastructure Work:**
+**Infrastructure Completed (2025-12-28):**
 
-To fully enable persistent storage, need to configure DynamoDB:
+1. **DynamoDB table created:** `facilitator-nonces`
+   - Partition key: `nonce_key` (String)
+   - Billing mode: PAY_PER_REQUEST (on-demand)
+   - TTL enabled on `expires_at` attribute
 
-1. **Create DynamoDB table:**
-   ```bash
-   aws dynamodb create-table \
-     --table-name facilitator-nonces \
-     --attribute-definitions AttributeName=pk,AttributeType=S \
-     --key-schema AttributeName=pk,KeyType=HASH \
-     --billing-mode PAY_PER_REQUEST \
-     --region us-east-2
-   ```
+2. **Terraform updated:** `terraform/environments/production/main.tf`
+   - Added `aws_dynamodb_table.nonce_store` resource
+   - Added `aws_iam_role_policy.dynamodb_nonce_access` for task role
+   - Added `NONCE_STORE_TABLE_NAME` environment variable
 
-2. **Enable TTL for automatic cleanup:**
-   ```bash
-   aws dynamodb update-time-to-live \
-     --table-name facilitator-nonces \
-     --time-to-live-specification Enabled=true,AttributeName=expires_at \
-     --region us-east-2
-   ```
+3. **IAM permissions:** DynamoDB access attached to `facilitator-production-ecs-task` role
 
-3. **Add environment variable to task definition:**
-   ```json
-   {"name": "NONCE_STORE_TABLE_NAME", "value": "facilitator-nonces"}
-   ```
+4. **Production deployment:** Task definition revision 123+ with nonce store enabled
 
-4. **Ensure IAM permissions** (ECS task role needs dynamodb:PutItem, GetItem, DescribeTable)
+**Verification (2025-12-28):**
 
-**Current State:**
-- Code deployed in v1.15.16
-- DynamoDB table `facilitator-nonces` created with TTL enabled
-- Task definition revision 123 includes `NONCE_STORE_TABLE_NAME=facilitator-nonces`
-- Nonce store initializes lazily on first Stellar/Algorand payment
-
-**Verification (after DynamoDB setup):**
 ```bash
-# Check logs show DynamoDB initialization
-aws logs filter-log-events --log-group-name /ecs/facilitator-production \
-  --filter-pattern "DynamoDB nonce store"
+# DynamoDB stores nonces
+$ aws dynamodb scan --table-name facilitator-nonces --region us-east-2
+{
+  "Items": [
+    {
+      "chain": {"S": "stellar"},
+      "pk": {"S": "stellar#GC4B6HETXQF44KOC4XUXNRLXD7GTFM26UGHHGK4PTDMDWYG6M6M4OMMX#5883833029523059"},
+      "expires_at": {"N": "1766952280"}
+    }
+  ]
+}
 
-# Make test Stellar/Algorand payment and verify nonce recorded
+# Logs confirm DynamoDB in use
+INFO x402_rs::nonce_store: Initialized DynamoDB nonce store table_name=facilitator-nonces
+INFO x402_rs::nonce_store: Using DynamoDB nonce store for replay protection
 ```
 
-**Original Proposed Fix Options:**
-
-1. ~~**Redis/ElastiCache**~~ - Not chosen
-2. **DynamoDB** ✅ - Implemented
-   - Serverless, scales automatically
-   - TTL feature for automatic cleanup
-   - Conditional puts for atomic operations
-   - Cost: Pay per request, likely <$5/month
-
-3. ~~**Local SQLite with WAL**~~ - Not chosen
-
-**Legacy Implementation Plan (archived):**
-
-```rust
-// Old proposal - not used
-redis = { version = "0.24", features = ["tokio-comp", "connection-manager"] }
-
-// Stellar nonce store interface
-#[async_trait]
-trait NonceStore: Send + Sync {
-    async fn check_unused(&self, address: &str, nonce: u64) -> Result<bool, Error>;
-    async fn mark_used(&self, address: &str, nonce: u64, expiry_ledger: u32) -> Result<(), Error>;
-}
-
-// Redis implementation
-struct RedisNonceStore {
-    client: redis::Client,
-}
-
-impl NonceStore for RedisNonceStore {
-    async fn check_unused(&self, address: &str, nonce: u64) -> Result<bool, Error> {
-        let key = format!("nonce:stellar:{}:{}", address, nonce);
-        let exists: bool = self.client.get_async_connection().await?.exists(&key).await?;
-        Ok(!exists)
-    }
-
-    async fn mark_used(&self, address: &str, nonce: u64, expiry_ledger: u32) -> Result<(), Error> {
-        let key = format!("nonce:stellar:{}:{}", address, nonce);
-        // Set with TTL based on expected ledger close time (~5 seconds per ledger)
-        let ttl_seconds = (expiry_ledger - current_ledger) * 5 + 300; // Add buffer
-        self.client.get_async_connection().await?.set_ex(&key, "1", ttl_seconds).await?;
-        Ok(())
-    }
-}
-```
-
-**Files to Modify:**
-- `Cargo.toml` - Add redis dependency
-- `src/chain/stellar.rs` - Replace HashMap with NonceStore trait
-- `src/chain/algorand.rs` - Replace HashMap with NonceStore trait
-- `src/from_env.rs` - Add REDIS_URL configuration
-- `terraform/environments/production/` - Add ElastiCache resource
+**Why DynamoDB was chosen:**
+- Serverless, scales automatically with no provisioning
+- Built-in TTL for automatic cleanup of expired nonces
+- Conditional puts for atomic check-and-mark operations
+- Cost: Pay per request, likely <$1/month for facilitator volume
 
 ---
 
@@ -483,8 +428,8 @@ let placeholder_token = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 ## Recommended Priority Order
 
 1. ~~**HIGH-2** - Compile and test Stellar signature fix~~ ✅ DONE
-2. **MEDIUM-4** - Add NEAR storage deposit rate limiting
-3. **HIGH-3** - Add persistent nonce storage (Redis/DynamoDB)
+2. ~~**HIGH-3** - Add persistent nonce storage (DynamoDB)~~ ✅ DONE (v1.15.16)
+3. **MEDIUM-4** - Add NEAR storage deposit rate limiting
 4. **MEDIUM-1** - Enforce Algorand lease field (with client coordination)
 
 ---
@@ -493,8 +438,13 @@ let placeholder_token = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
 | File | Change Type | Status |
 |------|-------------|--------|
-| `src/chain/stellar.rs` | Security fix (HIGH-2) | ✅ Compiled, tested |
-| `src/chain/mod.rs` | Minor fix (cfg feature) | ✅ Compiled, tested |
+| `src/chain/stellar.rs` | Security fix (HIGH-2, HIGH-3) | ✅ Compiled, deployed |
+| `src/chain/algorand.rs` | Security fix (HIGH-3) | ✅ Compiled, deployed |
+| `src/chain/mod.rs` | Minor fix (cfg feature) | ✅ Compiled, deployed |
+| `src/nonce_store.rs` | NEW - DynamoDB nonce store (HIGH-3) | ✅ Compiled, deployed |
+| `src/lib.rs` | Added nonce_store module | ✅ Compiled, deployed |
+| `src/main.rs` | Added nonce_store module | ✅ Compiled, deployed |
+| `terraform/environments/production/main.tf` | Added DynamoDB table + IAM | ✅ Applied |
 | `terraform/modules/facilitator-service/` | Deleted (HIGH-1) | Moved to `.unused/` |
 
 ---

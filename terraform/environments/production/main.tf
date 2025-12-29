@@ -420,10 +420,10 @@ resource "aws_iam_role" "ecs_task" {
 resource "aws_dynamodb_table" "nonce_store" {
   name         = "facilitator-nonces"
   billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "nonce_key"
+  hash_key     = "pk"
 
   attribute {
-    name = "nonce_key"
+    name = "pk"
     type = "S"
   }
 

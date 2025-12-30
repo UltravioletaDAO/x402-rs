@@ -546,6 +546,35 @@ resource "aws_ecs_task_definition" "facilitator" {
         {
           name  = "NONCE_STORE_TABLE_NAME"
           value = aws_dynamodb_table.nonce_store.name
+        },
+        # Additional network RPCs (public endpoints)
+        {
+          name  = "RPC_URL_MONAD"
+          value = "https://rpc.monad.xyz"
+        },
+        {
+          name  = "RPC_URL_FOGO"
+          value = "https://rpc.fogo.nightly.app"
+        },
+        {
+          name  = "RPC_URL_FOGO_TESTNET"
+          value = "https://testnet.fogo.io"
+        },
+        {
+          name  = "RPC_URL_SUI"
+          value = "https://fullnode.mainnet.sui.io:443"
+        },
+        {
+          name  = "RPC_URL_SUI_TESTNET"
+          value = "https://fullnode.testnet.sui.io:443"
+        },
+        {
+          name  = "RPC_URL_UNICHAIN_SEPOLIA"
+          value = "https://unichain-sepolia.drpc.org"
+        },
+        {
+          name  = "RPC_URL_BSC"
+          value = "https://bsc-rpc.publicnode.com"
         }
       ]
 

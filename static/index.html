@@ -2318,6 +2318,16 @@ result = <span class="code-function">verify_payment</span>(
                     rpc: 'https://bsc-dataseed.binance.org/',
                     address: MAINNET_ADDRESS
                 },
+                'sui-mainnet': {
+                    rpc: 'https://fullnode.mainnet.sui.io:443',
+                    address: '0xe7bbf2b13f7d72714760aa16e024fa1b35a978793f9893d0568a4fbf356a764a',
+                    isSui: true
+                },
+                'sui-testnet': {
+                    rpc: 'https://fullnode.testnet.sui.io:443',
+                    address: '0xabbd16a2fab2a502c9cfe835195a6fc7d70bfc27cffb40b8b286b52a97006e67',
+                    isSui: true
+                },
             };
 
             // Fetch balance for each network
@@ -2425,6 +2435,35 @@ result = <span class="code-function">verify_payment</span>(
                             const balanceEl = document.querySelector(`[data-balance="${network}"]`);
                             if (balanceEl) {
                                 balanceEl.textContent = formatted;
+                            }
+                        }
+                    } else if (config.isSui) {
+                        // Sui uses JSON-RPC suix_getAllBalances
+                        const response = await fetch(config.rpc, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                jsonrpc: '2.0',
+                                id: 1,
+                                method: 'suix_getAllBalances',
+                                params: [config.address]
+                            })
+                        });
+
+                        const data = await response.json();
+                        if (data.result && Array.isArray(data.result)) {
+                            // Find native SUI balance (coinType: 0x2::sui::SUI)
+                            const suiBalance = data.result.find(b => b.coinType === '0x2::sui::SUI');
+                            if (suiBalance) {
+                                // Sui balance is in MIST (1 SUI = 1e9 MIST)
+                                const balanceMist = BigInt(suiBalance.totalBalance);
+                                const balanceSUI = Number(balanceMist) / 1e9;
+                                const formatted = balanceSUI.toFixed(4);
+
+                                const balanceEl = document.querySelector(`[data-balance="${network}"]`);
+                                if (balanceEl) {
+                                    balanceEl.textContent = formatted;
+                                }
                             }
                         }
                     } else {
@@ -2537,6 +2576,8 @@ result = <span class="code-function">verify_payment</span>(
             'stellar-testnet': ['usdc'],
             'algorand-mainnet': ['usdc'],
             'algorand-testnet': ['usdc'],
+            'sui-mainnet': ['usdc', 'ausd'],
+            'sui-testnet': ['usdc'],
         };
 
         const TOKEN_INFO = {

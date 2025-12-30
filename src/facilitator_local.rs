@@ -428,6 +428,14 @@ where
                 );
                 Ok(())
             }
+            #[cfg(feature = "sui")]
+            ExactPaymentPayload::Sui(_sui_payload) => {
+                // For now, allow Sui transactions through (compliance will be added later)
+                tracing::debug!(
+                    "Sui payment compliance check: allowing transaction (TODO: implement Sui compliance)"
+                );
+                Ok(())
+            }
         }
     }
 }

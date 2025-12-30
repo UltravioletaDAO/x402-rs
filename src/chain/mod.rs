@@ -7,6 +7,8 @@ use crate::chain::solana::SolanaProvider;
 use crate::chain::stellar::StellarProvider;
 #[cfg(feature = "algorand")]
 use crate::chain::algorand::AlgorandProvider;
+#[cfg(feature = "sui")]
+use crate::chain::sui::SuiProvider;
 use crate::facilitator::Facilitator;
 use crate::network::{Network, NetworkFamily};
 use crate::types::{
@@ -20,6 +22,8 @@ pub mod evm;
 pub mod near;
 pub mod solana;
 pub mod stellar;
+#[cfg(feature = "sui")]
+pub mod sui;
 
 pub enum NetworkProvider {
     Evm(EvmProvider),
@@ -28,6 +32,8 @@ pub enum NetworkProvider {
     Stellar(StellarProvider),
     #[cfg(feature = "algorand")]
     Algorand(AlgorandProvider),
+    #[cfg(feature = "sui")]
+    Sui(SuiProvider),
 }
 
 pub trait FromEnvByNetworkBuild: Sized {
@@ -61,6 +67,11 @@ impl FromEnvByNetworkBuild for NetworkProvider {
                 let provider = AlgorandProvider::from_env(network).await?;
                 provider.map(NetworkProvider::Algorand)
             }
+            #[cfg(feature = "sui")]
+            NetworkFamily::Sui => {
+                let provider = SuiProvider::from_env(network).await?;
+                provider.map(NetworkProvider::Sui)
+            }
         };
         Ok(provider)
     }
@@ -80,6 +91,8 @@ impl NetworkProviderOps for NetworkProvider {
             NetworkProvider::Stellar(provider) => provider.signer_address(),
             #[cfg(feature = "algorand")]
             NetworkProvider::Algorand(provider) => provider.signer_address(),
+            #[cfg(feature = "sui")]
+            NetworkProvider::Sui(provider) => provider.signer_address(),
         }
     }
 
@@ -91,6 +104,8 @@ impl NetworkProviderOps for NetworkProvider {
             NetworkProvider::Stellar(provider) => provider.network(),
             #[cfg(feature = "algorand")]
             NetworkProvider::Algorand(provider) => provider.network(),
+            #[cfg(feature = "sui")]
+            NetworkProvider::Sui(provider) => provider.network(),
         }
     }
 }
@@ -106,6 +121,8 @@ impl Facilitator for NetworkProvider {
             NetworkProvider::Stellar(provider) => provider.verify(request).await,
             #[cfg(feature = "algorand")]
             NetworkProvider::Algorand(provider) => provider.verify(request).await,
+            #[cfg(feature = "sui")]
+            NetworkProvider::Sui(provider) => provider.verify(request).await,
         }
     }
 
@@ -117,6 +134,8 @@ impl Facilitator for NetworkProvider {
             NetworkProvider::Stellar(provider) => provider.settle(request).await,
             #[cfg(feature = "algorand")]
             NetworkProvider::Algorand(provider) => provider.settle(request).await,
+            #[cfg(feature = "sui")]
+            NetworkProvider::Sui(provider) => provider.settle(request).await,
         }
     }
 
@@ -128,6 +147,8 @@ impl Facilitator for NetworkProvider {
             NetworkProvider::Stellar(provider) => provider.supported().await,
             #[cfg(feature = "algorand")]
             NetworkProvider::Algorand(provider) => provider.supported().await,
+            #[cfg(feature = "sui")]
+            NetworkProvider::Sui(provider) => provider.supported().await,
         }
     }
 }

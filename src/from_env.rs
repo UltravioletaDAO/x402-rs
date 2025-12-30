@@ -70,6 +70,20 @@ pub const ENV_RPC_FOGO_TESTNET: &str = "RPC_URL_FOGO_TESTNET";
 pub const ENV_RPC_ALGORAND: &str = "RPC_URL_ALGORAND";
 pub const ENV_RPC_ALGORAND_TESTNET: &str = "RPC_URL_ALGORAND_TESTNET";
 
+// Sui RPC URLs
+#[cfg(feature = "sui")]
+pub const ENV_RPC_SUI: &str = "RPC_URL_SUI";
+#[cfg(feature = "sui")]
+pub const ENV_RPC_SUI_TESTNET: &str = "RPC_URL_SUI_TESTNET";
+
+// Sui wallet private key environment variables
+#[cfg(feature = "sui")]
+pub const ENV_SUI_PRIVATE_KEY: &str = "SUI_PRIVATE_KEY";
+#[cfg(feature = "sui")]
+pub const ENV_SUI_PRIVATE_KEY_MAINNET: &str = "SUI_PRIVATE_KEY_MAINNET";
+#[cfg(feature = "sui")]
+pub const ENV_SUI_PRIVATE_KEY_TESTNET: &str = "SUI_PRIVATE_KEY_TESTNET";
+
 pub fn rpc_env_name_from_network(network: Network) -> &'static str {
     match network {
         Network::BaseSepolia => ENV_RPC_BASE_SEPOLIA,
@@ -108,6 +122,10 @@ pub fn rpc_env_name_from_network(network: Network) -> &'static str {
         Network::Algorand => ENV_RPC_ALGORAND,
         #[cfg(feature = "algorand")]
         Network::AlgorandTestnet => ENV_RPC_ALGORAND_TESTNET,
+        #[cfg(feature = "sui")]
+        Network::Sui => ENV_RPC_SUI,
+        #[cfg(feature = "sui")]
+        Network::SuiTestnet => ENV_RPC_SUI_TESTNET,
     }
 }
 

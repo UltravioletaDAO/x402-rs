@@ -35,6 +35,10 @@ pub enum Namespace {
     /// Fogo blockchain (SVM-based, custom namespace).
     /// Reference is the network name ("mainnet" or "testnet").
     Fogo,
+    /// Sui blockchain (Move-based, uses sponsored transactions).
+    /// Reference is the network name ("mainnet" or "testnet").
+    #[cfg(feature = "sui")]
+    Sui,
 }
 
 impl Display for Namespace {
@@ -45,6 +49,8 @@ impl Display for Namespace {
             Namespace::Near => write!(f, "near"),
             Namespace::Stellar => write!(f, "stellar"),
             Namespace::Fogo => write!(f, "fogo"),
+            #[cfg(feature = "sui")]
+            Namespace::Sui => write!(f, "sui"),
         }
     }
 }
@@ -59,6 +65,8 @@ impl FromStr for Namespace {
             "near" => Ok(Namespace::Near),
             "stellar" => Ok(Namespace::Stellar),
             "fogo" => Ok(Namespace::Fogo),
+            #[cfg(feature = "sui")]
+            "sui" => Ok(Namespace::Sui),
             _ => Err(Caip2ParseError::UnknownNamespace(s.to_string())),
         }
     }
@@ -118,6 +126,15 @@ impl Caip2NetworkId {
                 if reference != "mainnet" && reference != "testnet" {
                     return Err(Caip2ParseError::InvalidNetworkName {
                         namespace: "fogo".to_string(),
+                        reference,
+                    });
+                }
+            }
+            #[cfg(feature = "sui")]
+            Namespace::Sui => {
+                if reference != "mainnet" && reference != "testnet" {
+                    return Err(Caip2ParseError::InvalidNetworkName {
+                        namespace: "sui".to_string(),
                         reference,
                     });
                 }
@@ -187,6 +204,24 @@ impl Caip2NetworkId {
     pub fn fogo_testnet() -> Self {
         Self {
             namespace: Namespace::Fogo,
+            reference: "testnet".to_string(),
+        }
+    }
+
+    /// Create a CAIP-2 ID for Sui mainnet.
+    #[cfg(feature = "sui")]
+    pub fn sui_mainnet() -> Self {
+        Self {
+            namespace: Namespace::Sui,
+            reference: "mainnet".to_string(),
+        }
+    }
+
+    /// Create a CAIP-2 ID for Sui testnet.
+    #[cfg(feature = "sui")]
+    pub fn sui_testnet() -> Self {
+        Self {
+            namespace: Namespace::Sui,
             reference: "testnet".to_string(),
         }
     }

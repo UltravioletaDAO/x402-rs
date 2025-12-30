@@ -531,6 +531,39 @@ pub struct ExactAlgorandPayload {
     pub payment_group: Vec<String>,
 }
 
+/// Payload for Sui payments using sponsored transactions.
+///
+/// Implements Sui's native gas sponsorship for gasless payments:
+/// 1. Client creates a TransactionData for USDC transfer
+/// 2. Client signs the transaction with their wallet
+/// 3. Client sends the transaction bytes and signature to facilitator
+/// 4. Facilitator adds gas sponsorship and co-signs
+/// 5. Facilitator submits the sponsored transaction
+///
+/// Key benefits of Sui sponsorship:
+/// - Gasless: User pays ZERO SUI (facilitator pays all gas)
+/// - Protocol-level: Native support, no smart contract wrappers needed
+/// - Secure: Client signature only authorizes their specific transfer
+#[cfg(feature = "sui")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExactSuiPayload {
+    /// BCS-encoded transaction bytes (base64).
+    /// Contains the USDC transfer from sender to recipient.
+    pub transaction_bytes: String,
+    /// Client's signature on the transaction (base64).
+    /// Signs the transaction intent message using their Sui keypair.
+    pub sender_signature: String,
+    /// Sender's Sui address (0x-prefixed 64 hex chars).
+    pub from: String,
+    /// Recipient's Sui address (0x-prefixed 64 hex chars).
+    pub to: String,
+    /// Amount to transfer in token base units (USDC uses 6 decimals).
+    pub amount: String,
+    /// USDC coin object ID to transfer from (0x-prefixed 64 hex chars).
+    pub coin_object_id: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ExactPaymentPayload {
@@ -540,6 +573,8 @@ pub enum ExactPaymentPayload {
     Stellar(ExactStellarPayload),
     #[cfg(feature = "algorand")]
     Algorand(ExactAlgorandPayload),
+    #[cfg(feature = "sui")]
+    Sui(ExactSuiPayload),
 }
 
 /// Describes a signed request to transfer a specific amount of funds on-chain.
@@ -904,6 +939,9 @@ pub enum MixedAddress {
     Stellar(String),
     /// Algorand address (58-character base32-encoded)
     Algorand(String),
+    /// Sui address (32-byte hex with 0x prefix) or object type ID (package::module::Type)
+    #[cfg(feature = "sui")]
+    Sui(String),
 }
 
 #[macro_export]
@@ -945,6 +983,8 @@ impl TryFrom<MixedAddress> for alloy::primitives::Address {
             MixedAddress::Near(_) => Err(MixedAddressError::NotEvmAddress),
             MixedAddress::Stellar(_) => Err(MixedAddressError::NotEvmAddress),
             MixedAddress::Algorand(_) => Err(MixedAddressError::NotEvmAddress),
+            #[cfg(feature = "sui")]
+            MixedAddress::Sui(_) => Err(MixedAddressError::NotEvmAddress),
         }
     }
 }
@@ -974,6 +1014,8 @@ impl TryInto<EvmAddress> for MixedAddress {
             MixedAddress::Near(_) => Err(MixedAddressError::NotEvmAddress),
             MixedAddress::Algorand(_) => Err(MixedAddressError::NotEvmAddress),
             MixedAddress::Stellar(_) => Err(MixedAddressError::NotEvmAddress),
+            #[cfg(feature = "sui")]
+            MixedAddress::Sui(_) => Err(MixedAddressError::NotEvmAddress),
         }
     }
 }
@@ -987,6 +1029,8 @@ impl Display for MixedAddress {
             MixedAddress::Near(account_id) => write!(f, "{account_id}"),
             MixedAddress::Stellar(address) => write!(f, "{address}"),
             MixedAddress::Algorand(address) => write!(f, "{address}"),
+            #[cfg(feature = "sui")]
+            MixedAddress::Sui(address) => write!(f, "{address}"),
         }
     }
 }
@@ -1017,6 +1061,13 @@ impl<'de> Deserialize<'de> for MixedAddress {
             Regex::new(r"^[A-Z2-7]{58}$").expect("Invalid regex for Algorand address")
         });
 
+        // Sui address regex: 0x-prefixed 64 hex chars, or object type ID (package::module::Type)
+        #[cfg(feature = "sui")]
+        static SUI_ADDRESS_REGEX: Lazy<Regex> = Lazy::new(|| {
+            Regex::new(r"^(0x[a-fA-F0-9]{64}|0x[a-fA-F0-9]{64}::[a-zA-Z_][a-zA-Z0-9_]*::[a-zA-Z_][a-zA-Z0-9_]*)$")
+                .expect("Invalid regex for Sui address")
+        });
+
         let s = String::deserialize(deserializer)?;
         // 1) EVM address (e.g., 0x... 20 bytes, hex)
         if let Ok(addr) = EvmAddress::from_str(&s) {
@@ -1038,7 +1089,12 @@ impl<'de> Deserialize<'de> for MixedAddress {
         if ALGORAND_ADDRESS_REGEX.is_match(&s) {
             return Ok(MixedAddress::Algorand(s));
         }
-        // 6) Off-chain address by regex
+        // 6) Sui address (0x-prefixed 64 hex or object type ID)
+        #[cfg(feature = "sui")]
+        if SUI_ADDRESS_REGEX.is_match(&s) {
+            return Ok(MixedAddress::Sui(s));
+        }
+        // 7) Off-chain address by regex
         if OFFCHAIN_ADDRESS_REGEX.is_match(&s) {
             return Ok(MixedAddress::Offchain(s));
         }
@@ -1058,6 +1114,8 @@ impl Serialize for MixedAddress {
             MixedAddress::Near(account_id) => serializer.serialize_str(account_id),
             MixedAddress::Stellar(address) => serializer.serialize_str(address),
             MixedAddress::Algorand(address) => serializer.serialize_str(address),
+            #[cfg(feature = "sui")]
+            MixedAddress::Sui(address) => serializer.serialize_str(address),
         }
     }
 }
@@ -1073,6 +1131,9 @@ pub enum TransactionHash {
     Stellar([u8; 32]),
     /// A 52-character Algorand transaction ID, encoded as base32.
     Algorand(String),
+    /// Sui transaction digest (base58-encoded 32 bytes).
+    #[cfg(feature = "sui")]
+    Sui(String),
 }
 
 impl<'de> Deserialize<'de> for TransactionHash {
@@ -1126,6 +1187,16 @@ impl<'de> Deserialize<'de> for TransactionHash {
             return Ok(TransactionHash::Algorand(s));
         }
 
+        // Sui: Base58 transaction digest (44 characters)
+        #[cfg(feature = "sui")]
+        {
+            static SUI_TX_DIGEST_REGEX: Lazy<Regex> =
+                Lazy::new(|| Regex::new(r"^[123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz]{43,44}$").expect("invalid regex"));
+            if SUI_TX_DIGEST_REGEX.is_match(&s) {
+                return Ok(TransactionHash::Sui(s));
+            }
+        }
+
         Err(serde::de::Error::custom("Invalid transaction hash format"))
     }
 }
@@ -1153,6 +1224,11 @@ impl Serialize for TransactionHash {
                 // Algorand uses base32 string directly
                 serializer.serialize_str(tx_id)
             }
+            #[cfg(feature = "sui")]
+            TransactionHash::Sui(digest) => {
+                // Sui uses base58 string directly
+                serializer.serialize_str(digest)
+            }
         }
     }
 }
@@ -1174,6 +1250,10 @@ impl Display for TransactionHash {
             }
             TransactionHash::Algorand(tx_id) => {
                 write!(f, "{}", tx_id)
+            }
+            #[cfg(feature = "sui")]
+            TransactionHash::Sui(digest) => {
+                write!(f, "{}", digest)
             }
         }
     }

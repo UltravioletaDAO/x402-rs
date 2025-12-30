@@ -122,6 +122,14 @@ pub enum Network {
     #[cfg(feature = "algorand")]
     #[serde(rename = "algorand-testnet")]
     AlgorandTestnet,
+    /// Sui mainnet (uses sponsored transactions for gasless payments).
+    #[cfg(feature = "sui")]
+    #[serde(rename = "sui")]
+    Sui,
+    /// Sui testnet (uses sponsored transactions for gasless payments).
+    #[cfg(feature = "sui")]
+    #[serde(rename = "sui-testnet")]
+    SuiTestnet,
 }
 
 impl Display for Network {
@@ -163,6 +171,10 @@ impl Display for Network {
             Network::Algorand => write!(f, "algorand"),
             #[cfg(feature = "algorand")]
             Network::AlgorandTestnet => write!(f, "algorand-testnet"),
+            #[cfg(feature = "sui")]
+            Network::Sui => write!(f, "sui"),
+            #[cfg(feature = "sui")]
+            Network::SuiTestnet => write!(f, "sui-testnet"),
         }
     }
 }
@@ -213,6 +225,10 @@ impl FromStr for Network {
             "algorand" | "algorand-mainnet" => Ok(Network::Algorand),
             #[cfg(feature = "algorand")]
             "algorand-testnet" => Ok(Network::AlgorandTestnet),
+            #[cfg(feature = "sui")]
+            "sui" | "sui-mainnet" => Ok(Network::Sui),
+            #[cfg(feature = "sui")]
+            "sui-testnet" => Ok(Network::SuiTestnet),
             _ => Err(NetworkParseError(s.to_string())),
         }
     }
@@ -226,6 +242,8 @@ pub enum NetworkFamily {
     Stellar,
     #[cfg(feature = "algorand")]
     Algorand,
+    #[cfg(feature = "sui")]
+    Sui,
 }
 
 impl From<Network> for NetworkFamily {
@@ -267,6 +285,10 @@ impl From<Network> for NetworkFamily {
             Network::Algorand => NetworkFamily::Algorand,
             #[cfg(feature = "algorand")]
             Network::AlgorandTestnet => NetworkFamily::Algorand,
+            #[cfg(feature = "sui")]
+            Network::Sui => NetworkFamily::Sui,
+            #[cfg(feature = "sui")]
+            Network::SuiTestnet => NetworkFamily::Sui,
         }
     }
 }
@@ -358,6 +380,10 @@ impl Network {
         if matches!(self, Network::AlgorandTestnet) {
             return true;
         }
+        #[cfg(feature = "sui")]
+        if matches!(self, Network::SuiTestnet) {
+            return true;
+        }
         matches!(
             self,
             Network::BaseSepolia
@@ -434,6 +460,11 @@ impl Network {
             Network::Algorand => "algorand:mainnet".to_string(),
             #[cfg(feature = "algorand")]
             Network::AlgorandTestnet => "algorand:testnet".to_string(),
+            // Sui - sui:{network_name}
+            #[cfg(feature = "sui")]
+            Network::Sui => "sui:mainnet".to_string(),
+            #[cfg(feature = "sui")]
+            Network::SuiTestnet => "sui:testnet".to_string(),
         }
     }
 
@@ -484,6 +515,11 @@ impl Network {
             "algorand:mainnet" => Some(Network::Algorand),
             #[cfg(feature = "algorand")]
             "algorand:testnet" => Some(Network::AlgorandTestnet),
+            // Sui
+            #[cfg(feature = "sui")]
+            "sui:mainnet" => Some(Network::Sui),
+            #[cfg(feature = "sui")]
+            "sui:testnet" => Some(Network::SuiTestnet),
             _ => None,
         }
     }
@@ -989,6 +1025,39 @@ static USDC_ALGORAND_TESTNET: Lazy<USDCDeployment> = Lazy::new(|| {
     })
 });
 
+/// Lazily initialized known USDC deployment on Sui mainnet as [`USDCDeployment`].
+/// Note: Sui uses object type IDs (package::module::Type) for tokens.
+/// Native Circle USDC on Sui mainnet.
+#[cfg(feature = "sui")]
+static USDC_SUI: Lazy<USDCDeployment> = Lazy::new(|| {
+    USDCDeployment(TokenDeployment {
+        asset: TokenAsset {
+            address: MixedAddress::Sui(
+                "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC".to_string(),
+            ),
+            network: Network::Sui,
+        },
+        decimals: 6,
+        eip712: None, // Sui uses BCS serialization, not EIP-712
+    })
+});
+
+/// Lazily initialized known USDC deployment on Sui testnet as [`USDCDeployment`].
+/// Native Circle USDC on Sui testnet.
+#[cfg(feature = "sui")]
+static USDC_SUI_TESTNET: Lazy<USDCDeployment> = Lazy::new(|| {
+    USDCDeployment(TokenDeployment {
+        asset: TokenAsset {
+            address: MixedAddress::Sui(
+                "0xa1ec7fc00a6f40db9693ad1415d0c193ad3906494428cf252621037bd7117e29::usdc::USDC".to_string(),
+            ),
+            network: Network::SuiTestnet,
+        },
+        decimals: 6,
+        eip712: None, // Sui uses BCS serialization, not EIP-712
+    })
+});
+
 /// A known USDC deployment as a wrapper around [`TokenDeployment`].
 #[derive(Clone, Debug)]
 pub struct USDCDeployment(pub TokenDeployment);
@@ -1061,6 +1130,10 @@ impl USDCDeployment {
             Network::Algorand => &USDC_ALGORAND,
             #[cfg(feature = "algorand")]
             Network::AlgorandTestnet => &USDC_ALGORAND_TESTNET,
+            #[cfg(feature = "sui")]
+            Network::Sui => &USDC_SUI,
+            #[cfg(feature = "sui")]
+            Network::SuiTestnet => &USDC_SUI_TESTNET,
         }
     }
 }

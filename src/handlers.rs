@@ -109,6 +109,7 @@ where
         .route("/fogo.png", get(get_fogo_logo))
         .route("/algorand.png", get(get_algorand_logo))
         .route("/bsc.png", get(get_bsc_logo))
+        .route("/sui.png", get(get_sui_logo))
 }
 
 /// Discovery API routes for the Bazaar feature.
@@ -528,6 +529,16 @@ pub async fn get_algorand_logo() -> impl IntoResponse {
 /// `GET /bsc.png`: Returns BSC (BNB Smart Chain) logo.
 pub async fn get_bsc_logo() -> impl IntoResponse {
     let bytes = include_bytes!("../static/bsc.png");
+    (
+        StatusCode::OK,
+        [("content-type", "image/png")],
+        bytes.as_slice(),
+    )
+}
+
+/// `GET /sui.png`: Returns Sui logo.
+pub async fn get_sui_logo() -> impl IntoResponse {
+    let bytes = include_bytes!("../static/sui.png");
     (
         StatusCode::OK,
         [("content-type", "image/png")],
@@ -1232,6 +1243,26 @@ where
             debug!(
                 "  - payment_group.len: {}",
                 algorand_payload.payment_group.len()
+            );
+        }
+        #[cfg(feature = "sui")]
+        crate::types::ExactPaymentPayload::Sui(sui_payload) => {
+            debug!("  - payload type: Sui (sponsored transaction)");
+            debug!(
+                "  - from: {}",
+                sui_payload.from
+            );
+            debug!(
+                "  - to: {}",
+                sui_payload.to
+            );
+            debug!(
+                "  - amount: {}",
+                sui_payload.amount
+            );
+            debug!(
+                "  - coin_object_id: {}",
+                sui_payload.coin_object_id
             );
         }
     }

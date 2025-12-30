@@ -520,10 +520,6 @@ resource "aws_ecs_task_definition" "facilitator" {
           value = "0.0.0.0"
         },
         {
-          name  = "RPC_URL_CELO"
-          value = "https://rpc.celocolombia.org"
-        },
-        {
           name  = "RPC_URL_BASE_SEPOLIA"
           value = "https://sepolia.base.org"
         },

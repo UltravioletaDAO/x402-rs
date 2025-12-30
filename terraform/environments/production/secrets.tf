@@ -54,6 +54,15 @@ data "aws_secretsmanager_secret" "stellar_testnet_keypair" {
   name = "facilitator-stellar-keypair-testnet"
 }
 
+# Sui Wallets (mainnet and testnet)
+data "aws_secretsmanager_secret" "sui_mainnet_keypair" {
+  name = "facilitator-sui-keypair-mainnet"
+}
+
+data "aws_secretsmanager_secret" "sui_testnet_keypair" {
+  name = "facilitator-sui-keypair-testnet"
+}
+
 # ----------------------------------------------------------------------------
 # RPC URL Secrets (Premium Endpoints)
 # ----------------------------------------------------------------------------
@@ -85,6 +94,8 @@ locals {
     data.aws_secretsmanager_secret.near_testnet_keypair.arn,
     data.aws_secretsmanager_secret.stellar_mainnet_keypair.arn,
     data.aws_secretsmanager_secret.stellar_testnet_keypair.arn,
+    data.aws_secretsmanager_secret.sui_mainnet_keypair.arn,
+    data.aws_secretsmanager_secret.sui_testnet_keypair.arn,
   ]
 
   # All RPC secret ARNs that need IAM permissions
@@ -165,6 +176,16 @@ locals {
     {
       name      = "STELLAR_PRIVATE_KEY_TESTNET"
       valueFrom = data.aws_secretsmanager_secret.stellar_testnet_keypair.arn
+    },
+
+    # Sui wallets (network-specific, plain string format - bech32 suiprivkey)
+    {
+      name      = "SUI_PRIVATE_KEY_MAINNET"
+      valueFrom = data.aws_secretsmanager_secret.sui_mainnet_keypair.arn
+    },
+    {
+      name      = "SUI_PRIVATE_KEY_TESTNET"
+      valueFrom = data.aws_secretsmanager_secret.sui_testnet_keypair.arn
     },
   ]
 

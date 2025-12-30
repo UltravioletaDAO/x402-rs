@@ -164,6 +164,10 @@ impl TryFrom<Network> for EvmChain {
             Network::Algorand => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             #[cfg(feature = "algorand")]
             Network::AlgorandTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
+            #[cfg(feature = "sui")]
+            Network::Sui => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
+            #[cfg(feature = "sui")]
+            Network::SuiTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
         }
     }
 }
@@ -472,6 +476,10 @@ impl FromEnvByNetworkBuild for EvmProvider {
             Network::Algorand => false, // Algorand is not an EVM chain
             #[cfg(feature = "algorand")]
             Network::AlgorandTestnet => false, // Algorand is not an EVM chain
+            #[cfg(feature = "sui")]
+            Network::Sui => false, // Sui is not an EVM chain
+            #[cfg(feature = "sui")]
+            Network::SuiTestnet => false, // Sui is not an EVM chain
         };
         let provider = EvmProvider::try_new(wallet, &rpc_url, is_eip1559, network).await?;
         Ok(Some(provider))
@@ -1205,6 +1213,10 @@ async fn assert_valid_payment<P: Provider>(
         }
         #[cfg(feature = "algorand")]
         ExactPaymentPayload::Algorand(_) => {
+            return Err(FacilitatorLocalError::UnsupportedNetwork(None));
+        }
+        #[cfg(feature = "sui")]
+        ExactPaymentPayload::Sui(_) => {
             return Err(FacilitatorLocalError::UnsupportedNetwork(None));
         }
     };

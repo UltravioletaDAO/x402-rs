@@ -72,6 +72,10 @@ impl TryFrom<Network> for SolanaChain {
             Network::Algorand => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             #[cfg(feature = "algorand")]
             Network::AlgorandTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
+            #[cfg(feature = "sui")]
+            Network::Sui => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
+            #[cfg(feature = "sui")]
+            Network::SuiTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
         }
     }
 }
@@ -103,6 +107,10 @@ impl TryFrom<MixedAddress> for SolanaAddress {
             | MixedAddress::Near(_)
             | MixedAddress::Stellar(_)
             | MixedAddress::Algorand(_) => Err(FacilitatorLocalError::InvalidAddress(
+                "expected Solana address".to_string(),
+            )),
+            #[cfg(feature = "sui")]
+            MixedAddress::Sui(_) => Err(FacilitatorLocalError::InvalidAddress(
                 "expected Solana address".to_string(),
             )),
             MixedAddress::Solana(pubkey) => Ok(Self { pubkey }),
@@ -672,6 +680,10 @@ impl SolanaProvider {
             }
             #[cfg(feature = "algorand")]
             ExactPaymentPayload::Algorand(..) => {
+                return Err(FacilitatorLocalError::UnsupportedNetwork(None));
+            }
+            #[cfg(feature = "sui")]
+            ExactPaymentPayload::Sui(..) => {
                 return Err(FacilitatorLocalError::UnsupportedNetwork(None));
             }
             ExactPaymentPayload::Solana(payload) => payload,

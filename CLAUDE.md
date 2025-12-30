@@ -189,6 +189,7 @@ This is a Cargo workspace with multiple crates:
    - Optimism mainnet/Sepolia testnet (Chain IDs: 10, 11155420)
    - Celo mainnet/Sepolia testnet (Chain IDs: 42220, 44787)
    - Solana mainnet/devnet
+   - Sui mainnet/testnet (requires `--features sui`)
    - **Merge strategy**: Preserve ALL custom networks when pulling upstream
 
 5. **Rust Edition** - Using edition 2021 for compatibility
@@ -209,6 +210,8 @@ Copy `.env.example` to `.env` and configure:
 - `EVM_PRIVATE_KEY_TESTNET` - Facilitator wallet for testnet EVM chains (leave empty for AWS Secrets Manager)
 - `SOLANA_PRIVATE_KEY_MAINNET` - Facilitator wallet for Solana mainnet (leave empty for AWS Secrets Manager)
 - `SOLANA_PRIVATE_KEY_TESTNET` - Facilitator wallet for Solana devnet (leave empty for AWS Secrets Manager)
+- `SUI_PRIVATE_KEY_MAINNET` - Facilitator wallet for Sui mainnet (leave empty for AWS Secrets Manager)
+- `SUI_PRIVATE_KEY_TESTNET` - Facilitator wallet for Sui testnet (leave empty for AWS Secrets Manager)
 
 **Backward Compatibility** (DEPRECATED):
 - `EVM_PRIVATE_KEY` - Generic wallet for ALL EVM chains (only used if network-specific keys are not set)
@@ -222,6 +225,7 @@ Copy `.env.example` to `.env` and configure:
 - `RPC_URL_POLYGON_MAINNET`, `RPC_URL_POLYGON_AMOY`
 - `RPC_URL_OPTIMISM_MAINNET`, `RPC_URL_OPTIMISM_SEPOLIA`
 - `RPC_URL_SOLANA_MAINNET`, `RPC_URL_SOLANA_DEVNET`
+- `RPC_URL_SUI`, `RPC_URL_SUI_TESTNET`
 - Additional: SEI, XDC networks
 
 **Optional**:
@@ -241,8 +245,10 @@ Secret names (configured in infrastructure):
 - `facilitator-evm-private-key-testnet` - Testnet EVM wallet
 - `facilitator-solana-keypair-mainnet` - Solana mainnet wallet
 - `facilitator-solana-keypair-testnet` - Solana devnet wallet
-- `facilitator-rpc-mainnet` - Contains all mainnet RPC URLs (Base, Avalanche, Polygon, Optimism, HyperEVM, Solana, Ethereum, Arbitrum, Celo)
-- `facilitator-rpc-testnet` - Contains all testnet RPC URLs (Solana Devnet, Arbitrum Sepolia)
+- `facilitator-sui-keypair-mainnet` - Sui mainnet wallet
+- `facilitator-sui-keypair-testnet` - Sui testnet wallet
+- `facilitator-rpc-mainnet` - Contains all mainnet RPC URLs (Base, Avalanche, Polygon, Optimism, HyperEVM, Solana, Sui, Ethereum, Arbitrum, Celo)
+- `facilitator-rpc-testnet` - Contains all testnet RPC URLs (Solana Devnet, Sui Testnet, Arbitrum Sepolia)
 
 **Legacy secrets** (deprecated, kept for backward compatibility):
 - `facilitator-evm-private-key` - Generic EVM wallet (not recommended)
@@ -583,100 +589,119 @@ This complete checklist covers:
   Then bump `Cargo.toml` version from the deployed version, NOT from the local version.
 
 
-  Using Gemini CLI for large codebase analysis
+## Using Gemini CLI for Large Codebase Analysis
 
-When a task involves many files or directories and might overflow your context window, prefer using the local gemini CLI and then summarize its output. Use gemini -p with the @ path syntax to let Gemini read the files while Claude focuses on planning and editing.
+When a task involves many files or directories and might overflow your context window, prefer using the local Gemini CLI and then summarize its output. Use `gemini -m gemini-3-flash-preview -p` with the `@` path syntax to let Gemini read the files while Claude focuses on planning and editing.
 
-File and directory syntax
+### Model Selection
 
-Paths are relative to the directory where you run the gemini command, and @ tells Gemini CLI which files or folders to load into context.
+**Always use `gemini-3-flash-preview`** for codebase analysis tasks:
+- Fast, efficient, and cost-effective
+- 1M token context window (handles large codebases)
+- Pro-level intelligence at Flash speed
 
-Examples
+Available Gemini 3 models:
+| Model | Use Case |
+|-------|----------|
+| `gemini-3-flash-preview` | **DEFAULT** - Fast codebase analysis, code review |
+| `gemini-3-pro-preview` | Complex reasoning, when Flash is insufficient |
 
-Single file
+### File and Directory Syntax
 
-gemini -p "@src/main.py Describe what this file does and how it is structured."
+Paths are relative to the directory where you run the `gemini` command, and `@` tells Gemini CLI which files or folders to load into context.
 
-Multiple files
+### Examples
 
-gemini -p "@package.json @src/index.js Analyze the dependencies and how they are used in the codebase."
+**Single file:**
+```bash
+gemini -m gemini-3-flash-preview -p "@src/main.py Describe what this file does and how it is structured."
+```
 
-One directory
+**Multiple files:**
+```bash
+gemini -m gemini-3-flash-preview -p "@package.json @src/index.js Analyze the dependencies and how they are used in the codebase."
+```
 
-gemini -p "@src/ Summarize the architecture, main modules, and data flow of this codebase."
+**One directory:**
+```bash
+gemini -m gemini-3-flash-preview -p "@src/ Summarize the architecture, main modules, and data flow of this codebase."
+```
 
-Several directories
+**Several directories:**
+```bash
+gemini -m gemini-3-flash-preview -p "@src/ @tests/ Explain how the test suite covers the source code and where the gaps are."
+```
 
-gemini -p "@src/ @tests/ Explain how the test suite covers the source code and where the gaps are."
+**Whole project tree:**
+```bash
+gemini -m gemini-3-flash-preview -p "@./ Give me a high-level overview of this project: tech stack, structure, and main responsibilities of each area."
+```
 
-Whole project tree
+**Using all tracked files:**
+```bash
+gemini -m gemini-3-flash-preview --all_files -p "Analyze the project layout, build system, and external dependencies."
+```
 
-gemini -p "@./ Give me a high-level overview of this project: tech stack, structure, and main responsibilities of each area."
-
-Using all tracked files
-
-gemini --all_files -p "Analyze the project layout, build system, and external dependencies."
-
-Implementation checks
+### Implementation Checks
 
 Use Gemini CLI to confirm whether specific features or patterns exist across the repo:
 
-Feature present?
+**Feature present?**
+```bash
+gemini -m gemini-3-flash-preview -p "@src/ @lib/ Is dark mode implemented? List the relevant files and functions."
+```
 
-gemini -p "@src/ @lib/ Is dark mode implemented? List the relevant files and functions."
+**Authentication:**
+```bash
+gemini -m gemini-3-flash-preview -p "@src/ @middleware/ How is authentication implemented (e.g. JWT/session)? List auth-related endpoints and middleware."
+```
 
-Authentication
+**WebSocket hooks:**
+```bash
+gemini -m gemini-3-flash-preview -p "@src/ Do we have React hooks or utilities that manage WebSocket connections? Show them with file paths."
+```
 
-gemini -p "@src/ @middleware/ How is authentication implemented (e.g. JWT/session)? List auth-related endpoints and middleware."
+**Error handling:**
+```bash
+gemini -m gemini-3-flash-preview -p "@src/ @api/ Is error handling consistent for API endpoints? Show representative try/catch or error-handling logic."
+```
 
-WebSocket hooks
+**Rate limiting:**
+```bash
+gemini -m gemini-3-flash-preview -p "@backend/ @middleware/ Is there any rate limiting in place for the API? Describe the implementation."
+```
 
-gemini -p "@src/ Do we have React hooks or utilities that manage WebSocket connections? Show them with file paths."
+**Caching:**
+```bash
+gemini -m gemini-3-flash-preview -p "@src/ @lib/ @services/ Is Redis (or any cache layer) used? List cache-related functions and how they are used."
+```
 
-Error handling
+**Security measures:**
+```bash
+gemini -m gemini-3-flash-preview -p "@src/ @api/ How are inputs sanitized to avoid SQL injection and similar attacks?"
+```
 
-gemini -p "@src/ @api/ Is error handling consistent for API endpoints? Show representative try/catch or error-handling logic."
+**Tests for a feature:**
+```bash
+gemini -m gemini-3-flash-preview -p "@src/payment/ @tests/ How well is the payment module tested? List the main test cases."
+```
 
-Rate limiting
+### When Claude Should Call Gemini
 
-gemini -p "@backend/ @middleware/ Is there any rate limiting in place for the API? Describe the implementation."
+Prefer calling `gemini -m gemini-3-flash-preview -p` via the Bash tool when:
 
-Caching
+- You need to reason about an entire codebase or large folders
+- Comparing or scanning many big files at once
+- Investigating project-wide patterns, architecture, or cross-cutting concerns
+- Total relevant files are likely > 100 KB of text
+- Verifying whether specific features, patterns, or security practices exist
+- Searching for coding patterns across many files
 
-gemini -p "@src/ @lib/ @services/ Is Redis (or any cache layer) used? List cache-related functions and how they are used."
+### Important Notes
 
-Security measures
-
-gemini -p "@src/ @api/ How are inputs sanitized to avoid SQL injection and similar attacks?"
-
-Tests for a feature
-
-gemini -p "@src/payment/ @tests/ How well is the payment module tested? List the main test cases."
-
-When Claude should call Gemini
-
-Prefer calling gemini -p via the bash tool when:
-
-You need to reason about an entire codebase or large folders.
-
-Comparing or scanning many big files at once.
-
-Investigating project-wide patterns, architecture, or cross-cutting concerns.
-
-Total relevant files are likely > 100 KB of text.
-
-Verifying whether specific features, patterns, or security practices exist.
-
-Searching for coding patterns across many files.
-
-Important notes
-
-Treat Gemini CLI output as an external report: read it, then answer in your own words.
-
-@ paths are always relative to the current working directory where gemini is executed.
-
-The CLI injects file contents directly into Gemini’s context, so Claude does not spend its own context window on those files.
-
-For read-only analysis you do not need any destructive flags.
-
-Be explicit in the -p prompt about what you want Gemini to look for; this produces more accurate results.
+- Treat Gemini CLI output as an external report: read it, then answer in your own words
+- `@` paths are always relative to the current working directory where gemini is executed
+- The CLI injects file contents directly into Gemini's context, so Claude does not spend its own context window on those files
+- For read-only analysis you do not need any destructive flags
+- Be explicit in the `-p` prompt about what you want Gemini to look for; this produces more accurate results
+- **Always include `-m gemini-3-flash-preview`** to ensure the correct model is used

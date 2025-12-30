@@ -63,6 +63,15 @@ data "aws_secretsmanager_secret" "sui_testnet_keypair" {
   name = "facilitator-sui-keypair-testnet"
 }
 
+# Algorand Wallets (mainnet and testnet)
+data "aws_secretsmanager_secret" "algorand_mainnet_mnemonic" {
+  name = "facilitator-algorand-mnemonic-mainnet"
+}
+
+data "aws_secretsmanager_secret" "algorand_testnet_mnemonic" {
+  name = "facilitator-algorand-mnemonic-testnet"
+}
+
 # ----------------------------------------------------------------------------
 # RPC URL Secrets (Premium Endpoints)
 # ----------------------------------------------------------------------------
@@ -96,6 +105,8 @@ locals {
     data.aws_secretsmanager_secret.stellar_testnet_keypair.arn,
     data.aws_secretsmanager_secret.sui_mainnet_keypair.arn,
     data.aws_secretsmanager_secret.sui_testnet_keypair.arn,
+    data.aws_secretsmanager_secret.algorand_mainnet_mnemonic.arn,
+    data.aws_secretsmanager_secret.algorand_testnet_mnemonic.arn,
   ]
 
   # All RPC secret ARNs that need IAM permissions
@@ -186,6 +197,16 @@ locals {
     {
       name      = "SUI_PRIVATE_KEY_TESTNET"
       valueFrom = data.aws_secretsmanager_secret.sui_testnet_keypair.arn
+    },
+
+    # Algorand wallets (network-specific, 25-word mnemonic format)
+    {
+      name      = "ALGORAND_MNEMONIC_MAINNET"
+      valueFrom = data.aws_secretsmanager_secret.algorand_mainnet_mnemonic.arn
+    },
+    {
+      name      = "ALGORAND_MNEMONIC_TESTNET"
+      valueFrom = data.aws_secretsmanager_secret.algorand_testnet_mnemonic.arn
     },
   ]
 

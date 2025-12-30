@@ -295,7 +295,50 @@ impl From<Network> for NetworkFamily {
 
 impl Network {
     /// Return all known [`Network`] variants.
-    #[cfg(feature = "algorand")]
+    #[cfg(all(feature = "algorand", feature = "sui"))]
+    pub fn variants() -> &'static [Network] {
+        &[
+            Network::BaseSepolia,
+            Network::Base,
+            Network::XdcMainnet,
+            Network::AvalancheFuji,
+            Network::Avalanche,
+            Network::XrplEvm,
+            Network::Solana,
+            Network::SolanaDevnet,
+            Network::PolygonAmoy,
+            Network::Polygon,
+            Network::Optimism,
+            Network::OptimismSepolia,
+            Network::Celo,
+            Network::CeloSepolia,
+            Network::HyperEvm,
+            Network::HyperEvmTestnet,
+            Network::Sei,
+            Network::SeiTestnet,
+            Network::Ethereum,
+            Network::EthereumSepolia,
+            Network::Arbitrum,
+            Network::ArbitrumSepolia,
+            Network::Unichain,
+            Network::UnichainSepolia,
+            Network::Monad,
+            Network::Bsc,
+            Network::Near,
+            Network::NearTestnet,
+            Network::Stellar,
+            Network::StellarTestnet,
+            Network::Fogo,
+            Network::FogoTestnet,
+            Network::Algorand,
+            Network::AlgorandTestnet,
+            Network::Sui,
+            Network::SuiTestnet,
+        ]
+    }
+
+    /// Return all known [`Network`] variants.
+    #[cfg(all(feature = "algorand", not(feature = "sui")))]
     pub fn variants() -> &'static [Network] {
         &[
             Network::BaseSepolia,
@@ -336,7 +379,48 @@ impl Network {
     }
 
     /// Return all known [`Network`] variants.
-    #[cfg(not(feature = "algorand"))]
+    #[cfg(all(not(feature = "algorand"), feature = "sui"))]
+    pub fn variants() -> &'static [Network] {
+        &[
+            Network::BaseSepolia,
+            Network::Base,
+            Network::XdcMainnet,
+            Network::AvalancheFuji,
+            Network::Avalanche,
+            Network::XrplEvm,
+            Network::Solana,
+            Network::SolanaDevnet,
+            Network::PolygonAmoy,
+            Network::Polygon,
+            Network::Optimism,
+            Network::OptimismSepolia,
+            Network::Celo,
+            Network::CeloSepolia,
+            Network::HyperEvm,
+            Network::HyperEvmTestnet,
+            Network::Sei,
+            Network::SeiTestnet,
+            Network::Ethereum,
+            Network::EthereumSepolia,
+            Network::Arbitrum,
+            Network::ArbitrumSepolia,
+            Network::Unichain,
+            Network::UnichainSepolia,
+            Network::Monad,
+            Network::Bsc,
+            Network::Near,
+            Network::NearTestnet,
+            Network::Stellar,
+            Network::StellarTestnet,
+            Network::Fogo,
+            Network::FogoTestnet,
+            Network::Sui,
+            Network::SuiTestnet,
+        ]
+    }
+
+    /// Return all known [`Network`] variants.
+    #[cfg(all(not(feature = "algorand"), not(feature = "sui")))]
     pub fn variants() -> &'static [Network] {
         &[
             Network::BaseSepolia,
@@ -1337,6 +1421,23 @@ static AUSD_SOLANA: Lazy<AUSDDeployment> = Lazy::new(|| {
     })
 });
 
+/// AUSD deployment on Sui mainnet.
+/// Coin type: 0x2053d08c1e2bd02791056171aab0fd12bd7cd7efad2ab8f6b9c8902f14df2ff2::ausd::AUSD
+/// Uses sponsored transactions (facilitator pays gas).
+#[cfg(feature = "sui")]
+static AUSD_SUI: Lazy<AUSDDeployment> = Lazy::new(|| {
+    AUSDDeployment(TokenDeployment {
+        asset: TokenAsset {
+            address: MixedAddress::Sui(
+                "0x2053d08c1e2bd02791056171aab0fd12bd7cd7efad2ab8f6b9c8902f14df2ff2::ausd::AUSD".to_string(),
+            ),
+            network: Network::Sui,
+        },
+        decimals: 6,
+        eip712: None, // Not needed for Sui - uses sponsored transactions
+    })
+});
+
 /// A known AUSD (Agora USD) deployment as a wrapper around [`TokenDeployment`].
 #[derive(Clone, Debug)]
 pub struct AUSDDeployment(pub TokenDeployment);
@@ -1359,7 +1460,7 @@ impl AUSDDeployment {
     /// Return the known AUSD deployment for the given network.
     ///
     /// Returns `None` if AUSD is not deployed on the specified network.
-    /// Note: AUSD uses CREATE2, so address is same on all supported chains.
+    /// Note: AUSD uses CREATE2, so address is same on all supported EVM chains.
     pub fn by_network<N: Borrow<Network>>(network: N) -> Option<&'static AUSDDeployment> {
         match network.borrow() {
             Network::Ethereum => Some(&AUSD_ETHEREUM),
@@ -1369,12 +1470,31 @@ impl AUSDDeployment {
             Network::Monad => Some(&AUSD_MONAD),
             Network::Bsc => Some(&AUSD_BSC),
             Network::Solana => Some(&AUSD_SOLANA),
+            #[cfg(feature = "sui")]
+            Network::Sui => Some(&AUSD_SUI),
             _ => None,
         }
     }
 
     /// Return all networks where AUSD is deployed.
+    /// EVM chains use EIP-3009, Solana uses Token2022 fee-payer model, Sui uses sponsored txs.
+    #[cfg(feature = "sui")]
+    pub fn supported_networks() -> &'static [Network] {
+        &[
+            Network::Ethereum,
+            Network::Polygon,
+            Network::Arbitrum,
+            Network::Avalanche,
+            Network::Monad,
+            Network::Bsc,
+            Network::Solana,
+            Network::Sui,
+        ]
+    }
+
+    /// Return all networks where AUSD is deployed.
     /// EVM chains use EIP-3009, Solana uses Token2022 fee-payer model.
+    #[cfg(not(feature = "sui"))]
     pub fn supported_networks() -> &'static [Network] {
         &[
             Network::Ethereum,

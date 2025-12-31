@@ -98,3 +98,4 @@ docs/_build/
 # Blacklist (may contain sensitive address blocking information)
 config/blacklist.json
 task-def-*.json
+terraform/environments/production/balances_lambda.zip

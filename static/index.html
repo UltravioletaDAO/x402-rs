@@ -2170,336 +2170,41 @@ result = <span class="code-function">verify_payment</span>(
             observer.observe(el);
         });
 
-        // Fetch wallet balances for both mainnet and testnet wallets
+        // Fetch wallet balances from backend API (Lambda + API Gateway)
+        // This centralizes RPC calls and hides private API keys from the frontend
         async function fetchWalletBalances() {
-            // Hardcoded wallet addresses
-            const MAINNET_ADDRESS = '0x103040545AC5031A11E8C03dd11324C7333a13C7';
-            const TESTNET_ADDRESS = '0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8';
+            // API Gateway endpoint (will be set after Terraform deployment)
+            // TODO: Update this URL after running terraform apply
+            const BALANCES_API_URL = window.BALANCES_API_URL || '/api/balances';
 
-            // RPC configurations for all networks
-            const networks = {
-                'avalanche-mainnet': {
-                    rpc: 'https://avalanche-c-chain-rpc.publicnode.com',
-                    address: MAINNET_ADDRESS
-                },
-                'base-mainnet': {
-                    rpc: 'https://mainnet.base.org',
-                    address: MAINNET_ADDRESS
-                },
-                'celo-mainnet': {
-                    rpc: 'https://rpc.celocolombia.org',
-                    address: MAINNET_ADDRESS
-                },
-                'hyperevm-mainnet': {
-                    rpc: 'https://rpc.hyperliquid.xyz/evm',
-                    address: MAINNET_ADDRESS
-                },
-                'polygon-mainnet': {
-                    rpc: 'https://polygon.drpc.org',
-                    address: MAINNET_ADDRESS
-                },
-                'solana-mainnet': {
-                    rpc: 'https://mainnet.helius-rpc.com/?api-key=f6fc10fb-cd9d-42e4-be78-900dde381d4a',
-                    address: 'F742C4VfFLQ9zRQyithoj5229ZgtX2WqKCSFKgH2EThq',
-                    isSolana: true
-                },
-                'optimism-mainnet': {
-                    rpc: 'https://mainnet.optimism.io',
-                    address: MAINNET_ADDRESS
-                },
-                'ethereum-mainnet': {
-                    rpc: 'https://ethereum-rpc.publicnode.com',
-                    address: MAINNET_ADDRESS
-                },
-                'arbitrum-mainnet': {
-                    rpc: 'https://public-arb-mainnet.fastnode.io',
-                    address: MAINNET_ADDRESS
-                },
-                'avalanche-testnet': {
-                    rpc: 'https://avalanche-fuji-c-chain-rpc.publicnode.com',
-                    address: TESTNET_ADDRESS
-                },
-                'base-testnet': {
-                    rpc: 'https://sepolia.base.org',
-                    address: TESTNET_ADDRESS
-                },
-                'celo-testnet': {
-                    rpc: 'https://rpc.ankr.com/celo_sepolia',
-                    address: TESTNET_ADDRESS
-                },
-                'polygon-testnet': {
-                    rpc: 'https://rpc-amoy.polygon.technology',
-                    address: TESTNET_ADDRESS
-                },
-                'optimism-testnet': {
-                    rpc: 'https://sepolia.optimism.io',
-                    address: TESTNET_ADDRESS
-                },
-                'ethereum-testnet': {
-                    rpc: 'https://ethereum-sepolia-rpc.publicnode.com',
-                    address: TESTNET_ADDRESS
-                },
-                'arbitrum-testnet': {
-                    rpc: 'https://arbitrum-sepolia-rpc.publicnode.com',
-                    address: TESTNET_ADDRESS
-                },
-                'unichain-mainnet': {
-                    rpc: 'https://unichain-rpc.publicnode.com',
-                    address: MAINNET_ADDRESS
-                },
-                'unichain-testnet': {
-                    rpc: 'https://unichain-sepolia.drpc.org',
-                    address: TESTNET_ADDRESS
-                },
-                'hyperevm-testnet': {
-                    rpc: 'https://rpc.hyperliquid-testnet.xyz/evm',
-                    address: TESTNET_ADDRESS
-                },
-                'monad-mainnet': {
-                    rpc: 'https://rpc.monad.xyz',
-                    address: MAINNET_ADDRESS
-                },
-                'near-mainnet': {
-                    rpcs: [
-                        'https://free.rpc.fastnear.com',
-                        'https://near.lava.build',
-                        'https://near.drpc.org',
-                        'https://near.blockpi.network/v1/rpc/public'
-                    ],
-                    address: 'uvd-facilitator.near',
-                    isNear: true
-                },
-                'near-testnet': {
-                    rpcs: [
-                        'https://test.rpc.fastnear.com',
-                        'https://rpc.testnet.fastnear.com',
-                        'https://neart.lava.build',
-                        'https://near-testnet.drpc.org'
-                    ],
-                    address: 'uvd-facilitator.testnet',
-                    isNear: true
-                },
-                'stellar-mainnet': {
-                    api: 'https://horizon.stellar.org/accounts/GCHPGXJT2WFFRFCA5TV4G4E3PMMXLNIDUH27PKDYA4QJ2XGYZWGFZNHB',
-                    address: 'GCHPGXJT2WFFRFCA5TV4G4E3PMMXLNIDUH27PKDYA4QJ2XGYZWGFZNHB',
-                    isStellar: true
-                },
-                'stellar-testnet': {
-                    api: 'https://horizon-testnet.stellar.org/accounts/GBBFZMLUJEZVI32EN4XA2KPP445XIBTMTRBLYWFIL556RDTHS2OWFQ2Z',
-                    address: 'GBBFZMLUJEZVI32EN4XA2KPP445XIBTMTRBLYWFIL556RDTHS2OWFQ2Z',
-                    isStellar: true
-                },
-                'fogo-mainnet': {
-                    rpc: 'https://rpc.fogo.nightly.app/',
-                    address: 'F742C4VfFLQ9zRQyithoj5229ZgtX2WqKCSFKgH2EThq',
-                    isSolana: true
-                },
-                'fogo-testnet': {
-                    rpc: 'https://testnet.fogo.io/',
-                    address: '6xNPewUdKRbEZDReQdpyfNUdgNg8QRc8Mt263T5GZSRv',
-                    isSolana: true
-                },
-                'solana-devnet': {
-                    rpc: 'https://api.devnet.solana.com',
-                    address: '6xNPewUdKRbEZDReQdpyfNUdgNg8QRc8Mt263T5GZSRv',
-                    isSolana: true
-                },
-                'algorand-mainnet': {
-                    api: 'https://mainnet-api.algonode.cloud/v2/accounts/KIMS5H6QLCUDL65L5UBTOXDPWLMTS7N3AAC3I6B2NCONEI5QIVK7LH2C2I',
-                    address: 'KIMS5H6QLCUDL65L5UBTOXDPWLMTS7N3AAC3I6B2NCONEI5QIVK7LH2C2I',
-                    isAlgorand: true
-                },
-                'algorand-testnet': {
-                    api: 'https://testnet-api.algonode.cloud/v2/accounts/5DPPDQNYUPCTXRZWRYSF3WPYU6RKAUR25F3YG4EKXQRHV5AUAI62H5GXL4',
-                    address: '5DPPDQNYUPCTXRZWRYSF3WPYU6RKAUR25F3YG4EKXQRHV5AUAI62H5GXL4',
-                    isAlgorand: true
-                },
-                'bsc-mainnet': {
-                    rpc: 'https://bsc-dataseed.binance.org/',
-                    address: MAINNET_ADDRESS
-                },
-                'sui-mainnet': {
-                    rpc: 'https://fullnode.mainnet.sui.io:443',
-                    address: '0xe7bbf2b13f7d72714760aa16e024fa1b35a978793f9893d0568a4fbf356a764a',
-                    isSui: true
-                },
-                'sui-testnet': {
-                    rpc: 'https://fullnode.testnet.sui.io:443',
-                    address: '0xabbd16a2fab2a502c9cfe835195a6fc7d70bfc27cffb40b8b286b52a97006e67',
-                    isSui: true
-                },
-            };
+            try {
+                const response = await fetch(BALANCES_API_URL, {
+                    method: 'GET',
+                    headers: { 'Accept': 'application/json' }
+                });
 
-            // Fetch balance for each network
-            for (const [network, config] of Object.entries(networks)) {
-                try {
-                    if (config.isSolana) {
-                        // Solana uses different RPC method
-                        const response = await fetch(config.rpc, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                jsonrpc: '2.0',
-                                method: 'getBalance',
-                                params: [config.address],
-                                id: 1
-                            })
-                        });
+                if (!response.ok) {
+                    throw new Error(`API returned ${response.status}`);
+                }
 
-                        const data = await response.json();
-                        if (data.result && data.result.value !== undefined) {
-                            // Solana balance is in lamports (1 SOL = 1e9 lamports)
-                            const balanceLamports = data.result.value;
-                            const balanceSOL = balanceLamports / 1e9;
-                            const formatted = balanceSOL.toFixed(4);
+                const data = await response.json();
+                const balances = data.balances || {};
 
-                            const balanceEl = document.querySelector(`[data-balance="${network}"]`);
-                            if (balanceEl) {
-                                balanceEl.textContent = formatted;
-                            }
-                        }
-                    } else if (config.isNear) {
-                        // NEAR uses RPC view_account with multi-RPC rotation
-                        const rpcs = config.rpcs || [config.rpc];
-                        let success = false;
-                        let lastError = null;
-
-                        for (const rpcUrl of rpcs) {
-                            try {
-                                const response = await fetch(rpcUrl, {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({
-                                        jsonrpc: '2.0',
-                                        id: 'balance',
-                                        method: 'query',
-                                        params: {
-                                            request_type: 'view_account',
-                                            finality: 'final',
-                                            account_id: config.address
-                                        }
-                                    }),
-                                    signal: AbortSignal.timeout(5000)
-                                });
-                                if (!response.ok) continue;
-                                const data = await response.json();
-
-                                if (data.result && data.result.amount) {
-                                    // NEAR balance is in yoctoNEAR (1 NEAR = 1e24 yoctoNEAR)
-                                    const balanceYocto = BigInt(data.result.amount);
-                                    const balanceNEAR = Number(balanceYocto) / 1e24;
-                                    const formatted = balanceNEAR.toFixed(4);
-
-                                    const balanceEl = document.querySelector(`[data-balance="${network}"]`);
-                                    if (balanceEl) {
-                                        balanceEl.textContent = formatted;
-                                    }
-                                    success = true;
-                                    break;
-                                }
-                            } catch (e) {
-                                lastError = e;
-                                continue; // Try next RPC
-                            }
-                        }
-                        if (!success && lastError) {
-                            throw lastError;
-                        }
-                    } else if (config.isStellar) {
-                        // Stellar uses Horizon API
-                        const response = await fetch(config.api);
-                        const data = await response.json();
-
-                        // Find native XLM balance in balances array
-                        const nativeBalance = data.balances?.find(b => b.asset_type === 'native');
-                        if (nativeBalance) {
-                            // Stellar balance is already in XLM (7 decimal precision)
-                            const balanceXLM = parseFloat(nativeBalance.balance);
-                            const formatted = balanceXLM.toFixed(4);
-
-                            const balanceEl = document.querySelector(`[data-balance="${network}"]`);
-                            if (balanceEl) {
-                                balanceEl.textContent = formatted;
-                            }
-                        }
-                    } else if (config.isAlgorand) {
-                        // Algorand uses Algod API
-                        const response = await fetch(config.api);
-                        const data = await response.json();
-
-                        if (data.amount !== undefined) {
-                            // Algorand balance is in microAlgos (1 ALGO = 1e6 microAlgos)
-                            const balanceALGO = data.amount / 1e6;
-                            const formatted = balanceALGO.toFixed(4);
-
-                            const balanceEl = document.querySelector(`[data-balance="${network}"]`);
-                            if (balanceEl) {
-                                balanceEl.textContent = formatted;
-                            }
-                        }
-                    } else if (config.isSui) {
-                        // Sui uses JSON-RPC suix_getAllBalances
-                        const response = await fetch(config.rpc, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                jsonrpc: '2.0',
-                                id: 1,
-                                method: 'suix_getAllBalances',
-                                params: [config.address]
-                            })
-                        });
-
-                        const data = await response.json();
-                        if (data.result && Array.isArray(data.result)) {
-                            // Find native SUI balance (coinType: 0x2::sui::SUI)
-                            const suiBalance = data.result.find(b => b.coinType === '0x2::sui::SUI');
-                            if (suiBalance) {
-                                // Sui balance is in MIST (1 SUI = 1e9 MIST)
-                                const balanceMist = BigInt(suiBalance.totalBalance);
-                                const balanceSUI = Number(balanceMist) / 1e9;
-                                const formatted = balanceSUI.toFixed(4);
-
-                                const balanceEl = document.querySelector(`[data-balance="${network}"]`);
-                                if (balanceEl) {
-                                    balanceEl.textContent = formatted;
-                                }
-                            }
-                        }
-                    } else {
-                        // EVM networks
-                        const response = await fetch(config.rpc, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                jsonrpc: '2.0',
-                                method: 'eth_getBalance',
-                                params: [config.address, 'latest'],
-                                id: 1
-                            })
-                        });
-
-                        const data = await response.json();
-                        if (data.result) {
-                            // Convert from wei to ether
-                            const balanceWei = BigInt(data.result);
-                            const balanceEther = Number(balanceWei) / 1e18;
-                            const formatted = balanceEther.toFixed(4);
-
-                            // Update the UI
-                            const balanceEl = document.querySelector(`[data-balance="${network}"]`);
-                            if (balanceEl) {
-                                balanceEl.textContent = formatted;
-                            }
-                        }
-                    }
-                } catch (error) {
-                    console.error(`Error fetching ${network} balance:`, error);
+                // Update all balance elements in the UI
+                for (const [network, balance] of Object.entries(balances)) {
                     const balanceEl = document.querySelector(`[data-balance="${network}"]`);
                     if (balanceEl) {
-                        balanceEl.textContent = 'Error';
+                        balanceEl.textContent = balance || 'N/A';
                     }
                 }
+            } catch (error) {
+                console.error('Error fetching balances from API:', error);
+                // Fallback: show error on all balance elements
+                document.querySelectorAll('[data-balance]').forEach(el => {
+                    if (el.textContent === '...') {
+                        el.textContent = 'Error';
+                    }
+                });
             }
         }
 
@@ -2534,11 +2239,8 @@ result = <span class="code-function">verify_payment</span>(
             document.getElementById(sdk + '-tab').style.display = 'block';
         };
 
-        // Fetch balances on page load
+        // Fetch balances once on page load (no timer - balances cached by backend)
         fetchWalletBalances();
-
-        // Refresh balances every 30 seconds
-        setInterval(fetchWalletBalances, 30000);
 
         // Token support configuration per network (based on EIP-3009 verification)
         // See docs/STABLECOIN_EXPANSION_PLAN.md for verification details

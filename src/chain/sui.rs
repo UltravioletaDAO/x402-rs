@@ -324,11 +324,15 @@ impl SuiProvider {
     }
 
     /// Submit a sponsored transaction to the network.
+    ///
+    /// Sui sponsored transactions require TWO signatures:
+    /// 1. sender_signature - User's signature authorizing the transfer
+    /// 2. sponsor_signature - Facilitator's signature authorizing gas payment
     async fn submit_sponsored_transaction(
         &self,
         tx_data: TransactionData,
-        _sender_signature: Signature,
-        _sender: SuiAddress,
+        sender_signature: Signature,
+        sender: SuiAddress,
     ) -> Result<String, FacilitatorLocalError> {
         let client = SuiClientBuilder::default()
             .build(&self.rpc_url)
@@ -337,19 +341,29 @@ impl SuiProvider {
                 FacilitatorLocalError::ContractCall(format!("Failed to connect to Sui RPC: {}", e))
             })?;
 
-        // For sponsored transactions, we need to:
-        // 1. Modify the transaction to set the gas owner to the facilitator
-        // 2. Sign the transaction with the facilitator's key
-        // 3. Submit with both signatures
+        // For sponsored transactions, we need BOTH signatures:
+        // 1. sender_signature - already provided by the user
+        // 2. sponsor_signature - facilitator signs as gas owner
 
-        // Sign the transaction data with facilitator's key
+        // Sign the transaction data with facilitator's key (gas sponsor)
         let intent_msg = IntentMessage::new(Intent::sui_transaction(), tx_data.clone());
-        let _sponsor_signature = Signature::new_secure(&intent_msg, &self.keypair);
+        let sponsor_signature = Signature::new_secure(&intent_msg, &self.keypair);
 
-        // Create the transaction with both signatures
-        let transaction = Transaction::from_data_and_signer(
+        debug!(
+            sender = %sender,
+            sponsor = %self.signer_address,
+            "Creating sponsored transaction with dual signatures"
+        );
+
+        // Create the transaction with BOTH signatures
+        // Order matters: sender signature first, then sponsor signature
+        // Convert Signature to GenericSignature for the Transaction constructor
+        let sender_sig = sui_types::signature::GenericSignature::Signature(sender_signature);
+        let sponsor_sig = sui_types::signature::GenericSignature::Signature(sponsor_signature);
+
+        let transaction = Transaction::from_generic_sig_data(
             tx_data,
-            vec![&self.keypair],
+            vec![sender_sig, sponsor_sig],
         );
 
         // Execute the transaction
@@ -372,7 +386,9 @@ impl SuiProvider {
 
         info!(
             digest = %digest,
-            "Sui transaction executed successfully"
+            sender = %sender,
+            sponsor = %self.signer_address,
+            "Sui sponsored transaction executed successfully with dual signatures"
         );
 
         Ok(digest)

@@ -2172,10 +2172,187 @@ result = <span class="code-function">verify_payment</span>(
 
         // Fetch wallet balances from backend API (Lambda + API Gateway)
         // This centralizes RPC calls and hides private API keys from the frontend
+        // Falls back to direct public RPC calls if API fails or returns null
+
+        // Wallet addresses for fallback
+        const WALLET_MAINNET = '0x103040545AC5031A11E8C03dd11324C7333a13C7';
+        const WALLET_TESTNET = '0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8';
+        const SOLANA_MAINNET = 'F742C4VfFLQ9zRQyithoj5229ZgtX2WqKCSFKgH2EThq';
+        const SOLANA_TESTNET = '6xNPewUdKRbEZDReQdpyfNUdgNg8QRc8Mt263T5GZSRv';
+        const SUI_MAINNET = '0xe7bbf2b13f7d72714760aa16e024fa1b35a978793f9893d0568a4fbf356a764a';
+        const SUI_TESTNET = '0xabbd16a2fab2a502c9cfe835195a6fc7d70bfc27cffb40b8b286b52a97006e67';
+        const NEAR_MAINNET = 'uvd-facilitator.near';
+        const NEAR_TESTNET = 'uvd-facilitator.testnet';
+        const STELLAR_MAINNET = 'GCHPGXJT2WFFRFCA5TV4G4E3PMMXLNIDUH27PKDYA4QJ2XGYZWGFZNHB';
+        const STELLAR_TESTNET = 'GBBFZMLUJEZVI32EN4XA2KPP445XIBTMTRBLYWFIL556RDTHS2OWFQ2Z';
+        const ALGORAND_MAINNET = 'KIMS5H6QLCUDL65L5UBTOXDPWLMTS7N3AAC3I6B2NCONEI5QIVK7LH2C2I';
+        const ALGORAND_TESTNET = '5DPPDQNYUPCTXRZWRYSF3WPYU6RKAUR25F3YG4EKXQRHV5AUAI62H5GXL4';
+
+        // Public RPCs for fallback (no API keys)
+        const PUBLIC_RPCS = {
+            'base-mainnet': { rpc: 'https://mainnet.base.org', addr: WALLET_MAINNET, type: 'evm' },
+            'base-testnet': { rpc: 'https://sepolia.base.org', addr: WALLET_TESTNET, type: 'evm' },
+            'avalanche-mainnet': { rpc: 'https://avalanche-c-chain-rpc.publicnode.com', addr: WALLET_MAINNET, type: 'evm' },
+            'avalanche-testnet': { rpc: 'https://avalanche-fuji-c-chain-rpc.publicnode.com', addr: WALLET_TESTNET, type: 'evm' },
+            'polygon-mainnet': { rpc: 'https://polygon.drpc.org', addr: WALLET_MAINNET, type: 'evm' },
+            'polygon-testnet': { rpc: 'https://rpc-amoy.polygon.technology', addr: WALLET_TESTNET, type: 'evm' },
+            'optimism-mainnet': { rpc: 'https://mainnet.optimism.io', addr: WALLET_MAINNET, type: 'evm' },
+            'optimism-testnet': { rpc: 'https://sepolia.optimism.io', addr: WALLET_TESTNET, type: 'evm' },
+            'celo-mainnet': { rpc: 'https://rpc.celocolombia.org', addr: WALLET_MAINNET, type: 'evm' },
+            'celo-testnet': { rpc: 'https://rpc.ankr.com/celo_sepolia', addr: WALLET_TESTNET, type: 'evm' },
+            'hyperevm-mainnet': { rpc: 'https://rpc.hyperliquid.xyz/evm', addr: WALLET_MAINNET, type: 'evm' },
+            'hyperevm-testnet': { rpc: 'https://rpc.hyperliquid-testnet.xyz/evm', addr: WALLET_TESTNET, type: 'evm' },
+            'ethereum-mainnet': { rpc: 'https://ethereum-rpc.publicnode.com', addr: WALLET_MAINNET, type: 'evm' },
+            'ethereum-testnet': { rpc: 'https://ethereum-sepolia-rpc.publicnode.com', addr: WALLET_TESTNET, type: 'evm' },
+            'arbitrum-mainnet': { rpc: 'https://arb1.arbitrum.io/rpc', addr: WALLET_MAINNET, type: 'evm' },
+            'arbitrum-testnet': { rpc: 'https://arbitrum-sepolia-rpc.publicnode.com', addr: WALLET_TESTNET, type: 'evm' },
+            'unichain-mainnet': { rpc: 'https://unichain-rpc.publicnode.com', addr: WALLET_MAINNET, type: 'evm' },
+            'unichain-testnet': { rpc: 'https://unichain-sepolia.drpc.org', addr: WALLET_TESTNET, type: 'evm' },
+            'monad-mainnet': { rpc: 'https://rpc.monad.xyz', addr: WALLET_MAINNET, type: 'evm' },
+            'bsc-mainnet': { rpc: 'https://bsc-dataseed.binance.org/', addr: WALLET_MAINNET, type: 'evm' },
+            'solana-mainnet': { rpc: 'https://api.mainnet-beta.solana.com', addr: SOLANA_MAINNET, type: 'solana' },
+            'solana-devnet': { rpc: 'https://api.devnet.solana.com', addr: SOLANA_TESTNET, type: 'solana' },
+            'fogo-mainnet': { rpc: 'https://rpc.fogo.nightly.app/', addr: SOLANA_MAINNET, type: 'solana' },
+            'fogo-testnet': { rpc: 'https://testnet.fogo.io/', addr: SOLANA_TESTNET, type: 'solana' },
+            'sui-mainnet': { rpc: 'https://fullnode.mainnet.sui.io:443', addr: SUI_MAINNET, type: 'sui' },
+            'sui-testnet': { rpc: 'https://fullnode.testnet.sui.io:443', addr: SUI_TESTNET, type: 'sui' },
+            'near-mainnet': { rpcs: ['https://free.rpc.fastnear.com', 'https://near.lava.build'], addr: NEAR_MAINNET, type: 'near' },
+            'near-testnet': { rpcs: ['https://test.rpc.fastnear.com', 'https://near-testnet.drpc.org'], addr: NEAR_TESTNET, type: 'near' },
+            'stellar-mainnet': { api: 'https://horizon.stellar.org/accounts/' + STELLAR_MAINNET, addr: STELLAR_MAINNET, type: 'stellar' },
+            'stellar-testnet': { api: 'https://horizon-testnet.stellar.org/accounts/' + STELLAR_TESTNET, addr: STELLAR_TESTNET, type: 'stellar' },
+            'algorand-mainnet': { api: 'https://mainnet-api.algonode.cloud/v2/accounts/' + ALGORAND_MAINNET, addr: ALGORAND_MAINNET, type: 'algorand' },
+            'algorand-testnet': { api: 'https://testnet-api.algonode.cloud/v2/accounts/' + ALGORAND_TESTNET, addr: ALGORAND_TESTNET, type: 'algorand' },
+        };
+
+        // Fallback: fetch single EVM balance
+        async function fetchEvmBalanceFallback(network, config) {
+            try {
+                const response = await fetch(config.rpc, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        jsonrpc: '2.0', method: 'eth_getBalance',
+                        params: [config.addr, 'latest'], id: 1
+                    })
+                });
+                const data = await response.json();
+                if (data.result) {
+                    const balanceWei = BigInt(data.result);
+                    const balanceEth = Number(balanceWei) / 1e18;
+                    return balanceEth.toFixed(4);
+                }
+            } catch (e) { console.error(`Fallback ${network}:`, e); }
+            return null;
+        }
+
+        // Fallback: fetch single Solana balance
+        async function fetchSolanaBalanceFallback(network, config) {
+            try {
+                const response = await fetch(config.rpc, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        jsonrpc: '2.0', method: 'getBalance',
+                        params: [config.addr], id: 1
+                    })
+                });
+                const data = await response.json();
+                if (data.result && data.result.value !== undefined) {
+                    const balanceSol = data.result.value / 1e9;
+                    return balanceSol.toFixed(4);
+                }
+            } catch (e) { console.error(`Fallback ${network}:`, e); }
+            return null;
+        }
+
+        // Fallback: fetch single Sui balance
+        async function fetchSuiBalanceFallback(network, config) {
+            try {
+                const response = await fetch(config.rpc, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        jsonrpc: '2.0', id: 1, method: 'suix_getAllBalances',
+                        params: [config.addr]
+                    })
+                });
+                const data = await response.json();
+                if (data.result && Array.isArray(data.result)) {
+                    const suiBalance = data.result.find(b => b.coinType === '0x2::sui::SUI');
+                    if (suiBalance) {
+                        const balanceSui = parseInt(suiBalance.totalBalance) / 1e9;
+                        return balanceSui.toFixed(4);
+                    }
+                }
+            } catch (e) { console.error(`Fallback ${network}:`, e); }
+            return null;
+        }
+
+        // Fallback: fetch single NEAR balance
+        async function fetchNearBalanceFallback(network, config) {
+            for (const rpc of config.rpcs) {
+                try {
+                    const response = await fetch(rpc, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            jsonrpc: '2.0', id: 'balance', method: 'query',
+                            params: { request_type: 'view_account', finality: 'final', account_id: config.addr }
+                        })
+                    });
+                    const data = await response.json();
+                    if (data.result && data.result.amount) {
+                        const balanceNear = parseInt(data.result.amount) / 1e24;
+                        return balanceNear.toFixed(4);
+                    }
+                } catch (e) { continue; }
+            }
+            return null;
+        }
+
+        // Fallback: fetch single Stellar balance
+        async function fetchStellarBalanceFallback(network, config) {
+            try {
+                const response = await fetch(config.api);
+                const data = await response.json();
+                const native = data.balances?.find(b => b.asset_type === 'native');
+                if (native) return parseFloat(native.balance).toFixed(4);
+            } catch (e) { console.error(`Fallback ${network}:`, e); }
+            return null;
+        }
+
+        // Fallback: fetch single Algorand balance
+        async function fetchAlgorandBalanceFallback(network, config) {
+            try {
+                const response = await fetch(config.api);
+                const data = await response.json();
+                if (data.amount !== undefined) {
+                    const balanceAlgo = data.amount / 1e6;
+                    return balanceAlgo.toFixed(4);
+                }
+            } catch (e) { console.error(`Fallback ${network}:`, e); }
+            return null;
+        }
+
+        // Fallback: fetch balance for a single network using public RPC
+        async function fetchBalanceFallback(network) {
+            const config = PUBLIC_RPCS[network];
+            if (!config) return null;
+
+            switch (config.type) {
+                case 'evm': return fetchEvmBalanceFallback(network, config);
+                case 'solana': return fetchSolanaBalanceFallback(network, config);
+                case 'sui': return fetchSuiBalanceFallback(network, config);
+                case 'near': return fetchNearBalanceFallback(network, config);
+                case 'stellar': return fetchStellarBalanceFallback(network, config);
+                case 'algorand': return fetchAlgorandBalanceFallback(network, config);
+                default: return null;
+            }
+        }
+
         async function fetchWalletBalances() {
-            // API Gateway endpoint (will be set after Terraform deployment)
-            // TODO: Update this URL after running terraform apply
             const BALANCES_API_URL = window.BALANCES_API_URL || '/api/balances';
+            let failedNetworks = [];
 
             try {
                 const response = await fetch(BALANCES_API_URL, {
@@ -2190,21 +2367,43 @@ result = <span class="code-function">verify_payment</span>(
                 const data = await response.json();
                 const balances = data.balances || {};
 
-                // Update all balance elements in the UI
+                // Update all balance elements, track failed ones
                 for (const [network, balance] of Object.entries(balances)) {
                     const balanceEl = document.querySelector(`[data-balance="${network}"]`);
                     if (balanceEl) {
-                        balanceEl.textContent = balance || 'N/A';
+                        if (balance && balance !== 'null') {
+                            balanceEl.textContent = balance;
+                        } else {
+                            failedNetworks.push(network);
+                            balanceEl.textContent = '...'; // Loading indicator for retry
+                        }
                     }
                 }
             } catch (error) {
                 console.error('Error fetching balances from API:', error);
-                // Fallback: show error on all balance elements
+                // API failed entirely - try fallback for all networks
                 document.querySelectorAll('[data-balance]').forEach(el => {
-                    if (el.textContent === '...') {
-                        el.textContent = 'Error';
+                    const network = el.getAttribute('data-balance');
+                    if (network && PUBLIC_RPCS[network]) {
+                        failedNetworks.push(network);
+                        el.textContent = '...';
+                    } else if (el.textContent === '...') {
+                        el.textContent = 'N/A';
                     }
                 });
+            }
+
+            // Fallback: retry failed networks with direct public RPC calls
+            if (failedNetworks.length > 0) {
+                console.log(`Retrying ${failedNetworks.length} networks with fallback RPCs...`);
+                const fallbackPromises = failedNetworks.map(async (network) => {
+                    const balance = await fetchBalanceFallback(network);
+                    const balanceEl = document.querySelector(`[data-balance="${network}"]`);
+                    if (balanceEl) {
+                        balanceEl.textContent = balance || 'N/A';
+                    }
+                });
+                await Promise.all(fallbackPromises);
             }
         }
 

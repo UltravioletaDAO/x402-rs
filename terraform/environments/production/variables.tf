@@ -147,5 +147,5 @@ variable "ecr_repository_name" {
 variable "image_tag" {
   description = "Docker image tag"
   type        = string
-  default     = "v1.17.2"
+  default     = "v1.18.1"
 }

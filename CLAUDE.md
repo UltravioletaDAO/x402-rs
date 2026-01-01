@@ -502,6 +502,7 @@ git merge upstream/main      # Follow docs/CUSTOMIZATIONS.md strategy
 4. **RPC rate limits** - Free RPC endpoints may throttle; use premium for production
 5. **Gas funds vs payment funds** - Facilitator wallet needs native tokens (ETH/AVAX/SOL) for gas, not payment tokens (USDC)
 6. **NEVER use emojis in Rust code** - No emojis in log messages, comments, or string literals. Use plain text like `[OK]`, `[FAIL]`, `[WARN]` instead of ✓, ✗, ⚠. Emojis cause encoding issues in CloudWatch logs and terminal output.
+7. **NEVER disable ENABLE_ESCROW** - The `ENABLE_ESCROW=true` environment variable in Terraform is CRITICAL. Without it, ALL payment settlements fail with "Escrow settlement is disabled". This must always be set to "true" in production.
 
 ## API Endpoints Reference
 

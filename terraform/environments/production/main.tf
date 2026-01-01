@@ -459,6 +459,35 @@ resource "aws_iam_role_policy" "dynamodb_nonce_access" {
   })
 }
 
+# Policy for S3 discovery store access (task role)
+resource "aws_iam_role_policy" "s3_discovery_access" {
+  name = "S3DiscoveryStoreAccess"
+  role = aws_iam_role.ecs_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject"
+        ]
+        Resource = "arn:aws:s3:::facilitator-discovery-prod/*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:ListBucket",
+          "s3:HeadBucket"
+        ]
+        Resource = "arn:aws:s3:::facilitator-discovery-prod"
+      }
+    ]
+  })
+}
+
 # ============================================================================
 # ECS Cluster
 # ============================================================================
@@ -575,6 +604,19 @@ resource "aws_ecs_task_definition" "facilitator" {
         {
           name  = "RPC_URL_BSC"
           value = "https://bsc-rpc.publicnode.com"
+        },
+        # Discovery API (Bazaar) configuration
+        {
+          name  = "DISCOVERY_S3_BUCKET"
+          value = "facilitator-discovery-prod"
+        },
+        {
+          name  = "DISCOVERY_S3_KEY"
+          value = "bazaar/resources.json"
+        },
+        {
+          name  = "FACILITATOR_URL"
+          value = "https://facilitator.ultravioletadao.xyz"
         }
       ]
 

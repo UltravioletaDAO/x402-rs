@@ -3,7 +3,8 @@ Lambda function to fetch wallet balances for all networks.
 Uses concurrent requests and caches results for 60 seconds.
 
 This Lambda is called via API Gateway and returns balances in JSON format.
-RPC URLs with API keys are stored in AWS Secrets Manager.
+Private RPC URLs (with API keys) are stored in AWS Secrets Manager.
+Falls back to public RPCs if private ones fail.
 """
 
 import json
@@ -24,6 +25,9 @@ CACHE_TTL_SECONDS = 60
 
 # Cache for secrets (loaded once per Lambda cold start)
 _secrets_cache: dict[str, str] = {}
+
+# Mainnet secret name
+MAINNET_SECRET_NAME = "facilitator-rpc-mainnet"
 
 
 def get_secret(secret_name: str, key: str | None = None) -> str | None:
@@ -48,7 +52,8 @@ def get_secret(secret_name: str, key: str | None = None) -> str | None:
         else:
             value = secret_string
 
-        _secrets_cache[cache_key] = value
+        if value:
+            _secrets_cache[cache_key] = value
         return value
     except ClientError as e:
         print(f"Error retrieving secret {secret_name}: {e}")
@@ -56,6 +61,12 @@ def get_secret(secret_name: str, key: str | None = None) -> str | None:
     except json.JSONDecodeError as e:
         print(f"Error parsing secret JSON {secret_name}: {e}")
         return None
+
+
+def get_private_rpc(network_key: str) -> str | None:
+    """Get private RPC URL from Secrets Manager."""
+    return get_secret(MAINNET_SECRET_NAME, network_key)
+
 
 # Wallet addresses
 MAINNET_ADDRESS = "0x103040545AC5031A11E8C03dd11324C7333a13C7"
@@ -82,161 +93,231 @@ ALGORAND_MAINNET_ADDRESS = "KIMS5H6QLCUDL65L5UBTOXDPWLMTS7N3AAC3I6B2NCONEI5QIVK7
 ALGORAND_TESTNET_ADDRESS = "5DPPDQNYUPCTXRZWRYSF3WPYU6RKAUR25F3YG4EKXQRHV5AUAI62H5GXL4"
 
 
+# Public RPC fallbacks (no API keys)
+PUBLIC_RPCS = {
+    "base": "https://mainnet.base.org",
+    "avalanche": "https://avalanche-c-chain-rpc.publicnode.com",
+    "polygon": "https://polygon.drpc.org",
+    "optimism": "https://mainnet.optimism.io",
+    "celo": "https://rpc.celocolombia.org",
+    "hyperevm": "https://rpc.hyperliquid.xyz/evm",
+    "ethereum": "https://ethereum-rpc.publicnode.com",
+    "arbitrum": "https://arb1.arbitrum.io/rpc",
+    "unichain": "https://unichain-rpc.publicnode.com",
+    "solana": "https://api.mainnet-beta.solana.com",
+    "near": "https://free.rpc.fastnear.com",
+}
+
+
 def get_network_configs() -> dict[str, dict]:
     """
     Build network configurations.
-    RPC URLs are read from environment variables or AWS Secrets Manager.
-    Private RPC URLs (with API keys) are loaded from Secrets Manager.
+    Private RPC URLs (with API keys) are loaded from Secrets Manager first,
+    with fallback to environment variables and then public RPCs.
     """
-    # Get Solana RPC from Secrets Manager (has API key)
-    solana_rpc = (
-        get_secret("facilitator-rpc-mainnet", "solana")
-        or os.environ.get("RPC_URL_SOLANA")
-        or "https://api.mainnet-beta.solana.com"
-    )
+    # Load private RPCs from Secrets Manager for mainnets
+    private_rpcs = {}
+    for network_key in ["base", "avalanche", "polygon", "optimism", "celo",
+                        "hyperevm", "ethereum", "arbitrum", "unichain", "solana", "near"]:
+        private_rpc = get_private_rpc(network_key)
+        if private_rpc:
+            private_rpcs[network_key] = private_rpc
+            print(f"Loaded private RPC for {network_key}")
+        else:
+            print(f"No private RPC for {network_key}, will use public")
 
     return {
-        # EVM Mainnets
+        # EVM Mainnets - with private RPC priority
         "avalanche-mainnet": {
-            "rpc": os.environ.get("RPC_URL_AVALANCHE", "https://avalanche-c-chain-rpc.publicnode.com"),
+            "rpcs": [
+                private_rpcs.get("avalanche"),
+                os.environ.get("RPC_URL_AVALANCHE"),
+                PUBLIC_RPCS["avalanche"],
+            ],
             "address": MAINNET_ADDRESS,
             "type": "evm"
         },
         "base-mainnet": {
-            "rpc": os.environ.get("RPC_URL_BASE", "https://mainnet.base.org"),
+            "rpcs": [
+                private_rpcs.get("base"),
+                os.environ.get("RPC_URL_BASE"),
+                PUBLIC_RPCS["base"],
+            ],
             "address": MAINNET_ADDRESS,
             "type": "evm"
         },
         "celo-mainnet": {
-            "rpc": os.environ.get("RPC_URL_CELO", "https://rpc.celocolombia.org"),
+            "rpcs": [
+                private_rpcs.get("celo"),
+                os.environ.get("RPC_URL_CELO"),
+                PUBLIC_RPCS["celo"],
+            ],
             "address": MAINNET_ADDRESS,
             "type": "evm"
         },
         "hyperevm-mainnet": {
-            "rpc": os.environ.get("RPC_URL_HYPEREVM", "https://rpc.hyperliquid.xyz/evm"),
+            "rpcs": [
+                private_rpcs.get("hyperevm"),
+                os.environ.get("RPC_URL_HYPEREVM"),
+                PUBLIC_RPCS["hyperevm"],
+            ],
             "address": MAINNET_ADDRESS,
             "type": "evm"
         },
         "polygon-mainnet": {
-            "rpc": os.environ.get("RPC_URL_POLYGON", "https://polygon.drpc.org"),
+            "rpcs": [
+                private_rpcs.get("polygon"),
+                os.environ.get("RPC_URL_POLYGON"),
+                PUBLIC_RPCS["polygon"],
+            ],
             "address": MAINNET_ADDRESS,
             "type": "evm"
         },
         "optimism-mainnet": {
-            "rpc": os.environ.get("RPC_URL_OPTIMISM", "https://mainnet.optimism.io"),
+            "rpcs": [
+                private_rpcs.get("optimism"),
+                os.environ.get("RPC_URL_OPTIMISM"),
+                PUBLIC_RPCS["optimism"],
+            ],
             "address": MAINNET_ADDRESS,
             "type": "evm"
         },
         "ethereum-mainnet": {
-            "rpc": os.environ.get("RPC_URL_ETHEREUM", "https://ethereum-rpc.publicnode.com"),
+            "rpcs": [
+                private_rpcs.get("ethereum"),
+                os.environ.get("RPC_URL_ETHEREUM"),
+                PUBLIC_RPCS["ethereum"],
+            ],
             "address": MAINNET_ADDRESS,
             "type": "evm"
         },
         "arbitrum-mainnet": {
-            "rpc": os.environ.get("RPC_URL_ARBITRUM", "https://arb1.arbitrum.io/rpc"),
+            "rpcs": [
+                private_rpcs.get("arbitrum"),
+                os.environ.get("RPC_URL_ARBITRUM"),
+                PUBLIC_RPCS["arbitrum"],
+            ],
             "address": MAINNET_ADDRESS,
             "type": "evm"
         },
         "unichain-mainnet": {
-            "rpc": os.environ.get("RPC_URL_UNICHAIN", "https://unichain-rpc.publicnode.com"),
+            "rpcs": [
+                private_rpcs.get("unichain"),
+                os.environ.get("RPC_URL_UNICHAIN"),
+                PUBLIC_RPCS["unichain"],
+            ],
             "address": MAINNET_ADDRESS,
             "type": "evm"
         },
         "monad-mainnet": {
-            "rpc": os.environ.get("RPC_URL_MONAD", "https://rpc.monad.xyz"),
+            "rpcs": [
+                os.environ.get("RPC_URL_MONAD"),
+                "https://rpc.monad.xyz",
+            ],
             "address": MAINNET_ADDRESS,
             "type": "evm"
         },
         "bsc-mainnet": {
-            "rpc": os.environ.get("RPC_URL_BSC", "https://bsc-dataseed.binance.org/"),
+            "rpcs": [
+                os.environ.get("RPC_URL_BSC"),
+                "https://bsc-dataseed.binance.org/",
+            ],
             "address": MAINNET_ADDRESS,
             "type": "evm"
         },
-        # EVM Testnets
+        # EVM Testnets - public RPCs only
         "avalanche-testnet": {
-            "rpc": "https://avalanche-fuji-c-chain-rpc.publicnode.com",
+            "rpcs": ["https://avalanche-fuji-c-chain-rpc.publicnode.com"],
             "address": TESTNET_ADDRESS,
             "type": "evm"
         },
         "base-testnet": {
-            "rpc": "https://sepolia.base.org",
+            "rpcs": ["https://sepolia.base.org"],
             "address": TESTNET_ADDRESS,
             "type": "evm"
         },
         "celo-testnet": {
-            "rpc": "https://rpc.ankr.com/celo_sepolia",
+            "rpcs": ["https://rpc.ankr.com/celo_sepolia"],
             "address": TESTNET_ADDRESS,
             "type": "evm"
         },
         "polygon-testnet": {
-            "rpc": "https://rpc-amoy.polygon.technology",
+            "rpcs": ["https://rpc-amoy.polygon.technology"],
             "address": TESTNET_ADDRESS,
             "type": "evm"
         },
         "optimism-testnet": {
-            "rpc": "https://sepolia.optimism.io",
+            "rpcs": ["https://sepolia.optimism.io"],
             "address": TESTNET_ADDRESS,
             "type": "evm"
         },
         "ethereum-testnet": {
-            "rpc": "https://ethereum-sepolia-rpc.publicnode.com",
+            "rpcs": ["https://ethereum-sepolia-rpc.publicnode.com"],
             "address": TESTNET_ADDRESS,
             "type": "evm"
         },
         "arbitrum-testnet": {
-            "rpc": "https://arbitrum-sepolia-rpc.publicnode.com",
+            "rpcs": ["https://arbitrum-sepolia-rpc.publicnode.com"],
             "address": TESTNET_ADDRESS,
             "type": "evm"
         },
         "unichain-testnet": {
-            "rpc": "https://unichain-sepolia.drpc.org",
+            "rpcs": ["https://unichain-sepolia.drpc.org"],
             "address": TESTNET_ADDRESS,
             "type": "evm"
         },
         "hyperevm-testnet": {
-            "rpc": "https://rpc.hyperliquid-testnet.xyz/evm",
+            "rpcs": ["https://rpc.hyperliquid-testnet.xyz/evm"],
             "address": TESTNET_ADDRESS,
             "type": "evm"
         },
-        # Solana
+        # Solana - with private RPC priority
         "solana-mainnet": {
-            "rpc": solana_rpc,
+            "rpcs": [
+                private_rpcs.get("solana"),
+                os.environ.get("RPC_URL_SOLANA"),
+                PUBLIC_RPCS["solana"],
+            ],
             "address": SOLANA_MAINNET_ADDRESS,
             "type": "solana"
         },
         "solana-devnet": {
-            "rpc": "https://api.devnet.solana.com",
+            "rpcs": ["https://api.devnet.solana.com"],
             "address": SOLANA_TESTNET_ADDRESS,
             "type": "solana"
         },
         # Fogo (Solana-based)
         "fogo-mainnet": {
-            "rpc": "https://rpc.fogo.nightly.app/",
+            "rpcs": ["https://rpc.fogo.nightly.app/"],
             "address": SOLANA_MAINNET_ADDRESS,
             "type": "solana"
         },
         "fogo-testnet": {
-            "rpc": "https://testnet.fogo.io/",
+            "rpcs": ["https://testnet.fogo.io/"],
             "address": SOLANA_TESTNET_ADDRESS,
             "type": "solana"
         },
         # Sui
         "sui-mainnet": {
-            "rpc": os.environ.get("RPC_URL_SUI", "https://fullnode.mainnet.sui.io:443"),
+            "rpcs": [
+                os.environ.get("RPC_URL_SUI"),
+                "https://fullnode.mainnet.sui.io:443",
+            ],
             "address": SUI_MAINNET_ADDRESS,
             "type": "sui"
         },
         "sui-testnet": {
-            "rpc": "https://fullnode.testnet.sui.io:443",
+            "rpcs": ["https://fullnode.testnet.sui.io:443"],
             "address": SUI_TESTNET_ADDRESS,
             "type": "sui"
         },
-        # NEAR
+        # NEAR - with private RPC priority
         "near-mainnet": {
             "rpcs": [
+                private_rpcs.get("near"),
                 "https://free.rpc.fastnear.com",
                 "https://near.lava.build",
-                "https://near.drpc.org"
+                "https://near.drpc.org",
             ],
             "address": NEAR_MAINNET_ADDRESS,
             "type": "near"
@@ -245,7 +326,7 @@ def get_network_configs() -> dict[str, dict]:
             "rpcs": [
                 "https://test.rpc.fastnear.com",
                 "https://rpc.testnet.fastnear.com",
-                "https://near-testnet.drpc.org"
+                "https://near-testnet.drpc.org",
             ],
             "address": NEAR_TESTNET_ADDRESS,
             "type": "near"
@@ -284,73 +365,90 @@ def fetch_json(url: str, data: bytes | None = None, timeout: float = 10) -> dict
 
 
 def fetch_evm_balance(network: str, config: dict) -> tuple[str, str | None]:
-    """Fetch balance for an EVM network."""
-    try:
-        payload = json.dumps({
-            "jsonrpc": "2.0",
-            "method": "eth_getBalance",
-            "params": [config["address"], "latest"],
-            "id": 1
-        }).encode()
+    """Fetch balance for an EVM network with RPC fallback."""
+    rpcs = [r for r in config.get("rpcs", []) if r]  # Filter out None values
 
-        data = fetch_json(config["rpc"], payload)
-        if "result" in data:
-            balance_wei = int(data["result"], 16)
-            balance_eth = balance_wei / 1e18
-            return network, f"{balance_eth:.4f}"
-    except Exception as e:
-        print(f"Error fetching {network}: {e}")
+    for rpc_url in rpcs:
+        try:
+            payload = json.dumps({
+                "jsonrpc": "2.0",
+                "method": "eth_getBalance",
+                "params": [config["address"], "latest"],
+                "id": 1
+            }).encode()
+
+            data = fetch_json(rpc_url, payload, timeout=8)
+            if "result" in data:
+                balance_wei = int(data["result"], 16)
+                balance_eth = balance_wei / 1e18
+                return network, f"{balance_eth:.4f}"
+        except Exception as e:
+            print(f"Error fetching {network} from {rpc_url[:50]}...: {e}")
+            continue
+
     return network, None
 
 
 def fetch_solana_balance(network: str, config: dict) -> tuple[str, str | None]:
-    """Fetch balance for Solana network."""
-    try:
-        payload = json.dumps({
-            "jsonrpc": "2.0",
-            "method": "getBalance",
-            "params": [config["address"]],
-            "id": 1
-        }).encode()
+    """Fetch balance for Solana network with RPC fallback."""
+    rpcs = [r for r in config.get("rpcs", []) if r]  # Filter out None values
 
-        data = fetch_json(config["rpc"], payload)
-        if "result" in data and "value" in data["result"]:
-            balance_lamports = data["result"]["value"]
-            balance_sol = balance_lamports / 1e9
-            return network, f"{balance_sol:.4f}"
-    except Exception as e:
-        print(f"Error fetching {network}: {e}")
+    for rpc_url in rpcs:
+        try:
+            payload = json.dumps({
+                "jsonrpc": "2.0",
+                "method": "getBalance",
+                "params": [config["address"]],
+                "id": 1
+            }).encode()
+
+            data = fetch_json(rpc_url, payload, timeout=8)
+            if "result" in data and "value" in data["result"]:
+                balance_lamports = data["result"]["value"]
+                balance_sol = balance_lamports / 1e9
+                return network, f"{balance_sol:.4f}"
+        except Exception as e:
+            print(f"Error fetching {network} from {rpc_url[:50]}...: {e}")
+            continue
+
     return network, None
 
 
 def fetch_sui_balance(network: str, config: dict) -> tuple[str, str | None]:
-    """Fetch balance for Sui network."""
-    try:
-        payload = json.dumps({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "suix_getAllBalances",
-            "params": [config["address"]]
-        }).encode()
+    """Fetch balance for Sui network with RPC fallback."""
+    rpcs = [r for r in config.get("rpcs", []) if r]  # Filter out None values
 
-        data = fetch_json(config["rpc"], payload)
-        if "result" in data and isinstance(data["result"], list):
-            sui_balance = next(
-                (b for b in data["result"] if b.get("coinType") == "0x2::sui::SUI"),
-                None
-            )
-            if sui_balance:
-                balance_mist = int(sui_balance["totalBalance"])
-                balance_sui = balance_mist / 1e9
-                return network, f"{balance_sui:.4f}"
-    except Exception as e:
-        print(f"Error fetching {network}: {e}")
+    for rpc_url in rpcs:
+        try:
+            payload = json.dumps({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "suix_getAllBalances",
+                "params": [config["address"]]
+            }).encode()
+
+            data = fetch_json(rpc_url, payload, timeout=8)
+            if "result" in data and isinstance(data["result"], list):
+                sui_balance = next(
+                    (b for b in data["result"] if b.get("coinType") == "0x2::sui::SUI"),
+                    None
+                )
+                if sui_balance:
+                    balance_mist = int(sui_balance["totalBalance"])
+                    balance_sui = balance_mist / 1e9
+                    return network, f"{balance_sui:.4f}"
+        except Exception as e:
+            print(f"Error fetching {network} from {rpc_url[:50]}...: {e}")
+            continue
+
     return network, None
 
 
 def fetch_near_balance(network: str, config: dict) -> tuple[str, str | None]:
     """Fetch balance for NEAR network with RPC rotation."""
-    for rpc_url in config.get("rpcs", []):
+    rpcs = [r for r in config.get("rpcs", []) if r]  # Filter out None values
+
+    for rpc_url in rpcs:
         try:
             payload = json.dumps({
                 "jsonrpc": "2.0",
@@ -376,7 +474,7 @@ def fetch_near_balance(network: str, config: dict) -> tuple[str, str | None]:
 def fetch_stellar_balance(network: str, config: dict) -> tuple[str, str | None]:
     """Fetch balance for Stellar network."""
     try:
-        data = fetch_json(config["api"])
+        data = fetch_json(config["api"], timeout=8)
         native_balance = next(
             (b for b in data.get("balances", []) if b.get("asset_type") == "native"),
             None
@@ -392,7 +490,7 @@ def fetch_stellar_balance(network: str, config: dict) -> tuple[str, str | None]:
 def fetch_algorand_balance(network: str, config: dict) -> tuple[str, str | None]:
     """Fetch balance for Algorand network."""
     try:
-        data = fetch_json(config["api"])
+        data = fetch_json(config["api"], timeout=8)
         if "amount" in data:
             balance_algo = data["amount"] / 1e6
             return network, f"{balance_algo:.4f}"

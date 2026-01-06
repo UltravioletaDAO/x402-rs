@@ -43,6 +43,7 @@ mod caip2;
 mod chain;
 mod discovery;
 mod discovery_aggregator;
+mod discovery_crawler;
 mod discovery_store;
 mod escrow;
 mod facilitator;
@@ -214,6 +215,56 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     } else {
         tracing::info!("Discovery aggregation is disabled (DISCOVERY_ENABLE_AGGREGATION=false)");
+    }
+
+    // Start background crawl task if enabled (Phase 3)
+    // Crawls /.well-known/x402 endpoints from configured seed URLs
+    let crawl_interval_secs = std::env::var("DISCOVERY_CRAWL_INTERVAL")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(86400); // Default: 24 hours
+
+    let enable_crawler = std::env::var("DISCOVERY_ENABLE_CRAWLER")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false); // Disabled by default (no seed URLs configured)
+
+    if enable_crawler {
+        // Parse seed URLs from comma-separated environment variable
+        let seed_urls = std::env::var("DISCOVERY_CRAWL_URLS")
+            .unwrap_or_default()
+            .split(',')
+            .filter_map(|s| {
+                let trimmed = s.trim();
+                if trimmed.is_empty() {
+                    return None;
+                }
+                match Url::parse(trimmed) {
+                    Ok(url) => Some(discovery_crawler::CrawlTarget::new(url)),
+                    Err(e) => {
+                        tracing::warn!(url = %trimmed, error = %e, "Invalid crawl URL, skipping");
+                        None
+                    }
+                }
+            })
+            .collect::<Vec<_>>();
+
+        if seed_urls.is_empty() {
+            tracing::info!("Discovery crawler enabled but no valid DISCOVERY_CRAWL_URLS configured");
+        } else {
+            tracing::info!(
+                interval_secs = crawl_interval_secs,
+                target_count = seed_urls.len(),
+                "Starting discovery crawler background task"
+            );
+            let registry_for_crawl = Arc::clone(&discovery_registry);
+            let _crawl_handle = discovery_crawler::start_crawl_task(
+                (*registry_for_crawl).clone(),
+                seed_urls,
+                crawl_interval_secs,
+            );
+        }
+    } else {
+        tracing::info!("Discovery crawler is disabled (DISCOVERY_ENABLE_CRAWLER=false)");
     }
 
     let http_endpoints = Router::new()

@@ -894,6 +894,43 @@ pub enum NetworkParseError {
 // Discovery API Types (Bazaar)
 // ============================================================================
 
+// ============================================================================
+// Discovery Source Tracking
+// ============================================================================
+
+/// How a resource was discovered and added to the Bazaar registry.
+///
+/// This enables the "Meta-Bazaar" architecture where resources can come from
+/// multiple sources: self-registration, settlement tracking, crawling, or
+/// aggregation from other facilitators.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DiscoverySource {
+    /// Resource was explicitly registered via POST /discovery/register
+    #[default]
+    SelfRegistered,
+
+    /// Resource was auto-registered during /settle when discoverable=true
+    Settlement,
+
+    /// Resource was discovered by crawling /.well-known/x402 endpoints
+    Crawled,
+
+    /// Resource was aggregated from another facilitator's Bazaar
+    Aggregated,
+}
+
+impl std::fmt::Display for DiscoverySource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DiscoverySource::SelfRegistered => write!(f, "self_registered"),
+            DiscoverySource::Settlement => write!(f, "settlement"),
+            DiscoverySource::Crawled => write!(f, "crawled"),
+            DiscoverySource::Aggregated => write!(f, "aggregated"),
+        }
+    }
+}
+
 /// Metadata for a discoverable resource in the Bazaar registry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -924,6 +961,16 @@ impl Default for DiscoveryMetadata {
 /// A discoverable paid resource in the Bazaar registry.
 ///
 /// Represents an API endpoint or service that accepts x402 payments.
+///
+/// # Source Tracking (Meta-Bazaar)
+///
+/// Resources can come from multiple sources:
+/// - `SelfRegistered`: Explicit POST /discovery/register
+/// - `Settlement`: Auto-registered via /settle with discoverable=true
+/// - `Crawled`: Discovered from /.well-known/x402 endpoints
+/// - `Aggregated`: Pulled from another facilitator's Bazaar
+///
+/// The `source` and `source_facilitator` fields enable filtering and attribution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiscoveryResource {
@@ -949,10 +996,28 @@ pub struct DiscoveryResource {
     /// Optional metadata for categorization and search
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<DiscoveryMetadata>,
+
+    // ========== Meta-Bazaar Source Tracking ==========
+
+    /// How this resource was discovered/registered
+    #[serde(default)]
+    pub source: DiscoverySource,
+
+    /// Origin facilitator for aggregated resources (e.g., "coinbase", "ultravioleta")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_facilitator: Option<String>,
+
+    /// Unix timestamp when we first discovered this resource
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_seen: Option<u64>,
+
+    /// Number of settlements observed (for Settlement source)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settlement_count: Option<u32>,
 }
 
 impl DiscoveryResource {
-    /// Create a new discovery resource
+    /// Create a new discovery resource (defaults to SelfRegistered source)
     pub fn new(
         url: Url,
         resource_type: String,
@@ -973,6 +1038,68 @@ impl DiscoveryResource {
             accepts,
             last_updated: now,
             metadata: None,
+            source: DiscoverySource::SelfRegistered,
+            source_facilitator: None,
+            first_seen: Some(now),
+            settlement_count: None,
+        }
+    }
+
+    /// Create a resource from aggregation (another facilitator's Bazaar)
+    pub fn from_aggregation(
+        url: Url,
+        resource_type: String,
+        description: String,
+        accepts: Vec<PaymentRequirementsV2>,
+        source_facilitator: String,
+        original_last_updated: u64,
+    ) -> Self {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        Self {
+            url,
+            resource_type,
+            x402_version: 2,
+            description,
+            accepts,
+            last_updated: original_last_updated,
+            metadata: None,
+            source: DiscoverySource::Aggregated,
+            source_facilitator: Some(source_facilitator),
+            first_seen: Some(now),
+            settlement_count: None,
+        }
+    }
+
+    /// Create a resource from settlement tracking
+    pub fn from_settlement(
+        url: Url,
+        resource_type: String,
+        description: String,
+        accepts: Vec<PaymentRequirementsV2>,
+    ) -> Self {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        Self {
+            url,
+            resource_type,
+            x402_version: 2,
+            description,
+            accepts,
+            last_updated: now,
+            metadata: None,
+            source: DiscoverySource::Settlement,
+            source_facilitator: None,
+            first_seen: Some(now),
+            settlement_count: Some(1),
         }
     }
 
@@ -980,6 +1107,23 @@ impl DiscoveryResource {
     pub fn with_metadata(mut self, metadata: DiscoveryMetadata) -> Self {
         self.metadata = Some(metadata);
         self
+    }
+
+    /// Set the source facilitator (for aggregated resources)
+    pub fn with_source_facilitator(mut self, facilitator: String) -> Self {
+        self.source_facilitator = Some(facilitator);
+        self
+    }
+
+    /// Increment settlement count (for Settlement source)
+    pub fn increment_settlement_count(&mut self) {
+        self.settlement_count = Some(self.settlement_count.unwrap_or(0) + 1);
+        // Update last_updated timestamp
+        use std::time::{SystemTime, UNIX_EPOCH};
+        self.last_updated = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
     }
 }
 
@@ -1092,6 +1236,16 @@ pub struct DiscoveryFilters {
     /// Filter by tag
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tag: Option<String>,
+
+    // ========== Meta-Bazaar Filters ==========
+
+    /// Filter by discovery source (self_registered, settlement, crawled, aggregated)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+
+    /// Filter by source facilitator (e.g., "coinbase", "ultravioleta")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_facilitator: Option<String>,
 }
 
 impl DiscoveryFilters {
@@ -1100,6 +1254,8 @@ impl DiscoveryFilters {
             && self.network.is_none()
             && self.provider.is_none()
             && self.tag.is_none()
+            && self.source.is_none()
+            && self.source_facilitator.is_none()
     }
 }
 

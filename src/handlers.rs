@@ -149,6 +149,12 @@ pub struct DiscoveryQueryParams {
 
     /// Filter by tag
     pub tag: Option<String>,
+
+    /// Filter by discovery source (self_registered, settlement, crawled, aggregated)
+    pub source: Option<String>,
+
+    /// Filter by source facilitator (e.g., "coinbase", "ultravioleta")
+    pub source_facilitator: Option<String>,
 }
 
 fn default_limit() -> u32 {
@@ -161,6 +167,8 @@ impl From<DiscoveryQueryParams> for Option<DiscoveryFilters> {
             && params.network.is_none()
             && params.provider.is_none()
             && params.tag.is_none()
+            && params.source.is_none()
+            && params.source_facilitator.is_none()
         {
             None
         } else {
@@ -169,6 +177,8 @@ impl From<DiscoveryQueryParams> for Option<DiscoveryFilters> {
                 network: params.network,
                 provider: params.provider,
                 tag: params.tag,
+                source: params.source,
+                source_facilitator: params.source_facilitator,
             })
         }
     }

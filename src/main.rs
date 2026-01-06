@@ -42,6 +42,7 @@ mod blocklist;
 mod caip2;
 mod chain;
 mod discovery;
+mod discovery_aggregator;
 mod discovery_store;
 mod escrow;
 mod facilitator;
@@ -189,6 +190,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         discovery_registry.store_type(),
         discovery_registry.count().await
     );
+
+    // Start background aggregation task if enabled
+    // Fetches resources from external facilitators (Coinbase, etc.) every hour
+    let aggregation_interval_secs = std::env::var("DISCOVERY_AGGREGATION_INTERVAL")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(3600); // Default: 1 hour
+
+    let enable_aggregation = std::env::var("DISCOVERY_ENABLE_AGGREGATION")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(true); // Enabled by default
+
+    if enable_aggregation {
+        tracing::info!(
+            interval_secs = aggregation_interval_secs,
+            "Starting discovery aggregation background task"
+        );
+        let registry_for_aggregation = Arc::clone(&discovery_registry);
+        let _aggregation_handle = discovery_aggregator::start_aggregation_task(
+            (*registry_for_aggregation).clone(),
+            aggregation_interval_secs,
+        );
+    } else {
+        tracing::info!("Discovery aggregation is disabled (DISCOVERY_ENABLE_AGGREGATION=false)");
+    }
 
     let http_endpoints = Router::new()
         .merge(handlers::routes().with_state(axum_state))

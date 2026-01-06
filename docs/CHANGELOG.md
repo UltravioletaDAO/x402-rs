@@ -1,5 +1,80 @@
 # Changelog
 
+## [1.19.0] - 2026-01-06
+
+### Added - Meta-Bazaar Discovery Aggregation
+
+This release implements Phase 1 of the unified Bazaar architecture, enabling the facilitator to aggregate discoverable resources from external facilitators (like Coinbase). This transforms the Ultravioleta facilitator into a "Meta-Bazaar" that indexes services from across the x402 ecosystem.
+
+#### New Features
+
+- **Discovery Source Tracking**: Resources now track their origin
+  - `DiscoverySource` enum: `SelfRegistered`, `Settlement`, `Crawled`, `Aggregated`
+  - `source_facilitator` field identifies origin facilitator (e.g., "coinbase")
+  - `first_seen` timestamp for when resource was discovered
+  - `settlement_count` for tracking payment activity
+
+- **Discovery Aggregator**: Background task that fetches from external facilitators
+  - Fetches from Coinbase CDP Bazaar (1,700+ services)
+  - Converts v1 network names to CAIP-2 format
+  - Runs periodically (default: every hour)
+  - Configurable via `DISCOVERY_AGGREGATION_INTERVAL`
+
+- **Enhanced Filtering**: Query resources by source
+  - `GET /discovery/resources?source=aggregated` - Show only aggregated resources
+  - `GET /discovery/resources?source_facilitator=coinbase` - Show Coinbase resources
+  - Combines with existing filters (category, network, provider, tag)
+
+- **Bulk Import API**: Efficient resource ingestion
+  - `DiscoveryRegistry::bulk_import()` for batch upserts
+  - Smart deduplication by URL
+  - Only updates if newer `last_updated` timestamp
+
+#### Environment Variables
+
+```bash
+# Enable/disable aggregation (default: true)
+DISCOVERY_ENABLE_AGGREGATION=true
+
+# Aggregation interval in seconds (default: 3600 = 1 hour)
+DISCOVERY_AGGREGATION_INTERVAL=3600
+```
+
+#### Architecture
+
+```
+External Facilitators          Ultravioleta Facilitator
++------------------+          +-------------------------+
+| Coinbase Bazaar  |--fetch-->| DiscoveryAggregator     |
+| 1,700+ services  |          |   |                     |
++------------------+          |   v                     |
+                              | Convert to v2 format    |
++------------------+          |   |                     |
+| Other Facilitator|--fetch-->|   v                     |
++------------------+          | DiscoveryRegistry       |
+                              | (source: Aggregated)    |
+                              +-------------------------+
+```
+
+#### API Changes
+
+- `DiscoveryResource` struct now includes:
+  - `source: DiscoverySource` (default: `self_registered`)
+  - `source_facilitator: Option<String>`
+  - `first_seen: Option<u64>`
+  - `settlement_count: Option<u32>`
+
+- `DiscoveryFilters` struct now supports:
+  - `source: Option<String>`
+  - `source_facilitator: Option<String>`
+
+#### Roadmap
+
+- **Phase 2**: Settlement tracking (auto-register on /settle when discoverable=true)
+- **Phase 3**: Crawler for /.well-known/x402 endpoints
+
+---
+
 ## [1.10.0] - 2025-12-19
 
 ### Added - Multi-Stablecoin Support

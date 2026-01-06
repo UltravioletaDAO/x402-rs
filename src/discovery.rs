@@ -362,6 +362,87 @@ impl DiscoveryRegistry {
         self.resources.read().await.len()
     }
 
+    /// Bulk import resources from an external source (aggregation).
+    ///
+    /// This performs an upsert: existing resources are updated, new ones are added.
+    /// Only updates resources if they have a newer `last_updated` timestamp.
+    ///
+    /// # Arguments
+    ///
+    /// * `resources` - The resources to import
+    /// * `skip_validation` - Skip URL/type validation (useful for aggregated resources)
+    ///
+    /// # Returns
+    ///
+    /// Tuple of (added_count, updated_count, skipped_count)
+    pub async fn bulk_import(
+        &self,
+        resources: Vec<DiscoveryResource>,
+        skip_validation: bool,
+    ) -> Result<(usize, usize, usize), DiscoveryError> {
+        let mut added = 0;
+        let mut updated = 0;
+        let mut skipped = 0;
+
+        let mut cache = self.resources.write().await;
+        let mut to_persist = Vec::new();
+
+        for resource in resources {
+            // Optionally validate
+            if !skip_validation {
+                if let Err(e) = self.validate_resource(&resource) {
+                    debug!(url = %resource.url, error = %e, "Skipping invalid resource during bulk import");
+                    skipped += 1;
+                    continue;
+                }
+            }
+
+            let url_key = resource.url.to_string();
+
+            if let Some(existing) = cache.get(&url_key) {
+                // Only update if newer
+                if resource.last_updated > existing.last_updated {
+                    cache.insert(url_key.clone(), resource.clone());
+                    to_persist.push(resource);
+                    updated += 1;
+                } else {
+                    skipped += 1;
+                }
+            } else {
+                // New resource
+                cache.insert(url_key.clone(), resource.clone());
+                to_persist.push(resource);
+                added += 1;
+            }
+        }
+
+        // Release lock before async persistence
+        drop(cache);
+
+        // Persist all changes
+        if !to_persist.is_empty() {
+            let store = Arc::clone(&self.store);
+            let persist_count = to_persist.len();
+            tokio::spawn(async move {
+                for resource in to_persist {
+                    if let Err(e) = store.save(&resource).await {
+                        error!(url = %resource.url, error = %e, "Failed to persist imported resource");
+                    }
+                }
+                info!(count = persist_count, "Persisted bulk-imported resources to store");
+            });
+        }
+
+        info!(
+            added = added,
+            updated = updated,
+            skipped = skipped,
+            "Bulk import completed"
+        );
+
+        Ok((added, updated, skipped))
+    }
+
     /// Check if a resource matches the given filters.
     fn matches_filters(&self, resource: &DiscoveryResource, filters: &Option<DiscoveryFilters>) -> bool {
         let Some(f) = filters else {
@@ -411,6 +492,26 @@ impl DiscoveryRegistry {
                 .metadata
                 .as_ref()
                 .map(|m| m.tags.iter().any(|t| t.eq_ignore_ascii_case(tag)))
+                .unwrap_or(false);
+            if !matches {
+                return false;
+            }
+        }
+
+        // Filter by source (Meta-Bazaar)
+        if let Some(ref source) = f.source {
+            let matches = resource.source.to_string().eq_ignore_ascii_case(source);
+            if !matches {
+                return false;
+            }
+        }
+
+        // Filter by source facilitator (Meta-Bazaar)
+        if let Some(ref facilitator) = f.source_facilitator {
+            let matches = resource
+                .source_facilitator
+                .as_ref()
+                .map(|sf| sf.eq_ignore_ascii_case(facilitator))
                 .unwrap_or(false);
             if !matches {
                 return false;

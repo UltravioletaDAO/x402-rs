@@ -114,9 +114,80 @@ Resource providers can opt-in to discovery by adding `discoverable: true` to the
 - Resources created via settlement are tagged with `source: Settlement`
 - Settlement count is incremented for existing resources
 
-#### Roadmap
+### Added - Discovery Crawler (Phase 3)
 
-- **Phase 3**: Crawler for `/.well-known/x402` endpoints
+This update implements Phase 3 of the unified Bazaar architecture: the well-known endpoint crawler. The crawler periodically fetches `/.well-known/x402` from configured seed URLs to discover x402-enabled resources.
+
+#### How It Works
+
+1. Configure seed URLs via `DISCOVERY_CRAWL_URLS` environment variable
+2. Crawler fetches `/.well-known/x402` from each domain
+3. Parses the JSON response containing resource definitions
+4. Imports discovered resources with `source: Crawled`
+
+#### Well-Known Format
+
+Resource providers should serve `/.well-known/x402` with this format:
+
+```json
+{
+  "x402Version": 2,
+  "resources": [
+    {
+      "url": "https://api.example.com/premium",
+      "type": "http",
+      "description": "Premium API endpoint",
+      "accepts": [
+        {
+          "scheme": "exact",
+          "network": "eip155:8453",
+          "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+          "amount": "100000",
+          "payTo": "0x...",
+          "maxTimeoutSeconds": 300
+        }
+      ],
+      "metadata": {
+        "category": "finance",
+        "provider": "Example Corp",
+        "tags": ["market-data", "real-time"]
+      }
+    }
+  ]
+}
+```
+
+#### Environment Variables
+
+```bash
+# Enable/disable crawler (default: false)
+DISCOVERY_ENABLE_CRAWLER=true
+
+# Crawl interval in seconds (default: 86400 = 24 hours)
+DISCOVERY_CRAWL_INTERVAL=86400
+
+# Comma-separated list of seed URLs to crawl
+DISCOVERY_CRAWL_URLS=https://api.example.com,https://data.service.io
+```
+
+#### Technical Details
+
+- Uses `reqwest` for HTTP requests with 30s timeout
+- Crawl runs in background task (non-blocking)
+- Resources tagged with `source: Crawled` and `source_facilitator: <domain>`
+- 404 responses are silently ignored (domain doesn't support x402)
+- Invalid URLs are skipped with warning log
+
+#### Complete Bazaar Architecture
+
+With all three phases complete, the Bazaar now has four resource sources:
+
+| Source | Description | Trigger |
+|--------|-------------|---------|
+| `self_registered` | Direct POST to `/discovery/register` | Manual registration |
+| `settlement` | Auto-registered on successful `/settle` | `discoverable: true` in payment requirements |
+| `aggregated` | Fetched from external facilitators (Coinbase) | Background task (hourly) |
+| `crawled` | Discovered from `/.well-known/x402` endpoints | Background task (daily) |
 
 ---
 

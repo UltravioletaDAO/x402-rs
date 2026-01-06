@@ -21,7 +21,7 @@
 //! - `OTEL_*` variables enable tracing to systems like Honeycomb
 
 use axum::http::Method;
-use axum::Router;
+use axum::{Extension, Router};
 use dotenvy::dotenv;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -218,7 +218,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let http_endpoints = Router::new()
         .merge(handlers::routes().with_state(axum_state))
-        .merge(handlers::discovery_routes().with_state(discovery_registry))
+        .merge(handlers::discovery_routes().with_state(Arc::clone(&discovery_registry)))
+        // Share discovery registry with all handlers via Extension for settlement tracking
+        .layer(Extension(discovery_registry))
         .layer(telemetry.http_tracing())
         .layer(
             cors::CorsLayer::new()

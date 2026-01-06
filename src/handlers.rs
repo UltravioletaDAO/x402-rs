@@ -10,7 +10,7 @@
 //! and is compatible with official x402 client SDKs.
 
 use axum::body::Bytes;
-use axum::extract::{Query, State};
+use axum::extract::{Extension, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use axum::routing::{get, post};
@@ -29,10 +29,10 @@ use crate::facilitator::Facilitator;
 use crate::provider_cache::{HasProviderMap, ProviderMap};
 use crate::types::{
     ErrorResponse, FacilitatorErrorReason, MixedAddress, SettleRequest, VerifyRequest,
-    VerifyResponse, X402Version,
+    VerifyResponse,
 };
 use crate::types_v2::{
-    DiscoveryFilters, RegisterResourceRequest, SettleRequestEnvelope,
+    DiscoveryFilters, DiscoveryResource, RegisterResourceRequest, SettleRequestEnvelope,
     SupportedPaymentKindsResponseV1ToV2, VerifyRequestEnvelope,
 };
 
@@ -955,9 +955,14 @@ fn log_settle_deserialization_error(body_str: &str, e: &serde_json::Error) {
 ///
 /// **x402 v2 Header Support**: If the `PAYMENT-SIGNATURE` header is present, the payload
 /// is extracted from the base64-decoded header value instead of the request body.
+///
+/// **Phase 2 Settlement Tracking**: After successful settlement, if `discoverable=true`
+/// is set in the payment requirements extra field, the resource is auto-registered
+/// in the Bazaar discovery registry.
 #[instrument(skip_all)]
 pub async fn post_settle<A>(
     State(facilitator): State<A>,
+    Extension(discovery_registry): Extension<Arc<DiscoveryRegistry>>,
     headers: HeaderMap,
     raw_body: Bytes,
 ) -> impl IntoResponse
@@ -1304,6 +1309,57 @@ where
                         valid_response.network,
                         valid_response.payer
                     );
+                }
+
+                // Phase 2: Settlement Tracking - check if discoverable=true
+                let is_discoverable = body
+                    .payment_requirements
+                    .extra
+                    .as_ref()
+                    .and_then(|e| e.get("discoverable"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+
+                if is_discoverable {
+                    // Convert v1 PaymentRequirements to v2 for the accepts array
+                    use crate::types_v2::PaymentRequirementsV1ToV2;
+                    let (_resource_info, requirements_v2) = body.payment_requirements.to_v2();
+
+                    // Create a DiscoveryResource from the settlement
+                    let discovery_resource = DiscoveryResource::from_settlement(
+                        body.payment_requirements.resource.clone(),
+                        "http".to_string(), // Default to HTTP resource type
+                        body.payment_requirements.description.clone(),
+                        vec![requirements_v2],
+                    );
+
+                    // Track the settlement (register or increment count)
+                    let registry = discovery_registry.clone();
+                    let resource_url = discovery_resource.url.to_string();
+                    tokio::spawn(async move {
+                        match registry.track_settlement(discovery_resource).await {
+                            Ok(is_new) => {
+                                if is_new {
+                                    info!(
+                                        url = %resource_url,
+                                        "Auto-registered new resource from settlement (discoverable=true)"
+                                    );
+                                } else {
+                                    debug!(
+                                        url = %resource_url,
+                                        "Incremented settlement count for existing resource"
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                warn!(
+                                    url = %resource_url,
+                                    error = %e,
+                                    "Failed to track settlement in discovery registry"
+                                );
+                            }
+                        }
+                    });
                 }
             } else {
                 error!(

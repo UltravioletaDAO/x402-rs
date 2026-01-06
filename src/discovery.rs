@@ -521,6 +521,67 @@ impl DiscoveryRegistry {
         true
     }
 
+    /// Track a settlement by either registering a new resource or incrementing the count.
+    ///
+    /// This is called after successful /settle when the resource has `discoverable=true`
+    /// in the payment requirements extra field.
+    ///
+    /// # Behavior
+    ///
+    /// - If resource doesn't exist: Create a new resource with `source: Settlement`
+    /// - If resource exists: Increment the `settlement_count`
+    ///
+    /// # Arguments
+    ///
+    /// * `resource` - The resource to track (created from settlement data)
+    ///
+    /// # Returns
+    ///
+    /// * `true` if a new resource was created
+    /// * `false` if an existing resource was updated
+    pub async fn track_settlement(&self, resource: DiscoveryResource) -> Result<bool, DiscoveryError> {
+        let url_key = resource.url.to_string();
+
+        let mut resources = self.resources.write().await;
+
+        if let Some(existing) = resources.get_mut(&url_key) {
+            // Resource exists - increment settlement count
+            existing.increment_settlement_count();
+            let resource_for_store = existing.clone();
+            debug!(
+                url = %url_key,
+                settlement_count = existing.settlement_count,
+                "Incremented settlement count for existing resource"
+            );
+
+            // Release lock before async persistence
+            drop(resources);
+
+            // Persist asynchronously
+            self.persist_async(resource_for_store);
+
+            Ok(false)
+        } else {
+            // New resource - register it
+            info!(
+                url = %url_key,
+                resource_type = %resource.resource_type,
+                "Auto-registering resource from settlement (discoverable=true)"
+            );
+
+            let resource_for_store = resource.clone();
+            resources.insert(url_key, resource);
+
+            // Release lock before async persistence
+            drop(resources);
+
+            // Persist asynchronously
+            self.persist_async(resource_for_store);
+
+            Ok(true)
+        }
+    }
+
     /// Validate a resource before registration.
     fn validate_resource(&self, resource: &DiscoveryResource) -> Result<(), DiscoveryError> {
         // Validate URL scheme

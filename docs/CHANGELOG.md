@@ -68,10 +68,55 @@ External Facilitators          Ultravioleta Facilitator
   - `source: Option<String>`
   - `source_facilitator: Option<String>`
 
+### Added - Settlement Tracking (Phase 2)
+
+This update implements Phase 2 of the unified Bazaar architecture: automatic settlement tracking. Resources can now be auto-registered in the Bazaar discovery registry when payments are settled.
+
+#### How It Works
+
+When a payment is settled via `POST /settle`:
+1. Check if `discoverable=true` in `paymentRequirements.extra`
+2. If true, auto-register the resource in the Bazaar (if new) or increment its settlement count (if existing)
+3. Resources are tagged with `source: Settlement` to distinguish from self-registered or aggregated resources
+
+#### Usage
+
+Resource providers can opt-in to discovery by adding `discoverable: true` to their payment requirements:
+
+```json
+{
+  "paymentRequirements": {
+    "scheme": "exact",
+    "network": "eip155:8453",
+    "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "amount": "100000",
+    "payTo": "0x...",
+    "resource": "https://api.example.com/premium-data",
+    "description": "Premium market data API",
+    "extra": {
+      "discoverable": true
+    }
+  }
+}
+```
+
+#### Benefits
+
+- **Zero-effort discovery**: Resources are automatically indexed when payments succeed
+- **Settlement metrics**: `settlement_count` tracks payment activity per resource
+- **Trust signals**: Resources with high settlement counts demonstrate active usage
+- **Backward compatible**: Existing integrations work unchanged (discoverable defaults to false)
+
+#### Technical Details
+
+- Settlement tracking runs asynchronously (non-blocking)
+- Uses `DiscoveryRegistry::track_settlement()` for upsert logic
+- Resources created via settlement are tagged with `source: Settlement`
+- Settlement count is incremented for existing resources
+
 #### Roadmap
 
-- **Phase 2**: Settlement tracking (auto-register on /settle when discoverable=true)
-- **Phase 3**: Crawler for /.well-known/x402 endpoints
+- **Phase 3**: Crawler for `/.well-known/x402` endpoints
 
 ---
 

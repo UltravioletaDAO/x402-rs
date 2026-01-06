@@ -1,5 +1,34 @@
 # Changelog
 
+## [1.19.1] - 2026-01-06
+
+### Fixed - Aggregator ISO8601 Timestamp Parsing
+
+Fixed a bug where the discovery aggregator failed to parse responses from Coinbase and other facilitators that return `lastUpdated` as an ISO8601 string instead of a Unix timestamp.
+
+#### Changes
+
+- **Flexible timestamp parsing**: `lastUpdated` field now accepts both:
+  - Unix timestamp (u64): `1767737779`
+  - ISO8601 string: `"2026-01-06T20:22:59.724Z"`
+
+- **Added 11 new facilitator sources**:
+  - PayAI: `https://facilitator.payai.network`
+  - Thirdweb: `https://api.thirdweb.com/v1/payments/x402`
+  - QuestFlow: `https://facilitator.questflow.ai`
+  - AurraCloud: `https://x402-facilitator.aurracloud.com`
+  - AnySpend: `https://mainnet.anyspend.com/x402`
+  - OpenX402: `https://open.x402.host`
+  - x402.rs: `https://facilitator.x402.rs`
+  - Heurist: `https://facilitator.heurist.xyz`
+  - Polymer: `https://api.polymer.zone/x402/v1`
+  - Meridian: `https://api.mrdn.finance`
+  - Virtuals: `https://acpx.virtuals.io`
+
+- **`FacilitatorConfig::all()`**: New method returns all 12 known facilitators
+
+---
+
 ## [1.19.0] - 2026-01-06
 
 ### Added - Meta-Bazaar Discovery Aggregation

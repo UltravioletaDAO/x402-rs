@@ -7,7 +7,17 @@
 //! # Supported Sources
 //!
 //! - **Coinbase CDP**: `https://api.cdp.coinbase.com/platform/v2/x402/discovery/resources`
-//! - Future: Other x402-compatible facilitators
+//! - **PayAI**: `https://facilitator.payai.network/discovery/resources`
+//! - **Thirdweb**: `https://api.thirdweb.com/v1/payments/x402/discovery/resources`
+//! - **QuestFlow**: `https://facilitator.questflow.ai/discovery/resources`
+//! - **AurraCloud**: `https://x402-facilitator.aurracloud.com/discovery/resources`
+//! - **AnySpend**: `https://mainnet.anyspend.com/x402/discovery/resources`
+//! - **OpenX402**: `https://open.x402.host/discovery/resources`
+//! - **x402.rs**: `https://facilitator.x402.rs/discovery/resources`
+//! - **Heurist**: `https://facilitator.heurist.xyz/discovery/resources`
+//! - **Polymer**: `https://api.polymer.zone/x402/v1/discovery/resources`
+//! - **Meridian**: `https://api.mrdn.finance/discovery/resources`
+//! - **Virtuals**: `https://acpx.virtuals.io/discovery/resources`
 //!
 //! # Architecture
 //!
@@ -36,13 +46,164 @@
 //! ```
 
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
 use url::Url;
 
 use alloy::primitives::U256;
 use std::str::FromStr;
+
+// ============================================================================
+// Timestamp Parsing (handles both u64 and ISO8601 string)
+// ============================================================================
+
+/// Deserialize a timestamp that can be either a u64 (Unix seconds) or an ISO8601 string.
+fn deserialize_flexible_timestamp<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::{self, Visitor};
+
+    struct FlexibleTimestampVisitor;
+
+    impl<'de> Visitor<'de> for FlexibleTimestampVisitor {
+        type Value = Option<u64>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a u64 timestamp or an ISO8601 date string")
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(None)
+        }
+
+        fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            deserializer.deserialize_any(FlexibleTimestampInnerVisitor)
+        }
+
+        fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(Some(value))
+        }
+
+        fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(Some(value as u64))
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            parse_iso8601_to_unix(value)
+                .map(Some)
+                .map_err(de::Error::custom)
+        }
+    }
+
+    struct FlexibleTimestampInnerVisitor;
+
+    impl<'de> Visitor<'de> for FlexibleTimestampInnerVisitor {
+        type Value = Option<u64>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a u64 timestamp or an ISO8601 date string")
+        }
+
+        fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(Some(value))
+        }
+
+        fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(Some(value as u64))
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            parse_iso8601_to_unix(value)
+                .map(Some)
+                .map_err(de::Error::custom)
+        }
+    }
+
+    deserializer.deserialize_option(FlexibleTimestampVisitor)
+}
+
+/// Parse an ISO8601 date string to Unix timestamp.
+/// Handles formats like "2026-01-06T20:22:59.724Z" or "2026-01-06T20:22:59Z"
+fn parse_iso8601_to_unix(s: &str) -> Result<u64, String> {
+    // Try to parse ISO8601 format manually
+    // Format: YYYY-MM-DDTHH:MM:SS.sssZ or YYYY-MM-DDTHH:MM:SSZ
+    let s = s.trim_end_matches('Z');
+    let (date_time, _millis) = if let Some(dot_pos) = s.find('.') {
+        (&s[..dot_pos], &s[dot_pos + 1..])
+    } else {
+        (s, "")
+    };
+
+    // Parse date and time parts
+    let parts: Vec<&str> = date_time.split('T').collect();
+    if parts.len() != 2 {
+        return Err(format!("Invalid ISO8601 format: {}", s));
+    }
+
+    let date_parts: Vec<u32> = parts[0]
+        .split('-')
+        .filter_map(|p| p.parse().ok())
+        .collect();
+    let time_parts: Vec<u32> = parts[1]
+        .split(':')
+        .filter_map(|p| p.parse().ok())
+        .collect();
+
+    if date_parts.len() != 3 || time_parts.len() != 3 {
+        return Err(format!("Invalid date/time components: {}", s));
+    }
+
+    let year = date_parts[0];
+    let month = date_parts[1];
+    let day = date_parts[2];
+    let hour = time_parts[0];
+    let minute = time_parts[1];
+    let second = time_parts[2];
+
+    // Calculate Unix timestamp (simplified - doesn't handle leap seconds)
+    // Days since Unix epoch (1970-01-01)
+    let days = days_since_epoch(year, month, day);
+    let seconds = days as u64 * 86400 + hour as u64 * 3600 + minute as u64 * 60 + second as u64;
+
+    Ok(seconds)
+}
+
+/// Calculate days since Unix epoch (1970-01-01).
+fn days_since_epoch(year: u32, month: u32, day: u32) -> i64 {
+    // Algorithm from Howard Hinnant's date library
+    let y = year as i64 - if month <= 2 { 1 } else { 0 };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = (y - era * 400) as u32;
+    let doy = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe as i64 - 719468
+}
 
 use crate::caip2::Caip2NetworkId;
 use crate::types::{MixedAddress, Scheme, TokenAmount};
@@ -102,6 +263,145 @@ impl FacilitatorConfig {
             timeout_secs: 30,
         }
     }
+
+    /// Create PayAI facilitator config
+    pub fn payai() -> Self {
+        Self {
+            id: "payai".to_string(),
+            name: "PayAI".to_string(),
+            discovery_url: "https://facilitator.payai.network/discovery/resources".to_string(),
+            enabled: true,
+            timeout_secs: 30,
+        }
+    }
+
+    /// Create Thirdweb facilitator config
+    pub fn thirdweb() -> Self {
+        Self {
+            id: "thirdweb".to_string(),
+            name: "Thirdweb".to_string(),
+            discovery_url: "https://api.thirdweb.com/v1/payments/x402/discovery/resources".to_string(),
+            enabled: true,
+            timeout_secs: 30,
+        }
+    }
+
+    /// Create QuestFlow facilitator config
+    pub fn questflow() -> Self {
+        Self {
+            id: "questflow".to_string(),
+            name: "QuestFlow".to_string(),
+            discovery_url: "https://facilitator.questflow.ai/discovery/resources".to_string(),
+            enabled: true,
+            timeout_secs: 30,
+        }
+    }
+
+    /// Create AurraCloud facilitator config
+    pub fn aurracloud() -> Self {
+        Self {
+            id: "aurracloud".to_string(),
+            name: "AurraCloud".to_string(),
+            discovery_url: "https://x402-facilitator.aurracloud.com/discovery/resources".to_string(),
+            enabled: true,
+            timeout_secs: 30,
+        }
+    }
+
+    /// Create AnySpend facilitator config
+    pub fn anyspend() -> Self {
+        Self {
+            id: "anyspend".to_string(),
+            name: "AnySpend".to_string(),
+            discovery_url: "https://mainnet.anyspend.com/x402/discovery/resources".to_string(),
+            enabled: true,
+            timeout_secs: 30,
+        }
+    }
+
+    /// Create OpenX402 facilitator config
+    pub fn openx402() -> Self {
+        Self {
+            id: "openx402".to_string(),
+            name: "OpenX402".to_string(),
+            discovery_url: "https://open.x402.host/discovery/resources".to_string(),
+            enabled: true,
+            timeout_secs: 30,
+        }
+    }
+
+    /// Create x402.rs facilitator config (upstream)
+    pub fn x402rs() -> Self {
+        Self {
+            id: "x402rs".to_string(),
+            name: "x402.rs".to_string(),
+            discovery_url: "https://facilitator.x402.rs/discovery/resources".to_string(),
+            enabled: true,
+            timeout_secs: 30,
+        }
+    }
+
+    /// Create Heurist facilitator config
+    pub fn heurist() -> Self {
+        Self {
+            id: "heurist".to_string(),
+            name: "Heurist".to_string(),
+            discovery_url: "https://facilitator.heurist.xyz/discovery/resources".to_string(),
+            enabled: true,
+            timeout_secs: 30,
+        }
+    }
+
+    /// Create Polymer facilitator config
+    pub fn polymer() -> Self {
+        Self {
+            id: "polymer".to_string(),
+            name: "Polymer".to_string(),
+            discovery_url: "https://api.polymer.zone/x402/v1/discovery/resources".to_string(),
+            enabled: true,
+            timeout_secs: 30,
+        }
+    }
+
+    /// Create Meridian facilitator config
+    pub fn meridian() -> Self {
+        Self {
+            id: "meridian".to_string(),
+            name: "Meridian".to_string(),
+            discovery_url: "https://api.mrdn.finance/discovery/resources".to_string(),
+            enabled: true,
+            timeout_secs: 30,
+        }
+    }
+
+    /// Create Virtuals facilitator config
+    pub fn virtuals() -> Self {
+        Self {
+            id: "virtuals".to_string(),
+            name: "Virtuals Protocol".to_string(),
+            discovery_url: "https://acpx.virtuals.io/discovery/resources".to_string(),
+            enabled: true,
+            timeout_secs: 30,
+        }
+    }
+
+    /// Get all known facilitator configs
+    pub fn all() -> Vec<Self> {
+        vec![
+            Self::coinbase(),
+            Self::payai(),
+            Self::thirdweb(),
+            Self::questflow(),
+            Self::aurracloud(),
+            Self::anyspend(),
+            Self::openx402(),
+            Self::x402rs(),
+            Self::heurist(),
+            Self::polymer(),
+            Self::meridian(),
+            Self::virtuals(),
+        ]
+    }
 }
 
 // ============================================================================
@@ -122,7 +422,8 @@ pub struct CoinbaseResource {
     /// Payment requirements (v1 format)
     #[serde(default)]
     pub accepts: Vec<CoinbasePaymentRequirement>,
-    /// Last updated timestamp
+    /// Last updated timestamp (can be u64 or ISO8601 string)
+    #[serde(default, deserialize_with = "deserialize_flexible_timestamp")]
     pub last_updated: Option<u64>,
     /// Metadata
     #[serde(default)]
@@ -193,7 +494,7 @@ impl Default for DiscoveryAggregator {
 }
 
 impl DiscoveryAggregator {
-    /// Create a new aggregator with default facilitators.
+    /// Create a new aggregator with all known facilitators.
     pub fn new() -> Self {
         let client = Client::builder()
             .timeout(Duration::from_secs(60))
@@ -203,7 +504,7 @@ impl DiscoveryAggregator {
 
         Self {
             client,
-            facilitators: vec![FacilitatorConfig::coinbase()],
+            facilitators: FacilitatorConfig::all(),
         }
     }
 
@@ -567,5 +868,99 @@ mod tests {
         assert_eq!(config.id, "coinbase");
         assert!(config.enabled);
         assert!(config.discovery_url.contains("coinbase"));
+    }
+
+    #[test]
+    fn test_all_facilitators() {
+        let all = FacilitatorConfig::all();
+        assert_eq!(all.len(), 12);
+
+        // Verify we have all expected facilitators
+        let ids: Vec<&str> = all.iter().map(|f| f.id.as_str()).collect();
+        assert!(ids.contains(&"coinbase"));
+        assert!(ids.contains(&"payai"));
+        assert!(ids.contains(&"thirdweb"));
+        assert!(ids.contains(&"questflow"));
+        assert!(ids.contains(&"aurracloud"));
+        assert!(ids.contains(&"anyspend"));
+        assert!(ids.contains(&"openx402"));
+        assert!(ids.contains(&"x402rs"));
+        assert!(ids.contains(&"heurist"));
+        assert!(ids.contains(&"polymer"));
+        assert!(ids.contains(&"meridian"));
+        assert!(ids.contains(&"virtuals"));
+    }
+
+    #[test]
+    fn test_parse_iso8601_to_unix() {
+        // Test a known date (Unix epoch)
+        let epoch = parse_iso8601_to_unix("1970-01-01T00:00:00Z").unwrap();
+        assert_eq!(epoch, 0);
+
+        // Test Y2K
+        let y2k = parse_iso8601_to_unix("2000-01-01T00:00:00Z").unwrap();
+        assert_eq!(y2k, 946684800);
+
+        // Test full ISO8601 with milliseconds
+        let ts = parse_iso8601_to_unix("2026-01-06T20:22:59.724Z").unwrap();
+        // Just verify it parses and returns a reasonable value (around 2026)
+        assert!(ts > 1700000000); // After 2023
+        assert!(ts < 1800000000); // Before 2027
+
+        // Test ISO8601 without milliseconds should give same result
+        let ts2 = parse_iso8601_to_unix("2026-01-06T20:22:59Z").unwrap();
+        assert_eq!(ts, ts2);
+    }
+
+    #[test]
+    fn test_deserialize_flexible_timestamp_u64() {
+        let json = r#"{"last_updated": 1767730979}"#;
+        #[derive(Deserialize)]
+        struct TestStruct {
+            #[serde(default, deserialize_with = "deserialize_flexible_timestamp")]
+            last_updated: Option<u64>,
+        }
+        let parsed: TestStruct = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.last_updated, Some(1767730979));
+    }
+
+    #[test]
+    fn test_deserialize_flexible_timestamp_string() {
+        let json = r#"{"last_updated": "2026-01-06T20:22:59.724Z"}"#;
+        #[derive(Deserialize)]
+        struct TestStruct {
+            #[serde(default, deserialize_with = "deserialize_flexible_timestamp")]
+            last_updated: Option<u64>,
+        }
+        let parsed: TestStruct = serde_json::from_str(json).unwrap();
+        // Just verify it parses successfully and returns a reasonable timestamp
+        assert!(parsed.last_updated.is_some());
+        let ts = parsed.last_updated.unwrap();
+        assert!(ts > 1700000000); // After 2023
+        assert!(ts < 1800000000); // Before 2027
+    }
+
+    #[test]
+    fn test_deserialize_flexible_timestamp_null() {
+        let json = r#"{"last_updated": null}"#;
+        #[derive(Deserialize)]
+        struct TestStruct {
+            #[serde(default, deserialize_with = "deserialize_flexible_timestamp")]
+            last_updated: Option<u64>,
+        }
+        let parsed: TestStruct = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.last_updated, None);
+    }
+
+    #[test]
+    fn test_deserialize_flexible_timestamp_missing() {
+        let json = r#"{}"#;
+        #[derive(Deserialize)]
+        struct TestStruct {
+            #[serde(default, deserialize_with = "deserialize_flexible_timestamp")]
+            last_updated: Option<u64>,
+        }
+        let parsed: TestStruct = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.last_updated, None);
     }
 }

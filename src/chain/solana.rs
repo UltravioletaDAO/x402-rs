@@ -452,6 +452,19 @@ impl SolanaProvider {
         let asset_address: SolanaAddress = requirements.asset.clone().try_into()?;
         let pay_to_address: SolanaAddress = requirements.pay_to.clone().try_into()?;
         let token_program = transfer_checked_instruction.token_program;
+
+        // SECURITY: Verify that the mint in the transaction matches the expected asset
+        // This prevents attacks where someone sends a fake token with the same amount/destination
+        if transfer_checked_instruction.mint != asset_address.pubkey {
+            tracing::warn!(
+                expected_mint = %asset_address.pubkey,
+                actual_mint = %transfer_checked_instruction.mint,
+                "Asset mismatch: transaction mint does not match expected asset"
+            );
+            return Err(FacilitatorLocalError::DecodingError(
+                "invalid_exact_svm_payload_transaction_asset_mismatch".to_string(),
+            ));
+        }
         // findAssociatedTokenPda
         let (ata, _) = Pubkey::find_program_address(
             &[

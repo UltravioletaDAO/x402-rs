@@ -412,7 +412,8 @@ impl FacilitatorConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CoinbaseResource {
-    /// Resource URL
+    /// Resource URL (accepts both "url" and "resource" field names)
+    #[serde(alias = "resource")]
     pub url: String,
     /// Resource type (http, mcp, etc.)
     #[serde(rename = "type")]
@@ -474,6 +475,22 @@ pub struct CoinbasePagination {
     pub limit: Option<u32>,
     pub offset: Option<u32>,
     pub total: Option<u32>,
+}
+
+/// Wrapped discovery response (some facilitators wrap in "data" object).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WrappedDiscoveryResponse {
+    pub data: CoinbaseDiscoveryResponse,
+}
+
+/// Alternative response format with "resources" instead of "items".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AlternativeDiscoveryResponse {
+    #[serde(alias = "items")]
+    pub resources: Vec<CoinbaseResource>,
+    pub pagination: Option<CoinbasePagination>,
 }
 
 // ============================================================================
@@ -584,18 +601,17 @@ impl DiscoveryAggregator {
 
             let body = response.text().await?;
 
-            // Try to parse as Coinbase format
-            let parsed: CoinbaseDiscoveryResponse = serde_json::from_str(&body)
-                .map_err(|e| AggregatorError::ParseError(format!("{}: {}", e, &body[..500.min(body.len())])))?;
+            // Try multiple response formats (facilitators use different schemas)
+            let (items, pagination) = self.parse_discovery_response(&body, &config.id)?;
 
-            let batch_count = parsed.items.len();
+            let batch_count = items.len();
 
             // Convert to our format
-            let resources = self.convert_coinbase_resources(parsed.items, &config.id);
+            let resources = self.convert_coinbase_resources(items, &config.id);
             all_resources.extend(resources);
 
             // Check if we need to fetch more
-            let total = parsed.pagination.as_ref().and_then(|p| p.total).unwrap_or(0);
+            let total = pagination.as_ref().and_then(|p| p.total).unwrap_or(0);
             offset += batch_count as u32;
 
             if batch_count < limit as usize || offset >= total {
@@ -606,6 +622,49 @@ impl DiscoveryAggregator {
         }
 
         Ok(all_resources)
+    }
+
+    /// Parse discovery response, trying multiple formats.
+    ///
+    /// Different facilitators use different response schemas:
+    /// - Standard: `{ "items": [...], "pagination": {...} }`
+    /// - Wrapped: `{ "data": { "items": [...] } }`
+    /// - Alternative: `{ "resources": [...] }`
+    fn parse_discovery_response(
+        &self,
+        body: &str,
+        facilitator_id: &str,
+    ) -> Result<(Vec<CoinbaseResource>, Option<CoinbasePagination>), AggregatorError> {
+        // Try 1: Standard Coinbase format with "items"
+        if let Ok(parsed) = serde_json::from_str::<CoinbaseDiscoveryResponse>(body) {
+            debug!(facilitator = facilitator_id, format = "standard", items = parsed.items.len(), "Parsed response");
+            return Ok((parsed.items, parsed.pagination));
+        }
+
+        // Try 2: Wrapped format with "data" object
+        if let Ok(parsed) = serde_json::from_str::<WrappedDiscoveryResponse>(body) {
+            debug!(facilitator = facilitator_id, format = "wrapped", items = parsed.data.items.len(), "Parsed response");
+            return Ok((parsed.data.items, parsed.data.pagination));
+        }
+
+        // Try 3: Alternative format with "resources" instead of "items"
+        if let Ok(parsed) = serde_json::from_str::<AlternativeDiscoveryResponse>(body) {
+            debug!(facilitator = facilitator_id, format = "alternative", resources = parsed.resources.len(), "Parsed response");
+            return Ok((parsed.resources, parsed.pagination));
+        }
+
+        // Try 4: Direct array of resources
+        if let Ok(resources) = serde_json::from_str::<Vec<CoinbaseResource>>(body) {
+            debug!(facilitator = facilitator_id, format = "array", resources = resources.len(), "Parsed response");
+            return Ok((resources, None));
+        }
+
+        // All formats failed
+        let preview = &body[..500.min(body.len())];
+        Err(AggregatorError::ParseError(format!(
+            "Unknown response format from {}: {}",
+            facilitator_id, preview
+        )))
     }
 
     /// Convert Coinbase resources to our v2 format.

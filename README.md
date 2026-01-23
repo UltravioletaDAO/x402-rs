@@ -10,7 +10,7 @@
 ```
 
 [![Live](https://img.shields.io/badge/live-facilitator.ultravioletadao.xyz-00d4aa)](https://facilitator.ultravioletadao.xyz)
-[![Version](https://img.shields.io/badge/version-1.20.1-blue)](https://github.com/UltravioletaDAO/x402-rs)
+[![Version](https://img.shields.io/badge/version-1.21.0-blue)](https://github.com/UltravioletaDAO/x402-rs)
 [![Rust](https://img.shields.io/badge/rust-2021-orange)](https://www.rust-lang.org/)
 
 ---
@@ -27,7 +27,7 @@ A payment settlement service implementing the [HTTP 402](https://developer.mozil
 
 > **Note**: Network counts may be outdated. Verify with: `curl -s https://facilitator.ultravioletadao.xyz/supported | jq '[.kinds[].network] | unique | map(select(contains("testnet") or contains("sepolia") or contains("devnet") or contains("fuji") or contains("amoy") or contains("alfajores") | not)) | length'`
 
-### Mainnets (18)
+### Mainnets (19)
 
 | Network | Chain ID | Token | Explorer |
 |---------|----------|-------|----------|
@@ -43,6 +43,7 @@ A payment settlement service implementing the [HTTP 402](https://developer.mozil
 | **Monad** | 10143 | MON | [monad.xyz](https://monad.xyz) |
 | **BSC** | 56 | USDC | [bscscan.com](https://bscscan.com) |
 | **SKALE Base** | 1187947933 | USDC.e | [skale-base.explorer](https://skale-base.explorer.skalenodes.com) |
+| **Scroll** | 534352 | USDC | [scrollscan.com](https://scrollscan.com) |
 | **Sui** | - | USDC | [suiscan.xyz](https://suiscan.xyz) |
 | **Solana** | - | USDC, AUSD | [solscan.io](https://solscan.io) |
 | **Fogo** | - | USDC | [fogoscan.com](https://fogoscan.com) |

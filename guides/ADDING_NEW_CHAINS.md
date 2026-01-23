@@ -638,6 +638,49 @@ Add entry to CHANGELOG:
 - [ ] Version number matches release
 - [ ] All major changes documented
 
+#### 7.3 Create Integration Document
+
+**REQUIRED**: Create `docs/{NETWORK}_INTEGRATION.md` with:
+
+```markdown
+# {Network Name} Network Integration
+
+**Date:** {date}
+**Version:** {version}
+**Status:** Complete
+
+## Network Details
+- Chain ID, RPC URLs, Explorer
+- CAIP-2 identifier
+
+## Token Contracts
+- USDC address
+- EIP-3009 verification status
+- EIP-712 domain info (name, version)
+
+## Facilitator Wallet
+- Mainnet/Testnet addresses
+- Funding transactions (with etherscan links)
+
+## Files Modified
+- List all changed files with summary of changes
+
+## Implementation Notes
+- Any special considerations (EIP-1559, L3, etc.)
+
+## Deployment Checklist
+- All items from this guide
+```
+
+See examples:
+- `docs/SKALE_INTEGRATION_PLAN.md`
+- `docs/SCROLL_INTEGRATION.md`
+
+**Checklist**:
+- [ ] Integration document created
+- [ ] Funding transaction linked
+- [ ] All technical details documented
+
 ## Common Issues and Troubleshooting
 
 ### Issue: Network not appearing in /supported

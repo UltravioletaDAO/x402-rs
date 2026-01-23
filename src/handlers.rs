@@ -111,6 +111,7 @@ where
         .route("/bsc.png", get(get_bsc_logo))
         .route("/sui.png", get(get_sui_logo))
         .route("/skale.png", get(get_skale_logo))
+        .route("/scroll.png", get(get_scroll_logo))
 }
 
 /// Discovery API routes for the Bazaar feature.
@@ -560,6 +561,16 @@ pub async fn get_sui_logo() -> impl IntoResponse {
 /// `GET /skale.png`: Returns SKALE logo.
 pub async fn get_skale_logo() -> impl IntoResponse {
     let bytes = include_bytes!("../static/skale.png");
+    (
+        StatusCode::OK,
+        [("content-type", "image/png")],
+        bytes.as_slice(),
+    )
+}
+
+/// `GET /scroll.png`: Returns Scroll logo.
+pub async fn get_scroll_logo() -> impl IntoResponse {
+    let bytes = include_bytes!("../static/scroll.png");
     (
         StatusCode::OK,
         [("content-type", "image/png")],

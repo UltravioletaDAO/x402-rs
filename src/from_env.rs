@@ -80,6 +80,9 @@ pub const ENV_RPC_SUI_TESTNET: &str = "RPC_URL_SUI_TESTNET";
 pub const ENV_RPC_SKALE_BASE: &str = "RPC_URL_SKALE_BASE";
 pub const ENV_RPC_SKALE_BASE_SEPOLIA: &str = "RPC_URL_SKALE_BASE_SEPOLIA";
 
+// Scroll RPC URL (zkEVM L2 on Ethereum)
+pub const ENV_RPC_SCROLL: &str = "RPC_URL_SCROLL";
+
 // Sui wallet private key environment variables
 #[cfg(feature = "sui")]
 pub const ENV_SUI_PRIVATE_KEY: &str = "SUI_PRIVATE_KEY";
@@ -132,6 +135,7 @@ pub fn rpc_env_name_from_network(network: Network) -> &'static str {
         Network::SuiTestnet => ENV_RPC_SUI_TESTNET,
         Network::SkaleBase => ENV_RPC_SKALE_BASE,
         Network::SkaleBaseSepolia => ENV_RPC_SKALE_BASE_SEPOLIA,
+        Network::Scroll => ENV_RPC_SCROLL,
     }
 }
 

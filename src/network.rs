@@ -136,6 +136,9 @@ pub enum Network {
     /// SKALE Base Sepolia testnet (chain ID 324705682) - L3 on Base Sepolia with gasless transactions.
     #[serde(rename = "skale-base-sepolia")]
     SkaleBaseSepolia,
+    /// Scroll mainnet (chain ID 534352) - zkEVM L2 on Ethereum.
+    #[serde(rename = "scroll")]
+    Scroll,
 }
 
 impl Display for Network {
@@ -183,6 +186,7 @@ impl Display for Network {
             Network::SuiTestnet => write!(f, "sui-testnet"),
             Network::SkaleBase => write!(f, "skale-base"),
             Network::SkaleBaseSepolia => write!(f, "skale-base-sepolia"),
+            Network::Scroll => write!(f, "scroll"),
         }
     }
 }
@@ -239,6 +243,7 @@ impl FromStr for Network {
             "sui-testnet" => Ok(Network::SuiTestnet),
             "skale-base" | "skale" => Ok(Network::SkaleBase),
             "skale-base-sepolia" | "skale-testnet" => Ok(Network::SkaleBaseSepolia),
+            "scroll" | "scroll-mainnet" => Ok(Network::Scroll),
             _ => Err(NetworkParseError(s.to_string())),
         }
     }
@@ -301,6 +306,7 @@ impl From<Network> for NetworkFamily {
             Network::SuiTestnet => NetworkFamily::Sui,
             Network::SkaleBase => NetworkFamily::Evm,
             Network::SkaleBaseSepolia => NetworkFamily::Evm,
+            Network::Scroll => NetworkFamily::Evm,
         }
     }
 }
@@ -348,6 +354,7 @@ impl Network {
             Network::SuiTestnet,
             Network::SkaleBase,
             Network::SkaleBaseSepolia,
+            Network::Scroll,
         ]
     }
 
@@ -391,6 +398,7 @@ impl Network {
             Network::AlgorandTestnet,
             Network::SkaleBase,
             Network::SkaleBaseSepolia,
+            Network::Scroll,
         ]
     }
 
@@ -434,6 +442,7 @@ impl Network {
             Network::SuiTestnet,
             Network::SkaleBase,
             Network::SkaleBaseSepolia,
+            Network::Scroll,
         ]
     }
 
@@ -475,6 +484,7 @@ impl Network {
             Network::FogoTestnet,
             Network::SkaleBase,
             Network::SkaleBaseSepolia,
+            Network::Scroll,
         ]
     }
 
@@ -573,6 +583,8 @@ impl Network {
             // SKALE - eip155:{chain_id}
             Network::SkaleBase => "eip155:1187947933".to_string(),
             Network::SkaleBaseSepolia => "eip155:324705682".to_string(),
+            // Scroll - eip155:{chain_id}
+            Network::Scroll => "eip155:534352".to_string(),
         }
     }
 
@@ -628,6 +640,11 @@ impl Network {
             "sui:mainnet" => Some(Network::Sui),
             #[cfg(feature = "sui")]
             "sui:testnet" => Some(Network::SuiTestnet),
+            // SKALE
+            "eip155:1187947933" => Some(Network::SkaleBase),
+            "eip155:324705682" => Some(Network::SkaleBaseSepolia),
+            // Scroll
+            "eip155:534352" => Some(Network::Scroll),
             _ => None,
         }
     }
@@ -1198,6 +1215,22 @@ static USDC_SKALE_BASE_SEPOLIA: Lazy<USDCDeployment> = Lazy::new(|| {
     })
 });
 
+/// Lazily initialized known USDC deployment on Scroll mainnet as [`USDCDeployment`].
+/// Scroll is a zkEVM L2 on Ethereum with native EIP-3009 support.
+static USDC_SCROLL: Lazy<USDCDeployment> = Lazy::new(|| {
+    USDCDeployment(TokenDeployment {
+        asset: TokenAsset {
+            address: address!("0x06eFdBFf2a14a7c8E15944D1F4A48F9F95F663A4").into(),
+            network: Network::Scroll,
+        },
+        decimals: 6,
+        eip712: Some(TokenDeploymentEip712 {
+            name: "USD Coin".into(),
+            version: "2".into(),
+        }),
+    })
+});
+
 /// A known USDC deployment as a wrapper around [`TokenDeployment`].
 #[derive(Clone, Debug)]
 pub struct USDCDeployment(pub TokenDeployment);
@@ -1276,6 +1309,7 @@ impl USDCDeployment {
             Network::SuiTestnet => &USDC_SUI_TESTNET,
             Network::SkaleBase => &USDC_SKALE_BASE,
             Network::SkaleBaseSepolia => &USDC_SKALE_BASE_SEPOLIA,
+            Network::Scroll => &USDC_SCROLL,
         }
     }
 }

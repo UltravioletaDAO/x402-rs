@@ -484,6 +484,16 @@
             box-shadow: 0 8px 24px rgba(0, 212, 170, 0.3);
         }
 
+        .network-badge.scroll {
+            border-color: #FFEEDA;
+            box-shadow: 0 0 20px rgba(255, 238, 218, 0.2);
+        }
+
+        .network-badge.scroll:hover {
+            border-color: #FFEEDA;
+            box-shadow: 0 8px 24px rgba(255, 238, 218, 0.3);
+        }
+
         .network-badge.zama {
             border-color: #ffcc00;
             box-shadow: 0 0 20px rgba(255, 204, 0, 0.2);
@@ -1353,6 +1363,20 @@
                             </div>
                             <div style="font-size: 0.7rem; color: var(--text-muted);">CREDIT Balance</div>
                             <div data-tokens="skale-mainnet"></div>
+                        </div>
+                        <div class="network-badge scroll"
+                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
+                            onclick="window.open('https://scrollscan.com/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
+                            <div style="display: flex; align-items: center; gap: 0.75rem;">
+                                <img src="/scroll.png" alt="Scroll" style="width: 32px; height: 32px; object-fit: contain;">
+                                <span style="font-weight: 700;">Scroll</span>
+                            </div>
+                            <div class="balance-amount" data-balance="scroll-mainnet"
+                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
+                                Loading...
+                            </div>
+                            <div style="font-size: 0.7rem; color: var(--text-muted);">ETH Balance</div>
+                            <div data-tokens="scroll-mainnet"></div>
                         </div>
 
                     </div>
@@ -2256,6 +2280,7 @@ result = <span class="code-function">verify_payment</span>(
             'sui-testnet': { rpc: 'https://fullnode.testnet.sui.io:443', addr: SUI_TESTNET, type: 'sui' },
             'skale-mainnet': { rpc: 'https://skale-base.skalenodes.com/v1/base', addr: WALLET_MAINNET, type: 'evm' },
             'skale-testnet': { rpc: 'https://base-sepolia-testnet.skalenodes.com/v1/jubilant-horrible-ancha', addr: WALLET_TESTNET, type: 'evm' },
+            'scroll-mainnet': { rpc: 'https://rpc.scroll.io', addr: WALLET_MAINNET, type: 'evm' },
             'near-mainnet': { rpcs: ['https://free.rpc.fastnear.com', 'https://near.lava.build'], addr: NEAR_MAINNET, type: 'near' },
             'near-testnet': { rpcs: ['https://test.rpc.fastnear.com', 'https://near-testnet.drpc.org'], addr: NEAR_TESTNET, type: 'near' },
             'stellar-mainnet': { api: 'https://horizon.stellar.org/accounts/' + STELLAR_MAINNET, addr: STELLAR_MAINNET, type: 'stellar' },
@@ -2521,6 +2546,7 @@ result = <span class="code-function">verify_payment</span>(
             'sui-testnet': ['usdc'],
             'skale-mainnet': ['usdc'],
             'skale-testnet': ['usdc'],
+            'scroll-mainnet': ['usdc'],
         };
 
         const TOKEN_INFO = {

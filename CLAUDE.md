@@ -24,13 +24,45 @@ This repository maintains a strict file organization structure. The root directo
 
 ## Project Overview
 
-This is the **x402-rs Payment Facilitator** - a standalone Rust-based service enabling gasless micropayments across 14+ blockchain networks using the HTTP 402 Payment Required protocol. The facilitator acts as a settlement intermediary, verifying EIP-3009 payment authorizations and submitting them on-chain.
+This is the **x402-rs Payment Facilitator** - a standalone Rust-based service enabling gasless micropayments across multiple blockchain networks using the HTTP 402 Payment Required protocol. The facilitator acts as a settlement intermediary, verifying EIP-3009 payment authorizations and submitting them on-chain.
 
 **Key characteristics**:
 - Production-ready service deployed on AWS ECS
-- Supports 7 mainnets + 7 testnets (EVM: Base, Avalanche, Celo, HyperEVM, Polygon, Optimism; Non-EVM: Solana)
+- Multi-chain support (EVM + Solana + NEAR + Stellar + Algorand + Sui + Fogo)
 - Custom Ultravioleta DAO branding (landing page, logos)
 - Forked from upstream [x402-rs/x402-rs](https://github.com/x402-rs/x402-rs)
+
+**IMPORTANT: Network and Stablecoin Verification**
+
+Network counts and stablecoin coverage in documentation get outdated quickly. **ALWAYS verify from source:**
+
+**To verify network count:**
+```bash
+# From production endpoint
+curl -s https://facilitator.ultravioletadao.xyz/supported | jq '[.kinds[].network] | unique | length'
+
+# Count mainnets only (exclude testnets)
+curl -s https://facilitator.ultravioletadao.xyz/supported | jq '[.kinds[].network] | unique | map(select(contains("testnet") or contains("sepolia") or contains("devnet") or contains("fuji") or contains("amoy") or contains("alfajores") | not)) | length'
+```
+
+**To verify stablecoin support matrix (GOLDEN SOURCE):**
+```bash
+# Run the stablecoin matrix script - this parses src/network.rs directly
+python scripts/stablecoin_matrix.py
+
+# Output as JSON for programmatic use
+python scripts/stablecoin_matrix.py --json
+
+# Output as Markdown table
+python scripts/stablecoin_matrix.py --md
+```
+
+**NEVER assume stablecoin coverage** - always run `python scripts/stablecoin_matrix.py` to get the real matrix.
+
+**When adding a new network or stablecoin:**
+1. Add the deployment to `src/network.rs`
+2. Run `python scripts/stablecoin_matrix.py` to verify
+3. Update README.md with the new counts and tables
 
 ## Development Commands
 
@@ -542,7 +574,14 @@ Key files for v2 support:
 
 ### Adding a New Network
 
-**See the comprehensive guide**: `guides/ADDING_NEW_CHAINS.md`
+**Preferred method:** Use the `/add-network` skill for automated integration:
+```
+add facilitator scroll
+```
+
+The skill handles research, EIP-3009 verification, prerequisite checks, implementation, and deployment.
+
+**Manual guide**: `guides/ADDING_NEW_CHAINS.md`
 
 This complete checklist covers:
 - Backend integration (Network enum, chain IDs, USDC contracts, RPC configuration)
@@ -564,8 +603,15 @@ This complete checklist covers:
 9. Fund both mainnet and testnet facilitator wallets with native tokens
 10. Build Docker image, push to ECR, and deploy to ECS
 11. Verify in `/supported` endpoint and test frontend
+12. **UPDATE README.md** - Update the network count and add the new network to the tables
+13. **VERIFY STABLECOIN MATRIX** - Run `python scripts/stablecoin_matrix.py` and update README stablecoin tables
 
-**Total work**: ~155 lines of code + 1 logo file + AWS config + wallet funding
+**CRITICAL**: Always update README.md when adding a new network OR stablecoin:
+- Network counts get stale quickly
+- Stablecoin coverage matrix must be regenerated with `python scripts/stablecoin_matrix.py --md`
+- Copy the markdown table output to README.md
+
+**Total work**: ~155 lines of code + 1 logo file + AWS config + wallet funding + README update
 
 ### Updating Branding
 

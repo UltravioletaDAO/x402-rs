@@ -10,7 +10,7 @@
 ```
 
 [![Live](https://img.shields.io/badge/live-facilitator.ultravioletadao.xyz-00d4aa)](https://facilitator.ultravioletadao.xyz)
-[![Version](https://img.shields.io/badge/version-1.15.9-blue)](https://github.com/UltravioletaDAO/x402-rs)
+[![Version](https://img.shields.io/badge/version-1.20.1-blue)](https://github.com/UltravioletaDAO/x402-rs)
 [![Rust](https://img.shields.io/badge/rust-2021-orange)](https://www.rust-lang.org/)
 
 ---
@@ -25,7 +25,9 @@ A payment settlement service implementing the [HTTP 402](https://developer.mozil
 
 ## Supported Networks
 
-### Mainnets (15)
+> **Note**: Network counts may be outdated. Verify with: `curl -s https://facilitator.ultravioletadao.xyz/supported | jq '[.kinds[].network] | unique | map(select(contains("testnet") or contains("sepolia") or contains("devnet") or contains("fuji") or contains("amoy") or contains("alfajores") | not)) | length'`
+
+### Mainnets (18)
 
 | Network | Chain ID | Token | Explorer |
 |---------|----------|-------|----------|
@@ -39,13 +41,16 @@ A payment settlement service implementing the [HTTP 402](https://developer.mozil
 | **HyperEVM** | 999 | USDC | [hyperliquid.xyz](https://hyperliquid.xyz) |
 | **Unichain** | 130 | USDC | [uniscan.xyz](https://uniscan.xyz) |
 | **Monad** | 10143 | MON | [monad.xyz](https://monad.xyz) |
+| **BSC** | 56 | USDC | [bscscan.com](https://bscscan.com) |
+| **SKALE Base** | 1187947933 | USDC.e | [skale-base.explorer](https://skale-base.explorer.skalenodes.com) |
+| **Sui** | - | USDC | [suiscan.xyz](https://suiscan.xyz) |
 | **Solana** | - | USDC, AUSD | [solscan.io](https://solscan.io) |
 | **Fogo** | - | USDC | [fogoscan.com](https://fogoscan.com) |
 | **NEAR** | - | USDC | [nearblocks.io](https://nearblocks.io) |
 | **Stellar** | - | USDC | [stellarchain.io](https://stellarchain.io) |
 | **Algorand** | - | USDC | [allo.info](https://allo.info) |
 
-### Testnets (15)
+### Testnets (17)
 
 | Network | Chain ID | Faucet |
 |---------|----------|--------|
@@ -58,23 +63,48 @@ A payment settlement service implementing the [HTTP 402](https://developer.mozil
 | Celo Alfajores | 44787 | [faucet.celo.org](https://faucet.celo.org) |
 | HyperEVM Testnet | 333 | - |
 | Unichain Sepolia | 1301 | - |
+| SKALE Base Sepolia | 324705682 | [sfuel.dirtroad.dev](https://sfuel.dirtroad.dev/staging) |
 | Solana Devnet | - | [solfaucet.com](https://solfaucet.com) |
 | Fogo Testnet | - | [fogoscan.com](https://fogoscan.com/?cluster=testnet) |
 | NEAR Testnet | - | [near-faucet.io](https://near-faucet.io) |
 | Stellar Testnet | - | [friendbot](https://friendbot.stellar.org) |
 | Algorand Testnet | - | [dispenser.testnet.aws.algodev.network](https://dispenser.testnet.aws.algodev.network) |
+| Sui Testnet | - | [suifaucet.com](https://suifaucet.com) |
 | Monad Testnet | 10143 | [monad.xyz](https://monad.xyz) |
 
 ### Supported Stablecoins
 
+> **Note**: Run `python scripts/stablecoin_matrix.py` for the authoritative stablecoin support matrix.
+
 | Token | Networks |
 |-------|----------|
-| **USDC** | All EVM, Solana, NEAR, Stellar, Algorand |
+| **USDC** | All networks (22 total) |
+| **AUSD** | Ethereum, Polygon, Arbitrum, Avalanche, Monad, BSC, Solana, Sui |
 | **EURC** | Ethereum, Base, Avalanche |
-| **AUSD** | Solana (Token2022) |
-| **PYUSD** | Ethereum, Solana |
-| **USDT** | Ethereum, Polygon |
-| **cUSD** | Celo |
+| **USDT** | Arbitrum, Celo, Optimism |
+| **PYUSD** | Ethereum |
+
+**Full Matrix:**
+
+| Network | USDC | AUSD | EURC | USDT | PYUSD |
+|---------|:----:|:----:|:----:|:----:|:-----:|
+| Ethereum | Y | Y | Y | - | Y |
+| Base | Y | - | Y | - | - |
+| Arbitrum | Y | Y | - | Y | - |
+| Optimism | Y | - | - | Y | - |
+| Polygon | Y | Y | - | - | - |
+| Avalanche | Y | Y | Y | - | - |
+| Celo | Y | - | - | Y | - |
+| BSC | Y | Y | - | - | - |
+| Monad | Y | Y | - | - | - |
+| HyperEVM | Y | - | - | - | - |
+| Unichain | Y | - | - | - | - |
+| Solana | Y | Y | - | - | - |
+| Sui | Y | Y | - | - | - |
+| Fogo | Y | - | - | - | - |
+| NEAR | Y | - | - | - | - |
+| Stellar | Y | - | - | - | - |
+| Algorand | Y | - | - | - | - |
 
 ---
 
@@ -95,7 +125,7 @@ cargo run --release --features solana,near,stellar,algorand
 # Test
 curl http://localhost:8080/health
 curl http://localhost:8080/supported | jq '.kinds | length'
-# => 60 (30 networks x2 for v1 and v2 formats)
+# => 64 (32 networks x2 for v1 and v2 formats)
 ```
 
 ### Docker
@@ -279,6 +309,37 @@ cargo clippy --features solana,near,stellar,algorand
 # Test
 cd tests/integration && python test_facilitator.py
 ```
+
+### Claude Code Skills
+
+This project includes Claude Code skills for automated development workflows:
+
+| Skill | Command | Description |
+|-------|---------|-------------|
+| **add-network** | `/add-network scroll` | Add new blockchain network with automated research, EIP-3009 verification, and deployment |
+| **stablecoin-addition** | `/stablecoin-addition` | Add new EIP-3009 compatible stablecoins (USDT, EURC, AUSD, etc.) |
+| **ship** | `/ship` | Full automated deployment: commit → build → ECR push → ECS deploy → verify |
+| **deploy-prod** | `/deploy-prod` | Build and deploy Docker image to production ECS |
+| **test-prod** | `/test-prod` | Test production facilitator endpoints |
+
+**Example: Add a new network**
+```
+> add facilitator scroll
+
+Claude will:
+1. Research chain IDs, RPCs, USDC contracts
+2. Verify EIP-3009 support
+3. Check wallet balances and logo
+4. Request any missing prerequisites
+5. Implement all code changes
+6. Deploy if all prerequisites met
+```
+
+### Adding New Networks
+
+See [`guides/ADDING_NEW_CHAINS.md`](guides/ADDING_NEW_CHAINS.md) for the complete manual checklist.
+
+**Quick automated path:** Use `/add-network {network-name}` skill.
 
 ---
 

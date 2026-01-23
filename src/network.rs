@@ -130,6 +130,12 @@ pub enum Network {
     #[cfg(feature = "sui")]
     #[serde(rename = "sui-testnet")]
     SuiTestnet,
+    /// SKALE Base mainnet (chain ID 1187947933) - L3 on Base with gasless transactions.
+    #[serde(rename = "skale-base")]
+    SkaleBase,
+    /// SKALE Base Sepolia testnet (chain ID 324705682) - L3 on Base Sepolia with gasless transactions.
+    #[serde(rename = "skale-base-sepolia")]
+    SkaleBaseSepolia,
 }
 
 impl Display for Network {
@@ -175,6 +181,8 @@ impl Display for Network {
             Network::Sui => write!(f, "sui"),
             #[cfg(feature = "sui")]
             Network::SuiTestnet => write!(f, "sui-testnet"),
+            Network::SkaleBase => write!(f, "skale-base"),
+            Network::SkaleBaseSepolia => write!(f, "skale-base-sepolia"),
         }
     }
 }
@@ -229,6 +237,8 @@ impl FromStr for Network {
             "sui" | "sui-mainnet" => Ok(Network::Sui),
             #[cfg(feature = "sui")]
             "sui-testnet" => Ok(Network::SuiTestnet),
+            "skale-base" | "skale" => Ok(Network::SkaleBase),
+            "skale-base-sepolia" | "skale-testnet" => Ok(Network::SkaleBaseSepolia),
             _ => Err(NetworkParseError(s.to_string())),
         }
     }
@@ -289,6 +299,8 @@ impl From<Network> for NetworkFamily {
             Network::Sui => NetworkFamily::Sui,
             #[cfg(feature = "sui")]
             Network::SuiTestnet => NetworkFamily::Sui,
+            Network::SkaleBase => NetworkFamily::Evm,
+            Network::SkaleBaseSepolia => NetworkFamily::Evm,
         }
     }
 }
@@ -334,6 +346,8 @@ impl Network {
             Network::AlgorandTestnet,
             Network::Sui,
             Network::SuiTestnet,
+            Network::SkaleBase,
+            Network::SkaleBaseSepolia,
         ]
     }
 
@@ -375,6 +389,8 @@ impl Network {
             Network::FogoTestnet,
             Network::Algorand,
             Network::AlgorandTestnet,
+            Network::SkaleBase,
+            Network::SkaleBaseSepolia,
         ]
     }
 
@@ -416,6 +432,8 @@ impl Network {
             Network::FogoTestnet,
             Network::Sui,
             Network::SuiTestnet,
+            Network::SkaleBase,
+            Network::SkaleBaseSepolia,
         ]
     }
 
@@ -455,6 +473,8 @@ impl Network {
             Network::StellarTestnet,
             Network::Fogo,
             Network::FogoTestnet,
+            Network::SkaleBase,
+            Network::SkaleBaseSepolia,
         ]
     }
 
@@ -484,6 +504,7 @@ impl Network {
                 | Network::NearTestnet
                 | Network::StellarTestnet
                 | Network::FogoTestnet
+                | Network::SkaleBaseSepolia
         )
     }
 
@@ -549,6 +570,9 @@ impl Network {
             Network::Sui => "sui:mainnet".to_string(),
             #[cfg(feature = "sui")]
             Network::SuiTestnet => "sui:testnet".to_string(),
+            // SKALE - eip155:{chain_id}
+            Network::SkaleBase => "eip155:1187947933".to_string(),
+            Network::SkaleBaseSepolia => "eip155:324705682".to_string(),
         }
     }
 
@@ -1142,6 +1166,38 @@ static USDC_SUI_TESTNET: Lazy<USDCDeployment> = Lazy::new(|| {
     })
 });
 
+/// Lazily initialized known USDC.e deployment on SKALE Base mainnet as [`USDCDeployment`].
+/// SKALE Base is an L3 on Base with native EIP-3009 support and gasless transactions (sFUEL).
+static USDC_SKALE_BASE: Lazy<USDCDeployment> = Lazy::new(|| {
+    USDCDeployment(TokenDeployment {
+        asset: TokenAsset {
+            address: address!("0x85889c8c714505E0c94b30fcfcF64fE3Ac8FCb20").into(),
+            network: Network::SkaleBase,
+        },
+        decimals: 6,
+        eip712: Some(TokenDeploymentEip712 {
+            name: "USDC".into(),
+            version: "2".into(),
+        }),
+    })
+});
+
+/// Lazily initialized known USDC.e deployment on SKALE Base Sepolia testnet as [`USDCDeployment`].
+/// SKALE Base Sepolia is an L3 on Base Sepolia with native EIP-3009 support and gasless transactions.
+static USDC_SKALE_BASE_SEPOLIA: Lazy<USDCDeployment> = Lazy::new(|| {
+    USDCDeployment(TokenDeployment {
+        asset: TokenAsset {
+            address: address!("0x2e08028E3C4c2356572E096d8EF835cD5C6030bD").into(),
+            network: Network::SkaleBaseSepolia,
+        },
+        decimals: 6,
+        eip712: Some(TokenDeploymentEip712 {
+            name: "USDC".into(),
+            version: "2".into(),
+        }),
+    })
+});
+
 /// A known USDC deployment as a wrapper around [`TokenDeployment`].
 #[derive(Clone, Debug)]
 pub struct USDCDeployment(pub TokenDeployment);
@@ -1218,6 +1274,8 @@ impl USDCDeployment {
             Network::Sui => &USDC_SUI,
             #[cfg(feature = "sui")]
             Network::SuiTestnet => &USDC_SUI_TESTNET,
+            Network::SkaleBase => &USDC_SKALE_BASE,
+            Network::SkaleBaseSepolia => &USDC_SKALE_BASE_SEPOLIA,
         }
     }
 }

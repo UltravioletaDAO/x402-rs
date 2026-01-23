@@ -154,6 +154,8 @@ impl TryFrom<Network> for EvmChain {
             Network::UnichainSepolia => Ok(EvmChain::new(value, 1301)),
             Network::Monad => Ok(EvmChain::new(value, 143)),
             Network::Bsc => Ok(EvmChain::new(value, 56)),
+            Network::SkaleBase => Ok(EvmChain::new(value, 1187947933)),
+            Network::SkaleBaseSepolia => Ok(EvmChain::new(value, 324705682)),
             Network::Near => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::NearTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::Stellar => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
@@ -466,6 +468,8 @@ impl FromEnvByNetworkBuild for EvmProvider {
             Network::UnichainSepolia => true,
             Network::Monad => true,
             Network::Bsc => true, // BSC supports EIP-1559 since BEP-95
+            Network::SkaleBase => false, // SKALE does NOT support EIP-1559, uses legacy tx
+            Network::SkaleBaseSepolia => false, // SKALE does NOT support EIP-1559, uses legacy tx
             Network::Near => false, // NEAR is not an EVM chain
             Network::NearTestnet => false, // NEAR is not an EVM chain
             Network::Stellar => false, // Stellar is not an EVM chain

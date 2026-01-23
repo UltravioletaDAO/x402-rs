@@ -76,6 +76,10 @@ pub const ENV_RPC_SUI: &str = "RPC_URL_SUI";
 #[cfg(feature = "sui")]
 pub const ENV_RPC_SUI_TESTNET: &str = "RPC_URL_SUI_TESTNET";
 
+// SKALE RPC URLs (L3 on Base with gasless transactions)
+pub const ENV_RPC_SKALE_BASE: &str = "RPC_URL_SKALE_BASE";
+pub const ENV_RPC_SKALE_BASE_SEPOLIA: &str = "RPC_URL_SKALE_BASE_SEPOLIA";
+
 // Sui wallet private key environment variables
 #[cfg(feature = "sui")]
 pub const ENV_SUI_PRIVATE_KEY: &str = "SUI_PRIVATE_KEY";
@@ -126,6 +130,8 @@ pub fn rpc_env_name_from_network(network: Network) -> &'static str {
         Network::Sui => ENV_RPC_SUI,
         #[cfg(feature = "sui")]
         Network::SuiTestnet => ENV_RPC_SUI_TESTNET,
+        Network::SkaleBase => ENV_RPC_SKALE_BASE,
+        Network::SkaleBaseSepolia => ENV_RPC_SKALE_BASE_SEPOLIA,
     }
 }
 

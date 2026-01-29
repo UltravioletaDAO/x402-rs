@@ -98,9 +98,9 @@ where
         .route("/feedback", post(post_feedback::<A>))
         .route("/feedback/revoke", post(post_revoke_feedback::<A>))
         .route("/feedback/response", post(post_append_response::<A>))
-        .route("/reputation/:network/:agent_id", get(get_reputation::<A>))
+        .route("/reputation/{network}/{agent_id}", get(get_reputation::<A>))
         // ERC-8004 Identity endpoints
-        .route("/identity/:network/:agent_id", get(get_identity::<A>))
+        .route("/identity/{network}/{agent_id}", get(get_identity::<A>))
         .route("/health", get(get_health))
         .route("/version", get(get_version))
         .route("/supported", get(get_supported::<A>))

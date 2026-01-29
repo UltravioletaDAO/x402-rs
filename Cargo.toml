@@ -1,6 +1,6 @@
 [package]
 name = "x402-rs"
-version = "1.21.2"
+version = "1.23.0"
 authors = ["Sergey Ukustov <sergey@ukstv.me>"]
 edition = "2021"
 license = "Apache-2.0"
@@ -77,6 +77,10 @@ bcs = { version = "0.1", optional = true }  # Binary Canonical Serialization for
 aws-config = { version = "1.5" }
 aws-sdk-s3 = { version = "1.65" }
 aws-sdk-dynamodb = { version = "1.54" }
+
+# Swagger/OpenAPI Documentation
+utoipa = { version = "5", features = ["axum_extras"] }
+utoipa-swagger-ui = { version = "9", features = ["axum"] }
 
 # Tracing and OpenTelemetry
 tracing = { version = "0.1.41" }

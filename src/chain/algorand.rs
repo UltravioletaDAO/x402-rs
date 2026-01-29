@@ -881,6 +881,7 @@ impl Facilitator for AlgorandProvider {
                             payer: verification.payer.into(),
                             transaction: None,
                             network: self.network(),
+                            proof_of_payment: None,
                         });
                     }
                 };
@@ -891,6 +892,7 @@ impl Facilitator for AlgorandProvider {
                     payer: verification.payer.into(),
                     transaction: Some(TransactionHash::Algorand(tx_id)),
                     network: self.network(),
+                    proof_of_payment: None, // ERC-8004 not supported on Algorand
                 })
             }
             _ => Err(FacilitatorLocalError::UnsupportedNetwork(None)),

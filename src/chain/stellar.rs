@@ -1509,6 +1509,7 @@ impl Facilitator for StellarProvider {
                     payer: verification.payer.into(),
                     transaction: None,
                     network: self.network(),
+                    proof_of_payment: None,
                 };
                 tracing::info!(
                     success = response.success,
@@ -1525,6 +1526,7 @@ impl Facilitator for StellarProvider {
             payer: verification.payer.into(),
             transaction: Some(TransactionHash::Stellar(tx_hash)),
             network: self.network(),
+            proof_of_payment: None, // ERC-8004 not supported on Stellar
         };
         tracing::info!(
             success = response.success,

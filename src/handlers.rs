@@ -10,7 +10,7 @@
 //! and is compatible with official x402 client SDKs.
 
 use axum::body::Bytes;
-use axum::extract::{Extension, Query, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use axum::routing::{get, post};
@@ -23,6 +23,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::chain::{FacilitatorLocalError, NetworkProvider};
+use crate::chain::evm::MetaEvmProvider;
 use crate::discovery::{DiscoveryError, DiscoveryRegistry};
 use crate::fhe_proxy::FheProxy;
 use crate::facilitator::Facilitator;
@@ -30,6 +31,12 @@ use crate::provider_cache::{HasProviderMap, ProviderMap};
 use crate::types::{
     ErrorResponse, FacilitatorErrorReason, MixedAddress, SettleRequest, VerifyRequest,
     VerifyResponse,
+};
+use crate::erc8004::{
+    FeedbackRequest, FeedbackResponse, IReputationRegistry, IIdentityRegistry,
+    get_contracts, is_erc8004_supported, supported_network_names,
+    ReputationSummary, FeedbackEntry, AgentIdentity,
+    RevokeFeedbackRequest, AppendResponseRequest, ReputationResponse,
 };
 use crate::types_v2::{
     DiscoveryFilters, DiscoveryResource, RegisterResourceRequest, SettleRequestEnvelope,
@@ -86,6 +93,14 @@ where
         .route("/verify", post(post_verify::<A>))
         .route("/settle", get(get_settle_info))
         .route("/settle", post(post_settle::<A>))
+        // ERC-8004 Reputation endpoints
+        .route("/feedback", get(get_feedback_info))
+        .route("/feedback", post(post_feedback::<A>))
+        .route("/feedback/revoke", post(post_revoke_feedback::<A>))
+        .route("/feedback/response", post(post_append_response::<A>))
+        .route("/reputation/:network/:agent_id", get(get_reputation::<A>))
+        // ERC-8004 Identity endpoints
+        .route("/identity/:network/:agent_id", get(get_identity::<A>))
         .route("/health", get(get_health))
         .route("/version", get(get_version))
         .route("/supported", get(get_supported::<A>))
@@ -1511,4 +1526,968 @@ impl IntoResponse for FacilitatorLocalError {
             }
         }
     }
+}
+
+// ============================================================================
+// ERC-8004 Feedback Handlers
+// ============================================================================
+
+/// `GET /feedback`: Returns a machine-readable description of the `/feedback` endpoint.
+///
+/// This endpoint provides metadata about how to submit reputation feedback
+/// using the ERC-8004 Trustless Agents protocol.
+#[instrument(skip_all)]
+pub async fn get_feedback_info() -> impl IntoResponse {
+    let networks = supported_network_names();
+
+    Json(json!({
+        "endpoint": "/feedback",
+        "description": "POST to submit ERC-8004 reputation feedback on-chain",
+        "extension": "8004-reputation",
+        "specification": "https://eips.ethereum.org/EIPS/eip-8004",
+        "body": {
+            "x402Version": "number (1 or 2)",
+            "network": format!("string (e.g., '{}' or 'eip155:1')", networks.first().unwrap_or(&"ethereum-mainnet")),
+            "feedback": {
+                "agentId": "number - Agent's token ID in the Identity Registry",
+                "value": "number - Feedback value (fixed-point, e.g., 87 means 87/100)",
+                "valueDecimals": "number (0-18) - Decimal places for value interpretation",
+                "tag1": "string - Primary categorization tag (e.g., 'starred', 'uptime', 'responseTime')",
+                "tag2": "string - Secondary categorization tag",
+                "endpoint": "string (optional) - Service endpoint that was used",
+                "feedbackUri": "string (optional) - URI to off-chain feedback file (IPFS, HTTPS)",
+                "feedbackHash": "string (optional) - Keccak256 hash of feedback content (32 bytes hex)",
+                "proof": {
+                    "transactionHash": "string - Settlement transaction hash",
+                    "blockNumber": "number - Block number of settlement",
+                    "network": "string - Network where settlement occurred",
+                    "payer": "address - Address that paid",
+                    "payee": "address - Address that received payment",
+                    "amount": "string - Amount paid in token base units",
+                    "token": "address - Token contract address",
+                    "timestamp": "number - Unix timestamp",
+                    "paymentHash": "string - Keccak256 hash of payment data"
+                }
+            }
+        },
+        "endpoints": {
+            "POST /feedback": "Submit new feedback",
+            "POST /feedback/revoke": "Revoke previously submitted feedback",
+            "POST /feedback/response": "Append response to feedback (agent only)",
+            "GET /reputation/:network/:agentId": "Get reputation summary for an agent",
+            "GET /identity/:network/:agentId": "Get agent identity from Identity Registry"
+        },
+        "supportedNetworks": networks
+    }))
+}
+
+/// `POST /feedback`: Submit ERC-8004 reputation feedback on-chain.
+///
+/// Given a valid [`FeedbackRequest`] with feedback parameters, this endpoint
+/// submits the reputation feedback to the ERC-8004 Reputation Registry contract.
+///
+/// The feedback follows the official ERC-8004 specification with full parameter support:
+/// - agentId: The agent's token ID in the Identity Registry
+/// - value: Fixed-point feedback value (e.g., 87 with decimals=0 means 87/100)
+/// - valueDecimals: Decimal places for value interpretation (0-18)
+/// - tag1, tag2: Categorization tags (e.g., "starred", "uptime", "responseTime")
+/// - endpoint: Service endpoint that was used (optional)
+/// - feedbackURI: URI to off-chain feedback file (IPFS, HTTPS) (optional)
+/// - feedbackHash: Keccak256 hash of feedback content (optional)
+///
+/// # Errors
+///
+/// - Returns 400 if the network doesn't support ERC-8004
+/// - Returns 400 if required fields are missing
+/// - Returns 500 if the on-chain submission fails
+#[instrument(skip_all)]
+pub async fn post_feedback<A>(
+    State(facilitator): State<A>,
+    raw_body: Bytes,
+) -> impl IntoResponse
+where
+    A: Facilitator + HasProviderMap,
+    A::Error: IntoResponse,
+    A::Map: ProviderMap<Value = NetworkProvider>,
+{
+    // Parse the request body
+    let request: FeedbackRequest = match serde_json::from_slice(&raw_body) {
+        Ok(req) => req,
+        Err(e) => {
+            error!("Failed to parse feedback request: {}", e);
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(FeedbackResponse {
+                    success: false,
+                    transaction: None,
+                    feedback_index: None,
+                    error: Some(format!("Invalid request format: {}", e)),
+                    network: crate::network::Network::Ethereum, // Placeholder
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let network = request.network;
+
+    // Check if the network supports ERC-8004
+    if !is_erc8004_supported(&network) {
+        let supported = supported_network_names();
+        warn!(
+            network = %network,
+            "ERC-8004 feedback not supported on this network"
+        );
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(FeedbackResponse {
+                success: false,
+                transaction: None,
+                feedback_index: None,
+                error: Some(format!(
+                    "ERC-8004 is not supported on network {}. Supported networks: {:?}",
+                    network, supported
+                )),
+                network,
+            }),
+        )
+            .into_response();
+    }
+
+    // Get the contract addresses for this network
+    let contracts = match get_contracts(&network) {
+        Some(c) => c,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(FeedbackResponse {
+                    success: false,
+                    transaction: None,
+                    feedback_index: None,
+                    error: Some(format!("No ERC-8004 contracts configured for network {}", network)),
+                    network,
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let feedback = &request.feedback;
+
+    info!(
+        network = %network,
+        agent_id = feedback.agent_id,
+        value = feedback.value,
+        value_decimals = feedback.value_decimals,
+        tag1 = %feedback.tag1,
+        "Processing ERC-8004 feedback submission"
+    );
+
+    // Get the provider for this network
+    let provider_map = facilitator.provider_map();
+    let provider = match provider_map.by_network(&network) {
+        Some(NetworkProvider::Evm(p)) => p,
+        _ => {
+            error!(network = %network, "No EVM provider available for network");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(FeedbackResponse {
+                    success: false,
+                    transaction: None,
+                    feedback_index: None,
+                    error: Some(format!("No EVM provider available for network {}", network)),
+                    network,
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    // Create the contract instance
+    let reputation_registry =
+        IReputationRegistry::new(contracts.reputation_registry, provider.inner().clone());
+
+    // Convert feedbackHash to bytes32 (default to zero if not provided)
+    let feedback_hash = feedback.feedback_hash.unwrap_or_default();
+
+    // Build and send the transaction using official ERC-8004 giveFeedback function
+    let call = reputation_registry.giveFeedback(
+        alloy::primitives::U256::from(feedback.agent_id),
+        feedback.value,
+        feedback.value_decimals,
+        feedback.tag1.clone(),
+        feedback.tag2.clone(),
+        feedback.endpoint.clone(),
+        feedback.feedback_uri.clone(),
+        feedback_hash,
+    );
+
+    match call.send().await {
+        Ok(pending_tx) => {
+            // Wait for the transaction to be mined
+            match pending_tx.get_receipt().await {
+                Ok(receipt) => {
+                    let tx_hash = receipt.transaction_hash;
+                    info!(
+                        network = %network,
+                        tx = %tx_hash,
+                        agent_id = feedback.agent_id,
+                        "ERC-8004 feedback submitted successfully"
+                    );
+
+                    // TODO: Parse logs to extract feedbackIndex from NewFeedback event
+                    let feedback_index = None; // Would need log parsing
+
+                    (
+                        StatusCode::OK,
+                        Json(FeedbackResponse {
+                            success: true,
+                            transaction: Some(crate::types::TransactionHash::Evm(tx_hash.0)),
+                            feedback_index,
+                            error: None,
+                            network,
+                        }),
+                    )
+                        .into_response()
+                }
+                Err(e) => {
+                    error!(
+                        network = %network,
+                        error = %e,
+                        "Failed to get transaction receipt for feedback"
+                    );
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(FeedbackResponse {
+                            success: false,
+                            transaction: None,
+                            feedback_index: None,
+                            error: Some(format!("Transaction failed: {}", e)),
+                            network,
+                        }),
+                    )
+                        .into_response()
+                }
+            }
+        }
+        Err(e) => {
+            error!(
+                network = %network,
+                error = %e,
+                "Failed to submit feedback transaction"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(FeedbackResponse {
+                    success: false,
+                    transaction: None,
+                    feedback_index: None,
+                    error: Some(format!("Failed to submit transaction: {}", e)),
+                    network,
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// `POST /feedback/revoke`: Revoke previously submitted ERC-8004 feedback.
+///
+/// Allows a client to revoke their own feedback. Only the original submitter
+/// can revoke their feedback.
+///
+/// # Request Body
+/// ```json
+/// {
+///   "x402Version": 1,
+///   "network": "ethereum-mainnet",
+///   "agentId": 42,
+///   "feedbackIndex": 1
+/// }
+/// ```
+#[instrument(skip_all)]
+pub async fn post_revoke_feedback<A>(
+    State(facilitator): State<A>,
+    raw_body: Bytes,
+) -> impl IntoResponse
+where
+    A: Facilitator + HasProviderMap,
+    A::Error: IntoResponse,
+    A::Map: ProviderMap<Value = NetworkProvider>,
+{
+    // Parse the request body
+    let request: RevokeFeedbackRequest = match serde_json::from_slice(&raw_body) {
+        Ok(req) => req,
+        Err(e) => {
+            error!("Failed to parse revoke feedback request: {}", e);
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "success": false,
+                    "error": format!("Invalid request format: {}", e)
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    let network = request.network;
+
+    // Check if the network supports ERC-8004
+    if !is_erc8004_supported(&network) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "success": false,
+                "error": format!("ERC-8004 is not supported on network {}", network)
+            })),
+        )
+            .into_response();
+    }
+
+    // Get contracts for this network
+    let contracts = match get_contracts(&network) {
+        Some(c) => c,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "success": false,
+                    "error": format!("No ERC-8004 contracts for network {}", network)
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    info!(
+        network = %network,
+        agent_id = request.agent_id,
+        feedback_index = request.feedback_index,
+        "Revoking ERC-8004 feedback"
+    );
+
+    // Get the provider for this network
+    let provider_map = facilitator.provider_map();
+    let provider = match provider_map.by_network(&network) {
+        Some(NetworkProvider::Evm(p)) => p,
+        _ => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "success": false,
+                    "error": format!("No EVM provider available for network {}", network)
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    // Create contract instance and call revokeFeedback
+    let reputation_registry =
+        IReputationRegistry::new(contracts.reputation_registry, provider.inner().clone());
+
+    let call = reputation_registry.revokeFeedback(
+        alloy::primitives::U256::from(request.agent_id),
+        request.feedback_index,
+    );
+
+    match call.send().await {
+        Ok(pending_tx) => {
+            match pending_tx.get_receipt().await {
+                Ok(receipt) => {
+                    let tx_hash = receipt.transaction_hash;
+                    info!(
+                        network = %network,
+                        tx = %tx_hash,
+                        "ERC-8004 feedback revoked successfully"
+                    );
+
+                    (
+                        StatusCode::OK,
+                        Json(json!({
+                            "success": true,
+                            "transaction": format!("0x{}", hex::encode(tx_hash.0)),
+                            "network": network.to_string()
+                        })),
+                    )
+                        .into_response()
+                }
+                Err(e) => {
+                    error!(error = %e, "Failed to get transaction receipt");
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({
+                            "success": false,
+                            "error": format!("Transaction failed: {}", e)
+                        })),
+                    )
+                        .into_response()
+                }
+            }
+        }
+        Err(e) => {
+            error!(error = %e, "Failed to send revoke transaction");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "success": false,
+                    "error": format!("Failed to submit transaction: {}", e)
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// `POST /feedback/response`: Append a response to feedback.
+///
+/// Allows an agent (or authorized party) to respond to feedback they received.
+///
+/// # Request Body
+/// ```json
+/// {
+///   "x402Version": 1,
+///   "network": "ethereum-mainnet",
+///   "agentId": 42,
+///   "clientAddress": "0x...",
+///   "feedbackIndex": 1,
+///   "responseUri": "ipfs://QmResponse...",
+///   "responseHash": "0x..."
+/// }
+/// ```
+#[instrument(skip_all)]
+pub async fn post_append_response<A>(
+    State(facilitator): State<A>,
+    raw_body: Bytes,
+) -> impl IntoResponse
+where
+    A: Facilitator + HasProviderMap,
+    A::Error: IntoResponse,
+    A::Map: ProviderMap<Value = NetworkProvider>,
+{
+    // Parse the request body
+    let request: AppendResponseRequest = match serde_json::from_slice(&raw_body) {
+        Ok(req) => req,
+        Err(e) => {
+            error!("Failed to parse append response request: {}", e);
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "success": false,
+                    "error": format!("Invalid request format: {}", e)
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    let network = request.network;
+
+    // Check if the network supports ERC-8004
+    if !is_erc8004_supported(&network) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "success": false,
+                "error": format!("ERC-8004 is not supported on network {}", network)
+            })),
+        )
+            .into_response();
+    }
+
+    // Get contracts for this network
+    let contracts = match get_contracts(&network) {
+        Some(c) => c,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "success": false,
+                    "error": format!("No ERC-8004 contracts for network {}", network)
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    // Extract client address
+    let client_addr = match &request.client_address {
+        MixedAddress::Evm(addr) => addr.0,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "success": false,
+                    "error": "Client address must be an EVM address"
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    info!(
+        network = %network,
+        agent_id = request.agent_id,
+        feedback_index = request.feedback_index,
+        "Appending response to ERC-8004 feedback"
+    );
+
+    // Get the provider for this network
+    let provider_map = facilitator.provider_map();
+    let provider = match provider_map.by_network(&network) {
+        Some(NetworkProvider::Evm(p)) => p,
+        _ => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "success": false,
+                    "error": format!("No EVM provider available for network {}", network)
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    // Create contract instance and call appendResponse
+    let reputation_registry =
+        IReputationRegistry::new(contracts.reputation_registry, provider.inner().clone());
+
+    let response_hash = request.response_hash.unwrap_or_default();
+
+    let call = reputation_registry.appendResponse(
+        alloy::primitives::U256::from(request.agent_id),
+        client_addr,
+        request.feedback_index,
+        request.response_uri.clone(),
+        response_hash,
+    );
+
+    match call.send().await {
+        Ok(pending_tx) => {
+            match pending_tx.get_receipt().await {
+                Ok(receipt) => {
+                    let tx_hash = receipt.transaction_hash;
+                    info!(
+                        network = %network,
+                        tx = %tx_hash,
+                        "ERC-8004 response appended successfully"
+                    );
+
+                    (
+                        StatusCode::OK,
+                        Json(json!({
+                            "success": true,
+                            "transaction": format!("0x{}", hex::encode(tx_hash.0)),
+                            "network": network.to_string()
+                        })),
+                    )
+                        .into_response()
+                }
+                Err(e) => {
+                    error!(error = %e, "Failed to get transaction receipt");
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({
+                            "success": false,
+                            "error": format!("Transaction failed: {}", e)
+                        })),
+                    )
+                        .into_response()
+                }
+            }
+        }
+        Err(e) => {
+            error!(error = %e, "Failed to send append response transaction");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "success": false,
+                    "error": format!("Failed to submit transaction: {}", e)
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Path parameters for reputation query
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ReputationPathParams {
+    pub network: String,
+    pub agent_id: u64,
+}
+
+/// Query parameters for reputation query
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReputationQueryParams {
+    /// Filter by tag1
+    #[serde(default)]
+    pub tag1: String,
+    /// Filter by tag2
+    #[serde(default)]
+    pub tag2: String,
+    /// Include individual feedback entries
+    #[serde(default)]
+    pub include_feedback: bool,
+}
+
+/// `GET /reputation/:network/:agent_id`: Get reputation summary for an agent.
+///
+/// Returns the aggregated reputation summary from the ERC-8004 Reputation Registry.
+///
+/// # Query Parameters
+/// - `tag1`: Filter by primary tag (optional)
+/// - `tag2`: Filter by secondary tag (optional)
+/// - `includeFeedback`: Include individual feedback entries (optional, default false)
+///
+/// # Example
+/// ```text
+/// GET /reputation/ethereum-mainnet/42?includeFeedback=true
+/// ```
+#[instrument(skip_all)]
+pub async fn get_reputation<A>(
+    State(facilitator): State<A>,
+    Path(params): Path<ReputationPathParams>,
+    Query(query): Query<ReputationQueryParams>,
+) -> impl IntoResponse
+where
+    A: Facilitator + HasProviderMap,
+    A::Error: IntoResponse,
+    A::Map: ProviderMap<Value = NetworkProvider>,
+{
+    // Parse network from path
+    let network: crate::network::Network = match params.network.parse() {
+        Ok(n) => n,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": format!("Invalid network: {}", params.network)
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    // Check if the network supports ERC-8004
+    if !is_erc8004_supported(&network) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": format!("ERC-8004 is not supported on network {}", network),
+                "supportedNetworks": supported_network_names()
+            })),
+        )
+            .into_response();
+    }
+
+    // Get contracts for this network
+    let contracts = match get_contracts(&network) {
+        Some(c) => c,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": format!("No ERC-8004 contracts for network {}", network)
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    info!(
+        network = %network,
+        agent_id = params.agent_id,
+        tag1 = %query.tag1,
+        tag2 = %query.tag2,
+        "Querying ERC-8004 reputation"
+    );
+
+    // Get the provider for this network
+    let provider_map = facilitator.provider_map();
+    let provider = match provider_map.by_network(&network) {
+        Some(NetworkProvider::Evm(p)) => p,
+        _ => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": format!("No EVM provider available for network {}", network)
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    // Create contract instance
+    let reputation_registry =
+        IReputationRegistry::new(contracts.reputation_registry, provider.inner().clone());
+
+    // Call getSummary on the contract
+    let summary_call = reputation_registry.getSummary(
+        alloy::primitives::U256::from(params.agent_id),
+        vec![], // Empty client filter = all clients
+        query.tag1.clone(),
+        query.tag2.clone(),
+    );
+
+    match summary_call.call().await {
+        Ok(result) => {
+            let summary = ReputationSummary {
+                agent_id: params.agent_id,
+                count: result.count,
+                summary_value: result.summaryValue,
+                summary_value_decimals: result.summaryValueDecimals,
+                network: network.clone(),
+            };
+
+            // Optionally fetch individual feedback entries
+            let feedback_entries: Option<Vec<FeedbackEntry>> = if query.include_feedback {
+                // Call readAllFeedback
+                let feedback_call = reputation_registry.readAllFeedback(
+                    alloy::primitives::U256::from(params.agent_id),
+                    vec![], // All clients
+                    query.tag1.clone(),
+                    query.tag2.clone(),
+                    false, // Don't include revoked
+                );
+
+                match feedback_call.call().await {
+                    Ok(fb_result) => {
+                        let entries: Vec<FeedbackEntry> = fb_result.clients
+                            .iter()
+                            .zip(fb_result.feedbackIndexes.iter())
+                            .zip(fb_result.values.iter())
+                            .zip(fb_result.valueDecimals.iter())
+                            .zip(fb_result.tag1s.iter())
+                            .zip(fb_result.tag2s.iter())
+                            .zip(fb_result.revokedStatuses.iter())
+                            .map(|((((((client, idx), val), dec), t1), t2), revoked)| {
+                                FeedbackEntry {
+                                    client: MixedAddress::Evm(crate::types::EvmAddress(*client)),
+                                    feedback_index: *idx,
+                                    value: *val,
+                                    value_decimals: *dec,
+                                    tag1: t1.clone(),
+                                    tag2: t2.clone(),
+                                    is_revoked: *revoked,
+                                }
+                            })
+                            .collect();
+                        Some(entries)
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Failed to fetch feedback entries, returning summary only");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            let response = ReputationResponse {
+                agent_id: params.agent_id,
+                summary,
+                feedback: feedback_entries,
+                network,
+            };
+
+            (StatusCode::OK, Json(response)).into_response()
+        }
+        Err(e) => {
+            error!(
+                network = %network,
+                agent_id = params.agent_id,
+                error = %e,
+                "Failed to query reputation"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": format!("Failed to query reputation: {}", e)
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Path parameters for identity query
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct IdentityPathParams {
+    pub network: String,
+    pub agent_id: u64,
+}
+
+/// `GET /identity/:network/:agent_id`: Get agent identity from the ERC-8004 Identity Registry.
+///
+/// Returns the agent's identity information including:
+/// - Owner address
+/// - Agent URI (metadata file location)
+/// - Payment wallet (if set)
+///
+/// # Example
+/// ```text
+/// GET /identity/ethereum-mainnet/42
+/// ```
+#[instrument(skip_all)]
+pub async fn get_identity<A>(
+    State(facilitator): State<A>,
+    Path(params): Path<IdentityPathParams>,
+) -> impl IntoResponse
+where
+    A: Facilitator + HasProviderMap,
+    A::Error: IntoResponse,
+    A::Map: ProviderMap<Value = NetworkProvider>,
+{
+    // Parse network from path
+    let network: crate::network::Network = match params.network.parse() {
+        Ok(n) => n,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": format!("Invalid network: {}", params.network)
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    // Check if the network supports ERC-8004
+    if !is_erc8004_supported(&network) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": format!("ERC-8004 is not supported on network {}", network),
+                "supportedNetworks": supported_network_names()
+            })),
+        )
+            .into_response();
+    }
+
+    // Get contracts for this network
+    let contracts = match get_contracts(&network) {
+        Some(c) => c,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": format!("No ERC-8004 contracts for network {}", network)
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    info!(
+        network = %network,
+        agent_id = params.agent_id,
+        "Querying ERC-8004 agent identity"
+    );
+
+    // Get the provider for this network
+    let provider_map = facilitator.provider_map();
+    let provider = match provider_map.by_network(&network) {
+        Some(NetworkProvider::Evm(p)) => p,
+        _ => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": format!("No EVM provider available for network {}", network)
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    // Create contract instance
+    let identity_registry =
+        IIdentityRegistry::new(contracts.identity_registry, provider.inner().clone());
+
+    let agent_id_u256 = alloy::primitives::U256::from(params.agent_id);
+
+    // Check if agent exists
+    let exists_call = identity_registry.exists(agent_id_u256);
+    match exists_call.call().await {
+        Ok(exists) => {
+            if !exists {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({
+                        "error": format!("Agent {} not found in Identity Registry", params.agent_id)
+                    })),
+                )
+                    .into_response();
+            }
+        }
+        Err(e) => {
+            error!(error = %e, "Failed to check if agent exists");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": format!("Failed to check agent existence: {}", e)
+                })),
+            )
+                .into_response();
+        }
+    }
+
+    // Get owner, URI, and wallet in parallel
+    let owner_call = identity_registry.ownerOf(agent_id_u256);
+    let uri_call = identity_registry.tokenURI(agent_id_u256);
+    let wallet_call = identity_registry.getAgentWallet(agent_id_u256);
+
+    let (owner_result, uri_result, wallet_result) = tokio::join!(
+        owner_call.call(),
+        uri_call.call(),
+        wallet_call.call()
+    );
+
+    let owner = match owner_result {
+        Ok(o) => MixedAddress::Evm(crate::types::EvmAddress(o)),
+        Err(e) => {
+            error!(error = %e, "Failed to get agent owner");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": format!("Failed to get agent owner: {}", e)
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    let agent_uri = match uri_result {
+        Ok(u) => u,
+        Err(e) => {
+            warn!(error = %e, "Failed to get agent URI, using empty string");
+            String::new()
+        }
+    };
+
+    let agent_wallet = match wallet_result {
+        Ok(w) => {
+            if w == alloy::primitives::Address::ZERO {
+                None
+            } else {
+                Some(MixedAddress::Evm(crate::types::EvmAddress(w)))
+            }
+        }
+        Err(e) => {
+            warn!(error = %e, "Failed to get agent wallet");
+            None
+        }
+    };
+
+    let identity = AgentIdentity {
+        agent_id: params.agent_id,
+        owner,
+        agent_uri,
+        agent_wallet,
+        network,
+    };
+
+    (StatusCode::OK, Json(identity)).into_response()
 }

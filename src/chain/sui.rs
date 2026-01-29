@@ -538,6 +538,7 @@ impl Facilitator for SuiProvider {
                     payer,
                     transaction: Some(crate::types::TransactionHash::Sui(digest)),
                     network: self.network,
+                    proof_of_payment: None, // ERC-8004 not supported on Sui yet
                 })
             }
             Err(e) => {
@@ -556,6 +557,7 @@ impl Facilitator for SuiProvider {
                     payer,
                     transaction: None,
                     network: self.network,
+                    proof_of_payment: None,
                 })
             }
         }

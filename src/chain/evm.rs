@@ -43,6 +43,7 @@ use tracing::{instrument, Instrument};
 use tracing_core::Level;
 
 use crate::chain::{FacilitatorLocalError, FromEnvByNetworkBuild, NetworkProviderOps};
+use crate::erc8004::{Erc8004Extension, ProofOfPayment};
 use crate::facilitator::Facilitator;
 use crate::from_env;
 use crate::network::{
@@ -870,12 +871,25 @@ where
                 tx = %receipt.transaction_hash,
                 "transferWithAuthorization_0 succeeded"
             );
+
+            // Check if ERC-8004 extension is present and create ProofOfPayment
+            let proof_of_payment = create_proof_of_payment(
+                &receipt,
+                requirements,
+                payload.network,
+                payment.from.into(),
+                requirements.pay_to.clone(),
+                TokenAmount::from(payment.value),
+                requirements.asset.clone(),
+            );
+
             Ok(SettleResponse {
                 success: true,
                 error_reason: None,
                 payer: payment.from.into(),
                 transaction: Some(TransactionHash::Evm(receipt.transaction_hash.0)),
                 network: payload.network,
+                proof_of_payment,
             })
         } else {
             tracing::event!(
@@ -890,6 +904,7 @@ where
                 payer: payment.from.into(),
                 transaction: Some(TransactionHash::Evm(receipt.transaction_hash.0)),
                 network: payload.network,
+                proof_of_payment: None,
             })
         }
     }
@@ -927,6 +942,66 @@ where
         }];
         Ok(SupportedPaymentKindsResponse { kinds })
     }
+}
+
+/// Create ProofOfPayment if ERC-8004 extension is active.
+///
+/// Returns Some(ProofOfPayment) if:
+/// - The `8004-reputation` extension is present in payment requirements
+/// - The network supports ERC-8004 contracts
+/// - The include_proof flag is true (default)
+fn create_proof_of_payment(
+    receipt: &TransactionReceipt,
+    requirements: &PaymentRequirements,
+    network: Network,
+    payer: MixedAddress,
+    payee: MixedAddress,
+    amount: TokenAmount,
+    token: MixedAddress,
+) -> Option<ProofOfPayment> {
+    // Check if ERC-8004 extension is present
+    let extension = Erc8004Extension::from_extra(&requirements.extra)?;
+
+    // Check if proof should be included
+    if !extension.include_proof {
+        return None;
+    }
+
+    // Check if network supports ERC-8004
+    if !crate::erc8004::is_erc8004_supported(&network) {
+        tracing::debug!(
+            network = %network,
+            "ERC-8004 extension present but network not supported"
+        );
+        return None;
+    }
+
+    // Extract block number and timestamp from receipt
+    let block_number = receipt.block_number.unwrap_or(0);
+    // Use current timestamp as fallback (block timestamp requires additional RPC call)
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let proof = ProofOfPayment::new(
+        TransactionHash::Evm(receipt.transaction_hash.0),
+        block_number,
+        network,
+        payer,
+        payee,
+        amount,
+        token,
+        timestamp,
+    );
+
+    tracing::info!(
+        tx = %receipt.transaction_hash,
+        block = block_number,
+        "Created ERC-8004 ProofOfPayment"
+    );
+
+    Some(proof)
 }
 
 /// A prepared call to `transferWithAuthorization` (ERC-3009) including all derived fields.

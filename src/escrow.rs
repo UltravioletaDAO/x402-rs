@@ -785,6 +785,7 @@ where
         payer: MixedAddress::Evm(EvmAddress(request.payer)),
         transaction: Some(TransactionHash::Evm(tx_hash_bytes)),
         network: request.network,
+        proof_of_payment: None, // Escrow settlements don't generate proof yet
     })
 }
 

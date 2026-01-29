@@ -19,6 +19,7 @@
 pub mod blocklist;
 pub mod caip2;
 pub mod chain;
+pub mod erc8004;
 pub mod discovery;
 pub mod discovery_aggregator;
 pub mod discovery_store;

@@ -1335,7 +1335,7 @@ impl VerifyRequest {
 /// to be used for settlement.
 pub type SettleRequest = VerifyRequest;
 
-#[derive(Debug, Serialize, Deserialize, thiserror::Error)]
+#[derive(Debug, Clone, Serialize, Deserialize, thiserror::Error)]
 #[serde(untagged, rename_all = "camelCase")]
 pub enum FacilitatorErrorReason {
     /// Payer doesn't have sufficient funds.
@@ -1360,6 +1360,10 @@ pub enum FacilitatorErrorReason {
 
 /// Returned from a facilitator after attempting to settle a payment on-chain.
 /// Indicates success/failure, transaction hash, and payer identity.
+///
+/// When the `8004-reputation` extension is active in PaymentRequirements.extra,
+/// the response includes a `proof_of_payment` field containing cryptographic proof
+/// that can be used to submit reputation feedback on-chain.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SettleResponse {
@@ -1370,6 +1374,9 @@ pub struct SettleResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transaction: Option<TransactionHash>,
     pub network: Network,
+    /// ERC-8004 proof of payment (included when `8004-reputation` extension is active)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proof_of_payment: Option<crate::erc8004::ProofOfPayment>,
 }
 
 /// Error returned when encoding a [`SettleResponse`] into base64 fails.

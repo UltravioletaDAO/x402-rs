@@ -900,6 +900,7 @@ impl Facilitator for SolanaProvider {
                 payer: verification.payer.into(),
                 transaction: None,
                 network: self.network(),
+                proof_of_payment: None,
             });
         }
 
@@ -920,6 +921,7 @@ impl Facilitator for SolanaProvider {
             payer: verification.payer.into(),
             transaction: Some(TransactionHash::Solana(*tx_sig.as_array())),
             network: self.network(),
+            proof_of_payment: None, // ERC-8004 not supported on Solana yet
         };
         Ok(settle_response)
     }

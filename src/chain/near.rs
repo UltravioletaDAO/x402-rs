@@ -668,6 +668,7 @@ impl Facilitator for NearProvider {
                 payer: verification.payer.into(),
                 transaction: None,
                 network: self.network(),
+                proof_of_payment: None,
             });
         }
 
@@ -685,6 +686,7 @@ impl Facilitator for NearProvider {
                     payer: verification.payer.into(),
                     transaction: None,
                     network: self.network(),
+                    proof_of_payment: None,
                 });
             }
         };
@@ -698,6 +700,7 @@ impl Facilitator for NearProvider {
             payer: verification.payer.into(),
             transaction: Some(TransactionHash::Near(tx_hash_bytes)),
             network: self.network(),
+            proof_of_payment: None, // ERC-8004 not supported on NEAR
         })
     }
 

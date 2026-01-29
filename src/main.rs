@@ -45,6 +45,7 @@ mod discovery;
 mod discovery_aggregator;
 mod discovery_crawler;
 mod discovery_store;
+mod erc8004;
 mod escrow;
 mod facilitator;
 mod facilitator_local;
@@ -52,6 +53,7 @@ mod fhe_proxy;
 mod from_env;
 mod handlers;
 mod network;
+mod openapi;
 mod nonce_store;
 mod provider_cache;
 mod sig_down;
@@ -270,6 +272,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let http_endpoints = Router::new()
         .merge(handlers::routes().with_state(axum_state))
         .merge(handlers::discovery_routes().with_state(Arc::clone(&discovery_registry)))
+        .merge(openapi::swagger_routes())
         // Share discovery registry with all handlers via Extension for settlement tracking
         .layer(Extension(discovery_registry))
         .layer(telemetry.http_tracing())

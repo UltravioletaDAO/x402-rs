@@ -22,15 +22,20 @@ The x402 facilitator enables gasless micropayments across multiple blockchain ne
 ## Supported Networks
 
 ### EVM Chains (Mainnet)
-- Ethereum, Base, Polygon, Optimism, Avalanche, Arbitrum, Celo, HyperEVM, Unichain, Monad, Scroll, Fogo, BSC
+Ethereum, Base, Polygon, Optimism, Avalanche, Arbitrum, Celo, HyperEVM, Unichain, Monad, Scroll, BSC, SKALE
 
 ### EVM Chains (Testnet)
-- Ethereum Sepolia, Base Sepolia, Polygon Amoy, Optimism Sepolia, Avalanche Fuji, Arbitrum Sepolia, Celo Alfajores, HyperEVM Testnet
+Ethereum Sepolia, Base Sepolia, Polygon Amoy, Optimism Sepolia, Avalanche Fuji, Arbitrum Sepolia, Celo Sepolia, HyperEVM Testnet, Unichain Sepolia, SKALE Sepolia
 
-### Non-EVM Chains
+### SVM Chains (Solana Virtual Machine)
 - **Solana**: Mainnet and Devnet
+- **Fogo**: Mainnet and Testnet
+
+### Other Non-EVM Chains
 - **NEAR Protocol**: Mainnet and Testnet
 - **Stellar/Soroban**: Mainnet and Testnet
+- **Algorand**: Mainnet and Testnet
+- **Sui**: Mainnet and Testnet
 
 ## Core Endpoints
 

@@ -105,7 +105,7 @@ pub fn supported_networks() -> Vec<Network> {
 /// Get list of supported network names for API responses
 pub fn supported_network_names() -> Vec<&'static str> {
     vec![
-        "ethereum-mainnet",
+        "ethereum",
         "ethereum-sepolia",
         // Add more as deployed
     ]

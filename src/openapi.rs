@@ -48,7 +48,7 @@ The facilitator supports [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) for
 - `GET /reputation/:network/:agentId` - Query agent reputation summary
 - `GET /identity/:network/:agentId` - Get agent identity from registry
 
-Supported ERC-8004 networks: `ethereum-mainnet`, `ethereum-sepolia`
+Supported ERC-8004 networks: `ethereum`, `ethereum-sepolia`
 
 ## Bazaar Discovery
 
@@ -321,13 +321,13 @@ async fn path_feedback_get() {}
     description = r#"
 Submits on-chain reputation feedback for an AI agent via the ERC-8004 Reputation Registry.
 
-**Supported networks:** ethereum-mainnet, ethereum-sepolia
+**Supported networks:** ethereum, ethereum-sepolia
 
 **Request body:**
 ```json
 {
   "x402Version": 1,
-  "network": "ethereum-mainnet",
+  "network": "ethereum",
   "feedback": {
     "agentId": 42,
     "value": 87,
@@ -340,7 +340,7 @@ Submits on-chain reputation feedback for an AI agent via the ERC-8004 Reputation
     "proof": {
       "transactionHash": "0x...",
       "blockNumber": 12345678,
-      "network": "ethereum-mainnet",
+      "network": "ethereum",
       "payer": "0x...",
       "payee": "0x...",
       "amount": "1000000",
@@ -358,7 +358,7 @@ Submits on-chain reputation feedback for an AI agent via the ERC-8004 Reputation
   "success": true,
   "transaction": "0x...",
   "feedbackIndex": 1,
-  "network": "ethereum-mainnet"
+  "network": "ethereum"
 }
 ```
 "#,
@@ -382,7 +382,7 @@ Revokes previously submitted reputation feedback.
 ```json
 {
   "x402Version": 1,
-  "network": "ethereum-mainnet",
+  "network": "ethereum",
   "agentId": 42,
   "feedbackIndex": 1
 }
@@ -408,7 +408,7 @@ Appends an agent's response to existing feedback.
 ```json
 {
   "x402Version": 1,
-  "network": "ethereum-mainnet",
+  "network": "ethereum",
   "agentId": 42,
   "clientAddress": "0x...",
   "feedbackIndex": 1,
@@ -433,7 +433,7 @@ async fn path_feedback_response() {}
     description = r#"
 Queries the reputation summary for an AI agent from the ERC-8004 Reputation Registry.
 
-**Supported networks:** ethereum-mainnet, ethereum-sepolia
+**Supported networks:** ethereum, ethereum-sepolia
 
 **Query parameters:**
 - `include_feedback` (optional): Include individual feedback entries
@@ -447,15 +447,15 @@ Queries the reputation summary for an AI agent from the ERC-8004 Reputation Regi
     "count": 15,
     "summaryValue": 87,
     "summaryValueDecimals": 0,
-    "network": "ethereum-mainnet"
+    "network": "ethereum"
   },
   "feedback": [...],
-  "network": "ethereum-mainnet"
+  "network": "ethereum"
 }
 ```
 "#,
     params(
-        ("network" = String, Path, description = "Network name (ethereum-mainnet or ethereum-sepolia)"),
+        ("network" = String, Path, description = "Network name (ethereum or ethereum-sepolia)"),
         ("agent_id" = u64, Path, description = "Agent ID (ERC-721 tokenId)"),
         ("include_feedback" = Option<bool>, Query, description = "Include individual feedback entries")
     ),
@@ -475,7 +475,7 @@ async fn path_reputation() {}
     description = r#"
 Retrieves agent identity information from the ERC-8004 Identity Registry.
 
-**Supported networks:** ethereum-mainnet, ethereum-sepolia
+**Supported networks:** ethereum, ethereum-sepolia
 
 **Response:**
 ```json
@@ -484,12 +484,12 @@ Retrieves agent identity information from the ERC-8004 Identity Registry.
   "owner": "0x...",
   "agentUri": "ipfs://Qm...",
   "agentWallet": "0x...",
-  "network": "ethereum-mainnet"
+  "network": "ethereum"
 }
 ```
 "#,
     params(
-        ("network" = String, Path, description = "Network name (ethereum-mainnet or ethereum-sepolia)"),
+        ("network" = String, Path, description = "Network name (ethereum or ethereum-sepolia)"),
         ("agent_id" = u64, Path, description = "Agent ID (ERC-721 tokenId)")
     ),
     responses(

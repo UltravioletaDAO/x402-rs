@@ -1547,7 +1547,7 @@ pub async fn get_feedback_info() -> impl IntoResponse {
         "specification": "https://eips.ethereum.org/EIPS/eip-8004",
         "body": {
             "x402Version": "number (1 or 2)",
-            "network": format!("string (e.g., '{}' or 'eip155:1')", networks.first().unwrap_or(&"ethereum-mainnet")),
+            "network": format!("string (e.g., '{}' or 'eip155:1')", networks.first().unwrap_or(&"ethereum")),
             "feedback": {
                 "agentId": "number - Agent's token ID in the Identity Registry",
                 "value": "number - Feedback value (fixed-point, e.g., 87 means 87/100)",

@@ -55,6 +55,7 @@ mod handlers;
 mod network;
 mod openapi;
 mod nonce_store;
+mod payment_operator;
 mod provider_cache;
 mod sig_down;
 mod telemetry;

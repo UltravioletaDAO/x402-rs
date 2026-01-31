@@ -1148,6 +1148,42 @@ where
                     }
                 }
             }
+
+            // Check for x402r PaymentOperator extension (advanced escrow with conditions/fees)
+            if extensions.contains_key("operator") {
+                // Check if PaymentOperator feature is enabled
+                if !crate::payment_operator::is_enabled() {
+                    warn!("PaymentOperator settlement requested but ENABLE_PAYMENT_OPERATOR is not set to true");
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({
+                            "success": false,
+                            "errorReason": "PaymentOperator settlement is disabled. Set ENABLE_PAYMENT_OPERATOR=true to enable."
+                        })),
+                    )
+                        .into_response();
+                }
+
+                info!("Detected x402r operator extension, routing to PaymentOperator settlement");
+
+                match crate::payment_operator::settle_with_operator(body_str, &facilitator).await {
+                    Ok(operator_response) => {
+                        info!("PaymentOperator settlement complete");
+                        return (StatusCode::OK, Json(operator_response)).into_response();
+                    }
+                    Err(e) => {
+                        error!(error = %e, "PaymentOperator settlement failed");
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(json!({
+                                "success": false,
+                                "errorReason": format!("PaymentOperator error: {}", e)
+                            })),
+                        )
+                            .into_response();
+                    }
+                }
+            }
         }
     }
 

@@ -1108,6 +1108,44 @@ where
             }
         }
 
+        // Check for x402r escrow scheme (top-level scheme field)
+        // This is the new v2 scheme pattern from x402r-scheme reference implementation
+        let top_level_scheme = json_value.get("scheme").and_then(|s| s.as_str());
+        if top_level_scheme == Some(crate::payment_operator::ESCROW_SCHEME) {
+            // Check if escrow scheme (PaymentOperator) is enabled
+            if !crate::payment_operator::is_enabled() {
+                warn!("Escrow scheme settlement requested but ENABLE_PAYMENT_OPERATOR is not set to true");
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "success": false,
+                        "errorReason": "Escrow scheme settlement is disabled. Set ENABLE_PAYMENT_OPERATOR=true to enable."
+                    })),
+                )
+                    .into_response();
+            }
+
+            info!("Detected escrow scheme, routing to PaymentOperator.authorize()");
+
+            match crate::payment_operator::settle_escrow(body_str, &facilitator).await {
+                Ok(escrow_response) => {
+                    info!("Escrow scheme settlement complete");
+                    return (StatusCode::OK, Json(escrow_response)).into_response();
+                }
+                Err(e) => {
+                    error!(error = %e, "Escrow scheme settlement failed");
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({
+                            "success": false,
+                            "errorReason": format!("Escrow scheme error: {}", e)
+                        })),
+                    )
+                        .into_response();
+                }
+            }
+        }
+
         // Check for x402r escrow/refund extension
         if let Some(extensions) = json_value
             .get("paymentPayload")
@@ -1149,41 +1187,8 @@ where
                 }
             }
 
-            // Check for x402r PaymentOperator extension (advanced escrow with conditions/fees)
-            if extensions.contains_key("operator") {
-                // Check if PaymentOperator feature is enabled
-                if !crate::payment_operator::is_enabled() {
-                    warn!("PaymentOperator settlement requested but ENABLE_PAYMENT_OPERATOR is not set to true");
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(json!({
-                            "success": false,
-                            "errorReason": "PaymentOperator settlement is disabled. Set ENABLE_PAYMENT_OPERATOR=true to enable."
-                        })),
-                    )
-                        .into_response();
-                }
-
-                info!("Detected x402r operator extension, routing to PaymentOperator settlement");
-
-                match crate::payment_operator::settle_with_operator(body_str, &facilitator).await {
-                    Ok(operator_response) => {
-                        info!("PaymentOperator settlement complete");
-                        return (StatusCode::OK, Json(operator_response)).into_response();
-                    }
-                    Err(e) => {
-                        error!(error = %e, "PaymentOperator settlement failed");
-                        return (
-                            StatusCode::BAD_REQUEST,
-                            Json(json!({
-                                "success": false,
-                                "errorReason": format!("PaymentOperator error: {}", e)
-                            })),
-                        )
-                            .into_response();
-                    }
-                }
-            }
+            // Note: PaymentOperator now uses scheme="escrow" at top level, not extensions
+            // The old operator extension pattern is deprecated
         }
     }
 

@@ -15,10 +15,10 @@ pub enum OperatorError {
     #[error("PaymentOperator requires x402 v2 protocol")]
     V1NotSupported,
 
-    #[error("Missing 'operator' extension in payment payload")]
-    MissingOperatorExtension,
+    #[error("Invalid scheme: expected 'escrow', got '{0}'")]
+    InvalidScheme(String),
 
-    #[error("Invalid operator extension format: {0}")]
+    #[error("Invalid escrow payload format: {0}")]
     InvalidExtensionFormat(String),
 
     #[error("Unknown operator action: {0}")]

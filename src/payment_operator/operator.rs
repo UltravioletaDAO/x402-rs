@@ -1,10 +1,12 @@
-//! PaymentOperator settlement logic
+//! Escrow Scheme settlement logic
 //!
-//! This module handles settlement requests with the "operator" extension,
-//! routing them to the appropriate PaymentOperator contract functions.
+//! This module handles settlement requests with scheme="escrow",
+//! calling PaymentOperator.authorize() to place funds in escrow.
+//!
+//! Based on reference implementation:
+//! https://github.com/BackTrackCo/x402r-scheme/tree/main/packages/evm/src/escrow/facilitator
 
-use alloy::hex;
-use alloy::primitives::{Address, Bytes, B256, U256};
+use alloy::primitives::{Bytes, B256, U256};
 use alloy::sol_types::SolCall;
 use tracing::{debug, info, instrument};
 
@@ -14,17 +16,20 @@ use crate::network::Network;
 use crate::provider_cache::{HasProviderMap, ProviderMap};
 use crate::types::{EvmAddress, MixedAddress, SettleResponse, TransactionHash};
 
-use super::abi::{OperatorContract, PaymentInfo as PaymentInfoContract};
+use super::abi::OperatorContract;
 use super::addresses::OperatorAddresses;
 use super::errors::OperatorError;
-use super::types::{EscrowState, OperatorAction, OperatorExtension};
+use super::types::{ContractPaymentInfo, EscrowExtra, EscrowPayload};
 
-/// Main PaymentOperator settlement function
+/// Escrow scheme identifier
+pub const ESCROW_SCHEME: &str = "escrow";
+
+/// Main escrow settlement function
 ///
-/// This is called from handlers.rs when an "operator" extension is detected.
-/// It routes the payment through the PaymentOperator contract based on the action.
+/// This is called from handlers.rs when scheme="escrow" is detected.
+/// It calls PaymentOperator.authorize() to place funds in escrow.
 #[instrument(skip_all, err, fields(network))]
-pub async fn settle_with_operator<F>(
+pub async fn settle_escrow<F>(
     body: &str,
     facilitator: &F,
 ) -> Result<SettleResponse, OperatorError>
@@ -38,16 +43,14 @@ where
     }
 
     // Parse the request
-    let (network, extension) = parse_operator_request(body)?;
+    let (network, escrow_payload, extra) = parse_escrow_request(body)?;
 
     info!(
-        action = ?extension.action,
         network = %network,
-        operator = ?extension.payment_info.operator,
-        payer = ?extension.payment_info.payer,
-        receiver = ?extension.payment_info.receiver,
-        amount = %extension.amount,
-        "Processing PaymentOperator settlement"
+        payer = ?escrow_payload.authorization.from,
+        receiver = ?escrow_payload.payment_info.receiver,
+        amount = %escrow_payload.authorization.value,
+        "Processing escrow scheme settlement (authorize)"
     );
 
     // Verify network is supported
@@ -66,13 +69,12 @@ where
         _ => return Err(OperatorError::NonEvmNetwork),
     };
 
-    // Execute the action
-    let tx_hash = execute_operator_action(&extension, &addrs, evm_provider).await?;
+    // Execute authorize
+    let tx_hash = execute_authorize(&escrow_payload, &extra, &addrs, evm_provider).await?;
 
     info!(
         tx_hash = ?tx_hash,
-        action = ?extension.action,
-        "PaymentOperator settlement transaction submitted"
+        "Escrow authorize transaction submitted"
     );
 
     // Convert B256 to [u8; 32] for TransactionHash::Evm
@@ -81,134 +83,104 @@ where
     Ok(SettleResponse {
         success: true,
         error_reason: None,
-        payer: MixedAddress::Evm(EvmAddress(extension.payment_info.payer)),
+        payer: MixedAddress::Evm(EvmAddress(escrow_payload.authorization.from)),
         transaction: Some(TransactionHash::Evm(tx_hash_bytes)),
         network,
         proof_of_payment: None,
     })
 }
 
-/// Parse operator extension from request body
-fn parse_operator_request(body: &str) -> Result<(Network, OperatorExtension), OperatorError> {
+/// Parse escrow scheme request from body
+fn parse_escrow_request(body: &str) -> Result<(Network, EscrowPayload, EscrowExtra), OperatorError> {
     let json_value: serde_json::Value = serde_json::from_str(body)?;
 
-    // Extract network from accepted field
+    // Verify scheme is "escrow"
+    let scheme = json_value
+        .get("scheme")
+        .and_then(|s| s.as_str())
+        .ok_or_else(|| OperatorError::MissingField("scheme".to_string()))?;
+
+    if scheme != ESCROW_SCHEME {
+        return Err(OperatorError::InvalidScheme(scheme.to_string()));
+    }
+
+    // Extract network from paymentRequirements
     let network_str = json_value
-        .get("paymentPayload")
-        .and_then(|pp| pp.get("accepted"))
-        .and_then(|acc| acc.get("network"))
+        .get("paymentRequirements")
+        .and_then(|pr| pr.get("network"))
         .and_then(|n| n.as_str())
-        .ok_or_else(|| OperatorError::MissingField("paymentPayload.accepted.network".to_string()))?;
+        .ok_or_else(|| OperatorError::MissingField("paymentRequirements.network".to_string()))?;
 
     let network = Network::from_caip2(network_str)
         .ok_or_else(|| OperatorError::UnsupportedNetwork(network_str.to_string()))?;
 
-    // Extract operator extension
-    let operator_ext_value = json_value
-        .get("paymentPayload")
-        .and_then(|pp| pp.get("extensions"))
-        .and_then(|ext| ext.get("operator"))
-        .ok_or(OperatorError::MissingOperatorExtension)?;
+    // Extract escrow payload
+    let payload_value = json_value
+        .get("payload")
+        .ok_or_else(|| OperatorError::MissingField("payload".to_string()))?;
 
-    let extension: OperatorExtension = serde_json::from_value(operator_ext_value.clone())
+    let escrow_payload: EscrowPayload = serde_json::from_value(payload_value.clone())
         .map_err(|e| OperatorError::InvalidExtensionFormat(e.to_string()))?;
 
-    Ok((network, extension))
+    // Extract extra from paymentRequirements
+    let extra_value = json_value
+        .get("paymentRequirements")
+        .and_then(|pr| pr.get("extra"))
+        .ok_or_else(|| OperatorError::MissingField("paymentRequirements.extra".to_string()))?;
+
+    let extra: EscrowExtra = serde_json::from_value(extra_value.clone())
+        .map_err(|e| OperatorError::InvalidExtensionFormat(format!("Invalid extra: {}", e)))?;
+
+    Ok((network, escrow_payload, extra))
 }
 
-/// Execute the appropriate operator action
-async fn execute_operator_action(
-    extension: &OperatorExtension,
-    addrs: &OperatorAddresses,
-    provider: &EvmProvider,
-) -> Result<B256, OperatorError> {
-    let payment_info = extension.payment_info.to_contract_type();
-    let amount = U256::from(extension.amount);
-
-    // Get token collector and data (default to ERC3009 collector with empty data)
-    let token_collector = extension
-        .token_collector
-        .unwrap_or(addrs.erc3009_collector);
-
-    let collector_data = extension
-        .collector_data
-        .as_ref()
-        .map(|s| {
-            if s.starts_with("0x") {
-                hex::decode(&s[2..]).unwrap_or_default()
-            } else {
-                hex::decode(s).unwrap_or_default()
-            }
-        })
-        .unwrap_or_default();
-
-    match extension.action {
-        OperatorAction::Authorize => {
-            execute_authorize(
-                &payment_info,
-                amount,
-                token_collector,
-                &collector_data,
-                provider,
-            )
-            .await
-        }
-        OperatorAction::Charge => {
-            execute_charge(
-                &payment_info,
-                amount,
-                token_collector,
-                &collector_data,
-                provider,
-            )
-            .await
-        }
-        OperatorAction::Release => {
-            execute_release(&payment_info, amount, provider).await
-        }
-        OperatorAction::RefundInEscrow => {
-            execute_refund_in_escrow(&payment_info, extension.amount, provider).await
-        }
-        OperatorAction::RefundPostEscrow => {
-            execute_refund_post_escrow(
-                &payment_info,
-                amount,
-                token_collector,
-                &collector_data,
-                provider,
-            )
-            .await
-        }
-    }
-}
-
-/// Execute authorize action on PaymentOperator
+/// Execute authorize on PaymentOperator
+///
+/// This is the ONLY action the facilitator performs for escrow scheme.
+/// Other actions (charge, release, refunds) are handled by other systems.
 #[instrument(skip_all, err)]
 async fn execute_authorize(
-    payment_info: &PaymentInfoContract,
-    amount: U256,
-    token_collector: Address,
-    collector_data: &[u8],
+    escrow_payload: &EscrowPayload,
+    extra: &EscrowExtra,
+    _addrs: &OperatorAddresses,
     provider: &EvmProvider,
 ) -> Result<B256, OperatorError> {
+    // Build PaymentInfo from escrow payload
+    let payment_info = ContractPaymentInfo::from_escrow_payload(escrow_payload);
+    let payment_info_abi = payment_info.to_abi_type();
+
+    let amount = U256::from(escrow_payload.authorization.value);
+
+    // Use token collector from extra
+    let token_collector = extra.token_collector;
+
+    // Encode collectorData: abi.encode(signature, "0x")
+    // The signature is the ERC-3009 authorization signature
+    let collector_data = encode_collector_data(&escrow_payload.signature);
+
     debug!(
         operator = ?payment_info.operator,
         payer = ?payment_info.payer,
+        receiver = ?payment_info.receiver,
         amount = %amount,
+        token_collector = ?token_collector,
         "Executing authorize on PaymentOperator"
     );
 
+    // Target is authorizeAddress if provided, otherwise operatorAddress
+    let target = extra.authorize_address.unwrap_or(extra.operator_address);
+
     let call = OperatorContract::authorizeCall {
-        paymentInfo: payment_info.clone(),
+        paymentInfo: payment_info_abi,
         amount,
         tokenCollector: token_collector,
-        collectorData: Bytes::from(collector_data.to_vec()),
+        collectorData: collector_data,
     };
 
     let calldata = call.abi_encode();
 
     let meta_tx = MetaTransaction {
-        to: payment_info.operator,
+        to: target,
         calldata: Bytes::from(calldata),
         confirmations: 1,
     };
@@ -221,225 +193,99 @@ async fn execute_authorize(
     Ok(receipt.transaction_hash)
 }
 
-/// Execute charge action on PaymentOperator
-#[instrument(skip_all, err)]
-async fn execute_charge(
-    payment_info: &PaymentInfoContract,
-    amount: U256,
-    token_collector: Address,
-    collector_data: &[u8],
-    provider: &EvmProvider,
-) -> Result<B256, OperatorError> {
-    debug!(
-        operator = ?payment_info.operator,
-        payer = ?payment_info.payer,
-        amount = %amount,
-        "Executing charge on PaymentOperator"
-    );
-
-    let call = OperatorContract::chargeCall {
-        paymentInfo: payment_info.clone(),
-        amount,
-        tokenCollector: token_collector,
-        collectorData: Bytes::from(collector_data.to_vec()),
-    };
-
-    let calldata = call.abi_encode();
-
-    let meta_tx = MetaTransaction {
-        to: payment_info.operator,
-        calldata: Bytes::from(calldata),
-        confirmations: 1,
-    };
-
-    let receipt = provider
-        .send_transaction(meta_tx)
-        .await
-        .map_err(|e| OperatorError::ContractCall(format!("{:?}", e)))?;
-
-    Ok(receipt.transaction_hash)
-}
-
-/// Execute release action on PaymentOperator
-#[instrument(skip_all, err)]
-async fn execute_release(
-    payment_info: &PaymentInfoContract,
-    amount: U256,
-    provider: &EvmProvider,
-) -> Result<B256, OperatorError> {
-    debug!(
-        operator = ?payment_info.operator,
-        receiver = ?payment_info.receiver,
-        amount = %amount,
-        "Executing release on PaymentOperator"
-    );
-
-    let call = OperatorContract::releaseCall {
-        paymentInfo: payment_info.clone(),
-        amount,
-    };
-
-    let calldata = call.abi_encode();
-
-    let meta_tx = MetaTransaction {
-        to: payment_info.operator,
-        calldata: Bytes::from(calldata),
-        confirmations: 1,
-    };
-
-    let receipt = provider
-        .send_transaction(meta_tx)
-        .await
-        .map_err(|e| OperatorError::ContractCall(format!("{:?}", e)))?;
-
-    Ok(receipt.transaction_hash)
-}
-
-/// Execute refundInEscrow action on PaymentOperator
-#[instrument(skip_all, err)]
-async fn execute_refund_in_escrow(
-    payment_info: &PaymentInfoContract,
-    amount: u128,
-    provider: &EvmProvider,
-) -> Result<B256, OperatorError> {
-    use alloy::primitives::Uint;
-
-    debug!(
-        operator = ?payment_info.operator,
-        payer = ?payment_info.payer,
-        amount = %amount,
-        "Executing refundInEscrow on PaymentOperator"
-    );
-
-    // Convert u128 to Uint<120, 2> for the contract call
-    let amount_uint120: Uint<120, 2> = Uint::from(amount);
-
-    let call = OperatorContract::refundInEscrowCall {
-        paymentInfo: payment_info.clone(),
-        amount: amount_uint120,
-    };
-
-    let calldata = call.abi_encode();
-
-    let meta_tx = MetaTransaction {
-        to: payment_info.operator,
-        calldata: Bytes::from(calldata),
-        confirmations: 1,
-    };
-
-    let receipt = provider
-        .send_transaction(meta_tx)
-        .await
-        .map_err(|e| OperatorError::ContractCall(format!("{:?}", e)))?;
-
-    Ok(receipt.transaction_hash)
-}
-
-/// Execute refundPostEscrow action on PaymentOperator
-#[instrument(skip_all, err)]
-async fn execute_refund_post_escrow(
-    payment_info: &PaymentInfoContract,
-    amount: U256,
-    token_collector: Address,
-    collector_data: &[u8],
-    provider: &EvmProvider,
-) -> Result<B256, OperatorError> {
-    debug!(
-        operator = ?payment_info.operator,
-        payer = ?payment_info.payer,
-        amount = %amount,
-        "Executing refundPostEscrow on PaymentOperator"
-    );
-
-    let call = OperatorContract::refundPostEscrowCall {
-        paymentInfo: payment_info.clone(),
-        amount,
-        tokenCollector: token_collector,
-        collectorData: Bytes::from(collector_data.to_vec()),
-    };
-
-    let calldata = call.abi_encode();
-
-    let meta_tx = MetaTransaction {
-        to: payment_info.operator,
-        calldata: Bytes::from(calldata),
-        confirmations: 1,
-    };
-
-    let receipt = provider
-        .send_transaction(meta_tx)
-        .await
-        .map_err(|e| OperatorError::ContractCall(format!("{:?}", e)))?;
-
-    Ok(receipt.transaction_hash)
-}
-
-/// Query escrow state for a payment
+/// Encode collector data for authorize call
 ///
-/// Note: This function is not yet implemented as it requires eth_call support
-/// for view functions. It's a placeholder for future implementation.
-#[instrument(skip_all, err)]
-#[allow(dead_code)]
-pub async fn query_escrow_state(
-    _payment_info: &PaymentInfoContract,
-    escrow_address: Address,
-    _provider: &EvmProvider,
-) -> Result<EscrowState, OperatorError> {
-    debug!(
-        escrow = ?escrow_address,
-        "Querying escrow state"
+/// Format: abi.encode(signature, "0x")
+/// The first bytes is the ERC-3009 signature, the second is empty (for future use)
+fn encode_collector_data(signature: &Bytes) -> Bytes {
+    use alloy::sol_types::SolType;
+
+    // ABI encode (bytes, bytes) - signature and empty bytes
+    let encoded = <(alloy::sol_types::sol_data::Bytes, alloy::sol_types::sol_data::Bytes)>::abi_encode(
+        &(signature.clone(), Bytes::new())
     );
 
-    // Note: For view calls, we'd need to use eth_call instead of send_transaction
-    // For now, this function is a placeholder - actual implementation would need
-    // the provider to support eth_call for view functions
-    Err(OperatorError::EscrowStateQuery("View calls not yet implemented".to_string()))
+    Bytes::from(encoded)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::address;
 
     #[test]
-    fn test_parse_operator_request() {
+    fn test_parse_escrow_request() {
         let body = r#"{
             "x402Version": 2,
-            "paymentPayload": {
-                "accepted": {
-                    "network": "eip155:84532"
+            "scheme": "escrow",
+            "payload": {
+                "authorization": {
+                    "from": "0x1111111111111111111111111111111111111111",
+                    "to": "0x0E3dF9510de65469C4518D7843919c0b8C7A7757",
+                    "value": "1000000",
+                    "validAfter": "0",
+                    "validBefore": "1738500000",
+                    "nonce": "0x0000000000000000000000000000000000000000000000000000000000003039"
                 },
-                "extensions": {
-                    "operator": {
-                        "action": "authorize",
-                        "paymentInfo": {
-                            "operator": "0xFa8C4Cb156053b867Ae7489220A29b5939E3Df70",
-                            "payer": "0x1111111111111111111111111111111111111111",
-                            "receiver": "0x2222222222222222222222222222222222222222",
-                            "token": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
-                            "maxAmount": "1000000",
-                            "preApprovalExpiry": "1738400000",
-                            "authorizationExpiry": "1738500000",
-                            "refundExpiry": "1738600000",
-                            "minFeeBps": 0,
-                            "maxFeeBps": 100,
-                            "feeReceiver": "0xFa8C4Cb156053b867Ae7489220A29b5939E3Df70",
-                            "salt": "12345"
-                        },
-                        "amount": "500000"
-                    }
+                "signature": "0xabcdef1234567890",
+                "paymentInfo": {
+                    "operator": "0xFa8C4Cb156053b867Ae7489220A29b5939E3Df70",
+                    "receiver": "0x2222222222222222222222222222222222222222",
+                    "token": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+                    "maxAmount": "1000000",
+                    "preApprovalExpiry": 281474976710655,
+                    "authorizationExpiry": 281474976710655,
+                    "refundExpiry": 281474976710655,
+                    "minFeeBps": 0,
+                    "maxFeeBps": 100,
+                    "feeReceiver": "0xFa8C4Cb156053b867Ae7489220A29b5939E3Df70",
+                    "salt": "0x0000000000000000000000000000000000000000000000000000000000003039"
+                }
+            },
+            "paymentRequirements": {
+                "scheme": "escrow",
+                "network": "eip155:84532",
+                "maxAmountRequired": "1000000",
+                "asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+                "payTo": "0x2222222222222222222222222222222222222222",
+                "extra": {
+                    "escrowAddress": "0xb9488351E48b23D798f24e8174514F28B741Eb4f",
+                    "operatorAddress": "0xFa8C4Cb156053b867Ae7489220A29b5939E3Df70",
+                    "tokenCollector": "0x0E3dF9510de65469C4518D7843919c0b8C7A7757"
                 }
             }
         }"#;
 
-        let (network, extension) = parse_operator_request(body).unwrap();
+        let (network, payload, extra) = parse_escrow_request(body).unwrap();
 
         assert_eq!(network, Network::BaseSepolia);
-        assert_eq!(extension.action, OperatorAction::Authorize);
-        assert_eq!(extension.amount, 500000);
+        assert_eq!(payload.authorization.value, 1_000_000);
         assert_eq!(
-            extension.payment_info.operator,
-            address!("Fa8C4Cb156053b867Ae7489220A29b5939E3Df70")
+            extra.operator_address,
+            alloy::primitives::address!("Fa8C4Cb156053b867Ae7489220A29b5939E3Df70")
         );
+    }
+
+    #[test]
+    fn test_encode_collector_data() {
+        let signature = Bytes::from(vec![0xab, 0xcd, 0xef]);
+        let encoded = encode_collector_data(&signature);
+
+        // Should be valid ABI-encoded (bytes, bytes)
+        assert!(!encoded.is_empty());
+        // First 32 bytes are offset to first bytes, next 32 are offset to second bytes
+        assert!(encoded.len() > 64);
+    }
+
+    #[test]
+    fn test_invalid_scheme() {
+        let body = r#"{
+            "x402Version": 2,
+            "scheme": "exact",
+            "payload": {},
+            "paymentRequirements": {}
+        }"#;
+
+        let result = parse_escrow_request(body);
+        assert!(matches!(result, Err(OperatorError::InvalidScheme(_))));
     }
 }

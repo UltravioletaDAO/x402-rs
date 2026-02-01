@@ -1,34 +1,63 @@
-//! PaymentOperator x402r Support
+//! x402r Escrow Scheme Support
 //!
-//! Implements support for the advanced PaymentOperator escrow system from x402r.
-//! This system provides:
-//! - Authorize/Capture pattern (authorize -> charge/release)
-//! - Pluggable conditions (payer, receiver, arbiter, time-based)
-//! - Pluggable recorders (state tracking after actions)
-//! - Fee system (protocol fees + operator fees)
-//! - Refunds (in-escrow and post-escrow)
+//! Implements the escrow payment scheme from x402r using Base Commerce Payments contracts.
 //!
-//! # Architecture
+//! # How It Works
 //!
-//! The PaymentOperator system works alongside (not replacing) the simpler DepositRelay system:
-//! - `extensions["refund"]` -> DepositRelay (simple escrow)
-//! - `extensions["operator"]` -> PaymentOperator (advanced escrow with conditions/fees)
+//! The escrow scheme uses `scheme: "escrow"` in the payment payload (not extensions).
+//! When a client sends a payment with this scheme, the facilitator:
+//!
+//! 1. Verifies the ERC-3009 signature
+//! 2. Calls `PaymentOperator.authorize()` to place funds in escrow
+//!
+//! That's it - the facilitator ONLY handles authorize. Other actions like charge,
+//! release, and refunds are handled by the resource server or other systems.
+//!
+//! # Request Format
+//!
+//! ```json
+//! {
+//!   "x402Version": 2,
+//!   "scheme": "escrow",
+//!   "payload": {
+//!     "authorization": { "from": "0x...", "to": "0x...", "value": "...", ... },
+//!     "signature": "0x...",
+//!     "paymentInfo": { "operator": "0x...", "receiver": "0x...", ... }
+//!   },
+//!   "paymentRequirements": {
+//!     "scheme": "escrow",
+//!     "network": "eip155:8453",
+//!     "extra": {
+//!       "escrowAddress": "0x...",
+//!       "operatorAddress": "0x...",
+//!       "tokenCollector": "0x..."
+//!     }
+//!   }
+//! }
+//! ```
 //!
 //! # Feature Flag
 //!
-//! Set `ENABLE_PAYMENT_OPERATOR=true` to enable PaymentOperator settlement support.
+//! Set `ENABLE_PAYMENT_OPERATOR=true` to enable escrow scheme support.
 //!
-//! # Deployed Contracts (Base Sepolia)
+//! # Deployed Contracts
+//!
+//! ## Base Sepolia (eip155:84532)
 //!
 //! | Contract | Address |
 //! |----------|---------|
 //! | AuthCaptureEscrow | 0xb9488351E48b23D798f24e8174514F28B741Eb4f |
 //! | PaymentOperatorFactory | 0xFa8C4Cb156053b867Ae7489220A29b5939E3Df70 |
+//! | ERC3009TokenCollector | 0x0E3dF9510de65469C4518D7843919c0b8C7A7757 |
 //! | ProtocolFeeConfig | 0x1e52a74cE6b69F04a506eF815743E1052A1BD28F |
-//! | RefundRequest | 0x6926c05193c714ED4bA3867Ee93d6816Fdc14128 |
-//! | PayerCondition | 0xBAF68176FF94CAdD403EF7FbB776bbca548AC09D |
-//! | ReceiverCondition | 0x12EDefd4549c53497689067f165c0f101796Eb6D |
-//! | AlwaysTrueCondition | 0x785cC83DEa3d46D5509f3bf7496EAb26D42EE610 |
+//!
+//! ## Base Mainnet (eip155:8453)
+//!
+//! Coming soon - waiting for Ali to deploy.
+//!
+//! # Reference Implementation
+//!
+//! Based on: https://github.com/BackTrackCo/x402r-scheme
 
 pub mod abi;
 pub mod addresses;
@@ -37,12 +66,12 @@ pub mod operator;
 pub mod types;
 
 pub use errors::OperatorError;
-pub use operator::settle_with_operator;
-pub use types::{OperatorAction, OperatorExtension, PaymentInfo};
+pub use operator::{settle_escrow, ESCROW_SCHEME};
+pub use types::{ContractPaymentInfo, EscrowAuthorization, EscrowExtra, EscrowPayload, EscrowPaymentInfo};
 
 use std::env;
 
-/// Check if PaymentOperator feature is enabled via environment variable
+/// Check if escrow scheme (PaymentOperator) is enabled via environment variable
 pub fn is_enabled() -> bool {
     env::var("ENABLE_PAYMENT_OPERATOR")
         .map(|v| v.eq_ignore_ascii_case("true") || v == "1")

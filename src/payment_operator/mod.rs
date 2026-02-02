@@ -53,7 +53,12 @@
 //!
 //! ## Base Mainnet (eip155:8453)
 //!
-//! Coming soon - waiting for Ali to deploy.
+//! | Contract | Address |
+//! |----------|---------|
+//! | AuthCaptureEscrow | 0x320a3c35F131E5D2Fb36af56345726B298936037 |
+//! | PaymentOperatorFactory | 0xD979dBfBdA5f4b16AAF60Eaab32A44f352076838 |
+//! | TokenCollector | 0x32d6AC59BCe8DFB3026F10BcaDB8D00AB218f5b6 |
+//! | ProtocolFeeConfig | 0x230fd3A171750FA45db2976121376b7F47Cba308 |
 //!
 //! # Reference Implementation
 //!

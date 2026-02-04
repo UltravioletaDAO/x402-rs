@@ -138,24 +138,33 @@ fn parse_escrow_request(body: &str) -> Result<(Network, EscrowPayload, EscrowExt
 ///
 /// This is the ONLY action the facilitator performs for escrow scheme.
 /// Other actions (charge, release, refunds) are handled by other systems.
+///
+/// SECURITY: Client-provided addresses (extra) are validated against hardcoded
+/// OperatorAddresses to prevent gas drain attacks via arbitrary target addresses.
 #[instrument(skip_all, err)]
 async fn execute_authorize(
     escrow_payload: &EscrowPayload,
     extra: &EscrowExtra,
-    _addrs: &OperatorAddresses,
+    addrs: &OperatorAddresses,
     provider: &EvmProvider,
 ) -> Result<B256, OperatorError> {
+    // SECURITY: Validate client-provided addresses match known deployments.
+    // Without this check, an attacker could specify arbitrary target addresses,
+    // causing the facilitator to send transactions to random contracts and burn gas.
+    validate_addresses(extra, addrs)?;
+
     // Build PaymentInfo from escrow payload
     let payment_info = ContractPaymentInfo::from_escrow_payload(escrow_payload);
     let payment_info_abi = payment_info.to_abi_type();
 
     let amount = U256::from(escrow_payload.authorization.value);
 
-    // Use token collector from extra
-    let token_collector = extra.token_collector;
+    // Use hardcoded token collector address (validated above)
+    let token_collector = addrs.token_collector;
 
-    // Encode collectorData: abi.encode(signature, "0x")
-    // The signature is the ERC-3009 authorization signature
+    // collectorData is the raw ERC-3009 signature bytes.
+    // The TokenCollector passes this through _handleERC6492Signature()
+    // and then to USDC.receiveWithAuthorization() as the signature parameter.
     let collector_data = encode_collector_data(&escrow_payload.signature);
 
     debug!(
@@ -167,8 +176,10 @@ async fn execute_authorize(
         "Executing authorize on PaymentOperator"
     );
 
-    // Target is authorizeAddress if provided, otherwise operatorAddress
-    let target = extra.authorize_address.unwrap_or(extra.operator_address);
+    // Use hardcoded operator address (validated above)
+    let target = addrs.payment_operator.ok_or_else(|| {
+        OperatorError::UnsupportedNetwork("no deployed PaymentOperator for this network".into())
+    })?;
 
     let call = OperatorContract::authorizeCall {
         paymentInfo: payment_info_abi,
@@ -193,19 +204,54 @@ async fn execute_authorize(
     Ok(receipt.transaction_hash)
 }
 
-/// Encode collector data for authorize call
+/// Validate that client-provided addresses match known contract deployments.
 ///
-/// Format: abi.encode(signature, "0x")
-/// The first bytes is the ERC-3009 signature, the second is empty (for future use)
+/// This prevents gas drain attacks where an attacker submits settlement requests
+/// with arbitrary target addresses, causing the facilitator to send transactions
+/// to random contracts and burn ETH on reverts.
+fn validate_addresses(extra: &EscrowExtra, addrs: &OperatorAddresses) -> Result<(), OperatorError> {
+    // Validate operator address
+    if let Some(known_operator) = addrs.payment_operator {
+        let client_target = extra.authorize_address.unwrap_or(extra.operator_address);
+        if client_target != known_operator {
+            return Err(OperatorError::PaymentInfoInvalid(format!(
+                "operator address mismatch: client={:?}, expected={:?}",
+                client_target, known_operator
+            )));
+        }
+    } else {
+        return Err(OperatorError::UnsupportedNetwork(
+            "no deployed PaymentOperator for this network".into(),
+        ));
+    }
+
+    // Validate token collector
+    if extra.token_collector != addrs.token_collector {
+        return Err(OperatorError::PaymentInfoInvalid(format!(
+            "token_collector mismatch: client={:?}, expected={:?}",
+            extra.token_collector, addrs.token_collector
+        )));
+    }
+
+    // Validate escrow address
+    if extra.escrow_address != addrs.escrow {
+        return Err(OperatorError::PaymentInfoInvalid(format!(
+            "escrow address mismatch: client={:?}, expected={:?}",
+            extra.escrow_address, addrs.escrow
+        )));
+    }
+
+    Ok(())
+}
+
+/// Encode collector data for authorize call.
+///
+/// The collectorData is the raw ERC-3009 signature bytes. The TokenCollector
+/// passes this through `_handleERC6492Signature()` and then to
+/// `USDC.receiveWithAuthorization()` as the signature parameter.
 fn encode_collector_data(signature: &Bytes) -> Bytes {
-    use alloy::sol_types::SolType;
-
-    // ABI encode (bytes, bytes) - signature and empty bytes
-    let encoded = <(alloy::sol_types::sol_data::Bytes, alloy::sol_types::sol_data::Bytes)>::abi_encode(
-        &(signature.clone(), Bytes::new())
-    );
-
-    Bytes::from(encoded)
+    // Pass the signature directly - the TokenCollector handles it
+    signature.clone()
 }
 
 #[cfg(test)]
@@ -270,10 +316,8 @@ mod tests {
         let signature = Bytes::from(vec![0xab, 0xcd, 0xef]);
         let encoded = encode_collector_data(&signature);
 
-        // Should be valid ABI-encoded (bytes, bytes)
-        assert!(!encoded.is_empty());
-        // First 32 bytes are offset to first bytes, next 32 are offset to second bytes
-        assert!(encoded.len() > 64);
+        // Raw signature bytes passed directly to TokenCollector
+        assert_eq!(encoded, signature);
     }
 
     #[test]

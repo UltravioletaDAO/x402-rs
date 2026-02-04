@@ -712,6 +712,7 @@ impl Facilitator for NearProvider {
             extra: Some(SupportedPaymentKindExtra {
                 fee_payer: Some(self.signer_address()),
                 tokens: None, // TODO: Add NEAR token support
+                escrow: None,
             }),
         }];
         Ok(SupportedPaymentKindsResponse { kinds })

@@ -2056,6 +2056,41 @@ result = <span class="code-function">verify_payment</span>(
                     </div>
                 </div>
 
+                <!-- x402r PaymentOperator Escrow Scheme (Advanced) -->
+                <div class="endpoint-group">
+                    <h4 data-i18n="endpoints.group.paymentOperator">x402r PaymentOperator (Advanced Escrow)</h4>
+                    <div class="endpoint">
+                        <span class="method post">POST</span>
+                        <span class="endpoint-path">/settle</span>
+                        <span class="endpoint-desc" data-i18n="endpoints.paymentOperatorSettle">Settle via AuthCaptureEscrow when scheme="escrow"</span>
+                    </div>
+                    <p style="color: var(--text-muted); font-size: 0.8rem; margin: 0.5rem 0 0 0; padding-left: 1rem;" data-i18n="endpoints.paymentOperatorNote">
+                        Advanced escrow with authorize/charge/release/refund flows. Funds held in TokenStore until capture.
+                    </p>
+                    <div style="background: rgba(var(--accent-rgb), 0.1); border-radius: 6px; padding: 0.75rem; margin-top: 0.75rem; font-size: 0.75rem; font-family: monospace;">
+                        <div style="color: var(--text-muted); margin-bottom: 0.5rem;">Base Mainnet Contracts:</div>
+                        <div style="display: grid; gap: 0.25rem;">
+                            <div><span style="color: var(--accent);">PaymentOperator:</span> <a href="https://basescan.org/address/0xa06958D93135BEd7e43893897C0d9fA931EF051C" target="_blank" style="color: var(--text);">0xa069...051C</a></div>
+                            <div><span style="color: var(--accent);">AuthCaptureEscrow:</span> <a href="https://basescan.org/address/0x320a3c35F131E5D2Fb36af56345726B298936037" target="_blank" style="color: var(--text);">0x320a...6037</a></div>
+                            <div><span style="color: var(--accent);">TokenCollector:</span> <a href="https://basescan.org/address/0x32d6AC59BCe8DFB3026F10BcaDB8D00AB218f5b6" target="_blank" style="color: var(--text);">0x32d6...f5b6</a></div>
+                        </div>
+                    </div>
+                    <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem; padding-left: 1rem;">
+                        <a href="https://github.com/BackTrackCo/x402r-contracts" target="_blank"
+                           style="font-size: 0.7rem; color: var(--accent); text-decoration: none; padding: 0.25rem 0.6rem; border: 1px solid var(--accent); border-radius: 4px; transition: all 0.2s;"
+                           onmouseover="this.style.background='var(--accent)'; this.style.color='#000';"
+                           onmouseout="this.style.background='transparent'; this.style.color='var(--accent)';">
+                            Contracts
+                        </a>
+                        <a href="https://github.com/BackTrackCo/x402r-sdk" target="_blank"
+                           style="font-size: 0.7rem; color: var(--accent); text-decoration: none; padding: 0.25rem 0.6rem; border: 1px solid var(--accent); border-radius: 4px; transition: all 0.2s;"
+                           onmouseover="this.style.background='var(--accent)'; this.style.color='#000';"
+                           onmouseout="this.style.background='transparent'; this.style.color='var(--accent)';">
+                            SDK
+                        </a>
+                    </div>
+                </div>
+
                 <!-- ERC-8004 Reputation -->
                 <div class="endpoint-group">
                     <h4 data-i18n="endpoints.group.erc8004">ERC-8004 Reputation (Trustless Agents)</h4>
@@ -2187,6 +2222,9 @@ result = <span class="code-function">verify_payment</span>(
                 "endpoints.group.discovery": "Discovery (Bazaar)",
                 "endpoints.escrowSettle": "Settle to escrow proxy when 'refund' extension is present",
                 "endpoints.escrowNote": "Add {\"refund\": {\"window\": 86400}} to extensions for trustless refund support via DepositRelay proxies.",
+                "endpoints.group.paymentOperator": "x402r PaymentOperator (Advanced Escrow)",
+                "endpoints.paymentOperatorSettle": "Settle via AuthCaptureEscrow when scheme=\"escrow\"",
+                "endpoints.paymentOperatorNote": "Advanced escrow with authorize/charge/release/refund flows. Funds held in TokenStore until capture.",
                 "endpoints.health": "Check facilitator health status",
                 "endpoints.version": "Facilitator version and build info",
                 "endpoints.supported": "List supported payment schemes and networks",
@@ -2232,6 +2270,9 @@ result = <span class="code-function">verify_payment</span>(
                 "endpoints.group.discovery": "Descubrimiento (Bazaar)",
                 "endpoints.escrowSettle": "Liquidar a proxy escrow cuando la extension 'refund' esta presente",
                 "endpoints.escrowNote": "Agrega {\"refund\": {\"window\": 86400}} a extensions para soporte de reembolsos sin confianza via proxies DepositRelay.",
+                "endpoints.group.paymentOperator": "x402r PaymentOperator (Escrow Avanzado)",
+                "endpoints.paymentOperatorSettle": "Liquidar via AuthCaptureEscrow cuando scheme=\"escrow\"",
+                "endpoints.paymentOperatorNote": "Escrow avanzado con flujos authorize/charge/release/refund. Fondos retenidos en TokenStore hasta captura.",
                 "endpoints.health": "Verificar estado de salud del facilitador",
                 "endpoints.version": "Versión e info de compilación del facilitador",
                 "endpoints.supported": "Listar esquemas de pago y redes soportadas",

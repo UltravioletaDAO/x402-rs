@@ -630,6 +630,17 @@ resource "aws_ecs_task_definition" "facilitator" {
         {
           name  = "ENABLE_ESCROW"
           value = "true"
+        },
+        # ============================================================
+        # PaymentOperator Escrow Scheme (x402r v2)
+        # ============================================================
+        # This enables the advanced escrow scheme using PaymentOperator
+        # contracts (AuthCaptureEscrow + TokenCollector pattern).
+        # Currently deployed only on Base Mainnet.
+        # ============================================================
+        {
+          name  = "ENABLE_PAYMENT_OPERATOR"
+          value = "true"
         }
       ]
 

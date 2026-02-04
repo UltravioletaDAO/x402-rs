@@ -25,6 +25,7 @@ pub mod discovery_aggregator;
 pub mod discovery_store;
 pub mod escrow;
 pub mod facilitator;
+pub mod payment_operator;
 pub mod facilitator_local;
 pub mod fhe_proxy;
 pub mod from_env;

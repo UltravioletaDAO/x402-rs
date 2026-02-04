@@ -97,8 +97,7 @@ impl<'de> Deserialize<'de> for X402Version {
     }
 }
 
-/// Enumerates payment schemes. Only "exact" is supported in this implementation,
-/// meaning the amount to be transferred must match exactly.
+/// Enumerates payment schemes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Scheme {
@@ -107,6 +106,9 @@ pub enum Scheme {
     /// Fully Homomorphic Encryption transfer using Zama FHEVM (ERC7984)
     #[serde(rename = "fhe-transfer")]
     FheTransfer,
+    /// x402r Escrow scheme - funds held in escrow via PaymentOperator
+    #[serde(rename = "escrow")]
+    Escrow,
 }
 
 impl Display for Scheme {
@@ -114,6 +116,7 @@ impl Display for Scheme {
         let s = match self {
             Scheme::Exact => "exact",
             Scheme::FheTransfer => "fhe-transfer",
+            Scheme::Escrow => "escrow",
         };
         write!(f, "{s}")
     }
@@ -1856,6 +1859,18 @@ pub struct SupportedTokenInfo {
     pub decimals: u8,
 }
 
+/// Information about escrow scheme support (x402r PaymentOperator)
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EscrowSupportedInfo {
+    /// AuthCaptureEscrow contract address
+    pub escrow_address: EvmAddress,
+    /// PaymentOperator contract address (our permissionless operator)
+    pub operator_address: EvmAddress,
+    /// TokenCollector contract address (receives ERC-3009 transfers)
+    pub token_collector: EvmAddress,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SupportedPaymentKindExtra {
@@ -1865,6 +1880,9 @@ pub struct SupportedPaymentKindExtra {
     /// List of supported tokens on this network
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tokens: Option<Vec<SupportedTokenInfo>>,
+    /// Escrow scheme information (for scheme="escrow")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub escrow: Option<EscrowSupportedInfo>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2065,6 +2083,7 @@ mod tests {
                     decimals: 6,
                 },
             ]),
+            escrow: None,
         };
 
         let json = serde_json::to_string(&extra).unwrap();
@@ -2081,10 +2100,11 @@ mod tests {
         let extra = SupportedPaymentKindExtra {
             fee_payer: None,
             tokens: None,
+            escrow: None,
         };
 
         let json = serde_json::to_string(&extra).unwrap();
-        // Both should be omitted
+        // All fields should be omitted (skip_serializing_if = None)
         assert_eq!(json, "{}");
     }
 }

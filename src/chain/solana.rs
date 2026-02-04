@@ -934,6 +934,7 @@ impl Facilitator for SolanaProvider {
             extra: Some(SupportedPaymentKindExtra {
                 fee_payer: Some(self.signer_address()),
                 tokens: None, // TODO: Add Solana token support
+                escrow: None,
             }),
         }];
         Ok(SupportedPaymentKindsResponse { kinds })

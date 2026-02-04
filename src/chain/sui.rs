@@ -578,6 +578,7 @@ impl Facilitator for SuiProvider {
             extra: Some(SupportedPaymentKindExtra {
                 fee_payer: Some(self.signer_address()),
                 tokens: None, // TODO: Add supported tokens list
+                escrow: None,
             }),
         }];
 

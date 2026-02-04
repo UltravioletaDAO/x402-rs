@@ -1544,6 +1544,7 @@ impl Facilitator for StellarProvider {
             extra: Some(SupportedPaymentKindExtra {
                 fee_payer: Some(self.signer_address()),
                 tokens: None, // TODO: Add Stellar token support
+                escrow: None,
             }),
         }];
         Ok(SupportedPaymentKindsResponse { kinds })

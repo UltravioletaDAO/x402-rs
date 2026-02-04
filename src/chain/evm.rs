@@ -931,6 +931,7 @@ where
             Some(SupportedPaymentKindExtra {
                 fee_payer: None, // Set at FacilitatorLocal level
                 tokens: Some(tokens),
+                escrow: None,
             })
         };
 

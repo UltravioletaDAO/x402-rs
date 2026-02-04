@@ -1,5 +1,97 @@
 # Changelog
 
+## [1.24.0] - 2026-02-03
+
+### Added - x402r PaymentOperator Escrow Scheme
+
+This release adds the x402r escrow payment scheme, enabling advanced escrow flows
+(authorize/charge/release/refund) via the PaymentOperator contract on Base Mainnet.
+This is the first payment scheme beyond "exact" supported by the facilitator.
+
+#### New Payment Scheme: `escrow`
+
+- **`Scheme::Escrow`** enum variant added to payment schemes
+- `/supported` endpoint now advertises escrow support on Base Mainnet (CAIP-2: `eip155:8453`)
+- Gated by `ENABLE_PAYMENT_OPERATOR=true` environment variable
+- Escrow contract info exposed in `/supported` response:
+  ```json
+  {
+    "x402Version": 2,
+    "scheme": "escrow",
+    "network": "eip155:8453",
+    "extra": {
+      "escrow": {
+        "escrowAddress": "0x320a3c35f131e5d2fb36af56345726b298936037",
+        "operatorAddress": "0xa06958d93135bed7e43893897c0d9fa931ef051c",
+        "tokenCollector": "0x32d6ac59bce8dfb3026f10bcadb8d00ab218f5b6"
+      }
+    }
+  }
+  ```
+
+#### Base Mainnet Contract Addresses
+
+| Contract | Address |
+|----------|---------|
+| PaymentOperator | `0xa06958D93135BEd7e43893897C0d9fA931EF051C` |
+| AuthCaptureEscrow | `0x320a3c35F131E5D2Fb36af56345726B298936037` |
+| TokenCollector | `0x32d6AC59BCe8DFB3026F10BcaDB8D00AB218f5b6` |
+| PaymentOperatorFactory | `0xD979dBfBdA5f4b16AAF60Eaab32A44f352076838` |
+
+#### Security Fixes
+
+- **Address validation**: Client-provided contract addresses (operatorAddress,
+  tokenCollector, escrowAddress) are now validated against hardcoded known
+  deployments before any on-chain transaction is submitted. This prevents gas
+  drain attacks where an attacker could specify arbitrary target addresses.
+- **`encode_collector_data` fix**: Changed from ABI-encoding `(bytes, bytes)` to
+  raw signature bytes, matching what the `ERC3009PaymentCollector` contract expects.
+  The old encoding would have caused on-chain reverts.
+
+#### Files Changed
+
+| File | Change |
+|------|--------|
+| `src/types.rs` | New `Scheme::Escrow`, `EscrowSupportedInfo` struct |
+| `src/facilitator_local.rs` | Escrow scheme in `/supported` (gated by feature flag) |
+| `src/payment_operator/operator.rs` | Address validation, raw signature encoding |
+| `src/payment_operator/addresses.rs` | `PAYMENT_OPERATOR` address, `OperatorAddresses` update |
+| `src/chain/*.rs` | `escrow: None` field on all chain providers |
+| `static/index.html` | PaymentOperator section with contract links |
+| `terraform/*/main.tf` | `ENABLE_PAYMENT_OPERATOR=true` |
+| `.env.example` | Updated PaymentOperator docs |
+
+#### Protocol Team Notes (Ali Abdoli, 2026-02-03)
+
+- **$100 USDC deposit limit**: Enforced by PaymentOperator contract per deposit
+- **`refundPostEscrow`**: NOT functional in production (requires `tokenCollector`
+  contract not yet implemented by protocol team)
+- **Recommended approach**: Use refund-in-escrow (keep funds locked until arbiter
+  decides release or refund) instead of post-escrow refund
+- **ERC-8004 reputation gating**: Future feature under consideration - could add
+  condition contracts that check ERC-8004 scores before allowing authorize/charge
+
+#### Related Changes (Other Repos)
+
+This release was part of a coordinated update across 3 repositories:
+
+1. **Chamba MCP Server** (`chamba` repo, commit `0ee2cf4`):
+   - 8 new MCP tools for AI agents: `chamba_escrow_authorize`, `chamba_escrow_release`,
+     `chamba_escrow_refund`, `chamba_escrow_charge`, `chamba_escrow_partial_release`,
+     `chamba_escrow_dispute`, `chamba_escrow_status`, `chamba_escrow_recommend_strategy`
+   - Agent guide: `mcp_server/docs/ESCROW_AGENT_GUIDE.md`
+   - Integration layer: $100 limit, arbiter escrow pattern
+
+2. **Python SDK** (`uvd-x402-sdk-python`, commit `835e9f6`):
+   - `DEPOSIT_LIMIT_USDC = 100_000_000` constant
+   - `refund_post_escrow()` marked NOT FUNCTIONAL
+
+3. **TypeScript SDK** (`uvd-x402-sdk-typescript`, commit `10b6e89`):
+   - `DEPOSIT_LIMIT_USDC = '100000000'` constant
+   - `refundPostEscrow()` marked NOT FUNCTIONAL
+
+---
+
 ## [1.19.1] - 2026-01-06
 
 ### Fixed - Aggregator ISO8601 Timestamp Parsing

@@ -95,6 +95,9 @@ docs/_build/
 **/*secret*.json
 **/*private*.json
 
+# Solidity contracts (local reference copy, too large for git)
+contracts/
+
 # Blacklist (may contain sensitive address blocking information)
 config/blacklist.json
 task-def-*.json

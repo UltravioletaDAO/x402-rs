@@ -53,6 +53,11 @@ pub mod base_mainnet {
     /// PaymentOperatorFactory - Deploys PaymentOperator instances
     pub const FACTORY: Address = address!("D979dBfBdA5f4b16AAF60Eaab32A44f352076838");
 
+    /// Our deployed PaymentOperator (permissionless, anyone can call authorize)
+    /// Deployed via factory at TX: 0x65a022e67576682f94dad9d9ec82d8c58cccc16fd22c405b8545a7247c5efa60
+    /// Config: feeRecipient=0xD3868E1eD738CED6945A574a7c769433BeD5d474, all conditions=ZERO
+    pub const PAYMENT_OPERATOR: Address = address!("a06958D93135BEd7e43893897C0d9fA931EF051C");
+
     /// TokenCollector - Receives tokens via ERC-3009 transferWithAuthorization
     pub const TOKEN_COLLECTOR: Address = address!("32d6AC59BCe8DFB3026F10BcaDB8D00AB218f5b6");
 
@@ -134,6 +139,7 @@ pub fn is_supported(network: Network) -> bool {
 pub struct OperatorAddresses {
     pub escrow: Address,
     pub factory: Address,
+    pub payment_operator: Option<Address>,  // Our deployed permissionless operator
     pub token_collector: Address,
     pub protocol_fee_config: Address,
     pub refund_request: Address,
@@ -146,6 +152,7 @@ impl OperatorAddresses {
             Network::BaseSepolia => Some(Self {
                 escrow: base_sepolia::ESCROW,
                 factory: base_sepolia::FACTORY,
+                payment_operator: None,  // No deployed operator yet for Sepolia
                 token_collector: base_sepolia::TOKEN_COLLECTOR,
                 protocol_fee_config: base_sepolia::PROTOCOL_FEE_CONFIG,
                 refund_request: base_sepolia::REFUND_REQUEST,
@@ -153,6 +160,7 @@ impl OperatorAddresses {
             Network::Base => Some(Self {
                 escrow: base_mainnet::ESCROW,
                 factory: base_mainnet::FACTORY,
+                payment_operator: Some(base_mainnet::PAYMENT_OPERATOR),
                 token_collector: base_mainnet::TOKEN_COLLECTOR,
                 protocol_fee_config: base_mainnet::PROTOCOL_FEE_CONFIG,
                 refund_request: base_mainnet::REFUND_REQUEST,

@@ -18,8 +18,9 @@ use crate::facilitator::Facilitator;
 use crate::network::Network;
 use crate::provider_cache::{HasProviderMap, ProviderMap};
 use crate::types::{
-    Scheme, SettleRequest, SettleResponse, SupportedPaymentKind, SupportedPaymentKindExtra,
-    SupportedPaymentKindsResponse, VerifyRequest, VerifyResponse, X402Version,
+    EscrowSupportedInfo, EvmAddress, Scheme, SettleRequest, SettleResponse, SupportedPaymentKind,
+    SupportedPaymentKindExtra, SupportedPaymentKindsResponse, VerifyRequest, VerifyResponse,
+    X402Version,
 };
 
 // Compliance module
@@ -214,6 +215,35 @@ where
             network: "eip155:11155111".to_string(), // CAIP-2 for Sepolia
             extra: None, // FHE proxy handles fee_payer internally
         });
+
+        // Add x402r escrow scheme support (PaymentOperator-based escrow)
+        // Only available for networks with deployed PaymentOperator contracts
+        // and only if ENABLE_PAYMENT_OPERATOR=true
+        if crate::payment_operator::is_enabled() {
+            // Base Mainnet - has deployed PaymentOperator at 0xa06958D93135BEd7e43893897C0d9fA931EF051C
+            let base_escrow_extra = SupportedPaymentKindExtra {
+                fee_payer: None, // Payer pays gas via ERC-3009
+                tokens: None,    // Uses USDC from base mainnet config
+                escrow: Some(EscrowSupportedInfo {
+                    escrow_address: EvmAddress(
+                        crate::payment_operator::addresses::base_mainnet::ESCROW,
+                    ),
+                    operator_address: EvmAddress(
+                        crate::payment_operator::addresses::base_mainnet::PAYMENT_OPERATOR,
+                    ),
+                    token_collector: EvmAddress(
+                        crate::payment_operator::addresses::base_mainnet::TOKEN_COLLECTOR,
+                    ),
+                }),
+            };
+
+            kinds.push(SupportedPaymentKind {
+                x402_version: X402Version::V2,
+                scheme: Scheme::Escrow,
+                network: "eip155:8453".to_string(), // CAIP-2 for Base Mainnet
+                extra: Some(base_escrow_extra),
+            });
+        }
 
         Ok(SupportedPaymentKindsResponse { kinds })
     }

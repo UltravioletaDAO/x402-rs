@@ -907,6 +907,7 @@ impl Facilitator for AlgorandProvider {
             extra: Some(SupportedPaymentKindExtra {
                 fee_payer: Some(self.signer_address()),
                 tokens: None,
+                escrow: None,
             }),
         }];
         Ok(SupportedPaymentKindsResponse { kinds })

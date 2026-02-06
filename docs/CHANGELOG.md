@@ -1,5 +1,127 @@
 # Changelog
 
+## [1.28.1] - 2026-02-06
+
+### Fixed - Avalanche ERC-8004 missing from /feedback API
+
+- Fixed `supported_network_names()` not including "avalanche" and "avalanche-fuji"
+- Updated all ERC-8004 tests to include Avalanche networks
+- `/feedback` endpoint now correctly reports 14 ERC-8004 networks
+
+## [1.28.0] - 2026-02-06
+
+### Added - Avalanche C-Chain ERC-8004 Support (14 Networks)
+
+- Added Avalanche C-Chain mainnet ERC-8004 contracts (CREATE2 deterministic addresses)
+- Added Avalanche Fuji testnet ERC-8004 contracts
+- Updated landing page ERC-8004 showcase: 8 mainnet badges, 14 total networks
+- Updated all network counts (stats card, feature card, i18n EN/ES)
+- On-chain bytecode verification confirmed for all 4 contracts
+
+## [1.27.0] - 2026-02-05
+
+### Improved - Landing Page ERC-8004 Showcase & Audit Fixes
+
+- Added dedicated ERC-8004 showcase section with three-pillar design (Identity, Reputation, Validation)
+- Added network badges with logos for all 7 ERC-8004 mainnets
+- Added 4th stat card showing "12 ERC-8004 Networks" with purple gradient
+- Added 4th feature card "On-Chain Reputation" with ERC-8004 highlight
+- Updated SDK section from "14+ networks" to "19 mainnets supported"
+- Full i18n support (EN/ES) for all new ERC-8004 content
+- Fixed agent file parse errors (CRLF line endings in aegis-rust-architect.md, terraform-aws-architect.md)
+- Removed invalid ralph-wiggum plugin references from global settings
+
+## [1.26.0] - 2026-02-05
+
+### Added - ERC-8004 Multi-Network Expansion (12 Networks)
+
+This release expands ERC-8004 Trustless Agents support from 3 to 12 networks,
+enabling cross-chain reputation across all major EVM ecosystems.
+
+#### Supported Networks (12 total)
+
+**Mainnets (7):**
+| Network | Contract Addresses |
+|---------|-------------------|
+| Ethereum | `0x8004A169FB4a3325136EB29fA0ceB6D2e539a432` / `0x8004BAa17C55a88189AE136b182e5fdA19dE9b63` |
+| Base | Same (CREATE2 deterministic) |
+| Polygon | Same (CREATE2 deterministic) |
+| Arbitrum | Same (CREATE2 deterministic) |
+| Celo | Same (CREATE2 deterministic) |
+| BSC | Same (CREATE2 deterministic) |
+| Monad | Same (CREATE2 deterministic) |
+
+**Testnets (5):**
+| Network | Contract Addresses |
+|---------|-------------------|
+| Ethereum Sepolia | `0x8004A818BFB912233c491871b3d84c89A494BD9e` / `0x8004B663056A597Dffe9eCcC1965A193B7388713` |
+| Base Sepolia | Same (deterministic) |
+| Polygon Amoy | Same (deterministic) |
+| Arbitrum Sepolia | Same (deterministic) |
+| Celo Sepolia | Same (deterministic) |
+
+#### Files Changed
+
+| File | Change |
+|------|--------|
+| `src/erc8004/mod.rs` | Added 9 new network contracts, updated functions |
+| `static/index.html` | Updated ERC-8004 section with 12 networks |
+
+#### SDK Updates
+
+- **Python SDK v0.8.0**: Added all 12 networks to `Erc8004Network` and `ERC8004_CONTRACTS`
+- **TypeScript SDK v2.19.0**: Added all 12 networks with shared address constants
+
+#### New Skill
+
+Added `/add-erc8004-network` skill for automated ERC-8004 network integration.
+
+---
+
+## [1.25.0] - 2026-02-04
+
+### Added - ERC-8004 Base Mainnet Support
+
+This release enables ERC-8004 (Trustless Agents) reputation contracts on Base Mainnet.
+The ERC-8004 contracts are now deployed on Base using CREATE2 deterministic addresses,
+meaning the same addresses work across all supported chains.
+
+#### Supported Networks for ERC-8004
+
+| Network | IdentityRegistry | ReputationRegistry |
+|---------|------------------|-------------------|
+| Ethereum Mainnet | `0x8004A169FB4a3325136EB29fA0ceB6D2e539a432` | `0x8004BAa17C55a88189AE136b182e5fdA19dE9b63` |
+| Ethereum Sepolia | `0x8004A818BFB912233c491871b3d84c89A494BD9e` | `0x8004B663056A597Dffe9eCcC1965A193B7388713` |
+| Base Mainnet | `0x8004A169FB4a3325136EB29fA0ceB6D2e539a432` | `0x8004BAa17C55a88189AE136b182e5fdA19dE9b63` |
+
+#### Cross-Chain Reputation
+
+With this update, AI agents can now:
+- Make payments on Base Mainnet (via x402 protocol)
+- Submit reputation feedback on Base Mainnet (via ERC-8004)
+- Use the same agent identity across Ethereum and Base
+
+The `ProofOfPayment` returned from `/settle` can be used to submit feedback on any
+ERC-8004 supported network, enabling cross-chain reputation flows.
+
+#### Files Changed
+
+| File | Change |
+|------|--------|
+| `src/erc8004/mod.rs` | Added `BASE_MAINNET_CONTRACTS` with official addresses |
+| `src/erc8004/mod.rs` | Updated `get_contracts()` to return Base contracts |
+| `src/erc8004/mod.rs` | Added Base to `supported_networks()` and `supported_network_names()` |
+| `static/index.html` | Updated ERC-8004 section with Base Mainnet support |
+| `static/index.html` | Added BaseScan contract links |
+
+#### Reference
+
+- ERC-8004 Specification: https://eips.ethereum.org/EIPS/eip-8004
+- Official Contracts: https://github.com/erc-8004/erc-8004-contracts
+- BaseScan ReputationRegistry: https://basescan.org/address/0x8004BAa17C55a88189AE136b182e5fdA19dE9b63
+
+---
+
 ## [1.24.0] - 2026-02-03
 
 ### Added - x402r PaymentOperator Escrow Scheme

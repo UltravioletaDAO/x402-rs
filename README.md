@@ -1,6 +1,6 @@
 # x402-rs
 
-**Gasless multi-chain payment facilitator**
+**Gasless multi-chain payment facilitator with ERC-8004 reputation**
 
 ```
  _  _  _  _  ___  ____      ____  ____
@@ -10,7 +10,7 @@
 ```
 
 [![Live](https://img.shields.io/badge/live-facilitator.ultravioletadao.xyz-00d4aa)](https://facilitator.ultravioletadao.xyz)
-[![Version](https://img.shields.io/badge/version-1.21.0-blue)](https://github.com/UltravioletaDAO/x402-rs)
+[![Version](https://img.shields.io/badge/version-1.28.1-blue)](https://github.com/UltravioletaDAO/x402-rs)
 [![Rust](https://img.shields.io/badge/rust-2021-orange)](https://www.rust-lang.org/)
 
 ---
@@ -18,6 +18,8 @@
 ## What is this?
 
 A payment settlement service implementing the [HTTP 402](https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/402) protocol. Users sign payment authorizations off-chain, the facilitator submits them on-chain and pays gas fees.
+
+Includes [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) on-chain reputation for AI agents across 14 networks (8 mainnets + 6 testnets).
 
 **No custody. No trust. Just payments.**
 
@@ -149,6 +151,9 @@ curl http://localhost:8080/
 | `/verify` | POST | Verify payment authorization |
 | `/settle` | POST | Submit payment on-chain (supports escrow with `refund` extension) |
 | `/blacklist` | GET | OFAC sanctioned addresses |
+| `/feedback` | GET/POST | ERC-8004 reputation (query/submit) |
+| `/identity/:network/:agentId` | GET | Agent identity lookup |
+| `/reputation/:network/:agentId` | GET | Agent reputation summary |
 | `/discovery/resources` | GET | List registered paid APIs |
 | `/discovery/register` | POST | Register a paid endpoint |
 
@@ -184,6 +189,64 @@ Smart contract-based authorization on Stellar's Soroban VM.
 
 ### Algorand (Atomic Groups)
 Fee pooling via atomic transaction groups. Facilitator signs transaction 0 (fee tx), user signs transaction 1 (payment tx). Based on [GoPlausible x402-avm spec](https://github.com/GoPlausible/x402-avm).
+
+---
+
+## ERC-8004 Trustless Agents (On-Chain Reputation)
+
+The facilitator integrates [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) for AI agent identity and reputation across 14 networks.
+
+### What is ERC-8004?
+
+Three on-chain registries enabling trust in the agentic economy:
+
+- **Identity Registry** - ERC-721 based agent handles with verifiable metadata
+- **Reputation Registry** - Standardized feedback posting with proof-of-payment
+- **Validation Registry** - Third-party attestation of agent capabilities
+
+### Supported ERC-8004 Networks (14)
+
+| Network | Type | Identity Registry | Reputation Registry |
+|---------|------|-------------------|---------------------|
+| Ethereum | Mainnet | `0x8004A169...9a432` | `0x8004BAa1...dE9b63` |
+| Base | Mainnet | Same (CREATE2) | Same (CREATE2) |
+| Polygon | Mainnet | Same (CREATE2) | Same (CREATE2) |
+| Arbitrum | Mainnet | Same (CREATE2) | Same (CREATE2) |
+| Celo | Mainnet | Same (CREATE2) | Same (CREATE2) |
+| BSC | Mainnet | Same (CREATE2) | Same (CREATE2) |
+| Monad | Mainnet | Same (CREATE2) | Same (CREATE2) |
+| Avalanche | Mainnet | Same (CREATE2) | Same (CREATE2) |
+| Ethereum Sepolia | Testnet | `0x8004A818...4BD9e` | `0x8004B663...8713` |
+| Base Sepolia | Testnet | Same | Same |
+| Polygon Amoy | Testnet | Same | Same |
+| Arbitrum Sepolia | Testnet | Same | Same |
+| Celo Sepolia | Testnet | Same | Same |
+| Avalanche Fuji | Testnet | Same | Same |
+
+All mainnet contracts use CREATE2 deterministic deployment (same addresses on every chain).
+
+### ERC-8004 API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/feedback` | GET | List ERC-8004 supported networks |
+| `/feedback` | POST | Submit on-chain reputation feedback |
+| `/identity/:network/:agentId` | GET | Query agent identity |
+| `/reputation/:network/:agentId` | GET | Query reputation summary |
+
+### Example: Submit Feedback
+
+```bash
+curl -X POST https://facilitator.ultravioletadao.xyz/feedback \
+  -H "Content-Type: application/json" \
+  -d '{
+    "network": "base-mainnet",
+    "agentId": "0x...",
+    "rating": 5,
+    "tags": ["uptime", "quality"],
+    "proofOfPayment": "0x..."
+  }'
+```
 
 ---
 
@@ -284,8 +347,8 @@ RPC_URL_ALGORAND_MAINNET=https://mainnet-api.algonode.cloud
 
 ```bash
 # Build & push
-docker build -t facilitator:v1.15.9 .
-docker push 518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator:v1.15.9
+docker build -t facilitator:v1.28.1 .
+docker push 518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator:v1.28.1
 
 # Deploy
 aws ecs update-service --cluster facilitator-production \
@@ -318,6 +381,7 @@ This project includes Claude Code skills for automated development workflows:
 | Skill | Command | Description |
 |-------|---------|-------------|
 | **add-network** | `/add-network scroll` | Add new blockchain network with automated research, EIP-3009 verification, and deployment |
+| **add-erc8004-network** | `/add-erc8004-network polygon` | Add ERC-8004 reputation support to a network |
 | **stablecoin-addition** | `/stablecoin-addition` | Add new EIP-3009 compatible stablecoins (USDT, EURC, AUSD, etc.) |
 | **ship** | `/ship` | Full automated deployment: commit → build → ECR push → ECS deploy → verify |
 | **deploy-prod** | `/deploy-prod` | Build and deploy Docker image to production ECS |

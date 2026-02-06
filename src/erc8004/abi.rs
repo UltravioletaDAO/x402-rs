@@ -120,6 +120,15 @@ sol!(
 
         /// Check if an agent ID exists
         function exists(uint256 agentId) external view returns (bool);
+
+        // ============ ERC-721 Transfer Functions ============
+
+        /// Transfer agent NFT to another address (inherited from ERC-721)
+        /// Used for "register on behalf" flow: facilitator registers, then transfers to recipient
+        function safeTransferFrom(address from, address to, uint256 tokenId) external;
+
+        /// Get the default signer address (for determining facilitator address)
+        function balanceOf(address owner) external view returns (uint256);
     }
 
     /// Metadata entry for registration

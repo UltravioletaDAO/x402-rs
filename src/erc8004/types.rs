@@ -80,6 +80,67 @@ pub struct AgentRegistration {
 }
 
 // ============================================================================
+// Agent Registration Types (POST /register endpoint)
+// ============================================================================
+
+/// Metadata key-value pair for agent registration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetadataEntryParam {
+    /// Metadata key (e.g., "description", "website")
+    pub key: String,
+    /// Metadata value as hex-encoded bytes
+    pub value: String,
+}
+
+/// Request body for POST /register endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisterAgentRequest {
+    /// x402 protocol version
+    pub x402_version: crate::types::X402Version,
+    /// Network where the agent will be registered
+    pub network: Network,
+    /// URI pointing to the agent registration file (IPFS, HTTPS, etc.)
+    #[serde(default)]
+    pub agent_uri: String,
+    /// Optional metadata key-value pairs
+    #[serde(default)]
+    pub metadata: Option<Vec<MetadataEntryParam>>,
+    /// Optional recipient address - if provided, the agent NFT is transferred
+    /// to this address after minting. The facilitator pays gas for both
+    /// registration and transfer. Note: agentWallet is cleared on transfer
+    /// and must be re-set by the new owner.
+    #[serde(default)]
+    pub recipient: Option<MixedAddress>,
+}
+
+/// Response from POST /register endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisterAgentResponse {
+    /// Whether the registration was successful
+    pub success: bool,
+    /// The newly assigned agent ID (ERC-721 tokenId)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<u64>,
+    /// Registration transaction hash
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transaction: Option<TransactionHash>,
+    /// Transfer transaction hash (only if recipient was specified)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transfer_transaction: Option<TransactionHash>,
+    /// Current owner of the agent NFT
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<MixedAddress>,
+    /// Error message (if failed)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// Network where the agent was registered
+    pub network: Network,
+}
+
+// ============================================================================
 // Reputation Registry Types
 // ============================================================================
 

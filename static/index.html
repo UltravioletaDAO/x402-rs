@@ -2011,7 +2011,7 @@ result = <span class="code-function">verify_payment</span>(
                             <span style="font-size: 1.2rem;">🪪</span>
                         </div>
                         <h4 style="font-size: 1rem; font-weight: 700; margin-bottom: 0.5rem;" data-i18n="erc8004.identity.title">Identity Registry</h4>
-                        <p style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.5;" data-i18n="erc8004.identity.desc">Register agents as on-chain NFTs with verifiable metadata. Each agent gets a unique tokenId tied to their wallet address.</p>
+                        <p style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.5;" data-i18n="erc8004.identity.desc">Register agents as on-chain NFTs via <code style="color: #8b5cf6; font-size: 0.8rem;">POST /register</code>. The facilitator pays gas — optionally mint to a user address. Read identity, metadata, and total supply via the API.</p>
                     </div>
                     <div style="background: var(--bg-card); border: 1px solid rgba(6, 182, 212, 0.2); border-radius: 12px; padding: 1.5rem; transition: all 0.3s;" onmouseover="this.style.borderColor='rgba(6, 182, 212, 0.5)'; this.style.transform='translateY(-2px)'" onmouseout="this.style.borderColor='rgba(6, 182, 212, 0.2)'; this.style.transform='translateY(0)'">
                         <div style="width: 40px; height: 40px; border-radius: 10px; background: rgba(6, 182, 212, 0.15); display: flex; align-items: center; justify-content: center; margin-bottom: 1rem;">
@@ -2080,11 +2080,17 @@ result = <span class="code-function">verify_payment</span>(
                            onmouseout="this.style.background='transparent'">
                             View Contracts
                         </a>
-                        <a href="/feedback" target="_blank"
+                        <a href="/register" target="_blank"
                            style="font-size: 0.8rem; color: #10b981; text-decoration: none; padding: 0.4rem 1rem; border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 6px; transition: all 0.2s; font-weight: 500;"
                            onmouseover="this.style.background='rgba(16, 185, 129, 0.1)'"
                            onmouseout="this.style.background='transparent'">
-                            Try API
+                            Register API
+                        </a>
+                        <a href="/feedback" target="_blank"
+                           style="font-size: 0.8rem; color: #06b6d4; text-decoration: none; padding: 0.4rem 1rem; border: 1px solid rgba(6, 182, 212, 0.3); border-radius: 6px; transition: all 0.2s; font-weight: 500;"
+                           onmouseover="this.style.background='rgba(6, 182, 212, 0.1)'"
+                           onmouseout="this.style.background='transparent'">
+                            Feedback API
                         </a>
                     </div>
                 </div>
@@ -2200,9 +2206,47 @@ result = <span class="code-function">verify_payment</span>(
                     </div>
                 </div>
 
+                <!-- ERC-8004 Agent Registration -->
+                <div class="endpoint-group">
+                    <h4 data-i18n="endpoints.group.erc8004reg">ERC-8004 Agent Registration</h4>
+                    <div class="endpoint">
+                        <span class="method get">GET</span>
+                        <span class="endpoint-path">/register</span>
+                        <span class="endpoint-desc" data-i18n="endpoints.registerInfo">Registration endpoint schema, supported networks, and request format</span>
+                    </div>
+                    <div class="endpoint">
+                        <span class="method post">POST</span>
+                        <span class="endpoint-path">/register</span>
+                        <span class="endpoint-desc" data-i18n="endpoints.registerAgent">Register a new ERC-8004 agent on-chain. Facilitator pays gas. Supports optional <code style="color: var(--accent); background: rgba(0,212,255,0.1); padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.8rem;">recipient</code> field to mint the NFT and transfer it to a user address</span>
+                    </div>
+                    <p style="color: var(--text-muted); font-size: 0.8rem; margin: 0.75rem 0 0 0; padding-left: 1rem; line-height: 1.6;" data-i18n="endpoints.registerNote">
+                        <strong style="color: #8b5cf6;">Gasless registration:</strong> The facilitator wallet pays all gas fees. Without <code style="color: var(--accent); font-size: 0.75rem;">recipient</code>, the NFT stays with the facilitator. With <code style="color: var(--accent); font-size: 0.75rem;">recipient</code>, the NFT is minted then transferred via ERC-721 <code style="color: var(--accent); font-size: 0.75rem;">safeTransferFrom</code> (2 transactions, both paid by facilitator). Note: <code style="color: var(--accent); font-size: 0.75rem;">agentWallet</code> is cleared on transfer and must be re-set by the new owner.
+                    </p>
+                </div>
+
+                <!-- ERC-8004 Identity -->
+                <div class="endpoint-group">
+                    <h4 data-i18n="endpoints.group.erc8004identity">ERC-8004 Agent Identity</h4>
+                    <div class="endpoint">
+                        <span class="method get">GET</span>
+                        <span class="endpoint-path">/identity/:network/:agentId</span>
+                        <span class="endpoint-desc" data-i18n="endpoints.identity">Get agent identity: owner address, registration URI, and payment wallet</span>
+                    </div>
+                    <div class="endpoint">
+                        <span class="method get">GET</span>
+                        <span class="endpoint-path">/identity/:network/:agentId/metadata/:key</span>
+                        <span class="endpoint-desc" data-i18n="endpoints.identityMetadata">Read a specific metadata key from the agent's on-chain profile (returns hex + UTF-8)</span>
+                    </div>
+                    <div class="endpoint">
+                        <span class="method get">GET</span>
+                        <span class="endpoint-path">/identity/:network/total-supply</span>
+                        <span class="endpoint-desc" data-i18n="endpoints.identityTotalSupply">Get total number of registered agents on a network</span>
+                    </div>
+                </div>
+
                 <!-- ERC-8004 Reputation -->
                 <div class="endpoint-group">
-                    <h4 data-i18n="endpoints.group.erc8004">ERC-8004 Reputation (Trustless Agents)</h4>
+                    <h4 data-i18n="endpoints.group.erc8004">ERC-8004 Reputation Feedback</h4>
                     <div class="endpoint">
                         <span class="method get">GET</span>
                         <span class="endpoint-path">/feedback</span>
@@ -2226,15 +2270,10 @@ result = <span class="code-function">verify_payment</span>(
                     <div class="endpoint">
                         <span class="method get">GET</span>
                         <span class="endpoint-path">/reputation/:network/:agentId</span>
-                        <span class="endpoint-desc" data-i18n="endpoints.reputation">Query reputation summary for an agent</span>
-                    </div>
-                    <div class="endpoint">
-                        <span class="method get">GET</span>
-                        <span class="endpoint-path">/identity/:network/:agentId</span>
-                        <span class="endpoint-desc" data-i18n="endpoints.identity">Get agent identity from Identity Registry</span>
+                        <span class="endpoint-desc" data-i18n="endpoints.reputation">Query aggregated reputation summary with optional tag filtering</span>
                     </div>
                     <p style="color: var(--text-muted); font-size: 0.8rem; margin: 0.5rem 0 0 0; padding-left: 1rem;" data-i18n="endpoints.erc8004Note">
-                        14 networks: ethereum, base, polygon, arbitrum, celo, bsc, monad, avalanche + testnets. CREATE2 deterministic addresses.
+                        14 networks: ethereum, base, polygon, arbitrum, celo, bsc, monad, avalanche + testnets. All mainnets use CREATE2 deterministic addresses.
                     </p>
                     <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem; padding-left: 1rem; flex-wrap: wrap;">
                         <a href="https://eips.ethereum.org/EIPS/eip-8004" target="_blank"

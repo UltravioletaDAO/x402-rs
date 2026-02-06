@@ -1851,9 +1851,13 @@
                     <div class="stat-value">100%</div>
                     <div class="stat-label" data-i18n="stats.trustless">Trustless Verification</div>
                 </div>
+                <div class="stat-card" style="border-color: rgba(139, 92, 246, 0.3);">
+                    <div class="stat-value" style="background: linear-gradient(135deg, #8b5cf6, #06b6d4); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">14</div>
+                    <div class="stat-label" data-i18n="stats.erc8004">ERC-8004 Networks</div>
+                </div>
             </section>
 
-            <section class="features fade-in">
+            <section class="features fade-in" style="grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));">
                 <div class="feature-card">
                     <span class="feature-icon">⚡</span>
                     <h3 data-i18n="features.gasless.title">Gasless Transactions</h3>
@@ -1875,6 +1879,13 @@
                     <h3 data-i18n="features.instant.title">Instant Settlement</h3>
                     <p data-i18n="features.instant.description">
                         Complete payment verification and on-chain settlement in ~2-3 seconds end-to-end.
+                    </p>
+                </div>
+                <div class="feature-card" style="border-color: rgba(139, 92, 246, 0.3); background: linear-gradient(135deg, var(--bg-card) 0%, rgba(139, 92, 246, 0.05) 100%);">
+                    <span class="feature-icon">🛡️</span>
+                    <h3 data-i18n="features.reputation.title">On-Chain Reputation</h3>
+                    <p data-i18n="features.reputation.description">
+                        ERC-8004 Trustless Agents with identity, reputation, and validation registries across 14 networks.
                     </p>
                 </div>
             </section>
@@ -1963,7 +1974,7 @@ result = <span class="code-function">verify_payment</span>(
                     </div>
                     <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; text-align: center;">
                         <span style="font-size: 1.25rem;">🌐</span>
-                        <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.5rem;">14+ networks supported</p>
+                        <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.5rem;" data-i18n="sdk.networks">19 mainnets supported</p>
                     </div>
                     <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; text-align: center;">
                         <span style="font-size: 1.25rem;">⚡</span>
@@ -1979,6 +1990,104 @@ result = <span class="code-function">verify_payment</span>(
                     payload to each request. The facilitator verifies it, executes the on-chain transfer, and grants
                     access to protected resources—all without accounts, wallets, or user registration.
                 </p>
+            </section>
+
+            <!-- ERC-8004 Showcase Section -->
+            <section class="section fade-in" style="margin-top: 3rem;">
+                <div style="text-align: center; margin-bottom: 2rem;">
+                    <div style="display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.4rem 1rem; border-radius: 20px; background: rgba(139, 92, 246, 0.1); border: 1px solid rgba(139, 92, 246, 0.3); margin-bottom: 1rem;">
+                        <span style="font-size: 0.75rem; color: #8b5cf6; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;" data-i18n="erc8004.badge">ERC-8004 Standard</span>
+                    </div>
+                    <h3 class="section-title" style="background: linear-gradient(135deg, #8b5cf6, #06b6d4); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;" data-i18n="erc8004.title">Trustless Agent Reputation</h3>
+                    <p class="section-description" data-i18n="erc8004.description">
+                        On-chain identity, reputation, and validation for AI agents. Rate service quality, verify agent identities, and build trust across the agentic economy — all verifiable on-chain through ERC-8004 registries.
+                    </p>
+                </div>
+
+                <!-- Three Pillars -->
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1.5rem; margin-bottom: 2.5rem;">
+                    <div style="background: var(--bg-card); border: 1px solid rgba(139, 92, 246, 0.2); border-radius: 12px; padding: 1.5rem; transition: all 0.3s;" onmouseover="this.style.borderColor='rgba(139, 92, 246, 0.5)'; this.style.transform='translateY(-2px)'" onmouseout="this.style.borderColor='rgba(139, 92, 246, 0.2)'; this.style.transform='translateY(0)'">
+                        <div style="width: 40px; height: 40px; border-radius: 10px; background: rgba(139, 92, 246, 0.15); display: flex; align-items: center; justify-content: center; margin-bottom: 1rem;">
+                            <span style="font-size: 1.2rem;">🪪</span>
+                        </div>
+                        <h4 style="font-size: 1rem; font-weight: 700; margin-bottom: 0.5rem;" data-i18n="erc8004.identity.title">Identity Registry</h4>
+                        <p style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.5;" data-i18n="erc8004.identity.desc">Register agents as on-chain NFTs with verifiable metadata. Each agent gets a unique tokenId tied to their wallet address.</p>
+                    </div>
+                    <div style="background: var(--bg-card); border: 1px solid rgba(6, 182, 212, 0.2); border-radius: 12px; padding: 1.5rem; transition: all 0.3s;" onmouseover="this.style.borderColor='rgba(6, 182, 212, 0.5)'; this.style.transform='translateY(-2px)'" onmouseout="this.style.borderColor='rgba(6, 182, 212, 0.2)'; this.style.transform='translateY(0)'">
+                        <div style="width: 40px; height: 40px; border-radius: 10px; background: rgba(6, 182, 212, 0.15); display: flex; align-items: center; justify-content: center; margin-bottom: 1rem;">
+                            <span style="font-size: 1.2rem;">⭐</span>
+                        </div>
+                        <h4 style="font-size: 1rem; font-weight: 700; margin-bottom: 0.5rem;" data-i18n="erc8004.reputation.title">Reputation Registry</h4>
+                        <p style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.5;" data-i18n="erc8004.reputation.desc">Submit, revoke, and query reputation feedback with proof-of-payment. Tags enable categorized ratings like uptime, quality, and response time.</p>
+                    </div>
+                    <div style="background: var(--bg-card); border: 1px solid rgba(16, 185, 129, 0.2); border-radius: 12px; padding: 1.5rem; transition: all 0.3s;" onmouseover="this.style.borderColor='rgba(16, 185, 129, 0.5)'; this.style.transform='translateY(-2px)'" onmouseout="this.style.borderColor='rgba(16, 185, 129, 0.2)'; this.style.transform='translateY(0)'">
+                        <div style="width: 40px; height: 40px; border-radius: 10px; background: rgba(16, 185, 129, 0.15); display: flex; align-items: center; justify-content: center; margin-bottom: 1rem;">
+                            <span style="font-size: 1.2rem;">✅</span>
+                        </div>
+                        <h4 style="font-size: 1rem; font-weight: 700; margin-bottom: 0.5rem;" data-i18n="erc8004.validation.title">Validation Registry</h4>
+                        <p style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.5;" data-i18n="erc8004.validation.desc">Third-party validators can attest to agent capabilities. Validation results are stored on-chain for transparent trust verification.</p>
+                    </div>
+                </div>
+
+                <!-- Supported Networks Grid -->
+                <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 2rem;">
+                    <h4 style="font-size: 0.9rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 1.25rem; text-align: center;" data-i18n="erc8004.networksTitle">Deployed on 14 Networks</h4>
+                    <div style="display: flex; flex-wrap: wrap; gap: 0.75rem; justify-content: center;">
+                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(139, 92, 246, 0.08); border: 1px solid rgba(139, 92, 246, 0.2); border-radius: 8px;">
+                            <img src="/ethereum.png" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
+                            <span style="font-size: 0.85rem; font-weight: 500;">Ethereum</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(0, 82, 255, 0.08); border: 1px solid rgba(0, 82, 255, 0.2); border-radius: 8px;">
+                            <img src="/base.png" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
+                            <span style="font-size: 0.85rem; font-weight: 500;">Base</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(130, 71, 229, 0.08); border: 1px solid rgba(130, 71, 229, 0.2); border-radius: 8px;">
+                            <img src="/polygon.png" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
+                            <span style="font-size: 0.85rem; font-weight: 500;">Polygon</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(40, 160, 240, 0.08); border: 1px solid rgba(40, 160, 240, 0.2); border-radius: 8px;">
+                            <img src="/arbitrum.png" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
+                            <span style="font-size: 0.85rem; font-weight: 500;">Arbitrum</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(252, 255, 82, 0.08); border: 1px solid rgba(252, 255, 82, 0.2); border-radius: 8px;">
+                            <img src="/celo.png" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
+                            <span style="font-size: 0.85rem; font-weight: 500;">Celo</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(243, 186, 47, 0.08); border: 1px solid rgba(243, 186, 47, 0.2); border-radius: 8px;">
+                            <img src="/bsc.png" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
+                            <span style="font-size: 0.85rem; font-weight: 500;">BNB Chain</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(130, 71, 229, 0.08); border: 1px solid rgba(130, 71, 229, 0.2); border-radius: 8px;">
+                            <img src="/monad.png" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
+                            <span style="font-size: 0.85rem; font-weight: 500;">Monad</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(232, 65, 66, 0.08); border: 1px solid rgba(232, 65, 66, 0.2); border-radius: 8px;">
+                            <img src="/avalanche.png" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
+                            <span style="font-size: 0.85rem; font-weight: 500;">Avalanche</span>
+                        </div>
+                    </div>
+                    <p style="text-align: center; color: var(--text-muted); font-size: 0.75rem; margin-top: 1rem;" data-i18n="erc8004.create2Note">+ 6 testnets. All mainnets use CREATE2 deterministic addresses (same contracts on every chain).</p>
+                    <div style="display: flex; gap: 0.75rem; justify-content: center; margin-top: 1.25rem;">
+                        <a href="https://eips.ethereum.org/EIPS/eip-8004" target="_blank"
+                           style="font-size: 0.8rem; color: #8b5cf6; text-decoration: none; padding: 0.4rem 1rem; border: 1px solid rgba(139, 92, 246, 0.3); border-radius: 6px; transition: all 0.2s; font-weight: 500;"
+                           onmouseover="this.style.background='rgba(139, 92, 246, 0.1)'"
+                           onmouseout="this.style.background='transparent'">
+                            Read EIP-8004
+                        </a>
+                        <a href="https://github.com/erc-8004/erc-8004-contracts" target="_blank"
+                           style="font-size: 0.8rem; color: #06b6d4; text-decoration: none; padding: 0.4rem 1rem; border: 1px solid rgba(6, 182, 212, 0.3); border-radius: 6px; transition: all 0.2s; font-weight: 500;"
+                           onmouseover="this.style.background='rgba(6, 182, 212, 0.1)'"
+                           onmouseout="this.style.background='transparent'">
+                            View Contracts
+                        </a>
+                        <a href="/feedback" target="_blank"
+                           style="font-size: 0.8rem; color: #10b981; text-decoration: none; padding: 0.4rem 1rem; border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 6px; transition: all 0.2s; font-weight: 500;"
+                           onmouseover="this.style.background='rgba(16, 185, 129, 0.1)'"
+                           onmouseout="this.style.background='transparent'">
+                            Try API
+                        </a>
+                    </div>
+                </div>
             </section>
 
             <section class="endpoints fade-in">
@@ -2125,7 +2234,7 @@ result = <span class="code-function">verify_payment</span>(
                         <span class="endpoint-desc" data-i18n="endpoints.identity">Get agent identity from Identity Registry</span>
                     </div>
                     <p style="color: var(--text-muted); font-size: 0.8rem; margin: 0.5rem 0 0 0; padding-left: 1rem;" data-i18n="endpoints.erc8004Note">
-                        Supported networks: ethereum, ethereum-sepolia. Uses official ERC-8004 contracts.
+                        14 networks: ethereum, base, polygon, arbitrum, celo, bsc, monad, avalanche + testnets. CREATE2 deterministic addresses.
                     </p>
                     <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem; padding-left: 1rem; flex-wrap: wrap;">
                         <a href="https://eips.ethereum.org/EIPS/eip-8004" target="_blank"
@@ -2134,17 +2243,11 @@ result = <span class="code-function">verify_payment</span>(
                            onmouseout="this.style.background='transparent'; this.style.color='var(--accent)';">
                             EIP-8004
                         </a>
-                        <a href="https://etherscan.io/address/0x8004BAa17C55a88189AE136b182e5fdA19dE9b63" target="_blank"
+                        <a href="https://github.com/erc-8004/erc-8004-contracts" target="_blank"
                            style="font-size: 0.7rem; color: var(--accent); text-decoration: none; padding: 0.25rem 0.6rem; border: 1px solid var(--accent); border-radius: 4px; transition: all 0.2s;"
                            onmouseover="this.style.background='var(--accent)'; this.style.color='#000';"
                            onmouseout="this.style.background='transparent'; this.style.color='var(--accent)';">
-                            ReputationRegistry
-                        </a>
-                        <a href="https://etherscan.io/address/0x8004A169FB4a3325136EB29fA0ceB6D2e539a432" target="_blank"
-                           style="font-size: 0.7rem; color: var(--accent); text-decoration: none; padding: 0.25rem 0.6rem; border: 1px solid var(--accent); border-radius: 4px; transition: all 0.2s;"
-                           onmouseover="this.style.background='var(--accent)'; this.style.color='#000';"
-                           onmouseout="this.style.background='transparent'; this.style.color='var(--accent)';">
-                            IdentityRegistry
+                            Contracts Repo
                         </a>
                     </div>
                 </div>
@@ -2205,12 +2308,27 @@ result = <span class="code-function">verify_payment</span>(
                 "stats.speed": "Settlement Time",
                 "stats.fees": "Gas Fees for Agents",
                 "stats.trustless": "Trustless Verification",
+                "stats.erc8004": "ERC-8004 Networks",
                 "features.gasless.title": "Gasless Transactions",
                 "features.gasless.description": "Agents never need AVAX or ETH for gas. The facilitator executes transferWithAuthorization via EIP-3009.",
                 "features.trustless.title": "Trustless by Design",
                 "features.trustless.description": "EIP-712 signature verification ensures cryptographically valid payments before on-chain execution.",
                 "features.instant.title": "Instant Settlement",
                 "features.instant.description": "Complete payment verification and on-chain settlement in ~2-3 seconds end-to-end.",
+                "features.reputation.title": "On-Chain Reputation",
+                "features.reputation.description": "ERC-8004 Trustless Agents with identity, reputation, and validation registries across 14 networks.",
+                "sdk.networks": "19 mainnets supported",
+                "erc8004.badge": "ERC-8004 Standard",
+                "erc8004.title": "Trustless Agent Reputation",
+                "erc8004.description": "On-chain identity, reputation, and validation for AI agents. Rate service quality, verify agent identities, and build trust across the agentic economy \u2014 all verifiable on-chain through ERC-8004 registries.",
+                "erc8004.identity.title": "Identity Registry",
+                "erc8004.identity.desc": "Register agents as on-chain NFTs with verifiable metadata. Each agent gets a unique tokenId tied to their wallet address.",
+                "erc8004.reputation.title": "Reputation Registry",
+                "erc8004.reputation.desc": "Submit, revoke, and query reputation feedback with proof-of-payment. Tags enable categorized ratings like uptime, quality, and response time.",
+                "erc8004.validation.title": "Validation Registry",
+                "erc8004.validation.desc": "Third-party validators can attest to agent capabilities. Validation results are stored on-chain for transparent trust verification.",
+                "erc8004.networksTitle": "Deployed on 14 Networks",
+                "erc8004.create2Note": "+ 6 testnets. All mainnets use CREATE2 deterministic addresses (same contracts on every chain).",
                 "code.title": "Integrate in Minutes",
                 "what.title": "What is x402?",
                 "what.description": "x402 is a protocol for stateless, per-request payments over HTTP. Clients attach a signed payment payload to each request. The facilitator verifies it, executes the on-chain transfer, and grants access to protected resources—all without accounts, wallets, or user registration.",
@@ -2239,7 +2357,7 @@ result = <span class="code-function">verify_payment</span>(
                 "endpoints.feedbackResponse": "Append agent response to feedback",
                 "endpoints.reputation": "Query reputation summary for an agent",
                 "endpoints.identity": "Get agent identity from Identity Registry",
-                "endpoints.erc8004Note": "Supported networks: ethereum, ethereum-sepolia. Uses official ERC-8004 contracts.",
+                "endpoints.erc8004Note": "14 networks: ethereum, base, polygon, arbitrum, celo, bsc, monad, avalanche + testnets. CREATE2 deterministic addresses.",
                 "endpoints.blacklist": "OFAC sanctioned and blocked addresses",
                 "endpoints.discovery": "Discover registered paid APIs and services",
                 "endpoints.register": "Register a new paid endpoint in the Bazaar",
@@ -2252,13 +2370,28 @@ result = <span class="code-function">verify_payment</span>(
                 "status": "Servicio en Línea",
                 "stats.speed": "Tiempo de Liquidación",
                 "stats.fees": "Comisiones de Gas para Agentes",
-                "stats.trustless": "Verificación Sin Confianza",
+                "stats.trustless": "Verificaci\u00f3n Sin Confianza",
+                "stats.erc8004": "Redes ERC-8004",
                 "features.gasless.title": "Transacciones Sin Gas",
                 "features.gasless.description": "Los agentes nunca necesitan AVAX o ETH para gas. El facilitador ejecuta transferWithAuthorization vía EIP-3009.",
                 "features.trustless.title": "Sin Confianza por Diseño",
                 "features.trustless.description": "La verificación de firmas EIP-712 asegura pagos criptográficamente válidos antes de la ejecución en cadena.",
                 "features.instant.title": "Liquidación Instantánea",
-                "features.instant.description": "Verificación y liquidación completa de pagos en ~2-3 segundos de extremo a extremo.",
+                "features.instant.description": "Verificaci\u00f3n y liquidaci\u00f3n completa de pagos en ~2-3 segundos de extremo a extremo.",
+                "features.reputation.title": "Reputaci\u00f3n On-Chain",
+                "features.reputation.description": "Agentes sin confianza ERC-8004 con registros de identidad, reputaci\u00f3n y validaci\u00f3n en 14 redes.",
+                "sdk.networks": "19 mainnets soportadas",
+                "erc8004.badge": "Est\u00e1ndar ERC-8004",
+                "erc8004.title": "Reputaci\u00f3n de Agentes Sin Confianza",
+                "erc8004.description": "Identidad, reputaci\u00f3n y validaci\u00f3n on-chain para agentes IA. Califica la calidad del servicio, verifica identidades de agentes y construye confianza en la econom\u00eda ag\u00e9ntica \u2014 todo verificable on-chain a trav\u00e9s de los registros ERC-8004.",
+                "erc8004.identity.title": "Registro de Identidad",
+                "erc8004.identity.desc": "Registra agentes como NFTs on-chain con metadatos verificables. Cada agente obtiene un tokenId \u00fanico vinculado a su direcci\u00f3n de wallet.",
+                "erc8004.reputation.title": "Registro de Reputaci\u00f3n",
+                "erc8004.reputation.desc": "Env\u00eda, revoca y consulta feedback de reputaci\u00f3n con prueba de pago. Tags permiten calificaciones categorizadas como uptime, calidad y tiempo de respuesta.",
+                "erc8004.validation.title": "Registro de Validaci\u00f3n",
+                "erc8004.validation.desc": "Validadores externos pueden atestiguar las capacidades de un agente. Los resultados se almacenan on-chain para verificaci\u00f3n transparente de confianza.",
+                "erc8004.networksTitle": "Desplegado en 14 Redes",
+                "erc8004.create2Note": "+ 6 testnets. Todas las mainnets usan direcciones deterministas CREATE2 (mismos contratos en cada cadena).",
                 "code.title": "Integra en Minutos",
                 "what.title": "¿Qué es x402?",
                 "what.description": "x402 es un protocolo para pagos sin estado por solicitud sobre HTTP. Los clientes adjuntan una carga de pago firmada a cada solicitud. El facilitador la verifica, ejecuta la transferencia en cadena y otorga acceso a recursos protegidos—todo sin cuentas, billeteras o registro de usuarios.",
@@ -2287,7 +2420,7 @@ result = <span class="code-function">verify_payment</span>(
                 "endpoints.feedbackResponse": "Agregar respuesta del agente al feedback",
                 "endpoints.reputation": "Consultar resumen de reputacion de un agente",
                 "endpoints.identity": "Obtener identidad del agente del Identity Registry",
-                "endpoints.erc8004Note": "Redes soportadas: ethereum, ethereum-sepolia. Usa contratos oficiales ERC-8004.",
+                "endpoints.erc8004Note": "14 redes: ethereum, base, polygon, arbitrum, celo, bsc, monad, avalanche + testnets. Direcciones deterministas CREATE2.",
                 "endpoints.blacklist": "Direcciones sancionadas por OFAC y bloqueadas",
                 "endpoints.discovery": "Descubrir APIs y servicios de pago registrados",
                 "endpoints.register": "Registrar un nuevo endpoint de pago en el Bazaar",

@@ -12,10 +12,23 @@
 //!
 //! # Supported Networks
 //!
-//! - Ethereum Mainnet (production)
-//! - Ethereum Sepolia (testnet)
-//! - Base Mainnet (when contracts are deployed)
-//! - Base Sepolia (when contracts are deployed)
+//! ## Mainnets
+//! - Ethereum Mainnet
+//! - Base Mainnet
+//! - Polygon Mainnet
+//! - Arbitrum One
+//! - Celo Mainnet
+//! - BSC (BNB Smart Chain)
+//! - Monad Mainnet
+//! - Avalanche C-Chain
+//!
+//! ## Testnets
+//! - Ethereum Sepolia
+//! - Base Sepolia
+//! - Polygon Amoy
+//! - Arbitrum Sepolia
+//! - Celo Sepolia
+//! - Avalanche Fuji
 //!
 //! # x402 Integration
 //!
@@ -69,21 +82,117 @@ pub const ETHEREUM_SEPOLIA_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
     validation_registry: Some(alloy::primitives::address!("8004Cb1BF31DAf7788923b405b754f57acEB4272")),
 };
 
-// Base Mainnet - Pending deployment
-// Using placeholder until official deployment
-pub const BASE_MAINNET_CONTRACTS: Option<Erc8004Contracts> = None;
+// ============================================================================
+// Mainnet Contracts - All use CREATE2 deterministic addresses
+// ============================================================================
 
-// Base Sepolia - Pending official deployment
-// Reference implementation exists but not canonical addresses
-pub const BASE_SEPOLIA_CONTRACTS: Option<Erc8004Contracts> = None;
+// Base Mainnet - Official deployment (February 4, 2026)
+pub const BASE_MAINNET_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
+    identity_registry: alloy::primitives::address!("8004A169FB4a3325136EB29fA0ceB6D2e539a432"),
+    reputation_registry: alloy::primitives::address!("8004BAa17C55a88189AE136b182e5fdA19dE9b63"),
+    validation_registry: None,
+};
+
+// Polygon Mainnet - Official deployment (February 2026)
+pub const POLYGON_MAINNET_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
+    identity_registry: alloy::primitives::address!("8004A169FB4a3325136EB29fA0ceB6D2e539a432"),
+    reputation_registry: alloy::primitives::address!("8004BAa17C55a88189AE136b182e5fdA19dE9b63"),
+    validation_registry: None,
+};
+
+// Arbitrum One Mainnet - Official deployment (February 2026)
+pub const ARBITRUM_MAINNET_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
+    identity_registry: alloy::primitives::address!("8004A169FB4a3325136EB29fA0ceB6D2e539a432"),
+    reputation_registry: alloy::primitives::address!("8004BAa17C55a88189AE136b182e5fdA19dE9b63"),
+    validation_registry: None,
+};
+
+// Celo Mainnet - Official deployment (February 2026)
+pub const CELO_MAINNET_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
+    identity_registry: alloy::primitives::address!("8004A169FB4a3325136EB29fA0ceB6D2e539a432"),
+    reputation_registry: alloy::primitives::address!("8004BAa17C55a88189AE136b182e5fdA19dE9b63"),
+    validation_registry: None,
+};
+
+// BSC (BNB Smart Chain) Mainnet - Official deployment (February 2026)
+pub const BSC_MAINNET_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
+    identity_registry: alloy::primitives::address!("8004A169FB4a3325136EB29fA0ceB6D2e539a432"),
+    reputation_registry: alloy::primitives::address!("8004BAa17C55a88189AE136b182e5fdA19dE9b63"),
+    validation_registry: None,
+};
+
+// Monad Mainnet - Official deployment (February 2026)
+pub const MONAD_MAINNET_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
+    identity_registry: alloy::primitives::address!("8004A169FB4a3325136EB29fA0ceB6D2e539a432"),
+    reputation_registry: alloy::primitives::address!("8004BAa17C55a88189AE136b182e5fdA19dE9b63"),
+    validation_registry: None,
+};
+
+// Avalanche C-Chain Mainnet - Official deployment (February 2026)
+pub const AVALANCHE_MAINNET_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
+    identity_registry: alloy::primitives::address!("8004A169FB4a3325136EB29fA0ceB6D2e539a432"),
+    reputation_registry: alloy::primitives::address!("8004BAa17C55a88189AE136b182e5fdA19dE9b63"),
+    validation_registry: None,
+};
+
+// ============================================================================
+// Testnet Contracts - All use same testnet addresses
+// ============================================================================
+
+// Base Sepolia - Official testnet deployment
+pub const BASE_SEPOLIA_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
+    identity_registry: alloy::primitives::address!("8004A818BFB912233c491871b3d84c89A494BD9e"),
+    reputation_registry: alloy::primitives::address!("8004B663056A597Dffe9eCcC1965A193B7388713"),
+    validation_registry: Some(alloy::primitives::address!("8004Cb1BF31DAf7788923b405b754f57acEB4272")),
+};
+
+// Polygon Amoy Testnet - Official testnet deployment
+pub const POLYGON_AMOY_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
+    identity_registry: alloy::primitives::address!("8004A818BFB912233c491871b3d84c89A494BD9e"),
+    reputation_registry: alloy::primitives::address!("8004B663056A597Dffe9eCcC1965A193B7388713"),
+    validation_registry: Some(alloy::primitives::address!("8004Cb1BF31DAf7788923b405b754f57acEB4272")),
+};
+
+// Arbitrum Sepolia Testnet - Official testnet deployment
+pub const ARBITRUM_SEPOLIA_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
+    identity_registry: alloy::primitives::address!("8004A818BFB912233c491871b3d84c89A494BD9e"),
+    reputation_registry: alloy::primitives::address!("8004B663056A597Dffe9eCcC1965A193B7388713"),
+    validation_registry: Some(alloy::primitives::address!("8004Cb1BF31DAf7788923b405b754f57acEB4272")),
+};
+
+// Celo Sepolia Testnet - Official testnet deployment
+pub const CELO_SEPOLIA_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
+    identity_registry: alloy::primitives::address!("8004A818BFB912233c491871b3d84c89A494BD9e"),
+    reputation_registry: alloy::primitives::address!("8004B663056A597Dffe9eCcC1965A193B7388713"),
+    validation_registry: Some(alloy::primitives::address!("8004Cb1BF31DAf7788923b405b754f57acEB4272")),
+};
+
+// Avalanche Fuji Testnet - Official testnet deployment
+pub const AVALANCHE_FUJI_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
+    identity_registry: alloy::primitives::address!("8004A818BFB912233c491871b3d84c89A494BD9e"),
+    reputation_registry: alloy::primitives::address!("8004B663056A597Dffe9eCcC1965A193B7388713"),
+    validation_registry: Some(alloy::primitives::address!("8004Cb1BF31DAf7788923b405b754f57acEB4272")),
+};
 
 /// Get ERC-8004 contract addresses for a network
 pub fn get_contracts(network: &Network) -> Option<Erc8004Contracts> {
     match network {
+        // Mainnets
         Network::Ethereum => Some(ETHEREUM_MAINNET_CONTRACTS),
+        Network::Base => Some(BASE_MAINNET_CONTRACTS),
+        Network::Polygon => Some(POLYGON_MAINNET_CONTRACTS),
+        Network::Arbitrum => Some(ARBITRUM_MAINNET_CONTRACTS),
+        Network::Celo => Some(CELO_MAINNET_CONTRACTS),
+        Network::Bsc => Some(BSC_MAINNET_CONTRACTS),
+        Network::Monad => Some(MONAD_MAINNET_CONTRACTS),
+        Network::Avalanche => Some(AVALANCHE_MAINNET_CONTRACTS),
+        // Testnets
         Network::EthereumSepolia => Some(ETHEREUM_SEPOLIA_CONTRACTS),
-        Network::Base => BASE_MAINNET_CONTRACTS,
-        Network::BaseSepolia => BASE_SEPOLIA_CONTRACTS,
+        Network::BaseSepolia => Some(BASE_SEPOLIA_CONTRACTS),
+        Network::PolygonAmoy => Some(POLYGON_AMOY_CONTRACTS),
+        Network::ArbitrumSepolia => Some(ARBITRUM_SEPOLIA_CONTRACTS),
+        Network::CeloSepolia => Some(CELO_SEPOLIA_CONTRACTS),
+        Network::AvalancheFuji => Some(AVALANCHE_FUJI_CONTRACTS),
         _ => None,
     }
 }
@@ -96,18 +205,44 @@ pub fn is_erc8004_supported(network: &Network) -> bool {
 /// Get list of all networks with ERC-8004 support
 pub fn supported_networks() -> Vec<Network> {
     vec![
+        // Mainnets
         Network::Ethereum,
+        Network::Base,
+        Network::Polygon,
+        Network::Arbitrum,
+        Network::Celo,
+        Network::Bsc,
+        Network::Monad,
+        Network::Avalanche,
+        // Testnets
         Network::EthereumSepolia,
-        // Add more networks here as contracts are deployed
+        Network::BaseSepolia,
+        Network::PolygonAmoy,
+        Network::ArbitrumSepolia,
+        Network::CeloSepolia,
+        Network::AvalancheFuji,
     ]
 }
 
 /// Get list of supported network names for API responses
 pub fn supported_network_names() -> Vec<&'static str> {
     vec![
+        // Mainnets
         "ethereum",
+        "base-mainnet",
+        "polygon",
+        "arbitrum",
+        "celo",
+        "bsc",
+        "monad",
+        "avalanche",
+        // Testnets
         "ethereum-sepolia",
-        // Add more as deployed
+        "base-sepolia",
+        "polygon-amoy",
+        "arbitrum-sepolia",
+        "celo-sepolia",
+        "avalanche-fuji",
     ]
 }
 
@@ -216,15 +351,115 @@ mod tests {
     }
 
     #[test]
+    fn test_base_mainnet_supported() {
+        assert!(is_erc8004_supported(&Network::Base));
+        let contracts = get_contracts(&Network::Base).unwrap();
+        // Same addresses as Ethereum (CREATE2 deterministic deployment)
+        assert_eq!(contracts.identity_registry, ETHEREUM_MAINNET_CONTRACTS.identity_registry);
+        assert_eq!(contracts.reputation_registry, ETHEREUM_MAINNET_CONTRACTS.reputation_registry);
+    }
+
+    #[test]
+    fn test_all_mainnets_use_deterministic_addresses() {
+        let mainnet_networks = vec![
+            Network::Ethereum,
+            Network::Base,
+            Network::Polygon,
+            Network::Arbitrum,
+            Network::Celo,
+            Network::Bsc,
+            Network::Monad,
+            Network::Avalanche,
+        ];
+
+        for network in mainnet_networks {
+            assert!(is_erc8004_supported(&network), "Network {:?} should be supported", network);
+            let contracts = get_contracts(&network).unwrap();
+            assert_eq!(
+                contracts.identity_registry,
+                ETHEREUM_MAINNET_CONTRACTS.identity_registry,
+                "Network {:?} should use deterministic identity address", network
+            );
+            assert_eq!(
+                contracts.reputation_registry,
+                ETHEREUM_MAINNET_CONTRACTS.reputation_registry,
+                "Network {:?} should use deterministic reputation address", network
+            );
+        }
+    }
+
+    #[test]
+    fn test_all_testnets_use_testnet_addresses() {
+        let testnet_networks = vec![
+            Network::EthereumSepolia,
+            Network::BaseSepolia,
+            Network::PolygonAmoy,
+            Network::ArbitrumSepolia,
+            Network::CeloSepolia,
+            Network::AvalancheFuji,
+        ];
+
+        for network in testnet_networks {
+            assert!(is_erc8004_supported(&network), "Network {:?} should be supported", network);
+            let contracts = get_contracts(&network).unwrap();
+            assert_eq!(
+                contracts.identity_registry,
+                ETHEREUM_SEPOLIA_CONTRACTS.identity_registry,
+                "Network {:?} should use testnet identity address", network
+            );
+            assert!(
+                contracts.validation_registry.is_some(),
+                "Network {:?} should have validation registry", network
+            );
+        }
+    }
+
+    #[test]
     fn test_unsupported_network() {
-        assert!(!is_erc8004_supported(&Network::Avalanche));
-        assert!(get_contracts(&Network::Avalanche).is_none());
+        assert!(!is_erc8004_supported(&Network::Optimism));
+        assert!(get_contracts(&Network::Optimism).is_none());
     }
 
     #[test]
     fn test_supported_networks_list() {
         let networks = supported_networks();
+        // Mainnets
         assert!(networks.contains(&Network::Ethereum));
+        assert!(networks.contains(&Network::Base));
+        assert!(networks.contains(&Network::Polygon));
+        assert!(networks.contains(&Network::Arbitrum));
+        assert!(networks.contains(&Network::Celo));
+        assert!(networks.contains(&Network::Bsc));
+        assert!(networks.contains(&Network::Monad));
+        assert!(networks.contains(&Network::Avalanche));
+        // Testnets
         assert!(networks.contains(&Network::EthereumSepolia));
+        assert!(networks.contains(&Network::BaseSepolia));
+        assert!(networks.contains(&Network::PolygonAmoy));
+        assert!(networks.contains(&Network::ArbitrumSepolia));
+        assert!(networks.contains(&Network::CeloSepolia));
+        assert!(networks.contains(&Network::AvalancheFuji));
+        // Total count
+        assert_eq!(networks.len(), 14);
+    }
+
+    #[test]
+    fn test_supported_network_names() {
+        let names = supported_network_names();
+        assert!(names.contains(&"ethereum"));
+        assert!(names.contains(&"base-mainnet"));
+        assert!(names.contains(&"polygon"));
+        assert!(names.contains(&"arbitrum"));
+        assert!(names.contains(&"celo"));
+        assert!(names.contains(&"bsc"));
+        assert!(names.contains(&"monad"));
+        assert!(names.contains(&"avalanche"));
+        assert!(names.contains(&"ethereum-sepolia"));
+        assert!(names.contains(&"base-sepolia"));
+        assert!(names.contains(&"polygon-amoy"));
+        assert!(names.contains(&"arbitrum-sepolia"));
+        assert!(names.contains(&"celo-sepolia"));
+        assert!(names.contains(&"avalanche-fuji"));
+        assert_eq!(names.len(), 14);
     }
 }

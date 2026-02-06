@@ -22,7 +22,7 @@ use tracing::{debug, error, info, instrument, warn};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::chain::{FacilitatorLocalError, NetworkProvider};
+use crate::chain::{FacilitatorLocalError, NetworkProvider, NetworkProviderOps};
 use crate::chain::evm::MetaEvmProvider;
 use crate::discovery::{DiscoveryError, DiscoveryRegistry};
 use crate::fhe_proxy::FheProxy;
@@ -37,6 +37,8 @@ use crate::erc8004::{
     get_contracts, is_erc8004_supported, supported_network_names,
     ReputationSummary, FeedbackEntry, AgentIdentity,
     RevokeFeedbackRequest, AppendResponseRequest, ReputationResponse,
+    RegisterAgentRequest, RegisterAgentResponse,
+    MetadataEntry,
 };
 use crate::types_v2::{
     DiscoveryFilters, DiscoveryResource, RegisterResourceRequest, SettleRequestEnvelope,
@@ -93,6 +95,9 @@ where
         .route("/verify", post(post_verify::<A>))
         .route("/settle", get(get_settle_info))
         .route("/settle", post(post_settle::<A>))
+        // ERC-8004 Registration endpoints
+        .route("/register", get(get_register_info))
+        .route("/register", post(post_register::<A>))
         // ERC-8004 Reputation endpoints
         .route("/feedback", get(get_feedback_info))
         .route("/feedback", post(post_feedback::<A>))
@@ -101,6 +106,8 @@ where
         .route("/reputation/{network}/{agent_id}", get(get_reputation::<A>))
         // ERC-8004 Identity endpoints
         .route("/identity/{network}/{agent_id}", get(get_identity::<A>))
+        .route("/identity/{network}/{agent_id}/metadata/{key}", get(get_identity_metadata::<A>))
+        .route("/identity/{network}/total-supply", get(get_identity_total_supply::<A>))
         .route("/health", get(get_health))
         .route("/version", get(get_version))
         .route("/supported", get(get_supported::<A>))
@@ -1612,11 +1619,14 @@ pub async fn get_feedback_info() -> impl IntoResponse {
             }
         },
         "endpoints": {
+            "POST /register": "Register a new ERC-8004 agent (with optional recipient for delegation)",
             "POST /feedback": "Submit new feedback",
             "POST /feedback/revoke": "Revoke previously submitted feedback",
             "POST /feedback/response": "Append response to feedback (agent only)",
             "GET /reputation/:network/:agentId": "Get reputation summary for an agent",
-            "GET /identity/:network/:agentId": "Get agent identity from Identity Registry"
+            "GET /identity/:network/:agentId": "Get agent identity from Identity Registry",
+            "GET /identity/:network/:agentId/metadata/:key": "Read specific agent metadata",
+            "GET /identity/:network/total-supply": "Get total registered agents on a network"
         },
         "supportedNetworks": networks
     }))
@@ -2531,4 +2541,646 @@ where
     };
 
     (StatusCode::OK, Json(identity)).into_response()
+}
+
+// ============================================================================
+// ERC-8004 Agent Registration Endpoints
+// ============================================================================
+
+/// `GET /register`: Returns a machine-readable description of the `/register` endpoint.
+#[instrument(skip_all)]
+pub async fn get_register_info() -> impl IntoResponse {
+    Json(json!({
+        "endpoint": "/register",
+        "description": "POST to register a new ERC-8004 agent on-chain",
+        "extension": "8004-reputation",
+        "supportedNetworks": supported_network_names(),
+        "body": {
+            "x402Version": "string - protocol version (1)",
+            "network": "string - target network (e.g., 'base-mainnet', 'ethereum')",
+            "agentUri": "string - URI pointing to agent registration file (IPFS, HTTPS)",
+            "metadata": "array (optional) - key-value metadata entries [{key, value}]",
+            "recipient": "string (optional) - address to receive the agent NFT. If omitted, the facilitator retains ownership."
+        },
+        "response": {
+            "success": "boolean",
+            "agentId": "number - the newly assigned agent ID (ERC-721 tokenId)",
+            "transaction": "string - registration transaction hash",
+            "transferTransaction": "string (optional) - transfer transaction hash if recipient was specified",
+            "owner": "string - current owner of the agent NFT",
+            "network": "string"
+        },
+        "notes": {
+            "gasless": "The facilitator pays all gas fees for registration and transfer",
+            "transferBehavior": "When recipient is specified, the facilitator mints the NFT then transfers it via ERC-721 safeTransferFrom. The agentWallet is cleared on transfer and must be re-set by the new owner.",
+            "relatedEndpoints": {
+                "GET /identity/:network/:agentId": "Read agent identity",
+                "GET /identity/:network/:agentId/metadata/:key": "Read agent metadata",
+                "GET /identity/:network/total-supply": "Get total registered agents",
+                "POST /feedback": "Submit reputation feedback"
+            }
+        }
+    }))
+}
+
+/// `POST /register`: Register a new ERC-8004 agent on-chain.
+///
+/// The facilitator pays gas for the registration transaction. If a `recipient`
+/// address is provided, the NFT is minted to the facilitator and then transferred
+/// to the recipient via ERC-721 `safeTransferFrom`.
+#[instrument(skip_all, fields(network, agent_uri))]
+pub async fn post_register<A>(
+    State(facilitator): State<A>,
+    raw_body: Bytes,
+) -> impl IntoResponse
+where
+    A: Facilitator + HasProviderMap,
+    A::Error: IntoResponse,
+    A::Map: ProviderMap<Value = NetworkProvider>,
+{
+    // Parse request body
+    let request: RegisterAgentRequest = match serde_json::from_slice(&raw_body) {
+        Ok(req) => req,
+        Err(e) => {
+            error!("Failed to parse register request: {}", e);
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(RegisterAgentResponse {
+                    success: false,
+                    agent_id: None,
+                    transaction: None,
+                    transfer_transaction: None,
+                    owner: None,
+                    error: Some(format!("Invalid request format: {}", e)),
+                    network: crate::network::Network::Ethereum,
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let network = request.network;
+
+    // Validate network supports ERC-8004
+    if !is_erc8004_supported(&network) {
+        let supported = supported_network_names();
+        warn!(network = %network, "ERC-8004 registration not supported on this network");
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(RegisterAgentResponse {
+                success: false,
+                agent_id: None,
+                transaction: None,
+                transfer_transaction: None,
+                owner: None,
+                error: Some(format!(
+                    "ERC-8004 is not supported on network {}. Supported networks: {:?}",
+                    network, supported
+                )),
+                network,
+            }),
+        )
+            .into_response();
+    }
+
+    // Get contracts for this network
+    let contracts = match get_contracts(&network) {
+        Some(c) => c,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(RegisterAgentResponse {
+                    success: false,
+                    agent_id: None,
+                    transaction: None,
+                    transfer_transaction: None,
+                    owner: None,
+                    error: Some(format!("No ERC-8004 contracts for network {}", network)),
+                    network,
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    info!(
+        network = %network,
+        agent_uri = %request.agent_uri,
+        has_recipient = request.recipient.is_some(),
+        "Processing ERC-8004 agent registration"
+    );
+
+    // Get the provider for this network
+    let provider_map = facilitator.provider_map();
+    let provider = match provider_map.by_network(&network) {
+        Some(NetworkProvider::Evm(p)) => p,
+        _ => {
+            error!(network = %network, "No EVM provider available for network");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(RegisterAgentResponse {
+                    success: false,
+                    agent_id: None,
+                    transaction: None,
+                    transfer_transaction: None,
+                    owner: None,
+                    error: Some(format!("No EVM provider available for network {}", network)),
+                    network,
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    // Create Identity Registry contract instance
+    let identity_registry =
+        IIdentityRegistry::new(contracts.identity_registry, provider.inner().clone());
+
+    // Build the registration call based on provided parameters
+    let agent_uri = request.agent_uri.clone();
+    let has_metadata = request.metadata.as_ref().map_or(false, |m| !m.is_empty());
+
+    let register_result = if has_metadata {
+        // Convert metadata params to contract MetadataEntry structs
+        let metadata_entries: Vec<MetadataEntry> = request
+            .metadata
+            .unwrap_or_default()
+            .into_iter()
+            .map(|m| MetadataEntry {
+                metadataKey: m.key,
+                metadataValue: hex::decode(m.value.trim_start_matches("0x"))
+                    .unwrap_or_else(|_| m.value.as_bytes().to_vec())
+                    .into(),
+            })
+            .collect();
+
+        info!(
+            metadata_count = metadata_entries.len(),
+            "Registering agent with URI and metadata"
+        );
+
+        // register_0 = register(string, MetadataEntry[]) - first overload in ABI
+        let call = identity_registry.register_0(agent_uri, metadata_entries);
+        call.send().await
+    } else if !request.agent_uri.is_empty() {
+        info!("Registering agent with URI only");
+        // register_1 = register(string) - second overload in ABI
+        let call = identity_registry.register_1(agent_uri);
+        call.send().await
+    } else {
+        info!("Registering agent without URI or metadata");
+        // register_2 = register() - third overload in ABI
+        let call = identity_registry.register_2();
+        call.send().await
+    };
+
+    // Handle registration transaction
+    let pending_tx = match register_result {
+        Ok(tx) => tx,
+        Err(e) => {
+            error!(network = %network, error = %e, "Failed to send registration transaction");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(RegisterAgentResponse {
+                    success: false,
+                    agent_id: None,
+                    transaction: None,
+                    transfer_transaction: None,
+                    owner: None,
+                    error: Some(format!("Failed to send registration transaction: {}", e)),
+                    network,
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    // Wait for receipt
+    let receipt = match pending_tx.get_receipt().await {
+        Ok(r) => r,
+        Err(e) => {
+            error!(network = %network, error = %e, "Failed to get registration receipt");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(RegisterAgentResponse {
+                    success: false,
+                    agent_id: None,
+                    transaction: None,
+                    transfer_transaction: None,
+                    owner: None,
+                    error: Some(format!("Registration transaction failed: {}", e)),
+                    network,
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let reg_tx_hash = receipt.transaction_hash;
+    info!(network = %network, tx = %reg_tx_hash, "Registration transaction confirmed");
+
+    // Parse Registered event from logs to get agentId
+    let agent_id: Option<u64> = receipt
+        .inner
+        .logs()
+        .iter()
+        .find_map(|log| {
+            log.log_decode::<IIdentityRegistry::Registered>()
+                .ok()
+                .map(|event| {
+                    let id: u64 = event.inner.data.agentId.try_into().unwrap_or(0);
+                    info!(agent_id = id, "Parsed agentId from Registered event");
+                    id
+                })
+        });
+
+    let agent_id = match agent_id {
+        Some(id) => id,
+        None => {
+            warn!("Could not parse agentId from Registered event logs, querying totalSupply");
+            // Fallback: query totalSupply (the last registered agent)
+            match identity_registry.totalSupply().call().await {
+                Ok(supply) => {
+                    let id: u64 = supply.try_into().unwrap_or(0);
+                    id
+                }
+                Err(e) => {
+                    error!(error = %e, "Failed to query totalSupply as fallback");
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(RegisterAgentResponse {
+                            success: true,
+                            agent_id: None,
+                            transaction: Some(crate::types::TransactionHash::Evm(reg_tx_hash.0)),
+                            transfer_transaction: None,
+                            owner: None,
+                            error: Some("Registration succeeded but failed to determine agentId".to_string()),
+                            network,
+                        }),
+                    )
+                        .into_response();
+                }
+            }
+        }
+    };
+
+    // Determine final owner - get the facilitator wallet address
+    let facilitator_mixed = provider.signer_address();
+    let facilitator_address = match &facilitator_mixed {
+        MixedAddress::Evm(addr) => addr.0,
+        _ => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(RegisterAgentResponse {
+                    success: true,
+                    agent_id: Some(agent_id),
+                    transaction: Some(crate::types::TransactionHash::Evm(reg_tx_hash.0)),
+                    transfer_transaction: None,
+                    owner: None,
+                    error: Some("Unexpected non-EVM signer address".to_string()),
+                    network,
+                }),
+            )
+                .into_response();
+        }
+    };
+    let mut final_owner = facilitator_mixed;
+    let mut transfer_tx: Option<crate::types::TransactionHash> = None;
+
+    // If recipient is specified, transfer the NFT
+    if let Some(ref recipient) = request.recipient {
+        let recipient_address = match recipient {
+            MixedAddress::Evm(addr) => addr.0,
+            _ => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(RegisterAgentResponse {
+                        success: true,
+                        agent_id: Some(agent_id),
+                        transaction: Some(crate::types::TransactionHash::Evm(reg_tx_hash.0)),
+                        transfer_transaction: None,
+                        owner: Some(final_owner),
+                        error: Some("Recipient must be an EVM address for ERC-8004 registration".to_string()),
+                        network,
+                    }),
+                )
+                    .into_response();
+            }
+        };
+
+        info!(
+            agent_id = agent_id,
+            from = %facilitator_address,
+            to = %recipient_address,
+            "Transferring agent NFT to recipient"
+        );
+
+        let transfer_call = identity_registry.safeTransferFrom(
+            facilitator_address,
+            recipient_address,
+            alloy::primitives::U256::from(agent_id),
+        );
+
+        match transfer_call.send().await {
+            Ok(pending) => {
+                match pending.get_receipt().await {
+                    Ok(transfer_receipt) => {
+                        let transfer_hash = transfer_receipt.transaction_hash;
+                        info!(
+                            network = %network,
+                            tx = %transfer_hash,
+                            agent_id = agent_id,
+                            recipient = %recipient_address,
+                            "Agent NFT transferred successfully"
+                        );
+                        transfer_tx = Some(crate::types::TransactionHash::Evm(transfer_hash.0));
+                        final_owner = recipient.clone();
+                    }
+                    Err(e) => {
+                        error!(error = %e, "Transfer receipt failed - agent registered but NOT transferred");
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(RegisterAgentResponse {
+                                success: true,
+                                agent_id: Some(agent_id),
+                                transaction: Some(crate::types::TransactionHash::Evm(reg_tx_hash.0)),
+                                transfer_transaction: None,
+                                owner: Some(final_owner),
+                                error: Some(format!("Agent registered (id={}) but transfer failed: {}", agent_id, e)),
+                                network,
+                            }),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+            Err(e) => {
+                error!(error = %e, "Failed to send transfer transaction");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(RegisterAgentResponse {
+                        success: true,
+                        agent_id: Some(agent_id),
+                        transaction: Some(crate::types::TransactionHash::Evm(reg_tx_hash.0)),
+                        transfer_transaction: None,
+                        owner: Some(final_owner),
+                        error: Some(format!("Agent registered (id={}) but transfer failed: {}", agent_id, e)),
+                        network,
+                    }),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    info!(
+        network = %network,
+        agent_id = agent_id,
+        owner = %final_owner,
+        "ERC-8004 agent registration complete"
+    );
+
+    (
+        StatusCode::OK,
+        Json(RegisterAgentResponse {
+            success: true,
+            agent_id: Some(agent_id),
+            transaction: Some(crate::types::TransactionHash::Evm(reg_tx_hash.0)),
+            transfer_transaction: transfer_tx,
+            owner: Some(final_owner),
+            error: None,
+            network,
+        }),
+    )
+        .into_response()
+}
+
+// ============================================================================
+// ERC-8004 Extended Identity Read Endpoints
+// ============================================================================
+
+/// Path parameters for metadata query
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct IdentityMetadataPathParams {
+    pub network: String,
+    pub agent_id: u64,
+    pub key: String,
+}
+
+/// `GET /identity/:network/:agent_id/metadata/:key`: Read specific metadata from an agent.
+#[instrument(skip_all, fields(network, agent_id, key))]
+pub async fn get_identity_metadata<A>(
+    State(facilitator): State<A>,
+    Path(params): Path<IdentityMetadataPathParams>,
+) -> impl IntoResponse
+where
+    A: Facilitator + HasProviderMap,
+    A::Error: IntoResponse,
+    A::Map: ProviderMap<Value = NetworkProvider>,
+{
+    let network: crate::network::Network = match params.network.parse() {
+        Ok(n) => n,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": format!("Invalid network: {}", params.network)
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    if !is_erc8004_supported(&network) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": format!("ERC-8004 is not supported on network {}", network),
+                "supportedNetworks": supported_network_names()
+            })),
+        )
+            .into_response();
+    }
+
+    let contracts = match get_contracts(&network) {
+        Some(c) => c,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": format!("No ERC-8004 contracts for network {}", network) })),
+            )
+                .into_response();
+        }
+    };
+
+    let provider_map = facilitator.provider_map();
+    let provider = match provider_map.by_network(&network) {
+        Some(NetworkProvider::Evm(p)) => p,
+        _ => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("No EVM provider available for network {}", network) })),
+            )
+                .into_response();
+        }
+    };
+
+    let identity_registry =
+        IIdentityRegistry::new(contracts.identity_registry, provider.inner().clone());
+    let agent_id_u256 = alloy::primitives::U256::from(params.agent_id);
+
+    // Check if agent exists
+    match identity_registry.exists(agent_id_u256).call().await {
+        Ok(exists) => {
+            if !exists {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({
+                        "error": format!("Agent {} not found", params.agent_id)
+                    })),
+                )
+                    .into_response();
+            }
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("Failed to check agent existence: {}", e) })),
+            )
+                .into_response();
+        }
+    }
+
+    // Query metadata
+    match identity_registry
+        .getMetadata(agent_id_u256, params.key.clone())
+        .call()
+        .await
+    {
+        Ok(value) => {
+            let hex_value = format!("0x{}", hex::encode(&value));
+            let utf8_value = String::from_utf8(value.to_vec()).ok();
+
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "agentId": params.agent_id,
+                    "key": params.key,
+                    "value": hex_value,
+                    "valueUtf8": utf8_value,
+                    "network": network
+                })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            error!(
+                network = %network,
+                agent_id = params.agent_id,
+                key = %params.key,
+                error = %e,
+                "Failed to query metadata"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": format!("Failed to query metadata: {}", e)
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Path parameters for total supply query
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct TotalSupplyPathParams {
+    pub network: String,
+}
+
+/// `GET /identity/:network/total-supply`: Get total number of registered agents on a network.
+#[instrument(skip_all, fields(network))]
+pub async fn get_identity_total_supply<A>(
+    State(facilitator): State<A>,
+    Path(params): Path<TotalSupplyPathParams>,
+) -> impl IntoResponse
+where
+    A: Facilitator + HasProviderMap,
+    A::Error: IntoResponse,
+    A::Map: ProviderMap<Value = NetworkProvider>,
+{
+    let network: crate::network::Network = match params.network.parse() {
+        Ok(n) => n,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": format!("Invalid network: {}", params.network)
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    if !is_erc8004_supported(&network) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": format!("ERC-8004 is not supported on network {}", network),
+                "supportedNetworks": supported_network_names()
+            })),
+        )
+            .into_response();
+    }
+
+    let contracts = match get_contracts(&network) {
+        Some(c) => c,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": format!("No ERC-8004 contracts for network {}", network) })),
+            )
+                .into_response();
+        }
+    };
+
+    let provider_map = facilitator.provider_map();
+    let provider = match provider_map.by_network(&network) {
+        Some(NetworkProvider::Evm(p)) => p,
+        _ => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("No EVM provider available for network {}", network) })),
+            )
+                .into_response();
+        }
+    };
+
+    let identity_registry =
+        IIdentityRegistry::new(contracts.identity_registry, provider.inner().clone());
+
+    match identity_registry.totalSupply().call().await {
+        Ok(supply) => {
+            let total: u64 = supply.try_into().unwrap_or(0);
+            info!(network = %network, total_supply = total, "Queried identity total supply");
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "totalSupply": total,
+                    "network": network
+                })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            error!(network = %network, error = %e, "Failed to query total supply");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": format!("Failed to query total supply: {}", e)
+                })),
+            )
+                .into_response()
+        }
+    }
 }

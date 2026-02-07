@@ -545,6 +545,8 @@ git merge upstream/main      # Follow docs/CUSTOMIZATIONS.md strategy
 - `POST /verify` - Verify payment authorization (accepts both v1 and v2 request formats)
 - `GET /settle` - Settlement schema
 - `POST /settle` - Settle payment on-chain (accepts both v1 and v2 request formats)
+- `GET /docs` - Interactive Swagger UI (OpenAPI documentation)
+- `GET /api-docs/openapi.json` - Raw OpenAPI 3.0 JSON spec (version auto-syncs from Cargo.toml)
 - Asset endpoints: `/logo.png`, `/favicon.ico`, `/avalanche.png`, etc.
 
 ### x402 Protocol v2 Support (v1.8.0+)
@@ -571,6 +573,8 @@ Key files for v2 support:
 5. Build Docker: `docker build -t facilitator-test .`
 6. Test Docker locally: `docker-compose up`
 7. Commit with clear messages
+
+**When adding new API endpoints**, always add corresponding documentation in `src/openapi.rs`. The version syncs automatically from `Cargo.toml` via `env!("CARGO_PKG_VERSION")`, but endpoint definitions must be added manually. Verify after deploy: `curl -s https://facilitator.ultravioletadao.xyz/api-docs/openapi.json | jq '.info.version'`
 
 ### Adding a New Network
 
@@ -612,6 +616,8 @@ This complete checklist covers:
 - Copy the markdown table output to README.md
 
 **Total work**: ~155 lines of code + 1 logo file + AWS config + wallet funding + README update
+
+> **OpenAPI Sync**: If the new network introduces new API endpoints, add them to `src/openapi.rs`. The version auto-syncs from `Cargo.toml`.
 
 ### Updating Branding
 

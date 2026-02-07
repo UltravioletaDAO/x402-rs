@@ -1,6 +1,10 @@
 //! OpenAPI/Swagger documentation for the x402 Facilitator API.
 //!
 //! This module provides interactive API documentation via Swagger UI at `/docs`.
+//!
+//! **IMPORTANT**: Keep this file in sync with actual endpoints in `src/handlers.rs`.
+//! When adding new endpoints or changing the version, update this file accordingly.
+//! The version here should match `Cargo.toml` version.
 
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
@@ -11,7 +15,7 @@ use axum::Router;
 #[openapi(
     info(
         title = "x402 Payment Facilitator API",
-        version = "1.23.0",
+        version = "0.0.0",  // Overridden at runtime by env!("CARGO_PKG_VERSION")
         description = r#"
 Ultravioleta DAO x402 Payment Facilitator - Gasless micropayments for the agentic economy.
 
@@ -25,7 +29,7 @@ The x402 facilitator enables gasless micropayments across multiple blockchain ne
 Ethereum, Base, Polygon, Optimism, Avalanche, Arbitrum, Celo, HyperEVM, Unichain, Monad, Scroll, BSC, SKALE
 
 ### EVM Chains (Testnet)
-Ethereum Sepolia, Base Sepolia, Polygon Amoy, Optimism Sepolia, Avalanche Fuji, Arbitrum Sepolia, Celo Sepolia, HyperEVM Testnet, Unichain Sepolia, SKALE Sepolia
+Ethereum Sepolia, Base Sepolia, Polygon Amoy, Optimism Sepolia, Avalanche Fuji, Arbitrum Sepolia, Celo Sepolia, HyperEVM Testnet, Unichain Sepolia, SKALE Sepolia, Monad Testnet
 
 ### SVM Chains (Solana Virtual Machine)
 - **Solana**: Mainnet and Devnet
@@ -45,24 +49,26 @@ Ethereum Sepolia, Base Sepolia, Polygon Amoy, Optimism Sepolia, Avalanche Fuji, 
 
 ## ERC-8004 Reputation (Trustless Agents)
 
-The facilitator supports [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) for AI agent reputation:
+The facilitator supports [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) for AI agent identity and reputation across **14 networks** (8 mainnets + 6 testnets).
 
+**Supported ERC-8004 networks:** `ethereum`, `base`, `polygon`, `arbitrum`, `celo`, `bsc`, `monad`, `avalanche`, `ethereum-sepolia`, `base-sepolia`, `polygon-amoy`, `arbitrum-sepolia`, `celo-sepolia`, `avalanche-fuji`
+
+### Endpoints:
+- `POST /register` - Register a new agent on-chain (gasless)
 - `POST /feedback` - Submit on-chain reputation feedback
 - `POST /feedback/revoke` - Revoke previously submitted feedback
 - `POST /feedback/response` - Append agent response to feedback
 - `GET /reputation/:network/:agentId` - Query agent reputation summary
 - `GET /identity/:network/:agentId` - Get agent identity from registry
-
-Supported ERC-8004 networks: `ethereum`, `ethereum-sepolia`
+- `GET /identity/:network/:agentId/metadata/:key` - Read specific agent metadata
+- `GET /identity/:network/total-supply` - Get total registered agents on a network
 
 ## Bazaar Discovery
 
 Decentralized resource discovery for x402-enabled services:
 
-- `GET /bazaar` - List all registered resources
-- `POST /bazaar` - Register a new resource
-- `GET /bazaar/:id` - Get specific resource by ID
-- `DELETE /bazaar/:id` - Unregister a resource
+- `GET /discovery/resources` - List all registered resources
+- `POST /discovery/register` - Register a new resource
 
 ## Protocol Documentation
 
@@ -87,8 +93,9 @@ Decentralized resource discovery for x402-enabled services:
     tags(
         (name = "Core", description = "Core x402 payment verification and settlement"),
         (name = "Discovery", description = "Network and scheme discovery"),
-        (name = "ERC-8004", description = "AI Agent reputation and identity (ERC-8004 Trustless Agents)"),
+        (name = "ERC-8004", description = "AI Agent reputation and identity (ERC-8004 Trustless Agents) - 14 networks"),
         (name = "Bazaar", description = "Decentralized resource discovery registry"),
+        (name = "Compliance", description = "OFAC compliance and sanctions screening"),
         (name = "Health", description = "Service health and status")
     ),
     paths(
@@ -101,17 +108,21 @@ Decentralized resource discovery for x402-enabled services:
         path_supported,
         path_version,
         // ERC-8004 endpoints
+        path_register_get,
+        path_register_post,
         path_feedback_get,
         path_feedback_post,
         path_feedback_revoke,
         path_feedback_response,
         path_reputation,
         path_identity,
+        path_identity_metadata,
+        path_identity_total_supply,
         // Bazaar endpoints
         path_bazaar_list,
         path_bazaar_register,
-        path_bazaar_get,
-        path_bazaar_delete,
+        // Compliance
+        path_blacklist,
         // Health
         path_health,
     )
@@ -158,7 +169,7 @@ Verifies an x402 payment authorization without settling it on-chain.
     "signature": "0x...",
     "payload": {
       "scheme": "exact",
-      "network": "base-mainnet",
+      "network": "base",
       "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
       "from": "0x...",
       "to": "0x...",
@@ -170,7 +181,7 @@ Verifies an x402 payment authorization without settling it on-chain.
   },
   "paymentRequirements": {
     "scheme": "exact",
-    "network": "base-mainnet",
+    "network": "base",
     "maxAmountRequired": "1000000",
     "payTo": "0x...",
     "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
@@ -219,6 +230,8 @@ Submits a verified payment authorization to the blockchain for settlement.
 2. Calls `transferWithAuthorization` on the token contract
 3. Returns transaction hash on success
 
+**Supports escrow settlements** when `extensions.refund` is present in the payment payload (x402r extension).
+
 **Request body:** Same as /verify
 
 **Response on success:**
@@ -226,7 +239,7 @@ Submits a verified payment authorization to the blockchain for settlement.
 {
   "success": true,
   "transaction": "0x...",
-  "network": "base-mainnet",
+  "network": "base",
   "payer": "0x..."
 }
 ```
@@ -237,7 +250,7 @@ Submits a verified payment authorization to the blockchain for settlement.
   "success": false,
   "errorReason": "insufficient_balance",
   "payer": "0x...",
-  "network": "base-mainnet"
+  "network": "base"
 }
 ```
 "#,
@@ -262,7 +275,7 @@ async fn path_settle_post() {}
 Returns all supported payment kinds (network + scheme + version combinations).
 
 **Response includes both v1 and v2 formats:**
-- v1: `"network": "base-mainnet"` (string enum)
+- v1: `"network": "base"` (string enum)
 - v2: `"network": "eip155:8453"` (CAIP-2 format)
 "#,
     responses(
@@ -272,7 +285,7 @@ Returns all supported payment kinds (network + scheme + version combinations).
                     {
                         "x402Version": 1,
                         "scheme": "exact",
-                        "network": "base-mainnet"
+                        "network": "base"
                     },
                     {
                         "x402Version": 2,
@@ -291,11 +304,11 @@ async fn path_supported() {}
     path = "/version",
     tag = "Discovery",
     summary = "Get facilitator version",
-    description = "Returns the current version of the facilitator.",
+    description = "Returns the current version of the facilitator. The version always matches the Cargo.toml package version.",
     responses(
         (status = 200, description = "Version info", body = Object,
             example = json!({
-                "version": "1.23.0"
+                "version": "(current Cargo.toml version)"
             })
         )
     )
@@ -308,12 +321,70 @@ async fn path_version() {}
 
 #[utoipa::path(
     get,
+    path = "/register",
+    tag = "ERC-8004",
+    summary = "Get agent registration schema",
+    description = "Returns the JSON schema for ERC-8004 agent registration requests, including supported networks and body format.",
+    responses(
+        (status = 200, description = "Registration schema", body = Object)
+    )
+)]
+async fn path_register_get() {}
+
+#[utoipa::path(
+    post,
+    path = "/register",
+    tag = "ERC-8004",
+    summary = "Register a new agent",
+    description = r#"
+Registers a new ERC-8004 agent on-chain. The facilitator pays all gas fees.
+
+**Supported networks:** ethereum, base, polygon, arbitrum, celo, bsc, monad, avalanche, ethereum-sepolia, base-sepolia, polygon-amoy, arbitrum-sepolia, celo-sepolia, avalanche-fuji
+
+If `recipient` is specified, the agent NFT is minted to the facilitator then transferred to the recipient via ERC-721 `safeTransferFrom`.
+
+**Request body:**
+```json
+{
+  "x402Version": 1,
+  "network": "base",
+  "agentUri": "ipfs://Qm.../agent.json",
+  "metadata": [
+    {"key": "description", "value": "0x..."},
+    {"key": "website", "value": "0x..."}
+  ],
+  "recipient": "0x..."
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "agentId": 42,
+  "transaction": "0x...",
+  "transferTransaction": "0x...",
+  "owner": "0x...",
+  "network": "base"
+}
+```
+"#,
+    request_body(content = Object, description = "Agent registration request"),
+    responses(
+        (status = 200, description = "Registration result", body = Object),
+        (status = 400, description = "Registration failed", body = Object)
+    )
+)]
+async fn path_register_post() {}
+
+#[utoipa::path(
+    get,
     path = "/feedback",
     tag = "ERC-8004",
     summary = "Get feedback submission schema",
-    description = "Returns the JSON schema for ERC-8004 feedback submission requests.",
+    description = "Returns the JSON schema for ERC-8004 feedback submission requests, including all supported networks and related endpoints.",
     responses(
-        (status = 200, description = "Feedback schema", body = Object)
+        (status = 200, description = "Feedback schema with supported networks", body = Object)
     )
 )]
 async fn path_feedback_get() {}
@@ -326,13 +397,13 @@ async fn path_feedback_get() {}
     description = r#"
 Submits on-chain reputation feedback for an AI agent via the ERC-8004 Reputation Registry.
 
-**Supported networks:** ethereum, ethereum-sepolia
+**Supported networks:** ethereum, base, polygon, arbitrum, celo, bsc, monad, avalanche, ethereum-sepolia, base-sepolia, polygon-amoy, arbitrum-sepolia, celo-sepolia, avalanche-fuji
 
 **Request body:**
 ```json
 {
   "x402Version": 1,
-  "network": "ethereum",
+  "network": "base",
   "feedback": {
     "agentId": 42,
     "value": 87,
@@ -345,7 +416,7 @@ Submits on-chain reputation feedback for an AI agent via the ERC-8004 Reputation
     "proof": {
       "transactionHash": "0x...",
       "blockNumber": 12345678,
-      "network": "ethereum",
+      "network": "base",
       "payer": "0x...",
       "payee": "0x...",
       "amount": "1000000",
@@ -363,7 +434,7 @@ Submits on-chain reputation feedback for an AI agent via the ERC-8004 Reputation
   "success": true,
   "transaction": "0x...",
   "feedbackIndex": 1,
-  "network": "ethereum"
+  "network": "base"
 }
 ```
 "#,
@@ -387,7 +458,7 @@ Revokes previously submitted reputation feedback.
 ```json
 {
   "x402Version": 1,
-  "network": "ethereum",
+  "network": "base",
   "agentId": 42,
   "feedbackIndex": 1
 }
@@ -413,7 +484,7 @@ Appends an agent's response to existing feedback.
 ```json
 {
   "x402Version": 1,
-  "network": "ethereum",
+  "network": "base",
   "agentId": 42,
   "clientAddress": "0x...",
   "feedbackIndex": 1,
@@ -438,10 +509,7 @@ async fn path_feedback_response() {}
     description = r#"
 Queries the reputation summary for an AI agent from the ERC-8004 Reputation Registry.
 
-**Supported networks:** ethereum, ethereum-sepolia
-
-**Query parameters:**
-- `include_feedback` (optional): Include individual feedback entries
+**Supported networks:** ethereum, base, polygon, arbitrum, celo, bsc, monad, avalanche, ethereum-sepolia, base-sepolia, polygon-amoy, arbitrum-sepolia, celo-sepolia, avalanche-fuji
 
 **Response:**
 ```json
@@ -452,15 +520,15 @@ Queries the reputation summary for an AI agent from the ERC-8004 Reputation Regi
     "count": 15,
     "summaryValue": 87,
     "summaryValueDecimals": 0,
-    "network": "ethereum"
+    "network": "base"
   },
   "feedback": [...],
-  "network": "ethereum"
+  "network": "base"
 }
 ```
 "#,
     params(
-        ("network" = String, Path, description = "Network name (ethereum or ethereum-sepolia)"),
+        ("network" = String, Path, description = "Network name (e.g., ethereum, base, polygon, arbitrum)"),
         ("agent_id" = u64, Path, description = "Agent ID (ERC-721 tokenId)"),
         ("include_feedback" = Option<bool>, Query, description = "Include individual feedback entries")
     ),
@@ -480,7 +548,7 @@ async fn path_reputation() {}
     description = r#"
 Retrieves agent identity information from the ERC-8004 Identity Registry.
 
-**Supported networks:** ethereum, ethereum-sepolia
+**Supported networks:** ethereum, base, polygon, arbitrum, celo, bsc, monad, avalanche, ethereum-sepolia, base-sepolia, polygon-amoy, arbitrum-sepolia, celo-sepolia, avalanche-fuji
 
 **Response:**
 ```json
@@ -489,12 +557,12 @@ Retrieves agent identity information from the ERC-8004 Identity Registry.
   "owner": "0x...",
   "agentUri": "ipfs://Qm...",
   "agentWallet": "0x...",
-  "network": "ethereum"
+  "network": "base"
 }
 ```
 "#,
     params(
-        ("network" = String, Path, description = "Network name (ethereum or ethereum-sepolia)"),
+        ("network" = String, Path, description = "Network name (e.g., ethereum, base, polygon)"),
         ("agent_id" = u64, Path, description = "Agent ID (ERC-721 tokenId)")
     ),
     responses(
@@ -505,17 +573,75 @@ Retrieves agent identity information from the ERC-8004 Identity Registry.
 )]
 async fn path_identity() {}
 
+#[utoipa::path(
+    get,
+    path = "/identity/{network}/{agent_id}/metadata/{key}",
+    tag = "ERC-8004",
+    summary = "Read agent metadata",
+    description = r#"
+Reads a specific metadata key from an agent's Identity Registry entry.
+
+**Response:**
+```json
+{
+  "agentId": 42,
+  "key": "description",
+  "value": "0x48656c6c6f",
+  "valueUtf8": "Hello",
+  "network": "base"
+}
+```
+"#,
+    params(
+        ("network" = String, Path, description = "Network name (e.g., ethereum, base)"),
+        ("agent_id" = u64, Path, description = "Agent ID (ERC-721 tokenId)"),
+        ("key" = String, Path, description = "Metadata key (e.g., description, website, version)")
+    ),
+    responses(
+        (status = 200, description = "Metadata value", body = Object),
+        (status = 400, description = "Invalid network or agent", body = Object),
+        (status = 404, description = "Agent or metadata key not found", body = Object)
+    )
+)]
+async fn path_identity_metadata() {}
+
+#[utoipa::path(
+    get,
+    path = "/identity/{network}/total-supply",
+    tag = "ERC-8004",
+    summary = "Get total registered agents",
+    description = r#"
+Returns the total number of registered agents on a specific network.
+
+**Response:**
+```json
+{
+  "network": "base",
+  "totalSupply": 156
+}
+```
+"#,
+    params(
+        ("network" = String, Path, description = "Network name (e.g., ethereum, base)")
+    ),
+    responses(
+        (status = 200, description = "Total supply", body = Object),
+        (status = 400, description = "Invalid or unsupported network", body = Object)
+    )
+)]
+async fn path_identity_total_supply() {}
+
 // ============================================================================
 // Bazaar Endpoints
 // ============================================================================
 
 #[utoipa::path(
     get,
-    path = "/bazaar",
+    path = "/discovery/resources",
     tag = "Bazaar",
     summary = "List registered resources",
     description = r#"
-Lists all resources registered in the Bazaar discovery registry.
+Lists all resources registered in the discovery registry.
 
 **Query parameters:**
 - `type` (optional): Filter by resource type (e.g., "facilitator", "agent", "service")
@@ -536,9 +662,7 @@ Lists all resources registered in the Bazaar discovery registry.
         "category": "ai-agent",
         "provider": "Example Inc",
         "tags": ["ai", "nlp"]
-      },
-      "registered_at": "2024-01-01T00:00:00Z",
-      "last_seen": "2024-01-02T00:00:00Z"
+      }
     }
   ]
 }
@@ -557,11 +681,11 @@ async fn path_bazaar_list() {}
 
 #[utoipa::path(
     post,
-    path = "/bazaar",
+    path = "/discovery/register",
     tag = "Bazaar",
     summary = "Register a resource",
     description = r#"
-Registers a new resource in the Bazaar discovery registry.
+Registers a new resource in the discovery registry.
 
 **Request body:**
 ```json
@@ -572,7 +696,7 @@ Registers a new resource in the Bazaar discovery registry.
   "paymentRequirements": [
     {
       "scheme": "exact",
-      "network": "base-mainnet",
+      "network": "base",
       "maxAmountRequired": "1000000",
       "payTo": "0x...",
       "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
@@ -594,37 +718,32 @@ Registers a new resource in the Bazaar discovery registry.
 )]
 async fn path_bazaar_register() {}
 
-#[utoipa::path(
-    get,
-    path = "/bazaar/{id}",
-    tag = "Bazaar",
-    summary = "Get resource by ID",
-    description = "Retrieves a specific resource from the Bazaar registry by its ID.",
-    params(
-        ("id" = String, Path, description = "Resource ID (UUID)")
-    ),
-    responses(
-        (status = 200, description = "Resource details", body = Object),
-        (status = 404, description = "Resource not found", body = Object)
-    )
-)]
-async fn path_bazaar_get() {}
+// ============================================================================
+// Compliance Endpoints
+// ============================================================================
 
 #[utoipa::path(
-    delete,
-    path = "/bazaar/{id}",
-    tag = "Bazaar",
-    summary = "Unregister a resource",
-    description = "Removes a resource from the Bazaar registry.",
-    params(
-        ("id" = String, Path, description = "Resource ID (UUID)")
-    ),
+    get,
+    path = "/blacklist",
+    tag = "Compliance",
+    summary = "Get OFAC sanctioned addresses",
+    description = r#"
+Returns the list of OFAC sanctioned blockchain addresses. Payments involving these addresses are blocked.
+
+**Response:**
+```json
+{
+  "addresses": ["0x...", "0x..."],
+  "lastUpdated": "2026-01-15T00:00:00Z",
+  "source": "OFAC SDN List"
+}
+```
+"#,
     responses(
-        (status = 200, description = "Resource unregistered", body = Object),
-        (status = 404, description = "Resource not found", body = Object)
+        (status = 200, description = "Sanctioned addresses list", body = Object)
     )
 )]
-async fn path_bazaar_delete() {}
+async fn path_blacklist() {}
 
 // ============================================================================
 // Health Endpoints
@@ -646,8 +765,13 @@ async fn path_bazaar_delete() {}
 )]
 async fn path_health() {}
 
-/// Create the Swagger UI router
+/// Create the Swagger UI router.
+///
+/// The OpenAPI version is patched at compile time from `Cargo.toml` via `env!("CARGO_PKG_VERSION")`,
+/// so it always stays in sync without manual updates.
 pub fn swagger_routes() -> Router {
+    let mut api_doc = ApiDoc::openapi();
+    api_doc.info.version = env!("CARGO_PKG_VERSION").to_string();
     Router::new()
-        .merge(SwaggerUi::new("/docs").url("/api-docs/openapi.json", ApiDoc::openapi()))
+        .merge(SwaggerUi::new("/docs").url("/api-docs/openapi.json", api_doc))
 }

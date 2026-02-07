@@ -1595,7 +1595,7 @@ pub async fn get_feedback_info() -> impl IntoResponse {
         "specification": "https://eips.ethereum.org/EIPS/eip-8004",
         "body": {
             "x402Version": "number (1 or 2)",
-            "network": format!("string (e.g., '{}' or 'eip155:1')", networks.first().unwrap_or(&"ethereum")),
+            "network": format!("string (e.g., '{}' or 'eip155:1')", networks.first().map(|s| s.as_str()).unwrap_or("ethereum")),
             "feedback": {
                 "agentId": "number - Agent's token ID in the Identity Registry",
                 "value": "number - Feedback value (fixed-point, e.g., 87 means 87/100)",
@@ -2459,33 +2459,10 @@ where
 
     let agent_id_u256 = alloy::primitives::U256::from(params.agent_id);
 
-    // Check if agent exists
-    let exists_call = identity_registry.exists(agent_id_u256);
-    match exists_call.call().await {
-        Ok(exists) => {
-            if !exists {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(json!({
-                        "error": format!("Agent {} not found in Identity Registry", params.agent_id)
-                    })),
-                )
-                    .into_response();
-            }
-        }
-        Err(e) => {
-            error!(error = %e, "Failed to check if agent exists");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({
-                    "error": format!("Failed to check agent existence: {}", e)
-                })),
-            )
-                .into_response();
-        }
-    }
-
-    // Get owner, URI, and wallet in parallel
+    // Query owner, URI, and wallet in parallel.
+    // We skip exists() because it's not part of standard ERC-721 and may not be
+    // implemented on all proxy contracts. Instead, ownerOf() reverts for
+    // non-existent tokens, which we catch below as a 404.
     let owner_call = identity_registry.ownerOf(agent_id_u256);
     let uri_call = identity_registry.tokenURI(agent_id_u256);
     let wallet_call = identity_registry.getAgentWallet(agent_id_u256);
@@ -2496,9 +2473,20 @@ where
         wallet_call.call()
     );
 
+    // ownerOf reverts for non-existent tokens (ERC-721 standard behavior)
     let owner = match owner_result {
         Ok(o) => MixedAddress::Evm(crate::types::EvmAddress(o)),
         Err(e) => {
+            let err_str = e.to_string();
+            if err_str.contains("revert") || err_str.contains("ERC721") {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({
+                        "error": format!("Agent {} not found in Identity Registry on {}", params.agent_id, network)
+                    })),
+                )
+                    .into_response();
+            }
             error!(error = %e, "Failed to get agent owner");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -3029,29 +3017,7 @@ where
         IIdentityRegistry::new(contracts.identity_registry, provider.inner().clone());
     let agent_id_u256 = alloy::primitives::U256::from(params.agent_id);
 
-    // Check if agent exists
-    match identity_registry.exists(agent_id_u256).call().await {
-        Ok(exists) => {
-            if !exists {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(json!({
-                        "error": format!("Agent {} not found", params.agent_id)
-                    })),
-                )
-                    .into_response();
-            }
-        }
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("Failed to check agent existence: {}", e) })),
-            )
-                .into_response();
-        }
-    }
-
-    // Query metadata
+    // Query metadata directly (skip exists() which may not be implemented on all proxies)
     match identity_registry
         .getMetadata(agent_id_u256, params.key.clone())
         .call()
@@ -3074,6 +3040,16 @@ where
                 .into_response()
         }
         Err(e) => {
+            let err_str = e.to_string();
+            if err_str.contains("revert") || err_str.contains("ERC721") {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({
+                        "error": format!("Agent {} not found or metadata key '{}' not set on {}", params.agent_id, params.key, network)
+                    })),
+                )
+                    .into_response();
+            }
             error!(
                 network = %network,
                 agent_id = params.agent_id,

@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.29.0] - 2026-02-06
+
+### Fixed - ERC-8004 Network Name Consistency & Identity Lookup Robustness
+
+- **BREAKING FIX**: `supported_network_names()` now derives names from `Network::Display` instead of hardcoded strings
+  - Fixes "base-mainnet" vs "base" mismatch: `/feedback` returned "base-mainnet" but POST endpoints expected "base"
+  - All API responses now use the canonical network names that serde/FromStr accept
+- Removed `exists()` calls from identity lookup handlers (`/identity/:network/:agentId`, `/identity/:network/:agentId/metadata/:key`)
+  - `exists()` is not part of standard ERC-721 and may not be implemented on all proxy contracts
+  - Now uses `ownerOf()` revert detection for non-existent agents (returns proper 404)
+  - Fixes "execution reverted" errors on Base and Ethereum identity lookups
+- Added ERC-8004 section to README.md with 14-network table, API endpoints, and usage examples
+
 ## [1.28.1] - 2026-02-06
 
 ### Fixed - Avalanche ERC-8004 missing from /feedback API

@@ -10,7 +10,8 @@
 ```
 
 [![Live](https://img.shields.io/badge/live-facilitator.ultravioletadao.xyz-00d4aa)](https://facilitator.ultravioletadao.xyz)
-[![Version](https://img.shields.io/badge/version-1.28.1-blue)](https://github.com/UltravioletaDAO/x402-rs)
+[![Version](https://img.shields.io/badge/version-1.29.0-blue)](https://github.com/UltravioletaDAO/x402-rs)
+[![Swagger](https://img.shields.io/badge/docs-Swagger_UI-85ea2d)](https://facilitator.ultravioletadao.xyz/docs/)
 [![Rust](https://img.shields.io/badge/rust-2021-orange)](https://www.rust-lang.org/)
 
 ---
@@ -347,8 +348,8 @@ RPC_URL_ALGORAND_MAINNET=https://mainnet-api.algonode.cloud
 
 ```bash
 # Build & push
-docker build -t facilitator:v1.28.1 .
-docker push 518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator:v1.28.1
+docker build -t facilitator:v1.29.0 .
+docker push 518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator:v1.29.0
 
 # Deploy
 aws ecs update-service --cluster facilitator-production \
@@ -405,6 +406,21 @@ Claude will:
 See [`guides/ADDING_NEW_CHAINS.md`](guides/ADDING_NEW_CHAINS.md) for the complete manual checklist.
 
 **Quick automated path:** Use `/add-network {network-name}` skill.
+
+### Version & Docs Maintenance Checklist
+
+When bumping the version, adding endpoints, or adding networks, update **all** of these:
+
+| File | What to update |
+|------|---------------|
+| `Cargo.toml` | `version` field |
+| `src/openapi.rs` | `version` in `#[openapi(info(...))]`, endpoint docs, network lists |
+| `README.md` | Version badge, network tables, API endpoint table, ERC-8004 network count |
+| `static/index.html` | Network cards, stats, ERC-8004 showcase badges, i18n strings (EN/ES) |
+| `docs/CHANGELOG.md` | New version entry |
+| `src/erc8004/mod.rs` | `supported_networks()` when adding ERC-8004 networks |
+
+**Swagger UI**: https://facilitator.ultravioletadao.xyz/docs/ (auto-generated from `src/openapi.rs`)
 
 ---
 

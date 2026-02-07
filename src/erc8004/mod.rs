@@ -224,26 +224,10 @@ pub fn supported_networks() -> Vec<Network> {
     ]
 }
 
-/// Get list of supported network names for API responses
-pub fn supported_network_names() -> Vec<&'static str> {
-    vec![
-        // Mainnets
-        "ethereum",
-        "base-mainnet",
-        "polygon",
-        "arbitrum",
-        "celo",
-        "bsc",
-        "monad",
-        "avalanche",
-        // Testnets
-        "ethereum-sepolia",
-        "base-sepolia",
-        "polygon-amoy",
-        "arbitrum-sepolia",
-        "celo-sepolia",
-        "avalanche-fuji",
-    ]
+/// Get list of supported network names for API responses.
+/// Derived from `supported_networks()` to avoid name mismatches.
+pub fn supported_network_names() -> Vec<String> {
+    supported_networks().iter().map(|n| n.to_string()).collect()
 }
 
 // ============================================================================
@@ -446,20 +430,21 @@ mod tests {
     #[test]
     fn test_supported_network_names() {
         let names = supported_network_names();
-        assert!(names.contains(&"ethereum"));
-        assert!(names.contains(&"base-mainnet"));
-        assert!(names.contains(&"polygon"));
-        assert!(names.contains(&"arbitrum"));
-        assert!(names.contains(&"celo"));
-        assert!(names.contains(&"bsc"));
-        assert!(names.contains(&"monad"));
-        assert!(names.contains(&"avalanche"));
-        assert!(names.contains(&"ethereum-sepolia"));
-        assert!(names.contains(&"base-sepolia"));
-        assert!(names.contains(&"polygon-amoy"));
-        assert!(names.contains(&"arbitrum-sepolia"));
-        assert!(names.contains(&"celo-sepolia"));
-        assert!(names.contains(&"avalanche-fuji"));
+        // Names must match Network::Display (what serde/FromStr accept)
+        assert!(names.contains(&"ethereum".to_string()));
+        assert!(names.contains(&"base".to_string())); // NOT "base-mainnet"
+        assert!(names.contains(&"polygon".to_string()));
+        assert!(names.contains(&"arbitrum".to_string()));
+        assert!(names.contains(&"celo".to_string()));
+        assert!(names.contains(&"bsc".to_string()));
+        assert!(names.contains(&"monad".to_string()));
+        assert!(names.contains(&"avalanche".to_string()));
+        assert!(names.contains(&"ethereum-sepolia".to_string()));
+        assert!(names.contains(&"base-sepolia".to_string()));
+        assert!(names.contains(&"polygon-amoy".to_string()));
+        assert!(names.contains(&"arbitrum-sepolia".to_string()));
+        assert!(names.contains(&"celo-sepolia".to_string()));
+        assert!(names.contains(&"avalanche-fuji".to_string()));
         assert_eq!(names.len(), 14);
     }
 }

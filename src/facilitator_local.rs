@@ -217,32 +217,35 @@ where
         });
 
         // Add x402r escrow scheme support (PaymentOperator-based escrow)
-        // Only available for networks with deployed PaymentOperator contracts
-        // and only if ENABLE_PAYMENT_OPERATOR=true
+        // Dynamically advertise all networks with deployed PaymentOperator contracts
+        // Only if ENABLE_PAYMENT_OPERATOR=true
         if crate::payment_operator::is_enabled() {
-            // Base Mainnet - has deployed PaymentOperator at 0xa06958D93135BEd7e43893897C0d9fA931EF051C
-            let base_escrow_extra = SupportedPaymentKindExtra {
-                fee_payer: None, // Payer pays gas via ERC-3009
-                tokens: None,    // Uses USDC from base mainnet config
-                escrow: Some(EscrowSupportedInfo {
-                    escrow_address: EvmAddress(
-                        crate::payment_operator::addresses::base_mainnet::ESCROW,
-                    ),
-                    operator_address: EvmAddress(
-                        crate::payment_operator::addresses::base_mainnet::PAYMENT_OPERATOR,
-                    ),
-                    token_collector: EvmAddress(
-                        crate::payment_operator::addresses::base_mainnet::TOKEN_COLLECTOR,
-                    ),
-                }),
-            };
+            use crate::payment_operator::addresses::{OperatorAddresses, ESCROW_NETWORKS};
 
-            kinds.push(SupportedPaymentKind {
-                x402_version: X402Version::V2,
-                scheme: Scheme::Escrow,
-                network: "eip155:8453".to_string(), // CAIP-2 for Base Mainnet
-                extra: Some(base_escrow_extra),
-            });
+            for &network in ESCROW_NETWORKS {
+                if let Some(addrs) = OperatorAddresses::for_network(network) {
+                    // Only advertise networks that have a deployed operator
+                    // (settlement requires a PaymentOperator contract)
+                    if let Some(operator) = addrs.payment_operator {
+                        let escrow_extra = SupportedPaymentKindExtra {
+                            fee_payer: None,
+                            tokens: None,
+                            escrow: Some(EscrowSupportedInfo {
+                                escrow_address: EvmAddress(addrs.escrow),
+                                operator_address: EvmAddress(operator),
+                                token_collector: EvmAddress(addrs.token_collector),
+                            }),
+                        };
+
+                        kinds.push(SupportedPaymentKind {
+                            x402_version: X402Version::V2,
+                            scheme: Scheme::Escrow,
+                            network: network.to_caip2(),
+                            extra: Some(escrow_extra),
+                        });
+                    }
+                }
+            }
         }
 
         Ok(SupportedPaymentKindsResponse { kinds })

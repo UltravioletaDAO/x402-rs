@@ -230,7 +230,9 @@ Submits a verified payment authorization to the blockchain for settlement.
 2. Calls `transferWithAuthorization` on the token contract
 3. Returns transaction hash on success
 
-**Supports escrow settlements** when `extensions.refund` is present in the payment payload (x402r extension).
+**Supports x402r escrow settlements** via PaymentOperator scheme (`scheme: "escrow"`).
+Escrow contracts deployed on 9 networks: Base, Ethereum, Polygon, Arbitrum, Celo, Monad, Avalanche (+ Base Sepolia, Ethereum Sepolia testnets).
+See `/supported` for networks with active PaymentOperator deployments.
 
 **Request body:** Same as /verify
 
@@ -274,6 +276,14 @@ async fn path_settle_post() {}
     description = r#"
 Returns all supported payment kinds (network + scheme + version combinations).
 
+**Schemes:**
+- `exact` - Direct EIP-3009 payment settlement (v1 and v2 formats)
+- `escrow` - x402r PaymentOperator escrow (v2 only, CAIP-2 networks)
+- `fhe_transfer` - FHE encrypted transfer via Zama (v1 and v2)
+
+**Escrow networks (9 total):** Base, Ethereum, Polygon, Arbitrum, Celo, Monad, Avalanche, Base Sepolia, Ethereum Sepolia.
+Only networks with a deployed PaymentOperator appear in the response.
+
 **Response includes both v1 and v2 formats:**
 - v1: `"network": "base"` (string enum)
 - v2: `"network": "eip155:8453"` (CAIP-2 format)
@@ -291,6 +301,18 @@ Returns all supported payment kinds (network + scheme + version combinations).
                         "x402Version": 2,
                         "scheme": "exact",
                         "network": "eip155:8453"
+                    },
+                    {
+                        "x402Version": 2,
+                        "scheme": "escrow",
+                        "network": "eip155:8453",
+                        "extra": {
+                            "escrow": {
+                                "escrowAddress": "0xb9488351E48b23D798f24e8174514F28B741Eb4f",
+                                "operatorAddress": "0x...",
+                                "tokenCollector": "0x48ADf6E37F9b31dC2AAD0462C5862B5422C736B8"
+                            }
+                        }
                     }
                 ]
             })

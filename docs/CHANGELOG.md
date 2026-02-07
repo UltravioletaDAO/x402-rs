@@ -1,6 +1,16 @@
 # Changelog
 
-## [1.29.0] - 2026-02-06
+## [1.29.0] - 2026-02-07
+
+### Added - x402r Escrow Multi-Chain Support (9 Networks)
+
+- **x402r escrow contracts configured for 9 networks** (from x402r-sdk A1igator/multichain-config):
+  - Mainnets: Base, Ethereum, Polygon, Arbitrum, Celo, Monad, Avalanche
+  - Testnets: Base Sepolia, Ethereum Sepolia
+- Updated all Base contract addresses to match new SDK deployment
+- `/supported` endpoint dynamically advertises escrow networks with deployed PaymentOperators
+- Added `ESCROW_NETWORKS` constant as single source of truth for escrow support
+- PaymentOperator deployment required on each network before settlement is active
 
 ### Fixed - ERC-8004 Network Name Consistency & Identity Lookup Robustness
 

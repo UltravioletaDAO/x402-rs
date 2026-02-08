@@ -22,23 +22,21 @@ use tracing::{debug, error, info, instrument, warn};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::chain::{FacilitatorLocalError, NetworkProvider, NetworkProviderOps};
 use crate::chain::evm::MetaEvmProvider;
+use crate::chain::{FacilitatorLocalError, NetworkProvider, NetworkProviderOps};
 use crate::discovery::{DiscoveryError, DiscoveryRegistry};
-use crate::fhe_proxy::FheProxy;
+use crate::erc8004::{
+    get_contracts, is_erc8004_supported, supported_network_names, AgentIdentity,
+    AppendResponseRequest, FeedbackEntry, FeedbackRequest, FeedbackResponse, IIdentityRegistry,
+    IReputationRegistry, MetadataEntry, RegisterAgentRequest, RegisterAgentResponse,
+    ReputationResponse, ReputationSummary, RevokeFeedbackRequest,
+};
 use crate::facilitator::Facilitator;
+use crate::fhe_proxy::FheProxy;
 use crate::provider_cache::{HasProviderMap, ProviderMap};
 use crate::types::{
     ErrorResponse, FacilitatorErrorReason, MixedAddress, SettleRequest, VerifyRequest,
     VerifyResponse,
-};
-use crate::erc8004::{
-    FeedbackRequest, FeedbackResponse, IReputationRegistry, IIdentityRegistry,
-    get_contracts, is_erc8004_supported, supported_network_names,
-    ReputationSummary, FeedbackEntry, AgentIdentity,
-    RevokeFeedbackRequest, AppendResponseRequest, ReputationResponse,
-    RegisterAgentRequest, RegisterAgentResponse,
-    MetadataEntry,
 };
 use crate::types_v2::{
     DiscoveryFilters, DiscoveryResource, RegisterResourceRequest, SettleRequestEnvelope,
@@ -106,8 +104,14 @@ where
         .route("/reputation/{network}/{agent_id}", get(get_reputation::<A>))
         // ERC-8004 Identity endpoints
         .route("/identity/{network}/{agent_id}", get(get_identity::<A>))
-        .route("/identity/{network}/{agent_id}/metadata/{key}", get(get_identity_metadata::<A>))
-        .route("/identity/{network}/total-supply", get(get_identity_total_supply::<A>))
+        .route(
+            "/identity/{network}/{agent_id}/metadata/{key}",
+            get(get_identity_metadata::<A>),
+        )
+        .route(
+            "/identity/{network}/total-supply",
+            get(get_identity_total_supply::<A>),
+        )
         .route("/health", get(get_health))
         .route("/version", get(get_version))
         .route("/supported", get(get_supported::<A>))
@@ -714,25 +718,23 @@ where
             Ok(header_value) => {
                 // Base64 decode the header value
                 match base64::engine::general_purpose::STANDARD.decode(header_value) {
-                    Ok(decoded_bytes) => {
-                        match String::from_utf8(decoded_bytes) {
-                            Ok(decoded_str) => {
-                                info!("Using PAYMENT-SIGNATURE header (x402 v2 format)");
-                                debug!("Decoded payload length: {} bytes", decoded_str.len());
-                                decoded_str
-                            }
-                            Err(e) => {
-                                error!("PAYMENT-SIGNATURE header is not valid UTF-8: {}", e);
-                                return (
-                                    StatusCode::BAD_REQUEST,
-                                    Json(json!({
-                                        "error": "PAYMENT-SIGNATURE header is not valid UTF-8"
-                                    })),
-                                )
-                                    .into_response();
-                            }
+                    Ok(decoded_bytes) => match String::from_utf8(decoded_bytes) {
+                        Ok(decoded_str) => {
+                            info!("Using PAYMENT-SIGNATURE header (x402 v2 format)");
+                            debug!("Decoded payload length: {} bytes", decoded_str.len());
+                            decoded_str
                         }
-                    }
+                        Err(e) => {
+                            error!("PAYMENT-SIGNATURE header is not valid UTF-8: {}", e);
+                            return (
+                                StatusCode::BAD_REQUEST,
+                                Json(json!({
+                                    "error": "PAYMENT-SIGNATURE header is not valid UTF-8"
+                                })),
+                            )
+                                .into_response();
+                        }
+                    },
                     Err(e) => {
                         error!("Failed to base64 decode PAYMENT-SIGNATURE header: {}", e);
                         return (
@@ -746,7 +748,10 @@ where
                 }
             }
             Err(e) => {
-                error!("PAYMENT-SIGNATURE header contains invalid characters: {}", e);
+                error!(
+                    "PAYMENT-SIGNATURE header contains invalid characters: {}",
+                    e
+                );
                 return (
                     StatusCode::BAD_REQUEST,
                     Json(json!({
@@ -787,7 +792,10 @@ where
 
             match FHE_PROXY.verify(&json_value).await {
                 Ok(fhe_response) => {
-                    info!(is_valid = fhe_response.is_valid, "FHE verification complete");
+                    info!(
+                        is_valid = fhe_response.is_valid,
+                        "FHE verification complete"
+                    );
                     return (StatusCode::OK, Json(fhe_response)).into_response();
                 }
                 Err(e) => {
@@ -838,15 +846,24 @@ where
     let format_name = match &envelope {
         VerifyRequestEnvelope::V1(_) => "v1",
         VerifyRequestEnvelope::V2(req) => {
-            debug!("Processing x402 v2 verify request with CAIP-2 network: {}", req.network());
+            debug!(
+                "Processing x402 v2 verify request with CAIP-2 network: {}",
+                req.network()
+            );
             "v2"
         }
         VerifyRequestEnvelope::X402r(req) => {
-            debug!("Processing x402r verify request with CAIP-2 network: {}", req.network());
+            debug!(
+                "Processing x402r verify request with CAIP-2 network: {}",
+                req.network()
+            );
             "x402r"
         }
         VerifyRequestEnvelope::X402rNested(req) => {
-            debug!("Processing x402r-nested verify request with CAIP-2 network: {}", req.network());
+            debug!(
+                "Processing x402r-nested verify request with CAIP-2 network: {}",
+                req.network()
+            );
             "x402r-nested"
         }
     };
@@ -1022,25 +1039,23 @@ where
             Ok(header_value) => {
                 // Base64 decode the header value
                 match base64::engine::general_purpose::STANDARD.decode(header_value) {
-                    Ok(decoded_bytes) => {
-                        match String::from_utf8(decoded_bytes) {
-                            Ok(decoded_str) => {
-                                info!("Using PAYMENT-SIGNATURE header for settle (x402 v2 format)");
-                                debug!("Decoded payload length: {} bytes", decoded_str.len());
-                                decoded_str
-                            }
-                            Err(e) => {
-                                error!("PAYMENT-SIGNATURE header is not valid UTF-8: {}", e);
-                                return (
-                                    StatusCode::BAD_REQUEST,
-                                    Json(json!({
-                                        "error": "PAYMENT-SIGNATURE header is not valid UTF-8"
-                                    })),
-                                )
-                                    .into_response();
-                            }
+                    Ok(decoded_bytes) => match String::from_utf8(decoded_bytes) {
+                        Ok(decoded_str) => {
+                            info!("Using PAYMENT-SIGNATURE header for settle (x402 v2 format)");
+                            debug!("Decoded payload length: {} bytes", decoded_str.len());
+                            decoded_str
                         }
-                    }
+                        Err(e) => {
+                            error!("PAYMENT-SIGNATURE header is not valid UTF-8: {}", e);
+                            return (
+                                StatusCode::BAD_REQUEST,
+                                Json(json!({
+                                    "error": "PAYMENT-SIGNATURE header is not valid UTF-8"
+                                })),
+                            )
+                                .into_response();
+                        }
+                    },
                     Err(e) => {
                         error!("Failed to base64 decode PAYMENT-SIGNATURE header: {}", e);
                         return (
@@ -1054,7 +1069,10 @@ where
                 }
             }
             Err(e) => {
-                error!("PAYMENT-SIGNATURE header contains invalid characters: {}", e);
+                error!(
+                    "PAYMENT-SIGNATURE header contains invalid characters: {}",
+                    e
+                );
                 return (
                     StatusCode::BAD_REQUEST,
                     Json(json!({
@@ -1231,15 +1249,24 @@ where
     let format_name = match &envelope {
         SettleRequestEnvelope::V1(_) => "v1",
         SettleRequestEnvelope::V2(req) => {
-            debug!("Processing x402 v2 settle request with CAIP-2 network: {}", req.network());
+            debug!(
+                "Processing x402 v2 settle request with CAIP-2 network: {}",
+                req.network()
+            );
             "v2"
         }
         SettleRequestEnvelope::X402r(req) => {
-            debug!("Processing x402r settle request with CAIP-2 network: {}", req.network());
+            debug!(
+                "Processing x402r settle request with CAIP-2 network: {}",
+                req.network()
+            );
             "x402r"
         }
         SettleRequestEnvelope::X402rNested(req) => {
-            debug!("Processing x402r-nested settle request with CAIP-2 network: {}", req.network());
+            debug!(
+                "Processing x402r-nested settle request with CAIP-2 network: {}",
+                req.network()
+            );
             "x402r-nested"
         }
     };
@@ -1248,7 +1275,10 @@ where
     let body = match envelope.to_v1() {
         Ok(v1_req) => v1_req,
         Err(e) => {
-            error!("Failed to convert {} settle request to v1: {}", format_name, e);
+            error!(
+                "Failed to convert {} settle request to v1: {}",
+                format_name, e
+            );
             debug!("=== END SETTLE REQUEST DEBUG ===");
             return (
                 StatusCode::BAD_REQUEST,
@@ -1289,12 +1319,16 @@ where
                 "  - authorization.value: {} (type: TokenAmount/U256 string)",
                 evm_payload.authorization.value
             );
-            debug!("  - authorization.validAfter: {} (type: UnixTimestamp u64 string, parsed to: {})",
+            debug!(
+                "  - authorization.validAfter: {} (type: UnixTimestamp u64 string, parsed to: {})",
                 evm_payload.authorization.valid_after.seconds_since_epoch(),
-                evm_payload.authorization.valid_after.seconds_since_epoch());
-            debug!("  - authorization.validBefore: {} (type: UnixTimestamp u64 string, parsed to: {})",
+                evm_payload.authorization.valid_after.seconds_since_epoch()
+            );
+            debug!(
+                "  - authorization.validBefore: {} (type: UnixTimestamp u64 string, parsed to: {})",
                 evm_payload.authorization.valid_before.seconds_since_epoch(),
-                evm_payload.authorization.valid_before.seconds_since_epoch());
+                evm_payload.authorization.valid_before.seconds_since_epoch()
+            );
             debug!(
                 "  - authorization.nonce: {:?} (type: HexEncodedNonce, 32-byte hex string)",
                 evm_payload.authorization.nonce
@@ -1315,31 +1349,20 @@ where
             debug!("  - payload type: NEAR");
             debug!(
                 "  - signed_delegate_action: {} (truncated)",
-                &near_payload.signed_delegate_action[..near_payload.signed_delegate_action.len().min(100)]
+                &near_payload.signed_delegate_action
+                    [..near_payload.signed_delegate_action.len().min(100)]
             );
         }
         crate::types::ExactPaymentPayload::Stellar(stellar_payload) => {
             debug!("  - payload type: Stellar");
-            debug!(
-                "  - from: {}",
-                stellar_payload.from
-            );
-            debug!(
-                "  - to: {}",
-                stellar_payload.to
-            );
-            debug!(
-                "  - amount: {}",
-                stellar_payload.amount
-            );
+            debug!("  - from: {}", stellar_payload.from);
+            debug!("  - to: {}", stellar_payload.to);
+            debug!("  - amount: {}", stellar_payload.amount);
         }
         #[cfg(feature = "algorand")]
         crate::types::ExactPaymentPayload::Algorand(algorand_payload) => {
             debug!("  - payload type: Algorand (atomic group)");
-            debug!(
-                "  - payment_index: {}",
-                algorand_payload.payment_index
-            );
+            debug!("  - payment_index: {}", algorand_payload.payment_index);
             debug!(
                 "  - payment_group.len: {}",
                 algorand_payload.payment_group.len()
@@ -1348,22 +1371,10 @@ where
         #[cfg(feature = "sui")]
         crate::types::ExactPaymentPayload::Sui(sui_payload) => {
             debug!("  - payload type: Sui (sponsored transaction)");
-            debug!(
-                "  - from: {}",
-                sui_payload.from
-            );
-            debug!(
-                "  - to: {}",
-                sui_payload.to
-            );
-            debug!(
-                "  - amount: {}",
-                sui_payload.amount
-            );
-            debug!(
-                "  - coin_object_id: {}",
-                sui_payload.coin_object_id
-            );
+            debug!("  - from: {}", sui_payload.from);
+            debug!("  - to: {}", sui_payload.to);
+            debug!("  - amount: {}", sui_payload.amount);
+            debug!("  - coin_object_id: {}", sui_payload.coin_object_id);
         }
     }
 
@@ -1374,8 +1385,7 @@ where
     // custom FHE payload structures. See the fhe-transfer check above.
     info!(
         "Attempting to settle payment on network: {:?}, scheme: {:?}",
-        body.payment_payload.network,
-        body.payment_payload.scheme
+        body.payment_payload.network, body.payment_payload.scheme
     );
 
     // Standard exact scheme - process locally
@@ -1652,10 +1662,7 @@ pub async fn get_feedback_info() -> impl IntoResponse {
 /// - Returns 400 if required fields are missing
 /// - Returns 500 if the on-chain submission fails
 #[instrument(skip_all)]
-pub async fn post_feedback<A>(
-    State(facilitator): State<A>,
-    raw_body: Bytes,
-) -> impl IntoResponse
+pub async fn post_feedback<A>(State(facilitator): State<A>, raw_body: Bytes) -> impl IntoResponse
 where
     A: Facilitator + HasProviderMap,
     A::Error: IntoResponse,
@@ -1715,7 +1722,10 @@ where
                     success: false,
                     transaction: None,
                     feedback_index: None,
-                    error: Some(format!("No ERC-8004 contracts configured for network {}", network)),
+                    error: Some(format!(
+                        "No ERC-8004 contracts configured for network {}",
+                        network
+                    )),
                     network,
                 }),
             )
@@ -1944,39 +1954,37 @@ where
     );
 
     match call.send().await {
-        Ok(pending_tx) => {
-            match pending_tx.get_receipt().await {
-                Ok(receipt) => {
-                    let tx_hash = receipt.transaction_hash;
-                    info!(
-                        network = %network,
-                        tx = %tx_hash,
-                        "ERC-8004 feedback revoked successfully"
-                    );
+        Ok(pending_tx) => match pending_tx.get_receipt().await {
+            Ok(receipt) => {
+                let tx_hash = receipt.transaction_hash;
+                info!(
+                    network = %network,
+                    tx = %tx_hash,
+                    "ERC-8004 feedback revoked successfully"
+                );
 
-                    (
-                        StatusCode::OK,
-                        Json(json!({
-                            "success": true,
-                            "transaction": format!("0x{}", hex::encode(tx_hash.0)),
-                            "network": network.to_string()
-                        })),
-                    )
-                        .into_response()
-                }
-                Err(e) => {
-                    error!(error = %e, "Failed to get transaction receipt");
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({
-                            "success": false,
-                            "error": format!("Transaction failed: {}", e)
-                        })),
-                    )
-                        .into_response()
-                }
+                (
+                    StatusCode::OK,
+                    Json(json!({
+                        "success": true,
+                        "transaction": format!("0x{}", hex::encode(tx_hash.0)),
+                        "network": network.to_string()
+                    })),
+                )
+                    .into_response()
             }
-        }
+            Err(e) => {
+                error!(error = %e, "Failed to get transaction receipt");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "success": false,
+                        "error": format!("Transaction failed: {}", e)
+                    })),
+                )
+                    .into_response()
+            }
+        },
         Err(e) => {
             error!(error = %e, "Failed to send revoke transaction");
             (
@@ -2115,39 +2123,37 @@ where
     );
 
     match call.send().await {
-        Ok(pending_tx) => {
-            match pending_tx.get_receipt().await {
-                Ok(receipt) => {
-                    let tx_hash = receipt.transaction_hash;
-                    info!(
-                        network = %network,
-                        tx = %tx_hash,
-                        "ERC-8004 response appended successfully"
-                    );
+        Ok(pending_tx) => match pending_tx.get_receipt().await {
+            Ok(receipt) => {
+                let tx_hash = receipt.transaction_hash;
+                info!(
+                    network = %network,
+                    tx = %tx_hash,
+                    "ERC-8004 response appended successfully"
+                );
 
-                    (
-                        StatusCode::OK,
-                        Json(json!({
-                            "success": true,
-                            "transaction": format!("0x{}", hex::encode(tx_hash.0)),
-                            "network": network.to_string()
-                        })),
-                    )
-                        .into_response()
-                }
-                Err(e) => {
-                    error!(error = %e, "Failed to get transaction receipt");
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({
-                            "success": false,
-                            "error": format!("Transaction failed: {}", e)
-                        })),
-                    )
-                        .into_response()
-                }
+                (
+                    StatusCode::OK,
+                    Json(json!({
+                        "success": true,
+                        "transaction": format!("0x{}", hex::encode(tx_hash.0)),
+                        "network": network.to_string()
+                    })),
+                )
+                    .into_response()
             }
-        }
+            Err(e) => {
+                error!(error = %e, "Failed to get transaction receipt");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "success": false,
+                        "error": format!("Transaction failed: {}", e)
+                    })),
+                )
+                    .into_response()
+            }
+        },
         Err(e) => {
             error!(error = %e, "Failed to send append response transaction");
             (
@@ -2182,6 +2188,10 @@ pub struct ReputationQueryParams {
     /// Include individual feedback entries
     #[serde(default)]
     pub include_feedback: bool,
+    /// Comma-separated client addresses to filter by.
+    /// If omitted, auto-discovers all clients via getClients().
+    #[serde(default)]
+    pub client_addresses: String,
 }
 
 /// `GET /reputation/:network/:agent_id`: Get reputation summary for an agent.
@@ -2192,10 +2202,13 @@ pub struct ReputationQueryParams {
 /// - `tag1`: Filter by primary tag (optional)
 /// - `tag2`: Filter by secondary tag (optional)
 /// - `includeFeedback`: Include individual feedback entries (optional, default false)
+/// - `clientAddresses`: Comma-separated client addresses to filter by (optional).
+///   If omitted, auto-discovers all clients via `getClients()` on-chain call.
 ///
 /// # Example
 /// ```text
-/// GET /reputation/ethereum-mainnet/42?includeFeedback=true
+/// GET /reputation/base/42?includeFeedback=true
+/// GET /reputation/base/42?clientAddresses=0xAAA,0xBBB&tag1=quality
 /// ```
 #[instrument(skip_all)]
 pub async fn get_reputation<A>(
@@ -2275,10 +2288,92 @@ where
     let reputation_registry =
         IReputationRegistry::new(contracts.reputation_registry, provider.inner().clone());
 
-    // Call getSummary on the contract
+    let agent_id_u256 = alloy::primitives::U256::from(params.agent_id);
+
+    // Resolve client addresses: parse from query param or auto-discover via getClients()
+    let client_addresses: Vec<alloy::primitives::Address> = if query.client_addresses.is_empty() {
+        // Auto-discover all clients who have given feedback to this agent
+        match reputation_registry.getClients(agent_id_u256).call().await {
+            Ok(clients) => {
+                info!(
+                    agent_id = params.agent_id,
+                    client_count = clients.len(),
+                    "Auto-discovered clients for reputation query"
+                );
+                clients
+            }
+            Err(e) => {
+                info!(
+                    agent_id = params.agent_id,
+                    error = %e,
+                    "No clients found for agent (may have no feedback yet)"
+                );
+                // Return zero summary - agent has no reputation data
+                let summary = ReputationSummary {
+                    agent_id: params.agent_id,
+                    count: 0,
+                    summary_value: 0,
+                    summary_value_decimals: 0,
+                    network: network.clone(),
+                };
+                let response = ReputationResponse {
+                    agent_id: params.agent_id,
+                    summary,
+                    feedback: if query.include_feedback {
+                        Some(vec![])
+                    } else {
+                        None
+                    },
+                    network,
+                };
+                return (StatusCode::OK, Json(response)).into_response();
+            }
+        }
+    } else {
+        // Parse comma-separated addresses from query param
+        let parsed: Vec<alloy::primitives::Address> = query
+            .client_addresses
+            .split(',')
+            .filter_map(|s| s.trim().parse::<alloy::primitives::Address>().ok())
+            .collect();
+        if parsed.is_empty() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "Invalid clientAddresses parameter: no valid addresses found"
+                })),
+            )
+                .into_response();
+        }
+        parsed
+    };
+
+    // If getClients returned empty (agent exists but has no feedback), return zero summary
+    if client_addresses.is_empty() {
+        let summary = ReputationSummary {
+            agent_id: params.agent_id,
+            count: 0,
+            summary_value: 0,
+            summary_value_decimals: 0,
+            network: network.clone(),
+        };
+        let response = ReputationResponse {
+            agent_id: params.agent_id,
+            summary,
+            feedback: if query.include_feedback {
+                Some(vec![])
+            } else {
+                None
+            },
+            network,
+        };
+        return (StatusCode::OK, Json(response)).into_response();
+    }
+
+    // Call getSummary with resolved client addresses
     let summary_call = reputation_registry.getSummary(
-        alloy::primitives::U256::from(params.agent_id),
-        vec![], // Empty client filter = all clients
+        agent_id_u256,
+        client_addresses.clone(),
         query.tag1.clone(),
         query.tag2.clone(),
     );
@@ -2295,10 +2390,9 @@ where
 
             // Optionally fetch individual feedback entries
             let feedback_entries: Option<Vec<FeedbackEntry>> = if query.include_feedback {
-                // Call readAllFeedback
                 let feedback_call = reputation_registry.readAllFeedback(
-                    alloy::primitives::U256::from(params.agent_id),
-                    vec![], // All clients
+                    agent_id_u256,
+                    client_addresses,
                     query.tag1.clone(),
                     query.tag2.clone(),
                     false, // Don't include revoked
@@ -2306,7 +2400,8 @@ where
 
                 match feedback_call.call().await {
                     Ok(fb_result) => {
-                        let entries: Vec<FeedbackEntry> = fb_result.clients
+                        let entries: Vec<FeedbackEntry> = fb_result
+                            .clients
                             .iter()
                             .zip(fb_result.feedbackIndexes.iter())
                             .zip(fb_result.values.iter())
@@ -2467,11 +2562,8 @@ where
     let uri_call = identity_registry.tokenURI(agent_id_u256);
     let wallet_call = identity_registry.getAgentWallet(agent_id_u256);
 
-    let (owner_result, uri_result, wallet_result) = tokio::join!(
-        owner_call.call(),
-        uri_call.call(),
-        wallet_call.call()
-    );
+    let (owner_result, uri_result, wallet_result) =
+        tokio::join!(owner_call.call(), uri_call.call(), wallet_call.call());
 
     // ownerOf reverts for non-existent tokens (ERC-721 standard behavior)
     let owner = match owner_result {
@@ -2577,10 +2669,7 @@ pub async fn get_register_info() -> impl IntoResponse {
 /// address is provided, the NFT is minted to the facilitator and then transferred
 /// to the recipient via ERC-721 `safeTransferFrom`.
 #[instrument(skip_all, fields(network, agent_uri))]
-pub async fn post_register<A>(
-    State(facilitator): State<A>,
-    raw_body: Bytes,
-) -> impl IntoResponse
+pub async fn post_register<A>(State(facilitator): State<A>, raw_body: Bytes) -> impl IntoResponse
 where
     A: Facilitator + HasProviderMap,
     A::Error: IntoResponse,
@@ -2768,19 +2857,15 @@ where
     info!(network = %network, tx = %reg_tx_hash, "Registration transaction confirmed");
 
     // Parse Registered event from logs to get agentId
-    let agent_id: Option<u64> = receipt
-        .inner
-        .logs()
-        .iter()
-        .find_map(|log| {
-            log.log_decode::<IIdentityRegistry::Registered>()
-                .ok()
-                .map(|event| {
-                    let id: u64 = event.inner.data.agentId.try_into().unwrap_or(0);
-                    info!(agent_id = id, "Parsed agentId from Registered event");
-                    id
-                })
-        });
+    let agent_id: Option<u64> = receipt.inner.logs().iter().find_map(|log| {
+        log.log_decode::<IIdentityRegistry::Registered>()
+            .ok()
+            .map(|event| {
+                let id: u64 = event.inner.data.agentId.try_into().unwrap_or(0);
+                info!(agent_id = id, "Parsed agentId from Registered event");
+                id
+            })
+    });
 
     let agent_id = match agent_id {
         Some(id) => id,
@@ -2802,7 +2887,10 @@ where
                             transaction: Some(crate::types::TransactionHash::Evm(reg_tx_hash.0)),
                             transfer_transaction: None,
                             owner: None,
-                            error: Some("Registration succeeded but failed to determine agentId".to_string()),
+                            error: Some(
+                                "Registration succeeded but failed to determine agentId"
+                                    .to_string(),
+                            ),
                             network,
                         }),
                     )
@@ -2848,7 +2936,10 @@ where
                         transaction: Some(crate::types::TransactionHash::Evm(reg_tx_hash.0)),
                         transfer_transaction: None,
                         owner: Some(final_owner),
-                        error: Some("Recipient must be an EVM address for ERC-8004 registration".to_string()),
+                        error: Some(
+                            "Recipient must be an EVM address for ERC-8004 registration"
+                                .to_string(),
+                        ),
                         network,
                     }),
                 )
@@ -2870,38 +2961,39 @@ where
         );
 
         match transfer_call.send().await {
-            Ok(pending) => {
-                match pending.get_receipt().await {
-                    Ok(transfer_receipt) => {
-                        let transfer_hash = transfer_receipt.transaction_hash;
-                        info!(
-                            network = %network,
-                            tx = %transfer_hash,
-                            agent_id = agent_id,
-                            recipient = %recipient_address,
-                            "Agent NFT transferred successfully"
-                        );
-                        transfer_tx = Some(crate::types::TransactionHash::Evm(transfer_hash.0));
-                        final_owner = recipient.clone();
-                    }
-                    Err(e) => {
-                        error!(error = %e, "Transfer receipt failed - agent registered but NOT transferred");
-                        return (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(RegisterAgentResponse {
-                                success: true,
-                                agent_id: Some(agent_id),
-                                transaction: Some(crate::types::TransactionHash::Evm(reg_tx_hash.0)),
-                                transfer_transaction: None,
-                                owner: Some(final_owner),
-                                error: Some(format!("Agent registered (id={}) but transfer failed: {}", agent_id, e)),
-                                network,
-                            }),
-                        )
-                            .into_response();
-                    }
+            Ok(pending) => match pending.get_receipt().await {
+                Ok(transfer_receipt) => {
+                    let transfer_hash = transfer_receipt.transaction_hash;
+                    info!(
+                        network = %network,
+                        tx = %transfer_hash,
+                        agent_id = agent_id,
+                        recipient = %recipient_address,
+                        "Agent NFT transferred successfully"
+                    );
+                    transfer_tx = Some(crate::types::TransactionHash::Evm(transfer_hash.0));
+                    final_owner = recipient.clone();
                 }
-            }
+                Err(e) => {
+                    error!(error = %e, "Transfer receipt failed - agent registered but NOT transferred");
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(RegisterAgentResponse {
+                            success: true,
+                            agent_id: Some(agent_id),
+                            transaction: Some(crate::types::TransactionHash::Evm(reg_tx_hash.0)),
+                            transfer_transaction: None,
+                            owner: Some(final_owner),
+                            error: Some(format!(
+                                "Agent registered (id={}) but transfer failed: {}",
+                                agent_id, e
+                            )),
+                            network,
+                        }),
+                    )
+                        .into_response();
+                }
+            },
             Err(e) => {
                 error!(error = %e, "Failed to send transfer transaction");
                 return (
@@ -2912,7 +3004,10 @@ where
                         transaction: Some(crate::types::TransactionHash::Evm(reg_tx_hash.0)),
                         transfer_transaction: None,
                         owner: Some(final_owner),
-                        error: Some(format!("Agent registered (id={}) but transfer failed: {}", agent_id, e)),
+                        error: Some(format!(
+                            "Agent registered (id={}) but transfer failed: {}",
+                            agent_id, e
+                        )),
                         network,
                     }),
                 )
@@ -3149,14 +3244,34 @@ where
                 .into_response()
         }
         Err(e) => {
-            error!(network = %network, error = %e, "Failed to query total supply");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({
-                    "error": format!("Failed to query total supply: {}", e)
-                })),
-            )
-                .into_response()
+            let error_str = format!("{}", e);
+            // Empty revert data ("0x") means the function selector doesn't exist
+            // on the current proxy implementation (ERC721Enumerable may have been removed)
+            if error_str.contains("execution reverted") {
+                warn!(
+                    network = %network,
+                    error = %e,
+                    "totalSupply() not available on this contract version"
+                );
+                (
+                    StatusCode::NOT_IMPLEMENTED,
+                    Json(json!({
+                        "error": "totalSupply() is not available on the current contract implementation",
+                        "network": network,
+                        "hint": "The Identity Registry may have been upgraded without ERC721Enumerable support"
+                    })),
+                )
+                    .into_response()
+            } else {
+                error!(network = %network, error = %e, "Failed to query total supply");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "error": format!("Failed to query total supply: {}", e)
+                    })),
+                )
+                    .into_response()
+            }
         }
     }
 }

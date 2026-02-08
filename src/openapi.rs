@@ -6,9 +6,9 @@
 //! When adding new endpoints or changing the version, update this file accordingly.
 //! The version here should match `Cargo.toml` version.
 
+use axum::Router;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
-use axum::Router;
 
 /// OpenAPI documentation for the x402 Facilitator API
 #[derive(OpenApi)]
@@ -533,6 +533,13 @@ Queries the reputation summary for an AI agent from the ERC-8004 Reputation Regi
 
 **Supported networks:** ethereum, base, polygon, arbitrum, celo, bsc, monad, avalanche, ethereum-sepolia, base-sepolia, polygon-amoy, arbitrum-sepolia, celo-sepolia, avalanche-fuji
 
+**Client address filtering:** The `clientAddresses` query parameter accepts comma-separated Ethereum addresses to filter reputation data by specific clients. If omitted, the endpoint auto-discovers all clients who have given feedback via the on-chain `getClients()` function.
+
+**Examples:**
+- `/reputation/base/42` - all clients (auto-discovered)
+- `/reputation/base/42?clientAddresses=0xAAA,0xBBB` - specific clients only
+- `/reputation/base/42?includeFeedback=true&tag1=quality` - with feedback entries filtered by tag
+
 **Response:**
 ```json
 {
@@ -552,7 +559,8 @@ Queries the reputation summary for an AI agent from the ERC-8004 Reputation Regi
     params(
         ("network" = String, Path, description = "Network name (e.g., ethereum, base, polygon, arbitrum)"),
         ("agent_id" = u64, Path, description = "Agent ID (ERC-721 tokenId)"),
-        ("include_feedback" = Option<bool>, Query, description = "Include individual feedback entries")
+        ("include_feedback" = Option<bool>, Query, description = "Include individual feedback entries"),
+        ("client_addresses" = Option<String>, Query, description = "Comma-separated client addresses to filter by. If omitted, auto-discovers all clients via getClients()")
     ),
     responses(
         (status = 200, description = "Reputation data", body = Object),
@@ -794,6 +802,5 @@ async fn path_health() {}
 pub fn swagger_routes() -> Router {
     let mut api_doc = ApiDoc::openapi();
     api_doc.info.version = env!("CARGO_PKG_VERSION").to_string();
-    Router::new()
-        .merge(SwaggerUi::new("/docs").url("/api-docs/openapi.json", api_doc))
+    Router::new().merge(SwaggerUi::new("/docs").url("/api-docs/openapi.json", api_doc))
 }

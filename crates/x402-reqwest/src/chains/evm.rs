@@ -56,7 +56,7 @@ impl SenderWallet for EvmSenderWallet {
         let network_family: NetworkFamily = network.into();
         match network_family {
             NetworkFamily::Evm => true,
-            NetworkFamily::Solana => false,
+            _ => false,
         }
     }
 

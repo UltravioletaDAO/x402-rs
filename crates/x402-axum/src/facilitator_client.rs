@@ -31,6 +31,7 @@
 use http::{HeaderMap, StatusCode};
 use reqwest::Client;
 use std::fmt::Display;
+use std::future::Future;
 use std::time::Duration;
 use url::Url;
 use x402_rs::facilitator::Facilitator;

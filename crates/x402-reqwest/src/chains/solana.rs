@@ -80,8 +80,8 @@ impl SenderWallet for SolanaSenderWallet {
         let network = requirements.network;
         let network_family: NetworkFamily = network.into();
         match network_family {
-            NetworkFamily::Evm => false,
             NetworkFamily::Solana => true,
+            _ => false,
         }
     }
 

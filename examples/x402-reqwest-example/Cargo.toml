@@ -8,8 +8,8 @@ publish = false
 x402-reqwest = { path = "../../crates/x402-reqwest" }
 x402-rs = { path = "../.." }
 alloy = { version = "1.0.12" }
-reqwest = { version = "0.12.20" }
-tokio = { version = "1.45.1" }
+reqwest = { version = "0.12.24" }
+tokio = { version = "1.49.0" }
 dotenvy = { version = "0.15.7" }
 solana-sdk = { version = "2.3.1", features = ["full"] }
 spl-token = { version = "8.0.0" , features = ["no-entrypoint"] }

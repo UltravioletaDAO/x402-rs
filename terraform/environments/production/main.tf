@@ -505,6 +505,17 @@ resource "aws_ecs_cluster" "main" {
   }
 }
 
+# Capacity providers: FARGATE (default) + FARGATE_SPOT (for observability)
+resource "aws_ecs_cluster_capacity_providers" "main" {
+  cluster_name       = aws_ecs_cluster.main.name
+  capacity_providers = ["FARGATE", "FARGATE_SPOT"]
+
+  default_capacity_provider_strategy {
+    capacity_provider = "FARGATE"
+    weight            = 1
+  }
+}
+
 # ============================================================================
 # ECS Task Definition
 # ============================================================================
@@ -518,7 +529,7 @@ resource "aws_ecs_task_definition" "facilitator" {
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
   task_role_arn            = aws_iam_role.ecs_task.arn
 
-  container_definitions = jsonencode([
+  container_definitions = jsonencode(concat([
     {
       name      = "facilitator"
       image     = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${data.aws_region.current.name}.amazonaws.com/${var.ecr_repository_name}:${var.image_tag}"
@@ -531,7 +542,7 @@ resource "aws_ecs_task_definition" "facilitator" {
         }
       ]
 
-      environment = [
+      environment = concat([
         {
           name  = "RUST_LOG"
           value = "info"
@@ -642,7 +653,24 @@ resource "aws_ecs_task_definition" "facilitator" {
           name  = "ENABLE_PAYMENT_OPERATOR"
           value = "true"
         }
-      ]
+      ], var.enable_observability ? [
+        # ============================================================
+        # OpenTelemetry - Push to OTel Collector sidecar
+        # (only when observability stack is enabled)
+        # ============================================================
+        {
+          name  = "OTEL_EXPORTER_OTLP_ENDPOINT"
+          value = "http://localhost:4318"
+        },
+        {
+          name  = "OTEL_EXPORTER_OTLP_PROTOCOL"
+          value = "http/protobuf"
+        },
+        {
+          name  = "OTEL_SERVICE_NAME"
+          value = "facilitator"
+        }
+      ] : [])
 
       # All secrets are defined in secrets.tf (local.all_task_secrets)
       # This ensures consistency and makes it impossible to forget a secret
@@ -665,7 +693,59 @@ resource "aws_ecs_task_definition" "facilitator" {
         startPeriod = 60
       }
     }
-  ])
+  ], var.enable_observability ? [
+    # ============================================================
+    # OpenTelemetry Collector Sidecar
+    # (only deployed when observability stack is enabled)
+    # ============================================================
+    # Receives OTLP from facilitator on localhost:4318
+    # Pushes metrics to Prometheus and traces to Tempo in the
+    # observability task via Cloud Map service discovery.
+    {
+      name      = "otel-collector"
+      image     = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${data.aws_region.current.name}.amazonaws.com/facilitator-otel-collector:${var.otel_collector_image_tag}"
+      essential = false
+
+      portMappings = [
+        {
+          containerPort = 4317
+          protocol      = "tcp"
+        },
+        {
+          containerPort = 4318
+          protocol      = "tcp"
+        }
+      ]
+
+      environment = [
+        {
+          name  = "PROMETHEUS_REMOTE_WRITE_ENDPOINT"
+          value = "http://observability.facilitator.local:9090/api/v1/write"
+        },
+        {
+          name  = "TEMPO_OTLP_ENDPOINT"
+          value = "observability.facilitator.local:4317"
+        }
+      ]
+
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.facilitator.name
+          "awslogs-region"        = data.aws_region.current.name
+          "awslogs-stream-prefix" = "otel-collector"
+        }
+      }
+
+      healthCheck = {
+        command     = ["CMD-SHELL", "wget --spider -q http://localhost:13133 || exit 1"]
+        interval    = 30
+        timeout     = 5
+        retries     = 3
+        startPeriod = 15
+      }
+    }
+  ] : []))
 
   tags = {
     Name = "facilitator-${var.environment}"

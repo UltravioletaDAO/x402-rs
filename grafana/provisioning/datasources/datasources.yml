@@ -1,0 +1,52 @@
+# =============================================================================
+# Grafana Datasource Provisioning
+# x402-rs Payment Facilitator - Ultravioleta DAO
+# =============================================================================
+#
+# Auto-provisions Prometheus and Tempo datasources on first boot.
+# Trace-to-metrics linking enabled: click a trace to see related metrics.
+#
+# =============================================================================
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true
+    jsonData:
+      httpMethod: POST
+      exemplarTraceIdDestinations:
+        - name: traceID
+          datasourceUid: tempo
+
+  - name: Tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    uid: tempo
+    editable: true
+    jsonData:
+      httpMethod: GET
+      tracesToMetrics:
+        datasourceUid: prometheus
+        spanStartTimeShift: "-1h"
+        spanEndTimeShift: "1h"
+        tags:
+          - key: service.name
+            value: service
+          - key: http.method
+            value: method
+      nodeGraph:
+        enabled: true
+      serviceMap:
+        datasourceUid: prometheus
+      search:
+        hide: false
+      traceQuery:
+        timeShiftEnabled: true
+        spanStartTimeShift: "-1h"
+        spanEndTimeShift: "1h"

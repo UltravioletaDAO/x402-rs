@@ -1,0 +1,18 @@
+# =============================================================================
+# Grafana Dashboard Provisioning
+# x402-rs Payment Facilitator - Ultravioleta DAO
+# =============================================================================
+
+apiVersion: 1
+
+providers:
+  - name: x402-dashboards
+    orgId: 1
+    type: file
+    disableDeletion: false
+    editable: true
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: false

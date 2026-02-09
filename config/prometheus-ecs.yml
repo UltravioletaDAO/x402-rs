@@ -1,0 +1,32 @@
+# =============================================================================
+# Prometheus Configuration - ECS Production
+# x402-rs Payment Facilitator - Ultravioleta DAO
+# =============================================================================
+#
+# Receives metrics via remote_write from:
+#   - OTel Collector (facilitator metrics)
+#   - Tempo (span-metrics)
+#
+# Runs in the observability ECS task alongside Tempo and Grafana.
+# All communication on localhost within the same Fargate task.
+#
+# =============================================================================
+
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+
+  external_labels:
+    cluster: "x402-facilitator"
+    environment: "production"
+    project: "ultravioleta-dao"
+
+# Metrics arrive via remote_write - minimal scrape config
+scrape_configs:
+  - job_name: "prometheus"
+    scrape_interval: 30s
+    static_configs:
+      - targets: ["localhost:9090"]
+        labels:
+          service: "prometheus"

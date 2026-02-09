@@ -1,0 +1,69 @@
+# =============================================================================
+# OpenTelemetry Collector Configuration - ECS Production
+# x402-rs Payment Facilitator - Ultravioleta DAO
+# =============================================================================
+#
+# Runs as sidecar in the facilitator ECS task.
+# Receives OTLP from facilitator on localhost:4318, pushes to:
+#   - Prometheus (remote_write) in the observability task
+#   - Tempo (OTLP) in the observability task
+#
+# Endpoints configured via environment variables:
+#   PROMETHEUS_REMOTE_WRITE_ENDPOINT - e.g. http://observability.facilitator.local:9090/api/v1/write
+#   TEMPO_OTLP_ENDPOINT             - e.g. observability.facilitator.local:4317
+#
+# =============================================================================
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    send_batch_size: 1024
+    timeout: 5s
+
+  resource:
+    attributes:
+      - key: service.namespace
+        value: ultravioleta-dao
+        action: upsert
+
+exporters:
+  # Push metrics to Prometheus via remote_write
+  prometheusremotewrite:
+    endpoint: ${env:PROMETHEUS_REMOTE_WRITE_ENDPOINT}
+    tls:
+      insecure: true
+
+  # Push traces to Tempo via OTLP gRPC
+  otlp/tempo:
+    endpoint: ${env:TEMPO_OTLP_ENDPOINT}
+    tls:
+      insecure: true
+
+  # Minimal debug output for production
+  debug:
+    verbosity: basic
+    sampling_initial: 2
+    sampling_thereafter: 500
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [resource, batch]
+      exporters: [otlp/tempo, debug]
+    metrics:
+      receivers: [otlp]
+      processors: [resource, batch]
+      exporters: [prometheusremotewrite, debug]

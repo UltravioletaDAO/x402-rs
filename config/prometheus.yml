@@ -1,153 +1,88 @@
 # =============================================================================
 # Prometheus Configuration for x402 Facilitator
-# Karmacadabra - Ultravioleta DAO
+# Ultravioleta DAO
 # =============================================================================
 #
-# Purpose: Scrape metrics from x402 facilitator and monitor system health
-# Metrics exposed at: http://facilitator:8080/metrics
+# Prometheus scrapes metrics from the OpenTelemetry Collector's Prometheus
+# exporter (not the facilitator directly - it uses OTLP push, not /metrics).
+#
+# Architecture:
+#   Facilitator --OTLP--> OTel Collector --prometheus exporter--> Prometheus
 #
 # =============================================================================
 
 # Global configuration
 global:
-  # How frequently to scrape targets
   scrape_interval: 15s
-
-  # How long until a scrape request times out
   scrape_timeout: 10s
-
-  # How frequently to evaluate rules
   evaluation_interval: 15s
 
-  # External labels attached to all metrics
   external_labels:
-    cluster: 'karmacadabra-fuji'
-    environment: 'testnet'
-    project: 'ultravioleta-dao'
-
-# Alertmanager configuration (future)
-# alerting:
-#   alertmanagers:
-#     - static_configs:
-#         - targets:
-#           - alertmanager:9093
-
-# Rule files (for alerting)
-# rule_files:
-#   - "alerts/*.yml"
+    cluster: "x402-facilitator"
+    environment: "development"
+    project: "ultravioleta-dao"
 
 # Scrape configurations
 scrape_configs:
   # =============================================================================
-  # x402 Facilitator Metrics
+  # OpenTelemetry Collector - Facilitator Metrics
   # =============================================================================
-  - job_name: 'x402-facilitator'
-
-    # Scrape interval (override global)
+  # The OTel Collector receives OTLP from the facilitator and exposes
+  # metrics in Prometheus format on :8889/metrics
+  - job_name: "otel-collector-metrics"
     scrape_interval: 10s
     scrape_timeout: 5s
-
-    # Metrics path
-    metrics_path: '/metrics'
-
-    # Scheme (http or https)
+    metrics_path: "/metrics"
     scheme: http
-
-    # Static targets
     static_configs:
-      - targets: ['facilitator:8080']
+      - targets: ["otel-collector:8889"]
         labels:
-          service: 'x402-facilitator'
-          network: 'avalanche-fuji'
-          chain_id: '43113'
+          service: "x402-facilitator"
+          source: "otel-collector"
 
-    # Metric relabeling (filter/modify metrics)
-    metric_relabel_configs:
-      # Add custom label to all x402 metrics
-      - source_labels: [__name__]
-        regex: 'x402_.*'
-        target_label: 'component'
-        replacement: 'payment-facilitator'
+  # =============================================================================
+  # OpenTelemetry Collector - Internal Metrics
+  # =============================================================================
+  # The Collector's own health/performance metrics
+  - job_name: "otel-collector-internal"
+    scrape_interval: 30s
+    static_configs:
+      - targets: ["otel-collector:8888"]
+        labels:
+          service: "otel-collector"
 
   # =============================================================================
   # Prometheus Self-Monitoring
   # =============================================================================
-  - job_name: 'prometheus'
-
+  - job_name: "prometheus"
     scrape_interval: 30s
     static_configs:
-      - targets: ['localhost:9090']
+      - targets: ["localhost:9090"]
         labels:
-          service: 'prometheus'
-
-  # =============================================================================
-  # Caddy Reverse Proxy Metrics (if enabled)
-  # =============================================================================
-  # - job_name: 'caddy'
-  #
-  #   scrape_interval: 15s
-  #   static_configs:
-  #     - targets: ['caddy:2019/metrics']
-  #       labels:
-  #         service: 'caddy-proxy'
-
-  # =============================================================================
-  # Node Exporter (System Metrics - if deployed)
-  # =============================================================================
-  # - job_name: 'node-exporter'
-  #
-  #   scrape_interval: 30s
-  #   static_configs:
-  #     - targets: ['node-exporter:9100']
-  #       labels:
-  #         service: 'system-metrics'
+          service: "prometheus"
 
 # =============================================================================
-# Expected x402 Facilitator Metrics:
+# Expected Metrics from OTel Collector (x402_ namespace):
 #
-# Payment Metrics:
-#   - x402_payments_total{status="success|failed"}
-#   - x402_payments_amount_total{token="UVD|USDC|WAVAX"}
-#   - x402_verify_duration_seconds
-#   - x402_settle_duration_seconds
+# HTTP Server Metrics (auto-generated from tracing-opentelemetry spans):
+#   x402_http_server_duration_milliseconds_bucket{http_method, http_route, http_status_code, le}
+#   x402_http_server_duration_milliseconds_sum{...}
+#   x402_http_server_duration_milliseconds_count{...}
 #
-# Blockchain Metrics:
-#   - x402_gas_used_total
-#   - x402_gas_price_gwei
-#   - x402_balance_avax
-#   - x402_nonce_errors_total
+# Useful Queries:
 #
-# HTTP Metrics:
-#   - x402_http_requests_total{method,path,status}
-#   - x402_http_request_duration_seconds
-#   - x402_http_errors_total{error_type}
+# Request rate by endpoint:
+#   sum by (http_route) (rate(x402_http_server_duration_milliseconds_count[5m]))
 #
-# Agent Metrics:
-#   - x402_agent_transactions_total{agent_id}
-#   - x402_agent_revenue_total{agent_id,token}
+# p95 latency for /settle:
+#   histogram_quantile(0.95, sum(rate(x402_http_server_duration_milliseconds_bucket{http_route="/settle"}[5m])) by (le))
 #
-# =============================================================================
-# Useful Prometheus Queries:
-#
-# Total payments per minute:
-#   rate(x402_payments_total[1m])
+# Error rate (5xx):
+#   sum(rate(x402_http_server_duration_milliseconds_count{http_status_code=~"5.."}[5m]))
+#   / sum(rate(x402_http_server_duration_milliseconds_count[5m])) * 100
 #
 # Success rate:
-#   rate(x402_payments_total{status="success"}[5m]) /
-#   rate(x402_payments_total[5m]) * 100
-#
-# Average verify latency:
-#   rate(x402_verify_duration_seconds_sum[5m]) /
-#   rate(x402_verify_duration_seconds_count[5m])
-#
-# Facilitator AVAX balance:
-#   x402_balance_avax
-#
-# Gas spent (last hour):
-#   increase(x402_gas_used_total[1h])
-#
-# HTTP error rate:
-#   rate(x402_http_requests_total{status=~"5.."}[5m]) /
-#   rate(x402_http_requests_total[5m]) * 100
+#   sum(rate(x402_http_server_duration_milliseconds_count{http_status_code=~"2.."}[5m]))
+#   / sum(rate(x402_http_server_duration_milliseconds_count[5m])) * 100
 #
 # =============================================================================

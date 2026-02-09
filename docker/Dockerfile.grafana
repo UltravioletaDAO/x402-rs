@@ -1,0 +1,4 @@
+FROM grafana/grafana:10.3.3
+COPY grafana/grafana-ecs.ini /etc/grafana/grafana.ini
+COPY grafana/provisioning-ecs/datasources/ /etc/grafana/provisioning/datasources/
+COPY grafana/provisioning/dashboards/ /etc/grafana/provisioning/dashboards/

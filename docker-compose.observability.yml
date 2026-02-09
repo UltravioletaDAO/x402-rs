@@ -1,0 +1,157 @@
+# =============================================================================
+# Observability Stack for x402 Payment Facilitator
+# Ultravioleta DAO
+# =============================================================================
+#
+# Usage:
+#   # Start the facilitator first
+#   docker-compose up -d
+#
+#   # Then start the observability stack
+#   docker-compose -f docker-compose.observability.yml up -d
+#
+# Access:
+#   Grafana:    http://localhost:3000  (admin/admin)
+#   Prometheus: http://localhost:9090
+#   Tempo:      http://localhost:3200
+#   Collector:  http://localhost:13133 (health check)
+#
+# Verify:
+#   curl http://localhost:8889/metrics | grep http_server     # OTel metrics
+#   curl http://localhost:9090/api/v1/targets                 # Prometheus targets
+#   curl http://localhost:3200/ready                          # Tempo readiness
+#   curl -u admin:admin http://localhost:3000/api/datasources # Grafana sources
+#
+# =============================================================================
+
+version: '3.8'
+
+services:
+  # ---------------------------------------------------------------------------
+  # OpenTelemetry Collector
+  # Receives OTLP from facilitator, exports to Prometheus + Tempo
+  # ---------------------------------------------------------------------------
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.95.0
+    container_name: otel-collector
+    command: ["--config=/etc/otelcol/config.yml"]
+    volumes:
+      - ./config/otel-collector-config.yml:/etc/otelcol/config.yml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "8889:8889"   # Prometheus metrics export
+      - "13133:13133" # Health check
+    networks:
+      - facilitator-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:13133"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    labels:
+      - "com.ultravioletadao.service=otel-collector"
+      - "com.ultravioletadao.project=facilitator"
+
+  # ---------------------------------------------------------------------------
+  # Prometheus
+  # Scrapes metrics from the OTel Collector's Prometheus exporter
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.50.0
+    container_name: prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+      - "--web.enable-remote-write-receiver"
+      - "--web.console.libraries=/etc/prometheus/console_libraries"
+      - "--web.console.templates=/etc/prometheus/consoles"
+      - "--enable-feature=exemplar-storage"
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - facilitator-network
+    restart: unless-stopped
+    depends_on:
+      otel-collector:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    labels:
+      - "com.ultravioletadao.service=prometheus"
+      - "com.ultravioletadao.project=facilitator"
+
+  # ---------------------------------------------------------------------------
+  # Grafana Tempo
+  # Stores distributed traces received from the OTel Collector
+  # ---------------------------------------------------------------------------
+  tempo:
+    image: grafana/tempo:2.4.0
+    container_name: tempo
+    command: ["-config.file=/etc/tempo/tempo.yml"]
+    volumes:
+      - ./config/tempo-config.yml:/etc/tempo/tempo.yml:ro
+      - tempo-data:/var/tempo
+    ports:
+      - "3200:3200"   # HTTP API
+    networks:
+      - facilitator-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3200/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    labels:
+      - "com.ultravioletadao.service=tempo"
+      - "com.ultravioletadao.project=facilitator"
+
+  # ---------------------------------------------------------------------------
+  # Grafana
+  # Dashboards and visualization for metrics and traces
+  # ---------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:10.3.3
+    container_name: grafana
+    volumes:
+      - ./grafana/grafana.ini:/etc/grafana/grafana.ini:ro
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    networks:
+      - facilitator-network
+    restart: unless-stopped
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      tempo:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    labels:
+      - "com.ultravioletadao.service=grafana"
+      - "com.ultravioletadao.project=facilitator"
+
+networks:
+  facilitator-network:
+    external: true
+
+volumes:
+  prometheus-data:
+    name: facilitator-prometheus-data
+  tempo-data:
+    name: facilitator-tempo-data
+  grafana-data:
+    name: facilitator-grafana-data

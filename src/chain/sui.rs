@@ -22,12 +22,12 @@
 
 use std::str::FromStr;
 
-use sui_sdk::SuiClientBuilder;
-use sui_sdk::rpc_types::SuiTransactionBlockResponseOptions;
-use sui_types::base_types::SuiAddress;
-use sui_types::crypto::{EncodeDecodeBase64, SuiKeyPair, Signature, SuiSignature, ToFromBytes};
-use sui_types::transaction::{TransactionData, Transaction, TransactionDataAPI};
 use shared_crypto::intent::{Intent, IntentMessage};
+use sui_sdk::rpc_types::SuiTransactionBlockResponseOptions;
+use sui_sdk::SuiClientBuilder;
+use sui_types::base_types::SuiAddress;
+use sui_types::crypto::{EncodeDecodeBase64, Signature, SuiKeyPair, SuiSignature, ToFromBytes};
+use sui_types::transaction::{Transaction, TransactionData, TransactionDataAPI};
 use tracing::{debug, error, info, warn};
 
 use crate::chain::{FacilitatorLocalError, FromEnvByNetworkBuild, NetworkProviderOps};
@@ -144,10 +144,7 @@ impl SuiProvider {
         })?;
 
         Signature::from_bytes(&sig_bytes).map_err(|e| {
-            FacilitatorLocalError::DecodingError(format!(
-                "Failed to parse Sui signature: {}",
-                e
-            ))
+            FacilitatorLocalError::DecodingError(format!("Failed to parse Sui signature: {}", e))
         })
     }
 
@@ -175,13 +172,15 @@ impl SuiProvider {
         }
 
         // Get the public key from the signature and derive the address
-        let public_key = PublicKey::try_from_bytes(signature.scheme(), signature.public_key_bytes())
-            .map_err(|e| {
-                FacilitatorLocalError::InvalidSignature(
-                    MixedAddress::Sui(expected_sender.to_string()),
-                    format!("Failed to extract public key from signature: {}", e),
-                )
-            })?;
+        let public_key =
+            PublicKey::try_from_bytes(signature.scheme(), signature.public_key_bytes()).map_err(
+                |e| {
+                    FacilitatorLocalError::InvalidSignature(
+                        MixedAddress::Sui(expected_sender.to_string()),
+                        format!("Failed to extract public key from signature: {}", e),
+                    )
+                },
+            )?;
 
         let signer_address = SuiAddress::from(&public_key);
 
@@ -243,7 +242,10 @@ impl SuiProvider {
 
         // Parse amount - Sui USDC uses u64 amounts (fits in 6 decimal precision)
         let payload_amount: u64 = payload.amount.parse().map_err(|e| {
-            FacilitatorLocalError::DecodingError(format!("Invalid amount '{}': {}", payload.amount, e))
+            FacilitatorLocalError::DecodingError(format!(
+                "Invalid amount '{}': {}",
+                payload.amount, e
+            ))
         })?;
 
         // Verify amount meets minimum (TokenAmount wraps U256)
@@ -308,9 +310,9 @@ impl SuiProvider {
         let total_balance: u64 = coins.data.iter().map(|c| c.balance).sum();
 
         if total_balance < required_amount {
-            return Err(FacilitatorLocalError::InsufficientFunds(
-                MixedAddress::Sui(address.to_string()),
-            ));
+            return Err(FacilitatorLocalError::InsufficientFunds(MixedAddress::Sui(
+                address.to_string(),
+            )));
         }
 
         debug!(
@@ -361,10 +363,8 @@ impl SuiProvider {
         let sender_sig = sui_types::signature::GenericSignature::Signature(sender_signature);
         let sponsor_sig = sui_types::signature::GenericSignature::Signature(sponsor_signature);
 
-        let transaction = Transaction::from_generic_sig_data(
-            tx_data,
-            vec![sender_sig, sponsor_sig],
-        );
+        let transaction =
+            Transaction::from_generic_sig_data(tx_data, vec![sender_sig, sponsor_sig]);
 
         // Execute the transaction
         let response = client
@@ -376,10 +376,7 @@ impl SuiProvider {
             )
             .await
             .map_err(|e| {
-                FacilitatorLocalError::Other(format!(
-                    "Failed to execute Sui transaction: {}",
-                    e
-                ))
+                FacilitatorLocalError::Other(format!("Failed to execute Sui transaction: {}", e))
             })?;
 
         let digest = response.digest.to_string();
@@ -437,18 +434,17 @@ impl FromEnvByNetworkBuild for SuiProvider {
         };
 
         // Try network-specific key first, then fall back to generic key
-        let private_key_str = match std::env::var(private_key_env)
-            .or_else(|_| std::env::var(ENV_SUI_PRIVATE_KEY))
-        {
-            Ok(key) => key,
-            Err(_) => {
-                warn!(
-                    network = %network,
-                    "No Sui private key found for network, skipping provider initialization"
-                );
-                return Ok(None);
-            }
-        };
+        let private_key_str =
+            match std::env::var(private_key_env).or_else(|_| std::env::var(ENV_SUI_PRIVATE_KEY)) {
+                Ok(key) => key,
+                Err(_) => {
+                    warn!(
+                        network = %network,
+                        "No Sui private key found for network, skipping provider initialization"
+                    );
+                    return Ok(None);
+                }
+            };
 
         // Parse the private key
         // Sui private keys can be in different formats:
@@ -523,7 +519,10 @@ impl Facilitator for SuiProvider {
         self.check_balance(&sender, required_amount).await?;
 
         // Submit the sponsored transaction
-        match self.submit_sponsored_transaction(tx_data, signature, sender).await {
+        match self
+            .submit_sponsored_transaction(tx_data, signature, sender)
+            .await
+        {
             Ok(digest) => {
                 info!(
                     network = %self.network,
@@ -551,9 +550,10 @@ impl Facilitator for SuiProvider {
 
                 Ok(SettleResponse {
                     success: false,
-                    error_reason: Some(crate::types::FacilitatorErrorReason::FreeForm(
-                        format!("Settlement failed: {}", e),
-                    )),
+                    error_reason: Some(crate::types::FacilitatorErrorReason::FreeForm(format!(
+                        "Settlement failed: {}",
+                        e
+                    ))),
                     payer,
                     transaction: None,
                     network: self.network,

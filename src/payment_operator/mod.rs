@@ -72,7 +72,9 @@ pub mod types;
 
 pub use errors::OperatorError;
 pub use operator::{settle_escrow, ESCROW_SCHEME};
-pub use types::{ContractPaymentInfo, EscrowAuthorization, EscrowExtra, EscrowPayload, EscrowPaymentInfo};
+pub use types::{
+    ContractPaymentInfo, EscrowAuthorization, EscrowExtra, EscrowPayload, EscrowPaymentInfo,
+};
 
 use std::env;
 

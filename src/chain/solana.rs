@@ -549,10 +549,7 @@ impl SolanaProvider {
                 .await
             {
                 Ok(transfer_instruction) => {
-                    tracing::debug!(
-                        instruction_index = idx,
-                        "Found valid transfer instruction"
-                    );
+                    tracing::debug!(instruction_index = idx, "Found valid transfer instruction");
                     return Ok((idx, transfer_instruction));
                 }
                 Err(e) => {
@@ -583,8 +580,7 @@ impl SolanaProvider {
 
         for idx in 0..transfer_idx {
             if let Some(instruction) = instructions.get(idx) {
-                let program_id =
-                    instruction.program_id(transaction.message.static_account_keys());
+                let program_id = instruction.program_id(transaction.message.static_account_keys());
                 if *program_id == ATA_PROGRAM_PUBKEY {
                     // Verify it's creating the right ATA
                     if self
@@ -1142,9 +1138,10 @@ impl TransactionInt {
                     timeout_secs = timeout_secs,
                     "Transaction confirmation timed out"
                 );
-                Err(FacilitatorLocalError::ContractCall(
-                    format!("Transaction confirmation timed out after {}s. TX may have been submitted: {}", timeout_secs, tx_sig)
-                ))
+                Err(FacilitatorLocalError::ContractCall(format!(
+                    "Transaction confirmation timed out after {}s. TX may have been submitted: {}",
+                    timeout_secs, tx_sig
+                )))
             }
         }
     }

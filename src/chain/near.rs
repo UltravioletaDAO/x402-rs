@@ -81,7 +81,9 @@ impl TryFrom<String> for NearAddress {
     fn try_from(value: String) -> Result<Self, Self::Error> {
         AccountId::from_str(&value)
             .map(|account_id| Self { account_id })
-            .map_err(|e| FacilitatorLocalError::InvalidAddress(format!("Invalid NEAR account: {e}")))
+            .map_err(|e| {
+                FacilitatorLocalError::InvalidAddress(format!("Invalid NEAR account: {e}"))
+            })
     }
 }
 
@@ -174,8 +176,9 @@ impl NearProvider {
         network: Network,
     ) -> Result<Self, FacilitatorLocalError> {
         let chain = NearChain::try_from(network)?;
-        let account_id = AccountId::from_str(&account_id)
-            .map_err(|e| FacilitatorLocalError::InvalidAddress(format!("Invalid account ID: {e}")))?;
+        let account_id = AccountId::from_str(&account_id).map_err(|e| {
+            FacilitatorLocalError::InvalidAddress(format!("Invalid account ID: {e}"))
+        })?;
 
         // Create an in-memory signer for the relayer and convert to Signer enum
         let signer: Signer = InMemorySigner::from_secret_key(account_id.clone(), secret_key).into();
@@ -217,11 +220,9 @@ impl NearProvider {
             },
         };
 
-        let response = self
-            .rpc_client
-            .call(request)
-            .await
-            .map_err(|e| FacilitatorLocalError::ContractCall(format!("Failed to query nonce: {e}")))?;
+        let response = self.rpc_client.call(request).await.map_err(|e| {
+            FacilitatorLocalError::ContractCall(format!("Failed to query nonce: {e}"))
+        })?;
 
         match response.kind {
             QueryResponseKind::AccessKey(access_key) => Ok(access_key.nonce),
@@ -237,11 +238,9 @@ impl NearProvider {
             block_reference: BlockReference::Finality(Finality::Final),
         };
 
-        let response = self
-            .rpc_client
-            .call(request)
-            .await
-            .map_err(|e| FacilitatorLocalError::ContractCall(format!("Failed to get block: {e}")))?;
+        let response = self.rpc_client.call(request).await.map_err(|e| {
+            FacilitatorLocalError::ContractCall(format!("Failed to get block: {e}"))
+        })?;
 
         Ok(response.header.hash)
     }
@@ -260,11 +259,12 @@ impl NearProvider {
             if let Action::FunctionCall(func_call) = action {
                 if func_call.method_name == "ft_transfer" {
                     // Parse the args as JSON to get receiver_id
-                    let args: FtTransferArgs = serde_json::from_slice(&func_call.args).map_err(|e| {
-                        FacilitatorLocalError::DecodingError(format!(
-                            "Failed to parse ft_transfer args: {e}"
-                        ))
-                    })?;
+                    let args: FtTransferArgs =
+                        serde_json::from_slice(&func_call.args).map_err(|e| {
+                            FacilitatorLocalError::DecodingError(format!(
+                                "Failed to parse ft_transfer args: {e}"
+                            ))
+                        })?;
 
                     let receiver_id = AccountId::from_str(&args.receiver_id).map_err(|e| {
                         FacilitatorLocalError::InvalidAddress(format!(
@@ -345,7 +345,9 @@ impl NearProvider {
             registration_only: Some(true),
         };
         let args_json = serde_json::to_vec(&args).map_err(|e| {
-            FacilitatorLocalError::DecodingError(format!("Failed to serialize storage_deposit args: {e}"))
+            FacilitatorLocalError::DecodingError(format!(
+                "Failed to serialize storage_deposit args: {e}"
+            ))
         })?;
 
         // Create storage_deposit action
@@ -377,8 +379,9 @@ impl NearProvider {
         );
 
         // Submit the transaction
-        let request =
-            methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest { signed_transaction: signed_tx };
+        let request = methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest {
+            signed_transaction: signed_tx,
+        };
 
         let response = self.rpc_client.call(request).await.map_err(|e| {
             FacilitatorLocalError::ContractCall(format!("Failed to submit storage_deposit: {e}"))
@@ -415,7 +418,9 @@ impl NearProvider {
         let usdc_receiver = self.extract_usdc_receiver(signed_delegate_action)?;
 
         // Check if the recipient is registered
-        let is_registered = self.is_account_registered(token_contract, &usdc_receiver).await?;
+        let is_registered = self
+            .is_account_registered(token_contract, &usdc_receiver)
+            .await?;
 
         if !is_registered {
             tracing::warn!(
@@ -425,7 +430,8 @@ impl NearProvider {
             );
 
             // Register the recipient (facilitator pays storage deposit)
-            self.register_account(token_contract, &usdc_receiver).await?;
+            self.register_account(token_contract, &usdc_receiver)
+                .await?;
         }
 
         Ok(())
@@ -445,11 +451,12 @@ impl NearProvider {
             })?;
 
         // Deserialize using borsh
-        let signed_delegate_action: SignedDelegateAction = borsh::from_slice(&bytes).map_err(|e| {
-            FacilitatorLocalError::DecodingError(format!(
-                "Failed to deserialize SignedDelegateAction: {e}"
-            ))
-        })?;
+        let signed_delegate_action: SignedDelegateAction =
+            borsh::from_slice(&bytes).map_err(|e| {
+                FacilitatorLocalError::DecodingError(format!(
+                    "Failed to deserialize SignedDelegateAction: {e}"
+                ))
+            })?;
 
         Ok(signed_delegate_action)
     }
@@ -532,7 +539,12 @@ impl NearProvider {
             }
         };
 
-        if signed_delegate_action.delegate_action.receiver_id.to_string() != usdc_contract {
+        if signed_delegate_action
+            .delegate_action
+            .receiver_id
+            .to_string()
+            != usdc_contract
+        {
             return Err(FacilitatorLocalError::ContractCall(format!(
                 "DelegateAction receiver {} does not match USDC contract {}",
                 signed_delegate_action.delegate_action.receiver_id, usdc_contract
@@ -585,8 +597,9 @@ impl NearProvider {
         );
 
         // Submit the transaction
-        let request =
-            methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest { signed_transaction: signed_tx };
+        let request = methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest {
+            signed_transaction: signed_tx,
+        };
 
         let response = self.rpc_client.call(request).await.map_err(|e| {
             FacilitatorLocalError::ContractCall(format!("Failed to submit meta-transaction: {e}"))

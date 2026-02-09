@@ -50,8 +50,8 @@ mod types;
 pub use abi::*;
 pub use types::*;
 
-use alloy::primitives::Address;
 use crate::network::Network;
+use alloy::primitives::Address;
 
 /// x402 extension identifier for ERC-8004 reputation
 pub const EXTENSION_ID: &str = "8004-reputation";
@@ -79,7 +79,9 @@ pub const ETHEREUM_MAINNET_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
 pub const ETHEREUM_SEPOLIA_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
     identity_registry: alloy::primitives::address!("8004A818BFB912233c491871b3d84c89A494BD9e"),
     reputation_registry: alloy::primitives::address!("8004B663056A597Dffe9eCcC1965A193B7388713"),
-    validation_registry: Some(alloy::primitives::address!("8004Cb1BF31DAf7788923b405b754f57acEB4272")),
+    validation_registry: Some(alloy::primitives::address!(
+        "8004Cb1BF31DAf7788923b405b754f57acEB4272"
+    )),
 };
 
 // ============================================================================
@@ -143,35 +145,45 @@ pub const AVALANCHE_MAINNET_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
 pub const BASE_SEPOLIA_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
     identity_registry: alloy::primitives::address!("8004A818BFB912233c491871b3d84c89A494BD9e"),
     reputation_registry: alloy::primitives::address!("8004B663056A597Dffe9eCcC1965A193B7388713"),
-    validation_registry: Some(alloy::primitives::address!("8004Cb1BF31DAf7788923b405b754f57acEB4272")),
+    validation_registry: Some(alloy::primitives::address!(
+        "8004Cb1BF31DAf7788923b405b754f57acEB4272"
+    )),
 };
 
 // Polygon Amoy Testnet - Official testnet deployment
 pub const POLYGON_AMOY_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
     identity_registry: alloy::primitives::address!("8004A818BFB912233c491871b3d84c89A494BD9e"),
     reputation_registry: alloy::primitives::address!("8004B663056A597Dffe9eCcC1965A193B7388713"),
-    validation_registry: Some(alloy::primitives::address!("8004Cb1BF31DAf7788923b405b754f57acEB4272")),
+    validation_registry: Some(alloy::primitives::address!(
+        "8004Cb1BF31DAf7788923b405b754f57acEB4272"
+    )),
 };
 
 // Arbitrum Sepolia Testnet - Official testnet deployment
 pub const ARBITRUM_SEPOLIA_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
     identity_registry: alloy::primitives::address!("8004A818BFB912233c491871b3d84c89A494BD9e"),
     reputation_registry: alloy::primitives::address!("8004B663056A597Dffe9eCcC1965A193B7388713"),
-    validation_registry: Some(alloy::primitives::address!("8004Cb1BF31DAf7788923b405b754f57acEB4272")),
+    validation_registry: Some(alloy::primitives::address!(
+        "8004Cb1BF31DAf7788923b405b754f57acEB4272"
+    )),
 };
 
 // Celo Sepolia Testnet - Official testnet deployment
 pub const CELO_SEPOLIA_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
     identity_registry: alloy::primitives::address!("8004A818BFB912233c491871b3d84c89A494BD9e"),
     reputation_registry: alloy::primitives::address!("8004B663056A597Dffe9eCcC1965A193B7388713"),
-    validation_registry: Some(alloy::primitives::address!("8004Cb1BF31DAf7788923b405b754f57acEB4272")),
+    validation_registry: Some(alloy::primitives::address!(
+        "8004Cb1BF31DAf7788923b405b754f57acEB4272"
+    )),
 };
 
 // Avalanche Fuji Testnet - Official testnet deployment
 pub const AVALANCHE_FUJI_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
     identity_registry: alloy::primitives::address!("8004A818BFB912233c491871b3d84c89A494BD9e"),
     reputation_registry: alloy::primitives::address!("8004B663056A597Dffe9eCcC1965A193B7388713"),
-    validation_registry: Some(alloy::primitives::address!("8004Cb1BF31DAf7788923b405b754f57acEB4272")),
+    validation_registry: Some(alloy::primitives::address!(
+        "8004Cb1BF31DAf7788923b405b754f57acEB4272"
+    )),
 };
 
 /// Get ERC-8004 contract addresses for a network
@@ -238,7 +250,8 @@ use once_cell::sync::Lazy;
 use std::str::FromStr;
 
 /// Placeholder address used when contracts are not configured
-const PLACEHOLDER_ADDRESS: Address = alloy::primitives::address!("0000000000000000000000000000000000000000");
+const PLACEHOLDER_ADDRESS: Address =
+    alloy::primitives::address!("0000000000000000000000000000000000000000");
 
 /// Legacy global configuration (deprecated - use get_contracts() instead)
 pub struct Erc8004Config {
@@ -312,9 +325,12 @@ pub fn is_configured() -> bool {
 }
 
 // Keep old constants for backward compatibility
-pub const IDENTITY_REGISTRY_ADDRESS: Address = alloy::primitives::address!("8004A169FB4a3325136EB29fA0ceB6D2e539a432");
-pub const REPUTATION_REGISTRY_ADDRESS: Address = alloy::primitives::address!("8004BAa17C55a88189AE136b182e5fdA19dE9b63");
-pub const VALIDATION_REGISTRY_ADDRESS: Address = alloy::primitives::address!("0000000000000000000000000000000000000000");
+pub const IDENTITY_REGISTRY_ADDRESS: Address =
+    alloy::primitives::address!("8004A169FB4a3325136EB29fA0ceB6D2e539a432");
+pub const REPUTATION_REGISTRY_ADDRESS: Address =
+    alloy::primitives::address!("8004BAa17C55a88189AE136b182e5fdA19dE9b63");
+pub const VALIDATION_REGISTRY_ADDRESS: Address =
+    alloy::primitives::address!("0000000000000000000000000000000000000000");
 
 #[cfg(test)]
 mod tests {
@@ -324,7 +340,10 @@ mod tests {
     fn test_ethereum_mainnet_supported() {
         assert!(is_erc8004_supported(&Network::Ethereum));
         let contracts = get_contracts(&Network::Ethereum).unwrap();
-        assert_eq!(contracts.identity_registry, ETHEREUM_MAINNET_CONTRACTS.identity_registry);
+        assert_eq!(
+            contracts.identity_registry,
+            ETHEREUM_MAINNET_CONTRACTS.identity_registry
+        );
     }
 
     #[test]
@@ -339,8 +358,14 @@ mod tests {
         assert!(is_erc8004_supported(&Network::Base));
         let contracts = get_contracts(&Network::Base).unwrap();
         // Same addresses as Ethereum (CREATE2 deterministic deployment)
-        assert_eq!(contracts.identity_registry, ETHEREUM_MAINNET_CONTRACTS.identity_registry);
-        assert_eq!(contracts.reputation_registry, ETHEREUM_MAINNET_CONTRACTS.reputation_registry);
+        assert_eq!(
+            contracts.identity_registry,
+            ETHEREUM_MAINNET_CONTRACTS.identity_registry
+        );
+        assert_eq!(
+            contracts.reputation_registry,
+            ETHEREUM_MAINNET_CONTRACTS.reputation_registry
+        );
     }
 
     #[test]
@@ -357,17 +382,21 @@ mod tests {
         ];
 
         for network in mainnet_networks {
-            assert!(is_erc8004_supported(&network), "Network {:?} should be supported", network);
+            assert!(
+                is_erc8004_supported(&network),
+                "Network {:?} should be supported",
+                network
+            );
             let contracts = get_contracts(&network).unwrap();
             assert_eq!(
-                contracts.identity_registry,
-                ETHEREUM_MAINNET_CONTRACTS.identity_registry,
-                "Network {:?} should use deterministic identity address", network
+                contracts.identity_registry, ETHEREUM_MAINNET_CONTRACTS.identity_registry,
+                "Network {:?} should use deterministic identity address",
+                network
             );
             assert_eq!(
-                contracts.reputation_registry,
-                ETHEREUM_MAINNET_CONTRACTS.reputation_registry,
-                "Network {:?} should use deterministic reputation address", network
+                contracts.reputation_registry, ETHEREUM_MAINNET_CONTRACTS.reputation_registry,
+                "Network {:?} should use deterministic reputation address",
+                network
             );
         }
     }
@@ -384,16 +413,21 @@ mod tests {
         ];
 
         for network in testnet_networks {
-            assert!(is_erc8004_supported(&network), "Network {:?} should be supported", network);
+            assert!(
+                is_erc8004_supported(&network),
+                "Network {:?} should be supported",
+                network
+            );
             let contracts = get_contracts(&network).unwrap();
             assert_eq!(
-                contracts.identity_registry,
-                ETHEREUM_SEPOLIA_CONTRACTS.identity_registry,
-                "Network {:?} should use testnet identity address", network
+                contracts.identity_registry, ETHEREUM_SEPOLIA_CONTRACTS.identity_registry,
+                "Network {:?} should use testnet identity address",
+                network
             );
             assert!(
                 contracts.validation_registry.is_some(),
-                "Network {:?} should have validation registry", network
+                "Network {:?} should have validation registry",
+                network
             );
         }
     }

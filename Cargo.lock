@@ -14656,7 +14656,7 @@ dependencies = [
 
 [[package]]
 name = "x402-rs"
-version = "1.29.8"
+version = "1.29.9"
 dependencies = [
  "algonaut",
  "alloy",

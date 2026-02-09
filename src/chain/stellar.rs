@@ -32,10 +32,10 @@ use stellar_xdr::curr::{
 };
 
 use crate::chain::{FacilitatorLocalError, FromEnvByNetworkBuild, NetworkProviderOps};
-use crate::nonce_store::{stellar_nonce_key, stellar_ttl_seconds, NonceStore, NonceStoreError};
 use crate::facilitator::Facilitator;
 use crate::from_env;
 use crate::network::Network;
+use crate::nonce_store::{stellar_nonce_key, stellar_ttl_seconds, NonceStore, NonceStoreError};
 use crate::types::{
     ExactPaymentPayload, FacilitatorErrorReason, MixedAddress, Scheme, SettleRequest,
     SettleResponse, SupportedPaymentKind, SupportedPaymentKindExtra, SupportedPaymentKindsResponse,
@@ -519,9 +519,7 @@ impl StellarProvider {
 
     /// Get the current ledger sequence number
     async fn get_latest_ledger(&self) -> Result<u32, StellarError> {
-        let result: GetLatestLedgerResult = self
-            .rpc_request_no_params("getLatestLedger")
-            .await?;
+        let result: GetLatestLedgerResult = self.rpc_request_no_params("getLatestLedger").await?;
         Ok(result.sequence)
     }
 
@@ -535,10 +533,9 @@ impl StellarProvider {
             .await
             .map_err(|e| StellarError::RpcError(format!("Horizon request failed: {}", e)))?;
 
-        let account: HorizonAccount = response
-            .json()
-            .await
-            .map_err(|e| StellarError::RpcError(format!("Failed to parse Horizon response: {}", e)))?;
+        let account: HorizonAccount = response.json().await.map_err(|e| {
+            StellarError::RpcError(format!("Failed to parse Horizon response: {}", e))
+        })?;
 
         account
             .sequence
@@ -629,7 +626,8 @@ impl StellarProvider {
         })?;
 
         // Compute the signature preimage using credentials and invocation
-        let preimage = self.compute_auth_entry_preimage(credentials, &auth_entry.root_invocation)?;
+        let preimage =
+            self.compute_auth_entry_preimage(credentials, &auth_entry.root_invocation)?;
 
         // Verify the signature
         let signature =
@@ -675,7 +673,8 @@ impl StellarProvider {
             .0;
 
         // Compute the preimage hash for signature verification
-        let preimage = self.compute_auth_entry_preimage(credentials, &auth_entry.root_invocation)?;
+        let preimage =
+            self.compute_auth_entry_preimage(credentials, &auth_entry.root_invocation)?;
 
         // Search through all signature entries for one matching our expected address
         for (idx, entry) in signatures.iter().enumerate() {
@@ -742,11 +741,11 @@ impl StellarProvider {
                         }
                     })?;
 
-                    return verifying_key
-                        .verify(&preimage, &signature)
-                        .map_err(|_| StellarError::InvalidSignature {
+                    return verifying_key.verify(&preimage, &signature).map_err(|_| {
+                        StellarError::InvalidSignature {
                             address: expected_address.to_string(),
-                        });
+                        }
+                    });
                 }
             }
         }
@@ -842,12 +841,10 @@ impl StellarProvider {
 
         match store.check_and_mark_used(&key, ttl).await {
             Ok(()) => Ok(()),
-            Err(NonceStoreError::NonceAlreadyUsed(_)) => {
-                Err(StellarError::NonceReused {
-                    from: from.to_string(),
-                    nonce,
-                })
-            }
+            Err(NonceStoreError::NonceAlreadyUsed(_)) => Err(StellarError::NonceReused {
+                from: from.to_string(),
+                nonce,
+            }),
             Err(e) => {
                 // For other errors, log and fail-open to avoid blocking legitimate payments
                 // This is a tradeoff: potential replay vs service availability
@@ -1007,9 +1004,9 @@ impl StellarProvider {
             body: OperationBody::InvokeHostFunction(invoke_op),
         };
 
-        let operations: VecM<Operation, 100> = vec![operation]
-            .try_into()
-            .map_err(|_| StellarError::InvalidXdr("Failed to create operations vector".to_string()))?;
+        let operations: VecM<Operation, 100> = vec![operation].try_into().map_err(|_| {
+            StellarError::InvalidXdr("Failed to create operations vector".to_string())
+        })?;
 
         // 4. Build MuxedAccount from facilitator's public key
         let facilitator_bytes = StellarPublicKey::from_string(&self.public_key)
@@ -1069,16 +1066,16 @@ impl StellarProvider {
         let decorated_sig = DecoratedSignature {
             hint: stellar_xdr::curr::SignatureHint(hint_bytes),
             signature: stellar_xdr::curr::Signature(
-                signature_bytes
-                    .to_vec()
-                    .try_into()
-                    .map_err(|_| StellarError::InvalidXdr("Invalid signature length".to_string()))?,
+                signature_bytes.to_vec().try_into().map_err(|_| {
+                    StellarError::InvalidXdr("Invalid signature length".to_string())
+                })?,
             ),
         };
 
-        let signatures: VecM<DecoratedSignature, 20> = vec![decorated_sig]
-            .try_into()
-            .map_err(|_| StellarError::InvalidXdr("Failed to create signatures vector".to_string()))?;
+        let signatures: VecM<DecoratedSignature, 20> =
+            vec![decorated_sig].try_into().map_err(|_| {
+                StellarError::InvalidXdr("Failed to create signatures vector".to_string())
+            })?;
 
         // Build TransactionV1Envelope
         let envelope = TransactionEnvelope::Tx(TransactionV1Envelope {
@@ -1112,9 +1109,9 @@ impl StellarProvider {
         let (transaction, _) = self.build_unsigned_transaction(verification, sequence, fee)?;
 
         // For simulation, we don't need signatures
-        let signatures: VecM<DecoratedSignature, 20> = vec![]
-            .try_into()
-            .map_err(|_| StellarError::InvalidXdr("Failed to create empty signatures".to_string()))?;
+        let signatures: VecM<DecoratedSignature, 20> = vec![].try_into().map_err(|_| {
+            StellarError::InvalidXdr("Failed to create empty signatures".to_string())
+        })?;
 
         let envelope = TransactionEnvelope::Tx(TransactionV1Envelope {
             tx: transaction,
@@ -1141,9 +1138,9 @@ impl StellarProvider {
         preimage.extend_from_slice(&2u32.to_be_bytes());
 
         // Transaction XDR
-        let tx_xdr = tx
-            .to_xdr(Limits::none())
-            .map_err(|e| StellarError::InvalidXdr(format!("Failed to encode transaction: {}", e)))?;
+        let tx_xdr = tx.to_xdr(Limits::none()).map_err(|e| {
+            StellarError::InvalidXdr(format!("Failed to encode transaction: {}", e))
+        })?;
         preimage.extend_from_slice(&tx_xdr);
 
         // Hash the preimage
@@ -1158,7 +1155,10 @@ impl StellarProvider {
     ) -> Result<[u8; 32], FacilitatorLocalError> {
         // Atomically check and mark nonce as used BEFORE submitting to blockchain
         // This prevents concurrent replay attempts
-        let current_ledger = self.get_latest_ledger().await.map_err(FacilitatorLocalError::from)?;
+        let current_ledger = self
+            .get_latest_ledger()
+            .await
+            .map_err(FacilitatorLocalError::from)?;
         self.check_and_mark_nonce_used(
             &verification.payer.address,
             verification.nonce,
@@ -1181,9 +1181,7 @@ impl StellarProvider {
         // Increment sequence for next transaction
         let next_sequence = account_sequence
             .checked_add(1)
-            .ok_or_else(|| {
-                FacilitatorLocalError::Other("Sequence number overflow".to_string())
-            })?;
+            .ok_or_else(|| FacilitatorLocalError::Other("Sequence number overflow".to_string()))?;
 
         tracing::info!(
             account_sequence = account_sequence,
@@ -1225,7 +1223,10 @@ impl StellarProvider {
 
         if let Some(ref error) = sim_result.error {
             tracing::error!(error = %error, "submit_transaction: Simulation returned error");
-            return Err(StellarError::SimulationFailed { error: error.clone() }.into());
+            return Err(StellarError::SimulationFailed {
+                error: error.clone(),
+            }
+            .into());
         }
 
         tracing::info!(
@@ -1236,14 +1237,12 @@ impl StellarProvider {
         );
 
         // Step 3: Extract SorobanTransactionData from simulation result
-        let transaction_data_xdr = sim_result
-            .transaction_data
-            .ok_or_else(|| {
-                tracing::error!("submit_transaction: No transactionData in simulation result");
-                StellarError::SimulationFailed {
-                    error: "No transactionData in simulation result".to_string(),
-                }
-            })?;
+        let transaction_data_xdr = sim_result.transaction_data.ok_or_else(|| {
+            tracing::error!("submit_transaction: No transactionData in simulation result");
+            StellarError::SimulationFailed {
+                error: "No transactionData in simulation result".to_string(),
+            }
+        })?;
 
         let soroban_data_bytes = BASE64.decode(&transaction_data_xdr).map_err(|e| {
             tracing::error!(error = %e, "submit_transaction: Failed to decode transactionData base64");
@@ -1259,15 +1258,12 @@ impl StellarProvider {
         tracing::debug!("submit_transaction: Parsed SorobanTransactionData successfully");
 
         // Step 4: Calculate final fee = base_fee + min_resource_fee + margin
-        let resource_fee_str = sim_result
-            .min_resource_fee
-            .as_ref()
-            .ok_or_else(|| {
-                tracing::error!("submit_transaction: No minResourceFee in simulation result");
-                StellarError::SimulationFailed {
-                    error: "No minResourceFee in simulation result".to_string(),
-                }
-            })?;
+        let resource_fee_str = sim_result.min_resource_fee.as_ref().ok_or_else(|| {
+            tracing::error!("submit_transaction: No minResourceFee in simulation result");
+            StellarError::SimulationFailed {
+                error: "No minResourceFee in simulation result".to_string(),
+            }
+        })?;
 
         let resource_fee: u64 = resource_fee_str.parse().map_err(|e| {
             tracing::error!(
@@ -1276,7 +1272,10 @@ impl StellarProvider {
                 "submit_transaction: Failed to parse minResourceFee"
             );
             StellarError::SimulationFailed {
-                error: format!("Failed to parse minResourceFee '{}': {}", resource_fee_str, e),
+                error: format!(
+                    "Failed to parse minResourceFee '{}': {}",
+                    resource_fee_str, e
+                ),
             }
         })?;
 
@@ -1359,10 +1358,7 @@ impl StellarProvider {
     }
 
     /// Wait for a transaction to be confirmed
-    async fn wait_for_transaction(
-        &self,
-        hash: &str,
-    ) -> Result<[u8; 32], FacilitatorLocalError> {
+    async fn wait_for_transaction(&self, hash: &str) -> Result<[u8; 32], FacilitatorLocalError> {
         const MAX_ATTEMPTS: u32 = 30;
         const POLL_INTERVAL_MS: u64 = 1000;
 
@@ -1562,13 +1558,15 @@ mod tests {
     #[test]
     fn test_stellar_address_validation() {
         // Valid G... address
-        let valid_g =
-            StellarAddress::new("GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF".to_string());
+        let valid_g = StellarAddress::new(
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF".to_string(),
+        );
         assert!(valid_g.is_valid());
 
         // Valid C... contract address
-        let valid_c =
-            StellarAddress::new("CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M".to_string());
+        let valid_c = StellarAddress::new(
+            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M".to_string(),
+        );
         assert!(valid_c.is_valid());
 
         // Invalid address

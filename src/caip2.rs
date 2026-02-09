@@ -83,7 +83,10 @@ pub struct Caip2NetworkId {
 
 impl Caip2NetworkId {
     /// Create a new CAIP-2 network ID with validation.
-    pub fn new(namespace: Namespace, reference: impl Into<String>) -> Result<Self, Caip2ParseError> {
+    pub fn new(
+        namespace: Namespace,
+        reference: impl Into<String>,
+    ) -> Result<Self, Caip2ParseError> {
         let reference = reference.into();
 
         // Validate reference format based on namespace
@@ -306,7 +309,10 @@ pub enum Caip2ParseError {
 
     /// Invalid network name for namespace.
     #[error("invalid {namespace} network name: {reference}")]
-    InvalidNetworkName { namespace: String, reference: String },
+    InvalidNetworkName {
+        namespace: String,
+        reference: String,
+    },
 }
 
 // ============================================================================
@@ -472,7 +478,12 @@ mod tests {
         for (chain_id, name) in chain_ids {
             let caip2 = format!("eip155:{}", chain_id);
             let parsed: Caip2NetworkId = caip2.parse().expect(&format!("Failed to parse {}", name));
-            assert_eq!(parsed.chain_id(), Some(chain_id), "Chain ID mismatch for {}", name);
+            assert_eq!(
+                parsed.chain_id(),
+                Some(chain_id),
+                "Chain ID mismatch for {}",
+                name
+            );
         }
     }
 }

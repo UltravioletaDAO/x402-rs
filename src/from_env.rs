@@ -357,10 +357,9 @@ impl SignerType {
 
                 // Basic validation: Stellar secret keys start with 'S'
                 if !secret_key.starts_with('S') {
-                    return Err(format!(
-                        "Invalid Stellar secret key format: must start with 'S'"
-                    )
-                    .into());
+                    return Err(
+                        format!("Invalid Stellar secret key format: must start with 'S'").into(),
+                    );
                 }
 
                 Ok(secret_key)

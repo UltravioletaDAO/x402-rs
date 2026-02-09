@@ -402,7 +402,7 @@ impl MetaEvmProvider for EvmProvider {
             std::env::var("TX_RECEIPT_TIMEOUT_SECS")
                 .ok()
                 .and_then(|s| s.parse().ok())
-.unwrap_or(default_timeout),
+                .unwrap_or(default_timeout),
         );
 
         let watcher = pending_tx
@@ -469,15 +469,15 @@ impl FromEnvByNetworkBuild for EvmProvider {
             Network::Unichain => true,
             Network::UnichainSepolia => true,
             Network::Monad => true,
-            Network::Bsc => true, // BSC supports EIP-1559 since BEP-95
+            Network::Bsc => true,        // BSC supports EIP-1559 since BEP-95
             Network::SkaleBase => false, // SKALE does NOT support EIP-1559, uses legacy tx
             Network::SkaleBaseSepolia => false, // SKALE does NOT support EIP-1559, uses legacy tx
-            Network::Scroll => true, // Scroll zkEVM supports EIP-1559
-            Network::Near => false, // NEAR is not an EVM chain
+            Network::Scroll => true,     // Scroll zkEVM supports EIP-1559
+            Network::Near => false,      // NEAR is not an EVM chain
             Network::NearTestnet => false, // NEAR is not an EVM chain
-            Network::Stellar => false, // Stellar is not an EVM chain
+            Network::Stellar => false,   // Stellar is not an EVM chain
             Network::StellarTestnet => false, // Stellar is not an EVM chain
-            Network::Fogo => false, // Fogo is a Solana network, not EVM
+            Network::Fogo => false,      // Fogo is a Solana network, not EVM
             Network::FogoTestnet => false, // Fogo is a Solana network, not EVM
             #[cfg(feature = "algorand")]
             Network::Algorand => false, // Algorand is not an EVM chain
@@ -535,7 +535,8 @@ where
                 // Check if the token requires v,r,s signature variant (e.g., PYUSD)
                 if requires_vrs_signature(*contract.address()) {
                     // Prepare the call to simulate transfer the funds using v,r,s variant
-                    let transfer_call = transferWithAuthorization_1(&contract, &payment, inner).await?;
+                    let transfer_call =
+                        transferWithAuthorization_1(&contract, &payment, inner).await?;
                     // Execute both calls in a single transaction simulation to accommodate for possible smart wallet creation
                     let (is_valid_signature_result, transfer_result) = self
                         .inner()
@@ -566,10 +567,12 @@ where
                             "Incorrect signature".to_string(),
                         ));
                     }
-                    transfer_result.map_err(|e| FacilitatorLocalError::ContractCall(format!("{e}")))?;
+                    transfer_result
+                        .map_err(|e| FacilitatorLocalError::ContractCall(format!("{e}")))?;
                 } else {
                     // Prepare the call to simulate transfer the funds using compact signature
-                    let transfer_call = transferWithAuthorization_0(&contract, &payment, inner).await?;
+                    let transfer_call =
+                        transferWithAuthorization_0(&contract, &payment, inner).await?;
                     // Execute both calls in a single transaction simulation to accommodate for possible smart wallet creation
                     let (is_valid_signature_result, transfer_result) = self
                         .inner()
@@ -598,7 +601,8 @@ where
                             "Incorrect signature".to_string(),
                         ));
                     }
-                    transfer_result.map_err(|e| FacilitatorLocalError::ContractCall(format!("{e}")))?;
+                    transfer_result
+                        .map_err(|e| FacilitatorLocalError::ContractCall(format!("{e}")))?;
                 }
             }
             StructuredSignature::EIP1271(signature) => {
@@ -689,7 +693,8 @@ where
                 let is_contract_deployed = is_contract_deployed(self.inner(), &payer).await?;
                 // Check if the token requires v,r,s signature variant (e.g., PYUSD)
                 if requires_vrs_signature(*contract.address()) {
-                    let transfer_call = transferWithAuthorization_1(&contract, &payment, inner).await?;
+                    let transfer_call =
+                        transferWithAuthorization_1(&contract, &payment, inner).await?;
                     if is_contract_deployed {
                         // transferWithAuthorization with v,r,s signature (PYUSD)
                         self.send_transaction(MetaTransaction {
@@ -751,7 +756,8 @@ where
                         )
                     }
                 } else {
-                    let transfer_call = transferWithAuthorization_0(&contract, &payment, inner).await?;
+                    let transfer_call =
+                        transferWithAuthorization_0(&contract, &payment, inner).await?;
                     if is_contract_deployed {
                         // transferWithAuthorization with inner signature
                         self.send_transaction(MetaTransaction {
@@ -1433,11 +1439,16 @@ fn requires_vrs_signature(contract_address: Address) -> bool {
 ///
 /// # Errors
 /// Returns an error if the signature is not exactly 65 bytes.
-fn split_signature(signature: &Bytes) -> Result<(u8, FixedBytes<32>, FixedBytes<32>), FacilitatorLocalError> {
+fn split_signature(
+    signature: &Bytes,
+) -> Result<(u8, FixedBytes<32>, FixedBytes<32>), FacilitatorLocalError> {
     if signature.len() != 65 {
         return Err(FacilitatorLocalError::InvalidSignature(
             EvmAddress(Address::ZERO).into(),
-            format!("Invalid signature length: expected 65 bytes, got {}", signature.len()),
+            format!(
+                "Invalid signature length: expected 65 bytes, got {}",
+                signature.len()
+            ),
         ));
     }
 

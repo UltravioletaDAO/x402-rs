@@ -92,7 +92,8 @@ pub trait NonceStore: Send + Sync + std::fmt::Debug {
     /// * `Ok(())` - Nonce was unused and is now marked as used
     /// * `Err(NonceAlreadyUsed)` - Nonce was already used (replay attempt)
     /// * `Err(...)` - Storage error
-    async fn check_and_mark_used(&self, key: &str, ttl_seconds: u64) -> Result<(), NonceStoreError>;
+    async fn check_and_mark_used(&self, key: &str, ttl_seconds: u64)
+        -> Result<(), NonceStoreError>;
 
     /// Check if a nonce has been used (read-only).
     ///
@@ -175,7 +176,11 @@ impl MemoryNonceStore {
 
 #[async_trait]
 impl NonceStore for MemoryNonceStore {
-    async fn check_and_mark_used(&self, key: &str, ttl_seconds: u64) -> Result<(), NonceStoreError> {
+    async fn check_and_mark_used(
+        &self,
+        key: &str,
+        ttl_seconds: u64,
+    ) -> Result<(), NonceStoreError> {
         let now = Self::current_timestamp();
         let mut data = self.data.write().await;
 
@@ -262,7 +267,11 @@ impl DynamoNonceStore {
 
 #[async_trait]
 impl NonceStore for DynamoNonceStore {
-    async fn check_and_mark_used(&self, key: &str, ttl_seconds: u64) -> Result<(), NonceStoreError> {
+    async fn check_and_mark_used(
+        &self,
+        key: &str,
+        ttl_seconds: u64,
+    ) -> Result<(), NonceStoreError> {
         use aws_sdk_dynamodb::types::AttributeValue;
 
         let now = Self::current_timestamp();
@@ -281,9 +290,7 @@ impl NonceStore for DynamoNonceStore {
             .item("created_at", AttributeValue::N(now.to_string()))
             .item("expires_at", AttributeValue::N(expires_at.to_string()))
             // Condition: item doesn't exist OR has expired
-            .condition_expression(
-                "attribute_not_exists(pk) OR expires_at < :now"
-            )
+            .condition_expression("attribute_not_exists(pk) OR expires_at < :now")
             .expression_attribute_values(":now", AttributeValue::N(now.to_string()))
             .send()
             .await;
@@ -363,22 +370,20 @@ impl NonceStore for DynamoNonceStore {
 /// - Otherwise, falls back to in-memory store (with warning)
 pub async fn create_nonce_store() -> Arc<dyn NonceStore> {
     match std::env::var("NONCE_STORE_TABLE_NAME") {
-        Ok(table_name) if !table_name.is_empty() => {
-            match DynamoNonceStore::from_env().await {
-                Ok(store) => {
-                    info!(
-                        table_name = %table_name,
-                        "Using DynamoDB nonce store for replay protection"
-                    );
-                    Arc::new(store)
-                }
-                Err(e) => {
-                    error!(error = %e, "Failed to initialize DynamoDB nonce store, falling back to memory");
-                    warn!("WARNING: In-memory nonce store does not survive restarts - replay attacks possible!");
-                    Arc::new(MemoryNonceStore::new())
-                }
+        Ok(table_name) if !table_name.is_empty() => match DynamoNonceStore::from_env().await {
+            Ok(store) => {
+                info!(
+                    table_name = %table_name,
+                    "Using DynamoDB nonce store for replay protection"
+                );
+                Arc::new(store)
             }
-        }
+            Err(e) => {
+                error!(error = %e, "Failed to initialize DynamoDB nonce store, falling back to memory");
+                warn!("WARNING: In-memory nonce store does not survive restarts - replay attacks possible!");
+                Arc::new(MemoryNonceStore::new())
+            }
+        },
         _ => {
             warn!("NONCE_STORE_TABLE_NAME not set - using in-memory nonce store");
             warn!("WARNING: In-memory nonce store does not survive restarts - replay attacks possible!");

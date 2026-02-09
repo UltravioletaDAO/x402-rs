@@ -113,15 +113,14 @@ impl FheProxy {
     }
 
     /// Forward a verify request to the FHE facilitator
-    pub async fn verify(&self, body: &serde_json::Value) -> Result<FheVerifyResponse, FheProxyError> {
+    pub async fn verify(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<FheVerifyResponse, FheProxyError> {
         let url = format!("{}/verify", self.config.endpoint);
         info!(url = %url, "Forwarding verify request to FHE facilitator");
 
-        let response = self.client
-            .post(&url)
-            .json(body)
-            .send()
-            .await?;
+        let response = self.client.post(&url).json(body).send().await?;
 
         let status = response.status();
         let response_text = response.text().await?;
@@ -133,11 +132,12 @@ impl FheProxy {
         );
 
         if status.is_success() {
-            serde_json::from_str(&response_text)
-                .map_err(|e| FheProxyError::InvalidResponse(format!(
+            serde_json::from_str(&response_text).map_err(|e| {
+                FheProxyError::InvalidResponse(format!(
                     "Failed to parse verify response: {} - body: {}",
                     e, response_text
-                )))
+                ))
+            })
         } else {
             error!(
                 status = %status,
@@ -149,15 +149,14 @@ impl FheProxy {
     }
 
     /// Forward a settle request to the FHE facilitator
-    pub async fn settle(&self, body: &serde_json::Value) -> Result<serde_json::Value, FheProxyError> {
+    pub async fn settle(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value, FheProxyError> {
         let url = format!("{}/settle", self.config.endpoint);
         info!(url = %url, "Forwarding settle request to FHE facilitator");
 
-        let response = self.client
-            .post(&url)
-            .json(body)
-            .send()
-            .await?;
+        let response = self.client.post(&url).json(body).send().await?;
 
         let status = response.status();
         let response_text = response.text().await?;
@@ -169,11 +168,12 @@ impl FheProxy {
         );
 
         if status.is_success() {
-            serde_json::from_str(&response_text)
-                .map_err(|e| FheProxyError::InvalidResponse(format!(
+            serde_json::from_str(&response_text).map_err(|e| {
+                FheProxyError::InvalidResponse(format!(
                     "Failed to parse settle response: {} - body: {}",
                     e, response_text
-                )))
+                ))
+            })
         } else {
             error!(
                 status = %status,

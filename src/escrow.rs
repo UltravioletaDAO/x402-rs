@@ -38,10 +38,12 @@ use crate::chain::evm::{EvmProvider, MetaEvmProvider, MetaTransaction};
 use crate::chain::{FacilitatorLocalError, NetworkProvider};
 use crate::network::Network;
 use crate::provider_cache::{HasProviderMap, ProviderMap};
-use crate::types::{EvmAddress, ExactPaymentPayload, MixedAddress, SettleResponse, TransactionHash};
+use crate::types::{
+    EvmAddress, ExactPaymentPayload, MixedAddress, SettleResponse, TransactionHash,
+};
 use crate::types_v2::{
-    PaymentPayloadV2, PaymentRequirementsV2, ResourceInfo, SettleRequestV2,
-    X402rPayload, X402rPaymentPayloadNested,
+    PaymentPayloadV2, PaymentRequirementsV2, ResourceInfo, SettleRequestV2, X402rPayload,
+    X402rPaymentPayloadNested,
 };
 
 // ============================================================================
@@ -220,7 +222,10 @@ pub enum EscrowError {
     InvalidExtensionFormat(String),
 
     #[error("Invalid proxy address: expected {expected}, computed {computed}")]
-    InvalidProxyAddress { expected: Address, computed: Address },
+    InvalidProxyAddress {
+        expected: Address,
+        computed: Address,
+    },
 
     #[error("Proxy {0} not found in refund extension proxies map")]
     UnknownProxy(Address),
@@ -323,8 +328,9 @@ pub fn compute_proxy_address(factory: Address, merchant_payout: Address) -> Addr
 fn compute_create3_address(createx: Address, salt: B256) -> Address {
     // CREATE3 proxy init code hash (constant for CreateX)
     // This is keccak256 of the minimal CREATE3 proxy bytecode
-    const CREATE3_PROXY_INITCODE_HASH: B256 =
-        alloy::primitives::b256!("21c35dbe1b344a2488cf3321d6ce542f8e9f305544ff09e4993a62319a497c1f");
+    const CREATE3_PROXY_INITCODE_HASH: B256 = alloy::primitives::b256!(
+        "21c35dbe1b344a2488cf3321d6ce542f8e9f305544ff09e4993a62319a497c1f"
+    );
 
     // Step 1: Compute CREATE2 proxy address
     // proxy_addr = keccak256(0xff || createx || salt || initCodeHash)[12:]
@@ -381,7 +387,9 @@ pub fn parse_escrow_request(body: &str) -> Result<EscrowSettleRequest, EscrowErr
 }
 
 /// Parse escrow request from Ali's nested format
-fn parse_from_nested_format(raw_req: EscrowSettleRequestRaw) -> Result<EscrowSettleRequest, EscrowError> {
+fn parse_from_nested_format(
+    raw_req: EscrowSettleRequestRaw,
+) -> Result<EscrowSettleRequest, EscrowError> {
     use alloy::hex;
     use std::str::FromStr;
 
@@ -416,19 +424,16 @@ fn parse_from_nested_format(raw_req: EscrowSettleRequestRaw) -> Result<EscrowSet
     // Parse authorization fields from X402rPayload strings
     let auth = &inner.payload.authorization;
 
-    let payer = Address::from_str(&auth.from)
-        .map_err(|_| EscrowError::InvalidEvmPayload)?;
-    let amount = U256::from_str(&auth.value)
-        .map_err(|_| EscrowError::InvalidEvmPayload)?;
-    let valid_after = U256::from_str(&auth.valid_after)
-        .map_err(|_| EscrowError::InvalidEvmPayload)?;
-    let valid_before = U256::from_str(&auth.valid_before)
-        .map_err(|_| EscrowError::InvalidEvmPayload)?;
+    let payer = Address::from_str(&auth.from).map_err(|_| EscrowError::InvalidEvmPayload)?;
+    let amount = U256::from_str(&auth.value).map_err(|_| EscrowError::InvalidEvmPayload)?;
+    let valid_after =
+        U256::from_str(&auth.valid_after).map_err(|_| EscrowError::InvalidEvmPayload)?;
+    let valid_before =
+        U256::from_str(&auth.valid_before).map_err(|_| EscrowError::InvalidEvmPayload)?;
 
     // Parse nonce (32 bytes hex)
     let nonce_str = auth.nonce.trim_start_matches("0x");
-    let nonce_bytes = hex::decode(nonce_str)
-        .map_err(|_| EscrowError::InvalidEvmPayload)?;
+    let nonce_bytes = hex::decode(nonce_str).map_err(|_| EscrowError::InvalidEvmPayload)?;
     let nonce_array: [u8; 32] = nonce_bytes
         .try_into()
         .map_err(|_| EscrowError::InvalidEvmPayload)?;
@@ -436,8 +441,7 @@ fn parse_from_nested_format(raw_req: EscrowSettleRequestRaw) -> Result<EscrowSet
 
     // Parse signature
     let sig_str = inner.payload.signature.trim_start_matches("0x");
-    let sig_bytes = hex::decode(sig_str)
-        .map_err(|_| EscrowError::InvalidEvmPayload)?;
+    let sig_bytes = hex::decode(sig_str).map_err(|_| EscrowError::InvalidEvmPayload)?;
 
     if sig_bytes.len() < 65 {
         return Err(EscrowError::InvalidEvmPayload);
@@ -521,8 +525,10 @@ fn parse_from_v2_format(settle_req: SettleRequestV2) -> Result<EscrowSettleReque
         .ok_or(EscrowError::UnknownProxy(proxy_address))?;
 
     // Parse network from CAIP-2
-    let network = Network::from_caip2(&payment_payload.accepted.network.to_string())
-        .ok_or_else(|| EscrowError::UnsupportedNetwork(payment_payload.accepted.network.to_string()))?;
+    let network =
+        Network::from_caip2(&payment_payload.accepted.network.to_string()).ok_or_else(|| {
+            EscrowError::UnsupportedNetwork(payment_payload.accepted.network.to_string())
+        })?;
 
     // Extract EVM-specific payload data
     let (payer, amount, valid_after, valid_before, nonce, sig_v, sig_r, sig_s) =
@@ -548,8 +554,19 @@ fn parse_from_v2_format(settle_req: SettleRequestV2) -> Result<EscrowSettleReque
 /// Extract EVM-specific data from payment payload
 fn extract_evm_payload(
     payload: &PaymentPayloadV2,
-) -> Result<(Address, U256, U256, U256, FixedBytes<32>, u8, FixedBytes<32>, FixedBytes<32>), EscrowError>
-{
+) -> Result<
+    (
+        Address,
+        U256,
+        U256,
+        U256,
+        FixedBytes<32>,
+        u8,
+        FixedBytes<32>,
+        FixedBytes<32>,
+    ),
+    EscrowError,
+> {
     // Get the EVM payload (signature + authorization)
     let evm_payload = match &payload.payload {
         crate::types::ExactPaymentPayload::Evm(evm_payload) => evm_payload,
@@ -584,7 +601,16 @@ fn extract_evm_payload(
     let sig_s = FixedBytes::from_slice(&sig_bytes[32..64]);
     let sig_v = sig_bytes[64];
 
-    Ok((payer, amount, valid_after, valid_before, nonce, sig_v, sig_r, sig_s))
+    Ok((
+        payer,
+        amount,
+        valid_after,
+        valid_before,
+        nonce,
+        sig_v,
+        sig_r,
+        sig_s,
+    ))
 }
 
 // ============================================================================
@@ -697,7 +723,10 @@ pub async fn verify_proxy_onchain(
 /// The `facilitator` parameter must implement `HasProviderMap` to provide
 /// access to the network-specific providers needed for settlement.
 #[instrument(skip_all, err, fields(network))]
-pub async fn settle_with_escrow<F>(body: &str, facilitator: &F) -> Result<SettleResponse, EscrowError>
+pub async fn settle_with_escrow<F>(
+    body: &str,
+    facilitator: &F,
+) -> Result<SettleResponse, EscrowError>
 where
     F: HasProviderMap,
     F::Map: ProviderMap<Value = NetworkProvider>,
@@ -862,7 +891,10 @@ mod tests {
         let addr1 = compute_proxy_address(factory, merchant1);
         let addr2 = compute_proxy_address(factory, merchant2);
 
-        assert_ne!(addr1, addr2, "Different merchants should produce different addresses");
+        assert_ne!(
+            addr1, addr2,
+            "Different merchants should produce different addresses"
+        );
     }
 
     #[test]

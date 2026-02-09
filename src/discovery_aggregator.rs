@@ -166,14 +166,8 @@ fn parse_iso8601_to_unix(s: &str) -> Result<u64, String> {
         return Err(format!("Invalid ISO8601 format: {}", s));
     }
 
-    let date_parts: Vec<u32> = parts[0]
-        .split('-')
-        .filter_map(|p| p.parse().ok())
-        .collect();
-    let time_parts: Vec<u32> = parts[1]
-        .split(':')
-        .filter_map(|p| p.parse().ok())
-        .collect();
+    let date_parts: Vec<u32> = parts[0].split('-').filter_map(|p| p.parse().ok()).collect();
+    let time_parts: Vec<u32> = parts[1].split(':').filter_map(|p| p.parse().ok()).collect();
 
     if date_parts.len() != 3 || time_parts.len() != 3 {
         return Err(format!("Invalid date/time components: {}", s));
@@ -258,7 +252,8 @@ impl FacilitatorConfig {
         Self {
             id: "coinbase".to_string(),
             name: "Coinbase CDP".to_string(),
-            discovery_url: "https://api.cdp.coinbase.com/platform/v2/x402/discovery/resources".to_string(),
+            discovery_url: "https://api.cdp.coinbase.com/platform/v2/x402/discovery/resources"
+                .to_string(),
             enabled: true,
             timeout_secs: 30,
         }
@@ -280,7 +275,8 @@ impl FacilitatorConfig {
         Self {
             id: "thirdweb".to_string(),
             name: "Thirdweb".to_string(),
-            discovery_url: "https://api.thirdweb.com/v1/payments/x402/discovery/resources".to_string(),
+            discovery_url: "https://api.thirdweb.com/v1/payments/x402/discovery/resources"
+                .to_string(),
             enabled: true,
             timeout_secs: 30,
         }
@@ -302,7 +298,8 @@ impl FacilitatorConfig {
         Self {
             id: "aurracloud".to_string(),
             name: "AurraCloud".to_string(),
-            discovery_url: "https://x402-facilitator.aurracloud.com/discovery/resources".to_string(),
+            discovery_url: "https://x402-facilitator.aurracloud.com/discovery/resources"
+                .to_string(),
             enabled: true,
             timeout_secs: 30,
         }
@@ -533,7 +530,10 @@ impl DiscoveryAggregator {
             .build()
             .expect("Failed to create HTTP client");
 
-        Self { client, facilitators }
+        Self {
+            client,
+            facilitators,
+        }
     }
 
     /// Fetch resources from all enabled facilitators.
@@ -637,25 +637,45 @@ impl DiscoveryAggregator {
     ) -> Result<(Vec<CoinbaseResource>, Option<CoinbasePagination>), AggregatorError> {
         // Try 1: Standard Coinbase format with "items"
         if let Ok(parsed) = serde_json::from_str::<CoinbaseDiscoveryResponse>(body) {
-            debug!(facilitator = facilitator_id, format = "standard", items = parsed.items.len(), "Parsed response");
+            debug!(
+                facilitator = facilitator_id,
+                format = "standard",
+                items = parsed.items.len(),
+                "Parsed response"
+            );
             return Ok((parsed.items, parsed.pagination));
         }
 
         // Try 2: Wrapped format with "data" object
         if let Ok(parsed) = serde_json::from_str::<WrappedDiscoveryResponse>(body) {
-            debug!(facilitator = facilitator_id, format = "wrapped", items = parsed.data.items.len(), "Parsed response");
+            debug!(
+                facilitator = facilitator_id,
+                format = "wrapped",
+                items = parsed.data.items.len(),
+                "Parsed response"
+            );
             return Ok((parsed.data.items, parsed.data.pagination));
         }
 
         // Try 3: Alternative format with "resources" instead of "items"
         if let Ok(parsed) = serde_json::from_str::<AlternativeDiscoveryResponse>(body) {
-            debug!(facilitator = facilitator_id, format = "alternative", resources = parsed.resources.len(), "Parsed response");
+            debug!(
+                facilitator = facilitator_id,
+                format = "alternative",
+                resources = parsed.resources.len(),
+                "Parsed response"
+            );
             return Ok((parsed.resources, parsed.pagination));
         }
 
         // Try 4: Direct array of resources
         if let Ok(resources) = serde_json::from_str::<Vec<CoinbaseResource>>(body) {
-            debug!(facilitator = facilitator_id, format = "array", resources = resources.len(), "Parsed response");
+            debug!(
+                facilitator = facilitator_id,
+                format = "array",
+                resources = resources.len(),
+                "Parsed response"
+            );
             return Ok((resources, None));
         }
 
@@ -735,7 +755,10 @@ impl DiscoveryAggregator {
     }
 
     /// Convert a Coinbase payment requirement to v2 format.
-    fn convert_payment_requirement(&self, req: CoinbasePaymentRequirement) -> Option<PaymentRequirementsV2> {
+    fn convert_payment_requirement(
+        &self,
+        req: CoinbasePaymentRequirement,
+    ) -> Option<PaymentRequirementsV2> {
         // Parse network - Coinbase uses v1 names like "base", "base-mainnet"
         let network_str = req.network.as_deref()?;
         let network = self.parse_network_to_caip2(network_str)?;
@@ -824,7 +847,10 @@ pub fn start_aggregation_task(
     registry: crate::discovery::DiscoveryRegistry,
     interval_secs: u64,
 ) -> tokio::task::JoinHandle<()> {
-    info!(interval_secs = interval_secs, "Starting discovery aggregation background task");
+    info!(
+        interval_secs = interval_secs,
+        "Starting discovery aggregation background task"
+    );
 
     tokio::spawn(async move {
         let aggregator = DiscoveryAggregator::new();
@@ -884,25 +910,40 @@ mod tests {
 
         // Test common network names
         assert_eq!(
-            aggregator.parse_network_to_caip2("base").unwrap().to_string(),
+            aggregator
+                .parse_network_to_caip2("base")
+                .unwrap()
+                .to_string(),
             "eip155:8453"
         );
         assert_eq!(
-            aggregator.parse_network_to_caip2("base-mainnet").unwrap().to_string(),
+            aggregator
+                .parse_network_to_caip2("base-mainnet")
+                .unwrap()
+                .to_string(),
             "eip155:8453"
         );
         assert_eq!(
-            aggregator.parse_network_to_caip2("ethereum").unwrap().to_string(),
+            aggregator
+                .parse_network_to_caip2("ethereum")
+                .unwrap()
+                .to_string(),
             "eip155:1"
         );
         assert_eq!(
-            aggregator.parse_network_to_caip2("polygon").unwrap().to_string(),
+            aggregator
+                .parse_network_to_caip2("polygon")
+                .unwrap()
+                .to_string(),
             "eip155:137"
         );
 
         // Test CAIP-2 passthrough
         assert_eq!(
-            aggregator.parse_network_to_caip2("eip155:8453").unwrap().to_string(),
+            aggregator
+                .parse_network_to_caip2("eip155:8453")
+                .unwrap()
+                .to_string(),
             "eip155:8453"
         );
     }

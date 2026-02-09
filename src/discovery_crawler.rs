@@ -191,14 +191,19 @@ impl DiscoveryCrawler {
     }
 
     /// Fetch and parse a single well-known endpoint.
-    async fn fetch_well_known(&self, target: &CrawlTarget) -> Result<WellKnownX402Response, CrawlError> {
-        let url = target.well_known_url()
+    async fn fetch_well_known(
+        &self,
+        target: &CrawlTarget,
+    ) -> Result<WellKnownX402Response, CrawlError> {
+        let url = target
+            .well_known_url()
             .map_err(|e| CrawlError::InvalidUrl(e.to_string()))?;
 
         let target_name = target.name.as_deref().unwrap_or(target.base_url.as_str());
         debug!(url = %url, target = %target_name, "Fetching well-known x402");
 
-        let response = self.client
+        let response = self
+            .client
             .get(url.clone())
             .timeout(self.timeout)
             .send()
@@ -209,11 +214,13 @@ impl DiscoveryCrawler {
             return Err(CrawlError::HttpError(response.status().as_u16()));
         }
 
-        let body = response.text().await
+        let body = response
+            .text()
+            .await
             .map_err(|e| CrawlError::NetworkError(e.to_string()))?;
 
-        let parsed: WellKnownX402Response = serde_json::from_str(&body)
-            .map_err(|e| CrawlError::ParseError(e.to_string()))?;
+        let parsed: WellKnownX402Response =
+            serde_json::from_str(&body).map_err(|e| CrawlError::ParseError(e.to_string()))?;
 
         info!(
             url = %url,
@@ -226,7 +233,10 @@ impl DiscoveryCrawler {
     }
 
     /// Convert a well-known resource to a discovery resource.
-    fn to_discovery_resource(resource: WellKnownResource, source_domain: &str) -> DiscoveryResource {
+    fn to_discovery_resource(
+        resource: WellKnownResource,
+        source_domain: &str,
+    ) -> DiscoveryResource {
         use crate::types_v2::DiscoveryMetadata;
         use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -261,16 +271,17 @@ impl DiscoveryCrawler {
         let mut summary = CrawlSummary::default();
 
         for target in &self.targets {
-            let target_name = target.name.as_deref()
+            let target_name = target
+                .name
+                .as_deref()
                 .unwrap_or(target.base_url.host_str().unwrap_or("unknown"));
 
             match self.fetch_well_known(target).await {
                 Ok(response) => {
-                    let source_domain = target.base_url.host_str()
-                        .unwrap_or("unknown")
-                        .to_string();
+                    let source_domain = target.base_url.host_str().unwrap_or("unknown").to_string();
 
-                    let resources: Vec<DiscoveryResource> = response.resources
+                    let resources: Vec<DiscoveryResource> = response
+                        .resources
                         .into_iter()
                         .map(|r| Self::to_discovery_resource(r, &source_domain))
                         .collect();
@@ -393,8 +404,7 @@ pub fn start_crawl_task(
     interval_secs: u64,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let crawler = DiscoveryCrawler::new()
-            .add_targets(targets);
+        let crawler = DiscoveryCrawler::new().add_targets(targets);
 
         // Initial crawl
         info!("Starting initial well-known crawl");

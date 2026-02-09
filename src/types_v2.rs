@@ -105,7 +105,10 @@ pub struct PaymentRequirementsV2 {
 
 impl PaymentRequirementsV2 {
     /// Convert to v1 PaymentRequirements for backward compatibility
-    pub fn to_v1(&self, resource_info: &ResourceInfo) -> Result<PaymentRequirements, NetworkParseError> {
+    pub fn to_v1(
+        &self,
+        resource_info: &ResourceInfo,
+    ) -> Result<PaymentRequirements, NetworkParseError> {
         let network = Network::from_caip2(&self.network.to_string())
             .ok_or_else(|| NetworkParseError::InvalidCaip2(self.network.to_string()))?;
 
@@ -318,8 +321,9 @@ impl PaymentPayloadEnvelope {
         match self {
             PaymentPayloadEnvelope::V1(payload) => Ok(payload.network),
             PaymentPayloadEnvelope::V2(payload) => {
-                Network::from_caip2(&payload.accepted.network.to_string())
-                    .ok_or_else(|| NetworkParseError::InvalidCaip2(payload.accepted.network.to_string()))
+                Network::from_caip2(&payload.accepted.network.to_string()).ok_or_else(|| {
+                    NetworkParseError::InvalidCaip2(payload.accepted.network.to_string())
+                })
             }
         }
     }
@@ -461,21 +465,28 @@ impl VerifyRequestX402rNested {
         let inner = &self.payment_payload;
 
         // Parse the authorization values
-        let from = Address::from_str(&inner.payload.authorization.from)
-            .map_err(|_| NetworkParseError::InvalidCaip2(inner.payload.authorization.from.clone()))?;
+        let from = Address::from_str(&inner.payload.authorization.from).map_err(|_| {
+            NetworkParseError::InvalidCaip2(inner.payload.authorization.from.clone())
+        })?;
         let to = Address::from_str(&inner.payload.authorization.to)
             .map_err(|_| NetworkParseError::InvalidCaip2(inner.payload.authorization.to.clone()))?;
-        let value = U256::from_str(&inner.payload.authorization.value)
-            .map_err(|_| NetworkParseError::InvalidCaip2(inner.payload.authorization.value.clone()))?;
-        let valid_after = U256::from_str(&inner.payload.authorization.valid_after)
-            .map_err(|_| NetworkParseError::InvalidCaip2(inner.payload.authorization.valid_after.clone()))?;
-        let valid_before = U256::from_str(&inner.payload.authorization.valid_before)
-            .map_err(|_| NetworkParseError::InvalidCaip2(inner.payload.authorization.valid_before.clone()))?;
+        let value = U256::from_str(&inner.payload.authorization.value).map_err(|_| {
+            NetworkParseError::InvalidCaip2(inner.payload.authorization.value.clone())
+        })?;
+        let valid_after =
+            U256::from_str(&inner.payload.authorization.valid_after).map_err(|_| {
+                NetworkParseError::InvalidCaip2(inner.payload.authorization.valid_after.clone())
+            })?;
+        let valid_before =
+            U256::from_str(&inner.payload.authorization.valid_before).map_err(|_| {
+                NetworkParseError::InvalidCaip2(inner.payload.authorization.valid_before.clone())
+            })?;
 
         // Parse nonce (32 bytes hex)
         let nonce_str = inner.payload.authorization.nonce.trim_start_matches("0x");
-        let nonce_bytes = hex::decode(nonce_str)
-            .map_err(|_| NetworkParseError::InvalidCaip2(inner.payload.authorization.nonce.clone()))?;
+        let nonce_bytes = hex::decode(nonce_str).map_err(|_| {
+            NetworkParseError::InvalidCaip2(inner.payload.authorization.nonce.clone())
+        })?;
 
         // Parse signature
         let sig_str = inner.payload.signature.trim_start_matches("0x");
@@ -487,13 +498,16 @@ impl VerifyRequestX402rNested {
             .ok_or_else(|| NetworkParseError::InvalidCaip2(inner.accepted.network.to_string()))?;
 
         // Convert U256 timestamps to u64 for UnixTimestamp
-        let valid_after_u64: u64 = valid_after.try_into()
+        let valid_after_u64: u64 = valid_after
+            .try_into()
             .map_err(|_| NetworkParseError::InvalidCaip2("valid_after too large".to_string()))?;
-        let valid_before_u64: u64 = valid_before.try_into()
+        let valid_before_u64: u64 = valid_before
+            .try_into()
             .map_err(|_| NetworkParseError::InvalidCaip2("valid_before too large".to_string()))?;
 
         // Convert nonce bytes to [u8; 32]
-        let nonce_array: [u8; 32] = nonce_bytes.try_into()
+        let nonce_array: [u8; 32] = nonce_bytes
+            .try_into()
             .map_err(|_| NetworkParseError::InvalidCaip2("nonce must be 32 bytes".to_string()))?;
 
         let evm_authorization = ExactEvmPayloadAuthorization {
@@ -518,7 +532,9 @@ impl VerifyRequestX402rNested {
         };
 
         // Get resource from: top-level, inner paymentPayload, or create default
-        let resource = self.resource.clone()
+        let resource = self
+            .resource
+            .clone()
             .or_else(|| inner.resource.clone())
             .unwrap_or_else(|| {
                 // Create a minimal ResourceInfo if none provided
@@ -551,21 +567,28 @@ impl VerifyRequestX402r {
         use std::str::FromStr;
 
         // Parse the authorization values
-        let from = Address::from_str(&self.payload.authorization.from)
-            .map_err(|_| NetworkParseError::InvalidCaip2(self.payload.authorization.from.clone()))?;
+        let from = Address::from_str(&self.payload.authorization.from).map_err(|_| {
+            NetworkParseError::InvalidCaip2(self.payload.authorization.from.clone())
+        })?;
         let to = Address::from_str(&self.payload.authorization.to)
             .map_err(|_| NetworkParseError::InvalidCaip2(self.payload.authorization.to.clone()))?;
-        let value = U256::from_str(&self.payload.authorization.value)
-            .map_err(|_| NetworkParseError::InvalidCaip2(self.payload.authorization.value.clone()))?;
-        let valid_after = U256::from_str(&self.payload.authorization.valid_after)
-            .map_err(|_| NetworkParseError::InvalidCaip2(self.payload.authorization.valid_after.clone()))?;
-        let valid_before = U256::from_str(&self.payload.authorization.valid_before)
-            .map_err(|_| NetworkParseError::InvalidCaip2(self.payload.authorization.valid_before.clone()))?;
+        let value = U256::from_str(&self.payload.authorization.value).map_err(|_| {
+            NetworkParseError::InvalidCaip2(self.payload.authorization.value.clone())
+        })?;
+        let valid_after =
+            U256::from_str(&self.payload.authorization.valid_after).map_err(|_| {
+                NetworkParseError::InvalidCaip2(self.payload.authorization.valid_after.clone())
+            })?;
+        let valid_before =
+            U256::from_str(&self.payload.authorization.valid_before).map_err(|_| {
+                NetworkParseError::InvalidCaip2(self.payload.authorization.valid_before.clone())
+            })?;
 
         // Parse nonce (32 bytes hex)
         let nonce_str = self.payload.authorization.nonce.trim_start_matches("0x");
-        let nonce_bytes = hex::decode(nonce_str)
-            .map_err(|_| NetworkParseError::InvalidCaip2(self.payload.authorization.nonce.clone()))?;
+        let nonce_bytes = hex::decode(nonce_str).map_err(|_| {
+            NetworkParseError::InvalidCaip2(self.payload.authorization.nonce.clone())
+        })?;
 
         // Parse signature
         let sig_str = self.payload.signature.trim_start_matches("0x");
@@ -578,13 +601,16 @@ impl VerifyRequestX402r {
 
         // Build v1 PaymentPayload
         // Convert U256 timestamps to u64 for UnixTimestamp
-        let valid_after_u64: u64 = valid_after.try_into()
+        let valid_after_u64: u64 = valid_after
+            .try_into()
             .map_err(|_| NetworkParseError::InvalidCaip2("valid_after too large".to_string()))?;
-        let valid_before_u64: u64 = valid_before.try_into()
+        let valid_before_u64: u64 = valid_before
+            .try_into()
             .map_err(|_| NetworkParseError::InvalidCaip2("valid_before too large".to_string()))?;
 
         // Convert nonce bytes to [u8; 32]
-        let nonce_array: [u8; 32] = nonce_bytes.try_into()
+        let nonce_array: [u8; 32] = nonce_bytes
+            .try_into()
             .map_err(|_| NetworkParseError::InvalidCaip2("nonce must be 32 bytes".to_string()))?;
 
         let evm_authorization = ExactEvmPayloadAuthorization {
@@ -667,14 +693,10 @@ impl VerifyRequestEnvelope {
     pub fn network_v1(&self) -> Result<Network, NetworkParseError> {
         match self {
             VerifyRequestEnvelope::V1(req) => Ok(req.network()),
-            VerifyRequestEnvelope::V2(req) => {
-                Network::from_caip2(&req.network().to_string())
-                    .ok_or_else(|| NetworkParseError::InvalidCaip2(req.network().to_string()))
-            }
-            VerifyRequestEnvelope::X402r(req) => {
-                Network::from_caip2(&req.network().to_string())
-                    .ok_or_else(|| NetworkParseError::InvalidCaip2(req.network().to_string()))
-            }
+            VerifyRequestEnvelope::V2(req) => Network::from_caip2(&req.network().to_string())
+                .ok_or_else(|| NetworkParseError::InvalidCaip2(req.network().to_string())),
+            VerifyRequestEnvelope::X402r(req) => Network::from_caip2(&req.network().to_string())
+                .ok_or_else(|| NetworkParseError::InvalidCaip2(req.network().to_string())),
             VerifyRequestEnvelope::X402rNested(req) => {
                 Network::from_caip2(&req.network().to_string())
                     .ok_or_else(|| NetworkParseError::InvalidCaip2(req.network().to_string()))
@@ -739,7 +761,10 @@ pub struct SupportedPaymentKindsResponseV2 {
 
 impl SupportedPaymentKindsResponseV2 {
     /// Create a new v2 response with both v1 and v2 network formats
-    pub fn new(networks: &[Network], facilitator_addresses: &HashMap<Namespace, Vec<MixedAddress>>) -> Self {
+    pub fn new(
+        networks: &[Network],
+        facilitator_addresses: &HashMap<Namespace, Vec<MixedAddress>>,
+    ) -> Self {
         let mut kinds = Vec::new();
         let mut signers = HashMap::new();
 
@@ -794,8 +819,10 @@ impl SupportedPaymentKindsResponseV1ToV2 for SupportedPaymentKindsResponse {
         extensions: Vec<String>,
         signers: HashMap<String, Vec<String>>,
     ) -> SupportedPaymentKindsResponseV2 {
-        let kinds = self.kinds.iter().map(|kind| {
-            SupportedPaymentKindV2 {
+        let kinds = self
+            .kinds
+            .iter()
+            .map(|kind| SupportedPaymentKindV2 {
                 x402_version: match kind.x402_version {
                     X402Version::V1 => 1,
                     X402Version::V2 => 2,
@@ -803,8 +830,8 @@ impl SupportedPaymentKindsResponseV1ToV2 for SupportedPaymentKindsResponse {
                 scheme: kind.scheme,
                 network: kind.network.clone(),
                 extra: kind.extra.clone(),
-            }
-        }).collect();
+            })
+            .collect();
 
         SupportedPaymentKindsResponseV2 {
             kinds,
@@ -858,10 +885,14 @@ pub enum FacilitatorErrorReasonV2 {
 impl From<FacilitatorErrorReason> for FacilitatorErrorReasonV2 {
     fn from(v1: FacilitatorErrorReason) -> Self {
         match v1 {
-            FacilitatorErrorReason::InsufficientFunds => FacilitatorErrorReasonV2::InsufficientFunds,
+            FacilitatorErrorReason::InsufficientFunds => {
+                FacilitatorErrorReasonV2::InsufficientFunds
+            }
             FacilitatorErrorReason::InvalidScheme => FacilitatorErrorReasonV2::InvalidScheme,
             FacilitatorErrorReason::InvalidNetwork => FacilitatorErrorReasonV2::InvalidNetwork,
-            FacilitatorErrorReason::UnexpectedSettleError => FacilitatorErrorReasonV2::UnexpectedSettleError,
+            FacilitatorErrorReason::UnexpectedSettleError => {
+                FacilitatorErrorReasonV2::UnexpectedSettleError
+            }
             FacilitatorErrorReason::FreeForm(msg) => FacilitatorErrorReasonV2::FreeForm(msg),
         }
     }
@@ -998,7 +1029,6 @@ pub struct DiscoveryResource {
     pub metadata: Option<DiscoveryMetadata>,
 
     // ========== Meta-Bazaar Source Tracking ==========
-
     /// How this resource was discovered/registered
     #[serde(default)]
     pub source: DiscoverySource,
@@ -1143,7 +1173,11 @@ pub struct Pagination {
 
 impl Pagination {
     pub fn new(limit: u32, offset: u32, total: u32) -> Self {
-        Self { limit, offset, total }
+        Self {
+            limit,
+            offset,
+            total,
+        }
     }
 }
 
@@ -1204,12 +1238,8 @@ pub struct RegisterResourceRequest {
 impl RegisterResourceRequest {
     /// Convert to a DiscoveryResource
     pub fn into_resource(self) -> DiscoveryResource {
-        let resource = DiscoveryResource::new(
-            self.url,
-            self.resource_type,
-            self.description,
-            self.accepts,
-        );
+        let resource =
+            DiscoveryResource::new(self.url, self.resource_type, self.description, self.accepts);
         match self.metadata {
             Some(meta) => resource.with_metadata(meta),
             None => resource,
@@ -1238,7 +1268,6 @@ pub struct DiscoveryFilters {
     pub tag: Option<String>,
 
     // ========== Meta-Bazaar Filters ==========
-
     /// Filter by discovery source (self_registered, settlement, crawled, aggregated)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
@@ -1325,8 +1354,12 @@ mod tests {
             payload: ExactPaymentPayload::Evm(crate::types::ExactEvmPayload {
                 signature: crate::types::EvmSignature(vec![0u8; 65]),
                 authorization: crate::types::ExactEvmPayloadAuthorization {
-                    from: "0x1234567890123456789012345678901234567890".parse().unwrap(),
-                    to: "0x1234567890123456789012345678901234567890".parse().unwrap(),
+                    from: "0x1234567890123456789012345678901234567890"
+                        .parse()
+                        .unwrap(),
+                    to: "0x1234567890123456789012345678901234567890"
+                        .parse()
+                        .unwrap(),
                     value: TokenAmount::from(1000000u64),
                     valid_after: crate::timestamp::UnixTimestamp(0),
                     valid_before: crate::timestamp::UnixTimestamp(2000000000),
@@ -1347,9 +1380,17 @@ mod tests {
         let requirements = PaymentRequirementsV2 {
             scheme: Scheme::Exact,
             network: Caip2NetworkId::eip155(8453),
-            asset: MixedAddress::Evm("0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913".parse().unwrap()),
+            asset: MixedAddress::Evm(
+                "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+                    .parse()
+                    .unwrap(),
+            ),
             amount: TokenAmount::from(1000000u64),
-            pay_to: MixedAddress::Evm("0x1234567890123456789012345678901234567890".parse().unwrap()),
+            pay_to: MixedAddress::Evm(
+                "0x1234567890123456789012345678901234567890"
+                    .parse()
+                    .unwrap(),
+            ),
             max_timeout_seconds: 300,
             extra: None,
         };
@@ -1359,8 +1400,12 @@ mod tests {
             ExactPaymentPayload::Evm(crate::types::ExactEvmPayload {
                 signature: crate::types::EvmSignature(vec![0u8; 65]),
                 authorization: crate::types::ExactEvmPayloadAuthorization {
-                    from: "0x1234567890123456789012345678901234567890".parse().unwrap(),
-                    to: "0x1234567890123456789012345678901234567890".parse().unwrap(),
+                    from: "0x1234567890123456789012345678901234567890"
+                        .parse()
+                        .unwrap(),
+                    to: "0x1234567890123456789012345678901234567890"
+                        .parse()
+                        .unwrap(),
                     value: TokenAmount::from(1000000u64),
                     valid_after: crate::timestamp::UnixTimestamp(0),
                     valid_before: crate::timestamp::UnixTimestamp(2000000000),
@@ -1379,7 +1424,11 @@ mod tests {
         let mut facilitator_addresses = HashMap::new();
         facilitator_addresses.insert(
             Namespace::Eip155,
-            vec![MixedAddress::Evm("0x1234567890123456789012345678901234567890".parse().unwrap())],
+            vec![MixedAddress::Evm(
+                "0x1234567890123456789012345678901234567890"
+                    .parse()
+                    .unwrap(),
+            )],
         );
 
         let response = SupportedPaymentKindsResponseV2::new(&networks, &facilitator_addresses);
@@ -1388,7 +1437,9 @@ mod tests {
         assert_eq!(response.kinds.len(), 4);
 
         // Check v1 entries exist
-        let v1_networks: Vec<_> = response.kinds.iter()
+        let v1_networks: Vec<_> = response
+            .kinds
+            .iter()
             .filter(|k| k.x402_version == 1)
             .map(|k| k.network.as_str())
             .collect();
@@ -1396,7 +1447,9 @@ mod tests {
         assert!(v1_networks.contains(&"solana"));
 
         // Check v2 entries exist (CAIP-2 format)
-        let v2_networks: Vec<_> = response.kinds.iter()
+        let v2_networks: Vec<_> = response
+            .kinds
+            .iter()
             .filter(|k| k.x402_version == 2)
             .map(|k| k.network.as_str())
             .collect();
@@ -1411,7 +1464,10 @@ mod tests {
     fn test_facilitator_error_reason_v2_from_v1() {
         let v1_error = FacilitatorErrorReason::InsufficientFunds;
         let v2_error: FacilitatorErrorReasonV2 = v1_error.into();
-        assert!(matches!(v2_error, FacilitatorErrorReasonV2::InsufficientFunds));
+        assert!(matches!(
+            v2_error,
+            FacilitatorErrorReasonV2::InsufficientFunds
+        ));
 
         let v1_error = FacilitatorErrorReason::FreeForm("test error".to_string());
         let v2_error: FacilitatorErrorReasonV2 = v1_error.into();

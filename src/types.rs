@@ -1193,8 +1193,10 @@ impl<'de> Deserialize<'de> for TransactionHash {
         // Sui: Base58 transaction digest (44 characters)
         #[cfg(feature = "sui")]
         {
-            static SUI_TX_DIGEST_REGEX: Lazy<Regex> =
-                Lazy::new(|| Regex::new(r"^[123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz]{43,44}$").expect("invalid regex"));
+            static SUI_TX_DIGEST_REGEX: Lazy<Regex> = Lazy::new(|| {
+                Regex::new(r"^[123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz]{43,44}$")
+                    .expect("invalid regex")
+            });
             if SUI_TX_DIGEST_REGEX.is_match(&s) {
                 return Ok(TransactionHash::Sui(s));
             }
@@ -1963,7 +1965,10 @@ mod tests {
         assert_eq!(serde_json::to_string(&TokenType::Usdc).unwrap(), "\"usdc\"");
         assert_eq!(serde_json::to_string(&TokenType::Eurc).unwrap(), "\"eurc\"");
         assert_eq!(serde_json::to_string(&TokenType::Ausd).unwrap(), "\"ausd\"");
-        assert_eq!(serde_json::to_string(&TokenType::Pyusd).unwrap(), "\"pyusd\"");
+        assert_eq!(
+            serde_json::to_string(&TokenType::Pyusd).unwrap(),
+            "\"pyusd\""
+        );
         assert_eq!(serde_json::to_string(&TokenType::Usdt).unwrap(), "\"usdt\"");
     }
 
@@ -2058,7 +2063,9 @@ mod tests {
         assert!(json.contains("\"token\":\"usdc\""));
         assert!(json.contains("\"decimals\":6"));
         // Address is checksummed (mixed case)
-        assert!(json.to_lowercase().contains("0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"));
+        assert!(json
+            .to_lowercase()
+            .contains("0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"));
     }
 
     #[test]

@@ -26,7 +26,7 @@ pub use AuthCaptureEscrow::PaymentInfo;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::{address, U256, Uint};
+    use alloy::primitives::{address, Uint, U256};
 
     #[test]
     fn test_payment_info_struct() {

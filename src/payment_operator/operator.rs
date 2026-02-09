@@ -29,10 +29,7 @@ pub const ESCROW_SCHEME: &str = "escrow";
 /// This is called from handlers.rs when scheme="escrow" is detected.
 /// It calls PaymentOperator.authorize() to place funds in escrow.
 #[instrument(skip_all, err, fields(network))]
-pub async fn settle_escrow<F>(
-    body: &str,
-    facilitator: &F,
-) -> Result<SettleResponse, OperatorError>
+pub async fn settle_escrow<F>(body: &str, facilitator: &F) -> Result<SettleResponse, OperatorError>
 where
     F: HasProviderMap,
     F::Map: ProviderMap<Value = NetworkProvider>,
@@ -91,7 +88,9 @@ where
 }
 
 /// Parse escrow scheme request from body
-fn parse_escrow_request(body: &str) -> Result<(Network, EscrowPayload, EscrowExtra), OperatorError> {
+fn parse_escrow_request(
+    body: &str,
+) -> Result<(Network, EscrowPayload, EscrowExtra), OperatorError> {
     let json_value: serde_json::Value = serde_json::from_str(body)?;
 
     // Verify scheme is "escrow"

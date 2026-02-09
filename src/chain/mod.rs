@@ -1,12 +1,12 @@
 use std::future::Future;
 use std::time::SystemTimeError;
 
+#[cfg(feature = "algorand")]
+use crate::chain::algorand::AlgorandProvider;
 use crate::chain::evm::EvmProvider;
 use crate::chain::near::NearProvider;
 use crate::chain::solana::SolanaProvider;
 use crate::chain::stellar::StellarProvider;
-#[cfg(feature = "algorand")]
-use crate::chain::algorand::AlgorandProvider;
 #[cfg(feature = "sui")]
 use crate::chain::sui::SuiProvider;
 use crate::facilitator::Facilitator;

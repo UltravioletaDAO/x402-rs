@@ -134,7 +134,10 @@ fn test_refund_extension_parsing() {
     // Check proxy -> merchant mappings
     let proxy1 = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
     let merchant1 = ext.info.merchant_payouts.get(&proxy1).unwrap();
-    assert_eq!(*merchant1, address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
+    assert_eq!(
+        *merchant1,
+        address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+    );
 }
 
 #[test]

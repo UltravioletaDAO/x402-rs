@@ -329,9 +329,7 @@ impl AlgorandProvider {
         })?;
 
         let public_address = account.address().to_string();
-        let effective_url = algod_url
-            .as_deref()
-            .unwrap_or(chain.default_algod_url());
+        let effective_url = algod_url.as_deref().unwrap_or(chain.default_algod_url());
 
         // Create algod client
         // Use placeholder token - algonode.cloud doesn't require auth but algonaut needs valid format
@@ -494,9 +492,12 @@ impl AlgorandProvider {
 
         // Verify the payment is an asset transfer and get details
         let (asset_id, amount, receiver, sender) = match &payment_signed.transaction.txn_type {
-            TransactionType::AssetTransferTransaction(xfer) => {
-                (xfer.xfer, xfer.amount, xfer.receiver.clone(), xfer.sender.clone())
-            }
+            TransactionType::AssetTransferTransaction(xfer) => (
+                xfer.xfer,
+                xfer.amount,
+                xfer.receiver.clone(),
+                xfer.sender.clone(),
+            ),
             _ => {
                 return Err(AlgorandError::InvalidAtomicGroup(
                     "Payment must be an asset transfer".to_string(),
@@ -567,7 +568,8 @@ impl AlgorandProvider {
             .map_err(|e| AlgorandError::InvalidEncoding(format!("Failed to sign fee tx: {}", e)))?;
 
         // Build the complete signed group
-        let mut signed_group: Vec<SignedTransaction> = Vec::with_capacity(payload.payment_group.len());
+        let mut signed_group: Vec<SignedTransaction> =
+            Vec::with_capacity(payload.payment_group.len());
 
         for (i, tx_base64) in payload.payment_group.iter().enumerate() {
             if i == 0 {
@@ -668,8 +670,9 @@ impl AlgorandProvider {
         let txn_strings: Vec<String> = signed_group
             .iter()
             .map(|stxn| {
-                let encoded = rmp_serde::to_vec_named(stxn)
-                    .map_err(|e| AlgorandError::InvalidEncoding(format!("Msgpack encode: {}", e)))?;
+                let encoded = rmp_serde::to_vec_named(stxn).map_err(|e| {
+                    AlgorandError::InvalidEncoding(format!("Msgpack encode: {}", e))
+                })?;
                 Ok(BASE64.encode(&encoded))
             })
             .collect::<Result<Vec<_>, AlgorandError>>()?;
@@ -771,7 +774,6 @@ pub struct VerifyGroupResult {
     pub current_round: u64,
     pub last_valid_round: u64,
 }
-
 
 // =============================================================================
 // Trait Implementations

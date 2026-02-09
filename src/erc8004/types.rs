@@ -341,13 +341,8 @@ impl ProofOfPayment {
         token: MixedAddress,
         timestamp: u64,
     ) -> Self {
-        let payment_hash = Self::compute_payment_hash(
-            &transaction_hash,
-            block_number,
-            &payer,
-            &payee,
-            &amount,
-        );
+        let payment_hash =
+            Self::compute_payment_hash(&transaction_hash, block_number, &payer, &payee, &amount);
 
         Self {
             transaction_hash,

@@ -53,8 +53,8 @@ mod fhe_proxy;
 mod from_env;
 mod handlers;
 mod network;
-mod openapi;
 mod nonce_store;
+mod openapi;
 mod payment_operator;
 mod provider_cache;
 mod sig_down;
@@ -64,9 +64,9 @@ mod types;
 mod types_v2;
 
 use discovery::DiscoveryRegistry;
-use discovery_store::S3Store;
 #[allow(unused_imports)]
 use discovery_store::DiscoveryStore;
+use discovery_store::S3Store;
 
 /// Initializes the x402 facilitator server.
 ///
@@ -124,20 +124,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let discovery_registry = if std::env::var("DISCOVERY_S3_BUCKET").is_ok() {
         // S3 persistence configured
         match S3Store::from_env().await {
-            Ok(store) => {
-                match DiscoveryRegistry::with_store(store).await {
-                    Ok(registry) => {
-                        tracing::info!("Discovery registry initialized with S3 persistence");
-                        Arc::new(registry)
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to initialize S3 store, falling back to in-memory: {}", e);
-                        Arc::new(DiscoveryRegistry::new())
-                    }
+            Ok(store) => match DiscoveryRegistry::with_store(store).await {
+                Ok(registry) => {
+                    tracing::info!("Discovery registry initialized with S3 persistence");
+                    Arc::new(registry)
                 }
-            }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to initialize S3 store, falling back to in-memory: {}",
+                        e
+                    );
+                    Arc::new(DiscoveryRegistry::new())
+                }
+            },
             Err(e) => {
-                tracing::warn!("Failed to create S3 store, falling back to in-memory: {}", e);
+                tracing::warn!(
+                    "Failed to create S3 store, falling back to in-memory: {}",
+                    e
+                );
                 Arc::new(DiscoveryRegistry::new())
             }
         }
@@ -252,7 +256,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .collect::<Vec<_>>();
 
         if seed_urls.is_empty() {
-            tracing::info!("Discovery crawler enabled but no valid DISCOVERY_CRAWL_URLS configured");
+            tracing::info!(
+                "Discovery crawler enabled but no valid DISCOVERY_CRAWL_URLS configured"
+            );
         } else {
             tracing::info!(
                 interval_secs = crawl_interval_secs,

@@ -1073,7 +1073,7 @@ static USDC_STELLAR: Lazy<USDCDeployment> = Lazy::new(|| {
             ),
             network: Network::Stellar,
         },
-        decimals: 7, // Stellar USDC uses 7 decimals
+        decimals: 7,  // Stellar USDC uses 7 decimals
         eip712: None, // Stellar uses XDR, not EIP-712
     })
 });
@@ -1158,7 +1158,8 @@ static USDC_SUI: Lazy<USDCDeployment> = Lazy::new(|| {
     USDCDeployment(TokenDeployment {
         asset: TokenAsset {
             address: MixedAddress::Sui(
-                "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC".to_string(),
+                "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC"
+                    .to_string(),
             ),
             network: Network::Sui,
         },
@@ -1174,7 +1175,8 @@ static USDC_SUI_TESTNET: Lazy<USDCDeployment> = Lazy::new(|| {
     USDCDeployment(TokenDeployment {
         asset: TokenAsset {
             address: MixedAddress::Sui(
-                "0xa1ec7fc00a6f40db9693ad1415d0c193ad3906494428cf252621037bd7117e29::usdc::USDC".to_string(),
+                "0xa1ec7fc00a6f40db9693ad1415d0c193ad3906494428cf252621037bd7117e29::usdc::USDC"
+                    .to_string(),
             ),
             network: Network::SuiTestnet,
         },
@@ -1521,7 +1523,8 @@ static AUSD_SUI: Lazy<AUSDDeployment> = Lazy::new(|| {
     AUSDDeployment(TokenDeployment {
         asset: TokenAsset {
             address: MixedAddress::Sui(
-                "0x2053d08c1e2bd02791056171aab0fd12bd7cd7efad2ab8f6b9c8902f14df2ff2::ausd::AUSD".to_string(),
+                "0x2053d08c1e2bd02791056171aab0fd12bd7cd7efad2ab8f6b9c8902f14df2ff2::ausd::AUSD"
+                    .to_string(),
             ),
             network: Network::Sui,
         },
@@ -1710,6 +1713,23 @@ static USDT_OPTIMISM: Lazy<USDTDeployment> = Lazy::new(|| {
     })
 });
 
+/// USDT0 deployment on Monad mainnet.
+/// Contract: 0xe7cd86e13AC4309349F30B3435a9d337750fC82D
+/// EIP-712 name: "USD₮0" (with TUGRIK SIGN Unicode character)
+static USDT_MONAD: Lazy<USDTDeployment> = Lazy::new(|| {
+    USDTDeployment(TokenDeployment {
+        asset: TokenAsset {
+            address: address!("0xe7cd86e13AC4309349F30B3435a9d337750fC82D").into(),
+            network: Network::Monad,
+        },
+        decimals: 6,
+        eip712: Some(TokenDeploymentEip712 {
+            name: "USD\u{20AE}0".into(), // USD₮0 (TUGRIK SIGN)
+            version: "1".into(),
+        }),
+    })
+});
+
 /// A known USDT (Tether USD / USDT0) deployment as a wrapper around [`TokenDeployment`].
 ///
 /// USDT0 is Tether's omnichain stablecoin launched in January 2025 using LayerZero OFT.
@@ -1735,20 +1755,26 @@ impl USDTDeployment {
     /// Return the known USDT deployment for the given network.
     ///
     /// Returns `None` if USDT is not deployed on the specified network.
-    /// Note: USDT0 (EIP-3009 compatible) is only on Arbitrum, Celo, and Optimism.
+    /// Note: USDT0 (EIP-3009 compatible) is on Arbitrum, Celo, Optimism, and Monad.
     /// Legacy USDT on Ethereum does NOT support EIP-3009.
     pub fn by_network<N: Borrow<Network>>(network: N) -> Option<&'static USDTDeployment> {
         match network.borrow() {
             Network::Arbitrum => Some(&USDT_ARBITRUM),
             Network::Celo => Some(&USDT_CELO),
             Network::Optimism => Some(&USDT_OPTIMISM),
+            Network::Monad => Some(&USDT_MONAD),
             _ => None,
         }
     }
 
     /// Return all networks where USDT0 is deployed with EIP-3009 support.
     pub fn supported_networks() -> &'static [Network] {
-        &[Network::Arbitrum, Network::Celo, Network::Optimism]
+        &[
+            Network::Arbitrum,
+            Network::Celo,
+            Network::Optimism,
+            Network::Monad,
+        ]
     }
 }
 
@@ -1920,7 +1946,8 @@ mod tests {
 
     #[test]
     fn test_ausd_same_address_all_evm_networks() {
-        let expected_address: EvmAddress = address!("00000000eFE302BEAA2b3e6e1b18d08D69a9012a").into();
+        let expected_address: EvmAddress =
+            address!("00000000eFE302BEAA2b3e6e1b18d08D69a9012a").into();
         // Only check EVM networks - Solana has different address format
         let evm_networks = [
             Network::Ethereum,
@@ -1994,10 +2021,11 @@ mod tests {
     #[test]
     fn test_usdt_supported_networks() {
         let networks = USDTDeployment::supported_networks();
-        assert_eq!(networks.len(), 3);
+        assert_eq!(networks.len(), 4);
         assert!(networks.contains(&Network::Arbitrum));
         assert!(networks.contains(&Network::Celo));
         assert!(networks.contains(&Network::Optimism));
+        assert!(networks.contains(&Network::Monad));
     }
 
     #[test]
@@ -2037,6 +2065,18 @@ mod tests {
         assert_eq!(
             deployment.asset.address,
             MixedAddress::Evm(address!("01bff41798a0bcf287b996046ca68b395dbc1071").into())
+        );
+        assert_eq!(deployment.decimals, 6);
+        // Check EIP-712 name (USD₮0 with Unicode TUGRIK SIGN)
+        assert_eq!(deployment.eip712.as_ref().unwrap().name, "USD\u{20AE}0");
+    }
+
+    #[test]
+    fn test_usdt_monad_address() {
+        let deployment = get_token_deployment(Network::Monad, TokenType::Usdt).unwrap();
+        assert_eq!(
+            deployment.asset.address,
+            MixedAddress::Evm(address!("e7cd86e13AC4309349F30B3435a9d337750fC82D").into())
         );
         assert_eq!(deployment.decimals, 6);
         // Check EIP-712 name (USD₮0 with Unicode TUGRIK SIGN)
@@ -2138,10 +2178,11 @@ mod tests {
     #[test]
     fn test_supported_networks_for_usdt() {
         let networks = supported_networks_for_token(TokenType::Usdt);
-        assert_eq!(networks.len(), 3);
+        assert_eq!(networks.len(), 4);
         assert!(networks.contains(&Network::Arbitrum));
         assert!(networks.contains(&Network::Celo));
         assert!(networks.contains(&Network::Optimism));
+        assert!(networks.contains(&Network::Monad));
         // USDT not on Ethereum (legacy contract doesn't support EIP-3009)
         assert!(!networks.contains(&Network::Ethereum));
     }

@@ -184,7 +184,11 @@ impl S3Store {
             key = %key,
             "Initialized S3 discovery store"
         );
-        Self { client, bucket, key }
+        Self {
+            client,
+            bucket,
+            key,
+        }
     }
 
     /// Create a new S3 store from environment variables.
@@ -421,10 +425,7 @@ mod tests {
         store.save(&resource).await.unwrap();
         assert_eq!(store.load_all().await.unwrap().len(), 1);
 
-        store
-            .delete("https://api.example.com/data")
-            .await
-            .unwrap();
+        store.delete("https://api.example.com/data").await.unwrap();
         assert_eq!(store.load_all().await.unwrap().len(), 0);
     }
 

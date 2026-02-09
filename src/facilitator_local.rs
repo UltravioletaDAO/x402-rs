@@ -186,14 +186,14 @@ where
             .iter()
             .filter_map(|v1_kind| {
                 // Parse the v1 network string to get the Network enum
-                Network::from_str(&v1_kind.network).ok().map(|network| {
-                    SupportedPaymentKind {
+                Network::from_str(&v1_kind.network)
+                    .ok()
+                    .map(|network| SupportedPaymentKind {
                         x402_version: X402Version::V2,
                         scheme: v1_kind.scheme.clone(),
                         network: network.to_caip2(),
                         extra: v1_kind.extra.clone(),
-                    }
-                })
+                    })
             })
             .collect();
 
@@ -213,7 +213,7 @@ where
             x402_version: X402Version::V2,
             scheme: Scheme::FheTransfer,
             network: "eip155:11155111".to_string(), // CAIP-2 for Sepolia
-            extra: None, // FHE proxy handles fee_payer internally
+            extra: None,                            // FHE proxy handles fee_payer internally
         });
 
         // Add x402r escrow scheme support (PaymentOperator-based escrow)

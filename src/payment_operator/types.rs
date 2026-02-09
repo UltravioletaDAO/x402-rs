@@ -318,7 +318,9 @@ mod tests {
                 value: 1_000_000,
                 valid_after: 0,
                 valid_before: 1738500000,
-                nonce: fixed_bytes!("0000000000000000000000000000000000000000000000000000000000003039"),
+                nonce: fixed_bytes!(
+                    "0000000000000000000000000000000000000000000000000000000000003039"
+                ),
             },
             signature: Bytes::from(vec![0xab, 0xcd, 0xef]),
             payment_info: EscrowPaymentInfo {
@@ -332,7 +334,9 @@ mod tests {
                 min_fee_bps: 0,
                 max_fee_bps: 100,
                 fee_receiver: address!("Fa8C4Cb156053b867Ae7489220A29b5939E3Df70"),
-                salt: fixed_bytes!("0000000000000000000000000000000000000000000000000000000000003039"),
+                salt: fixed_bytes!(
+                    "0000000000000000000000000000000000000000000000000000000000003039"
+                ),
             },
         };
 

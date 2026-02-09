@@ -140,11 +140,12 @@ impl DiscoveryRegistry {
     /// Create a new discovery registry with persistent storage.
     ///
     /// Loads existing resources from the store on creation.
-    pub async fn with_store<S: DiscoveryStore + 'static>(
-        store: S,
-    ) -> Result<Self, DiscoveryError> {
+    pub async fn with_store<S: DiscoveryStore + 'static>(store: S) -> Result<Self, DiscoveryError> {
         let store_type = store.store_type();
-        info!(store_type = store_type, "Initializing Bazaar discovery registry with persistence");
+        info!(
+            store_type = store_type,
+            "Initializing Bazaar discovery registry with persistence"
+        );
 
         // Load existing resources from store
         let existing = store.load_all().await?;
@@ -429,7 +430,10 @@ impl DiscoveryRegistry {
                         error!(url = %resource.url, error = %e, "Failed to persist imported resource");
                     }
                 }
-                info!(count = persist_count, "Persisted bulk-imported resources to store");
+                info!(
+                    count = persist_count,
+                    "Persisted bulk-imported resources to store"
+                );
             });
         }
 
@@ -444,7 +448,11 @@ impl DiscoveryRegistry {
     }
 
     /// Check if a resource matches the given filters.
-    fn matches_filters(&self, resource: &DiscoveryResource, filters: &Option<DiscoveryFilters>) -> bool {
+    fn matches_filters(
+        &self,
+        resource: &DiscoveryResource,
+        filters: &Option<DiscoveryFilters>,
+    ) -> bool {
         let Some(f) = filters else {
             return true;
         };
@@ -539,7 +547,10 @@ impl DiscoveryRegistry {
     ///
     /// * `true` if a new resource was created
     /// * `false` if an existing resource was updated
-    pub async fn track_settlement(&self, resource: DiscoveryResource) -> Result<bool, DiscoveryError> {
+    pub async fn track_settlement(
+        &self,
+        resource: DiscoveryResource,
+    ) -> Result<bool, DiscoveryError> {
         let url_key = resource.url.to_string();
 
         let mut resources = self.resources.write().await;
@@ -785,10 +796,14 @@ mod tests {
 
         let response = registry.list(10, 0, filters).await;
         assert_eq!(response.pagination.total, 2);
-        assert!(response
-            .items
-            .iter()
-            .all(|r| r.metadata.as_ref().unwrap().category.as_ref().unwrap() == "finance"));
+        assert!(response.items.iter().all(|r| r
+            .metadata
+            .as_ref()
+            .unwrap()
+            .category
+            .as_ref()
+            .unwrap()
+            == "finance"));
     }
 
     #[tokio::test]
@@ -856,7 +871,10 @@ mod tests {
         );
 
         let result = registry.register(resource).await;
-        assert!(matches!(result, Err(DiscoveryError::InvalidResourceType(_))));
+        assert!(matches!(
+            result,
+            Err(DiscoveryError::InvalidResourceType(_))
+        ));
     }
 
     #[tokio::test]

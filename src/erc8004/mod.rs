@@ -17,6 +17,7 @@
 //! - Base Mainnet
 //! - Polygon Mainnet
 //! - Arbitrum One
+//! - Optimism Mainnet
 //! - Celo Mainnet
 //! - BSC (BNB Smart Chain)
 //! - Monad Mainnet
@@ -27,6 +28,7 @@
 //! - Base Sepolia
 //! - Polygon Amoy
 //! - Arbitrum Sepolia
+//! - Optimism Sepolia
 //! - Celo Sepolia
 //! - Avalanche Fuji
 //!
@@ -109,6 +111,13 @@ pub const ARBITRUM_MAINNET_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
     validation_registry: None,
 };
 
+// Optimism Mainnet - Official deployment (February 9, 2026)
+pub const OPTIMISM_MAINNET_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
+    identity_registry: alloy::primitives::address!("8004A169FB4a3325136EB29fA0ceB6D2e539a432"),
+    reputation_registry: alloy::primitives::address!("8004BAa17C55a88189AE136b182e5fdA19dE9b63"),
+    validation_registry: None,
+};
+
 // Celo Mainnet - Official deployment (February 2026)
 pub const CELO_MAINNET_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
     identity_registry: alloy::primitives::address!("8004A169FB4a3325136EB29fA0ceB6D2e539a432"),
@@ -168,6 +177,15 @@ pub const ARBITRUM_SEPOLIA_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
     )),
 };
 
+// Optimism Sepolia Testnet - Official testnet deployment (February 9, 2026)
+pub const OPTIMISM_SEPOLIA_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
+    identity_registry: alloy::primitives::address!("8004A818BFB912233c491871b3d84c89A494BD9e"),
+    reputation_registry: alloy::primitives::address!("8004B663056A597Dffe9eCcC1965A193B7388713"),
+    validation_registry: Some(alloy::primitives::address!(
+        "8004Cb1BF31DAf7788923b405b754f57acEB4272"
+    )),
+};
+
 // Celo Sepolia Testnet - Official testnet deployment
 pub const CELO_SEPOLIA_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
     identity_registry: alloy::primitives::address!("8004A818BFB912233c491871b3d84c89A494BD9e"),
@@ -194,6 +212,7 @@ pub fn get_contracts(network: &Network) -> Option<Erc8004Contracts> {
         Network::Base => Some(BASE_MAINNET_CONTRACTS),
         Network::Polygon => Some(POLYGON_MAINNET_CONTRACTS),
         Network::Arbitrum => Some(ARBITRUM_MAINNET_CONTRACTS),
+        Network::Optimism => Some(OPTIMISM_MAINNET_CONTRACTS),
         Network::Celo => Some(CELO_MAINNET_CONTRACTS),
         Network::Bsc => Some(BSC_MAINNET_CONTRACTS),
         Network::Monad => Some(MONAD_MAINNET_CONTRACTS),
@@ -203,6 +222,7 @@ pub fn get_contracts(network: &Network) -> Option<Erc8004Contracts> {
         Network::BaseSepolia => Some(BASE_SEPOLIA_CONTRACTS),
         Network::PolygonAmoy => Some(POLYGON_AMOY_CONTRACTS),
         Network::ArbitrumSepolia => Some(ARBITRUM_SEPOLIA_CONTRACTS),
+        Network::OptimismSepolia => Some(OPTIMISM_SEPOLIA_CONTRACTS),
         Network::CeloSepolia => Some(CELO_SEPOLIA_CONTRACTS),
         Network::AvalancheFuji => Some(AVALANCHE_FUJI_CONTRACTS),
         _ => None,
@@ -222,6 +242,7 @@ pub fn supported_networks() -> Vec<Network> {
         Network::Base,
         Network::Polygon,
         Network::Arbitrum,
+        Network::Optimism,
         Network::Celo,
         Network::Bsc,
         Network::Monad,
@@ -231,6 +252,7 @@ pub fn supported_networks() -> Vec<Network> {
         Network::BaseSepolia,
         Network::PolygonAmoy,
         Network::ArbitrumSepolia,
+        Network::OptimismSepolia,
         Network::CeloSepolia,
         Network::AvalancheFuji,
     ]
@@ -375,6 +397,7 @@ mod tests {
             Network::Base,
             Network::Polygon,
             Network::Arbitrum,
+            Network::Optimism,
             Network::Celo,
             Network::Bsc,
             Network::Monad,
@@ -408,6 +431,7 @@ mod tests {
             Network::BaseSepolia,
             Network::PolygonAmoy,
             Network::ArbitrumSepolia,
+            Network::OptimismSepolia,
             Network::CeloSepolia,
             Network::AvalancheFuji,
         ];
@@ -434,8 +458,8 @@ mod tests {
 
     #[test]
     fn test_unsupported_network() {
-        assert!(!is_erc8004_supported(&Network::Optimism));
-        assert!(get_contracts(&Network::Optimism).is_none());
+        assert!(!is_erc8004_supported(&Network::HyperEvm));
+        assert!(get_contracts(&Network::HyperEvm).is_none());
     }
 
     #[test]
@@ -446,6 +470,7 @@ mod tests {
         assert!(networks.contains(&Network::Base));
         assert!(networks.contains(&Network::Polygon));
         assert!(networks.contains(&Network::Arbitrum));
+        assert!(networks.contains(&Network::Optimism));
         assert!(networks.contains(&Network::Celo));
         assert!(networks.contains(&Network::Bsc));
         assert!(networks.contains(&Network::Monad));
@@ -455,10 +480,11 @@ mod tests {
         assert!(networks.contains(&Network::BaseSepolia));
         assert!(networks.contains(&Network::PolygonAmoy));
         assert!(networks.contains(&Network::ArbitrumSepolia));
+        assert!(networks.contains(&Network::OptimismSepolia));
         assert!(networks.contains(&Network::CeloSepolia));
         assert!(networks.contains(&Network::AvalancheFuji));
         // Total count
-        assert_eq!(networks.len(), 14);
+        assert_eq!(networks.len(), 16);
     }
 
     #[test]
@@ -469,6 +495,7 @@ mod tests {
         assert!(names.contains(&"base".to_string())); // NOT "base-mainnet"
         assert!(names.contains(&"polygon".to_string()));
         assert!(names.contains(&"arbitrum".to_string()));
+        assert!(names.contains(&"optimism".to_string()));
         assert!(names.contains(&"celo".to_string()));
         assert!(names.contains(&"bsc".to_string()));
         assert!(names.contains(&"monad".to_string()));
@@ -477,8 +504,9 @@ mod tests {
         assert!(names.contains(&"base-sepolia".to_string()));
         assert!(names.contains(&"polygon-amoy".to_string()));
         assert!(names.contains(&"arbitrum-sepolia".to_string()));
+        assert!(names.contains(&"optimism-sepolia".to_string()));
         assert!(names.contains(&"celo-sepolia".to_string()));
         assert!(names.contains(&"avalanche-fuji".to_string()));
-        assert_eq!(names.len(), 14);
+        assert_eq!(names.len(), 16);
     }
 }

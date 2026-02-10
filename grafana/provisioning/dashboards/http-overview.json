@@ -52,7 +52,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum(rate(x402_http_server_duration_milliseconds_count[5m]))",
+          "expr": "sum(rate(calls_total{span_name=~\"GET /.*|POST /.*\"}[5m]))",
           "legendFormat": "req/s",
           "refId": "A"
         }
@@ -88,7 +88,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum(rate(x402_http_server_duration_milliseconds_sum[5m])) / sum(rate(x402_http_server_duration_milliseconds_count[5m]))",
+          "expr": "sum(rate(duration_milliseconds_sum{span_name=~\"GET /.*|POST /.*\"}[5m])) / sum(rate(duration_milliseconds_count{span_name=~\"GET /.*|POST /.*\"}[5m]))",
           "legendFormat": "avg",
           "refId": "A"
         }
@@ -103,10 +103,10 @@
             "mode": "absolute",
             "steps": [
               { "color": "green", "value": null },
-              { "color": "red", "value": 0.01 }
+              { "color": "red", "value": 1 }
             ]
           },
-          "unit": "percentunit"
+          "unit": "short"
         },
         "overrides": []
       },
@@ -118,13 +118,13 @@
         "graphMode": "area",
         "textMode": "auto"
       },
-      "title": "4xx Error Rate",
+      "title": "Errors (5m)",
       "type": "stat",
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum(rate(x402_http_server_duration_milliseconds_count{http_status_code=~\"4..\"}[5m])) / sum(rate(x402_http_server_duration_milliseconds_count[5m])) or vector(0)",
-          "legendFormat": "4xx rate",
+          "expr": "sum(increase(calls_total{span_name=~\"GET /.*|POST /.*\", status_code=\"STATUS_CODE_ERROR\"}[5m])) or vector(0)",
+          "legendFormat": "errors",
           "refId": "A"
         }
       ]
@@ -138,10 +138,11 @@
             "mode": "absolute",
             "steps": [
               { "color": "green", "value": null },
-              { "color": "red", "value": 0.001 }
+              { "color": "yellow", "value": 500 },
+              { "color": "red", "value": 2000 }
             ]
           },
-          "unit": "percentunit"
+          "unit": "ms"
         },
         "overrides": []
       },
@@ -153,13 +154,13 @@
         "graphMode": "area",
         "textMode": "auto"
       },
-      "title": "5xx Error Rate",
+      "title": "p95 Latency",
       "type": "stat",
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum(rate(x402_http_server_duration_milliseconds_count{http_status_code=~\"5..\"}[5m])) / sum(rate(x402_http_server_duration_milliseconds_count[5m])) or vector(0)",
-          "legendFormat": "5xx rate",
+          "expr": "histogram_quantile(0.95, sum(rate(duration_milliseconds_bucket{span_name=~\"GET /.*|POST /.*\"}[5m])) by (le))",
+          "legendFormat": "p95",
           "refId": "A"
         }
       ]
@@ -205,8 +206,8 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum by (http_route) (rate(x402_http_server_duration_milliseconds_count[$__rate_interval]))",
-          "legendFormat": "{{http_route}}",
+          "expr": "sum by (span_name) (rate(calls_total{span_name=~\"GET /.*|POST /.*\"}[$__rate_interval]))",
+          "legendFormat": "{{span_name}}",
           "refId": "A"
         }
       ]
@@ -228,13 +229,13 @@
         "tooltip": { "mode": "single", "sort": "none" },
         "legend": { "displayMode": "table", "placement": "right", "values": ["percent"] }
       },
-      "title": "Status Code Distribution",
+      "title": "Status Distribution",
       "type": "piechart",
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum by (http_status_code) (increase(x402_http_server_duration_milliseconds_count[1h]))",
-          "legendFormat": "{{http_status_code}}",
+          "expr": "sum by (status_code) (increase(calls_total{span_name=~\"GET /.*|POST /.*\"}[1h]))",
+          "legendFormat": "{{status_code}}",
           "refId": "A"
         }
       ]
@@ -275,7 +276,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum(increase(x402_http_server_duration_milliseconds_bucket[$__rate_interval])) by (le)",
+          "expr": "sum(increase(duration_milliseconds_bucket{span_name=~\"GET /.*|POST /.*\"}[$__rate_interval])) by (le)",
           "legendFormat": "{{le}}",
           "refId": "A",
           "format": "heatmap"
@@ -311,7 +312,7 @@
         "overrides": [
           {
             "matcher": { "id": "byName", "options": "Endpoint" },
-            "properties": [{ "id": "custom.width", "value": 200 }]
+            "properties": [{ "id": "custom.width", "value": 250 }]
           },
           {
             "matcher": { "id": "byName", "options": "Avg Latency (ms)" },
@@ -339,7 +340,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum by (http_route) (rate(x402_http_server_duration_milliseconds_sum[5m])) / sum by (http_route) (rate(x402_http_server_duration_milliseconds_count[5m]))",
+          "expr": "sum by (span_name) (rate(duration_milliseconds_sum{span_name=~\"GET /.*|POST /.*\"}[5m])) / sum by (span_name) (rate(duration_milliseconds_count{span_name=~\"GET /.*|POST /.*\"}[5m]))",
           "legendFormat": "",
           "refId": "A",
           "format": "table",
@@ -347,7 +348,7 @@
         },
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum by (http_route) (rate(x402_http_server_duration_milliseconds_count[5m]))",
+          "expr": "sum by (span_name) (rate(calls_total{span_name=~\"GET /.*|POST /.*\"}[5m]))",
           "legendFormat": "",
           "refId": "B",
           "format": "table",
@@ -363,7 +364,7 @@
           "id": "organize",
           "options": {
             "renameByName": {
-              "http_route": "Endpoint",
+              "span_name": "Endpoint",
               "Value #A": "Avg Latency (ms)",
               "Value #B": "Req/s"
             },

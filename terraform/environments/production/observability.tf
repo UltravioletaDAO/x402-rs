@@ -773,11 +773,28 @@ resource "aws_ecs_service" "observability" {
   task_definition = aws_ecs_task_definition.observability[0].arn
   desired_count   = 1
 
-  # Fargate Spot: ~70% cheaper, acceptable for monitoring workload
+  # FARGATE regular as base (guaranteed capacity - Spot was unreliable in us-east-2)
+  # base=1 ensures the single observability task always runs on regular Fargate
+  capacity_provider_strategy {
+    capacity_provider = "FARGATE"
+    weight            = 0
+    base              = 1
+  }
+
+  # FARGATE_SPOT for any additional tasks (scaling beyond 1)
   capacity_provider_strategy {
     capacity_provider = "FARGATE_SPOT"
     weight            = 1
-    base              = 1
+    base              = 0
+  }
+
+  # Stop-first deployment: Prometheus holds EFS lock, can't run 2 tasks simultaneously
+  deployment_minimum_healthy_percent = 0
+  deployment_maximum_percent         = 100
+
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
   }
 
   # Platform version 1.4.0+ required for EFS

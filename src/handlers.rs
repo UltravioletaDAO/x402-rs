@@ -138,6 +138,11 @@ where
         .route("/sui.png", get(get_sui_logo))
         .route("/skale.png", get(get_skale_logo))
         .route("/scroll.png", get(get_scroll_logo))
+        .route("/usdc.png", get(get_usdc_logo))
+        .route("/usdt.png", get(get_usdt_logo))
+        .route("/eurc.png", get(get_eurc_logo))
+        .route("/ausd.png", get(get_ausd_logo))
+        .route("/pyusd.png", get(get_pyusd_logo))
 }
 
 /// Discovery API routes for the Bazaar feature.
@@ -597,6 +602,56 @@ pub async fn get_skale_logo() -> impl IntoResponse {
 /// `GET /scroll.png`: Returns Scroll logo.
 pub async fn get_scroll_logo() -> impl IntoResponse {
     let bytes = include_bytes!("../static/scroll.png");
+    (
+        StatusCode::OK,
+        [("content-type", "image/png")],
+        bytes.as_slice(),
+    )
+}
+
+/// `GET /usdc.png`: Returns USDC stablecoin logo.
+pub async fn get_usdc_logo() -> impl IntoResponse {
+    let bytes = include_bytes!("../static/usdc.png");
+    (
+        StatusCode::OK,
+        [("content-type", "image/png")],
+        bytes.as_slice(),
+    )
+}
+
+/// `GET /usdt.png`: Returns USDT stablecoin logo.
+pub async fn get_usdt_logo() -> impl IntoResponse {
+    let bytes = include_bytes!("../static/usdt.png");
+    (
+        StatusCode::OK,
+        [("content-type", "image/png")],
+        bytes.as_slice(),
+    )
+}
+
+/// `GET /eurc.png`: Returns EURC stablecoin logo.
+pub async fn get_eurc_logo() -> impl IntoResponse {
+    let bytes = include_bytes!("../static/eurc.png");
+    (
+        StatusCode::OK,
+        [("content-type", "image/png")],
+        bytes.as_slice(),
+    )
+}
+
+/// `GET /ausd.png`: Returns AUSD stablecoin logo.
+pub async fn get_ausd_logo() -> impl IntoResponse {
+    let bytes = include_bytes!("../static/ausd.png");
+    (
+        StatusCode::OK,
+        [("content-type", "image/png")],
+        bytes.as_slice(),
+    )
+}
+
+/// `GET /pyusd.png`: Returns PYUSD stablecoin logo.
+pub async fn get_pyusd_logo() -> impl IntoResponse {
+    let bytes = include_bytes!("../static/pyusd.png");
     (
         StatusCode::OK,
         [("content-type", "image/png")],

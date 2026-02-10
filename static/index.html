@@ -994,49 +994,43 @@
             display: inline-flex;
             align-items: center;
             gap: 0.25rem;
-            padding: 0.2rem 0.5rem;
+            padding: 0.15rem;
             border-radius: 9999px;
-            font-size: 0.6rem;
-            font-weight: 600;
-            font-family: 'JetBrains Mono', monospace;
-            text-transform: uppercase;
-            letter-spacing: 0.02em;
             border: 1px solid transparent;
             transition: all 0.2s ease;
+            position: relative;
+            cursor: pointer;
+        }
+
+        .token-pill img {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            object-fit: contain;
         }
 
         .token-pill.usdc {
-            background: rgba(39, 117, 202, 0.15);
-            color: #2775ca;
             border-color: rgba(39, 117, 202, 0.3);
         }
 
         .token-pill.eurc {
-            background: rgba(0, 51, 153, 0.15);
-            color: #6699ff;
             border-color: rgba(0, 51, 153, 0.3);
         }
 
         .token-pill.ausd {
-            background: rgba(16, 185, 129, 0.15);
-            color: #10b981;
             border-color: rgba(16, 185, 129, 0.3);
         }
 
         .token-pill.pyusd {
-            background: rgba(0, 112, 186, 0.15);
-            color: #0070ba;
             border-color: rgba(0, 112, 186, 0.3);
         }
 
         .token-pill.usdt {
-            background: rgba(80, 175, 149, 0.15);
-            color: #50af95;
             border-color: rgba(80, 175, 149, 0.3);
         }
 
         .token-pill:hover {
-            transform: scale(1.05);
+            transform: scale(1.15);
             filter: brightness(1.2);
         }
 
@@ -1046,6 +1040,19 @@
             margin-top: 0.25rem;
             text-transform: uppercase;
             letter-spacing: 0.05em;
+        }
+
+        .stablecoin-icon {
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            object-fit: contain;
+            transition: transform 0.2s ease;
+            cursor: pointer;
+        }
+
+        .stablecoin-icon:hover {
+            transform: scale(1.2);
         }
     </style>
 </head>
@@ -1088,6 +1095,18 @@
                     Enable AI agents to transact autonomously without gas fees. Built on x402 protocol with EIP-3009
                     meta-transactions.
                 </p>
+
+                <!-- Supported Stablecoins Bar -->
+                <div style="display: flex; align-items: center; justify-content: center; gap: 1.5rem; margin-bottom: 2rem; padding: 1rem 2rem; background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px;">
+                    <span style="font-size: 0.7rem; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em;" data-i18n="hero.stablecoins">5 Stablecoins Supported</span>
+                    <div style="display: flex; gap: 0.75rem; align-items: center;">
+                        <img src="/usdc.png" alt="USDC" title="USDC" class="stablecoin-icon" style="width: 28px; height: 28px;">
+                        <img src="/usdt.png" alt="USDT" title="USDT" class="stablecoin-icon" style="width: 28px; height: 28px;">
+                        <img src="/eurc.png" alt="EURC" title="EURC" class="stablecoin-icon" style="width: 28px; height: 28px;">
+                        <img src="/ausd.png" alt="AUSD" title="AUSD" class="stablecoin-icon" style="width: 28px; height: 28px;">
+                        <img src="/pyusd.png" alt="PYUSD" title="PYUSD" class="stablecoin-icon" style="width: 28px; height: 28px;">
+                    </div>
+                </div>
 
                 <!-- Network Tabs -->
                 <div class="tabs-container">
@@ -2177,6 +2196,16 @@ result = <span class="code-function">verify_payment</span>(
                             <span style="font-size: 0.85rem; font-weight: 500;">Avalanche</span>
                         </div>
                     </div>
+                    <div style="display: flex; align-items: center; justify-content: center; gap: 1rem; margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid var(--border);">
+                        <span style="font-size: 0.75rem; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;" data-i18n="x402r.stablecoinsLabel">Supported Stablecoins</span>
+                        <div style="display: flex; gap: 0.5rem; align-items: center;">
+                            <img src="/usdc.png" alt="USDC" title="USDC" class="stablecoin-icon">
+                            <img src="/usdt.png" alt="USDT" title="USDT" class="stablecoin-icon">
+                            <img src="/eurc.png" alt="EURC" title="EURC" class="stablecoin-icon">
+                            <img src="/ausd.png" alt="AUSD" title="AUSD" class="stablecoin-icon">
+                            <img src="/pyusd.png" alt="PYUSD" title="PYUSD" class="stablecoin-icon">
+                        </div>
+                    </div>
                     <p style="text-align: center; color: var(--text-muted); font-size: 0.75rem; margin-top: 1rem;" data-i18n="x402r.create2Note">+ 2 testnets (Base Sepolia, Ethereum Sepolia). Each network has its own deployed contract set.</p>
                     <div style="display: flex; gap: 0.75rem; justify-content: center; margin-top: 1.25rem;">
                         <a href="https://github.com/BackTrackCo/x402r-contracts" target="_blank"
@@ -2490,6 +2519,7 @@ result = <span class="code-function">verify_payment</span>(
                 "header.subtitle": "Payment infrastructure for autonomous agents",
                 "hero.title": "Payment infrastructure for autonomous agents",
                 "hero.description": "Enable AI agents to transact autonomously without gas fees. Built on x402 protocol with EIP-3009 meta-transactions.",
+                "hero.stablecoins": "5 Stablecoins Supported",
                 "status": "Service Online",
                 "stats.speed": "Settlement Time",
                 "stats.fees": "Gas Fees for Agents",
@@ -2525,6 +2555,7 @@ result = <span class="code-function">verify_payment</span>(
                 "x402r.capture.title": "Authorize & Capture",
                 "x402r.capture.desc": "Two-phase settlement: authorize first, capture later. Sellers can charge partial or full amounts, and release remaining funds back to the buyer.",
                 "x402r.networksTitle": "Escrow Deployed on 9 Networks",
+                "x402r.stablecoinsLabel": "Supported Stablecoins",
                 "x402r.create2Note": "+ 2 testnets (Base Sepolia, Ethereum Sepolia). Each network has its own deployed contract set.",
                 "code.title": "Integrate in Minutes",
                 "what.title": "What is x402?",
@@ -2568,6 +2599,7 @@ result = <span class="code-function">verify_payment</span>(
                 "header.subtitle": "Infraestructura de pagos para agentes autónomos",
                 "hero.title": "Infraestructura de pagos para agentes autónomos",
                 "hero.description": "Permite que los agentes IA transaccionen de forma autónoma sin comisiones de gas. Construido sobre el protocolo x402 con meta-transacciones EIP-3009.",
+                "hero.stablecoins": "5 Stablecoins Soportadas",
                 "status": "Servicio en Línea",
                 "stats.speed": "Tiempo de Liquidación",
                 "stats.fees": "Comisiones de Gas para Agentes",
@@ -2603,6 +2635,7 @@ result = <span class="code-function">verify_payment</span>(
                 "x402r.capture.title": "Autorizar y Capturar",
                 "x402r.capture.desc": "Liquidaci\u00f3n en dos fases: autorizar primero, capturar despu\u00e9s. Los vendedores pueden cobrar montos parciales o totales, y liberar los fondos restantes al comprador.",
                 "x402r.networksTitle": "Escrow Desplegado en 9 Redes",
+                "x402r.stablecoinsLabel": "Stablecoins Soportadas",
                 "x402r.create2Note": "+ 2 testnets (Base Sepolia, Ethereum Sepolia). Cada red tiene su propio conjunto de contratos desplegados.",
                 "code.title": "Integra en Minutos",
                 "what.title": "¿Qué es x402?",
@@ -3040,11 +3073,11 @@ result = <span class="code-function">verify_payment</span>(
         };
 
         const TOKEN_INFO = {
-            'usdc': { name: 'USDC', decimals: 6 },
-            'eurc': { name: 'EURC', decimals: 6 },
-            'ausd': { name: 'AUSD', decimals: 6 },
-            'pyusd': { name: 'PYUSD', decimals: 6 },
-            'usdt': { name: 'USDT', decimals: 6 },
+            'usdc': { name: 'USDC', decimals: 6, logo: '/usdc.png' },
+            'eurc': { name: 'EURC', decimals: 6, logo: '/eurc.png' },
+            'ausd': { name: 'AUSD', decimals: 6, logo: '/ausd.png' },
+            'pyusd': { name: 'PYUSD', decimals: 6, logo: '/pyusd.png' },
+            'usdt': { name: 'USDT', decimals: 6, logo: '/usdt.png' },
         };
 
         // Display supported tokens for each network card
@@ -3057,7 +3090,7 @@ result = <span class="code-function">verify_payment</span>(
                 if (tokens.length > 0) {
                     const badgesHtml = tokens.map(token => {
                         const info = TOKEN_INFO[token];
-                        return `<span class="token-pill ${token}" title="${info.name} (${info.decimals} decimals)">${info.name}</span>`;
+                        return `<span class="token-pill ${token}" title="${info.name}"><img src="${info.logo}" alt="${info.name}"></span>`;
                     }).join('');
 
                     container.innerHTML = `

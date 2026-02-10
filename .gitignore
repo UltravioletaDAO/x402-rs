@@ -18,6 +18,7 @@ Cargo.lock
 terraform.tfstate*
 .terraform/
 *.tfplan
+tfplan
 terraform.tfvars
 
 # IDE

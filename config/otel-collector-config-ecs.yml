@@ -8,6 +8,9 @@
 #   - Prometheus (remote_write) in the observability task
 #   - Tempo (OTLP) in the observability task
 #
+# The facilitator sends TRACES only (via tracing-opentelemetry).
+# The spanmetrics connector derives HTTP metrics from trace spans.
+#
 # Endpoints configured via environment variables:
 #   PROMETHEUS_REMOTE_WRITE_ENDPOINT - e.g. http://observability.facilitator.local:9090/api/v1/write
 #   TEMPO_OTLP_ENDPOINT             - e.g. observability.facilitator.local:4317
@@ -21,6 +24,21 @@ receivers:
         endpoint: 0.0.0.0:4317
       http:
         endpoint: 0.0.0.0:4318
+
+connectors:
+  # Derive metrics from trace spans (http.server.duration, etc.)
+  spanmetrics:
+    histogram:
+      explicit:
+        buckets: [5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 2.5s, 5s, 10s]
+    dimensions:
+      - name: http.method
+      - name: http.status_code
+      - name: http.route
+      - name: http.target
+    dimensions_cache_size: 1000
+    aggregation_temporality: "AGGREGATION_TEMPORALITY_CUMULATIVE"
+    metrics_flush_interval: 15s
 
 processors:
   batch:
@@ -62,8 +80,8 @@ service:
     traces:
       receivers: [otlp]
       processors: [resource, batch]
-      exporters: [otlp/tempo, debug]
+      exporters: [spanmetrics, otlp/tempo, debug]
     metrics:
-      receivers: [otlp]
+      receivers: [spanmetrics]
       processors: [resource, batch]
       exporters: [prometheusremotewrite, debug]

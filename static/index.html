@@ -2107,6 +2107,100 @@ result = <span class="code-function">verify_payment</span>(
                 </div>
             </section>
 
+            <!-- x402r Escrow Showcase Section -->
+            <section class="section fade-in" style="margin-top: 3rem;">
+                <div style="text-align: center; margin-bottom: 2rem;">
+                    <div style="display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.4rem 1rem; border-radius: 20px; background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3); margin-bottom: 1rem;">
+                        <span style="font-size: 0.75rem; color: #f59e0b; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;" data-i18n="x402r.badge">x402r Protocol</span>
+                    </div>
+                    <h3 class="section-title" style="background: linear-gradient(135deg, #f59e0b, #ef4444); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;" data-i18n="x402r.title">Trustless Escrow & Refunds</h3>
+                    <p class="section-description" data-i18n="x402r.description">
+                        On-chain escrow with authorize/capture/release/refund flows. Funds are held in smart contracts until conditions are met, enabling trustless refunds for HTTP 402 payments across 9 networks.
+                    </p>
+                </div>
+
+                <!-- Three Pillars -->
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1.5rem; margin-bottom: 2.5rem;">
+                    <div style="background: var(--bg-card); border: 1px solid rgba(245, 158, 11, 0.2); border-radius: 12px; padding: 1.5rem; transition: all 0.3s;" onmouseover="this.style.borderColor='rgba(245, 158, 11, 0.5)'; this.style.transform='translateY(-2px)'" onmouseout="this.style.borderColor='rgba(245, 158, 11, 0.2)'; this.style.transform='translateY(0)'">
+                        <div style="width: 40px; height: 40px; border-radius: 10px; background: rgba(245, 158, 11, 0.15); display: flex; align-items: center; justify-content: center; margin-bottom: 1rem;">
+                            <span style="font-size: 1.2rem;">🔒</span>
+                        </div>
+                        <h4 style="font-size: 1rem; font-weight: 700; margin-bottom: 0.5rem;" data-i18n="x402r.escrow.title">Escrow Settlement</h4>
+                        <p style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.5;" data-i18n="x402r.escrow.desc">Payments are authorized and held in on-chain escrow contracts. Funds remain locked until the seller captures or the buyer requests a refund.</p>
+                    </div>
+                    <div style="background: var(--bg-card); border: 1px solid rgba(239, 68, 68, 0.2); border-radius: 12px; padding: 1.5rem; transition: all 0.3s;" onmouseover="this.style.borderColor='rgba(239, 68, 68, 0.5)'; this.style.transform='translateY(-2px)'" onmouseout="this.style.borderColor='rgba(239, 68, 68, 0.2)'; this.style.transform='translateY(0)'">
+                        <div style="width: 40px; height: 40px; border-radius: 10px; background: rgba(239, 68, 68, 0.15); display: flex; align-items: center; justify-content: center; margin-bottom: 1rem;">
+                            <span style="font-size: 1.2rem;">↩️</span>
+                        </div>
+                        <h4 style="font-size: 1rem; font-weight: 700; margin-bottom: 0.5rem;" data-i18n="x402r.refund.title">Trustless Refunds</h4>
+                        <p style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.5;" data-i18n="x402r.refund.desc">Buyers can request refunds within a configurable time window. No intermediary needed — the smart contract enforces the refund policy on-chain.</p>
+                    </div>
+                    <div style="background: var(--bg-card); border: 1px solid rgba(16, 185, 129, 0.2); border-radius: 12px; padding: 1.5rem; transition: all 0.3s;" onmouseover="this.style.borderColor='rgba(16, 185, 129, 0.5)'; this.style.transform='translateY(-2px)'" onmouseout="this.style.borderColor='rgba(16, 185, 129, 0.2)'; this.style.transform='translateY(0)'">
+                        <div style="width: 40px; height: 40px; border-radius: 10px; background: rgba(16, 185, 129, 0.15); display: flex; align-items: center; justify-content: center; margin-bottom: 1rem;">
+                            <span style="font-size: 1.2rem;">⚡</span>
+                        </div>
+                        <h4 style="font-size: 1rem; font-weight: 700; margin-bottom: 0.5rem;" data-i18n="x402r.capture.title">Authorize & Capture</h4>
+                        <p style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.5;" data-i18n="x402r.capture.desc">Two-phase settlement: authorize first, capture later. Sellers can charge partial or full amounts, and release remaining funds back to the buyer.</p>
+                    </div>
+                </div>
+
+                <!-- Supported Networks Grid -->
+                <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 2rem;">
+                    <h4 style="font-size: 0.9rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 1.25rem; text-align: center;" data-i18n="x402r.networksTitle">Escrow Deployed on 9 Networks</h4>
+                    <div style="display: flex; flex-wrap: wrap; gap: 0.75rem; justify-content: center;">
+                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(139, 92, 246, 0.08); border: 1px solid rgba(139, 92, 246, 0.2); border-radius: 8px;">
+                            <img src="/ethereum.png" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
+                            <span style="font-size: 0.85rem; font-weight: 500;">Ethereum</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(0, 82, 255, 0.08); border: 1px solid rgba(0, 82, 255, 0.2); border-radius: 8px;">
+                            <img src="/base.png" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
+                            <span style="font-size: 0.85rem; font-weight: 500;">Base</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(130, 71, 229, 0.08); border: 1px solid rgba(130, 71, 229, 0.2); border-radius: 8px;">
+                            <img src="/polygon.png" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
+                            <span style="font-size: 0.85rem; font-weight: 500;">Polygon</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(40, 160, 240, 0.08); border: 1px solid rgba(40, 160, 240, 0.2); border-radius: 8px;">
+                            <img src="/arbitrum.png" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
+                            <span style="font-size: 0.85rem; font-weight: 500;">Arbitrum</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(252, 255, 82, 0.08); border: 1px solid rgba(252, 255, 82, 0.2); border-radius: 8px;">
+                            <img src="/celo.png" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
+                            <span style="font-size: 0.85rem; font-weight: 500;">Celo</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(130, 71, 229, 0.08); border: 1px solid rgba(130, 71, 229, 0.2); border-radius: 8px;">
+                            <img src="/monad.png" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
+                            <span style="font-size: 0.85rem; font-weight: 500;">Monad</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(232, 65, 66, 0.08); border: 1px solid rgba(232, 65, 66, 0.2); border-radius: 8px;">
+                            <img src="/avalanche.png" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
+                            <span style="font-size: 0.85rem; font-weight: 500;">Avalanche</span>
+                        </div>
+                    </div>
+                    <p style="text-align: center; color: var(--text-muted); font-size: 0.75rem; margin-top: 1rem;" data-i18n="x402r.create2Note">+ 2 testnets (Base Sepolia, Ethereum Sepolia). Each network has its own deployed contract set.</p>
+                    <div style="display: flex; gap: 0.75rem; justify-content: center; margin-top: 1.25rem;">
+                        <a href="https://github.com/BackTrackCo/x402r-contracts" target="_blank"
+                           style="font-size: 0.8rem; color: #f59e0b; text-decoration: none; padding: 0.4rem 1rem; border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 6px; transition: all 0.2s; font-weight: 500;"
+                           onmouseover="this.style.background='rgba(245, 158, 11, 0.1)'"
+                           onmouseout="this.style.background='transparent'">
+                            View Contracts
+                        </a>
+                        <a href="https://github.com/BackTrackCo/x402r-sdk" target="_blank"
+                           style="font-size: 0.8rem; color: #ef4444; text-decoration: none; padding: 0.4rem 1rem; border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 6px; transition: all 0.2s; font-weight: 500;"
+                           onmouseover="this.style.background='rgba(239, 68, 68, 0.1)'"
+                           onmouseout="this.style.background='transparent'">
+                            x402r SDK
+                        </a>
+                        <a href="https://github.com/coinbase/x402/issues/864" target="_blank"
+                           style="font-size: 0.8rem; color: #10b981; text-decoration: none; padding: 0.4rem 1rem; border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 6px; transition: all 0.2s; font-weight: 500;"
+                           onmouseover="this.style.background='rgba(16, 185, 129, 0.1)'"
+                           onmouseout="this.style.background='transparent'">
+                            x402r Proposal
+                        </a>
+                    </div>
+                </div>
+            </section>
+
             <section class="endpoints fade-in">
                 <h3 data-i18n="endpoints.title">API Endpoints</h3>
 
@@ -2421,6 +2515,17 @@ result = <span class="code-function">verify_payment</span>(
                 "erc8004.validation.desc": "Third-party validators can attest to agent capabilities. Validation results are stored on-chain for transparent trust verification.",
                 "erc8004.networksTitle": "Deployed on 16 Networks",
                 "erc8004.create2Note": "+ 7 testnets. All mainnets use CREATE2 deterministic addresses (same contracts on every chain).",
+                "x402r.badge": "x402r Protocol",
+                "x402r.title": "Trustless Escrow & Refunds",
+                "x402r.description": "On-chain escrow with authorize/capture/release/refund flows. Funds are held in smart contracts until conditions are met, enabling trustless refunds for HTTP 402 payments across 9 networks.",
+                "x402r.escrow.title": "Escrow Settlement",
+                "x402r.escrow.desc": "Payments are authorized and held in on-chain escrow contracts. Funds remain locked until the seller captures or the buyer requests a refund.",
+                "x402r.refund.title": "Trustless Refunds",
+                "x402r.refund.desc": "Buyers can request refunds within a configurable time window. No intermediary needed — the smart contract enforces the refund policy on-chain.",
+                "x402r.capture.title": "Authorize & Capture",
+                "x402r.capture.desc": "Two-phase settlement: authorize first, capture later. Sellers can charge partial or full amounts, and release remaining funds back to the buyer.",
+                "x402r.networksTitle": "Escrow Deployed on 9 Networks",
+                "x402r.create2Note": "+ 2 testnets (Base Sepolia, Ethereum Sepolia). Each network has its own deployed contract set.",
                 "code.title": "Integrate in Minutes",
                 "what.title": "What is x402?",
                 "what.description": "x402 is a protocol for stateless, per-request payments over HTTP. Clients attach a signed payment payload to each request. The facilitator verifies it, executes the on-chain transfer, and grants access to protected resources—all without accounts, wallets, or user registration.",
@@ -2488,6 +2593,17 @@ result = <span class="code-function">verify_payment</span>(
                 "erc8004.validation.desc": "Validadores externos pueden atestiguar las capacidades de un agente. Los resultados se almacenan on-chain para verificaci\u00f3n transparente de confianza.",
                 "erc8004.networksTitle": "Desplegado en 16 Redes",
                 "erc8004.create2Note": "+ 7 testnets. Todas las mainnets usan direcciones deterministas CREATE2 (mismos contratos en cada cadena).",
+                "x402r.badge": "Protocolo x402r",
+                "x402r.title": "Escrow y Reembolsos Sin Confianza",
+                "x402r.description": "Escrow on-chain con flujos de autorizar/capturar/liberar/reembolsar. Los fondos se mantienen en contratos inteligentes hasta que se cumplan las condiciones, habilitando reembolsos sin confianza para pagos HTTP 402 en 9 redes.",
+                "x402r.escrow.title": "Liquidaci\u00f3n en Escrow",
+                "x402r.escrow.desc": "Los pagos se autorizan y retienen en contratos escrow on-chain. Los fondos permanecen bloqueados hasta que el vendedor capture o el comprador solicite un reembolso.",
+                "x402r.refund.title": "Reembolsos Sin Confianza",
+                "x402r.refund.desc": "Los compradores pueden solicitar reembolsos dentro de una ventana de tiempo configurable. Sin intermediarios \u2014 el contrato inteligente aplica la pol\u00edtica de reembolso on-chain.",
+                "x402r.capture.title": "Autorizar y Capturar",
+                "x402r.capture.desc": "Liquidaci\u00f3n en dos fases: autorizar primero, capturar despu\u00e9s. Los vendedores pueden cobrar montos parciales o totales, y liberar los fondos restantes al comprador.",
+                "x402r.networksTitle": "Escrow Desplegado en 9 Redes",
+                "x402r.create2Note": "+ 2 testnets (Base Sepolia, Ethereum Sepolia). Cada red tiene su propio conjunto de contratos desplegados.",
                 "code.title": "Integra en Minutos",
                 "what.title": "¿Qué es x402?",
                 "what.description": "x402 es un protocolo para pagos sin estado por solicitud sobre HTTP. Los clientes adjuntan una carga de pago firmada a cada solicitud. El facilitador la verifica, ejecuta la transferencia en cadena y otorga acceso a recursos protegidos—todo sin cuentas, billeteras o registro de usuarios.",

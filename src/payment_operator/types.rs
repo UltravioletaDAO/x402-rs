@@ -158,6 +158,71 @@ pub struct EscrowExtra {
 }
 
 // ============================================================================
+// EscrowLifecyclePayload - For release and refundInEscrow (no signature needed)
+// ============================================================================
+
+/// Payload for release and refundInEscrow actions (no ERC-3009 signature needed)
+///
+/// These operations only need the paymentInfo to identify the escrow,
+/// the payer address, and the amount to release/refund.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EscrowLifecyclePayload {
+    /// Payment information identifying the escrow
+    pub payment_info: EscrowPaymentInfo,
+
+    /// The payer's address (needed for contract PaymentInfo struct)
+    pub payer: Address,
+
+    /// Amount to release or refund (in token decimals, as string)
+    #[serde(with = "string_u128")]
+    pub amount: u128,
+}
+
+// ============================================================================
+// EscrowStateQuery/Response - For querying escrow state
+// ============================================================================
+
+/// Query for escrow state (sent to /escrow/state endpoint)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EscrowStateQuery {
+    /// Payment information identifying the escrow
+    pub payment_info: EscrowPaymentInfo,
+
+    /// The payer's address (needed for contract PaymentInfo struct)
+    pub payer: Address,
+
+    /// Network in CAIP-2 format (e.g., "eip155:84532")
+    pub network: String,
+
+    /// Extra configuration with contract addresses
+    pub extra: EscrowExtra,
+}
+
+/// Response from escrow state query
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EscrowStateResponse {
+    /// Whether payment has been fully collected/captured
+    pub has_collected_payment: bool,
+
+    /// Amount still available for capture (uint120)
+    #[serde(with = "string_u128")]
+    pub capturable_amount: u128,
+
+    /// Amount available for refund (uint120)
+    #[serde(with = "string_u128")]
+    pub refundable_amount: u128,
+
+    /// Hash of the paymentInfo struct
+    pub payment_info_hash: String,
+
+    /// Network where the escrow lives
+    pub network: String,
+}
+
+// ============================================================================
 // Contract types - For building the authorize() call
 // ============================================================================
 
@@ -199,11 +264,52 @@ impl ContractPaymentInfo {
         }
     }
 
-    /// Convert to Alloy ABI struct for contract calls
+    /// Create from EscrowLifecyclePayload (for release/refundInEscrow - payer is explicit)
+    pub fn from_lifecycle_payload(payload: &EscrowLifecyclePayload) -> Self {
+        Self {
+            operator: payload.payment_info.operator,
+            payer: payload.payer,
+            receiver: payload.payment_info.receiver,
+            token: payload.payment_info.token,
+            max_amount: payload.payment_info.max_amount,
+            pre_approval_expiry: payload.payment_info.pre_approval_expiry,
+            authorization_expiry: payload.payment_info.authorization_expiry,
+            refund_expiry: payload.payment_info.refund_expiry,
+            min_fee_bps: payload.payment_info.min_fee_bps,
+            max_fee_bps: payload.payment_info.max_fee_bps,
+            fee_receiver: payload.payment_info.fee_receiver,
+            salt: U256::from_be_bytes(payload.payment_info.salt.0),
+        }
+    }
+
+    /// Convert to Alloy ABI struct for OperatorContract calls (authorize, release, refund)
     pub fn to_abi_type(&self) -> super::abi::PaymentInfo {
         use alloy::primitives::Uint;
 
         super::abi::PaymentInfo {
+            operator: self.operator,
+            payer: self.payer,
+            receiver: self.receiver,
+            token: self.token,
+            maxAmount: Uint::from(self.max_amount),
+            preApprovalExpiry: Uint::from(self.pre_approval_expiry),
+            authorizationExpiry: Uint::from(self.authorization_expiry),
+            refundExpiry: Uint::from(self.refund_expiry),
+            minFeeBps: self.min_fee_bps,
+            maxFeeBps: self.max_fee_bps,
+            feeReceiver: self.fee_receiver,
+            salt: self.salt,
+        }
+    }
+
+    /// Convert to Alloy ABI struct for EscrowContract calls (getHash, paymentState)
+    ///
+    /// EscrowContract's PaymentInfo is a separate Rust type from OperatorContract's,
+    /// even though they have identical fields, because they come from different sol! invocations.
+    pub fn to_escrow_abi_type(&self) -> super::abi::EscrowPaymentInfo {
+        use alloy::primitives::Uint;
+
+        super::abi::EscrowPaymentInfo {
             operator: self.operator,
             payer: self.payer,
             receiver: self.receiver,

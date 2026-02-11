@@ -92,6 +92,7 @@ Decentralized resource discovery for x402-enabled services:
     ),
     tags(
         (name = "Core", description = "Core x402 payment verification and settlement"),
+        (name = "Escrow", description = "Gasless escrow lifecycle (authorize, release, refund, state query)"),
         (name = "Discovery", description = "Network and scheme discovery"),
         (name = "ERC-8004", description = "AI Agent reputation and identity (ERC-8004 Trustless Agents) - 14 networks"),
         (name = "Bazaar", description = "Decentralized resource discovery registry"),
@@ -104,6 +105,8 @@ Decentralized resource discovery for x402-enabled services:
         path_verify_post,
         path_settle_get,
         path_settle_post,
+        // Escrow endpoints
+        path_escrow_state,
         // Discovery endpoints
         path_supported,
         path_version,
@@ -230,11 +233,34 @@ Submits a verified payment authorization to the blockchain for settlement.
 2. Calls `transferWithAuthorization` on the token contract
 3. Returns transaction hash on success
 
-**Supports x402r escrow settlements** via PaymentOperator scheme (`scheme: "escrow"`).
-Escrow contracts deployed on 9 networks: Base, Ethereum, Polygon, Arbitrum, Celo, Monad, Avalanche (+ Base Sepolia, Ethereum Sepolia testnets).
-See `/supported` for networks with active PaymentOperator deployments.
+**Escrow Lifecycle (scheme: "escrow"):**
 
-**Request body:** Same as /verify
+When `scheme: "escrow"` is set, the `action` field controls the operation:
+
+| Action | Description | Signature Required |
+|--------|-------------|-------------------|
+| `authorize` (default) | Lock funds in escrow | Yes (ERC-3009) |
+| `release` | Send escrowed funds to receiver | No |
+| `refundInEscrow` | Return escrowed funds to payer | No |
+
+Escrow contracts deployed on 9 networks. See `/supported` for networks with active PaymentOperator deployments.
+
+**Escrow release/refund payload** (no signature needed):
+```json
+{
+  "scheme": "escrow",
+  "action": "release",
+  "payload": {
+    "paymentInfo": { "operator": "0x...", "receiver": "0x...", ... },
+    "payer": "0x...",
+    "amount": "1000000"
+  },
+  "paymentRequirements": {
+    "network": "eip155:8453",
+    "extra": { "escrowAddress": "0x...", "operatorAddress": "0x...", "tokenCollector": "0x..." }
+  }
+}
+```
 
 **Response on success:**
 ```json
@@ -263,6 +289,74 @@ See `/supported` for networks with active PaymentOperator deployments.
     )
 )]
 async fn path_settle_post() {}
+
+// ============================================================================
+// Escrow Endpoints
+// ============================================================================
+
+#[utoipa::path(
+    post,
+    path = "/escrow/state",
+    tag = "Escrow",
+    summary = "Query escrow payment state",
+    description = r#"
+Queries the on-chain state of an escrow payment from the AuthCaptureEscrow contract.
+This is a read-only view call (no gas consumed).
+
+Returns the capturable amount, refundable amount, and whether payment has been fully collected.
+
+**Request body:**
+```json
+{
+  "paymentInfo": {
+    "operator": "0x...",
+    "receiver": "0x...",
+    "token": "0x...",
+    "maxAmount": "1000000",
+    "preApprovalExpiry": 281474976710655,
+    "authorizationExpiry": 281474976710655,
+    "refundExpiry": 281474976710655,
+    "minFeeBps": 0,
+    "maxFeeBps": 100,
+    "feeReceiver": "0x...",
+    "salt": "0x..."
+  },
+  "payer": "0x...",
+  "network": "eip155:8453",
+  "extra": {
+    "escrowAddress": "0x...",
+    "operatorAddress": "0x...",
+    "tokenCollector": "0x..."
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "hasCollectedPayment": false,
+  "capturableAmount": "1000000",
+  "refundableAmount": "0",
+  "paymentInfoHash": "0x...",
+  "network": "eip155:8453"
+}
+```
+"#,
+    request_body(content = Object, description = "Escrow state query"),
+    responses(
+        (status = 200, description = "Escrow state", body = Object,
+            example = json!({
+                "hasCollectedPayment": false,
+                "capturableAmount": "1000000",
+                "refundableAmount": "0",
+                "paymentInfoHash": "0xabcdef...",
+                "network": "eip155:8453"
+            })
+        ),
+        (status = 400, description = "Query failed", body = Object)
+    )
+)]
+async fn path_escrow_state() {}
 
 // ============================================================================
 // Discovery Endpoints

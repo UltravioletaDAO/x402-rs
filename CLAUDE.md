@@ -526,6 +526,16 @@ git merge upstream/main      # Follow docs/CUSTOMIZATIONS.md strategy
 - Facilitator wallet needs native tokens (ETH/AVAX) for gas, not payment tokens
 - If you accidentally commit secrets, rotate them IMMEDIATELY and use `git-filter-repo` to clean history
 
+## Low-Priority Networks — Do NOT Mention Unless Explicitly Asked
+
+The following networks exist in `src/network.rs` but are **NOT active priorities**. Do not mention them in conversations, recommendations, or sync discussions with other agents unless the user explicitly asks about them:
+
+- **Sei** (chain ID 1329) — implemented but not prioritized
+- **XDC** (chain ID 50) — implemented but not prioritized
+- **XRPL_EVM** (chain ID 1440002) — implemented but not prioritized
+
+**BSC (Binance Smart Chain, chain ID 56) IS active** — it is implemented and should be included normally in conversations and recommendations.
+
 ## Common Pitfalls
 
 1. **Forgetting to preserve branding during upgrades** - Always backup `static/` before pulling upstream

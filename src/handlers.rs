@@ -93,6 +93,8 @@ where
         .route("/verify", post(post_verify::<A>))
         .route("/settle", get(get_settle_info))
         .route("/settle", post(post_settle::<A>))
+        // Escrow state query endpoint
+        .route("/escrow/state", post(post_escrow_state::<A>))
         // ERC-8004 Registration endpoints
         .route("/register", get(get_register_info))
         .route("/register", post(post_register::<A>))
@@ -1205,7 +1207,7 @@ where
                     .into_response();
             }
 
-            info!("Detected escrow scheme, routing to PaymentOperator.authorize()");
+            info!("Detected escrow scheme, routing to PaymentOperator settlement");
 
             match crate::payment_operator::settle_escrow(body_str, &facilitator).await {
                 Ok(escrow_response) => {
@@ -1637,6 +1639,53 @@ impl IntoResponse for FacilitatorLocalError {
                 )
                     .into_response()
             }
+        }
+    }
+}
+
+// ============================================================================
+// Escrow State Query Handler
+// ============================================================================
+
+/// `POST /escrow/state`: Query the on-chain state of an escrow payment.
+///
+/// Returns capturable amount, refundable amount, and whether payment has been collected.
+/// This is a read-only view call (no gas consumed).
+#[instrument(skip_all)]
+pub async fn post_escrow_state<A>(
+    State(facilitator): State<A>,
+    raw_body: Bytes,
+) -> impl IntoResponse
+where
+    A: Facilitator + HasProviderMap,
+    A::Error: IntoResponse,
+    A::Map: ProviderMap<Value = NetworkProvider>,
+{
+    let body_str = match std::str::from_utf8(&raw_body) {
+        Ok(s) => s,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "Invalid UTF-8 in request body" })),
+            )
+                .into_response();
+        }
+    };
+
+    match crate::payment_operator::query_escrow_state(body_str, &facilitator).await {
+        Ok(state_response) => {
+            info!("Escrow state query complete");
+            (StatusCode::OK, Json(json!(state_response))).into_response()
+        }
+        Err(e) => {
+            error!(error = %e, "Escrow state query failed");
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": format!("Escrow state query failed: {}", e)
+                })),
+            )
+                .into_response()
         }
     }
 }

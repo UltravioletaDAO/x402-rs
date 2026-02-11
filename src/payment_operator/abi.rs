@@ -2,26 +2,49 @@
 //!
 //! These bindings are generated from the contract ABIs in the abi/ directory.
 //!
+//! Each sol! invocation lives in its own sub-module to prevent AuthCaptureEscrow
+//! module name collisions (both ABIs reference the same PaymentInfo struct type).
+//!
 //! Usage:
-//! - `OperatorContract::authorizeCall` for building authorize calls
+//! - `OperatorContract::authorizeCall` for building authorize/release/refund calls
+//! - `EscrowContract::getHashCall` / `paymentStateCall` for state queries
 //! - Access PaymentInfo via: `PaymentInfo` (re-exported at module level)
 
-use alloy::sol;
+/// PaymentOperator ABI bindings (authorize, release, refundInEscrow, charge, etc.)
+mod operator_abi {
+    use alloy::sol;
 
-// PaymentOperator binding from ABI file
-// This includes nested AuthCaptureEscrow types (PaymentInfo struct)
-// The sol! macro generates AuthCaptureEscrow as a top-level module in this file
-sol!(
-    #[allow(missing_docs)]
-    #[derive(Debug)]
-    #[sol(rpc)]
-    OperatorContract,
-    "abi/PaymentOperator.json"
-);
+    sol!(
+        #[allow(missing_docs)]
+        #[derive(Debug)]
+        #[sol(rpc)]
+        OperatorContract,
+        "abi/PaymentOperator.json"
+    );
+}
 
-// The sol! macro creates AuthCaptureEscrow at the top level of this module
-// We can re-export its types directly
-pub use AuthCaptureEscrow::PaymentInfo;
+/// AuthCaptureEscrow ABI bindings (getHash, paymentState, etc.)
+mod escrow_abi {
+    use alloy::sol;
+
+    sol!(
+        #[allow(missing_docs)]
+        #[derive(Debug)]
+        #[sol(rpc)]
+        EscrowContract,
+        "abi/AuthCaptureEscrow.json"
+    );
+}
+
+// Re-export contract types at this module level
+pub use escrow_abi::EscrowContract;
+pub use operator_abi::AuthCaptureEscrow::PaymentInfo;
+pub use operator_abi::OperatorContract;
+
+/// PaymentInfo type from the EscrowContract ABI scope.
+/// Structurally identical to `PaymentInfo` but a different Rust type because
+/// it comes from a separate sol! invocation. Used for EscrowContract calls.
+pub use escrow_abi::AuthCaptureEscrow::PaymentInfo as EscrowPaymentInfo;
 
 #[cfg(test)]
 mod tests {

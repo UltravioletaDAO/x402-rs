@@ -254,7 +254,7 @@ impl OperatorAddresses {
             Network::Base => Some(Self {
                 escrow: base_mainnet::ESCROW,
                 factory: base_mainnet::FACTORY,
-                payment_operator: None, // Deploy via factory (old operator 0xa069... was for previous escrow deployment)
+                payment_operator: Some(address!("b9635f544665758019159c04c08a3d583dadd723")), // EM operator (Facilitator-only release/refund)
                 token_collector: base_mainnet::TOKEN_COLLECTOR,
                 protocol_fee_config: base_mainnet::PROTOCOL_FEE_CONFIG,
                 refund_request: base_mainnet::REFUND_REQUEST,
@@ -361,14 +361,16 @@ mod tests {
                 "OperatorAddresses::for_network should return Some for {:?}",
                 network
             );
-            let addrs = addrs.unwrap();
-            // All operators are None until deployed
-            assert!(
-                addrs.payment_operator.is_none(),
-                "payment_operator should be None for {:?} until deployed",
-                network
-            );
         }
+    }
+
+    #[test]
+    fn test_base_mainnet_has_payment_operator() {
+        let addrs = OperatorAddresses::for_network(Network::Base).unwrap();
+        assert!(
+            addrs.payment_operator.is_some(),
+            "Base mainnet should have EM PaymentOperator registered"
+        );
     }
 
     #[test]

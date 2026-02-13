@@ -367,57 +367,129 @@ impl MetaEvmProvider for EvmProvider {
         tx: MetaTransaction,
     ) -> Result<TransactionReceipt, Self::Error> {
         let from_address = self.next_signer_address();
-        let mut txr = TransactionRequest::default()
-            .with_to(tx.to)
-            .with_from(from_address)
-            .with_input(tx.calldata);
-        if !self.eip1559 {
-            let provider = &self.inner;
-            let gas: u128 = provider
-                .get_gas_price()
-                .instrument(tracing::info_span!("get_gas_price"))
-                .await
-                .map_err(|e| FacilitatorLocalError::ContractCall(format!("{e:?}")))?;
-            txr.set_gas_price(gas);
+        let to = tx.to;
+        let calldata = tx.calldata;
+        let confirmations = tx.confirmations;
+
+        const MAX_NONCE_RETRIES: u32 = 1;
+
+        // Snapshot confirmed TX count before sending. If this advances after a
+        // nonce error, the "failed" TX was actually mined (RPC load-balancer
+        // returned a stale error). Retrying would replay an already-consumed
+        // EIP-3009 auth → "FiatTokenV2: invalid signature".
+        let pre_send_nonce = self
+            .inner
+            .get_transaction_count(from_address)
+            .await
+            .unwrap_or(0);
+
+        for attempt in 0..=MAX_NONCE_RETRIES {
+            // Build TX request (calldata.clone() is O(1) - Bytes is ref-counted)
+            let mut txr = TransactionRequest::default()
+                .with_to(to)
+                .with_from(from_address)
+                .with_input(calldata.clone());
+
+            if !self.eip1559 {
+                let gas: u128 = self
+                    .inner
+                    .get_gas_price()
+                    .instrument(tracing::info_span!("get_gas_price"))
+                    .await
+                    .map_err(|e| FacilitatorLocalError::ContractCall(format!("{e:?}")))?;
+                txr.set_gas_price(gas);
+            }
+
+            // Send transaction
+            match self.inner.send_transaction(txr).await {
+                Ok(pending_tx) => {
+                    // TX submitted - wait for receipt with timeout
+                    // Base mainnet requires longer timeout (90s) due to network congestion
+                    // and first-TX-after-idle latency spikes
+                    // Other EVM chains use default 30s timeout
+                    let default_timeout = match self.chain.network {
+                        Network::Base => 90,
+                        _ => 30,
+                    };
+                    let timeout = std::time::Duration::from_secs(
+                        std::env::var("TX_RECEIPT_TIMEOUT_SECS")
+                            .ok()
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(default_timeout),
+                    );
+
+                    let watcher = pending_tx
+                        .with_required_confirmations(confirmations)
+                        .with_timeout(Some(timeout));
+
+                    return match watcher.get_receipt().await {
+                        Ok(receipt) => Ok(receipt),
+                        Err(e) => {
+                            // Receipt fetch failed (timeout or other) - reset nonce
+                            // Do NOT retry: TX may have been mined, retrying could double-spend
+                            self.nonce_manager.reset_nonce(from_address).await;
+                            Err(FacilitatorLocalError::ContractCall(format!("{e:?}")))
+                        }
+                    };
+                }
+                Err(e) => {
+                    let error_str = format!("{e:?}");
+                    self.nonce_manager.reset_nonce(from_address).await;
+
+                    if is_nonce_error(&error_str) && attempt < MAX_NONCE_RETRIES {
+                        // Safety check: if the confirmed TX count advanced, the
+                        // "failed" TX was actually mined by a different RPC node.
+                        // Retrying would replay the same EIP-3009 auth and revert.
+                        let post_nonce = self
+                            .inner
+                            .get_transaction_count(from_address)
+                            .await
+                            .unwrap_or(0);
+                        if post_nonce > pre_send_nonce {
+                            tracing::warn!(
+                                %from_address,
+                                network = %self.chain.network,
+                                pre_nonce = pre_send_nonce,
+                                post_nonce = post_nonce,
+                                error = %error_str,
+                                "Nonce error but confirmed TX count advanced, \
+                                 original TX likely mined - skipping retry"
+                            );
+                            return Err(FacilitatorLocalError::ContractCall(format!(
+                                "Nonce error but TX count advanced \
+                                 ({pre_send_nonce} -> {post_nonce}), \
+                                 original TX may have been mined: {error_str}"
+                            )));
+                        }
+
+                        tracing::warn!(
+                            attempt = attempt + 1,
+                            max_retries = MAX_NONCE_RETRIES,
+                            error = %error_str,
+                            %from_address,
+                            network = %self.chain.network,
+                            "Nonce error detected, retrying after backoff"
+                        );
+                        // Brief backoff to let RPC sync pending state
+                        tokio::time::sleep(std::time::Duration::from_millis(250))
+                            .await;
+                        continue;
+                    }
+
+                    return Err(FacilitatorLocalError::ContractCall(error_str));
+                }
+            }
         }
 
-        // Send transaction with error handling for nonce reset
-        let pending_tx = match self.inner.send_transaction(txr).await {
-            Ok(pending) => pending,
-            Err(e) => {
-                // Transaction submission failed - reset nonce to force requery
-                self.nonce_manager.reset_nonce(from_address).await;
-                return Err(FacilitatorLocalError::ContractCall(format!("{e:?}")));
-            }
-        };
-
-        // Get receipt with timeout and error handling for nonce reset
-        // Base mainnet requires longer timeout (60s) due to network congestion
-        // Other EVM chains use default 30s timeout
-        let default_timeout = match self.chain.network {
-            Network::Base => 60,
-            _ => 30,
-        };
-        let timeout = std::time::Duration::from_secs(
-            std::env::var("TX_RECEIPT_TIMEOUT_SECS")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(default_timeout),
-        );
-
-        let watcher = pending_tx
-            .with_required_confirmations(tx.confirmations)
-            .with_timeout(Some(timeout));
-
-        match watcher.get_receipt().await {
-            Ok(receipt) => Ok(receipt),
-            Err(e) => {
-                // Receipt fetch failed (timeout or other error) - reset nonce to force requery
-                self.nonce_manager.reset_nonce(from_address).await;
-                Err(FacilitatorLocalError::ContractCall(format!("{e:?}")))
-            }
-        }
+        unreachable!("retry loop always returns")
     }
+}
+
+/// Check if a transport error is a nonce-related error that can be retried.
+fn is_nonce_error(error: &str) -> bool {
+    let lower = error.to_lowercase();
+    (lower.contains("nonce") && (lower.contains("too low") || lower.contains("already known")))
+        || lower.contains("replacement transaction underpriced")
 }
 
 impl NetworkProviderOps for EvmProvider {
@@ -1762,6 +1834,21 @@ impl PendingNonceManager {
 mod tests {
     use super::*;
     use alloy::primitives::address;
+
+    #[test]
+    fn test_is_nonce_error() {
+        assert!(is_nonce_error(
+            "nonce too low: next nonce 4604, tx nonce 4603"
+        ));
+        assert!(is_nonce_error(
+            "ErrorResp(ErrorPayload { code: -32000, message: \"nonce too low\" })"
+        ));
+        assert!(is_nonce_error("transaction nonce already known"));
+        assert!(is_nonce_error("replacement transaction underpriced"));
+        assert!(!is_nonce_error("insufficient funds for gas"));
+        assert!(!is_nonce_error("execution reverted"));
+        assert!(!is_nonce_error("Invalid signature"));
+    }
 
     #[tokio::test]
     async fn test_reset_nonce_clears_cache() {

@@ -77,7 +77,7 @@ pub fn extract_revert_reason(error: &str) -> Option<String> {
     if error.contains("insufficient") {
         return Some("Insufficient balance or allowance".to_string());
     }
-    if error.contains("nonce") && error.contains("used") {
+    if error.contains("nonce") && (error.contains("used") || error.contains("too low")) {
         return Some("Nonce already used".to_string());
     }
     if error.contains("signature") && error.contains("invalid") {

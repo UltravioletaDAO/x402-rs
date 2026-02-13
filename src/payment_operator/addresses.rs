@@ -375,7 +375,7 @@ mod tests {
             !addrs.payment_operators.is_empty(),
             "Base mainnet should have EM PaymentOperator(s) registered"
         );
-        assert_eq!(addrs.payment_operators.len(), 1);
+        assert_eq!(addrs.payment_operators.len(), 2);
     }
 
     #[test]

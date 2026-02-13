@@ -36,14 +36,24 @@ connectors:
       - name: http.status_code
       - name: http.route
       - name: http.target
-    dimensions_cache_size: 1000
+    dimensions_cache_size: 500
     aggregation_temporality: "AGGREGATION_TEMPORALITY_CUMULATIVE"
     metrics_flush_interval: 15s
 
 processors:
+  # Prevents OOM by dropping data when memory exceeds limits.
+  # check_interval: how often to check memory usage.
+  # limit_mib: hard limit - starts refusing data above this.
+  # spike_limit_mib: buffer for sudden spikes.
+  memory_limiter:
+    check_interval: 5s
+    limit_mib: 180
+    spike_limit_mib: 50
+
   batch:
-    send_batch_size: 1024
+    send_batch_size: 512
     timeout: 5s
+    send_batch_max_size: 1024
 
   resource:
     attributes:
@@ -79,9 +89,9 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [resource, batch]
+      processors: [memory_limiter, resource, batch]
       exporters: [spanmetrics, otlp/tempo, debug]
     metrics:
       receivers: [spanmetrics]
-      processors: [resource, batch]
+      processors: [memory_limiter, resource, batch]
       exporters: [prometheusremotewrite, debug]

@@ -706,6 +706,11 @@ resource "aws_ecs_task_definition" "facilitator" {
       image     = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${data.aws_region.current.name}.amazonaws.com/facilitator-otel-collector:${var.otel_collector_image_tag}"
       essential = false
 
+      # Hard memory limit: prevents OOM from killing the whole task.
+      # The collector only forwards OTLP data, 256MB is generous.
+      memory            = 256
+      memoryReservation = 128
+
       portMappings = [
         {
           containerPort = 4317

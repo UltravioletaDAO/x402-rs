@@ -1,7 +1,7 @@
 [package]
 name = "x402-rs"
-version = "1.32.1"
-authors = ["Sergey Ukustov <sergey@ukstv.me>"]
+version = "1.33.3"
+authors = ["Sergey Ukustov <sergey@ukstv.me>", "0xultravioleta <0xultravioleta@gmail.com>"]
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/x402-rs/x402-rs"

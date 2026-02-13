@@ -256,8 +256,8 @@ impl OperatorAddresses {
                 escrow: base_mainnet::ESCROW,
                 factory: base_mainnet::FACTORY,
                 payment_operators: vec![
-                    address!("8D3DeCBAe68F6BA6f8104B60De1a42cE1869c2E6"), // EM Fase 3 operator (OR: Payer|Facilitator, 1% fee)
-                    address!("b9635f544665758019159c04c08a3d583dadd723"), // EM Fase 2 operator (Facilitator-only, legacy)
+                    address!("030353642B936c9D4213caD7BcB0fB8a1489cBe5"), // EM Secure operator (OR release, Facilitator-only refund, feeCalculator=0)
+                    address!("d5149049e7c212ce5436a9581b4307EB9595df95"), // EM legacy operator (OR release+refund — vulnerable, keep for active escrows)
                 ],
                 token_collector: base_mainnet::TOKEN_COLLECTOR,
                 protocol_fee_config: base_mainnet::PROTOCOL_FEE_CONFIG,

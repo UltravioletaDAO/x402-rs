@@ -117,9 +117,18 @@ docker-compose up -d
 # View logs
 docker-compose logs -f facilitator
 
-# Build and push to ECR
+# FAST BUILD (5-10x faster on WSL2) - ALWAYS USE THIS
+./scripts/fast-build.sh v1.32.1           # Build only
+./scripts/fast-build.sh v1.32.1 --push    # Build + push to ECR
+
+# Legacy build (slow on WSL2, only use if fast-build fails)
 ./scripts/build-and-push.sh v1.0.0
 ```
+
+**Why fast-build?** The repo lives on `/mnt/z/` (Windows NTFS via WSL2 9P). Docker builds
+cross the WSL2-Windows boundary for every file operation, making builds 5-10x slower.
+`fast-build.sh` rsyncs to `~/x402-rs-build` (native ext4) first, then builds there.
+First run ~3min, subsequent runs ~35s.
 
 ### Diagnostics
 ```bash
@@ -357,8 +366,8 @@ aws dynamodb create-table --table-name facilitator-terraform-locks \
 aws ecr create-repository --repository-name facilitator \
   --image-scanning-configuration scanOnPush=true --region us-east-2
 
-# Build and push Docker image
-./scripts/build-and-push.sh v1.0.0
+# Build and push Docker image (ALWAYS use fast-build on WSL2)
+./scripts/fast-build.sh v1.32.1 --push
 
 # Deploy infrastructure
 cd terraform/environments/production

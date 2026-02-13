@@ -230,7 +230,7 @@ pub fn is_supported(network: Network) -> bool {
 pub struct OperatorAddresses {
     pub escrow: Address,
     pub factory: Address,
-    pub payment_operator: Option<Address>,
+    pub payment_operators: Vec<Address>,
     pub token_collector: Address,
     pub protocol_fee_config: Address,
     pub refund_request: Address,
@@ -239,14 +239,15 @@ pub struct OperatorAddresses {
 impl OperatorAddresses {
     /// Get addresses for a network.
     ///
-    /// NOTE: payment_operator is None until a PaymentOperator is deployed
+    /// NOTE: payment_operators is empty until a PaymentOperator is deployed
     /// on each network using the factory. Use deploy_operator.py to deploy.
+    /// Multiple operators per network are supported (e.g. Fase 3 multi-operator).
     pub fn for_network(network: Network) -> Option<Self> {
         match network {
             Network::BaseSepolia => Some(Self {
                 escrow: base_sepolia::ESCROW,
                 factory: base_sepolia::FACTORY,
-                payment_operator: None, // Deploy via factory
+                payment_operators: vec![], // Deploy via factory
                 token_collector: base_sepolia::TOKEN_COLLECTOR,
                 protocol_fee_config: base_sepolia::PROTOCOL_FEE_CONFIG,
                 refund_request: base_sepolia::REFUND_REQUEST,
@@ -254,7 +255,10 @@ impl OperatorAddresses {
             Network::Base => Some(Self {
                 escrow: base_mainnet::ESCROW,
                 factory: base_mainnet::FACTORY,
-                payment_operator: Some(address!("b9635f544665758019159c04c08a3d583dadd723")), // EM operator (Facilitator-only release/refund)
+                payment_operators: vec![
+                    address!("8D3DeCBAe68F6BA6f8104B60De1a42cE1869c2E6"), // EM Fase 3 operator (OR: Payer|Facilitator, 1% fee)
+                    address!("b9635f544665758019159c04c08a3d583dadd723"), // EM Fase 2 operator (Facilitator-only, legacy)
+                ],
                 token_collector: base_mainnet::TOKEN_COLLECTOR,
                 protocol_fee_config: base_mainnet::PROTOCOL_FEE_CONFIG,
                 refund_request: base_mainnet::REFUND_REQUEST,
@@ -262,7 +266,7 @@ impl OperatorAddresses {
             Network::EthereumSepolia => Some(Self {
                 escrow: ethereum_sepolia::ESCROW,
                 factory: ethereum_sepolia::FACTORY,
-                payment_operator: None,
+                payment_operators: vec![],
                 token_collector: ethereum_sepolia::TOKEN_COLLECTOR,
                 protocol_fee_config: ethereum_sepolia::PROTOCOL_FEE_CONFIG,
                 refund_request: ethereum_sepolia::REFUND_REQUEST,
@@ -270,7 +274,7 @@ impl OperatorAddresses {
             Network::Ethereum => Some(Self {
                 escrow: ethereum_mainnet::ESCROW,
                 factory: ethereum_mainnet::FACTORY,
-                payment_operator: None,
+                payment_operators: vec![],
                 token_collector: ethereum_mainnet::TOKEN_COLLECTOR,
                 protocol_fee_config: ethereum_mainnet::PROTOCOL_FEE_CONFIG,
                 refund_request: ethereum_mainnet::REFUND_REQUEST,
@@ -278,7 +282,7 @@ impl OperatorAddresses {
             Network::Polygon => Some(Self {
                 escrow: polygon::ESCROW,
                 factory: polygon::FACTORY,
-                payment_operator: None,
+                payment_operators: vec![],
                 token_collector: polygon::TOKEN_COLLECTOR,
                 protocol_fee_config: polygon::PROTOCOL_FEE_CONFIG,
                 refund_request: polygon::REFUND_REQUEST,
@@ -286,7 +290,7 @@ impl OperatorAddresses {
             Network::Arbitrum => Some(Self {
                 escrow: arbitrum::ESCROW,
                 factory: arbitrum::FACTORY,
-                payment_operator: None,
+                payment_operators: vec![],
                 token_collector: arbitrum::TOKEN_COLLECTOR,
                 protocol_fee_config: arbitrum::PROTOCOL_FEE_CONFIG,
                 refund_request: arbitrum::REFUND_REQUEST,
@@ -294,7 +298,7 @@ impl OperatorAddresses {
             Network::Celo => Some(Self {
                 escrow: celo::ESCROW,
                 factory: celo::FACTORY,
-                payment_operator: None,
+                payment_operators: vec![],
                 token_collector: celo::TOKEN_COLLECTOR,
                 protocol_fee_config: celo::PROTOCOL_FEE_CONFIG,
                 refund_request: celo::REFUND_REQUEST,
@@ -302,7 +306,7 @@ impl OperatorAddresses {
             Network::Monad => Some(Self {
                 escrow: monad::ESCROW,
                 factory: monad::FACTORY,
-                payment_operator: None,
+                payment_operators: vec![],
                 token_collector: monad::TOKEN_COLLECTOR,
                 protocol_fee_config: monad::PROTOCOL_FEE_CONFIG,
                 refund_request: monad::REFUND_REQUEST,
@@ -310,7 +314,7 @@ impl OperatorAddresses {
             Network::Avalanche => Some(Self {
                 escrow: avalanche::ESCROW,
                 factory: avalanche::FACTORY,
-                payment_operator: None,
+                payment_operators: vec![],
                 token_collector: avalanche::TOKEN_COLLECTOR,
                 protocol_fee_config: avalanche::PROTOCOL_FEE_CONFIG,
                 refund_request: avalanche::REFUND_REQUEST,
@@ -365,12 +369,13 @@ mod tests {
     }
 
     #[test]
-    fn test_base_mainnet_has_payment_operator() {
+    fn test_base_mainnet_has_payment_operators() {
         let addrs = OperatorAddresses::for_network(Network::Base).unwrap();
         assert!(
-            addrs.payment_operator.is_some(),
-            "Base mainnet should have EM PaymentOperator registered"
+            !addrs.payment_operators.is_empty(),
+            "Base mainnet should have EM PaymentOperator(s) registered"
         );
+        assert_eq!(addrs.payment_operators.len(), 1);
     }
 
     #[test]

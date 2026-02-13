@@ -406,18 +406,18 @@ async fn execute_authorize(
     let token_collector = addrs.token_collector;
     let collector_data = encode_collector_data(&escrow_payload.signature);
 
+    // Target is the client-provided operator address (already validated in validate_addresses)
+    let target = extra.authorize_address.unwrap_or(extra.operator_address);
+
     debug!(
         operator = ?payment_info.operator,
         payer = ?payment_info.payer,
         receiver = ?payment_info.receiver,
         amount = %amount,
         token_collector = ?token_collector,
+        target = ?target,
         "Executing authorize on PaymentOperator"
     );
-
-    let target = addrs.payment_operator.ok_or_else(|| {
-        OperatorError::UnsupportedNetwork("no deployed PaymentOperator for this network".into())
-    })?;
 
     let call = OperatorContract::authorizeCall {
         paymentInfo: payment_info_abi,
@@ -446,16 +446,16 @@ async fn execute_release(
     let payment_info_abi = payment_info.to_abi_type();
     let amount = U256::from(lifecycle.amount);
 
+    // Target is the client-provided operator address (already validated in validate_addresses)
+    let target = extra.authorize_address.unwrap_or(extra.operator_address);
+
     debug!(
         payer = ?payment_info.payer,
         receiver = ?payment_info.receiver,
         amount = %amount,
+        target = ?target,
         "Executing release on PaymentOperator"
     );
-
-    let target = addrs.payment_operator.ok_or_else(|| {
-        OperatorError::UnsupportedNetwork("no deployed PaymentOperator for this network".into())
-    })?;
 
     let call = OperatorContract::releaseCall {
         paymentInfo: payment_info_abi,
@@ -493,16 +493,16 @@ async fn execute_refund_in_escrow(
     // Convert to Uint<120, 2> for the ABI
     let amount = alloy::primitives::Uint::<120, 2>::from(lifecycle.amount);
 
+    // Target is the client-provided operator address (already validated in validate_addresses)
+    let target = extra.authorize_address.unwrap_or(extra.operator_address);
+
     debug!(
         payer = ?payment_info.payer,
         receiver = ?payment_info.receiver,
         amount = %lifecycle.amount,
+        target = ?target,
         "Executing refundInEscrow on PaymentOperator"
     );
-
-    let target = addrs.payment_operator.ok_or_else(|| {
-        OperatorError::UnsupportedNetwork("no deployed PaymentOperator for this network".into())
-    })?;
 
     let call = OperatorContract::refundInEscrowCall {
         paymentInfo: payment_info_abi,
@@ -582,19 +582,18 @@ async fn eth_call(
 /// with arbitrary target addresses, causing the facilitator to send transactions
 /// to random contracts and burn ETH on reverts.
 fn validate_addresses(extra: &EscrowExtra, addrs: &OperatorAddresses) -> Result<(), OperatorError> {
-    // Validate operator address
-    if let Some(known_operator) = addrs.payment_operator {
-        let client_target = extra.authorize_address.unwrap_or(extra.operator_address);
-        if client_target != known_operator {
-            return Err(OperatorError::PaymentInfoInvalid(format!(
-                "operator address mismatch: client={:?}, expected={:?}",
-                client_target, known_operator
-            )));
-        }
-    } else {
+    // Validate operator address against allowlist
+    if addrs.payment_operators.is_empty() {
         return Err(OperatorError::UnsupportedNetwork(
             "no deployed PaymentOperator for this network".into(),
         ));
+    }
+    let client_target = extra.authorize_address.unwrap_or(extra.operator_address);
+    if !addrs.payment_operators.contains(&client_target) {
+        return Err(OperatorError::PaymentInfoInvalid(format!(
+            "operator address mismatch: client={:?}, allowed={:?}",
+            client_target, addrs.payment_operators
+        )));
     }
 
     // Validate token collector

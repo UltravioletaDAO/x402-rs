@@ -224,9 +224,8 @@ where
 
             for &network in ESCROW_NETWORKS {
                 if let Some(addrs) = OperatorAddresses::for_network(network) {
-                    // Only advertise networks that have a deployed operator
-                    // (settlement requires a PaymentOperator contract)
-                    if let Some(operator) = addrs.payment_operator {
+                    // Advertise one entry per deployed operator on this network
+                    for &operator in &addrs.payment_operators {
                         let escrow_extra = SupportedPaymentKindExtra {
                             fee_payer: None,
                             tokens: None,

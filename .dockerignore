@@ -3,3 +3,6 @@ target/
 *.rs.bk
 *.log
 .env
+contracts/
+.unused/
+node_modules/

@@ -3,7 +3,7 @@
 //! These addresses are from the x402r-sdk multichain deployment:
 //! https://github.com/BackTrackCo/x402r-sdk/blob/A1igator/multichain-config/packages/core/src/config/index.ts
 //!
-//! Supported networks (9 total):
+//! Supported networks (10 total):
 //! - Base Sepolia (testnet)
 //! - Base Mainnet
 //! - Ethereum Sepolia (testnet)
@@ -13,6 +13,7 @@
 //! - Celo
 //! - Monad
 //! - Avalanche C-Chain
+//! - Optimism
 
 use alloy::primitives::{address, Address};
 
@@ -126,6 +127,18 @@ pub mod avalanche {
     pub const USDC: Address = address!("B97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E");
 }
 
+/// Contract addresses for Optimism (eip155:10)
+pub mod optimism {
+    use super::*;
+
+    pub const ESCROW: Address = address!("320a3c35F131E5D2Fb36af56345726B298936037");
+    pub const FACTORY: Address = address!("32d6AC59BCe8DFB3026F10BcaDB8D00AB218f5b6");
+    pub const TOKEN_COLLECTOR: Address = address!("230fd3A171750FA45db2976121376b7F47Cba308");
+    pub const PROTOCOL_FEE_CONFIG: Address = address!("D979dBfBdA5f4b16AAF60Eaab32A44f352076838");
+    pub const REFUND_REQUEST: Address = address!("c1256Bb30bd0cdDa07D8C8Cf67a59105f2EA1b98");
+    pub const USDC: Address = address!("0b2C639c533813f4Aa9D7837CAf62653d097Ff85");
+}
+
 /// All networks that have x402r escrow contracts deployed.
 /// This is the single source of truth for escrow network support.
 pub const ESCROW_NETWORKS: &[Network] = &[
@@ -138,6 +151,7 @@ pub const ESCROW_NETWORKS: &[Network] = &[
     Network::Celo,
     Network::Monad,
     Network::Avalanche,
+    Network::Optimism,
 ];
 
 /// Get escrow address for a given network
@@ -152,6 +166,7 @@ pub fn escrow_for_network(network: Network) -> Option<Address> {
         Network::Celo => Some(celo::ESCROW),
         Network::Monad => Some(monad::ESCROW),
         Network::Avalanche => Some(avalanche::ESCROW),
+        Network::Optimism => Some(optimism::ESCROW),
         _ => None,
     }
 }
@@ -168,6 +183,7 @@ pub fn factory_for_network(network: Network) -> Option<Address> {
         Network::Celo => Some(celo::FACTORY),
         Network::Monad => Some(monad::FACTORY),
         Network::Avalanche => Some(avalanche::FACTORY),
+        Network::Optimism => Some(optimism::FACTORY),
         _ => None,
     }
 }
@@ -184,6 +200,7 @@ pub fn token_collector_for_network(network: Network) -> Option<Address> {
         Network::Celo => Some(celo::TOKEN_COLLECTOR),
         Network::Monad => Some(monad::TOKEN_COLLECTOR),
         Network::Avalanche => Some(avalanche::TOKEN_COLLECTOR),
+        Network::Optimism => Some(optimism::TOKEN_COLLECTOR),
         _ => None,
     }
 }
@@ -200,6 +217,7 @@ pub fn protocol_fee_config_for_network(network: Network) -> Option<Address> {
         Network::Celo => Some(celo::PROTOCOL_FEE_CONFIG),
         Network::Monad => Some(monad::PROTOCOL_FEE_CONFIG),
         Network::Avalanche => Some(avalanche::PROTOCOL_FEE_CONFIG),
+        Network::Optimism => Some(optimism::PROTOCOL_FEE_CONFIG),
         _ => None,
     }
 }
@@ -216,6 +234,7 @@ pub fn refund_request_for_network(network: Network) -> Option<Address> {
         Network::Celo => Some(celo::REFUND_REQUEST),
         Network::Monad => Some(monad::REFUND_REQUEST),
         Network::Avalanche => Some(avalanche::REFUND_REQUEST),
+        Network::Optimism => Some(optimism::REFUND_REQUEST),
         _ => None,
     }
 }
@@ -256,8 +275,8 @@ impl OperatorAddresses {
                 escrow: base_mainnet::ESCROW,
                 factory: base_mainnet::FACTORY,
                 payment_operators: vec![
-                    address!("030353642B936c9D4213caD7BcB0fB8a1489cBe5"), // EM Secure operator (OR release, Facilitator-only refund, feeCalculator=0)
-                    address!("d5149049e7c212ce5436a9581b4307EB9595df95"), // EM legacy operator (OR release+refund — vulnerable, keep for active escrows)
+                    address!("271f9fa7f8907aCf178CCFB470076D9129D8F0Eb"), // EM Fase 5 trustless fee split (1300bps=13%, Facilitator-only refund)
+                    address!("030353642B936c9D4213caD7BcB0fB8a1489cBe5"), // EM Fase 4 secure operator (OR release, Facilitator-only refund, feeCalculator=0)
                 ],
                 token_collector: base_mainnet::TOKEN_COLLECTOR,
                 protocol_fee_config: base_mainnet::PROTOCOL_FEE_CONFIG,
@@ -282,7 +301,9 @@ impl OperatorAddresses {
             Network::Polygon => Some(Self {
                 escrow: polygon::ESCROW,
                 factory: polygon::FACTORY,
-                payment_operators: vec![],
+                payment_operators: vec![
+                    address!("B87F1ECC85f074e50df3DD16A1F40e4e1EC4102e"), // EM Fase 5 (1300bps, OR release, Facilitator-only refund)
+                ],
                 token_collector: polygon::TOKEN_COLLECTOR,
                 protocol_fee_config: polygon::PROTOCOL_FEE_CONFIG,
                 refund_request: polygon::REFUND_REQUEST,
@@ -290,7 +311,9 @@ impl OperatorAddresses {
             Network::Arbitrum => Some(Self {
                 escrow: arbitrum::ESCROW,
                 factory: arbitrum::FACTORY,
-                payment_operators: vec![],
+                payment_operators: vec![
+                    address!("C2377a9Db1de2520BD6b2756eD012f4E82F7938e"), // EM Fase 5 (1300bps, OR release, Facilitator-only refund)
+                ],
                 token_collector: arbitrum::TOKEN_COLLECTOR,
                 protocol_fee_config: arbitrum::PROTOCOL_FEE_CONFIG,
                 refund_request: arbitrum::REFUND_REQUEST,
@@ -298,7 +321,9 @@ impl OperatorAddresses {
             Network::Celo => Some(Self {
                 escrow: celo::ESCROW,
                 factory: celo::FACTORY,
-                payment_operators: vec![],
+                payment_operators: vec![
+                    address!("C2377a9Db1de2520BD6b2756eD012f4E82F7938e"), // EM Fase 5 (1300bps, OR release, Facilitator-only refund)
+                ],
                 token_collector: celo::TOKEN_COLLECTOR,
                 protocol_fee_config: celo::PROTOCOL_FEE_CONFIG,
                 refund_request: celo::REFUND_REQUEST,
@@ -306,7 +331,9 @@ impl OperatorAddresses {
             Network::Monad => Some(Self {
                 escrow: monad::ESCROW,
                 factory: monad::FACTORY,
-                payment_operators: vec![],
+                payment_operators: vec![
+                    address!("9620Dbe2BB549E1d080Dc8e7982623A9e1Df8cC3"), // EM Fase 5 (1300bps, OR release, Facilitator-only refund)
+                ],
                 token_collector: monad::TOKEN_COLLECTOR,
                 protocol_fee_config: monad::PROTOCOL_FEE_CONFIG,
                 refund_request: monad::REFUND_REQUEST,
@@ -314,10 +341,22 @@ impl OperatorAddresses {
             Network::Avalanche => Some(Self {
                 escrow: avalanche::ESCROW,
                 factory: avalanche::FACTORY,
-                payment_operators: vec![],
+                payment_operators: vec![
+                    address!("C2377a9Db1de2520BD6b2756eD012f4E82F7938e"), // EM Fase 5 (1300bps, OR release, Facilitator-only refund)
+                ],
                 token_collector: avalanche::TOKEN_COLLECTOR,
                 protocol_fee_config: avalanche::PROTOCOL_FEE_CONFIG,
                 refund_request: avalanche::REFUND_REQUEST,
+            }),
+            Network::Optimism => Some(Self {
+                escrow: optimism::ESCROW,
+                factory: optimism::FACTORY,
+                payment_operators: vec![
+                    address!("C2377a9Db1de2520BD6b2756eD012f4E82F7938e"), // EM Fase 5 (1300bps, OR release, Facilitator-only refund)
+                ],
+                token_collector: optimism::TOKEN_COLLECTOR,
+                protocol_fee_config: optimism::PROTOCOL_FEE_CONFIG,
+                refund_request: optimism::REFUND_REQUEST,
             }),
             _ => None,
         }
@@ -348,12 +387,11 @@ mod tests {
         // Non-escrow networks should not be supported
         assert!(!is_supported(Network::Solana));
         assert!(!is_supported(Network::HyperEvm));
-        assert!(!is_supported(Network::Optimism));
     }
 
     #[test]
     fn test_escrow_networks_count() {
-        assert_eq!(ESCROW_NETWORKS.len(), 9);
+        assert_eq!(ESCROW_NETWORKS.len(), 10);
     }
 
     #[test]

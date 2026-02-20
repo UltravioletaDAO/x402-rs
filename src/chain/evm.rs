@@ -398,6 +398,21 @@ impl MetaEvmProvider for EvmProvider {
                     .await
                     .map_err(|e| FacilitatorLocalError::ContractCall(format!("{e:?}")))?;
                 txr.set_gas_price(gas);
+            } else if self.chain.network == Network::Ethereum {
+                // Ethereum L1 gas price floor: Alloy's auto-estimation can produce
+                // absurdly low values (0.08 Gwei max fee, 0.00015 Gwei priority).
+                // These get dropped from mempool when base fee rises.
+                // Set floor: 1 Gwei priority, 3 Gwei max fee for reliable inclusion.
+                const GWEI: u128 = 1_000_000_000;
+                let min_priority = 1 * GWEI; // 1 Gwei
+                let min_max_fee = 3 * GWEI;  // 3 Gwei
+                txr.set_max_priority_fee_per_gas(min_priority);
+                txr.set_max_fee_per_gas(min_max_fee);
+                tracing::debug!(
+                    min_priority_gwei = 1,
+                    min_max_fee_gwei = 3,
+                    "Ethereum L1 gas price floor applied"
+                );
             }
 
             // Send transaction

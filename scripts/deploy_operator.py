@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Deploy a PaymentOperator via PaymentOperatorFactory.
 
-This script calls createOperator() on the factory contract to deploy
+This script calls deployOperator(config) on the factory contract to deploy
 a new PaymentOperator for the facilitator wallet. The deployed operator
 address must be registered in src/payment_operator/addresses.rs.
 
@@ -13,16 +13,16 @@ Prerequisites:
 Usage:
   python scripts/deploy_operator.py --network base-sepolia
   python scripts/deploy_operator.py --network base-mainnet --rpc-url https://...
+  python scripts/deploy_operator.py --network ethereum-sepolia --fee-recipient 0x...
 
 The script will:
 1. Connect to the target network
-2. Call PaymentOperatorFactory.createOperator()
-3. Parse the OperatorCreated event to get the deployed address
-4. Print the address for registration in addresses.rs
+2. Check if an operator with this config already exists
+3. Call PaymentOperatorFactory.deployOperator(config) via CREATE2
+4. Print the deployed address for registration in addresses.rs
 """
 
 import argparse
-import json
 import os
 import sys
 
@@ -31,6 +31,8 @@ try:
 except ImportError:
     print("Error: web3 not installed. Run: pip install web3")
     sys.exit(1)
+
+ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 
 # Factory addresses per network (from addresses.rs)
 FACTORY_ADDRESSES = {
@@ -43,39 +45,87 @@ FACTORY_ADDRESSES = {
     "celo": "0x32d6AC59BCe8DFB3026F10BcaDB8D00AB218f5b6",
     "monad": "0x32d6AC59BCe8DFB3026F10BcaDB8D00AB218f5b6",
     "avalanche": "0x32d6AC59BCe8DFB3026F10BcaDB8D00AB218f5b6",
+    "optimism": "0x32d6AC59BCe8DFB3026F10BcaDB8D00AB218f5b6",
 }
 
 # Default RPC URLs (free/public endpoints)
 DEFAULT_RPCS = {
     "base-sepolia": "https://sepolia.base.org",
     "base-mainnet": "https://mainnet.base.org",
-    "ethereum-sepolia": "https://rpc.sepolia.org",
+    "ethereum-sepolia": "https://ethereum-sepolia-rpc.publicnode.com",
     "polygon": "https://polygon-rpc.com",
     "arbitrum": "https://arb1.arbitrum.io/rpc",
     "celo": "https://forno.celo.org",
     "avalanche": "https://api.avax.network/ext/bc/C/rpc",
+    "optimism": "https://mainnet.optimism.io",
 }
 
-# Minimal ABI for PaymentOperatorFactory.createOperator()
-FACTORY_ABI = json.loads("""[
+# OperatorConfig struct fields
+CONFIG_FIELDS = [
+    "feeRecipient",
+    "feeCalculator",
+    "authorizeCondition",
+    "authorizeRecorder",
+    "chargeCondition",
+    "chargeRecorder",
+    "releaseCondition",
+    "releaseRecorder",
+    "refundInEscrowCondition",
+    "refundInEscrowRecorder",
+    "refundPostEscrowCondition",
+    "refundPostEscrowRecorder",
+]
+
+# PaymentOperatorFactory ABI (deployOperator, getOperator, computeAddress)
+FACTORY_ABI = [
     {
         "type": "function",
-        "name": "createOperator",
-        "inputs": [],
-        "outputs": [
-            {"name": "", "type": "address", "internalType": "address"}
+        "name": "deployOperator",
+        "inputs": [
+            {
+                "name": "config",
+                "type": "tuple",
+                "components": [{"name": f, "type": "address"} for f in CONFIG_FIELDS],
+            }
         ],
-        "stateMutability": "nonpayable"
+        "outputs": [{"name": "operator", "type": "address"}],
+        "stateMutability": "nonpayable",
     },
     {
-        "type": "event",
-        "name": "OperatorCreated",
+        "type": "function",
+        "name": "getOperator",
         "inputs": [
-            {"name": "operator", "type": "address", "indexed": true},
-            {"name": "owner", "type": "address", "indexed": true}
-        ]
-    }
-]""")
+            {
+                "name": "config",
+                "type": "tuple",
+                "components": [{"name": f, "type": "address"} for f in CONFIG_FIELDS],
+            }
+        ],
+        "outputs": [{"name": "", "type": "address"}],
+        "stateMutability": "view",
+    },
+    {
+        "type": "function",
+        "name": "computeAddress",
+        "inputs": [
+            {
+                "name": "config",
+                "type": "tuple",
+                "components": [{"name": f, "type": "address"} for f in CONFIG_FIELDS],
+            }
+        ],
+        "outputs": [{"name": "operator", "type": "address"}],
+        "stateMutability": "view",
+    },
+]
+
+
+def create_config(fee_recipient):
+    """Create a permissionless OperatorConfig (all conditions = zero address)."""
+    return tuple(
+        Web3.to_checksum_address(fee_recipient if i == 0 else ZERO_ADDRESS)
+        for i in range(len(CONFIG_FIELDS))
+    )
 
 
 def main():
@@ -90,6 +140,10 @@ def main():
     parser.add_argument(
         "--private-key",
         help="Facilitator wallet private key (or set EVM_PRIVATE_KEY env var)",
+    )
+    parser.add_argument(
+        "--fee-recipient",
+        help="Fee recipient address (default: deployer wallet)",
     )
     parser.add_argument("--dry-run", action="store_true", help="Only simulate, don't send tx")
     args = parser.parse_args()
@@ -132,58 +186,89 @@ def main():
         print("Error: wallet has no ETH for gas")
         sys.exit(1)
 
-    # Build transaction
+    # Build factory contract
     factory = w3.eth.contract(
         address=Web3.to_checksum_address(factory_address), abi=FACTORY_ABI
     )
 
-    nonce = w3.eth.get_transaction_count(account.address)
+    # Create config
+    fee_recipient = args.fee_recipient or account.address
+    config = create_config(fee_recipient)
+    print(f"\nConfig:")
+    print(f"  feeRecipient: {config[0]}")
+    print(f"  All conditions/recorders: ZERO_ADDRESS (permissionless)")
 
-    tx = factory.functions.createOperator().build_transaction(
+    # Check if already deployed
+    existing = factory.functions.getOperator(config).call()
+    if existing != ZERO_ADDRESS:
+        print(f"\nAlready deployed at: {existing}")
+        print(f"\nUpdate src/payment_operator/addresses.rs:")
+        print(f'  address!("{existing[2:]}"),')
+        return
+
+    # Compute deterministic address
+    computed = factory.functions.computeAddress(config).call()
+    print(f"  Predicted address: {computed}")
+
+    if args.dry_run:
+        print(f"\n[DRY RUN] Would deploy to: {computed}")
+        return
+
+    # Estimate gas
+    gas_estimate = factory.functions.deployOperator(config).estimate_gas(
+        {"from": account.address}
+    )
+    gas_limit = int(gas_estimate * 1.3)  # 30% buffer
+    print(f"\nGas estimate: {gas_estimate} (limit: {gas_limit})")
+
+    # Build transaction with EIP-1559
+    gas_price = w3.eth.gas_price
+    tx = factory.functions.deployOperator(config).build_transaction(
         {
             "from": account.address,
-            "nonce": nonce,
-            "gas": 500_000,  # createOperator typically uses ~200k gas
-            "chainId": chain_id,
+            "nonce": w3.eth.get_transaction_count(account.address),
+            "gas": gas_limit,
+            "maxFeePerGas": gas_price * 4,
+            "maxPriorityFeePerGas": min(w3.to_wei(1, "gwei"), gas_price),
         }
     )
 
-    if args.dry_run:
-        print("\n[DRY RUN] Transaction built but not sent:")
-        print(f"  To:    {tx['to']}")
-        print(f"  Gas:   {tx['gas']}")
-        print(f"  Nonce: {tx['nonce']}")
-        return
-
     # Sign and send
-    print("\nSending createOperator() transaction...")
+    print("Sending deployOperator() transaction...")
     signed_tx = w3.eth.account.sign_transaction(tx, private_key)
     tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
-    print(f"TX Hash:  {tx_hash.hex()}")
+    print(f"TX Hash:  0x{tx_hash.hex()}")
 
     # Wait for receipt
     print("Waiting for confirmation...")
     receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
 
     if receipt.status != 1:
-        print(f"Error: transaction reverted (status={receipt.status})")
+        print(f"Error: transaction reverted (gas used: {receipt.gasUsed})")
         sys.exit(1)
 
     print(f"Gas used: {receipt.gasUsed}")
 
-    # Parse OperatorCreated event
-    logs = factory.events.OperatorCreated().process_receipt(receipt)
-    if logs:
-        operator_address = logs[0].args.operator
-        print(f"\n{'='*60}")
-        print(f"PaymentOperator deployed!")
-        print(f"Address: {operator_address}")
-        print(f"{'='*60}")
-        print(f"\nUpdate src/payment_operator/addresses.rs:")
-        print(f'  payment_operator: Some(address!("{operator_address[2:]}")),')
+    # Verify deployment
+    deployed = factory.functions.getOperator(config).call()
+    if deployed != ZERO_ADDRESS:
+        operator_address = deployed
     else:
-        print("\nWarning: OperatorCreated event not found in logs")
-        print("Check the transaction on block explorer to find the operator address")
+        # Fallback: check code at computed address
+        code = w3.eth.get_code(Web3.to_checksum_address(computed))
+        if len(code) > 2:
+            operator_address = computed
+        else:
+            print("Warning: could not verify deployment")
+            print("Check the transaction on block explorer")
+            sys.exit(1)
+
+    print(f"\n{'='*60}")
+    print(f"PaymentOperator deployed!")
+    print(f"Address: {operator_address}")
+    print(f"{'='*60}")
+    print(f"\nUpdate src/payment_operator/addresses.rs:")
+    print(f'  address!("{operator_address[2:]}"),')
 
 
 if __name__ == "__main__":

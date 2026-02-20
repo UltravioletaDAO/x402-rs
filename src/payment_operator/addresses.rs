@@ -266,7 +266,9 @@ impl OperatorAddresses {
             Network::BaseSepolia => Some(Self {
                 escrow: base_sepolia::ESCROW,
                 factory: base_sepolia::FACTORY,
-                payment_operators: vec![], // Deploy via factory
+                payment_operators: vec![
+                    address!("7D092ec506B3D43EB87846F9c9739303785D7B2f"), // Permissionless testnet operator (feeRecipient=facilitator, all conditions=zero)
+                ],
                 token_collector: base_sepolia::TOKEN_COLLECTOR,
                 protocol_fee_config: base_sepolia::PROTOCOL_FEE_CONFIG,
                 refund_request: base_sepolia::REFUND_REQUEST,
@@ -285,7 +287,9 @@ impl OperatorAddresses {
             Network::EthereumSepolia => Some(Self {
                 escrow: ethereum_sepolia::ESCROW,
                 factory: ethereum_sepolia::FACTORY,
-                payment_operators: vec![],
+                payment_operators: vec![
+                    address!("a8d2432C7ab8bA551feC15e09b64F44505e72b36"), // Permissionless testnet operator (feeRecipient=facilitator, all conditions=zero)
+                ],
                 token_collector: ethereum_sepolia::TOKEN_COLLECTOR,
                 protocol_fee_config: ethereum_sepolia::PROTOCOL_FEE_CONFIG,
                 refund_request: ethereum_sepolia::REFUND_REQUEST,

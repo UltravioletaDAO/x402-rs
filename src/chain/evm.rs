@@ -406,8 +406,10 @@ impl MetaEvmProvider for EvmProvider {
                     // TX submitted - wait for receipt with timeout
                     // Base mainnet requires longer timeout (90s) due to network congestion
                     // and first-TX-after-idle latency spikes
+                    // Ethereum L1 uses 120s - blocks are ~12s and gas can be unpredictable
                     // Other EVM chains use default 30s timeout
                     let default_timeout = match self.chain.network {
+                        Network::Ethereum => 120,
                         Network::Base => 90,
                         _ => 30,
                     };

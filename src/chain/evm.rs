@@ -403,13 +403,22 @@ impl MetaEvmProvider for EvmProvider {
             // Send transaction
             match self.inner.send_transaction(txr).await {
                 Ok(pending_tx) => {
+                    // Log TX hash for debugging (visible on block explorers)
+                    let tx_hash = *pending_tx.tx_hash();
+                    tracing::info!(
+                        %tx_hash,
+                        %from_address,
+                        network = %self.chain.network,
+                        "Transaction submitted to mempool"
+                    );
+
                     // TX submitted - wait for receipt with timeout
+                    // Ethereum L1 uses 300s - blocks are ~12s but gas can be unpredictable
+                    // and stuck TXs need time to clear
                     // Base mainnet requires longer timeout (90s) due to network congestion
-                    // and first-TX-after-idle latency spikes
-                    // Ethereum L1 uses 120s - blocks are ~12s and gas can be unpredictable
                     // Other EVM chains use default 30s timeout
                     let default_timeout = match self.chain.network {
-                        Network::Ethereum => 120,
+                        Network::Ethereum => 300,
                         Network::Base => 90,
                         _ => 30,
                     };
@@ -490,7 +499,10 @@ impl MetaEvmProvider for EvmProvider {
 /// Check if a transport error is a nonce-related error that can be retried.
 fn is_nonce_error(error: &str) -> bool {
     let lower = error.to_lowercase();
-    (lower.contains("nonce") && (lower.contains("too low") || lower.contains("already known")))
+    (lower.contains("nonce")
+        && (lower.contains("too low")
+            || lower.contains("already known")
+            || lower.contains("gap")))
         || lower.contains("replacement transaction underpriced")
 }
 
@@ -1847,6 +1859,9 @@ mod tests {
         ));
         assert!(is_nonce_error("transaction nonce already known"));
         assert!(is_nonce_error("replacement transaction underpriced"));
+        assert!(is_nonce_error(
+            "Nonce gap: 16 > 15. Use nonce 15"
+        ));
         assert!(!is_nonce_error("insufficient funds for gas"));
         assert!(!is_nonce_error("execution reverted"));
         assert!(!is_nonce_error("Invalid signature"));

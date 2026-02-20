@@ -56,14 +56,15 @@ pub mod ethereum_sepolia {
 }
 
 /// Contract addresses for Ethereum mainnet (eip155:1)
+/// Redeployed by Ali (2026-02-20) - addresses from x402r-sdk config
 pub mod ethereum_mainnet {
     use super::*;
 
-    pub const ESCROW: Address = address!("c1256Bb30bd0cdDa07D8C8Cf67a59105f2EA1b98");
-    pub const FACTORY: Address = address!("ed02d3E5167BCc9582D851885A89b050AB816a56");
-    pub const TOKEN_COLLECTOR: Address = address!("E78648e7af7B1BaDE717FF6E410B922F92adE80f");
-    pub const PROTOCOL_FEE_CONFIG: Address = address!("b33D6502EdBbC47201cd1E53C49d703EC0a660b8");
-    pub const REFUND_REQUEST: Address = address!("c9BbA6A2CF9838e7Dd8c19BC8B3BAC620B9D8178");
+    pub const ESCROW: Address = address!("9D4146EF898c8E60B3e865AE254ef438E7cEd2A0");
+    pub const FACTORY: Address = address!("1e52a74cE6b69F04a506eF815743E1052A1BD28F");
+    pub const TOKEN_COLLECTOR: Address = address!("206D4DbB6E7b876e4B5EFAAD2a04e7d7813FB6ba");
+    pub const PROTOCOL_FEE_CONFIG: Address = address!("5b3e33791C1764cF7e2573Bf8116F1D361FD97Cd");
+    pub const REFUND_REQUEST: Address = address!("Fa8C4Cb156053b867Ae7489220A29b5939E3Df70");
     pub const USDC: Address = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
 }
 
@@ -297,7 +298,9 @@ impl OperatorAddresses {
             Network::Ethereum => Some(Self {
                 escrow: ethereum_mainnet::ESCROW,
                 factory: ethereum_mainnet::FACTORY,
-                payment_operators: vec![],
+                payment_operators: vec![
+                    address!("69B67962ffb7c5C7078ff348a87DF604dfA8001b"), // EM Fase 5 (1300bps, OR release, Facilitator-only refund)
+                ],
                 token_collector: ethereum_mainnet::TOKEN_COLLECTOR,
                 protocol_fee_config: ethereum_mainnet::PROTOCOL_FEE_CONFIG,
                 refund_request: ethereum_mainnet::REFUND_REQUEST,
@@ -463,5 +466,6 @@ mod tests {
         assert_eq!(addrs.escrow, ethereum_mainnet::ESCROW);
         assert_eq!(addrs.factory, ethereum_mainnet::FACTORY);
         assert_eq!(addrs.token_collector, ethereum_mainnet::TOKEN_COLLECTOR);
+        assert_eq!(addrs.payment_operators.len(), 1);
     }
 }

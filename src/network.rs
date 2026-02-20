@@ -790,7 +790,7 @@ static USDC_POLYGON: Lazy<USDCDeployment> = Lazy::new(|| {
         },
         decimals: 6,
         eip712: Some(TokenDeploymentEip712 {
-            name: "USDC".into(),
+            name: "USD Coin".into(),
             version: "2".into(),
         }),
     })
@@ -835,7 +835,7 @@ static USDC_CELO: Lazy<USDCDeployment> = Lazy::new(|| {
         },
         decimals: 6,
         eip712: Some(TokenDeploymentEip712 {
-            name: "USD Coin".into(),
+            name: "USDC".into(),
             version: "2".into(),
         }),
     })

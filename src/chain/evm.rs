@@ -390,6 +390,24 @@ impl MetaEvmProvider for EvmProvider {
                 .with_from(from_address)
                 .with_input(calldata.clone());
 
+            // For Ethereum L1: explicitly set nonce from confirmed count to avoid
+            // stale pending TXs in RPC mempool causing nonce gaps. Alloy's default
+            // uses "pending" count which can be ahead of confirmed if prior TXs were
+            // dropped from the network but still in the RPC node's local pool.
+            if self.chain.network == Network::Ethereum {
+                let confirmed_nonce = self
+                    .inner
+                    .get_transaction_count(from_address)
+                    .await
+                    .unwrap_or(0);
+                txr.set_nonce(confirmed_nonce);
+                tracing::info!(
+                    confirmed_nonce,
+                    %from_address,
+                    "Ethereum L1 nonce from confirmed count"
+                );
+            }
+
             if !self.eip1559 {
                 let gas: u128 = self
                     .inner

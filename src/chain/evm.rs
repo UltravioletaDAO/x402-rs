@@ -471,12 +471,12 @@ impl MetaEvmProvider for EvmProvider {
                     );
 
                     // TX submitted - wait for receipt with timeout
-                    // Ethereum L1 uses 600s - blocks are ~12s but gas pricing and mempool
-                    // congestion can cause significant delays on L1
+                    // Ethereum L1 uses 900s - L1 can take 10+ min during congestion
+                    // (601s observed during Golden Flow testing 2026-02-21)
                     // Base mainnet requires longer timeout (90s) due to network congestion
                     // Other EVM chains use default 30s timeout
                     let default_timeout = match self.chain.network {
-                        Network::Ethereum => 600,
+                        Network::Ethereum => 900,
                         Network::Base => 90,
                         _ => 30,
                     };

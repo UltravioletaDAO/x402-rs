@@ -399,19 +399,44 @@ impl MetaEvmProvider for EvmProvider {
                     .map_err(|e| FacilitatorLocalError::ContractCall(format!("{e:?}")))?;
                 txr.set_gas_price(gas);
             } else if self.chain.network == Network::Ethereum {
-                // Ethereum L1 gas price floor: Alloy's auto-estimation can produce
-                // absurdly low values (0.08 Gwei max fee, 0.00015 Gwei priority).
-                // These get dropped from mempool when base fee rises.
-                // Set floor: 1 Gwei priority, 3 Gwei max fee for reliable inclusion.
+                // Ethereum L1 gas floor: Alloy's auto-estimation can produce absurdly
+                // low values (0.08 Gwei). We query current fees and apply a floor so
+                // TXs aren't dropped when base fee fluctuates.
                 const GWEI: u128 = 1_000_000_000;
-                let min_priority = 1 * GWEI; // 1 Gwei
-                let min_max_fee = 3 * GWEI;  // 3 Gwei
-                txr.set_max_priority_fee_per_gas(min_priority);
-                txr.set_max_fee_per_gas(min_max_fee);
-                tracing::debug!(
-                    min_priority_gwei = 1,
-                    min_max_fee_gwei = 3,
-                    "Ethereum L1 gas price floor applied"
+                const MIN_PRIORITY: u128 = 1 * GWEI; // 1 Gwei floor
+                const MIN_MAX_FEE: u128 = 5 * GWEI;  // 5 Gwei floor
+
+                // Get current base fee from latest block
+                let (priority, max_fee) = if let Ok(fee_history) = self
+                    .inner
+                    .get_fee_history(1, alloy::eips::BlockNumberOrTag::Latest, &[])
+                    .await
+                {
+                    let base_fee = fee_history
+                        .latest_block_base_fee()
+                        .unwrap_or(2 * GWEI);
+                    // priority: max of RPC estimate and floor
+                    let rpc_priority = self
+                        .inner
+                        .get_max_priority_fee_per_gas()
+                        .await
+                        .unwrap_or(MIN_PRIORITY);
+                    let priority = std::cmp::max(rpc_priority, MIN_PRIORITY);
+                    // max_fee: base_fee * 2 + priority, floored at MIN_MAX_FEE
+                    let computed_max = base_fee * 2 + priority;
+                    let max_fee = std::cmp::max(computed_max, MIN_MAX_FEE);
+                    (priority, max_fee)
+                } else {
+                    // Fallback: use generous static values
+                    (MIN_PRIORITY, MIN_MAX_FEE)
+                };
+
+                txr.set_max_priority_fee_per_gas(priority);
+                txr.set_max_fee_per_gas(max_fee);
+                tracing::info!(
+                    priority_gwei = priority / GWEI,
+                    max_fee_gwei = max_fee / GWEI,
+                    "Ethereum L1 gas pricing"
                 );
             }
 

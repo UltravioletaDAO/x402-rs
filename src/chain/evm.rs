@@ -1296,9 +1296,10 @@ async fn is_contract_deployed<P: Provider>(
 
 /// Constructs the correct EIP-712 domain for signature verification.
 ///
-/// Resolves the `name` and `version` based on:
-/// - Static metadata from known token deployments (USDC, EURC, AUSD, PYUSD),
-/// - Or by calling `version()` on the token contract if not matched statically.
+/// Resolves the `name` and `version` with this priority:
+/// 1. Static metadata from known token deployments (USDC, EURC, AUSD, PYUSD) - TRUSTED
+/// 2. Client-provided `extra.name`/`extra.version` (for unknown tokens only)
+/// 3. On-chain `name()`/`version()` calls (fallback)
 #[instrument(skip_all, err, fields(
     network = %payload.network,
     asset = %asset_address
@@ -1310,17 +1311,38 @@ async fn assert_domain<P: Provider>(
     asset_address: &Address,
     requirements: &PaymentRequirements,
 ) -> Result<Eip712Domain, FacilitatorLocalError> {
-    // Try to find EIP-712 metadata from known token deployments
+    // Try to find EIP-712 metadata from known token deployments.
+    // IMPORTANT: For known tokens, our verified static config takes priority over
+    // client-provided extra.name/extra.version because clients may send incorrect
+    // domain info (e.g., version "1" for Avalanche USDC which actually uses "2").
+    // The EIP-712 domain MUST match what the on-chain contract expects.
     let known_eip712 = find_known_eip712_metadata(payload.network, asset_address);
 
-    let name = requirements
+    let name = if let Some((ref known_name, _)) = known_eip712 {
+        // Known token: use our verified static metadata
+        if let Some(client_name) = requirements
+            .extra
+            .as_ref()
+            .and_then(|e| e.get("name")?.as_str())
+        {
+            if client_name != known_name {
+                tracing::warn!(
+                    client_name,
+                    static_name = %known_name,
+                    "Client EIP-712 name differs from static config, using static"
+                );
+            }
+        }
+        known_name.clone()
+    } else if let Some(name) = requirements
         .extra
         .as_ref()
         .and_then(|e| e.get("name")?.as_str().map(str::to_string))
-        .or_else(|| known_eip712.as_ref().map(|(name, _)| name.clone()));
-    let name = if let Some(name) = name {
+    {
+        // Unknown token: use client-provided name
         name
     } else {
+        // Fallback: query on-chain
         token_contract
             .name()
             .call()
@@ -1333,15 +1355,32 @@ async fn assert_domain<P: Provider>(
             .map_err(|e| FacilitatorLocalError::ContractCall(format!("{e:?}")))?
     };
     let chain_id = chain.chain_id;
-    let version = requirements
+    let version = if let Some((_, ref known_version)) = known_eip712 {
+        // Known token: use our verified static metadata
+        if let Some(client_version) = requirements
+            .extra
+            .as_ref()
+            .and_then(|e| e.get("version")?.as_str())
+        {
+            if client_version != known_version {
+                tracing::warn!(
+                    client_version,
+                    static_version = %known_version,
+                    "Client EIP-712 version differs from static config, using static"
+                );
+            }
+        }
+        known_version.clone()
+    } else if let Some(version) = requirements
         .extra
         .as_ref()
         .and_then(|extra| extra.get("version"))
         .and_then(|version| version.as_str().map(|s| s.to_string()))
-        .or_else(|| known_eip712.map(|(_, version)| version));
-    let version = if let Some(version) = version {
+    {
+        // Unknown token: use client-provided version
         version
     } else {
+        // Fallback: query on-chain
         token_contract
             .version()
             .call()

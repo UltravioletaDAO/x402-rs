@@ -62,6 +62,7 @@ mod telemetry;
 mod timestamp;
 mod types;
 mod types_v2;
+mod upto;
 
 use discovery::DiscoveryRegistry;
 #[allow(unused_imports)]

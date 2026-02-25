@@ -652,6 +652,17 @@ resource "aws_ecs_task_definition" "facilitator" {
         {
           name  = "ENABLE_PAYMENT_OPERATOR"
           value = "true"
+        },
+        # ============================================================
+        # Upto Scheme (Permit2-based variable amount settlement)
+        # ============================================================
+        # This enables the "upto" payment scheme where clients authorize
+        # a maximum amount via Permit2 and the server settles for actual
+        # usage (<= max). Uses x402UptoPermit2Proxy contract.
+        # ============================================================
+        {
+          name  = "ENABLE_UPTO"
+          value = "true"
         }
       ], var.enable_observability ? [
         # ============================================================

@@ -38,6 +38,7 @@ pub mod telemetry;
 pub mod timestamp;
 pub mod types;
 pub mod types_v2;
+pub mod upto;
 
 // Hidden re-exports just for macro expansion.
 #[doc(hidden)]

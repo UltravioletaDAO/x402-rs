@@ -247,6 +247,31 @@ where
             }
         }
 
+        // Add upto scheme support (Permit2-based variable amount settlement)
+        // Only if ENABLE_UPTO=true
+        // Upto works on any EVM chain where Permit2 and x402UptoPermit2Proxy are deployed
+        if crate::upto::is_enabled() {
+            // Collect EVM networks from existing exact scheme entries (v2 CAIP-2 format)
+            let evm_networks: Vec<String> = kinds
+                .iter()
+                .filter(|k| {
+                    k.x402_version == X402Version::V2
+                        && k.scheme == Scheme::Exact
+                        && k.network.starts_with("eip155:")
+                })
+                .map(|k| k.network.clone())
+                .collect();
+
+            for network_caip2 in evm_networks {
+                kinds.push(SupportedPaymentKind {
+                    x402_version: X402Version::V2,
+                    scheme: Scheme::Upto,
+                    network: network_caip2,
+                    extra: None, // Upto doesn't need extra (Permit2 domain is always "Permit2")
+                });
+            }
+        }
+
         Ok(SupportedPaymentKindsResponse { kinds })
     }
 

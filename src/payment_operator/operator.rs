@@ -147,7 +147,6 @@ where
         .map_err(|e| OperatorError::InvalidExtensionFormat(format!("Invalid escrow payload: {}", e)))?;
 
     let payer = escrow_payload.authorization.from;
-    let payer_addr = MixedAddress::Evm(EvmAddress(payer));
 
     // Extract network from paymentRequirements
     let network_str = req_value
@@ -182,7 +181,7 @@ where
         }
     };
 
-    if let Err(e) = validate_addresses(&extra, &addrs) {
+    if let Err(e) = validate_addresses(&extra, &addrs, false) {
         warn!(error = %e, "Escrow verify address validation failed");
         return Ok(serde_json::json!({
             "isValid": false,
@@ -324,8 +323,8 @@ where
     let addrs = OperatorAddresses::for_network(network)
         .ok_or_else(|| OperatorError::unsupported_network(&network))?;
 
-    // Validate addresses
-    validate_addresses(&query.extra, &addrs)?;
+    // Validate addresses (read-only query, lenient on operator)
+    validate_addresses(&query.extra, &addrs, false)?;
 
     // Get EVM provider
     let evm_provider = get_evm_provider(facilitator, network)?;
@@ -591,7 +590,7 @@ async fn execute_authorize(
     addrs: &OperatorAddresses,
     provider: &EvmProvider,
 ) -> Result<B256, OperatorError> {
-    validate_addresses(extra, addrs)?;
+    validate_addresses(extra, addrs, true)?;
 
     let payment_info = ContractPaymentInfo::from_escrow_payload(escrow_payload);
     let payment_info_abi = payment_info.to_abi_type();
@@ -633,7 +632,7 @@ async fn execute_release(
     addrs: &OperatorAddresses,
     provider: &EvmProvider,
 ) -> Result<B256, OperatorError> {
-    validate_addresses(extra, addrs)?;
+    validate_addresses(extra, addrs, true)?;
 
     let payment_info = ContractPaymentInfo::from_lifecycle_payload(lifecycle);
     let payment_info_abi = payment_info.to_abi_type();
@@ -669,7 +668,7 @@ async fn execute_refund_in_escrow(
     addrs: &OperatorAddresses,
     provider: &EvmProvider,
 ) -> Result<B256, OperatorError> {
-    validate_addresses(extra, addrs)?;
+    validate_addresses(extra, addrs, true)?;
 
     // Bounds check: refundInEscrow takes uint120 (max ~1.3*10^36)
     const UINT120_MAX: u128 = (1u128 << 120) - 1;
@@ -774,22 +773,30 @@ async fn eth_call(
 /// This prevents gas drain attacks where an attacker submits settlement requests
 /// with arbitrary target addresses, causing the facilitator to send transactions
 /// to random contracts and burn ETH on reverts.
-fn validate_addresses(extra: &EscrowExtra, addrs: &OperatorAddresses) -> Result<(), OperatorError> {
-    // Validate operator address against allowlist
-    if addrs.payment_operators.is_empty() {
-        return Err(OperatorError::UnsupportedNetwork(
-            "no deployed PaymentOperator for this network".into(),
-        ));
+///
+/// When `strict_operator` is true (settle path), the operator must be in our
+/// allowlist to prevent gas drain. When false (verify path), any operator is
+/// accepted - merchants can bring their own operator.
+fn validate_addresses(extra: &EscrowExtra, addrs: &OperatorAddresses, strict_operator: bool) -> Result<(), OperatorError> {
+    if strict_operator {
+        // Validate operator address against allowlist (settle path - we spend gas)
+        if addrs.payment_operators.is_empty() {
+            return Err(OperatorError::UnsupportedNetwork(
+                "no deployed PaymentOperator for this network".into(),
+            ));
+        }
+        let client_target = extra.authorize_address.unwrap_or(extra.operator_address);
+        if !addrs.payment_operators.contains(&client_target) {
+            return Err(OperatorError::PaymentInfoInvalid(format!(
+                "operator address mismatch: client={:?}, allowed={:?}",
+                client_target, addrs.payment_operators
+            )));
+        }
     }
-    let client_target = extra.authorize_address.unwrap_or(extra.operator_address);
-    if !addrs.payment_operators.contains(&client_target) {
-        return Err(OperatorError::PaymentInfoInvalid(format!(
-            "operator address mismatch: client={:?}, allowed={:?}",
-            client_target, addrs.payment_operators
-        )));
-    }
+    // Note: when strict_operator=false (verify), we accept any operator address.
+    // The merchant specifies the operator in their paymentRequirements.
 
-    // Validate token collector
+    // Validate token collector (shared infrastructure, always strict)
     if extra.token_collector != addrs.token_collector {
         return Err(OperatorError::PaymentInfoInvalid(format!(
             "token_collector mismatch: client={:?}, expected={:?}",
@@ -797,7 +804,7 @@ fn validate_addresses(extra: &EscrowExtra, addrs: &OperatorAddresses) -> Result<
         )));
     }
 
-    // Validate escrow address
+    // Validate escrow address (shared infrastructure, always strict)
     if extra.escrow_address != addrs.escrow {
         return Err(OperatorError::PaymentInfoInvalid(format!(
             "escrow address mismatch: client={:?}, expected={:?}",

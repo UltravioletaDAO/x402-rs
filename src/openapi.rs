@@ -91,7 +91,7 @@ Decentralized resource discovery for x402-enabled services:
         (url = "http://localhost:8080", description = "Local Development")
     ),
     tags(
-        (name = "Core", description = "Core x402 payment verification and settlement"),
+        (name = "Core", description = "Core x402 payment verification and settlement (exact, upto, escrow schemes)"),
         (name = "Escrow", description = "Gasless escrow lifecycle (authorize, release, refund, state query)"),
         (name = "Discovery", description = "Network and scheme discovery"),
         (name = "ERC-8004", description = "AI Agent reputation and identity (ERC-8004 Trustless Agents) - 14 networks"),
@@ -233,6 +233,14 @@ Submits a verified payment authorization to the blockchain for settlement.
 2. Calls `transferWithAuthorization` on the token contract
 3. Returns transaction hash on success
 
+**Upto Settlement (scheme: "upto"):**
+
+When `scheme: "upto"`, the client provides a Permit2-signed authorization for a maximum amount.
+The server settles for the actual usage amount (<= authorized max). If actual amount is 0, no
+on-chain transaction is submitted.
+
+Uses `x402UptoPermit2Proxy.settle(permit, amount, owner, witness, signature)` via Uniswap Permit2.
+
 **Escrow Lifecycle (scheme: "escrow"):**
 
 When `scheme: "escrow"` is set, the `action` field controls the operation:
@@ -372,8 +380,11 @@ Returns all supported payment kinds (network + scheme + version combinations).
 
 **Schemes:**
 - `exact` - Direct EIP-3009 payment settlement (v1 and v2 formats)
+- `upto` - Permit2-based variable amount settlement (v2 only, CAIP-2 networks). Client authorizes a max amount; server settles actual usage (<= max). Ideal for usage-based pricing (LLM tokens, bandwidth, metered APIs).
 - `escrow` - x402r PaymentOperator escrow (v2 only, CAIP-2 networks)
 - `fhe_transfer` - FHE encrypted transfer via Zama (v1 and v2)
+
+**Upto networks:** All EVM networks that support the `exact` scheme also support `upto` via the x402UptoPermit2Proxy contract (Permit2-based, CREATE2 address `0x4020633461b2895a48930Ff97eE8fCdE8E520002`).
 
 **Escrow networks (9 total):** Base, Ethereum, Polygon, Arbitrum, Celo, Monad, Avalanche, Base Sepolia, Ethereum Sepolia.
 Only networks with a deployed PaymentOperator appear in the response.
@@ -394,6 +405,11 @@ Only networks with a deployed PaymentOperator appear in the response.
                     {
                         "x402Version": 2,
                         "scheme": "exact",
+                        "network": "eip155:8453"
+                    },
+                    {
+                        "x402Version": 2,
+                        "scheme": "upto",
                         "network": "eip155:8453"
                     },
                     {

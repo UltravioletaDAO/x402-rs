@@ -765,8 +765,9 @@ pub async fn post_verify<A>(
     raw_body: Bytes,
 ) -> impl IntoResponse
 where
-    A: Facilitator,
+    A: Facilitator + HasProviderMap,
     A::Error: IntoResponse,
+    A::Map: ProviderMap<Value = NetworkProvider>,
 {
     // x402 v2: Check for PAYMENT-SIGNATURE header (base64-encoded JSON)
     // If present, decode and use it instead of the body
@@ -836,13 +837,17 @@ where
     };
     let body_str = body_str.as_str();
 
-    // Check for FHE scheme BEFORE trying to parse as standard types
-    // FHE requests may have different payload structures that don't match standard x402 types
+    // Check for special schemes BEFORE trying to parse as standard types
+    // These schemes may have different payload structures that don't match standard x402 types
     if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(body_str) {
+        // Detect scheme from paymentPayload.scheme (v1) or paymentPayload.accepted.scheme (v2)
         let scheme = json_value
             .get("paymentPayload")
-            .and_then(|pp| pp.get("scheme"))
-            .and_then(|s| s.as_str());
+            .and_then(|pp| {
+                pp.get("scheme")
+                    .and_then(|s| s.as_str())
+                    .or_else(|| pp.get("accepted").and_then(|a| a.get("scheme")).and_then(|s| s.as_str()))
+            });
 
         if scheme == Some("fhe-transfer") {
             info!("Detected fhe-transfer scheme, routing to Zama Lambda facilitator");
@@ -862,6 +867,112 @@ where
                         Json(json!({
                             "isValid": false,
                             "invalidReason": format!("FHE facilitator error: {}", e)
+                        })),
+                    )
+                        .into_response();
+                }
+            }
+        }
+
+        // Check for upto scheme (Permit2-based variable amount settlement)
+        if scheme == Some("upto") {
+            if !crate::upto::is_enabled() {
+                warn!("Upto scheme verify requested but ENABLE_UPTO is not set to true");
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "isValid": false,
+                        "invalidReason": "Upto scheme is disabled. Set ENABLE_UPTO=true to enable."
+                    })),
+                )
+                    .into_response();
+            }
+
+            info!("Detected upto scheme, routing to Permit2 verification");
+
+            match crate::upto::verify_upto(body_str, &facilitator).await {
+                Ok(response) => {
+                    info!("Upto verification complete");
+                    return (StatusCode::OK, Json(response)).into_response();
+                }
+                Err(e) => {
+                    error!(error = %e, "Upto verification failed");
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({
+                            "isValid": false,
+                            "invalidReason": format!("Upto verification error: {}", e)
+                        })),
+                    )
+                        .into_response();
+                }
+            }
+        }
+
+        // Check for escrow scheme (x402r PaymentOperator)
+        if scheme == Some(crate::payment_operator::ESCROW_SCHEME) {
+            if !crate::payment_operator::is_enabled() {
+                warn!("Escrow scheme verify requested but ENABLE_PAYMENT_OPERATOR is not set to true");
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "isValid": false,
+                        "invalidReason": "Escrow scheme is disabled. Set ENABLE_PAYMENT_OPERATOR=true to enable."
+                    })),
+                )
+                    .into_response();
+            }
+
+            info!("Detected escrow scheme, routing to PaymentOperator verification");
+
+            match crate::payment_operator::verify_escrow(body_str, &facilitator).await {
+                Ok(response) => {
+                    info!("Escrow verification complete");
+                    return (StatusCode::OK, Json(response)).into_response();
+                }
+                Err(e) => {
+                    error!(error = %e, "Escrow verification failed");
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({
+                            "isValid": false,
+                            "invalidReason": format!("Escrow verification error: {}", e)
+                        })),
+                    )
+                        .into_response();
+                }
+            }
+        }
+
+        // Also check for top-level scheme (direct escrow request format)
+        let top_level_scheme = json_value.get("scheme").and_then(|s| s.as_str());
+        if top_level_scheme == Some(crate::payment_operator::ESCROW_SCHEME) {
+            if !crate::payment_operator::is_enabled() {
+                warn!("Escrow scheme verify requested but ENABLE_PAYMENT_OPERATOR is not set to true");
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "isValid": false,
+                        "invalidReason": "Escrow scheme is disabled. Set ENABLE_PAYMENT_OPERATOR=true to enable."
+                    })),
+                )
+                    .into_response();
+            }
+
+            info!("Detected top-level escrow scheme, routing to PaymentOperator verification");
+
+            match crate::payment_operator::verify_escrow(body_str, &facilitator).await {
+                Ok(response) => {
+                    info!("Escrow verification complete");
+                    return (StatusCode::OK, Json(response)).into_response();
+                }
+                Err(e) => {
+                    error!(error = %e, "Escrow verification failed");
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({
+                            "isValid": false,
+                            "invalidReason": format!("Escrow verification error: {}", e)
                         })),
                     )
                         .into_response();
@@ -1160,13 +1271,17 @@ where
     debug!("=== SETTLE REQUEST DEBUG ===");
     debug!("Raw JSON body: {}", body_str);
 
-    // Check for FHE scheme BEFORE trying to parse as standard types
-    // FHE requests may have different payload structures that don't match standard x402 types
+    // Check for special schemes BEFORE trying to parse as standard types
+    // These schemes may have different payload structures that don't match standard x402 types
     if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(body_str) {
+        // Detect scheme from paymentPayload.scheme (v1) or paymentPayload.accepted.scheme (v2)
         let scheme = json_value
             .get("paymentPayload")
-            .and_then(|pp| pp.get("scheme"))
-            .and_then(|s| s.as_str());
+            .and_then(|pp| {
+                pp.get("scheme")
+                    .and_then(|s| s.as_str())
+                    .or_else(|| pp.get("accepted").and_then(|a| a.get("scheme")).and_then(|s| s.as_str()))
+            });
 
         if scheme == Some("fhe-transfer") {
             info!("Detected fhe-transfer scheme, routing settle to Zama Lambda facilitator");
@@ -1183,6 +1298,41 @@ where
                         Json(json!({
                             "success": false,
                             "errorReason": format!("FHE facilitator error: {}", e)
+                        })),
+                    )
+                        .into_response();
+                }
+            }
+        }
+
+        // Check for upto scheme (Permit2-based variable amount settlement)
+        if scheme == Some("upto") {
+            if !crate::upto::is_enabled() {
+                warn!("Upto scheme settle requested but ENABLE_UPTO is not set to true");
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "success": false,
+                        "errorReason": "Upto scheme is disabled. Set ENABLE_UPTO=true to enable."
+                    })),
+                )
+                    .into_response();
+            }
+
+            info!("Detected upto scheme, routing to Permit2 settlement");
+
+            match crate::upto::settle_upto(body_str, &facilitator).await {
+                Ok(upto_response) => {
+                    info!("Upto settlement complete");
+                    return (StatusCode::OK, Json(upto_response)).into_response();
+                }
+                Err(e) => {
+                    error!(error = %e, "Upto settlement failed");
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({
+                            "success": false,
+                            "errorReason": format!("Upto scheme error: {}", e)
                         })),
                     )
                         .into_response();

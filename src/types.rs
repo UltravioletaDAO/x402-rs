@@ -109,6 +109,9 @@ pub enum Scheme {
     /// x402r Escrow scheme - funds held in escrow via PaymentOperator
     #[serde(rename = "escrow")]
     Escrow,
+    /// Upto scheme - authorize max amount via Permit2, settle actual usage
+    #[serde(rename = "upto")]
+    Upto,
 }
 
 impl Display for Scheme {
@@ -117,6 +120,7 @@ impl Display for Scheme {
             Scheme::Exact => "exact",
             Scheme::FheTransfer => "fhe-transfer",
             Scheme::Escrow => "escrow",
+            Scheme::Upto => "upto",
         };
         write!(f, "{s}")
     }

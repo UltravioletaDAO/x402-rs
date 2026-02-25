@@ -71,7 +71,7 @@ pub mod operator;
 pub mod types;
 
 pub use errors::OperatorError;
-pub use operator::{query_escrow_state, settle_escrow, ESCROW_SCHEME};
+pub use operator::{query_escrow_state, settle_escrow, verify_escrow, ESCROW_SCHEME};
 pub use types::{
     ContractPaymentInfo, EscrowAuthorization, EscrowExtra, EscrowLifecyclePayload, EscrowPayload,
     EscrowPaymentInfo, EscrowStateQuery, EscrowStateResponse,

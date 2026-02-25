@@ -2230,6 +2230,68 @@ result = <span class="code-function">verify_payment</span>(
                 </div>
             </section>
 
+            <!-- Upto Scheme Showcase Section -->
+            <section class="section fade-in" style="margin-top: 3rem;">
+                <div style="text-align: center; margin-bottom: 2rem;">
+                    <div style="display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.4rem 1rem; border-radius: 20px; background: rgba(59, 130, 246, 0.1); border: 1px solid rgba(59, 130, 246, 0.3); margin-bottom: 1rem;">
+                        <span style="font-size: 0.75rem; color: #3b82f6; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;" data-i18n="upto.badge">Upto Scheme (Permit2)</span>
+                    </div>
+                    <h3 class="section-title" style="background: linear-gradient(135deg, #3b82f6, #06b6d4); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;" data-i18n="upto.title">Usage-Based Payments</h3>
+                    <p class="section-description" data-i18n="upto.description">
+                        Authorize a maximum payment upfront, pay only for what you use. Built on Uniswap Permit2 for gasless variable-amount settlements across all EVM networks.
+                    </p>
+                </div>
+
+                <!-- Three Pillars -->
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1.5rem; margin-bottom: 2.5rem;">
+                    <div style="background: var(--bg-card); border: 1px solid rgba(59, 130, 246, 0.2); border-radius: 12px; padding: 1.5rem; transition: all 0.3s;" onmouseover="this.style.borderColor='rgba(59, 130, 246, 0.5)'; this.style.transform='translateY(-2px)'" onmouseout="this.style.borderColor='rgba(59, 130, 246, 0.2)'; this.style.transform='translateY(0)'">
+                        <div style="width: 40px; height: 40px; border-radius: 10px; background: rgba(59, 130, 246, 0.15); display: flex; align-items: center; justify-content: center; margin-bottom: 1rem;">
+                            <span style="font-size: 1.2rem; color: #3b82f6; font-weight: bold;">$</span>
+                        </div>
+                        <h4 style="font-size: 1rem; font-weight: 700; margin-bottom: 0.5rem;" data-i18n="upto.payAsYouGo.title">Pay As You Go</h4>
+                        <p style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.5;" data-i18n="upto.payAsYouGo.desc">Client signs a max amount via Permit2. Server charges only the actual usage. Zero-cost if nothing is consumed.</p>
+                    </div>
+
+                    <div style="background: var(--bg-card); border: 1px solid rgba(59, 130, 246, 0.2); border-radius: 12px; padding: 1.5rem; transition: all 0.3s;" onmouseover="this.style.borderColor='rgba(59, 130, 246, 0.5)'; this.style.transform='translateY(-2px)'" onmouseout="this.style.borderColor='rgba(59, 130, 246, 0.2)'; this.style.transform='translateY(0)'">
+                        <div style="width: 40px; height: 40px; border-radius: 10px; background: rgba(59, 130, 246, 0.15); display: flex; align-items: center; justify-content: center; margin-bottom: 1rem;">
+                            <span style="font-size: 1.2rem; color: #3b82f6; font-weight: bold;">P2</span>
+                        </div>
+                        <h4 style="font-size: 1rem; font-weight: 700; margin-bottom: 0.5rem;" data-i18n="upto.permit2.title">Permit2 Powered</h4>
+                        <p style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.5;" data-i18n="upto.permit2.desc">Uses Uniswap's Permit2 contract for gasless ERC-20 approvals. One signature authorizes the max; settlement can be any amount up to that limit.</p>
+                    </div>
+
+                    <div style="background: var(--bg-card); border: 1px solid rgba(59, 130, 246, 0.2); border-radius: 12px; padding: 1.5rem; transition: all 0.3s;" onmouseover="this.style.borderColor='rgba(59, 130, 246, 0.5)'; this.style.transform='translateY(-2px)'" onmouseout="this.style.borderColor='rgba(59, 130, 246, 0.2)'; this.style.transform='translateY(0)'">
+                        <div style="width: 40px; height: 40px; border-radius: 10px; background: rgba(59, 130, 246, 0.15); display: flex; align-items: center; justify-content: center; margin-bottom: 1rem;">
+                            <span style="font-size: 1.2rem; color: #3b82f6; font-weight: bold;">AI</span>
+                        </div>
+                        <h4 style="font-size: 1rem; font-weight: 700; margin-bottom: 0.5rem;" data-i18n="upto.useCases.title">Built for AI Agents</h4>
+                        <p style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.5;" data-i18n="upto.useCases.desc">Ideal for LLM token billing, bandwidth metering, and any usage-based API. Agents pre-authorize, consume resources, and pay the exact cost.</p>
+                    </div>
+                </div>
+
+                <div style="background: rgba(59, 130, 246, 0.05); border: 1px solid rgba(59, 130, 246, 0.15); border-radius: 12px; padding: 1.5rem; text-align: center;">
+                    <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.5rem;" data-i18n="upto.contractsLabel">Smart Contract (CREATE2, same on all EVM chains)</div>
+                    <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;">
+                        <span style="color: #3b82f6;">x402UptoPermit2Proxy:</span>
+                        <a href="https://basescan.org/address/0x4020633461b2895a48930Ff97eE8fCdE8E520002" target="_blank" style="color: var(--text); text-decoration: none;">0x4020...0002</a>
+                    </div>
+                    <div style="display: flex; gap: 0.5rem; justify-content: center; margin-top: 1rem;">
+                        <a href="https://x402.org" target="_blank"
+                           style="font-size: 0.7rem; color: #3b82f6; text-decoration: none; padding: 0.25rem 0.6rem; border: 1px solid #3b82f6; border-radius: 4px; transition: all 0.2s;"
+                           onmouseover="this.style.background='#3b82f6'; this.style.color='#fff';"
+                           onmouseout="this.style.background='transparent'; this.style.color='#3b82f6';">
+                            x402 Protocol
+                        </a>
+                        <a href="https://github.com/x402-rs/x402-rs" target="_blank"
+                           style="font-size: 0.7rem; color: #3b82f6; text-decoration: none; padding: 0.25rem 0.6rem; border: 1px solid #3b82f6; border-radius: 4px; transition: all 0.2s;"
+                           onmouseover="this.style.background='#3b82f6'; this.style.color='#fff';"
+                           onmouseout="this.style.background='transparent'; this.style.color='#3b82f6';">
+                            Source Code
+                        </a>
+                    </div>
+                </div>
+            </section>
+
             <section class="endpoints fade-in">
                 <h3 data-i18n="endpoints.title">API Endpoints</h3>
 
@@ -2338,6 +2400,24 @@ result = <span class="code-function">verify_payment</span>(
                             SDK
                         </a>
                     </div>
+                </div>
+
+                <!-- Upto Scheme (Permit2) -->
+                <div class="endpoint-group">
+                    <h4 data-i18n="endpoints.group.upto">Upto Scheme (Permit2 Variable Settlement)</h4>
+                    <div class="endpoint">
+                        <span class="method post">POST</span>
+                        <span class="endpoint-path">/verify</span>
+                        <span class="endpoint-desc" data-i18n="endpoints.uptoVerify">Verify Permit2 authorization when scheme="upto"</span>
+                    </div>
+                    <div class="endpoint">
+                        <span class="method post">POST</span>
+                        <span class="endpoint-path">/settle</span>
+                        <span class="endpoint-desc" data-i18n="endpoints.uptoSettle">Settle for actual usage amount via x402UptoPermit2Proxy</span>
+                    </div>
+                    <p style="color: var(--text-muted); font-size: 0.8rem; margin: 0.5rem 0 0 0; padding-left: 1rem;" data-i18n="endpoints.uptoNote">
+                        Client authorizes max amount via Permit2 signature. Server settles for actual usage (<= max). If usage is $0, no on-chain transaction is submitted.
+                    </p>
                 </div>
 
                 <!-- ERC-8004 Agent Registration -->
@@ -2545,6 +2625,16 @@ result = <span class="code-function">verify_payment</span>(
                 "erc8004.validation.desc": "Third-party validators can attest to agent capabilities. Validation results are stored on-chain for transparent trust verification.",
                 "erc8004.networksTitle": "Deployed on 16 Networks",
                 "erc8004.create2Note": "+ 7 testnets. All mainnets use CREATE2 deterministic addresses (same contracts on every chain).",
+                "upto.badge": "Upto Scheme (Permit2)",
+                "upto.title": "Usage-Based Payments",
+                "upto.description": "Authorize a maximum payment upfront, pay only for what you use. Built on Uniswap Permit2 for gasless variable-amount settlements across all EVM networks.",
+                "upto.payAsYouGo.title": "Pay As You Go",
+                "upto.payAsYouGo.desc": "Client signs a max amount via Permit2. Server charges only the actual usage. Zero-cost if nothing is consumed.",
+                "upto.permit2.title": "Permit2 Powered",
+                "upto.permit2.desc": "Uses Uniswap's Permit2 contract for gasless ERC-20 approvals. One signature authorizes the max; settlement can be any amount up to that limit.",
+                "upto.useCases.title": "Built for AI Agents",
+                "upto.useCases.desc": "Ideal for LLM token billing, bandwidth metering, and any usage-based API. Agents pre-authorize, consume resources, and pay the exact cost.",
+                "upto.contractsLabel": "Smart Contract (CREATE2, same on all EVM chains)",
                 "x402r.badge": "x402r Protocol",
                 "x402r.title": "Trustless Escrow & Refunds",
                 "x402r.description": "On-chain escrow with authorize/capture/release/refund flows. Funds are held in smart contracts until conditions are met, enabling trustless refunds for HTTP 402 payments across 9 networks.",
@@ -2571,6 +2661,10 @@ result = <span class="code-function">verify_payment</span>(
                 "endpoints.group.paymentOperator": "x402r PaymentOperator (Advanced Escrow)",
                 "endpoints.paymentOperatorSettle": "Settle via AuthCaptureEscrow when scheme=\"escrow\"",
                 "endpoints.paymentOperatorNote": "Advanced escrow with authorize/charge/release/refund flows. Funds held in TokenStore until capture.",
+                "endpoints.group.upto": "Upto Scheme (Permit2 Variable Settlement)",
+                "endpoints.uptoVerify": "Verify Permit2 authorization when scheme=\"upto\"",
+                "endpoints.uptoSettle": "Settle for actual usage amount via x402UptoPermit2Proxy",
+                "endpoints.uptoNote": "Client authorizes max amount via Permit2 signature. Server settles for actual usage (<= max). If usage is $0, no on-chain transaction is submitted.",
                 "endpoints.health": "Check facilitator health status",
                 "endpoints.version": "Facilitator version and build info",
                 "endpoints.supported": "List supported payment schemes and networks",
@@ -2625,6 +2719,16 @@ result = <span class="code-function">verify_payment</span>(
                 "erc8004.validation.desc": "Validadores externos pueden atestiguar las capacidades de un agente. Los resultados se almacenan on-chain para verificaci\u00f3n transparente de confianza.",
                 "erc8004.networksTitle": "Desplegado en 16 Redes",
                 "erc8004.create2Note": "+ 7 testnets. Todas las mainnets usan direcciones deterministas CREATE2 (mismos contratos en cada cadena).",
+                "upto.badge": "Esquema Upto (Permit2)",
+                "upto.title": "Pagos Basados en Uso",
+                "upto.description": "Autoriza un monto maximo por adelantado, paga solo lo que uses. Construido sobre Uniswap Permit2 para liquidaciones gasless de monto variable en todas las redes EVM.",
+                "upto.payAsYouGo.title": "Paga por Uso",
+                "upto.payAsYouGo.desc": "El cliente firma un monto maximo via Permit2. El servidor cobra solo el uso real. Costo cero si no se consume nada.",
+                "upto.permit2.title": "Impulsado por Permit2",
+                "upto.permit2.desc": "Usa el contrato Permit2 de Uniswap para aprobaciones ERC-20 sin gas. Una firma autoriza el maximo; la liquidacion puede ser cualquier monto hasta ese limite.",
+                "upto.useCases.title": "Creado para Agentes IA",
+                "upto.useCases.desc": "Ideal para facturacion de tokens LLM, medicion de ancho de banda y cualquier API basada en uso. Los agentes pre-autorizan, consumen recursos y pagan el costo exacto.",
+                "upto.contractsLabel": "Contrato Inteligente (CREATE2, mismo en todas las cadenas EVM)",
                 "x402r.badge": "Protocolo x402r",
                 "x402r.title": "Escrow y Reembolsos Sin Confianza",
                 "x402r.description": "Escrow on-chain con flujos de autorizar/capturar/liberar/reembolsar. Los fondos se mantienen en contratos inteligentes hasta que se cumplan las condiciones, habilitando reembolsos sin confianza para pagos HTTP 402 en 9 redes.",
@@ -2651,6 +2755,10 @@ result = <span class="code-function">verify_payment</span>(
                 "endpoints.group.paymentOperator": "x402r PaymentOperator (Escrow Avanzado)",
                 "endpoints.paymentOperatorSettle": "Liquidar via AuthCaptureEscrow cuando scheme=\"escrow\"",
                 "endpoints.paymentOperatorNote": "Escrow avanzado con flujos authorize/charge/release/refund. Fondos retenidos en TokenStore hasta captura.",
+                "endpoints.group.upto": "Esquema Upto (Liquidacion Variable Permit2)",
+                "endpoints.uptoVerify": "Verificar autorizacion Permit2 cuando scheme=\"upto\"",
+                "endpoints.uptoSettle": "Liquidar por monto de uso real via x402UptoPermit2Proxy",
+                "endpoints.uptoNote": "El cliente autoriza monto maximo via firma Permit2. El servidor liquida por uso real (<= max). Si el uso es $0, no se envia transaccion on-chain.",
                 "endpoints.health": "Verificar estado de salud del facilitador",
                 "endpoints.version": "Versión e info de compilación del facilitador",
                 "endpoints.supported": "Listar esquemas de pago y redes soportadas",

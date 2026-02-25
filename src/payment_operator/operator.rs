@@ -1,7 +1,8 @@
-//! Escrow Scheme settlement logic
+//! Escrow Scheme settlement and verification logic
 //!
-//! This module handles settlement requests with scheme="escrow",
+//! This module handles requests with scheme="escrow",
 //! supporting the full escrow lifecycle:
+//! - verify: Validate escrow payload (balance check, address validation)
 //! - authorize: Lock funds in escrow (ERC-3009 signature required)
 //! - release: Send escrowed funds to receiver (no signature needed)
 //! - refundInEscrow: Return escrowed funds to payer (no signature needed)
@@ -10,12 +11,13 @@
 //! Based on reference implementation:
 //! https://github.com/BackTrackCo/x402r-scheme/tree/main/packages/evm/src/escrow/facilitator
 
-use alloy::primitives::{Bytes, FixedBytes, B256, U256};
+use alloy::primitives::{Address, Bytes, FixedBytes, B256, U256};
 use alloy::providers::Provider;
 use alloy::rpc::types::TransactionRequest;
+use alloy::sol;
 use alloy::sol_types::SolCall;
 use alloy::network::TransactionBuilder as _;
-use tracing::{debug, info, instrument};
+use tracing::{debug, info, warn, instrument};
 
 use crate::chain::evm::{EvmProvider, MetaEvmProvider, MetaTransaction};
 use crate::chain::NetworkProvider;
@@ -30,6 +32,15 @@ use super::types::{
     ContractPaymentInfo, EscrowExtra, EscrowLifecyclePayload, EscrowPayload, EscrowStateQuery,
     EscrowStateResponse,
 };
+
+// Minimal ERC-20 ABI for balance checks during verify
+sol! {
+    #[allow(missing_docs)]
+    #[sol(rpc)]
+    interface IERC20 {
+        function balanceOf(address account) external view returns (uint256);
+    }
+}
 
 /// Escrow scheme identifier
 pub const ESCROW_SCHEME: &str = "escrow";
@@ -98,6 +109,188 @@ where
             extra,
         } => execute_refund_in_escrow_flow(network, &lifecycle, &extra, facilitator).await,
     }
+}
+
+// ============================================================================
+// Escrow verification
+// ============================================================================
+
+/// Verify an escrow scheme payment payload.
+///
+/// Called from handlers.rs when scheme="escrow" is detected on /verify.
+/// Validates the escrow payload structure, checks payer token balance,
+/// and returns a VerifyResponse-compatible JSON value.
+///
+/// This does NOT verify the ERC-3009 signature on-chain (that happens at
+/// settle/authorize time). It validates that the payment CAN be settled:
+/// - Correct contract addresses (escrow, token_collector)
+/// - Payer has sufficient token balance
+/// - Authorization.to matches token_collector
+#[instrument(skip_all, err)]
+pub async fn verify_escrow<F>(body: &str, facilitator: &F) -> Result<serde_json::Value, OperatorError>
+where
+    F: HasProviderMap,
+    F::Map: ProviderMap<Value = NetworkProvider>,
+{
+    // Check feature flag
+    if !super::is_enabled() {
+        return Err(OperatorError::FeatureDisabled);
+    }
+
+    let json_value: serde_json::Value = serde_json::from_str(body)?;
+
+    // Extract payload (could be top-level or nested in paymentPayload)
+    let (payload_value, req_value) = extract_escrow_verify_fields(&json_value)?;
+
+    // Parse escrow payload
+    let escrow_payload: EscrowPayload = serde_json::from_value(payload_value.clone())
+        .map_err(|e| OperatorError::InvalidExtensionFormat(format!("Invalid escrow payload: {}", e)))?;
+
+    let payer = escrow_payload.authorization.from;
+    let payer_addr = MixedAddress::Evm(EvmAddress(payer));
+
+    // Extract network from paymentRequirements
+    let network_str = req_value
+        .get("network")
+        .and_then(|n| n.as_str())
+        .ok_or_else(|| OperatorError::MissingField("paymentRequirements.network".to_string()))?;
+
+    let network = Network::from_caip2(network_str)
+        .ok_or_else(|| OperatorError::UnsupportedNetwork(network_str.to_string()))?;
+
+    // Extract extra from paymentRequirements
+    let extra: EscrowExtra = if let Some(extra_val) = req_value.get("extra") {
+        serde_json::from_value(extra_val.clone())
+            .map_err(|e| OperatorError::InvalidExtensionFormat(format!("Invalid extra: {}", e)))?
+    } else {
+        return Ok(serde_json::json!({
+            "isValid": false,
+            "invalidReason": "missing paymentRequirements.extra",
+            "payer": format!("{}", payer)
+        }));
+    };
+
+    // Validate addresses (escrow, token_collector; operator is flexible)
+    let addrs = match OperatorAddresses::for_network(network) {
+        Some(a) => a,
+        None => {
+            return Ok(serde_json::json!({
+                "isValid": false,
+                "invalidReason": format!("unsupported escrow network: {}", network_str),
+                "payer": format!("{}", payer)
+            }));
+        }
+    };
+
+    if let Err(e) = validate_addresses(&extra, &addrs) {
+        warn!(error = %e, "Escrow verify address validation failed");
+        return Ok(serde_json::json!({
+            "isValid": false,
+            "invalidReason": format!("{}", e),
+            "payer": format!("{}", payer)
+        }));
+    }
+
+    // Validate authorization.to == token_collector
+    if escrow_payload.authorization.to != extra.token_collector {
+        return Ok(serde_json::json!({
+            "isValid": false,
+            "invalidReason": format!(
+                "authorization.to ({}) does not match tokenCollector ({})",
+                escrow_payload.authorization.to, extra.token_collector
+            ),
+            "payer": format!("{}", payer)
+        }));
+    }
+
+    // Check payer token balance
+    let evm_provider = get_evm_provider(facilitator, network)?;
+    let token_address = escrow_payload.payment_info.token;
+    let required_amount = U256::from(escrow_payload.authorization.value);
+
+    match check_token_balance(evm_provider, token_address, payer, required_amount).await {
+        Ok(true) => {
+            info!(
+                payer = ?payer,
+                network = %network,
+                amount = %required_amount,
+                "Escrow verify: valid"
+            );
+            Ok(serde_json::json!({
+                "isValid": true,
+                "payer": format!("{}", payer)
+            }))
+        }
+        Ok(false) => {
+            info!(payer = ?payer, "Escrow verify: insufficient funds");
+            Ok(serde_json::json!({
+                "isValid": false,
+                "invalidReason": "insufficient_funds",
+                "payer": format!("{}", payer)
+            }))
+        }
+        Err(e) => {
+            warn!(error = %e, "Escrow verify: balance check failed, allowing anyway");
+            // If balance check fails (RPC error), still return valid
+            // The actual settlement will catch any issues
+            Ok(serde_json::json!({
+                "isValid": true,
+                "payer": format!("{}", payer)
+            }))
+        }
+    }
+}
+
+/// Extract escrow payload and paymentRequirements from various request formats.
+///
+/// Supports:
+/// - Top-level: { scheme, payload, paymentRequirements }
+/// - Wrapped: { paymentPayload: { scheme, payload, accepted } }
+fn extract_escrow_verify_fields(json: &serde_json::Value) -> Result<(serde_json::Value, serde_json::Value), OperatorError> {
+    // Format 1: Top-level { scheme, payload, paymentRequirements }
+    if json.get("scheme").and_then(|s| s.as_str()) == Some(ESCROW_SCHEME) {
+        let payload = json.get("payload")
+            .ok_or_else(|| OperatorError::MissingField("payload".to_string()))?
+            .clone();
+        let requirements = json.get("paymentRequirements")
+            .ok_or_else(|| OperatorError::MissingField("paymentRequirements".to_string()))?
+            .clone();
+        return Ok((payload, requirements));
+    }
+
+    // Format 2: { paymentPayload: { scheme/accepted.scheme, payload, ... } }
+    if let Some(pp) = json.get("paymentPayload") {
+        let scheme = pp.get("scheme").and_then(|s| s.as_str())
+            .or_else(|| pp.get("accepted").and_then(|a| a.get("scheme")).and_then(|s| s.as_str()));
+
+        if scheme == Some(ESCROW_SCHEME) {
+            let payload = pp.get("payload")
+                .ok_or_else(|| OperatorError::MissingField("paymentPayload.payload".to_string()))?
+                .clone();
+            // paymentRequirements can be in "accepted" (v2) or "paymentRequirements" (v1)
+            let requirements = pp.get("accepted")
+                .or_else(|| json.get("paymentRequirements"))
+                .ok_or_else(|| OperatorError::MissingField("paymentRequirements/accepted".to_string()))?
+                .clone();
+            return Ok((payload, requirements));
+        }
+    }
+
+    Err(OperatorError::InvalidScheme("not an escrow scheme request".to_string()))
+}
+
+/// Check if an address has sufficient ERC-20 token balance.
+async fn check_token_balance(
+    provider: &EvmProvider,
+    token: Address,
+    account: Address,
+    required: U256,
+) -> Result<bool, OperatorError> {
+    let call = IERC20::balanceOfCall { account };
+    let result = eth_call(provider, token, &call).await?;
+    let balance = IERC20::balanceOfCall::abi_decode_returns(&result)
+        .map_err(|e| OperatorError::ContractCall(format!("decode balanceOf: {}", e)))?;
+    Ok(balance >= required)
 }
 
 // ============================================================================

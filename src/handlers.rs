@@ -1340,6 +1340,42 @@ where
             }
         }
 
+        // Check for escrow scheme in nested paymentPayload.scheme (v2 format)
+        // This mirrors the verify handler's nested escrow detection
+        if scheme == Some(crate::payment_operator::ESCROW_SCHEME) {
+            if !crate::payment_operator::is_enabled() {
+                warn!("Escrow scheme settlement requested but ENABLE_PAYMENT_OPERATOR is not set to true");
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "success": false,
+                        "errorReason": "Escrow scheme settlement is disabled. Set ENABLE_PAYMENT_OPERATOR=true to enable."
+                    })),
+                )
+                    .into_response();
+            }
+
+            info!("Detected nested escrow scheme in paymentPayload, routing to PaymentOperator settlement");
+
+            match crate::payment_operator::settle_escrow(body_str, &facilitator).await {
+                Ok(escrow_response) => {
+                    info!("Escrow scheme settlement complete");
+                    return (StatusCode::OK, Json(escrow_response)).into_response();
+                }
+                Err(e) => {
+                    error!(error = %e, "Escrow scheme settlement failed");
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({
+                            "success": false,
+                            "errorReason": format!("Escrow scheme error: {}", e)
+                        })),
+                    )
+                        .into_response();
+                }
+            }
+        }
+
         // Check for x402r escrow scheme (top-level scheme field)
         // This is the new v2 scheme pattern from x402r-scheme reference implementation
         let top_level_scheme = json_value.get("scheme").and_then(|s| s.as_str());

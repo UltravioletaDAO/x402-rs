@@ -492,49 +492,22 @@ where
 // Request parsing
 // ============================================================================
 
-/// Parse escrow scheme request from body, with action routing
+/// Parse escrow scheme request from body, with action routing.
+///
+/// Supports two request formats:
+/// - Top-level: `{ scheme, action, payload, paymentRequirements }`
+/// - Wrapped (v2): `{ paymentPayload: { payload, accepted: { scheme, network, extra } }, paymentRequirements: { ... } }`
 fn parse_escrow_request(body: &str) -> Result<ParsedEscrowRequest, OperatorError> {
     let json_value: serde_json::Value = serde_json::from_str(body)?;
 
-    // Verify scheme is "escrow"
-    let scheme = json_value
-        .get("scheme")
-        .and_then(|s| s.as_str())
-        .ok_or_else(|| OperatorError::MissingField("scheme".to_string()))?;
-
-    if scheme != ESCROW_SCHEME {
-        return Err(OperatorError::InvalidScheme(scheme.to_string()));
-    }
-
-    // Read action (default: "authorize" for backward compatibility)
-    let action = json_value
-        .get("action")
-        .and_then(|a| a.as_str())
-        .unwrap_or("authorize");
-
-    // Extract network from paymentRequirements
-    let network_str = json_value
-        .get("paymentRequirements")
-        .and_then(|pr| pr.get("network"))
-        .and_then(|n| n.as_str())
-        .ok_or_else(|| OperatorError::MissingField("paymentRequirements.network".to_string()))?;
+    // Extract fields from whichever format is present
+    let (payload_value, network_str, extra_value, action) = extract_escrow_settle_fields(&json_value)?;
 
     let network = Network::from_caip2(network_str)
         .ok_or_else(|| OperatorError::UnsupportedNetwork(network_str.to_string()))?;
 
-    // Extract extra from paymentRequirements
-    let extra_value = json_value
-        .get("paymentRequirements")
-        .and_then(|pr| pr.get("extra"))
-        .ok_or_else(|| OperatorError::MissingField("paymentRequirements.extra".to_string()))?;
-
     let extra: EscrowExtra = serde_json::from_value(extra_value.clone())
         .map_err(|e| OperatorError::InvalidExtensionFormat(format!("Invalid extra: {}", e)))?;
-
-    // Extract payload based on action
-    let payload_value = json_value
-        .get("payload")
-        .ok_or_else(|| OperatorError::MissingField("payload".to_string()))?;
 
     match action {
         "authorize" => {
@@ -575,14 +548,73 @@ fn parse_escrow_request(body: &str) -> Result<ParsedEscrowRequest, OperatorError
     }
 }
 
+/// Extract settle fields from either top-level or wrapped (v2) format.
+///
+/// Returns (payload, network_str, extra_value, action).
+fn extract_escrow_settle_fields(json: &serde_json::Value) -> Result<(serde_json::Value, &str, serde_json::Value, &str), OperatorError> {
+    // Format 1: Top-level { scheme, action, payload, paymentRequirements }
+    if json.get("scheme").and_then(|s| s.as_str()) == Some(ESCROW_SCHEME) {
+        let action = json.get("action").and_then(|a| a.as_str()).unwrap_or("authorize");
+
+        let payload = json.get("payload")
+            .ok_or_else(|| OperatorError::MissingField("payload".to_string()))?
+            .clone();
+
+        let requirements = json.get("paymentRequirements")
+            .ok_or_else(|| OperatorError::MissingField("paymentRequirements".to_string()))?;
+
+        let network_str = requirements.get("network").and_then(|n| n.as_str())
+            .ok_or_else(|| OperatorError::MissingField("paymentRequirements.network".to_string()))?;
+
+        let extra = requirements.get("extra")
+            .ok_or_else(|| OperatorError::MissingField("paymentRequirements.extra".to_string()))?
+            .clone();
+
+        return Ok((payload, network_str, extra, action));
+    }
+
+    // Format 2: { paymentPayload: { payload, accepted/scheme }, paymentRequirements }
+    if let Some(pp) = json.get("paymentPayload") {
+        let scheme = pp.get("scheme").and_then(|s| s.as_str())
+            .or_else(|| pp.get("accepted").and_then(|a| a.get("scheme")).and_then(|s| s.as_str()));
+
+        if scheme == Some(ESCROW_SCHEME) {
+            let action = pp.get("action").and_then(|a| a.as_str())
+                .or_else(|| pp.get("accepted").and_then(|a| a.get("action")).and_then(|a| a.as_str()))
+                .unwrap_or("authorize");
+
+            let payload = pp.get("payload")
+                .ok_or_else(|| OperatorError::MissingField("paymentPayload.payload".to_string()))?
+                .clone();
+
+            // paymentRequirements: try top-level first, then accepted inside paymentPayload
+            let requirements = json.get("paymentRequirements")
+                .or_else(|| pp.get("accepted"))
+                .ok_or_else(|| OperatorError::MissingField("paymentRequirements".to_string()))?;
+
+            let network_str = requirements.get("network").and_then(|n| n.as_str())
+                .ok_or_else(|| OperatorError::MissingField("paymentRequirements.network".to_string()))?;
+
+            let extra = requirements.get("extra")
+                .ok_or_else(|| OperatorError::MissingField("paymentRequirements.extra".to_string()))?
+                .clone();
+
+            return Ok((payload, network_str, extra, action));
+        }
+    }
+
+    Err(OperatorError::InvalidScheme("not an escrow scheme request".to_string()))
+}
+
 // ============================================================================
 // Contract execution functions
 // ============================================================================
 
 /// Execute authorize on PaymentOperator
 ///
-/// SECURITY: Client-provided addresses (extra) are validated against hardcoded
-/// OperatorAddresses to prevent gas drain attacks via arbitrary target addresses.
+/// Client-provided addresses (escrow, token_collector) are validated against
+/// hardcoded OperatorAddresses. Operator address is NOT restricted — the
+/// facilitator acts as a relay and the escrow contract enforces operator rules.
 #[instrument(skip_all, err)]
 async fn execute_authorize(
     escrow_payload: &EscrowPayload,
@@ -590,7 +622,7 @@ async fn execute_authorize(
     addrs: &OperatorAddresses,
     provider: &EvmProvider,
 ) -> Result<B256, OperatorError> {
-    validate_addresses(extra, addrs, true)?;
+    validate_addresses(extra, addrs, false)?;
 
     let payment_info = ContractPaymentInfo::from_escrow_payload(escrow_payload);
     let payment_info_abi = payment_info.to_abi_type();
@@ -625,6 +657,7 @@ async fn execute_authorize(
 ///
 /// Sends escrowed funds to the receiver. No ERC-3009 signature needed.
 /// The PaymentOperator contract checks msg.sender == operator for access control.
+/// Operator address is not restricted — the escrow contract enforces operator rules.
 #[instrument(skip_all, err)]
 async fn execute_release(
     lifecycle: &EscrowLifecyclePayload,
@@ -632,7 +665,7 @@ async fn execute_release(
     addrs: &OperatorAddresses,
     provider: &EvmProvider,
 ) -> Result<B256, OperatorError> {
-    validate_addresses(extra, addrs, true)?;
+    validate_addresses(extra, addrs, false)?;
 
     let payment_info = ContractPaymentInfo::from_lifecycle_payload(lifecycle);
     let payment_info_abi = payment_info.to_abi_type();
@@ -661,6 +694,7 @@ async fn execute_release(
 ///
 /// Returns escrowed funds to the payer. No ERC-3009 signature needed.
 /// The amount parameter is uint120 in the ABI.
+/// Operator address is not restricted — the escrow contract enforces operator rules.
 #[instrument(skip_all, err)]
 async fn execute_refund_in_escrow(
     lifecycle: &EscrowLifecyclePayload,
@@ -668,7 +702,7 @@ async fn execute_refund_in_escrow(
     addrs: &OperatorAddresses,
     provider: &EvmProvider,
 ) -> Result<B256, OperatorError> {
-    validate_addresses(extra, addrs, true)?;
+    validate_addresses(extra, addrs, false)?;
 
     // Bounds check: refundInEscrow takes uint120 (max ~1.3*10^36)
     const UINT120_MAX: u128 = (1u128 << 120) - 1;
@@ -770,16 +804,20 @@ async fn eth_call(
 
 /// Validate that client-provided addresses match known contract deployments.
 ///
-/// This prevents gas drain attacks where an attacker submits settlement requests
-/// with arbitrary target addresses, causing the facilitator to send transactions
-/// to random contracts and burn ETH on reverts.
+/// Validates escrow and token_collector addresses (shared infrastructure).
+/// Operator address is NOT validated — the facilitator acts as a relay and
+/// the escrow contract enforces operator rules. Merchants bring their own
+/// PaymentOperator contracts.
 ///
-/// When `strict_operator` is true (settle path), the operator must be in our
-/// allowlist to prevent gas drain. When false (verify path), any operator is
-/// accepted - merchants can bring their own operator.
+/// The `strict_operator` parameter is retained for future use but currently
+/// all callers pass `false` (operator-agnostic mode).
+///
+/// Note on gas risk: accepting any operator means the facilitator may spend
+/// gas on transactions that revert if the operator contract rejects them.
+/// This is an accepted tradeoff for protocol openness.
 fn validate_addresses(extra: &EscrowExtra, addrs: &OperatorAddresses, strict_operator: bool) -> Result<(), OperatorError> {
     if strict_operator {
-        // Validate operator address against allowlist (settle path - we spend gas)
+        // Reserved for future use — currently all paths are operator-agnostic
         if addrs.payment_operators.is_empty() {
             return Err(OperatorError::UnsupportedNetwork(
                 "no deployed PaymentOperator for this network".into(),
@@ -793,8 +831,7 @@ fn validate_addresses(extra: &EscrowExtra, addrs: &OperatorAddresses, strict_ope
             )));
         }
     }
-    // Note: when strict_operator=false (verify), we accept any operator address.
-    // The merchant specifies the operator in their paymentRequirements.
+    // Operator address is not validated — merchants specify their own operator.
 
     // Validate token collector (shared infrastructure, always strict)
     if extra.token_collector != addrs.token_collector {

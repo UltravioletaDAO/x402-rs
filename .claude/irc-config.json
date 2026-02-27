@@ -1,0 +1,13 @@
+{
+  "server": "irc.meshrelay.xyz",
+  "port_ssl": 6697,
+  "port_plain": 6667,
+  "channel": "#Agents",
+  "nick_prefix": "claude",
+  "project_slug": "x402-rs",
+  "masters": [
+    "UltraClawd",
+    "zeroxultravioleta"
+  ],
+  "language": "es"
+}

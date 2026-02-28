@@ -22,6 +22,13 @@ from pathlib import Path
 # IRC message line limit (RFC 2812: 512 bytes including CRLF)
 IRC_MAX_LINE = 400  # Conservative limit for message body
 
+# Keepalive: send client PING if no data received in this many seconds
+PING_INTERVAL = 120
+
+# Reconnect backoff
+RECONNECT_DELAY_INITIAL = 5
+RECONNECT_DELAY_MAX = 120
+
 
 class IRCDaemon:
     def __init__(
@@ -44,6 +51,9 @@ class IRCDaemon:
         self.connected = False
         self.sock = None
         self.use_ssl = True
+
+        # Track last data received for keepalive
+        self._last_recv_time = time.time()
 
         # Session directory (global, shared across projects)
         self.base_dir = Path.home() / ".claude" / "irc-agent" / "sessions" / nick
@@ -79,6 +89,14 @@ class IRCDaemon:
         """Connect to IRC server. Try SSL first, fallback to plain."""
         self.set_status("connecting")
 
+        # Close existing socket if any
+        if self.sock:
+            try:
+                self.sock.close()
+            except Exception:
+                pass
+            self.sock = None
+
         # Try SSL first
         try:
             self._connect_ssl()
@@ -108,18 +126,26 @@ class IRCDaemon:
         self.log(f"Joined {self.channel} as {self.nick} ({proto}:{port})")
         self.set_status("connected")
         self.connected = True
+        self._last_recv_time = time.time()
 
         # Announce presence
         self._send_raw(f"PRIVMSG {self.channel} :[connected] {self.nick} online")
 
     def _connect_ssl(self):
-        """Establish SSL connection."""
+        """Establish SSL connection.
+
+        Uses lenient certificate verification because many IRC servers
+        (including MeshRelay) use self-signed certificates.
+        """
         self.log(f"Trying SSL connection to {self.server}:{self.port_ssl}...")
         raw_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         raw_sock.settimeout(30)
-        ctx = ssl.create_default_context()
+        raw_sock.connect((self.server, self.port_ssl))
+
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
         self.sock = ctx.wrap_socket(raw_sock, server_hostname=self.server)
-        self.sock.connect((self.server, self.port_ssl))
         self.use_ssl = True
         self.log(f"SSL connection established")
 
@@ -165,7 +191,7 @@ class IRCDaemon:
                         self.log("Registration successful")
                         return
                     elif " 433 " in line:  # Nick in use
-                        self.nick = self.nick + "_"
+                        self.nick = f"{self.original_nick}-{int(time.time()) % 10000}"
                         self.log(f"Nick collision, trying: {self.nick}")
                         self._send_raw(f"NICK {self.nick}")
                     elif " 432 " in line:  # Erroneous nickname
@@ -178,34 +204,50 @@ class IRCDaemon:
         raise ConnectionError("Registration timeout")
 
     def _read_loop(self):
-        """Thread: Read from IRC socket, dispatch messages to inbox."""
-        buffer = ""
+        """Thread: Read from IRC socket, dispatch messages to inbox.
+
+        Survives disconnects by sleeping and waiting for reconnect
+        instead of exiting. Only exits when self.running is False.
+        """
         while self.running:
-            try:
-                data = self.sock.recv(4096).decode("utf-8", errors="replace")
-                if not data:
-                    self.log("Connection closed by server")
-                    self.connected = False
-                    break
-
-                buffer += data
-                lines = buffer.split("\r\n")
-                buffer = lines.pop()
-
-                for line in lines:
-                    self._handle_line(line)
-
-            except socket.timeout:
+            if not self.connected:
+                time.sleep(1)
                 continue
-            except OSError as e:
-                if self.running:
-                    self.log(f"Socket error: {e}")
-                    self.connected = False
-                break
+
+            buffer = ""
+            try:
+                while self.running and self.connected:
+                    try:
+                        data = self.sock.recv(4096).decode("utf-8", errors="replace")
+                        if not data:
+                            self.log("Connection closed by server")
+                            self.connected = False
+                            break
+
+                        self._last_recv_time = time.time()
+                        buffer += data
+                        lines = buffer.split("\r\n")
+                        buffer = lines.pop()
+
+                        for line in lines:
+                            self._handle_line(line)
+
+                    except socket.timeout:
+                        continue
+                    except OSError as e:
+                        if self.running:
+                            self.log(f"Socket error in read loop: {e}")
+                            self.connected = False
+                        break
+
             except Exception as e:
-                self.log(f"Read error: {e}")
+                self.log(f"Read loop error: {e}")
                 self.connected = False
-                break
+
+            # Don't spin -- wait before retrying
+            if self.running and not self.connected:
+                self.log("Read loop waiting for reconnect...")
+                time.sleep(2)
 
     def _handle_line(self, line):
         """Parse an IRC protocol line and handle it."""
@@ -218,6 +260,12 @@ class IRCDaemon:
         if line.startswith("PING"):
             pong = line.replace("PING", "PONG", 1)
             self._send_raw(pong)
+            return
+
+        # Handle ERROR from server (pre-disconnect notice)
+        if line.startswith("ERROR"):
+            self.log(f"Server ERROR: {line}")
+            self.connected = False
             return
 
         # Parse PRIVMSG: :nick!user@host PRIVMSG #channel :message
@@ -347,25 +395,64 @@ class IRCDaemon:
             chunks.append(current)
         return chunks
 
-    def _reconnect_loop(self):
-        """Thread: Monitor connection and reconnect if dropped."""
+    def _keepalive_loop(self):
+        """Thread: Send client PINGs if no data received recently.
+
+        Detects silent disconnects (server drops us without ERROR).
+        If no data received in PING_INTERVAL seconds, sends a PING.
+        If still no data after another PING_INTERVAL, marks as disconnected.
+        """
+        ping_sent = False
         while self.running:
             time.sleep(10)
+            if not self.connected:
+                ping_sent = False
+                continue
+
+            elapsed = time.time() - self._last_recv_time
+            if elapsed > PING_INTERVAL:
+                if ping_sent:
+                    # Sent a PING but got no response -- connection is dead
+                    self.log(
+                        f"No data for {int(elapsed)}s after PING -- "
+                        f"connection dead, triggering reconnect"
+                    )
+                    self.connected = False
+                    ping_sent = False
+                else:
+                    # Send a client-side PING to check if server is alive
+                    self.log(f"No data for {int(elapsed)}s, sending keepalive PING")
+                    self._send_raw(f"PING :{self.nick}")
+                    ping_sent = True
+            else:
+                ping_sent = False
+
+    def _reconnect_loop(self):
+        """Thread: Monitor connection and reconnect if dropped.
+
+        Uses exponential backoff to avoid hammering the server.
+        """
+        delay = RECONNECT_DELAY_INITIAL
+        while self.running:
+            time.sleep(5)
             if self.running and not self.connected:
-                self.log("Connection lost, attempting reconnect...")
+                self.log(f"Connection lost, attempting reconnect in {delay}s...")
                 self.set_status("reconnecting")
+                time.sleep(delay)
+
+                if not self.running:
+                    break
+
                 try:
-                    if self.sock:
-                        try:
-                            self.sock.close()
-                        except Exception:
-                            pass
-                    time.sleep(5)
                     self.connect()
+                    # Reset backoff on successful reconnect
+                    delay = RECONNECT_DELAY_INITIAL
+                    self.log("Reconnected successfully")
                 except Exception as e:
                     self.log(f"Reconnect failed: {e}")
                     self.set_status(f"reconnecting (failed: {e})")
-                    time.sleep(30)
+                    # Exponential backoff, capped
+                    delay = min(delay * 2, RECONNECT_DELAY_MAX)
 
     def run(self):
         """Main entry point - start daemon."""
@@ -397,6 +484,9 @@ class IRCDaemon:
                 ),
                 threading.Thread(
                     target=self._reconnect_loop, daemon=True, name="reconnector"
+                ),
+                threading.Thread(
+                    target=self._keepalive_loop, daemon=True, name="keepalive"
                 ),
             ]
             for t in threads:

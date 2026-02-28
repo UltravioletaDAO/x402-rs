@@ -1887,7 +1887,9 @@ pub struct SupportedPaymentKindExtra {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tokens: Option<Vec<SupportedTokenInfo>>,
     /// Escrow scheme information (for scheme="escrow")
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Flattened so escrowAddress/operatorAddress/tokenCollector appear at the top level
+    /// of extra, matching the format merchants use in paymentRequirements.extra.
+    #[serde(flatten)]
     pub escrow: Option<EscrowSupportedInfo>,
 }
 

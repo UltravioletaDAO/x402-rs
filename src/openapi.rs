@@ -417,11 +417,9 @@ Only networks with a deployed PaymentOperator appear in the response.
                         "scheme": "escrow",
                         "network": "eip155:8453",
                         "extra": {
-                            "escrow": {
-                                "escrowAddress": "0xb9488351E48b23D798f24e8174514F28B741Eb4f",
-                                "operatorAddress": "0x...",
-                                "tokenCollector": "0x48ADf6E37F9b31dC2AAD0462C5862B5422C736B8"
-                            }
+                            "escrowAddress": "0xb9488351E48b23D798f24e8174514F28B741Eb4f",
+                            "operatorAddress": "0x...",
+                            "tokenCollector": "0x48ADf6E37F9b31dC2AAD0462C5862B5422C736B8"
                         }
                     }
                 ]

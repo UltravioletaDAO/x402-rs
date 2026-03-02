@@ -483,6 +483,26 @@ pub struct ExactSolanaPayload {
     pub transaction: String,
 }
 
+/// Solana settlement account payload for custodial wallets (Crossmint).
+///
+/// Custodial wallets can only `sendTransaction` (sign+submit atomically),
+/// not `signTransaction`. The wallet submits the USDC transfer directly,
+/// then provides proof + a secret key for the facilitator to sweep funds.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettlementAccountPayload {
+    /// On-chain transaction signature (base58-encoded, already confirmed)
+    pub transaction_signature: String,
+    /// Secret key of the settlement account (base58-encoded, 64 bytes).
+    /// Used by the facilitator to sweep USDC from the settlement account to payTo.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settle_secret_key: Option<String>,
+    /// Where to send SOL rent when closing the settlement ATA.
+    /// Defaults to the facilitator's address if not provided.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settlement_rent_destination: Option<String>,
+}
+
 /// NEAR payment payload containing a base64-encoded SignedDelegateAction (NEP-366).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -582,6 +602,9 @@ pub enum ExactPaymentPayload {
     Algorand(ExactAlgorandPayload),
     #[cfg(feature = "sui")]
     Sui(ExactSuiPayload),
+    /// Settlement account payload for custodial wallets (Crossmint).
+    /// Must be AFTER Solana variant so serde tries standard payload first.
+    SolanaSettlementAccount(SettlementAccountPayload),
 }
 
 /// Describes a signed request to transfer a specific amount of funds on-chain.

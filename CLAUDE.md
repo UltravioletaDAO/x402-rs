@@ -564,6 +564,7 @@ The following networks exist in `src/network.rs` but are **NOT active priorities
 - `POST /verify` - Verify payment authorization (accepts both v1 and v2 request formats)
 - `GET /settle` - Settlement schema
 - `POST /settle` - Settle payment on-chain (accepts both v1 and v2 request formats)
+- `POST /accepts` - Negotiate payment requirements (Faremeter middleware compatibility, enriches with feePayer/tokens/escrow)
 - `GET /docs` - Interactive Swagger UI (OpenAPI documentation)
 - `GET /api-docs/openapi.json` - Raw OpenAPI 3.0 JSON spec (version auto-syncs from Cargo.toml)
 - Asset endpoints: `/logo.png`, `/favicon.ico`, `/avalanche.png`, etc.

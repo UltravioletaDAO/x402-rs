@@ -117,6 +117,7 @@ where
         .route("/health", get(get_health))
         .route("/version", get(get_version))
         .route("/supported", get(get_supported::<A>))
+        .route("/accepts", post(post_accepts::<A>))
         .route("/blacklist", get(get_blacklist::<A>))
         .route("/logo.png", get(get_logo))
         .route("/favicon.ico", get(get_favicon))
@@ -688,6 +689,138 @@ where
         }
         Err(error) => error.into_response(),
     }
+}
+
+/// `POST /accepts`: Negotiation endpoint for Faremeter middleware compatibility.
+///
+/// Receives merchant payment requirements, matches them against the facilitator's
+/// supported capabilities, and returns enriched requirements with facilitator data
+/// (feePayer, tokens, escrow contracts, etc.).
+///
+/// This is the standard way `@faremeter/middleware` integrates with facilitators.
+/// Without this endpoint, servers using the middleware get 404 errors.
+///
+/// # Request format
+/// Same shape as a 402 response body:
+/// ```json
+/// {
+///   "x402Version": 1,
+///   "accepts": [{ "scheme": "exact", "network": "base", "asset": "0x...", ... }],
+///   "error": ""
+/// }
+/// ```
+///
+/// # Response format
+/// Enriched requirements (only those the facilitator supports):
+/// ```json
+/// {
+///   "x402Version": 1,
+///   "accepts": [{ ...original fields, "extra": { "feePayer": "...", "tokens": [...] } }],
+///   "error": ""
+/// }
+/// ```
+#[instrument(skip_all)]
+pub async fn post_accepts<A>(
+    State(facilitator): State<A>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse
+where
+    A: Facilitator,
+    A::Error: IntoResponse,
+{
+    let x402_version = body
+        .get("x402Version")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(1);
+
+    let accepts = match body.get("accepts").and_then(|a| a.as_array()) {
+        Some(a) => a,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "x402Version": x402_version,
+                    "accepts": [],
+                    "error": "Missing or invalid 'accepts' array"
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    // Get facilitator's supported kinds
+    let supported = match facilitator.supported().await {
+        Ok(s) => s,
+        Err(e) => return e.into_response(),
+    };
+
+    // Build lookup: (scheme_str, network_str) -> extra
+    // Includes both v1 network names ("base") and v2 CAIP-2 ("eip155:8453")
+    let mut extra_lookup: HashMap<(String, String), Option<serde_json::Value>> = HashMap::new();
+    for kind in &supported.kinds {
+        let scheme_str = match serde_json::to_value(&kind.scheme) {
+            Ok(serde_json::Value::String(s)) => s,
+            _ => continue,
+        };
+        let extra_json = kind.extra.as_ref().and_then(|e| serde_json::to_value(e).ok());
+        extra_lookup.insert((scheme_str, kind.network.clone()), extra_json);
+    }
+
+    // Match and enrich each merchant requirement
+    let mut enriched = Vec::new();
+    for req in accepts {
+        let scheme = req.get("scheme").and_then(|s| s.as_str()).unwrap_or("");
+        let network = req.get("network").and_then(|n| n.as_str()).unwrap_or("");
+        let key = (scheme.to_string(), network.to_string());
+
+        if let Some(facilitator_extra) = extra_lookup.get(&key) {
+            let mut enriched_req = req.clone();
+
+            // Merge facilitator's extra into the requirement's extra
+            if let Some(fac_extra) = facilitator_extra {
+                let req_extra = enriched_req
+                    .get("extra")
+                    .cloned()
+                    .unwrap_or(json!({}));
+                let mut merged = match req_extra {
+                    serde_json::Value::Object(obj) => obj,
+                    _ => serde_json::Map::new(),
+                };
+
+                // Add facilitator fields without overwriting merchant-provided ones
+                if let serde_json::Value::Object(fac_obj) = fac_extra {
+                    for (k, v) in fac_obj {
+                        if !merged.contains_key(k) {
+                            merged.insert(k.clone(), v.clone());
+                        }
+                    }
+                }
+
+                enriched_req["extra"] = serde_json::Value::Object(merged);
+            }
+
+            enriched.push(enriched_req);
+        }
+        // Requirements that don't match any supported kind are silently dropped
+    }
+
+    info!(
+        requested = accepts.len(),
+        matched = enriched.len(),
+        "POST /accepts: matched {}/{} requirements",
+        enriched.len(),
+        accepts.len()
+    );
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "x402Version": x402_version,
+            "accepts": enriched,
+            "error": ""
+        })),
+    )
+        .into_response()
 }
 
 /// `GET /health`: Health check endpoint for load balancers and monitoring.
@@ -1618,6 +1751,12 @@ where
             debug!("  - to: {}", sui_payload.to);
             debug!("  - amount: {}", sui_payload.amount);
             debug!("  - coin_object_id: {}", sui_payload.coin_object_id);
+        }
+        crate::types::ExactPaymentPayload::SolanaSettlementAccount(sa_payload) => {
+            debug!("  - payload type: Solana Settlement Account (Crossmint)");
+            debug!("  - transaction_signature: {}", sa_payload.transaction_signature);
+            debug!("  - settle_secret_key: {}", if sa_payload.settle_secret_key.is_some() { "provided" } else { "none" });
+            debug!("  - settlement_rent_destination: {:?}", sa_payload.settlement_rent_destination);
         }
     }
 

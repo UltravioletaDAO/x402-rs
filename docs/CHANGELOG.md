@@ -1,5 +1,35 @@
 # Changelog
 
+## [1.36.0] - 2026-03-02
+
+### Added - `/accepts` Endpoint (Faremeter Middleware Compatibility)
+
+- **`POST /accepts`**: Negotiation endpoint that enables `@faremeter/middleware` integration
+  - Receives merchant payment requirements, matches against facilitator capabilities
+  - Enriches matched requirements with facilitator data (feePayer, tokens, escrow contracts)
+  - Supports both v1 network names ("base") and v2 CAIP-2 format ("eip155:8453")
+  - Merchant-provided `extra` fields are preserved (facilitator adds without overwriting)
+  - Unsupported scheme+network combinations are silently filtered from the response
+- Without this endpoint, servers using `@faremeter/middleware` received 404 errors
+  and had to manually construct 402 responses (as discovered during Crossmint smart wallet testing)
+- OpenAPI/Swagger documentation added for the new endpoint
+- Landing page updated with endpoint entry (EN + ES translations)
+
+### Added - Settlement Account Support (Crossmint Custodial Wallets)
+
+- **Solana settlement account payloads** for custodial wallets that can only `sendTransaction`:
+  - New `SettlementAccountPayload` type: `{ transactionSignature, settleSecretKey, settlementRentDestination }`
+  - Added `SolanaSettlementAccount` variant to `ExactPaymentPayload` enum
+  - **Verify**: fetches on-chain transaction via RPC, checks confirmation status, validates USDC
+    transfer amount from pre/post token balances
+  - **Settle**: verifies on-chain tx, then sweeps USDC from settlement account to payTo using
+    the provided `settleSecretKey` (creates payTo ATA if needed, transfers, closes settlement ATA)
+  - If `settleSecretKey` is not provided, returns original tx signature (funds already at payTo)
+  - If settlement account has 0 balance, skips sweep (direct transfer mode)
+- Enables Crossmint smart wallets and other custodial wallets that cannot `signTransaction`
+- Automatic retry (up to 10 attempts with 2s backoff) for transaction fetching
+- Compliance screening pass-through for settlement account payloads
+
 ## [1.35.0] - 2026-03-02
 
 ### Added - Solana Smart Wallet Support (Squads, Crossmint, SWIG)

@@ -8,6 +8,7 @@
 //! - `POST /verify` – Verify a payment payload against requirements
 //! - `GET /settle` – Supported settlement schema
 //! - `POST /settle` – Settle an accepted payment payload on-chain
+//! - `POST /accepts` – Negotiate payment requirements (Faremeter middleware)
 //! - `GET /supported` – List supported payment kinds (version/scheme/network)
 //!
 //! This server includes:

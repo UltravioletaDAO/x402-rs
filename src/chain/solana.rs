@@ -7,8 +7,11 @@ use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::{Keypair, Signature};
 use solana_sdk::signer::Signer;
 use solana_sdk::transaction::VersionedTransaction;
-use solana_transaction_status_client_types::{UiInnerInstructions, UiInstruction};
+use solana_transaction_status_client_types::{
+    option_serializer::OptionSerializer, UiInnerInstructions, UiInstruction,
+};
 use std::fmt::{Debug, Formatter};
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing_core::Level;
@@ -856,6 +859,13 @@ impl SolanaProvider {
             ExactPaymentPayload::Sui(..) => {
                 return Err(FacilitatorLocalError::UnsupportedNetwork(None));
             }
+            ExactPaymentPayload::SolanaSettlementAccount(..) => {
+                // Settlement account payloads are handled by verify_settlement_account,
+                // not verify_transfer. This branch shouldn't be reached.
+                return Err(FacilitatorLocalError::DecodingError(
+                    "settlement account payload should not reach verify_transfer".to_string(),
+                ));
+            }
             ExactPaymentPayload::Solana(payload) => payload,
         };
         if payload.network != self.network() {
@@ -1007,6 +1017,455 @@ impl SolanaProvider {
         let pubkey = self.keypair.pubkey();
         MixedAddress::Solana(pubkey)
     }
+
+    // ========================================================================
+    // Settlement Account Support (Crossmint custodial wallets)
+    // ========================================================================
+
+    /// Verify a settlement account payment by checking the on-chain transaction.
+    ///
+    /// The custodial wallet already submitted the transaction. We fetch it from
+    /// the RPC and verify it transferred sufficient USDC.
+    async fn verify_settlement_account(
+        &self,
+        payload: &crate::types::SettlementAccountPayload,
+        requirements: &PaymentRequirements,
+    ) -> Result<SettlementAccountVerifyResult, FacilitatorLocalError> {
+        use solana_client::rpc_config::RpcTransactionConfig;
+        use solana_transaction_status_client_types::UiTransactionEncoding;
+
+        let sig = Signature::from_str(&payload.transaction_signature).map_err(|e| {
+            FacilitatorLocalError::DecodingError(format!("invalid transaction signature: {e}"))
+        })?;
+
+        tracing::info!(
+            network = %self.network(),
+            tx_signature = %sig,
+            "Verifying settlement account on-chain transaction"
+        );
+
+        // Fetch the transaction with token balance info
+        let config = RpcTransactionConfig {
+            encoding: Some(UiTransactionEncoding::JsonParsed),
+            commitment: Some(CommitmentConfig::confirmed()),
+            max_supported_transaction_version: Some(0),
+        };
+
+        // Retry fetching the transaction (it may not be indexed yet)
+        let mut tx_info = None;
+        for attempt in 0..10 {
+            match self
+                .rpc_client
+                .get_transaction_with_config(&sig, config)
+                .await
+            {
+                Ok(info) => {
+                    tx_info = Some(info);
+                    break;
+                }
+                Err(e) => {
+                    if attempt < 9 {
+                        tracing::debug!(
+                            attempt = attempt + 1,
+                            error = %e,
+                            "Transaction not yet available, retrying..."
+                        );
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                    }
+                }
+            }
+        }
+
+        let tx_info = tx_info.ok_or_else(|| {
+            FacilitatorLocalError::ContractCall(
+                "settlement account transaction not found on-chain after 20s".to_string(),
+            )
+        })?;
+
+        // Check transaction succeeded
+        if let Some(ref meta) = tx_info.transaction.meta {
+            if meta.err.is_some() {
+                return Err(FacilitatorLocalError::ContractCall(format!(
+                    "settlement account transaction failed on-chain: {:?}",
+                    meta.err
+                )));
+            }
+        } else {
+            return Err(FacilitatorLocalError::ContractCall(
+                "settlement account transaction has no metadata".to_string(),
+            ));
+        }
+
+        let meta = tx_info.transaction.meta.as_ref().unwrap();
+
+        // Parse the required asset (USDC mint) from requirements
+        let asset_pubkey: Pubkey = match &requirements.asset {
+            MixedAddress::Solana(pk) => *pk,
+            _ => {
+                return Err(FacilitatorLocalError::InvalidAddress(
+                    "expected Solana asset address".to_string(),
+                ))
+            }
+        };
+
+        // Parse required amount
+        let required_amount: u64 = requirements
+            .max_amount_required
+            .0
+            .to_string()
+            .parse::<u64>()
+            .map_err(|e| {
+                FacilitatorLocalError::DecodingError(format!(
+                    "cannot parse maxAmountRequired as u64: {e}"
+                ))
+            })?;
+
+        // Check pre/post token balances for USDC transfer
+        let pre_balances = meta
+            .pre_token_balances
+            .as_ref()
+            .map(|b| b.as_slice())
+            .unwrap_or(&[]);
+        let post_balances = meta
+            .post_token_balances
+            .as_ref()
+            .map(|b| b.as_slice())
+            .unwrap_or(&[]);
+
+        let asset_str = asset_pubkey.to_string();
+        let mut total_credit: u64 = 0;
+        let mut payer_pubkey: Option<Pubkey> = None;
+
+        for post_bal in post_balances {
+            // Filter by mint
+            if post_bal.mint != asset_str {
+                continue;
+            }
+
+            let post_amount: u64 = post_bal
+                .ui_token_amount
+                .amount
+                .parse()
+                .unwrap_or(0);
+
+            // Find matching pre-balance
+            let pre_amount: u64 = pre_balances
+                .iter()
+                .find(|p| p.account_index == post_bal.account_index && p.mint == asset_str)
+                .map(|p| p.ui_token_amount.amount.parse().unwrap_or(0))
+                .unwrap_or(0);
+
+            let diff = post_amount.saturating_sub(pre_amount);
+            if diff > 0 {
+                total_credit += diff;
+                tracing::debug!(
+                    account_index = post_bal.account_index,
+                    credit = diff,
+                    owner = ?post_bal.owner,
+                    "Found USDC credit in settlement transaction"
+                );
+            }
+
+            // Track the source (debit) as the payer
+            if pre_amount > post_amount {
+                if let OptionSerializer::Some(ref owner) = post_bal.owner {
+                    if let Ok(pk) = Pubkey::from_str(owner) {
+                        payer_pubkey = Some(pk);
+                    }
+                }
+            }
+        }
+
+        // Also check debits to find the payer
+        if payer_pubkey.is_none() {
+            for pre_bal in pre_balances {
+                if pre_bal.mint != asset_str {
+                    continue;
+                }
+                let pre_amount: u64 = pre_bal.ui_token_amount.amount.parse().unwrap_or(0);
+                let post_amount: u64 = post_balances
+                    .iter()
+                    .find(|p| p.account_index == pre_bal.account_index && p.mint == asset_str)
+                    .map(|p| p.ui_token_amount.amount.parse().unwrap_or(0))
+                    .unwrap_or(0);
+
+                if pre_amount > post_amount {
+                    if let OptionSerializer::Some(ref owner) = pre_bal.owner {
+                        if let Ok(pk) = Pubkey::from_str(owner) {
+                            payer_pubkey = Some(pk);
+                        }
+                    }
+                }
+            }
+        }
+
+        if total_credit < required_amount {
+            return Err(FacilitatorLocalError::DecodingError(format!(
+                "settlement account transfer amount {} < required {}",
+                total_credit, required_amount
+            )));
+        }
+
+        let payer = payer_pubkey
+            .map(SolanaAddress::from)
+            .unwrap_or_else(|| SolanaAddress::from(self.keypair.pubkey()));
+
+        tracing::info!(
+            network = %self.network(),
+            tx_signature = %sig,
+            amount = total_credit,
+            payer = %payer.pubkey,
+            "Settlement account on-chain verification passed"
+        );
+
+        Ok(SettlementAccountVerifyResult {
+            payer,
+            tx_signature: sig,
+        })
+    }
+
+    /// Settle a settlement account payment: verify on-chain, then sweep if needed.
+    ///
+    /// If `settle_secret_key` is provided, the facilitator sweeps USDC from the
+    /// settlement account to `payTo` and closes the ATA.
+    /// If not provided, returns the original transaction signature (funds already at payTo).
+    async fn settle_settlement_account(
+        &self,
+        payload: &crate::types::SettlementAccountPayload,
+        requirements: &PaymentRequirements,
+    ) -> Result<SettleResponse, FacilitatorLocalError> {
+        // Step 1: Verify the on-chain transaction
+        let verification = self
+            .verify_settlement_account(payload, requirements)
+            .await?;
+
+        // Step 2: If settleSecretKey is provided, sweep funds from settlement account to payTo
+        if let Some(ref secret_key_str) = payload.settle_secret_key {
+            return self
+                .sweep_settlement_account(secret_key_str, payload, requirements, &verification)
+                .await;
+        }
+
+        // No secret key: funds already at payTo, return original tx signature
+        tracing::info!(
+            network = %self.network(),
+            tx_signature = %verification.tx_signature,
+            "Settlement account: no sweep needed (no settleSecretKey), returning original tx"
+        );
+
+        Ok(SettleResponse {
+            success: true,
+            error_reason: None,
+            payer: verification.payer.clone().into(),
+            transaction: Some(TransactionHash::Solana(
+                *verification.tx_signature.as_array(),
+            )),
+            network: self.network(),
+            proof_of_payment: None,
+        })
+    }
+
+    /// Sweep USDC from a settlement account to payTo using the settlement secret key.
+    async fn sweep_settlement_account(
+        &self,
+        secret_key_str: &str,
+        payload: &crate::types::SettlementAccountPayload,
+        requirements: &PaymentRequirements,
+        verification: &SettlementAccountVerifyResult,
+    ) -> Result<SettleResponse, FacilitatorLocalError> {
+        use solana_sdk::instruction::{AccountMeta, Instruction};
+        use solana_sdk::message::Message;
+        use solana_sdk::transaction::Transaction;
+
+        // Decode the settlement keypair
+        let secret_bytes = solana_sdk::bs58::decode(secret_key_str)
+            .into_vec()
+            .map_err(|e| {
+                FacilitatorLocalError::DecodingError(format!("invalid settleSecretKey: {e}"))
+            })?;
+        let settlement_keypair = Keypair::from_bytes(&secret_bytes).map_err(|e| {
+            FacilitatorLocalError::DecodingError(format!("invalid settleSecretKey keypair: {e}"))
+        })?;
+        let settlement_pubkey = settlement_keypair.pubkey();
+
+        // Parse asset mint and payTo
+        let mint: Pubkey = match &requirements.asset {
+            MixedAddress::Solana(pk) => *pk,
+            _ => {
+                return Err(FacilitatorLocalError::InvalidAddress(
+                    "expected Solana asset address".to_string(),
+                ))
+            }
+        };
+        let pay_to: Pubkey = match &requirements.pay_to {
+            MixedAddress::Solana(pk) => *pk,
+            _ => {
+                return Err(FacilitatorLocalError::InvalidAddress(
+                    "expected Solana payTo address".to_string(),
+                ))
+            }
+        };
+
+        let token_program = spl_token::id();
+        let fee_payer = self.keypair.pubkey();
+
+        // Derive ATAs
+        let (settlement_ata, _) = Pubkey::find_program_address(
+            &[
+                settlement_pubkey.as_ref(),
+                token_program.as_ref(),
+                mint.as_ref(),
+            ],
+            &ATA_PROGRAM_PUBKEY,
+        );
+        let (pay_to_ata, _) = Pubkey::find_program_address(
+            &[pay_to.as_ref(), token_program.as_ref(), mint.as_ref()],
+            &ATA_PROGRAM_PUBKEY,
+        );
+
+        // Check settlement account ATA balance
+        let settlement_balance = self
+            .rpc_client
+            .get_token_account_balance(&settlement_ata)
+            .await
+            .map_err(|e| {
+                FacilitatorLocalError::ContractCall(format!(
+                    "failed to get settlement account balance: {e}"
+                ))
+            })?;
+        let sweep_amount: u64 = settlement_balance.amount.parse().unwrap_or(0);
+
+        if sweep_amount == 0 {
+            // No balance to sweep - funds went directly to payTo
+            tracing::info!(
+                network = %self.network(),
+                "Settlement account ATA has 0 balance, no sweep needed"
+            );
+            return Ok(SettleResponse {
+                success: true,
+                error_reason: None,
+                payer: verification.payer.clone().into(),
+                transaction: Some(TransactionHash::Solana(
+                    *verification.tx_signature.as_array(),
+                )),
+                network: self.network(),
+                proof_of_payment: None,
+            });
+        }
+
+        tracing::info!(
+            network = %self.network(),
+            settlement_account = %settlement_pubkey,
+            sweep_amount = sweep_amount,
+            pay_to = %pay_to,
+            "Sweeping settlement account to payTo"
+        );
+
+        let mut instructions = Vec::new();
+
+        // 1. Create payTo ATA (idempotent - no-op if exists)
+        instructions.push(Instruction {
+            program_id: ATA_PROGRAM_PUBKEY,
+            accounts: vec![
+                AccountMeta::new(fee_payer, true),
+                AccountMeta::new(pay_to_ata, false),
+                AccountMeta::new_readonly(pay_to, false),
+                AccountMeta::new_readonly(mint, false),
+                AccountMeta::new_readonly(solana_sdk::system_program::id(), false),
+                AccountMeta::new_readonly(token_program, false),
+            ],
+            data: vec![1], // 1 = CreateIdempotent
+        });
+
+        // 2. TransferChecked from settlement ATA to payTo ATA
+        instructions.push(
+            spl_token::instruction::transfer_checked(
+                &token_program,
+                &settlement_ata,
+                &mint,
+                &pay_to_ata,
+                &settlement_pubkey,
+                &[],
+                sweep_amount,
+                6, // USDC decimals
+            )
+            .map_err(|e| {
+                FacilitatorLocalError::ContractCall(format!(
+                    "failed to create transfer instruction: {e}"
+                ))
+            })?,
+        );
+
+        // 3. Close settlement ATA (send rent to destination or facilitator)
+        let rent_destination = payload
+            .settlement_rent_destination
+            .as_ref()
+            .and_then(|s| Pubkey::from_str(s).ok())
+            .unwrap_or(fee_payer);
+
+        instructions.push(
+            spl_token::instruction::close_account(
+                &token_program,
+                &settlement_ata,
+                &rent_destination,
+                &settlement_pubkey,
+                &[],
+            )
+            .map_err(|e| {
+                FacilitatorLocalError::ContractCall(format!(
+                    "failed to create close_account instruction: {e}"
+                ))
+            })?,
+        );
+
+        // Build and sign the transaction
+        let recent_blockhash = self
+            .rpc_client
+            .get_latest_blockhash()
+            .await
+            .map_err(|e| FacilitatorLocalError::ContractCall(format!("{e}")))?;
+
+        let tx = Transaction::new_signed_with_payer(
+            &instructions,
+            Some(&fee_payer),
+            &[&self.keypair, &settlement_keypair],
+            recent_blockhash,
+        );
+
+        // Submit
+        let tx_sig = self
+            .rpc_client
+            .send_and_confirm_transaction_with_spinner_and_config(
+                &tx,
+                CommitmentConfig::confirmed(),
+                RpcSendTransactionConfig {
+                    skip_preflight: false,
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|e| {
+                FacilitatorLocalError::ContractCall(format!(
+                    "settlement account sweep failed: {e}"
+                ))
+            })?;
+
+        tracing::info!(
+            network = %self.network(),
+            sweep_tx = %tx_sig,
+            amount = sweep_amount,
+            "Settlement account sweep successful"
+        );
+
+        Ok(SettleResponse {
+            success: true,
+            error_reason: None,
+            payer: verification.payer.clone().into(),
+            transaction: Some(TransactionHash::Solana(*tx_sig.as_array())),
+            network: self.network(),
+            proof_of_payment: None,
+        })
+    }
 }
 
 impl FromEnvByNetworkBuild for SolanaProvider {
@@ -1038,6 +1497,11 @@ pub struct VerifyTransferResult {
     pub transaction: VersionedTransaction,
 }
 
+pub struct SettlementAccountVerifyResult {
+    pub payer: SolanaAddress,
+    pub tx_signature: Signature,
+}
+
 #[derive(Debug)]
 pub struct TransferCheckedInstruction {
     pub amount: u64,
@@ -1064,12 +1528,31 @@ impl Facilitator for SolanaProvider {
     type Error = FacilitatorLocalError;
 
     async fn verify(&self, request: &VerifyRequest) -> Result<VerifyResponse, Self::Error> {
+        // Route: settlement account vs standard transaction
+        if let ExactPaymentPayload::SolanaSettlementAccount(sa_payload) =
+            &request.payment_payload.payload
+        {
+            let result = self
+                .verify_settlement_account(sa_payload, &request.payment_requirements)
+                .await?;
+            return Ok(VerifyResponse::valid(result.payer.into()));
+        }
+
         let verification = self.verify_transfer(request).await?;
         Ok(VerifyResponse::valid(verification.payer.into()))
     }
 
     async fn settle(&self, request: &SettleRequest) -> Result<SettleResponse, Self::Error> {
-        // Verify the transaction first - this validates the transfer and fee payer safety
+        // Route: settlement account vs standard transaction
+        if let ExactPaymentPayload::SolanaSettlementAccount(sa_payload) =
+            &request.payment_payload.payload
+        {
+            return self
+                .settle_settlement_account(sa_payload, &request.payment_requirements)
+                .await;
+        }
+
+        // Standard flow: verify + co-sign + submit
         let verification = self.verify_transfer(request).await?;
 
         tracing::info!(

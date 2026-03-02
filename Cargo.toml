@@ -1,6 +1,6 @@
 [package]
 name = "x402-rs"
-version = "1.34.3"
+version = "1.35.0"
 authors = ["Sergey Ukustov <sergey@ukstv.me>", "0xultravioleta <0xultravioleta@gmail.com>"]
 edition = "2021"
 license = "Apache-2.0"
@@ -41,6 +41,7 @@ bincode = { version = "1.3.3" } # Older version due to compatibility with solana
 spl-token = { version = "8.0.0", features = ["no-entrypoint"] }
 spl-token-2022 = { version = "9.0.0", features = ["no-entrypoint"] }
 solana-client = { version = "2.3.7" }
+solana-transaction-status-client-types = { version = "2.3.13" }
 
 # NEAR Protocol (NEP-366 meta-transactions support)
 near-jsonrpc-client = { version = "0.20" }

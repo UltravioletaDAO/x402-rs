@@ -1,5 +1,37 @@
 # Changelog
 
+## [1.35.0] - 2026-03-02
+
+### Added - Solana Smart Wallet Support (Squads, Crossmint, SWIG)
+
+- **Two-path verification for Solana transactions** enabling smart wallet payments:
+  - **Path 1 (unchanged)**: Top-level TransferChecked detection for standard EOA wallets (~5ms)
+  - **Path 2 (new)**: CPI inner instruction scanning for smart wallet transfers (~50ms)
+  - Automatic fallback: tries Path 1 first, falls back to Path 2 if no top-level transfer found
+- Smart wallets execute token transfers via Cross-Program Invocation (CPI), where TransferChecked
+  appears as an inner instruction rather than a top-level one. This blocked all program-controlled
+  accounts from using x402 payments on Solana.
+- Now supports: Squads multisig, Crossmint custodial wallets, SWIG session wallets,
+  SPL Governance DAOs, and any smart wallet that uses CPI-based token transfers
+- Simulation now requests `inner_instructions: true` to capture CPI calls at all depths
+- Inner instruction validation: verifies exactly ONE matching TransferChecked with correct
+  amount, destination ATA, mint, and authority (prevents split/double transfer attacks)
+- Added dependency: `solana-transaction-status-client-types` for inner instruction type parsing
+
+### Hardened - Solana ComputeBudget Duplicate Rejection
+
+- Reject duplicate `SetComputeUnitLimit` instructions (Solana applies last-wins, which could
+  bypass facilitator caps)
+- Reject duplicate `SetComputeUnitPrice` instructions (same last-wins bypass risk)
+- References: [coinbase/x402#646](https://github.com/coinbase/x402/issues/646) RFC security model
+
+### Context
+
+- Requested by CryptoFede (Crossmint) for [lobster.cash](https://lobster.cash) integration
+- Dexter and Faremeter already shipped closed-source implementations
+- Ultravioleta DAO is the first open-source facilitator with smart wallet support
+- Fully backward compatible: existing standard wallet payments work unchanged
+
 ## [1.29.0] - 2026-02-07
 
 ### Added - x402r Escrow Multi-Chain Support (9 Networks)

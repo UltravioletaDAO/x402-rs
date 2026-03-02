@@ -7,6 +7,7 @@ use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::{Keypair, Signature};
 use solana_sdk::signer::Signer;
 use solana_sdk::transaction::VersionedTransaction;
+use solana_transaction_status_client_types::{UiInnerInstructions, UiInstruction};
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 use std::time::Duration;
@@ -568,6 +569,153 @@ impl SolanaProvider {
         ))
     }
 
+    /// Path 2: Find a TransferChecked instruction in CPI inner instructions from simulation.
+    /// This enables smart wallet support (Squads, Crossmint, SWIG, etc.) where the token
+    /// transfer is executed via Cross-Program Invocation rather than as a top-level instruction.
+    fn find_transfer_in_inner_instructions(
+        &self,
+        inner_instructions: &[UiInnerInstructions],
+        transaction: &VersionedTransaction,
+        requirements: &PaymentRequirements,
+    ) -> Result<TransferCheckedInstruction, FacilitatorLocalError> {
+        let static_keys = transaction.message.static_account_keys();
+        let fee_payer_pubkey = self.keypair.pubkey();
+        let asset_address: SolanaAddress = requirements.asset.clone().try_into()?;
+        let pay_to_address: SolanaAddress = requirements.pay_to.clone().try_into()?;
+
+        // Derive expected destination ATA for both token programs
+        let expected_ata_spl = Pubkey::find_program_address(
+            &[
+                pay_to_address.pubkey.as_ref(),
+                spl_token::ID.as_ref(),
+                asset_address.pubkey.as_ref(),
+            ],
+            &ATA_PROGRAM_PUBKEY,
+        )
+        .0;
+        let expected_ata_2022 = Pubkey::find_program_address(
+            &[
+                pay_to_address.pubkey.as_ref(),
+                spl_token_2022::ID.as_ref(),
+                asset_address.pubkey.as_ref(),
+            ],
+            &ATA_PROGRAM_PUBKEY,
+        )
+        .0;
+
+        let mut found: Option<TransferCheckedInstruction> = None;
+
+        for group in inner_instructions {
+            for ui_ix in &group.instructions {
+                let compiled = match ui_ix {
+                    UiInstruction::Compiled(c) => c,
+                    // Parsed instructions are returned when the RPC uses jsonParsed encoding;
+                    // our simulation uses the default binary encoding so this branch is
+                    // unexpected, but skip gracefully if it occurs.
+                    UiInstruction::Parsed(_) => continue,
+                };
+
+                // Resolve program ID from the transaction's account keys
+                let program_id = match static_keys.get(compiled.program_id_index as usize) {
+                    Some(pk) => *pk,
+                    None => continue,
+                };
+
+                // Only look at spl_token and spl_token_2022 programs
+                if program_id != spl_token::ID && program_id != spl_token_2022::ID {
+                    continue;
+                }
+
+                // Decode bs58 instruction data
+                let data = match bs58::decode(&compiled.data).into_vec() {
+                    Ok(d) => d,
+                    Err(_) => continue,
+                };
+
+                // TransferChecked discriminator = 12, needs at least 10 bytes (1 + 8 + 1)
+                if data.is_empty() || data[0] != 12 || data.len() < 10 {
+                    continue;
+                }
+
+                // Parse amount (u64 LE) and decimals (u8)
+                let mut amount_buf = [0u8; 8];
+                amount_buf.copy_from_slice(&data[1..9]);
+                let amount = u64::from_le_bytes(amount_buf);
+                let decimals = data[9];
+
+                // Resolve account keys: source(0), mint(1), destination(2), authority(3)
+                if compiled.accounts.len() < 4 {
+                    continue;
+                }
+                let resolve = |idx: usize| -> Option<Pubkey> {
+                    static_keys.get(compiled.accounts[idx] as usize).copied()
+                };
+                let (source, mint, destination, authority) =
+                    match (resolve(0), resolve(1), resolve(2), resolve(3)) {
+                        (Some(s), Some(m), Some(d), Some(a)) => (s, m, d, a),
+                        _ => continue,
+                    };
+
+                // Validate: mint must match expected asset
+                if mint != asset_address.pubkey {
+                    continue;
+                }
+
+                // Validate: destination must be the correct ATA
+                if destination != expected_ata_spl && destination != expected_ata_2022 {
+                    continue;
+                }
+
+                // Validate: amount must match requirements
+                let instruction_amount: TokenAmount = amount.into();
+                let requirements_amount: TokenAmount = requirements.max_amount_required;
+                if instruction_amount != requirements_amount {
+                    continue;
+                }
+
+                // Security: authority must not be the fee payer
+                if authority == fee_payer_pubkey {
+                    return Err(FacilitatorLocalError::DecodingError(
+                        "invalid_exact_svm_payload_inner_transfer_fee_payer_is_authority".to_string(),
+                    ));
+                }
+
+                // Ensure exactly ONE matching TransferChecked
+                if found.is_some() {
+                    return Err(FacilitatorLocalError::DecodingError(
+                        "invalid_exact_svm_payload_multiple_inner_transfers_found".to_string(),
+                    ));
+                }
+
+                tracing::info!(
+                    amount = amount,
+                    mint = %mint,
+                    destination = %destination,
+                    authority = %authority,
+                    token_program = %program_id,
+                    "Found CPI TransferChecked in inner instructions (smart wallet path)"
+                );
+
+                found = Some(TransferCheckedInstruction {
+                    amount,
+                    decimals,
+                    source,
+                    mint,
+                    destination,
+                    authority,
+                    token_program: program_id,
+                    data,
+                });
+            }
+        }
+
+        found.ok_or_else(|| {
+            FacilitatorLocalError::DecodingError(
+                "no_valid_transfer_in_inner_instructions".to_string(),
+            )
+        })
+    }
+
     /// Check if there's a CreateATA instruction before the given index
     /// that creates the ATA for the payee
     fn has_create_ata_before(
@@ -621,7 +769,12 @@ impl SolanaProvider {
 
             match data[0] {
                 2 if data.len() == 5 => {
-                    // SetComputeUnitLimit
+                    // SetComputeUnitLimit - reject duplicates (Solana applies last-wins)
+                    if found_limit {
+                        return Err(FacilitatorLocalError::DecodingError(
+                            "duplicate_compute_unit_limit_instruction".to_string(),
+                        ));
+                    }
                     let mut buf = [0u8; 4];
                     buf.copy_from_slice(&data[1..5]);
                     let compute_units = u32::from_le_bytes(buf);
@@ -638,7 +791,12 @@ impl SolanaProvider {
                     found_limit = true;
                 }
                 3 if data.len() == 9 => {
-                    // SetComputeUnitPrice
+                    // SetComputeUnitPrice - reject duplicates (Solana applies last-wins)
+                    if found_price {
+                        return Err(FacilitatorLocalError::DecodingError(
+                            "duplicate_compute_unit_price_instruction".to_string(),
+                        ));
+                    }
                     let mut buf = [0u8; 8];
                     buf.copy_from_slice(&data[1..]);
                     let microlamports = u64::from_le_bytes(buf);
@@ -743,12 +901,7 @@ impl SolanaProvider {
         // 1. Verify compute budget instructions exist and are within limits
         self.verify_compute_budget_instructions(&transaction)?;
 
-        // 2. Find and verify the transfer instruction (can be at any position)
-        let (_transfer_idx, transfer_instruction) = self
-            .find_transfer_instruction(&transaction, requirements)
-            .await?;
-
-        // 3. Fee payer safety check
+        // 2. Fee payer safety check
         // Verify that the fee payer is not included in any instruction's accounts
         // This single check covers all cases: authority, source, or any other role
         let fee_payer_pubkey = self.keypair.pubkey();
@@ -770,7 +923,13 @@ impl SolanaProvider {
             }
         }
 
+        // 3. Try Path 1: Find top-level TransferChecked instruction (standard wallets)
+        let top_level_result = self
+            .find_transfer_instruction(&transaction, requirements)
+            .await;
+
         // 4. Simulate the transaction (with our signature added)
+        // Enable inner_instructions to support smart wallet CPI detection (Path 2)
         let tx = TransactionInt::new(transaction.clone()).sign(&self.keypair)?;
         let cfg = RpcSimulateTransactionConfig {
             sig_verify: false,
@@ -778,7 +937,7 @@ impl SolanaProvider {
             commitment: Some(CommitmentConfig::confirmed()),
             encoding: None,
             accounts: None,
-            inner_instructions: false,
+            inner_instructions: true,
             min_context_slot: None,
         };
         let sim = self
@@ -796,6 +955,49 @@ impl SolanaProvider {
                 "invalid_exact_svm_payload_transaction_simulation_failed".to_string(),
             ));
         }
+
+        // 5. Determine transfer instruction via Path 1 or Path 2
+        let transfer_instruction = match top_level_result {
+            Ok((_idx, ti)) => {
+                tracing::debug!("Path 1: Found top-level TransferChecked (standard wallet)");
+                ti
+            }
+            Err(path1_err) => {
+                // Path 2: Smart wallet - find TransferChecked in CPI inner instructions
+                let inner_ixs = sim.value.inner_instructions.as_deref().unwrap_or(&[]);
+                if inner_ixs.is_empty() {
+                    tracing::warn!(
+                        path1_error = %path1_err,
+                        "No top-level transfer and no inner instructions from simulation"
+                    );
+                    return Err(path1_err);
+                }
+
+                match self.find_transfer_in_inner_instructions(
+                    inner_ixs,
+                    &transaction,
+                    requirements,
+                ) {
+                    Ok(ti) => {
+                        tracing::info!(
+                            authority = %ti.authority,
+                            "Path 2: Found CPI TransferChecked in inner instructions (smart wallet)"
+                        );
+                        ti
+                    }
+                    Err(path2_err) => {
+                        tracing::warn!(
+                            path1_error = %path1_err,
+                            path2_error = %path2_err,
+                            "Neither top-level nor inner instruction transfer found"
+                        );
+                        return Err(FacilitatorLocalError::DecodingError(
+                            "no_valid_transfer_found_in_top_level_or_inner_instructions".to_string(),
+                        ));
+                    }
+                }
+            }
+        };
 
         let payer: SolanaAddress = transfer_instruction.authority.into();
         Ok(VerifyTransferResult { payer, transaction })

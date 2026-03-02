@@ -493,6 +493,14 @@ where
                 );
                 Ok(())
             }
+            ExactPaymentPayload::SolanaSettlementAccount(_sa_payload) => {
+                // Settlement account payloads contain an already-submitted transaction signature.
+                // Compliance screening will be done when verifying the on-chain transaction.
+                tracing::debug!(
+                    "Settlement account compliance check: will verify on-chain transaction"
+                );
+                Ok(())
+            }
         }
     }
 }

@@ -105,6 +105,7 @@ Decentralized resource discovery for x402-enabled services:
         path_verify_post,
         path_settle_get,
         path_settle_post,
+        path_accepts_post,
         // Escrow endpoints
         path_escrow_state,
         // Discovery endpoints
@@ -297,6 +298,109 @@ Escrow contracts deployed on 9 networks. See `/supported` for networks with acti
     )
 )]
 async fn path_settle_post() {}
+
+#[utoipa::path(
+    post,
+    path = "/accepts",
+    tag = "Core",
+    summary = "Negotiate payment requirements (Faremeter middleware)",
+    description = r#"
+Negotiation endpoint used by `@faremeter/middleware` and compatible x402 clients.
+
+Receives merchant payment requirements, matches them against the facilitator's
+supported capabilities, and returns enriched requirements with facilitator-specific
+data (feePayer, tokens, escrow contracts, etc.).
+
+**How it works:**
+1. Middleware sends the merchant's desired payment requirements
+2. Facilitator filters to only those it can handle (matching scheme + network)
+3. Facilitator enriches each match with `extra` data (feePayer, tokens, features)
+4. Middleware uses the enriched requirements in the 402 response to clients
+
+**Supports both v1 and v2 network formats** (auto-detected):
+- v1: `"network": "base"` (string enum)
+- v2: `"network": "eip155:8453"` (CAIP-2 format)
+
+**Request body:**
+```json
+{
+  "x402Version": 1,
+  "accepts": [
+    {
+      "scheme": "exact",
+      "network": "solana",
+      "maxAmountRequired": "10000",
+      "asset": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "payTo": "SomePublicKey...",
+      "description": "Access to premium API",
+      "maxTimeoutSeconds": 90,
+      "resource": "https://api.example.com/data"
+    }
+  ],
+  "error": ""
+}
+```
+
+**Response (enriched):**
+```json
+{
+  "x402Version": 1,
+  "accepts": [
+    {
+      "scheme": "exact",
+      "network": "solana",
+      "maxAmountRequired": "10000",
+      "asset": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "payTo": "SomePublicKey...",
+      "description": "Access to premium API",
+      "maxTimeoutSeconds": 90,
+      "resource": "https://api.example.com/data",
+      "extra": {
+        "feePayer": "F742C4VfFLQ9zRQyithoj5229ZgtX2WqKCSFKgH2EThq",
+        "tokens": [
+          { "token": "usdc", "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "decimals": 6 }
+        ]
+      }
+    }
+  ],
+  "error": ""
+}
+```
+
+**Note:** Requirements for unsupported scheme+network combinations are silently dropped from the response.
+"#,
+    request_body(content = Object, description = "Merchant payment requirements to negotiate"),
+    responses(
+        (status = 200, description = "Enriched payment requirements", body = Object,
+            example = json!({
+                "x402Version": 1,
+                "accepts": [
+                    {
+                        "scheme": "exact",
+                        "network": "base",
+                        "maxAmountRequired": "1000000",
+                        "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+                        "payTo": "0x...",
+                        "extra": {
+                            "tokens": [
+                                { "token": "usdc", "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", "decimals": 6 }
+                            ]
+                        }
+                    }
+                ],
+                "error": ""
+            })
+        ),
+        (status = 400, description = "Invalid request", body = Object,
+            example = json!({
+                "x402Version": 1,
+                "accepts": [],
+                "error": "Missing or invalid 'accepts' array"
+            })
+        )
+    )
+)]
+async fn path_accepts_post() {}
 
 // ============================================================================
 // Escrow Endpoints

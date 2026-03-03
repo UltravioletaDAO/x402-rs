@@ -298,7 +298,43 @@ pub struct ReputationResponse {
     pub summary: ReputationSummary,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub feedback: Option<Vec<FeedbackEntry>>,
+    /// ATOM Engine stats (Solana only, null for EVM networks)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub atom_stats: Option<AtomStatsResponse>,
     pub network: Network,
+}
+
+// ============================================================================
+// ATOM Engine Types (Solana-specific)
+// ============================================================================
+
+/// ATOM Engine reputation analytics response (Solana only).
+///
+/// These stats are computed on-chain by the ATOM Engine CPI program
+/// and provide richer reputation data than EVM's off-chain aggregation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AtomStatsResponse {
+    /// Trust tier (0-4): Unknown, New, Established, Trusted, Legendary
+    pub trust_tier: u8,
+    /// Human-readable trust tier name
+    pub trust_tier_name: String,
+    /// EMA quality score (centered at 0, positive = above average)
+    pub quality_score: i32,
+    /// Statistical confidence (0-100)
+    pub confidence: u8,
+    /// Risk assessment (0-100, lower is better)
+    pub risk_score: u8,
+    /// Client diversity from HyperLogLog (0-100)
+    pub diversity_ratio: u8,
+    /// Positive feedback count
+    pub positive_count: u32,
+    /// Negative feedback count
+    pub negative_count: u32,
+    /// Total feedback count
+    pub feedback_count: u32,
+    /// Slot of most recent feedback
+    pub last_feedback_slot: u64,
 }
 
 // ============================================================================

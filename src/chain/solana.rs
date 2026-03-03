@@ -224,6 +224,11 @@ impl SolanaProvider {
         })
     }
 
+    /// Get a reference to the RPC client (used for ERC-8004 read queries)
+    pub fn rpc_client(&self) -> &RpcClient {
+        &self.rpc_client
+    }
+
     pub fn verify_compute_limit_instruction(
         &self,
         transaction: &VersionedTransaction,

@@ -229,6 +229,11 @@ impl SolanaProvider {
         &self.rpc_client
     }
 
+    /// Get a reference to the keypair (used for ERC-8004 transaction signing)
+    pub fn keypair(&self) -> &Keypair {
+        &self.keypair
+    }
+
     pub fn verify_compute_limit_instruction(
         &self,
         transaction: &VersionedTransaction,

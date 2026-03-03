@@ -399,6 +399,460 @@ pub fn is_solana_erc8004_supported(network: &Network) -> bool {
     matches!(network, Network::Solana | Network::SolanaDevnet)
 }
 
+// ============================================================================
+// Metaplex Core Program
+// ============================================================================
+
+/// Metaplex Core program ID (mainnet/devnet share the same program)
+pub const METAPLEX_CORE_PROGRAM: Pubkey =
+    solana_sdk::pubkey!("CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d");
+
+// ============================================================================
+// Anchor Instruction Discriminators (SHA256("global:<fn_name>")[..8])
+// ============================================================================
+
+const IX_GIVE_FEEDBACK: [u8; 8] = [145, 136, 123, 3, 215, 165, 98, 41];
+const IX_REVOKE_FEEDBACK: [u8; 8] = [211, 37, 230, 82, 118, 216, 137, 206];
+const IX_APPEND_RESPONSE: [u8; 8] = [162, 210, 186, 50, 180, 4, 47, 104];
+const IX_REGISTER: [u8; 8] = [211, 124, 67, 15, 211, 194, 178, 240];
+const IX_SET_AGENT_URI: [u8; 8] = [43, 254, 168, 104, 192, 51, 39, 46];
+const IX_SET_METADATA_PDA: [u8; 8] = [236, 60, 23, 48, 138, 69, 196, 153];
+
+// ============================================================================
+// SEAL v1 Domain Constants
+// ============================================================================
+
+const DOMAIN_SEAL_V1: &[u8] = b"8004_SEAL_V1____";
+const DOMAIN_FEEDBACK: &[u8] = b"8004_FEED_V1___";
+const DOMAIN_RESPONSE: &[u8] = b"8004_RESP_V1___";
+const DOMAIN_REVOKE: &[u8] = b"8004_REVK_V1___";
+
+// ============================================================================
+// SEAL v1 Hash Computation
+// ============================================================================
+
+/// Compute the SEAL v1 hash for a feedback submission.
+///
+/// seal_hash = SHA256(DOMAIN_SEAL_V1 || DOMAIN_FEEDBACK || agent_key || client_key
+///                    || feedback_count_le || feedback_uri || feedback_hash)
+pub fn compute_feedback_seal_hash(
+    agent_pubkey: &Pubkey,
+    client_pubkey: &Pubkey,
+    feedback_count: u64,
+    feedback_uri: &str,
+    feedback_hash: &[u8; 32],
+) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(DOMAIN_SEAL_V1);
+    hasher.update(DOMAIN_FEEDBACK);
+    hasher.update(agent_pubkey.as_ref());
+    hasher.update(client_pubkey.as_ref());
+    hasher.update(feedback_count.to_le_bytes());
+    hasher.update(feedback_uri.as_bytes());
+    hasher.update(feedback_hash);
+    hasher.finalize().into()
+}
+
+/// Compute the SEAL v1 hash for a revocation.
+///
+/// seal_hash = SHA256(DOMAIN_SEAL_V1 || DOMAIN_REVOKE || agent_key || client_key
+///                    || feedback_index_le || revoke_count_le)
+pub fn compute_revoke_seal_hash(
+    agent_pubkey: &Pubkey,
+    client_pubkey: &Pubkey,
+    feedback_index: u64,
+    revoke_count: u64,
+) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(DOMAIN_SEAL_V1);
+    hasher.update(DOMAIN_REVOKE);
+    hasher.update(agent_pubkey.as_ref());
+    hasher.update(client_pubkey.as_ref());
+    hasher.update(feedback_index.to_le_bytes());
+    hasher.update(revoke_count.to_le_bytes());
+    hasher.finalize().into()
+}
+
+/// Compute the SEAL v1 hash for a response.
+///
+/// seal_hash = SHA256(DOMAIN_SEAL_V1 || DOMAIN_RESPONSE || agent_key || responder_key
+///                    || response_count_le || response_uri || response_hash)
+pub fn compute_response_seal_hash(
+    agent_pubkey: &Pubkey,
+    responder_pubkey: &Pubkey,
+    response_count: u64,
+    response_uri: &str,
+    response_hash: &[u8; 32],
+) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(DOMAIN_SEAL_V1);
+    hasher.update(DOMAIN_RESPONSE);
+    hasher.update(agent_pubkey.as_ref());
+    hasher.update(responder_pubkey.as_ref());
+    hasher.update(response_count.to_le_bytes());
+    hasher.update(response_uri.as_bytes());
+    hasher.update(response_hash);
+    hasher.finalize().into()
+}
+
+// ============================================================================
+// Instruction Builders (Phase 2: Feedback)
+// ============================================================================
+
+use solana_sdk::instruction::{AccountMeta, Instruction};
+
+/// Build a `give_feedback` instruction for the Agent Registry program.
+///
+/// Accounts:
+/// 0. [writable] agent PDA (["agent", asset])
+/// 1. [] asset (NFT mint)
+/// 2. [signer] client (feedback author / fee payer)
+/// 3. [writable] atom_stats PDA (["atom_stats", asset]) on ATOM Engine
+/// 4. [] atom_engine program
+/// 5. [] system_program
+pub fn build_give_feedback_ix(
+    programs: &SolanaErc8004Programs,
+    asset: &Pubkey,
+    client: &Pubkey,
+    value: i128,
+    value_decimals: u8,
+    score: Option<u8>,
+    tag1: &str,
+    tag2: &str,
+    endpoint: &str,
+    feedback_uri: &str,
+    feedback_hash: Option<[u8; 32]>,
+) -> Instruction {
+    let (agent_pda, _) = derive_agent_pda(asset, &programs.agent_registry);
+    let (atom_stats_pda, _) = derive_atom_stats_pda(asset, &programs.atom_engine);
+
+    // Serialize args using Borsh (Anchor format)
+    let mut data = Vec::with_capacity(256);
+    data.extend_from_slice(&IX_GIVE_FEEDBACK);
+    // i128 as 16 bytes LE
+    data.extend_from_slice(&value.to_le_bytes());
+    // u8
+    data.push(value_decimals);
+    // Option<u8>
+    match score {
+        Some(s) => {
+            data.push(1);
+            data.push(s);
+        }
+        None => data.push(0),
+    }
+    // Option<[u8; 32]>
+    match feedback_hash {
+        Some(h) => {
+            data.push(1);
+            data.extend_from_slice(&h);
+        }
+        None => data.push(0),
+    }
+    // String (4-byte LE length prefix + bytes)
+    borsh_write_string(&mut data, tag1);
+    borsh_write_string(&mut data, tag2);
+    borsh_write_string(&mut data, endpoint);
+    borsh_write_string(&mut data, feedback_uri);
+
+    Instruction {
+        program_id: programs.agent_registry,
+        accounts: vec![
+            AccountMeta::new(agent_pda, false),
+            AccountMeta::new_readonly(*asset, false),
+            AccountMeta::new(*client, true),
+            AccountMeta::new(atom_stats_pda, false),
+            AccountMeta::new_readonly(programs.atom_engine, false),
+            AccountMeta::new_readonly(solana_sdk::system_program::id(), false),
+        ],
+        data,
+    }
+}
+
+/// Build a `revoke_feedback` instruction.
+///
+/// Accounts:
+/// 0. [writable] agent PDA
+/// 1. [] asset
+/// 2. [writable] atom_stats PDA on ATOM Engine
+/// 3. [] atom_engine program
+/// 4. [] system_program
+pub fn build_revoke_feedback_ix(
+    programs: &SolanaErc8004Programs,
+    asset: &Pubkey,
+    feedback_index: u64,
+    seal_hash: [u8; 32],
+) -> Instruction {
+    let (agent_pda, _) = derive_agent_pda(asset, &programs.agent_registry);
+    let (atom_stats_pda, _) = derive_atom_stats_pda(asset, &programs.atom_engine);
+
+    let mut data = Vec::with_capacity(64);
+    data.extend_from_slice(&IX_REVOKE_FEEDBACK);
+    data.extend_from_slice(&feedback_index.to_le_bytes());
+    data.extend_from_slice(&seal_hash);
+
+    Instruction {
+        program_id: programs.agent_registry,
+        accounts: vec![
+            AccountMeta::new(agent_pda, false),
+            AccountMeta::new_readonly(*asset, false),
+            AccountMeta::new(atom_stats_pda, false),
+            AccountMeta::new_readonly(programs.atom_engine, false),
+            AccountMeta::new_readonly(solana_sdk::system_program::id(), false),
+        ],
+        data,
+    }
+}
+
+/// Build an `append_response` instruction.
+///
+/// Accounts:
+/// 0. [writable] agent PDA
+/// 1. [] asset
+/// 2. [] client_address (original feedback author)
+/// 3. [signer] responder
+/// 4. [] system_program
+pub fn build_append_response_ix(
+    programs: &SolanaErc8004Programs,
+    asset: &Pubkey,
+    client_address: &Pubkey,
+    responder: &Pubkey,
+    feedback_index: u64,
+    response_uri: &str,
+    response_hash: [u8; 32],
+    seal_hash: [u8; 32],
+) -> Instruction {
+    let (agent_pda, _) = derive_agent_pda(asset, &programs.agent_registry);
+
+    let mut data = Vec::with_capacity(128);
+    data.extend_from_slice(&IX_APPEND_RESPONSE);
+    data.extend_from_slice(&feedback_index.to_le_bytes());
+    borsh_write_string(&mut data, response_uri);
+    data.extend_from_slice(&response_hash);
+    data.extend_from_slice(&seal_hash);
+
+    Instruction {
+        program_id: programs.agent_registry,
+        accounts: vec![
+            AccountMeta::new(agent_pda, false),
+            AccountMeta::new_readonly(*asset, false),
+            AccountMeta::new_readonly(*client_address, false),
+            AccountMeta::new(*responder, true),
+            AccountMeta::new_readonly(solana_sdk::system_program::id(), false),
+        ],
+        data,
+    }
+}
+
+// ============================================================================
+// Instruction Builders (Phase 3: Registration)
+// ============================================================================
+
+/// Build a `register` instruction to mint a new agent NFT.
+///
+/// Accounts:
+/// 0. [writable] config PDA (["config"])
+/// 1. [writable] agent PDA (["agent", asset])
+/// 2. [] collection (Core Collection)
+/// 3. [writable] asset (new NFT keypair - must be signer)
+/// 4. [signer] owner (registrant / fee payer)
+/// 5. [] system_program
+/// 6. [] metaplex_core program
+pub fn build_register_ix(
+    programs: &SolanaErc8004Programs,
+    collection: &Pubkey,
+    asset: &Pubkey,
+    owner: &Pubkey,
+    agent_uri: &str,
+) -> Instruction {
+    let (config_pda, _) = derive_registry_config_pda(&programs.agent_registry);
+    let (agent_pda, _) = derive_agent_pda(asset, &programs.agent_registry);
+
+    let mut data = Vec::with_capacity(64);
+    data.extend_from_slice(&IX_REGISTER);
+    borsh_write_string(&mut data, agent_uri);
+
+    Instruction {
+        program_id: programs.agent_registry,
+        accounts: vec![
+            AccountMeta::new(config_pda, false),
+            AccountMeta::new(agent_pda, false),
+            AccountMeta::new_readonly(*collection, false),
+            AccountMeta::new(*asset, true),
+            AccountMeta::new(*owner, true),
+            AccountMeta::new_readonly(solana_sdk::system_program::id(), false),
+            AccountMeta::new_readonly(METAPLEX_CORE_PROGRAM, false),
+        ],
+        data,
+    }
+}
+
+/// Build a `set_agent_uri` instruction.
+///
+/// Accounts:
+/// 0. [writable] config PDA
+/// 1. [writable] agent PDA
+/// 2. [writable] asset (NFT)
+/// 3. [signer] owner
+/// 4. [] system_program
+/// 5. [] metaplex_core program
+pub fn build_set_agent_uri_ix(
+    programs: &SolanaErc8004Programs,
+    asset: &Pubkey,
+    owner: &Pubkey,
+    new_uri: &str,
+) -> Instruction {
+    let (config_pda, _) = derive_registry_config_pda(&programs.agent_registry);
+    let (agent_pda, _) = derive_agent_pda(asset, &programs.agent_registry);
+
+    let mut data = Vec::with_capacity(64);
+    data.extend_from_slice(&IX_SET_AGENT_URI);
+    borsh_write_string(&mut data, new_uri);
+
+    Instruction {
+        program_id: programs.agent_registry,
+        accounts: vec![
+            AccountMeta::new(config_pda, false),
+            AccountMeta::new(agent_pda, false),
+            AccountMeta::new(*asset, false),
+            AccountMeta::new(*owner, true),
+            AccountMeta::new_readonly(solana_sdk::system_program::id(), false),
+            AccountMeta::new_readonly(METAPLEX_CORE_PROGRAM, false),
+        ],
+        data,
+    }
+}
+
+/// Build a `set_metadata_pda` instruction.
+///
+/// Accounts:
+/// 0. [writable] agent PDA
+/// 1. [writable] metadata_entry PDA (["agent_meta", asset, key_hash[0..8]])
+/// 2. [] asset
+/// 3. [signer] owner
+/// 4. [] system_program
+pub fn build_set_metadata_pda_ix(
+    programs: &SolanaErc8004Programs,
+    asset: &Pubkey,
+    owner: &Pubkey,
+    key: &str,
+    value: &[u8],
+    immutable: bool,
+) -> Instruction {
+    use sha2::{Digest, Sha256};
+    let key_hash = Sha256::digest(key.as_bytes());
+    let key_hash_prefix: [u8; 8] = key_hash[..8].try_into().unwrap();
+
+    let (agent_pda, _) = derive_agent_pda(asset, &programs.agent_registry);
+    let (metadata_pda, _) = derive_metadata_pda(asset, key, &programs.agent_registry);
+
+    let mut data = Vec::with_capacity(128);
+    data.extend_from_slice(&IX_SET_METADATA_PDA);
+    data.extend_from_slice(&key_hash_prefix);
+    borsh_write_string(&mut data, key);
+    // Vec<u8> (4-byte LE length prefix + raw bytes)
+    data.extend_from_slice(&(value.len() as u32).to_le_bytes());
+    data.extend_from_slice(value);
+    // bool
+    data.push(if immutable { 1 } else { 0 });
+
+    Instruction {
+        program_id: programs.agent_registry,
+        accounts: vec![
+            AccountMeta::new(agent_pda, false),
+            AccountMeta::new(metadata_pda, false),
+            AccountMeta::new_readonly(*asset, false),
+            AccountMeta::new(*owner, true),
+            AccountMeta::new_readonly(solana_sdk::system_program::id(), false),
+        ],
+        data,
+    }
+}
+
+// ============================================================================
+// Transaction Helpers
+// ============================================================================
+
+use solana_sdk::signature::{Keypair, Signature};
+use solana_sdk::signer::Signer;
+use solana_sdk::transaction::Transaction;
+
+/// Build, sign, send, and confirm a single-instruction transaction.
+///
+/// The facilitator keypair is used as both the fee payer and signer.
+pub async fn send_erc8004_transaction(
+    rpc_client: &RpcClient,
+    keypair: &Keypair,
+    instructions: Vec<Instruction>,
+) -> Result<Signature, SolanaErc8004Error> {
+    let recent_blockhash = rpc_client
+        .get_latest_blockhash()
+        .await
+        .map_err(|e| SolanaErc8004Error::RpcError(format!("Failed to get blockhash: {}", e)))?;
+
+    let tx = Transaction::new_signed_with_payer(
+        &instructions,
+        Some(&keypair.pubkey()),
+        &[keypair],
+        recent_blockhash,
+    );
+
+    rpc_client
+        .send_and_confirm_transaction(&tx)
+        .await
+        .map_err(|e| SolanaErc8004Error::RpcError(format!("Transaction failed: {}", e)))
+}
+
+/// Build, sign, send, and confirm a transaction that requires multiple signers.
+///
+/// Used for register() where the new NFT asset keypair must also sign.
+pub async fn send_erc8004_transaction_with_signers(
+    rpc_client: &RpcClient,
+    fee_payer: &Keypair,
+    signers: &[&Keypair],
+    instructions: Vec<Instruction>,
+) -> Result<Signature, SolanaErc8004Error> {
+    let recent_blockhash = rpc_client
+        .get_latest_blockhash()
+        .await
+        .map_err(|e| SolanaErc8004Error::RpcError(format!("Failed to get blockhash: {}", e)))?;
+
+    let tx = Transaction::new_signed_with_payer(
+        &instructions,
+        Some(&fee_payer.pubkey()),
+        signers,
+        recent_blockhash,
+    );
+
+    rpc_client
+        .send_and_confirm_transaction(&tx)
+        .await
+        .map_err(|e| SolanaErc8004Error::RpcError(format!("Transaction failed: {}", e)))
+}
+
+/// Read the collection pubkey from the RegistryConfig PDA.
+pub async fn read_collection_pubkey(
+    rpc_client: &RpcClient,
+    program_id: &Pubkey,
+) -> Result<Pubkey, SolanaErc8004Error> {
+    let config = read_registry_config(rpc_client, program_id).await?;
+    Ok(bytes_to_pubkey(&config.collection))
+}
+
+// ============================================================================
+// Borsh Serialization Helper
+// ============================================================================
+
+/// Write a Borsh-encoded string (4-byte LE length prefix + UTF-8 bytes).
+fn borsh_write_string(buf: &mut Vec<u8>, s: &str) {
+    let bytes = s.as_bytes();
+    buf.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+    buf.extend_from_slice(bytes);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -489,5 +943,182 @@ mod tests {
         let bytes = [0u8; 32];
         let pubkey = bytes_to_pubkey(&bytes);
         assert_eq!(pubkey, Pubkey::default());
+    }
+
+    // ====================================================================
+    // Phase 2 + 3 Tests
+    // ====================================================================
+
+    #[test]
+    fn test_give_feedback_instruction() {
+        let programs = get_program_ids(&Network::Solana).unwrap();
+        let asset = Pubkey::from_str("7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgHkv").unwrap();
+        let client = Pubkey::new_unique();
+
+        let ix = build_give_feedback_ix(
+            &programs,
+            &asset,
+            &client,
+            87,
+            0,
+            Some(85),
+            "quality",
+            "api",
+            "https://api.example.com",
+            "ipfs://QmFeedback",
+            None,
+        );
+
+        assert_eq!(ix.program_id, AGENT_REGISTRY_MAINNET);
+        assert_eq!(ix.accounts.len(), 6);
+        // First 8 bytes should be discriminator
+        assert_eq!(&ix.data[..8], &IX_GIVE_FEEDBACK);
+        // client should be signer
+        assert!(ix.accounts[2].is_signer);
+    }
+
+    #[test]
+    fn test_revoke_feedback_instruction() {
+        let programs = get_program_ids(&Network::SolanaDevnet).unwrap();
+        let asset = Pubkey::from_str("7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgHkv").unwrap();
+        let seal_hash = [0xABu8; 32];
+
+        let ix = build_revoke_feedback_ix(&programs, &asset, 1, seal_hash);
+
+        assert_eq!(ix.program_id, AGENT_REGISTRY_DEVNET);
+        assert_eq!(ix.accounts.len(), 5);
+        assert_eq!(&ix.data[..8], &IX_REVOKE_FEEDBACK);
+    }
+
+    #[test]
+    fn test_append_response_instruction() {
+        let programs = get_program_ids(&Network::Solana).unwrap();
+        let asset = Pubkey::new_unique();
+        let client = Pubkey::new_unique();
+        let responder = Pubkey::new_unique();
+
+        let ix = build_append_response_ix(
+            &programs,
+            &asset,
+            &client,
+            &responder,
+            1,
+            "ipfs://QmResponse",
+            [0u8; 32],
+            [0u8; 32],
+        );
+
+        assert_eq!(ix.program_id, AGENT_REGISTRY_MAINNET);
+        assert_eq!(ix.accounts.len(), 5);
+        assert_eq!(&ix.data[..8], &IX_APPEND_RESPONSE);
+        assert!(ix.accounts[3].is_signer); // responder
+    }
+
+    #[test]
+    fn test_register_instruction() {
+        let programs = get_program_ids(&Network::Solana).unwrap();
+        let collection = Pubkey::new_unique();
+        let asset = Pubkey::new_unique();
+        let owner = Pubkey::new_unique();
+
+        let ix = build_register_ix(
+            &programs,
+            &collection,
+            &asset,
+            &owner,
+            "ipfs://QmAgentSpec",
+        );
+
+        assert_eq!(ix.program_id, AGENT_REGISTRY_MAINNET);
+        assert_eq!(ix.accounts.len(), 7);
+        assert_eq!(&ix.data[..8], &IX_REGISTER);
+        assert!(ix.accounts[3].is_signer); // asset
+        assert!(ix.accounts[4].is_signer); // owner
+    }
+
+    #[test]
+    fn test_set_metadata_pda_instruction() {
+        let programs = get_program_ids(&Network::Solana).unwrap();
+        let asset = Pubkey::new_unique();
+        let owner = Pubkey::new_unique();
+
+        let ix = build_set_metadata_pda_ix(
+            &programs,
+            &asset,
+            &owner,
+            "x402Support",
+            b"true",
+            false,
+        );
+
+        assert_eq!(ix.program_id, AGENT_REGISTRY_MAINNET);
+        assert_eq!(ix.accounts.len(), 5);
+        assert_eq!(&ix.data[..8], &IX_SET_METADATA_PDA);
+        assert!(ix.accounts[3].is_signer); // owner
+    }
+
+    #[test]
+    fn test_seal_hash_deterministic() {
+        let agent = Pubkey::new_unique();
+        let client = Pubkey::new_unique();
+        let hash1 = compute_feedback_seal_hash(
+            &agent, &client, 0, "ipfs://QmTest", &[0u8; 32],
+        );
+        let hash2 = compute_feedback_seal_hash(
+            &agent, &client, 0, "ipfs://QmTest", &[0u8; 32],
+        );
+        assert_eq!(hash1, hash2);
+
+        // Different feedback_count should produce different hash
+        let hash3 = compute_feedback_seal_hash(
+            &agent, &client, 1, "ipfs://QmTest", &[0u8; 32],
+        );
+        assert_ne!(hash1, hash3);
+    }
+
+    #[test]
+    fn test_seal_hash_domains() {
+        let agent = Pubkey::new_unique();
+        let client = Pubkey::new_unique();
+
+        let feedback_hash = compute_feedback_seal_hash(
+            &agent, &client, 0, "uri", &[0u8; 32],
+        );
+        let revoke_hash = compute_revoke_seal_hash(
+            &agent, &client, 0, 0,
+        );
+        let response_hash = compute_response_seal_hash(
+            &agent, &client, 0, "uri", &[0u8; 32],
+        );
+
+        // All three should be different due to different domains
+        assert_ne!(feedback_hash, revoke_hash);
+        assert_ne!(feedback_hash, response_hash);
+        assert_ne!(revoke_hash, response_hash);
+    }
+
+    #[test]
+    fn test_borsh_write_string() {
+        let mut buf = Vec::new();
+        borsh_write_string(&mut buf, "hello");
+        // 4-byte LE length (5) + 5 bytes of "hello"
+        assert_eq!(buf.len(), 9);
+        assert_eq!(&buf[..4], &5u32.to_le_bytes());
+        assert_eq!(&buf[4..], b"hello");
+    }
+
+    #[test]
+    fn test_set_agent_uri_instruction() {
+        let programs = get_program_ids(&Network::Solana).unwrap();
+        let asset = Pubkey::new_unique();
+        let owner = Pubkey::new_unique();
+
+        let ix = build_set_agent_uri_ix(
+            &programs, &asset, &owner, "ipfs://QmNewUri",
+        );
+
+        assert_eq!(ix.program_id, AGENT_REGISTRY_MAINNET);
+        assert_eq!(ix.accounts.len(), 6);
+        assert_eq!(&ix.data[..8], &IX_SET_AGENT_URI);
     }
 }

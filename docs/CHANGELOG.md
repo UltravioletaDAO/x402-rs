@@ -2,8 +2,9 @@
 
 ## [1.37.0] - 2026-03-03
 
-### Added - ERC-8004 Solana Support (Phase 1: Read-Only)
+### Added - ERC-8004 Solana Full Support (Phase 1-3)
 
+#### Phase 1: Read-Only Identity + Reputation
 - **Solana Agent Registry integration** via QuantuLabs 8004-solana Anchor program:
   - `GET /identity/{network}/{agent_id}` - Read agent identity from on-chain PDA
   - `GET /reputation/{network}/{agent_id}` - Read reputation + ATOM Engine trust scores
@@ -14,15 +15,40 @@
   - Quality scores, confidence, risk, diversity ratio
   - Feedback counts and last feedback slot
 - New `AtomStatsResponse` type in reputation responses (`atomStats` field)
-- Agent ID parameter changed from `u64` to `String` across all ERC-8004 endpoints
-  (EVM uses numeric IDs, Solana uses base58 Pubkeys) - backward compatible
 - `src/erc8004/solana.rs` module: Borsh deserialization, PDA derivation, RPC helpers
+
+#### Phase 2: Feedback Submission
+- **Solana branches** for all feedback endpoints:
+  - `POST /feedback` - Submit feedback via Anchor `give_feedback` with ATOM Engine CPI
+  - `POST /feedback/revoke` - Revoke feedback with SEAL v1 hash validation
+  - `POST /feedback/response` - Append response with SEAL v1 hash integrity
+- SEAL v1 hash computation for feedback/revoke/response operations
+- Facilitator pays SOL gas as fee payer for all transactions
+- `sealHash` field added to revoke/response requests (required for Solana)
+
+#### Phase 3: Agent Registration
+- **Solana branch** for `POST /register`:
+  - Mints Metaplex Core NFT via Anchor `register()` instruction
+  - Reads collection pubkey from on-chain RegistryConfig PDA
+  - Generates new Keypair for NFT asset (dual-signer transaction)
+  - Sets metadata PDAs if provided (`set_metadata_pda` instruction)
+- `set_agent_uri` instruction builder for updating agent URI
+- `set_metadata_pda` instruction builder with SHA256 key hashing
+
+#### Cross-cutting Changes
+- Agent ID parameter changed from `u64` to `serde_json::Value` across all ERC-8004 endpoints
+  (accepts both JSON numbers and strings - backward compatible)
+- `RegisterAgentResponse.agent_id` changed from `Option<u64>` to `Option<String>`
+- `parse_agent_id_value()` helper for flexible agent ID parsing
+- `keypair()` accessor on `SolanaProvider` for transaction signing
+- Anchor instruction discriminators pre-computed via `SHA256("global:<fn_name>")[..8]`
+- Metaplex Core program ID constant
 - Program IDs: Agent Registry `8oo4dC4JvBLwy5tGgiH3WwK4B9PWxL9Z4XjA2jzkQMbQ`, ATOM Engine `AToMw53aiPQ8j7iHVb4fGt6nzUNxUhcPc3tbPBZuzVVb`
 - ERC-8004 supported networks expanded from 16 to 18 (added Solana mainnet + devnet)
-- OpenAPI documentation updated with Solana examples and dual-format agent IDs
+- OpenAPI documentation updated with Solana examples for all endpoints
 - Landing page updated with Solana ERC-8004 badge and action button (EN + ES i18n)
 - Technical documentation: `docs/ERC8004_SOLANA_INTEGRATION.md`, `docs/ERC8004_SOLANA_SDK_GUIDE.md`
-- 7 new unit tests for Solana ERC-8004 module (PDA derivation, parsing, discriminators)
+- 16 new unit tests for Solana ERC-8004 module (32 total ERC-8004 tests passing)
 
 ## [1.36.0] - 2026-03-02
 

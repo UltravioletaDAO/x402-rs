@@ -577,33 +577,39 @@ async fn path_register_get() {}
     description = r#"
 Registers a new ERC-8004 agent on-chain. The facilitator pays all gas fees.
 
-**Supported networks:** ethereum, base, polygon, arbitrum, celo, bsc, monad, avalanche, ethereum-sepolia, base-sepolia, polygon-amoy, arbitrum-sepolia, celo-sepolia, avalanche-fuji
+**Supported networks:** 18 networks (EVM + Solana). EVM chains use ERC-721 NFTs, Solana uses Metaplex Core NFTs.
 
-If `recipient` is specified, the agent NFT is minted to the facilitator then transferred to the recipient via ERC-721 `safeTransferFrom`.
-
-**Request body:**
+**EVM request:**
 ```json
 {
   "x402Version": 1,
   "network": "base",
   "agentUri": "ipfs://Qm.../agent.json",
-  "metadata": [
-    {"key": "description", "value": "0x..."},
-    {"key": "website", "value": "0x..."}
-  ],
+  "metadata": [{"key": "description", "value": "0x..."}],
   "recipient": "0x..."
 }
 ```
 
-**Response:**
+**Solana request:**
+```json
+{
+  "x402Version": 1,
+  "network": "solana",
+  "agentUri": "ipfs://Qm.../agent.json",
+  "metadata": [{"key": "x402Support", "value": "true"}]
+}
+```
+
+**EVM response:** `agentId` is a numeric string (ERC-721 tokenId).
+**Solana response:** `agentId` is a base58 Pubkey (Metaplex Core NFT mint address).
+
 ```json
 {
   "success": true,
-  "agentId": 42,
-  "transaction": "0x...",
-  "transferTransaction": "0x...",
-  "owner": "0x...",
-  "network": "base"
+  "agentId": "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgHkv",
+  "transaction": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d6...",
+  "owner": "facilitator-pubkey...",
+  "network": "solana"
 }
 ```
 "#,
@@ -633,11 +639,13 @@ async fn path_feedback_get() {}
     tag = "ERC-8004",
     summary = "Submit reputation feedback",
     description = r#"
-Submits on-chain reputation feedback for an AI agent via the ERC-8004 Reputation Registry.
+Submits on-chain reputation feedback for an AI agent via the ERC-8004 Reputation Registry (EVM) or Agent Registry with ATOM Engine CPI (Solana).
 
-**Supported networks:** ethereum, base, polygon, arbitrum, celo, bsc, monad, avalanche, ethereum-sepolia, base-sepolia, polygon-amoy, arbitrum-sepolia, celo-sepolia, avalanche-fuji
+**Supported networks:** 18 networks (EVM + Solana).
 
-**Request body:**
+**agentId format:** Numeric (42) for EVM, base58 Pubkey string for Solana. Both JSON numbers and strings are accepted.
+
+**EVM request:**
 ```json
 {
   "x402Version": 1,
@@ -649,32 +657,29 @@ Submits on-chain reputation feedback for an AI agent via the ERC-8004 Reputation
     "tag1": "starred",
     "tag2": "quality",
     "endpoint": "https://agent.example/api",
-    "feedbackUri": "ipfs://Qm...",
-    "feedbackHash": "0x...",
-    "proof": {
-      "transactionHash": "0x...",
-      "blockNumber": 12345678,
-      "network": "base",
-      "payer": "0x...",
-      "payee": "0x...",
-      "amount": "1000000",
-      "token": "0x...",
-      "timestamp": 1700000000,
-      "paymentHash": "0x..."
-    }
+    "feedbackUri": "ipfs://Qm..."
   }
 }
 ```
 
-**Response:**
+**Solana request:**
 ```json
 {
-  "success": true,
-  "transaction": "0x...",
-  "feedbackIndex": 1,
-  "network": "base"
+  "x402Version": 1,
+  "network": "solana",
+  "feedback": {
+    "agentId": "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgHkv",
+    "value": 87,
+    "valueDecimals": 0,
+    "tag1": "quality",
+    "tag2": "api",
+    "endpoint": "https://agent.example/api",
+    "feedbackUri": "ipfs://Qm..."
+  }
 }
 ```
+
+Solana feedback triggers ATOM Engine CPI for trust scoring (trust tiers, HyperLogLog diversity, EMA quality).
 "#,
     request_body(content = Object, description = "ERC-8004 feedback request"),
     responses(
@@ -692,13 +697,24 @@ async fn path_feedback_post() {}
     description = r#"
 Revokes previously submitted reputation feedback.
 
-**Request body:**
+**EVM request:**
 ```json
 {
   "x402Version": 1,
   "network": "base",
   "agentId": 42,
   "feedbackIndex": 1
+}
+```
+
+**Solana request** (requires `sealHash` for SEAL v1 integrity):
+```json
+{
+  "x402Version": 1,
+  "network": "solana",
+  "agentId": "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgHkv",
+  "feedbackIndex": 1,
+  "sealHash": "0xabc123..."
 }
 ```
 "#,
@@ -718,7 +734,7 @@ async fn path_feedback_revoke() {}
     description = r#"
 Appends an agent's response to existing feedback.
 
-**Request body:**
+**EVM request:**
 ```json
 {
   "x402Version": 1,
@@ -728,6 +744,20 @@ Appends an agent's response to existing feedback.
   "feedbackIndex": 1,
   "responseUri": "ipfs://Qm...",
   "responseHash": "0x..."
+}
+```
+
+**Solana request** (requires `sealHash` for SEAL v1 integrity, `clientAddress` as Solana Pubkey):
+```json
+{
+  "x402Version": 1,
+  "network": "solana",
+  "agentId": "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgHkv",
+  "clientAddress": "Bz5K7...",
+  "feedbackIndex": 1,
+  "responseUri": "ipfs://Qm...",
+  "responseHash": "0x...",
+  "sealHash": "0xabc123..."
 }
 ```
 "#,

@@ -2050,7 +2050,7 @@ result = <span class="code-function">verify_payment</span>(
 
                 <!-- Supported Networks Grid -->
                 <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 2rem;">
-                    <h4 style="font-size: 0.9rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 1.25rem; text-align: center;" data-i18n="erc8004.networksTitle">Deployed on 16 Networks</h4>
+                    <h4 style="font-size: 0.9rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 1.25rem; text-align: center;" data-i18n="erc8004.networksTitle">Deployed on 18 Networks</h4>
                     <div style="display: flex; flex-wrap: wrap; gap: 0.75rem; justify-content: center;">
                         <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(139, 92, 246, 0.08); border: 1px solid rgba(139, 92, 246, 0.2); border-radius: 8px;">
                             <img src="/ethereum.png" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
@@ -2089,8 +2089,13 @@ result = <span class="code-function">verify_payment</span>(
                             <span style="font-size: 0.85rem; font-weight: 500;">Avalanche</span>
                             <a href="https://github.com/ava-labs/8004-boilerplate" target="_blank" style="font-size: 0.6rem; font-weight: 600; color: #e84142; background: rgba(232, 65, 66, 0.12); border: 1px solid rgba(232, 65, 66, 0.3); border-radius: 10px; padding: 0.1rem 0.45rem; text-decoration: none; white-space: nowrap; line-height: 1.4; transition: all 0.2s;" onmouseover="this.style.background='rgba(232, 65, 66, 0.25)'" onmouseout="this.style.background='rgba(232, 65, 66, 0.12)'">ERC-8004 Beta</a>
                         </div>
+                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(153, 69, 255, 0.08); border: 1px solid rgba(153, 69, 255, 0.2); border-radius: 8px;">
+                            <img src="/solana.png" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
+                            <span style="font-size: 0.85rem; font-weight: 500;">Solana</span>
+                            <a href="https://solana.com/agent-registry" target="_blank" style="font-size: 0.6rem; font-weight: 600; color: #9945FF; background: rgba(153, 69, 255, 0.12); border: 1px solid rgba(153, 69, 255, 0.3); border-radius: 10px; padding: 0.1rem 0.45rem; text-decoration: none; white-space: nowrap; line-height: 1.4; transition: all 0.2s;" onmouseover="this.style.background='rgba(153, 69, 255, 0.25)'" onmouseout="this.style.background='rgba(153, 69, 255, 0.12)'">Agent Registry</a>
+                        </div>
                     </div>
-                    <p style="text-align: center; color: var(--text-muted); font-size: 0.75rem; margin-top: 1rem;" data-i18n="erc8004.create2Note">+ 7 testnets. All mainnets use CREATE2 deterministic addresses (same contracts on every chain).</p>
+                    <p style="text-align: center; color: var(--text-muted); font-size: 0.75rem; margin-top: 1rem;" data-i18n="erc8004.create2Note">+ 8 testnets. EVM mainnets use CREATE2 deterministic addresses. Solana uses the QuantuLabs Agent Registry program.</p>
                     <div style="display: flex; gap: 0.75rem; justify-content: center; margin-top: 1.25rem;">
                         <a href="https://eips.ethereum.org/EIPS/eip-8004" target="_blank"
                            style="font-size: 0.8rem; color: #8b5cf6; text-decoration: none; padding: 0.4rem 1rem; border: 1px solid rgba(139, 92, 246, 0.3); border-radius: 6px; transition: all 0.2s; font-weight: 500;"
@@ -2121,6 +2126,12 @@ result = <span class="code-function">verify_payment</span>(
                            onmouseover="this.style.background='rgba(232, 65, 66, 0.1)'"
                            onmouseout="this.style.background='transparent'">
                             Ava Labs Boilerplate
+                        </a>
+                        <a href="https://8004.qnt.sh" target="_blank"
+                           style="font-size: 0.8rem; color: #9945FF; text-decoration: none; padding: 0.4rem 1rem; border: 1px solid rgba(153, 69, 255, 0.3); border-radius: 6px; transition: all 0.2s; font-weight: 500;"
+                           onmouseover="this.style.background='rgba(153, 69, 255, 0.1)'"
+                           onmouseout="this.style.background='transparent'">
+                            Solana Agent Registry
                         </a>
                     </div>
                 </div>
@@ -2617,7 +2628,7 @@ result = <span class="code-function">verify_payment</span>(
                 "features.instant.title": "Instant Settlement",
                 "features.instant.description": "Complete payment verification and on-chain settlement in ~2-3 seconds end-to-end.",
                 "features.reputation.title": "On-Chain Reputation",
-                "features.reputation.description": "ERC-8004 Trustless Agents with identity, reputation, and validation registries across 16 networks.",
+                "features.reputation.description": "ERC-8004 Trustless Agents with identity, reputation, and validation registries across 18 networks (EVM + Solana).",
                 "sdk.networks": "19 mainnets supported",
                 "erc8004.badge": "ERC-8004 Standard",
                 "erc8004.title": "Trustless Agent Reputation",
@@ -2628,8 +2639,8 @@ result = <span class="code-function">verify_payment</span>(
                 "erc8004.reputation.desc": "Submit, revoke, and query reputation feedback with proof-of-payment. Tags enable categorized ratings like uptime, quality, and response time.",
                 "erc8004.validation.title": "Validation Registry",
                 "erc8004.validation.desc": "Third-party validators can attest to agent capabilities. Validation results are stored on-chain for transparent trust verification.",
-                "erc8004.networksTitle": "Deployed on 16 Networks",
-                "erc8004.create2Note": "+ 7 testnets. All mainnets use CREATE2 deterministic addresses (same contracts on every chain).",
+                "erc8004.networksTitle": "Deployed on 18 Networks",
+                "erc8004.create2Note": "+ 8 testnets. EVM mainnets use CREATE2 deterministic addresses. Solana uses the QuantuLabs Agent Registry program.",
                 "upto.badge": "Upto Scheme (Permit2)",
                 "upto.title": "Usage-Based Payments",
                 "upto.description": "Authorize a maximum payment upfront, pay only for what you use. Built on Uniswap Permit2 for gasless variable-amount settlements across all EVM networks.",
@@ -2685,7 +2696,7 @@ result = <span class="code-function">verify_payment</span>(
                 "endpoints.feedbackResponse": "Append agent response to feedback",
                 "endpoints.reputation": "Query reputation summary for an agent",
                 "endpoints.identity": "Get agent identity from Identity Registry",
-                "endpoints.erc8004Note": "16 networks: ethereum, base, polygon, arbitrum, optimism, celo, bsc, monad, avalanche + testnets. CREATE2 deterministic addresses.",
+                "endpoints.erc8004Note": "18 networks: ethereum, base, polygon, arbitrum, optimism, celo, bsc, monad, avalanche, solana + testnets. CREATE2 (EVM) + Agent Registry program (Solana).",
                 "endpoints.blacklist": "OFAC sanctioned and blocked addresses",
                 "endpoints.discovery": "Discover registered paid APIs and services",
                 "endpoints.register": "Register a new paid endpoint in the Bazaar",
@@ -2712,7 +2723,7 @@ result = <span class="code-function">verify_payment</span>(
                 "features.instant.title": "Liquidación Instantánea",
                 "features.instant.description": "Verificaci\u00f3n y liquidaci\u00f3n completa de pagos en ~2-3 segundos de extremo a extremo.",
                 "features.reputation.title": "Reputaci\u00f3n On-Chain",
-                "features.reputation.description": "Agentes sin confianza ERC-8004 con registros de identidad, reputaci\u00f3n y validaci\u00f3n en 16 redes.",
+                "features.reputation.description": "Agentes sin confianza ERC-8004 con registros de identidad, reputaci\u00f3n y validaci\u00f3n en 18 redes (EVM + Solana).",
                 "sdk.networks": "19 mainnets soportadas",
                 "erc8004.badge": "Est\u00e1ndar ERC-8004",
                 "erc8004.title": "Reputaci\u00f3n de Agentes Sin Confianza",
@@ -2723,8 +2734,8 @@ result = <span class="code-function">verify_payment</span>(
                 "erc8004.reputation.desc": "Env\u00eda, revoca y consulta feedback de reputaci\u00f3n con prueba de pago. Tags permiten calificaciones categorizadas como uptime, calidad y tiempo de respuesta.",
                 "erc8004.validation.title": "Registro de Validaci\u00f3n",
                 "erc8004.validation.desc": "Validadores externos pueden atestiguar las capacidades de un agente. Los resultados se almacenan on-chain para verificaci\u00f3n transparente de confianza.",
-                "erc8004.networksTitle": "Desplegado en 16 Redes",
-                "erc8004.create2Note": "+ 7 testnets. Todas las mainnets usan direcciones deterministas CREATE2 (mismos contratos en cada cadena).",
+                "erc8004.networksTitle": "Desplegado en 18 Redes",
+                "erc8004.create2Note": "+ 8 testnets. Mainnets EVM usan direcciones deterministas CREATE2. Solana usa el programa Agent Registry de QuantuLabs.",
                 "upto.badge": "Esquema Upto (Permit2)",
                 "upto.title": "Pagos Basados en Uso",
                 "upto.description": "Autoriza un monto maximo por adelantado, paga solo lo que uses. Construido sobre Uniswap Permit2 para liquidaciones gasless de monto variable en todas las redes EVM.",
@@ -2780,7 +2791,7 @@ result = <span class="code-function">verify_payment</span>(
                 "endpoints.feedbackResponse": "Agregar respuesta del agente al feedback",
                 "endpoints.reputation": "Consultar resumen de reputacion de un agente",
                 "endpoints.identity": "Obtener identidad del agente del Identity Registry",
-                "endpoints.erc8004Note": "16 redes: ethereum, base, polygon, arbitrum, optimism, celo, bsc, monad, avalanche + testnets. Direcciones deterministas CREATE2.",
+                "endpoints.erc8004Note": "18 redes: ethereum, base, polygon, arbitrum, optimism, celo, bsc, monad, avalanche, solana + testnets. CREATE2 (EVM) + programa Agent Registry (Solana).",
                 "endpoints.blacklist": "Direcciones sancionadas por OFAC y bloqueadas",
                 "endpoints.discovery": "Descubrir APIs y servicios de pago registrados",
                 "endpoints.register": "Registrar un nuevo endpoint de pago en el Bazaar",

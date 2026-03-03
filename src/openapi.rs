@@ -49,19 +49,23 @@ Ethereum Sepolia, Base Sepolia, Polygon Amoy, Optimism Sepolia, Avalanche Fuji, 
 
 ## ERC-8004 Reputation (Trustless Agents)
 
-The facilitator supports [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) for AI agent identity and reputation across **14 networks** (8 mainnets + 6 testnets).
+The facilitator supports [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) for AI agent identity and reputation across **18 networks** (10 mainnets + 8 testnets), spanning both EVM and Solana.
 
-**Supported ERC-8004 networks:** `ethereum`, `base`, `polygon`, `arbitrum`, `celo`, `bsc`, `monad`, `avalanche`, `ethereum-sepolia`, `base-sepolia`, `polygon-amoy`, `arbitrum-sepolia`, `celo-sepolia`, `avalanche-fuji`
+**EVM networks:** `ethereum`, `base`, `polygon`, `arbitrum`, `optimism`, `celo`, `bsc`, `monad`, `avalanche`, `ethereum-sepolia`, `base-sepolia`, `polygon-amoy`, `arbitrum-sepolia`, `optimism-sepolia`, `celo-sepolia`, `avalanche-fuji`
+
+**Solana networks:** `solana`, `solana-devnet` (via [QuantuLabs 8004-solana](https://github.com/QuantuLabs/8004-solana) + [ATOM Engine](https://github.com/QuantuLabs/8004-atom))
+
+**Note:** For EVM networks, `agentId` is a numeric uint256 (e.g., `42`). For Solana, `agentId` is a base58 Pubkey (e.g., `7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgHkv`). Solana reputation responses include bonus `atomStats` with trust tiers, quality scores, and anti-Sybil metrics.
 
 ### Endpoints:
-- `POST /register` - Register a new agent on-chain (gasless)
-- `POST /feedback` - Submit on-chain reputation feedback
-- `POST /feedback/revoke` - Revoke previously submitted feedback
-- `POST /feedback/response` - Append agent response to feedback
-- `GET /reputation/:network/:agentId` - Query agent reputation summary
-- `GET /identity/:network/:agentId` - Get agent identity from registry
-- `GET /identity/:network/:agentId/metadata/:key` - Read specific agent metadata
-- `GET /identity/:network/total-supply` - Get total registered agents on a network
+- `POST /register` - Register a new agent on-chain (gasless, EVM only)
+- `POST /feedback` - Submit on-chain reputation feedback (EVM only)
+- `POST /feedback/revoke` - Revoke previously submitted feedback (EVM only)
+- `POST /feedback/response` - Append agent response to feedback (EVM only)
+- `GET /reputation/:network/:agentId` - Query agent reputation summary (EVM + Solana)
+- `GET /identity/:network/:agentId` - Get agent identity from registry (EVM + Solana)
+- `GET /identity/:network/:agentId/metadata/:key` - Read specific agent metadata (EVM + Solana)
+- `GET /identity/:network/total-supply` - Get total registered agents on a network (EVM + Solana)
 
 ## Bazaar Discovery
 
@@ -94,7 +98,7 @@ Decentralized resource discovery for x402-enabled services:
         (name = "Core", description = "Core x402 payment verification and settlement (exact, upto, escrow schemes)"),
         (name = "Escrow", description = "Gasless escrow lifecycle (authorize, release, refund, state query)"),
         (name = "Discovery", description = "Network and scheme discovery"),
-        (name = "ERC-8004", description = "AI Agent reputation and identity (ERC-8004 Trustless Agents) - 14 networks"),
+        (name = "ERC-8004", description = "AI Agent reputation and identity (ERC-8004 Trustless Agents) - 18 networks (EVM + Solana)"),
         (name = "Bazaar", description = "Decentralized resource discovery registry"),
         (name = "Compliance", description = "OFAC compliance and sanctions screening"),
         (name = "Health", description = "Service health and status")
@@ -743,34 +747,45 @@ async fn path_feedback_response() {}
     description = r#"
 Queries the reputation summary for an AI agent from the ERC-8004 Reputation Registry.
 
-**Supported networks:** ethereum, base, polygon, arbitrum, celo, bsc, monad, avalanche, ethereum-sepolia, base-sepolia, polygon-amoy, arbitrum-sepolia, celo-sepolia, avalanche-fuji
+**EVM networks:** ethereum, base, polygon, arbitrum, optimism, celo, bsc, monad, avalanche + testnets
 
-**Client address filtering:** The `clientAddresses` query parameter accepts comma-separated Ethereum addresses to filter reputation data by specific clients. If omitted, the endpoint auto-discovers all clients who have given feedback via the on-chain `getClients()` function.
+**Solana networks:** solana, solana-devnet (reads from ATOM Engine for enriched reputation data)
+
+**Client address filtering (EVM only):** The `clientAddresses` query parameter accepts comma-separated Ethereum addresses to filter reputation data by specific clients. If omitted, the endpoint auto-discovers all clients who have given feedback via the on-chain `getClients()` function.
 
 **Examples:**
-- `/reputation/base/42` - all clients (auto-discovered)
-- `/reputation/base/42?clientAddresses=0xAAA,0xBBB` - specific clients only
+- `/reputation/base/42` - EVM agent (all clients, auto-discovered)
+- `/reputation/solana/7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgHkv` - Solana agent (with ATOM stats)
 - `/reputation/base/42?includeFeedback=true&tag1=quality` - with feedback entries filtered by tag
 
-**Response:**
+**EVM Response:**
 ```json
 {
   "agentId": 42,
-  "summary": {
-    "agentId": 42,
-    "count": 15,
-    "summaryValue": 87,
-    "summaryValueDecimals": 0,
-    "network": "base"
-  },
+  "summary": { "count": 15, "summaryValue": 87, "summaryValueDecimals": 0 },
   "feedback": [...],
+  "atomStats": null,
   "network": "base"
+}
+```
+
+**Solana Response (includes ATOM Engine bonus data):**
+```json
+{
+  "agentId": "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgHkv",
+  "summary": { "count": 47, "summaryValue": 78, "summaryValueDecimals": 0 },
+  "atomStats": {
+    "trustTier": 3, "trustTierName": "Trusted",
+    "qualityScore": 78, "confidence": 85, "riskScore": 12,
+    "diversityRatio": 67, "positiveCount": 42, "negativeCount": 5
+  },
+  "network": "solana"
 }
 ```
 "#,
     params(
-        ("network" = String, Path, description = "Network name (e.g., ethereum, base, polygon, arbitrum)"),
-        ("agent_id" = u64, Path, description = "Agent ID (ERC-721 tokenId)"),
+        ("network" = String, Path, description = "Network name (e.g., ethereum, base, solana, solana-devnet)"),
+        ("agent_id" = String, Path, description = "Agent ID: numeric for EVM (e.g., 42), base58 Pubkey for Solana"),
         ("include_feedback" = Option<bool>, Query, description = "Include individual feedback entries"),
         ("client_addresses" = Option<String>, Query, description = "Comma-separated client addresses to filter by. If omitted, auto-discovers all clients via getClients()")
     ),
@@ -790,9 +805,11 @@ async fn path_reputation() {}
     description = r#"
 Retrieves agent identity information from the ERC-8004 Identity Registry.
 
-**Supported networks:** ethereum, base, polygon, arbitrum, celo, bsc, monad, avalanche, ethereum-sepolia, base-sepolia, polygon-amoy, arbitrum-sepolia, celo-sepolia, avalanche-fuji
+**EVM networks:** ethereum, base, polygon, arbitrum, optimism, celo, bsc, monad, avalanche + testnets
 
-**Response:**
+**Solana networks:** solana, solana-devnet (reads AgentAccount PDA from 8004-solana program)
+
+**EVM Response:**
 ```json
 {
   "agentId": 42,
@@ -802,10 +819,22 @@ Retrieves agent identity information from the ERC-8004 Identity Registry.
   "network": "base"
 }
 ```
+
+**Solana Response:**
+```json
+{
+  "agentId": "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgHkv",
+  "owner": "5FHwkrdxPMsgAJBDkWmcoLiN9m1K95VCGw7qr4eXfjsP",
+  "agentUri": "https://example.com/agent.json",
+  "nftName": "My AI Agent",
+  "feedbackCount": 47,
+  "network": "solana"
+}
+```
 "#,
     params(
-        ("network" = String, Path, description = "Network name (e.g., ethereum, base, polygon)"),
-        ("agent_id" = u64, Path, description = "Agent ID (ERC-721 tokenId)")
+        ("network" = String, Path, description = "Network name (e.g., ethereum, base, solana, solana-devnet)"),
+        ("agent_id" = String, Path, description = "Agent ID: numeric for EVM (e.g., 42), base58 Pubkey for Solana")
     ),
     responses(
         (status = 200, description = "Agent identity", body = Object),
@@ -823,6 +852,8 @@ async fn path_identity() {}
     description = r#"
 Reads a specific metadata key from an agent's Identity Registry entry.
 
+Supports both EVM and Solana networks. On Solana, metadata is stored in MetadataEntryPda accounts derived from the agent's NFT address and metadata key hash.
+
 **Response:**
 ```json
 {
@@ -835,8 +866,8 @@ Reads a specific metadata key from an agent's Identity Registry entry.
 ```
 "#,
     params(
-        ("network" = String, Path, description = "Network name (e.g., ethereum, base)"),
-        ("agent_id" = u64, Path, description = "Agent ID (ERC-721 tokenId)"),
+        ("network" = String, Path, description = "Network name (e.g., ethereum, base, solana)"),
+        ("agent_id" = String, Path, description = "Agent ID: numeric for EVM, base58 Pubkey for Solana"),
         ("key" = String, Path, description = "Metadata key (e.g., description, website, version)")
     ),
     responses(
@@ -855,16 +886,27 @@ async fn path_identity_metadata() {}
     description = r#"
 Returns the total number of registered agents on a specific network.
 
-**Response:**
+**EVM networks** return the ERC-721 totalSupply from the AgentRegistry contract.
+**Solana networks** return the `baseIndex` from the RegistryConfig PDA (total minted agents).
+
+**EVM Response:**
 ```json
 {
   "network": "base",
   "totalSupply": 156
 }
 ```
+
+**Solana Response:**
+```json
+{
+  "network": "solana",
+  "totalSupply": 42
+}
+```
 "#,
     params(
-        ("network" = String, Path, description = "Network name (e.g., ethereum, base)")
+        ("network" = String, Path, description = "Network name (e.g., ethereum, base, solana)")
     ),
     responses(
         (status = 200, description = "Total supply", body = Object),

@@ -1,5 +1,29 @@
 # Changelog
 
+## [1.37.0] - 2026-03-03
+
+### Added - ERC-8004 Solana Support (Phase 1: Read-Only)
+
+- **Solana Agent Registry integration** via QuantuLabs 8004-solana Anchor program:
+  - `GET /identity/{network}/{agent_id}` - Read agent identity from on-chain PDA
+  - `GET /reputation/{network}/{agent_id}` - Read reputation + ATOM Engine trust scores
+  - `GET /identity/{network}/{agent_id}/metadata/{key}` - Read metadata entries
+  - `GET /identity/{network}/total-supply` - Read total registered agents from RegistryConfig
+- **ATOM Engine trust scoring** integrated into reputation responses:
+  - Trust tiers (0-4: Unknown, Cautious, Neutral, Reliable, Trusted)
+  - Quality scores, confidence, risk, diversity ratio
+  - Feedback counts and last feedback slot
+- New `AtomStatsResponse` type in reputation responses (`atomStats` field)
+- Agent ID parameter changed from `u64` to `String` across all ERC-8004 endpoints
+  (EVM uses numeric IDs, Solana uses base58 Pubkeys) - backward compatible
+- `src/erc8004/solana.rs` module: Borsh deserialization, PDA derivation, RPC helpers
+- Program IDs: Agent Registry `8oo4dC4JvBLwy5tGgiH3WwK4B9PWxL9Z4XjA2jzkQMbQ`, ATOM Engine `AToMw53aiPQ8j7iHVb4fGt6nzUNxUhcPc3tbPBZuzVVb`
+- ERC-8004 supported networks expanded from 16 to 18 (added Solana mainnet + devnet)
+- OpenAPI documentation updated with Solana examples and dual-format agent IDs
+- Landing page updated with Solana ERC-8004 badge and action button (EN + ES i18n)
+- Technical documentation: `docs/ERC8004_SOLANA_INTEGRATION.md`, `docs/ERC8004_SOLANA_SDK_GUIDE.md`
+- 7 new unit tests for Solana ERC-8004 module (PDA derivation, parsing, discriminators)
+
 ## [1.36.0] - 2026-03-02
 
 ### Added - `/accepts` Endpoint (Faremeter Middleware Compatibility)

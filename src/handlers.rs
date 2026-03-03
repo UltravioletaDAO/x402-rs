@@ -27,10 +27,11 @@ use crate::chain::{FacilitatorLocalError, NetworkProvider, NetworkProviderOps};
 use crate::discovery::{DiscoveryError, DiscoveryRegistry};
 use crate::erc8004::{
     get_contracts, is_erc8004_supported, supported_network_names, AgentIdentity,
-    AppendResponseRequest, FeedbackEntry, FeedbackRequest, FeedbackResponse, IIdentityRegistry,
-    IReputationRegistry, MetadataEntry, RegisterAgentRequest, RegisterAgentResponse,
-    ReputationResponse, ReputationSummary, RevokeFeedbackRequest,
+    AppendResponseRequest, AtomStatsResponse, FeedbackEntry, FeedbackRequest, FeedbackResponse,
+    IIdentityRegistry, IReputationRegistry, MetadataEntry, RegisterAgentRequest,
+    RegisterAgentResponse, ReputationResponse, ReputationSummary, RevokeFeedbackRequest,
 };
+use crate::erc8004::solana as solana_erc8004;
 use crate::facilitator::Facilitator;
 use crate::fhe_proxy::FheProxy;
 use crate::provider_cache::{HasProviderMap, ProviderMap};
@@ -2601,7 +2602,8 @@ where
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct ReputationPathParams {
     pub network: String,
-    pub agent_id: u64,
+    /// Agent ID: u64 for EVM, base58 pubkey for Solana
+    pub agent_id: String,
 }
 
 /// Query parameters for reputation query
@@ -2676,6 +2678,148 @@ where
             .into_response();
     }
 
+    info!(
+        network = %network,
+        agent_id = %params.agent_id,
+        tag1 = %query.tag1,
+        tag2 = %query.tag2,
+        "Querying ERC-8004 reputation"
+    );
+
+    // ---- Solana branch: read from ATOM Engine + AgentAccount ----
+    if solana_erc8004::is_solana_erc8004_supported(&network) {
+        let provider_map = facilitator.provider_map();
+        let solana_provider = match provider_map.by_network(&network) {
+            Some(NetworkProvider::Solana(p)) => p,
+            _ => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "error": format!("No Solana provider available for network {}", network)
+                    })),
+                )
+                    .into_response();
+            }
+        };
+
+        let asset_pubkey = match solana_erc8004::parse_agent_id(&params.agent_id) {
+            Ok(pk) => pk,
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": format!("Invalid Solana agent ID: {}", e)
+                    })),
+                )
+                    .into_response();
+            }
+        };
+
+        let programs = match solana_erc8004::get_program_ids(&network) {
+            Some(p) => p,
+            None => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "error": format!("No Solana ERC-8004 program IDs for network {}", network)
+                    })),
+                )
+                    .into_response();
+            }
+        };
+
+        let rpc = solana_provider.rpc_client();
+
+        // Read AgentAccount for basic feedback counts (via SEAL digests)
+        let agent_result =
+            solana_erc8004::read_agent_account(rpc, &asset_pubkey, &programs.agent_registry).await;
+
+        let feedback_count_from_agent = match &agent_result {
+            Ok(agent) => agent.feedback_count,
+            Err(solana_erc8004::SolanaErc8004Error::AccountNotFound(msg)) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({ "error": msg })),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                error!(error = %e, "Failed to read Solana agent account for reputation");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "error": format!("Failed to query agent: {}", e)
+                    })),
+                )
+                    .into_response();
+            }
+        };
+
+        // Read ATOM Engine stats (may not exist if agent has no feedback yet)
+        let atom_stats_response =
+            match solana_erc8004::read_atom_stats(rpc, &asset_pubkey, &programs.atom_engine).await {
+                Ok(stats) => Some(AtomStatsResponse {
+                    trust_tier: stats.trust_tier,
+                    trust_tier_name: solana_erc8004::trust_tier_name(stats.trust_tier).to_string(),
+                    quality_score: stats.quality_score,
+                    confidence: stats.confidence,
+                    risk_score: stats.risk_score,
+                    diversity_ratio: stats.diversity_ratio,
+                    positive_count: stats.positive_count,
+                    negative_count: stats.negative_count,
+                    feedback_count: stats.feedback_count,
+                    last_feedback_slot: stats.last_feedback_slot,
+                }),
+                Err(solana_erc8004::SolanaErc8004Error::AccountNotFound(_)) => {
+                    // ATOM stats not initialized yet (agent has no feedback)
+                    None
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to read ATOM stats, returning without ATOM data");
+                    None
+                }
+            };
+
+        // Build summary from ATOM stats or fall back to agent account counts
+        let (count, summary_value) = if let Some(ref atom) = atom_stats_response {
+            (atom.feedback_count as u64, atom.quality_score as i128)
+        } else {
+            (feedback_count_from_agent, 0i128)
+        };
+
+        return (
+            StatusCode::OK,
+            Json(json!({
+                "agentId": params.agent_id,
+                "summary": {
+                    "count": count,
+                    "summaryValue": summary_value,
+                    "summaryValueDecimals": 0,
+                    "network": network
+                },
+                "atomStats": atom_stats_response,
+                "network": network
+            })),
+        )
+            .into_response();
+    }
+
+    // ---- EVM branch: read from ERC-8004 Solidity contracts ----
+
+    // Parse agent_id as u64 for EVM
+    let agent_id: u64 = match params.agent_id.parse() {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": format!("Invalid EVM agent ID (expected numeric): {}", params.agent_id)
+                })),
+            )
+                .into_response();
+        }
+    };
+
     // Get contracts for this network
     let contracts = match get_contracts(&network) {
         Some(c) => c,
@@ -2689,14 +2833,6 @@ where
                 .into_response();
         }
     };
-
-    info!(
-        network = %network,
-        agent_id = params.agent_id,
-        tag1 = %query.tag1,
-        tag2 = %query.tag2,
-        "Querying ERC-8004 reputation"
-    );
 
     // Get the provider for this network
     let provider_map = facilitator.provider_map();
@@ -2717,7 +2853,7 @@ where
     let reputation_registry =
         IReputationRegistry::new(contracts.reputation_registry, provider.inner().clone());
 
-    let agent_id_u256 = alloy::primitives::U256::from(params.agent_id);
+    let agent_id_u256 = alloy::primitives::U256::from(agent_id);
 
     // Resolve client addresses: parse from query param or auto-discover via getClients()
     let client_addresses: Vec<alloy::primitives::Address> = if query.client_addresses.is_empty() {
@@ -2725,7 +2861,7 @@ where
         match reputation_registry.getClients(agent_id_u256).call().await {
             Ok(clients) => {
                 info!(
-                    agent_id = params.agent_id,
+                    agent_id = agent_id,
                     client_count = clients.len(),
                     "Auto-discovered clients for reputation query"
                 );
@@ -2733,26 +2869,27 @@ where
             }
             Err(e) => {
                 info!(
-                    agent_id = params.agent_id,
+                    agent_id = agent_id,
                     error = %e,
                     "No clients found for agent (may have no feedback yet)"
                 );
                 // Return zero summary - agent has no reputation data
                 let summary = ReputationSummary {
-                    agent_id: params.agent_id,
+                    agent_id,
                     count: 0,
                     summary_value: 0,
                     summary_value_decimals: 0,
                     network: network.clone(),
                 };
                 let response = ReputationResponse {
-                    agent_id: params.agent_id,
+                    agent_id,
                     summary,
                     feedback: if query.include_feedback {
                         Some(vec![])
                     } else {
                         None
                     },
+                    atom_stats: None,
                     network,
                 };
                 return (StatusCode::OK, Json(response)).into_response();
@@ -2780,20 +2917,21 @@ where
     // If getClients returned empty (agent exists but has no feedback), return zero summary
     if client_addresses.is_empty() {
         let summary = ReputationSummary {
-            agent_id: params.agent_id,
+            agent_id,
             count: 0,
             summary_value: 0,
             summary_value_decimals: 0,
             network: network.clone(),
         };
         let response = ReputationResponse {
-            agent_id: params.agent_id,
+            agent_id,
             summary,
             feedback: if query.include_feedback {
                 Some(vec![])
             } else {
                 None
             },
+            atom_stats: None,
             network,
         };
         return (StatusCode::OK, Json(response)).into_response();
@@ -2810,7 +2948,7 @@ where
     match summary_call.call().await {
         Ok(result) => {
             let summary = ReputationSummary {
-                agent_id: params.agent_id,
+                agent_id,
                 count: result.count,
                 summary_value: result.summaryValue,
                 summary_value_decimals: result.summaryValueDecimals,
@@ -2862,9 +3000,10 @@ where
             };
 
             let response = ReputationResponse {
-                agent_id: params.agent_id,
+                agent_id,
                 summary,
                 feedback: feedback_entries,
+                atom_stats: None, // EVM has no ATOM Engine
                 network,
             };
 
@@ -2873,7 +3012,7 @@ where
         Err(e) => {
             error!(
                 network = %network,
-                agent_id = params.agent_id,
+                agent_id = agent_id,
                 error = %e,
                 "Failed to query reputation"
             );
@@ -2892,7 +3031,8 @@ where
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct IdentityPathParams {
     pub network: String,
-    pub agent_id: u64,
+    /// Agent ID: u64 for EVM, base58 pubkey for Solana
+    pub agent_id: String,
 }
 
 /// `GET /identity/:network/:agent_id`: Get agent identity from the ERC-8004 Identity Registry.
@@ -2942,6 +3082,113 @@ where
             .into_response();
     }
 
+    info!(
+        network = %network,
+        agent_id = %params.agent_id,
+        "Querying ERC-8004 agent identity"
+    );
+
+    // ---- Solana branch: read from 8004-solana Anchor program ----
+    if solana_erc8004::is_solana_erc8004_supported(&network) {
+        let provider_map = facilitator.provider_map();
+        let solana_provider = match provider_map.by_network(&network) {
+            Some(NetworkProvider::Solana(p)) => p,
+            _ => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "error": format!("No Solana provider available for network {}", network)
+                    })),
+                )
+                    .into_response();
+            }
+        };
+
+        let asset_pubkey = match solana_erc8004::parse_agent_id(&params.agent_id) {
+            Ok(pk) => pk,
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": format!("Invalid Solana agent ID: {}", e)
+                    })),
+                )
+                    .into_response();
+            }
+        };
+
+        let programs = match solana_erc8004::get_program_ids(&network) {
+            Some(p) => p,
+            None => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "error": format!("No Solana ERC-8004 program IDs for network {}", network)
+                    })),
+                )
+                    .into_response();
+            }
+        };
+
+        let rpc = solana_provider.rpc_client();
+        match solana_erc8004::read_agent_account(rpc, &asset_pubkey, &programs.agent_registry).await
+        {
+            Ok(agent) => {
+                let owner_pubkey = solana_erc8004::bytes_to_pubkey(&agent.owner);
+                return (
+                    StatusCode::OK,
+                    Json(json!({
+                        "agentId": params.agent_id,
+                        "owner": owner_pubkey.to_string(),
+                        "agentUri": agent.agent_uri,
+                        "nftName": agent.nft_name,
+                        "agentWallet": null,
+                        "feedbackCount": agent.feedback_count,
+                        "responseCount": agent.response_count,
+                        "revokeCount": agent.revoke_count,
+                        "network": network
+                    })),
+                )
+                    .into_response();
+            }
+            Err(solana_erc8004::SolanaErc8004Error::AccountNotFound(msg)) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({
+                        "error": msg
+                    })),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                error!(error = %e, "Failed to read Solana agent account");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "error": format!("Failed to query Solana agent: {}", e)
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    // ---- EVM branch: read from ERC-8004 Solidity contracts ----
+
+    // Parse agent_id as u64 for EVM
+    let agent_id: u64 = match params.agent_id.parse() {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": format!("Invalid EVM agent ID (expected numeric): {}", params.agent_id)
+                })),
+            )
+                .into_response();
+        }
+    };
+
     // Get contracts for this network
     let contracts = match get_contracts(&network) {
         Some(c) => c,
@@ -2955,12 +3202,6 @@ where
                 .into_response();
         }
     };
-
-    info!(
-        network = %network,
-        agent_id = params.agent_id,
-        "Querying ERC-8004 agent identity"
-    );
 
     // Get the provider for this network
     let provider_map = facilitator.provider_map();
@@ -2981,7 +3222,7 @@ where
     let identity_registry =
         IIdentityRegistry::new(contracts.identity_registry, provider.inner().clone());
 
-    let agent_id_u256 = alloy::primitives::U256::from(params.agent_id);
+    let agent_id_u256 = alloy::primitives::U256::from(agent_id);
 
     // Query owner, URI, and wallet in parallel.
     // We skip exists() because it's not part of standard ERC-721 and may not be
@@ -3003,7 +3244,7 @@ where
                 return (
                     StatusCode::NOT_FOUND,
                     Json(json!({
-                        "error": format!("Agent {} not found in Identity Registry on {}", params.agent_id, network)
+                        "error": format!("Agent {} not found in Identity Registry on {}", agent_id, network)
                     })),
                 )
                     .into_response();
@@ -3042,7 +3283,7 @@ where
     };
 
     let identity = AgentIdentity {
-        agent_id: params.agent_id,
+        agent_id,
         owner,
         agent_uri,
         agent_wallet,
@@ -3475,7 +3716,8 @@ where
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct IdentityMetadataPathParams {
     pub network: String,
-    pub agent_id: u64,
+    /// Agent ID: u64 for EVM, base58 pubkey for Solana
+    pub agent_id: String,
     pub key: String,
 }
 
@@ -3514,6 +3756,134 @@ where
             .into_response();
     }
 
+    // ---- Solana branch: read from MetadataEntryPda ----
+    if solana_erc8004::is_solana_erc8004_supported(&network) {
+        let provider_map = facilitator.provider_map();
+        let solana_provider = match provider_map.by_network(&network) {
+            Some(NetworkProvider::Solana(p)) => p,
+            _ => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "error": format!("No Solana provider available for network {}", network)
+                    })),
+                )
+                    .into_response();
+            }
+        };
+
+        let asset_pubkey = match solana_erc8004::parse_agent_id(&params.agent_id) {
+            Ok(pk) => pk,
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": format!("Invalid Solana agent ID: {}", e)
+                    })),
+                )
+                    .into_response();
+            }
+        };
+
+        let programs = match solana_erc8004::get_program_ids(&network) {
+            Some(p) => p,
+            None => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "error": format!("No Solana ERC-8004 program IDs for network {}", network)
+                    })),
+                )
+                    .into_response();
+            }
+        };
+
+        // Derive the MetadataEntryPda
+        let (metadata_pda, _bump) = solana_erc8004::derive_metadata_pda(
+            &asset_pubkey,
+            &params.key,
+            &programs.agent_registry,
+        );
+
+        let rpc = solana_provider.rpc_client();
+        match rpc.get_account_data(&metadata_pda).await {
+            Ok(data) => {
+                // Skip 8-byte Anchor discriminator, then deserialize
+                if data.len() < 8 {
+                    return (
+                        StatusCode::NOT_FOUND,
+                        Json(json!({
+                            "error": format!("Metadata key '{}' not set for agent {} on {}", params.key, params.agent_id, network)
+                        })),
+                    )
+                        .into_response();
+                }
+
+                // Try to extract value as UTF-8 (metadata_value is Vec<u8> in the PDA)
+                // Account layout after discriminator: asset(32) + metadata_key(string) + metadata_value(vec<u8>) + immutable(bool) + bump(u8)
+                // For simplicity, return the raw data hex-encoded
+                let hex_value = format!("0x{}", hex::encode(&data[8..]));
+                let utf8_value = String::from_utf8(data[8..].to_vec()).ok();
+
+                return (
+                    StatusCode::OK,
+                    Json(json!({
+                        "agentId": params.agent_id,
+                        "key": params.key,
+                        "value": hex_value,
+                        "valueUtf8": utf8_value,
+                        "network": network
+                    })),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                let err_str = e.to_string();
+                if err_str.contains("AccountNotFound")
+                    || err_str.contains("could not find account")
+                {
+                    return (
+                        StatusCode::NOT_FOUND,
+                        Json(json!({
+                            "error": format!("Metadata key '{}' not set for agent {} on {}", params.key, params.agent_id, network)
+                        })),
+                    )
+                        .into_response();
+                }
+                error!(
+                    network = %network,
+                    agent_id = %params.agent_id,
+                    key = %params.key,
+                    error = %e,
+                    "Failed to query Solana metadata"
+                );
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "error": format!("Failed to query metadata: {}", e)
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    // ---- EVM branch: read from ERC-8004 Solidity contracts ----
+
+    // Parse agent_id as u64 for EVM
+    let agent_id: u64 = match params.agent_id.parse() {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": format!("Invalid EVM agent ID (expected numeric): {}", params.agent_id)
+                })),
+            )
+                .into_response();
+        }
+    };
+
     let contracts = match get_contracts(&network) {
         Some(c) => c,
         None => {
@@ -3539,7 +3909,7 @@ where
 
     let identity_registry =
         IIdentityRegistry::new(contracts.identity_registry, provider.inner().clone());
-    let agent_id_u256 = alloy::primitives::U256::from(params.agent_id);
+    let agent_id_u256 = alloy::primitives::U256::from(agent_id);
 
     // Query metadata directly (skip exists() which may not be implemented on all proxies)
     match identity_registry
@@ -3554,7 +3924,7 @@ where
             (
                 StatusCode::OK,
                 Json(json!({
-                    "agentId": params.agent_id,
+                    "agentId": agent_id,
                     "key": params.key,
                     "value": hex_value,
                     "valueUtf8": utf8_value,
@@ -3569,14 +3939,14 @@ where
                 return (
                     StatusCode::NOT_FOUND,
                     Json(json!({
-                        "error": format!("Agent {} not found or metadata key '{}' not set on {}", params.agent_id, params.key, network)
+                        "error": format!("Agent {} not found or metadata key '{}' not set on {}", agent_id, params.key, network)
                     })),
                 )
                     .into_response();
             }
             error!(
                 network = %network,
-                agent_id = params.agent_id,
+                agent_id = agent_id,
                 key = %params.key,
                 error = %e,
                 "Failed to query metadata"
@@ -3632,6 +4002,64 @@ where
         )
             .into_response();
     }
+
+    // ---- Solana branch: read from RegistryConfig PDA ----
+    if solana_erc8004::is_solana_erc8004_supported(&network) {
+        let provider_map = facilitator.provider_map();
+        let solana_provider = match provider_map.by_network(&network) {
+            Some(NetworkProvider::Solana(p)) => p,
+            _ => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "error": format!("No Solana provider available for network {}", network)
+                    })),
+                )
+                    .into_response();
+            }
+        };
+
+        let programs = match solana_erc8004::get_program_ids(&network) {
+            Some(p) => p,
+            None => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "error": format!("No Solana ERC-8004 program IDs for network {}", network)
+                    })),
+                )
+                    .into_response();
+            }
+        };
+
+        let rpc = solana_provider.rpc_client();
+        match solana_erc8004::read_registry_config(rpc, &programs.agent_registry).await {
+            Ok(config) => {
+                let total = config.base_index as u64;
+                info!(network = %network, total_supply = total, "Queried Solana registry total supply");
+                return (
+                    StatusCode::OK,
+                    Json(json!({
+                        "totalSupply": total,
+                        "network": network
+                    })),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                error!(network = %network, error = %e, "Failed to query Solana registry config");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "error": format!("Failed to query total supply: {}", e)
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    // ---- EVM branch: read from ERC-8004 Solidity contracts ----
 
     let contracts = match get_contracts(&network) {
         Some(c) => c,

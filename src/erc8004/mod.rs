@@ -12,7 +12,7 @@
 //!
 //! # Supported Networks
 //!
-//! ## Mainnets
+//! ## EVM Mainnets
 //! - Ethereum Mainnet
 //! - Base Mainnet
 //! - Polygon Mainnet
@@ -23,7 +23,7 @@
 //! - Monad Mainnet
 //! - Avalanche C-Chain
 //!
-//! ## Testnets
+//! ## EVM Testnets
 //! - Ethereum Sepolia
 //! - Base Sepolia
 //! - Polygon Amoy
@@ -31,6 +31,10 @@
 //! - Optimism Sepolia
 //! - Celo Sepolia
 //! - Avalanche Fuji
+//!
+//! ## Solana (QuantuLabs 8004-solana + ATOM Engine)
+//! - Solana Mainnet
+//! - Solana Devnet
 //!
 //! # x402 Integration
 //!
@@ -47,6 +51,7 @@
 //! - x402 Extension: `8004-reputation`
 
 mod abi;
+pub mod solana;
 mod types;
 
 pub use abi::*;
@@ -229,15 +234,15 @@ pub fn get_contracts(network: &Network) -> Option<Erc8004Contracts> {
     }
 }
 
-/// Check if ERC-8004 is supported on a network
+/// Check if ERC-8004 is supported on a network (EVM or Solana)
 pub fn is_erc8004_supported(network: &Network) -> bool {
-    get_contracts(network).is_some()
+    get_contracts(network).is_some() || solana::is_solana_erc8004_supported(network)
 }
 
 /// Get list of all networks with ERC-8004 support
 pub fn supported_networks() -> Vec<Network> {
     vec![
-        // Mainnets
+        // EVM Mainnets
         Network::Ethereum,
         Network::Base,
         Network::Polygon,
@@ -247,7 +252,7 @@ pub fn supported_networks() -> Vec<Network> {
         Network::Bsc,
         Network::Monad,
         Network::Avalanche,
-        // Testnets
+        // EVM Testnets
         Network::EthereumSepolia,
         Network::BaseSepolia,
         Network::PolygonAmoy,
@@ -255,6 +260,9 @@ pub fn supported_networks() -> Vec<Network> {
         Network::OptimismSepolia,
         Network::CeloSepolia,
         Network::AvalancheFuji,
+        // Solana (QuantuLabs 8004-solana + ATOM Engine)
+        Network::Solana,
+        Network::SolanaDevnet,
     ]
 }
 
@@ -465,7 +473,7 @@ mod tests {
     #[test]
     fn test_supported_networks_list() {
         let networks = supported_networks();
-        // Mainnets
+        // EVM Mainnets
         assert!(networks.contains(&Network::Ethereum));
         assert!(networks.contains(&Network::Base));
         assert!(networks.contains(&Network::Polygon));
@@ -475,7 +483,7 @@ mod tests {
         assert!(networks.contains(&Network::Bsc));
         assert!(networks.contains(&Network::Monad));
         assert!(networks.contains(&Network::Avalanche));
-        // Testnets
+        // EVM Testnets
         assert!(networks.contains(&Network::EthereumSepolia));
         assert!(networks.contains(&Network::BaseSepolia));
         assert!(networks.contains(&Network::PolygonAmoy));
@@ -483,14 +491,17 @@ mod tests {
         assert!(networks.contains(&Network::OptimismSepolia));
         assert!(networks.contains(&Network::CeloSepolia));
         assert!(networks.contains(&Network::AvalancheFuji));
-        // Total count
-        assert_eq!(networks.len(), 16);
+        // Solana
+        assert!(networks.contains(&Network::Solana));
+        assert!(networks.contains(&Network::SolanaDevnet));
+        // Total count: 16 EVM + 2 Solana = 18
+        assert_eq!(networks.len(), 18);
     }
 
     #[test]
     fn test_supported_network_names() {
         let names = supported_network_names();
-        // Names must match Network::Display (what serde/FromStr accept)
+        // EVM names must match Network::Display (what serde/FromStr accept)
         assert!(names.contains(&"ethereum".to_string()));
         assert!(names.contains(&"base".to_string())); // NOT "base-mainnet"
         assert!(names.contains(&"polygon".to_string()));
@@ -507,6 +518,15 @@ mod tests {
         assert!(names.contains(&"optimism-sepolia".to_string()));
         assert!(names.contains(&"celo-sepolia".to_string()));
         assert!(names.contains(&"avalanche-fuji".to_string()));
-        assert_eq!(names.len(), 16);
+        // Solana names
+        assert!(names.contains(&"solana".to_string()));
+        assert!(names.contains(&"solana-devnet".to_string()));
+        assert_eq!(names.len(), 18);
+    }
+
+    #[test]
+    fn test_solana_erc8004_supported() {
+        assert!(is_erc8004_supported(&Network::Solana));
+        assert!(is_erc8004_supported(&Network::SolanaDevnet));
     }
 }

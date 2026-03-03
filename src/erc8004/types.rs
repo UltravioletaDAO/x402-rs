@@ -121,9 +121,9 @@ pub struct RegisterAgentRequest {
 pub struct RegisterAgentResponse {
     /// Whether the registration was successful
     pub success: bool,
-    /// The newly assigned agent ID (ERC-721 tokenId)
+    /// Agent ID: ERC-721 tokenId (numeric string) for EVM, base58 Pubkey for Solana
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub agent_id: Option<u64>,
+    pub agent_id: Option<String>,
     /// Registration transaction hash
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transaction: Option<TransactionHash>,
@@ -144,12 +144,23 @@ pub struct RegisterAgentResponse {
 // Reputation Registry Types
 // ============================================================================
 
+/// Parse an agent_id from a JSON value that may be a number or a string.
+/// Returns the raw string representation.
+pub fn parse_agent_id_value(v: &serde_json::Value) -> Option<String> {
+    match v {
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        serde_json::Value::String(s) => Some(s.clone()),
+        _ => None,
+    }
+}
+
 /// Parameters for submitting reputation feedback (matches official spec).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FeedbackParams {
-    /// The agent's ID (tokenId in Identity Registry)
-    pub agent_id: u64,
+    /// Agent ID: numeric (or string) for EVM tokenId, base58 string for Solana Pubkey.
+    /// Accepts both JSON number (42) and string ("42" or "7xKXtg2CW87d97TXJSDp...").
+    pub agent_id: serde_json::Value,
 
     /// Feedback value (fixed-point)
     /// Examples: 87 with decimals=0 means 87/100, 9977 with decimals=2 means 99.77%
@@ -221,8 +232,12 @@ pub struct FeedbackResponse {
 pub struct RevokeFeedbackRequest {
     pub x402_version: crate::types::X402Version,
     pub network: Network,
-    pub agent_id: u64,
+    /// Agent ID: numeric for EVM, base58 Pubkey for Solana
+    pub agent_id: serde_json::Value,
     pub feedback_index: u64,
+    /// SEAL hash for Solana revocations (required for Solana, ignored for EVM)
+    #[serde(default)]
+    pub seal_hash: Option<String>,
 }
 
 /// Request to append response to feedback
@@ -231,12 +246,16 @@ pub struct RevokeFeedbackRequest {
 pub struct AppendResponseRequest {
     pub x402_version: crate::types::X402Version,
     pub network: Network,
-    pub agent_id: u64,
+    /// Agent ID: numeric for EVM, base58 Pubkey for Solana
+    pub agent_id: serde_json::Value,
     pub client_address: MixedAddress,
     pub feedback_index: u64,
     pub response_uri: String,
     #[serde(default)]
     pub response_hash: Option<FixedBytes<32>>,
+    /// SEAL hash for Solana responses (required for Solana, ignored for EVM)
+    #[serde(default)]
+    pub seal_hash: Option<String>,
 }
 
 /// Reputation summary for an agent
@@ -576,7 +595,7 @@ mod tests {
     #[test]
     fn test_feedback_params_full() {
         let params = FeedbackParams {
-            agent_id: 42,
+            agent_id: serde_json::json!(42),
             value: 87,
             value_decimals: 0,
             tag1: "starred".to_string(),
@@ -598,7 +617,7 @@ mod tests {
             x402_version: X402Version::V1,
             network: Network::EthereumSepolia,
             feedback: FeedbackParams {
-                agent_id: 1,
+                agent_id: serde_json::json!(1),
                 value: 100,
                 value_decimals: 0,
                 tag1: "test".to_string(),

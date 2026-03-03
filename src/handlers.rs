@@ -3540,26 +3540,6 @@ where
             .into_response();
     }
 
-    // Get contracts for this network
-    let contracts = match get_contracts(&network) {
-        Some(c) => c,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(RegisterAgentResponse {
-                    success: false,
-                    agent_id: None,
-                    transaction: None,
-                    transfer_transaction: None,
-                    owner: None,
-                    error: Some(format!("No ERC-8004 contracts for network {}", network)),
-                    network,
-                }),
-            )
-                .into_response();
-        }
-    };
-
     info!(
         network = %network,
         agent_uri = %request.agent_uri,
@@ -3569,6 +3549,127 @@ where
 
     // Get the provider for this network
     let provider_map = facilitator.provider_map();
+
+    // ── Solana registration via Anchor register() ──
+    if let Some(NetworkProvider::Solana(p)) = provider_map.by_network(&network) {
+        let programs = match solana_erc8004::get_program_ids(&network) {
+            Some(prog) => prog,
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(RegisterAgentResponse {
+                        success: false, agent_id: None, transaction: None,
+                        transfer_transaction: None, owner: None,
+                        error: Some(format!("No Solana ERC-8004 programs for {}", network)),
+                        network,
+                    }),
+                ).into_response();
+            }
+        };
+
+        // Read the collection pubkey from on-chain config
+        let collection = match solana_erc8004::read_collection_pubkey(
+            p.rpc_client(), &programs.agent_registry,
+        ).await {
+            Ok(c) => c,
+            Err(e) => {
+                error!(network = %network, error = %e, "Failed to read collection pubkey");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(RegisterAgentResponse {
+                        success: false, agent_id: None, transaction: None,
+                        transfer_transaction: None, owner: None,
+                        error: Some(format!("Failed to read registry config: {}", e)),
+                        network,
+                    }),
+                ).into_response();
+            }
+        };
+
+        // Generate a new keypair for the NFT asset
+        let asset_keypair = solana_sdk::signature::Keypair::new();
+        let asset_pubkey = asset_keypair.pubkey();
+        let fee_payer = p.keypair();
+
+        let ix = solana_erc8004::build_register_ix(
+            &programs, &collection, &asset_pubkey, &fee_payer.pubkey(), &request.agent_uri,
+        );
+
+        // Register requires both fee_payer and asset keypairs to sign
+        match solana_erc8004::send_erc8004_transaction_with_signers(
+            p.rpc_client(), fee_payer, &[fee_payer, &asset_keypair], vec![ix],
+        ).await {
+            Ok(sig) => {
+                let agent_id = asset_pubkey.to_string();
+                info!(
+                    network = %network,
+                    tx = %sig,
+                    agent_id = %agent_id,
+                    "ERC-8004 Solana agent registered successfully"
+                );
+
+                // Set metadata if provided
+                if let Some(ref metadata) = request.metadata {
+                    for entry in metadata {
+                        let ix = solana_erc8004::build_set_metadata_pda_ix(
+                            &programs, &asset_pubkey, &fee_payer.pubkey(),
+                            &entry.key, entry.value.as_bytes(), false,
+                        );
+                        if let Err(e) = solana_erc8004::send_erc8004_transaction(
+                            p.rpc_client(), fee_payer, vec![ix],
+                        ).await {
+                            warn!(
+                                key = %entry.key, error = %e,
+                                "Failed to set metadata (agent registered successfully)"
+                            );
+                        }
+                    }
+                }
+
+                return (
+                    StatusCode::OK,
+                    Json(RegisterAgentResponse {
+                        success: true,
+                        agent_id: Some(agent_id),
+                        transaction: Some(crate::types::TransactionHash::Solana(sig.into())),
+                        transfer_transaction: None,
+                        owner: Some(MixedAddress::Solana(fee_payer.pubkey())),
+                        error: None,
+                        network,
+                    }),
+                ).into_response();
+            }
+            Err(e) => {
+                error!(network = %network, error = %e, "Solana registration failed");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(RegisterAgentResponse {
+                        success: false, agent_id: None, transaction: None,
+                        transfer_transaction: None, owner: None,
+                        error: Some(format!("Registration failed: {}", e)),
+                        network,
+                    }),
+                ).into_response();
+            }
+        }
+    }
+
+    // ── EVM registration via IIdentityRegistry.register() ──
+    let contracts = match get_contracts(&network) {
+        Some(c) => c,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(RegisterAgentResponse {
+                    success: false, agent_id: None, transaction: None,
+                    transfer_transaction: None, owner: None,
+                    error: Some(format!("No ERC-8004 contracts for network {}", network)),
+                    network,
+                }),
+            ).into_response();
+        }
+    };
+
     let provider = match provider_map.by_network(&network) {
         Some(NetworkProvider::Evm(p)) => p,
         _ => {
@@ -3576,16 +3677,12 @@ where
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(RegisterAgentResponse {
-                    success: false,
-                    agent_id: None,
-                    transaction: None,
-                    transfer_transaction: None,
-                    owner: None,
+                    success: false, agent_id: None, transaction: None,
+                    transfer_transaction: None, owner: None,
                     error: Some(format!("No EVM provider available for network {}", network)),
                     network,
                 }),
-            )
-                .into_response();
+            ).into_response();
         }
     };
 

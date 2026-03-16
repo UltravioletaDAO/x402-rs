@@ -168,6 +168,7 @@ python scripts/compare_usdc_contracts.py
 - `/settle` - Submit payment on-chain
 - `/supported` - List available networks/schemes
 - `/health` - Health check endpoint
+- `/accepts` - Negotiate payment requirements (Faremeter middleware compatibility)
 
 **src/facilitator.rs**: Core payment logic trait
 - `Facilitator` trait defining verification and settlement interface
@@ -181,6 +182,13 @@ python scripts/compare_usdc_contracts.py
 **src/chain/**: Chain-specific payment logic
 - `chain/evm.rs` - EIP-3009 payment verification and settlement for EVM chains
 - `chain/solana.rs` - Solana token transfer authorization support
+  - **Smart wallet support** (v1.36.0): Two-path verification for Squads, Crossmint, SWIG wallets
+    - Path 1: Top-level TransferChecked (standard wallets, unchanged)
+    - Path 2: Simulation inner instruction scanning (CPI-based smart wallets)
+  - **Settlement account support** (v1.36.0): For Crossmint custodial wallets that can only `sendTransaction`
+    - `SettlementAccountPayload` type: `{ transactionSignature, settleSecretKey, settlementRentDestination }`
+    - Verify: fetches on-chain tx, checks confirmation, validates USDC transfer from token balances
+    - Settle: sweeps USDC from settlement account to payTo (creates ATA if needed, transfers, closes)
 - Handles signature verification, nonce validation, on-chain submission
 
 **src/provider_cache.rs**: RPC provider management
@@ -418,6 +426,18 @@ Located in `tests/x402/`:
 - Verify/settle payload validation
 - See `tests/x402/README.md` and `tests/x402/TROUBLESHOOTING.md`
 
+### Crossmint Smart Wallet Testing
+
+Located in `tests/crossmint-smart-wallet/`:
+- End-to-end test for Crossmint custodial wallets on Solana mainnet
+- Uses `@faremeter/middleware` + `@faremeter/wallet-crossmint` packages
+- `server.mjs` - Mini paywall server supporting both standard and settlement account modes
+- `test.mjs` - Automated test: checks balances, initializes Crossmint wallet, makes x402 payment
+- `setup-wallet.mjs` - Wallet setup helper
+- Tests both Path 1 (standard TransferChecked) and Path 2 (CPI inner instruction scanning)
+- Requires: `CROSSMINT_API_KEY`, `CROSSMINT_WALLET` in `.env`, funded with SOL + USDC
+- Run: `cd tests/crossmint-smart-wallet && npm install && node server.mjs` then `node test.mjs`
+
 ## Important Documentation
 
 - **guides/ADDING_NEW_CHAINS.md** - Complete checklist and guide for adding new blockchain networks
@@ -429,6 +449,8 @@ Located in `tests/x402/`:
 - **docs/UPSTREAM_MERGE_STRATEGY.md** - How to safely merge upstream changes without losing branding
 - **docs/EXTRACTION_MASTER_PLAN.md** - History of extracting facilitator from karmacadabra monorepo
 - **docs/EIP3009_TIMESTAMP_BEST_PRACTICES.md** - Timestamp handling for payment authorizations
+- **docs/ERC8004_SOLANA_INTEGRATION.md** - ERC-8004 Solana integration design and implementation
+- **docs/ERC8004_SOLANA_SDK_GUIDE.md** - SDK guide for ERC-8004 Solana operations
 
 ## Troubleshooting
 

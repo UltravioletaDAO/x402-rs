@@ -529,6 +529,8 @@ pub struct SettleResponseWithProof {
     pub network: Network,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proof_of_payment: Option<ProofOfPayment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<std::collections::HashMap<String, serde_json::Value>>,
 }
 
 // ============================================================================

@@ -411,6 +411,7 @@ where
         transaction: Some(TransactionHash::Evm(tx_hash_bytes)),
         network,
         proof_of_payment: None,
+        extensions: None,
     })
 }
 
@@ -448,6 +449,7 @@ where
         transaction: Some(TransactionHash::Evm(tx_hash_bytes)),
         network,
         proof_of_payment: None,
+        extensions: None,
     })
 }
 
@@ -485,6 +487,7 @@ where
         transaction: Some(TransactionHash::Evm(tx_hash_bytes)),
         network,
         proof_of_payment: None,
+        extensions: None,
     })
 }
 

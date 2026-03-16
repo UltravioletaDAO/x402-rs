@@ -815,6 +815,7 @@ where
         transaction: Some(TransactionHash::Evm(tx_hash_bytes)),
         network: request.network,
         proof_of_payment: None, // Escrow settlements don't generate proof yet
+        extensions: None,
     })
 }
 

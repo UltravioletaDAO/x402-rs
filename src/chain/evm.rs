@@ -1040,6 +1040,7 @@ where
                 transaction: Some(TransactionHash::Evm(receipt.transaction_hash.0)),
                 network: payload.network,
                 proof_of_payment,
+                extensions: None,
             })
         } else {
             tracing::event!(
@@ -1055,6 +1056,7 @@ where
                 transaction: Some(TransactionHash::Evm(receipt.transaction_hash.0)),
                 network: payload.network,
                 proof_of_payment: None,
+                extensions: None,
             })
         }
     }

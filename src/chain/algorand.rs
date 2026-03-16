@@ -884,6 +884,7 @@ impl Facilitator for AlgorandProvider {
                             transaction: None,
                             network: self.network(),
                             proof_of_payment: None,
+                            extensions: None,
                         });
                     }
                 };
@@ -895,6 +896,7 @@ impl Facilitator for AlgorandProvider {
                     transaction: Some(TransactionHash::Algorand(tx_id)),
                     network: self.network(),
                     proof_of_payment: None, // ERC-8004 not supported on Algorand
+                    extensions: None,
                 })
             }
             _ => Err(FacilitatorLocalError::UnsupportedNetwork(None)),

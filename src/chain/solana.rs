@@ -1272,6 +1272,7 @@ impl SolanaProvider {
             )),
             network: self.network(),
             proof_of_payment: None,
+            extensions: None,
         })
     }
 
@@ -1360,6 +1361,7 @@ impl SolanaProvider {
                 )),
                 network: self.network(),
                 proof_of_payment: None,
+                extensions: None,
             });
         }
 
@@ -1474,6 +1476,7 @@ impl SolanaProvider {
             transaction: Some(TransactionHash::Solana(*tx_sig.as_array())),
             network: self.network(),
             proof_of_payment: None,
+            extensions: None,
         })
     }
 }
@@ -1592,6 +1595,7 @@ impl Facilitator for SolanaProvider {
                 transaction: None,
                 network: self.network(),
                 proof_of_payment: None,
+                extensions: None,
             });
         }
 
@@ -1613,6 +1617,7 @@ impl Facilitator for SolanaProvider {
             transaction: Some(TransactionHash::Solana(*tx_sig.as_array())),
             network: self.network(),
             proof_of_payment: None, // ERC-8004 not supported on Solana yet
+            extensions: None,
         };
         Ok(settle_response)
     }

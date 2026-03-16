@@ -682,6 +682,7 @@ impl Facilitator for NearProvider {
                 transaction: None,
                 network: self.network(),
                 proof_of_payment: None,
+                extensions: None,
             });
         }
 
@@ -700,6 +701,7 @@ impl Facilitator for NearProvider {
                     transaction: None,
                     network: self.network(),
                     proof_of_payment: None,
+                    extensions: None,
                 });
             }
         };
@@ -714,6 +716,7 @@ impl Facilitator for NearProvider {
             transaction: Some(TransactionHash::Near(tx_hash_bytes)),
             network: self.network(),
             proof_of_payment: None, // ERC-8004 not supported on NEAR
+            extensions: None,
         })
     }
 

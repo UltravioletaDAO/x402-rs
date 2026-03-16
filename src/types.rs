@@ -1409,6 +1409,11 @@ pub struct SettleResponse {
     /// ERC-8004 proof of payment (included when `8004-reputation` extension is active)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proof_of_payment: Option<crate::erc8004::ProofOfPayment>,
+    /// Optional protocol extensions (e.g., "offer-receipt" from x402 PR #935).
+    /// Pass-through field: the facilitator preserves extensions from requests
+    /// and may populate extensions in responses for downstream consumers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<std::collections::HashMap<String, serde_json::Value>>,
 }
 
 /// Error returned when encoding a [`SettleResponse`] into base64 fails.

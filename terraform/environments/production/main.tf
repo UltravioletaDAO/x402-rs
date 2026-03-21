@@ -616,6 +616,14 @@ resource "aws_ecs_task_definition" "facilitator" {
           name  = "RPC_URL_BSC"
           value = "https://bsc-rpc.publicnode.com"
         },
+        {
+          name  = "RPC_URL_SKALE_BASE"
+          value = "https://skale-base.skalenodes.com/v1/base"
+        },
+        {
+          name  = "RPC_URL_SKALE_BASE_SEPOLIA"
+          value = "https://base-sepolia-testnet.skalenodes.com/v1/jubilant-horrible-ancha"
+        },
         # Discovery API (Bazaar) configuration
         {
           name  = "DISCOVERY_S3_BUCKET"

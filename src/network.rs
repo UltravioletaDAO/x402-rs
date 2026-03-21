@@ -1187,6 +1187,7 @@ static USDC_SUI_TESTNET: Lazy<USDCDeployment> = Lazy::new(|| {
 
 /// Lazily initialized known USDC.e deployment on SKALE Base mainnet as [`USDCDeployment`].
 /// SKALE Base is an L3 on Base with native EIP-3009 support and gasless transactions (sFUEL).
+/// On-chain name() returns "Bridged USDC (SKALE Bridge)" which is the correct EIP-712 domain name.
 static USDC_SKALE_BASE: Lazy<USDCDeployment> = Lazy::new(|| {
     USDCDeployment(TokenDeployment {
         asset: TokenAsset {
@@ -1195,7 +1196,7 @@ static USDC_SKALE_BASE: Lazy<USDCDeployment> = Lazy::new(|| {
         },
         decimals: 6,
         eip712: Some(TokenDeploymentEip712 {
-            name: "USDC".into(),
+            name: "Bridged USDC (SKALE Bridge)".into(),
             version: "2".into(),
         }),
     })
@@ -1203,6 +1204,7 @@ static USDC_SKALE_BASE: Lazy<USDCDeployment> = Lazy::new(|| {
 
 /// Lazily initialized known USDC.e deployment on SKALE Base Sepolia testnet as [`USDCDeployment`].
 /// SKALE Base Sepolia is an L3 on Base Sepolia with native EIP-3009 support and gasless transactions.
+/// On-chain name() returns "Bridged USDC (SKALE Bridge)" which is the correct EIP-712 domain name.
 static USDC_SKALE_BASE_SEPOLIA: Lazy<USDCDeployment> = Lazy::new(|| {
     USDCDeployment(TokenDeployment {
         asset: TokenAsset {
@@ -1211,7 +1213,7 @@ static USDC_SKALE_BASE_SEPOLIA: Lazy<USDCDeployment> = Lazy::new(|| {
         },
         decimals: 6,
         eip712: Some(TokenDeploymentEip712 {
-            name: "USDC".into(),
+            name: "Bridged USDC (SKALE Bridge)".into(),
             version: "2".into(),
         }),
     })

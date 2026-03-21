@@ -1186,7 +1186,7 @@ static USDC_SUI_TESTNET: Lazy<USDCDeployment> = Lazy::new(|| {
 });
 
 /// Lazily initialized known USDC.e deployment on SKALE Base mainnet as [`USDCDeployment`].
-/// SKALE Base is an L3 on Base with native EIP-3009 support and gasless transactions (sFUEL).
+/// SKALE Base is an L3 on Base with native EIP-3009 support and gasless transactions (CREDIT).
 /// On-chain name() returns "Bridged USDC (SKALE Bridge)" which is the correct EIP-712 domain name.
 static USDC_SKALE_BASE: Lazy<USDCDeployment> = Lazy::new(|| {
     USDCDeployment(TokenDeployment {

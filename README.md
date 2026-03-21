@@ -45,7 +45,7 @@ Includes [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) on-chain reputation
 | **Unichain** | 130 | USDC | [uniscan.xyz](https://uniscan.xyz) |
 | **Monad** | 10143 | MON | [monad.xyz](https://monad.xyz) |
 | **BSC** | 56 | USDC | [bscscan.com](https://bscscan.com) |
-| **SKALE Base** | 1187947933 | USDC.e | [skale-base.explorer](https://skale-base.explorer.skalenodes.com) |
+| **SKALE Base** | 1187947933 | USDC.e | [skale-base-explorer](https://skale-base-explorer.skalenodes.com) |
 | **Scroll** | 534352 | USDC | [scrollscan.com](https://scrollscan.com) |
 | **Sui** | - | USDC | [suiscan.xyz](https://suiscan.xyz) |
 | **Solana** | - | USDC, AUSD | [solscan.io](https://solscan.io) |
@@ -67,7 +67,7 @@ Includes [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) on-chain reputation
 | Celo Alfajores | 44787 | [faucet.celo.org](https://faucet.celo.org) |
 | HyperEVM Testnet | 333 | - |
 | Unichain Sepolia | 1301 | - |
-| SKALE Base Sepolia | 324705682 | [sfuel.dirtroad.dev](https://sfuel.dirtroad.dev/staging) |
+| SKALE Base Sepolia | 324705682 | [base-sepolia-faucet.skale.space](http://base-sepolia-faucet.skale.space) |
 | Solana Devnet | - | [solfaucet.com](https://solfaucet.com) |
 | Fogo Testnet | - | [fogoscan.com](https://fogoscan.com/?cluster=testnet) |
 | NEAR Testnet | - | [near-faucet.io](https://near-faucet.io) |

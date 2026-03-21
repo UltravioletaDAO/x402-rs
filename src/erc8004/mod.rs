@@ -22,6 +22,7 @@
 //! - BSC (BNB Smart Chain)
 //! - Monad Mainnet
 //! - Avalanche C-Chain
+//! - SKALE Base Mainnet (gasless L3)
 //!
 //! ## EVM Testnets
 //! - Ethereum Sepolia
@@ -31,6 +32,7 @@
 //! - Optimism Sepolia
 //! - Celo Sepolia
 //! - Avalanche Fuji
+//! - SKALE Base Sepolia
 //!
 //! ## Solana (QuantuLabs 8004-solana + ATOM Engine)
 //! - Solana Mainnet
@@ -151,6 +153,14 @@ pub const AVALANCHE_MAINNET_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
     validation_registry: None,
 };
 
+// SKALE Base Mainnet - Official deployment (CREATE2 deterministic)
+// Gasless L3 on Base - zero gas cost for reputation operations
+pub const SKALE_BASE_MAINNET_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
+    identity_registry: alloy::primitives::address!("8004A169FB4a3325136EB29fA0ceB6D2e539a432"),
+    reputation_registry: alloy::primitives::address!("8004BAa17C55a88189AE136b182e5fdA19dE9b63"),
+    validation_registry: None,
+};
+
 // ============================================================================
 // Testnet Contracts - All use same testnet addresses
 // ============================================================================
@@ -209,6 +219,13 @@ pub const AVALANCHE_FUJI_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
     )),
 };
 
+// SKALE Base Sepolia Testnet - Official testnet deployment (CREATE2 deterministic)
+pub const SKALE_BASE_SEPOLIA_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
+    identity_registry: alloy::primitives::address!("8004A818BFB912233c491871b3d84c89A494BD9e"),
+    reputation_registry: alloy::primitives::address!("8004B663056A597Dffe9eCcC1965A193B7388713"),
+    validation_registry: None,
+};
+
 /// Get ERC-8004 contract addresses for a network
 pub fn get_contracts(network: &Network) -> Option<Erc8004Contracts> {
     match network {
@@ -222,6 +239,7 @@ pub fn get_contracts(network: &Network) -> Option<Erc8004Contracts> {
         Network::Bsc => Some(BSC_MAINNET_CONTRACTS),
         Network::Monad => Some(MONAD_MAINNET_CONTRACTS),
         Network::Avalanche => Some(AVALANCHE_MAINNET_CONTRACTS),
+        Network::SkaleBase => Some(SKALE_BASE_MAINNET_CONTRACTS),
         // Testnets
         Network::EthereumSepolia => Some(ETHEREUM_SEPOLIA_CONTRACTS),
         Network::BaseSepolia => Some(BASE_SEPOLIA_CONTRACTS),
@@ -230,6 +248,7 @@ pub fn get_contracts(network: &Network) -> Option<Erc8004Contracts> {
         Network::OptimismSepolia => Some(OPTIMISM_SEPOLIA_CONTRACTS),
         Network::CeloSepolia => Some(CELO_SEPOLIA_CONTRACTS),
         Network::AvalancheFuji => Some(AVALANCHE_FUJI_CONTRACTS),
+        Network::SkaleBaseSepolia => Some(SKALE_BASE_SEPOLIA_CONTRACTS),
         _ => None,
     }
 }
@@ -252,6 +271,7 @@ pub fn supported_networks() -> Vec<Network> {
         Network::Bsc,
         Network::Monad,
         Network::Avalanche,
+        Network::SkaleBase,
         // EVM Testnets
         Network::EthereumSepolia,
         Network::BaseSepolia,
@@ -260,6 +280,7 @@ pub fn supported_networks() -> Vec<Network> {
         Network::OptimismSepolia,
         Network::CeloSepolia,
         Network::AvalancheFuji,
+        Network::SkaleBaseSepolia,
         // Solana (QuantuLabs 8004-solana + ATOM Engine)
         Network::Solana,
         Network::SolanaDevnet,
@@ -410,6 +431,7 @@ mod tests {
             Network::Bsc,
             Network::Monad,
             Network::Avalanche,
+            Network::SkaleBase,
         ];
 
         for network in mainnet_networks {
@@ -442,6 +464,7 @@ mod tests {
             Network::OptimismSepolia,
             Network::CeloSepolia,
             Network::AvalancheFuji,
+            Network::SkaleBaseSepolia,
         ];
 
         for network in testnet_networks {
@@ -456,11 +479,13 @@ mod tests {
                 "Network {:?} should use testnet identity address",
                 network
             );
-            assert!(
-                contracts.validation_registry.is_some(),
-                "Network {:?} should have validation registry",
-                network
-            );
+            if network != Network::SkaleBaseSepolia {
+                assert!(
+                    contracts.validation_registry.is_some(),
+                    "Network {:?} should have validation registry",
+                    network
+                );
+            }
         }
     }
 
@@ -494,8 +519,11 @@ mod tests {
         // Solana
         assert!(networks.contains(&Network::Solana));
         assert!(networks.contains(&Network::SolanaDevnet));
-        // Total count: 16 EVM + 2 Solana = 18
-        assert_eq!(networks.len(), 18);
+        // SKALE
+        assert!(networks.contains(&Network::SkaleBase));
+        assert!(networks.contains(&Network::SkaleBaseSepolia));
+        // Total count: 16 EVM + 2 SKALE + 2 Solana = 20
+        assert_eq!(networks.len(), 20);
     }
 
     #[test]
@@ -521,7 +549,10 @@ mod tests {
         // Solana names
         assert!(names.contains(&"solana".to_string()));
         assert!(names.contains(&"solana-devnet".to_string()));
-        assert_eq!(names.len(), 18);
+        // SKALE names
+        assert!(names.contains(&"skale-base".to_string()));
+        assert!(names.contains(&"skale-base-sepolia".to_string()));
+        assert_eq!(names.len(), 20);
     }
 
     #[test]

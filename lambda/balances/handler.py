@@ -353,6 +353,23 @@ def get_network_configs() -> dict[str, dict]:
             "address": ALGORAND_TESTNET_ADDRESS,
             "type": "algorand"
         },
+        # SKALE Base (gasless L3, native token is CREDIT)
+        "skale-mainnet": {
+            "rpcs": ["https://skale-base.skalenodes.com/v1/base"],
+            "address": MAINNET_ADDRESS,
+            "type": "evm"
+        },
+        "skale-testnet": {
+            "rpcs": ["https://base-sepolia-testnet.skalenodes.com/v1/jubilant-horrible-ancha"],
+            "address": TESTNET_ADDRESS,
+            "type": "evm"
+        },
+        # Scroll
+        "scroll-mainnet": {
+            "rpcs": ["https://scroll.drpc.org", "https://1rpc.io/scroll", "https://rpc.scroll.io"],
+            "address": MAINNET_ADDRESS,
+            "type": "evm"
+        },
     }
 
 

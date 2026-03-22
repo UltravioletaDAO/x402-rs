@@ -1,12 +1,16 @@
-//! Contract addresses for x402r Escrow Scheme by network
+//! Contract addresses for x402r Escrow Scheme
 //!
-//! These addresses are from the x402r-sdk multichain deployment:
-//! https://github.com/BackTrackCo/x402r-sdk/blob/A1igator/multichain-config/packages/core/src/config/index.ts
+//! CREATE3 unified deployment (2026-03-22): all infrastructure contracts share
+//! the same address on every chain. Only PaymentOperator instances (deployed
+//! via the factory) differ per chain.
 //!
-//! Supported networks (10 total):
+//! Source: https://github.com/BackTrackCo/x402r-sdk/blob/main/packages/core/src/config/index.ts
+//!
+//! Supported networks (11 total):
 //! - Base Sepolia (testnet)
-//! - Base Mainnet
 //! - Ethereum Sepolia (testnet)
+//! - Arbitrum Sepolia (testnet)
+//! - Base Mainnet
 //! - Ethereum Mainnet
 //! - Polygon PoS
 //! - Arbitrum One
@@ -14,134 +18,55 @@
 //! - Monad
 //! - Avalanche C-Chain
 //! - Optimism
+//! - SKALE Base (gasless L3, CREDIT gas token)
 
 use alloy::primitives::{address, Address};
 
 use crate::network::Network;
 
-/// Contract addresses for Base Sepolia testnet (eip155:84532)
-pub mod base_sepolia {
+// ============================================================================
+// CREATE3 Unified Addresses (same on ALL chains)
+// ============================================================================
+
+/// Infrastructure contracts deployed via CREATE3 — identical address on every chain.
+pub mod create3 {
     use super::*;
 
-    pub const ESCROW: Address = address!("29025c0E9D4239d438e169570818dB9FE0A80873");
-    pub const FACTORY: Address = address!("97d53e63A9CB97556c00BeFd325AF810c9b267B2");
-    pub const TOKEN_COLLECTOR: Address = address!("5cA789000070DF15b4663DB64a50AeF5D49c5Ee0");
-    pub const PROTOCOL_FEE_CONFIG: Address = address!("8F96C493bAC365E41f0315cf45830069EBbDCaCe");
-    pub const REFUND_REQUEST: Address = address!("1C2Ab244aC8bDdDB74d43389FF34B118aF2E90F4");
-    pub const USDC: Address = address!("036CbD53842c5426634e7929541eC2318f3dCF7e");
+    // Core
+    pub const ESCROW: Address = address!("e050bB89eD43BB02d71343063824614A7fb80B77");
+    pub const TOKEN_COLLECTOR: Address = address!("cE66Ab399EDA513BD12760b6427C87D6602344a7");
+    pub const PROTOCOL_FEE_CONFIG: Address = address!("7e868A42a458fa2443b6259419aA6A8a161E08c8");
+
+    // Factories
+    pub const FACTORY_PAYMENT_OPERATOR: Address = address!("dc41F932dF2d22346F218E4f5650694c650ab863");
+    pub const FACTORY_REFUND_REQUEST: Address = address!("9cD87Bb58553Ef5ad90Ed6260EBdB906a50D6b83");
+    pub const FACTORY_REFUND_REQUEST_EVIDENCE: Address = address!("3769Be76BBEa31345A2B2d84EF90683E9A377e00");
+    pub const FACTORY_ESCROW_PERIOD: Address = address!("15DB06aADEB3a39D47756Bf864a173cc48bafe24");
+    pub const FACTORY_FREEZE: Address = address!("df129EFFE040c3403aca597c0F0bb704859a78Fd");
+    pub const FACTORY_STATIC_FEE_CALCULATOR: Address = address!("6CDdBdB46e2d7Caae31A6b213B59a1412d7f16Ac");
+    pub const FACTORY_STATIC_ADDRESS_CONDITION: Address = address!("fB09350b200fda7dDd06565F5296A0CA625311d5");
+    pub const FACTORY_AND_CONDITION: Address = address!("5a1F3b6d030D25a2B86aAE469Ae1216ef3be308D");
+    pub const FACTORY_OR_CONDITION: Address = address!("101B2fac8cdC6348E541A0ef087275dA62AA13A0");
+    pub const FACTORY_NOT_CONDITION: Address = address!("1D58f97843579356863d3393ebe24feEd76ceefF");
+    pub const FACTORY_RECORDER_COMBINATOR: Address = address!("ACf2b5e21CFc14135C9cD43ebE96a481F184C1A1");
+    pub const FACTORY_SIGNATURE_CONDITION: Address = address!("669B4930f9E72884725F5C7D837Ab9517eA3040f");
+
+    // Singletons
+    pub const USDC_TVL_LIMIT: Address = address!("0F1F26719219CfAdC8a1C80D2216098A0534a091");
+    pub const ARBITER_REGISTRY: Address = address!("1c2d7d5978d46a943FA98aC9a649519C1424FB3e");
+    pub const RECEIVER_REFUND_COLLECTOR: Address = address!("E5500a38BE45a6C598420fbd7867ac85EC451A07");
+
+    // Condition singletons
+    pub const CONDITION_PAYER: Address = address!("33F5F1154A02d0839266EFd23Fd3b85a3505bB4B");
+    pub const CONDITION_RECEIVER: Address = address!("F41974A853940Ff4c18d46B6565f973c1180E171");
+    pub const CONDITION_ALWAYS_TRUE: Address = address!("b295df7E7f786fd84D614AB26b1f2e86026C3483");
 }
 
-/// Contract addresses for Base mainnet (eip155:8453)
-pub mod base_mainnet {
-    use super::*;
-
-    pub const ESCROW: Address = address!("b9488351E48b23D798f24e8174514F28B741Eb4f");
-    pub const FACTORY: Address = address!("3D0837fF8Ea36F417261577b9BA568400A840260");
-    pub const TOKEN_COLLECTOR: Address = address!("48ADf6E37F9b31dC2AAD0462C5862B5422C736B8");
-    pub const PROTOCOL_FEE_CONFIG: Address = address!("59314674BAbb1a24Eb2704468a9cCdD50668a1C6");
-    pub const REFUND_REQUEST: Address = address!("35fb2EFEfAc3Ee9f6E52A9AAE5C9655bC08dEc00");
-    pub const USDC: Address = address!("833589fCD6eDb6E08f4c7C32D4f71b54bdA02913");
-}
-
-/// Contract addresses for Ethereum Sepolia testnet (eip155:11155111)
-pub mod ethereum_sepolia {
-    use super::*;
-
-    pub const ESCROW: Address = address!("320a3c35F131E5D2Fb36af56345726B298936037");
-    pub const FACTORY: Address = address!("32d6AC59BCe8DFB3026F10BcaDB8D00AB218f5b6");
-    pub const TOKEN_COLLECTOR: Address = address!("230fd3A171750FA45db2976121376b7F47Cba308");
-    pub const PROTOCOL_FEE_CONFIG: Address = address!("D979dBfBdA5f4b16AAF60Eaab32A44f352076838");
-    pub const REFUND_REQUEST: Address = address!("c1256Bb30bd0cdDa07D8C8Cf67a59105f2EA1b98");
-    pub const USDC: Address = address!("1c7D4B196Cb0C7B01d743Fbc6116a902379C7238");
-}
-
-/// Contract addresses for Ethereum mainnet (eip155:1)
-/// Redeployed by Ali (2026-02-20) - addresses from x402r-sdk config
-pub mod ethereum_mainnet {
-    use super::*;
-
-    pub const ESCROW: Address = address!("9D4146EF898c8E60B3e865AE254ef438E7cEd2A0");
-    pub const FACTORY: Address = address!("1e52a74cE6b69F04a506eF815743E1052A1BD28F");
-    pub const TOKEN_COLLECTOR: Address = address!("206D4DbB6E7b876e4B5EFAAD2a04e7d7813FB6ba");
-    pub const PROTOCOL_FEE_CONFIG: Address = address!("5b3e33791C1764cF7e2573Bf8116F1D361FD97Cd");
-    pub const REFUND_REQUEST: Address = address!("Fa8C4Cb156053b867Ae7489220A29b5939E3Df70");
-    pub const USDC: Address = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
-}
-
-/// Contract addresses for Polygon PoS (eip155:137)
-pub mod polygon {
-    use super::*;
-
-    pub const ESCROW: Address = address!("32d6AC59BCe8DFB3026F10BcaDB8D00AB218f5b6");
-    pub const FACTORY: Address = address!("b33D6502EdBbC47201cd1E53C49d703EC0a660b8");
-    pub const TOKEN_COLLECTOR: Address = address!("c1256Bb30bd0cdDa07D8C8Cf67a59105f2EA1b98");
-    pub const PROTOCOL_FEE_CONFIG: Address = address!("E78648e7af7B1BaDE717FF6E410B922F92adE80f");
-    pub const REFUND_REQUEST: Address = address!("ed02d3E5167BCc9582D851885A89b050AB816a56");
-    pub const USDC: Address = address!("3c499c542cEF5E3811e1192ce70d8cC03d5c3359");
-}
-
-/// Contract addresses for Arbitrum One (eip155:42161)
-pub mod arbitrum {
-    use super::*;
-
-    pub const ESCROW: Address = address!("320a3c35F131E5D2Fb36af56345726B298936037");
-    pub const FACTORY: Address = address!("32d6AC59BCe8DFB3026F10BcaDB8D00AB218f5b6");
-    pub const TOKEN_COLLECTOR: Address = address!("230fd3A171750FA45db2976121376b7F47Cba308");
-    pub const PROTOCOL_FEE_CONFIG: Address = address!("D979dBfBdA5f4b16AAF60Eaab32A44f352076838");
-    pub const REFUND_REQUEST: Address = address!("c1256Bb30bd0cdDa07D8C8Cf67a59105f2EA1b98");
-    pub const USDC: Address = address!("af88d065e77c8cC2239327C5EDb3A432268e5831");
-}
-
-/// Contract addresses for Celo (eip155:42220)
-pub mod celo {
-    use super::*;
-
-    pub const ESCROW: Address = address!("320a3c35F131E5D2Fb36af56345726B298936037");
-    pub const FACTORY: Address = address!("32d6AC59BCe8DFB3026F10BcaDB8D00AB218f5b6");
-    pub const TOKEN_COLLECTOR: Address = address!("230fd3A171750FA45db2976121376b7F47Cba308");
-    pub const PROTOCOL_FEE_CONFIG: Address = address!("D979dBfBdA5f4b16AAF60Eaab32A44f352076838");
-    pub const REFUND_REQUEST: Address = address!("c1256Bb30bd0cdDa07D8C8Cf67a59105f2EA1b98");
-    pub const USDC: Address = address!("cebA9300f2b948710d2653dD7B07f33A8B32118C");
-}
-
-/// Contract addresses for Monad (eip155:143)
-pub mod monad {
-    use super::*;
-
-    pub const ESCROW: Address = address!("320a3c35F131E5D2Fb36af56345726B298936037");
-    pub const FACTORY: Address = address!("32d6AC59BCe8DFB3026F10BcaDB8D00AB218f5b6");
-    pub const TOKEN_COLLECTOR: Address = address!("230fd3A171750FA45db2976121376b7F47Cba308");
-    pub const PROTOCOL_FEE_CONFIG: Address = address!("D979dBfBdA5f4b16AAF60Eaab32A44f352076838");
-    pub const REFUND_REQUEST: Address = address!("c1256Bb30bd0cdDa07D8C8Cf67a59105f2EA1b98");
-    pub const USDC: Address = address!("754704Bc059F8C67012fEd69BC8A327a5aafb603");
-}
-
-/// Contract addresses for Avalanche C-Chain (eip155:43114)
-pub mod avalanche {
-    use super::*;
-
-    pub const ESCROW: Address = address!("320a3c35F131E5D2Fb36af56345726B298936037");
-    pub const FACTORY: Address = address!("32d6AC59BCe8DFB3026F10BcaDB8D00AB218f5b6");
-    pub const TOKEN_COLLECTOR: Address = address!("230fd3A171750FA45db2976121376b7F47Cba308");
-    pub const PROTOCOL_FEE_CONFIG: Address = address!("D979dBfBdA5f4b16AAF60Eaab32A44f352076838");
-    pub const REFUND_REQUEST: Address = address!("c1256Bb30bd0cdDa07D8C8Cf67a59105f2EA1b98");
-    pub const USDC: Address = address!("B97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E");
-}
-
-/// Contract addresses for Optimism (eip155:10)
-pub mod optimism {
-    use super::*;
-
-    pub const ESCROW: Address = address!("320a3c35F131E5D2Fb36af56345726B298936037");
-    pub const FACTORY: Address = address!("32d6AC59BCe8DFB3026F10BcaDB8D00AB218f5b6");
-    pub const TOKEN_COLLECTOR: Address = address!("230fd3A171750FA45db2976121376b7F47Cba308");
-    pub const PROTOCOL_FEE_CONFIG: Address = address!("D979dBfBdA5f4b16AAF60Eaab32A44f352076838");
-    pub const REFUND_REQUEST: Address = address!("c1256Bb30bd0cdDa07D8C8Cf67a59105f2EA1b98");
-    pub const USDC: Address = address!("0b2C639c533813f4Aa9D7837CAf62653d097Ff85");
-}
+// ============================================================================
+// Network Support
+// ============================================================================
 
 /// All networks that have x402r escrow contracts deployed.
-/// This is the single source of truth for escrow network support.
 pub const ESCROW_NETWORKS: &[Network] = &[
     Network::BaseSepolia,
     Network::Base,
@@ -153,99 +78,49 @@ pub const ESCROW_NETWORKS: &[Network] = &[
     Network::Monad,
     Network::Avalanche,
     Network::Optimism,
+    Network::SkaleBase,
 ];
 
-/// Get escrow address for a given network
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/// Get escrow address for a given network (CREATE3 = same on all supported networks)
 pub fn escrow_for_network(network: Network) -> Option<Address> {
-    match network {
-        Network::BaseSepolia => Some(base_sepolia::ESCROW),
-        Network::Base => Some(base_mainnet::ESCROW),
-        Network::EthereumSepolia => Some(ethereum_sepolia::ESCROW),
-        Network::Ethereum => Some(ethereum_mainnet::ESCROW),
-        Network::Polygon => Some(polygon::ESCROW),
-        Network::Arbitrum => Some(arbitrum::ESCROW),
-        Network::Celo => Some(celo::ESCROW),
-        Network::Monad => Some(monad::ESCROW),
-        Network::Avalanche => Some(avalanche::ESCROW),
-        Network::Optimism => Some(optimism::ESCROW),
-        _ => None,
-    }
+    if is_supported(network) { Some(create3::ESCROW) } else { None }
 }
 
-/// Get factory address for a given network
+/// Get factory address for a given network (CREATE3 = same on all supported networks)
 pub fn factory_for_network(network: Network) -> Option<Address> {
-    match network {
-        Network::BaseSepolia => Some(base_sepolia::FACTORY),
-        Network::Base => Some(base_mainnet::FACTORY),
-        Network::EthereumSepolia => Some(ethereum_sepolia::FACTORY),
-        Network::Ethereum => Some(ethereum_mainnet::FACTORY),
-        Network::Polygon => Some(polygon::FACTORY),
-        Network::Arbitrum => Some(arbitrum::FACTORY),
-        Network::Celo => Some(celo::FACTORY),
-        Network::Monad => Some(monad::FACTORY),
-        Network::Avalanche => Some(avalanche::FACTORY),
-        Network::Optimism => Some(optimism::FACTORY),
-        _ => None,
-    }
+    if is_supported(network) { Some(create3::FACTORY_PAYMENT_OPERATOR) } else { None }
 }
 
-/// Get token collector address for a given network
+/// Get token collector address for a given network (CREATE3 = same on all supported networks)
 pub fn token_collector_for_network(network: Network) -> Option<Address> {
-    match network {
-        Network::BaseSepolia => Some(base_sepolia::TOKEN_COLLECTOR),
-        Network::Base => Some(base_mainnet::TOKEN_COLLECTOR),
-        Network::EthereumSepolia => Some(ethereum_sepolia::TOKEN_COLLECTOR),
-        Network::Ethereum => Some(ethereum_mainnet::TOKEN_COLLECTOR),
-        Network::Polygon => Some(polygon::TOKEN_COLLECTOR),
-        Network::Arbitrum => Some(arbitrum::TOKEN_COLLECTOR),
-        Network::Celo => Some(celo::TOKEN_COLLECTOR),
-        Network::Monad => Some(monad::TOKEN_COLLECTOR),
-        Network::Avalanche => Some(avalanche::TOKEN_COLLECTOR),
-        Network::Optimism => Some(optimism::TOKEN_COLLECTOR),
-        _ => None,
-    }
+    if is_supported(network) { Some(create3::TOKEN_COLLECTOR) } else { None }
 }
 
-/// Get protocol fee config address for a given network
+/// Get protocol fee config address for a given network (CREATE3 = same on all supported networks)
 pub fn protocol_fee_config_for_network(network: Network) -> Option<Address> {
-    match network {
-        Network::BaseSepolia => Some(base_sepolia::PROTOCOL_FEE_CONFIG),
-        Network::Base => Some(base_mainnet::PROTOCOL_FEE_CONFIG),
-        Network::EthereumSepolia => Some(ethereum_sepolia::PROTOCOL_FEE_CONFIG),
-        Network::Ethereum => Some(ethereum_mainnet::PROTOCOL_FEE_CONFIG),
-        Network::Polygon => Some(polygon::PROTOCOL_FEE_CONFIG),
-        Network::Arbitrum => Some(arbitrum::PROTOCOL_FEE_CONFIG),
-        Network::Celo => Some(celo::PROTOCOL_FEE_CONFIG),
-        Network::Monad => Some(monad::PROTOCOL_FEE_CONFIG),
-        Network::Avalanche => Some(avalanche::PROTOCOL_FEE_CONFIG),
-        Network::Optimism => Some(optimism::PROTOCOL_FEE_CONFIG),
-        _ => None,
-    }
+    if is_supported(network) { Some(create3::PROTOCOL_FEE_CONFIG) } else { None }
 }
 
-/// Get refund request address for a given network
+/// Get refund request factory address for a given network (CREATE3 = same on all supported networks)
 pub fn refund_request_for_network(network: Network) -> Option<Address> {
-    match network {
-        Network::BaseSepolia => Some(base_sepolia::REFUND_REQUEST),
-        Network::Base => Some(base_mainnet::REFUND_REQUEST),
-        Network::EthereumSepolia => Some(ethereum_sepolia::REFUND_REQUEST),
-        Network::Ethereum => Some(ethereum_mainnet::REFUND_REQUEST),
-        Network::Polygon => Some(polygon::REFUND_REQUEST),
-        Network::Arbitrum => Some(arbitrum::REFUND_REQUEST),
-        Network::Celo => Some(celo::REFUND_REQUEST),
-        Network::Monad => Some(monad::REFUND_REQUEST),
-        Network::Avalanche => Some(avalanche::REFUND_REQUEST),
-        Network::Optimism => Some(optimism::REFUND_REQUEST),
-        _ => None,
-    }
+    if is_supported(network) { Some(create3::FACTORY_REFUND_REQUEST) } else { None }
 }
 
 /// Check if a network supports the escrow scheme
 pub fn is_supported(network: Network) -> bool {
-    escrow_for_network(network).is_some()
+    ESCROW_NETWORKS.contains(&network)
 }
 
-/// All escrow contract addresses for a network
+// ============================================================================
+// Per-Network Operator Addresses
+// ============================================================================
+
+/// All escrow contract addresses for a network.
+/// Infrastructure addresses are CREATE3-unified; only `payment_operators` differs per chain.
 #[derive(Debug, Clone)]
 pub struct OperatorAddresses {
     pub escrow: Address,
@@ -257,114 +132,63 @@ pub struct OperatorAddresses {
 }
 
 impl OperatorAddresses {
+    /// Build an OperatorAddresses with CREATE3 infrastructure and per-chain operators.
+    fn with_operators(operators: Vec<Address>) -> Self {
+        Self {
+            escrow: create3::ESCROW,
+            factory: create3::FACTORY_PAYMENT_OPERATOR,
+            token_collector: create3::TOKEN_COLLECTOR,
+            protocol_fee_config: create3::PROTOCOL_FEE_CONFIG,
+            refund_request: create3::FACTORY_REFUND_REQUEST,
+            payment_operators: operators,
+        }
+    }
+
     /// Get addresses for a network.
     ///
-    /// NOTE: payment_operators is empty until a PaymentOperator is deployed
-    /// on each network using the factory. Use deploy_operator.py to deploy.
-    /// Multiple operators per network are supported (e.g. Fase 3 multi-operator).
+    /// Infrastructure addresses are CREATE3-unified (same on all chains).
+    /// PaymentOperator addresses are per-chain, deployed via the factory.
     pub fn for_network(network: Network) -> Option<Self> {
         match network {
-            Network::BaseSepolia => Some(Self {
-                escrow: base_sepolia::ESCROW,
-                factory: base_sepolia::FACTORY,
-                payment_operators: vec![
-                    address!("7D092ec506B3D43EB87846F9c9739303785D7B2f"), // Permissionless testnet operator (feeRecipient=facilitator, all conditions=zero)
-                ],
-                token_collector: base_sepolia::TOKEN_COLLECTOR,
-                protocol_fee_config: base_sepolia::PROTOCOL_FEE_CONFIG,
-                refund_request: base_sepolia::REFUND_REQUEST,
-            }),
-            Network::Base => Some(Self {
-                escrow: base_mainnet::ESCROW,
-                factory: base_mainnet::FACTORY,
-                payment_operators: vec![
-                    address!("271f9fa7f8907aCf178CCFB470076D9129D8F0Eb"), // EM Fase 5 trustless fee split (1300bps=13%, Facilitator-only refund)
-                    address!("030353642B936c9D4213caD7BcB0fB8a1489cBe5"), // EM Fase 4 secure operator (OR release, Facilitator-only refund, feeCalculator=0)
-                ],
-                token_collector: base_mainnet::TOKEN_COLLECTOR,
-                protocol_fee_config: base_mainnet::PROTOCOL_FEE_CONFIG,
-                refund_request: base_mainnet::REFUND_REQUEST,
-            }),
-            Network::EthereumSepolia => Some(Self {
-                escrow: ethereum_sepolia::ESCROW,
-                factory: ethereum_sepolia::FACTORY,
-                payment_operators: vec![
-                    address!("a8d2432C7ab8bA551feC15e09b64F44505e72b36"), // Permissionless testnet operator (feeRecipient=facilitator, all conditions=zero)
-                ],
-                token_collector: ethereum_sepolia::TOKEN_COLLECTOR,
-                protocol_fee_config: ethereum_sepolia::PROTOCOL_FEE_CONFIG,
-                refund_request: ethereum_sepolia::REFUND_REQUEST,
-            }),
-            Network::Ethereum => Some(Self {
-                escrow: ethereum_mainnet::ESCROW,
-                factory: ethereum_mainnet::FACTORY,
-                payment_operators: vec![
-                    address!("69B67962ffb7c5C7078ff348a87DF604dfA8001b"), // EM Fase 5 (1300bps, OR release, Facilitator-only refund)
-                ],
-                token_collector: ethereum_mainnet::TOKEN_COLLECTOR,
-                protocol_fee_config: ethereum_mainnet::PROTOCOL_FEE_CONFIG,
-                refund_request: ethereum_mainnet::REFUND_REQUEST,
-            }),
-            Network::Polygon => Some(Self {
-                escrow: polygon::ESCROW,
-                factory: polygon::FACTORY,
-                payment_operators: vec![
-                    address!("B87F1ECC85f074e50df3DD16A1F40e4e1EC4102e"), // EM Fase 5 (1300bps, OR release, Facilitator-only refund)
-                ],
-                token_collector: polygon::TOKEN_COLLECTOR,
-                protocol_fee_config: polygon::PROTOCOL_FEE_CONFIG,
-                refund_request: polygon::REFUND_REQUEST,
-            }),
-            Network::Arbitrum => Some(Self {
-                escrow: arbitrum::ESCROW,
-                factory: arbitrum::FACTORY,
-                payment_operators: vec![
-                    address!("C2377a9Db1de2520BD6b2756eD012f4E82F7938e"), // EM Fase 5 (1300bps, OR release, Facilitator-only refund)
-                ],
-                token_collector: arbitrum::TOKEN_COLLECTOR,
-                protocol_fee_config: arbitrum::PROTOCOL_FEE_CONFIG,
-                refund_request: arbitrum::REFUND_REQUEST,
-            }),
-            Network::Celo => Some(Self {
-                escrow: celo::ESCROW,
-                factory: celo::FACTORY,
-                payment_operators: vec![
-                    address!("C2377a9Db1de2520BD6b2756eD012f4E82F7938e"), // EM Fase 5 (1300bps, OR release, Facilitator-only refund)
-                ],
-                token_collector: celo::TOKEN_COLLECTOR,
-                protocol_fee_config: celo::PROTOCOL_FEE_CONFIG,
-                refund_request: celo::REFUND_REQUEST,
-            }),
-            Network::Monad => Some(Self {
-                escrow: monad::ESCROW,
-                factory: monad::FACTORY,
-                payment_operators: vec![
-                    address!("9620Dbe2BB549E1d080Dc8e7982623A9e1Df8cC3"), // EM Fase 5 (1300bps, OR release, Facilitator-only refund)
-                ],
-                token_collector: monad::TOKEN_COLLECTOR,
-                protocol_fee_config: monad::PROTOCOL_FEE_CONFIG,
-                refund_request: monad::REFUND_REQUEST,
-            }),
-            Network::Avalanche => Some(Self {
-                escrow: avalanche::ESCROW,
-                factory: avalanche::FACTORY,
-                payment_operators: vec![
-                    address!("C2377a9Db1de2520BD6b2756eD012f4E82F7938e"), // EM Fase 5 (1300bps, OR release, Facilitator-only refund)
-                ],
-                token_collector: avalanche::TOKEN_COLLECTOR,
-                protocol_fee_config: avalanche::PROTOCOL_FEE_CONFIG,
-                refund_request: avalanche::REFUND_REQUEST,
-            }),
-            Network::Optimism => Some(Self {
-                escrow: optimism::ESCROW,
-                factory: optimism::FACTORY,
-                payment_operators: vec![
-                    address!("C2377a9Db1de2520BD6b2756eD012f4E82F7938e"), // EM Fase 5 (1300bps, OR release, Facilitator-only refund)
-                ],
-                token_collector: optimism::TOKEN_COLLECTOR,
-                protocol_fee_config: optimism::PROTOCOL_FEE_CONFIG,
-                refund_request: optimism::REFUND_REQUEST,
-            }),
+            // Testnets
+            Network::BaseSepolia => Some(Self::with_operators(vec![
+                address!("7D092ec506B3D43EB87846F9c9739303785D7B2f"), // Permissionless testnet operator
+            ])),
+            Network::EthereumSepolia => Some(Self::with_operators(vec![
+                address!("a8d2432C7ab8bA551feC15e09b64F44505e72b36"), // Permissionless testnet operator
+            ])),
+
+            // Mainnets
+            Network::Base => Some(Self::with_operators(vec![
+                address!("271f9fa7f8907aCf178CCFB470076D9129D8F0Eb"), // Fase 5 (1300bps, OR release, Facilitator-only refund)
+                address!("030353642B936c9D4213caD7BcB0fB8a1489cBe5"), // Fase 4 (OR release, Facilitator-only refund, feeCalculator=0)
+            ])),
+            Network::Ethereum => Some(Self::with_operators(vec![
+                address!("69B67962ffb7c5C7078ff348a87DF604dfA8001b"), // Fase 5
+            ])),
+            Network::Polygon => Some(Self::with_operators(vec![
+                address!("B87F1ECC85f074e50df3DD16A1F40e4e1EC4102e"), // Fase 5
+            ])),
+            Network::Arbitrum => Some(Self::with_operators(vec![
+                address!("C2377a9Db1de2520BD6b2756eD012f4E82F7938e"), // Fase 5
+            ])),
+            Network::Celo => Some(Self::with_operators(vec![
+                address!("C2377a9Db1de2520BD6b2756eD012f4E82F7938e"), // Fase 5
+            ])),
+            Network::Monad => Some(Self::with_operators(vec![
+                address!("9620Dbe2BB549E1d080Dc8e7982623A9e1Df8cC3"), // Fase 5
+            ])),
+            Network::Avalanche => Some(Self::with_operators(vec![
+                address!("C2377a9Db1de2520BD6b2756eD012f4E82F7938e"), // Fase 5
+            ])),
+            Network::Optimism => Some(Self::with_operators(vec![
+                address!("C2377a9Db1de2520BD6b2756eD012f4E82F7938e"), // Fase 5
+            ])),
+
+            // SKALE Base (gasless L3, CREDIT gas token, legacy tx only)
+            // PaymentOperator not yet deployed -- will be deployed via factory
+            Network::SkaleBase => Some(Self::with_operators(vec![])),
+
             _ => None,
         }
     }
@@ -387,18 +211,16 @@ mod tests {
 
     #[test]
     fn test_is_supported() {
-        // All escrow networks should be supported
         for &network in ESCROW_NETWORKS {
             assert!(is_supported(network), "{:?} should be supported", network);
         }
-        // Non-escrow networks should not be supported
         assert!(!is_supported(Network::Solana));
         assert!(!is_supported(Network::HyperEvm));
     }
 
     #[test]
     fn test_escrow_networks_count() {
-        assert_eq!(ESCROW_NETWORKS.len(), 10);
+        assert_eq!(ESCROW_NETWORKS.len(), 11);
     }
 
     #[test]
@@ -414,13 +236,33 @@ mod tests {
     }
 
     #[test]
+    fn test_create3_unified_addresses() {
+        // All supported networks must return the same infrastructure addresses
+        for &network in ESCROW_NETWORKS {
+            let addrs = OperatorAddresses::for_network(network).unwrap();
+            assert_eq!(addrs.escrow, create3::ESCROW, "escrow mismatch for {:?}", network);
+            assert_eq!(addrs.factory, create3::FACTORY_PAYMENT_OPERATOR, "factory mismatch for {:?}", network);
+            assert_eq!(addrs.token_collector, create3::TOKEN_COLLECTOR, "token_collector mismatch for {:?}", network);
+            assert_eq!(addrs.protocol_fee_config, create3::PROTOCOL_FEE_CONFIG, "protocol_fee_config mismatch for {:?}", network);
+            assert_eq!(addrs.refund_request, create3::FACTORY_REFUND_REQUEST, "refund_request mismatch for {:?}", network);
+        }
+    }
+
+    #[test]
     fn test_base_mainnet_has_payment_operators() {
         let addrs = OperatorAddresses::for_network(Network::Base).unwrap();
-        assert!(
-            !addrs.payment_operators.is_empty(),
-            "Base mainnet should have EM PaymentOperator(s) registered"
-        );
+        assert!(!addrs.payment_operators.is_empty());
         assert_eq!(addrs.payment_operators.len(), 2);
+    }
+
+    #[test]
+    fn test_skale_base_supported() {
+        assert!(is_supported(Network::SkaleBase));
+        let addrs = OperatorAddresses::for_network(Network::SkaleBase).unwrap();
+        assert_eq!(addrs.escrow, create3::ESCROW);
+        assert_eq!(addrs.factory, create3::FACTORY_PAYMENT_OPERATOR);
+        // No operators deployed yet
+        assert!(addrs.payment_operators.is_empty());
     }
 
     #[test]
@@ -450,22 +292,5 @@ mod tests {
         assert!(escrow_for_network(Network::Solana).is_none());
         assert!(factory_for_network(Network::Solana).is_none());
         assert!(OperatorAddresses::for_network(Network::Solana).is_none());
-    }
-
-    #[test]
-    fn test_base_mainnet_addresses() {
-        let addrs = OperatorAddresses::for_network(Network::Base).unwrap();
-        assert_eq!(addrs.escrow, base_mainnet::ESCROW);
-        assert_eq!(addrs.factory, base_mainnet::FACTORY);
-        assert_eq!(addrs.token_collector, base_mainnet::TOKEN_COLLECTOR);
-    }
-
-    #[test]
-    fn test_ethereum_mainnet_addresses() {
-        let addrs = OperatorAddresses::for_network(Network::Ethereum).unwrap();
-        assert_eq!(addrs.escrow, ethereum_mainnet::ESCROW);
-        assert_eq!(addrs.factory, ethereum_mainnet::FACTORY);
-        assert_eq!(addrs.token_collector, ethereum_mainnet::TOKEN_COLLECTOR);
-        assert_eq!(addrs.payment_operators.len(), 1);
     }
 }

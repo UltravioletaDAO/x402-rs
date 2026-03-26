@@ -40,29 +40,29 @@ pub mod create3 {
     pub const TOKEN_COLLECTOR: Address = address!("cE66Ab399EDA513BD12760b6427C87D6602344a7");
     pub const PROTOCOL_FEE_CONFIG: Address = address!("7e868A42a458fa2443b6259419aA6A8a161E08c8");
 
-    // Factories
-    pub const FACTORY_PAYMENT_OPERATOR: Address = address!("dc41F932dF2d22346F218E4f5650694c650ab863");
-    pub const FACTORY_REFUND_REQUEST: Address = address!("9cD87Bb58553Ef5ad90Ed6260EBdB906a50D6b83");
-    pub const FACTORY_REFUND_REQUEST_EVIDENCE: Address = address!("3769Be76BBEa31345A2B2d84EF90683E9A377e00");
-    pub const FACTORY_ESCROW_PERIOD: Address = address!("15DB06aADEB3a39D47756Bf864a173cc48bafe24");
-    pub const FACTORY_FREEZE: Address = address!("df129EFFE040c3403aca597c0F0bb704859a78Fd");
-    pub const FACTORY_STATIC_FEE_CALCULATOR: Address = address!("6CDdBdB46e2d7Caae31A6b213B59a1412d7f16Ac");
-    pub const FACTORY_STATIC_ADDRESS_CONDITION: Address = address!("fB09350b200fda7dDd06565F5296A0CA625311d5");
-    pub const FACTORY_AND_CONDITION: Address = address!("5a1F3b6d030D25a2B86aAE469Ae1216ef3be308D");
-    pub const FACTORY_OR_CONDITION: Address = address!("101B2fac8cdC6348E541A0ef087275dA62AA13A0");
-    pub const FACTORY_NOT_CONDITION: Address = address!("1D58f97843579356863d3393ebe24feEd76ceefF");
-    pub const FACTORY_RECORDER_COMBINATOR: Address = address!("ACf2b5e21CFc14135C9cD43ebE96a481F184C1A1");
-    pub const FACTORY_SIGNATURE_CONDITION: Address = address!("669B4930f9E72884725F5C7D837Ab9517eA3040f");
+    // Factories (redeployed 2026-03-26 with Shanghai EVM for SKALE compat)
+    pub const FACTORY_PAYMENT_OPERATOR: Address = address!("A13AD07eD53BFF6c4e9e6478C3A8FFA4D096B5A3");
+    pub const FACTORY_REFUND_REQUEST: Address = address!("7996b1E7B5B28AF85093dcE3AE73b128133D3715");
+    pub const FACTORY_REFUND_REQUEST_EVIDENCE: Address = address!("a454D7e0D521176c998309E4E6828156870EDf4B");
+    pub const FACTORY_ESCROW_PERIOD: Address = address!("Cf84F213d6e1b2E2dc0DbCBd7d81FaAC305d4E96");
+    pub const FACTORY_FREEZE: Address = address!("af6700833bf414BEde7d450f9c6772e2FE76B21d");
+    pub const FACTORY_STATIC_FEE_CALCULATOR: Address = address!("83B94258Daa50Dd08aED72e0Cda1daCC20286F52");
+    pub const FACTORY_STATIC_ADDRESS_CONDITION: Address = address!("f9739BB422C93A9705cC636BA9D35B97F721e782");
+    pub const FACTORY_AND_CONDITION: Address = address!("57d33f001a0d880Ca9e53e578c55CA74baB5C36A");
+    pub const FACTORY_OR_CONDITION: Address = address!("efaD31Ab2a17092Bb4350C84324D59C80CeBB9F4");
+    pub const FACTORY_NOT_CONDITION: Address = address!("8FE9EDE9a786e613723922aB9f512F54DAEfE3A8");
+    pub const FACTORY_RECORDER_COMBINATOR: Address = address!("60C1492fbB1A53F5d968Ad6FDFA6b7672Bc6a34c");
+    pub const FACTORY_SIGNATURE_CONDITION: Address = address!("99F11e8b407dAc9BCBf40B869D35071D74FE56f4");
 
-    // Singletons
-    pub const USDC_TVL_LIMIT: Address = address!("0F1F26719219CfAdC8a1C80D2216098A0534a091");
+    // Singletons (redeployed 2026-03-26)
+    pub const USDC_TVL_LIMIT: Address = address!("6CAcA05D19312d28787e93ad4249508ED11198be");
     pub const ARBITER_REGISTRY: Address = address!("1c2d7d5978d46a943FA98aC9a649519C1424FB3e");
     pub const RECEIVER_REFUND_COLLECTOR: Address = address!("E5500a38BE45a6C598420fbd7867ac85EC451A07");
 
-    // Condition singletons
-    pub const CONDITION_PAYER: Address = address!("33F5F1154A02d0839266EFd23Fd3b85a3505bB4B");
-    pub const CONDITION_RECEIVER: Address = address!("F41974A853940Ff4c18d46B6565f973c1180E171");
-    pub const CONDITION_ALWAYS_TRUE: Address = address!("b295df7E7f786fd84D614AB26b1f2e86026C3483");
+    // Condition singletons (redeployed 2026-03-26)
+    pub const CONDITION_PAYER: Address = address!("c321156210E9c2D135454290dc13ca7A1A7533C6");
+    pub const CONDITION_RECEIVER: Address = address!("d14242a812F9C7C81869F01867453e571cacEaba");
+    pub const CONDITION_ALWAYS_TRUE: Address = address!("27E1576D4C7C5A6Ee919CB456f2284026177e9c6");
 }
 
 // ============================================================================

@@ -437,7 +437,7 @@ where
     let addrs = OperatorAddresses::for_network(network)
         .ok_or_else(|| OperatorError::unsupported_network(&network))?;
     let evm_provider = get_evm_provider(facilitator, network)?;
-    let tx_hash = execute_release(lifecycle, extra, &addrs, evm_provider).await?;
+    let tx_hash = execute_release(lifecycle, extra, &addrs, evm_provider, network).await?;
 
     info!(tx_hash = ?tx_hash, "Escrow release transaction submitted");
 
@@ -475,7 +475,7 @@ where
     let addrs = OperatorAddresses::for_network(network)
         .ok_or_else(|| OperatorError::unsupported_network(&network))?;
     let evm_provider = get_evm_provider(facilitator, network)?;
-    let tx_hash = execute_refund_in_escrow(lifecycle, extra, &addrs, evm_provider).await?;
+    let tx_hash = execute_refund_in_escrow(lifecycle, extra, &addrs, evm_provider, network).await?;
 
     info!(tx_hash = ?tx_hash, "Escrow refundInEscrow transaction submitted");
 
@@ -667,6 +667,7 @@ async fn execute_release(
     extra: &EscrowExtra,
     addrs: &OperatorAddresses,
     provider: &EvmProvider,
+    network: Network,
 ) -> Result<B256, OperatorError> {
     validate_addresses(extra, addrs, false)?;
 
@@ -682,16 +683,37 @@ async fn execute_release(
         receiver = ?payment_info.receiver,
         amount = %amount,
         target = ?target,
+        network = %network,
         "Executing release on PaymentOperator"
     );
 
-    let call = OperatorContract::releaseCall {
-        paymentInfo: payment_info_abi,
-        amount,
-        data: alloy::primitives::Bytes::new(),
-    };
-
-    send_operator_tx(provider, target, &call).await
+    // CREATE3 networks (SKALE) use new ABI with bytes data param
+    // Legacy networks (Base, Ethereum, etc.) use old ABI without bytes data
+    if is_create3_network(network) {
+        let call = OperatorContract::releaseCall {
+            paymentInfo: payment_info_abi,
+            amount,
+            data: alloy::primitives::Bytes::new(),
+        };
+        send_operator_tx(provider, target, &call).await
+    } else {
+        // Legacy ABI: release(PaymentInfo, uint256) without bytes data
+        // Manually encode with old selector 0xecf39b0a
+        use alloy::sol_types::SolValue;
+        let encoded_args = (payment_info_abi, amount).abi_encode_params();
+        let mut calldata = vec![0xec, 0xf3, 0x9b, 0x0a]; // old release selector
+        calldata.extend_from_slice(&encoded_args);
+        let meta_tx = MetaTransaction {
+            to: target,
+            calldata: Bytes::from(calldata),
+            confirmations: 1,
+        };
+        let receipt = provider
+            .send_transaction(meta_tx)
+            .await
+            .map_err(|e| OperatorError::ContractCall(format!("{:?}", e)))?;
+        Ok(receipt.transaction_hash)
+    }
 }
 
 /// Execute refundInEscrow on PaymentOperator
@@ -705,6 +727,7 @@ async fn execute_refund_in_escrow(
     extra: &EscrowExtra,
     addrs: &OperatorAddresses,
     provider: &EvmProvider,
+    network: Network,
 ) -> Result<B256, OperatorError> {
     validate_addresses(extra, addrs, false)?;
 
@@ -731,16 +754,37 @@ async fn execute_refund_in_escrow(
         receiver = ?payment_info.receiver,
         amount = %lifecycle.amount,
         target = ?target,
+        network = %network,
         "Executing refundInEscrow on PaymentOperator"
     );
 
-    let call = OperatorContract::refundInEscrowCall {
-        paymentInfo: payment_info_abi,
-        amount,
-        data: alloy::primitives::Bytes::new(),
-    };
-
-    send_operator_tx(provider, target, &call).await
+    // CREATE3 networks (SKALE) use new ABI with bytes data param
+    // Legacy networks (Base, Ethereum, etc.) use old ABI without bytes data
+    if is_create3_network(network) {
+        let call = OperatorContract::refundInEscrowCall {
+            paymentInfo: payment_info_abi,
+            amount,
+            data: alloy::primitives::Bytes::new(),
+        };
+        send_operator_tx(provider, target, &call).await
+    } else {
+        // Legacy ABI: refundInEscrow(PaymentInfo, uint120) without bytes data
+        // Manually encode with old selector 0xe2b8996f
+        use alloy::sol_types::SolValue;
+        let encoded_args = (payment_info_abi, amount).abi_encode_params();
+        let mut calldata = vec![0xe2, 0xb8, 0x99, 0x6f]; // old refundInEscrow selector
+        calldata.extend_from_slice(&encoded_args);
+        let meta_tx = MetaTransaction {
+            to: target,
+            calldata: Bytes::from(calldata),
+            confirmations: 1,
+        };
+        let receipt = provider
+            .send_transaction(meta_tx)
+            .await
+            .map_err(|e| OperatorError::ContractCall(format!("{:?}", e)))?;
+        Ok(receipt.transaction_hash)
+    }
 }
 
 // ============================================================================
@@ -762,6 +806,14 @@ where
         NetworkProvider::Evm(provider) => Ok(provider),
         _ => Err(OperatorError::NonEvmNetwork),
     }
+}
+
+/// Check if a network uses CREATE3 deployment (new ABI with bytes data param)
+/// vs legacy per-chain deployment (old ABI without bytes data)
+fn is_create3_network(network: Network) -> bool {
+    // Currently only SKALE uses CREATE3 deployment with new ABI
+    // When other networks migrate to CREATE3, add them here
+    matches!(network, Network::SkaleBase)
 }
 
 /// Send a transaction to the PaymentOperator contract

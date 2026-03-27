@@ -688,6 +688,7 @@ async fn execute_release(
     let call = OperatorContract::releaseCall {
         paymentInfo: payment_info_abi,
         amount,
+        data: alloy::primitives::Bytes::new(),
     };
 
     send_operator_tx(provider, target, &call).await
@@ -736,6 +737,7 @@ async fn execute_refund_in_escrow(
     let call = OperatorContract::refundInEscrowCall {
         paymentInfo: payment_info_abi,
         amount,
+        data: alloy::primitives::Bytes::new(),
     };
 
     send_operator_tx(provider, target, &call).await

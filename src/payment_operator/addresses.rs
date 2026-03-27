@@ -35,34 +35,34 @@ use crate::network::Network;
 pub mod create3 {
     use super::*;
 
-    // Core
-    pub const ESCROW: Address = address!("e050bB89eD43BB02d71343063824614A7fb80B77");
-    pub const TOKEN_COLLECTOR: Address = address!("cE66Ab399EDA513BD12760b6427C87D6602344a7");
-    pub const PROTOCOL_FEE_CONFIG: Address = address!("7e868A42a458fa2443b6259419aA6A8a161E08c8");
+    // Core (3rd redeploy 2026-03-27, SKALE-compatible)
+    pub const ESCROW: Address = address!("BC151792f80C0EB1973d56b0235e6bee2A60e245");
+    pub const TOKEN_COLLECTOR: Address = address!("9A12A116a44636F55c9e135189A1321Abcfe2f30");
+    pub const PROTOCOL_FEE_CONFIG: Address = address!("f62788834C99B2E85a6891C0b46D1EB996f8f596");
 
-    // Factories (redeployed 2026-03-26 with Shanghai EVM for SKALE compat)
-    pub const FACTORY_PAYMENT_OPERATOR: Address = address!("A13AD07eD53BFF6c4e9e6478C3A8FFA4D096B5A3");
-    pub const FACTORY_REFUND_REQUEST: Address = address!("7996b1E7B5B28AF85093dcE3AE73b128133D3715");
-    pub const FACTORY_REFUND_REQUEST_EVIDENCE: Address = address!("a454D7e0D521176c998309E4E6828156870EDf4B");
-    pub const FACTORY_ESCROW_PERIOD: Address = address!("Cf84F213d6e1b2E2dc0DbCBd7d81FaAC305d4E96");
-    pub const FACTORY_FREEZE: Address = address!("af6700833bf414BEde7d450f9c6772e2FE76B21d");
-    pub const FACTORY_STATIC_FEE_CALCULATOR: Address = address!("83B94258Daa50Dd08aED72e0Cda1daCC20286F52");
-    pub const FACTORY_STATIC_ADDRESS_CONDITION: Address = address!("f9739BB422C93A9705cC636BA9D35B97F721e782");
-    pub const FACTORY_AND_CONDITION: Address = address!("57d33f001a0d880Ca9e53e578c55CA74baB5C36A");
-    pub const FACTORY_OR_CONDITION: Address = address!("efaD31Ab2a17092Bb4350C84324D59C80CeBB9F4");
-    pub const FACTORY_NOT_CONDITION: Address = address!("8FE9EDE9a786e613723922aB9f512F54DAEfE3A8");
-    pub const FACTORY_RECORDER_COMBINATOR: Address = address!("60C1492fbB1A53F5d968Ad6FDFA6b7672Bc6a34c");
-    pub const FACTORY_SIGNATURE_CONDITION: Address = address!("99F11e8b407dAc9BCBf40B869D35071D74FE56f4");
+    // Factories
+    pub const FACTORY_PAYMENT_OPERATOR: Address = address!("3Cd5c76Fefe46CB07788Ee8f80B93B20D81941D4");
+    pub const FACTORY_REFUND_REQUEST: Address = address!("69e9BF2b40Ed472b55E47e9D4205d93Ed673093F");
+    pub const FACTORY_REFUND_REQUEST_EVIDENCE: Address = address!("6514e417f48c1828A2443C6173fa6E04324166E3");
+    pub const FACTORY_ESCROW_PERIOD: Address = address!("22E42a1bC9Fc64ab77E4Bb9968b105034a978bfb");
+    pub const FACTORY_FREEZE: Address = address!("67657BefCd872A3AF36F437D53b2D4722392a940");
+    pub const FACTORY_STATIC_FEE_CALCULATOR: Address = address!("8a9C93F3401A5C712bEd8A52436Ac09cD9aFe2De");
+    pub const FACTORY_STATIC_ADDRESS_CONDITION: Address = address!("E606cA9568c92115a3Deb76E9f3891BEfac141f3");
+    pub const FACTORY_AND_CONDITION: Address = address!("6c3c57071C0Ac144D04e6C66BC809d2951dDF47D");
+    pub const FACTORY_OR_CONDITION: Address = address!("3dF6b5B840989Ce466161C31A49b8FadF2DA52E5");
+    pub const FACTORY_NOT_CONDITION: Address = address!("269Db5f049A7225E4968Ef7Dee885922da0B8D73");
+    pub const FACTORY_RECORDER_COMBINATOR: Address = address!("b7571b80C24Ce81C65F6b322a75573B61327cA23");
+    pub const FACTORY_SIGNATURE_CONDITION: Address = address!("c34EFa7C20940dc2aB50bE23eF150D8B87aEFAc3");
 
-    // Singletons (redeployed 2026-03-26)
-    pub const USDC_TVL_LIMIT: Address = address!("6CAcA05D19312d28787e93ad4249508ED11198be");
-    pub const ARBITER_REGISTRY: Address = address!("1c2d7d5978d46a943FA98aC9a649519C1424FB3e");
-    pub const RECEIVER_REFUND_COLLECTOR: Address = address!("E5500a38BE45a6C598420fbd7867ac85EC451A07");
+    // Singletons
+    pub const USDC_TVL_LIMIT: Address = address!("96a585F0e23eE9FD8722C7a61d3b8B3FAd2419df");
+    pub const ARBITER_REGISTRY: Address = address!("dd3954f83CF6D65B07A8a88B117300AE73602333");
+    pub const RECEIVER_REFUND_COLLECTOR: Address = address!("2C0eC8B33196071cA6d08299844235fD81e1466A");
 
-    // Condition singletons (redeployed 2026-03-26)
-    pub const CONDITION_PAYER: Address = address!("c321156210E9c2D135454290dc13ca7A1A7533C6");
-    pub const CONDITION_RECEIVER: Address = address!("d14242a812F9C7C81869F01867453e571cacEaba");
-    pub const CONDITION_ALWAYS_TRUE: Address = address!("27E1576D4C7C5A6Ee919CB456f2284026177e9c6");
+    // Condition singletons
+    pub const CONDITION_PAYER: Address = address!("808bB293AE1473A38Dd4017afa3db941924fD0F3");
+    pub const CONDITION_RECEIVER: Address = address!("B82697792e5Fcd644bDEAB23aa4e4511d9024C17");
+    pub const CONDITION_ALWAYS_TRUE: Address = address!("A367323189f20706488A1D83430eda82a2eA5320");
 }
 
 // ============================================================================
@@ -418,7 +418,9 @@ impl OperatorAddresses {
             Network::SkaleBase => Some(Self {
                 escrow: create3::ESCROW,
                 factory: create3::FACTORY_PAYMENT_OPERATOR,
-                payment_operators: vec![],
+                payment_operators: vec![
+                    address!("942cDC281F5Bd7bF3fAE8973253fd708f23ef442"), // Marketplace operator (7d escrow, facilitator-as-arbiter, no fees)
+                ],
                 token_collector: create3::TOKEN_COLLECTOR,
                 protocol_fee_config: create3::PROTOCOL_FEE_CONFIG,
                 refund_request: create3::FACTORY_REFUND_REQUEST,
@@ -485,7 +487,7 @@ mod tests {
         assert_eq!(addrs.escrow, create3::ESCROW);
         assert_eq!(addrs.token_collector, create3::TOKEN_COLLECTOR);
         assert_eq!(addrs.factory, create3::FACTORY_PAYMENT_OPERATOR);
-        assert!(addrs.payment_operators.is_empty());
+        assert_eq!(addrs.payment_operators.len(), 1);
     }
 
     #[test]

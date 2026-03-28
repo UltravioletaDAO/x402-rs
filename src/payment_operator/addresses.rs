@@ -420,7 +420,8 @@ impl OperatorAddresses {
                 factory: create3::FACTORY_PAYMENT_OPERATOR,
                 payment_operators: vec![
                     address!("942cDC281F5Bd7bF3fAE8973253fd708f23ef442"), // Marketplace operator (7d escrow, facilitator-as-arbiter, no fees)
-                    address!("28c23AE8f55aDe5Ea10a5353FC40418D0c1B3d33"), // EM operator (1300bps, OR release payer|facilitator, facilitator-only refund)
+                    address!("28c23AE8f55aDe5Ea10a5353FC40418D0c1B3d33"), // EM operator v1 (broken OrCondition)
+                    address!("43E46d4587fCCc382285C52012227555ed78D183"), // EM operator v2 (fixed OrCondition, 1300bps, OR release payer|facilitator)
                 ],
                 token_collector: create3::TOKEN_COLLECTOR,
                 protocol_fee_config: create3::PROTOCOL_FEE_CONFIG,
@@ -488,7 +489,7 @@ mod tests {
         assert_eq!(addrs.escrow, create3::ESCROW);
         assert_eq!(addrs.token_collector, create3::TOKEN_COLLECTOR);
         assert_eq!(addrs.factory, create3::FACTORY_PAYMENT_OPERATOR);
-        assert_eq!(addrs.payment_operators.len(), 2);
+        assert_eq!(addrs.payment_operators.len(), 3);
     }
 
     #[test]

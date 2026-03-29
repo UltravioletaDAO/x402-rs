@@ -294,6 +294,33 @@ If the token uses v,r,s format (like PYUSD) instead of compact signature:
 1. Add the token to `needs_split_signature()` function
 2. Test with v,r,s format in payload
 
+
+### 3.4 Update config/supported_tokens.json
+
+After adding the stablecoin to `src/network.rs`, also update `config/supported_tokens.json`:
+
+- For each network where the stablecoin is being added, append the token name to the `tokens` array
+- Use the correct facilitator wallet address for the chain type:
+  - **EVM mainnets:** `0x103040545AC5031A11E8C03dd11324C7333a13C7`
+  - **EVM testnets:** `0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8`
+  - **Solana/Fogo:** `F742C4VfFLQ9zRQyithoj5229ZgtX2WqKCSFKgH2EThq`
+  - **SUI:** `0xe7bbf2b13f7d72714760aa16e024fa1b35a978793f9893d0568a4fbf356a764a`
+  - **NEAR:** `uvd-facilitator.near`
+  - **Stellar:** `GCHPGXJT2WFFRFCA5TV4G4E3PMMXLNIDUH27PKDYA4QJ2XGYZWGFZNHB`
+  - **Algorand:** `KIMS5H6QLCUDL65L5UBTOXDPWLMTS7N3AAC3I6B2NCONEI5QIVK7LH2C2I`
+- Update the summary counts at the bottom of the JSON file
+- **NEVER type wallet addresses from memory** - always copy from `lambda/balances/handler.py`
+
+**Example:** Adding EURC to Base mainnet:
+
+```json
+"base": {
+  "chainId": 8453,
+  "tokens": ["usdc", "eurc"],
+  "explorer": "https://basescan.org",
+  "facilitatorWallet": "0x103040545AC5031A11E8C03dd11324C7333a13C7"
+}
+```
 ---
 
 ## Step 4: Frontend Integration
@@ -437,6 +464,9 @@ curl -s https://facilitator.ultravioletadao.xyz/supported | jq '.kinds[] | selec
 - [ ] Update `supported_networks_for_token()` function
 - [ ] Add EIP-712 lookup in `chain/evm.rs`
 - [ ] Handle special signature format if needed
+
+### Config
+- [ ] Update `config/supported_tokens.json` with new token in each network's `tokens` array
 
 ### Frontend (static/)
 - [ ] Add token to TOKEN_SUPPORT for each network

@@ -54,6 +54,7 @@ User: "add facilitator scroll"
 │    - src/handlers.rs            │
 │    - static/index.html          │
 │    - .env.example               │
+│    - config/supported_tokens.json│
 └─────────────────────────────────┘
          │
          ▼
@@ -455,6 +456,34 @@ RPC_URL_SCROLL_SEPOLIA=https://sepolia-rpc.scroll.io
 - Add to supported networks table
 - Run `python scripts/stablecoin_matrix.py --md` and update stablecoin table
 
+### 3.9 Update config/supported_tokens.json
+
+After adding the network to `src/network.rs`, also update `config/supported_tokens.json`:
+
+- Add the new network entry with `chainId`, `tokens` array, `explorer` URL, and `facilitatorWallet`
+- Place mainnet entries under `evm_mainnets` and testnet entries under `evm_testnets`
+- Use the correct facilitator wallet address for the chain type:
+  - **EVM mainnets:** `0x103040545AC5031A11E8C03dd11324C7333a13C7`
+  - **EVM testnets:** `0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8`
+  - **Solana/Fogo:** `F742C4VfFLQ9zRQyithoj5229ZgtX2WqKCSFKgH2EThq`
+  - **SUI:** `0xe7bbf2b13f7d72714760aa16e024fa1b35a978793f9893d0568a4fbf356a764a`
+  - **NEAR:** `uvd-facilitator.near`
+  - **Stellar:** `GCHPGXJT2WFFRFCA5TV4G4E3PMMXLNIDUH27PKDYA4QJ2XGYZWGFZNHB`
+  - **Algorand:** `KIMS5H6QLCUDL65L5UBTOXDPWLMTS7N3AAC3I6B2NCONEI5QIVK7LH2C2I`
+- Update the summary counts at the bottom of the JSON file
+- **NEVER type wallet addresses from memory** - always copy from `lambda/balances/handler.py`
+
+**Example entry:**
+
+```json
+"scroll": {
+  "chainId": 534352,
+  "tokens": ["usdc"],
+  "explorer": "https://scrollscan.com",
+  "facilitatorWallet": "0x103040545AC5031A11E8C03dd11324C7333a13C7"
+}
+```
+
 ---
 
 ## Phase 4: Build and Verify Locally
@@ -571,8 +600,9 @@ curl https://facilitator.ultravioletadao.xyz/supported | jq '[.kinds[].network] 
 | `static/{network}.png` | Logo file (1 file) |
 | `.env.example` | RPC URLs (~2 lines) |
 | `README.md` | Network counts, tables (~10 lines) |
+| `config/supported_tokens.json` | New network entry with chainId, tokens, explorer, wallet (~5 lines) |
 
-**Total: ~175 lines + 1 logo file**
+**Total: ~180 lines + 1 logo file**
 
 ---
 

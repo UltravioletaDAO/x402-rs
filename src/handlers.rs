@@ -22,6 +22,7 @@ use tracing::{debug, error, info, instrument, warn};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use alloy::providers::Provider as _;
 use crate::chain::evm::MetaEvmProvider;
 use crate::chain::{FacilitatorLocalError, NetworkProvider, NetworkProviderOps};
 use crate::discovery::{DiscoveryError, DiscoveryRegistry};

@@ -3599,38 +3599,47 @@ where
         ).into_response();
     }
 
-    // Scan ERC-721 Transfer events where `to = owner_address` (indexed param).
-    // We use Transfer instead of Registered because the facilitator is the minter
-    // (Registered.owner = facilitator), then transfers to the recipient.
-    let filter = identity_registry
-        .Transfer_filter()
-        .topic2(owner_address)
-        .from_block(0);
-
-    let logs = match filter.query().await {
-        Ok(l) => l,
-        Err(e) => {
-            error!(error = %e, "Failed to query Transfer events");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("Failed to scan events: {}", e) })),
-            ).into_response();
+    // Find token ID by iterating ownerOf() calls. This approach works on ALL chains:
+    // - No ERC-721 Enumerable needed (tokenOfOwnerByIndex reverts on SKALE)
+    // - No event scanning needed (eth_getLogs has 2000-block limit on SKALE)
+    // - Just basic ERC-721 ownerOf() which is universally supported
+    //
+    // Strategy: binary search for max token ID, then iterate checking ownerOf().
+    // Token IDs are sequential starting from 1.
+    let mut hi: u64 = 1;
+    // Exponential probe to find upper bound
+    loop {
+        let probe = alloy::primitives::U256::from(hi);
+        match identity_registry.ownerOf(probe).call().await {
+            Ok(_) => hi *= 2,
+            Err(_) => break, // token doesn't exist, hi is past the end
         }
-    };
+        if hi > 1_000_000 {
+            break; // safety cap
+        }
+    }
+    // Binary search for exact max token ID
+    let mut lo: u64 = hi / 2;
+    while lo < hi - 1 {
+        let mid = lo + (hi - lo) / 2;
+        match identity_registry.ownerOf(alloy::primitives::U256::from(mid)).call().await {
+            Ok(_) => lo = mid,
+            Err(_) => hi = mid,
+        }
+    }
+    let max_token_id = lo;
 
-    // Find the first agent still owned by this address (handles re-transfers)
-    for (event, _log) in &logs {
-        let agent_id_u256 = event.tokenId;
-        let agent_id: u64 = agent_id_u256.try_into().unwrap_or(u64::MAX);
-
-        match identity_registry.ownerOf(agent_id_u256).call().await {
-            Ok(current_owner) if current_owner == owner_address => {
-                let uri = identity_registry.tokenURI(agent_id_u256).call().await.unwrap_or_default();
-                info!(network = %network, agent_id = agent_id, owner = %owner_address, "Resolved agent by owner");
+    // Iterate from 1 to max_token_id, find first owned by target address
+    for id in 1..=max_token_id {
+        let id_u256 = alloy::primitives::U256::from(id);
+        if let Ok(current_owner) = identity_registry.ownerOf(id_u256).call().await {
+            if current_owner == owner_address {
+                let uri = identity_registry.tokenURI(id_u256).call().await.unwrap_or_default();
+                info!(network = %network, agent_id = id, owner = %owner_address, "Resolved agent by owner");
                 return (
                     StatusCode::OK,
                     Json(json!({
-                        "agentId": agent_id,
+                        "agentId": id,
                         "owner": format!("{}", owner_address),
                         "agentUri": uri,
                         "network": network.to_string(),
@@ -3638,15 +3647,13 @@ where
                     })),
                 ).into_response();
             }
-            _ => continue, // Transferred away, check next
         }
     }
 
-    // Has balance but no Registered events found (edge case: received via transfer, not registration)
     (
         StatusCode::NOT_FOUND,
         Json(json!({
-            "error": format!("Could not resolve agent ID for {} on {} (owns {} but no matching registration events)", owner_address, network, balance),
+            "error": format!("Could not resolve agent ID for {} on {} (balance={} but no ownerOf match found)", owner_address, network, balance),
             "balance": balance.to_string()
         })),
     ).into_response()
@@ -3900,6 +3907,8 @@ where
         IIdentityRegistry::new(contracts.identity_registry, provider.inner().clone());
 
     // ── Idempotency check: if recipient already owns an agent, return it ──
+    // Uses ownerOf() iteration — works on ALL chains including SKALE which lacks
+    // ERC-721 Enumerable and limits eth_getLogs to 2000 blocks.
     let check_owner = match &request.recipient {
         Some(MixedAddress::Evm(addr)) => Some(addr.0),
         _ => None,
@@ -3907,49 +3916,54 @@ where
     if let Some(target_owner) = check_owner {
         if let Ok(balance) = identity_registry.balanceOf(target_owner).call().await {
             if balance > alloy::primitives::U256::ZERO {
-                // Scan ERC-721 Transfer events where `to = target_owner`.
-                // We use Transfer (not Registered) because the facilitator is the minter,
-                // then transfers to the recipient via safeTransferFrom.
-                let filter = identity_registry
-                    .Transfer_filter()
-                    .topic2(target_owner)
-                    .from_block(0);
-                if let Ok(logs) = filter.query().await {
-                    for (event, _log) in &logs {
-                        let aid = event.tokenId;
-                        if let Ok(current_owner) = identity_registry.ownerOf(aid).call().await {
-                            if current_owner == target_owner {
-                                let aid_u64: u64 = aid.try_into().unwrap_or(u64::MAX);
-                                let uri = identity_registry.tokenURI(aid).call().await.unwrap_or_default();
-                                info!(
-                                    network = %network,
-                                    agent_id = aid_u64,
-                                    owner = %target_owner,
-                                    "Idempotent register: returning existing agent"
-                                );
-                                return (
-                                    StatusCode::OK,
-                                    Json(RegisterAgentResponse {
-                                        success: true,
-                                        agent_id: Some(aid_u64.to_string()),
-                                        transaction: None,
-                                        transfer_transaction: None,
-                                        owner: Some(MixedAddress::Evm(crate::types::EvmAddress(target_owner))),
-                                        error: None,
-                                        network,
-                                    }),
-                                ).into_response();
-                            }
+                // Find max token ID via exponential probe + binary search
+                let mut hi: u64 = 1;
+                loop {
+                    match identity_registry.ownerOf(alloy::primitives::U256::from(hi)).call().await {
+                        Ok(_) => hi *= 2,
+                        Err(_) => break,
+                    }
+                    if hi > 1_000_000 { break; }
+                }
+                let mut lo: u64 = hi / 2;
+                while lo < hi - 1 {
+                    let mid = lo + (hi - lo) / 2;
+                    match identity_registry.ownerOf(alloy::primitives::U256::from(mid)).call().await {
+                        Ok(_) => lo = mid,
+                        Err(_) => hi = mid,
+                    }
+                }
+                // Iterate to find first token owned by target
+                for id in 1..=lo {
+                    if let Ok(owner) = identity_registry.ownerOf(alloy::primitives::U256::from(id)).call().await {
+                        if owner == target_owner {
+                            info!(
+                                network = %network,
+                                agent_id = id,
+                                owner = %target_owner,
+                                "Idempotent register: returning existing agent"
+                            );
+                            return (
+                                StatusCode::OK,
+                                Json(RegisterAgentResponse {
+                                    success: true,
+                                    agent_id: Some(id.to_string()),
+                                    transaction: None,
+                                    transfer_transaction: None,
+                                    owner: Some(MixedAddress::Evm(crate::types::EvmAddress(target_owner))),
+                                    error: None,
+                                    network,
+                                }),
+                            ).into_response();
                         }
                     }
                 }
-                // balance > 0 but no matching events: might have received via transfer
-                // Fall through to mint (they could legitimately want another agent)
+                // balance > 0 but couldn't find matching token (shouldn't happen, but be safe)
                 warn!(
                     network = %network,
                     owner = %target_owner,
                     balance = %balance,
-                    "Recipient has balance but no matching Registered events, proceeding with mint"
+                    "Recipient has balance but ownerOf scan found no match, proceeding with mint"
                 );
             }
         }

@@ -110,6 +110,16 @@ sol!(
             bytes calldata metadataValue
         ) external;
 
+        // ============ ERC-721 Standard Events ============
+
+        /// ERC-721 Transfer event (standard). All three params are indexed.
+        /// Used to resolve token ownership when ERC-721 Enumerable is not available.
+        event Transfer(
+            address indexed from,
+            address indexed to,
+            uint256 indexed tokenId
+        );
+
         // ============ ERC-721 Standard Functions ============
 
         /// Get the owner of an agent

@@ -3599,16 +3599,18 @@ where
         ).into_response();
     }
 
-    // Scan Registered events filtered by owner (indexed param)
+    // Scan ERC-721 Transfer events where `to = owner_address` (indexed param).
+    // We use Transfer instead of Registered because the facilitator is the minter
+    // (Registered.owner = facilitator), then transfers to the recipient.
     let filter = identity_registry
-        .Registered_filter()
+        .Transfer_filter()
         .topic2(owner_address)
         .from_block(0);
 
     let logs = match filter.query().await {
         Ok(l) => l,
         Err(e) => {
-            error!(error = %e, "Failed to query Registered events");
+            error!(error = %e, "Failed to query Transfer events");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({ "error": format!("Failed to scan events: {}", e) })),
@@ -3616,9 +3618,9 @@ where
         }
     };
 
-    // Find the first agent still owned by this address (handles transfers)
+    // Find the first agent still owned by this address (handles re-transfers)
     for (event, _log) in &logs {
-        let agent_id_u256 = event.agentId;
+        let agent_id_u256 = event.tokenId;
         let agent_id: u64 = agent_id_u256.try_into().unwrap_or(u64::MAX);
 
         match identity_registry.ownerOf(agent_id_u256).call().await {
@@ -3905,14 +3907,16 @@ where
     if let Some(target_owner) = check_owner {
         if let Ok(balance) = identity_registry.balanceOf(target_owner).call().await {
             if balance > alloy::primitives::U256::ZERO {
-                // Scan Registered events to find existing agent ID
+                // Scan ERC-721 Transfer events where `to = target_owner`.
+                // We use Transfer (not Registered) because the facilitator is the minter,
+                // then transfers to the recipient via safeTransferFrom.
                 let filter = identity_registry
-                    .Registered_filter()
+                    .Transfer_filter()
                     .topic2(target_owner)
                     .from_block(0);
                 if let Ok(logs) = filter.query().await {
                     for (event, _log) in &logs {
-                        let aid = event.agentId;
+                        let aid = event.tokenId;
                         if let Ok(current_owner) = identity_registry.ownerOf(aid).call().await {
                             if current_owner == target_owner {
                                 let aid_u64: u64 = aid.try_into().unwrap_or(u64::MAX);

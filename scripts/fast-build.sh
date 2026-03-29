@@ -23,6 +23,21 @@ SOURCE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="$HOME/x402-rs-build"
 ECR_REPO="518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator"
 
+# ── Kill any previous build processes to avoid parallel builds competing ──
+PREV_BUILDS=$(pgrep -f "fast-build.sh" | grep -v $$ || true)
+if [ -n "$PREV_BUILDS" ]; then
+    echo "[PRE] Killing previous build processes: $PREV_BUILDS"
+    echo "$PREV_BUILDS" | xargs kill 2>/dev/null || true
+    sleep 1
+fi
+# Also kill any orphaned docker build processes for facilitator
+PREV_DOCKER=$(pgrep -f "docker build.*x402-rs-build" || true)
+if [ -n "$PREV_DOCKER" ]; then
+    echo "[PRE] Killing orphaned docker build processes: $PREV_DOCKER"
+    echo "$PREV_DOCKER" | xargs kill 2>/dev/null || true
+    sleep 1
+fi
+
 echo "=== Fast Build: $VERSION ==="
 echo "Source: $SOURCE_DIR"
 echo "Build:  $BUILD_DIR"

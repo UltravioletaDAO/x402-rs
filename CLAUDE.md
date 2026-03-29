@@ -576,6 +576,15 @@ The following networks exist in `src/network.rs` but are **NOT active priorities
 5. **Gas funds vs payment funds** - Facilitator wallet needs native tokens (ETH/AVAX/SOL) for gas, not payment tokens (USDC)
 6. **NEVER use emojis in Rust code** - No emojis in log messages, comments, or string literals. Use plain text like `[OK]`, `[FAIL]`, `[WARN]` instead of ✓, ✗, ⚠. Emojis cause encoding issues in CloudWatch logs and terminal output.
 7. **NEVER disable ENABLE_ESCROW** - The `ENABLE_ESCROW=true` environment variable in Terraform is CRITICAL. Without it, ALL payment settlements fail with "Escrow settlement is disabled". This must always be set to "true" in production.
+8. **ALWAYS update `config/supported_tokens.json`** when adding a new network or stablecoin. This file is the JSON source of truth for all supported chains, tokens, and facilitator wallet addresses. **NEVER type wallet addresses from memory** — always copy them from `lambda/balances/handler.py` (the authoritative source). Previous AI-generated addresses were hallucinated and caused data integrity issues.
+9. **Facilitator wallet addresses are FIXED** — do not invent or guess them:
+   - EVM Mainnet: `0x103040545AC5031A11E8C03dd11324C7333a13C7`
+   - EVM Testnet: `0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8`
+   - Solana/Fogo: `F742C4VfFLQ9zRQyithoj5229ZgtX2WqKCSFKgH2EThq`
+   - SUI: `0xe7bbf2b13f7d72714760aa16e024fa1b35a978793f9893d0568a4fbf356a764a`
+   - NEAR: `uvd-facilitator.near`
+   - Stellar: `GCHPGXJT2WFFRFCA5TV4G4E3PMMXLNIDUH27PKDYA4QJ2XGYZWGFZNHB`
+   - Algorand: `KIMS5H6QLCUDL65L5UBTOXDPWLMTS7N3AAC3I6B2NCONEI5QIVK7LH2C2I`
 
 ## API Endpoints Reference
 
@@ -651,9 +660,13 @@ This complete checklist covers:
 11. Verify in `/supported` endpoint and test frontend
 12. **UPDATE README.md** - Update the network count and add the new network to the tables
 13. **VERIFY STABLECOIN MATRIX** - Run `python scripts/stablecoin_matrix.py` and update README stablecoin tables
+14. **UPDATE `config/supported_tokens.json`** - Add the new network with chainId, tokens, explorer, and facilitatorWallet. Copy wallet address from `lambda/balances/handler.py` — NEVER type from memory.
+15. **UPDATE `lambda/balances/handler.py`** - Add the new network to `get_network_configs()` with RPC and wallet address.
 
-**CRITICAL**: Always update README.md when adding a new network OR stablecoin:
-- Network counts get stale quickly
+**CRITICAL**: Always update these files when adding a new network OR stablecoin:
+- `config/supported_tokens.json` - JSON source of truth for all chains and wallets
+- `lambda/balances/handler.py` - Landing page balance checker (wallet addresses)
+- README.md - Network counts get stale quickly
 - Stablecoin coverage matrix must be regenerated with `python scripts/stablecoin_matrix.py --md`
 - Copy the markdown table output to README.md
 

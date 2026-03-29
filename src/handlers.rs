@@ -117,6 +117,10 @@ where
             "/identity/{network}/total-supply",
             get(get_identity_total_supply::<A>),
         )
+        .route(
+            "/identity/{network}/owner/{address}",
+            get(get_identity_by_owner::<A>),
+        )
         .route("/health", get(get_health))
         .route("/version", get(get_version))
         .route("/supported", get(get_supported::<A>))
@@ -3491,6 +3495,161 @@ where
     (StatusCode::OK, Json(identity)).into_response()
 }
 
+/// Path parameters for identity-by-owner query
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct OwnerIdentityPathParams {
+    pub network: String,
+    pub address: String,
+}
+
+/// `GET /identity/:network/owner/:address`: Resolve agent ID by owner wallet address.
+///
+/// Scans `Registered` events filtered by owner, then verifies current ownership via `ownerOf()`.
+/// Returns the first (lowest) agent ID still owned by the address.
+///
+/// # Example
+/// ```text
+/// GET /identity/skale-base/owner/0x52E05C8e45a32eeE169639F6d2cA40f8887b5A15
+/// ```
+#[instrument(skip_all)]
+pub async fn get_identity_by_owner<A>(
+    State(facilitator): State<A>,
+    Path(params): Path<OwnerIdentityPathParams>,
+) -> impl IntoResponse
+where
+    A: Facilitator + HasProviderMap,
+    A::Error: IntoResponse,
+    A::Map: ProviderMap<Value = NetworkProvider>,
+{
+    let network: crate::network::Network = match params.network.parse() {
+        Ok(n) => n,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": format!("Invalid network: {}", params.network) })),
+            ).into_response();
+        }
+    };
+
+    if !is_erc8004_supported(&network) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": format!("ERC-8004 is not supported on network {}", network),
+                "supportedNetworks": supported_network_names()
+            })),
+        ).into_response();
+    }
+
+    let owner_address: alloy::primitives::Address = match params.address.parse() {
+        Ok(a) => a,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": format!("Invalid address: {}", params.address) })),
+            ).into_response();
+        }
+    };
+
+    info!(network = %network, owner = %owner_address, "Resolving agent ID by owner");
+
+    let contracts = match get_contracts(&network) {
+        Some(c) => c,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": format!("No ERC-8004 contracts for {}", network) })),
+            ).into_response();
+        }
+    };
+
+    let provider_map = facilitator.provider_map();
+    let provider = match provider_map.by_network(&network) {
+        Some(NetworkProvider::Evm(p)) => p,
+        _ => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("No EVM provider for {}", network) })),
+            ).into_response();
+        }
+    };
+
+    let identity_registry =
+        IIdentityRegistry::new(contracts.identity_registry, provider.inner().clone());
+
+    // Check balance first — quick rejection
+    let balance = match identity_registry.balanceOf(owner_address).call().await {
+        Ok(b) => b,
+        Err(e) => {
+            error!(error = %e, "Failed to query balanceOf");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("Failed to query balance: {}", e) })),
+            ).into_response();
+        }
+    };
+
+    if balance == alloy::primitives::U256::ZERO {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "error": format!("Address {} does not own any agent on {}", owner_address, network),
+                "balance": 0
+            })),
+        ).into_response();
+    }
+
+    // Scan Registered events filtered by owner (indexed param)
+    let filter = identity_registry
+        .Registered_filter()
+        .topic2(owner_address)
+        .from_block(0);
+
+    let logs = match filter.query().await {
+        Ok(l) => l,
+        Err(e) => {
+            error!(error = %e, "Failed to query Registered events");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("Failed to scan events: {}", e) })),
+            ).into_response();
+        }
+    };
+
+    // Find the first agent still owned by this address (handles transfers)
+    for (event, _log) in &logs {
+        let agent_id_u256 = event.agentId;
+        let agent_id: u64 = agent_id_u256.try_into().unwrap_or(u64::MAX);
+
+        match identity_registry.ownerOf(agent_id_u256).call().await {
+            Ok(current_owner) if current_owner == owner_address => {
+                let uri = identity_registry.tokenURI(agent_id_u256).call().await.unwrap_or_default();
+                info!(network = %network, agent_id = agent_id, owner = %owner_address, "Resolved agent by owner");
+                return (
+                    StatusCode::OK,
+                    Json(json!({
+                        "agentId": agent_id,
+                        "owner": format!("{}", owner_address),
+                        "agentUri": uri,
+                        "network": network.to_string(),
+                        "balance": balance.to_string()
+                    })),
+                ).into_response();
+            }
+            _ => continue, // Transferred away, check next
+        }
+    }
+
+    // Has balance but no Registered events found (edge case: received via transfer, not registration)
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({
+            "error": format!("Could not resolve agent ID for {} on {} (owns {} but no matching registration events)", owner_address, network, balance),
+            "balance": balance.to_string()
+        })),
+    ).into_response()
+}
+
 // ============================================================================
 // ERC-8004 Agent Registration Endpoints
 // ============================================================================
@@ -3737,6 +3896,60 @@ where
     // Create Identity Registry contract instance
     let identity_registry =
         IIdentityRegistry::new(contracts.identity_registry, provider.inner().clone());
+
+    // ── Idempotency check: if recipient already owns an agent, return it ──
+    let check_owner = match &request.recipient {
+        Some(MixedAddress::Evm(addr)) => Some(addr.0),
+        _ => None,
+    };
+    if let Some(target_owner) = check_owner {
+        if let Ok(balance) = identity_registry.balanceOf(target_owner).call().await {
+            if balance > alloy::primitives::U256::ZERO {
+                // Scan Registered events to find existing agent ID
+                let filter = identity_registry
+                    .Registered_filter()
+                    .topic2(target_owner)
+                    .from_block(0);
+                if let Ok(logs) = filter.query().await {
+                    for (event, _log) in &logs {
+                        let aid = event.agentId;
+                        if let Ok(current_owner) = identity_registry.ownerOf(aid).call().await {
+                            if current_owner == target_owner {
+                                let aid_u64: u64 = aid.try_into().unwrap_or(u64::MAX);
+                                let uri = identity_registry.tokenURI(aid).call().await.unwrap_or_default();
+                                info!(
+                                    network = %network,
+                                    agent_id = aid_u64,
+                                    owner = %target_owner,
+                                    "Idempotent register: returning existing agent"
+                                );
+                                return (
+                                    StatusCode::OK,
+                                    Json(RegisterAgentResponse {
+                                        success: true,
+                                        agent_id: Some(aid_u64.to_string()),
+                                        transaction: None,
+                                        transfer_transaction: None,
+                                        owner: Some(MixedAddress::Evm(crate::types::EvmAddress(target_owner))),
+                                        error: None,
+                                        network,
+                                    }),
+                                ).into_response();
+                            }
+                        }
+                    }
+                }
+                // balance > 0 but no matching events: might have received via transfer
+                // Fall through to mint (they could legitimately want another agent)
+                warn!(
+                    network = %network,
+                    owner = %target_owner,
+                    balance = %balance,
+                    "Recipient has balance but no matching Registered events, proceeding with mint"
+                );
+            }
+        }
+    }
 
     // Build the registration call based on provided parameters
     let agent_uri = request.agent_uri.clone();

@@ -296,6 +296,10 @@ pub trait MetaEvmProvider {
     /// Returns reference to chain descriptor.
     fn chain(&self) -> &EvmChain;
 
+    /// Whether the network supports EIP-1559 gas pricing.
+    /// Legacy chains (e.g., SKALE) return false and need explicit gasPrice.
+    fn is_eip1559(&self) -> bool;
+
     /// Sends a meta-transaction to the network.
     fn send_transaction(
         &self,
@@ -323,6 +327,10 @@ impl MetaEvmProvider for EvmProvider {
 
     fn chain(&self) -> &EvmChain {
         &self.chain
+    }
+
+    fn is_eip1559(&self) -> bool {
+        self.eip1559
     }
 
     /// Send a meta-transaction with provided `to`, `calldata`, and automatically selected signer.

@@ -2288,7 +2288,24 @@ where
                 feedback_hash,
             );
 
-            match call.send().await {
+            // Legacy chains (SKALE) need explicit gasPrice to avoid EIP-1559 rejection
+            let send_result = if !provider.is_eip1559() {
+                let gp = provider.inner().get_gas_price().await.map_err(|e| format!("{e:?}"));
+                match gp {
+                    Ok(gas_price) => call.gas_price(gas_price).send().await,
+                    Err(e) => {
+                        error!(error = %e, "Failed to get gas price");
+                        return (StatusCode::INTERNAL_SERVER_ERROR, Json(FeedbackResponse {
+                            success: false, transaction: None, feedback_index: None,
+                            error: Some(format!("Failed to get gas price: {}", e)), network,
+                        })).into_response();
+                    }
+                }
+            } else {
+                call.send().await
+            };
+
+            match send_result {
                 Ok(pending_tx) => {
                     match pending_tx.get_receipt().await {
                         Ok(receipt) => {
@@ -2501,7 +2518,22 @@ where
                 request.feedback_index,
             );
 
-            match call.send().await {
+            // Legacy chains (SKALE) need explicit gasPrice
+            let send_result = if !provider.is_eip1559() {
+                match provider.inner().get_gas_price().await {
+                    Ok(gas_price) => call.gas_price(gas_price).send().await,
+                    Err(e) => {
+                        error!(error = %e, "Failed to get gas price");
+                        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                            "success": false, "error": format!("Failed to get gas price: {}", e)
+                        }))).into_response();
+                    }
+                }
+            } else {
+                call.send().await
+            };
+
+            match send_result {
                 Ok(pending_tx) => match pending_tx.get_receipt().await {
                     Ok(receipt) => {
                         let tx_hash = receipt.transaction_hash;
@@ -2714,7 +2746,22 @@ where
                 response_hash,
             );
 
-            match call.send().await {
+            // Legacy chains (SKALE) need explicit gasPrice
+            let send_result = if !provider.is_eip1559() {
+                match provider.inner().get_gas_price().await {
+                    Ok(gas_price) => call.gas_price(gas_price).send().await,
+                    Err(e) => {
+                        error!(error = %e, "Failed to get gas price");
+                        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                            "success": false, "error": format!("Failed to get gas price: {}", e)
+                        }))).into_response();
+                    }
+                }
+            } else {
+                call.send().await
+            };
+
+            match send_result {
                 Ok(pending_tx) => match pending_tx.get_receipt().await {
                     Ok(receipt) => {
                         let tx_hash = receipt.transaction_hash;
@@ -3694,6 +3741,27 @@ where
     let agent_uri = request.agent_uri.clone();
     let has_metadata = request.metadata.as_ref().map_or(false, |m| !m.is_empty());
 
+    // Legacy chains (SKALE) need explicit gasPrice to avoid EIP-1559 rejection
+    let legacy_gas_price = if !provider.is_eip1559() {
+        match provider.inner().get_gas_price().await {
+            Ok(gp) => Some(gp),
+            Err(e) => {
+                error!(error = %e, "Failed to get gas price for legacy chain");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(RegisterAgentResponse {
+                        success: false, agent_id: None, transaction: None,
+                        transfer_transaction: None, owner: None,
+                        error: Some(format!("Failed to get gas price: {}", e)),
+                        network,
+                    }),
+                ).into_response();
+            }
+        }
+    } else {
+        None
+    };
+
     let register_result = if has_metadata {
         // Convert metadata params to contract MetadataEntry structs
         let metadata_entries: Vec<MetadataEntry> = request
@@ -3715,17 +3783,29 @@ where
 
         // register_0 = register(string, MetadataEntry[]) - first overload in ABI
         let call = identity_registry.register_0(agent_uri, metadata_entries);
-        call.send().await
+        if let Some(gp) = legacy_gas_price {
+            call.gas_price(gp).send().await
+        } else {
+            call.send().await
+        }
     } else if !request.agent_uri.is_empty() {
         info!("Registering agent with URI only");
         // register_1 = register(string) - second overload in ABI
         let call = identity_registry.register_1(agent_uri);
-        call.send().await
+        if let Some(gp) = legacy_gas_price {
+            call.gas_price(gp).send().await
+        } else {
+            call.send().await
+        }
     } else {
         info!("Registering agent without URI or metadata");
         // register_2 = register() - third overload in ABI
         let call = identity_registry.register_2();
-        call.send().await
+        if let Some(gp) = legacy_gas_price {
+            call.gas_price(gp).send().await
+        } else {
+            call.send().await
+        }
     };
 
     // Handle registration transaction
@@ -3877,7 +3957,31 @@ where
             alloy::primitives::U256::from(agent_id),
         );
 
-        match transfer_call.send().await {
+        // Legacy chains (SKALE) need explicit gasPrice for transfer too
+        let transfer_send = if !provider.is_eip1559() {
+            match provider.inner().get_gas_price().await {
+                Ok(gp) => transfer_call.gas_price(gp).send().await,
+                Err(e) => {
+                    error!(error = %e, "Failed to get gas price for transfer");
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(RegisterAgentResponse {
+                            success: true,
+                            agent_id: Some(agent_id_str.clone()),
+                            transaction: Some(crate::types::TransactionHash::Evm(reg_tx_hash.0)),
+                            transfer_transaction: None,
+                            owner: Some(final_owner),
+                            error: Some(format!("Failed to get gas price for transfer: {}", e)),
+                            network,
+                        }),
+                    ).into_response();
+                }
+            }
+        } else {
+            transfer_call.send().await
+        };
+
+        match transfer_send {
             Ok(pending) => match pending.get_receipt().await {
                 Ok(transfer_receipt) => {
                     let transfer_hash = transfer_receipt.transaction_hash;

@@ -75,6 +75,8 @@ impl TryFrom<Network> for SolanaChain {
             Network::StellarTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::Fogo => Ok(Self { network: value }),
             Network::FogoTestnet => Ok(Self { network: value }),
+            Network::Hedera => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
+            Network::HederaTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             #[cfg(feature = "algorand")]
             Network::Algorand => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             #[cfg(feature = "algorand")]

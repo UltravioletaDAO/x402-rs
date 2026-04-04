@@ -624,6 +624,14 @@ resource "aws_ecs_task_definition" "facilitator" {
           name  = "RPC_URL_SKALE_BASE_SEPOLIA"
           value = "https://base-sepolia-testnet.skalenodes.com/v1/jubilant-horrible-ancha"
         },
+        {
+          name  = "RPC_URL_HEDERA"
+          value = "https://mainnet.hashio.io/api"
+        },
+        {
+          name  = "RPC_URL_HEDERA_TESTNET"
+          value = "https://testnet.hashio.io/api"
+        },
         # Discovery API (Bazaar) configuration
         {
           name  = "DISCOVERY_S3_BUCKET"

@@ -139,6 +139,12 @@ pub enum Network {
     /// Scroll mainnet (chain ID 534352) - zkEVM L2 on Ethereum.
     #[serde(rename = "scroll")]
     Scroll,
+    /// Hedera mainnet (chain ID 295) - ERC-8004 only, no EIP-3009 USDC.
+    #[serde(rename = "hedera")]
+    Hedera,
+    /// Hedera testnet (chain ID 296) - ERC-8004 only, no EIP-3009 USDC.
+    #[serde(rename = "hedera-testnet")]
+    HederaTestnet,
 }
 
 impl Display for Network {
@@ -187,6 +193,8 @@ impl Display for Network {
             Network::SkaleBase => write!(f, "skale-base"),
             Network::SkaleBaseSepolia => write!(f, "skale-base-sepolia"),
             Network::Scroll => write!(f, "scroll"),
+            Network::Hedera => write!(f, "hedera"),
+            Network::HederaTestnet => write!(f, "hedera-testnet"),
         }
     }
 }
@@ -244,6 +252,8 @@ impl FromStr for Network {
             "skale-base" | "skale" => Ok(Network::SkaleBase),
             "skale-base-sepolia" | "skale-testnet" => Ok(Network::SkaleBaseSepolia),
             "scroll" | "scroll-mainnet" => Ok(Network::Scroll),
+            "hedera" | "hedera-mainnet" => Ok(Network::Hedera),
+            "hedera-testnet" => Ok(Network::HederaTestnet),
             _ => Err(NetworkParseError(s.to_string())),
         }
     }
@@ -307,6 +317,8 @@ impl From<Network> for NetworkFamily {
             Network::SkaleBase => NetworkFamily::Evm,
             Network::SkaleBaseSepolia => NetworkFamily::Evm,
             Network::Scroll => NetworkFamily::Evm,
+            Network::Hedera => NetworkFamily::Evm,
+            Network::HederaTestnet => NetworkFamily::Evm,
         }
     }
 }
@@ -355,6 +367,8 @@ impl Network {
             Network::SkaleBase,
             Network::SkaleBaseSepolia,
             Network::Scroll,
+            Network::Hedera,
+            Network::HederaTestnet,
         ]
     }
 
@@ -399,6 +413,8 @@ impl Network {
             Network::SkaleBase,
             Network::SkaleBaseSepolia,
             Network::Scroll,
+            Network::Hedera,
+            Network::HederaTestnet,
         ]
     }
 
@@ -443,6 +459,8 @@ impl Network {
             Network::SkaleBase,
             Network::SkaleBaseSepolia,
             Network::Scroll,
+            Network::Hedera,
+            Network::HederaTestnet,
         ]
     }
 
@@ -485,6 +503,8 @@ impl Network {
             Network::SkaleBase,
             Network::SkaleBaseSepolia,
             Network::Scroll,
+            Network::Hedera,
+            Network::HederaTestnet,
         ]
     }
 
@@ -515,6 +535,7 @@ impl Network {
                 | Network::StellarTestnet
                 | Network::FogoTestnet
                 | Network::SkaleBaseSepolia
+                | Network::HederaTestnet
         )
     }
 
@@ -585,6 +606,9 @@ impl Network {
             Network::SkaleBaseSepolia => "eip155:324705682".to_string(),
             // Scroll - eip155:{chain_id}
             Network::Scroll => "eip155:534352".to_string(),
+            // Hedera - eip155:{chain_id}
+            Network::Hedera => "eip155:295".to_string(),
+            Network::HederaTestnet => "eip155:296".to_string(),
         }
     }
 
@@ -645,6 +669,9 @@ impl Network {
             "eip155:324705682" => Some(Network::SkaleBaseSepolia),
             // Scroll
             "eip155:534352" => Some(Network::Scroll),
+            // Hedera
+            "eip155:295" => Some(Network::Hedera),
+            "eip155:296" => Some(Network::HederaTestnet),
             _ => None,
         }
     }
@@ -1266,54 +1293,53 @@ impl From<&USDCDeployment> for Vec<TokenAsset> {
 }
 
 impl USDCDeployment {
-    /// Return the known USDC deployment for the given network.
-    ///
-    /// Panic if the network is unsupported (not expected in practice).
-    pub fn by_network<N: Borrow<Network>>(network: N) -> &'static USDCDeployment {
+    /// Return the known USDC deployment for the given network, if one exists.
+    pub fn by_network<N: Borrow<Network>>(network: N) -> Option<&'static USDCDeployment> {
         match network.borrow() {
-            Network::BaseSepolia => &USDC_BASE_SEPOLIA,
-            Network::Base => &USDC_BASE,
-            Network::XdcMainnet => &USDC_XDC,
-            Network::AvalancheFuji => &USDC_AVALANCHE_FUJI,
-            Network::Avalanche => &USDC_AVALANCHE,
-            Network::XrplEvm => &USDC_XRPL_EVM,
-            Network::Solana => &USDC_SOLANA,
-            Network::SolanaDevnet => &USDC_SOLANA_DEVNET,
-            Network::PolygonAmoy => &USDC_POLYGON_AMOY,
-            Network::Polygon => &USDC_POLYGON,
-            Network::Optimism => &USDC_OPTIMISM,
-            Network::OptimismSepolia => &USDC_OPTIMISM_SEPOLIA,
-            Network::Celo => &USDC_CELO,
-            Network::CeloSepolia => &USDC_CELO_SEPOLIA,
-            Network::HyperEvm => &USDC_HYPEREVM,
-            Network::HyperEvmTestnet => &USDC_HYPEREVM_TESTNET,
-            Network::Sei => &USDC_SEI,
-            Network::SeiTestnet => &USDC_SEI_TESTNET,
-            Network::Ethereum => &USDC_ETHEREUM,
-            Network::EthereumSepolia => &USDC_ETHEREUM_SEPOLIA,
-            Network::Arbitrum => &USDC_ARBITRUM,
-            Network::ArbitrumSepolia => &USDC_ARBITRUM_SEPOLIA,
-            Network::Unichain => &USDC_UNICHAIN,
-            Network::UnichainSepolia => &USDC_UNICHAIN_SEPOLIA,
-            Network::Monad => &USDC_MONAD,
-            Network::Bsc => &USDC_BSC,
-            Network::Near => &USDC_NEAR,
-            Network::NearTestnet => &USDC_NEAR_TESTNET,
-            Network::Stellar => &USDC_STELLAR,
-            Network::StellarTestnet => &USDC_STELLAR_TESTNET,
-            Network::Fogo => &USDC_FOGO,
-            Network::FogoTestnet => &USDC_FOGO_TESTNET,
+            Network::BaseSepolia => Some(&USDC_BASE_SEPOLIA),
+            Network::Base => Some(&USDC_BASE),
+            Network::XdcMainnet => Some(&USDC_XDC),
+            Network::AvalancheFuji => Some(&USDC_AVALANCHE_FUJI),
+            Network::Avalanche => Some(&USDC_AVALANCHE),
+            Network::XrplEvm => Some(&USDC_XRPL_EVM),
+            Network::Solana => Some(&USDC_SOLANA),
+            Network::SolanaDevnet => Some(&USDC_SOLANA_DEVNET),
+            Network::PolygonAmoy => Some(&USDC_POLYGON_AMOY),
+            Network::Polygon => Some(&USDC_POLYGON),
+            Network::Optimism => Some(&USDC_OPTIMISM),
+            Network::OptimismSepolia => Some(&USDC_OPTIMISM_SEPOLIA),
+            Network::Celo => Some(&USDC_CELO),
+            Network::CeloSepolia => Some(&USDC_CELO_SEPOLIA),
+            Network::HyperEvm => Some(&USDC_HYPEREVM),
+            Network::HyperEvmTestnet => Some(&USDC_HYPEREVM_TESTNET),
+            Network::Sei => Some(&USDC_SEI),
+            Network::SeiTestnet => Some(&USDC_SEI_TESTNET),
+            Network::Ethereum => Some(&USDC_ETHEREUM),
+            Network::EthereumSepolia => Some(&USDC_ETHEREUM_SEPOLIA),
+            Network::Arbitrum => Some(&USDC_ARBITRUM),
+            Network::ArbitrumSepolia => Some(&USDC_ARBITRUM_SEPOLIA),
+            Network::Unichain => Some(&USDC_UNICHAIN),
+            Network::UnichainSepolia => Some(&USDC_UNICHAIN_SEPOLIA),
+            Network::Monad => Some(&USDC_MONAD),
+            Network::Bsc => Some(&USDC_BSC),
+            Network::Near => Some(&USDC_NEAR),
+            Network::NearTestnet => Some(&USDC_NEAR_TESTNET),
+            Network::Stellar => Some(&USDC_STELLAR),
+            Network::StellarTestnet => Some(&USDC_STELLAR_TESTNET),
+            Network::Fogo => Some(&USDC_FOGO),
+            Network::FogoTestnet => Some(&USDC_FOGO_TESTNET),
             #[cfg(feature = "algorand")]
-            Network::Algorand => &USDC_ALGORAND,
+            Network::Algorand => Some(&USDC_ALGORAND),
             #[cfg(feature = "algorand")]
-            Network::AlgorandTestnet => &USDC_ALGORAND_TESTNET,
+            Network::AlgorandTestnet => Some(&USDC_ALGORAND_TESTNET),
             #[cfg(feature = "sui")]
-            Network::Sui => &USDC_SUI,
+            Network::Sui => Some(&USDC_SUI),
             #[cfg(feature = "sui")]
-            Network::SuiTestnet => &USDC_SUI_TESTNET,
-            Network::SkaleBase => &USDC_SKALE_BASE,
-            Network::SkaleBaseSepolia => &USDC_SKALE_BASE_SEPOLIA,
-            Network::Scroll => &USDC_SCROLL,
+            Network::SuiTestnet => Some(&USDC_SUI_TESTNET),
+            Network::SkaleBase => Some(&USDC_SKALE_BASE),
+            Network::SkaleBaseSepolia => Some(&USDC_SKALE_BASE_SEPOLIA),
+            Network::Scroll => Some(&USDC_SCROLL),
+            Network::Hedera | Network::HederaTestnet => None,
         }
     }
 }
@@ -1799,7 +1825,7 @@ impl USDTDeployment {
 /// ```
 pub fn get_token_deployment(network: Network, token_type: TokenType) -> Option<TokenDeployment> {
     match token_type {
-        TokenType::Usdc => Some(USDCDeployment::by_network(network).0.clone()),
+        TokenType::Usdc => USDCDeployment::by_network(network).map(|d| d.0.clone()),
         TokenType::Eurc => EURCDeployment::by_network(network).map(|d| d.0.clone()),
         TokenType::Ausd => AUSDDeployment::by_network(network).map(|d| d.0.clone()),
         TokenType::Pyusd => PYUSDDeployment::by_network(network).map(|d| d.0.clone()),

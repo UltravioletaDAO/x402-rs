@@ -148,6 +148,7 @@ where
         .route("/sui.png", get(get_sui_logo))
         .route("/skale.png", get(get_skale_logo))
         .route("/scroll.png", get(get_scroll_logo))
+        .route("/hedera.png", get(get_hedera_logo))
         .route("/usdc.png", get(get_usdc_logo))
         .route("/usdt.png", get(get_usdt_logo))
         .route("/eurc.png", get(get_eurc_logo))
@@ -612,6 +613,16 @@ pub async fn get_skale_logo() -> impl IntoResponse {
 /// `GET /scroll.png`: Returns Scroll logo.
 pub async fn get_scroll_logo() -> impl IntoResponse {
     let bytes = include_bytes!("../static/scroll.png");
+    (
+        StatusCode::OK,
+        [("content-type", "image/png")],
+        bytes.as_slice(),
+    )
+}
+
+/// `GET /hedera.png`: Returns Hedera network logo.
+pub async fn get_hedera_logo() -> impl IntoResponse {
+    let bytes = include_bytes!("../static/hedera.png");
     (
         StatusCode::OK,
         [("content-type", "image/png")],

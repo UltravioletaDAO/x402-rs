@@ -83,6 +83,10 @@ pub const ENV_RPC_SKALE_BASE_SEPOLIA: &str = "RPC_URL_SKALE_BASE_SEPOLIA";
 // Scroll RPC URL (zkEVM L2 on Ethereum)
 pub const ENV_RPC_SCROLL: &str = "RPC_URL_SCROLL";
 
+// Hedera RPC URLs (ERC-8004 only, no EIP-3009 USDC)
+pub const ENV_RPC_HEDERA: &str = "RPC_URL_HEDERA";
+pub const ENV_RPC_HEDERA_TESTNET: &str = "RPC_URL_HEDERA_TESTNET";
+
 // Sui wallet private key environment variables
 #[cfg(feature = "sui")]
 pub const ENV_SUI_PRIVATE_KEY: &str = "SUI_PRIVATE_KEY";
@@ -136,6 +140,8 @@ pub fn rpc_env_name_from_network(network: Network) -> &'static str {
         Network::SkaleBase => ENV_RPC_SKALE_BASE,
         Network::SkaleBaseSepolia => ENV_RPC_SKALE_BASE_SEPOLIA,
         Network::Scroll => ENV_RPC_SCROLL,
+        Network::Hedera => ENV_RPC_HEDERA,
+        Network::HederaTestnet => ENV_RPC_HEDERA_TESTNET,
     }
 }
 

@@ -216,9 +216,10 @@ where
             extra: None,                            // FHE proxy handles fee_payer internally
         });
 
-        // Add x402r escrow scheme support (PaymentOperator-based escrow)
+        // Add x402r escrow/commerce scheme support (PaymentOperator-based escrow)
         // Dynamically advertise all networks with deployed PaymentOperator contracts
         // Only if ENABLE_PAYMENT_OPERATOR=true
+        // Both "escrow" and "commerce" schemes are advertised (functionally identical)
         if crate::payment_operator::is_enabled() {
             use crate::payment_operator::addresses::{OperatorAddresses, ESCROW_NETWORKS};
 
@@ -236,12 +237,15 @@ where
                             }),
                         };
 
-                        kinds.push(SupportedPaymentKind {
-                            x402_version: X402Version::V2,
-                            scheme: Scheme::Escrow,
-                            network: network.to_caip2(),
-                            extra: Some(escrow_extra),
-                        });
+                        // Advertise both escrow and commerce schemes
+                        for scheme in [Scheme::Escrow, Scheme::Commerce] {
+                            kinds.push(SupportedPaymentKind {
+                                x402_version: X402Version::V2,
+                                scheme,
+                                network: network.to_caip2(),
+                                extra: Some(escrow_extra.clone()),
+                            });
+                        }
                     }
                 }
             }

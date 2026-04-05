@@ -1,11 +1,13 @@
-//! x402r Escrow Scheme Support
+//! x402r Escrow / Commerce Scheme Support
 //!
 //! Implements the escrow payment scheme from x402r using Base Commerce Payments contracts.
+//! Both `"escrow"` and `"commerce"` scheme identifiers are accepted (functionally identical).
+//! The `"commerce"` alias was introduced by x402r for marketplace integrations.
 //!
 //! # How It Works
 //!
-//! The escrow scheme uses `scheme: "escrow"` in the payment payload (not extensions).
-//! When a client sends a payment with this scheme, the facilitator:
+//! The escrow scheme uses `scheme: "escrow"` or `scheme: "commerce"` in the payment payload.
+//! When a client sends a payment with either scheme, the facilitator:
 //!
 //! 1. Verifies the ERC-3009 signature
 //! 2. Calls `PaymentOperator.authorize()` to place funds in escrow
@@ -71,7 +73,10 @@ pub mod operator;
 pub mod types;
 
 pub use errors::OperatorError;
-pub use operator::{query_escrow_state, settle_escrow, verify_escrow, ESCROW_SCHEME};
+pub use operator::{
+    is_escrow_scheme, query_escrow_state, settle_escrow, verify_escrow, COMMERCE_SCHEME,
+    ESCROW_SCHEME,
+};
 pub use types::{
     ContractPaymentInfo, EscrowAuthorization, EscrowExtra, EscrowLifecyclePayload, EscrowPayload,
     EscrowPaymentInfo, EscrowStateQuery, EscrowStateResponse,

@@ -246,9 +246,11 @@ on-chain transaction is submitted.
 
 Uses `x402UptoPermit2Proxy.settle(permit, amount, owner, witness, signature)` via Uniswap Permit2.
 
-**Escrow Lifecycle (scheme: "escrow"):**
+**Escrow / Commerce Lifecycle (scheme: "escrow" or "commerce"):**
 
-When `scheme: "escrow"` is set, the `action` field controls the operation:
+Both `"escrow"` and `"commerce"` schemes are supported and functionally identical.
+The `"commerce"` alias was introduced by x402r for marketplace integrations (e.g., Execution Market).
+The `action` field controls the operation:
 
 | Action | Description | Signature Required |
 |--------|-------------|-------------------|
@@ -256,7 +258,7 @@ When `scheme: "escrow"` is set, the `action` field controls the operation:
 | `release` | Send escrowed funds to receiver | No |
 | `refundInEscrow` | Return escrowed funds to payer | No |
 
-Escrow contracts deployed on 9 networks. See `/supported` for networks with active PaymentOperator deployments.
+Escrow contracts deployed on 11 networks. See `/supported` for networks with active PaymentOperator deployments.
 
 **Escrow release/refund payload** (no signature needed):
 ```json

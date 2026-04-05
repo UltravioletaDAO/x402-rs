@@ -11,13 +11,13 @@
 //! Based on reference implementation:
 //! https://github.com/BackTrackCo/x402r-scheme/tree/main/packages/evm/src/escrow/facilitator
 
+use alloy::network::TransactionBuilder as _;
 use alloy::primitives::{Address, Bytes, FixedBytes, B256, U256};
 use alloy::providers::Provider;
 use alloy::rpc::types::TransactionRequest;
 use alloy::sol;
 use alloy::sol_types::SolCall;
-use alloy::network::TransactionBuilder as _;
-use tracing::{debug, info, warn, instrument};
+use tracing::{debug, info, instrument, warn};
 
 use crate::chain::evm::{EvmProvider, MetaEvmProvider, MetaTransaction};
 use crate::chain::NetworkProvider;
@@ -44,6 +44,15 @@ sol! {
 
 /// Escrow scheme identifier
 pub const ESCROW_SCHEME: &str = "escrow";
+
+/// Commerce scheme identifier (x402r alias for escrow)
+pub const COMMERCE_SCHEME: &str = "commerce";
+
+/// Check if a scheme string is an escrow-family scheme ("escrow" or "commerce").
+/// The commerce scheme is functionally identical to escrow -- same contracts, same ABI.
+pub fn is_escrow_scheme(s: Option<&str>) -> bool {
+    matches!(s, Some(ESCROW_SCHEME) | Some(COMMERCE_SCHEME))
+}
 
 // ============================================================================
 // Parsed request types
@@ -127,7 +136,10 @@ where
 /// - Payer has sufficient token balance
 /// - Authorization.to matches token_collector
 #[instrument(skip_all, err)]
-pub async fn verify_escrow<F>(body: &str, facilitator: &F) -> Result<serde_json::Value, OperatorError>
+pub async fn verify_escrow<F>(
+    body: &str,
+    facilitator: &F,
+) -> Result<serde_json::Value, OperatorError>
 where
     F: HasProviderMap,
     F::Map: ProviderMap<Value = NetworkProvider>,
@@ -143,8 +155,10 @@ where
     let (payload_value, req_value) = extract_escrow_verify_fields(&json_value)?;
 
     // Parse escrow payload
-    let escrow_payload: EscrowPayload = serde_json::from_value(payload_value.clone())
-        .map_err(|e| OperatorError::InvalidExtensionFormat(format!("Invalid escrow payload: {}", e)))?;
+    let escrow_payload: EscrowPayload =
+        serde_json::from_value(payload_value.clone()).map_err(|e| {
+            OperatorError::InvalidExtensionFormat(format!("Invalid escrow payload: {}", e))
+        })?;
 
     let payer = escrow_payload.authorization.from;
 
@@ -245,13 +259,17 @@ where
 /// Supports:
 /// - Top-level: { scheme, payload, paymentRequirements }
 /// - Wrapped: { paymentPayload: { scheme, payload, accepted } }
-fn extract_escrow_verify_fields(json: &serde_json::Value) -> Result<(serde_json::Value, serde_json::Value), OperatorError> {
+fn extract_escrow_verify_fields(
+    json: &serde_json::Value,
+) -> Result<(serde_json::Value, serde_json::Value), OperatorError> {
     // Format 1: Top-level { scheme, payload, paymentRequirements }
-    if json.get("scheme").and_then(|s| s.as_str()) == Some(ESCROW_SCHEME) {
-        let payload = json.get("payload")
+    if is_escrow_scheme(json.get("scheme").and_then(|s| s.as_str())) {
+        let payload = json
+            .get("payload")
             .ok_or_else(|| OperatorError::MissingField("payload".to_string()))?
             .clone();
-        let requirements = json.get("paymentRequirements")
+        let requirements = json
+            .get("paymentRequirements")
             .ok_or_else(|| OperatorError::MissingField("paymentRequirements".to_string()))?
             .clone();
         return Ok((payload, requirements));
@@ -259,23 +277,32 @@ fn extract_escrow_verify_fields(json: &serde_json::Value) -> Result<(serde_json:
 
     // Format 2: { paymentPayload: { scheme/accepted.scheme, payload, ... } }
     if let Some(pp) = json.get("paymentPayload") {
-        let scheme = pp.get("scheme").and_then(|s| s.as_str())
-            .or_else(|| pp.get("accepted").and_then(|a| a.get("scheme")).and_then(|s| s.as_str()));
+        let scheme = pp.get("scheme").and_then(|s| s.as_str()).or_else(|| {
+            pp.get("accepted")
+                .and_then(|a| a.get("scheme"))
+                .and_then(|s| s.as_str())
+        });
 
-        if scheme == Some(ESCROW_SCHEME) {
-            let payload = pp.get("payload")
+        if is_escrow_scheme(scheme) {
+            let payload = pp
+                .get("payload")
                 .ok_or_else(|| OperatorError::MissingField("paymentPayload.payload".to_string()))?
                 .clone();
             // paymentRequirements can be in "accepted" (v2) or "paymentRequirements" (v1)
-            let requirements = pp.get("accepted")
+            let requirements = pp
+                .get("accepted")
                 .or_else(|| json.get("paymentRequirements"))
-                .ok_or_else(|| OperatorError::MissingField("paymentRequirements/accepted".to_string()))?
+                .ok_or_else(|| {
+                    OperatorError::MissingField("paymentRequirements/accepted".to_string())
+                })?
                 .clone();
             return Ok((payload, requirements));
         }
     }
 
-    Err(OperatorError::InvalidScheme("not an escrow scheme request".to_string()))
+    Err(OperatorError::InvalidScheme(
+        "not an escrow scheme request".to_string(),
+    ))
 }
 
 /// Check if an address has sufficient ERC-20 token balance.
@@ -314,8 +341,8 @@ where
         return Err(OperatorError::FeatureDisabled);
     }
 
-    let query: EscrowStateQuery =
-        serde_json::from_str(body).map_err(|e| OperatorError::InvalidExtensionFormat(e.to_string()))?;
+    let query: EscrowStateQuery = serde_json::from_str(body)
+        .map_err(|e| OperatorError::InvalidExtensionFormat(e.to_string()))?;
 
     let network = Network::from_caip2(&query.network)
         .ok_or_else(|| OperatorError::UnsupportedNetwork(query.network.clone()))?;
@@ -504,7 +531,8 @@ fn parse_escrow_request(body: &str) -> Result<ParsedEscrowRequest, OperatorError
     let json_value: serde_json::Value = serde_json::from_str(body)?;
 
     // Extract fields from whichever format is present
-    let (payload_value, network_str, extra_value, action) = extract_escrow_settle_fields(&json_value)?;
+    let (payload_value, network_str, extra_value, action) =
+        extract_escrow_settle_fields(&json_value)?;
 
     let network = Network::from_caip2(network_str)
         .ok_or_else(|| OperatorError::UnsupportedNetwork(network_str.to_string()))?;
@@ -514,9 +542,8 @@ fn parse_escrow_request(body: &str) -> Result<ParsedEscrowRequest, OperatorError
 
     match action {
         "authorize" => {
-            let escrow_payload: EscrowPayload =
-                serde_json::from_value(payload_value.clone())
-                    .map_err(|e| OperatorError::InvalidExtensionFormat(e.to_string()))?;
+            let escrow_payload: EscrowPayload = serde_json::from_value(payload_value.clone())
+                .map_err(|e| OperatorError::InvalidExtensionFormat(e.to_string()))?;
             Ok(ParsedEscrowRequest::Authorize {
                 network,
                 payload: escrow_payload,
@@ -524,11 +551,10 @@ fn parse_escrow_request(body: &str) -> Result<ParsedEscrowRequest, OperatorError
             })
         }
         "release" => {
-            let lifecycle: EscrowLifecyclePayload =
-                serde_json::from_value(payload_value.clone())
-                    .map_err(|e| OperatorError::InvalidExtensionFormat(
-                        format!("Invalid release payload: {}", e),
-                    ))?;
+            let lifecycle: EscrowLifecyclePayload = serde_json::from_value(payload_value.clone())
+                .map_err(|e| {
+                OperatorError::InvalidExtensionFormat(format!("Invalid release payload: {}", e))
+            })?;
             Ok(ParsedEscrowRequest::Release {
                 network,
                 lifecycle,
@@ -536,11 +562,13 @@ fn parse_escrow_request(body: &str) -> Result<ParsedEscrowRequest, OperatorError
             })
         }
         "refundInEscrow" => {
-            let lifecycle: EscrowLifecyclePayload =
-                serde_json::from_value(payload_value.clone())
-                    .map_err(|e| OperatorError::InvalidExtensionFormat(
-                        format!("Invalid refundInEscrow payload: {}", e),
-                    ))?;
+            let lifecycle: EscrowLifecyclePayload = serde_json::from_value(payload_value.clone())
+                .map_err(|e| {
+                OperatorError::InvalidExtensionFormat(format!(
+                    "Invalid refundInEscrow payload: {}",
+                    e
+                ))
+            })?;
             Ok(ParsedEscrowRequest::RefundInEscrow {
                 network,
                 lifecycle,
@@ -554,22 +582,34 @@ fn parse_escrow_request(body: &str) -> Result<ParsedEscrowRequest, OperatorError
 /// Extract settle fields from either top-level or wrapped (v2) format.
 ///
 /// Returns (payload, network_str, extra_value, action).
-fn extract_escrow_settle_fields(json: &serde_json::Value) -> Result<(serde_json::Value, &str, serde_json::Value, &str), OperatorError> {
+fn extract_escrow_settle_fields(
+    json: &serde_json::Value,
+) -> Result<(serde_json::Value, &str, serde_json::Value, &str), OperatorError> {
     // Format 1: Top-level { scheme, action, payload, paymentRequirements }
-    if json.get("scheme").and_then(|s| s.as_str()) == Some(ESCROW_SCHEME) {
-        let action = json.get("action").and_then(|a| a.as_str()).unwrap_or("authorize");
+    if is_escrow_scheme(json.get("scheme").and_then(|s| s.as_str())) {
+        let action = json
+            .get("action")
+            .and_then(|a| a.as_str())
+            .unwrap_or("authorize");
 
-        let payload = json.get("payload")
+        let payload = json
+            .get("payload")
             .ok_or_else(|| OperatorError::MissingField("payload".to_string()))?
             .clone();
 
-        let requirements = json.get("paymentRequirements")
+        let requirements = json
+            .get("paymentRequirements")
             .ok_or_else(|| OperatorError::MissingField("paymentRequirements".to_string()))?;
 
-        let network_str = requirements.get("network").and_then(|n| n.as_str())
-            .ok_or_else(|| OperatorError::MissingField("paymentRequirements.network".to_string()))?;
+        let network_str = requirements
+            .get("network")
+            .and_then(|n| n.as_str())
+            .ok_or_else(|| {
+                OperatorError::MissingField("paymentRequirements.network".to_string())
+            })?;
 
-        let extra = requirements.get("extra")
+        let extra = requirements
+            .get("extra")
             .ok_or_else(|| OperatorError::MissingField("paymentRequirements.extra".to_string()))?
             .clone();
 
@@ -578,35 +618,55 @@ fn extract_escrow_settle_fields(json: &serde_json::Value) -> Result<(serde_json:
 
     // Format 2: { paymentPayload: { payload, accepted/scheme }, paymentRequirements }
     if let Some(pp) = json.get("paymentPayload") {
-        let scheme = pp.get("scheme").and_then(|s| s.as_str())
-            .or_else(|| pp.get("accepted").and_then(|a| a.get("scheme")).and_then(|s| s.as_str()));
+        let scheme = pp.get("scheme").and_then(|s| s.as_str()).or_else(|| {
+            pp.get("accepted")
+                .and_then(|a| a.get("scheme"))
+                .and_then(|s| s.as_str())
+        });
 
-        if scheme == Some(ESCROW_SCHEME) {
-            let action = pp.get("action").and_then(|a| a.as_str())
-                .or_else(|| pp.get("accepted").and_then(|a| a.get("action")).and_then(|a| a.as_str()))
+        if is_escrow_scheme(scheme) {
+            let action = pp
+                .get("action")
+                .and_then(|a| a.as_str())
+                .or_else(|| {
+                    pp.get("accepted")
+                        .and_then(|a| a.get("action"))
+                        .and_then(|a| a.as_str())
+                })
                 .unwrap_or("authorize");
 
-            let payload = pp.get("payload")
+            let payload = pp
+                .get("payload")
                 .ok_or_else(|| OperatorError::MissingField("paymentPayload.payload".to_string()))?
                 .clone();
 
             // paymentRequirements: try top-level first, then accepted inside paymentPayload
-            let requirements = json.get("paymentRequirements")
+            let requirements = json
+                .get("paymentRequirements")
                 .or_else(|| pp.get("accepted"))
                 .ok_or_else(|| OperatorError::MissingField("paymentRequirements".to_string()))?;
 
-            let network_str = requirements.get("network").and_then(|n| n.as_str())
-                .ok_or_else(|| OperatorError::MissingField("paymentRequirements.network".to_string()))?;
+            let network_str = requirements
+                .get("network")
+                .and_then(|n| n.as_str())
+                .ok_or_else(|| {
+                    OperatorError::MissingField("paymentRequirements.network".to_string())
+                })?;
 
-            let extra = requirements.get("extra")
-                .ok_or_else(|| OperatorError::MissingField("paymentRequirements.extra".to_string()))?
+            let extra = requirements
+                .get("extra")
+                .ok_or_else(|| {
+                    OperatorError::MissingField("paymentRequirements.extra".to_string())
+                })?
                 .clone();
 
             return Ok((payload, network_str, extra, action));
         }
     }
 
-    Err(OperatorError::InvalidScheme("not an escrow scheme request".to_string()))
+    Err(OperatorError::InvalidScheme(
+        "not an escrow scheme request".to_string(),
+    ))
 }
 
 // ============================================================================
@@ -792,7 +852,10 @@ async fn execute_refund_in_escrow(
 // ============================================================================
 
 /// Get EVM provider for a network from the facilitator
-fn get_evm_provider<'a, F>(facilitator: &'a F, network: Network) -> Result<&'a EvmProvider, OperatorError>
+fn get_evm_provider<'a, F>(
+    facilitator: &'a F,
+    network: Network,
+) -> Result<&'a EvmProvider, OperatorError>
 where
     F: HasProviderMap,
     F::Map: ProviderMap<Value = NetworkProvider>,
@@ -872,7 +935,11 @@ async fn eth_call(
 /// Note on gas risk: accepting any operator means the facilitator may spend
 /// gas on transactions that revert if the operator contract rejects them.
 /// This is an accepted tradeoff for protocol openness.
-fn validate_addresses(extra: &EscrowExtra, addrs: &OperatorAddresses, strict_operator: bool) -> Result<(), OperatorError> {
+fn validate_addresses(
+    extra: &EscrowExtra,
+    addrs: &OperatorAddresses,
+    strict_operator: bool,
+) -> Result<(), OperatorError> {
     if strict_operator {
         // Reserved for future use — currently all paths are operator-agnostic
         if addrs.payment_operators.is_empty() {
@@ -969,7 +1036,12 @@ mod tests {
         let result = parse_escrow_request(body).unwrap();
         assert!(matches!(result, ParsedEscrowRequest::Authorize { .. }));
 
-        if let ParsedEscrowRequest::Authorize { network, payload, extra } = result {
+        if let ParsedEscrowRequest::Authorize {
+            network,
+            payload,
+            extra,
+        } = result
+        {
             assert_eq!(network, Network::BaseSepolia);
             assert_eq!(payload.authorization.value, 1_000_000);
             assert_eq!(
@@ -1016,7 +1088,10 @@ mod tests {
         let result = parse_escrow_request(body).unwrap();
         assert!(matches!(result, ParsedEscrowRequest::Release { .. }));
 
-        if let ParsedEscrowRequest::Release { network, lifecycle, .. } = result {
+        if let ParsedEscrowRequest::Release {
+            network, lifecycle, ..
+        } = result
+        {
             assert_eq!(network, Network::BaseSepolia);
             assert_eq!(lifecycle.amount, 1_000_000);
             assert_eq!(
@@ -1186,5 +1261,167 @@ mod tests {
             query.payer,
             alloy::primitives::address!("1111111111111111111111111111111111111111")
         );
+    }
+
+    // ========================================================================
+    // Commerce scheme tests (functionally identical to escrow)
+    // ========================================================================
+
+    #[test]
+    fn test_is_escrow_scheme_helper() {
+        assert!(is_escrow_scheme(Some("escrow")));
+        assert!(is_escrow_scheme(Some("commerce")));
+        assert!(!is_escrow_scheme(Some("exact")));
+        assert!(!is_escrow_scheme(Some("upto")));
+        assert!(!is_escrow_scheme(None));
+    }
+
+    #[test]
+    fn test_commerce_scheme_authorize() {
+        let body = r#"{
+            "x402Version": 2,
+            "scheme": "commerce",
+            "payload": {
+                "authorization": {
+                    "from": "0x1111111111111111111111111111111111111111",
+                    "to": "0x0E3dF9510de65469C4518D7843919c0b8C7A7757",
+                    "value": "1000000",
+                    "validAfter": "0",
+                    "validBefore": "1738500000",
+                    "nonce": "0x0000000000000000000000000000000000000000000000000000000000003039"
+                },
+                "signature": "0xabcdef1234567890",
+                "paymentInfo": {
+                    "operator": "0xFa8C4Cb156053b867Ae7489220A29b5939E3Df70",
+                    "receiver": "0x2222222222222222222222222222222222222222",
+                    "token": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+                    "maxAmount": "1000000",
+                    "preApprovalExpiry": 281474976710655,
+                    "authorizationExpiry": 281474976710655,
+                    "refundExpiry": 281474976710655,
+                    "minFeeBps": 0,
+                    "maxFeeBps": 100,
+                    "feeReceiver": "0xFa8C4Cb156053b867Ae7489220A29b5939E3Df70",
+                    "salt": "0x0000000000000000000000000000000000000000000000000000000000003039"
+                }
+            },
+            "paymentRequirements": {
+                "scheme": "commerce",
+                "network": "eip155:84532",
+                "maxAmountRequired": "1000000",
+                "asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+                "payTo": "0x2222222222222222222222222222222222222222",
+                "extra": {
+                    "escrowAddress": "0xb9488351E48b23D798f24e8174514F28B741Eb4f",
+                    "operatorAddress": "0xFa8C4Cb156053b867Ae7489220A29b5939E3Df70",
+                    "tokenCollector": "0x0E3dF9510de65469C4518D7843919c0b8C7A7757"
+                }
+            }
+        }"#;
+
+        let result = parse_escrow_request(body).unwrap();
+        assert!(matches!(result, ParsedEscrowRequest::Authorize { .. }));
+
+        if let ParsedEscrowRequest::Authorize {
+            network,
+            payload,
+            extra,
+        } = result
+        {
+            assert_eq!(network, Network::BaseSepolia);
+            assert_eq!(payload.authorization.value, 1_000_000);
+            assert_eq!(
+                extra.operator_address,
+                alloy::primitives::address!("Fa8C4Cb156053b867Ae7489220A29b5939E3Df70")
+            );
+        }
+    }
+
+    #[test]
+    fn test_commerce_scheme_release() {
+        let body = r#"{
+            "x402Version": 2,
+            "scheme": "commerce",
+            "action": "release",
+            "payload": {
+                "paymentInfo": {
+                    "operator": "0xFa8C4Cb156053b867Ae7489220A29b5939E3Df70",
+                    "receiver": "0x2222222222222222222222222222222222222222",
+                    "token": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+                    "maxAmount": "1000000",
+                    "preApprovalExpiry": 281474976710655,
+                    "authorizationExpiry": 281474976710655,
+                    "refundExpiry": 281474976710655,
+                    "minFeeBps": 0,
+                    "maxFeeBps": 100,
+                    "feeReceiver": "0xFa8C4Cb156053b867Ae7489220A29b5939E3Df70",
+                    "salt": "0x0000000000000000000000000000000000000000000000000000000000003039"
+                },
+                "payer": "0x1111111111111111111111111111111111111111",
+                "amount": "1000000"
+            },
+            "paymentRequirements": {
+                "scheme": "commerce",
+                "network": "eip155:84532",
+                "extra": {
+                    "escrowAddress": "0xb9488351E48b23D798f24e8174514F28B741Eb4f",
+                    "operatorAddress": "0xFa8C4Cb156053b867Ae7489220A29b5939E3Df70",
+                    "tokenCollector": "0x0E3dF9510de65469C4518D7843919c0b8C7A7757"
+                }
+            }
+        }"#;
+
+        let result = parse_escrow_request(body).unwrap();
+        assert!(matches!(result, ParsedEscrowRequest::Release { .. }));
+
+        if let ParsedEscrowRequest::Release {
+            network, lifecycle, ..
+        } = result
+        {
+            assert_eq!(network, Network::BaseSepolia);
+            assert_eq!(lifecycle.amount, 1_000_000);
+        }
+    }
+
+    #[test]
+    fn test_commerce_scheme_refund() {
+        let body = r#"{
+            "x402Version": 2,
+            "scheme": "commerce",
+            "action": "refundInEscrow",
+            "payload": {
+                "paymentInfo": {
+                    "operator": "0xFa8C4Cb156053b867Ae7489220A29b5939E3Df70",
+                    "receiver": "0x2222222222222222222222222222222222222222",
+                    "token": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+                    "maxAmount": "1000000",
+                    "preApprovalExpiry": 281474976710655,
+                    "authorizationExpiry": 281474976710655,
+                    "refundExpiry": 281474976710655,
+                    "minFeeBps": 0,
+                    "maxFeeBps": 100,
+                    "feeReceiver": "0xFa8C4Cb156053b867Ae7489220A29b5939E3Df70",
+                    "salt": "0x0000000000000000000000000000000000000000000000000000000000003039"
+                },
+                "payer": "0x1111111111111111111111111111111111111111",
+                "amount": "500000"
+            },
+            "paymentRequirements": {
+                "scheme": "commerce",
+                "network": "eip155:84532",
+                "extra": {
+                    "escrowAddress": "0xb9488351E48b23D798f24e8174514F28B741Eb4f",
+                    "operatorAddress": "0xFa8C4Cb156053b867Ae7489220A29b5939E3Df70",
+                    "tokenCollector": "0x0E3dF9510de65469C4518D7843919c0b8C7A7757"
+                }
+            }
+        }"#;
+
+        let result = parse_escrow_request(body).unwrap();
+        assert!(matches!(result, ParsedEscrowRequest::RefundInEscrow { .. }));
+
+        if let ParsedEscrowRequest::RefundInEscrow { lifecycle, .. } = result {
+            assert_eq!(lifecycle.amount, 500_000);
+        }
     }
 }

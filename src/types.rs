@@ -109,6 +109,10 @@ pub enum Scheme {
     /// x402r Escrow scheme - funds held in escrow via PaymentOperator
     #[serde(rename = "escrow")]
     Escrow,
+    /// x402r Commerce scheme - functionally identical to Escrow.
+    /// Separate variant so /supported advertises both "escrow" and "commerce".
+    #[serde(rename = "commerce")]
+    Commerce,
     /// Upto scheme - authorize max amount via Permit2, settle actual usage
     #[serde(rename = "upto")]
     Upto,
@@ -120,6 +124,7 @@ impl Display for Scheme {
             Scheme::Exact => "exact",
             Scheme::FheTransfer => "fhe-transfer",
             Scheme::Escrow => "escrow",
+            Scheme::Commerce => "commerce",
             Scheme::Upto => "upto",
         };
         write!(f, "{s}")

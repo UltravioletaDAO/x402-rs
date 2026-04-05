@@ -22,18 +22,16 @@ use tracing::{debug, error, info, instrument, warn};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use alloy::providers::Provider as _;
 use crate::chain::evm::MetaEvmProvider;
 use crate::chain::{FacilitatorLocalError, NetworkProvider, NetworkProviderOps};
 use crate::discovery::{DiscoveryError, DiscoveryRegistry};
+use crate::erc8004::solana as solana_erc8004;
 use crate::erc8004::{
     get_contracts, is_erc8004_supported, parse_agent_id_value, supported_network_names,
     AgentIdentity, AppendResponseRequest, AtomStatsResponse, FeedbackEntry, FeedbackRequest,
     FeedbackResponse, IIdentityRegistry, IReputationRegistry, MetadataEntry, RegisterAgentRequest,
     RegisterAgentResponse, ReputationResponse, ReputationSummary, RevokeFeedbackRequest,
 };
-use crate::erc8004::solana as solana_erc8004;
-use solana_sdk::signer::Signer as _;
 use crate::facilitator::Facilitator;
 use crate::fhe_proxy::FheProxy;
 use crate::provider_cache::{HasProviderMap, ProviderMap};
@@ -45,6 +43,8 @@ use crate::types_v2::{
     DiscoveryFilters, DiscoveryResource, RegisterResourceRequest, SettleRequestEnvelope,
     SupportedPaymentKindsResponseV1ToV2, VerifyRequestEnvelope,
 };
+use alloy::providers::Provider as _;
+use solana_sdk::signer::Signer as _;
 
 // Global FHE proxy instance (lazy initialized)
 use once_cell::sync::Lazy;
@@ -780,7 +780,10 @@ where
             Ok(serde_json::Value::String(s)) => s,
             _ => continue,
         };
-        let extra_json = kind.extra.as_ref().and_then(|e| serde_json::to_value(e).ok());
+        let extra_json = kind
+            .extra
+            .as_ref()
+            .and_then(|e| serde_json::to_value(e).ok());
         extra_lookup.insert((scheme_str, kind.network.clone()), extra_json);
     }
 
@@ -796,10 +799,7 @@ where
 
             // Merge facilitator's extra into the requirement's extra
             if let Some(fac_extra) = facilitator_extra {
-                let req_extra = enriched_req
-                    .get("extra")
-                    .cloned()
-                    .unwrap_or(json!({}));
+                let req_extra = enriched_req.get("extra").cloned().unwrap_or(json!({}));
                 let mut merged = match req_extra {
                     serde_json::Value::Object(obj) => obj,
                     _ => serde_json::Map::new(),
@@ -992,13 +992,13 @@ where
     // These schemes may have different payload structures that don't match standard x402 types
     if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(body_str) {
         // Detect scheme from paymentPayload.scheme (v1) or paymentPayload.accepted.scheme (v2)
-        let scheme = json_value
-            .get("paymentPayload")
-            .and_then(|pp| {
-                pp.get("scheme")
+        let scheme = json_value.get("paymentPayload").and_then(|pp| {
+            pp.get("scheme").and_then(|s| s.as_str()).or_else(|| {
+                pp.get("accepted")
+                    .and_then(|a| a.get("scheme"))
                     .and_then(|s| s.as_str())
-                    .or_else(|| pp.get("accepted").and_then(|a| a.get("scheme")).and_then(|s| s.as_str()))
-            });
+            })
+        });
 
         if scheme == Some("fhe-transfer") {
             info!("Detected fhe-transfer scheme, routing to Zama Lambda facilitator");
@@ -1060,10 +1060,12 @@ where
             }
         }
 
-        // Check for escrow scheme (x402r PaymentOperator)
-        if scheme == Some(crate::payment_operator::ESCROW_SCHEME) {
+        // Check for escrow/commerce scheme (x402r PaymentOperator)
+        if crate::payment_operator::is_escrow_scheme(scheme) {
             if !crate::payment_operator::is_enabled() {
-                warn!("Escrow scheme verify requested but ENABLE_PAYMENT_OPERATOR is not set to true");
+                warn!(
+                    "Escrow scheme verify requested but ENABLE_PAYMENT_OPERATOR is not set to true"
+                );
                 return (
                     StatusCode::BAD_REQUEST,
                     Json(json!({
@@ -1095,11 +1097,13 @@ where
             }
         }
 
-        // Also check for top-level scheme (direct escrow request format)
+        // Also check for top-level scheme (direct escrow/commerce request format)
         let top_level_scheme = json_value.get("scheme").and_then(|s| s.as_str());
-        if top_level_scheme == Some(crate::payment_operator::ESCROW_SCHEME) {
+        if crate::payment_operator::is_escrow_scheme(top_level_scheme) {
             if !crate::payment_operator::is_enabled() {
-                warn!("Escrow scheme verify requested but ENABLE_PAYMENT_OPERATOR is not set to true");
+                warn!(
+                    "Escrow scheme verify requested but ENABLE_PAYMENT_OPERATOR is not set to true"
+                );
                 return (
                     StatusCode::BAD_REQUEST,
                     Json(json!({
@@ -1426,13 +1430,13 @@ where
     // These schemes may have different payload structures that don't match standard x402 types
     if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(body_str) {
         // Detect scheme from paymentPayload.scheme (v1) or paymentPayload.accepted.scheme (v2)
-        let scheme = json_value
-            .get("paymentPayload")
-            .and_then(|pp| {
-                pp.get("scheme")
+        let scheme = json_value.get("paymentPayload").and_then(|pp| {
+            pp.get("scheme").and_then(|s| s.as_str()).or_else(|| {
+                pp.get("accepted")
+                    .and_then(|a| a.get("scheme"))
                     .and_then(|s| s.as_str())
-                    .or_else(|| pp.get("accepted").and_then(|a| a.get("scheme")).and_then(|s| s.as_str()))
-            });
+            })
+        });
 
         if scheme == Some("fhe-transfer") {
             info!("Detected fhe-transfer scheme, routing settle to Zama Lambda facilitator");
@@ -1491,9 +1495,9 @@ where
             }
         }
 
-        // Check for escrow scheme in nested paymentPayload.scheme (v2 format)
+        // Check for escrow/commerce scheme in nested paymentPayload.scheme (v2 format)
         // This mirrors the verify handler's nested escrow detection
-        if scheme == Some(crate::payment_operator::ESCROW_SCHEME) {
+        if crate::payment_operator::is_escrow_scheme(scheme) {
             if !crate::payment_operator::is_enabled() {
                 warn!("Escrow scheme settlement requested but ENABLE_PAYMENT_OPERATOR is not set to true");
                 return (
@@ -1527,10 +1531,10 @@ where
             }
         }
 
-        // Check for x402r escrow scheme (top-level scheme field)
+        // Check for x402r escrow/commerce scheme (top-level scheme field)
         // This is the new v2 scheme pattern from x402r-scheme reference implementation
         let top_level_scheme = json_value.get("scheme").and_then(|s| s.as_str());
-        if top_level_scheme == Some(crate::payment_operator::ESCROW_SCHEME) {
+        if crate::payment_operator::is_escrow_scheme(top_level_scheme) {
             // Check if escrow scheme (PaymentOperator) is enabled
             if !crate::payment_operator::is_enabled() {
                 warn!("Escrow scheme settlement requested but ENABLE_PAYMENT_OPERATOR is not set to true");
@@ -1772,9 +1776,22 @@ where
         }
         crate::types::ExactPaymentPayload::SolanaSettlementAccount(sa_payload) => {
             debug!("  - payload type: Solana Settlement Account (Crossmint)");
-            debug!("  - transaction_signature: {}", sa_payload.transaction_signature);
-            debug!("  - settle_secret_key: {}", if sa_payload.settle_secret_key.is_some() { "provided" } else { "none" });
-            debug!("  - settlement_rent_destination: {:?}", sa_payload.settlement_rent_destination);
+            debug!(
+                "  - transaction_signature: {}",
+                sa_payload.transaction_signature
+            );
+            debug!(
+                "  - settle_secret_key: {}",
+                if sa_payload.settle_secret_key.is_some() {
+                    "provided"
+                } else {
+                    "none"
+                }
+            );
+            debug!(
+                "  - settlement_rent_destination: {:?}",
+                sa_payload.settlement_rent_destination
+            );
         }
     }
 
@@ -2160,8 +2177,8 @@ where
     }
 
     let feedback = &request.feedback;
-    let agent_id_str = parse_agent_id_value(&feedback.agent_id)
-        .unwrap_or_else(|| feedback.agent_id.to_string());
+    let agent_id_str =
+        parse_agent_id_value(&feedback.agent_id).unwrap_or_else(|| feedback.agent_id.to_string());
 
     info!(
         network = %network,
@@ -2184,11 +2201,17 @@ where
                     return (
                         StatusCode::BAD_REQUEST,
                         Json(FeedbackResponse {
-                            success: false, transaction: None, feedback_index: None,
-                            error: Some(format!("No Solana ERC-8004 programs for network {}", network)),
+                            success: false,
+                            transaction: None,
+                            feedback_index: None,
+                            error: Some(format!(
+                                "No Solana ERC-8004 programs for network {}",
+                                network
+                            )),
                             network,
                         }),
-                    ).into_response();
+                    )
+                        .into_response();
                 }
             };
 
@@ -2198,11 +2221,14 @@ where
                     return (
                         StatusCode::BAD_REQUEST,
                         Json(FeedbackResponse {
-                            success: false, transaction: None, feedback_index: None,
+                            success: false,
+                            transaction: None,
+                            feedback_index: None,
                             error: Some(format!("{}", e)),
                             network,
                         }),
-                    ).into_response();
+                    )
+                        .into_response();
                 }
             };
 
@@ -2224,9 +2250,9 @@ where
                 feedback_hash_bytes,
             );
 
-            match solana_erc8004::send_erc8004_transaction(
-                p.rpc_client(), p.keypair(), vec![ix],
-            ).await {
+            match solana_erc8004::send_erc8004_transaction(p.rpc_client(), p.keypair(), vec![ix])
+                .await
+            {
                 Ok(sig) => {
                     info!(
                         network = %network,
@@ -2243,18 +2269,22 @@ where
                             error: None,
                             network,
                         }),
-                    ).into_response()
+                    )
+                        .into_response()
                 }
                 Err(e) => {
                     error!(network = %network, error = %e, "Solana feedback transaction failed");
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(FeedbackResponse {
-                            success: false, transaction: None, feedback_index: None,
+                            success: false,
+                            transaction: None,
+                            feedback_index: None,
                             error: Some(format!("Transaction failed: {}", e)),
                             network,
                         }),
-                    ).into_response()
+                    )
+                        .into_response()
                 }
             }
         }
@@ -2266,11 +2296,14 @@ where
                     return (
                         StatusCode::BAD_REQUEST,
                         Json(FeedbackResponse {
-                            success: false, transaction: None, feedback_index: None,
+                            success: false,
+                            transaction: None,
+                            feedback_index: None,
                             error: Some(format!("No ERC-8004 contracts for network {}", network)),
                             network,
                         }),
-                    ).into_response();
+                    )
+                        .into_response();
                 }
             };
 
@@ -2280,11 +2313,17 @@ where
                     return (
                         StatusCode::BAD_REQUEST,
                         Json(FeedbackResponse {
-                            success: false, transaction: None, feedback_index: None,
-                            error: Some(format!("Invalid EVM agent ID (expected numeric): {}", agent_id_str)),
+                            success: false,
+                            transaction: None,
+                            feedback_index: None,
+                            error: Some(format!(
+                                "Invalid EVM agent ID (expected numeric): {}",
+                                agent_id_str
+                            )),
                             network,
                         }),
-                    ).into_response();
+                    )
+                        .into_response();
                 }
             };
 
@@ -2306,15 +2345,26 @@ where
 
             // Legacy chains (SKALE) need explicit gasPrice to avoid EIP-1559 rejection
             let send_result = if !provider.is_eip1559() {
-                let gp = provider.inner().get_gas_price().await.map_err(|e| format!("{e:?}"));
+                let gp = provider
+                    .inner()
+                    .get_gas_price()
+                    .await
+                    .map_err(|e| format!("{e:?}"));
                 match gp {
                     Ok(gas_price) => call.gas_price(gas_price).send().await,
                     Err(e) => {
                         error!(error = %e, "Failed to get gas price");
-                        return (StatusCode::INTERNAL_SERVER_ERROR, Json(FeedbackResponse {
-                            success: false, transaction: None, feedback_index: None,
-                            error: Some(format!("Failed to get gas price: {}", e)), network,
-                        })).into_response();
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(FeedbackResponse {
+                                success: false,
+                                transaction: None,
+                                feedback_index: None,
+                                error: Some(format!("Failed to get gas price: {}", e)),
+                                network,
+                            }),
+                        )
+                            .into_response();
                     }
                 }
             } else {
@@ -2322,51 +2372,56 @@ where
             };
 
             match send_result {
-                Ok(pending_tx) => {
-                    match pending_tx.get_receipt().await {
-                        Ok(receipt) => {
-                            let tx_hash = receipt.transaction_hash;
-                            info!(
-                                network = %network,
-                                tx = %tx_hash,
-                                agent_id = %agent_id_str,
-                                "ERC-8004 feedback submitted successfully"
-                            );
-                            let feedback_index = None;
-                            (
-                                StatusCode::OK,
-                                Json(FeedbackResponse {
-                                    success: true,
-                                    transaction: Some(crate::types::TransactionHash::Evm(tx_hash.0)),
-                                    feedback_index,
-                                    error: None,
-                                    network,
-                                }),
-                            ).into_response()
-                        }
-                        Err(e) => {
-                            error!(network = %network, error = %e, "Failed to get transaction receipt");
-                            (
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                Json(FeedbackResponse {
-                                    success: false, transaction: None, feedback_index: None,
-                                    error: Some(format!("Transaction failed: {}", e)),
-                                    network,
-                                }),
-                            ).into_response()
-                        }
+                Ok(pending_tx) => match pending_tx.get_receipt().await {
+                    Ok(receipt) => {
+                        let tx_hash = receipt.transaction_hash;
+                        info!(
+                            network = %network,
+                            tx = %tx_hash,
+                            agent_id = %agent_id_str,
+                            "ERC-8004 feedback submitted successfully"
+                        );
+                        let feedback_index = None;
+                        (
+                            StatusCode::OK,
+                            Json(FeedbackResponse {
+                                success: true,
+                                transaction: Some(crate::types::TransactionHash::Evm(tx_hash.0)),
+                                feedback_index,
+                                error: None,
+                                network,
+                            }),
+                        )
+                            .into_response()
                     }
-                }
+                    Err(e) => {
+                        error!(network = %network, error = %e, "Failed to get transaction receipt");
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(FeedbackResponse {
+                                success: false,
+                                transaction: None,
+                                feedback_index: None,
+                                error: Some(format!("Transaction failed: {}", e)),
+                                network,
+                            }),
+                        )
+                            .into_response()
+                    }
+                },
                 Err(e) => {
                     error!(network = %network, error = %e, "Failed to submit feedback transaction");
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(FeedbackResponse {
-                            success: false, transaction: None, feedback_index: None,
+                            success: false,
+                            transaction: None,
+                            feedback_index: None,
                             error: Some(format!("Failed to submit transaction: {}", e)),
                             network,
                         }),
-                    ).into_response()
+                    )
+                        .into_response()
                 }
             }
         }
@@ -2375,11 +2430,14 @@ where
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(FeedbackResponse {
-                    success: false, transaction: None, feedback_index: None,
+                    success: false,
+                    transaction: None,
+                    feedback_index: None,
                     error: Some(format!("No provider available for network {}", network)),
                     network,
                 }),
-            ).into_response()
+            )
+                .into_response()
         }
     }
 }
@@ -2438,8 +2496,8 @@ where
             .into_response();
     }
 
-    let agent_id_str = parse_agent_id_value(&request.agent_id)
-        .unwrap_or_else(|| request.agent_id.to_string());
+    let agent_id_str =
+        parse_agent_id_value(&request.agent_id).unwrap_or_else(|| request.agent_id.to_string());
 
     info!(
         network = %network,
@@ -2464,35 +2522,46 @@ where
             let asset_pubkey = match solana_erc8004::parse_agent_id(&agent_id_str) {
                 Ok(pk) => pk,
                 Err(e) => {
-                    return (StatusCode::BAD_REQUEST, Json(json!({
-                        "success": false, "error": format!("{}", e)
-                    }))).into_response();
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({
+                            "success": false, "error": format!("{}", e)
+                        })),
+                    )
+                        .into_response();
                 }
             };
 
             // Decode seal_hash from hex string (required for Solana)
-            let seal_hash: [u8; 32] = match &request.seal_hash {
-                Some(hex_str) => {
-                    let bytes = hex::decode(hex_str.trim_start_matches("0x")).unwrap_or_default();
-                    if bytes.len() != 32 {
-                        return (StatusCode::BAD_REQUEST, Json(json!({
+            let seal_hash: [u8; 32] =
+                match &request.seal_hash {
+                    Some(hex_str) => {
+                        let bytes =
+                            hex::decode(hex_str.trim_start_matches("0x")).unwrap_or_default();
+                        if bytes.len() != 32 {
+                            return (StatusCode::BAD_REQUEST, Json(json!({
                             "success": false, "error": "sealHash must be 32 bytes (64 hex chars)"
                         }))).into_response();
+                        }
+                        bytes.try_into().unwrap()
                     }
-                    bytes.try_into().unwrap()
-                }
-                None => {
-                    return (StatusCode::BAD_REQUEST, Json(json!({
+                    None => {
+                        return (StatusCode::BAD_REQUEST, Json(json!({
                         "success": false, "error": "sealHash is required for Solana revocations"
                     }))).into_response();
-                }
-            };
+                    }
+                };
 
             let ix = solana_erc8004::build_revoke_feedback_ix(
-                &programs, &asset_pubkey, request.feedback_index, seal_hash,
+                &programs,
+                &asset_pubkey,
+                request.feedback_index,
+                seal_hash,
             );
 
-            match solana_erc8004::send_erc8004_transaction(p.rpc_client(), p.keypair(), vec![ix]).await {
+            match solana_erc8004::send_erc8004_transaction(p.rpc_client(), p.keypair(), vec![ix])
+                .await
+            {
                 Ok(sig) => {
                     info!(network = %network, tx = %sig, "ERC-8004 Solana feedback revoked");
                     (StatusCode::OK, Json(json!({
@@ -2501,9 +2570,13 @@ where
                 }
                 Err(e) => {
                     error!(network = %network, error = %e, "Solana revoke failed");
-                    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-                        "success": false, "error": format!("Transaction failed: {}", e)
-                    }))).into_response()
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({
+                            "success": false, "error": format!("Transaction failed: {}", e)
+                        })),
+                    )
+                        .into_response()
                 }
             }
         }
@@ -2535,36 +2608,45 @@ where
             );
 
             // Legacy chains (SKALE) need explicit gasPrice
-            let send_result = if !provider.is_eip1559() {
-                match provider.inner().get_gas_price().await {
-                    Ok(gas_price) => call.gas_price(gas_price).send().await,
-                    Err(e) => {
-                        error!(error = %e, "Failed to get gas price");
-                        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+            let send_result =
+                if !provider.is_eip1559() {
+                    match provider.inner().get_gas_price().await {
+                        Ok(gas_price) => call.gas_price(gas_price).send().await,
+                        Err(e) => {
+                            error!(error = %e, "Failed to get gas price");
+                            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
                             "success": false, "error": format!("Failed to get gas price: {}", e)
                         }))).into_response();
+                        }
                     }
-                }
-            } else {
-                call.send().await
-            };
+                } else {
+                    call.send().await
+                };
 
             match send_result {
                 Ok(pending_tx) => match pending_tx.get_receipt().await {
                     Ok(receipt) => {
                         let tx_hash = receipt.transaction_hash;
                         info!(network = %network, tx = %tx_hash, "ERC-8004 feedback revoked");
-                        (StatusCode::OK, Json(json!({
-                            "success": true,
-                            "transaction": format!("0x{}", hex::encode(tx_hash.0)),
-                            "network": network.to_string()
-                        }))).into_response()
+                        (
+                            StatusCode::OK,
+                            Json(json!({
+                                "success": true,
+                                "transaction": format!("0x{}", hex::encode(tx_hash.0)),
+                                "network": network.to_string()
+                            })),
+                        )
+                            .into_response()
                     }
                     Err(e) => {
                         error!(error = %e, "Failed to get transaction receipt");
-                        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-                            "success": false, "error": format!("Transaction failed: {}", e)
-                        }))).into_response()
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(json!({
+                                "success": false, "error": format!("Transaction failed: {}", e)
+                            })),
+                        )
+                            .into_response()
                     }
                 },
                 Err(e) => {
@@ -2575,11 +2657,13 @@ where
                 }
             }
         }
-        _ => {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+        _ => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
                 "success": false, "error": format!("No provider for network {}", network)
-            }))).into_response()
-        }
+            })),
+        )
+            .into_response(),
     }
 }
 
@@ -2639,8 +2723,8 @@ where
             .into_response();
     }
 
-    let agent_id_str = parse_agent_id_value(&request.agent_id)
-        .unwrap_or_else(|| request.agent_id.to_string());
+    let agent_id_str =
+        parse_agent_id_value(&request.agent_id).unwrap_or_else(|| request.agent_id.to_string());
 
     info!(
         network = %network,
@@ -2665,9 +2749,13 @@ where
             let asset_pubkey = match solana_erc8004::parse_agent_id(&agent_id_str) {
                 Ok(pk) => pk,
                 Err(e) => {
-                    return (StatusCode::BAD_REQUEST, Json(json!({
-                        "success": false, "error": format!("{}", e)
-                    }))).into_response();
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({
+                            "success": false, "error": format!("{}", e)
+                        })),
+                    )
+                        .into_response();
                 }
             };
 
@@ -2681,33 +2769,44 @@ where
                 }
             };
 
-            let response_hash_bytes: [u8; 32] = request.response_hash.map(|h| h.0).unwrap_or([0u8; 32]);
+            let response_hash_bytes: [u8; 32] =
+                request.response_hash.map(|h| h.0).unwrap_or([0u8; 32]);
 
             // Decode seal_hash from hex string (required for Solana)
-            let seal_hash: [u8; 32] = match &request.seal_hash {
-                Some(hex_str) => {
-                    let bytes = hex::decode(hex_str.trim_start_matches("0x")).unwrap_or_default();
-                    if bytes.len() != 32 {
-                        return (StatusCode::BAD_REQUEST, Json(json!({
+            let seal_hash: [u8; 32] =
+                match &request.seal_hash {
+                    Some(hex_str) => {
+                        let bytes =
+                            hex::decode(hex_str.trim_start_matches("0x")).unwrap_or_default();
+                        if bytes.len() != 32 {
+                            return (StatusCode::BAD_REQUEST, Json(json!({
                             "success": false, "error": "sealHash must be 32 bytes (64 hex chars)"
                         }))).into_response();
+                        }
+                        bytes.try_into().unwrap()
                     }
-                    bytes.try_into().unwrap()
-                }
-                None => {
-                    return (StatusCode::BAD_REQUEST, Json(json!({
+                    None => {
+                        return (StatusCode::BAD_REQUEST, Json(json!({
                         "success": false, "error": "sealHash is required for Solana responses"
                     }))).into_response();
-                }
-            };
+                    }
+                };
 
             let fee_payer_pubkey = p.keypair().pubkey();
             let ix = solana_erc8004::build_append_response_ix(
-                &programs, &asset_pubkey, &client_pubkey, &fee_payer_pubkey,
-                request.feedback_index, &request.response_uri, response_hash_bytes, seal_hash,
+                &programs,
+                &asset_pubkey,
+                &client_pubkey,
+                &fee_payer_pubkey,
+                request.feedback_index,
+                &request.response_uri,
+                response_hash_bytes,
+                seal_hash,
             );
 
-            match solana_erc8004::send_erc8004_transaction(p.rpc_client(), p.keypair(), vec![ix]).await {
+            match solana_erc8004::send_erc8004_transaction(p.rpc_client(), p.keypair(), vec![ix])
+                .await
+            {
                 Ok(sig) => {
                     info!(network = %network, tx = %sig, "ERC-8004 Solana response appended");
                     (StatusCode::OK, Json(json!({
@@ -2716,9 +2815,13 @@ where
                 }
                 Err(e) => {
                     error!(network = %network, error = %e, "Solana append response failed");
-                    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-                        "success": false, "error": format!("Transaction failed: {}", e)
-                    }))).into_response()
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({
+                            "success": false, "error": format!("Transaction failed: {}", e)
+                        })),
+                    )
+                        .into_response()
                 }
             }
         }
@@ -2735,9 +2838,13 @@ where
             let client_addr = match &request.client_address {
                 MixedAddress::Evm(addr) => addr.0,
                 _ => {
-                    return (StatusCode::BAD_REQUEST, Json(json!({
-                        "success": false, "error": "Client address must be an EVM address"
-                    }))).into_response();
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({
+                            "success": false, "error": "Client address must be an EVM address"
+                        })),
+                    )
+                        .into_response();
                 }
             };
 
@@ -2763,36 +2870,45 @@ where
             );
 
             // Legacy chains (SKALE) need explicit gasPrice
-            let send_result = if !provider.is_eip1559() {
-                match provider.inner().get_gas_price().await {
-                    Ok(gas_price) => call.gas_price(gas_price).send().await,
-                    Err(e) => {
-                        error!(error = %e, "Failed to get gas price");
-                        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+            let send_result =
+                if !provider.is_eip1559() {
+                    match provider.inner().get_gas_price().await {
+                        Ok(gas_price) => call.gas_price(gas_price).send().await,
+                        Err(e) => {
+                            error!(error = %e, "Failed to get gas price");
+                            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
                             "success": false, "error": format!("Failed to get gas price: {}", e)
                         }))).into_response();
+                        }
                     }
-                }
-            } else {
-                call.send().await
-            };
+                } else {
+                    call.send().await
+                };
 
             match send_result {
                 Ok(pending_tx) => match pending_tx.get_receipt().await {
                     Ok(receipt) => {
                         let tx_hash = receipt.transaction_hash;
                         info!(network = %network, tx = %tx_hash, "ERC-8004 response appended");
-                        (StatusCode::OK, Json(json!({
-                            "success": true,
-                            "transaction": format!("0x{}", hex::encode(tx_hash.0)),
-                            "network": network.to_string()
-                        }))).into_response()
+                        (
+                            StatusCode::OK,
+                            Json(json!({
+                                "success": true,
+                                "transaction": format!("0x{}", hex::encode(tx_hash.0)),
+                                "network": network.to_string()
+                            })),
+                        )
+                            .into_response()
                     }
                     Err(e) => {
                         error!(error = %e, "Failed to get transaction receipt");
-                        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-                            "success": false, "error": format!("Transaction failed: {}", e)
-                        }))).into_response()
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(json!({
+                                "success": false, "error": format!("Transaction failed: {}", e)
+                            })),
+                        )
+                            .into_response()
                     }
                 },
                 Err(e) => {
@@ -2803,11 +2919,13 @@ where
                 }
             }
         }
-        _ => {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+        _ => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
                 "success": false, "error": format!("No provider for network {}", network)
-            }))).into_response()
-        }
+            })),
+        )
+            .into_response(),
     }
 }
 
@@ -2950,11 +3068,7 @@ where
         let feedback_count_from_agent = match &agent_result {
             Ok(agent) => agent.feedback_count,
             Err(solana_erc8004::SolanaErc8004Error::AccountNotFound(msg)) => {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(json!({ "error": msg })),
-                )
-                    .into_response();
+                return (StatusCode::NOT_FOUND, Json(json!({ "error": msg }))).into_response();
             }
             Err(e) => {
                 error!(error = %e, "Failed to read Solana agent account for reputation");
@@ -2969,29 +3083,34 @@ where
         };
 
         // Read ATOM Engine stats (may not exist if agent has no feedback yet)
-        let atom_stats_response =
-            match solana_erc8004::read_atom_stats(rpc, &asset_pubkey, &programs.atom_engine).await {
-                Ok(stats) => Some(AtomStatsResponse {
-                    trust_tier: stats.trust_tier,
-                    trust_tier_name: solana_erc8004::trust_tier_name(stats.trust_tier).to_string(),
-                    quality_score: stats.quality_score,
-                    confidence: stats.confidence,
-                    risk_score: stats.risk_score,
-                    diversity_ratio: stats.diversity_ratio,
-                    positive_count: stats.positive_count,
-                    negative_count: stats.negative_count,
-                    feedback_count: stats.feedback_count,
-                    last_feedback_slot: stats.last_feedback_slot,
-                }),
-                Err(solana_erc8004::SolanaErc8004Error::AccountNotFound(_)) => {
-                    // ATOM stats not initialized yet (agent has no feedback)
-                    None
-                }
-                Err(e) => {
-                    warn!(error = %e, "Failed to read ATOM stats, returning without ATOM data");
-                    None
-                }
-            };
+        let atom_stats_response = match solana_erc8004::read_atom_stats(
+            rpc,
+            &asset_pubkey,
+            &programs.atom_engine,
+        )
+        .await
+        {
+            Ok(stats) => Some(AtomStatsResponse {
+                trust_tier: stats.trust_tier,
+                trust_tier_name: solana_erc8004::trust_tier_name(stats.trust_tier).to_string(),
+                quality_score: stats.quality_score,
+                confidence: stats.confidence,
+                risk_score: stats.risk_score,
+                diversity_ratio: stats.diversity_ratio,
+                positive_count: stats.positive_count,
+                negative_count: stats.negative_count,
+                feedback_count: stats.feedback_count,
+                last_feedback_slot: stats.last_feedback_slot,
+            }),
+            Err(solana_erc8004::SolanaErc8004Error::AccountNotFound(_)) => {
+                // ATOM stats not initialized yet (agent has no feedback)
+                None
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to read ATOM stats, returning without ATOM data");
+                None
+            }
+        };
 
         // Build summary from ATOM stats or fall back to agent account counts
         let (count, summary_value) = if let Some(ref atom) = atom_stats_response {
@@ -3520,25 +3639,35 @@ async fn resolve_first_token_by_owner(
     registry: alloy::primitives::Address,
     target: alloy::primitives::Address,
 ) -> Result<u64, String> {
-    use alloy::sol_types::SolCall;
     use alloy::providers::bindings::IMulticall3;
     use alloy::providers::MULTICALL3_ADDRESS;
+    use alloy::sol_types::SolCall;
 
     let identity = IIdentityRegistry::new(registry, provider.clone());
 
     // Step 1: Find max token ID via exponential probe + binary search
     let mut hi: u64 = 1;
     loop {
-        match identity.ownerOf(alloy::primitives::U256::from(hi)).call().await {
+        match identity
+            .ownerOf(alloy::primitives::U256::from(hi))
+            .call()
+            .await
+        {
             Ok(_) => hi = hi.saturating_mul(2),
             Err(_) => break,
         }
-        if hi > 1_000_000 { break; }
+        if hi > 1_000_000 {
+            break;
+        }
     }
     let mut lo: u64 = hi / 2;
     while lo < hi.saturating_sub(1) {
         let mid = lo + (hi - lo) / 2;
-        match identity.ownerOf(alloy::primitives::U256::from(mid)).call().await {
+        match identity
+            .ownerOf(alloy::primitives::U256::from(mid))
+            .call()
+            .await
+        {
             Ok(_) => lo = mid,
             Err(_) => hi = mid,
         }
@@ -3553,7 +3682,8 @@ async fn resolve_first_token_by_owner(
         .map(|id| {
             let calldata = IIdentityRegistry::ownerOfCall {
                 agentId: alloy::primitives::U256::from(id),
-            }.abi_encode();
+            }
+            .abi_encode();
             IMulticall3::Call3 {
                 target: registry,
                 allowFailure: true,
@@ -3568,7 +3698,9 @@ async fn resolve_first_token_by_owner(
         .to(MULTICALL3_ADDRESS)
         .input(alloy::rpc::types::TransactionInput::new(encoded.into()));
 
-    let raw_result = provider.call(tx).await
+    let raw_result = provider
+        .call(tx)
+        .await
         .map_err(|e| format!("Multicall3 call failed: {e}"))?;
 
     // Decode aggregate3 return: Result[] where Result = (bool success, bytes returnData)
@@ -3588,7 +3720,9 @@ async fn resolve_first_token_by_owner(
         }
     }
 
-    Err(format!("No token found owned by {target} (scanned 1..={max_id})"))
+    Err(format!(
+        "No token found owned by {target} (scanned 1..={max_id})"
+    ))
 }
 
 /// Path parameters for identity-by-owner query
@@ -3623,7 +3757,8 @@ where
             return (
                 StatusCode::BAD_REQUEST,
                 Json(json!({ "error": format!("Invalid network: {}", params.network) })),
-            ).into_response();
+            )
+                .into_response();
         }
     };
 
@@ -3634,7 +3769,8 @@ where
                 "error": format!("ERC-8004 is not supported on network {}", network),
                 "supportedNetworks": supported_network_names()
             })),
-        ).into_response();
+        )
+            .into_response();
     }
 
     let owner_address: alloy::primitives::Address = match params.address.parse() {
@@ -3643,7 +3779,8 @@ where
             return (
                 StatusCode::BAD_REQUEST,
                 Json(json!({ "error": format!("Invalid address: {}", params.address) })),
-            ).into_response();
+            )
+                .into_response();
         }
     };
 
@@ -3655,7 +3792,8 @@ where
             return (
                 StatusCode::BAD_REQUEST,
                 Json(json!({ "error": format!("No ERC-8004 contracts for {}", network) })),
-            ).into_response();
+            )
+                .into_response();
         }
     };
 
@@ -3666,7 +3804,8 @@ where
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({ "error": format!("No EVM provider for {}", network) })),
-            ).into_response();
+            )
+                .into_response();
         }
     };
 
@@ -3681,7 +3820,8 @@ where
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({ "error": format!("Failed to query balance: {}", e) })),
-            ).into_response();
+            )
+                .into_response();
         }
     };
 
@@ -3692,22 +3832,23 @@ where
                 "error": format!("Address {} does not own any agent on {}", owner_address, network),
                 "balance": 0
             })),
-        ).into_response();
+        )
+            .into_response();
     }
 
     // Resolve token ID using Multicall3 batched ownerOf() calls.
     // This replaces sequential iteration (250 RPC calls = ~14s) with a single
     // batched call (~200ms). Works on all chains — Multicall3 is at the canonical
     // address 0xcA11bde05977b3631167028862bE2a173976CA11.
-    match resolve_first_token_by_owner(
-        provider.inner(),
-        contracts.identity_registry,
-        owner_address,
-    ).await {
+    match resolve_first_token_by_owner(provider.inner(), contracts.identity_registry, owner_address)
+        .await
+    {
         Ok(agent_id) => {
             let uri = identity_registry
                 .tokenURI(alloy::primitives::U256::from(agent_id))
-                .call().await.unwrap_or_default();
+                .call()
+                .await
+                .unwrap_or_default();
             info!(network = %network, agent_id = agent_id, owner = %owner_address, "Resolved agent by owner");
             (
                 StatusCode::OK,
@@ -3718,7 +3859,8 @@ where
                     "network": network.to_string(),
                     "balance": balance.to_string()
                 })),
-            ).into_response()
+            )
+                .into_response()
         }
         Err(e) => {
             warn!(network = %network, owner = %owner_address, error = %e, "Failed to resolve token by owner");
@@ -3848,33 +3990,42 @@ where
                 return (
                     StatusCode::BAD_REQUEST,
                     Json(RegisterAgentResponse {
-                        success: false, agent_id: None, transaction: None,
-                        transfer_transaction: None, owner: None,
+                        success: false,
+                        agent_id: None,
+                        transaction: None,
+                        transfer_transaction: None,
+                        owner: None,
                         error: Some(format!("No Solana ERC-8004 programs for {}", network)),
                         network,
                     }),
-                ).into_response();
+                )
+                    .into_response();
             }
         };
 
         // Read the collection pubkey from on-chain config
-        let collection = match solana_erc8004::read_collection_pubkey(
-            p.rpc_client(), &programs.agent_registry,
-        ).await {
-            Ok(c) => c,
-            Err(e) => {
-                error!(network = %network, error = %e, "Failed to read collection pubkey");
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(RegisterAgentResponse {
-                        success: false, agent_id: None, transaction: None,
-                        transfer_transaction: None, owner: None,
-                        error: Some(format!("Failed to read registry config: {}", e)),
-                        network,
-                    }),
-                ).into_response();
-            }
-        };
+        let collection =
+            match solana_erc8004::read_collection_pubkey(p.rpc_client(), &programs.agent_registry)
+                .await
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    error!(network = %network, error = %e, "Failed to read collection pubkey");
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(RegisterAgentResponse {
+                            success: false,
+                            agent_id: None,
+                            transaction: None,
+                            transfer_transaction: None,
+                            owner: None,
+                            error: Some(format!("Failed to read registry config: {}", e)),
+                            network,
+                        }),
+                    )
+                        .into_response();
+                }
+            };
 
         // Generate a new keypair for the NFT asset
         let asset_keypair = solana_sdk::signature::Keypair::new();
@@ -3882,13 +4033,22 @@ where
         let fee_payer = p.keypair();
 
         let ix = solana_erc8004::build_register_ix(
-            &programs, &collection, &asset_pubkey, &fee_payer.pubkey(), &request.agent_uri,
+            &programs,
+            &collection,
+            &asset_pubkey,
+            &fee_payer.pubkey(),
+            &request.agent_uri,
         );
 
         // Register requires both fee_payer and asset keypairs to sign
         match solana_erc8004::send_erc8004_transaction_with_signers(
-            p.rpc_client(), fee_payer, &[fee_payer, &asset_keypair], vec![ix],
-        ).await {
+            p.rpc_client(),
+            fee_payer,
+            &[fee_payer, &asset_keypair],
+            vec![ix],
+        )
+        .await
+        {
             Ok(sig) => {
                 let agent_id = asset_pubkey.to_string();
                 info!(
@@ -3902,12 +4062,20 @@ where
                 if let Some(ref metadata) = request.metadata {
                     for entry in metadata {
                         let ix = solana_erc8004::build_set_metadata_pda_ix(
-                            &programs, &asset_pubkey, &fee_payer.pubkey(),
-                            &entry.key, entry.value.as_bytes(), false,
+                            &programs,
+                            &asset_pubkey,
+                            &fee_payer.pubkey(),
+                            &entry.key,
+                            entry.value.as_bytes(),
+                            false,
                         );
                         if let Err(e) = solana_erc8004::send_erc8004_transaction(
-                            p.rpc_client(), fee_payer, vec![ix],
-                        ).await {
+                            p.rpc_client(),
+                            fee_payer,
+                            vec![ix],
+                        )
+                        .await
+                        {
                             warn!(
                                 key = %entry.key, error = %e,
                                 "Failed to set metadata (agent registered successfully)"
@@ -3927,19 +4095,24 @@ where
                         error: None,
                         network,
                     }),
-                ).into_response();
+                )
+                    .into_response();
             }
             Err(e) => {
                 error!(network = %network, error = %e, "Solana registration failed");
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(RegisterAgentResponse {
-                        success: false, agent_id: None, transaction: None,
-                        transfer_transaction: None, owner: None,
+                        success: false,
+                        agent_id: None,
+                        transaction: None,
+                        transfer_transaction: None,
+                        owner: None,
                         error: Some(format!("Registration failed: {}", e)),
                         network,
                     }),
-                ).into_response();
+                )
+                    .into_response();
             }
         }
     }
@@ -3951,12 +4124,16 @@ where
             return (
                 StatusCode::BAD_REQUEST,
                 Json(RegisterAgentResponse {
-                    success: false, agent_id: None, transaction: None,
-                    transfer_transaction: None, owner: None,
+                    success: false,
+                    agent_id: None,
+                    transaction: None,
+                    transfer_transaction: None,
+                    owner: None,
                     error: Some(format!("No ERC-8004 contracts for network {}", network)),
                     network,
                 }),
-            ).into_response();
+            )
+                .into_response();
         }
     };
 
@@ -3967,12 +4144,16 @@ where
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(RegisterAgentResponse {
-                    success: false, agent_id: None, transaction: None,
-                    transfer_transaction: None, owner: None,
+                    success: false,
+                    agent_id: None,
+                    transaction: None,
+                    transfer_transaction: None,
+                    owner: None,
                     error: Some(format!("No EVM provider available for network {}", network)),
                     network,
                 }),
-            ).into_response();
+            )
+                .into_response();
         }
     };
 
@@ -3994,7 +4175,9 @@ where
                     provider.inner(),
                     contracts.identity_registry,
                     target_owner,
-                ).await {
+                )
+                .await
+                {
                     Ok(id) => {
                         info!(
                             network = %network,
@@ -4009,11 +4192,14 @@ where
                                 agent_id: Some(id.to_string()),
                                 transaction: None,
                                 transfer_transaction: None,
-                                owner: Some(MixedAddress::Evm(crate::types::EvmAddress(target_owner))),
+                                owner: Some(MixedAddress::Evm(crate::types::EvmAddress(
+                                    target_owner,
+                                ))),
                                 error: None,
                                 network,
                             }),
-                        ).into_response();
+                        )
+                            .into_response();
                     }
                     Err(e) => {
                         warn!(
@@ -4042,12 +4228,16 @@ where
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(RegisterAgentResponse {
-                        success: false, agent_id: None, transaction: None,
-                        transfer_transaction: None, owner: None,
+                        success: false,
+                        agent_id: None,
+                        transaction: None,
+                        transfer_transaction: None,
+                        owner: None,
                         error: Some(format!("Failed to get gas price: {}", e)),
                         network,
                     }),
-                ).into_response();
+                )
+                    .into_response();
             }
         }
     } else {
@@ -4266,7 +4456,8 @@ where
                             error: Some(format!("Failed to get gas price for transfer: {}", e)),
                             network,
                         }),
-                    ).into_response();
+                    )
+                        .into_response();
                 }
             }
         } else {
@@ -4482,8 +4673,7 @@ where
             }
             Err(e) => {
                 let err_str = e.to_string();
-                if err_str.contains("AccountNotFound")
-                    || err_str.contains("could not find account")
+                if err_str.contains("AccountNotFound") || err_str.contains("could not find account")
                 {
                     return (
                         StatusCode::NOT_FOUND,

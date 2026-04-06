@@ -219,13 +219,15 @@ where
         // Add x402r escrow/commerce scheme support (PaymentOperator-based escrow)
         // Dynamically advertise all networks with deployed PaymentOperator contracts
         // Only if ENABLE_PAYMENT_OPERATOR=true
-        // Both "escrow" and "commerce" schemes are advertised (functionally identical)
+        //
+        // "escrow" scheme: uses per-chain legacy addresses (backward compat with existing operators)
+        // "commerce" scheme: uses x402r CREATE3 canonical addresses (interop with @x402r/helpers)
         if crate::payment_operator::is_enabled() {
-            use crate::payment_operator::addresses::{OperatorAddresses, ESCROW_NETWORKS};
+            use crate::payment_operator::addresses::{create3, OperatorAddresses, ESCROW_NETWORKS};
 
             for &network in ESCROW_NETWORKS {
                 if let Some(addrs) = OperatorAddresses::for_network(network) {
-                    // Advertise one entry per deployed operator on this network
+                    // Escrow scheme: per-chain legacy addresses, one entry per deployed operator
                     for &operator in &addrs.payment_operators {
                         let escrow_extra = SupportedPaymentKindExtra {
                             fee_payer: None,
@@ -237,16 +239,31 @@ where
                             }),
                         };
 
-                        // Advertise both escrow and commerce schemes
-                        for scheme in [Scheme::Escrow, Scheme::Commerce] {
-                            kinds.push(SupportedPaymentKind {
-                                x402_version: X402Version::V2,
-                                scheme,
-                                network: network.to_caip2(),
-                                extra: Some(escrow_extra.clone()),
-                            });
-                        }
+                        kinds.push(SupportedPaymentKind {
+                            x402_version: X402Version::V2,
+                            scheme: Scheme::Escrow,
+                            network: network.to_caip2(),
+                            extra: Some(escrow_extra),
+                        });
                     }
+
+                    // Commerce scheme: CREATE3 canonical addresses (no operator — merchant-specific)
+                    let commerce_extra = SupportedPaymentKindExtra {
+                        fee_payer: None,
+                        tokens: None,
+                        escrow: Some(EscrowSupportedInfo {
+                            escrow_address: EvmAddress(create3::ESCROW),
+                            operator_address: EvmAddress(create3::FACTORY_PAYMENT_OPERATOR),
+                            token_collector: EvmAddress(create3::TOKEN_COLLECTOR),
+                        }),
+                    };
+
+                    kinds.push(SupportedPaymentKind {
+                        x402_version: X402Version::V2,
+                        scheme: Scheme::Commerce,
+                        network: network.to_caip2(),
+                        extra: Some(commerce_extra),
+                    });
                 }
             }
         }

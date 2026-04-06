@@ -925,6 +925,10 @@ async fn eth_call(
 /// Validate that client-provided addresses match known contract deployments.
 ///
 /// Validates escrow and token_collector addresses (shared infrastructure).
+/// Accepts BOTH the per-chain legacy address AND the x402r CREATE3 canonical address.
+/// This allows merchants using `@x402r/helpers` (CREATE3 addresses) to work on all
+/// networks, not just SKALE.
+///
 /// Operator address is NOT validated — the facilitator acts as a relay and
 /// the escrow contract enforces operator rules. Merchants bring their own
 /// PaymentOperator contracts.
@@ -940,6 +944,8 @@ fn validate_addresses(
     addrs: &OperatorAddresses,
     strict_operator: bool,
 ) -> Result<(), OperatorError> {
+    use super::addresses::create3;
+
     if strict_operator {
         // Reserved for future use — currently all paths are operator-agnostic
         if addrs.payment_operators.is_empty() {
@@ -957,19 +963,25 @@ fn validate_addresses(
     }
     // Operator address is not validated — merchants specify their own operator.
 
-    // Validate token collector (shared infrastructure, always strict)
-    if extra.token_collector != addrs.token_collector {
+    // Validate token collector (accept per-chain legacy OR CREATE3 canonical)
+    if extra.token_collector != addrs.token_collector
+        && extra.token_collector != create3::TOKEN_COLLECTOR
+    {
         return Err(OperatorError::PaymentInfoInvalid(format!(
-            "token_collector mismatch: client={:?}, expected={:?}",
-            extra.token_collector, addrs.token_collector
+            "token_collector mismatch: client={:?}, expected={:?} or CREATE3={:?}",
+            extra.token_collector,
+            addrs.token_collector,
+            create3::TOKEN_COLLECTOR
         )));
     }
 
-    // Validate escrow address (shared infrastructure, always strict)
-    if extra.escrow_address != addrs.escrow {
+    // Validate escrow address (accept per-chain legacy OR CREATE3 canonical)
+    if extra.escrow_address != addrs.escrow && extra.escrow_address != create3::ESCROW {
         return Err(OperatorError::PaymentInfoInvalid(format!(
-            "escrow address mismatch: client={:?}, expected={:?}",
-            extra.escrow_address, addrs.escrow
+            "escrow address mismatch: client={:?}, expected={:?} or CREATE3={:?}",
+            extra.escrow_address,
+            addrs.escrow,
+            create3::ESCROW
         )));
     }
 
@@ -1423,5 +1435,73 @@ mod tests {
         if let ParsedEscrowRequest::RefundInEscrow { lifecycle, .. } = result {
             assert_eq!(lifecycle.amount, 500_000);
         }
+    }
+
+    // ========================================================================
+    // validate_addresses tests (legacy + CREATE3 acceptance)
+    // ========================================================================
+
+    /// Helper to build EscrowExtra for tests with only the required address fields.
+    fn test_extra(
+        escrow_address: Address,
+        operator_address: Address,
+        token_collector: Address,
+    ) -> EscrowExtra {
+        EscrowExtra {
+            escrow_address,
+            operator_address,
+            token_collector,
+            authorize_address: None,
+            min_deposit: None,
+            max_deposit: None,
+            pre_approval_expiry_seconds: None,
+            authorization_expiry_seconds: None,
+            refund_expiry_seconds: None,
+            min_fee_bps: None,
+            max_fee_bps: None,
+            fee_receiver: None,
+            name: None,
+            version: None,
+        }
+    }
+
+    #[test]
+    fn test_validate_addresses_accepts_legacy() {
+        use crate::payment_operator::addresses::{base_sepolia, OperatorAddresses};
+
+        let addrs = OperatorAddresses::for_network(Network::BaseSepolia).unwrap();
+        let extra = test_extra(
+            base_sepolia::ESCROW,
+            alloy::primitives::address!("7D092ec506B3D43EB87846F9c9739303785D7B2f"),
+            base_sepolia::TOKEN_COLLECTOR,
+        );
+        assert!(validate_addresses(&extra, &addrs, false).is_ok());
+    }
+
+    #[test]
+    fn test_validate_addresses_accepts_create3() {
+        use crate::payment_operator::addresses::{create3, OperatorAddresses};
+
+        // Merchant uses CREATE3 canonical addresses on a legacy network (Base Sepolia)
+        let addrs = OperatorAddresses::for_network(Network::BaseSepolia).unwrap();
+        let extra = test_extra(
+            create3::ESCROW,
+            alloy::primitives::address!("7D092ec506B3D43EB87846F9c9739303785D7B2f"),
+            create3::TOKEN_COLLECTOR,
+        );
+        assert!(validate_addresses(&extra, &addrs, false).is_ok());
+    }
+
+    #[test]
+    fn test_validate_addresses_rejects_unknown() {
+        use crate::payment_operator::addresses::OperatorAddresses;
+
+        let addrs = OperatorAddresses::for_network(Network::BaseSepolia).unwrap();
+        let extra = test_extra(
+            alloy::primitives::address!("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
+            alloy::primitives::address!("7D092ec506B3D43EB87846F9c9739303785D7B2f"),
+            alloy::primitives::address!("cafebabecafebabecafebabecafebabecafebabe"),
+        );
+        assert!(validate_addresses(&extra, &addrs, false).is_err());
     }
 }

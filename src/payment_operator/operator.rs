@@ -366,11 +366,14 @@ where
     // Use escrow ABI type for EscrowContract calls (different Rust type from OperatorContract's)
     let escrow_payment_info = payment_info.to_escrow_abi_type();
 
+    // Use merchant-provided escrow address (validated as legacy OR CREATE3)
+    let escrow_address = query.extra.escrow_address;
+
     // Call getHash(paymentInfo) on the escrow contract
     let get_hash_call = EscrowContract::getHashCall {
         paymentInfo: escrow_payment_info,
     };
-    let hash_result = eth_call(evm_provider, addrs.escrow, &get_hash_call).await?;
+    let hash_result = eth_call(evm_provider, escrow_address, &get_hash_call).await?;
     let payment_info_hash: FixedBytes<32> =
         EscrowContract::getHashCall::abi_decode_returns(&hash_result)
             .map_err(|e| OperatorError::EscrowStateQuery(format!("decode getHash: {}", e)))?;
@@ -379,7 +382,7 @@ where
     let state_call = EscrowContract::paymentStateCall {
         paymentInfoHash: payment_info_hash,
     };
-    let state_result = eth_call(evm_provider, addrs.escrow, &state_call).await?;
+    let state_result = eth_call(evm_provider, escrow_address, &state_call).await?;
     let state = EscrowContract::paymentStateCall::abi_decode_returns(&state_result)
         .map_err(|e| OperatorError::EscrowStateQuery(format!("decode paymentState: {}", e)))?;
 
@@ -675,9 +678,11 @@ fn extract_escrow_settle_fields(
 
 /// Execute authorize on PaymentOperator
 ///
-/// Client-provided addresses (escrow, token_collector) are validated against
-/// hardcoded OperatorAddresses. Operator address is NOT restricted — the
-/// facilitator acts as a relay and the escrow contract enforces operator rules.
+/// Uses the merchant-provided tokenCollector and operator address from
+/// `extra` (validated to be either the per-chain legacy or CREATE3 canonical).
+/// The merchant's operator is bound to a specific escrow/tokenCollector pair,
+/// so we MUST pass the merchant's tokenCollector — using our hardcoded one
+/// causes `OnlyAuthCaptureEscrow` reverts when the merchant uses CREATE3.
 #[instrument(skip_all, err)]
 async fn execute_authorize(
     escrow_payload: &EscrowPayload,
@@ -690,7 +695,9 @@ async fn execute_authorize(
     let payment_info = ContractPaymentInfo::from_escrow_payload(escrow_payload);
     let payment_info_abi = payment_info.to_abi_type();
     let amount = U256::from(escrow_payload.authorization.value);
-    let token_collector = addrs.token_collector;
+    // Use the merchant-provided tokenCollector (already validated as legacy OR CREATE3).
+    // The merchant's operator is bound to a specific (escrow, tokenCollector) pair.
+    let token_collector = extra.token_collector;
     let collector_data = encode_collector_data(&escrow_payload.signature);
 
     // Target is the client-provided operator address (already validated in validate_addresses)

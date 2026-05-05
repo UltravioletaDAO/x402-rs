@@ -28,6 +28,7 @@ use stellar_xdr::curr::{
     ReadXdr, SequenceNumber, SorobanAddressCredentials, SorobanAuthorizationEntry,
     SorobanAuthorizedFunction, SorobanAuthorizedInvocation, SorobanCredentials,
     SorobanTransactionData, Transaction, TransactionEnvelope, TransactionExt,
+    TransactionSignaturePayload, TransactionSignaturePayloadTaggedTransaction,
     TransactionV1Envelope, Uint256, VecM, WriteXdr,
 };
 
@@ -140,6 +141,30 @@ impl StellarChain {
         hasher.update(self.network_passphrase.as_bytes());
         let result = hasher.finalize();
         Hash(result.into())
+    }
+
+    /// Compute the SHA256 hash a Stellar signer must sign for a classic
+    /// transaction.
+    ///
+    /// The preimage is the canonical Stellar `TransactionSignaturePayload`
+    /// XDR: `{ network_id, tagged_transaction: Tx(tx) }`. Wire-equivalent to
+    /// the legacy concat `network_id || ENVELOPE_TYPE_TX || tx.to_xdr()`,
+    /// but resilient to future envelope-type additions and self-documenting.
+    pub fn compute_transaction_hash(&self, tx: &Transaction) -> Result<Vec<u8>, StellarError> {
+        let payload = TransactionSignaturePayload {
+            network_id: self.network_id(),
+            tagged_transaction: TransactionSignaturePayloadTaggedTransaction::Tx(tx.clone()),
+        };
+
+        let preimage = payload.to_xdr(Limits::none()).map_err(|e| {
+            StellarError::InvalidXdr(format!(
+                "Failed to encode transaction signature payload: {}",
+                e
+            ))
+        })?;
+
+        let hash = Sha256::digest(&preimage);
+        Ok(hash.to_vec())
     }
 }
 
@@ -1055,7 +1080,7 @@ impl StellarProvider {
         transaction.fee = fee;
 
         // Sign the transaction
-        let tx_hash = self.compute_transaction_hash(&transaction)?;
+        let tx_hash = self.chain.compute_transaction_hash(&transaction)?;
         let signature_bytes = self.signing_key.sign(&tx_hash).to_bytes();
 
         // Create signature hint (last 4 bytes of public key)
@@ -1123,29 +1148,6 @@ impl StellarProvider {
             .map_err(|e| StellarError::InvalidXdr(format!("Failed to encode envelope: {}", e)))?;
 
         Ok(BASE64.encode(&envelope_xdr))
-    }
-
-    /// Compute the transaction hash for signing
-    fn compute_transaction_hash(&self, tx: &Transaction) -> Result<Vec<u8>, StellarError> {
-        // Transaction hash = SHA256(network_id + ENVELOPE_TYPE_TX + transaction_xdr)
-        let mut preimage = Vec::new();
-
-        // Network ID (32 bytes)
-        preimage.extend_from_slice(&self.chain.network_id().0);
-
-        // Envelope type for Transaction (4 bytes, big-endian)
-        // ENVELOPE_TYPE_TX = 2
-        preimage.extend_from_slice(&2u32.to_be_bytes());
-
-        // Transaction XDR
-        let tx_xdr = tx.to_xdr(Limits::none()).map_err(|e| {
-            StellarError::InvalidXdr(format!("Failed to encode transaction: {}", e))
-        })?;
-        preimage.extend_from_slice(&tx_xdr);
-
-        // Hash the preimage
-        let hash = Sha256::digest(&preimage);
-        Ok(hash.to_vec())
     }
 
     /// Submit a Stellar transaction with the authorization entry
@@ -1583,5 +1585,84 @@ mod tests {
 
         let testnet = StellarChain::try_from(Network::StellarTestnet).unwrap();
         assert_eq!(testnet.network_passphrase, STELLAR_TESTNET_PASSPHRASE);
+    }
+
+    /// Build a deterministic Transaction fixture used by the signature-payload
+    /// invariant tests. Empty operations are valid XDR (variable-length array)
+    /// and keep the fixture self-contained without any Soroban auth setup.
+    fn signature_payload_fixture_tx() -> Transaction {
+        let source_account = MuxedAccount::Ed25519(Uint256([0u8; 32]));
+        let operations: VecM<Operation, 100> = vec![]
+            .try_into()
+            .expect("empty operations vec is a valid VecM");
+        Transaction {
+            source_account,
+            fee: 100,
+            seq_num: SequenceNumber(1),
+            cond: Preconditions::None,
+            memo: Memo::None,
+            operations,
+            ext: TransactionExt::V0,
+        }
+    }
+
+    /// Frozen reference impl of the historical signature payload formula:
+    /// network_id || ENVELOPE_TYPE_TX (= 2u32 BE) || tx.to_xdr().
+    /// Kept inline in the test so any drift in the production signing path
+    /// fails this assertion regardless of how production builds the bytes.
+    fn manual_signature_payload(network_id: &[u8; 32], tx: &Transaction) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(network_id);
+        buf.extend_from_slice(&2u32.to_be_bytes()); // ENVELOPE_TYPE_TX
+        buf.extend_from_slice(&tx.to_xdr(Limits::none()).unwrap());
+        buf
+    }
+
+    #[test]
+    fn stellar_signature_payload_byte_invariant() {
+        // Pins the SHA256 of the historical signature payload formula on the
+        // deterministic fixture below. After the canonical-XDR migration the
+        // production path computes the same bytes a different way, so this
+        // hash must stay constant. If it ever changes, the signing wire
+        // format has drifted and every Stellar settlement is at risk.
+        let tx = signature_payload_fixture_tx();
+        let chain = StellarChain::try_from(Network::Stellar).unwrap();
+        let network_id = chain.network_id().0;
+
+        let preimage = manual_signature_payload(&network_id, &tx);
+        let frozen_hash = Sha256::digest(&preimage);
+
+        // Pinned at handoff stellar-canonical-xdr-migration (2026-05-05).
+        let expected_hex = "cac2ac369c44ca0a1120c3f6e2d8262b5870b0879a33a2f515d9fa1e6a700365";
+        assert_eq!(hex::encode(frozen_hash), expected_hex);
+
+        // Production path must produce the same hash as the historical formula.
+        let production_hash = chain.compute_transaction_hash(&tx).unwrap();
+        assert_eq!(hex::encode(&production_hash), expected_hex);
+    }
+
+    #[test]
+    fn stellar_canonical_xdr_matches_manual_concat() {
+        use stellar_xdr::curr::{
+            TransactionSignaturePayload, TransactionSignaturePayloadTaggedTransaction,
+        };
+
+        let tx = signature_payload_fixture_tx();
+        let chain = StellarChain::try_from(Network::Stellar).unwrap();
+        let network_id = chain.network_id().0;
+
+        let manual = manual_signature_payload(&network_id, &tx);
+
+        let canonical = TransactionSignaturePayload {
+            network_id: Hash(network_id),
+            tagged_transaction: TransactionSignaturePayloadTaggedTransaction::Tx(tx.clone()),
+        }
+        .to_xdr(Limits::none())
+        .unwrap();
+
+        assert_eq!(
+            manual, canonical,
+            "canonical TransactionSignaturePayload XDR must equal manual concat"
+        );
     }
 }

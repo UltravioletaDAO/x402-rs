@@ -23,9 +23,10 @@ use stellar_strkey::{
     ed25519::PrivateKey as StellarPrivateKey, ed25519::PublicKey as StellarPublicKey, Contract,
 };
 use stellar_xdr::curr::{
-    DecoratedSignature, Hash, HashIdPreimage, HashIdPreimageSorobanAuthorization, HostFunction,
-    InvokeHostFunctionOp, Limits, Memo, MuxedAccount, Operation, OperationBody, Preconditions,
-    ReadXdr, SequenceNumber, SorobanAddressCredentials, SorobanAuthorizationEntry,
+    AccountId, DecoratedSignature, Hash, HashIdPreimage, HashIdPreimageSorobanAuthorization,
+    HostFunction, Int128Parts, InvokeContractArgs, InvokeHostFunctionOp, Limits, Memo,
+    MuxedAccount, Operation, OperationBody, Preconditions, PublicKey, ReadXdr, ScAddress, ScVal,
+    SequenceNumber, SorobanAddressCredentials, SorobanAuthorizationEntry,
     SorobanAuthorizedFunction, SorobanAuthorizedInvocation, SorobanCredentials,
     SorobanTransactionData, Transaction, TransactionEnvelope, TransactionExt,
     TransactionSignaturePayload, TransactionSignaturePayloadTaggedTransaction,
@@ -35,12 +36,12 @@ use stellar_xdr::curr::{
 use crate::chain::{FacilitatorLocalError, FromEnvByNetworkBuild, NetworkProviderOps};
 use crate::facilitator::Facilitator;
 use crate::from_env;
-use crate::network::Network;
+use crate::network::{Network, USDCDeployment};
 use crate::nonce_store::{stellar_nonce_key, stellar_ttl_seconds, NonceStore, NonceStoreError};
 use crate::types::{
     ExactPaymentPayload, FacilitatorErrorReason, MixedAddress, Scheme, SettleRequest,
     SettleResponse, SupportedPaymentKind, SupportedPaymentKindExtra, SupportedPaymentKindsResponse,
-    TransactionHash, VerifyRequest, VerifyResponse, X402Version,
+    TokenAmount, TransactionHash, VerifyRequest, VerifyResponse, X402Version,
 };
 
 // =============================================================================
@@ -97,6 +98,41 @@ pub enum StellarError {
 
     #[error("Unsupported credential type")]
     UnsupportedCredentialType,
+
+    // B4: auth-entry content validation errors
+    #[error("Authorization entry must invoke ContractFn, not CreateContractHostFn")]
+    InvalidInvocationType,
+
+    #[error(
+        "Authorization entry contract mismatch: expected USDC contract {expected}, got {actual}"
+    )]
+    InvalidContractAddress { expected: String, actual: String },
+
+    #[error("Authorization entry function must be 'transfer', got '{actual}'")]
+    InvalidFunctionName { actual: String },
+
+    #[error("Authorization entry args count must be 3, got {actual}")]
+    InvalidArgsCount { actual: usize },
+
+    #[error("Authorization entry sender must be facilitator {expected}, got {actual}")]
+    InvalidSender { expected: String, actual: String },
+
+    #[error("Authorization entry recipient must match pay_to {expected}, got {actual}")]
+    InvalidRecipient { expected: String, actual: String },
+
+    #[error("Authorization entry amount must match max_amount_required {expected}, got {actual}")]
+    InvalidAmount { expected: String, actual: String },
+
+    #[error("Authorization entry has unexpected sub-invocations (depth > 0 not permitted)")]
+    UnexpectedSubInvocations,
+
+    #[error("Authorization entry args contain unexpected ScVal types: {0}")]
+    InvalidArgType(String),
+
+    // F5: nonce store unavailable (fail-closed). Returning this rejects the
+    // payment instead of allowing a potential replay through a downed store.
+    #[error("Nonce store unavailable: {0}")]
+    NonceStoreUnavailable(String),
 }
 
 impl From<StellarError> for FacilitatorLocalError {
@@ -442,7 +478,7 @@ impl StellarProvider {
         tracing::info!(
             network = %network,
             public_key = %public_key,
-            rpc_url = ?rpc_url.as_deref().unwrap_or(chain.default_soroban_rpc_url()),
+            rpc_url = %crate::redact::rpc_url(rpc_url.as_deref().unwrap_or(chain.default_soroban_rpc_url())),
             "Initialized Stellar provider"
         );
 
@@ -845,8 +881,17 @@ impl StellarProvider {
             }),
             Ok(false) => Ok(()),
             Err(e) => {
-                tracing::warn!(error = %e, "Failed to check nonce store, allowing (fail-open)");
-                Ok(())
+                let correlation_id = uuid::Uuid::new_v4();
+                tracing::error!(
+                    %correlation_id,
+                    error = %e,
+                    from = %from,
+                    nonce = nonce,
+                    "Nonce store read failed during verify, failing closed"
+                );
+                Err(StellarError::NonceStoreUnavailable(format!(
+                    "verification_unavailable (ref: {correlation_id})"
+                )))
             }
         }
     }
@@ -871,12 +916,297 @@ impl StellarProvider {
                 nonce,
             }),
             Err(e) => {
-                // For other errors, log and fail-open to avoid blocking legitimate payments
-                // This is a tradeoff: potential replay vs service availability
-                tracing::error!(error = %e, "Nonce store error, failing open");
-                Ok(())
+                // F5: fail-closed. Connection/read/write errors must reject the
+                // settlement; failing open here is a replay vector when the
+                // store goes down.
+                let correlation_id = uuid::Uuid::new_v4();
+                tracing::error!(
+                    %correlation_id,
+                    error = %e,
+                    from = %from,
+                    nonce = nonce,
+                    "Nonce store write failed during settle, failing closed"
+                );
+                Err(StellarError::NonceStoreUnavailable(format!(
+                    "settlement_unavailable (ref: {correlation_id})"
+                )))
             }
         }
+    }
+
+    /// Validate the semantic content of a Soroban authorization entry (B4 fix).
+    ///
+    /// Checks that the entry authorizes exactly the expected USDC transfer:
+    /// - root_invocation.function is ContractFn (not CreateContractHostFn)
+    /// - contract_address matches the known USDC contract for this network
+    /// - function_name is "transfer"
+    /// - args has exactly 3 elements: [from: facilitator, to: pay_to, amount: max_amount_required]
+    /// - sub_invocations is empty (no nested calls)
+    ///
+    /// This must be called BEFORE signing the authorization entry preimage to prevent
+    /// a malicious client from getting the facilitator to authorize arbitrary Soroban calls.
+    fn validate_soroban_auth_entry(
+        &self,
+        auth_entry: &SorobanAuthorizationEntry,
+        expected_pay_to: &str,
+        expected_amount: TokenAmount,
+    ) -> Result<(), StellarError> {
+        // --- Check 1: must be ContractFn, not CreateContractHostFn ---
+        let invoke_args: &InvokeContractArgs = match &auth_entry.root_invocation.function {
+            SorobanAuthorizedFunction::ContractFn(args) => args,
+            SorobanAuthorizedFunction::CreateContractHostFn(_) => {
+                tracing::warn!(
+                    network = %self.chain.network,
+                    "B4: auth entry uses CreateContractHostFn, rejecting"
+                );
+                return Err(StellarError::InvalidInvocationType);
+            }
+        };
+
+        // --- Check 2: contract address must be the known USDC contract ---
+        let expected_usdc = USDCDeployment::by_network(self.chain.network).ok_or_else(|| {
+            StellarError::TokenContractMismatch {
+                expected: "unknown (no USDC deployment for network)".to_string(),
+                actual: format!("{:?}", invoke_args.contract_address),
+            }
+        })?;
+        let expected_contract_str = match &expected_usdc.0.asset.address {
+            MixedAddress::Stellar(s) => s.clone(),
+            other => {
+                return Err(StellarError::TokenContractMismatch {
+                    expected: format!("{:?}", other),
+                    actual: format!("{:?}", invoke_args.contract_address),
+                });
+            }
+        };
+        // Convert the expected C... strkey to raw 32-byte hash for comparison with ScAddress::Contract
+        let expected_contract_bytes = Contract::from_string(&expected_contract_str)
+            .map_err(|e| {
+                StellarError::InvalidXdr(format!(
+                    "Could not parse known USDC contract address '{}': {}",
+                    expected_contract_str, e
+                ))
+            })?
+            .0;
+        let actual_contract_bytes: [u8; 32] = match &invoke_args.contract_address {
+            ScAddress::Contract(Hash(bytes)) => *bytes,
+            ScAddress::Account(_) => {
+                tracing::warn!(
+                    network = %self.chain.network,
+                    expected = %expected_contract_str,
+                    "B4: auth entry contract_address is an Account address, expected Contract"
+                );
+                return Err(StellarError::InvalidContractAddress {
+                    expected: expected_contract_str,
+                    actual: "Account(...)".to_string(),
+                });
+            }
+        };
+        if actual_contract_bytes != expected_contract_bytes {
+            // Re-encode actual bytes as a C... strkey for the error message
+            let actual_str = Contract(actual_contract_bytes).to_string();
+            tracing::warn!(
+                network = %self.chain.network,
+                expected = %expected_contract_str,
+                actual = %actual_str,
+                "B4: auth entry contract address does not match USDC contract"
+            );
+            return Err(StellarError::InvalidContractAddress {
+                expected: expected_contract_str,
+                actual: actual_str,
+            });
+        }
+
+        // --- Check 3: function name must be "transfer" ---
+        // ScSymbol wraps StringM<32> which holds raw bytes; decode as UTF-8 for comparison.
+        let fn_name = std::str::from_utf8(invoke_args.function_name.as_slice())
+            .map_err(|e| StellarError::InvalidXdr(format!("Non-UTF-8 function name: {}", e)))?
+            .to_string();
+        if fn_name != "transfer" {
+            tracing::warn!(
+                network = %self.chain.network,
+                actual_fn = %fn_name,
+                "B4: auth entry function name is not 'transfer'"
+            );
+            return Err(StellarError::InvalidFunctionName { actual: fn_name });
+        }
+
+        // --- Check 4: exactly 3 args ---
+        if invoke_args.args.len() != 3 {
+            tracing::warn!(
+                network = %self.chain.network,
+                args_count = invoke_args.args.len(),
+                "B4: auth entry does not have exactly 3 args"
+            );
+            return Err(StellarError::InvalidArgsCount {
+                actual: invoke_args.args.len(),
+            });
+        }
+
+        // --- Check 5a: args[0] = ScVal::Address(ScAddress::Account) matching facilitator ---
+        let facilitator_bytes = StellarPublicKey::from_string(&self.public_key)
+            .map_err(|e| {
+                StellarError::InvalidXdr(format!(
+                    "Could not parse facilitator public key '{}': {}",
+                    self.public_key, e
+                ))
+            })?
+            .0;
+        match &invoke_args.args[0] {
+            ScVal::Address(ScAddress::Account(AccountId(PublicKey::PublicKeyTypeEd25519(
+                Uint256(key_bytes),
+            )))) => {
+                if *key_bytes != facilitator_bytes {
+                    let actual_pk = StellarPublicKey(*key_bytes).to_string();
+                    tracing::warn!(
+                        network = %self.chain.network,
+                        expected_sender = %self.public_key,
+                        actual_sender = %actual_pk,
+                        "B4: auth entry sender does not match facilitator address"
+                    );
+                    return Err(StellarError::InvalidSender {
+                        expected: self.public_key.clone(),
+                        actual: actual_pk,
+                    });
+                }
+            }
+            ScVal::Address(ScAddress::Contract(Hash(bytes))) => {
+                let actual_str = Contract(*bytes).to_string();
+                tracing::warn!(
+                    network = %self.chain.network,
+                    expected_sender = %self.public_key,
+                    actual_sender = %actual_str,
+                    "B4: auth entry sender is a contract address, expected facilitator account"
+                );
+                return Err(StellarError::InvalidSender {
+                    expected: self.public_key.clone(),
+                    actual: actual_str,
+                });
+            }
+            other => {
+                tracing::warn!(
+                    network = %self.chain.network,
+                    "B4: auth entry args[0] has unexpected ScVal type"
+                );
+                return Err(StellarError::InvalidArgType(format!(
+                    "args[0] must be ScVal::Address(Account), got {:?}",
+                    std::mem::discriminant(other)
+                )));
+            }
+        }
+
+        // --- Check 5b: args[1] = ScVal::Address matching pay_to ---
+        let actual_recipient_str: String = match &invoke_args.args[1] {
+            ScVal::Address(ScAddress::Account(AccountId(PublicKey::PublicKeyTypeEd25519(
+                Uint256(key_bytes),
+            )))) => StellarPublicKey(*key_bytes).to_string(),
+            ScVal::Address(ScAddress::Contract(Hash(bytes))) => {
+                // Contracts can legitimately receive tokens; encode as C... strkey
+                Contract(*bytes).to_string()
+            }
+            other => {
+                tracing::warn!(
+                    network = %self.chain.network,
+                    "B4: auth entry args[1] has unexpected ScVal type"
+                );
+                return Err(StellarError::InvalidArgType(format!(
+                    "args[1] must be ScVal::Address, got {:?}",
+                    std::mem::discriminant(other)
+                )));
+            }
+        };
+        if actual_recipient_str != expected_pay_to {
+            tracing::warn!(
+                network = %self.chain.network,
+                expected_recipient = %expected_pay_to,
+                actual_recipient = %actual_recipient_str,
+                "B4: auth entry recipient does not match pay_to"
+            );
+            return Err(StellarError::InvalidRecipient {
+                expected: expected_pay_to.to_string(),
+                actual: actual_recipient_str,
+            });
+        }
+
+        // --- Check 5c: args[2] = ScVal::I128 matching expected_amount ---
+        // Stellar USDC uses 7 decimals; max_amount_required is already in those base units.
+        // ScVal::I128(Int128Parts { hi, lo }) represents: (hi as i128) << 64 | (lo as u64 as i128)
+        let actual_amount_i128: i128 = match &invoke_args.args[2] {
+            ScVal::I128(Int128Parts { hi, lo }) => {
+                let hi = *hi as i128;
+                let lo = *lo as u64 as i128; // lo is u64 in XDR, treat unsigned
+                hi.wrapping_shl(64).wrapping_add(lo)
+            }
+            other => {
+                tracing::warn!(
+                    network = %self.chain.network,
+                    "B4: auth entry args[2] has unexpected ScVal type (expected I128)"
+                );
+                return Err(StellarError::InvalidArgType(format!(
+                    "args[2] must be ScVal::I128, got {:?}",
+                    std::mem::discriminant(other)
+                )));
+            }
+        };
+        // Amounts must be positive (negative transfers make no sense)
+        if actual_amount_i128 < 0 {
+            tracing::warn!(
+                network = %self.chain.network,
+                actual_amount = actual_amount_i128,
+                "B4: auth entry amount is negative"
+            );
+            return Err(StellarError::InvalidAmount {
+                expected: expected_amount.to_string(),
+                actual: actual_amount_i128.to_string(),
+            });
+        }
+        let actual_amount_u128 = actual_amount_i128 as u128;
+        // expected_amount is a TokenAmount(U256); for Stellar USDC the amount fits in u128
+        let expected_raw: u128 = {
+            let u256 = expected_amount.0;
+            // Reject if it doesn't fit in u128 (would be astronomically large for any realistic transfer)
+            if u256 > alloy::primitives::U256::from(u128::MAX) {
+                return Err(StellarError::InvalidAmount {
+                    expected: expected_amount.to_string(),
+                    actual: actual_amount_i128.to_string(),
+                });
+            }
+            u256.to::<u128>()
+        };
+        if actual_amount_u128 != expected_raw {
+            tracing::warn!(
+                network = %self.chain.network,
+                expected_amount = expected_raw,
+                actual_amount = actual_amount_u128,
+                "B4: auth entry amount does not match max_amount_required"
+            );
+            return Err(StellarError::InvalidAmount {
+                expected: expected_amount.to_string(),
+                actual: actual_amount_u128.to_string(),
+            });
+        }
+
+        // --- Check 6: no sub-invocations (defense in depth) ---
+        // The Soroban USDC token contract's transfer function does not sub-invoke
+        // other contracts. Rejecting sub-invocations prevents nested reentrancy attacks
+        // and ensures we know exactly what operation is being authorized.
+        if !auth_entry.root_invocation.sub_invocations.is_empty() {
+            tracing::warn!(
+                network = %self.chain.network,
+                sub_invocations_count = auth_entry.root_invocation.sub_invocations.len(),
+                "B4: auth entry has unexpected sub-invocations"
+            );
+            return Err(StellarError::UnexpectedSubInvocations);
+        }
+
+        tracing::debug!(
+            network = %self.chain.network,
+            contract = %expected_contract_str,
+            recipient = %actual_recipient_str,
+            amount = actual_amount_u128,
+            "B4: auth entry content validated successfully"
+        );
+        Ok(())
     }
 
     /// Verify a payment request
@@ -925,6 +1255,20 @@ impl StellarProvider {
         // Decode the authorization entry XDR
         let auth_entry = self
             .decode_authorization_entry(&stellar_payload.authorization_entry_xdr)
+            .map_err(FacilitatorLocalError::from)?;
+
+        // B4: Validate that the auth entry authorizes exactly the expected USDC transfer
+        // before doing anything else with it (especially before signing).
+        let pay_to_str = match &requirements.pay_to {
+            MixedAddress::Stellar(s) => s.as_str(),
+            other => {
+                return Err(FacilitatorLocalError::InvalidAddress(format!(
+                    "pay_to is not a Stellar address: {:?}",
+                    other
+                )));
+            }
+        };
+        self.validate_soroban_auth_entry(&auth_entry, pay_to_str, requirements.max_amount_required)
             .map_err(FacilitatorLocalError::from)?;
 
         // Get current ledger for expiration check
@@ -1663,6 +2007,266 @@ mod tests {
         assert_eq!(
             manual, canonical,
             "canonical TransactionSignaturePayload XDR must equal manual concat"
+        );
+    }
+
+    // ==========================================================================
+    // B4: validate_soroban_auth_entry unit tests
+    // ==========================================================================
+
+    // Shared constants for B4 tests
+    const TESTNET_USDC: &str = "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA";
+    const MAINNET_USDC: &str = "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75";
+    // A well-known constant G-address used as the test recipient.
+    const TEST_RECIPIENT: &str = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
+    // A different valid G-address for negative tests.
+    const OTHER_ADDRESS: &str = "GBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABKPC2";
+
+    /// Build a minimal StellarProvider with an all-zeros signing key for testing.
+    ///
+    /// This must not make any network calls; we only use it for the synchronous
+    /// validate_soroban_auth_entry method.
+    fn test_provider(network: Network) -> StellarProvider {
+        // All-zeros 32-byte key is valid ed25519 (though useless for real signing)
+        let signing_key = SigningKey::from_bytes(&[0u8; 32]);
+        let verifying_key = signing_key.verifying_key();
+        let stellar_pk = StellarPublicKey(verifying_key.to_bytes());
+        StellarProvider {
+            signing_key: Arc::new(signing_key),
+            public_key: stellar_pk.to_string(),
+            http_client: Arc::new(reqwest::Client::new()),
+            chain: StellarChain::try_from(network).unwrap(),
+            rpc_url: None,
+        }
+    }
+
+    /// Build the 32-byte contract hash from a C... strkey.
+    fn contract_hash(addr: &str) -> Hash {
+        Hash(Contract::from_string(addr).unwrap().0)
+    }
+
+    /// Build the AccountId for a G... strkey.
+    fn account_id(addr: &str) -> AccountId {
+        let pk_bytes = StellarPublicKey::from_string(addr).unwrap().0;
+        AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(pk_bytes)))
+    }
+
+    /// Build a well-formed SorobanAuthorizationEntry for the given params.
+    fn make_auth_entry(
+        provider: &StellarProvider,
+        contract: &str,
+        fn_name: &str,
+        sender_addr: &str,
+        recipient_addr: &str,
+        amount_i128: i128,
+        sub_invocations: Vec<SorobanAuthorizedInvocation>,
+    ) -> SorobanAuthorizationEntry {
+        use stellar_xdr::curr::{
+            ScSymbol, SorobanAuthorizedFunction, SorobanAuthorizedInvocation, StringM,
+        };
+
+        let args: Vec<ScVal> = vec![
+            ScVal::Address(ScAddress::Account(account_id(sender_addr))),
+            ScVal::Address(ScAddress::Account(account_id(recipient_addr))),
+            ScVal::I128(Int128Parts {
+                hi: (amount_i128 >> 64) as i64,
+                lo: amount_i128 as u64,
+            }),
+        ];
+        let args_vevm: VecM<ScVal> = args.try_into().unwrap();
+
+        let fn_sym: StringM<32> = fn_name.try_into().unwrap();
+        let fn_sc_sym = ScSymbol(fn_sym);
+
+        let sub_vec: VecM<SorobanAuthorizedInvocation> = sub_invocations.try_into().unwrap();
+
+        let invocation = SorobanAuthorizedInvocation {
+            function: SorobanAuthorizedFunction::ContractFn(InvokeContractArgs {
+                contract_address: ScAddress::Contract(contract_hash(contract)),
+                function_name: fn_sc_sym,
+                args: args_vevm,
+            }),
+            sub_invocations: sub_vec,
+        };
+
+        // Credentials are not validated by validate_soroban_auth_entry; use SourceAccount for simplicity
+        SorobanAuthorizationEntry {
+            credentials: SorobanCredentials::SourceAccount,
+            root_invocation: invocation,
+        }
+    }
+
+    fn token_amount(v: u128) -> TokenAmount {
+        TokenAmount(alloy::primitives::U256::from(v))
+    }
+
+    #[test]
+    fn b4_valid_auth_entry_passes() {
+        let provider = test_provider(Network::StellarTestnet);
+        let facilitator = provider.public_key.clone();
+        let entry = make_auth_entry(
+            &provider,
+            TESTNET_USDC,
+            "transfer",
+            &facilitator,
+            TEST_RECIPIENT,
+            1_000_000_0i128, // 1 USDC at 7 decimals
+            vec![],
+        );
+        assert!(provider
+            .validate_soroban_auth_entry(&entry, TEST_RECIPIENT, token_amount(10_000_000))
+            .is_ok());
+    }
+
+    #[test]
+    fn b4_wrong_contract_rejected() {
+        let provider = test_provider(Network::StellarTestnet);
+        let facilitator = provider.public_key.clone();
+        // Use the mainnet USDC contract on a testnet entry -- should fail
+        let entry = make_auth_entry(
+            &provider,
+            MAINNET_USDC,
+            "transfer",
+            &facilitator,
+            TEST_RECIPIENT,
+            10_000_000i128,
+            vec![],
+        );
+        let err = provider
+            .validate_soroban_auth_entry(&entry, TEST_RECIPIENT, token_amount(10_000_000))
+            .unwrap_err();
+        assert!(
+            matches!(err, StellarError::InvalidContractAddress { .. }),
+            "expected InvalidContractAddress, got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn b4_wrong_function_name_rejected() {
+        let provider = test_provider(Network::StellarTestnet);
+        let facilitator = provider.public_key.clone();
+        let entry = make_auth_entry(
+            &provider,
+            TESTNET_USDC,
+            "approve",
+            &facilitator,
+            TEST_RECIPIENT,
+            10_000_000i128,
+            vec![],
+        );
+        let err = provider
+            .validate_soroban_auth_entry(&entry, TEST_RECIPIENT, token_amount(10_000_000))
+            .unwrap_err();
+        assert!(
+            matches!(err, StellarError::InvalidFunctionName { .. }),
+            "expected InvalidFunctionName, got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn b4_wrong_recipient_rejected() {
+        let provider = test_provider(Network::StellarTestnet);
+        let facilitator = provider.public_key.clone();
+        let entry = make_auth_entry(
+            &provider,
+            TESTNET_USDC,
+            "transfer",
+            &facilitator,
+            OTHER_ADDRESS, // different recipient in the entry
+            10_000_000i128,
+            vec![],
+        );
+        // But we claim pay_to is TEST_RECIPIENT
+        let err = provider
+            .validate_soroban_auth_entry(&entry, TEST_RECIPIENT, token_amount(10_000_000))
+            .unwrap_err();
+        assert!(
+            matches!(err, StellarError::InvalidRecipient { .. }),
+            "expected InvalidRecipient, got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn b4_wrong_amount_rejected() {
+        let provider = test_provider(Network::StellarTestnet);
+        let facilitator = provider.public_key.clone();
+        let entry = make_auth_entry(
+            &provider,
+            TESTNET_USDC,
+            "transfer",
+            &facilitator,
+            TEST_RECIPIENT,
+            5_000_000i128, // entry says 0.5 USDC
+            vec![],
+        );
+        // requirements say 1 USDC
+        let err = provider
+            .validate_soroban_auth_entry(&entry, TEST_RECIPIENT, token_amount(10_000_000))
+            .unwrap_err();
+        assert!(
+            matches!(err, StellarError::InvalidAmount { .. }),
+            "expected InvalidAmount, got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn b4_wrong_sender_rejected() {
+        let provider = test_provider(Network::StellarTestnet);
+        // Put OTHER_ADDRESS as the sender in the entry instead of the facilitator
+        let entry = make_auth_entry(
+            &provider,
+            TESTNET_USDC,
+            "transfer",
+            OTHER_ADDRESS, // not the facilitator
+            TEST_RECIPIENT,
+            10_000_000i128,
+            vec![],
+        );
+        let err = provider
+            .validate_soroban_auth_entry(&entry, TEST_RECIPIENT, token_amount(10_000_000))
+            .unwrap_err();
+        assert!(
+            matches!(err, StellarError::InvalidSender { .. }),
+            "expected InvalidSender, got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn b4_create_contract_fn_rejected() {
+        use stellar_xdr::curr::{
+            ContractExecutable, ContractIdPreimage, ContractIdPreimageFromAddress,
+            CreateContractArgs,
+        };
+
+        let provider = test_provider(Network::StellarTestnet);
+
+        // Build an entry that uses CreateContractHostFn
+        let invocation = SorobanAuthorizedInvocation {
+            function: SorobanAuthorizedFunction::CreateContractHostFn(CreateContractArgs {
+                contract_id_preimage: ContractIdPreimage::Address(ContractIdPreimageFromAddress {
+                    address: ScAddress::Contract(contract_hash(TESTNET_USDC)),
+                    salt: Uint256([0u8; 32]),
+                }),
+                executable: ContractExecutable::StellarAsset,
+            }),
+            sub_invocations: vec![].try_into().unwrap(),
+        };
+        let entry = SorobanAuthorizationEntry {
+            credentials: SorobanCredentials::SourceAccount,
+            root_invocation: invocation,
+        };
+        let err = provider
+            .validate_soroban_auth_entry(&entry, TEST_RECIPIENT, token_amount(10_000_000))
+            .unwrap_err();
+        assert!(
+            matches!(err, StellarError::InvalidInvocationType),
+            "expected InvalidInvocationType, got {:?}",
+            err
         );
     }
 }

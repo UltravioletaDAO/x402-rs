@@ -212,10 +212,7 @@ pub fn derive_metadata_pda(
 ) -> (Pubkey, u8) {
     use sha2::{Digest, Sha256};
     let key_hash = Sha256::digest(metadata_key.as_bytes());
-    Pubkey::find_program_address(
-        &[b"agent_meta", asset.as_ref(), &key_hash[..8]],
-        program_id,
-    )
+    Pubkey::find_program_address(&[b"agent_meta", asset.as_ref(), &key_hash[..8]], program_id)
 }
 
 // ============================================================================
@@ -255,20 +252,17 @@ pub async fn read_agent_account(
 ) -> Result<AgentAccount, SolanaErc8004Error> {
     let (pda, _bump) = derive_agent_pda(asset_pubkey, program_id);
 
-    let account_data = rpc_client
-        .get_account_data(&pda)
-        .await
-        .map_err(|e| {
-            let err_str = e.to_string();
-            if err_str.contains("AccountNotFound") || err_str.contains("could not find account") {
-                SolanaErc8004Error::AccountNotFound(format!(
-                    "Agent {} not found (PDA: {})",
-                    asset_pubkey, pda
-                ))
-            } else {
-                SolanaErc8004Error::RpcError(err_str)
-            }
-        })?;
+    let account_data = rpc_client.get_account_data(&pda).await.map_err(|e| {
+        let err_str = e.to_string();
+        if err_str.contains("AccountNotFound") || err_str.contains("could not find account") {
+            SolanaErc8004Error::AccountNotFound(format!(
+                "Agent {} not found (PDA: {})",
+                asset_pubkey, pda
+            ))
+        } else {
+            SolanaErc8004Error::RpcError(err_str)
+        }
+    })?;
 
     // Verify Anchor discriminator (first 8 bytes)
     if account_data.len() < 8 {
@@ -297,20 +291,17 @@ pub async fn read_atom_stats(
 ) -> Result<AtomStats, SolanaErc8004Error> {
     let (pda, _bump) = derive_atom_stats_pda(asset_pubkey, atom_program_id);
 
-    let account_data = rpc_client
-        .get_account_data(&pda)
-        .await
-        .map_err(|e| {
-            let err_str = e.to_string();
-            if err_str.contains("AccountNotFound") || err_str.contains("could not find account") {
-                SolanaErc8004Error::AccountNotFound(format!(
-                    "ATOM stats not found for agent {} (PDA: {})",
-                    asset_pubkey, pda
-                ))
-            } else {
-                SolanaErc8004Error::RpcError(err_str)
-            }
-        })?;
+    let account_data = rpc_client.get_account_data(&pda).await.map_err(|e| {
+        let err_str = e.to_string();
+        if err_str.contains("AccountNotFound") || err_str.contains("could not find account") {
+            SolanaErc8004Error::AccountNotFound(format!(
+                "ATOM stats not found for agent {} (PDA: {})",
+                asset_pubkey, pda
+            ))
+        } else {
+            SolanaErc8004Error::RpcError(err_str)
+        }
+    })?;
 
     // Verify Anchor discriminator
     if account_data.len() < 8 {
@@ -337,20 +328,14 @@ pub async fn read_registry_config(
 ) -> Result<RegistryConfig, SolanaErc8004Error> {
     let (pda, _bump) = derive_registry_config_pda(program_id);
 
-    let account_data = rpc_client
-        .get_account_data(&pda)
-        .await
-        .map_err(|e| {
-            let err_str = e.to_string();
-            if err_str.contains("AccountNotFound") || err_str.contains("could not find account") {
-                SolanaErc8004Error::AccountNotFound(format!(
-                    "Registry config not found (PDA: {})",
-                    pda
-                ))
-            } else {
-                SolanaErc8004Error::RpcError(err_str)
-            }
-        })?;
+    let account_data = rpc_client.get_account_data(&pda).await.map_err(|e| {
+        let err_str = e.to_string();
+        if err_str.contains("AccountNotFound") || err_str.contains("could not find account") {
+            SolanaErc8004Error::AccountNotFound(format!("Registry config not found (PDA: {})", pda))
+        } else {
+            SolanaErc8004Error::RpcError(err_str)
+        }
+    })?;
 
     // Verify Anchor discriminator
     if account_data.len() < 8 {
@@ -1021,13 +1006,7 @@ mod tests {
         let asset = Pubkey::new_unique();
         let owner = Pubkey::new_unique();
 
-        let ix = build_register_ix(
-            &programs,
-            &collection,
-            &asset,
-            &owner,
-            "ipfs://QmAgentSpec",
-        );
+        let ix = build_register_ix(&programs, &collection, &asset, &owner, "ipfs://QmAgentSpec");
 
         assert_eq!(ix.program_id, AGENT_REGISTRY_MAINNET);
         assert_eq!(ix.accounts.len(), 7);
@@ -1042,14 +1021,8 @@ mod tests {
         let asset = Pubkey::new_unique();
         let owner = Pubkey::new_unique();
 
-        let ix = build_set_metadata_pda_ix(
-            &programs,
-            &asset,
-            &owner,
-            "x402Support",
-            b"true",
-            false,
-        );
+        let ix =
+            build_set_metadata_pda_ix(&programs, &asset, &owner, "x402Support", b"true", false);
 
         assert_eq!(ix.program_id, AGENT_REGISTRY_MAINNET);
         assert_eq!(ix.accounts.len(), 5);
@@ -1061,18 +1034,12 @@ mod tests {
     fn test_seal_hash_deterministic() {
         let agent = Pubkey::new_unique();
         let client = Pubkey::new_unique();
-        let hash1 = compute_feedback_seal_hash(
-            &agent, &client, 0, "ipfs://QmTest", &[0u8; 32],
-        );
-        let hash2 = compute_feedback_seal_hash(
-            &agent, &client, 0, "ipfs://QmTest", &[0u8; 32],
-        );
+        let hash1 = compute_feedback_seal_hash(&agent, &client, 0, "ipfs://QmTest", &[0u8; 32]);
+        let hash2 = compute_feedback_seal_hash(&agent, &client, 0, "ipfs://QmTest", &[0u8; 32]);
         assert_eq!(hash1, hash2);
 
         // Different feedback_count should produce different hash
-        let hash3 = compute_feedback_seal_hash(
-            &agent, &client, 1, "ipfs://QmTest", &[0u8; 32],
-        );
+        let hash3 = compute_feedback_seal_hash(&agent, &client, 1, "ipfs://QmTest", &[0u8; 32]);
         assert_ne!(hash1, hash3);
     }
 
@@ -1081,15 +1048,9 @@ mod tests {
         let agent = Pubkey::new_unique();
         let client = Pubkey::new_unique();
 
-        let feedback_hash = compute_feedback_seal_hash(
-            &agent, &client, 0, "uri", &[0u8; 32],
-        );
-        let revoke_hash = compute_revoke_seal_hash(
-            &agent, &client, 0, 0,
-        );
-        let response_hash = compute_response_seal_hash(
-            &agent, &client, 0, "uri", &[0u8; 32],
-        );
+        let feedback_hash = compute_feedback_seal_hash(&agent, &client, 0, "uri", &[0u8; 32]);
+        let revoke_hash = compute_revoke_seal_hash(&agent, &client, 0, 0);
+        let response_hash = compute_response_seal_hash(&agent, &client, 0, "uri", &[0u8; 32]);
 
         // All three should be different due to different domains
         assert_ne!(feedback_hash, revoke_hash);
@@ -1113,9 +1074,7 @@ mod tests {
         let asset = Pubkey::new_unique();
         let owner = Pubkey::new_unique();
 
-        let ix = build_set_agent_uri_ix(
-            &programs, &asset, &owner, "ipfs://QmNewUri",
-        );
+        let ix = build_set_agent_uri_ix(&programs, &asset, &owner, "ipfs://QmNewUri");
 
         assert_eq!(ix.program_id, AGENT_REGISTRY_MAINNET);
         assert_eq!(ix.accounts.len(), 6);

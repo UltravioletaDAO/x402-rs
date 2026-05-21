@@ -137,6 +137,94 @@ pub struct StorageBalance {
     pub available: String,
 }
 
+/// Validate that a slice of NonDelegateActions (from a DelegateAction) satisfies
+/// the payment requirements:
+///
+/// - At least one action must be present.
+/// - Every action must be a FunctionCall with method_name == "ft_transfer".
+/// - Each ft_transfer's JSON args must decode to { receiver_id, amount }.
+/// - receiver_id must exactly equal expected_receiver.
+/// - amount must exactly equal expected_amount (decimal string in atomic units).
+///
+/// Any deviation is rejected. Mixed action envelopes (e.g., Transfer + FunctionCall)
+/// are also rejected because we cannot safely reason about their combined effect.
+pub(crate) fn validate_delegate_actions_inner(
+    actions: &[NonDelegateAction],
+    expected_receiver: &str,
+    expected_amount: &str,
+) -> Result<(), FacilitatorLocalError> {
+    if actions.is_empty() {
+        return Err(FacilitatorLocalError::Other(
+            "DelegateAction contains no inner actions".to_string(),
+        ));
+    }
+
+    for (i, non_delegate_action) in actions.iter().enumerate() {
+        let action: Action = non_delegate_action.clone().into();
+        match action {
+            Action::FunctionCall(fc) => {
+                if fc.method_name != "ft_transfer" {
+                    tracing::warn!(
+                        index = i,
+                        method = %fc.method_name,
+                        "Rejected DelegateAction: inner action is not ft_transfer"
+                    );
+                    return Err(FacilitatorLocalError::Other(format!(
+                        "DelegateAction action[{}] method '{}' is not ft_transfer",
+                        i, fc.method_name
+                    )));
+                }
+
+                let args: FtTransferArgs = serde_json::from_slice(&fc.args).map_err(|e| {
+                    FacilitatorLocalError::DecodingError(format!(
+                        "Failed to parse ft_transfer args at action[{}]: {e}",
+                        i
+                    ))
+                })?;
+
+                if args.receiver_id != expected_receiver {
+                    tracing::warn!(
+                        index = i,
+                        got = %args.receiver_id,
+                        expected = %expected_receiver,
+                        "Rejected DelegateAction: ft_transfer receiver_id mismatch"
+                    );
+                    return Err(FacilitatorLocalError::Other(format!(
+                        "DelegateAction action[{}] ft_transfer receiver_id '{}' does not match pay_to '{}'",
+                        i, args.receiver_id, expected_receiver
+                    )));
+                }
+
+                if args.amount != expected_amount {
+                    tracing::warn!(
+                        index = i,
+                        got = %args.amount,
+                        expected = %expected_amount,
+                        "Rejected DelegateAction: ft_transfer amount mismatch"
+                    );
+                    return Err(FacilitatorLocalError::Other(format!(
+                        "DelegateAction action[{}] ft_transfer amount '{}' does not match required amount '{}'",
+                        i, args.amount, expected_amount
+                    )));
+                }
+            }
+            other => {
+                tracing::warn!(
+                    index = i,
+                    action_type = ?other,
+                    "Rejected DelegateAction: unexpected action type (only ft_transfer allowed)"
+                );
+                return Err(FacilitatorLocalError::Other(format!(
+                    "DelegateAction action[{}] is not a FunctionCall (only ft_transfer allowed)",
+                    i
+                )));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// NEAR Protocol payment provider
 ///
 /// Implements USDC payments on NEAR using NEP-366 meta-transactions.
@@ -479,6 +567,23 @@ impl NearProvider {
         Ok(())
     }
 
+    /// Validate inner actions of a SignedDelegateAction against payment requirements.
+    ///
+    /// Delegates to the free function `validate_delegate_actions_inner` so the logic
+    /// is independently unit-testable without a live NearProvider.
+    fn validate_delegate_actions(
+        &self,
+        signed_delegate_action: &SignedDelegateAction,
+        expected_receiver: &str,
+        expected_amount: &str,
+    ) -> Result<(), FacilitatorLocalError> {
+        validate_delegate_actions_inner(
+            &signed_delegate_action.delegate_action.actions,
+            expected_receiver,
+            expected_amount,
+        )
+    }
+
     /// Verify a payment request
     async fn verify_payment(
         &self,
@@ -550,6 +655,24 @@ impl NearProvider {
                 signed_delegate_action.delegate_action.receiver_id, usdc_contract
             )));
         }
+
+        // Validate inner actions: every action must be ft_transfer and its
+        // args must match the payment requirements exactly (receiver_id and amount).
+        let expected_receiver = match &requirements.pay_to {
+            MixedAddress::Near(account_id_str) => account_id_str.clone(),
+            _ => {
+                return Err(FacilitatorLocalError::InvalidAddress(
+                    "pay_to must be a NEAR address".to_string(),
+                ))
+            }
+        };
+        let expected_amount = requirements.max_amount_required.to_string();
+
+        self.validate_delegate_actions(
+            &signed_delegate_action,
+            &expected_receiver,
+            &expected_amount,
+        )?;
 
         Ok(VerifyPaymentResult {
             payer,
@@ -732,5 +855,165 @@ impl Facilitator for NearProvider {
             }),
         }];
         Ok(SupportedPaymentKindsResponse { kinds })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use near_primitives::transaction::TransferAction;
+
+    /// Build a NonDelegateAction wrapping a ft_transfer FunctionCall with the given args JSON.
+    fn make_ft_transfer_action(args_json: &str) -> NonDelegateAction {
+        let action = Action::FunctionCall(Box::new(FunctionCallAction {
+            method_name: "ft_transfer".to_string(),
+            args: args_json.as_bytes().to_vec(),
+            gas: Gas::from_gas(5_000_000_000_000),
+            deposit: NearToken::from_yoctonear(1),
+        }));
+        NonDelegateAction::try_from(action).expect("FunctionCall is a valid NonDelegateAction")
+    }
+
+    /// Build a NonDelegateAction wrapping an arbitrary method name.
+    fn make_func_call_action(method: &str, args_json: &str) -> NonDelegateAction {
+        let action = Action::FunctionCall(Box::new(FunctionCallAction {
+            method_name: method.to_string(),
+            args: args_json.as_bytes().to_vec(),
+            gas: Gas::from_gas(5_000_000_000_000),
+            deposit: NearToken::from_yoctonear(0),
+        }));
+        NonDelegateAction::try_from(action).expect("FunctionCall is a valid NonDelegateAction")
+    }
+
+    #[test]
+    fn valid_single_ft_transfer_passes() {
+        let args = r#"{"receiver_id":"merchant.near","amount":"1000000"}"#;
+        let actions = vec![make_ft_transfer_action(args)];
+        let result = validate_delegate_actions_inner(&actions, "merchant.near", "1000000");
+        assert!(result.is_ok(), "expected Ok, got: {:?}", result);
+    }
+
+    #[test]
+    fn wrong_receiver_id_is_rejected() {
+        let args = r#"{"receiver_id":"attacker.near","amount":"1000000"}"#;
+        let actions = vec![make_ft_transfer_action(args)];
+        let err = validate_delegate_actions_inner(&actions, "merchant.near", "1000000")
+            .expect_err("should fail on receiver_id mismatch");
+        match err {
+            FacilitatorLocalError::Other(msg) => {
+                assert!(
+                    msg.contains("receiver_id"),
+                    "error message should mention receiver_id, got: {msg}"
+                );
+            }
+            other => panic!("unexpected error variant: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn wrong_amount_is_rejected() {
+        let args = r#"{"receiver_id":"merchant.near","amount":"1"}"#;
+        let actions = vec![make_ft_transfer_action(args)];
+        let err = validate_delegate_actions_inner(&actions, "merchant.near", "1000000")
+            .expect_err("should fail on amount mismatch");
+        match err {
+            FacilitatorLocalError::Other(msg) => {
+                assert!(
+                    msg.contains("amount"),
+                    "error message should mention amount, got: {msg}"
+                );
+            }
+            other => panic!("unexpected error variant: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn non_ft_transfer_method_is_rejected() {
+        let actions = vec![make_func_call_action(
+            "storage_deposit",
+            r#"{"account_id":"attacker.near"}"#,
+        )];
+        let err = validate_delegate_actions_inner(&actions, "merchant.near", "1000000")
+            .expect_err("should fail on non-ft_transfer method");
+        match err {
+            FacilitatorLocalError::Other(msg) => {
+                assert!(
+                    msg.contains("ft_transfer"),
+                    "error message should mention ft_transfer, got: {msg}"
+                );
+            }
+            other => panic!("unexpected error variant: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn non_function_call_action_is_rejected() {
+        let transfer_action = Action::Transfer(TransferAction {
+            deposit: NearToken::from_yoctonear(1_000_000),
+        });
+        let actions = vec![NonDelegateAction::try_from(transfer_action)
+            .expect("Transfer is a valid NonDelegateAction")];
+        let err = validate_delegate_actions_inner(&actions, "merchant.near", "1000000")
+            .expect_err("should fail on non-FunctionCall action");
+        match err {
+            FacilitatorLocalError::Other(msg) => {
+                assert!(
+                    msg.contains("FunctionCall"),
+                    "error message should mention FunctionCall, got: {msg}"
+                );
+            }
+            other => panic!("unexpected error variant: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn malformed_args_json_is_rejected() {
+        // Valid ft_transfer method but args are not valid JSON
+        let actions = vec![make_func_call_action("ft_transfer", "not json at all")];
+        let err = validate_delegate_actions_inner(&actions, "merchant.near", "1000000")
+            .expect_err("should fail on malformed JSON args");
+        match err {
+            FacilitatorLocalError::DecodingError(msg) => {
+                assert!(
+                    msg.contains("parse ft_transfer args"),
+                    "error message should mention parse, got: {msg}"
+                );
+            }
+            other => panic!("unexpected error variant: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn empty_actions_list_is_rejected() {
+        let err = validate_delegate_actions_inner(&[], "merchant.near", "1000000")
+            .expect_err("should fail on empty actions");
+        match err {
+            FacilitatorLocalError::Other(msg) => {
+                assert!(
+                    msg.contains("no inner actions"),
+                    "error message should mention no inner actions, got: {msg}"
+                );
+            }
+            other => panic!("unexpected error variant: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mixed_actions_first_valid_second_invalid_is_rejected() {
+        // Two ft_transfer actions: first is correct, second has wrong receiver.
+        let good = r#"{"receiver_id":"merchant.near","amount":"1000000"}"#;
+        let bad = r#"{"receiver_id":"attacker.near","amount":"1000000"}"#;
+        let actions = vec![make_ft_transfer_action(good), make_ft_transfer_action(bad)];
+        let err = validate_delegate_actions_inner(&actions, "merchant.near", "1000000")
+            .expect_err("should fail on second action's receiver_id mismatch");
+        match err {
+            FacilitatorLocalError::Other(msg) => {
+                assert!(
+                    msg.contains("receiver_id"),
+                    "error should be about receiver_id, got: {msg}"
+                );
+            }
+            other => panic!("unexpected error variant: {:?}", other),
+        }
     }
 }

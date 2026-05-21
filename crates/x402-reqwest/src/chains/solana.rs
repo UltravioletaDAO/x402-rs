@@ -4,7 +4,7 @@ use solana_client::rpc_config::RpcSimulateTransactionConfig;
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::hash::Hash;
 use solana_sdk::instruction::Instruction;
-use solana_sdk::message::{VersionedMessage, v0::Message as MessageV0};
+use solana_sdk::message::{v0::Message as MessageV0, VersionedMessage};
 use solana_sdk::program_pack::Pack;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::{Keypair, Signature, Signer};
@@ -18,8 +18,8 @@ use x402_rs::types::{
     ExactPaymentPayload, ExactSolanaPayload, PaymentPayload, PaymentRequirements, X402Version,
 };
 
-use crate::X402PaymentsError;
 use crate::chains::{IntoSenderWallet, SenderWallet};
+use crate::X402PaymentsError;
 
 #[derive(Clone)]
 pub struct SolanaSenderWallet {

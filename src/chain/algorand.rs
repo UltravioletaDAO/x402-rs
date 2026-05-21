@@ -56,6 +56,15 @@ pub const ALGORAND_MAINNET_ALGOD: &str = "https://mainnet-api.algonode.cloud";
 /// Default Algorand testnet algod endpoint
 pub const ALGORAND_TESTNET_ALGOD: &str = "https://testnet-api.algonode.cloud";
 
+/// Maximum fee the facilitator will pay in a fee transaction, in microAlgos.
+///
+/// Standard minimum network fee is 1_000 microAlgos (0.001 ALGO).
+/// A 2-transaction atomic group requires at minimum 2_000 microAlgos in fee pooling.
+/// This cap is set to 100_000 microAlgos (0.1 ALGO) -- 50x the typical needed amount --
+/// to allow for network congestion while bounding the worst-case drain to 0.1 ALGO
+/// per settlement call in the event that the sender check is somehow bypassed.
+pub const MAX_ALGORAND_FEE_TX_MICROALGOS: u64 = 100_000;
+
 // =============================================================================
 // Error Types
 // =============================================================================
@@ -113,6 +122,12 @@ pub enum AlgorandError {
 
     #[error("Lease mismatch: expected {expected}, got {actual}")]
     LeaseMismatch { expected: String, actual: String },
+
+    #[error("Fee transaction sender mismatch: expected facilitator {expected}, got {actual}")]
+    FeeSenderMismatch { expected: String, actual: String },
+
+    #[error("Fee transaction amount {amount} exceeds maximum allowed {max}")]
+    FeeTooHigh { amount: u64, max: u64 },
 }
 
 impl From<AlgorandError> for FacilitatorLocalError {
@@ -393,7 +408,41 @@ impl AlgorandProvider {
     /// CRITICAL SECURITY: This prevents malicious transactions from:
     /// - Draining the facilitator's funds (close_remainder_to)
     /// - Taking over the facilitator's account (rekey_to)
+    /// - Signing as a sender that is NOT the facilitator (sender check -- B2)
+    /// - Paying an unbounded fee from the facilitator wallet (fee cap -- B2)
     fn validate_fee_transaction(&self, tx: &AlgoTransaction) -> Result<(), AlgorandError> {
+        // B2 invariant 1: The fee transaction MUST be sent FROM the facilitator address.
+        // An attacker could otherwise embed Payment(facilitator -> attacker, amount) in the
+        // atomic group and get the facilitator to co-sign it, draining the facilitator wallet.
+        let tx_sender = tx.sender.to_string();
+        if tx_sender != self.public_address {
+            tracing::warn!(
+                expected = %self.public_address,
+                actual = %tx_sender,
+                "Fee transaction sender is not the facilitator address -- rejecting"
+            );
+            return Err(AlgorandError::FeeSenderMismatch {
+                expected: self.public_address.clone(),
+                actual: tx_sender,
+            });
+        }
+
+        // B2 invariant 2: The fee amount must not exceed MAX_ALGORAND_FEE_TX_MICROALGOS.
+        // Even with the sender check above, we bound the fee so that a misconfigured or
+        // future-buggy caller cannot extract more than 0.1 ALGO per settlement call.
+        let fee_amount = tx.fee.0;
+        if fee_amount > MAX_ALGORAND_FEE_TX_MICROALGOS {
+            tracing::warn!(
+                fee_amount = fee_amount,
+                max = MAX_ALGORAND_FEE_TX_MICROALGOS,
+                "Fee transaction amount exceeds cap -- rejecting"
+            );
+            return Err(AlgorandError::FeeTooHigh {
+                amount: fee_amount,
+                max: MAX_ALGORAND_FEE_TX_MICROALGOS,
+            });
+        }
+
         // Check for rekey_to which would give control of facilitator account to attacker
         if tx.rekey_to.is_some() {
             return Err(AlgorandError::ForbiddenFeeField {
@@ -952,5 +1001,28 @@ mod tests {
 
         let testnet = AlgorandChain::try_from(Network::AlgorandTestnet).unwrap();
         assert_eq!(testnet.usdc_asa_id, USDC_ASA_ID_TESTNET);
+    }
+
+    // NOTE: Unit tests for validate_fee_transaction's B2 invariants (sender check and fee
+    // cap) are not implemented here because algonaut does not expose a public constructor
+    // for AlgoTransaction -- transactions must be built through the SDK's builder API which
+    // requires live genesis hash/id parameters (fetched from algod).  Constructing a valid
+    // fake AlgoTransaction struct for pure unit testing would require either:
+    //   (a) unsafe transmute / raw struct init (unsound),
+    //   (b) a live algod connection (integration test, not unit), or
+    //   (c) an algonaut test-helper crate that does not yet exist.
+    //
+    // The invariants are covered by the integration test suite in tests/integration/ which
+    // exercises the full verify/settle flow against a live testnet.  The logic itself is
+    // straightforward string equality and integer comparison on data already validated by
+    // algonaut deserialization, so the risk of the check itself being wrong is low.
+
+    #[test]
+    fn test_fee_cap_constant_is_sane() {
+        // Standard Algorand minimum fee is 1_000 microAlgos.
+        // A 2-transaction group needs at least 2_000.
+        // The cap should be strictly above the minimum and below 1 ALGO (1_000_000).
+        assert!(MAX_ALGORAND_FEE_TX_MICROALGOS > 2_000);
+        assert!(MAX_ALGORAND_FEE_TX_MICROALGOS < 1_000_000);
     }
 }

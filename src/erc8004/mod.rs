@@ -545,8 +545,11 @@ mod tests {
         // SKALE
         assert!(networks.contains(&Network::SkaleBase));
         assert!(networks.contains(&Network::SkaleBaseSepolia));
-        // Total count: 16 EVM + 2 SKALE + 2 Solana = 20
-        assert_eq!(networks.len(), 20);
+        // Hedera
+        assert!(networks.contains(&Network::Hedera));
+        assert!(networks.contains(&Network::HederaTestnet));
+        // Total count: 16 EVM + 2 SKALE + 2 Hedera + 2 Solana = 22
+        assert_eq!(networks.len(), 22);
     }
 
     #[test]
@@ -575,7 +578,10 @@ mod tests {
         // SKALE names
         assert!(names.contains(&"skale-base".to_string()));
         assert!(names.contains(&"skale-base-sepolia".to_string()));
-        assert_eq!(names.len(), 20);
+        // Hedera names
+        assert!(names.contains(&"hedera".to_string()));
+        assert!(names.contains(&"hedera-testnet".to_string()));
+        assert_eq!(names.len(), 22);
     }
 
     #[test]

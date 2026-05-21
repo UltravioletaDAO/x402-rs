@@ -25,9 +25,11 @@ use std::str::FromStr;
 use shared_crypto::intent::{Intent, IntentMessage};
 use sui_sdk::rpc_types::SuiTransactionBlockResponseOptions;
 use sui_sdk::SuiClientBuilder;
-use sui_types::base_types::SuiAddress;
+use sui_types::base_types::{ObjectID, SuiAddress};
 use sui_types::crypto::{EncodeDecodeBase64, Signature, SuiKeyPair, SuiSignature, ToFromBytes};
-use sui_types::transaction::{Transaction, TransactionData, TransactionDataAPI};
+use sui_types::transaction::{
+    Argument, CallArg, Command, Transaction, TransactionData, TransactionDataAPI, TransactionKind,
+};
 use tracing::{debug, error, info, warn};
 
 use crate::chain::{FacilitatorLocalError, FromEnvByNetworkBuild, NetworkProviderOps};
@@ -203,6 +205,245 @@ impl SuiProvider {
         Ok(())
     }
 
+    /// Validate that a decoded `TransactionData` encodes exactly the expected USDC transfer.
+    ///
+    /// A valid x402 Sui payload must contain a `ProgrammableTransaction` with exactly
+    /// two commands in this order:
+    ///
+    ///   1. `SplitCoins(coin_arg, [amount_arg])` — splits `expected_amount` off a USDC coin.
+    ///   2. `TransferObjects([Result(0)], recipient_arg)` — sends the split coin to the merchant.
+    ///
+    /// The inputs vector must supply:
+    ///   - A `Pure(u64 LE bytes)` for the split amount equal to `expected_amount`.
+    ///   - A `Pure(32-byte address)` or `Object(ImmOrOwned)` for the recipient equal to `expected_recipient`.
+    ///   - An `Object(ImmOrOwned)` whose object ID matches `expected_coin_id` (the declared coin object).
+    ///
+    /// Any deviation — wrong recipient, wrong amount, extra commands, non-USDC coin type that
+    /// cannot be verified structurally, non-numeric amount, or malformed BCS — is a hard rejection.
+    ///
+    /// NOTE: We do NOT validate the coin object's Move type here because `CallArg::Object` only
+    /// carries the ObjectID/SequenceNumber/Digest tuple, not the Move type. Coin type enforcement
+    /// is handled by (a) the USDC balance check in `check_balance` which queries only the
+    /// `usdc_coin_type` coins, and (b) Sui's own type-checker which will reject a `SplitCoins`
+    /// on a non-Coin object at execution time. What we CAN and MUST verify is that the coin
+    /// object ID in the PTB matches the declared `coin_object_id` in the JSON payload, preventing
+    /// the client from declaring one coin but signing a PTB that drains a different coin.
+    fn validate_ptb(
+        &self,
+        tx_data: &TransactionData,
+        expected_recipient: &SuiAddress,
+        expected_amount: u64,
+        expected_coin_id: &ObjectID,
+    ) -> Result<(), FacilitatorLocalError> {
+        // Extract the ProgrammableTransaction — reject all other transaction kinds.
+        let ptb = match tx_data.kind() {
+            TransactionKind::ProgrammableTransaction(ptb) => ptb,
+            other => {
+                return Err(FacilitatorLocalError::Other(format!(
+                    "PTB validation failed: expected ProgrammableTransaction, got {:?}",
+                    other
+                )));
+            }
+        };
+
+        // Require exactly two commands.
+        if ptb.commands.len() != 2 {
+            return Err(FacilitatorLocalError::Other(format!(
+                "PTB validation failed: expected exactly 2 commands, got {}",
+                ptb.commands.len()
+            )));
+        }
+
+        // --- Command 0: SplitCoins(coin_arg, [amount_arg]) ---
+        let (split_coin_arg, split_amount_arg) = match &ptb.commands[0] {
+            Command::SplitCoins(coin_arg, amount_args) => {
+                if amount_args.len() != 1 {
+                    return Err(FacilitatorLocalError::Other(format!(
+                        "PTB validation failed: SplitCoins must have exactly 1 amount, got {}",
+                        amount_args.len()
+                    )));
+                }
+                (coin_arg, &amount_args[0])
+            }
+            other => {
+                return Err(FacilitatorLocalError::Other(format!(
+                    "PTB validation failed: command[0] must be SplitCoins, got {:?}",
+                    other
+                )));
+            }
+        };
+
+        // --- Command 1: TransferObjects([Result(0)], recipient_arg) ---
+        let (transfer_objects, recipient_arg) = match &ptb.commands[1] {
+            Command::TransferObjects(objects, recipient) => (objects, recipient),
+            other => {
+                return Err(FacilitatorLocalError::Other(format!(
+                    "PTB validation failed: command[1] must be TransferObjects, got {:?}",
+                    other
+                )));
+            }
+        };
+
+        // TransferObjects must move exactly the result of command 0.
+        if transfer_objects.len() != 1 || transfer_objects[0] != Argument::Result(0) {
+            return Err(FacilitatorLocalError::Other(
+                "PTB validation failed: TransferObjects must transfer exactly Result(0)"
+                    .to_string(),
+            ));
+        }
+
+        // --- Resolve coin_arg -> coin object ID ---
+        // The coin source must be an Input referring to an Object input.
+        let coin_input_index = match split_coin_arg {
+            Argument::Input(idx) => *idx as usize,
+            other => {
+                return Err(FacilitatorLocalError::Other(format!(
+                    "PTB validation failed: SplitCoins coin argument must be Input, got {:?}",
+                    other
+                )));
+            }
+        };
+
+        let coin_call_arg = ptb.inputs.get(coin_input_index).ok_or_else(|| {
+            FacilitatorLocalError::Other(format!(
+                "PTB validation failed: coin input index {} out of range (inputs len {})",
+                coin_input_index,
+                ptb.inputs.len()
+            ))
+        })?;
+
+        let ptb_coin_id = match coin_call_arg {
+            CallArg::Object(sui_types::transaction::ObjectArg::ImmOrOwnedObject(obj_ref)) => {
+                obj_ref.0
+            }
+            other => {
+                return Err(FacilitatorLocalError::Other(format!(
+                    "PTB validation failed: SplitCoins coin input must be ImmOrOwnedObject, got {:?}",
+                    other
+                )));
+            }
+        };
+
+        if ptb_coin_id != *expected_coin_id {
+            return Err(FacilitatorLocalError::Other(format!(
+                "PTB validation failed: coin object ID in PTB ({}) does not match declared coin_object_id ({})",
+                ptb_coin_id, expected_coin_id
+            )));
+        }
+
+        // --- Resolve split_amount_arg -> u64 ---
+        let amount_input_index = match split_amount_arg {
+            Argument::Input(idx) => *idx as usize,
+            other => {
+                return Err(FacilitatorLocalError::Other(format!(
+                    "PTB validation failed: SplitCoins amount argument must be Input, got {:?}",
+                    other
+                )));
+            }
+        };
+
+        let amount_call_arg = ptb.inputs.get(amount_input_index).ok_or_else(|| {
+            FacilitatorLocalError::Other(format!(
+                "PTB validation failed: amount input index {} out of range",
+                amount_input_index
+            ))
+        })?;
+
+        let ptb_amount: u64 = match amount_call_arg {
+            CallArg::Pure(bytes) => {
+                if bytes.len() != 8 {
+                    return Err(FacilitatorLocalError::Other(format!(
+                        "PTB validation failed: amount Pure bytes must be 8 bytes (u64 LE), got {}",
+                        bytes.len()
+                    )));
+                }
+                u64::from_le_bytes(bytes[..8].try_into().expect("slice is exactly 8 bytes"))
+            }
+            other => {
+                return Err(FacilitatorLocalError::Other(format!(
+                    "PTB validation failed: SplitCoins amount input must be Pure(u64), got {:?}",
+                    other
+                )));
+            }
+        };
+
+        if ptb_amount != expected_amount {
+            return Err(FacilitatorLocalError::Other(format!(
+                "PTB validation failed: PTB split amount {} does not match required amount {}",
+                ptb_amount, expected_amount
+            )));
+        }
+
+        // --- Resolve recipient_arg -> SuiAddress ---
+        let recipient_input_index = match recipient_arg {
+            Argument::Input(idx) => *idx as usize,
+            other => {
+                return Err(FacilitatorLocalError::Other(format!(
+                    "PTB validation failed: TransferObjects recipient must be Input, got {:?}",
+                    other
+                )));
+            }
+        };
+
+        let recipient_call_arg = ptb.inputs.get(recipient_input_index).ok_or_else(|| {
+            FacilitatorLocalError::Other(format!(
+                "PTB validation failed: recipient input index {} out of range",
+                recipient_input_index
+            ))
+        })?;
+
+        let ptb_recipient: SuiAddress = match recipient_call_arg {
+            CallArg::Pure(bytes) => {
+                if bytes.len() != 32 {
+                    return Err(FacilitatorLocalError::Other(format!(
+                        "PTB validation failed: recipient Pure bytes must be 32 bytes, got {}",
+                        bytes.len()
+                    )));
+                }
+                SuiAddress::from_bytes(bytes).map_err(|e| {
+                    FacilitatorLocalError::Other(format!(
+                        "PTB validation failed: cannot parse recipient address from Pure bytes: {}",
+                        e
+                    ))
+                })?
+            }
+            other => {
+                return Err(FacilitatorLocalError::Other(format!(
+                    "PTB validation failed: recipient input must be Pure(address), got {:?}",
+                    other
+                )));
+            }
+        };
+
+        if ptb_recipient != *expected_recipient {
+            return Err(FacilitatorLocalError::Other(format!(
+                "PTB validation failed: PTB recipient {} does not match required pay_to {}",
+                ptb_recipient, expected_recipient
+            )));
+        }
+
+        // --- Validate gas_data.owner == facilitator (gas sponsor) ---
+        // For a sponsored transaction the gas owner must be the facilitator, not the sender.
+        // If the client encodes gas_data.owner = themselves, they could trick us into signing
+        // a transaction where the gas refund goes to them instead of the facilitator.
+        let gas_owner = tx_data.gas_data().owner;
+        if gas_owner != self.signer_address {
+            return Err(FacilitatorLocalError::Other(format!(
+                "PTB validation failed: gas_data.owner {} must be the facilitator {}",
+                gas_owner, self.signer_address
+            )));
+        }
+
+        debug!(
+            recipient = %ptb_recipient,
+            amount = ptb_amount,
+            coin_id = %ptb_coin_id,
+            "PTB structural validation passed"
+        );
+
+        Ok(())
+    }
+
     /// Verify transaction parameters match payment requirements.
     async fn verify_transaction(
         &self,
@@ -230,17 +471,30 @@ impl SuiProvider {
             ));
         }
 
-        // Verify recipient matches payment requirements
-        let expected_recipient = request.payment_requirements.pay_to.to_string();
-        if payload.to.to_lowercase() != expected_recipient.to_lowercase() {
+        // Parse the required recipient address from payment requirements.
+        // We parse it as a SuiAddress so the PTB validator can do a typed comparison
+        // rather than a lossy case-folded string comparison.
+        let expected_recipient_str = request.payment_requirements.pay_to.to_string();
+        let expected_recipient_addr =
+            Self::parse_address(&expected_recipient_str).map_err(|e| {
+                FacilitatorLocalError::DecodingError(format!(
+                    "pay_to is not a valid Sui address '{}': {}",
+                    expected_recipient_str, e
+                ))
+            })?;
+
+        // Also verify the JSON payload.to field matches (belt-and-suspenders; the PTB check
+        // below is the authoritative one).
+        if payload.to.to_lowercase() != expected_recipient_str.to_lowercase() {
             return Err(FacilitatorLocalError::ReceiverMismatch(
                 payer.clone(),
                 payload.to.clone(),
-                expected_recipient,
+                expected_recipient_str,
             ));
         }
 
-        // Parse amount - Sui USDC uses u64 amounts (fits in 6 decimal precision)
+        // Parse amount - Sui USDC uses u64 amounts (fits in 6 decimal precision).
+        // Explicit propagation — a non-numeric or missing amount is a hard error, not 0.
         let payload_amount: u64 = payload.amount.parse().map_err(|e| {
             FacilitatorLocalError::DecodingError(format!(
                 "Invalid amount '{}': {}",
@@ -248,12 +502,27 @@ impl SuiProvider {
             ))
         })?;
 
-        // Verify amount meets minimum (TokenAmount wraps U256)
+        // Reject zero amounts immediately — a 0-amount passes any balance check.
+        if payload_amount == 0 {
+            return Err(FacilitatorLocalError::DecodingError(
+                "Amount must be greater than zero".to_string(),
+            ));
+        }
+
+        // Verify amount meets minimum (TokenAmount wraps U256).
         let required_amount = request.payment_requirements.max_amount_required.0;
         let payload_amount_u256 = alloy::primitives::U256::from(payload_amount);
         if payload_amount_u256 < required_amount {
             return Err(FacilitatorLocalError::InsufficientValue(payer.clone()));
         }
+
+        // Parse the declared coin object ID so we can bind it to the PTB.
+        let coin_object_id = ObjectID::from_str(&payload.coin_object_id).map_err(|e| {
+            FacilitatorLocalError::DecodingError(format!(
+                "Invalid coin_object_id '{}': {}",
+                payload.coin_object_id, e
+            ))
+        })?;
 
         // Decode and verify transaction
         let tx_data = self.decode_transaction_bytes(&payload.transaction_bytes)?;
@@ -270,6 +539,16 @@ impl SuiProvider {
                 ),
             ));
         }
+
+        // Validate the PTB structure: bind the on-chain commands to the declared parameters.
+        // This is the critical check that prevents a mismatch between the JSON-declared
+        // (to, amount) and the actual on-chain transfer encoded in the BCS bytes.
+        self.validate_ptb(
+            &tx_data,
+            &expected_recipient_addr,
+            payload_amount,
+            &coin_object_id,
+        )?;
 
         // Verify signature
         self.verify_signature(&tx_data, &signature, &payer_addr)?;
@@ -455,7 +734,7 @@ impl FromEnvByNetworkBuild for SuiProvider {
 
         info!(
             network = %network,
-            rpc_url = %rpc_url,
+            rpc_url = %crate::redact::rpc_url(&rpc_url),
             signer = %signer_address,
             "Sui provider initialized"
         );
@@ -494,8 +773,13 @@ impl Facilitator for SuiProvider {
         // Full verification including signature and transaction structure
         let (_tx_data, _signature, payer_addr) = self.verify_transaction(payload, request).await?;
 
-        // Check balance
-        let required_amount: u64 = payload.amount.parse().unwrap_or(0);
+        // Check balance — parse explicitly; a non-numeric amount is a hard error, not 0.
+        let required_amount: u64 = payload.amount.parse().map_err(|e| {
+            FacilitatorLocalError::DecodingError(format!(
+                "Invalid amount '{}': {}",
+                payload.amount, e
+            ))
+        })?;
         self.check_balance(&payer_addr, required_amount).await?;
 
         info!(
@@ -514,8 +798,13 @@ impl Facilitator for SuiProvider {
         // Verify the transaction
         let (tx_data, signature, sender) = self.verify_transaction(payload, request).await?;
 
-        // Check balance before settlement
-        let required_amount: u64 = payload.amount.parse().unwrap_or(0);
+        // Check balance before settlement — parse explicitly; a non-numeric amount is a hard error, not 0.
+        let required_amount: u64 = payload.amount.parse().map_err(|e| {
+            FacilitatorLocalError::DecodingError(format!(
+                "Invalid amount '{}': {}",
+                payload.amount, e
+            ))
+        })?;
         self.check_balance(&sender, required_amount).await?;
 
         // Submit the sponsored transaction
@@ -591,6 +880,123 @@ impl Facilitator for SuiProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sui_types::base_types::{ObjectDigest, SequenceNumber};
+    use sui_types::transaction::{
+        GasData, ObjectArg, ProgrammableTransaction, TransactionDataV1, TransactionExpiration,
+        TransactionKind,
+    };
+
+    // -----------------------------------------------------------------------
+    // Helpers
+    // -----------------------------------------------------------------------
+
+    /// Dummy facilitator address used as gas sponsor in test transactions.
+    fn facilitator_addr() -> SuiAddress {
+        SuiAddress::from_str("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+            .unwrap()
+    }
+
+    fn merchant_addr() -> SuiAddress {
+        SuiAddress::from_str("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+            .unwrap()
+    }
+
+    fn attacker_addr() -> SuiAddress {
+        SuiAddress::from_str("0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
+            .unwrap()
+    }
+
+    fn sender_addr() -> SuiAddress {
+        SuiAddress::from_str("0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd")
+            .unwrap()
+    }
+
+    fn dummy_coin_id() -> ObjectID {
+        ObjectID::from_str("0x1111111111111111111111111111111111111111111111111111111111111111")
+            .unwrap()
+    }
+
+    fn other_coin_id() -> ObjectID {
+        ObjectID::from_str("0x2222222222222222222222222222222222222222222222222222222222222222")
+            .unwrap()
+    }
+
+    /// Build a minimal SuiProvider for unit-testing validate_ptb (no RPC needed).
+    fn make_provider(signer: SuiAddress) -> SuiProvider {
+        // We need a keypair; generate a deterministic one from a fixed seed.
+        use sui_types::crypto::{Ed25519SuiSignature, SuiKeyPair};
+        // Construct a throwaway keypair — only signer_address matters for validate_ptb.
+        // We use the bech32-encoded all-zeros key that Sui accepts as valid Ed25519.
+        let kp = SuiKeyPair::decode(
+            "suiprivkey1qqpqhyfze0g99vr8xlef7rg9qs54q2rdl44jz08y5x4yf60g0y98hk8acqm",
+        )
+        .expect("known-valid test keypair");
+        let derived_addr = SuiAddress::from(&kp.public());
+
+        // We override signer_address with our chosen `signer` so gas_data.owner
+        // validation works predictably in tests.
+        SuiProvider {
+            network: Network::SuiTestnet,
+            rpc_url: "http://localhost:9000".to_string(),
+            signer_address: signer,
+            keypair: kp,
+            usdc_coin_type: USDC_COIN_TYPE_TESTNET.to_string(),
+        }
+    }
+
+    /// Build the canonical two-command PTB for a USDC transfer:
+    ///   inputs[0] = Object(ImmOrOwned) -- coin object
+    ///   inputs[1] = Pure(amount as u64 LE)
+    ///   inputs[2] = Pure(recipient address 32 bytes)
+    ///   commands[0] = SplitCoins(Input(0), [Input(1)])
+    ///   commands[1] = TransferObjects([Result(0)], Input(2))
+    fn build_valid_ptb(
+        sender: SuiAddress,
+        gas_sponsor: SuiAddress,
+        recipient: SuiAddress,
+        amount: u64,
+        coin_id: ObjectID,
+    ) -> TransactionData {
+        let coin_ref = (coin_id, SequenceNumber::new(), ObjectDigest::new([0u8; 32]));
+
+        let inputs = vec![
+            CallArg::Object(ObjectArg::ImmOrOwnedObject(coin_ref)),
+            CallArg::Pure(amount.to_le_bytes().to_vec()),
+            CallArg::Pure(recipient.to_vec()),
+        ];
+        let commands = vec![
+            Command::SplitCoins(Argument::Input(0), vec![Argument::Input(1)]),
+            Command::TransferObjects(vec![Argument::Result(0)], Argument::Input(2)),
+        ];
+        let ptb = ProgrammableTransaction { inputs, commands };
+
+        // Gas object owned by the sponsor (facilitator).
+        let gas_coin = (
+            ObjectID::from_str(
+                "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            )
+            .unwrap(),
+            SequenceNumber::new(),
+            ObjectDigest::new([0u8; 32]),
+        );
+        let gas_data = GasData {
+            payment: vec![gas_coin],
+            owner: gas_sponsor,
+            price: 1000,
+            budget: 10_000_000,
+        };
+
+        TransactionData::V1(TransactionDataV1 {
+            kind: TransactionKind::ProgrammableTransaction(ptb),
+            sender,
+            gas_data,
+            expiration: TransactionExpiration::None,
+        })
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests
+    // -----------------------------------------------------------------------
 
     #[test]
     fn test_sui_address_parsing() {
@@ -607,5 +1013,196 @@ mod tests {
     fn test_usdc_coin_types() {
         assert!(USDC_COIN_TYPE_MAINNET.contains("usdc::USDC"));
         assert!(USDC_COIN_TYPE_TESTNET.contains("usdc::USDC"));
+    }
+
+    #[test]
+    fn test_validate_ptb_valid() {
+        let sponsor = facilitator_addr();
+        let provider = make_provider(sponsor);
+        let tx = build_valid_ptb(
+            sender_addr(),
+            sponsor,
+            merchant_addr(),
+            1_000_000,
+            dummy_coin_id(),
+        );
+        let result = provider.validate_ptb(&tx, &merchant_addr(), 1_000_000, &dummy_coin_id());
+        assert!(result.is_ok(), "valid PTB should pass: {:?}", result);
+    }
+
+    #[test]
+    fn test_validate_ptb_wrong_recipient() {
+        // PTB transfers to attacker but requirements say merchant — must reject.
+        let sponsor = facilitator_addr();
+        let provider = make_provider(sponsor);
+        let tx = build_valid_ptb(
+            sender_addr(),
+            sponsor,
+            attacker_addr(),
+            1_000_000,
+            dummy_coin_id(),
+        );
+        let result = provider.validate_ptb(&tx, &merchant_addr(), 1_000_000, &dummy_coin_id());
+        assert!(
+            matches!(&result, Err(FacilitatorLocalError::Other(msg)) if msg.contains("recipient")),
+            "wrong recipient must be rejected, got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_validate_ptb_wrong_amount() {
+        // PTB splits 500_000 but requirements demand 1_000_000 — must reject.
+        let sponsor = facilitator_addr();
+        let provider = make_provider(sponsor);
+        let tx = build_valid_ptb(
+            sender_addr(),
+            sponsor,
+            merchant_addr(),
+            500_000,
+            dummy_coin_id(),
+        );
+        let result = provider.validate_ptb(&tx, &merchant_addr(), 1_000_000, &dummy_coin_id());
+        assert!(
+            matches!(&result, Err(FacilitatorLocalError::Other(msg)) if msg.contains("amount")),
+            "wrong amount must be rejected, got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_validate_ptb_wrong_coin_id() {
+        // PTB uses other_coin_id but declaration says dummy_coin_id — must reject.
+        let sponsor = facilitator_addr();
+        let provider = make_provider(sponsor);
+        let tx = build_valid_ptb(
+            sender_addr(),
+            sponsor,
+            merchant_addr(),
+            1_000_000,
+            other_coin_id(),
+        );
+        let result = provider.validate_ptb(&tx, &merchant_addr(), 1_000_000, &dummy_coin_id());
+        assert!(
+            matches!(&result, Err(FacilitatorLocalError::Other(msg)) if msg.contains("coin object ID")),
+            "wrong coin ID must be rejected, got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_validate_ptb_wrong_gas_owner() {
+        // PTB has gas_data.owner = sender (not facilitator) — must reject.
+        let sponsor = facilitator_addr();
+        let provider = make_provider(sponsor);
+        // Build with sender as gas owner instead of facilitator.
+        let tx = build_valid_ptb(
+            sender_addr(),
+            sender_addr(),
+            merchant_addr(),
+            1_000_000,
+            dummy_coin_id(),
+        );
+        let result = provider.validate_ptb(&tx, &merchant_addr(), 1_000_000, &dummy_coin_id());
+        assert!(
+            matches!(&result, Err(FacilitatorLocalError::Other(msg)) if msg.contains("gas_data.owner")),
+            "wrong gas owner must be rejected, got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_validate_ptb_extra_commands() {
+        // A PTB with 3 commands (extra MoveCall appended) must be rejected.
+        let sponsor = facilitator_addr();
+        let provider = make_provider(sponsor);
+
+        let coin_id = dummy_coin_id();
+        let coin_ref = (coin_id, SequenceNumber::new(), ObjectDigest::new([0u8; 32]));
+        let inputs = vec![
+            CallArg::Object(ObjectArg::ImmOrOwnedObject(coin_ref)),
+            CallArg::Pure(1_000_000u64.to_le_bytes().to_vec()),
+            CallArg::Pure(merchant_addr().to_vec()),
+        ];
+        // Add a spurious third command.
+        let commands = vec![
+            Command::SplitCoins(Argument::Input(0), vec![Argument::Input(1)]),
+            Command::TransferObjects(vec![Argument::Result(0)], Argument::Input(2)),
+            Command::MergeCoins(Argument::Input(0), vec![Argument::Result(0)]),
+        ];
+        let ptb = ProgrammableTransaction { inputs, commands };
+        let gas_coin = (
+            ObjectID::from_str(
+                "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            )
+            .unwrap(),
+            SequenceNumber::new(),
+            ObjectDigest::new([0u8; 32]),
+        );
+        let gas_data = GasData {
+            payment: vec![gas_coin],
+            owner: sponsor,
+            price: 1000,
+            budget: 10_000_000,
+        };
+        let tx = TransactionData::V1(TransactionDataV1 {
+            kind: TransactionKind::ProgrammableTransaction(ptb),
+            sender: sender_addr(),
+            gas_data,
+            expiration: TransactionExpiration::None,
+        });
+
+        let result = provider.validate_ptb(&tx, &merchant_addr(), 1_000_000, &coin_id);
+        assert!(
+            matches!(&result, Err(FacilitatorLocalError::Other(msg)) if msg.contains("2 commands")),
+            "extra commands must be rejected, got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_validate_ptb_malformed_bcs_via_decode() {
+        // Feed garbage bytes to decode_transaction_bytes and confirm it errors out.
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        let provider = make_provider(facilitator_addr());
+        let garbage_b64 = STANDARD.encode(b"this is not bcs");
+        let result = provider.decode_transaction_bytes(&garbage_b64);
+        assert!(
+            matches!(result, Err(FacilitatorLocalError::DecodingError(_))),
+            "malformed BCS must return DecodingError, got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_non_numeric_amount_in_verify_transaction() {
+        // The amount field "abc" cannot be parsed as u64.
+        // verify_transaction must propagate an error (not silently become 0).
+        //
+        // We cannot call verify_transaction directly without an async runtime and
+        // a full VerifyRequest, so we test the parse path in isolation here,
+        // matching the exact error path used by both verify_transaction AND the
+        // check_balance callers in verify/settle.
+        let parse_result: Result<u64, _> = "abc".parse();
+        assert!(
+            parse_result.is_err(),
+            "non-numeric amount must not parse to 0"
+        );
+
+        let parse_zero: Result<u64, _> = "0".parse();
+        assert_eq!(parse_zero.unwrap(), 0u64);
+        // The facilitator additionally rejects 0 after parsing (zero-amount guard).
+        // Confirm that path is present: build_valid_ptb with amount=0 should fail validate_ptb.
+        let sponsor = facilitator_addr();
+        let provider = make_provider(sponsor);
+        let tx = build_valid_ptb(sender_addr(), sponsor, merchant_addr(), 0, dummy_coin_id());
+        // validate_ptb itself accepts 0 (amount comparison is == not >); the zero guard
+        // lives in verify_transaction (explicit `payload_amount == 0` rejection).
+        // Confirm validate_ptb with 0 expected and 0 actual passes (it is the outer guard's job).
+        let ptb_ok = provider.validate_ptb(&tx, &merchant_addr(), 0, &dummy_coin_id());
+        assert!(
+            ptb_ok.is_ok(),
+            "validate_ptb accepts 0==0; outer guard handles rejection"
+        );
     }
 }

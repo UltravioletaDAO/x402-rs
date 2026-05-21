@@ -41,23 +41,31 @@ pub mod create3 {
     pub const PROTOCOL_FEE_CONFIG: Address = address!("f62788834C99B2E85a6891C0b46D1EB996f8f596");
 
     // Factories
-    pub const FACTORY_PAYMENT_OPERATOR: Address = address!("3Cd5c76Fefe46CB07788Ee8f80B93B20D81941D4");
-    pub const FACTORY_REFUND_REQUEST: Address = address!("69e9BF2b40Ed472b55E47e9D4205d93Ed673093F");
-    pub const FACTORY_REFUND_REQUEST_EVIDENCE: Address = address!("6514e417f48c1828A2443C6173fa6E04324166E3");
+    pub const FACTORY_PAYMENT_OPERATOR: Address =
+        address!("3Cd5c76Fefe46CB07788Ee8f80B93B20D81941D4");
+    pub const FACTORY_REFUND_REQUEST: Address =
+        address!("69e9BF2b40Ed472b55E47e9D4205d93Ed673093F");
+    pub const FACTORY_REFUND_REQUEST_EVIDENCE: Address =
+        address!("6514e417f48c1828A2443C6173fa6E04324166E3");
     pub const FACTORY_ESCROW_PERIOD: Address = address!("22E42a1bC9Fc64ab77E4Bb9968b105034a978bfb");
     pub const FACTORY_FREEZE: Address = address!("67657BefCd872A3AF36F437D53b2D4722392a940");
-    pub const FACTORY_STATIC_FEE_CALCULATOR: Address = address!("8a9C93F3401A5C712bEd8A52436Ac09cD9aFe2De");
-    pub const FACTORY_STATIC_ADDRESS_CONDITION: Address = address!("E606cA9568c92115a3Deb76E9f3891BEfac141f3");
+    pub const FACTORY_STATIC_FEE_CALCULATOR: Address =
+        address!("8a9C93F3401A5C712bEd8A52436Ac09cD9aFe2De");
+    pub const FACTORY_STATIC_ADDRESS_CONDITION: Address =
+        address!("E606cA9568c92115a3Deb76E9f3891BEfac141f3");
     pub const FACTORY_AND_CONDITION: Address = address!("6c3c57071C0Ac144D04e6C66BC809d2951dDF47D");
     pub const FACTORY_OR_CONDITION: Address = address!("3dF6b5B840989Ce466161C31A49b8FadF2DA52E5");
     pub const FACTORY_NOT_CONDITION: Address = address!("269Db5f049A7225E4968Ef7Dee885922da0B8D73");
-    pub const FACTORY_RECORDER_COMBINATOR: Address = address!("b7571b80C24Ce81C65F6b322a75573B61327cA23");
-    pub const FACTORY_SIGNATURE_CONDITION: Address = address!("c34EFa7C20940dc2aB50bE23eF150D8B87aEFAc3");
+    pub const FACTORY_RECORDER_COMBINATOR: Address =
+        address!("b7571b80C24Ce81C65F6b322a75573B61327cA23");
+    pub const FACTORY_SIGNATURE_CONDITION: Address =
+        address!("c34EFa7C20940dc2aB50bE23eF150D8B87aEFAc3");
 
     // Singletons
     pub const USDC_TVL_LIMIT: Address = address!("96a585F0e23eE9FD8722C7a61d3b8B3FAd2419df");
     pub const ARBITER_REGISTRY: Address = address!("dd3954f83CF6D65B07A8a88B117300AE73602333");
-    pub const RECEIVER_REFUND_COLLECTOR: Address = address!("2C0eC8B33196071cA6d08299844235fD81e1466A");
+    pub const RECEIVER_REFUND_COLLECTOR: Address =
+        address!("2C0eC8B33196071cA6d08299844235fD81e1466A");
 
     // Condition singletons
     pub const CONDITION_PAYER: Address = address!("808bB293AE1473A38Dd4017afa3db941924fD0F3");
@@ -313,9 +321,7 @@ impl OperatorAddresses {
             Network::BaseSepolia => Some(Self {
                 escrow: base_sepolia::ESCROW,
                 factory: base_sepolia::FACTORY,
-                payment_operators: vec![
-                    address!("7D092ec506B3D43EB87846F9c9739303785D7B2f"),
-                ],
+                payment_operators: vec![address!("7D092ec506B3D43EB87846F9c9739303785D7B2f")],
                 token_collector: base_sepolia::TOKEN_COLLECTOR,
                 protocol_fee_config: base_sepolia::PROTOCOL_FEE_CONFIG,
                 refund_request: base_sepolia::REFUND_REQUEST,
@@ -323,9 +329,7 @@ impl OperatorAddresses {
             Network::EthereumSepolia => Some(Self {
                 escrow: ethereum_sepolia::ESCROW,
                 factory: ethereum_sepolia::FACTORY,
-                payment_operators: vec![
-                    address!("a8d2432C7ab8bA551feC15e09b64F44505e72b36"),
-                ],
+                payment_operators: vec![address!("a8d2432C7ab8bA551feC15e09b64F44505e72b36")],
                 token_collector: ethereum_sepolia::TOKEN_COLLECTOR,
                 protocol_fee_config: ethereum_sepolia::PROTOCOL_FEE_CONFIG,
                 refund_request: ethereum_sepolia::REFUND_REQUEST,
@@ -346,9 +350,7 @@ impl OperatorAddresses {
             Network::Ethereum => Some(Self {
                 escrow: ethereum_mainnet::ESCROW,
                 factory: ethereum_mainnet::FACTORY,
-                payment_operators: vec![
-                    address!("69B67962ffb7c5C7078ff348a87DF604dfA8001b"),
-                ],
+                payment_operators: vec![address!("69B67962ffb7c5C7078ff348a87DF604dfA8001b")],
                 token_collector: ethereum_mainnet::TOKEN_COLLECTOR,
                 protocol_fee_config: ethereum_mainnet::PROTOCOL_FEE_CONFIG,
                 refund_request: ethereum_mainnet::REFUND_REQUEST,
@@ -356,9 +358,7 @@ impl OperatorAddresses {
             Network::Polygon => Some(Self {
                 escrow: polygon::ESCROW,
                 factory: polygon::FACTORY,
-                payment_operators: vec![
-                    address!("B87F1ECC85f074e50df3DD16A1F40e4e1EC4102e"),
-                ],
+                payment_operators: vec![address!("B87F1ECC85f074e50df3DD16A1F40e4e1EC4102e")],
                 token_collector: polygon::TOKEN_COLLECTOR,
                 protocol_fee_config: polygon::PROTOCOL_FEE_CONFIG,
                 refund_request: polygon::REFUND_REQUEST,
@@ -366,9 +366,7 @@ impl OperatorAddresses {
             Network::Arbitrum => Some(Self {
                 escrow: arbitrum::ESCROW,
                 factory: arbitrum::FACTORY,
-                payment_operators: vec![
-                    address!("C2377a9Db1de2520BD6b2756eD012f4E82F7938e"),
-                ],
+                payment_operators: vec![address!("C2377a9Db1de2520BD6b2756eD012f4E82F7938e")],
                 token_collector: arbitrum::TOKEN_COLLECTOR,
                 protocol_fee_config: arbitrum::PROTOCOL_FEE_CONFIG,
                 refund_request: arbitrum::REFUND_REQUEST,
@@ -376,9 +374,7 @@ impl OperatorAddresses {
             Network::Celo => Some(Self {
                 escrow: celo::ESCROW,
                 factory: celo::FACTORY,
-                payment_operators: vec![
-                    address!("C2377a9Db1de2520BD6b2756eD012f4E82F7938e"),
-                ],
+                payment_operators: vec![address!("C2377a9Db1de2520BD6b2756eD012f4E82F7938e")],
                 token_collector: celo::TOKEN_COLLECTOR,
                 protocol_fee_config: celo::PROTOCOL_FEE_CONFIG,
                 refund_request: celo::REFUND_REQUEST,
@@ -386,9 +382,7 @@ impl OperatorAddresses {
             Network::Monad => Some(Self {
                 escrow: monad::ESCROW,
                 factory: monad::FACTORY,
-                payment_operators: vec![
-                    address!("9620Dbe2BB549E1d080Dc8e7982623A9e1Df8cC3"),
-                ],
+                payment_operators: vec![address!("9620Dbe2BB549E1d080Dc8e7982623A9e1Df8cC3")],
                 token_collector: monad::TOKEN_COLLECTOR,
                 protocol_fee_config: monad::PROTOCOL_FEE_CONFIG,
                 refund_request: monad::REFUND_REQUEST,
@@ -396,9 +390,7 @@ impl OperatorAddresses {
             Network::Avalanche => Some(Self {
                 escrow: avalanche::ESCROW,
                 factory: avalanche::FACTORY,
-                payment_operators: vec![
-                    address!("C2377a9Db1de2520BD6b2756eD012f4E82F7938e"),
-                ],
+                payment_operators: vec![address!("C2377a9Db1de2520BD6b2756eD012f4E82F7938e")],
                 token_collector: avalanche::TOKEN_COLLECTOR,
                 protocol_fee_config: avalanche::PROTOCOL_FEE_CONFIG,
                 refund_request: avalanche::REFUND_REQUEST,
@@ -406,9 +398,7 @@ impl OperatorAddresses {
             Network::Optimism => Some(Self {
                 escrow: optimism::ESCROW,
                 factory: optimism::FACTORY,
-                payment_operators: vec![
-                    address!("C2377a9Db1de2520BD6b2756eD012f4E82F7938e"),
-                ],
+                payment_operators: vec![address!("C2377a9Db1de2520BD6b2756eD012f4E82F7938e")],
                 token_collector: optimism::TOKEN_COLLECTOR,
                 protocol_fee_config: optimism::PROTOCOL_FEE_CONFIG,
                 refund_request: optimism::REFUND_REQUEST,

@@ -604,6 +604,21 @@ impl DiscoveryRegistry {
             )));
         }
 
+        // SSRF guard: reject IP-literal hosts in private / link-local / loopback
+        // address ranges. The classic case is `169.254.169.254` (AWS instance
+        // metadata) — anyone able to convince the facilitator to fetch from
+        // that host can read EC2/Fargate credentials. Domain-name hosts pass
+        // this gate; the secondary DNS-resolution gate happens at fetch time.
+        if let Some(host) = resource.url.host_str() {
+            if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+                if is_disallowed_target_ip(&ip) {
+                    return Err(DiscoveryError::InvalidUrl(format!(
+                        "URL host {ip} resolves to a non-routable, private, or link-local address"
+                    )));
+                }
+            }
+        }
+
         // Validate resource type
         // "facilitator" is a special type for x402 payment facilitator services
         let valid_types = ["http", "mcp", "a2a", "facilitator"];
@@ -619,6 +634,90 @@ impl DiscoveryRegistry {
         }
 
         Ok(())
+    }
+}
+
+/// Return `true` if the given IP must never be the target of an outbound
+/// request originated from the facilitator. Covers:
+/// - Loopback (127/8, ::1)
+/// - Unspecified (0.0.0.0, ::)
+/// - Private (RFC1918, IPv6 unique local fc00::/7)
+/// - Link-local (169.254/16 — includes AWS metadata — and fe80::/10)
+/// - Carrier-grade NAT (100.64/10)
+/// - Benchmark (198.18/15)
+/// - Multicast and reserved
+///
+/// Used by [`DiscoveryRegistry::validate_resource`] to block SSRF against
+/// instance metadata and internal services.
+fn is_disallowed_target_ip(ip: &std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            if v4.is_loopback() || v4.is_unspecified() || v4.is_broadcast() || v4.is_multicast() {
+                return true;
+            }
+            // RFC1918
+            if o[0] == 10 {
+                return true;
+            }
+            if o[0] == 172 && (16..=31).contains(&o[1]) {
+                return true;
+            }
+            if o[0] == 192 && o[1] == 168 {
+                return true;
+            }
+            // Link-local (includes AWS / GCP instance metadata 169.254.169.254)
+            if o[0] == 169 && o[1] == 254 {
+                return true;
+            }
+            // Carrier-grade NAT
+            if o[0] == 100 && (64..=127).contains(&o[1]) {
+                return true;
+            }
+            // Benchmark / network testing
+            if o[0] == 198 && (o[1] == 18 || o[1] == 19) {
+                return true;
+            }
+            // Reserved 192.0.0.0/24 (IETF protocol assignments)
+            if o[0] == 192 && o[1] == 0 && o[2] == 0 {
+                return true;
+            }
+            // Documentation (192.0.2/24, 198.51.100/24, 203.0.113/24)
+            if o[0] == 192 && o[1] == 0 && o[2] == 2 {
+                return true;
+            }
+            if o[0] == 198 && o[1] == 51 && o[2] == 100 {
+                return true;
+            }
+            if o[0] == 203 && o[1] == 0 && o[2] == 113 {
+                return true;
+            }
+            // 0.0.0.0/8 reserved
+            if o[0] == 0 {
+                return true;
+            }
+            false
+        }
+        IpAddr::V6(v6) => {
+            if v6.is_loopback() || v6.is_unspecified() || v6.is_multicast() {
+                return true;
+            }
+            // Unique local fc00::/7
+            let segs = v6.segments();
+            if (segs[0] & 0xfe00) == 0xfc00 {
+                return true;
+            }
+            // Link-local fe80::/10
+            if (segs[0] & 0xffc0) == 0xfe80 {
+                return true;
+            }
+            // IPv4-mapped: extract embedded v4 and re-check
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_disallowed_target_ip(&IpAddr::V4(v4));
+            }
+            false
+        }
     }
 }
 

@@ -4,17 +4,18 @@
 //! - `verify_upto()` - Validates a Permit2 payment authorization (off-chain + on-chain simulation)
 //! - `settle_upto()` - Settles a payment for the actual amount used (<= authorized max)
 
+use alloy::network::TransactionBuilder as _;
 use alloy::primitives::{Address, Bytes, U256};
 use alloy::providers::{Provider, WalletProvider};
 use alloy::rpc::types::TransactionRequest;
 use alloy::sol_types::SolCall;
-use alloy::network::TransactionBuilder as _;
 use tracing::{debug, info, instrument, warn};
 
 use crate::chain::evm::{EvmProvider, MetaEvmProvider, MetaTransaction};
 use crate::chain::NetworkProvider;
-use crate::network::Network;
+use crate::network::{is_supported_asset, Network};
 use crate::provider_cache::{HasProviderMap, ProviderMap};
+use crate::types::MixedAddress;
 
 use super::abi;
 use super::errors::UptoError;
@@ -93,10 +94,7 @@ where
 ///
 /// If the actual amount is zero, no on-chain transaction is submitted.
 #[instrument(skip_all, err)]
-pub async fn settle_upto<F>(
-    body: &str,
-    facilitator: &F,
-) -> Result<UptoSettleResponse, UptoError>
+pub async fn settle_upto<F>(body: &str, facilitator: &F) -> Result<UptoSettleResponse, UptoError>
 where
     F: HasProviderMap,
     F::Map: ProviderMap<Value = NetworkProvider>,
@@ -206,6 +204,28 @@ fn validate_offchain(request: &UptoRequest) -> Result<(), UptoError> {
             "asset mismatch: accepted={}, requirements={}",
             accepted.asset, requirements.asset
         )));
+    }
+
+    // B6: strict asset allow-list. UPTO is Permit2 + EVM, so the network must
+    // resolve to a known EVM Network and the asset must match a deployment
+    // listed in `src/network.rs`. Refuses arbitrary ERC-20s before any RPC
+    // call so a hostile UPTO payload cannot trick the facilitator into
+    // settling against a token we did not pre-approve.
+    {
+        let network_enum = Network::from_caip2(&accepted.network).ok_or_else(|| {
+            UptoError::InvalidPayload(format!(
+                "unsupported_asset: unknown network {}",
+                accepted.network
+            ))
+        })?;
+        let asset_addr = parse_address(&accepted.asset)?;
+        let asset_mixed: MixedAddress = asset_addr.into();
+        if !is_supported_asset(network_enum, &asset_mixed) {
+            return Err(UptoError::InvalidPayload(format!(
+                "unsupported_asset: network={}, asset={}",
+                accepted.network, accepted.asset
+            )));
+        }
     }
 
     // Spender must be the UPTO_PERMIT2_PROXY_ADDRESS
@@ -345,14 +365,10 @@ async fn simulate_settlement(
 
     let tx = tx.with_from(from);
 
-    provider
-        .inner()
-        .call(tx)
-        .await
-        .map_err(|e| {
-            warn!(error = %e, "Upto settlement simulation failed");
-            UptoError::VerificationFailed(format!("settlement simulation reverted: {e}"))
-        })?;
+    provider.inner().call(tx).await.map_err(|e| {
+        warn!(error = %e, "Upto settlement simulation failed");
+        UptoError::VerificationFailed(format!("settlement simulation reverted: {e}"))
+    })?;
 
     debug!("Settlement simulation passed");
     Ok(())
@@ -397,10 +413,7 @@ async fn execute_settlement(
 // ============================================================================
 
 /// Build the `settle()` calldata for the X402UptoPermit2Proxy contract.
-fn build_settle_call(
-    request: &UptoRequest,
-    amount: U256,
-) -> Result<abi::settleCall, UptoError> {
+fn build_settle_call(request: &UptoRequest, amount: U256) -> Result<abi::settleCall, UptoError> {
     let permit2_auth = &request.payment_payload.payload.permit_2_authorization;
 
     // Parse all fields

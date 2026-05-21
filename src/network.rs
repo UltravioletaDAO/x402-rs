@@ -1885,6 +1885,50 @@ pub fn supported_networks_for_token(token_type: TokenType) -> Vec<Network> {
     }
 }
 
+/// Return the canonical asset addresses (MixedAddress) that the facilitator
+/// accepts on this network, aggregating all known stablecoin deployments
+/// (USDC, EURC, AUSD, PYUSD, USDT) from this module.
+///
+/// Used as the **strict allow-list** for asset validation in verify/settle:
+/// any `PaymentRequirements.asset` that is not in this list is rejected
+/// upfront, without touching the RPC layer. This closes the attack surface
+/// where an attacker submits an `asset` pointing at an arbitrary ERC-20
+/// (or SPL mint) that happens to expose a similarly-named function but
+/// drains funds or bypasses our verification logic.
+///
+/// Returns an empty `Vec` for ERC-8004-only networks (Hedera) where no
+/// stablecoin is deployed.
+pub fn supported_asset_addresses(network: Network) -> Vec<MixedAddress> {
+    let mut addrs: Vec<MixedAddress> = Vec::with_capacity(5);
+    if let Some(d) = USDCDeployment::by_network(network) {
+        addrs.push(d.0.asset.address.clone());
+    }
+    if let Some(d) = EURCDeployment::by_network(network) {
+        addrs.push(d.0.asset.address.clone());
+    }
+    if let Some(d) = AUSDDeployment::by_network(network) {
+        addrs.push(d.0.asset.address.clone());
+    }
+    if let Some(d) = PYUSDDeployment::by_network(network) {
+        addrs.push(d.0.asset.address.clone());
+    }
+    if let Some(d) = USDTDeployment::by_network(network) {
+        addrs.push(d.0.asset.address.clone());
+    }
+    addrs
+}
+
+/// Return `true` if `asset` is in the strict allow-list for `network`.
+///
+/// EVM addresses compare canonically (alloy `Address` is 20 raw bytes).
+/// Solana / NEAR / Stellar / Algorand / Sui compare on their string form,
+/// which is already canonical for each chain.
+pub fn is_supported_asset(network: Network, asset: &MixedAddress) -> bool {
+    supported_asset_addresses(network)
+        .iter()
+        .any(|allowed| allowed == asset)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1897,8 +1941,17 @@ mod tests {
 
     #[test]
     fn test_usdc_available_on_all_networks() {
-        // USDC should be available on all networks
+        // USDC should be available on all networks except ERC-8004-only networks (Hedera)
+        let erc8004_only = [Network::Hedera, Network::HederaTestnet];
         for network in Network::variants() {
+            if erc8004_only.contains(network) {
+                assert!(
+                    !is_token_supported(*network, TokenType::Usdc),
+                    "USDC should NOT be supported on ERC-8004-only network {:?}",
+                    network
+                );
+                continue;
+            }
             assert!(
                 is_token_supported(*network, TokenType::Usdc),
                 "USDC should be supported on {:?}",
@@ -1914,11 +1967,16 @@ mod tests {
 
     #[test]
     fn test_usdc_decimals() {
+        // Hedera has no USDC (ERC-8004 only), skip it
+        let skip = [Network::Hedera, Network::HederaTestnet];
         for network in Network::variants() {
+            if skip.contains(network) {
+                continue;
+            }
             let deployment = get_token_deployment(*network, TokenType::Usdc).unwrap();
-            // Most networks use 6 decimals, but Stellar uses 7
             let expected_decimals = match network {
                 Network::Stellar | Network::StellarTestnet => 7,
+                Network::Bsc => 18, // BSC USDC uses 18 decimals
                 _ => 6,
             };
             assert_eq!(

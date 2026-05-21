@@ -69,7 +69,8 @@ def main():
     if not evm_private_key or evm_private_key.startswith('0x0000'):
         print("⚠️  No valid EVM_PRIVATE_KEY found in .env file")
         print()
-        print("Current value:", evm_private_key[:20] + "..." if evm_private_key else "(empty)")
+        # Do NOT print any portion of the key — user is always on stream.
+        print("Current value:", "(set, but invalid placeholder)" if evm_private_key else "(empty)")
         print()
         print("Please either:")
         print("  1. Add your private key to x402-rs/.env as EVM_PRIVATE_KEY=0x...")

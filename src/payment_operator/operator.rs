@@ -243,11 +243,14 @@ where
             }))
         }
         Err(e) => {
-            warn!(error = %e, "Escrow verify: balance check failed, allowing anyway");
-            // If balance check fails (RPC error), still return valid
-            // The actual settlement will catch any issues
+            // B9 fail-closed: if the balance RPC call fails, we cannot prove the payer is solvent.
+            // Previously this returned isValid=true ("settle will catch any issues"), which let an
+            // attacker DoS the RPC to bypass the pre-check. The client should retry later.
+            let correlation_id = uuid::Uuid::new_v4();
+            tracing::error!(%correlation_id, error = %e, payer = ?payer, "Escrow verify: balance RPC failed, failing closed");
             Ok(serde_json::json!({
-                "isValid": true,
+                "isValid": false,
+                "invalidReason": format!("verification_unavailable (ref: {correlation_id})"),
                 "payer": format!("{}", payer)
             }))
         }

@@ -29,11 +29,26 @@ import os
 import sys
 import json
 import subprocess
+import tempfile
 from pathlib import Path
 from web3 import Web3
 from eth_account import Account
 import boto3
 from typing import Dict
+
+
+def _temp_wallet_path() -> Path:
+    """Return the secure ephemeral wallet path under the system tmp dir.
+
+    The wallet payload contains an unencrypted private key, so it must never
+    live under the repo root (where `git add -A` could capture it before
+    `--deploy` cleans it up). Namespacing by UID prevents collisions and other
+    users' read attempts on shared dev hosts; the file itself is then created
+    with mode 0o600 in `generate_new_wallet`.
+    """
+    tmp_dir = tempfile.gettempdir()
+    suffix = f"_{os.getuid()}" if hasattr(os, "getuid") else ""
+    return Path(tmp_dir) / f".facilitator_wallet{suffix}_temp.json"
 
 # ============================================================================
 # Configuration
@@ -327,10 +342,23 @@ def main():
         wallet = generate_new_wallet()
         display_funding_instructions(wallet['address'])
 
-        # Save to temporary file (gitignored)
-        temp_file = Path(__file__).parent.parent / '.facilitator_wallet_temp.json'
-        with open(temp_file, 'w') as f:
-            json.dump(wallet, f)
+        # Save to a 0o600 file under the system tmp dir, NOT the repo root.
+        # `git add -A` from another agent could otherwise sweep this file into
+        # a commit before --deploy gets a chance to delete it.
+        temp_file = _temp_wallet_path()
+        fd = os.open(str(temp_file), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            with os.fdopen(fd, 'w') as f:
+                json.dump(wallet, f)
+        except Exception:
+            # If the write failed, leave nothing on disk for an attacker to read.
+            try:
+                os.remove(temp_file)
+            except OSError:
+                pass
+            raise
+        # Defense in depth: re-apply 0o600 in case umask stripped the mode bits.
+        os.chmod(temp_file, 0o600)
 
         print(f"{Colors.OKGREEN}[OK] Wallet saved to: {temp_file}{Colors.ENDC}")
         print(f"{Colors.WARNING}!  NEXT STEP: Fund the wallet on all networks, then run:{Colors.ENDC}")
@@ -339,7 +367,7 @@ def main():
 
     # DEPLOY mode: Update AWS and redeploy
     if mode == 'deploy':
-        temp_file = Path(__file__).parent.parent / '.facilitator_wallet_temp.json'
+        temp_file = _temp_wallet_path()
 
         if not temp_file.exists():
             print(f"{Colors.FAIL}[X] No wallet found! Run --generate first.{Colors.ENDC}\n")
@@ -374,8 +402,12 @@ def main():
         # Verify
         verify_new_wallet(wallet['address'])
 
-        # Clean up temp file
-        temp_file.unlink()
+        # Clean up temp file. Use missing_ok=True so a partially-failed deploy
+        # that already deleted the file doesn't leak a noisy traceback.
+        try:
+            os.remove(temp_file)
+        except OSError:
+            pass
         print(f"{Colors.OKGREEN}[OK] Wallet rotation complete! Temporary file deleted.{Colors.ENDC}\n")
 
     # FULL mode: Do everything at once

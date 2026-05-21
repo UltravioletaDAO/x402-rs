@@ -61,9 +61,9 @@ variable "task_memory" {
 }
 
 variable "desired_count" {
-  description = "Desired number of tasks"
+  description = "Desired number of tasks. Default 2 spreads tasks across AZs so a single-AZ outage does not drop the service. Override to 1 only for dev/cost-saving (acknowledge the resilience tradeoff)."
   type        = number
-  default     = 1
+  default     = 2
 }
 
 variable "min_capacity" {
@@ -145,7 +145,7 @@ variable "ecr_repository_name" {
 }
 
 variable "image_tag" {
-  description = "Docker image tag"
+  description = "Docker image tag (required). Set explicitly in terraform.tfvars to avoid accidentally rolling forward to an unintended build. Removing the default also prevents 'latest'-style drift on apply."
   type        = string
-  default     = "v1.24.0"
+  # no default by design - must be set explicitly in tfvars
 }

@@ -49,13 +49,13 @@ variable "observability_task_memory" {
 }
 
 variable "otel_collector_image_tag" {
-  description = "Docker image tag for OTel Collector"
+  description = "Docker image tag for OTel Collector. Note: ECR repo is IMMUTABLE (F10) - pushing the same tag twice will fail. Use semver tags (v1.2.3) when enable_observability=true; 'latest' kept as default only because observability is off in production tfvars."
   type        = string
   default     = "latest"
 }
 
 variable "observability_image_tag" {
-  description = "Docker image tag for observability stack (prometheus, tempo, grafana)"
+  description = "Docker image tag for observability stack (prometheus, tempo, grafana). Same IMMUTABLE caveat as otel_collector_image_tag - use semver tags when enabling."
   type        = string
   default     = "latest"
 }
@@ -68,12 +68,22 @@ variable "observability_image_tag" {
 # ECR Repositories ($0 - images preserved across toggles)
 # ----------------------------------------------------------------------------
 
+# F10: ECR repositories are IMMUTABLE (tag cannot be overwritten) + scan_on_push (CVE detection).
+# IMMUTABLE prevents supply-chain attack via tag-rewrite (push a malicious image to v1.34.3,
+# subsequent deploys pull it). Operators must publish with a fresh tag every release.
+#
+# NOTE: the primary 'facilitator' ECR repo is NOT managed by Terraform (per CLAUDE.md it is
+# created out-of-band via `aws ecr create-repository`). To bring it in line manually:
+#   aws ecr put-image-scanning-configuration --repository-name facilitator \
+#     --image-scanning-configuration scanOnPush=true --region us-east-2
+#   aws ecr put-image-tag-mutability --repository-name facilitator \
+#     --image-tag-mutability IMMUTABLE --region us-east-2
 resource "aws_ecr_repository" "otel_collector" {
   name                 = "facilitator-otel-collector"
-  image_tag_mutability = "MUTABLE"
+  image_tag_mutability = "IMMUTABLE"
 
   image_scanning_configuration {
-    scan_on_push = false
+    scan_on_push = true
   }
 
   tags = {
@@ -83,10 +93,10 @@ resource "aws_ecr_repository" "otel_collector" {
 
 resource "aws_ecr_repository" "prometheus" {
   name                 = "facilitator-prometheus"
-  image_tag_mutability = "MUTABLE"
+  image_tag_mutability = "IMMUTABLE"
 
   image_scanning_configuration {
-    scan_on_push = false
+    scan_on_push = true
   }
 
   tags = {
@@ -96,10 +106,10 @@ resource "aws_ecr_repository" "prometheus" {
 
 resource "aws_ecr_repository" "tempo" {
   name                 = "facilitator-tempo"
-  image_tag_mutability = "MUTABLE"
+  image_tag_mutability = "IMMUTABLE"
 
   image_scanning_configuration {
-    scan_on_push = false
+    scan_on_push = true
   }
 
   tags = {
@@ -109,10 +119,10 @@ resource "aws_ecr_repository" "tempo" {
 
 resource "aws_ecr_repository" "grafana" {
   name                 = "facilitator-grafana"
-  image_tag_mutability = "MUTABLE"
+  image_tag_mutability = "IMMUTABLE"
 
   image_scanning_configuration {
-    scan_on_push = false
+    scan_on_push = true
   }
 
   tags = {

@@ -82,7 +82,8 @@ for secret_name in "${evm_secrets[@]}"; do
         if echo "$secret_value" | jq -e '.private_key' > /dev/null 2>&1; then
             private_key=$(echo "$secret_value" | jq -r '.private_key')
             if [[ -n "$private_key" && "$private_key" != "null" ]]; then
-                success "$secret_name: Valid (private_key: ${private_key:0:10}...)"
+                # User is always on stream — never print any portion of the key.
+                success "$secret_name: Valid (private_key: set)"
             else
                 error "$secret_name: Empty or null private_key"
             fi
@@ -109,7 +110,8 @@ for secret_name in "${solana_secrets[@]}"; do
 
         if echo "$secret_value" | jq -e '.private_key' > /dev/null 2>&1; then
             private_key=$(echo "$secret_value" | jq -r '.private_key')
-            success "$secret_name: Valid (private_key: ${private_key:0:10}...)"
+            # User is always on stream — never print any portion of the key.
+            success "$secret_name: Valid (private_key: set)"
         else
             error "$secret_name: Missing 'private_key' field in JSON"
         fi
@@ -136,7 +138,8 @@ for secret_name in "${near_secrets[@]}"; do
         if [[ "$has_private_key" == "yes" && "$has_account_id" == "yes" ]]; then
             private_key=$(echo "$secret_value" | jq -r '.private_key')
             account_id=$(echo "$secret_value" | jq -r '.account_id')
-            success "$secret_name: Valid (account: $account_id, key: ${private_key:0:15}...)"
+            # User is always on stream — never print any portion of the key.
+            success "$secret_name: Valid (account: $account_id, key: set)"
         else
             if [[ "$has_private_key" == "no" ]]; then
                 error "$secret_name: Missing 'private_key' field"
@@ -163,7 +166,8 @@ for secret_name in "${stellar_secrets[@]}"; do
         secret_value=$(aws secretsmanager get-secret-value --secret-id "$secret_name" --region "$REGION" --query 'SecretString' --output text)
 
         if [[ $secret_value == S* ]]; then
-            success "$secret_name: Valid (key: ${secret_value:0:5}...)"
+            # User is always on stream — never print any portion of the key.
+            success "$secret_name: Valid (key: set, starts with 'S')"
         else
             error "$secret_name: Invalid format (Stellar secret keys must start with 'S')"
         fi

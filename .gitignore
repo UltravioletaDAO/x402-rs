@@ -12,6 +12,8 @@ Cargo.lock
 *.key
 *.p12
 *.pfx
+.facilitator_wallet_temp.json
+**/.facilitator_wallet_temp.json
 
 # AWS
 .aws/

@@ -27,6 +27,7 @@ use dotenvy::dotenv;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tower_governor::governor::GovernorConfigBuilder;
+use tower_governor::key_extractor::SmartIpKeyExtractor;
 use tower_governor::GovernorLayer;
 use tower_http::cors;
 use tower_http::limit::RequestBodyLimitLayer;
@@ -323,10 +324,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // providers; /discovery/register triggers DNS + outbound fetches against
     // attacker-supplied URLs (already SSRF-guarded but cheap to spam), so it
     // gets the stricter limit.
+    //
+    // SmartIpKeyExtractor reads X-Forwarded-For / X-Real-IP / Forwarded
+    // headers before falling back to the peer IP — required behind the ALB,
+    // where the peer IP is the ALB itself (so the default PeerIpKeyExtractor
+    // would either rate-limit ALL clients into one bucket or, without
+    // ConnectInfo wired up, fail with "Unable To Extract Key!" 500s on every
+    // request).
     let verify_settle_config = Arc::new(
         GovernorConfigBuilder::default()
             .per_second(2)
             .burst_size(30)
+            .key_extractor(SmartIpKeyExtractor)
             .finish()
             .expect("verify/settle governor config must be valid"),
     );
@@ -334,6 +343,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         GovernorConfigBuilder::default()
             .per_second(12)
             .burst_size(5)
+            .key_extractor(SmartIpKeyExtractor)
             .finish()
             .expect("discovery_register governor config must be valid"),
     );

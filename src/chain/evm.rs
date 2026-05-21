@@ -47,8 +47,8 @@ use crate::erc8004::{Erc8004Extension, ProofOfPayment};
 use crate::facilitator::Facilitator;
 use crate::from_env;
 use crate::network::{
-    get_token_deployment, supported_tokens_for_network, AUSDDeployment, EURCDeployment, Network,
-    PYUSDDeployment, USDCDeployment, USDTDeployment,
+    get_token_deployment, is_supported_asset, supported_tokens_for_network, AUSDDeployment,
+    EURCDeployment, Network, PYUSDDeployment, USDCDeployment, USDTDeployment,
 };
 use crate::timestamp::UnixTimestamp;
 use crate::types::{
@@ -261,7 +261,7 @@ impl EvmProvider {
             .wallet(wallet)
             .connect_client(client);
 
-        tracing::info!(network=%network, rpc=rpc_url, signers=?signer_addresses, "Initialized provider");
+        tracing::info!(network=%network, rpc=%crate::redact::rpc_url(rpc_url), signers=?signer_addresses, "Initialized provider");
 
         Ok(Self {
             inner,
@@ -432,7 +432,7 @@ impl MetaEvmProvider for EvmProvider {
                 // TXs aren't dropped when base fee fluctuates.
                 const GWEI: u128 = 1_000_000_000;
                 const MIN_PRIORITY: u128 = 1 * GWEI; // 1 Gwei floor
-                const MIN_MAX_FEE: u128 = 5 * GWEI;  // 5 Gwei floor
+                const MIN_MAX_FEE: u128 = 5 * GWEI; // 5 Gwei floor
 
                 // Get current base fee from latest block
                 let (priority, max_fee) = if let Ok(fee_history) = self
@@ -440,9 +440,7 @@ impl MetaEvmProvider for EvmProvider {
                     .get_fee_history(1, alloy::eips::BlockNumberOrTag::Latest, &[])
                     .await
                 {
-                    let base_fee = fee_history
-                        .latest_block_base_fee()
-                        .unwrap_or(2 * GWEI);
+                    let base_fee = fee_history.latest_block_base_fee().unwrap_or(2 * GWEI);
                     // priority: max of RPC estimate and floor
                     let rpc_priority = self
                         .inner
@@ -550,8 +548,7 @@ impl MetaEvmProvider for EvmProvider {
                             "Nonce error detected, retrying after backoff"
                         );
                         // Brief backoff to let RPC sync pending state
-                        tokio::time::sleep(std::time::Duration::from_millis(250))
-                            .await;
+                        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
                         continue;
                     }
 
@@ -568,9 +565,7 @@ impl MetaEvmProvider for EvmProvider {
 fn is_nonce_error(error: &str) -> bool {
     let lower = error.to_lowercase();
     (lower.contains("nonce")
-        && (lower.contains("too low")
-            || lower.contains("already known")
-            || lower.contains("gap")))
+        && (lower.contains("too low") || lower.contains("already known") || lower.contains("gap")))
         || lower.contains("replacement transaction underpriced")
 }
 
@@ -1198,7 +1193,16 @@ pub struct TransferWithAuthorization0Call<P> {
 
 /// Validates that the current time is within the `validAfter` and `validBefore` bounds.
 ///
-/// Adds a 6-second grace buffer when checking expiration to account for latency.
+/// Applies a symmetric clock-skew grace window on both sides of the validity
+/// interval to tolerate small drift between buyer wallet and facilitator host:
+/// - `valid_before` must be at least `now - CLOCK_SKEW_GRACE_SECS` (we still
+///   accept auths that just barely expired)
+/// - `valid_after` must be at most `now + CLOCK_SKEW_GRACE_SECS` (we accept
+///   auths from buyers whose clock is slightly ahead)
+///
+/// Without symmetry, a buyer with a fast clock could produce an auth that the
+/// facilitator rejects as "not yet active" while the same buyer with a slow
+/// clock would be accepted — confusing UX and unrelated to actual security.
 ///
 /// # Errors
 /// Returns [`FacilitatorLocalError::InvalidTiming`] if the authorization is not yet active or already expired.
@@ -1209,17 +1213,25 @@ fn assert_time(
     valid_after: UnixTimestamp,
     valid_before: UnixTimestamp,
 ) -> Result<(), FacilitatorLocalError> {
+    const CLOCK_SKEW_GRACE_SECS: u64 = 6;
     let now = UnixTimestamp::try_now().map_err(FacilitatorLocalError::ClockError)?;
-    if valid_before < now + 6 {
+    if valid_before < now + CLOCK_SKEW_GRACE_SECS {
         return Err(FacilitatorLocalError::InvalidTiming(
             payer,
-            format!("Expired: now {} > valid_before {}", now + 6, valid_before),
+            format!(
+                "Expired: now + grace {} > valid_before {}",
+                now + CLOCK_SKEW_GRACE_SECS,
+                valid_before
+            ),
         ));
     }
-    if valid_after > now {
+    if valid_after > now + CLOCK_SKEW_GRACE_SECS {
         return Err(FacilitatorLocalError::InvalidTiming(
             payer,
-            format!("Not active yet: valid_after {valid_after} > now {now}",),
+            format!(
+                "Not active yet: valid_after {valid_after} > now + grace {}",
+                now + CLOCK_SKEW_GRACE_SECS
+            ),
         ));
     }
     Ok(())
@@ -1547,6 +1559,19 @@ async fn assert_valid_payment<P: Provider>(
     let valid_after = payment_payload.authorization.valid_after;
     let valid_before = payment_payload.authorization.valid_before;
     assert_time(payer.into(), valid_after, valid_before)?;
+
+    // B6: strict asset allow-list. Only assets declared in `src/network.rs`
+    // (USDC, EURC, AUSD, PYUSD, USDT deployments) are accepted on each
+    // network. Refuses arbitrary ERC-20s before any RPC call so a hostile
+    // payload cannot trick the facilitator into invoking
+    // `transferWithAuthorization` on a token we did not pre-approve.
+    if !is_supported_asset(chain.network, &requirements.asset) {
+        return Err(FacilitatorLocalError::Other(format!(
+            "unsupported_asset: network={}, asset={}",
+            chain.network, requirements.asset
+        )));
+    }
+
     let asset_address = requirements
         .asset
         .clone()
@@ -1555,6 +1580,55 @@ async fn assert_valid_payment<P: Provider>(
     let contract = USDC::new(asset_address, provider);
 
     let domain = assert_domain(chain, &contract, payload, &asset_address, requirements).await?;
+
+    // F4 (EIP-2): reject signatures in non-canonical (high-s) form.
+    //
+    // secp256k1 has two valid `s` values for every signature: `s` and `n - s`,
+    // where `n` is the curve group order. An attacker can flip one valid
+    // signature into the other by negating `s`, producing a second valid
+    // signature over the same authorization — classic ECDSA malleability.
+    // EIP-3009 nonces prevent replay of the *payload*, so the practical blast
+    // radius here is bounded, but enforcing the EIP-2 canonical form
+    // (`s <= n/2`) keeps the facilitator inside Ethereum's normalised
+    // signature space and is cheap defense-in-depth.
+    //
+    // Layout: signature is r (32) || s (32) || v (1) = 65 bytes.
+    //
+    // Constants (secp256k1):
+    //   N   = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFE BAAEDCE6 AF48A03B BFD25E8C D0364141
+    //   N/2 = 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF 5D576E73 57A4501D DFE92F46 681B20A0
+    //
+    // Big-endian byte comparison matches numeric comparison, so we compare
+    // the raw `s` bytes against the constant directly.
+    {
+        let sig_bytes = &payment_payload.signature.0;
+        if sig_bytes.len() != 65 {
+            return Err(FacilitatorLocalError::InvalidSignature(
+                payer.into(),
+                format!(
+                    "invalid_signature_length: expected 65, got {}",
+                    sig_bytes.len()
+                ),
+            ));
+        }
+        const SECP256K1_N_HALF: [u8; 32] = [
+            0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+            0xFF, 0xFF, 0x5D, 0x57, 0x6E, 0x73, 0x57, 0xA4, 0x50, 0x1D, 0xDF, 0xE9, 0x2F, 0x46,
+            0x68, 0x1B, 0x20, 0xA0,
+        ];
+        let s_bytes: [u8; 32] = sig_bytes[32..64].try_into().map_err(|_| {
+            FacilitatorLocalError::InvalidSignature(
+                payer.into(),
+                "invalid_signature_s_slice".to_string(),
+            )
+        })?;
+        if s_bytes > SECP256K1_N_HALF {
+            return Err(FacilitatorLocalError::InvalidSignature(
+                payer.into(),
+                "non_canonical_signature_high_s".to_string(),
+            ));
+        }
+    }
 
     let amount_required = requirements.max_amount_required.0;
     assert_enough_balance(
@@ -1634,12 +1708,30 @@ fn requires_vrs_signature(contract_address: Address) -> bool {
     contract_address == PYUSD_ETHEREUM_ADDRESS
 }
 
+/// Upper bound of the canonical (low) `s` value for secp256k1 signatures: `N / 2`.
+///
+/// `N` is the order of the secp256k1 curve. A signature with `s > N/2` is the
+/// arithmetic complement of an otherwise valid signature for the same digest
+/// and is therefore malleable: an attacker observing the original signature
+/// can produce a different but equally valid 65-byte signature for the same
+/// `transferWithAuthorization` payload, defeating naive replay-protection
+/// schemes that key on the signature bytes.
+///
+/// We reject high-s signatures at the facilitator boundary. This is the same
+/// rule applied by go-ethereum, OpenZeppelin's ECDSA library, and EIP-2.
+const SECP256K1_N_HALF: FixedBytes<32> = FixedBytes::new([
+    0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0x5D, 0x57, 0x6E, 0x73, 0x57, 0xA4, 0x50, 0x1D, 0xDF, 0xE9, 0x2F, 0x46, 0x68, 0x1B, 0x20, 0xA0,
+]);
+
 /// Split a 65-byte signature into its v, r, s components.
 ///
 /// Standard Ethereum signatures are 65 bytes: r (32 bytes) + s (32 bytes) + v (1 byte).
 ///
+/// Enforces canonical (low) `s` per EIP-2 to prevent signature malleability.
+///
 /// # Errors
-/// Returns an error if the signature is not exactly 65 bytes.
+/// Returns an error if the signature is not exactly 65 bytes or if `s > N/2`.
 fn split_signature(
     signature: &Bytes,
 ) -> Result<(u8, FixedBytes<32>, FixedBytes<32>), FacilitatorLocalError> {
@@ -1656,6 +1748,13 @@ fn split_signature(
     let r: FixedBytes<32> = FixedBytes::from_slice(&signature[0..32]);
     let s: FixedBytes<32> = FixedBytes::from_slice(&signature[32..64]);
     let v: u8 = signature[64];
+
+    if s > SECP256K1_N_HALF {
+        return Err(FacilitatorLocalError::InvalidSignature(
+            EvmAddress(Address::ZERO).into(),
+            "non-canonical signature: s > N/2 (EIP-2 malleability)".to_string(),
+        ));
+    }
 
     Ok((v, r, s))
 }
@@ -1974,9 +2073,7 @@ mod tests {
         ));
         assert!(is_nonce_error("transaction nonce already known"));
         assert!(is_nonce_error("replacement transaction underpriced"));
-        assert!(is_nonce_error(
-            "Nonce gap: 16 > 15. Use nonce 15"
-        ));
+        assert!(is_nonce_error("Nonce gap: 16 > 15. Use nonce 15"));
         assert!(!is_nonce_error("insufficient funds for gas"));
         assert!(!is_nonce_error("execution reverted"));
         assert!(!is_nonce_error("Invalid signature"));

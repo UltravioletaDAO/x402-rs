@@ -34,10 +34,11 @@ use crate::erc8004::{
 };
 use crate::facilitator::Facilitator;
 use crate::fhe_proxy::FheProxy;
+use crate::idempotency_store::{hash_request_body, IdempotencyRecord, IDEMPOTENCY_TTL_SECONDS};
 use crate::provider_cache::{HasProviderMap, ProviderMap};
 use crate::types::{
-    ErrorResponse, FacilitatorErrorReason, MixedAddress, SettleRequest, VerifyRequest,
-    VerifyResponse,
+    ErrorResponse, FacilitatorErrorReason, MixedAddress, SettleRequest, SettleResponse,
+    VerifyRequest, VerifyResponse,
 };
 use crate::types_v2::{
     DiscoveryFilters, DiscoveryResource, RegisterResourceRequest, SettleRequestEnvelope,
@@ -1378,6 +1379,24 @@ where
     A::Error: IntoResponse,
     A::Map: ProviderMap<Value = NetworkProvider>,
 {
+    // F4: idempotency store lives in a process-global OnceCell. The read
+    // and write helpers (`lookup_record` / `store_record`) are dispatched
+    // through `tokio::spawn` so the outer handler future is `Send` — calling
+    // the `#[async_trait]` method on `Arc<dyn IdempotencyStore + Send + Sync>`
+    // directly from this generic handler tripped axum's Handler trait
+    // elaboration (the dyn-trait future's lifetime couldn't be proved
+    // `Send + 'static` through the routing layer, even with explicit bounds).
+    // F4: extract the Idempotency-Key header (Stripe-style). If present, we
+    // hash the canonical request body so we can detect "same key + same body"
+    // replays (return cached) vs "same key + different body" (refuse with 409).
+    // Header lookup is case-insensitive in HeaderMap. The actual hash is
+    // computed below against `body_str` so it normalises across the v1 raw
+    // body and the v2 base64-decoded PAYMENT-SIGNATURE transports.
+    let idempotency_key: Option<String> = headers
+        .get("idempotency-key")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
     // x402 v2: Check for PAYMENT-SIGNATURE header (base64-encoded JSON)
     // If present, decode and use it instead of the body
     let body_str: String = if let Some(payment_sig) = headers.get("payment-signature") {
@@ -1445,6 +1464,91 @@ where
         }
     };
     let body_str = body_str.as_str();
+
+    // F4: idempotency cache lookup against canonical body bytes. The hash
+    // is sha256(body_str) which intentionally matches across v1 raw body
+    // and v2 PAYMENT-SIGNATURE transports — a retry with the same logical
+    // request returns the cached response, while a same-key reuse with a
+    // different body is refused.
+    let request_hash: Option<String> = idempotency_key
+        .as_ref()
+        .map(|_| hash_request_body(body_str.as_bytes()));
+    let lookup_key = idempotency_key.clone();
+    let lookup_hash = request_hash.clone();
+    if let (Some(key), Some(hash)) = (lookup_key, lookup_hash) {
+        let key_for_lookup = key.clone();
+        let lookup_result =
+            tokio::spawn(
+                async move { crate::idempotency_store::lookup_record(key_for_lookup).await },
+            )
+            .await
+            .unwrap_or_else(|e| {
+                Err(crate::idempotency_store::IdempotencyStoreError::ReadError(
+                    format!("idempotency lookup task panicked: {e}"),
+                ))
+            });
+        match lookup_result {
+            Ok(Some(record)) if record.request_hash == hash => {
+                info!(idempotency_key = %key, "Serving cached /settle response");
+                let parsed: SettleResponse = match serde_json::from_str(&record.response_json) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        warn!(
+                            idempotency_key = %key,
+                            error = %e,
+                            "Cached idempotency record could not be parsed; re-running settle"
+                        );
+                        // Fall through to normal settle path. We can't return
+                        // here because the outer `if let` only runs once.
+                        return (
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            Json(json!({"error": "idempotency_cache_corrupt"})),
+                        )
+                            .into_response();
+                    }
+                };
+                return (StatusCode::OK, Json(parsed)).into_response();
+            }
+            Ok(Some(_)) => {
+                let correlation_id = uuid::Uuid::new_v4();
+                warn!(
+                    %correlation_id,
+                    idempotency_key = %key,
+                    "Idempotency-Key reused with different body"
+                );
+                return (
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "error": "idempotency_key_conflict",
+                        "correlation_id": correlation_id.to_string(),
+                    })),
+                )
+                    .into_response();
+            }
+            Ok(None) => {
+                debug!(idempotency_key = %key, "Idempotency cache miss");
+            }
+            Err(e) => {
+                // Fail closed — refusing to settle is safer than risking a
+                // double-spend window when the cache is unavailable.
+                let correlation_id = uuid::Uuid::new_v4();
+                error!(
+                    %correlation_id,
+                    idempotency_key = %key,
+                    error = %e,
+                    "Idempotency store unavailable; refusing to settle"
+                );
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({
+                        "error": "idempotency_store_unavailable",
+                        "correlation_id": correlation_id.to_string(),
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    }
 
     debug!("=== SETTLE REQUEST DEBUG ===");
     debug!("Raw JSON body: {}", body_str);
@@ -1904,7 +2008,61 @@ where
                     valid_response.error_reason
                 );
             }
-            (StatusCode::OK, Json(valid_response)).into_response()
+            // F4: cache the response body so a future client retry with the
+            // same Idempotency-Key returns identical bytes without re-running
+            // the on-chain settlement. We only cache when settlement reports
+            // success — caching failures would lock callers out of legitimate
+            // retries against transient errors.
+            let cache_response_payload = if valid_response.success {
+                serde_json::to_string(&valid_response).ok()
+            } else {
+                None
+            };
+            if let (Some(key), Some(hash), Some(json)) = (
+                idempotency_key.as_ref(),
+                request_hash.as_ref(),
+                cache_response_payload.as_ref(),
+            ) {
+                let expires_at = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0)
+                    + IDEMPOTENCY_TTL_SECONDS;
+                let record = IdempotencyRecord {
+                    idempotency_key: key.clone(),
+                    request_hash: hash.clone(),
+                    response_json: json.clone(),
+                    expires_at,
+                };
+                let key_for_log = key.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = crate::idempotency_store::store_record(record).await {
+                        // Best-effort: cache failure does NOT roll back the
+                        // on-chain settlement (the transaction already happened).
+                        // Log so retries can be correlated. Fire-and-forget via
+                        // tokio::spawn so we don't hold a non-Send future across
+                        // the /settle handler's await points.
+                        warn!(
+                            idempotency_key = %key_for_log,
+                            error = %e,
+                            "Failed to cache /settle response for idempotency"
+                        );
+                    }
+                });
+            }
+            // If we already serialized for the cache, reuse it; otherwise
+            // serialize once more for the wire. Returning the raw JSON string
+            // (instead of Json<SettleResponse>) keeps the wire bytes byte-equal
+            // to what we cached, so a cached retry returns the same payload.
+            match cache_response_payload {
+                Some(json) => (
+                    StatusCode::OK,
+                    [(axum::http::header::CONTENT_TYPE, "application/json")],
+                    json,
+                )
+                    .into_response(),
+                None => (StatusCode::OK, Json(valid_response)).into_response(),
+            }
         }
         Err(error) => {
             error!(

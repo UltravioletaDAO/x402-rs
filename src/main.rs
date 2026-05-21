@@ -67,6 +67,7 @@ mod facilitator_local;
 mod fhe_proxy;
 mod from_env;
 mod handlers;
+mod idempotency_store;
 mod json_depth;
 mod network;
 mod nonce_store;
@@ -292,6 +293,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         tracing::info!("Discovery crawler is disabled (DISCOVERY_ENABLE_CRAWLER=false)");
     }
+
+    // F4: Idempotency-Key cache for /settle retries. Backed by DynamoDB in
+    // production (env IDEMPOTENCY_TABLE_NAME) and a no-op store in dev,
+    // which keeps the pre-F4 "retry re-runs the settle" behaviour intact
+    // for environments without the table provisioned. Stored in a global
+    // OnceCell so the generic /settle handler can read it without an
+    // Extension layer (see comment in src/idempotency_store.rs).
+    let idempotency_store = idempotency_store::create_idempotency_store().await;
+    tracing::info!(
+        store_type = idempotency_store.store_type(),
+        "Idempotency-Key cache initialized"
+    );
+    idempotency_store::set_global_idempotency_store(idempotency_store);
 
     let max_body_bytes = std::env::var("MAX_REQUEST_BODY_BYTES")
         .ok()

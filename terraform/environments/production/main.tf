@@ -68,22 +68,32 @@ resource "aws_subnet" "private" {
   }
 }
 
-# Elastic IP for NAT
+# NAT configuration:
+#   single_nat_gateway = true   -> one NAT in AZ-0 (cheapest, AZ-0 outage drops egress for ALL private subnets)
+#   single_nat_gateway = false  -> one NAT per AZ (multi-AZ resilience, ~$32/mo per extra NAT)
+locals {
+  nat_count = var.single_nat_gateway ? 1 : length(var.availability_zones)
+}
+
+# Elastic IPs for NAT (one per NAT gateway)
 resource "aws_eip" "nat" {
+  count  = local.nat_count
   domain = "vpc"
 
   tags = {
-    Name = "facilitator-${var.environment}-nat-eip"
+    Name = "facilitator-${var.environment}-nat-eip-${count.index}"
   }
 }
 
-# NAT Gateway (for private subnets to reach internet)
+# NAT Gateway(s) for private subnets to reach internet.
+# Placed in the matching public subnet so traffic stays in-AZ when multi-AZ.
 resource "aws_nat_gateway" "main" {
-  allocation_id = aws_eip.nat.id
-  subnet_id     = aws_subnet.public[0].id
+  count         = local.nat_count
+  allocation_id = aws_eip.nat[count.index].id
+  subnet_id     = aws_subnet.public[count.index].id
 
   tags = {
-    Name = "facilitator-${var.environment}-nat"
+    Name = "facilitator-${var.environment}-nat-${count.index}"
   }
 
   depends_on = [aws_internet_gateway.main]
@@ -103,17 +113,20 @@ resource "aws_route_table" "public" {
   }
 }
 
-# Route Table for Private Subnets
+# Route Table(s) for Private Subnets.
+# When multi-AZ, each AZ gets its own RT pointing to its local NAT — so an AZ outage
+# does not pull a healthy AZ's egress through a dead NAT.
 resource "aws_route_table" "private" {
+  count  = local.nat_count
   vpc_id = aws_vpc.main.id
 
   route {
     cidr_block     = "0.0.0.0/0"
-    nat_gateway_id = aws_nat_gateway.main.id
+    nat_gateway_id = aws_nat_gateway.main[count.index].id
   }
 
   tags = {
-    Name = "facilitator-${var.environment}-private-rt"
+    Name = "facilitator-${var.environment}-private-rt-${count.index}"
   }
 }
 
@@ -124,11 +137,13 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
-# Associate Private Subnets with Private Route Table
+# Associate Private Subnets with their AZ-local Private Route Table.
+# Single-NAT mode: every subnet points at the only RT (index 0).
+# Multi-AZ mode:   subnet N points at RT N (same AZ as its NAT).
 resource "aws_route_table_association" "private" {
   count          = length(aws_subnet.private)
   subnet_id      = aws_subnet.private[count.index].id
-  route_table_id = aws_route_table.private.id
+  route_table_id = aws_route_table.private[var.single_nat_gateway ? 0 : count.index].id
 }
 
 # ============================================================================
@@ -459,6 +474,53 @@ resource "aws_iam_role_policy" "dynamodb_nonce_access" {
   })
 }
 
+# F4: DynamoDB table for /settle idempotency-key cache.
+# Holds the response_json for ~24h so a client retry with the same
+# Idempotency-Key header returns the original response verbatim without
+# re-running the on-chain settlement. TTL is enforced by DDB on the
+# `expires_at` attribute (eventually consistent — handler also re-checks).
+resource "aws_dynamodb_table" "idempotency_store" {
+  name         = "idempotency_records"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "idempotency_key"
+
+  attribute {
+    name = "idempotency_key"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "expires_at"
+    enabled        = true
+  }
+
+  tags = {
+    Name        = "idempotency_records"
+    Environment = var.environment
+  }
+}
+
+# Policy for DynamoDB idempotency store access (task role)
+resource "aws_iam_role_policy" "dynamodb_idempotency_access" {
+  name = "DynamoDBIdempotencyStoreAccess"
+  role = aws_iam_role.ecs_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:PutItem",
+          "dynamodb:GetItem",
+          "dynamodb:DescribeTable"
+        ]
+        Resource = aws_dynamodb_table.idempotency_store.arn
+      }
+    ]
+  })
+}
+
 # Policy for S3 discovery store access (task role)
 resource "aws_iam_role_policy" "s3_discovery_access" {
   name = "S3DiscoveryStoreAccess"
@@ -586,6 +648,10 @@ resource "aws_ecs_task_definition" "facilitator" {
         {
           name  = "NONCE_STORE_TABLE_NAME"
           value = aws_dynamodb_table.nonce_store.name
+        },
+        {
+          name  = "IDEMPOTENCY_TABLE_NAME"
+          value = aws_dynamodb_table.idempotency_store.name
         },
         # Additional network RPCs (public endpoints)
         {

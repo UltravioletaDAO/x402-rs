@@ -29,6 +29,7 @@ pub mod facilitator_local;
 pub mod fhe_proxy;
 pub mod from_env;
 pub mod handlers;
+pub mod idempotency_store;
 pub mod json_depth;
 pub mod network;
 pub mod nonce_store;

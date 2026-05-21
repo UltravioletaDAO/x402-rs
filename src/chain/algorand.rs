@@ -414,7 +414,7 @@ impl AlgorandProvider {
         // B2 invariant 1: The fee transaction MUST be sent FROM the facilitator address.
         // An attacker could otherwise embed Payment(facilitator -> attacker, amount) in the
         // atomic group and get the facilitator to co-sign it, draining the facilitator wallet.
-        let tx_sender = tx.sender.to_string();
+        let tx_sender = tx.sender().to_string();
         if tx_sender != self.public_address {
             tracing::warn!(
                 expected = %self.public_address,

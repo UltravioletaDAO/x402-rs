@@ -18,7 +18,8 @@ tokio = { version = "1.49.0", features = ["full"] }
 tokio-util = { version = "0.7.16", features = ["rt"] }
 dotenvy = { version = "0.15.7" }
 serde_json = { version = "1.0.149" }
-tower-http = { version = "0.6.8", features = ["trace", "cors"] }
+tower-http = { version = "0.6.8", features = ["trace", "cors", "limit"] }
+tower_governor = { version = "0.8" }
 serde = { version = "1.0.228", features = ["derive"] }
 once_cell = { version = "1.21.3" }
 regex = { version = "1.11.1" }
@@ -30,6 +31,7 @@ hex = { version = "0.4" }
 rust_decimal = { version = "1.39.0" }
 async-trait = { version = "0.1.88" }
 dashmap = { version = "6.1.0" }
+uuid = { version = "1.21", features = ["v4"] }
 
 # Compliance
 x402-compliance = { path = "crates/x402-compliance", features = ["solana"] }

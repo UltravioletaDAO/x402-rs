@@ -84,6 +84,25 @@ pub async fn get_settle_info() -> impl IntoResponse {
     }))
 }
 
+/// Verify + settle routes that should be rate-limited.
+///
+/// Split out of [`routes`] so `main.rs` can wrap these (and only these) in a
+/// stricter `GovernorLayer`. Each `/verify` and `/settle` call burns RPC quota
+/// against the configured chain providers, so an unbounded caller could drain
+/// a paid plan within minutes.
+pub fn verify_settle_routes<A>() -> Router<A>
+where
+    A: Facilitator + HasProviderMap + Clone + Send + Sync + 'static,
+    A::Error: IntoResponse,
+    A::Map: ProviderMap<Value = NetworkProvider>,
+{
+    Router::new()
+        .route("/verify", get(get_verify_info))
+        .route("/verify", post(post_verify::<A>))
+        .route("/settle", get(get_settle_info))
+        .route("/settle", post(post_settle::<A>))
+}
+
 pub fn routes<A>() -> Router<A>
 where
     A: Facilitator + HasProviderMap + Clone + Send + Sync + 'static,
@@ -92,10 +111,6 @@ where
 {
     Router::new()
         .route("/", get(get_root))
-        .route("/verify", get(get_verify_info))
-        .route("/verify", post(post_verify::<A>))
-        .route("/settle", get(get_settle_info))
-        .route("/settle", post(post_settle::<A>))
         // Escrow state query endpoint
         .route("/escrow/state", post(post_escrow_state::<A>))
         // ERC-8004 Registration endpoints
@@ -159,11 +174,19 @@ where
 /// Discovery API routes for the Bazaar feature.
 ///
 /// These routes are separate from the main facilitator routes because they use
-/// a different state type (DiscoveryRegistry).
+/// a different state type (DiscoveryRegistry). The `/discovery/register` POST
+/// is split out into [`discovery_register_routes`] so it can carry a stricter
+/// rate limit (it triggers DNS lookups + outbound fetches against
+/// attacker-supplied URLs).
 pub fn discovery_routes() -> Router<Arc<DiscoveryRegistry>> {
-    Router::new()
-        .route("/discovery/resources", get(get_discovery_resources))
-        .route("/discovery/register", post(post_discovery_register))
+    Router::new().route("/discovery/resources", get(get_discovery_resources))
+}
+
+/// `POST /discovery/register` carved out into its own router so the strict
+/// 5 req/min governor can be attached without affecting the read-only
+/// `/discovery/resources` listing.
+pub fn discovery_register_routes() -> Router<Arc<DiscoveryRegistry>> {
+    Router::new().route("/discovery/register", post(post_discovery_register))
 }
 
 // ============================================================================
@@ -1934,31 +1957,36 @@ impl IntoResponse for FacilitatorLocalError {
             )
                 .into_response(),
             FacilitatorLocalError::ContractCall(ref e) => {
-                tracing::error!(error = %e, "ContractCall error");
+                // Opaque external error to avoid leaking RPC URLs / revert reasons / API keys
+                // that appear in alloy RpcError messages. Full detail logged server-side.
+                let correlation_id = uuid::Uuid::new_v4();
+                tracing::error!(%correlation_id, error = %e, "ContractCall error");
                 (
                     StatusCode::BAD_REQUEST,
                     Json(ErrorResponse {
-                        error: format!("Contract call failed: {}", e),
+                        error: format!("contract_call_failed (ref: {correlation_id})"),
                     }),
                 )
                     .into_response()
             }
             FacilitatorLocalError::InvalidAddress(ref e) => {
-                tracing::error!(error = %e, "InvalidAddress error");
+                let correlation_id = uuid::Uuid::new_v4();
+                tracing::error!(%correlation_id, error = %e, "InvalidAddress error");
                 (
                     StatusCode::BAD_REQUEST,
                     Json(ErrorResponse {
-                        error: format!("Invalid address: {}", e),
+                        error: format!("invalid_address (ref: {correlation_id})"),
                     }),
                 )
                     .into_response()
             }
             FacilitatorLocalError::ClockError(ref e) => {
-                tracing::error!(error = ?e, "ClockError");
+                let correlation_id = uuid::Uuid::new_v4();
+                tracing::error!(%correlation_id, error = ?e, "ClockError");
                 (
                     StatusCode::BAD_REQUEST,
                     Json(ErrorResponse {
-                        error: format!("Clock error: {:?}", e),
+                        error: format!("clock_error (ref: {correlation_id})"),
                     }),
                 )
                     .into_response()
@@ -1990,11 +2018,12 @@ impl IntoResponse for FacilitatorLocalError {
                     .into_response()
             }
             FacilitatorLocalError::Other(ref e) => {
-                tracing::error!(error = %e, "Other facilitator error");
+                let correlation_id = uuid::Uuid::new_v4();
+                tracing::error!(%correlation_id, error = %e, "Other facilitator error");
                 (
                     StatusCode::BAD_REQUEST,
                     Json(ErrorResponse {
-                        error: format!("{}", e),
+                        error: format!("internal_error (ref: {correlation_id})"),
                     }),
                 )
                     .into_response()
@@ -3342,7 +3371,9 @@ where
             (StatusCode::OK, Json(response)).into_response()
         }
         Err(e) => {
+            let correlation_id = uuid::Uuid::new_v4();
             error!(
+                %correlation_id,
                 network = %network,
                 agent_id = agent_id,
                 error = %e,
@@ -3351,7 +3382,7 @@ where
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({
-                    "error": format!("Failed to query reputation: {}", e)
+                    "error": format!("reputation_query_failed (ref: {correlation_id})")
                 })),
             )
                 .into_response()
@@ -3816,10 +3847,11 @@ where
     let balance = match identity_registry.balanceOf(owner_address).call().await {
         Ok(b) => b,
         Err(e) => {
-            error!(error = %e, "Failed to query balanceOf");
+            let correlation_id = uuid::Uuid::new_v4();
+            error!(%correlation_id, error = %e, "Failed to query balanceOf");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("Failed to query balance: {}", e) })),
+                Json(json!({ "error": format!("balance_query_failed (ref: {correlation_id})") })),
             )
                 .into_response();
         }

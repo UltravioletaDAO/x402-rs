@@ -43,7 +43,10 @@ pub struct Permit2Witness {
     /// Earliest timestamp when payment can be settled.
     pub valid_after: String,
     /// Extra data (ABI-encoded, usually empty).
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "crate::json_depth::deserialize_bounded_extra"
+    )]
     pub extra: Option<serde_json::Value>,
 }
 
@@ -97,7 +100,10 @@ pub struct UptoPaymentRequirements {
     #[serde(default)]
     pub max_timeout_seconds: Option<u64>,
     /// Extra scheme-specific data.
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "crate::json_depth::deserialize_bounded_extra"
+    )]
     pub extra: Option<serde_json::Value>,
 }
 
@@ -179,11 +185,13 @@ pub struct UptoVerifyResponse {
 /// Parse a string amount (decimal or hex) into alloy U256.
 pub fn parse_amount(s: &str) -> Result<U256, super::UptoError> {
     if s.starts_with("0x") || s.starts_with("0X") {
-        U256::from_str_radix(&s[2..], 16)
-            .map_err(|e| super::UptoError::InvalidPayload(format!("invalid hex amount '{}': {}", s, e)))
+        U256::from_str_radix(&s[2..], 16).map_err(|e| {
+            super::UptoError::InvalidPayload(format!("invalid hex amount '{}': {}", s, e))
+        })
     } else {
-        U256::from_str_radix(s, 10)
-            .map_err(|e| super::UptoError::InvalidPayload(format!("invalid decimal amount '{}': {}", s, e)))
+        U256::from_str_radix(s, 10).map_err(|e| {
+            super::UptoError::InvalidPayload(format!("invalid decimal amount '{}': {}", s, e))
+        })
     }
 }
 

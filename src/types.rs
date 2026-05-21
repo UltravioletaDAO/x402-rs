@@ -1312,6 +1312,10 @@ pub struct PaymentRequirements {
     pub pay_to: MixedAddress,
     pub max_timeout_seconds: u64,
     pub asset: MixedAddress,
+    #[serde(
+        default,
+        deserialize_with = "crate::json_depth::deserialize_bounded_extra"
+    )]
     pub extra: Option<serde_json::Value>,
 }
 

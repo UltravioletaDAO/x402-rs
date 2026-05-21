@@ -26,8 +26,22 @@ use axum::{Extension, Router};
 use dotenvy::dotenv;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use tower_governor::governor::GovernorConfigBuilder;
+use tower_governor::GovernorLayer;
 use tower_http::cors;
+use tower_http::limit::RequestBodyLimitLayer;
 use url::Url;
+
+/// Maximum request body size accepted by the facilitator.
+///
+/// Set conservatively. A legitimate `/verify` or `/settle` payload is well
+/// under 16 KiB (payment payload + EIP-712 signature). The pre-existing
+/// Axum default of 2 MiB allowed multi-megabyte POSTs to OOM the 2 GB
+/// Fargate task before any rate limit could kick in.
+///
+/// Override via the `MAX_REQUEST_BODY_BYTES` env var if a future integration
+/// needs more headroom — keep the floor at 16 KiB.
+const DEFAULT_MAX_REQUEST_BODY_BYTES: usize = 64 * 1024;
 
 use crate::facilitator::Facilitator;
 use crate::facilitator_local::FacilitatorLocal;
@@ -53,6 +67,7 @@ mod facilitator_local;
 mod fhe_proxy;
 mod from_env;
 mod handlers;
+mod json_depth;
 mod network;
 mod nonce_store;
 mod openapi;
@@ -278,19 +293,65 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!("Discovery crawler is disabled (DISCOVERY_ENABLE_CRAWLER=false)");
     }
 
+    let max_body_bytes = std::env::var("MAX_REQUEST_BODY_BYTES")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .map(|n| n.max(16 * 1024)) // never less than 16 KiB
+        .unwrap_or(DEFAULT_MAX_REQUEST_BODY_BYTES);
+    tracing::info!(max_body_bytes, "HTTP request body limit configured");
+
+    // Per-IP rate limits. tower_governor's GCRA replenishes one token every
+    // `per_second` seconds and caps the bucket at `burst_size`, so:
+    //   - 1 token every 2s, burst 30  ≈ 30 req/min sustained
+    //   - 1 token every 12s, burst 5  ≈ 5 req/min sustained
+    // Each /verify or /settle call burns RPC quota against the configured chain
+    // providers; /discovery/register triggers DNS + outbound fetches against
+    // attacker-supplied URLs (already SSRF-guarded but cheap to spam), so it
+    // gets the stricter limit.
+    let verify_settle_config = Arc::new(
+        GovernorConfigBuilder::default()
+            .per_second(2)
+            .burst_size(30)
+            .finish()
+            .expect("verify/settle governor config must be valid"),
+    );
+    let discovery_register_config = Arc::new(
+        GovernorConfigBuilder::default()
+            .per_second(12)
+            .burst_size(5)
+            .finish()
+            .expect("discovery_register governor config must be valid"),
+    );
+
+    let verify_settle = handlers::verify_settle_routes()
+        .with_state(axum_state.clone())
+        .layer(GovernorLayer::new(verify_settle_config));
+
+    let discovery_register = handlers::discovery_register_routes()
+        .with_state(Arc::clone(&discovery_registry))
+        .layer(GovernorLayer::new(discovery_register_config));
+
     let http_endpoints = Router::new()
+        .merge(verify_settle)
         .merge(handlers::routes().with_state(axum_state))
+        .merge(discovery_register)
         .merge(handlers::discovery_routes().with_state(Arc::clone(&discovery_registry)))
         .merge(openapi::swagger_routes())
         // Share discovery registry with all handlers via Extension for settlement tracking
         .layer(Extension(discovery_registry))
         .layer(telemetry.http_tracing())
+        // CORS stays permissive — facilitator is intentionally public.
+        // First-party callers: photo2melee, ExecutionMarket, meshrelay, plus arbitrary third
+        // parties using the public x402 protocol. Tightening CORS would break consumers.
         .layer(
             cors::CorsLayer::new()
                 .allow_origin(cors::Any)
                 .allow_methods([Method::GET, Method::POST])
                 .allow_headers(cors::Any),
-        );
+        )
+        // Body limit MUST be the last layer applied so it wraps everything below.
+        // 64 KiB ceiling on POST bodies — caps memory blow-up from oversized JSON.
+        .layer(RequestBodyLimitLayer::new(max_body_bytes));
 
     let host = std::env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
     let port = std::env::var("PORT")

@@ -99,7 +99,11 @@ pub struct PaymentRequirementsV2 {
     pub max_timeout_seconds: u64,
 
     /// Optional chain-specific or application-specific data
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::json_depth::deserialize_bounded_extra"
+    )]
     pub extra: Option<serde_json::Value>,
 }
 

@@ -199,16 +199,124 @@ resource "aws_security_group" "ecs_tasks" {
     security_groups = [aws_security_group.alb.id]
   }
 
+  # B10: SG egress is no longer 0.0.0.0/0 0-65535/-1. RPC CIDRs are unenumerable
+  # (chain providers run on diverse hosts and rotate IP ranges), so we cannot
+  # literally allow-list specific destinations — but we CAN bound the protocol
+  # surface so an RCE in the container cannot open arbitrary outbound sockets.
+  # AWS-internal traffic (DynamoDB, Secrets Manager) goes through the VPC
+  # endpoints declared below instead of the public internet.
+
   egress {
-    description = "All outbound traffic (for RPC calls)"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
+    description = "HTTPS to chain RPCs, AWS API endpoints, and the wider web"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    description = "HTTP fallback for a few RPCs that still expose http://"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    description = "DNS resolution (UDP)"
+    from_port   = 53
+    to_port     = 53
+    protocol    = "udp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    description = "DNS resolution (TCP fallback for large responses)"
+    from_port   = 53
+    to_port     = 53
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    description = "NTP time sync"
+    from_port   = 123
+    to_port     = 123
+    protocol    = "udp"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
   tags = {
     Name = "facilitator-${var.environment}-ecs-tasks-sg"
+  }
+}
+
+# ============================================================================
+# VPC Endpoints (B10 defense-in-depth)
+# ============================================================================
+# Route AWS-service traffic (DynamoDB, Secrets Manager) through private VPC
+# endpoints instead of NAT gateway → public internet. This both reduces NAT
+# costs/throughput and isolates the secrets/state plane from an
+# arbitrary-internet-reachable code-execution scenario inside the container.
+
+# DynamoDB Gateway endpoint — free, attached to the private route table(s).
+# All traffic to DDB in this region from these subnets stays on the AWS
+# backbone; no NAT hop, no internet edge.
+resource "aws_vpc_endpoint" "dynamodb" {
+  vpc_id            = aws_vpc.main.id
+  service_name      = "com.amazonaws.${data.aws_region.current.name}.dynamodb"
+  vpc_endpoint_type = "Gateway"
+  route_table_ids   = aws_route_table.private[*].id
+
+  tags = {
+    Name = "facilitator-${var.environment}-dynamodb-endpoint"
+  }
+}
+
+# Security group dedicated to the Interface endpoints below. The endpoints
+# expose ENIs inside our private subnets; this SG limits the source to the
+# ECS task SG (port 443 only) so nothing else in the VPC can poke them.
+resource "aws_security_group" "vpc_endpoints" {
+  name        = "facilitator-${var.environment}-vpc-endpoints"
+  description = "Security group for AWS service VPC interface endpoints"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    description     = "HTTPS from facilitator ECS tasks"
+    from_port       = 443
+    to_port         = 443
+    protocol        = "tcp"
+    security_groups = [aws_security_group.ecs_tasks.id]
+  }
+
+  egress {
+    description = "Replies to ECS tasks (stateful SG; this rule is mostly for clarity)"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = [var.vpc_cidr]
+  }
+
+  tags = {
+    Name = "facilitator-${var.environment}-vpc-endpoints-sg"
+  }
+}
+
+# Secrets Manager Interface endpoint. Costs ~$7/AZ/month + data charges,
+# but means the facilitator's pull of facilitator-*-private-key never
+# transits the public internet — an RCE inside the container that resolves
+# secretsmanager.us-east-2.amazonaws.com hits an ENI inside our VPC instead
+# of an AWS edge.
+resource "aws_vpc_endpoint" "secretsmanager" {
+  vpc_id              = aws_vpc.main.id
+  service_name        = "com.amazonaws.${data.aws_region.current.name}.secretsmanager"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = aws_subnet.private[*].id
+  security_group_ids  = [aws_security_group.vpc_endpoints.id]
+  private_dns_enabled = true
+
+  tags = {
+    Name = "facilitator-${var.environment}-secretsmanager-endpoint"
   }
 }
 

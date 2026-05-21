@@ -302,16 +302,16 @@ resource "aws_security_group" "vpc_endpoints" {
   }
 }
 
-# Secrets Manager Interface endpoint. Costs ~$7/AZ/month + data charges,
-# but means the facilitator's pull of facilitator-*-private-key never
-# transits the public internet — an RCE inside the container that resolves
-# secretsmanager.us-east-2.amazonaws.com hits an ENI inside our VPC instead
-# of an AWS edge.
+# Secrets Manager Interface endpoint. Costs ~$7/AZ/month + data charges.
+# In single-NAT mode all egress is single-AZ anyway, so we pin the endpoint
+# ENI to subnet[0] (the AZ that hosts the NAT) — one ENI, one charge.
+# When the user switches `single_nat_gateway = false` we fan out the ENI
+# across every private subnet for resilience.
 resource "aws_vpc_endpoint" "secretsmanager" {
   vpc_id              = aws_vpc.main.id
   service_name        = "com.amazonaws.${data.aws_region.current.name}.secretsmanager"
   vpc_endpoint_type   = "Interface"
-  subnet_ids          = aws_subnet.private[*].id
+  subnet_ids          = var.single_nat_gateway ? [aws_subnet.private[0].id] : aws_subnet.private[*].id
   security_group_ids  = [aws_security_group.vpc_endpoints.id]
   private_dns_enabled = true
 

@@ -74,6 +74,7 @@ mod nonce_store;
 mod openapi;
 mod payment_operator;
 mod provider_cache;
+mod redact;
 mod sig_down;
 mod telemetry;
 mod timestamp;

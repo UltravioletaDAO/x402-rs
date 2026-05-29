@@ -472,7 +472,6 @@ mod tests {
             (1301, "Unichain Sepolia"),
             (143, "Monad"),
             (50, "XDC"),
-            (1440000, "XRPL EVM"),
         ];
 
         for (chain_id, name) in chain_ids {

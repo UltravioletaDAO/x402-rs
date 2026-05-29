@@ -92,6 +92,10 @@ STELLAR_TESTNET_ADDRESS = "GBBFZMLUJEZVI32EN4XA2KPP445XIBTMTRBLYWFIL556RDTHS2OWF
 ALGORAND_MAINNET_ADDRESS = "KIMS5H6QLCUDL65L5UBTOXDPWLMTS7N3AAC3I6B2NCONEI5QIVK7LH2C2I"
 ALGORAND_TESTNET_ADDRESS = "5DPPDQNYUPCTXRZWRYSF3WPYU6RKAUR25F3YG4EKXQRHV5AUAI62H5GXL4"
 
+# XRPL addresses (native XRP Ledger, classic r... addresses; NOT the EVM sidechain)
+XRPL_MAINNET_ADDRESS = "rfADKkVXBNqK3z72tVSS3LVzAR3psYkonp"
+XRPL_TESTNET_ADDRESS = "rGhTioKAFHe75KgVnQtacRiKFuPv28Wbwk"
+
 
 # Public RPC fallbacks (no API keys)
 PUBLIC_RPCS = {
@@ -370,6 +374,17 @@ def get_network_configs() -> dict[str, dict]:
             "address": MAINNET_ADDRESS,
             "type": "evm"
         },
+        # XRPL (native XRP Ledger; public JSON-RPC, balance in drops, 1 XRP = 1e6 drops)
+        "xrpl-mainnet": {
+            "rpcs": ["https://s1.ripple.com:51234/", "https://xrplcluster.com/"],
+            "address": XRPL_MAINNET_ADDRESS,
+            "type": "xrpl"
+        },
+        "xrpl-testnet": {
+            "rpcs": ["https://s.altnet.rippletest.net:51234/"],
+            "address": XRPL_TESTNET_ADDRESS,
+            "type": "xrpl"
+        },
     }
 
 
@@ -516,6 +531,37 @@ def fetch_algorand_balance(network: str, config: dict) -> tuple[str, str | None]
     return network, None
 
 
+def fetch_xrpl_balance(network: str, config: dict) -> tuple[str, str | None]:
+    """Fetch balance for XRPL (native XRP Ledger) via account_info JSON-RPC.
+
+    Balance is returned in drops (1 XRP = 1e6 drops). Uses RPC fallback.
+    """
+    rpcs = [r for r in config.get("rpcs", []) if r]  # Filter out None values
+
+    for rpc_url in rpcs:
+        try:
+            payload = json.dumps({
+                "method": "account_info",
+                "params": [{
+                    "account": config["address"],
+                    "ledger_index": "validated"
+                }]
+            }).encode()
+
+            data = fetch_json(rpc_url, payload, timeout=8)
+            result = data.get("result", {})
+            account_data = result.get("account_data", {})
+            if "Balance" in account_data:
+                balance_drops = int(account_data["Balance"])
+                balance_xrp = balance_drops / 1e6
+                return network, f"{balance_xrp:.4f}"
+        except Exception as e:
+            print(f"Error fetching {network} from {rpc_url[:50]}...: {e}")
+            continue
+
+    return network, None
+
+
 def fetch_all_balances() -> dict[str, str | None]:
     """Fetch balances for all networks concurrently."""
     global _cache, _cache_timestamp
@@ -547,6 +593,8 @@ def fetch_all_balances() -> dict[str, str | None]:
                 futures.append(executor.submit(fetch_stellar_balance, network, config))
             elif network_type == "algorand":
                 futures.append(executor.submit(fetch_algorand_balance, network, config))
+            elif network_type == "xrpl":
+                futures.append(executor.submit(fetch_xrpl_balance, network, config))
 
         for future in as_completed(futures):
             network, balance = future.result()

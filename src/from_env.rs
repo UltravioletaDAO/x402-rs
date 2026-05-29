@@ -26,6 +26,14 @@ pub const ENV_STELLAR_PRIVATE_KEY: &str = "STELLAR_PRIVATE_KEY";
 pub const ENV_STELLAR_PRIVATE_KEY_MAINNET: &str = "STELLAR_PRIVATE_KEY_MAINNET";
 pub const ENV_STELLAR_PRIVATE_KEY_TESTNET: &str = "STELLAR_PRIVATE_KEY_TESTNET";
 
+// XRPL environment variables (XRPL family seeds: s... secp256k1 or sEd... ed25519)
+#[cfg(feature = "xrpl")]
+pub const ENV_XRPL_PRIVATE_KEY: &str = "XRPL_PRIVATE_KEY";
+#[cfg(feature = "xrpl")]
+pub const ENV_XRPL_PRIVATE_KEY_MAINNET: &str = "XRPL_PRIVATE_KEY_MAINNET";
+#[cfg(feature = "xrpl")]
+pub const ENV_XRPL_PRIVATE_KEY_TESTNET: &str = "XRPL_PRIVATE_KEY_TESTNET";
+
 // Algorand environment variables (25-word mnemonic)
 pub const ENV_ALGORAND_MNEMONIC: &str = "ALGORAND_MNEMONIC";
 pub const ENV_ALGORAND_MNEMONIC_MAINNET: &str = "ALGORAND_MNEMONIC_MAINNET";
@@ -36,7 +44,6 @@ pub const ENV_RPC_BASE_SEPOLIA: &str = "RPC_URL_BASE_SEPOLIA";
 pub const ENV_RPC_XDC: &str = "RPC_URL_XDC";
 pub const ENV_RPC_AVALANCHE_FUJI: &str = "RPC_URL_AVALANCHE_FUJI";
 pub const ENV_RPC_AVALANCHE: &str = "RPC_URL_AVALANCHE";
-pub const ENV_RPC_XRPL_EVM: &str = "RPC_URL_XRPL_EVM";
 pub const ENV_RPC_SOLANA: &str = "RPC_URL_SOLANA";
 pub const ENV_RPC_SOLANA_DEVNET: &str = "RPC_URL_SOLANA_DEVNET";
 pub const ENV_RPC_POLYGON_AMOY: &str = "RPC_URL_POLYGON_AMOY";
@@ -63,6 +70,14 @@ pub const ENV_RPC_NEAR_TESTNET: &str = "RPC_URL_NEAR_TESTNET";
 // Stellar RPC (Horizon/Soroban) URLs
 pub const ENV_RPC_STELLAR: &str = "RPC_URL_STELLAR";
 pub const ENV_RPC_STELLAR_TESTNET: &str = "RPC_URL_STELLAR_TESTNET";
+
+// XRPL RPC (JSON-RPC) URLs. Note: per brief, XRPL uses the explicit _MAINNET/_TESTNET
+// suffix (unlike Stellar's RPC_URL_STELLAR). Public fallbacks if unset:
+//   mainnet https://s1.ripple.com:51234/ ; testnet https://s.altnet.rippletest.net:51234/
+#[cfg(feature = "xrpl")]
+pub const ENV_RPC_XRPL_MAINNET: &str = "RPC_URL_XRPL_MAINNET";
+#[cfg(feature = "xrpl")]
+pub const ENV_RPC_XRPL_TESTNET: &str = "RPC_URL_XRPL_TESTNET";
 pub const ENV_RPC_FOGO: &str = "RPC_URL_FOGO";
 pub const ENV_RPC_FOGO_TESTNET: &str = "RPC_URL_FOGO_TESTNET";
 
@@ -102,7 +117,6 @@ pub fn rpc_env_name_from_network(network: Network) -> &'static str {
         Network::XdcMainnet => ENV_RPC_XDC,
         Network::AvalancheFuji => ENV_RPC_AVALANCHE_FUJI,
         Network::Avalanche => ENV_RPC_AVALANCHE,
-        Network::XrplEvm => ENV_RPC_XRPL_EVM,
         Network::Solana => ENV_RPC_SOLANA,
         Network::SolanaDevnet => ENV_RPC_SOLANA_DEVNET,
         Network::PolygonAmoy => ENV_RPC_POLYGON_AMOY,
@@ -127,6 +141,10 @@ pub fn rpc_env_name_from_network(network: Network) -> &'static str {
         Network::NearTestnet => ENV_RPC_NEAR_TESTNET,
         Network::Stellar => ENV_RPC_STELLAR,
         Network::StellarTestnet => ENV_RPC_STELLAR_TESTNET,
+        #[cfg(feature = "xrpl")]
+        Network::Xrpl => ENV_RPC_XRPL_MAINNET,
+        #[cfg(feature = "xrpl")]
+        Network::XrplTestnet => ENV_RPC_XRPL_TESTNET,
         Network::Fogo => ENV_RPC_FOGO,
         Network::FogoTestnet => ENV_RPC_FOGO_TESTNET,
         #[cfg(feature = "algorand")]
@@ -369,6 +387,79 @@ impl SignerType {
                 }
 
                 Ok(secret_key)
+            }
+        }
+    }
+
+    /// Retrieves the XRPL family seed from environment variables.
+    ///
+    /// Environment variables:
+    /// - `XRPL_PRIVATE_KEY_MAINNET` — XRPL seed for mainnet (s... secp256k1 or sEd... ed25519)
+    /// - `XRPL_PRIVATE_KEY_TESTNET` — XRPL seed for testnet
+    /// - `XRPL_PRIVATE_KEY` — fallback for all networks if network-specific keys are not set
+    ///
+    /// AWS Secrets Manager stores the value as JSON `{"seed","classic_address",
+    /// "public_key","algorithm"}`. The recommended deployment maps the secret's
+    /// `seed` JSON-key directly into the env var (so a bare seed lands here), but
+    /// as a defensive fallback this also detects a leading `{` and extracts the
+    /// `seed` field. Returns the raw seed string; parsing into the XRPL SDK
+    /// wallet happens in the XrplProvider to avoid the xrpl dependency here.
+    #[cfg(feature = "xrpl")]
+    pub fn get_xrpl_secret_key(
+        &self,
+        network: Network,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        match self {
+            SignerType::PrivateKey => {
+                let raw = if network.is_testnet() {
+                    env::var(ENV_XRPL_PRIVATE_KEY_TESTNET)
+                        .or_else(|_| env::var(ENV_XRPL_PRIVATE_KEY))
+                        .map_err(|_| {
+                            format!(
+                                "env {} or {} not set",
+                                ENV_XRPL_PRIVATE_KEY_TESTNET, ENV_XRPL_PRIVATE_KEY
+                            )
+                        })?
+                } else {
+                    env::var(ENV_XRPL_PRIVATE_KEY_MAINNET)
+                        .or_else(|_| env::var(ENV_XRPL_PRIVATE_KEY))
+                        .map_err(|_| {
+                            format!(
+                                "env {} or {} not set",
+                                ENV_XRPL_PRIVATE_KEY_MAINNET, ENV_XRPL_PRIVATE_KEY
+                            )
+                        })?
+                };
+
+                // Defensive fallback: if the AWS JSON secret value landed here whole
+                // (starts with '{'), extract the `seed` field. The preferred deployment
+                // maps the secret's `seed` JSON-key directly, so `raw` is already a seed.
+                let seed = {
+                    let trimmed = raw.trim();
+                    if trimmed.starts_with('{') {
+                        let parsed: serde_json::Value = serde_json::from_str(trimmed)
+                            .map_err(|e| format!("Invalid XRPL secret JSON: {}", e))?;
+                        parsed
+                            .get("seed")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string())
+                            .ok_or_else(|| {
+                                "XRPL secret JSON missing string `seed` field".to_string()
+                            })?
+                    } else {
+                        trimmed.to_string()
+                    }
+                };
+
+                // Basic validation: XRPL family seeds start with 's'
+                // (classic 's...' secp256k1 or 'sEd...' ed25519).
+                if !seed.starts_with('s') {
+                    return Err(
+                        "Invalid XRPL seed format: must start with 's'".to_string().into(),
+                    );
+                }
+
+                Ok(seed)
             }
         }
     }

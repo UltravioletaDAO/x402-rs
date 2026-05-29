@@ -68,6 +68,11 @@ sha2 = { version = "0.10" }  # SHA-256 for Stellar signature hashing
 algonaut = { version = "0.4", optional = true }  # Umbrella crate for Algorand SDK
 rmp-serde = { version = "1.3", optional = true }  # MessagePack for Algorand txns
 
+# XRPL (XRP Ledger pre-signed transaction blobs for gasless payments)
+# Note: crate is `xrpl-rust` but its lib name is `xrpl`, so the package must be renamed.
+# Trim the default `cli` feature (drags clap+bip39); `std` hard-pins tokio/reqwest (fine, repo is tokio).
+xrpl = { package = "xrpl-rust", version = "1.1.0", default-features = false, features = ["std", "tokio-rt", "core", "models", "wallet", "utils", "helpers", "json-rpc"], optional = true }
+
 # Sui (sponsored transactions for gasless payments)
 # Note: Sui SDK is not yet stable on crates.io, using git dependencies
 # Pin to specific tag for reproducible builds
@@ -104,6 +109,7 @@ near = []
 stellar = []
 algorand = ["algonaut", "rmp-serde"]
 sui = ["sui-sdk", "sui-types", "sui-keys", "shared-crypto", "bcs"]
+xrpl = ["dep:xrpl"]
 
 [workspace]
 members = [

@@ -30,7 +30,7 @@ Includes [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) on-chain reputation
 
 > **Note**: Network counts may be outdated. Verify with: `curl -s https://facilitator.ultravioletadao.xyz/supported | jq '[.kinds[].network] | unique | map(select(contains("testnet") or contains("sepolia") or contains("devnet") or contains("fuji") or contains("amoy") or contains("alfajores") | not)) | length'`
 
-### Mainnets (19)
+### Mainnets (20)
 
 | Network | Chain ID | Token | Explorer |
 |---------|----------|-------|----------|
@@ -53,6 +53,7 @@ Includes [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) on-chain reputation
 | **NEAR** | - | USDC | [nearblocks.io](https://nearblocks.io) |
 | **Stellar** | - | USDC | [stellarchain.io](https://stellarchain.io) |
 | **Algorand** | - | USDC | [allo.info](https://allo.info) |
+| **XRPL** | - | XRP, USDC, RLUSD | [livenet.xrpl.org](https://livenet.xrpl.org) |
 
 ### Testnets (17)
 
@@ -87,6 +88,8 @@ Includes [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) on-chain reputation
 | **EURC** | Ethereum, Base, Avalanche |
 | **USDT** | Arbitrum, Celo, Optimism |
 | **PYUSD** | Ethereum |
+| **RLUSD** | XRPL |
+| **XRP** | XRPL (native) |
 
 **Full Matrix:**
 
@@ -109,6 +112,9 @@ Includes [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) on-chain reputation
 | NEAR | Y | - | - | - | - |
 | Stellar | Y | - | - | - | - |
 | Algorand | Y | - | - | - | - |
+| XRPL | Y | - | - | - | - |
+
+> **XRPL note**: In addition to USDC (issued token), XRPL also supports **RLUSD** (issued token) and **native XRP**. These are not EIP-3009 tokens, so they are not tracked by `scripts/stablecoin_matrix.py` (which only enumerates EIP-3009 stablecoins). See `docs/plans/xrpl-native-x402-integration-plan.md`.
 
 ---
 

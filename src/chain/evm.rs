@@ -134,7 +134,6 @@ impl TryFrom<Network> for EvmChain {
             Network::XdcMainnet => Ok(EvmChain::new(value, 50)),
             Network::AvalancheFuji => Ok(EvmChain::new(value, 43113)),
             Network::Avalanche => Ok(EvmChain::new(value, 43114)),
-            Network::XrplEvm => Ok(EvmChain::new(value, 1440000)),
             Network::Solana => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::SolanaDevnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::PolygonAmoy => Ok(EvmChain::new(value, 80002)),
@@ -164,6 +163,10 @@ impl TryFrom<Network> for EvmChain {
             Network::NearTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::Stellar => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::StellarTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
+            #[cfg(feature = "xrpl")]
+            Network::Xrpl => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
+            #[cfg(feature = "xrpl")]
+            Network::XrplTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::Fogo => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::FogoTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             #[cfg(feature = "algorand")]
@@ -598,7 +601,6 @@ impl FromEnvByNetworkBuild for EvmProvider {
             Network::XdcMainnet => false,
             Network::AvalancheFuji => true,
             Network::Avalanche => true,
-            Network::XrplEvm => false,
             Network::Solana => false,
             Network::SolanaDevnet => false,
             Network::PolygonAmoy => true,
@@ -628,6 +630,10 @@ impl FromEnvByNetworkBuild for EvmProvider {
             Network::NearTestnet => false, // NEAR is not an EVM chain
             Network::Stellar => false,   // Stellar is not an EVM chain
             Network::StellarTestnet => false, // Stellar is not an EVM chain
+            #[cfg(feature = "xrpl")]
+            Network::Xrpl => false, // XRPL is not an EVM chain
+            #[cfg(feature = "xrpl")]
+            Network::XrplTestnet => false, // XRPL is not an EVM chain
             Network::Fogo => false,      // Fogo is a Solana network, not EVM
             Network::FogoTestnet => false, // Fogo is a Solana network, not EVM
             #[cfg(feature = "algorand")]
@@ -1518,6 +1524,10 @@ async fn assert_valid_payment<P: Provider>(
             return Err(FacilitatorLocalError::UnsupportedNetwork(None));
         }
         ExactPaymentPayload::SolanaSettlementAccount(_) => {
+            return Err(FacilitatorLocalError::UnsupportedNetwork(None));
+        }
+        #[cfg(feature = "xrpl")]
+        ExactPaymentPayload::Xrpl(_) => {
             return Err(FacilitatorLocalError::UnsupportedNetwork(None));
         }
     };

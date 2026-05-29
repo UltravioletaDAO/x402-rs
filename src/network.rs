@@ -33,9 +33,6 @@ pub enum Network {
     /// Avalanche Mainnet (chain ID 43114)
     #[serde(rename = "avalanche")]
     Avalanche,
-    /// XRPL EVM mainnet (chain ID 1440000) - NEW from upstream v0.10.0
-    #[serde(rename = "xrpl-evm")]
-    XrplEvm,
     /// Solana Mainnet - Live production environment for deployed applications
     #[serde(rename = "solana")]
     Solana,
@@ -108,6 +105,14 @@ pub enum Network {
     /// Stellar testnet.
     #[serde(rename = "stellar-testnet")]
     StellarTestnet,
+    /// XRP Ledger mainnet (native XRPL family; NOT the EVM `xrpl-evm` chain).
+    #[cfg(feature = "xrpl")]
+    #[serde(rename = "xrpl")]
+    Xrpl,
+    /// XRP Ledger testnet (native XRPL family; NOT the EVM `xrpl-evm` chain).
+    #[cfg(feature = "xrpl")]
+    #[serde(rename = "xrpl-testnet")]
+    XrplTestnet,
     /// Fogo mainnet (Solana Virtual Machine).
     #[serde(rename = "fogo")]
     Fogo,
@@ -155,7 +160,6 @@ impl Display for Network {
             Network::XdcMainnet => write!(f, "xdc"),
             Network::AvalancheFuji => write!(f, "avalanche-fuji"),
             Network::Avalanche => write!(f, "avalanche"),
-            Network::XrplEvm => write!(f, "xrpl-evm"),
             Network::Solana => write!(f, "solana"),
             Network::SolanaDevnet => write!(f, "solana-devnet"),
             Network::PolygonAmoy => write!(f, "polygon-amoy"),
@@ -180,6 +184,10 @@ impl Display for Network {
             Network::NearTestnet => write!(f, "near-testnet"),
             Network::Stellar => write!(f, "stellar"),
             Network::StellarTestnet => write!(f, "stellar-testnet"),
+            #[cfg(feature = "xrpl")]
+            Network::Xrpl => write!(f, "xrpl"),
+            #[cfg(feature = "xrpl")]
+            Network::XrplTestnet => write!(f, "xrpl-testnet"),
             Network::Fogo => write!(f, "fogo"),
             Network::FogoTestnet => write!(f, "fogo-testnet"),
             #[cfg(feature = "algorand")]
@@ -214,7 +222,6 @@ impl FromStr for Network {
             "xdc" => Ok(Network::XdcMainnet),
             "avalanche-fuji" => Ok(Network::AvalancheFuji),
             "avalanche" => Ok(Network::Avalanche),
-            "xrpl-evm" => Ok(Network::XrplEvm),
             "solana" => Ok(Network::Solana),
             "solana-devnet" => Ok(Network::SolanaDevnet),
             "polygon-amoy" => Ok(Network::PolygonAmoy),
@@ -239,6 +246,10 @@ impl FromStr for Network {
             "near-testnet" => Ok(Network::NearTestnet),
             "stellar" => Ok(Network::Stellar),
             "stellar-testnet" => Ok(Network::StellarTestnet),
+            #[cfg(feature = "xrpl")]
+            "xrpl" | "xrpl-mainnet" => Ok(Network::Xrpl),
+            #[cfg(feature = "xrpl")]
+            "xrpl-testnet" => Ok(Network::XrplTestnet),
             "fogo" => Ok(Network::Fogo),
             "fogo-testnet" => Ok(Network::FogoTestnet),
             #[cfg(feature = "algorand")]
@@ -265,6 +276,8 @@ pub enum NetworkFamily {
     Solana,
     Near,
     Stellar,
+    #[cfg(feature = "xrpl")]
+    Xrpl,
     #[cfg(feature = "algorand")]
     Algorand,
     #[cfg(feature = "sui")]
@@ -279,7 +292,6 @@ impl From<Network> for NetworkFamily {
             Network::XdcMainnet => NetworkFamily::Evm,
             Network::AvalancheFuji => NetworkFamily::Evm,
             Network::Avalanche => NetworkFamily::Evm,
-            Network::XrplEvm => NetworkFamily::Evm,
             Network::Solana => NetworkFamily::Solana,
             Network::SolanaDevnet => NetworkFamily::Solana,
             Network::PolygonAmoy => NetworkFamily::Evm,
@@ -304,6 +316,10 @@ impl From<Network> for NetworkFamily {
             Network::NearTestnet => NetworkFamily::Near,
             Network::Stellar => NetworkFamily::Stellar,
             Network::StellarTestnet => NetworkFamily::Stellar,
+            #[cfg(feature = "xrpl")]
+            Network::Xrpl => NetworkFamily::Xrpl,
+            #[cfg(feature = "xrpl")]
+            Network::XrplTestnet => NetworkFamily::Xrpl,
             Network::Fogo => NetworkFamily::Solana,
             Network::FogoTestnet => NetworkFamily::Solana,
             #[cfg(feature = "algorand")]
@@ -333,7 +349,6 @@ impl Network {
             Network::XdcMainnet,
             Network::AvalancheFuji,
             Network::Avalanche,
-            Network::XrplEvm,
             Network::Solana,
             Network::SolanaDevnet,
             Network::PolygonAmoy,
@@ -358,6 +373,10 @@ impl Network {
             Network::NearTestnet,
             Network::Stellar,
             Network::StellarTestnet,
+            #[cfg(feature = "xrpl")]
+            Network::Xrpl,
+            #[cfg(feature = "xrpl")]
+            Network::XrplTestnet,
             Network::Fogo,
             Network::FogoTestnet,
             Network::Algorand,
@@ -381,7 +400,6 @@ impl Network {
             Network::XdcMainnet,
             Network::AvalancheFuji,
             Network::Avalanche,
-            Network::XrplEvm,
             Network::Solana,
             Network::SolanaDevnet,
             Network::PolygonAmoy,
@@ -406,6 +424,10 @@ impl Network {
             Network::NearTestnet,
             Network::Stellar,
             Network::StellarTestnet,
+            #[cfg(feature = "xrpl")]
+            Network::Xrpl,
+            #[cfg(feature = "xrpl")]
+            Network::XrplTestnet,
             Network::Fogo,
             Network::FogoTestnet,
             Network::Algorand,
@@ -427,7 +449,6 @@ impl Network {
             Network::XdcMainnet,
             Network::AvalancheFuji,
             Network::Avalanche,
-            Network::XrplEvm,
             Network::Solana,
             Network::SolanaDevnet,
             Network::PolygonAmoy,
@@ -452,6 +473,10 @@ impl Network {
             Network::NearTestnet,
             Network::Stellar,
             Network::StellarTestnet,
+            #[cfg(feature = "xrpl")]
+            Network::Xrpl,
+            #[cfg(feature = "xrpl")]
+            Network::XrplTestnet,
             Network::Fogo,
             Network::FogoTestnet,
             Network::Sui,
@@ -473,7 +498,6 @@ impl Network {
             Network::XdcMainnet,
             Network::AvalancheFuji,
             Network::Avalanche,
-            Network::XrplEvm,
             Network::Solana,
             Network::SolanaDevnet,
             Network::PolygonAmoy,
@@ -498,6 +522,10 @@ impl Network {
             Network::NearTestnet,
             Network::Stellar,
             Network::StellarTestnet,
+            #[cfg(feature = "xrpl")]
+            Network::Xrpl,
+            #[cfg(feature = "xrpl")]
+            Network::XrplTestnet,
             Network::Fogo,
             Network::FogoTestnet,
             Network::SkaleBase,
@@ -516,6 +544,10 @@ impl Network {
         }
         #[cfg(feature = "sui")]
         if matches!(self, Network::SuiTestnet) {
+            return true;
+        }
+        #[cfg(feature = "xrpl")]
+        if matches!(self, Network::XrplTestnet) {
             return true;
         }
         matches!(
@@ -578,7 +610,6 @@ impl Network {
             Network::Monad => "eip155:143".to_string(),
             Network::Bsc => "eip155:56".to_string(),
             Network::XdcMainnet => "eip155:50".to_string(),
-            Network::XrplEvm => "eip155:1440000".to_string(),
             // Solana - solana:{genesis_hash}
             Network::Solana => "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp".to_string(),
             Network::SolanaDevnet => "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1".to_string(),
@@ -588,6 +619,11 @@ impl Network {
             // Stellar - stellar:{network_name}
             Network::Stellar => "stellar:pubnet".to_string(),
             Network::StellarTestnet => "stellar:testnet".to_string(),
+            // XRPL - xrpl:{network_id} (mainnet NetworkID=0, testnet NetworkID=1)
+            #[cfg(feature = "xrpl")]
+            Network::Xrpl => "xrpl:0".to_string(),
+            #[cfg(feature = "xrpl")]
+            Network::XrplTestnet => "xrpl:1".to_string(),
             // Fogo - fogo:{network_name}
             Network::Fogo => "fogo:mainnet".to_string(),
             Network::FogoTestnet => "fogo:testnet".to_string(),
@@ -641,7 +677,6 @@ impl Network {
             "eip155:143" => Some(Network::Monad),
             "eip155:56" => Some(Network::Bsc),
             "eip155:50" => Some(Network::XdcMainnet),
-            "eip155:1440000" => Some(Network::XrplEvm),
             // Solana
             "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp" => Some(Network::Solana),
             "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1" => Some(Network::SolanaDevnet),
@@ -651,6 +686,11 @@ impl Network {
             // Stellar
             "stellar:pubnet" => Some(Network::Stellar),
             "stellar:testnet" => Some(Network::StellarTestnet),
+            // XRPL (xrpl:0 mainnet, xrpl:1 testnet)
+            #[cfg(feature = "xrpl")]
+            "xrpl:0" => Some(Network::Xrpl),
+            #[cfg(feature = "xrpl")]
+            "xrpl:1" => Some(Network::XrplTestnet),
             // Fogo
             "fogo:mainnet" => Some(Network::Fogo),
             "fogo:testnet" => Some(Network::FogoTestnet),
@@ -749,19 +789,6 @@ static USDC_AVALANCHE: Lazy<USDCDeployment> = Lazy::new(|| {
             name: "USD Coin".into(),
             version: "2".into(),
         }),
-    })
-});
-
-/// Lazily initialized known USDC deployment on XRPL EVM mainnet as [`USDCDeployment`].
-static USDC_XRPL_EVM: Lazy<USDCDeployment> = Lazy::new(|| {
-    USDCDeployment(TokenDeployment {
-        asset: TokenAsset {
-            address: address!("0xDaF4556169c4F3f2231d8ab7BC8772Ddb7D4c84C").into(),
-            network: Network::XrplEvm,
-        },
-        decimals: 6,
-        // EIP-712 domain fields (name/version) are resolved dynamically if not provided.
-        eip712: None,
     })
 });
 
@@ -1119,6 +1146,102 @@ static USDC_STELLAR_TESTNET: Lazy<USDCDeployment> = Lazy::new(|| {
     })
 });
 
+// =============================================================================
+// XRPL token deployments
+//
+// XRPL assets are {currency, issuer} pairs (or native XRP), not a single
+// contract address. The MixedAddress::Xrpl(String) convention used here is:
+//   - Issued tokens: "<40-char-currency-hex>.<issuer-r-address>"
+//   - Native XRP:    "XRP"
+// The XRPL provider's decode logic reconstructs the {currency, issuer} pair
+// from this string. Decimals are advertised as 6 for cross-chain display
+// consistency, though XRPL issued tokens are decimal strings (up to 15
+// significant digits), not fixed-base-unit integers. XRP itself is integer
+// drops (6 dp). eip712 is always None (XRPL does not use EIP-712).
+//
+// Currency hex constants (40-char, right-zero-padded; ISO codes >3 chars are
+// ALWAYS the 40-char hex on-chain):
+//   USDC  = 5553444300000000000000000000000000000000
+//   RLUSD = 524C555344000000000000000000000000000000
+// =============================================================================
+
+/// Lazily initialized known USDC (Circle native) deployment on XRPL mainnet.
+/// Issuer VERIFIED via Circle blog/docs (per XRPL implementation brief).
+#[cfg(feature = "xrpl")]
+static USDC_XRPL: Lazy<USDCDeployment> = Lazy::new(|| {
+    USDCDeployment(TokenDeployment {
+        asset: TokenAsset {
+            // currency=USDC, issuer=rGm7WCVp9gb4jZHWTEtGUr4dd74z2XuWhE (VERIFIED, Circle)
+            address: MixedAddress::Xrpl(
+                "5553444300000000000000000000000000000000.rGm7WCVp9gb4jZHWTEtGUr4dd74z2XuWhE"
+                    .to_string(),
+            ),
+            network: Network::Xrpl,
+        },
+        decimals: 6,
+        eip712: None,
+    })
+});
+
+/// Lazily initialized known USDC (Circle native) deployment on XRPL testnet.
+/// Issuer VERIFIED via Circle quickstart (per XRPL implementation brief).
+#[cfg(feature = "xrpl")]
+static USDC_XRPL_TESTNET: Lazy<USDCDeployment> = Lazy::new(|| {
+    USDCDeployment(TokenDeployment {
+        asset: TokenAsset {
+            // currency=USDC, issuer=rHuGNhqTG32mfmAvWA8hUyWRLV3tCSwKQt (VERIFIED, Circle)
+            address: MixedAddress::Xrpl(
+                "5553444300000000000000000000000000000000.rHuGNhqTG32mfmAvWA8hUyWRLV3tCSwKQt"
+                    .to_string(),
+            ),
+            network: Network::XrplTestnet,
+        },
+        decimals: 6,
+        eip712: None,
+    })
+});
+
+/// Lazily initialized known RLUSD deployment on XRPL mainnet.
+/// Issuer VERIFIED via RippleX / xrpscan (per XRPL implementation brief).
+/// Surfaced as an additional asset (not the USDCDeployment `by_network` getter).
+#[cfg(feature = "xrpl")]
+pub(crate) static RLUSD_XRPL: Lazy<TokenAsset> = Lazy::new(|| TokenAsset {
+    // currency=RLUSD, issuer=rMxCKbEDwqr76QuheSUMdEGf4B9xJ8m5De (VERIFIED, RippleX)
+    address: MixedAddress::Xrpl(
+        "524C555344000000000000000000000000000000.rMxCKbEDwqr76QuheSUMdEGf4B9xJ8m5De".to_string(),
+    ),
+    network: Network::Xrpl,
+});
+
+/// Lazily initialized known RLUSD deployment on XRPL testnet.
+/// TODO(UNVERIFIED): issuer rQhWct2fv4Vc4KRjRgMrxa8xPN9Zx9iLKV is sourced from
+/// official Ripple docs (a JS SPA, attributed via search not direct render).
+/// Run a live `account_lines`/`ledger_data` against
+/// https://s.altnet.rippletest.net:51234/ to double-confirm before relying on it.
+#[cfg(feature = "xrpl")]
+pub(crate) static RLUSD_XRPL_TESTNET: Lazy<TokenAsset> = Lazy::new(|| TokenAsset {
+    // currency=RLUSD, issuer=rQhWct2fv4Vc4KRjRgMrxa8xPN9Zx9iLKV (UNVERIFIED - confirm live)
+    address: MixedAddress::Xrpl(
+        "524C555344000000000000000000000000000000.rQhWct2fv4Vc4KRjRgMrxa8xPN9Zx9iLKV".to_string(),
+    ),
+    network: Network::XrplTestnet,
+});
+
+/// Native XRP "asset" sentinel on XRPL mainnet.
+/// XRP is the native token (6 dp, integer drops). VERIFIED (xrpl.org currency-formats).
+#[cfg(feature = "xrpl")]
+pub(crate) static XRP_XRPL: Lazy<TokenAsset> = Lazy::new(|| TokenAsset {
+    address: MixedAddress::Xrpl("XRP".to_string()),
+    network: Network::Xrpl,
+});
+
+/// Native XRP "asset" sentinel on XRPL testnet.
+#[cfg(feature = "xrpl")]
+pub(crate) static XRP_XRPL_TESTNET: Lazy<TokenAsset> = Lazy::new(|| TokenAsset {
+    address: MixedAddress::Xrpl("XRP".to_string()),
+    network: Network::XrplTestnet,
+});
+
 /// Lazily initialized known USDC deployment on Fogo mainnet as [`USDCDeployment`].
 static USDC_FOGO: Lazy<USDCDeployment> = Lazy::new(|| {
     USDCDeployment(TokenDeployment {
@@ -1301,7 +1424,6 @@ impl USDCDeployment {
             Network::XdcMainnet => Some(&USDC_XDC),
             Network::AvalancheFuji => Some(&USDC_AVALANCHE_FUJI),
             Network::Avalanche => Some(&USDC_AVALANCHE),
-            Network::XrplEvm => Some(&USDC_XRPL_EVM),
             Network::Solana => Some(&USDC_SOLANA),
             Network::SolanaDevnet => Some(&USDC_SOLANA_DEVNET),
             Network::PolygonAmoy => Some(&USDC_POLYGON_AMOY),
@@ -1326,6 +1448,10 @@ impl USDCDeployment {
             Network::NearTestnet => Some(&USDC_NEAR_TESTNET),
             Network::Stellar => Some(&USDC_STELLAR),
             Network::StellarTestnet => Some(&USDC_STELLAR_TESTNET),
+            #[cfg(feature = "xrpl")]
+            Network::Xrpl => Some(&USDC_XRPL),
+            #[cfg(feature = "xrpl")]
+            Network::XrplTestnet => Some(&USDC_XRPL_TESTNET),
             Network::Fogo => Some(&USDC_FOGO),
             Network::FogoTestnet => Some(&USDC_FOGO_TESTNET),
             #[cfg(feature = "algorand")]
@@ -1830,6 +1956,8 @@ pub fn get_token_deployment(network: Network, token_type: TokenType) -> Option<T
         TokenType::Ausd => AUSDDeployment::by_network(network).map(|d| d.0.clone()),
         TokenType::Pyusd => PYUSDDeployment::by_network(network).map(|d| d.0.clone()),
         TokenType::Usdt => USDTDeployment::by_network(network).map(|d| d.0.clone()),
+        // XRPL-only tokens: no EVM deployment registry.
+        TokenType::Rlusd | TokenType::Xrp => None,
     }
 }
 
@@ -1882,6 +2010,8 @@ pub fn supported_networks_for_token(token_type: TokenType) -> Vec<Network> {
         TokenType::Ausd => AUSDDeployment::supported_networks().to_vec(),
         TokenType::Pyusd => PYUSDDeployment::supported_networks().to_vec(),
         TokenType::Usdt => USDTDeployment::supported_networks().to_vec(),
+        // XRPL-only tokens: surfaced by the XrplProvider::supported() method.
+        TokenType::Rlusd | TokenType::Xrp => vec![],
     }
 }
 

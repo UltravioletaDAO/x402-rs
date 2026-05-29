@@ -97,7 +97,6 @@ impl TryFrom<Network> for SolanaChain {
             Network::XdcMainnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::AvalancheFuji => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::Avalanche => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
-            Network::XrplEvm => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::PolygonAmoy => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::Polygon => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::Sei => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
@@ -124,6 +123,10 @@ impl TryFrom<Network> for SolanaChain {
             Network::NearTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::Stellar => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::StellarTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
+            #[cfg(feature = "xrpl")]
+            Network::Xrpl => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
+            #[cfg(feature = "xrpl")]
+            Network::XrplTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::Fogo => Ok(Self { network: value }),
             Network::FogoTestnet => Ok(Self { network: value }),
             Network::Hedera => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
@@ -171,6 +174,10 @@ impl TryFrom<MixedAddress> for SolanaAddress {
             )),
             #[cfg(feature = "sui")]
             MixedAddress::Sui(_) => Err(FacilitatorLocalError::InvalidAddress(
+                "expected Solana address".to_string(),
+            )),
+            #[cfg(feature = "xrpl")]
+            MixedAddress::Xrpl(_) => Err(FacilitatorLocalError::InvalidAddress(
                 "expected Solana address".to_string(),
             )),
             MixedAddress::Solana(pubkey) => Ok(Self { pubkey }),
@@ -1085,6 +1092,10 @@ impl SolanaProvider {
                 return Err(FacilitatorLocalError::DecodingError(
                     "settlement account payload should not reach verify_transfer".to_string(),
                 ));
+            }
+            #[cfg(feature = "xrpl")]
+            ExactPaymentPayload::Xrpl(..) => {
+                return Err(FacilitatorLocalError::UnsupportedNetwork(None));
             }
             ExactPaymentPayload::Solana(payload) => payload,
         };

@@ -158,6 +158,7 @@ where
         .route("/monad.png", get(get_monad_logo))
         .route("/near.png", get(get_near_logo))
         .route("/stellar.png", get(get_stellar_logo))
+        .route("/xrpl.png", get(get_xrpl_logo))
         .route("/fogo.png", get(get_fogo_logo))
         .route("/algorand.png", get(get_algorand_logo))
         .route("/bsc.png", get(get_bsc_logo))
@@ -577,6 +578,17 @@ pub async fn get_near_logo() -> impl IntoResponse {
 #[instrument(skip_all)]
 pub async fn get_stellar_logo() -> impl IntoResponse {
     let bytes = include_bytes!("../static/stellar.png");
+    (
+        StatusCode::OK,
+        [("content-type", "image/png")],
+        bytes.as_slice(),
+    )
+}
+
+/// `GET /xrpl.png`: Returns XRPL (XRP Ledger) logo.
+#[instrument(skip_all)]
+pub async fn get_xrpl_logo() -> impl IntoResponse {
+    let bytes = include_bytes!("../static/xrpl.png");
     (
         StatusCode::OK,
         [("content-type", "image/png")],
@@ -1918,6 +1930,14 @@ where
             debug!(
                 "  - settlement_rent_destination: {:?}",
                 sa_payload.settlement_rent_destination
+            );
+        }
+        #[cfg(feature = "xrpl")]
+        crate::types::ExactPaymentPayload::Xrpl(xrpl_payload) => {
+            debug!("  - payload type: XRPL (pre-signed Payment)");
+            debug!(
+                "  - signed_tx_blob: {} (truncated)",
+                &xrpl_payload.signed_tx_blob[..xrpl_payload.signed_tx_blob.len().min(100)]
             );
         }
     }

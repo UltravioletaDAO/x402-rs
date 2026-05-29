@@ -9,6 +9,8 @@ use crate::chain::solana::SolanaProvider;
 use crate::chain::stellar::StellarProvider;
 #[cfg(feature = "sui")]
 use crate::chain::sui::SuiProvider;
+#[cfg(feature = "xrpl")]
+use crate::chain::xrpl::XrplProvider;
 use crate::facilitator::Facilitator;
 use crate::network::{Network, NetworkFamily};
 use crate::types::{
@@ -24,12 +26,16 @@ pub mod solana;
 pub mod stellar;
 #[cfg(feature = "sui")]
 pub mod sui;
+#[cfg(feature = "xrpl")]
+pub mod xrpl;
 
 pub enum NetworkProvider {
     Evm(EvmProvider),
     Solana(SolanaProvider),
     Near(NearProvider),
     Stellar(StellarProvider),
+    #[cfg(feature = "xrpl")]
+    Xrpl(XrplProvider),
     #[cfg(feature = "algorand")]
     Algorand(AlgorandProvider),
     #[cfg(feature = "sui")]
@@ -62,6 +68,11 @@ impl FromEnvByNetworkBuild for NetworkProvider {
                 let provider = StellarProvider::from_env(network).await?;
                 provider.map(NetworkProvider::Stellar)
             }
+            #[cfg(feature = "xrpl")]
+            NetworkFamily::Xrpl => {
+                let provider = XrplProvider::from_env(network).await?;
+                provider.map(NetworkProvider::Xrpl)
+            }
             #[cfg(feature = "algorand")]
             NetworkFamily::Algorand => {
                 let provider = AlgorandProvider::from_env(network).await?;
@@ -89,6 +100,8 @@ impl NetworkProviderOps for NetworkProvider {
             NetworkProvider::Solana(provider) => provider.signer_address(),
             NetworkProvider::Near(provider) => provider.signer_address(),
             NetworkProvider::Stellar(provider) => provider.signer_address(),
+            #[cfg(feature = "xrpl")]
+            NetworkProvider::Xrpl(provider) => provider.signer_address(),
             #[cfg(feature = "algorand")]
             NetworkProvider::Algorand(provider) => provider.signer_address(),
             #[cfg(feature = "sui")]
@@ -102,6 +115,8 @@ impl NetworkProviderOps for NetworkProvider {
             NetworkProvider::Solana(provider) => provider.network(),
             NetworkProvider::Near(provider) => provider.network(),
             NetworkProvider::Stellar(provider) => provider.network(),
+            #[cfg(feature = "xrpl")]
+            NetworkProvider::Xrpl(provider) => provider.network(),
             #[cfg(feature = "algorand")]
             NetworkProvider::Algorand(provider) => provider.network(),
             #[cfg(feature = "sui")]
@@ -119,6 +134,8 @@ impl Facilitator for NetworkProvider {
             NetworkProvider::Solana(provider) => provider.verify(request).await,
             NetworkProvider::Near(provider) => provider.verify(request).await,
             NetworkProvider::Stellar(provider) => provider.verify(request).await,
+            #[cfg(feature = "xrpl")]
+            NetworkProvider::Xrpl(provider) => provider.verify(request).await,
             #[cfg(feature = "algorand")]
             NetworkProvider::Algorand(provider) => provider.verify(request).await,
             #[cfg(feature = "sui")]
@@ -132,6 +149,8 @@ impl Facilitator for NetworkProvider {
             NetworkProvider::Solana(provider) => provider.settle(request).await,
             NetworkProvider::Near(provider) => provider.settle(request).await,
             NetworkProvider::Stellar(provider) => provider.settle(request).await,
+            #[cfg(feature = "xrpl")]
+            NetworkProvider::Xrpl(provider) => provider.settle(request).await,
             #[cfg(feature = "algorand")]
             NetworkProvider::Algorand(provider) => provider.settle(request).await,
             #[cfg(feature = "sui")]
@@ -145,6 +164,8 @@ impl Facilitator for NetworkProvider {
             NetworkProvider::Solana(provider) => provider.supported().await,
             NetworkProvider::Near(provider) => provider.supported().await,
             NetworkProvider::Stellar(provider) => provider.supported().await,
+            #[cfg(feature = "xrpl")]
+            NetworkProvider::Xrpl(provider) => provider.supported().await,
             #[cfg(feature = "algorand")]
             NetworkProvider::Algorand(provider) => provider.supported().await,
             #[cfg(feature = "sui")]

@@ -236,6 +236,21 @@
     }
   },
 
+  "xrpl_networks": {
+    "_comment": "XRPL native family (NOT the EVM sidechain xrpl-evm / eip155:1440000). Native XRPL uses CAIP-2 xrpl:0 (mainnet) / xrpl:1 (testnet). Issued tokens are {currency, issuer} pairs; currency codes >3 chars are the 40-char hex form on-chain. XRP is native (integer drops, 1 XRP = 1e6 drops, 6 decimals). Issued tokens (RLUSD/USDC) are sent as decimal strings (up to 15 sig digits) but advertised as decimals:6 for cross-chain display consistency.",
+    "xrpl": {
+      "caip2": "xrpl:0",
+      "tokens": ["xrp", "rlusd", "usdc"],
+      "explorer": "https://livenet.xrpl.org",
+      "facilitatorWallet": "rfADKkVXBNqK3z72tVSS3LVzAR3psYkonp",
+      "xrpDecimals": 6,
+      "rlusdCurrencyHex": "524C555344000000000000000000000000000000",
+      "rlusdIssuer": "rMxCKbEDwqr76QuheSUMdEGf4B9xJ8m5De",
+      "usdcCurrencyHex": "5553444300000000000000000000000000000000",
+      "usdcIssuer": "rGm7WCVp9gb4jZHWTEtGUr4dd74z2XuWhE"
+    }
+  },
+
   "token_info": {
     "usdc": {
       "name": "USDC",
@@ -266,6 +281,18 @@
       "fullName": "Tether USD / USDT0",
       "decimals": 6,
       "issuer": "Tether/LayerZero OFT"
+    },
+    "xrp": {
+      "name": "XRP",
+      "fullName": "XRP (native)",
+      "decimals": 6,
+      "issuer": "XRP Ledger (native)"
+    },
+    "rlusd": {
+      "name": "RLUSD",
+      "fullName": "Ripple USD",
+      "decimals": 6,
+      "issuer": "Ripple"
     }
   },
 
@@ -310,7 +337,7 @@
   },
 
   "summary": {
-    "total_networks": 35,
+    "total_networks": 36,
     "evm_mainnets": 13,
     "evm_testnets": 10,
     "svm_networks": 4,
@@ -318,6 +345,7 @@
     "near_networks": 2,
     "stellar_networks": 2,
     "algorand_networks": 2,
-    "total_stablecoins": 5
+    "xrpl_networks": 1,
+    "total_stablecoins": 6
   }
 }

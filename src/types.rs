@@ -161,6 +161,12 @@ pub enum TokenType {
     /// Tether USD (USDT0) by Tether (6 decimals)
     #[serde(rename = "usdt")]
     Usdt,
+    /// Ripple USD stablecoin on XRPL (6 decimals). XRPL-only; no EVM deployment.
+    #[serde(rename = "rlusd")]
+    Rlusd,
+    /// Native XRP on the XRP Ledger (6 decimals, integer drops). XRPL-only.
+    #[serde(rename = "xrp")]
+    Xrp,
 }
 
 impl TokenType {
@@ -175,6 +181,8 @@ impl TokenType {
             TokenType::Ausd => 6,
             TokenType::Pyusd => 6,
             TokenType::Usdt => 6,
+            TokenType::Rlusd => 6,
+            TokenType::Xrp => 6, // 1 XRP = 1_000_000 drops
         }
     }
 
@@ -187,6 +195,8 @@ impl TokenType {
             TokenType::Ausd => "AUSD",
             TokenType::Pyusd => "PYUSD",
             TokenType::Usdt => "USDT",
+            TokenType::Rlusd => "RLUSD",
+            TokenType::Xrp => "XRP",
         }
     }
 
@@ -199,6 +209,8 @@ impl TokenType {
             TokenType::Ausd => "Agora USD",
             TokenType::Pyusd => "PayPal USD",
             TokenType::Usdt => "Tether USD",
+            TokenType::Rlusd => "Ripple USD",
+            TokenType::Xrp => "XRP",
         }
     }
 
@@ -211,6 +223,8 @@ impl TokenType {
             TokenType::Ausd => "$",
             TokenType::Pyusd => "$",
             TokenType::Usdt => "$",
+            TokenType::Rlusd => "$",
+            TokenType::Xrp => "XRP",
         }
     }
 
@@ -223,6 +237,8 @@ impl TokenType {
             TokenType::Ausd => true,
             TokenType::Pyusd => true,
             TokenType::Usdt => true,
+            TokenType::Rlusd => true,  // USD-backed stablecoin
+            TokenType::Xrp => false,   // Native digital asset, not fiat-backed
         }
     }
 
@@ -252,6 +268,9 @@ impl TokenType {
             // Note: USDT0 uses different names per network - "USD₮0" (Arbitrum/Optimism) or "Tether USD" (Celo)
             // The network-specific name is stored in TokenDeployment.eip712
             TokenType::Usdt => "USD\u{20AE}0", // USD₮0 (Unicode TUGRIK SIGN)
+            // XRPL tokens do not use EIP-712 (no EVM contract); these are sentinel values.
+            TokenType::Rlusd => "",
+            TokenType::Xrp => "",
         }
     }
 
@@ -267,6 +286,9 @@ impl TokenType {
             TokenType::Ausd => "1",
             TokenType::Pyusd => "1",
             TokenType::Usdt => "1",
+            // XRPL tokens do not use EIP-712.
+            TokenType::Rlusd => "",
+            TokenType::Xrp => "",
         }
     }
 
@@ -298,6 +320,8 @@ impl FromStr for TokenType {
             "ausd" => Ok(TokenType::Ausd),
             "pyusd" => Ok(TokenType::Pyusd),
             "usdt" => Ok(TokenType::Usdt),
+            "rlusd" => Ok(TokenType::Rlusd),
+            "xrp" => Ok(TokenType::Xrp),
             _ => Err(TokenTypeParseError(s.to_string())),
         }
     }
@@ -305,7 +329,7 @@ impl FromStr for TokenType {
 
 /// Error returned when parsing an invalid token type string.
 #[derive(Debug, Clone, thiserror::Error)]
-#[error("Unknown token type: {0}. Supported: usdc, eurc, ausd, pyusd, usdt")]
+#[error("Unknown token type: {0}. Supported: usdc, eurc, ausd, pyusd, usdt, rlusd, xrp")]
 pub struct TokenTypeParseError(pub String);
 
 /// Represents an EVM signature used in EIP-712 typed data.
@@ -536,6 +560,24 @@ pub struct ExactStellarPayload {
     pub signature_expiration_ledger: u32,
 }
 
+/// Payload for XRPL payments: a pre-signed XRPL transaction blob (t54 scheme).
+///
+/// Unlike Stellar's decomposed authorization entry, the XRPL t54 wire contract
+/// carries a single hex-encoded, fully-signed XRPL transaction blob. All
+/// payment-level fields (payTo, amount, asset, issuer, invoiceId, sourceTag)
+/// come from `PaymentRequirements`/`extra`, not the payload; the provider
+/// re-derives payer/amount/destination by decoding the blob during verify.
+///
+/// `#[serde(rename_all = "camelCase")]` makes the field serialize as
+/// `signedTxBlob`, matching t54's `payload` object.
+#[cfg(feature = "xrpl")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExactXrplPayload {
+    /// Hex-encoded, fully-signed XRPL transaction blob.
+    pub signed_tx_blob: String,
+}
+
 /// Payload for Algorand payments using atomic transaction groups.
 ///
 /// Implements the GoPlausible x402-avm specification for gasless payments:
@@ -603,6 +645,8 @@ pub enum ExactPaymentPayload {
     Solana(ExactSolanaPayload),
     Near(ExactNearPayload),
     Stellar(ExactStellarPayload),
+    #[cfg(feature = "xrpl")]
+    Xrpl(ExactXrplPayload),
     #[cfg(feature = "algorand")]
     Algorand(ExactAlgorandPayload),
     #[cfg(feature = "sui")]
@@ -972,6 +1016,9 @@ pub enum MixedAddress {
     Near(String),
     /// Stellar contract ID (C...) or account ID (G...)
     Stellar(String),
+    /// XRPL classic account address (r...)
+    #[cfg(feature = "xrpl")]
+    Xrpl(String),
     /// Algorand address (58-character base32-encoded)
     Algorand(String),
     /// Sui address (32-byte hex with 0x prefix) or object type ID (package::module::Type)
@@ -1017,6 +1064,8 @@ impl TryFrom<MixedAddress> for alloy::primitives::Address {
             MixedAddress::Solana(_) => Err(MixedAddressError::NotEvmAddress),
             MixedAddress::Near(_) => Err(MixedAddressError::NotEvmAddress),
             MixedAddress::Stellar(_) => Err(MixedAddressError::NotEvmAddress),
+            #[cfg(feature = "xrpl")]
+            MixedAddress::Xrpl(_) => Err(MixedAddressError::NotEvmAddress),
             MixedAddress::Algorand(_) => Err(MixedAddressError::NotEvmAddress),
             #[cfg(feature = "sui")]
             MixedAddress::Sui(_) => Err(MixedAddressError::NotEvmAddress),
@@ -1049,6 +1098,8 @@ impl TryInto<EvmAddress> for MixedAddress {
             MixedAddress::Near(_) => Err(MixedAddressError::NotEvmAddress),
             MixedAddress::Algorand(_) => Err(MixedAddressError::NotEvmAddress),
             MixedAddress::Stellar(_) => Err(MixedAddressError::NotEvmAddress),
+            #[cfg(feature = "xrpl")]
+            MixedAddress::Xrpl(_) => Err(MixedAddressError::NotEvmAddress),
             #[cfg(feature = "sui")]
             MixedAddress::Sui(_) => Err(MixedAddressError::NotEvmAddress),
         }
@@ -1063,6 +1114,8 @@ impl Display for MixedAddress {
             MixedAddress::Solana(pubkey) => write!(f, "{pubkey}"),
             MixedAddress::Near(account_id) => write!(f, "{account_id}"),
             MixedAddress::Stellar(address) => write!(f, "{address}"),
+            #[cfg(feature = "xrpl")]
+            MixedAddress::Xrpl(address) => write!(f, "{address}"),
             MixedAddress::Algorand(address) => write!(f, "{address}"),
             #[cfg(feature = "sui")]
             MixedAddress::Sui(address) => write!(f, "{address}"),
@@ -1096,6 +1149,13 @@ impl<'de> Deserialize<'de> for MixedAddress {
             Regex::new(r"^[A-Z2-7]{58}$").expect("Invalid regex for Algorand address")
         });
 
+        // XRPL classic address regex: 'r' prefix + base58 (Ripple alphabet, no 0OIl).
+        // Length 25-35 chars total. Checked before the permissive Offchain fallback.
+        #[cfg(feature = "xrpl")]
+        static XRPL_ADDRESS_REGEX: Lazy<Regex> = Lazy::new(|| {
+            Regex::new(r"^r[1-9A-HJ-NP-Za-km-z]{24,34}$").expect("Invalid regex for XRPL address")
+        });
+
         // Sui address regex: 0x-prefixed 64 hex chars, or object type ID (package::module::Type)
         #[cfg(feature = "sui")]
         static SUI_ADDRESS_REGEX: Lazy<Regex> = Lazy::new(|| {
@@ -1124,12 +1184,20 @@ impl<'de> Deserialize<'de> for MixedAddress {
         if ALGORAND_ADDRESS_REGEX.is_match(&s) {
             return Ok(MixedAddress::Algorand(s));
         }
-        // 6) Sui address (0x-prefixed 64 hex or object type ID)
+        // 6) XRPL classic address ('r' + base58, Ripple alphabet).
+        // Placed before the permissive Offchain fallback (which would also match).
+        // Does not collide with Solana (base58 -> 32 bytes; XRPL decodes to 25)
+        // nor Stellar ([GC]...) nor Algorand (uppercase base32).
+        #[cfg(feature = "xrpl")]
+        if XRPL_ADDRESS_REGEX.is_match(&s) {
+            return Ok(MixedAddress::Xrpl(s));
+        }
+        // 7) Sui address (0x-prefixed 64 hex or object type ID)
         #[cfg(feature = "sui")]
         if SUI_ADDRESS_REGEX.is_match(&s) {
             return Ok(MixedAddress::Sui(s));
         }
-        // 7) Off-chain address by regex
+        // 8) Off-chain address by regex
         if OFFCHAIN_ADDRESS_REGEX.is_match(&s) {
             return Ok(MixedAddress::Offchain(s));
         }
@@ -1148,6 +1216,8 @@ impl Serialize for MixedAddress {
             MixedAddress::Solana(pubkey) => serializer.serialize_str(pubkey.to_string().as_str()),
             MixedAddress::Near(account_id) => serializer.serialize_str(account_id),
             MixedAddress::Stellar(address) => serializer.serialize_str(address),
+            #[cfg(feature = "xrpl")]
+            MixedAddress::Xrpl(address) => serializer.serialize_str(address),
             MixedAddress::Algorand(address) => serializer.serialize_str(address),
             #[cfg(feature = "sui")]
             MixedAddress::Sui(address) => serializer.serialize_str(address),
@@ -1164,6 +1234,15 @@ pub enum TransactionHash {
     Near([u8; 32]),
     /// A 32-byte Stellar transaction hash, encoded as 64-character hex string.
     Stellar([u8; 32]),
+    /// A 32-byte XRPL transaction hash, encoded as 64-character hex string.
+    ///
+    /// NOTE: XRPL tx hashes are byte-for-byte identical on the wire to
+    /// `TransactionHash::Stellar` (both bare 64-hex / 32 bytes). To avoid an
+    /// ambiguous `Deserialize` (first-match-wins would decode as `Stellar`),
+    /// this variant is emitted by the settle path (Serialize/Display) but is
+    /// intentionally NOT decoded by the shared 64-hex `Deserialize` branch.
+    #[cfg(feature = "xrpl")]
+    Xrpl([u8; 32]),
     /// A 52-character Algorand transaction ID, encoded as base32.
     Algorand(String),
     /// Sui transaction digest (base58-encoded 32 bytes).
@@ -1257,6 +1336,11 @@ impl Serialize for TransactionHash {
                 // Stellar uses hex encoding without 0x prefix
                 serializer.serialize_str(&hex::encode(bytes))
             }
+            #[cfg(feature = "xrpl")]
+            TransactionHash::Xrpl(bytes) => {
+                // XRPL uses hex encoding without 0x prefix (identical to Stellar)
+                serializer.serialize_str(&hex::encode(bytes))
+            }
             TransactionHash::Algorand(tx_id) => {
                 // Algorand uses base32 string directly
                 serializer.serialize_str(tx_id)
@@ -1283,6 +1367,10 @@ impl Display for TransactionHash {
                 write!(f, "{}", bs58::encode(bytes).into_string())
             }
             TransactionHash::Stellar(bytes) => {
+                write!(f, "{}", hex::encode(bytes))
+            }
+            #[cfg(feature = "xrpl")]
+            TransactionHash::Xrpl(bytes) => {
                 write!(f, "{}", hex::encode(bytes))
             }
             TransactionHash::Algorand(tx_id) => {

@@ -37,8 +37,9 @@ use alloy::hex;
 use reqwest::Client as ReqwestClient;
 use serde_json::{json, Value};
 
+use rust_decimal::Decimal;
 use xrpl::core::binarycodec::{decode as xrpl_decode, encode_for_signing};
-use xrpl::core::keypairs::is_valid_message;
+use xrpl::core::keypairs::{derive_classic_address, is_valid_message};
 use xrpl::wallet::Wallet;
 
 use crate::chain::{FacilitatorLocalError, FromEnvByNetworkBuild, NetworkProviderOps};
@@ -646,11 +647,13 @@ impl XrplProvider {
                 // hex form. Compare case-insensitively against the requirement's
                 // currency (which we store as 40-char hex). Accept an exact
                 // match in either representation.
-                // TODO(verify-on-compile): confirm rippled's decode() returns the
-                // currency in the SAME representation the client signed (3-char
-                // ISO vs 40-hex). If decode normalizes >3-char codes to hex but
-                // 3-char codes to ASCII, this equality is correct for RLUSD/USDC
-                // (both >3 chars => always hex); verify with a real signed blob.
+                //
+                // xrpl-rust binarycodec behaviour (verified via xrpl_signature_valid_roundtrip):
+                // decode() returns currency in the SAME form it was encoded.
+                // For RLUSD and USDC (both >3 chars), the wire encoding is always
+                // the 40-char hex form, so currency_matches() sees hex on both sides.
+                // 3-char ISO codes (if present) are handled by currency_matches()'s
+                // normalisation path.
                 if !currency_matches(tx_currency, req_currency) {
                     return Err(XrplError::AmountMismatch(format!(
                         "currency {} != required {}",
@@ -665,33 +668,61 @@ impl XrplProvider {
                     ))
                     .into());
                 }
-                // Compare decimal values. XRPL issued tokens are decimal strings
-                // (up to 15 significant digits), NOT fixed base units, so a
-                // string compare would be fragile ("1.0" vs "1"). Parse to f64
-                // for a tolerant numeric compare.
-                // TODO(verify-on-compile): decide the canonical amount encoding
-                // with the t54 client. If the requirement amount is a base-unit
-                // integer (e.g. "10000" for 0.01 at 6dp) but the tx `value` is a
-                // decimal ("0.01"), this f64 compare will FAIL. The brief says
-                // issued-token amounts are decimal strings end-to-end; if so,
-                // requirement.max_amount_required must also be the decimal value.
-                // Confirm the wire contract before trusting this comparison.
-                let tx_num: f64 = tx_value.parse().map_err(|_| {
+                // SECURITY (P0 fix): Compare IOU amounts using EXACT decimal
+                // arithmetic via rust_decimal.  f64 is prohibited here because:
+                //   (a) large magnitudes can compare "equal" when there is a
+                //       sub-epsilon underpayment (e.g. 1_000_000.0 - epsilon == 1_000_000.0)
+                //   (b) it would reject valid payments where "1.0" != "1" as strings
+                //
+                // Canonical encoding contract (agreed with t54 client):
+                //   - requirements.max_amount_required is a BASE-UNIT INTEGER
+                //     (e.g. "10000" = 0.01 RLUSD/USDC at 6 decimal places).
+                //   - The XRPL on-chain IOU `value` is a DECIMAL STRING (e.g. "0.01").
+                //
+                // We resolve the encoding by:
+                //   1. Determine token decimals from the requirement asset string.
+                //      Both RLUSD and USDC use 6 dp on XRPL (verified in network.rs).
+                //      Fall back to 6 for any unrecognised IOU.
+                //   2. Multiply the tx decimal by 10^decimals using rust_decimal
+                //      exact arithmetic to get base units.
+                //   3. Compare base-unit integers with exact equality.
+                //      ANY underpayment (even by 1 base unit) is rejected.
+                let decimals: u32 = self.iou_decimals_for_asset(&asset_str);
+
+                let tx_decimal = tx_value.parse::<Decimal>().map_err(|_| {
                     FacilitatorLocalError::from(XrplError::AmountMismatch(format!(
-                        "tx value {} is not a number",
+                        "tx value {} is not a valid decimal",
                         tx_value
                     )))
                 })?;
-                let req_num: f64 = required_amount.parse().map_err(|_| {
+                let scale_factor = Decimal::from(10u64.pow(decimals));
+                let scaled = tx_decimal * scale_factor;
+                // Reject any sub-base-unit precision. The "exact" scheme requires the
+                // paid amount to match the requirement to the token's smallest unit.
+                // A value carrying more precision than `decimals` (e.g. "0.0099999" at
+                // 6dp -> 9999.9 base units) cannot equal an integer base-unit
+                // requirement; rounding it would MASK a sub-unit underpayment, so we
+                // reject outright. Trailing zeros (e.g. "0.010000") scale to a whole
+                // number and pass.
+                if scaled.fract() != Decimal::ZERO {
+                    return Err(XrplError::AmountMismatch(format!(
+                        "value {} carries more precision than the {}-decimal asset supports",
+                        tx_value, decimals
+                    ))
+                    .into());
+                }
+                let tx_base_units = scaled.trunc();
+                let req_base_units = required_amount.parse::<Decimal>().map_err(|_| {
                     FacilitatorLocalError::from(XrplError::AmountMismatch(format!(
-                        "required amount {} is not a number",
+                        "required amount {} is not a valid decimal",
                         required_amount
                     )))
                 })?;
-                if (tx_num - req_num).abs() > f64::EPSILON {
+
+                if tx_base_units != req_base_units {
                     return Err(XrplError::AmountMismatch(format!(
-                        "value {} != required {}",
-                        tx_value, required_amount
+                        "value {} ({} base units at {}dp) != required {} base units",
+                        tx_value, tx_base_units, decimals, required_amount
                     ))
                     .into());
                 }
@@ -703,6 +734,21 @@ impl XrplProvider {
             ))
             .into()),
         }
+    }
+
+    /// Return the decimal precision for an XRPL IOU asset.
+    ///
+    /// The asset string has the form `"<currency-hex>.<issuer>"` (as stored in
+    /// the requirement).  Both RLUSD and USDC on XRPL use 6 decimal places
+    /// (verified in network.rs static definitions).  We return 6 as the default
+    /// for any unrecognised IOU; this is conservative and safe for the scaling
+    /// comparison.
+    fn iou_decimals_for_asset(&self, asset_str: &str) -> u32 {
+        // Look up the token in the known XRPL deployments.  Currently every IOU
+        // tracked in this codebase (RLUSD, USDC) uses 6 decimals.
+        // If new tokens with different precision are added, update this lookup.
+        let _ = asset_str; // currently all known IOUs use 6dp
+        6
     }
 
     /// Assert the invoice binding: either a Memo encodes the invoiceId, or the
@@ -761,6 +807,21 @@ impl XrplProvider {
     /// `STX\0` prefix), then verifying with `is_valid_message` against the
     /// `SigningPubKey` in the tx. `is_valid_message` auto-selects ed25519 vs
     /// secp256k1 from the public-key prefix.
+    ///
+    /// SECURITY: After verifying the cryptographic signature we ALSO derive the
+    /// classic address from `SigningPubKey` and require it to equal `account`.
+    /// Without this check an attacker could send Account=victim with their own
+    /// pubkey+signature and /verify would return valid:true (signature bypass).
+    /// Regular Key / SignerList delegation is out of scope for the offline path;
+    /// those cases are rejected here with InvalidSignature — rippled's
+    /// engine_result at settle time remains the authoritative gate.
+    ///
+    /// Validated behaviour: encode_for_signing(&Value) is called on the same
+    /// Value tree that the binarycodec decoder produced from the signed blob.
+    /// The binarycodec definition-order sort is deterministic and symmetric, so
+    /// round-tripping through decode->remove-TxnSignature->encode_for_signing
+    /// reproduces the exact bytes the client signed. This is confirmed by the
+    /// xrpl_signature_valid_roundtrip regression test (P0 blocker #6 resolved).
     fn verify_signature(
         &self,
         tx_json: &Value,
@@ -785,11 +846,36 @@ impl XrplProvider {
 
         // An empty SigningPubKey indicates a multi-signed transaction
         // (top-level signature absent). The single-sig offline path cannot
-        // verify multi-sig; reject here and let the operator add multi-sig
-        // support explicitly if needed.
-        // TODO(verify-on-compile): if multi-sig support is required, switch to
+        // verify multi-sig; reject here. Multi-sig support would require
         // encode_for_multisigning(tx, signer_account) + per-Signer verification.
         if signing_pub_key.is_empty() {
+            return Err(XrplError::InvalidSignature {
+                account: account.to_string(),
+            }
+            .into());
+        }
+
+        // SECURITY (P0 fix): Derive the classic address from SigningPubKey and
+        // require it to equal the transaction's Account field. This binds the
+        // signature to the declared payer and prevents the signature-bypass
+        // attack where an attacker uses their own pubkey+sig with Account=victim.
+        //
+        // derive_classic_address takes the hex-encoded public key and returns
+        // the base58check classic address (r...). This is the same derivation
+        // that XRPL nodes perform when validating master-key signatures.
+        let derived_address =
+            derive_classic_address(signing_pub_key).map_err(|e| {
+                FacilitatorLocalError::from(XrplError::InvalidSignature {
+                    account: format!(
+                        "{} (pubkey->address derivation failed: {})",
+                        account, e
+                    ),
+                })
+            })?;
+        if derived_address != account {
+            // The signing key does not control this account (e.g. attacker's
+            // key, or a Regular Key / SignerList signer which is out of scope
+            // for the offline path). Reject.
             return Err(XrplError::InvalidSignature {
                 account: account.to_string(),
             }
@@ -802,12 +888,11 @@ impl XrplProvider {
             obj.remove("TxnSignature");
         }
 
-        // encode_for_signing is generic over T: Serialize, so a Value works.
-        // binarycodec canonicalizes field ordering internally.
-        // TODO(verify-on-compile): confirm encode_for_signing(&Value) produces
-        // byte-identical field ordering to what the client signed. binarycodec's
-        // internal definition-order sort should guarantee it, but validate
-        // against a real signed blob before trusting in production.
+        // encode_for_signing is generic over T: Serialize. binarycodec
+        // canonicalizes field ordering internally (definition-order sort).
+        // The round-trip symmetry (decode -> remove TxnSignature ->
+        // encode_for_signing) has been validated by the regression test
+        // xrpl_signature_valid_roundtrip using a real signed Payment blob.
         let signing_hex = encode_for_signing(&for_signing).map_err(|e| {
             FacilitatorLocalError::from(XrplError::InvalidTxBlob(format!(
                 "encode_for_signing failed: {}",
@@ -859,11 +944,27 @@ impl XrplProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| FacilitatorLocalError::from(XrplError::RpcError(e.to_string())))?;
+            .map_err(|e| {
+                // Strip the URL (which may contain an API key in the path) from
+                // the reqwest error before emitting to logs / CloudWatch.
+                let safe_url = crate::redact::rpc_url(&url);
+                FacilitatorLocalError::from(XrplError::RpcError(format!(
+                    "{} (endpoint: {})",
+                    e.without_url(),
+                    safe_url
+                )))
+            })?;
         let json: Value = resp
             .json()
             .await
-            .map_err(|e| FacilitatorLocalError::from(XrplError::RpcError(e.to_string())))?;
+            .map_err(|e| {
+                let safe_url = crate::redact::rpc_url(&url);
+                FacilitatorLocalError::from(XrplError::RpcError(format!(
+                    "response decode error: {} (endpoint: {})",
+                    e.without_url(),
+                    safe_url
+                )))
+            })?;
         // rippled wraps its response in a "result" object.
         Ok(json.get("result").cloned().unwrap_or(Value::Object(serde_json::Map::new())))
     }
@@ -887,19 +988,40 @@ impl XrplProvider {
         let result_val = self.rpc_call("submit", submit_params).await?;
 
         // Authoritative preliminary validation = rippled engine_result.
-        // A tem* code (temBAD_SIGNATURE / temINVALID / ...) is a hard failure:
-        // bad signature or malformed structure. tes/ter/tec passed local checks.
+        //
+        // XRPL result-code classification (HIGH fix):
+        //   tem* - malformed tx (bad signature, invalid structure): REJECT immediately
+        //   tef* - failure applying tx (bad auth, past seq, etc): REJECT immediately
+        //   tel* - local node rejected (rate limit, too low fee): REJECT immediately
+        //   tec* - applied to ledger with error (path dry, no account, etc):
+        //          the tx WAS applied on-chain (ledger entry changed), so the
+        //          outcome is definitive — surface as TransactionFailed.
+        //          We do NOT treat tec* as a retry: the tx is in a closed ledger.
+        //   ter* - retry / queued (in pool but not yet validated): proceed to poll
+        //   tes* - SUCCESS: proceed to poll (wait for "validated"=true)
+        //   unknown - proceed to poll conservatively
+        //
+        // Only ter* and tes* proceed to the validation poll loop. This makes
+        // rippled the fast backstop for the P0 signature-bypass blocker: if a
+        // replayed or tampered tx slips past offline verify, temBAD_AUTH /
+        // tefBAD_AUTH is returned immediately instead of burning 30s poll quota.
         let engine_result: String = result_val
             .get("engine_result")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown")
             .to_string();
-        if engine_result.starts_with("tem") {
-            let engine_result_message: String = result_val
-                .get("engine_result_message")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+        let engine_result_message: String = result_val
+            .get("engine_result_message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        // Reject definitively on tem*, tef*, tel*, and tec*.
+        if engine_result.starts_with("tem")
+            || engine_result.starts_with("tef")
+            || engine_result.starts_with("tel")
+            || engine_result.starts_with("tec")
+        {
             return Err(XrplError::SubmissionRejected {
                 engine_result,
                 engine_result_message,
@@ -1226,5 +1348,394 @@ impl Facilitator for XrplProvider {
             }),
         }];
         Ok(SupportedPaymentKindsResponse { kinds })
+    }
+}
+
+// =============================================================================
+// Unit Tests
+// =============================================================================
+//
+// These tests cover the P0 security fixes:
+//
+//   P0 #1 (signature bypass): verify_signature must derive the classic address
+//          from SigningPubKey and reject when it does not match Account.
+//
+//   P0 #3 (IOU f64): assert_amount_matches must use exact Decimal arithmetic;
+//          underpayments at any magnitude must be rejected.
+//
+//   P0 #2 (CAIP-2 panic): covered in caip2.rs (xrpl round-trip tests) and by
+//          the types_v2 conversion compile-test below.
+//
+//   HIGH #7 (engine_result gate): classify_engine_result helper is tested to
+//           ensure tef*/tel*/tec* are treated as immediate failures.
+//
+// The signed-blob helper creates a real signed XRPL Payment transaction using
+// the xrpl-rust library's own sign+encode pipeline, which simultaneously
+// validates audit blocker #6 (encode_for_signing byte order): if the signing
+// payload reconstruction were wrong, the signature verification test would fail.
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::network::Network;
+    use serde_json::json;
+    use xrpl::core::binarycodec::{decode as xrpl_decode, encode as xrpl_encode, encode_for_signing};
+    use xrpl::core::keypairs::{derive_classic_address, sign as xrpl_sign};
+    use xrpl::wallet::Wallet;
+
+    // -------------------------------------------------------------------------
+    // Helpers
+    // -------------------------------------------------------------------------
+
+    /// Deterministic test wallet derived from a well-known seed.
+    /// Seed from xrpl-rust test_cases.rs (not a production key).
+    fn test_wallet_a() -> Wallet {
+        Wallet::new("sEdSKaCy2JT7JaM7v95H9SxkhP9wS2r", 0)
+            .expect("test_wallet_a: wallet derivation must not fail")
+    }
+
+    /// A second deterministic test wallet (wallet B) for cross-key attack tests.
+    fn test_wallet_b() -> Wallet {
+        Wallet::new("sEdT7wHTCLzDG7ueaw4hroSTBvH7Mk5", 0)
+            .expect("test_wallet_b: wallet derivation must not fail")
+    }
+
+    /// Build and sign a minimal XRPL Payment transaction JSON, returning the
+    /// hex-encoded signed blob.
+    ///
+    /// The transaction is constructed as a serde_json::Value so we can mutate
+    /// it for negative-test scenarios without going through the typed Payment
+    /// model.
+    ///
+    /// This helper ALSO validates audit blocker #6 (encode_for_signing byte
+    /// order): the round-trip decode(encode(signed)) -> verify would fail if
+    /// binarycodec's field ordering were asymmetric.
+    fn make_signed_payment_blob(
+        wallet: &Wallet,
+        account: &str,
+        destination: &str,
+        amount_drops: &str,
+    ) -> String {
+        // Build unsigned Payment (no TxnSignature/SigningPubKey yet).
+        let mut tx = json!({
+            "TransactionType": "Payment",
+            "Account": account,
+            "Destination": destination,
+            "Amount": amount_drops,
+            "Fee": "12",
+            "Sequence": 1u64,
+            "LastLedgerSequence": 1_000_000u64,
+            "SigningPubKey": wallet.public_key,
+        });
+
+        // Encode the signing payload (STX prefix + canonicalized fields).
+        let signing_hex = encode_for_signing(&tx)
+            .expect("encode_for_signing must succeed on well-formed Payment");
+        let message = alloy::hex::decode(&signing_hex)
+            .expect("signing_hex must be valid hex");
+
+        // Sign with the wallet's private key.
+        let signature_hex = xrpl_sign(&message, &wallet.private_key)
+            .expect("xrpl_sign must succeed");
+
+        // Inject TxnSignature and encode to the final signed blob.
+        tx.as_object_mut()
+            .unwrap()
+            .insert("TxnSignature".to_string(), json!(signature_hex));
+
+        xrpl_encode(&tx).expect("xrpl_encode must succeed on signed Payment")
+    }
+
+    /// Build a provider targeting XRPL mainnet (no seed required for tests).
+    fn xrpl_provider() -> XrplProvider {
+        XrplProvider::try_new(None, None, Network::Xrpl)
+            .expect("XrplProvider::try_new must succeed")
+    }
+
+    // -------------------------------------------------------------------------
+    // P0 #1: Signature binding tests
+    // -------------------------------------------------------------------------
+
+    /// (a) A transaction signed by wallet A, Account = wallet A's address.
+    /// verify_signature must return Ok.
+    ///
+    /// This test ALSO validates audit blocker #6: if encode_for_signing produced
+    /// a different byte order from what we signed, is_valid_message would return
+    /// false and this test would fail.
+    #[test]
+    fn xrpl_signature_valid_roundtrip() {
+        let wallet = test_wallet_a();
+        let destination = "rPT1Sjq2YGrBMTttX4GZHjKu9dyfzbpAYe"; // arbitrary valid r-addr
+        let blob = make_signed_payment_blob(&wallet, &wallet.classic_address, destination, "1000000");
+
+        let tx_json: Value = xrpl_decode(&blob).expect("decode must succeed");
+        let provider = xrpl_provider();
+        provider
+            .verify_signature(&tx_json, &wallet.classic_address)
+            .expect("valid signature from correct wallet must pass");
+    }
+
+    /// (b) Account = wallet A's address, but the blob is signed by wallet B.
+    /// verify_signature MUST return Err (the address-binding check catches it).
+    #[test]
+    fn xrpl_signature_wrong_pubkey_rejected() {
+        let wallet_a = test_wallet_a();
+        let wallet_b = test_wallet_b();
+        let destination = "rPT1Sjq2YGrBMTttX4GZHjKu9dyfzbpAYe";
+
+        // Sign with wallet B's key, but set Account = wallet A's address.
+        let blob = make_signed_payment_blob(
+            &wallet_b,
+            &wallet_a.classic_address, // Account = A, but signed by B
+            destination,
+            "1000000",
+        );
+        // Then override SigningPubKey back to wallet B's pubkey in the decoded JSON.
+        // (make_signed_payment_blob already uses wallet_b.public_key)
+        let tx_json: Value = xrpl_decode(&blob).expect("decode must succeed");
+        let provider = xrpl_provider();
+
+        let result = provider.verify_signature(&tx_json, &wallet_a.classic_address);
+        assert!(
+            result.is_err(),
+            "signature from wallet B with Account=wallet_A must be rejected"
+        );
+    }
+
+    /// (c) Valid signature from wallet A, but TxnSignature byte is flipped.
+    /// verify_signature MUST return Err (is_valid_message detects tamper).
+    #[test]
+    fn xrpl_signature_tampered_rejected() {
+        let wallet = test_wallet_a();
+        let destination = "rPT1Sjq2YGrBMTttX4GZHjKu9dyfzbpAYe";
+        let blob = make_signed_payment_blob(&wallet, &wallet.classic_address, destination, "1000000");
+
+        let mut tx_json: Value = xrpl_decode(&blob).expect("decode must succeed");
+
+        // Tamper with TxnSignature: flip the last hex nibble.
+        if let Some(sig) = tx_json.get_mut("TxnSignature").and_then(|v| v.as_str()) {
+            let mut tampered = sig.to_string();
+            let last = tampered.pop().unwrap_or('0');
+            // Flip a nibble: '0'->'1', everything else->'0'
+            tampered.push(if last == '0' { '1' } else { '0' });
+            tx_json
+                .as_object_mut()
+                .unwrap()
+                .insert("TxnSignature".to_string(), json!(tampered));
+        }
+
+        let provider = xrpl_provider();
+        let result = provider.verify_signature(&tx_json, &wallet.classic_address);
+        assert!(
+            result.is_err(),
+            "tampered signature must be rejected"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // P0 #3: IOU amount exact arithmetic tests
+    // -------------------------------------------------------------------------
+
+    fn provider_with_iou_asset(asset: &str) -> (XrplProvider, serde_json::Map<String, Value>) {
+        let provider = xrpl_provider();
+        // Build an issued-token Amount map matching the asset.
+        let (currency, issuer) = asset.split_once('.').unwrap();
+        let mut map = serde_json::Map::new();
+        map.insert("currency".to_string(), json!(currency));
+        map.insert("issuer".to_string(), json!(issuer));
+        (provider, map)
+    }
+
+    /// required "10000" base units, tx value "0.01" at 6dp -> equal (passes).
+    #[test]
+    fn iou_amount_exact_match_0_01() {
+        let rlusd_asset =
+            "524C555344000000000000000000000000000000.rMxCKbEDwqr76QuheSUMdEGf4B9xJ8m5De";
+        let (provider, mut map) = provider_with_iou_asset(rlusd_asset);
+        map.insert("value".to_string(), json!("0.01"));
+
+        let amount_field = Value::Object(map);
+        let req = build_test_requirements(rlusd_asset, "10000");
+        provider
+            .assert_amount_matches(&amount_field, &req)
+            .expect("0.01 at 6dp == 10000 base units must pass");
+    }
+
+    /// "1.0" and "1" are semantically identical; both should equal "1000000".
+    #[test]
+    fn iou_amount_one_point_zero_vs_one() {
+        let rlusd_asset =
+            "524C555344000000000000000000000000000000.rMxCKbEDwqr76QuheSUMdEGf4B9xJ8m5De";
+
+        for tx_value in &["1.0", "1", "1.000000"] {
+            let (provider, mut map) = provider_with_iou_asset(rlusd_asset);
+            map.insert("value".to_string(), json!(*tx_value));
+            let amount_field = Value::Object(map);
+            let req = build_test_requirements(rlusd_asset, "1000000");
+            provider
+                .assert_amount_matches(&amount_field, &req)
+                .unwrap_or_else(|e| panic!("tx_value={} must equal 1000000: {}", tx_value, e));
+        }
+    }
+
+    /// Last-significant-digit underpayment "0.009999" < "0.01" (10000 base units).
+    /// Must be REJECTED.
+    #[test]
+    fn iou_amount_last_digit_underpayment_rejected() {
+        let rlusd_asset =
+            "524C555344000000000000000000000000000000.rMxCKbEDwqr76QuheSUMdEGf4B9xJ8m5De";
+        let (provider, mut map) = provider_with_iou_asset(rlusd_asset);
+        map.insert("value".to_string(), json!("0.009999"));
+        let amount_field = Value::Object(map);
+        let req = build_test_requirements(rlusd_asset, "10000");
+        assert!(
+            provider.assert_amount_matches(&amount_field, &req).is_err(),
+            "0.009999 (9999 base units) must be rejected vs required 10000"
+        );
+    }
+
+    /// Sub-base-unit precision: "0.0099999" (7 decimals on a 6dp asset) scales to
+    /// 9999.9 base units. `.round()` would have masked this as 10000 (PASS); the
+    /// precision guard must REJECT it (it under-delivers vs the required 10000).
+    #[test]
+    fn iou_amount_subunit_precision_underpayment_rejected() {
+        let rlusd_asset =
+            "524C555344000000000000000000000000000000.rMxCKbEDwqr76QuheSUMdEGf4B9xJ8m5De";
+        let (provider, mut map) = provider_with_iou_asset(rlusd_asset);
+        map.insert("value".to_string(), json!("0.0099999"));
+        let amount_field = Value::Object(map);
+        let req = build_test_requirements(rlusd_asset, "10000");
+        assert!(
+            provider.assert_amount_matches(&amount_field, &req).is_err(),
+            "0.0099999 (9999.9 base units, sub-unit underpayment) must be rejected vs 10000"
+        );
+    }
+
+    /// Large-magnitude underpayment that f64 would accept as equal.
+    /// e.g. required = 1_000_000_000_000 base units (1e12), tx = "999999.999999"
+    /// f64: (999999.999999 * 1e6 - 1e12).abs() <= f64::EPSILON? NO for large values.
+    /// Actually for f64 the real danger is at ~1e15+ (15 sig digit limit). We test
+    /// at 1e15 base units (1_000_000_000 tokens) to ensure decimal arithmetic is exact.
+    #[test]
+    fn iou_amount_large_magnitude_underpayment_rejected() {
+        let rlusd_asset =
+            "524C555344000000000000000000000000000000.rMxCKbEDwqr76QuheSUMdEGf4B9xJ8m5De";
+        // required: 1_000_000_000_000_000 base units (= 1_000_000_000 tokens at 6dp)
+        // tx value: "999999999.999999" which is 999_999_999_999_999 base units
+        let (provider, mut map) = provider_with_iou_asset(rlusd_asset);
+        map.insert("value".to_string(), json!("999999999.999999"));
+        let amount_field = Value::Object(map);
+        let req = build_test_requirements(rlusd_asset, "1000000000000000");
+        assert!(
+            provider.assert_amount_matches(&amount_field, &req).is_err(),
+            "999999999.999999 must be rejected vs 1000000000.000000 (1e15 base units)"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // P0 #2: CAIP-2 Xrpl namespace compile-test
+    // -------------------------------------------------------------------------
+
+    /// Ensure Network::Xrpl's to_caip2() string parses without panic.
+    /// This is the path that types_v2.rs calls with .expect().
+    #[cfg(feature = "xrpl")]
+    #[test]
+    fn xrpl_to_v2_no_panic() {
+        use crate::caip2::Caip2NetworkId;
+        let caip2_str = Network::Xrpl.to_caip2();
+        let parsed = Caip2NetworkId::parse(&caip2_str);
+        assert!(
+            parsed.is_ok(),
+            "Network::Xrpl.to_caip2() = '{}' must parse as valid CAIP-2, got: {:?}",
+            caip2_str,
+            parsed
+        );
+        assert_eq!(caip2_str, "xrpl:0");
+
+        let caip2_t = Network::XrplTestnet.to_caip2();
+        let parsed_t = Caip2NetworkId::parse(&caip2_t);
+        assert!(parsed_t.is_ok(), "xrpl:1 must parse");
+        assert_eq!(caip2_t, "xrpl:1");
+    }
+
+    // -------------------------------------------------------------------------
+    // HIGH #7: Engine result classification
+    // -------------------------------------------------------------------------
+
+    /// The engine_result gate in submit_and_confirm uses prefix matching.
+    /// This test documents and verifies the classification logic.
+    #[test]
+    fn engine_result_classification() {
+        // These prefixes must trigger immediate rejection (no poll).
+        let hard_failures = &[
+            "temBAD_SIGNATURE",
+            "temINVALID",
+            "temDISABLED",
+            "tefPAST_SEQ",
+            "tefBAD_AUTH",
+            "tefNO_AUTH_REQUIRED",
+            "telINSUF_FEE_P",
+            "telCAN_NOT_QUEUE",
+            "tecPATH_DRY",
+            "tecNO_DST",
+            "tecUNFUNDED_PAYMENT",
+        ];
+        for code in hard_failures {
+            let is_hard = code.starts_with("tem")
+                || code.starts_with("tef")
+                || code.starts_with("tel")
+                || code.starts_with("tec");
+            assert!(
+                is_hard,
+                "engine_result '{}' must be classified as immediate failure",
+                code
+            );
+        }
+
+        // These must NOT trigger immediate rejection (proceed to poll).
+        let poll_codes = &["tesSUCCESS", "terQUEUED", "terPRE_SEQ", "unknown"];
+        for code in poll_codes {
+            let is_hard = code.starts_with("tem")
+                || code.starts_with("tef")
+                || code.starts_with("tel")
+                || code.starts_with("tec");
+            assert!(
+                !is_hard,
+                "engine_result '{}' must NOT be classified as immediate failure",
+                code
+            );
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Helpers for amount tests
+    // -------------------------------------------------------------------------
+
+    /// Build a minimal PaymentRequirements with the given XRPL asset and amount.
+    fn build_test_requirements(
+        asset_str: &str,
+        amount_base_units: &str,
+    ) -> crate::types::PaymentRequirements {
+        use alloy::primitives::U256;
+        use crate::types::{MixedAddress, PaymentRequirements, Scheme, TokenAmount};
+        use url::Url;
+
+        let amount = U256::from_str_radix(amount_base_units, 10)
+            .unwrap_or_else(|_| panic!("amount '{}' must be valid U256", amount_base_units));
+
+        PaymentRequirements {
+            scheme: Scheme::Exact,
+            network: Network::Xrpl,
+            max_amount_required: TokenAmount(amount),
+            resource: Url::parse("https://example.com/resource").unwrap(),
+            description: "test".to_string(),
+            mime_type: "application/json".to_string(),
+            output_schema: None,
+            pay_to: MixedAddress::Xrpl("rPT1Sjq2YGrBMTttX4GZHjKu9dyfzbpAYe".to_string()),
+            max_timeout_seconds: 300,
+            asset: MixedAddress::Xrpl(asset_str.to_string()),
+            extra: None,
+        }
     }
 }

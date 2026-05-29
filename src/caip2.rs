@@ -39,6 +39,11 @@ pub enum Namespace {
     /// Reference is the network name ("mainnet" or "testnet").
     #[cfg(feature = "sui")]
     Sui,
+    /// XRP Ledger (XRPL).
+    /// Reference is the numeric network ID as a decimal string (0 = mainnet, 1 = testnet).
+    /// Valid range: 0..=4294967295.
+    #[cfg(feature = "xrpl")]
+    Xrpl,
 }
 
 impl Display for Namespace {
@@ -51,6 +56,8 @@ impl Display for Namespace {
             Namespace::Fogo => write!(f, "fogo"),
             #[cfg(feature = "sui")]
             Namespace::Sui => write!(f, "sui"),
+            #[cfg(feature = "xrpl")]
+            Namespace::Xrpl => write!(f, "xrpl"),
         }
     }
 }
@@ -67,6 +74,8 @@ impl FromStr for Namespace {
             "fogo" => Ok(Namespace::Fogo),
             #[cfg(feature = "sui")]
             "sui" => Ok(Namespace::Sui),
+            #[cfg(feature = "xrpl")]
+            "xrpl" => Ok(Namespace::Xrpl),
             _ => Err(Caip2ParseError::UnknownNamespace(s.to_string())),
         }
     }
@@ -141,6 +150,18 @@ impl Caip2NetworkId {
                         reference,
                     });
                 }
+            }
+            #[cfg(feature = "xrpl")]
+            Namespace::Xrpl => {
+                // Reference must be a valid u32 network ID (0..=4294967295).
+                // XRPL mainnet=0, testnet=1. The u32 ceiling matches the XRPL
+                // protocol's NetworkID field (UInt32).
+                reference.parse::<u32>().map_err(|_| {
+                    Caip2ParseError::InvalidNetworkName {
+                        namespace: "xrpl".to_string(),
+                        reference: reference.clone(),
+                    }
+                })?;
             }
         }
 
@@ -226,6 +247,24 @@ impl Caip2NetworkId {
         Self {
             namespace: Namespace::Sui,
             reference: "testnet".to_string(),
+        }
+    }
+
+    /// Create a CAIP-2 ID for XRPL mainnet (network_id=0).
+    #[cfg(feature = "xrpl")]
+    pub fn xrpl_mainnet() -> Self {
+        Self {
+            namespace: Namespace::Xrpl,
+            reference: "0".to_string(),
+        }
+    }
+
+    /// Create a CAIP-2 ID for XRPL testnet (Altnet, network_id=1).
+    #[cfg(feature = "xrpl")]
+    pub fn xrpl_testnet() -> Self {
+        Self {
+            namespace: Namespace::Xrpl,
+            reference: "1".to_string(),
         }
     }
 
@@ -394,6 +433,47 @@ mod tests {
 
         let testnet = Caip2NetworkId::fogo_testnet();
         assert_eq!(testnet.to_string(), "fogo:testnet");
+    }
+
+    #[cfg(feature = "xrpl")]
+    #[test]
+    fn test_caip2_xrpl_roundtrip() {
+        // xrpl:0 (mainnet) round-trips correctly.
+        let mainnet = Caip2NetworkId::xrpl_mainnet();
+        assert_eq!(mainnet.to_string(), "xrpl:0");
+        let parsed: Caip2NetworkId = "xrpl:0".parse().expect("xrpl:0 must parse");
+        assert_eq!(parsed, mainnet);
+
+        // xrpl:1 (testnet/Altnet) round-trips correctly.
+        let testnet = Caip2NetworkId::xrpl_testnet();
+        assert_eq!(testnet.to_string(), "xrpl:1");
+        let parsed_t: Caip2NetworkId = "xrpl:1".parse().expect("xrpl:1 must parse");
+        assert_eq!(parsed_t, testnet);
+
+        // Arbitrary valid network IDs parse.
+        let arbitrary: Caip2NetworkId = "xrpl:4294967295".parse().expect("u32::MAX must parse");
+        assert_eq!(arbitrary.to_string(), "xrpl:4294967295");
+    }
+
+    #[cfg(feature = "xrpl")]
+    #[test]
+    fn test_caip2_xrpl_invalid() {
+        // Non-numeric reference must fail.
+        assert!(
+            "xrpl:mainnet".parse::<Caip2NetworkId>().is_err(),
+            "xrpl:mainnet should be invalid"
+        );
+        // Out-of-u32 reference must fail.
+        assert!(
+            "xrpl:4294967296".parse::<Caip2NetworkId>().is_err(),
+            "xrpl:4294967296 (> u32::MAX) should be invalid"
+        );
+    }
+
+    #[cfg(feature = "xrpl")]
+    #[test]
+    fn test_namespace_display_xrpl() {
+        assert_eq!(Namespace::Xrpl.to_string(), "xrpl");
     }
 
     #[test]

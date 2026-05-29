@@ -1935,10 +1935,11 @@ where
         #[cfg(feature = "xrpl")]
         crate::types::ExactPaymentPayload::Xrpl(xrpl_payload) => {
             debug!("  - payload type: XRPL (pre-signed Payment)");
-            debug!(
-                "  - signed_tx_blob: {} (truncated)",
-                &xrpl_payload.signed_tx_blob[..xrpl_payload.signed_tx_blob.len().min(100)]
-            );
+            // Use char-safe truncation: signed_tx_blob is hex (pure ASCII) so
+            // char indices == byte indices, but .chars().take() is defensive
+            // against any future change to the field encoding.
+            let preview: String = xrpl_payload.signed_tx_blob.chars().take(100).collect();
+            debug!("  - signed_tx_blob: {} (truncated)", preview);
         }
     }
 

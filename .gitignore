@@ -105,3 +105,6 @@ contracts/
 config/blacklist.json
 task-def-*.json
 terraform/environments/production/balances_lambda.zip
+
+# backup files
+*.bak*

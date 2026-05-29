@@ -9,6 +9,9 @@
       "Bash(aws ecs describe-tasks:*)"
     ],
     "deny": [],
-    "ask": []
+    "ask": [],
+    "additionalDirectories": [
+      "/mnt/z/ultravioleta/dao/execution-market"
+    ]
   }
 }

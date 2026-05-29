@@ -43,12 +43,18 @@
             --glow: rgba(0, 212, 255, 0.15);
         }
 
+        html {
+            overflow-x: hidden;
+        }
+
         body {
             font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
             background: var(--bg-dark);
             color: var(--text);
             line-height: 1.6;
             overflow-x: hidden;
+            width: 100%;
+            max-width: 100%;
         }
 
         /* Animated background */
@@ -115,8 +121,9 @@
         }
 
         .logo-image {
-            width: 368px;
-            height: 106px;
+            width: 100%;
+            max-width: 368px;
+            height: auto;
             object-fit: contain;
             filter: drop-shadow(0 0 20px var(--glow));
             animation: pulse 3s ease-in-out infinite;
@@ -432,6 +439,16 @@
         .network-badge.stellar:hover {
             border-color: #0FC0FC;
             box-shadow: 0 8px 24px rgba(15, 192, 252, 0.3);
+        }
+
+        .network-badge.xrpl {
+            border-color: #23292F;
+            box-shadow: 0 0 20px rgba(35, 41, 47, 0.2);
+        }
+
+        .network-badge.xrpl:hover {
+            border-color: #23292F;
+            box-shadow: 0 8px 24px rgba(35, 41, 47, 0.3);
         }
 
         .network-badge.fogo {
@@ -893,6 +910,17 @@
             font-size: 1.125rem;
         }
 
+        /* Wallet addresses: allow long monospace strings to wrap instead of
+           forcing horizontal overflow on mobile */
+        .wallet-addresses {
+            overflow-wrap: anywhere;
+        }
+
+        .wallet-addresses a {
+            word-break: break-all;
+            overflow-wrap: anywhere;
+        }
+
         /* Responsive */
         @media (max-width: 768px) {
             .container {
@@ -905,6 +933,22 @@
 
             .hero-title {
                 font-size: 2rem;
+            }
+
+            .hero-description {
+                font-size: 1.05rem;
+            }
+
+            .logo-image {
+                max-width: 260px;
+            }
+
+            .section-title {
+                font-size: 1.5rem;
+            }
+
+            .section-description {
+                font-size: 1rem;
             }
 
             .features {
@@ -920,6 +964,29 @@
             .footer-content {
                 flex-direction: column;
                 text-align: center;
+            }
+        }
+
+        /* Small phones (iPhone SE / 320-480px) */
+        @media (max-width: 480px) {
+            .container {
+                padding: 0.75rem;
+            }
+
+            .logo-image {
+                max-width: 220px;
+            }
+
+            .hero-title {
+                font-size: 1.65rem;
+            }
+
+            .hero-description {
+                font-size: 0.95rem;
+            }
+
+            .section-title {
+                font-size: 1.3rem;
             }
         }
 
@@ -1121,7 +1188,7 @@
                             style="color: var(--text-muted); font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 1px;">Mainnets</span>
                     </div>
                     <div class="networks"
-                        style="gap: 2rem; margin-bottom: 2.5rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); justify-items: center;">
+                        style="gap: 2rem; margin-bottom: 2.5rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); justify-items: center;">
                         <div class="network-badge avalanche"
                             style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://snowtrace.io/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
@@ -1323,6 +1390,21 @@
                             <div style="font-size: 0.7rem; color: var(--text-muted);">XLM Balance</div>
                             <div data-tokens="stellar-mainnet"></div>
                         </div>
+                        <div class="network-badge xrpl"
+                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
+                            onclick="window.open('https://livenet.xrpl.org/accounts/rfADKkVXBNqK3z72tVSS3LVzAR3psYkonp', '_blank')">
+                            <div style="display: flex; align-items: center; gap: 0.75rem;">
+                                <img src="/xrpl.png" alt="XRPL"
+                                    style="width: 32px; height: 32px; object-fit: contain;">
+                                <span style="font-weight: 700;">XRPL</span>
+                            </div>
+                            <div class="balance-amount" data-balance="xrpl-mainnet"
+                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
+                                Loading...
+                            </div>
+                            <div style="font-size: 0.7rem; color: var(--text-muted);" data-i18n="balances.xrpBalance">XRP Balance</div>
+                            <div data-tokens="xrpl-mainnet"></div>
+                        </div>
                         <div class="network-badge fogo"
                             style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://fogoscan.com/account/F742C4VfFLQ9zRQyithoj5229ZgtX2WqKCSFKgH2EThq', '_blank')">
@@ -1420,7 +1502,7 @@
                             style="color: var(--text-muted); font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 1px;">Testnets</span>
                     </div>
                     <div class="networks"
-                        style="gap: 2rem; margin-bottom: 2rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); justify-items: center;">
+                        style="gap: 2rem; margin-bottom: 2rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); justify-items: center;">
                         <div class="network-badge avalanche"
                             style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://testnet.snowtrace.io/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
@@ -1699,7 +1781,7 @@
                 </div>
 
                 <!-- Wallet Addresses -->
-                <div
+                <div class="wallet-addresses"
                     style="display: flex; flex-direction: column; gap: 1rem; margin: 0 auto 2.5rem; max-width: 800px; padding: 1.25rem 1.5rem; background: rgba(255,255,255,0.02); border-radius: 8px; border: 1px solid rgba(255,255,255,0.05);">
                     <!-- EVM Wallets -->
                     <div style="display: flex; flex-direction: column; gap: 0.5rem;">
@@ -1825,6 +1907,33 @@
                                 style="font-family: 'JetBrains Mono', monospace; color: var(--accent); text-decoration: none; transition: opacity 0.2s;"
                                 onmouseover="this.style.opacity='0.7'"
                                 onmouseout="this.style.opacity='1'">GBBFZMLUJEZVI32EN4XA2KPP445XIBTMTRBLYWFIL556RDTHS2OWFQ2Z</a>
+                        </div>
+                    </div>
+
+                    <!-- Divider -->
+                    <div style="height: 1px; background: rgba(255,255,255,0.05); margin: 0.25rem 0;"></div>
+
+                    <!-- XRPL Wallets -->
+                    <div style="display: flex; flex-direction: column; gap: 0.5rem;">
+                        <div
+                            style="text-align: center; font-size: 0.75rem; color: var(--accent); font-weight: 600; margin-bottom: 0.25rem;">
+                            XRPL Wallets
+                        </div>
+                        <div style="text-align: center; font-size: 0.7rem; color: var(--text-muted);">
+                            <span style="font-weight: 600;">Mainnet:</span> <a
+                                href="https://livenet.xrpl.org/accounts/rfADKkVXBNqK3z72tVSS3LVzAR3psYkonp"
+                                target="_blank"
+                                style="font-family: 'JetBrains Mono', monospace; color: var(--accent); text-decoration: none; transition: opacity 0.2s;"
+                                onmouseover="this.style.opacity='0.7'"
+                                onmouseout="this.style.opacity='1'">rfADKkVXBNqK3z72tVSS3LVzAR3psYkonp</a>
+                        </div>
+                        <div style="text-align: center; font-size: 0.7rem; color: var(--text-muted);">
+                            <span style="font-weight: 600;">Testnet:</span> <a
+                                href="https://testnet.xrpl.org/accounts/rGhTioKAFHe75KgVnQtacRiKFuPv28Wbwk"
+                                target="_blank"
+                                style="font-family: 'JetBrains Mono', monospace; color: var(--accent); text-decoration: none; transition: opacity 0.2s;"
+                                onmouseover="this.style.opacity='0.7'"
+                                onmouseout="this.style.opacity='1'">rGhTioKAFHe75KgVnQtacRiKFuPv28Wbwk</a>
                         </div>
                     </div>
 
@@ -2100,7 +2209,7 @@ result = <span class="code-function">verify_payment</span>(
                         </div>
                     </div>
                     <p style="text-align: center; color: var(--text-muted); font-size: 0.75rem; margin-top: 1rem;" data-i18n="erc8004.create2Note">+ 10 testnets. EVM mainnets use CREATE2 deterministic addresses. Solana uses the QuantuLabs Agent Registry program.</p>
-                    <div style="display: flex; gap: 0.75rem; justify-content: center; margin-top: 1.25rem;">
+                    <div style="display: flex; flex-wrap: wrap; gap: 0.75rem; justify-content: center; margin-top: 1.25rem;">
                         <a href="https://eips.ethereum.org/EIPS/eip-8004" target="_blank"
                            style="font-size: 0.8rem; color: #8b5cf6; text-decoration: none; padding: 0.4rem 1rem; border: 1px solid rgba(139, 92, 246, 0.3); border-radius: 6px; transition: all 0.2s; font-weight: 500;"
                            onmouseover="this.style.background='rgba(139, 92, 246, 0.1)'"
@@ -2708,6 +2817,7 @@ result = <span class="code-function">verify_payment</span>(
                 "apidocs.description": "Explore all endpoints interactively with Swagger UI. Try requests directly from your browser, view schemas, and download the OpenAPI spec.",
                 "apidocs.swagger": "Swagger UI",
                 "apidocs.json": "OpenAPI JSON",
+                "balances.xrpBalance": "XRP Balance",
                 "footer.powered": "Powered by"
             },
             es: {
@@ -2803,6 +2913,7 @@ result = <span class="code-function">verify_payment</span>(
                 "apidocs.description": "Explora todos los endpoints de forma interactiva con Swagger UI. Prueba solicitudes directamente desde tu navegador, consulta esquemas y descarga la especificacion OpenAPI.",
                 "apidocs.swagger": "Swagger UI",
                 "apidocs.json": "OpenAPI JSON",
+                "balances.xrpBalance": "Saldo de XRP",
                 "footer.powered": "Desarrollado por"
             }
         };

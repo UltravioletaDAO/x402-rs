@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && rm -rf /var/lib/apt/lists/*
 
 COPY . ./
-RUN cargo build --release --features solana,near,stellar,algorand,sui
+RUN cargo build --release --features solana,near,stellar,algorand,sui,xrpl
 
 # --- Stage 2 ---
 FROM --platform=$BUILDPLATFORM debian:bullseye-slim

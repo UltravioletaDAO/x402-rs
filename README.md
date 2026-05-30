@@ -10,7 +10,7 @@
 ```
 
 [![Live](https://img.shields.io/badge/live-facilitator.ultravioletadao.xyz-00d4aa)](https://facilitator.ultravioletadao.xyz)
-[![Version](https://img.shields.io/badge/version-1.29.0-blue)](https://github.com/UltravioletaDAO/x402-rs)
+[![Version](https://img.shields.io/badge/version-1.46.0-blue)](https://github.com/UltravioletaDAO/x402-rs)
 [![Swagger](https://img.shields.io/badge/docs-Swagger_UI-85ea2d)](https://facilitator.ultravioletadao.xyz/docs/)
 [![Rust](https://img.shields.io/badge/rust-2021-orange)](https://www.rust-lang.org/)
 
@@ -83,7 +83,7 @@ Includes [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) on-chain reputation
 
 | Token | Networks |
 |-------|----------|
-| **USDC** | All networks (22 total) |
+| **USDC** | All 20 payment networks |
 | **AUSD** | Ethereum, Polygon, Arbitrum, Avalanche, Monad, BSC, Solana, Sui |
 | **EURC** | Ethereum, Base, Avalanche |
 | **USDT** | Arbitrum, Celo, Optimism, Monad |
@@ -137,7 +137,7 @@ cargo run --release --features solana,near,stellar,algorand
 # Test
 curl http://localhost:8080/health
 curl http://localhost:8080/supported | jq '.kinds | length'
-# => 64 (32 networks x2 for v1 and v2 formats)
+# => 121 (networks listed across v1 and v2/CAIP-2 formats)
 ```
 
 ### Docker
@@ -362,8 +362,8 @@ RPC_URL_ALGORAND_MAINNET=https://mainnet-api.algonode.cloud
 
 ```bash
 # Build & push
-docker build -t facilitator:v1.29.0 .
-docker push 518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator:v1.29.0
+docker build -t facilitator:v1.46.0 .
+docker push 518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator:v1.46.0
 
 # Deploy
 aws ecs update-service --cluster facilitator-production \

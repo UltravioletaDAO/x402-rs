@@ -3042,6 +3042,8 @@ result = <span class="code-function">verify_payment</span>(
             'stellar-testnet': { api: 'https://horizon-testnet.stellar.org/accounts/' + STELLAR_TESTNET, addr: STELLAR_TESTNET, type: 'stellar' },
             'algorand-mainnet': { api: 'https://mainnet-api.algonode.cloud/v2/accounts/' + ALGORAND_MAINNET, addr: ALGORAND_MAINNET, type: 'algorand' },
             'algorand-testnet': { api: 'https://testnet-api.algonode.cloud/v2/accounts/' + ALGORAND_TESTNET, addr: ALGORAND_TESTNET, type: 'algorand' },
+            // XRPL native (XRP Ledger). xrplcluster.com allows browser CORS; s1.ripple.com is the fallback.
+            'xrpl-mainnet': { rpcs: ['https://xrplcluster.com/', 'https://s1.ripple.com:51234/'], addr: 'rfADKkVXBNqK3z72tVSS3LVzAR3psYkonp', type: 'xrpl' },
         };
 
         // Fallback: fetch EVM balance with multi-RPC retry support
@@ -3163,6 +3165,37 @@ result = <span class="code-function">verify_payment</span>(
             return null;
         }
 
+        // Fallback: fetch single XRPL native balance (account_info JSON-RPC; drops, 1 XRP = 1e6 drops)
+        async function fetchXrplBalanceFallback(network, config) {
+            const rpcs = config.rpcs || [config.rpc];
+            for (const rpc of rpcs) {
+                try {
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 5000);
+                    const response = await fetch(rpc, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            method: 'account_info',
+                            params: [{ account: config.addr, ledger_index: 'validated' }]
+                        }),
+                        signal: controller.signal
+                    });
+                    clearTimeout(timeoutId);
+                    const data = await response.json();
+                    const result = data.result || {};
+                    const drops = result.account_data && result.account_data.Balance;
+                    if (drops !== undefined && drops !== null) {
+                        return (Number(drops) / 1e6).toFixed(4);
+                    }
+                    // Unfunded account (actNotFound) -> genuinely zero, stop retrying
+                    if (result.error === 'actNotFound') return '0.0000';
+                } catch (e) { console.warn(`${network} RPC ${rpc} failed:`, e.message); }
+            }
+            console.error(`All RPCs failed for ${network}`);
+            return null;
+        }
+
         // Fallback: fetch balance for a single network using public RPC
         async function fetchBalanceFallback(network) {
             const config = PUBLIC_RPCS[network];
@@ -3175,6 +3208,7 @@ result = <span class="code-function">verify_payment</span>(
                 case 'near': return fetchNearBalanceFallback(network, config);
                 case 'stellar': return fetchStellarBalanceFallback(network, config);
                 case 'algorand': return fetchAlgorandBalanceFallback(network, config);
+                case 'xrpl': return fetchXrplBalanceFallback(network, config);
                 default: return null;
             }
         }
@@ -3197,9 +3231,11 @@ result = <span class="code-function">verify_payment</span>(
                 const balances = data.balances || {};
 
                 // Update all balance elements, track failed ones
+                const handled = new Set();
                 for (const [network, balance] of Object.entries(balances)) {
                     const balanceEl = document.querySelector(`[data-balance="${network}"]`);
                     if (balanceEl) {
+                        handled.add(network);
                         if (balance && balance !== 'null') {
                             balanceEl.textContent = balance;
                         } else {
@@ -3208,6 +3244,21 @@ result = <span class="code-function">verify_payment</span>(
                         }
                     }
                 }
+
+                // Networks rendered in the DOM but absent from the API response
+                // (e.g. a new network like XRPL added before the balances lambda
+                // was redeployed) would otherwise hang on "Loading..." forever.
+                // Queue them for the public-RPC fallback, or mark N/A if unsupported.
+                document.querySelectorAll('[data-balance]').forEach(el => {
+                    const network = el.getAttribute('data-balance');
+                    if (!network || handled.has(network)) return;
+                    if (PUBLIC_RPCS[network]) {
+                        failedNetworks.push(network);
+                        el.textContent = '...';
+                    } else {
+                        el.textContent = 'N/A';
+                    }
+                });
             } catch (error) {
                 console.error('Error fetching balances from API:', error);
                 // API failed entirely - try fallback for all networks

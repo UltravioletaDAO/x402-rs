@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.45.2] - 2026-05-29
+
+### Added - XRPL (XRP Ledger) Native Support
+
+- XRPL (XRP Ledger) added as mainnet network #20, bringing coverage to 20 mainnets across 7 blockchain ecosystems (EVM, Solana, NEAR, Stellar, Algorand, Sui, XRPL).
+  - Native XRPL family (NOT the EVM `xrpl-evm` / `eip155:1440000` sidechain). Network ids: `xrpl-mainnet` (CAIP-2 `xrpl:0`) and `xrpl-testnet` (CAIP-2 `xrpl:1`).
+  - Native XRP asset, 6 decimals (drops; 1 XRP = 1,000,000 drops), no token contract. Issued tokens RLUSD and USDC also supported on mainnet as `{currency, issuer}` pairs.
+  - Settlement model: clients submit pre-signed XRPL Payment transaction blobs; the facilitator submits them and pays the ~0.00001 XRP network fee.
+  - Implemented in `src/chain/xrpl.rs`; `Xrpl` / `XrplTestnet` variants added to `src/network.rs` behind the `xrpl` feature flag.
+  - Facilitator wallets: mainnet `rfADKkVXBNqK3z72tVSS3LVzAR3psYkonp`, testnet `rGhTioKAFHe75KgVnQtacRiKFuPv28Wbwk`.
+  - Updated `config/supported_tokens.json` (added `xrpl-testnet`, summary now 37 total networks), `lambda/balances/handler.py` (XRPL balance fetch), README.md network tables, and `docs/CUSTOMIZATIONS.md`.
+
+### Fixed
+- Rate limiting: use `SmartIpKeyExtractor` for B8 governor (hotfix from v1.44.1).
+
 ## [1.37.0] - 2026-03-03
 
 ### Added - ERC-8004 Solana Full Support (Phase 1-3)

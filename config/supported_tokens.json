@@ -1,7 +1,7 @@
 {
   "_comment": "Source of truth for all supported networks, tokens, and facilitator wallet addresses. MUST be updated when adding new chains or stablecoins. Wallet addresses sourced from lambda/balances/handler.py.",
-  "_lastUpdated": "2026-03-23",
-  "_version": "1.40.1",
+  "_lastUpdated": "2026-05-30",
+  "_version": "1.45.2",
 
   "evm_mainnets": {
     "ethereum": {
@@ -248,6 +248,13 @@
       "rlusdIssuer": "rMxCKbEDwqr76QuheSUMdEGf4B9xJ8m5De",
       "usdcCurrencyHex": "5553444300000000000000000000000000000000",
       "usdcIssuer": "rGm7WCVp9gb4jZHWTEtGUr4dd74z2XuWhE"
+    },
+    "xrpl-testnet": {
+      "caip2": "xrpl:1",
+      "tokens": ["xrp"],
+      "explorer": "https://testnet.xrpl.org",
+      "facilitatorWallet": "rGhTioKAFHe75KgVnQtacRiKFuPv28Wbwk",
+      "xrpDecimals": 6
     }
   },
 
@@ -337,7 +344,7 @@
   },
 
   "summary": {
-    "total_networks": 36,
+    "total_networks": 37,
     "evm_mainnets": 13,
     "evm_testnets": 10,
     "svm_networks": 4,
@@ -345,7 +352,7 @@
     "near_networks": 2,
     "stellar_networks": 2,
     "algorand_networks": 2,
-    "xrpl_networks": 1,
+    "xrpl_networks": 2,
     "total_stablecoins": 6
   }
 }

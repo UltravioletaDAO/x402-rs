@@ -40,6 +40,7 @@ Ethereum Sepolia, Base Sepolia, Polygon Amoy, Optimism Sepolia, Avalanche Fuji, 
 - **Stellar/Soroban**: Mainnet and Testnet
 - **Algorand**: Mainnet and Testnet
 - **Sui**: Mainnet and Testnet
+- **XRPL (XRP Ledger)**: Mainnet and Testnet (native XRP, pre-signed Payment transaction blobs; not the EVM `xrpl-evm` sidechain)
 
 ## Core Endpoints
 

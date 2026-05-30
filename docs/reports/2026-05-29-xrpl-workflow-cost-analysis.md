@@ -1,192 +1,166 @@
-# Análisis de Costos: Workflow `xrpl-native-integration`
+# Análisis de Costos: Workflows `xrpl-native-integration` + Auditoría CTO
 
-> **Fecha:** 29 de mayo de 2026
+> **Fecha:** 29 de mayo de 2026 · **Revisado:** 30 de mayo de 2026 (v2 — modelo realista)
 > **Tipo:** Análisis ejecutivo / simulación de costos (Project Management)
-> **Contexto:** Estimación de "¿qué hubiera costado este workflow con un equipo humano tradicional?"
-> **Disclaimer:** Cifras de salarios y costos son estimaciones de mercado 2026 con fines ilustrativos. El costo de cómputo de IA es aproximado; el foco está en el **orden de magnitud** del contraste.
+> **Alcance:** Equipo A (construcción, 12 agentes) + Equipo B (auditoría, 7 agentes) = **19 agentes**
+> **Disclaimer:** Cifras de salarios, tarifas y precios de auditoría son estimaciones de mercado 2026 con fines ilustrativos. El costo de cómputo de IA es aproximado; el foco está en el **orden de magnitud** y, sobre todo, en la **viabilidad real**.
 
 ---
 
-## 1. Resumen ejecutivo
+## ⚠️ Nota metodológica: por qué existe una v2
 
-El workflow `xrpl-native-integration` ejecutó **12 agentes de IA (Opus 4.8, 1M de contexto)** que eliminaron el stub roto de XRPL-EVM y construyeron la integración **nativa de XRPL (`xrpl:0`)** del facilitador x402 para **XRP, RLUSD y USDC**, modelada sobre el patrón de Stellar + el esquema de pago presignado **t54**.
+La v1 de este reporte (escenario "equipo ideal disponible al instante, 2 semanas, $50k") era **optimista hasta lo fantasioso**. Dos correcciones de fondo:
 
-| Métrica | Valor |
+1. **El talento no existe a demanda.** No es que tome "3-6 meses conseguir el equipo" — es que la intersección *Rust senior ∩ blockchain de pagos ∩ XRP Ledger ∩ criptografía de firmas ∩ protocolo x402* son **unas pocas docenas de personas en el mundo**, y ninguna deja su empleo por un contrato de 2 semanas.
+2. **Nadie produce 8 horas de foco al día.** La utilización productiva real es **55-65%**; el resto se va en reuniones, comunicación, context-switching y ramp-up.
+
+Esta v2 recalcula todo con esos dos hechos en el centro.
+
+---
+
+## 1. Resumen ejecutivo (realista)
+
+Dos workflows encadenados — **construcción (12 agentes)** y **auditoría de seguridad (7 agentes)** — entregaron Y auditaron la integración nativa de XRPL (`xrpl:0`) para XRP/RLUSD/USDC en **~46 minutos de reloj** y **~2.03 millones de tokens**.
+
+Un equivalente humano realista (consultora boutique + firma de auditoría de cripto externa) habría costado **~$115,000 – $160,000 USD** y tomado **3 – 4.5 meses calendario** — y eso *asumiendo que se consigue el talento ultra-nicho*, lo cual es el verdadero cuello de botella.
+
+**Conclusión clave:** la IA no hizo este proyecto *más barato*. Lo hizo **posible**. Convirtió algo económicamente inviable para un DAO en una tarde de trabajo.
+
+---
+
+## 2. Datos duros combinados
+
+| Métrica | Equipo A (build) | Equipo B (audit) | **TOTAL** |
+|---|---:|---:|---:|
+| Agentes | 12 | 7 | **19** |
+| Tokens | 1,074k | 957k | **~2.03 millones** |
+| Acciones (tool calls) | 365 | 229 | **594** |
+| Tiempo de reloj | 33m 41s | ~12m | **~46 min** |
+| Modelo | Opus 4.8 (1M ctx) | Opus 4.8 (1M ctx) | — |
+
+---
+
+## 3. Error corregido #1 — el talento NO está disponible a demanda
+
+No hablamos de "programadores" genéricos. La intersección requerida:
+
+> **Rust senior/staff** (≈1-2% de los devs) **∩ blockchain de pagos ∩ XRP Ledger** (ecosistema diminuto vs EVM/Solana) **∩ criptografía de firmas ∩ protocolo x402** (nacido en 2025).
+
+Resultado: **unas pocas docenas de personas calificadas en el planeta.** De esas:
+- Ninguna está esperando un proyecto de 2 semanas
+- Ninguna deja un empleo de $300k/año por un gig corto
+- Las freelance buenas tienen cola de 1-3 meses
+
+**El constraint real nunca fue el dinero — es la escasez y disponibilidad del talento.**
+
+---
+
+## 4. Error corregido #2 — la utilización real, no las 40h ideales
+
+| Concepto | Realidad de industria |
+|---|---|
+| "Deep work" en código por día | **3-5 horas** (no 8) |
+| Utilización productiva (foco real) | **55-65%** del tiempo pagado |
+| Overhead (reuniones, Slack, planning, reviews, interrupciones) | **35-45%** |
+| Ramp-up de tech nicho (XRPL) | la **primera semana** casi solo aprendiendo |
+
+Para entregar ~300h **productivas** hay que **pagar ~500h**. Más ramp-up XRPL: +40-80h.
+
+---
+
+## 5. Tres escenarios realistas
+
+### 🅰️ Equipo interno (FTE)
+- No se contrata a 12 personas por 2 semanas; se arma un equipo permanente.
+- Reclutamiento Rust/blockchain senior: 3-6 meses **por rol** → armar 5-8 calificados: **6-12 meses**.
+- Headhunters: 20-30% del primer año (~$50-75k/cabeza) → **$400-600k solo en reclutamiento**.
+- Equipo permanente: ~$1.5-2M/año cargado. **Solo justificable con roadmap de 20+ integraciones**, no para una.
+
+### 🅱️ Consultora boutique + auditoría externa *(el más realista para un one-off)*
+- Contratar consultora: **3-6 semanas** (scoping, SOW, NDA, negociación).
+- Asignan **2-3 devs** (no 12); ramp-up XRPL + build secuencial.
+- La auditoría de seguridad **se subcontrata** a una firma de cripto (las consultoras de dev no auditan su propio código de fondos).
+
+### 🅲️ Solo la auditoría de seguridad *(lo que hizo el Equipo B)*
+- Los 7 CTOs ejecutaron **una auditoría de seguridad de cripto profesional**.
+- Firmas tipo Trail of Bits / Halborn / OpenZeppelin: **$15k-50k/semana**, engagements de 2-4 semanas, **colas de 1-3 meses**.
+- Para 1,293 líneas de código de pagos: **$40k-100k** y **4-8 semanas**.
+- Encuentran exactamente lo que encontró el Equipo B: **el signature bypass crítico**.
+
+---
+
+## 6. Costo realista recalculado (Escenario 🅱️)
+
+| Concepto | Estimación realista |
 |---|---:|
-| Tokens procesados | **~1.074 millones** |
-| Acciones ejecutadas (tool calls) | **365** |
-| Agentes | **12 / 12 completados** |
-| Tiempo de reloj | **33 min 41 s** |
-| Tiempo de cómputo sumado | **~44 min 47 s** |
+| **BUILD** (consultora, ~500h pagadas @ $180/h blended + PM + ramp-up XRPL) | **$75,000 – $90,000** |
+| **AUDITORÍA DE SEGURIDAD** (firma cripto externa, 2-3 semanas) | **$40,000 – $70,000** |
+| **TOTAL PROYECTO REALISTA** | **~$115,000 – $160,000 USD** |
 
-**Veredicto del análisis:** un equipo humano equivalente habría costado **~$50,000 USD (~$205M COP)** y tomado **~2 semanas calendario**. El workflow lo entregó en **34 minutos** por el costo de cómputo de unos pocos dólares.
+> Triple de la estimación v1 ($50k), porque v1 ignoró: auditoría de seguridad externa obligatoria, ramp-up XRPL, utilización real (55-65%) y overhead de contratación.
 
----
-
-## 2. Los 12 agentes (datos crudos del workflow)
-
-| # | Fase | Agente | Tokens | Acciones | Tiempo |
-|---|------|--------|-------:|------:|-------:|
-| 1 | Research | live-code-map | 130.4k | 13 | 2m31s |
-| 2 | Research | xrpl-rust-api | 71.8k | 23 | 3m15s |
-| 3 | Research | t54-wire-format | 41.5k | 13 | 2m08s |
-| 4 | Research | asset-facts | 46.7k | 22 | 2m23s |
-| 5 | Synthesize | implementation-brief | 65.0k | 5 | 3m13s |
-| 6 | Implement | remove-xrpl-evm-stub | 59.1k | 36 | 1m56s |
-| 7 | Implement | **core-scaffold** | **188.3k** | **91** | 9m19s |
-| 8 | Implement | chain-xrpl-rs | 169.5k | 53 | 7m49s |
-| 9 | Peripheral | config+lambda | 70.6k | 12 | 1m56s |
-| 10 | Peripheral | frontend | 77.4k | 37 | 3m29s |
-| 11 | Peripheral | readme+plan | 54.3k | 19 | 2m07s |
-| 12 | Review | diff-review | 99.7k | 41 | 4m41s |
-| | | **TOTAL** | **~1,074.3k** | **365** | reloj: 33m41s |
+### 🇨🇴 En pesos colombianos (USD/COP ~$4,100)
+- **~$470 – $655 millones COP** (centro ~$553M)
+- ≈ **29 años** de salario mínimo colombiano 2026 (~$1.6M/mes)
+- ≈ el sueldo anual completo de **16-17 personas**
 
 ---
 
-## 3. Organigrama: los cargos equivalentes
-
-| # | Agente | Cargo equivalente | Seniority |
-|---|--------|-------------------|-----------|
-| 1 | live-code-map | Staff Engineer / Tech Lead de Arquitectura | Staff |
-| 2 | xrpl-rust-api | Senior Blockchain Engineer (especialista XRPL) | Senior |
-| 3 | t54-wire-format | Protocol & Cryptography Engineer | Senior |
-| 4 | asset-facts | Blockchain Research Analyst | Mid |
-| 5 | implementation-brief | Solutions Architect / Technical PM | Senior |
-| 6 | remove-xrpl-evm-stub | Software Engineer (Refactoring) | Mid |
-| 7 | core-scaffold | Staff Backend Engineer (Rust) | Staff |
-| 8 | chain-xrpl-rs | Senior Blockchain Protocol Engineer (Rust) | Senior |
-| 9 | config+lambda | DevOps / Cloud Engineer (AWS) | Senior |
-| 10 | frontend | Frontend Engineer | Mid |
-| 11 | readme+plan | Technical Writer / DevRel | Mid |
-| 12 | diff-review | Principal Engineer / QA Lead | Principal |
-| — | (orquestador) | Engineering Manager / PM | Manager |
-
-> Armar este equipo (3 Staff/Principal, 5 Senior, 4 Mid) toma **3–6 meses de reclutamiento** en la vida real.
-
----
-
-## 4. Nómina y costeo (mercado 2026)
-
-| Agente | Salario anual | Tarifa/h | Horas humanas | Costo |
-|--------|--------------:|---------:|--------------:|------:|
-| live-code-map | $280k | $135 | 12 h | $1,620 |
-| xrpl-rust-api | $240k | $115 | 16 h | $1,840 |
-| t54-wire-format | $260k | $125 | 12 h | $1,500 |
-| asset-facts | $160k | $77 | 8 h | $616 |
-| implementation-brief | $230k | $111 | 8 h | $888 |
-| remove-xrpl-evm-stub | $150k | $72 | 4 h | $288 |
-| core-scaffold | $270k | $130 | 36 h | $4,680 |
-| chain-xrpl-rs | $255k | $123 | 32 h | $3,936 |
-| config+lambda | $200k | $96 | 8 h | $768 |
-| frontend | $170k | $82 | 12 h | $984 |
-| readme+plan | $130k | $63 | 8 h | $504 |
-| diff-review | $300k | $144 | 12 h | $1,728 |
-| **SUBTOTAL** | | | **168 h-persona** | **$19,352** |
-
-**168 horas-persona = ~21 días laborales = ~1 mes** de trabajo de un ingeniero (solo código productivo).
-
----
-
-## 5. Cronograma humano (camino crítico)
-
-Las fases tienen dependencias (no se implementa sin plan):
+## 7. Timeline realista (no "2 semanas")
 
 ```
-SEMANA 1
-  Lun-Mar  FASE 1 Research (4 paralelo) ......... 2 días   (cuello: xrpl-rust-api 16h)
-  Mié      FASE 2 Synthesize (1) ................ 1 día
-  Jue-Vie  FASE 3 Implement arranca...
-SEMANA 2
-  Lun-Mié  FASE 3 Implement (3 paralelo) ........ 4.5 días (cuello: core-scaffold 36h)
-  Jue      FASE 4 Peripheral (3 paralelo) ....... 1.5 días
-  Vie      FASE 5 Review (1) .................... 1.5 días
+Escenario 🅱️ (consultora + auditoría externa):
 
-CAMINO CRÍTICO: ~10.5 días hábiles = ~2 SEMANAS CALENDARIO
+Mes 1      ████   Encontrar/contratar consultora (scoping, SOW, NDA)
+Mes 1-2    ██     Onboarding + ramp-up XRPL
+Mes 2-3    ██████ Desarrollo (dependencias, reviews, iteración)
+Mes 3      ███    Conseguir slot en firma de auditoría (cola)
+Mes 3-4    ████   Auditoría de seguridad externa
+Mes 4      ██     Remediar findings + re-auditar
+
+TOTAL REALISTA: 3 - 4.5 MESES calendario
 ```
 
-**La IA lo hizo en 33m41s → ~142x más rápido** en tiempo de oficina.
+Escenario 🅰️ (equipo interno): **6-12 meses** solo para tener la gente.
+
+**Lo que pasó de verdad: ~46 minutos de reloj.**
 
 ---
 
-## 6. El overhead invisible (coordinación)
+## 8. Contraste honesto
 
-Con 12 personas, el costo de coordinación explota (**66 canales de comunicación** posibles — Ley de Brooks):
-
-| Ceremonia | Cálculo | Horas-persona |
-|---|---|---:|
-| Sprint planning | 2h × 13 | 26 h |
-| Daily standups | 15min × 13 × 10 días | 32.5 h |
-| Architecture review | 2h × 8 | 16 h |
-| Code reviews síncronos | varias sesiones | 15 h |
-| Retrospectiva | 1.5h × 13 | 19.5 h |
-| Comunicación asíncrona | ~8% | 13.4 h |
-| **TOTAL** | | **~122 h-persona** |
-
-El overhead (122h) es casi tan grande como el trabajo productivo (168h). **Los agentes tuvieron 0 reuniones.**
-
----
-
-## 7. Presupuesto total consolidado
-
-| Concepto | Costo |
-|---|---:|
-| Trabajo productivo (168h) | $19,352 |
-| Overhead de coordinación (122h) | $12,974 |
-| Gestión del PM (40h) | $4,800 |
-| **Subtotal directo** | **$37,126** |
-| + Cargas sociales y beneficios (×1.3) | +$11,138 |
-| **COSTO FULLY-LOADED** | **~$48,000 – $55,000 USD** |
-
-### Aterrizado en pesos colombianos (USD/COP ~$4,100)
-
-- **~$205 millones COP**
-- ≈ **128 meses** de salario mínimo colombiano 2026 (~$1.6M/mes) = **~11 años**
-- ≈ el sueldo anual completo de **~10 colombianos**
-
----
-
-## 8. Contraste IA vs humano
-
-| | Equipo humano | 12 agentes IA |
+| | Realidad humana | Equipos A + B (IA) |
 |---|---|---|
-| Costo | ~$50,000 USD | ~$30–60 cómputo (o incluido en suscripción) |
-| Tiempo calendario | ~2 semanas | 34 minutos |
-| Reclutamiento | 3–6 meses | 0 segundos |
-| Disponibilidad | 8am–5pm, L–V | 24/7/365 |
-| Bajas / vacaciones | Sí | Nunca |
-| Reuniones | 122 horas | 0 |
-
-> **Ahorro en costo: ~1,000x. Ahorro en tiempo: ~142x.** Cambio de categoría, no mejora incremental.
+| 💵 Costo | **$115k – $160k** (build + audit) | decenas de dólares de cómputo |
+| ⏱️ Calendario | **3 – 4.5 meses** | **~46 minutos** |
+| 👥 Conseguir el talento | **casi imposible** a demanda | instantáneo |
+| 🔁 Iterar (build→audit→fix→re-audit) | otro ciclo de semanas | otra tanda de minutos |
+| 🛡️ Auditoría de seguridad | $40-100k, cola de meses | incluida, 12 min |
 
 ---
 
-## 9. Métricas extra (perspectiva PM)
+## 9. El insight que de verdad importa: acceso, no eficiencia
 
-1. **Throughput de talento:** 168 h-persona entregadas en 0.56h reales → **~300 horas de trabajo humano por cada hora de reloj.**
-2. **Densidad de procesamiento:** ~531 tokens/seg agregados → **~76x** la velocidad de lectura humana, escribiendo código en simultáneo.
-3. **Decisiones por minuto:** 365 acciones / 34 min = **10.8 decisiones técnicas/min**, sin fatiga.
-4. **Cero bus factor:** sin punto único de falla.
-5. **Rework incluido gratis:** auditoría completa (agente #12). En humanos el rework es 20–40% del esfuerzo.
-6. **Time-to-market:** llegar 2 semanas antes en cripto puede valer más que el ahorro mismo.
-7. **Costo por hora-persona entregada:** ~$298/h de valor humano, a un costo de centavos.
+El valor real **no es ahorrar $150k.** Es que para un DAO:
 
----
+> **(a)** probablemente no hay $150k líquidos para un experimento; **(b)** aunque los hubiera, son 3-4 meses de espera; **(c)** el especialista XRPL+Rust específico quizás ni existe disponible.
 
-## 10. Analogías
+La IA no hizo este proyecto *más barato*. Lo hizo **posible**. Pasó de "económicamente inviable para una organización de este tamaño" a "una tarde de stream". Eso no es eficiencia — es **democratización de acceso** a capacidades que hasta ayer solo tenían empresas con $150k+ y conexiones en el mundo cripto.
 
-- **Como construir una casa:** cimientos (core-scaffold), estructura (chain-xrpl-rs), instalaciones (config+lambda), acabados (frontend), planos (docs), inspección (diff-review) — completa en lo que dura un partido de fútbol.
-- **Un episodio y medio de serie** = un mes de trabajo de ingeniería de 12 personas.
-- **El ahorro (~$50k)** = un carro 0km, u 11 años de salario mínimo colombiano.
-- **Leyeron una Biblia entera** (~800,000 palabras) de código y la entendieron antes de que se enfríe el café.
+Y el dato que lo corona: el **Equipo B** hizo, en 12 minutos, una **auditoría de seguridad de $40-100k** (con cola de meses) y encontró un **robo de fondos real** (signature bypass) *antes* de que tocara producción. Ese único equipo se pagó, en términos de mercado, decenas de miles de veces.
 
 ---
 
-## 11. Veredicto del PM
+## 10. Conclusión
 
-Como Project Manager, habría presentado un presupuesto de **~$50,000 USD (~$205M COP)** y un cronograma de **2 semanas** con 12 especialistas difíciles de conseguir. Se entregó en **34 minutos** por el costo de un almuerzo, con auditoría incluida.
-
-**PERO:** esto es un **borrador de primera calidad, no producción aprobada.** Falta lo que ningún agente reemplaza por sí solo: **revisar el diff, compilar, probar y decidir el deploy.** La IA hizo el trabajo de 12 personas; la firma del release sigue siendo del dueño.
+| Pregunta | Respuesta honesta |
+|---|---|
+| ¿Cuánto costaría con humanos? | **$115k – $160k USD (~$553M COP)** |
+| ¿Cuánto tardaría? | **3 – 4.5 meses** (o 6-12 armando equipo) |
+| ¿Es viable conseguir el talento? | **Casi no**, a demanda |
+| ¿Cuánto tomó con IA? | **~46 minutos**, ~2.03M tokens, 19 agentes |
+| ¿El verdadero valor? | **Acceso**, no ahorro: hizo posible lo inviable |
 
 ---
 
-*Generado por Claude Code (Opus 4.8, 1M context) como análisis ejecutivo. Cifras estimadas con fines ilustrativos.*
+*Generado por Claude Code (Opus 4.8, 1M context) como análisis ejecutivo. v2 con modelo de costos realista. Cifras estimadas con fines ilustrativos; las facilitator wallets XRPL referenciadas en el proyecto son direcciones públicas, no secretos.*

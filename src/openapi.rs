@@ -26,21 +26,21 @@ The x402 facilitator enables gasless micropayments across multiple blockchain ne
 ## Supported Networks
 
 ### EVM Chains (Mainnet)
-Ethereum, Base, Polygon, Optimism, Avalanche, Arbitrum, Celo, HyperEVM, Unichain, Monad, Scroll, BSC, SKALE
+Ethereum, Base, Polygon, Optimism, Avalanche, Arbitrum, Celo, HyperEVM, Unichain, Monad, Scroll, BSC, SKALE Base
 
 ### EVM Chains (Testnet)
-Ethereum Sepolia, Base Sepolia, Polygon Amoy, Optimism Sepolia, Avalanche Fuji, Arbitrum Sepolia, Celo Sepolia, HyperEVM Testnet, Unichain Sepolia, SKALE Sepolia, Monad Testnet
+Ethereum Sepolia, Base Sepolia, Polygon Amoy, Optimism Sepolia, Avalanche Fuji, Arbitrum Sepolia, Celo Sepolia, HyperEVM Testnet, Unichain Sepolia, SKALE Base Sepolia, Monad Testnet
 
 ### SVM Chains (Solana Virtual Machine)
-- **Solana**: Mainnet and Devnet
-- **Fogo**: Mainnet and Testnet
+- **Solana**: Mainnet (`solana`) and Devnet (`solana-devnet`)
+- **Fogo**: Mainnet (`fogo`) and Testnet (`fogo-testnet`)
+- **XRPL (XRP Ledger)**: Mainnet (`xrpl`) and Testnet (`xrpl-testnet`) — native XRP, pre-signed Payment transaction blobs; not the EVM `xrpl-evm` sidechain
 
 ### Other Non-EVM Chains
-- **NEAR Protocol**: Mainnet and Testnet
-- **Stellar/Soroban**: Mainnet and Testnet
-- **Algorand**: Mainnet and Testnet
-- **Sui**: Mainnet and Testnet
-- **XRPL (XRP Ledger)**: Mainnet and Testnet (native XRP, pre-signed Payment transaction blobs; not the EVM `xrpl-evm` sidechain)
+- **NEAR Protocol**: Mainnet (`near`) and Testnet (`near-testnet`)
+- **Stellar/Soroban**: Mainnet (`stellar`) and Testnet (`stellar-testnet`)
+- **Algorand**: Mainnet (`algorand`) and Testnet (`algorand-testnet`)
+- **Sui**: Mainnet (`sui`) and Testnet (`sui-testnet`)
 
 ## Core Endpoints
 

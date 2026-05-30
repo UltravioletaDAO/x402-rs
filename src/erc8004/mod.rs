@@ -23,7 +23,6 @@
 //! - Monad Mainnet
 //! - Avalanche C-Chain
 //! - SKALE Base Mainnet (gasless L3)
-//! - Hedera Mainnet (ERC-8004 only, no x402 payments)
 //!
 //! ## EVM Testnets
 //! - Ethereum Sepolia
@@ -34,7 +33,6 @@
 //! - Celo Sepolia
 //! - Avalanche Fuji
 //! - SKALE Base Sepolia
-//! - Hedera Testnet (ERC-8004 only, no x402 payments)
 //!
 //! ## Solana (QuantuLabs 8004-solana + ATOM Engine)
 //! - Solana Mainnet
@@ -163,14 +161,6 @@ pub const SKALE_BASE_MAINNET_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
     validation_registry: None,
 };
 
-// Hedera Mainnet (chain ID 295) - Official deployment (CREATE2 deterministic)
-// ERC-8004 only: Hedera USDC is HTS native, no EIP-3009 support for x402 payments
-pub const HEDERA_MAINNET_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
-    identity_registry: alloy::primitives::address!("8004A169FB4a3325136EB29fA0ceB6D2e539a432"),
-    reputation_registry: alloy::primitives::address!("8004BAa17C55a88189AE136b182e5fdA19dE9b63"),
-    validation_registry: None,
-};
-
 // ============================================================================
 // Testnet Contracts - All use same testnet addresses
 // ============================================================================
@@ -236,15 +226,6 @@ pub const SKALE_BASE_SEPOLIA_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
     validation_registry: None,
 };
 
-// Hedera Testnet (chain ID 296) - Official testnet deployment (CREATE2 deterministic)
-pub const HEDERA_TESTNET_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
-    identity_registry: alloy::primitives::address!("8004A818BFB912233c491871b3d84c89A494BD9e"),
-    reputation_registry: alloy::primitives::address!("8004B663056A597Dffe9eCcC1965A193B7388713"),
-    validation_registry: Some(alloy::primitives::address!(
-        "8004Cb1BF31DAf7788923b405b754f57acEB4272"
-    )),
-};
-
 /// Get ERC-8004 contract addresses for a network
 pub fn get_contracts(network: &Network) -> Option<Erc8004Contracts> {
     match network {
@@ -259,7 +240,6 @@ pub fn get_contracts(network: &Network) -> Option<Erc8004Contracts> {
         Network::Monad => Some(MONAD_MAINNET_CONTRACTS),
         Network::Avalanche => Some(AVALANCHE_MAINNET_CONTRACTS),
         Network::SkaleBase => Some(SKALE_BASE_MAINNET_CONTRACTS),
-        Network::Hedera => Some(HEDERA_MAINNET_CONTRACTS),
         // Testnets
         Network::EthereumSepolia => Some(ETHEREUM_SEPOLIA_CONTRACTS),
         Network::BaseSepolia => Some(BASE_SEPOLIA_CONTRACTS),
@@ -269,7 +249,6 @@ pub fn get_contracts(network: &Network) -> Option<Erc8004Contracts> {
         Network::CeloSepolia => Some(CELO_SEPOLIA_CONTRACTS),
         Network::AvalancheFuji => Some(AVALANCHE_FUJI_CONTRACTS),
         Network::SkaleBaseSepolia => Some(SKALE_BASE_SEPOLIA_CONTRACTS),
-        Network::HederaTestnet => Some(HEDERA_TESTNET_CONTRACTS),
         _ => None,
     }
 }
@@ -293,7 +272,6 @@ pub fn supported_networks() -> Vec<Network> {
         Network::Monad,
         Network::Avalanche,
         Network::SkaleBase,
-        Network::Hedera,
         // EVM Testnets
         Network::EthereumSepolia,
         Network::BaseSepolia,
@@ -303,7 +281,6 @@ pub fn supported_networks() -> Vec<Network> {
         Network::CeloSepolia,
         Network::AvalancheFuji,
         Network::SkaleBaseSepolia,
-        Network::HederaTestnet,
         // Solana (QuantuLabs 8004-solana + ATOM Engine)
         Network::Solana,
         Network::SolanaDevnet,
@@ -545,11 +522,8 @@ mod tests {
         // SKALE
         assert!(networks.contains(&Network::SkaleBase));
         assert!(networks.contains(&Network::SkaleBaseSepolia));
-        // Hedera
-        assert!(networks.contains(&Network::Hedera));
-        assert!(networks.contains(&Network::HederaTestnet));
-        // Total count: 16 EVM + 2 SKALE + 2 Hedera + 2 Solana = 22
-        assert_eq!(networks.len(), 22);
+        // Total count: 16 EVM + 2 SKALE + 2 Solana = 20
+        assert_eq!(networks.len(), 20);
     }
 
     #[test]
@@ -578,10 +552,7 @@ mod tests {
         // SKALE names
         assert!(names.contains(&"skale-base".to_string()));
         assert!(names.contains(&"skale-base-sepolia".to_string()));
-        // Hedera names
-        assert!(names.contains(&"hedera".to_string()));
-        assert!(names.contains(&"hedera-testnet".to_string()));
-        assert_eq!(names.len(), 22);
+        assert_eq!(names.len(), 20);
     }
 
     #[test]

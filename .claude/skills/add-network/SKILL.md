@@ -484,6 +484,40 @@ After adding the network to `src/network.rs`, also update `config/supported_toke
 }
 ```
 
+### 3.10 Update src/openapi.rs (Swagger / OpenAPI)
+
+The interactive API docs at `/docs` (Swagger UI) and `/api-docs/openapi.json` are
+generated from `src/openapi.rs`. A new network is INVISIBLE in the published API
+spec until it is added here — this is a required step, not optional.
+
+- Add the new network's serde name (e.g. `"scroll"`) to the `Network` enum /
+  examples in `src/openapi.rs`. Keep it consistent with `src/network.rs`.
+- Do NOT edit the version — it auto-syncs from `Cargo.toml` via `env!("CARGO_PKG_VERSION")`.
+- Verify after deploy:
+  `curl -s https://facilitator.ultravioletadao.xyz/api-docs/openapi.json | jq '.paths,.components.schemas.Network'`
+
+### 3.11 Canonical consistency — landing MUST match /supported
+
+The landing page network counts are NOT free text: they are a single source of
+truth. `/supported` is canonical for payment networks; `src/payment_operator/addresses.rs`
+for escrow; `src/erc8004/mod.rs` for ERC-8004. NEVER hardcode a number that
+disagrees with these.
+
+- The landing computes the live payment-network count from `/supported` in the
+  browser (`[data-live-count="payment-mainnets"]`); also update the hardcoded
+  fallback string (`data-i18n="sdk.networks"`, both EN and ES) so they agree.
+- If the network gains escrow or ERC-8004, update those grids AND their
+  "Escrow Deployed on N Networks" / "Deployed on N Networks" headings + the
+  ERC-8004 stat card (`id="ovr-erc8004-networks"`), EN + ES.
+- After building, run the canonical check and resolve any drift it reports:
+  `python scripts/verify_landing_canonical.py`
+  (It fails the build if the landing disagrees with /supported, escrow, or ERC-8004.)
+
+### 3.12 Update lambda/balances/handler.py
+
+Add the network to `get_network_configs()` (RPC list + facilitator wallet) so the
+landing balance cards render. Copy the wallet address from this file — NEVER from memory.
+
 ---
 
 ## Phase 4: Build and Verify Locally

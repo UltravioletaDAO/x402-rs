@@ -144,12 +144,6 @@ pub enum Network {
     /// Scroll mainnet (chain ID 534352) - zkEVM L2 on Ethereum.
     #[serde(rename = "scroll")]
     Scroll,
-    /// Hedera mainnet (chain ID 295) - ERC-8004 only, no EIP-3009 USDC.
-    #[serde(rename = "hedera")]
-    Hedera,
-    /// Hedera testnet (chain ID 296) - ERC-8004 only, no EIP-3009 USDC.
-    #[serde(rename = "hedera-testnet")]
-    HederaTestnet,
 }
 
 impl Display for Network {
@@ -201,8 +195,6 @@ impl Display for Network {
             Network::SkaleBase => write!(f, "skale-base"),
             Network::SkaleBaseSepolia => write!(f, "skale-base-sepolia"),
             Network::Scroll => write!(f, "scroll"),
-            Network::Hedera => write!(f, "hedera"),
-            Network::HederaTestnet => write!(f, "hedera-testnet"),
         }
     }
 }
@@ -263,8 +255,6 @@ impl FromStr for Network {
             "skale-base" | "skale" => Ok(Network::SkaleBase),
             "skale-base-sepolia" | "skale-testnet" => Ok(Network::SkaleBaseSepolia),
             "scroll" | "scroll-mainnet" => Ok(Network::Scroll),
-            "hedera" | "hedera-mainnet" => Ok(Network::Hedera),
-            "hedera-testnet" => Ok(Network::HederaTestnet),
             _ => Err(NetworkParseError(s.to_string())),
         }
     }
@@ -333,8 +323,6 @@ impl From<Network> for NetworkFamily {
             Network::SkaleBase => NetworkFamily::Evm,
             Network::SkaleBaseSepolia => NetworkFamily::Evm,
             Network::Scroll => NetworkFamily::Evm,
-            Network::Hedera => NetworkFamily::Evm,
-            Network::HederaTestnet => NetworkFamily::Evm,
         }
     }
 }
@@ -346,7 +334,6 @@ impl Network {
         &[
             Network::BaseSepolia,
             Network::Base,
-            Network::XdcMainnet,
             Network::AvalancheFuji,
             Network::Avalanche,
             Network::Solana,
@@ -359,8 +346,6 @@ impl Network {
             Network::CeloSepolia,
             Network::HyperEvm,
             Network::HyperEvmTestnet,
-            Network::Sei,
-            Network::SeiTestnet,
             Network::Ethereum,
             Network::EthereumSepolia,
             Network::Arbitrum,
@@ -386,8 +371,6 @@ impl Network {
             Network::SkaleBase,
             Network::SkaleBaseSepolia,
             Network::Scroll,
-            Network::Hedera,
-            Network::HederaTestnet,
         ]
     }
 
@@ -397,7 +380,6 @@ impl Network {
         &[
             Network::BaseSepolia,
             Network::Base,
-            Network::XdcMainnet,
             Network::AvalancheFuji,
             Network::Avalanche,
             Network::Solana,
@@ -410,8 +392,6 @@ impl Network {
             Network::CeloSepolia,
             Network::HyperEvm,
             Network::HyperEvmTestnet,
-            Network::Sei,
-            Network::SeiTestnet,
             Network::Ethereum,
             Network::EthereumSepolia,
             Network::Arbitrum,
@@ -435,8 +415,6 @@ impl Network {
             Network::SkaleBase,
             Network::SkaleBaseSepolia,
             Network::Scroll,
-            Network::Hedera,
-            Network::HederaTestnet,
         ]
     }
 
@@ -446,7 +424,6 @@ impl Network {
         &[
             Network::BaseSepolia,
             Network::Base,
-            Network::XdcMainnet,
             Network::AvalancheFuji,
             Network::Avalanche,
             Network::Solana,
@@ -459,8 +436,6 @@ impl Network {
             Network::CeloSepolia,
             Network::HyperEvm,
             Network::HyperEvmTestnet,
-            Network::Sei,
-            Network::SeiTestnet,
             Network::Ethereum,
             Network::EthereumSepolia,
             Network::Arbitrum,
@@ -484,8 +459,6 @@ impl Network {
             Network::SkaleBase,
             Network::SkaleBaseSepolia,
             Network::Scroll,
-            Network::Hedera,
-            Network::HederaTestnet,
         ]
     }
 
@@ -495,7 +468,6 @@ impl Network {
         &[
             Network::BaseSepolia,
             Network::Base,
-            Network::XdcMainnet,
             Network::AvalancheFuji,
             Network::Avalanche,
             Network::Solana,
@@ -508,8 +480,6 @@ impl Network {
             Network::CeloSepolia,
             Network::HyperEvm,
             Network::HyperEvmTestnet,
-            Network::Sei,
-            Network::SeiTestnet,
             Network::Ethereum,
             Network::EthereumSepolia,
             Network::Arbitrum,
@@ -531,8 +501,6 @@ impl Network {
             Network::SkaleBase,
             Network::SkaleBaseSepolia,
             Network::Scroll,
-            Network::Hedera,
-            Network::HederaTestnet,
         ]
     }
 
@@ -567,7 +535,6 @@ impl Network {
                 | Network::StellarTestnet
                 | Network::FogoTestnet
                 | Network::SkaleBaseSepolia
-                | Network::HederaTestnet
         )
     }
 
@@ -642,9 +609,6 @@ impl Network {
             Network::SkaleBaseSepolia => "eip155:324705682".to_string(),
             // Scroll - eip155:{chain_id}
             Network::Scroll => "eip155:534352".to_string(),
-            // Hedera - eip155:{chain_id}
-            Network::Hedera => "eip155:295".to_string(),
-            Network::HederaTestnet => "eip155:296".to_string(),
         }
     }
 
@@ -709,9 +673,6 @@ impl Network {
             "eip155:324705682" => Some(Network::SkaleBaseSepolia),
             // Scroll
             "eip155:534352" => Some(Network::Scroll),
-            // Hedera
-            "eip155:295" => Some(Network::Hedera),
-            "eip155:296" => Some(Network::HederaTestnet),
             _ => None,
         }
     }
@@ -1371,6 +1332,9 @@ static USDC_SKALE_BASE_SEPOLIA: Lazy<USDCDeployment> = Lazy::new(|| {
 
 /// Lazily initialized known USDC deployment on Scroll mainnet as [`USDCDeployment`].
 /// Scroll is a zkEVM L2 on Ethereum with native EIP-3009 support.
+/// TODO: verify Scroll USDC EIP-3009 domain name/version on-chain before merchant use.
+/// Current values (name "USD Coin", version "2") are sourced from contract inspection;
+/// confirm via eth_call to token.name() and token.version() on chain ID 534352.
 static USDC_SCROLL: Lazy<USDCDeployment> = Lazy::new(|| {
     USDCDeployment(TokenDeployment {
         asset: TokenAsset {
@@ -1465,7 +1429,6 @@ impl USDCDeployment {
             Network::SkaleBase => Some(&USDC_SKALE_BASE),
             Network::SkaleBaseSepolia => Some(&USDC_SKALE_BASE_SEPOLIA),
             Network::Scroll => Some(&USDC_SCROLL),
-            Network::Hedera | Network::HederaTestnet => None,
         }
     }
 }
@@ -2026,8 +1989,7 @@ pub fn supported_networks_for_token(token_type: TokenType) -> Vec<Network> {
 /// (or SPL mint) that happens to expose a similarly-named function but
 /// drains funds or bypasses our verification logic.
 ///
-/// Returns an empty `Vec` for ERC-8004-only networks (Hedera) where no
-/// stablecoin is deployed.
+/// Returns an empty `Vec` if no stablecoin is deployed on the given network.
 pub fn supported_asset_addresses(network: Network) -> Vec<MixedAddress> {
     let mut addrs: Vec<MixedAddress> = Vec::with_capacity(5);
     if let Some(d) = USDCDeployment::by_network(network) {
@@ -2071,17 +2033,8 @@ mod tests {
 
     #[test]
     fn test_usdc_available_on_all_networks() {
-        // USDC should be available on all networks except ERC-8004-only networks (Hedera)
-        let erc8004_only = [Network::Hedera, Network::HederaTestnet];
+        // USDC should be available on all networks in variants()
         for network in Network::variants() {
-            if erc8004_only.contains(network) {
-                assert!(
-                    !is_token_supported(*network, TokenType::Usdc),
-                    "USDC should NOT be supported on ERC-8004-only network {:?}",
-                    network
-                );
-                continue;
-            }
             assert!(
                 is_token_supported(*network, TokenType::Usdc),
                 "USDC should be supported on {:?}",
@@ -2097,12 +2050,7 @@ mod tests {
 
     #[test]
     fn test_usdc_decimals() {
-        // Hedera has no USDC (ERC-8004 only), skip it
-        let skip = [Network::Hedera, Network::HederaTestnet];
         for network in Network::variants() {
-            if skip.contains(network) {
-                continue;
-            }
             let deployment = get_token_deployment(*network, TokenType::Usdc).unwrap();
             let expected_decimals = match network {
                 Network::Stellar | Network::StellarTestnet => 7,

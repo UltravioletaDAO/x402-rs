@@ -157,8 +157,6 @@ impl TryFrom<Network> for EvmChain {
             Network::SkaleBase => Ok(EvmChain::new(value, 1187947933)),
             Network::SkaleBaseSepolia => Ok(EvmChain::new(value, 324705682)),
             Network::Scroll => Ok(EvmChain::new(value, 534352)),
-            Network::Hedera => Ok(EvmChain::new(value, 295)),
-            Network::HederaTestnet => Ok(EvmChain::new(value, 296)),
             Network::Near => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::NearTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::Stellar => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
@@ -624,8 +622,6 @@ impl FromEnvByNetworkBuild for EvmProvider {
             Network::SkaleBase => false, // SKALE does NOT support EIP-1559, uses legacy tx
             Network::SkaleBaseSepolia => false, // SKALE does NOT support EIP-1559, uses legacy tx
             Network::Scroll => true,     // Scroll zkEVM supports EIP-1559
-            Network::Hedera => true,     // Hedera EVM supports EIP-1559
-            Network::HederaTestnet => true, // Hedera testnet supports EIP-1559
             Network::Near => false,      // NEAR is not an EVM chain
             Network::NearTestnet => false, // NEAR is not an EVM chain
             Network::Stellar => false,   // Stellar is not an EVM chain

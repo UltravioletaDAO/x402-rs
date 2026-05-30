@@ -133,3 +133,26 @@ El camino a producción está claro: **6 P0 + verificación en testnet.** La bas
 ---
 
 *Generado por un panel de 7 agentes Claude (Opus 4.8, 1M context). Recomendación, no acción: el deploy sigue siendo decisión humana.*
+
+---
+
+## REMEDIACIÓN — RESUELTO (2026-05-29, v1.45.2)
+
+Todos los bloqueadores subsanados, verificados por re-auditoría independiente (`security-auditor` → **GO**), y desplegados a producción.
+
+| Bloqueador | Estado | Fix |
+|---|---|---|
+| P0-1 Signature bypass | ✅ RESUELTO | `verify_signature` liga `Account`↔`SigningPubKey` (`derive_classic_address(pubkey) == account`); rechaza mismatch/multisig. Tests no-vacuos (Account=A firmado por key_B → rechazado) válidos para ed25519 y secp256k1, confirmados a nivel cripto. |
+| P0-2 CAIP-2 panic | ✅ RESUELTO | `Namespace::Xrpl` (validación `network_id` u32); `to_v2()` ya no paniquea post-settlement; tests round-trip `xrpl:0`/`xrpl:1`. |
+| P0-3 IOU f64 | ✅ RESUELTO | `rust_decimal` exacto + guard de precisión sub-unidad; rechaza todo underpayment (incl. el residual `.round()` hallado en la re-auditoría). |
+| P0-4 Dockerfile xrpl | ✅ RESUELTO | `--features solana,near,stellar,algorand,sui,xrpl`. |
+| P0-5 redact.rs | ✅ RESUELTO | committeado (`b4e0ad2`). |
+| P0-6 compiló | ✅ RESUELTO | Rust 1.94 local / Docker `rust:bullseye`; build verde con feature-set completo (28 crates xrpl-rust). |
+| HIGH-7 engine gate | ✅ RESUELTO | rechaza `tem*`/`tef*`/`tel*`/`tec*` rápido. |
+| MED rpc-leak | ✅ RESUELTO | `without_url()` + `redact::rpc_url`. |
+| MED str-slice panic | ✅ RESUELTO | truncado char-safe. |
+| P2 bak2 | ✅ RESUELTO | `git rm src/network.rs.bak2` + gitignore `*.bak*`. |
+
+**Commit:** `5bbda45 fix(xrpl,security)`. **Deploy:** v1.45.2 (verificado live: `/version`=1.45.2, `/supported` contiene `xrpl:0`, `/health` healthy, `/verify` XRPL rechaza sin panic/500). **Tests:** 13 de regresión pasan. **Re-auditoría independiente:** GO.
+
+**Pendiente recomendado (NO bloqueante del riesgo de seguridad):** e2e completo en testnet con el cliente t54 real (firmar Payment → `/verify` → `/settle`; confirmar valid→true, ataque→false, underpayment rechazado) antes del primer uso por merchants. El binding se validó vía tests unitarios no-vacuos + auditoría adversarial independiente + binario desplegado == código auditado/testeado. Confirmar también la representación `asset` de XRP nativo en requests `/verify` (nota funcional, no de seguridad).

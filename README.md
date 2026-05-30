@@ -20,7 +20,7 @@
 
 A payment settlement service implementing the [HTTP 402](https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/402) protocol. Users sign payment authorizations off-chain, the facilitator submits them on-chain and pays gas fees.
 
-Includes [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) on-chain reputation for AI agents across 14 networks (8 mainnets + 6 testnets).
+Includes [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) on-chain reputation for AI agents across 20 networks (11 mainnets + 9 testnets).
 
 **No custody. No trust. Just payments.**
 
@@ -86,7 +86,7 @@ Includes [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) on-chain reputation
 | **USDC** | All networks (22 total) |
 | **AUSD** | Ethereum, Polygon, Arbitrum, Avalanche, Monad, BSC, Solana, Sui |
 | **EURC** | Ethereum, Base, Avalanche |
-| **USDT** | Arbitrum, Celo, Optimism |
+| **USDT** | Arbitrum, Celo, Optimism, Monad |
 | **PYUSD** | Ethereum |
 | **RLUSD** | XRPL |
 | **XRP** | XRPL (native) |
@@ -103,9 +103,11 @@ Includes [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) on-chain reputation
 | Avalanche | Y | Y | Y | - | - |
 | Celo | Y | - | - | Y | - |
 | BSC | Y | Y | - | - | - |
-| Monad | Y | Y | - | - | - |
+| Monad | Y | Y | - | Y | - |
 | HyperEVM | Y | - | - | - | - |
 | Unichain | Y | - | - | - | - |
+| Scroll | Y | - | - | - | - |
+| SKALE Base | Y | - | - | - | - |
 | Solana | Y | Y | - | - | - |
 | Sui | Y | Y | - | - | - |
 | Fogo | Y | - | - | - | - |
@@ -201,7 +203,7 @@ Fee pooling via atomic transaction groups. Facilitator signs transaction 0 (fee 
 
 ## ERC-8004 Trustless Agents (On-Chain Reputation)
 
-The facilitator integrates [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) for AI agent identity and reputation across 14 networks.
+The facilitator integrates [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) for AI agent identity and reputation across 20 networks.
 
 ### What is ERC-8004?
 
@@ -211,7 +213,7 @@ Three on-chain registries enabling trust in the agentic economy:
 - **Reputation Registry** - Standardized feedback posting with proof-of-payment
 - **Validation Registry** - Third-party attestation of agent capabilities
 
-### Supported ERC-8004 Networks (14)
+### Supported ERC-8004 Networks (20)
 
 | Network | Type | Identity Registry | Reputation Registry |
 |---------|------|-------------------|---------------------|
@@ -219,18 +221,24 @@ Three on-chain registries enabling trust in the agentic economy:
 | Base | Mainnet | Same (CREATE2) | Same (CREATE2) |
 | Polygon | Mainnet | Same (CREATE2) | Same (CREATE2) |
 | Arbitrum | Mainnet | Same (CREATE2) | Same (CREATE2) |
+| Optimism | Mainnet | Same (CREATE2) | Same (CREATE2) |
 | Celo | Mainnet | Same (CREATE2) | Same (CREATE2) |
 | BSC | Mainnet | Same (CREATE2) | Same (CREATE2) |
 | Monad | Mainnet | Same (CREATE2) | Same (CREATE2) |
 | Avalanche | Mainnet | Same (CREATE2) | Same (CREATE2) |
+| SKALE Base | Mainnet | Same (CREATE2) | Same (CREATE2) |
+| Solana | Mainnet | Anchor program | Anchor program |
 | Ethereum Sepolia | Testnet | `0x8004A818...4BD9e` | `0x8004B663...8713` |
 | Base Sepolia | Testnet | Same | Same |
 | Polygon Amoy | Testnet | Same | Same |
 | Arbitrum Sepolia | Testnet | Same | Same |
+| Optimism Sepolia | Testnet | Same | Same |
 | Celo Sepolia | Testnet | Same | Same |
 | Avalanche Fuji | Testnet | Same | Same |
+| SKALE Base Sepolia | Testnet | Same | Same |
+| Solana Devnet | Testnet | Anchor program | Anchor program |
 
-All mainnet contracts use CREATE2 deterministic deployment (same addresses on every chain).
+All EVM mainnet contracts use CREATE2 deterministic deployment (same addresses on every chain). Solana uses a dedicated Anchor program.
 
 ### ERC-8004 API Endpoints
 

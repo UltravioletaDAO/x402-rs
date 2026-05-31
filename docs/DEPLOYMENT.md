@@ -254,7 +254,7 @@ sudo apt update
 sudo apt install caddy
 
 # Copy Caddyfile
-sudo cp Caddyfile /etc/caddy/Caddyfile
+sudo cp config/Caddyfile /etc/caddy/Caddyfile
 
 # Validate config
 sudo caddy validate --config /etc/caddy/Caddyfile

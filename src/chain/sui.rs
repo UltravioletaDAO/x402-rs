@@ -964,15 +964,12 @@ mod tests {
 
     /// Build a minimal SuiProvider for unit-testing validate_ptb (no RPC needed).
     fn make_provider(signer: SuiAddress) -> SuiProvider {
-        // We need a keypair; generate a deterministic one from a fixed seed.
-        use sui_types::crypto::{Ed25519SuiSignature, SuiKeyPair};
-        // Construct a throwaway keypair — only signer_address matters for validate_ptb.
-        // We use the bech32-encoded all-zeros key that Sui accepts as valid Ed25519.
-        let kp = SuiKeyPair::decode(
-            "suiprivkey1qqpqhyfze0g99vr8xlef7rg9qs54q2rdl44jz08y5x4yf60g0y98hk8acqm",
-        )
-        .expect("known-valid test keypair");
-        let derived_addr = SuiAddress::from(&kp.public());
+        use sui_types::crypto::SuiKeyPair;
+        // Construct a throwaway keypair from a fixed seed — only signer_address matters for
+        // validate_ptb. Bytes are `flag || privkey`: flag 0x00 = Ed25519, then a 32-byte seed
+        // (any 32 bytes is a valid Ed25519 seed). This is version-robust, unlike decoding a
+        // hardcoded bech32 string (which the pinned sui-types rejected).
+        let kp = SuiKeyPair::from_bytes(&[0u8; 33]).expect("valid Ed25519 test keypair");
 
         // We override signer_address with our chosen `signer` so gas_data.owner
         // validation works predictably in tests.

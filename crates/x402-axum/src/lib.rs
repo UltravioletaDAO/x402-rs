@@ -11,11 +11,14 @@
 //! use http::StatusCode;
 //! use serde_json::json;
 //! use x402_axum::{X402Middleware, IntoPriceTag};
+//! use x402_rs::address_evm;
 //! use x402_rs::network::{Network, USDCDeployment};
 //!
 //! let x402 = X402Middleware::try_from("https://facilitator.example.com/").unwrap();
 //! // You can construct `TokenAsset` manually. Here we use known USDC on Base Sepolia
-//! let usdc = USDCDeployment::by_network(Network::BaseSepolia).pay_to("0xADDRESS");
+//! let usdc = USDCDeployment::by_network(Network::BaseSepolia)
+//!     .unwrap()
+//!     .pay_to(address_evm!("0x036CbD53842c5426634e7929541eC2318f3dCF7e"));
 //!
 //! let app: Router = Router::new().route(
 //!     "/paywall",

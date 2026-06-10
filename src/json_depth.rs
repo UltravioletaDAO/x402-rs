@@ -103,7 +103,10 @@ mod tests {
 
     #[test]
     fn array_of_arrays_counts_each_level() {
-        let v: serde_json::Value = serde_json::from_str(r#"[[[[[]]]]]"#).unwrap();
+        // 5 nested arrays around a scalar leaf -> depth 5. (json_value_depth measures the depth
+        // of the deepest *element*; an empty innermost `[]` would itself be the deepest element
+        // at depth 4, so a scalar leaf is used here to unambiguously count all 5 levels.)
+        let v: serde_json::Value = serde_json::from_str(r#"[[[[["x"]]]]]"#).unwrap();
         assert_eq!(json_value_depth(&v), 5);
     }
 

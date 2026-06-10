@@ -25,11 +25,14 @@
 //! use x402_reqwest::{MaxTokenAmountFromAmount, X402Payments};
 //! use x402_rs::network::{Network, USDCDeployment};
 //!
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let signer: PrivateKeySigner = "0x...".parse()?;
-//! X402Payments::with_signer(signer)
+//! let _payments = X402Payments::with_wallet(signer)
 //!     // Example: prefer USDC on Base, and limit payments to 1.00 USDC
-//!     .prefer(USDCDeployment::by_network(Network::Base))
-//!     .max(USDCDeployment::by_network(Network::Base).amount("1.00")?)
+//!     .prefer(USDCDeployment::by_network(Network::Base).unwrap())
+//!     .max(USDCDeployment::by_network(Network::Base).unwrap().amount("1.00")?);
+//! # Ok(())
+//! # }
 //! ```
 //!
 //! ## Examples
@@ -46,8 +49,8 @@
 //!     let signer: PrivateKeySigner = "0x...".parse()?;
 //!     let client = ClientBuilder::new()
 //!         .with_payments(signer)
-//!         .prefer(USDCDeployment::by_network(Network::Base))
-//!         .max(USDCDeployment::by_network(Network::Base).amount("1.00")?)
+//!         .prefer(USDCDeployment::by_network(Network::Base).unwrap())
+//!         .max(USDCDeployment::by_network(Network::Base).unwrap().amount("1.00")?)
 //!         .build()?;
 //!
 //!     let response = client
@@ -71,8 +74,8 @@
 //!     let signer: PrivateKeySigner = "0x...".parse()?;
 //!     let client = Client::new()
 //!         .with_payments(signer)
-//!         .prefer(USDCDeployment::by_network(Network::Base))
-//!         .max(USDCDeployment::by_network(Network::Base).amount("1.00")?)
+//!         .prefer(USDCDeployment::by_network(Network::Base).unwrap())
+//!         .max(USDCDeployment::by_network(Network::Base).unwrap().amount("1.00")?)
 //!         .build();
 //!
 //!     let response = client
@@ -97,9 +100,9 @@
 //!     let signer: PrivateKeySigner = "0x...".parse()?;
 //!     let client = rqm::ClientBuilder::new(Client::new())
 //!         .with(
-//!             X402Payments::with_signer(signer)
-//!                 .prefer(USDCDeployment::by_network(Network::BaseSepolia))
-//!                 .max(USDCDeployment::by_network(Network::BaseSepolia).amount(0.1)?),
+//!             X402Payments::with_wallet(signer)
+//!                 .prefer(USDCDeployment::by_network(Network::BaseSepolia).unwrap())
+//!                 .max(USDCDeployment::by_network(Network::BaseSepolia).unwrap().amount(0.1)?),
 //!         )
 //!         .build();
 //!

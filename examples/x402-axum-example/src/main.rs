@@ -30,8 +30,10 @@ async fn main() {
         .unwrap()
         .with_base_url(url::Url::parse("https://localhost:3000/").unwrap());
     let usdc_base_sepolia = USDCDeployment::by_network(Network::BaseSepolia)
+        .unwrap()
         .pay_to(address_evm!("0xBAc675C310721717Cd4A37F6cbeA1F081b1C2a07"));
     let usdc_solana = USDCDeployment::by_network(Network::Solana)
+        .unwrap()
         .pay_to(address_sol!("EGBQqKn968sVv5cQh5Cr72pSTHfxsuzq7o7asqYB5uEV"));
 
     let app = Router::new()

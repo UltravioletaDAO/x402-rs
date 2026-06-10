@@ -32,6 +32,7 @@ solana-sdk = { version = "2.3", optional = true }
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
 tokio-test = "0.4"
+tempfile = "3"
 
 [features]
 default = ["ofac"]

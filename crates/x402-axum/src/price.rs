@@ -90,12 +90,13 @@ where
 ///
 /// ```rust
 /// use x402_axum::price::IntoPriceTag;
+/// use x402_rs::address_evm;
 /// use x402_rs::network::{Network, USDCDeployment};
 ///
 /// let price_tag = USDCDeployment::by_network(Network::Base)
+///     .unwrap()
+///     .pay_to(address_evm!("0x036CbD53842c5426634e7929541eC2318f3dCF7e"))
 ///     .amount("1.50")
-///     .pay_to("0x036CbD53842c5426634e7929541eC2318f3dCF7e")
-///     .build()
 ///     .unwrap();
 /// ```
 pub trait IntoPriceTag {

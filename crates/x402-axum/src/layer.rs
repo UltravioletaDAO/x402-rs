@@ -12,13 +12,15 @@
 //! use axum::response::IntoResponse;
 //! use http::StatusCode;
 //! use serde_json::json;
+//! use x402_rs::address_evm;
 //! use x402_rs::network::{Network, USDCDeployment};
 //! use x402_axum::layer::X402Middleware;
 //! use x402_axum::price::IntoPriceTag;
 //!
 //! let x402 = X402Middleware::try_from("https://facilitator.ukstv.me/").unwrap();
 //! let usdc = USDCDeployment::by_network(Network::BaseSepolia)
-//!     .pay_to("0xADDRESS");
+//!     .unwrap()
+//!     .pay_to(address_evm!("0x036CbD53842c5426634e7929541eC2318f3dCF7e"));
 //!
 //! let app: Router = Router::new().route(
 //!     "/protected",
@@ -313,6 +315,7 @@ where
     ///
     /// ```rust,no_run
     /// use x402_axum::X402Middleware;
+    /// use x402_rs::address_evm;
     /// use x402_rs::network::{Network, USDCDeployment};
     /// use x402_axum::IntoPriceTag;
     ///
@@ -321,8 +324,9 @@ where
     ///     .settle_before_execution()
     ///     .with_price_tag(
     ///         USDCDeployment::by_network(Network::BaseSepolia)
+    ///             .unwrap()
+    ///             .pay_to(address_evm!("0x036CbD53842c5426634e7929541eC2318f3dCF7e"))
     ///             .amount("0.01")
-    ///             .pay_to("0xADDRESS")
     ///             .unwrap()
     ///     );
     /// ```

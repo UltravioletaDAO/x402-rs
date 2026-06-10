@@ -114,7 +114,7 @@ pub enum StellarError {
     #[error("Authorization entry args count must be 3, got {actual}")]
     InvalidArgsCount { actual: usize },
 
-    #[error("Authorization entry sender must be facilitator {expected}, got {actual}")]
+    #[error("Authorization entry sender must match payer {expected}, got {actual}")]
     InvalidSender { expected: String, actual: String },
 
     #[error("Authorization entry recipient must match pay_to {expected}, got {actual}")]
@@ -627,10 +627,44 @@ impl StellarProvider {
         let credentials = match &auth_entry.credentials {
             SorobanCredentials::Address(addr_creds) => addr_creds,
             SorobanCredentials::SourceAccount => {
-                // Source account credentials don't need signature verification here
-                return Ok(());
+                // SECURITY (audit 01): SourceAccount credentials carry NO payer signature.
+                // On the payment path the tx source account is the facilitator, so accepting
+                // SourceAccount would let the facilitator's own signature authorize the
+                // transfer's `from` -- a self-drain. The x402 Stellar spec mandates
+                // SorobanAddressCredentials (payer-signed). Reject hard.
+                tracing::warn!(
+                    "Authorization entry uses SourceAccount credentials on payment path - rejecting"
+                );
+                return Err(StellarError::UnsupportedCredentialType);
             }
         };
+
+        // SECURITY (audit 01): the credential address (the account whose signature
+        // authorizes this transfer) MUST be the declared payer, not some other account.
+        let cred_addr_str = match &credentials.address {
+            ScAddress::Account(AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(b)))) => {
+                StellarPublicKey(*b).to_string()
+            }
+            other => {
+                tracing::warn!(
+                    ?other,
+                    "auth credential address is not an ed25519 account - rejecting"
+                );
+                return Err(StellarError::InvalidSignature {
+                    address: expected_address.to_string(),
+                });
+            }
+        };
+        if cred_addr_str != expected_address {
+            tracing::warn!(
+                credential_address = %cred_addr_str,
+                expected = %expected_address,
+                "auth credential address does not match declared payer - rejecting"
+            );
+            return Err(StellarError::InvalidSignature {
+                address: expected_address.to_string(),
+            });
+        }
 
         // Get the signature from credentials
         // Stellar supports two signature formats:
@@ -940,13 +974,14 @@ impl StellarProvider {
     /// - root_invocation.function is ContractFn (not CreateContractHostFn)
     /// - contract_address matches the known USDC contract for this network
     /// - function_name is "transfer"
-    /// - args has exactly 3 elements: [from: facilitator, to: pay_to, amount: max_amount_required]
+    /// - args has exactly 3 elements: [from: payer, to: pay_to, amount: max_amount_required]
     /// - sub_invocations is empty (no nested calls)
     ///
     /// This must be called BEFORE signing the authorization entry preimage to prevent
     /// a malicious client from getting the facilitator to authorize arbitrary Soroban calls.
     fn validate_soroban_auth_entry(
         &self,
+        expected_from: &str, // SECURITY (audit 01): the PAYER (stellar_payload.from)
         auth_entry: &SorobanAuthorizationEntry,
         expected_pay_to: &str,
         expected_amount: TokenAmount,
@@ -1043,7 +1078,18 @@ impl StellarProvider {
             });
         }
 
-        // --- Check 5a: args[0] = ScVal::Address(ScAddress::Account) matching facilitator ---
+        // --- Check 5a: args[0] (transfer `from`) must be the PAYER, never the facilitator ---
+        // SECURITY (audit 01): previously this required args[0] == self.public_key
+        // (the facilitator), which made every accepted transfer drain the facilitator's
+        // own USDC. Bind it to the declared payer and hard-reject the facilitator.
+        let expected_from_bytes = StellarPublicKey::from_string(expected_from)
+            .map_err(|e| {
+                StellarError::InvalidXdr(format!(
+                    "Could not parse payer public key '{}': {}",
+                    expected_from, e
+                ))
+            })?
+            .0;
         let facilitator_bytes = StellarPublicKey::from_string(&self.public_key)
             .map_err(|e| {
                 StellarError::InvalidXdr(format!(
@@ -1056,16 +1102,27 @@ impl StellarProvider {
             ScVal::Address(ScAddress::Account(AccountId(PublicKey::PublicKeyTypeEd25519(
                 Uint256(key_bytes),
             )))) => {
-                if *key_bytes != facilitator_bytes {
+                // Never allow the facilitator to be the source of funds.
+                if *key_bytes == facilitator_bytes {
+                    tracing::warn!(
+                        network = %self.chain.network,
+                        "B4/audit01: auth entry `from` is the facilitator - rejecting self-drain"
+                    );
+                    return Err(StellarError::InvalidSender {
+                        expected: expected_from.to_string(),
+                        actual: self.public_key.clone(),
+                    });
+                }
+                if *key_bytes != expected_from_bytes {
                     let actual_pk = StellarPublicKey(*key_bytes).to_string();
                     tracing::warn!(
                         network = %self.chain.network,
-                        expected_sender = %self.public_key,
+                        expected_sender = %expected_from,
                         actual_sender = %actual_pk,
-                        "B4: auth entry sender does not match facilitator address"
+                        "B4/audit01: auth entry `from` does not match declared payer"
                     );
                     return Err(StellarError::InvalidSender {
-                        expected: self.public_key.clone(),
+                        expected: expected_from.to_string(),
                         actual: actual_pk,
                     });
                 }
@@ -1074,19 +1131,19 @@ impl StellarProvider {
                 let actual_str = Contract(*bytes).to_string();
                 tracing::warn!(
                     network = %self.chain.network,
-                    expected_sender = %self.public_key,
+                    expected_sender = %expected_from,
                     actual_sender = %actual_str,
-                    "B4: auth entry sender is a contract address, expected facilitator account"
+                    "B4/audit01: auth entry `from` is a contract address, expected payer account"
                 );
                 return Err(StellarError::InvalidSender {
-                    expected: self.public_key.clone(),
+                    expected: expected_from.to_string(),
                     actual: actual_str,
                 });
             }
             other => {
                 tracing::warn!(
                     network = %self.chain.network,
-                    "B4: auth entry args[0] has unexpected ScVal type"
+                    "B4/audit01: auth entry args[0] has unexpected ScVal type"
                 );
                 return Err(StellarError::InvalidArgType(format!(
                     "args[0] must be ScVal::Address(Account), got {:?}",
@@ -1252,6 +1309,15 @@ impl StellarProvider {
         // Validate payer address
         let payer = StellarAddress::try_from(stellar_payload.from.clone())?;
 
+        // SECURITY (audit 01): the facilitator must never be a payer/source of funds.
+        if payer.address == self.public_key {
+            return Err(StellarError::InvalidSender {
+                expected: "any payer != facilitator".to_string(),
+                actual: self.public_key.clone(),
+            }
+            .into());
+        }
+
         // Decode the authorization entry XDR
         let auth_entry = self
             .decode_authorization_entry(&stellar_payload.authorization_entry_xdr)
@@ -1268,8 +1334,13 @@ impl StellarProvider {
                 )));
             }
         };
-        self.validate_soroban_auth_entry(&auth_entry, pay_to_str, requirements.max_amount_required)
-            .map_err(FacilitatorLocalError::from)?;
+        self.validate_soroban_auth_entry(
+            &payer.address, // expected_from = payer (SECURITY audit 01)
+            &auth_entry,
+            pay_to_str,
+            requirements.max_amount_required,
+        )
+        .map_err(FacilitatorLocalError::from)?;
 
         // Get current ledger for expiration check
         let current_ledger = self
@@ -2017,10 +2088,12 @@ mod tests {
     // Shared constants for B4 tests
     const TESTNET_USDC: &str = "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA";
     const MAINNET_USDC: &str = "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75";
-    // A well-known constant G-address used as the test recipient.
-    const TEST_RECIPIENT: &str = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
+    // Valid G-addresses for tests (seed-derived; the previous hand-written constants had
+    // invalid strkey checksums and panicked in account_id() -- audit 01 test fix).
+    // TEST_RECIPIENT = ed25519([2u8;32]), OTHER_ADDRESS = ed25519([1u8;32]).
+    const TEST_RECIPIENT: &str = "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U";
     // A different valid G-address for negative tests.
-    const OTHER_ADDRESS: &str = "GBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABKPC2";
+    const OTHER_ADDRESS: &str = "GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR";
 
     /// Build a minimal StellarProvider with an all-zeros signing key for testing.
     ///
@@ -2101,39 +2174,101 @@ mod tests {
     }
 
     #[test]
-    fn b4_valid_auth_entry_passes() {
+    fn b4_payer_as_from_passes() {
+        // SECURITY (audit 01): a payer-as-`from` entry (NOT the facilitator) must pass.
+        let provider = test_provider(Network::StellarTestnet);
+        let entry = make_auth_entry(
+            &provider,
+            TESTNET_USDC,
+            "transfer",
+            OTHER_ADDRESS, // from = payer (not the facilitator)
+            TEST_RECIPIENT,
+            1_000_000_0i128, // 1 USDC at 7 decimals
+            vec![],
+        );
+        assert!(provider
+            .validate_soroban_auth_entry(
+                OTHER_ADDRESS,
+                &entry,
+                TEST_RECIPIENT,
+                token_amount(10_000_000)
+            )
+            .is_ok());
+    }
+
+    #[test]
+    fn b4_facilitator_as_from_rejected() {
+        // SECURITY (audit 01): the self-drain primitive -- `from` = facilitator -- must be rejected.
         let provider = test_provider(Network::StellarTestnet);
         let facilitator = provider.public_key.clone();
         let entry = make_auth_entry(
             &provider,
             TESTNET_USDC,
             "transfer",
-            &facilitator,
-            TEST_RECIPIENT,
-            1_000_000_0i128, // 1 USDC at 7 decimals
-            vec![],
-        );
-        assert!(provider
-            .validate_soroban_auth_entry(&entry, TEST_RECIPIENT, token_amount(10_000_000))
-            .is_ok());
-    }
-
-    #[test]
-    fn b4_wrong_contract_rejected() {
-        let provider = test_provider(Network::StellarTestnet);
-        let facilitator = provider.public_key.clone();
-        // Use the mainnet USDC contract on a testnet entry -- should fail
-        let entry = make_auth_entry(
-            &provider,
-            MAINNET_USDC,
-            "transfer",
-            &facilitator,
+            &facilitator, // from = facilitator -> must be rejected
             TEST_RECIPIENT,
             10_000_000i128,
             vec![],
         );
         let err = provider
-            .validate_soroban_auth_entry(&entry, TEST_RECIPIENT, token_amount(10_000_000))
+            .validate_soroban_auth_entry(
+                &facilitator,
+                &entry,
+                TEST_RECIPIENT,
+                token_amount(10_000_000),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, StellarError::InvalidSender { .. }),
+            "facilitator-as-from must be rejected, got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn source_account_credentials_rejected() {
+        // SECURITY (audit 01): SourceAccount credentials carry no payer signature and must
+        // be rejected on the payment path (make_auth_entry emits SourceAccount).
+        let provider = test_provider(Network::StellarTestnet);
+        let entry = make_auth_entry(
+            &provider,
+            TESTNET_USDC,
+            "transfer",
+            OTHER_ADDRESS,
+            TEST_RECIPIENT,
+            10_000_000i128,
+            vec![],
+        );
+        let err = provider
+            .verify_authorization_signature(&entry, OTHER_ADDRESS)
+            .unwrap_err();
+        assert!(
+            matches!(err, StellarError::UnsupportedCredentialType),
+            "SourceAccount credentials must be rejected, got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn b4_wrong_contract_rejected() {
+        let provider = test_provider(Network::StellarTestnet);
+        // Use the mainnet USDC contract on a testnet entry -- should fail
+        let entry = make_auth_entry(
+            &provider,
+            MAINNET_USDC,
+            "transfer",
+            OTHER_ADDRESS, // payer
+            TEST_RECIPIENT,
+            10_000_000i128,
+            vec![],
+        );
+        let err = provider
+            .validate_soroban_auth_entry(
+                OTHER_ADDRESS,
+                &entry,
+                TEST_RECIPIENT,
+                token_amount(10_000_000),
+            )
             .unwrap_err();
         assert!(
             matches!(err, StellarError::InvalidContractAddress { .. }),
@@ -2145,18 +2280,22 @@ mod tests {
     #[test]
     fn b4_wrong_function_name_rejected() {
         let provider = test_provider(Network::StellarTestnet);
-        let facilitator = provider.public_key.clone();
         let entry = make_auth_entry(
             &provider,
             TESTNET_USDC,
             "approve",
-            &facilitator,
+            OTHER_ADDRESS, // payer
             TEST_RECIPIENT,
             10_000_000i128,
             vec![],
         );
         let err = provider
-            .validate_soroban_auth_entry(&entry, TEST_RECIPIENT, token_amount(10_000_000))
+            .validate_soroban_auth_entry(
+                OTHER_ADDRESS,
+                &entry,
+                TEST_RECIPIENT,
+                token_amount(10_000_000),
+            )
             .unwrap_err();
         assert!(
             matches!(err, StellarError::InvalidFunctionName { .. }),
@@ -2168,19 +2307,24 @@ mod tests {
     #[test]
     fn b4_wrong_recipient_rejected() {
         let provider = test_provider(Network::StellarTestnet);
-        let facilitator = provider.public_key.clone();
+        // Payer is TEST_RECIPIENT; entry recipient is OTHER_ADDRESS but pay_to claims TEST_RECIPIENT.
         let entry = make_auth_entry(
             &provider,
             TESTNET_USDC,
             "transfer",
-            &facilitator,
-            OTHER_ADDRESS, // different recipient in the entry
+            TEST_RECIPIENT, // from = payer
+            OTHER_ADDRESS,  // different recipient in the entry
             10_000_000i128,
             vec![],
         );
         // But we claim pay_to is TEST_RECIPIENT
         let err = provider
-            .validate_soroban_auth_entry(&entry, TEST_RECIPIENT, token_amount(10_000_000))
+            .validate_soroban_auth_entry(
+                TEST_RECIPIENT,
+                &entry,
+                TEST_RECIPIENT,
+                token_amount(10_000_000),
+            )
             .unwrap_err();
         assert!(
             matches!(err, StellarError::InvalidRecipient { .. }),
@@ -2192,19 +2336,23 @@ mod tests {
     #[test]
     fn b4_wrong_amount_rejected() {
         let provider = test_provider(Network::StellarTestnet);
-        let facilitator = provider.public_key.clone();
         let entry = make_auth_entry(
             &provider,
             TESTNET_USDC,
             "transfer",
-            &facilitator,
+            OTHER_ADDRESS, // from = payer
             TEST_RECIPIENT,
             5_000_000i128, // entry says 0.5 USDC
             vec![],
         );
         // requirements say 1 USDC
         let err = provider
-            .validate_soroban_auth_entry(&entry, TEST_RECIPIENT, token_amount(10_000_000))
+            .validate_soroban_auth_entry(
+                OTHER_ADDRESS,
+                &entry,
+                TEST_RECIPIENT,
+                token_amount(10_000_000),
+            )
             .unwrap_err();
         assert!(
             matches!(err, StellarError::InvalidAmount { .. }),
@@ -2214,24 +2362,30 @@ mod tests {
     }
 
     #[test]
-    fn b4_wrong_sender_rejected() {
+    fn b4_from_payer_mismatch_rejected() {
+        // SECURITY (audit 01): entry `from` != declared payer must be rejected.
         let provider = test_provider(Network::StellarTestnet);
-        // Put OTHER_ADDRESS as the sender in the entry instead of the facilitator
+        // Entry says from = OTHER_ADDRESS but we declare the payer as TEST_RECIPIENT.
         let entry = make_auth_entry(
             &provider,
             TESTNET_USDC,
             "transfer",
-            OTHER_ADDRESS, // not the facilitator
+            OTHER_ADDRESS,
             TEST_RECIPIENT,
             10_000_000i128,
             vec![],
         );
         let err = provider
-            .validate_soroban_auth_entry(&entry, TEST_RECIPIENT, token_amount(10_000_000))
+            .validate_soroban_auth_entry(
+                TEST_RECIPIENT,
+                &entry,
+                TEST_RECIPIENT,
+                token_amount(10_000_000),
+            )
             .unwrap_err();
         assert!(
             matches!(err, StellarError::InvalidSender { .. }),
-            "expected InvalidSender, got {:?}",
+            "from != declared payer must be rejected, got {:?}",
             err
         );
     }
@@ -2261,7 +2415,12 @@ mod tests {
             root_invocation: invocation,
         };
         let err = provider
-            .validate_soroban_auth_entry(&entry, TEST_RECIPIENT, token_amount(10_000_000))
+            .validate_soroban_auth_entry(
+                OTHER_ADDRESS,
+                &entry,
+                TEST_RECIPIENT,
+                token_amount(10_000_000),
+            )
             .unwrap_err();
         assert!(
             matches!(err, StellarError::InvalidInvocationType),

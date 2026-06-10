@@ -202,10 +202,12 @@ impl X402Payments {
             }
         }
 
-        // Try to find a USDC requirement
+        // Try to find a USDC requirement (networks without a known USDC deployment
+        // return None from by_network and simply do not match).
         let usdc_requirement = sorted.iter().find(|req| {
-            let usdc = USDCDeployment::by_network(req.network);
-            req.asset == usdc.address()
+            USDCDeployment::by_network(req.network)
+                .map(|usdc| req.asset == usdc.address())
+                .unwrap_or(false)
         });
 
         let selected = usdc_requirement

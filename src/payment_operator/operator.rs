@@ -778,10 +778,9 @@ async fn execute_release(
             calldata: Bytes::from(calldata),
             confirmations: 1,
         };
-        let receipt = provider
-            .send_transaction(meta_tx)
-            .await
-            .map_err(|e| OperatorError::ContractCall(format!("{:?}", e)))?;
+        let receipt = provider.send_transaction(meta_tx).await.map_err(|e| {
+            OperatorError::ContractCall(crate::redact::scrub_urls(&format!("{e:?}")))
+        })?;
         Ok(receipt.transaction_hash)
     }
 }
@@ -849,10 +848,9 @@ async fn execute_refund_in_escrow(
             calldata: Bytes::from(calldata),
             confirmations: 1,
         };
-        let receipt = provider
-            .send_transaction(meta_tx)
-            .await
-            .map_err(|e| OperatorError::ContractCall(format!("{:?}", e)))?;
+        let receipt = provider.send_transaction(meta_tx).await.map_err(|e| {
+            OperatorError::ContractCall(crate::redact::scrub_urls(&format!("{e:?}")))
+        })?;
         Ok(receipt.transaction_hash)
     }
 }
@@ -906,7 +904,7 @@ async fn send_operator_tx(
     let receipt = provider
         .send_transaction(meta_tx)
         .await
-        .map_err(|e| OperatorError::ContractCall(format!("{:?}", e)))?;
+        .map_err(|e| OperatorError::ContractCall(crate::redact::scrub_urls(&format!("{e:?}"))))?;
 
     Ok(receipt.transaction_hash)
 }
@@ -923,11 +921,11 @@ async fn eth_call(
         .with_to(target)
         .with_input(Bytes::from(calldata));
 
-    let result = provider
-        .inner()
-        .call(tx)
-        .await
-        .map_err(|e| OperatorError::ContractCall(format!("eth_call failed: {:?}", e)))?;
+    let result = provider.inner().call(tx).await.map_err(|e| {
+        OperatorError::ContractCall(crate::redact::scrub_urls(&format!(
+            "eth_call failed: {e:?}"
+        )))
+    })?;
 
     Ok(result)
 }

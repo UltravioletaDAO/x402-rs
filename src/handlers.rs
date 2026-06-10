@@ -114,14 +114,11 @@ where
         .route("/", get(get_root))
         // Escrow state query endpoint
         .route("/escrow/state", post(post_escrow_state::<A>))
-        // ERC-8004 Registration endpoints
+        // ERC-8004 Registration endpoints (GET info only; gas-spending POST writes are
+        // carved into erc8004_write_routes() so they can carry a strict rate limit -- audit 02)
         .route("/register", get(get_register_info))
-        .route("/register", post(post_register::<A>))
-        // ERC-8004 Reputation endpoints
+        // ERC-8004 Reputation endpoints (GET info only)
         .route("/feedback", get(get_feedback_info))
-        .route("/feedback", post(post_feedback::<A>))
-        .route("/feedback/revoke", post(post_revoke_feedback::<A>))
-        .route("/feedback/response", post(post_append_response::<A>))
         .route("/reputation/{network}/{agent_id}", get(get_reputation::<A>))
         // ERC-8004 Identity endpoints
         .route("/identity/{network}/{agent_id}", get(get_identity::<A>))
@@ -170,6 +167,23 @@ where
         .route("/eurc.png", get(get_eurc_logo))
         .route("/ausd.png", get(get_ausd_logo))
         .route("/pyusd.png", get(get_pyusd_logo))
+}
+
+/// ERC-8004 gas-spending write routes, carved out so a strict rate limit can be
+/// attached (audit 02): every `/register`, `/feedback`, `/feedback/revoke`,
+/// `/feedback/response` is a real on-chain tx the facilitator EOA pays gas for.
+/// Without a per-IP limit these are an unbounded gas-treasury drain.
+pub fn erc8004_write_routes<A>() -> Router<A>
+where
+    A: Facilitator + HasProviderMap + Clone + Send + Sync + 'static,
+    A::Error: IntoResponse,
+    A::Map: ProviderMap<Value = NetworkProvider>,
+{
+    Router::new()
+        .route("/register", post(post_register::<A>))
+        .route("/feedback", post(post_feedback::<A>))
+        .route("/feedback/revoke", post(post_revoke_feedback::<A>))
+        .route("/feedback/response", post(post_append_response::<A>))
 }
 
 /// Discovery API routes for the Bazaar feature.
@@ -1170,9 +1184,18 @@ where
                 Ok(v1_req) => VerifyRequestEnvelope::V1(v1_req),
                 Err(_) => {
                     error!("Failed to deserialize VerifyRequest (v1 or v2): {}", e);
-                    // Log first 2000 chars of the payload for debugging
+                    // Log first 2000 chars of the payload for debugging.
+                    // SECURITY (audit 4B.1): use a char-safe boundary -- `&body_str[..2000]`
+                    // panics when byte 2000 falls inside a multi-byte UTF-8 char, which an
+                    // attacker can trigger with a crafted body (DoS on the error path).
                     let truncated = if body_str.len() > 2000 {
-                        format!("{}... (truncated)", &body_str[..2000])
+                        let end = body_str
+                            .char_indices()
+                            .map(|(i, _)| i)
+                            .take_while(|&i| i <= 2000)
+                            .last()
+                            .unwrap_or(0);
+                        format!("{}... (truncated)", &body_str[..end])
                     } else {
                         body_str.to_string()
                     };

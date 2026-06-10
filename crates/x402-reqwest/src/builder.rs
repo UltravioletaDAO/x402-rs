@@ -5,16 +5,20 @@
 //!
 //! ```rust,no_run
 //! use reqwest::Client;
-//! use x402_reqwest::{ReqwestWithPayments, ReqwestWithPaymentsBuild};
+//! use x402_reqwest::{ReqwestWithPayments, ReqwestWithPaymentsBuild, MaxTokenAmountFromAmount};
 //! use alloy::signers::local::PrivateKeySigner;
+//! use x402_rs::network::{Network, USDCDeployment};
 //!
-//! let signer: PrivateKeySigner = "...".parse().unwrap();
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let signer: PrivateKeySigner = "0x...".parse()?;
 //!
 //! let client: reqwest_middleware::ClientWithMiddleware = Client::new()
 //!     .with_payments(signer)
-//!     .prefer(...)
-//!     .max(...)
+//!     .prefer(USDCDeployment::by_network(Network::Base).unwrap())
+//!     .max(USDCDeployment::by_network(Network::Base).unwrap().amount("1.00")?)
 //!     .build();
+//! # Ok(())
+//! # }
 //! ```
 
 use reqwest::{Client, ClientBuilder};

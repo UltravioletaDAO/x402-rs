@@ -108,3 +108,8 @@ terraform/environments/production/balances_lambda.zip
 
 # backup files
 *.bak*
+
+# stray deploy/scratch artifacts (root cleanup 2026-05-31)
+deployment-result.json
+current-task-def.json
+tmpclaude-*

@@ -366,8 +366,10 @@ async fn simulate_settlement(
     let tx = tx.with_from(from);
 
     provider.inner().call(tx).await.map_err(|e| {
-        warn!(error = %e, "Upto settlement simulation failed");
-        UptoError::VerificationFailed(format!("settlement simulation reverted: {e}"))
+        warn!(error = %crate::redact::scrub_urls(&e.to_string()), "Upto settlement simulation failed");
+        UptoError::VerificationFailed(crate::redact::scrub_urls(&format!(
+            "settlement simulation reverted: {e}"
+        )))
     })?;
 
     debug!("Settlement simulation passed");
@@ -396,7 +398,7 @@ async fn execute_settlement(
     let receipt = provider
         .send_transaction(meta_tx)
         .await
-        .map_err(|e| UptoError::SettlementFailed(format!("{e}")))?;
+        .map_err(|e| UptoError::SettlementFailed(crate::redact::scrub_urls(&format!("{e}"))))?;
 
     if !receipt.status() {
         return Err(UptoError::SettlementFailed(format!(
@@ -496,11 +498,9 @@ async fn eth_call(
         .with_to(target)
         .with_input(Bytes::from(calldata));
 
-    let result = provider
-        .inner()
-        .call(tx)
-        .await
-        .map_err(|e| UptoError::ContractCall(format!("eth_call failed: {e}")))?;
+    let result = provider.inner().call(tx).await.map_err(|e| {
+        UptoError::ContractCall(crate::redact::scrub_urls(&format!("eth_call failed: {e}")))
+    })?;
 
     Ok(result)
 }

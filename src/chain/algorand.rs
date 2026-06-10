@@ -35,9 +35,10 @@ use crate::from_env;
 use crate::network::Network;
 use crate::nonce_store::{algorand_nonce_key, algorand_ttl_seconds, NonceStore, NonceStoreError};
 use crate::types::{
-    ExactAlgorandPayload, ExactPaymentPayload, FacilitatorErrorReason, MixedAddress, Scheme,
-    SettleRequest, SettleResponse, SupportedPaymentKind, SupportedPaymentKindExtra,
-    SupportedPaymentKindsResponse, TransactionHash, VerifyRequest, VerifyResponse, X402Version,
+    ExactAlgorandPayload, ExactPaymentPayload, FacilitatorErrorReason, MixedAddress,
+    PaymentRequirements, Scheme, SettleRequest, SettleResponse, SupportedPaymentKind,
+    SupportedPaymentKindExtra, SupportedPaymentKindsResponse, TransactionHash, VerifyRequest,
+    VerifyResponse, X402Version,
 };
 
 // =============================================================================
@@ -481,6 +482,8 @@ impl AlgorandProvider {
     async fn verify_payment_group(
         &self,
         payload: &ExactAlgorandPayload,
+        requirements: &PaymentRequirements,
+        payment_scheme: Scheme,
     ) -> Result<VerifyGroupResult, AlgorandError> {
         if payload.payment_group.len() < 2 {
             return Err(AlgorandError::InvalidAtomicGroup(
@@ -560,6 +563,75 @@ impl AlgorandProvider {
                 expected: self.chain.usdc_asa_id,
                 actual: asset_id,
             });
+        }
+
+        // ---- BIND TO PAYMENT REQUIREMENTS (SECURITY audit 05; mirrors near.rs / stellar B4) ----
+        // Without these, the signed ASA transfer's receiver/amount were never compared to
+        // requirements.pay_to / max_amount_required, so a 1-microUSDC self-transfer could
+        // confirm an arbitrary-priced resource. Checks run BEFORE the algod round-trip below.
+
+        // (a) network must match the network this provider serves
+        if requirements.network != self.chain.network {
+            return Err(AlgorandError::InvalidAtomicGroup(format!(
+                "requirements.network {} does not match provider network {}",
+                requirements.network, self.chain.network
+            )));
+        }
+
+        // (b) scheme must be exact and match requirements
+        if payment_scheme != Scheme::Exact || requirements.scheme != Scheme::Exact {
+            return Err(AlgorandError::InvalidAtomicGroup(format!(
+                "unsupported scheme: payload={payment_scheme:?}, requirements={:?}",
+                requirements.scheme
+            )));
+        }
+
+        // (c) recipient: signed transfer receiver MUST equal requirements.pay_to
+        let expected_pay_to = match &requirements.pay_to {
+            MixedAddress::Algorand(addr) => addr.clone(),
+            other => {
+                return Err(AlgorandError::InvalidAtomicGroup(format!(
+                    "pay_to must be an Algorand address, got {other:?}"
+                )));
+            }
+        };
+        let actual_receiver = receiver.to_string();
+        if actual_receiver != expected_pay_to {
+            tracing::warn!(
+                expected = %expected_pay_to,
+                actual = %actual_receiver,
+                "Algorand payment receiver does not match pay_to -- rejecting"
+            );
+            return Err(AlgorandError::InvalidAtomicGroup(format!(
+                "payment receiver {actual_receiver} does not match required pay_to {expected_pay_to}"
+            )));
+        }
+
+        // (d) amount: signed transfer amount MUST equal requirements.max_amount_required.
+        // On-chain `amount` is u64; max_amount_required is TokenAmount(U256). Compare in U256.
+        let expected_amount = requirements.max_amount_required.0; // alloy U256
+        let actual_amount = alloy::primitives::U256::from(amount); // u64 -> U256, no overflow
+        if actual_amount != expected_amount {
+            tracing::warn!(
+                expected = %expected_amount,
+                actual = %actual_amount,
+                "Algorand payment amount does not match max_amount_required -- rejecting"
+            );
+            return Err(AlgorandError::InvalidAtomicGroup(format!(
+                "payment amount {actual_amount} does not match required {expected_amount}"
+            )));
+        }
+
+        // (e) defense-in-depth: if requirements.asset carries a numeric ASA id, it must match
+        if let MixedAddress::Offchain(asset_str) = &requirements.asset {
+            if let Ok(req_asa) = asset_str.parse::<u64>() {
+                if req_asa != asset_id {
+                    return Err(AlgorandError::AsaIdMismatch {
+                        expected: req_asa,
+                        actual: asset_id,
+                    });
+                }
+            }
         }
 
         // Get current round for validity checks
@@ -875,7 +947,11 @@ impl Facilitator for AlgorandProvider {
         match &payload.payload {
             ExactPaymentPayload::Algorand(p) => {
                 let verification = self
-                    .verify_payment_group(p)
+                    .verify_payment_group(
+                        p,
+                        &request.payment_requirements,
+                        request.payment_payload.scheme,
+                    )
                     .await
                     .map_err(FacilitatorLocalError::from)?;
                 Ok(VerifyResponse::valid(verification.payer.into()))
@@ -901,7 +977,11 @@ impl Facilitator for AlgorandProvider {
             ExactPaymentPayload::Algorand(algorand_payload) => {
                 tracing::info!("Algorand settle: Verifying payment group");
                 let verification = self
-                    .verify_payment_group(algorand_payload)
+                    .verify_payment_group(
+                        algorand_payload,
+                        &request.payment_requirements,
+                        request.payment_payload.scheme,
+                    )
                     .await
                     .map_err(FacilitatorLocalError::from)?;
 

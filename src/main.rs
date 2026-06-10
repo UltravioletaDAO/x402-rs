@@ -354,11 +354,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let discovery_register = handlers::discovery_register_routes()
         .with_state(Arc::clone(&discovery_registry))
-        .layer(GovernorLayer::new(discovery_register_config));
+        .layer(GovernorLayer::new(Arc::clone(&discovery_register_config)));
 
-    let http_endpoints = Router::new()
+    // ERC-8004 write kill-switch (audit 02): set ENABLE_ERC8004_WRITES=false to disable the
+    // gasless reputation/identity write surface entirely (closes the forgery vector). Defaults
+    // to ON to preserve existing behavior for operators actively using ERC-8004 writes. When ON,
+    // the gas-spending writes sit behind the same strict ~5 req/min governor as discovery_register
+    // to cap the gas-treasury drain / bulk reputation-rewrite rate.
+    let erc8004_writes_enabled = std::env::var("ENABLE_ERC8004_WRITES")
+        .map(|v| !(v.eq_ignore_ascii_case("false") || v == "0"))
+        .unwrap_or(true);
+    if !erc8004_writes_enabled {
+        tracing::warn!(
+            "ENABLE_ERC8004_WRITES=false: ERC-8004 write endpoints (/register, /feedback, \
+             /feedback/revoke, /feedback/response) are DISABLED"
+        );
+    }
+
+    let mut http_endpoints = Router::new()
         .merge(verify_settle)
-        .merge(handlers::routes().with_state(axum_state))
+        .merge(handlers::routes().with_state(axum_state.clone()));
+    if erc8004_writes_enabled {
+        let erc8004_writes = handlers::erc8004_write_routes()
+            .with_state(axum_state)
+            .layer(GovernorLayer::new(Arc::clone(&discovery_register_config)));
+        http_endpoints = http_endpoints.merge(erc8004_writes);
+    }
+    let http_endpoints = http_endpoints
         .merge(discovery_register)
         .merge(handlers::discovery_routes().with_state(Arc::clone(&discovery_registry)))
         .merge(openapi::swagger_routes())

@@ -221,13 +221,15 @@ impl SuiProvider {
     /// Any deviation — wrong recipient, wrong amount, extra commands, non-USDC coin type that
     /// cannot be verified structurally, non-numeric amount, or malformed BCS — is a hard rejection.
     ///
-    /// NOTE: We do NOT validate the coin object's Move type here because `CallArg::Object` only
-    /// carries the ObjectID/SequenceNumber/Digest tuple, not the Move type. Coin type enforcement
-    /// is handled by (a) the USDC balance check in `check_balance` which queries only the
-    /// `usdc_coin_type` coins, and (b) Sui's own type-checker which will reject a `SplitCoins`
-    /// on a non-Coin object at execution time. What we CAN and MUST verify is that the coin
-    /// object ID in the PTB matches the declared `coin_object_id` in the JSON payload, preventing
-    /// the client from declaring one coin but signing a PTB that drains a different coin.
+    /// NOTE: We do NOT validate the coin object's Move type *here* because `CallArg::Object` only
+    /// carries the ObjectID/SequenceNumber/Digest tuple, not the Move type. Coin-type enforcement
+    /// is therefore done in `check_balance` (audit 04): `get_coins` is filtered to
+    /// `usdc_coin_type`, and the spent `coin_object_id` MUST be a member of that set — which
+    /// proves the spent coin is canonical USDC owned by the sender. (Sui's type-checker does NOT
+    /// save us here: `SplitCoins`/`TransferObjects` are generic over `Coin<T>`, so a `Coin<JUNK>`
+    /// executes fine — that is exactly the coin-type-confusion this binding closes.) `validate_ptb`
+    /// still verifies that the coin object ID in the PTB matches the declared `coin_object_id`,
+    /// preventing the client from declaring one coin but signing a PTB that drains a different coin.
     fn validate_ptb(
         &self,
         tx_data: &TransactionData,
@@ -564,11 +566,18 @@ impl SuiProvider {
         Ok((tx_data, signature, payer_addr))
     }
 
-    /// Check USDC balance for the sender.
+    /// Check USDC balance for the sender AND bind the spent coin object to USDC.
+    ///
+    /// `spent_coin_id` is the coin object the PTB splits from (the client's declared
+    /// `coin_object_id`). Because `get_coins` is filtered to `self.usdc_coin_type`,
+    /// requiring `spent_coin_id` to be a member of the returned set proves the spent
+    /// coin is (a) USDC of the canonical type and (b) owned by `address`. This closes
+    /// the coin-type-confusion hole (audit 04) where a payer splits a worthless `Coin<JUNK>`.
     async fn check_balance(
         &self,
         address: &SuiAddress,
         required_amount: u64,
+        spent_coin_id: &ObjectID,
     ) -> Result<(), FacilitatorLocalError> {
         let client = SuiClientBuilder::default()
             .build(&self.rpc_url)
@@ -577,7 +586,7 @@ impl SuiProvider {
                 FacilitatorLocalError::ContractCall(format!("Failed to connect to Sui RPC: {}", e))
             })?;
 
-        // Get all USDC coins owned by the address
+        // Get all USDC coins owned by the address (filtered to the canonical USDC type).
         let coins = client
             .coin_read_api()
             .get_coins(*address, Some(self.usdc_coin_type.clone()), None, None)
@@ -585,6 +594,22 @@ impl SuiProvider {
             .map_err(|e| {
                 FacilitatorLocalError::ContractCall(format!("Failed to fetch USDC balance: {}", e))
             })?;
+
+        // SECURITY (audit 04): the coin the PTB spends MUST be one of the sender's
+        // canonical-USDC coins. `get_coins` is filtered to `self.usdc_coin_type`, so
+        // membership proves the spent coin object is USDC AND owned by the sender.
+        // Without this, a payer can split a worthless Coin<JUNK> and the facilitator
+        // would still report a successful USDC payment.
+        let spends_usdc = coins
+            .data
+            .iter()
+            .any(|c| c.coin_object_id == *spent_coin_id);
+        if !spends_usdc {
+            return Err(FacilitatorLocalError::Other(format!(
+                "PTB validation failed: spent coin object {} is not a USDC ({}) coin owned by {}",
+                spent_coin_id, self.usdc_coin_type, address
+            )));
+        }
 
         let total_balance: u64 = coins.data.iter().map(|c| c.balance).sum();
 
@@ -780,7 +805,15 @@ impl Facilitator for SuiProvider {
                 payload.amount, e
             ))
         })?;
-        self.check_balance(&payer_addr, required_amount).await?;
+        // SECURITY (audit 04): bind the spent coin object to canonical USDC.
+        let spent_coin_id = ObjectID::from_str(&payload.coin_object_id).map_err(|e| {
+            FacilitatorLocalError::DecodingError(format!(
+                "Invalid coin_object_id '{}': {}",
+                payload.coin_object_id, e
+            ))
+        })?;
+        self.check_balance(&payer_addr, required_amount, &spent_coin_id)
+            .await?;
 
         info!(
             network = %self.network,
@@ -805,7 +838,15 @@ impl Facilitator for SuiProvider {
                 payload.amount, e
             ))
         })?;
-        self.check_balance(&sender, required_amount).await?;
+        // SECURITY (audit 04): bind the spent coin object to canonical USDC.
+        let spent_coin_id = ObjectID::from_str(&payload.coin_object_id).map_err(|e| {
+            FacilitatorLocalError::DecodingError(format!(
+                "Invalid coin_object_id '{}': {}",
+                payload.coin_object_id, e
+            ))
+        })?;
+        self.check_balance(&sender, required_amount, &spent_coin_id)
+            .await?;
 
         // Submit the sponsored transaction
         match self

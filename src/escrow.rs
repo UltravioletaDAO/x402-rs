@@ -859,7 +859,7 @@ async fn execute_escrow_deposit(
     let receipt = provider
         .send_transaction(meta_tx)
         .await
-        .map_err(|e| EscrowError::ContractCall(format!("{:?}", e)))?;
+        .map_err(|e| EscrowError::ContractCall(crate::redact::scrub_urls(&format!("{e:?}"))))?;
 
     Ok(receipt.transaction_hash)
 }

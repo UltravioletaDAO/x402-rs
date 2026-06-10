@@ -1,5 +1,45 @@
 # Changelog
 
+## [1.47.0] - 2026-06-10
+
+### Security — Multi-agent audit remediation (docs/security-audit-2026-06-10/)
+
+Fixes the confirmed P0 + P1 findings from the 2026-06-10 security audit. Every non-EVM settle
+path now binds recipient/amount/asset to the signed payload + payment requirements, mirroring the
+EVM `assert_valid_payment` discipline.
+
+- **P0 — Stellar self-drain (CRITICAL):** `src/chain/stellar.rs` Soroban auth-entry validation was
+  inverted — it forced the transfer `from` to be the facilitator and accepted unsigned
+  `SourceAccount` credentials, letting an unauthenticated `POST /settle` drain the facilitator's own
+  Stellar USDC. Now rejects `SourceAccount` on the payment path, binds the credential address and
+  transfer `from` to the declared payer, and hard-rejects facilitator-as-source. Legitimate
+  payer-signed `Address`-credential payments (previously broken by the same inversion) now work.
+  13 Stellar unit tests pass (incl. self-drain-rejected, SourceAccount-rejected).
+- **P1 — Solana settlement-account forgery:** `verify_settlement_account` now requires the
+  referenced tx to credit `pay_to` directly when there is no sweep (`settleSecretKey == None`), and
+  the empty-settlement-ATA branch hard-errors instead of forging `success:true`. The legitimate
+  Crossmint sweep flow is preserved. Adds `ENABLE_SETTLEMENT_ACCOUNT` kill-switch (default ON;
+  set false to disable the niche path).
+- **P1 — Sui coin-type confusion:** `check_balance` binds the spent coin object to the canonical
+  USDC Move type, so a worthless `Coin<JUNK>` can no longer settle as USDC.
+- **P1 — Algorand recipient/amount unbound:** `verify_payment_group` binds the signed ASA
+  transfer's receiver/amount/asset/network/scheme to the payment requirements.
+- **P1 — ERC-8004 gasless write abuse:** `/register`, `/feedback`, `/feedback/revoke`,
+  `/feedback/response` are now rate-limited (~5 req/min/IP) and gated behind `ENABLE_ERC8004_WRITES`
+  (default ON; set false to disable). Full proof-of-payment authorization (audit fix 02 Layer B) is
+  tracked as follow-up (requires SDK/wire change).
+- **P2 — RPC API-key leak:** escrow/commerce/upto/escrow-state transport errors are scrubbed via
+  `redact::scrub_urls()` at the source, so API-keyed RPC URLs no longer reach client responses/logs.
+- **Hardening:** char-safe truncation in the `post_verify` error path (prevents a UTF-8 boundary
+  panic / DoS); `quinn-proto` bumped to 0.11.14 (RUSTSEC-2026-0037, CVSS 8.7).
+
+### Deferred (see docs/security-audit-2026-06-10/MASTER_PLAN_EXECUTION.md)
+
+ERC-8004 proof-of-payment gate (Layer B), compliance choke-point hoist for alt-scheme paths
+(Phase 3A), broader non-EVM OFAC screening, remaining dependency bumps blocked by transitive pins,
+and infra/Solidity hardening (Phase 4) — these require wire/SDK coordination, contract redeploys,
+or `terraform apply` and are out of scope for this binary release.
+
 ## [1.45.2] - 2026-05-29
 
 ### Added - XRPL (XRP Ledger) Native Support

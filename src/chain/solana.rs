@@ -77,6 +77,17 @@ fn solana_settle_nonce_key(network: &str, tx_signature: &str) -> String {
     format!("solana-settle#{}#{}", network, tx_signature)
 }
 
+/// Kill-switch for the settlement-account (Crossmint custodial) scheme (audit 03).
+/// The forgery vector is already closed by the pay_to-credit binding in
+/// `verify_settlement_account` and the empty-ATA hard-error in `sweep_settlement_account`,
+/// so this gate is defense-in-depth: it defaults ON to preserve existing Crossmint flows, and
+/// can be set ENABLE_SETTLEMENT_ACCOUNT=false to disable the niche path entirely if unused.
+pub fn is_settlement_account_enabled() -> bool {
+    std::env::var("ENABLE_SETTLEMENT_ACCOUNT")
+        .map(|v| !(v.eq_ignore_ascii_case("false") || v == "0"))
+        .unwrap_or(true)
+}
+
 // TTL for settlement replay records: 7 days in seconds.
 const SOLANA_SETTLE_TTL_SECONDS: u64 = 7 * 24 * 3600;
 
@@ -1454,6 +1465,16 @@ impl SolanaProvider {
 
         let asset_str = asset_pubkey.to_string();
 
+        // SECURITY (audit 03): resolve pay_to so we can separately track credit that lands
+        // DIRECTLY in the merchant's wallet. In the no-sweep (settleSecretKey == None) path,
+        // funds reach pay_to ONLY if the referenced tx credited pay_to directly -- we require
+        // that below. (When a settleSecretKey IS supplied, the sweep moves funds from the
+        // settlement ATA to pay_to with a cap, so a settlement-ATA credit is acceptable.)
+        let pay_to_str: Option<String> = match &requirements.pay_to {
+            MixedAddress::Solana(pk) => Some(pk.to_string()),
+            _ => None,
+        };
+
         // B1 NOTE: The Crossmint settlement-account model deposits USDC into a settlement ATA
         // (owned by the settlement keypair), NOT directly into pay_to's ATA.  A strict owner==pay_to
         // check would reject all legitimate Crossmint payments.  Instead, verification confirms
@@ -1471,6 +1492,8 @@ impl SolanaProvider {
         // from (payer, pay_to, nonce) and the facilitator controls the PDA.  This removes the
         // settleSecretKey entirely.  See SOLANA_NONCE_STORE comment block for details.
         let mut total_credit: u64 = 0;
+        // SECURITY (audit 03): credit that landed DIRECTLY in pay_to's ATA (owner == pay_to).
+        let mut pay_to_credit: u64 = 0;
         let mut payer_pubkey: Option<Pubkey> = None;
 
         for post_bal in post_balances {
@@ -1491,6 +1514,14 @@ impl SolanaProvider {
             let diff = post_amount.saturating_sub(pre_amount);
             if diff > 0 {
                 total_credit += diff;
+                // Track credit that landed directly in pay_to's ATA.
+                if let (OptionSerializer::Some(ref owner), Some(ref pay_to)) =
+                    (&post_bal.owner, &pay_to_str)
+                {
+                    if owner == pay_to {
+                        pay_to_credit += diff;
+                    }
+                }
                 tracing::debug!(
                     account_index = post_bal.account_index,
                     credit = diff,
@@ -1536,6 +1567,20 @@ impl SolanaProvider {
             return Err(FacilitatorLocalError::DecodingError(format!(
                 "settlement account transfer amount {} < required {}",
                 total_credit, required_amount
+            )));
+        }
+
+        // SECURITY (audit 03): when there is NO sweep (settleSecretKey == None), the facilitator
+        // does not move any funds itself, so the merchant is paid ONLY if the referenced tx
+        // credited pay_to's ATA directly. Without this, an attacker could cite ANY unrelated
+        // confirmed USDC transfer (crediting strangers' ATAs) and the facilitator would forge a
+        // success while pay_to received nothing. When a settleSecretKey IS supplied, the sweep
+        // (capped, to pay_to) provides the binding, so a settlement-ATA credit is acceptable.
+        if payload.settle_secret_key.is_none() && pay_to_credit < required_amount {
+            return Err(FacilitatorLocalError::DecodingError(format!(
+                "settlement account (no sweep): credit to pay_to {} < required {} \
+                 (referenced transaction did not pay the merchant directly)",
+                pay_to_credit, required_amount
             )));
         }
 
@@ -1605,11 +1650,14 @@ impl SolanaProvider {
                 .await;
         }
 
-        // No secret key: funds already at payTo, return original tx signature.
+        // No settleSecretKey: the referenced transaction itself must have credited pay_to's ATA.
+        // verify_settlement_account (audit 03) already enforced pay_to_credit >= required_amount
+        // before we reach here, so returning the original tx signature is sound. This branch is
+        // NO LONGER a blind "trust the client" path.
         tracing::info!(
             network = %self.network(),
             tx_signature = %verification.tx_signature,
-            "Settlement account: no sweep needed (no settleSecretKey), returning original tx"
+            "Settlement account: no sweep needed, on-chain credit to pay_to already verified"
         );
 
         Ok(SettleResponse {
@@ -1715,22 +1763,15 @@ impl SolanaProvider {
         let sweep_amount = on_chain_balance.min(required_amount);
 
         if on_chain_balance == 0 {
-            // No balance to sweep - funds went directly to payTo
-            tracing::info!(
-                network = %self.network(),
-                "Settlement account ATA has 0 balance, no sweep needed"
-            );
-            return Ok(SettleResponse {
-                success: true,
-                error_reason: None,
-                payer: verification.payer.clone().into(),
-                transaction: Some(TransactionHash::Solana(
-                    *verification.tx_signature.as_array(),
-                )),
-                network: self.network(),
-                proof_of_payment: None,
-                extensions: None,
-            });
+            // SECURITY (audit 03): a settleSecretKey was supplied, which asserts funds are in the
+            // settlement account awaiting a sweep. An empty settlement ATA means there is nothing
+            // to move to pay_to. Returning success here previously forged a payment (an attacker
+            // could supply a fresh empty keypair). Hard-error instead; the only sound "no sweep"
+            // path is the settleSecretKey == None branch, which is guarded on-chain by the
+            // pay_to_credit check in verify_settlement_account.
+            return Err(FacilitatorLocalError::ContractCall(
+                "settlement account ATA is empty: no funds to sweep to pay_to".to_string(),
+            ));
         }
 
         tracing::info!(
@@ -1938,6 +1979,13 @@ impl Facilitator for SolanaProvider {
         if let ExactPaymentPayload::SolanaSettlementAccount(sa_payload) =
             &request.payment_payload.payload
         {
+            // SECURITY (audit 03): settlement-account scheme is opt-in and OFF by default.
+            if !is_settlement_account_enabled() {
+                return Err(FacilitatorLocalError::Other(
+                    "settlement_account_disabled: ENABLE_SETTLEMENT_ACCOUNT=false"
+                        .to_string(),
+                ));
+            }
             let result = self
                 .verify_settlement_account(sa_payload, &request.payment_requirements)
                 .await?;
@@ -1964,6 +2012,13 @@ impl Facilitator for SolanaProvider {
         if let ExactPaymentPayload::SolanaSettlementAccount(sa_payload) =
             &request.payment_payload.payload
         {
+            // SECURITY (audit 03): settlement-account scheme is opt-in and OFF by default.
+            if !is_settlement_account_enabled() {
+                return Err(FacilitatorLocalError::Other(
+                    "settlement_account_disabled: ENABLE_SETTLEMENT_ACCOUNT=false"
+                        .to_string(),
+                ));
+            }
             return self
                 .settle_settlement_account(sa_payload, &request.payment_requirements)
                 .await;

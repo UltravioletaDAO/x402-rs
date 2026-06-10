@@ -30,9 +30,53 @@ pub fn rpc_url(raw: &str) -> String {
     }
 }
 
+use std::sync::LazyLock;
+
+/// Matches any http/https URL substring (greedy to end of whitespace token).
+static URL_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"https?://\S+").expect("valid url regex"));
+
+/// Replace every `http(s)://…` substring in an arbitrary string with
+/// `<redacted-url>`. Use this on any error string before it is logged or
+/// returned to a client, because alloy/reqwest transport errors embed the
+/// full (API-keyed) RPC URL in their `Display`/`Debug` output (audit 07).
+pub fn scrub_urls(raw: &str) -> String {
+    URL_RE.replace_all(raw, "<redacted-url>").into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scrub_urls_strips_quicknode_in_error_string() {
+        let raw = "eth_call failed: Transport(Custom(reqwest::Error { kind: Request, \
+                   url: \"https://node.quiknode.pro/SECRETKEY123/\", source: Timeout }))";
+        let out = scrub_urls(raw);
+        assert!(!out.contains("https://"), "url not scrubbed: {out}");
+        assert!(!out.contains("SECRETKEY123"), "key leaked: {out}");
+        assert!(out.contains("<redacted-url>"));
+    }
+
+    #[test]
+    fn scrub_urls_strips_infura_query() {
+        let raw = "failed: https://mainnet.infura.io/v3/DEADBEEFKEY at line 1";
+        let out = scrub_urls(raw);
+        assert!(!out.contains("DEADBEEFKEY"), "key leaked: {out}");
+        assert_eq!(out, "failed: <redacted-url> at line 1");
+    }
+
+    #[test]
+    fn scrub_urls_handles_multiple_urls() {
+        let raw = "a https://h1/k1 b http://h2/k2 c";
+        let out = scrub_urls(raw);
+        assert_eq!(out, "a <redacted-url> b <redacted-url> c");
+    }
+
+    #[test]
+    fn scrub_urls_noop_without_url() {
+        assert_eq!(scrub_urls("plain error, no url"), "plain error, no url");
+    }
 
     #[test]
     fn strips_quicknode_path_api_key() {

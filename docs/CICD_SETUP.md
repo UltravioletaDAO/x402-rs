@@ -123,11 +123,13 @@ That's it. The next push to `main` will build → push to ECR → `terraform app
 
 - **Image tag:** `<Cargo.toml version>-<short-sha>` (e.g. `1.47.0-6999058`) plus `:latest`, pushed to
   `518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator`.
-- **Deploy:** a full `terraform apply -var image_tag=...` (no `-target`). A refreshed full plan
-  converges to exactly the image change — the `aws_ecs_task_definition` replace + in-place
-  `aws_ecs_service` update — and nothing else (validated against prod state). `-target` is avoided
-  because it spuriously pulls the ALB dependency into the apply; `-refresh=false` is avoided because
-  it invents drift from stale state.
+- **Deploy:** a **targeted** `terraform apply -target=aws_ecs_task_definition.facilitator
+  -target=aws_ecs_service.facilitator -var image_tag=...`. This scopes the deploy to **only** rolling
+  the image. A full apply would additionally re-upload the balances Lambda every run (the
+  `archive_file` zip hashes differently in CI than in state) and touch the ALB — neither belongs in
+  an image deploy. `-target` avoids the Lambda; the one no-op ALB-attribute modify it spuriously pulls
+  in (the service's ALB dependency) is covered by the role's `elasticloadbalancing:Modify*` perms.
+  `-refresh=false` is avoided (it invents drift from stale state).
 - **Verify:** waits for `services-stable`, then polls `/health` for `200`.
 - `concurrency: deploy-production` serializes deploys so two merges can't apply at once.
 

@@ -126,12 +126,16 @@ jobs:
         working-directory: terraform/environments/production
         run: |
           terraform init -input=false
-          # Full apply (no -target): a refreshed full plan converges to exactly the image
-          # change -- task-definition replace + in-place service update -- and nothing else
-          # (validated against prod state). NOTE: do NOT use -target here; it spuriously
-          # pulls the ALB dependency into the apply (ModifyLoadBalancerAttributes), and do
-          # NOT use -refresh=false; it compares config to stale state and invents drift.
+          # Targeted apply scopes the deploy to the ECS task def + service so it ONLY rolls
+          # the image. A *full* apply additionally wants lambda:UpdateFunctionCode every run
+          # (the archive_file zip hashes differently in CI than in state) and an ALB attribute
+          # modify -- neither belongs in an image deploy. -target avoids the Lambda entirely;
+          # the one ALB-attribute modify it spuriously pulls in (the service's ALB dependency)
+          # is a no-op (config already matches reality) and is covered by the CI role's
+          # elasticloadbalancing:Modify* perms. Do NOT use -refresh=false (invents drift).
           terraform apply -input=false -auto-approve \
+            -target=aws_ecs_task_definition.facilitator \
+            -target=aws_ecs_service.facilitator \
             -var="image_tag=${{ steps.tag.outputs.image_tag }}"
 
       - name: Wait for ECS rollout to stabilize

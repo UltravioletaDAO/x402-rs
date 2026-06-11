@@ -77,7 +77,9 @@ jobs:
       github.ref == 'refs/heads/main' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # ~16-min image build + terraform + ECS rollout wait; 50 leaves headroom so the
+    # "wait for stable" + verify steps complete (30 was cut off mid-rollout).
+    timeout-minutes: 50
     concurrency:
       group: deploy-production
       cancel-in-progress: false

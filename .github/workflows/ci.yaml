@@ -68,10 +68,11 @@ jobs:
   deploy:
     name: Push to ECR & deploy to ECS (production)
     needs: [test, preflight]
+    # Deploy on a push to main OR a manual "Run workflow" on main, once AWS secrets exist.
     if: >-
-      github.event_name == 'push' &&
+      needs.preflight.outputs.deploy == 'true' &&
       github.ref == 'refs/heads/main' &&
-      needs.preflight.outputs.deploy == 'true'
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     concurrency:
       group: deploy-production

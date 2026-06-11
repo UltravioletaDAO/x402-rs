@@ -126,11 +126,12 @@ jobs:
         working-directory: terraform/environments/production
         run: |
           terraform init -input=false
-          # -refresh=false: an image-only deploy reuses the cached data-source values in
-          # state (secret ARNs, ACM cert, Route53 zone, DynamoDB tables) instead of
-          # re-reading the whole dependency graph, so the CI role needs only write access to
-          # the targeted ECS resources + state, not broad read across every service.
-          terraform apply -input=false -auto-approve -refresh=false \
+          # Refreshed targeted apply: reads the dependency graph (the CI role has scoped
+          # read access for that) so the plan is accurate and image-only. NOTE: do NOT use
+          # -refresh=false here -- it produced a phantom aws_lb ModifyLoadBalancerAttributes
+          # change by comparing config to stale state. A refreshed plan correctly shows only
+          # the task-definition replace + in-place service update.
+          terraform apply -input=false -auto-approve \
             -target=aws_ecs_task_definition.facilitator \
             -target=aws_ecs_service.facilitator \
             -var="image_tag=${{ steps.tag.outputs.image_tag }}"

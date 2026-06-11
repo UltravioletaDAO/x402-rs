@@ -126,14 +126,12 @@ jobs:
         working-directory: terraform/environments/production
         run: |
           terraform init -input=false
-          # Refreshed targeted apply: reads the dependency graph (the CI role has scoped
-          # read access for that) so the plan is accurate and image-only. NOTE: do NOT use
-          # -refresh=false here -- it produced a phantom aws_lb ModifyLoadBalancerAttributes
-          # change by comparing config to stale state. A refreshed plan correctly shows only
-          # the task-definition replace + in-place service update.
+          # Full apply (no -target): a refreshed full plan converges to exactly the image
+          # change -- task-definition replace + in-place service update -- and nothing else
+          # (validated against prod state). NOTE: do NOT use -target here; it spuriously
+          # pulls the ALB dependency into the apply (ModifyLoadBalancerAttributes), and do
+          # NOT use -refresh=false; it compares config to stale state and invents drift.
           terraform apply -input=false -auto-approve \
-            -target=aws_ecs_task_definition.facilitator \
-            -target=aws_ecs_service.facilitator \
             -var="image_tag=${{ steps.tag.outputs.image_tag }}"
 
       - name: Wait for ECS rollout to stabilize

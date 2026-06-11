@@ -18,22 +18,34 @@ is **skipped** (the run still goes green on the `test` job), so merging the work
 ### 1. Create an IAM user for CI
 
 Create an IAM user (e.g. `github-actions-facilitator-deploy`) with **programmatic access** (no console),
-and attach the policy below. It is scoped to exactly what the pipeline needs: push to ECR, roll the
-ECS service, pass the task roles, refresh the targeted Terraform resources, and read/write the
-Terraform state backend.
+then give it two policies:
+
+**(a) Reads — attach the AWS managed `ReadOnlyAccess` policy.** A full `terraform apply` refreshes the
+whole prod config (ECS, ALB, ACM, Route53, DynamoDB, Secrets metadata, CloudWatch, Lambda, …), so the
+role needs broad read. `ReadOnlyAccess` covers it without the 2 KB inline-policy size limit:
+
+```bash
+aws iam attach-user-policy --user-name github-actions-facilitator-deploy \
+  --policy-arn arn:aws:iam::aws:policy/ReadOnlyAccess
+```
+
+**(b) Writes + secret-value deny — attach this inline policy** (`facilitator-cicd`). It grants only what
+the deploy *writes* (push to ECR, register the task def, roll the service, pass the task roles, and
+read/write the Terraform state backend) and explicitly **denies reading secret values** so the CI key
+can never exfiltrate production secrets:
 
 ```json
 {
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "EcrPushPull",
+      "Sid": "EcrPush",
       "Effect": "Allow",
       "Action": [
         "ecr:GetAuthorizationToken",
         "ecr:BatchCheckLayerAvailability",
-        "ecr:BatchGetImage",
         "ecr:GetDownloadUrlForLayer",
+        "ecr:BatchGetImage",
         "ecr:InitiateLayerUpload",
         "ecr:UploadLayerPart",
         "ecr:CompleteLayerUpload",
@@ -42,85 +54,48 @@ Terraform state backend.
       "Resource": "*"
     },
     {
-      "Sid": "EcsDeploy",
+      "Sid": "EcsAndElbWrite",
       "Effect": "Allow",
       "Action": [
-        "ecs:DescribeClusters",
-        "ecs:DescribeServices",
-        "ecs:DescribeTaskDefinition",
-        "ecs:DescribeTasks",
-        "ecs:ListTasks",
         "ecs:RegisterTaskDefinition",
         "ecs:DeregisterTaskDefinition",
         "ecs:UpdateService",
-        "ecs:TagResource"
+        "ecs:TagResource",
+        "iam:PassRole"
       ],
       "Resource": "*"
     },
     {
-      "Sid": "PassTaskRoles",
+      "Sid": "TerraformStateRW",
       "Effect": "Allow",
-      "Action": [
-        "iam:PassRole",
-        "iam:GetRole",
-        "iam:ListAttachedRolePolicies",
-        "iam:ListRolePolicies",
-        "iam:GetRolePolicy"
-      ],
-      "Resource": "*"
+      "Action": ["s3:PutObject", "s3:DeleteObject"],
+      "Resource": "arn:aws:s3:::facilitator-terraform-state/*"
     },
     {
-      "Sid": "TerraformRefreshReads",
+      "Sid": "TerraformLockRW",
       "Effect": "Allow",
-      "Action": [
-        "ec2:Describe*",
-        "elasticloadbalancing:Describe*",
-        "logs:DescribeLogGroups",
-        "logs:DescribeLogStreams",
-        "logs:ListTagsForResource",
-        "application-autoscaling:Describe*",
-        "secretsmanager:DescribeSecret",
-        "secretsmanager:GetResourcePolicy",
-        "secretsmanager:ListSecretVersionIds",
-        "servicediscovery:Get*",
-        "servicediscovery:List*",
-        "acm:DescribeCertificate",
-        "acm:ListTagsForCertificate",
-        "dynamodb:DescribeTable",
-        "dynamodb:DescribeContinuousBackups",
-        "dynamodb:DescribeTimeToLive",
-        "dynamodb:ListTagsOfResource",
-        "route53:ListHostedZones",
-        "route53:GetHostedZone",
-        "route53:ListResourceRecordSets",
-        "route53:ListTagsForResource",
-        "route53:GetChange",
-        "kms:DescribeKey"
-      ],
-      "Resource": "*"
-    },
-    {
-      "Sid": "TerraformState",
-      "Effect": "Allow",
-      "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListBucket"],
-      "Resource": [
-        "arn:aws:s3:::facilitator-terraform-state",
-        "arn:aws:s3:::facilitator-terraform-state/*"
-      ]
-    },
-    {
-      "Sid": "TerraformLock",
-      "Effect": "Allow",
-      "Action": ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem"],
+      "Action": ["dynamodb:PutItem", "dynamodb:DeleteItem"],
       "Resource": "arn:aws:dynamodb:us-east-2:518898403364:table/facilitator-terraform-locks"
+    },
+    {
+      "Sid": "DenySecretValueReads",
+      "Effect": "Deny",
+      "Action": "secretsmanager:GetSecretValue",
+      "Resource": "*"
     }
   ]
 }
 ```
 
-> `iam:PassRole` is `Resource: "*"` for simplicity. To tighten it, replace `*` with the exact ARNs of
-> the ECS **task** and **execution** roles (`aws_iam_role.ecs_task` / `aws_iam_role.ecs_task_execution`
-> in `terraform/environments/production/main.tf`).
+```bash
+aws iam put-user-policy --user-name github-actions-facilitator-deploy \
+  --policy-name facilitator-cicd --policy-document file://ci-policy.json
+```
+
+> Reads come from `ReadOnlyAccess` (state read, ECS/ELB/secret-metadata describe, etc.); the inline
+> policy adds only the writes (`s3:PutObject`, `dynamodb:PutItem`, `ecs:Register/Update`, `ecr:Put*`,
+> `iam:PassRole`). `iam:PassRole` is `Resource: "*"` for simplicity — tighten to the ECS task/execution
+> role ARNs (`aws_iam_role.ecs_task` / `aws_iam_role.ecs_task_execution`) to harden.
 
 Then create an access key for that user and copy the **Access key ID** and **Secret access key**.
 
@@ -148,9 +123,11 @@ That's it. The next push to `main` will build → push to ECR → `terraform app
 
 - **Image tag:** `<Cargo.toml version>-<short-sha>` (e.g. `1.47.0-6999058`) plus `:latest`, pushed to
   `518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator`.
-- **Deploy:** a **targeted** `terraform apply` of only `aws_ecs_task_definition.facilitator` and
-  `aws_ecs_service.facilitator`, overriding `image_tag` via `-var`. This rolls the service to the new
-  image without touching the rest of the infrastructure — the same change my manual deploys make.
+- **Deploy:** a full `terraform apply -var image_tag=...` (no `-target`). A refreshed full plan
+  converges to exactly the image change — the `aws_ecs_task_definition` replace + in-place
+  `aws_ecs_service` update — and nothing else (validated against prod state). `-target` is avoided
+  because it spuriously pulls the ALB dependency into the apply; `-refresh=false` is avoided because
+  it invents drift from stale state.
 - **Verify:** waits for `services-stable`, then polls `/health` for `200`.
 - `concurrency: deploy-production` serializes deploys so two merges can't apply at once.
 

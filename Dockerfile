@@ -12,6 +12,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && rm -rf /var/lib/apt/lists/*
 
 COPY . ./
+# config/blacklist.json is gitignored, so git-based builds (e.g. GitHub Actions `COPY .`
+# of the checkout) do not include it -- but the facilitator hard-requires it at startup
+# (src/main.rs with_blacklist) and exits(1) if missing. Default to an empty list when
+# absent so the image always starts. (scripts/fast-build.sh rsyncs the real local file;
+# commit a managed config/blacklist.json to git if you want CI builds to ship real entries.)
+RUN [ -f config/blacklist.json ] || printf '[]\n' > config/blacklist.json
 RUN cargo build --release --features solana,near,stellar,algorand,sui,xrpl
 
 # --- Stage 2 ---

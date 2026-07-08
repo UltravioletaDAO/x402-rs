@@ -26,11 +26,13 @@ use crate::chain::evm::MetaEvmProvider;
 use crate::chain::{FacilitatorLocalError, NetworkProvider, NetworkProviderOps};
 use crate::discovery::{DiscoveryError, DiscoveryRegistry};
 use crate::erc8004::solana as solana_erc8004;
+use crate::erc8004::register_jobs;
 use crate::erc8004::{
     get_contracts, is_erc8004_supported, parse_agent_id_value, supported_network_names,
     AgentIdentity, AppendResponseRequest, AtomStatsResponse, FeedbackEntry, FeedbackRequest,
-    FeedbackResponse, IIdentityRegistry, IReputationRegistry, MetadataEntry, RegisterAgentRequest,
-    RegisterAgentResponse, ReputationResponse, ReputationSummary, RevokeFeedbackRequest,
+    FeedbackResponse, IIdentityRegistry, IReputationRegistry, MetadataEntry, MetadataEntryParam,
+    RegisterAgentRequest, RegisterAgentResponse, ReputationResponse, ReputationSummary,
+    RevokeFeedbackRequest,
 };
 use crate::facilitator::Facilitator;
 use crate::fhe_proxy::FheProxy;
@@ -117,6 +119,10 @@ where
         // ERC-8004 Registration endpoints (GET info only; gas-spending POST writes are
         // carved into erc8004_write_routes() so they can carry a strict rate limit -- audit 02)
         .route("/register", get(get_register_info))
+        // ERC-8004 async registration status polling (P1). Deliberately on the
+        // main router (not the strict write-governor) so frequent polling is
+        // not rate-limited.
+        .route("/register/status/{job_id}", get(get_register_status))
         // ERC-8004 Reputation endpoints (GET info only)
         .route("/feedback", get(get_feedback_info))
         .route("/reputation/{network}/{agent_id}", get(get_reputation::<A>))
@@ -177,7 +183,7 @@ pub fn erc8004_write_routes<A>() -> Router<A>
 where
     A: Facilitator + HasProviderMap + Clone + Send + Sync + 'static,
     A::Error: IntoResponse,
-    A::Map: ProviderMap<Value = NetworkProvider>,
+    A::Map: ProviderMap<Value = NetworkProvider> + Sync,
 {
     Router::new()
         .route("/register", post(post_register::<A>))
@@ -4144,11 +4150,15 @@ pub async fn get_register_info() -> impl IntoResponse {
 /// address is provided, the NFT is minted to the facilitator and then transferred
 /// to the recipient via ERC-721 `safeTransferFrom`.
 #[instrument(skip_all, fields(network, agent_uri))]
-pub async fn post_register<A>(State(facilitator): State<A>, raw_body: Bytes) -> impl IntoResponse
+pub async fn post_register<A>(
+    State(facilitator): State<A>,
+    headers: HeaderMap,
+    raw_body: Bytes,
+) -> impl IntoResponse
 where
-    A: Facilitator + HasProviderMap,
+    A: Facilitator + HasProviderMap + Clone + Send + Sync + 'static,
     A::Error: IntoResponse,
-    A::Map: ProviderMap<Value = NetworkProvider>,
+    A::Map: ProviderMap<Value = NetworkProvider> + Sync,
 {
     // Parse request body
     let request: RegisterAgentRequest = match serde_json::from_slice(&raw_body) {
@@ -4340,13 +4350,71 @@ where
         }
     }
 
-    // ── EVM registration via IIdentityRegistry.register() ──
+    // ── EVM registration: dispatch sync vs async (P1 pollable, P3 in-flight lock) ──
+    let async_mode = wants_async(&headers);
+    let key = register_jobs::inflight_key(&network, &request.agent_uri, &request.recipient);
+    let job_id = match register_jobs::begin(network, key) {
+        register_jobs::BeginOutcome::AlreadyInflight(job) => {
+            return already_inflight_response(async_mode, job);
+        }
+        register_jobs::BeginOutcome::Started(id) => id,
+    };
+
+    if async_mode {
+        // P1: respond immediately with a jobId; drive the mint on a background
+        // task so the facilitator's on-chain latency leaves the caller's path.
+        let fac = facilitator.clone();
+        let jid = job_id.clone();
+        let uri = request.agent_uri.clone();
+        let meta = request.metadata.clone();
+        let recip = request.recipient.clone();
+        tokio::spawn(async move {
+            let (_status, resp) =
+                run_evm_registration(fac, network, uri, meta, recip, Some(jid.clone())).await;
+            register_jobs::finalize_from_response(&jid, &resp);
+        });
+        return accepted_response(&job_id);
+    }
+
+    // Synchronous path (default): unchanged response contract, now covered by
+    // the in-flight lock (P3) and the receipt-wait timeout (P2).
+    let (status, resp) = run_evm_registration(
+        facilitator,
+        network,
+        request.agent_uri.clone(),
+        request.metadata.clone(),
+        request.recipient.clone(),
+        Some(job_id.clone()),
+    )
+    .await;
+    register_jobs::finalize_from_response(&job_id, &resp);
+    (status, Json(resp)).into_response()
+}
+
+/// EVM ERC-8004 registration core: mint (+ optional transfer to recipient).
+/// Shared by the synchronous and async (`Prefer: respond-async`) paths of
+/// `POST /register`. Applies the same `TX_RECEIPT_TIMEOUT_SECS` receipt-wait
+/// bound as `/settle` (P2) and, when `job_id` is set, records progress in the
+/// register job store so `GET /register/status/{job_id}` can report `agentId`.
+async fn run_evm_registration<A>(
+    facilitator: A,
+    network: crate::network::Network,
+    agent_uri: String,
+    metadata: Option<Vec<MetadataEntryParam>>,
+    recipient: Option<MixedAddress>,
+    job_id: Option<String>,
+) -> (StatusCode, RegisterAgentResponse)
+where
+    A: HasProviderMap + Send + Sync + 'static,
+    A::Map: ProviderMap<Value = NetworkProvider> + Sync,
+{
+    let provider_map = facilitator.provider_map();
     let contracts = match get_contracts(&network) {
         Some(c) => c,
         None => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(RegisterAgentResponse {
+                RegisterAgentResponse {
                     success: false,
                     agent_id: None,
                     transaction: None,
@@ -4354,9 +4422,8 @@ where
                     owner: None,
                     error: Some(format!("No ERC-8004 contracts for network {}", network)),
                     network,
-                }),
-            )
-                .into_response();
+                },
+            );
         }
     };
 
@@ -4366,7 +4433,7 @@ where
             error!(network = %network, "No EVM provider available for network");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(RegisterAgentResponse {
+                RegisterAgentResponse {
                     success: false,
                     agent_id: None,
                     transaction: None,
@@ -4374,9 +4441,8 @@ where
                     owner: None,
                     error: Some(format!("No EVM provider available for network {}", network)),
                     network,
-                }),
-            )
-                .into_response();
+                },
+            );
         }
     };
 
@@ -4387,7 +4453,7 @@ where
     // ── Idempotency check: if recipient already owns an agent, return it ──
     // Uses ownerOf() iteration — works on ALL chains including SKALE which lacks
     // ERC-721 Enumerable and limits eth_getLogs to 2000 blocks.
-    let check_owner = match &request.recipient {
+    let check_owner = match &recipient {
         Some(MixedAddress::Evm(addr)) => Some(addr.0),
         _ => None,
     };
@@ -4410,7 +4476,7 @@ where
                         );
                         return (
                             StatusCode::OK,
-                            Json(RegisterAgentResponse {
+                            RegisterAgentResponse {
                                 success: true,
                                 agent_id: Some(id.to_string()),
                                 transaction: None,
@@ -4420,9 +4486,8 @@ where
                                 ))),
                                 error: None,
                                 network,
-                            }),
-                        )
-                            .into_response();
+                            },
+                        );
                     }
                     Err(e) => {
                         warn!(
@@ -4439,8 +4504,8 @@ where
     }
 
     // Build the registration call based on provided parameters
-    let agent_uri = request.agent_uri.clone();
-    let has_metadata = request.metadata.as_ref().map_or(false, |m| !m.is_empty());
+    let agent_uri = agent_uri.clone();
+    let has_metadata = metadata.as_ref().map_or(false, |m| !m.is_empty());
 
     // Legacy chains (SKALE) need explicit gasPrice to avoid EIP-1559 rejection
     let legacy_gas_price = if !provider.is_eip1559() {
@@ -4450,7 +4515,7 @@ where
                 error!(error = %e, "Failed to get gas price for legacy chain");
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(RegisterAgentResponse {
+                    RegisterAgentResponse {
                         success: false,
                         agent_id: None,
                         transaction: None,
@@ -4458,9 +4523,8 @@ where
                         owner: None,
                         error: Some(format!("Failed to get gas price: {}", e)),
                         network,
-                    }),
-                )
-                    .into_response();
+                    },
+                );
             }
         }
     } else {
@@ -4469,8 +4533,7 @@ where
 
     let register_result = if has_metadata {
         // Convert metadata params to contract MetadataEntry structs
-        let metadata_entries: Vec<MetadataEntry> = request
-            .metadata
+        let metadata_entries: Vec<MetadataEntry> = metadata
             .unwrap_or_default()
             .into_iter()
             .map(|m| MetadataEntry {
@@ -4493,7 +4556,7 @@ where
         } else {
             call.send().await
         }
-    } else if !request.agent_uri.is_empty() {
+    } else if !agent_uri.is_empty() {
         info!("Registering agent with URI only");
         // register_1 = register(string) - second overload in ABI
         let call = identity_registry.register_1(agent_uri);
@@ -4520,7 +4583,7 @@ where
             error!(network = %network, error = %e, "Failed to send registration transaction");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(RegisterAgentResponse {
+                RegisterAgentResponse {
                     success: false,
                     agent_id: None,
                     transaction: None,
@@ -4528,20 +4591,22 @@ where
                     owner: None,
                     error: Some(format!("Failed to send registration transaction: {}", e)),
                     network,
-                }),
-            )
-                .into_response();
+                },
+            );
         }
     };
 
     // Wait for receipt
-    let receipt = match pending_tx.get_receipt().await {
+    let receipt = match pending_tx
+        .with_timeout(Some(evm_receipt_timeout(&network)))
+        .get_receipt()
+        .await {
         Ok(r) => r,
         Err(e) => {
             error!(network = %network, error = %e, "Failed to get registration receipt");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(RegisterAgentResponse {
+                RegisterAgentResponse {
                     success: false,
                     agent_id: None,
                     transaction: None,
@@ -4549,9 +4614,8 @@ where
                     owner: None,
                     error: Some(format!("Registration transaction failed: {}", e)),
                     network,
-                }),
-            )
-                .into_response();
+                },
+            );
         }
     };
 
@@ -4582,7 +4646,7 @@ where
                     error!(error = %e, "Failed to query totalSupply as fallback");
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(RegisterAgentResponse {
+                        RegisterAgentResponse {
                             success: true,
                             agent_id: None,
                             transaction: Some(crate::types::TransactionHash::Evm(reg_tx_hash.0)),
@@ -4593,9 +4657,8 @@ where
                                     .to_string(),
                             ),
                             network,
-                        }),
-                    )
-                        .into_response();
+                        },
+                    );
                 }
             }
         }
@@ -4609,7 +4672,7 @@ where
         _ => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(RegisterAgentResponse {
+                RegisterAgentResponse {
                     success: true,
                     agent_id: Some(agent_id_str.clone()),
                     transaction: Some(crate::types::TransactionHash::Evm(reg_tx_hash.0)),
@@ -4617,22 +4680,29 @@ where
                     owner: None,
                     error: Some("Unexpected non-EVM signer address".to_string()),
                     network,
-                }),
-            )
-                .into_response();
+                },
+            );
         }
     };
+    if let Some(ref jid) = job_id {
+        register_jobs::set_mint_confirmed(
+            jid,
+            crate::types::TransactionHash::Evm(reg_tx_hash.0),
+            agent_id_str.clone(),
+            facilitator_mixed.clone(),
+        );
+    }
     let mut final_owner = facilitator_mixed;
     let mut transfer_tx: Option<crate::types::TransactionHash> = None;
 
     // If recipient is specified, transfer the NFT
-    if let Some(ref recipient) = request.recipient {
+    if let Some(ref recipient) = recipient {
         let recipient_address = match recipient {
             MixedAddress::Evm(addr) => addr.0,
             _ => {
                 return (
                     StatusCode::BAD_REQUEST,
-                    Json(RegisterAgentResponse {
+                    RegisterAgentResponse {
                         success: true,
                         agent_id: Some(agent_id_str.clone()),
                         transaction: Some(crate::types::TransactionHash::Evm(reg_tx_hash.0)),
@@ -4643,9 +4713,8 @@ where
                                 .to_string(),
                         ),
                         network,
-                    }),
-                )
-                    .into_response();
+                    },
+                );
             }
         };
 
@@ -4670,7 +4739,7 @@ where
                     error!(error = %e, "Failed to get gas price for transfer");
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(RegisterAgentResponse {
+                        RegisterAgentResponse {
                             success: true,
                             agent_id: Some(agent_id_str.clone()),
                             transaction: Some(crate::types::TransactionHash::Evm(reg_tx_hash.0)),
@@ -4678,9 +4747,8 @@ where
                             owner: Some(final_owner),
                             error: Some(format!("Failed to get gas price for transfer: {}", e)),
                             network,
-                        }),
-                    )
-                        .into_response();
+                        },
+                    );
                 }
             }
         } else {
@@ -4688,7 +4756,10 @@ where
         };
 
         match transfer_send {
-            Ok(pending) => match pending.get_receipt().await {
+            Ok(pending) => match pending
+                .with_timeout(Some(evm_receipt_timeout(&network)))
+                .get_receipt()
+                .await {
                 Ok(transfer_receipt) => {
                     let transfer_hash = transfer_receipt.transaction_hash;
                     info!(
@@ -4705,7 +4776,7 @@ where
                     error!(error = %e, "Transfer receipt failed - agent registered but NOT transferred");
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(RegisterAgentResponse {
+                        RegisterAgentResponse {
                             success: true,
                             agent_id: Some(agent_id_str.clone()),
                             transaction: Some(crate::types::TransactionHash::Evm(reg_tx_hash.0)),
@@ -4716,16 +4787,15 @@ where
                                 agent_id_str, e
                             )),
                             network,
-                        }),
-                    )
-                        .into_response();
+                        },
+                    );
                 }
             },
             Err(e) => {
                 error!(error = %e, "Failed to send transfer transaction");
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(RegisterAgentResponse {
+                    RegisterAgentResponse {
                         success: true,
                         agent_id: Some(agent_id_str.clone()),
                         transaction: Some(crate::types::TransactionHash::Evm(reg_tx_hash.0)),
@@ -4736,9 +4806,8 @@ where
                             agent_id_str, e
                         )),
                         network,
-                    }),
-                )
-                    .into_response();
+                    },
+                );
             }
         }
     }
@@ -4752,7 +4821,7 @@ where
 
     (
         StatusCode::OK,
-        Json(RegisterAgentResponse {
+        RegisterAgentResponse {
             success: true,
             agent_id: Some(agent_id_str),
             transaction: Some(crate::types::TransactionHash::Evm(reg_tx_hash.0)),
@@ -4760,9 +4829,108 @@ where
             owner: Some(final_owner),
             error: None,
             network,
+        },
+    )
+}
+
+/// Whether the caller opted into async registration (P1). Honored via the
+/// RFC 7240 `Prefer: respond-async` header, or the convenience `X-Async: true`.
+fn wants_async(headers: &HeaderMap) -> bool {
+    let prefer = headers
+        .get("prefer")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_ascii_lowercase().contains("respond-async"))
+        .unwrap_or(false);
+    let x_async = headers
+        .get("x-async")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| matches!(s.trim(), "1" | "true" | "yes"))
+        .unwrap_or(false);
+    prefer || x_async
+}
+
+/// Receipt-wait timeout for an ERC-8004 registration/transfer tx (P2). Mirrors
+/// the `/settle` path in `chain::evm`: 30s default, longer for slow L1s,
+/// overridable via `TX_RECEIPT_TIMEOUT_SECS`.
+fn evm_receipt_timeout(network: &crate::network::Network) -> std::time::Duration {
+    use crate::network::Network;
+    let default_secs = match network {
+        Network::Ethereum => 900,
+        Network::Base => 90,
+        _ => 30,
+    };
+    let secs = std::env::var("TX_RECEIPT_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(default_secs);
+    std::time::Duration::from_secs(secs)
+}
+
+/// Response when a registration for the same in-flight key is already running
+/// (P3). Async callers get the existing job; sync callers get `409 Conflict`
+/// instead of a double-mint that would revert on-chain.
+fn already_inflight_response(async_mode: bool, job: register_jobs::RegisterJob) -> Response {
+    if async_mode {
+        let loc = format!("/register/status/{}", job.job_id);
+        return (
+            StatusCode::OK,
+            [(axum::http::header::LOCATION, loc)],
+            Json(job),
+        )
+            .into_response();
+    }
+    (
+        StatusCode::CONFLICT,
+        Json(RegisterAgentResponse {
+            success: false,
+            agent_id: job.agent_id.clone(),
+            transaction: job.transaction.clone(),
+            transfer_transaction: job.transfer_transaction.clone(),
+            owner: job.owner.clone(),
+            error: Some(
+                "A registration for this agent is already in progress; retry later or poll \
+                 GET /register/status/{jobId}"
+                    .to_string(),
+            ),
+            network: job.network,
         }),
     )
         .into_response()
+}
+
+/// `202 Accepted` for an async registration: returns the freshly-created job
+/// (status `pending`) plus a `Location` header pointing at the status endpoint.
+fn accepted_response(job_id: &str) -> Response {
+    let loc = format!("/register/status/{job_id}");
+    let body = match register_jobs::get(job_id) {
+        Some(job) => serde_json::to_value(&job)
+            .unwrap_or_else(|_| json!({ "jobId": job_id, "status": "pending" })),
+        None => json!({ "jobId": job_id, "status": "pending" }),
+    };
+    (
+        StatusCode::ACCEPTED,
+        [(axum::http::header::LOCATION, loc)],
+        Json(body),
+    )
+        .into_response()
+}
+
+/// `GET /register/status/{job_id}`: poll an async ERC-8004 registration (P1).
+/// Returns the job with `agentId` once the mint confirms, or `404` if the
+/// job id is unknown or its result has aged out of the store.
+#[instrument(skip_all, fields(job_id))]
+pub async fn get_register_status(Path(job_id): Path<String>) -> impl IntoResponse {
+    match register_jobs::get(&job_id) {
+        Some(job) => (StatusCode::OK, Json(job)).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "error": "register job not found or expired",
+                "jobId": job_id,
+            })),
+        )
+            .into_response(),
+    }
 }
 
 // ============================================================================

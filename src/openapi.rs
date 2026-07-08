@@ -59,7 +59,8 @@ The facilitator supports [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) for
 **Note:** For EVM networks, `agentId` is a numeric uint256 (e.g., `42`). For Solana, `agentId` is a base58 Pubkey (e.g., `7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgHkv`). Solana reputation responses include bonus `atomStats` with trust tiers, quality scores, and anti-Sybil metrics.
 
 ### Endpoints:
-- `POST /register` - Register a new agent on-chain (gasless, EVM only)
+- `POST /register` - Register a new agent on-chain (gasless; sync or async via `Prefer: respond-async`)
+- `GET /register/status/{job_id}` - Poll an async registration until `agentId` is ready
 - `POST /feedback` - Submit on-chain reputation feedback (EVM only)
 - `POST /feedback/revoke` - Revoke previously submitted feedback (EVM only)
 - `POST /feedback/response` - Append agent response to feedback (EVM only)
@@ -119,6 +120,7 @@ Decentralized resource discovery for x402-enabled services:
         // ERC-8004 endpoints
         path_register_get,
         path_register_post,
+        path_register_status,
         path_feedback_get,
         path_feedback_post,
         path_feedback_revoke,
@@ -615,14 +617,61 @@ Registers a new ERC-8004 agent on-chain. The facilitator pays all gas fees.
   "network": "solana"
 }
 ```
+
+**Async mode (EVM):** send header `Prefer: respond-async` (or `X-Async: true`) to
+get an immediate `202 Accepted` with a `jobId` instead of blocking on the ~28s
+on-chain confirmation. Poll `GET /register/status/{jobId}` until `status` is
+`done` and `agentId` is populated. The `Location` header of the 202 points at the
+status URL, keeping the facilitator's on-chain latency out of the caller's
+timeout budget.
+
+**Idempotency / in-flight lock:** a second registration for the same
+`network|agentUri|recipient` while the first is still confirming is not
+re-minted — the async path returns the existing job, the sync path returns
+`409 Conflict`.
 "#,
     request_body(content = Object, description = "Agent registration request"),
     responses(
-        (status = 200, description = "Registration result", body = Object),
-        (status = 400, description = "Registration failed", body = Object)
+        (status = 200, description = "Registration result (sync)", body = Object),
+        (status = 202, description = "Async registration accepted; poll /register/status/{jobId}", body = Object),
+        (status = 400, description = "Registration failed", body = Object),
+        (status = 409, description = "A registration for this agent is already in progress", body = Object)
     )
 )]
 async fn path_register_post() {}
+
+#[utoipa::path(
+    get,
+    path = "/register/status/{job_id}",
+    tag = "ERC-8004",
+    summary = "Poll async registration status",
+    description = r#"
+Returns the status of an asynchronous ERC-8004 registration started with
+`Prefer: respond-async` on `POST /register`.
+
+`status` progresses `pending -> mint_confirmed -> done` (or `failed`). Once
+`mint_confirmed`/`done`, `agentId` is populated. Terminal jobs are retained for
+one hour before they age out (then this returns `404`).
+
+```json
+{
+  "jobId": "reg_42",
+  "status": "done",
+  "network": "base",
+  "agentId": "17",
+  "transaction": "0x...",
+  "transferTransaction": "0x...",
+  "owner": "0x..."
+}
+```
+"#,
+    params(("job_id" = String, Path, description = "Job id from the async POST /register")),
+    responses(
+        (status = 200, description = "Current job status", body = Object),
+        (status = 404, description = "Job not found or expired", body = Object)
+    )
+)]
+async fn path_register_status() {}
 
 #[utoipa::path(
     get,

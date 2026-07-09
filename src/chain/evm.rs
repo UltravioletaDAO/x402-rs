@@ -1193,18 +1193,26 @@ pub struct TransferWithAuthorization0Call<P> {
     pub contract_address: alloy::primitives::Address,
 }
 
-/// Validates that the current time is within the `validAfter` and `validBefore` bounds.
+/// Validates that a payment authorization is within its `validAfter`/`validBefore`
+/// window, per EIP-3009 (an authorization is usable while
+/// `validAfter <= block.timestamp < validBefore`).
 ///
-/// Applies a symmetric clock-skew grace window on both sides of the validity
-/// interval to tolerate small drift between buyer wallet and facilitator host:
-/// - `valid_before` must be at least `now - CLOCK_SKEW_GRACE_SECS` (we still
-///   accept auths that just barely expired)
-/// - `valid_after` must be at most `now + CLOCK_SKEW_GRACE_SECS` (we accept
-///   auths from buyers whose clock is slightly ahead)
+/// Validity is evaluated at `now + CLOCK_SKEW_GRACE_SECS` — a small forward
+/// look-ahead rather than at the bare wall-clock instant. This single offset
+/// serves two purposes:
+/// - it tolerates buyers whose clock is slightly ahead, accepting auths whose
+///   `validAfter` is up to `CLOCK_SKEW_GRACE_SECS` in the future; and
+/// - it keeps a settlement-latency safety margin on the expiry side: an auth is
+///   rejected once it has fewer than `CLOCK_SKEW_GRACE_SECS` of validity left
+///   (`valid_before < now + grace`), so a settlement tx submitted now cannot
+///   expire on-chain before it is mined.
 ///
-/// Without symmetry, a buyer with a fast clock could produce an auth that the
-/// facilitator rejects as "not yet active" while the same buyer with a slow
-/// clock would be accepted — confusing UX and unrelated to actual security.
+/// This is deliberately *stricter* than the raw spec on the expiry side (it
+/// demands a small buffer before `validBefore` rather than accepting auths that
+/// just barely expired). It never accepts an expired or not-yet-active auth, so
+/// there is no timing-bypass or replay risk. It is also the regression guard for
+/// the historical inverted-comparison bug that rejected valid `validAfter`-in-
+/// the-past auths and accepted `validAfter`-in-the-future ones.
 ///
 /// # Errors
 /// Returns [`FacilitatorLocalError::InvalidTiming`] if the authorization is not yet active or already expired.
@@ -2083,6 +2091,62 @@ mod tests {
         assert!(!is_nonce_error("insufficient funds for gas"));
         assert!(!is_nonce_error("execution reverted"));
         assert!(!is_nonce_error("Invalid signature"));
+    }
+
+    // FAC-2 regression guard: the historical inverted-comparison bug rejected
+    // spec-valid `validAfter=now-60` auths and accepted `validAfter`-in-the-future
+    // ones. These lock the correct EIP-3009 ordering in place. `assert_time`
+    // reads the real clock, so windows are anchored to `now` with wide margins.
+
+    #[test]
+    fn assert_time_accepts_spec_valid_window() {
+        let now = UnixTimestamp::try_now().unwrap().0;
+        let payer: MixedAddress = MixedAddress::Evm(EvmAddress(address!(
+            "0000000000000000000000000000000000000001"
+        )));
+        assert!(
+            assert_time(payer, UnixTimestamp(now - 60), UnixTimestamp(now + 3600)).is_ok(),
+            "validAfter=now-60 / validBefore=now+3600 must be accepted"
+        );
+    }
+
+    #[test]
+    fn assert_time_rejects_future_valid_after() {
+        let now = UnixTimestamp::try_now().unwrap().0;
+        let payer: MixedAddress = MixedAddress::Evm(EvmAddress(address!(
+            "0000000000000000000000000000000000000002"
+        )));
+        assert!(matches!(
+            assert_time(payer, UnixTimestamp(now + 300), UnixTimestamp(now + 3600)),
+            Err(FacilitatorLocalError::InvalidTiming(_, _))
+        ));
+    }
+
+    #[test]
+    fn assert_time_rejects_expired() {
+        let now = UnixTimestamp::try_now().unwrap().0;
+        let payer: MixedAddress = MixedAddress::Evm(EvmAddress(address!(
+            "0000000000000000000000000000000000000003"
+        )));
+        assert!(matches!(
+            assert_time(payer, UnixTimestamp(now - 3600), UnixTimestamp(now - 60)),
+            Err(FacilitatorLocalError::InvalidTiming(_, _))
+        ));
+    }
+
+    #[test]
+    fn assert_time_rejects_within_expiry_grace_buffer() {
+        // Deliberately conservative: an auth still nominally live but expiring
+        // within the clock-skew/settlement grace buffer is rejected so a
+        // settlement tx submitted now cannot expire on-chain before it mines.
+        let now = UnixTimestamp::try_now().unwrap().0;
+        let payer: MixedAddress = MixedAddress::Evm(EvmAddress(address!(
+            "0000000000000000000000000000000000000004"
+        )));
+        assert!(matches!(
+            assert_time(payer, UnixTimestamp(now - 60), UnixTimestamp(now + 2)),
+            Err(FacilitatorLocalError::InvalidTiming(_, _))
+        ));
     }
 
     #[tokio::test]

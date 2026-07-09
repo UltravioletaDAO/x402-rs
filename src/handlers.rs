@@ -25,8 +25,8 @@ use std::sync::Arc;
 use crate::chain::evm::MetaEvmProvider;
 use crate::chain::{FacilitatorLocalError, NetworkProvider, NetworkProviderOps};
 use crate::discovery::{DiscoveryError, DiscoveryRegistry};
-use crate::erc8004::solana as solana_erc8004;
 use crate::erc8004::register_jobs;
+use crate::erc8004::solana as solana_erc8004;
 use crate::erc8004::{
     get_contracts, is_erc8004_supported, parse_agent_id_value, supported_network_names,
     AgentIdentity, AppendResponseRequest, AtomStatsResponse, FeedbackEntry, FeedbackRequest,
@@ -4450,6 +4450,30 @@ where
     let identity_registry =
         IIdentityRegistry::new(contracts.identity_registry, provider.inner().clone());
 
+    // Resolve the facilitator's own wallet address up front. Both the
+    // stranded-NFT recovery path (FAC-1 #2) and the post-mint transfer need it,
+    // and resolving it before minting means a misconfigured (non-EVM) signer
+    // fails fast without first spending gas on a mint. On an EVM provider the
+    // signer is always EVM; the non-EVM arm is purely defensive.
+    let facilitator_mixed = provider.signer_address();
+    let facilitator_address = match &facilitator_mixed {
+        MixedAddress::Evm(addr) => addr.0,
+        _ => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                RegisterAgentResponse {
+                    success: false,
+                    agent_id: None,
+                    transaction: None,
+                    transfer_transaction: None,
+                    owner: None,
+                    error: Some("Unexpected non-EVM signer address".to_string()),
+                    network,
+                },
+            );
+        }
+    };
+
     // ── Idempotency check: if recipient already owns an agent, return it ──
     // Uses ownerOf() iteration — works on ALL chains including SKALE which lacks
     // ERC-721 Enumerable and limits eth_getLogs to 2000 blocks.
@@ -4497,6 +4521,76 @@ where
                             error = %e,
                             "Recipient has balance but multicall scan found no match, proceeding with mint"
                         );
+                    }
+                }
+            }
+        }
+    }
+
+    // ── FAC-1 #2: recover a stranded self-mint instead of minting anew ──
+    // If a prior registration for this exact network|uri|recipient triple minted
+    // the identity NFT but then failed to transfer it, the NFT is stranded in
+    // the facilitator wallet. Rather than mint a fresh one (orphaning the
+    // stranded token and returning a different agentId), reclaim it. This is
+    // record-based and recipient-keyed: it can only ever hand back an NFT THIS
+    // facilitator minted for THIS recipient+uri, so there is no on-chain URI
+    // scan and thus no planted-token poisoning and no cross-recipient
+    // mis-delivery. It costs zero extra RPC on the happy path — the on-chain
+    // view calls run only when a stranded record actually exists for this key.
+    if register_recovery_enabled() && !agent_uri.trim().is_empty() {
+        if let Some(MixedAddress::Evm(ref recip)) = recipient {
+            let recipient_address = recip.0;
+            if let Some(key) = register_jobs::inflight_key(&network, &agent_uri, &recipient) {
+                if let Some(stranded) = register_jobs::get_stranded(&key) {
+                    info!(
+                        network = %network,
+                        agent_id = stranded.agent_id,
+                        recipient = %recipient_address,
+                        "Found a stranded agent NFT for this key; attempting recovery instead of minting"
+                    );
+                    match try_recover_stranded_nft(
+                        provider,
+                        contracts.identity_registry,
+                        facilitator_address,
+                        recipient_address,
+                        stranded.agent_id,
+                        &agent_uri,
+                        network,
+                    )
+                    .await
+                    {
+                        StrandedRecovery::Recovered(transfer_tx) => {
+                            register_jobs::clear_stranded(&key);
+                            info!(
+                                network = %network,
+                                agent_id = stranded.agent_id,
+                                recipient = %recipient_address,
+                                "Recovered stranded agent NFT to recipient (no new mint)"
+                            );
+                            return (
+                                StatusCode::OK,
+                                RegisterAgentResponse {
+                                    success: true,
+                                    agent_id: Some(stranded.agent_id.to_string()),
+                                    transaction: stranded.mint_tx.clone(),
+                                    transfer_transaction: Some(transfer_tx),
+                                    owner: recipient.clone(),
+                                    error: None,
+                                    network,
+                                },
+                            );
+                        }
+                        StrandedRecovery::Gone => {
+                            // The token is no longer facilitator-held (moved) or
+                            // its on-chain URI does not match: the record is
+                            // stale. Drop it and fall through to a fresh mint.
+                            register_jobs::clear_stranded(&key);
+                        }
+                        StrandedRecovery::Transient => {
+                            // A transient RPC/transfer error: keep the record for
+                            // a later retry, but still mint now so the caller
+                            // gets an identity on this call.
+                        }
                     }
                 }
             }
@@ -4600,7 +4694,8 @@ where
     let receipt = match pending_tx
         .with_timeout(Some(evm_receipt_timeout(&network)))
         .get_receipt()
-        .await {
+        .await
+    {
         Ok(r) => r,
         Err(e) => {
             error!(network = %network, error = %e, "Failed to get registration receipt");
@@ -4620,6 +4715,26 @@ where
     };
 
     let reg_tx_hash = receipt.transaction_hash;
+
+    // Symmetric to the transfer path: a reverted-but-mined mint still returns a
+    // receipt (status == 0). A reverted mint emits no Registered event, so the
+    // totalSupply() fallback below would otherwise resolve an UNRELATED agentId
+    // and could transfer the wrong NFT to the recipient — reject it outright.
+    if !receipt.status() {
+        error!(network = %network, tx = %reg_tx_hash, "Registration transaction reverted on-chain");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            RegisterAgentResponse {
+                success: false,
+                agent_id: None,
+                transaction: Some(crate::types::TransactionHash::Evm(reg_tx_hash.0)),
+                transfer_transaction: None,
+                owner: None,
+                error: Some("Registration transaction reverted on-chain".to_string()),
+                network,
+            },
+        );
+    }
     info!(network = %network, tx = %reg_tx_hash, "Registration transaction confirmed");
 
     // Parse Registered event from logs to get agentId
@@ -4665,25 +4780,6 @@ where
     };
     let agent_id_str = agent_id.to_string();
 
-    // Determine final owner - get the facilitator wallet address
-    let facilitator_mixed = provider.signer_address();
-    let facilitator_address = match &facilitator_mixed {
-        MixedAddress::Evm(addr) => addr.0,
-        _ => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                RegisterAgentResponse {
-                    success: true,
-                    agent_id: Some(agent_id_str.clone()),
-                    transaction: Some(crate::types::TransactionHash::Evm(reg_tx_hash.0)),
-                    transfer_transaction: None,
-                    owner: None,
-                    error: Some("Unexpected non-EVM signer address".to_string()),
-                    network,
-                },
-            );
-        }
-    };
     if let Some(ref jid) = job_id {
         register_jobs::set_mint_confirmed(
             jid,
@@ -4725,74 +4821,29 @@ where
             "Transferring agent NFT to recipient"
         );
 
-        let transfer_call = identity_registry.safeTransferFrom(
+        match transfer_agent_nft(
+            provider,
+            contracts.identity_registry,
             facilitator_address,
             recipient_address,
-            alloy::primitives::U256::from(agent_id),
-        );
-
-        // Legacy chains (SKALE) need explicit gasPrice for transfer too
-        let transfer_send = if !provider.is_eip1559() {
-            match provider.inner().get_gas_price().await {
-                Ok(gp) => transfer_call.gas_price(gp).send().await,
-                Err(e) => {
-                    error!(error = %e, "Failed to get gas price for transfer");
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        RegisterAgentResponse {
-                            success: true,
-                            agent_id: Some(agent_id_str.clone()),
-                            transaction: Some(crate::types::TransactionHash::Evm(reg_tx_hash.0)),
-                            transfer_transaction: None,
-                            owner: Some(final_owner),
-                            error: Some(format!("Failed to get gas price for transfer: {}", e)),
-                            network,
-                        },
-                    );
-                }
+            agent_id,
+            network,
+        )
+        .await
+        {
+            Ok(tx) => {
+                info!(
+                    network = %network,
+                    tx = ?tx,
+                    agent_id = agent_id,
+                    recipient = %recipient_address,
+                    "Agent NFT transferred successfully"
+                );
+                transfer_tx = Some(tx);
+                final_owner = recipient.clone();
             }
-        } else {
-            transfer_call.send().await
-        };
-
-        match transfer_send {
-            Ok(pending) => match pending
-                .with_timeout(Some(evm_receipt_timeout(&network)))
-                .get_receipt()
-                .await {
-                Ok(transfer_receipt) => {
-                    let transfer_hash = transfer_receipt.transaction_hash;
-                    info!(
-                        network = %network,
-                        tx = %transfer_hash,
-                        agent_id = agent_id,
-                        recipient = %recipient_address,
-                        "Agent NFT transferred successfully"
-                    );
-                    transfer_tx = Some(crate::types::TransactionHash::Evm(transfer_hash.0));
-                    final_owner = recipient.clone();
-                }
-                Err(e) => {
-                    error!(error = %e, "Transfer receipt failed - agent registered but NOT transferred");
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        RegisterAgentResponse {
-                            success: true,
-                            agent_id: Some(agent_id_str.clone()),
-                            transaction: Some(crate::types::TransactionHash::Evm(reg_tx_hash.0)),
-                            transfer_transaction: None,
-                            owner: Some(final_owner),
-                            error: Some(format!(
-                                "Agent registered (id={}) but transfer failed: {}",
-                                agent_id_str, e
-                            )),
-                            network,
-                        },
-                    );
-                }
-            },
             Err(e) => {
-                error!(error = %e, "Failed to send transfer transaction");
+                error!(error = %e, "Transfer failed - agent registered but NOT transferred");
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     RegisterAgentResponse {
@@ -4831,6 +4882,162 @@ where
             network,
         },
     )
+}
+
+/// FAC-1 #2 kill-switch. Stranded-NFT recovery (reclaiming an agent NFT that a
+/// prior registration minted but failed to transfer, instead of minting a fresh
+/// one and orphaning the stranded token) is record-based and recipient-keyed, so
+/// it is safe by construction and defaults ON. Set `ENABLE_REGISTER_RECOVERY` to
+/// `false`/`0`/`no`/`off` to disable it.
+fn register_recovery_enabled() -> bool {
+    std::env::var("ENABLE_REGISTER_RECOVERY")
+        .map(|v| {
+            !matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "false" | "0" | "no" | "off"
+            )
+        })
+        .unwrap_or(true)
+}
+
+/// Outcome of attempting to recover a stranded agent NFT (FAC-1 #2).
+enum StrandedRecovery {
+    /// The stranded NFT was verified and transferred to the recipient; carries
+    /// the transfer transaction hash.
+    Recovered(crate::types::TransactionHash),
+    /// The record is stale (token no longer facilitator-held, or its on-chain
+    /// URI does not match this request): drop the record and mint fresh.
+    Gone,
+    /// A transient RPC/transfer error: keep the record and mint fresh this time.
+    Transient,
+}
+
+/// Attempt to reclaim a stranded self-minted agent NFT and hand it to the
+/// recipient, instead of minting a new one (FAC-1 #2).
+///
+/// Safety is by construction: the caller only reaches here with an `agent_id` it
+/// recorded from a PRIOR mint-succeeded-transfer-failed attempt for this exact
+/// recipient+uri. Before transferring we still re-verify on-chain that (a) the
+/// facilitator wallet is the current owner (so we never move a token that has
+/// left the wallet or that we do not own), and (b) the token's `tokenURI`
+/// byte-exactly matches the requested `agentURI` (never case-folded — IPFS CIDs
+/// and URL paths are case-sensitive), so a registry whose `tokenURI` is not the
+/// raw `agentURI` simply degrades to minting.
+async fn try_recover_stranded_nft(
+    provider: &crate::chain::evm::EvmProvider,
+    registry: alloy::primitives::Address,
+    facilitator: alloy::primitives::Address,
+    recipient: alloy::primitives::Address,
+    agent_id: u64,
+    agent_uri: &str,
+    network: crate::network::Network,
+) -> StrandedRecovery {
+    let identity_registry = IIdentityRegistry::new(registry, provider.inner().clone());
+    let id = alloy::primitives::U256::from(agent_id);
+
+    // (a) The NFT must still be held by the facilitator (our own self-mint).
+    match identity_registry.ownerOf(id).call().await {
+        Ok(owner) if owner == facilitator => {}
+        Ok(other) => {
+            warn!(
+                agent_id,
+                current_owner = %other,
+                "Stranded recovery: NFT is no longer facilitator-held; will mint fresh"
+            );
+            return StrandedRecovery::Gone;
+        }
+        Err(e) => {
+            warn!(agent_id, error = %e, "Stranded recovery: ownerOf read failed; will mint fresh");
+            return StrandedRecovery::Transient;
+        }
+    }
+
+    // (b) tokenURI must byte-match this request's agentURI (trim surrounding
+    //     whitespace only; never case-fold).
+    match identity_registry.tokenURI(id).call().await {
+        Ok(on_chain_uri) if on_chain_uri.trim() == agent_uri.trim() => {}
+        Ok(on_chain_uri) => {
+            warn!(
+                agent_id,
+                on_chain_uri = %on_chain_uri,
+                "Stranded recovery: tokenURI does not match request URI; will mint fresh"
+            );
+            return StrandedRecovery::Gone;
+        }
+        Err(e) => {
+            warn!(agent_id, error = %e, "Stranded recovery: tokenURI read failed; will mint fresh");
+            return StrandedRecovery::Transient;
+        }
+    }
+
+    // (c) Transfer the recovered NFT to the recipient (on-chain success checked).
+    match transfer_agent_nft(
+        provider,
+        registry,
+        facilitator,
+        recipient,
+        agent_id,
+        network,
+    )
+    .await
+    {
+        Ok(tx) => StrandedRecovery::Recovered(tx),
+        Err(e) => {
+            warn!(agent_id, error = %e, "Stranded recovery: transfer failed; will mint fresh");
+            StrandedRecovery::Transient
+        }
+    }
+}
+
+/// Send a `safeTransferFrom` of an ERC-8004 agent NFT from the facilitator to a
+/// recipient, wait for the receipt (bounded by [`evm_receipt_timeout`]), and
+/// REQUIRE that the transaction actually succeeded on-chain.
+///
+/// A reverted `safeTransferFrom` still yields a receipt, so `receipt.status()`
+/// MUST be checked — otherwise a non-delivery (e.g. a recipient contract without
+/// `onERC721Received`, or a race that reverts) would be reported to the caller as
+/// a successful transfer. Shared by the normal post-mint transfer and the
+/// stranded-NFT recovery path so this success check can never drift between them.
+async fn transfer_agent_nft(
+    provider: &crate::chain::evm::EvmProvider,
+    registry: alloy::primitives::Address,
+    from: alloy::primitives::Address,
+    to: alloy::primitives::Address,
+    agent_id: u64,
+    network: crate::network::Network,
+) -> Result<crate::types::TransactionHash, String> {
+    let identity_registry = IIdentityRegistry::new(registry, provider.inner().clone());
+    let transfer_call =
+        identity_registry.safeTransferFrom(from, to, alloy::primitives::U256::from(agent_id));
+
+    // Legacy chains (SKALE) need an explicit gasPrice to avoid EIP-1559 rejection.
+    let send_result = if !provider.is_eip1559() {
+        let gas_price = provider
+            .inner()
+            .get_gas_price()
+            .await
+            .map_err(|e| format!("Failed to get gas price for transfer: {e}"))?;
+        transfer_call.gas_price(gas_price).send().await
+    } else {
+        transfer_call.send().await
+    };
+
+    let pending = send_result.map_err(|e| format!("Failed to send transfer transaction: {e}"))?;
+    let receipt = pending
+        .with_timeout(Some(evm_receipt_timeout(&network)))
+        .get_receipt()
+        .await
+        .map_err(|e| format!("Transfer receipt failed: {e}"))?;
+
+    if !receipt.status() {
+        return Err(format!(
+            "Transfer reverted on-chain (tx {})",
+            receipt.transaction_hash
+        ));
+    }
+    Ok(crate::types::TransactionHash::Evm(
+        receipt.transaction_hash.0,
+    ))
 }
 
 /// Whether the caller opted into async registration (P1). Honored via the

@@ -1,5 +1,62 @@
 # Changelog
 
+## [1.49.0] - 2026-07-09
+
+### Reliability — ERC-8004 `/register` atomicity + a fund-safety fix (FACILITATOR security handoff FAC-1)
+
+Addresses the KarmaCadabra 2026-07-09 facilitator handoff (`FAC-1` mint→transfer atomicity /
+stranded-NFT recovery) and fixes a real pre-existing correctness bug surfaced while doing so. The
+FAC-1 latency ask (async pollable `/register`) already shipped in 1.48.0.
+
+- **Bug fix — reverted on-chain tx reported as success (mint + transfer):** `run_evm_registration`
+  trusted both the mint and the transfer receipts without checking `receipt.status()`. A
+  reverted-but-mined transaction still returns a receipt (`status == 0`), so (a) a `safeTransferFrom`
+  that reverts (e.g. a recipient contract lacking `onERC721Received`) was reported as a successful
+  transfer, and (b) a reverted mint — emitting no `Registered` event — fell through to a
+  `totalSupply()` fallback that could resolve an **unrelated** `agentId` and transfer the wrong NFT
+  to the recipient. Both are fixed: the transfer runs through a single shared `transfer_agent_nft()`
+  helper requiring `status() == 1` (so the check can't drift between the normal and recovery paths),
+  and the mint now rejects a reverted receipt outright instead of guessing an id.
+- **FAC-1 #2 — stranded-NFT recovery (record-based, safe by construction):** if a registration
+  mints the identity NFT but then fails to transfer it to the recipient, the NFT is stranded in the
+  facilitator wallet and a naive retry re-mints (orphaning the stranded token and returning a
+  different `agentId`). `/register` now records the stranded `agentId` keyed by the exact
+  `network|agentUri|recipient` triple; a later retry for that same key reclaims that specific token
+  (re-verifying on-chain `ownerOf == facilitator` **and** `tokenURI == agentURI` byte-exactly before
+  transferring, status-checked) instead of minting anew, returning the **same** `agentId`. It is
+  recipient-keyed and trusts only the facilitator's own recorded self-mints, so it cannot
+  mis-deliver across recipients or be poisoned by a token an attacker transfers into the facilitator
+  wallet — a deliberate rejection of the naive "scan facilitator-held tokens and match by URI"
+  approach. Costs zero extra RPC on the happy path (view calls run only when a stranded record
+  exists). Gated by `ENABLE_REGISTER_RECOVERY` (default ON). Cross-process/restart orphans remain a
+  documented residual (recoverable only out-of-band).
+- **FAC-2 — EIP-3009 timing (verified correct + regression-guarded):** re-verified `assert_time`
+  against EIP-3009; the historical inverted-comparison bug is not present (validity is evaluated at
+  `now + grace`, accepting `validAfter=now-60` and rejecting future-dated auths). Added 4 regression
+  tests and corrected a stale doc comment (the code applies a forward settlement buffer on the
+  expiry side — stricter than, not looser than, the spec).
+- **FAC-3 — Base USDC "invalid signature" (verified resolved, no change):** `assert_domain` gives
+  verified static EIP-712 metadata priority over client-provided `extra` for known tokens, so Base
+  mainnet USDC resolves to `name: "USD Coin", version: "2"` (matching the on-chain FiatTokenV2_2) and
+  a client cannot force a mismatched domain separator; the `transferWithAuthorization` call sites
+  already log the full request parameters across all branches.
+
+Files: `src/handlers.rs`, `src/erc8004/register_jobs.rs`, `src/chain/evm.rs`. Kill-switch:
+`ENABLE_REGISTER_RECOVERY` (default ON).
+
+## [1.48.0] - 2026-07-08
+
+### Reliability — async pollable ERC-8004 `/register` (postmortem P1/P2/P3)
+
+- **P1 — async pollable registration:** `POST /register` accepts `Prefer: respond-async` (or
+  `X-Async: true`) → `202` + `jobId` in <2s; poll `GET /register/status/{jobId}`
+  (`pending → mint_confirmed → done|failed`). Sync remains the default (SDK contract unchanged). New
+  `src/erc8004/register_jobs.rs` in-memory job store; EVM core extracted to `run_evm_registration()`.
+- **P2 — receipt-wait timeout:** register + transfer bound `get_receipt` with
+  `TX_RECEIPT_TIMEOUT_SECS` (30s default; Base 90s, Ethereum 900s), like `/settle`.
+- **P3 — in-flight lock:** a lock keyed by `network|agentUri|recipient` stops concurrent
+  double-mints — async returns the existing job, sync returns `409 Conflict`.
+
 ## [1.47.0] - 2026-06-10
 
 ### Security — Multi-agent audit remediation (docs/security-audit-2026-06-10/)

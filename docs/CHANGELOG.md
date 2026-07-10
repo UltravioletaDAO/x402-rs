@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.49.2] - 2026-07-10
+
+### Reliability — nonce manager: no dashmap guard held across `.await`
+
+Fixes a guard-across-`.await` hazard in `PendingNonceManager` found while
+diagnosing a flaky CI test hang (the v1.49.1 `test` job hung for 33 min in the
+async `test_reset_nonce_*` tests and was cancelled at the 35-min timeout).
+
+- **Production `reset_nonce` (settlement failure path):** it held the dashmap
+  shard read guard from `nonces.get(address)` across `nonce_lock.lock().await`.
+  Holding a `dashmap` shard guard across an await point is a deadlock hazard — a
+  suspended task keeps the shard locked and can block another task that needs the
+  same shard. `reset_nonce` runs on `is_nonce_error` retries in `settle`, so this
+  was on the hot path, not just in tests. It now clones the per-address
+  `Arc<Mutex<u64>>` and drops the dashmap guard **before** awaiting, exactly as
+  `get_next_nonce` already does (whose comment documents the same rule). No
+  behavior change; strictly removes the hazard.
+- **Tests:** the `test_reset_nonce_*` / `test_multiple_addresses_*` /
+  `test_concurrent_reset_and_access` tests held a dashmap guard (`entry(...)` /
+  `get(...)`) across `.lock().await`, which is what actually hung on CI. They now
+  go through `set_nonce`/`read_nonce` helpers that clone the `Arc` and drop the
+  guard before awaiting, removing the flaky hang at its source.
+
+Files: `src/chain/evm.rs`. No API or protocol change.
+
 ## [1.49.1] - 2026-07-09
 
 ### Reliability — ERC-8004 `/register` stranded-record hygiene (FAC-1 #2 follow-ups)

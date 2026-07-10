@@ -2064,7 +2064,15 @@ impl PendingNonceManager {
     /// By resetting to the sentinel value, the next call to `get_next_nonce` will query
     /// the RPC provider using `.pending()`, which includes mempool transactions.
     pub async fn reset_nonce(&self, address: Address) {
-        if let Some(nonce_lock) = self.nonces.get(&address) {
+        // Clone the `Arc` and drop the dashmap guard BEFORE the await point,
+        // exactly as `get_next_nonce` does. A dashmap shard guard (here the read
+        // guard from `.get()`) must never be held across `.await`: doing so is a
+        // guard-across-await deadlock hazard (a suspended task holding the shard
+        // lock can block another task that needs the same shard). This path runs
+        // on settlement failure (`is_nonce_error` retry), so the hazard is on the
+        // hot path, not just in tests.
+        let nonce_lock = self.nonces.get(&address).map(|r| Arc::clone(r.value()));
+        if let Some(nonce_lock) = nonce_lock {
             let mut nonce = nonce_lock.lock().await;
             *nonce = u64::MAX; // NONE sentinel - will trigger fresh query
             tracing::debug!(%address, "reset nonce cache, will requery on next use");
@@ -2149,37 +2157,35 @@ mod tests {
         ));
     }
 
+    // Test helpers that mirror the production get_next_nonce/reset_nonce
+    // discipline: clone the per-address `Arc<Mutex<u64>>` out of the dashmap and
+    // DROP the dashmap guard BEFORE `.lock().await`, so a shard guard is never
+    // held across an await point (the guard-across-await hazard behind the flaky
+    // CI test hang).
+    async fn set_nonce(m: &PendingNonceManager, addr: alloy::primitives::Address, val: u64) {
+        let lock = {
+            let rm = m.nonces.entry(addr).or_insert_with(|| Arc::new(Mutex::new(0)));
+            Arc::clone(rm.value())
+        };
+        *lock.lock().await = val;
+    }
+
+    async fn read_nonce(m: &PendingNonceManager, addr: alloy::primitives::Address) -> Option<u64> {
+        let lock = m.nonces.get(&addr).map(|r| Arc::clone(r.value()));
+        match lock {
+            Some(l) => Some(*l.lock().await),
+            None => None,
+        }
+    }
+
     #[tokio::test]
     async fn test_reset_nonce_clears_cache() {
         let manager = PendingNonceManager::default();
         let test_address = address!("0000000000000000000000000000000000000001");
-
-        // Manually set a nonce in the cache (simulating it was fetched)
-        {
-            let nonce_lock = manager
-                .nonces
-                .entry(test_address)
-                .or_insert_with(|| Arc::new(Mutex::new(0)));
-            let mut nonce = nonce_lock.lock().await;
-            *nonce = 42;
-        }
-
-        // Verify nonce is cached
-        {
-            let nonce_lock = manager.nonces.get(&test_address).unwrap();
-            let nonce = nonce_lock.lock().await;
-            assert_eq!(*nonce, 42);
-        }
-
-        // Reset the nonce
+        set_nonce(&manager, test_address, 42).await;
+        assert_eq!(read_nonce(&manager, test_address).await, Some(42));
         manager.reset_nonce(test_address).await;
-
-        // Verify nonce is reset to sentinel value (u64::MAX)
-        {
-            let nonce_lock = manager.nonces.get(&test_address).unwrap();
-            let nonce = nonce_lock.lock().await;
-            assert_eq!(*nonce, u64::MAX);
-        }
+        assert_eq!(read_nonce(&manager, test_address).await, Some(u64::MAX));
     }
 
     #[tokio::test]
@@ -2187,27 +2193,14 @@ mod tests {
         let manager = PendingNonceManager::default();
         let test_address = address!("0000000000000000000000000000000000000002");
 
-        // Simulate nonce allocations
-        {
-            let nonce_lock = manager
-                .nonces
-                .entry(test_address)
-                .or_insert_with(|| Arc::new(Mutex::new(0)));
-            let mut nonce = nonce_lock.lock().await;
-            *nonce = 50; // First allocation
-            *nonce = 51; // Second allocation
-            *nonce = 52; // Third allocation
-        }
-
-        // Simulate a transaction failure - reset nonce
+        // Simulate nonce allocations, then a transaction failure -> reset.
+        set_nonce(&manager, test_address, 50).await;
+        set_nonce(&manager, test_address, 51).await;
+        set_nonce(&manager, test_address, 52).await;
         manager.reset_nonce(test_address).await;
 
-        // Verify nonce is back to sentinel for requery
-        {
-            let nonce_lock = manager.nonces.get(&test_address).unwrap();
-            let nonce = nonce_lock.lock().await;
-            assert_eq!(*nonce, u64::MAX);
-        }
+        // Nonce is back to the sentinel for requery.
+        assert_eq!(read_nonce(&manager, test_address).await, Some(u64::MAX));
     }
 
     #[tokio::test]
@@ -2228,32 +2221,14 @@ mod tests {
         let address1 = address!("0000000000000000000000000000000000000001");
         let address2 = address!("0000000000000000000000000000000000000002");
 
-        // Set nonces for both addresses
-        {
-            let nonce_lock1 = manager
-                .nonces
-                .entry(address1)
-                .or_insert_with(|| Arc::new(Mutex::new(0)));
-            *nonce_lock1.lock().await = 10;
+        set_nonce(&manager, address1, 10).await;
+        set_nonce(&manager, address2, 20).await;
 
-            let nonce_lock2 = manager
-                .nonces
-                .entry(address2)
-                .or_insert_with(|| Arc::new(Mutex::new(0)));
-            *nonce_lock2.lock().await = 20;
-        }
-
-        // Reset address1
         manager.reset_nonce(address1).await;
 
-        // address1 should be reset, address2 should be unchanged
-        {
-            let nonce_lock1 = manager.nonces.get(&address1).unwrap();
-            assert_eq!(*nonce_lock1.lock().await, u64::MAX);
-
-            let nonce_lock2 = manager.nonces.get(&address2).unwrap();
-            assert_eq!(*nonce_lock2.lock().await, 20);
-        }
+        // address1 is reset; address2 is unchanged.
+        assert_eq!(read_nonce(&manager, address1).await, Some(u64::MAX));
+        assert_eq!(read_nonce(&manager, address2).await, Some(20));
     }
 
     #[tokio::test]
@@ -2262,13 +2237,7 @@ mod tests {
         let test_address = address!("0000000000000000000000000000000000000003");
 
         // Set initial nonce
-        {
-            let nonce_lock = manager
-                .nonces
-                .entry(test_address)
-                .or_insert_with(|| Arc::new(Mutex::new(0)));
-            *nonce_lock.lock().await = 100;
-        }
+        set_nonce(&manager, test_address, 100).await;
 
         // Spawn concurrent tasks
         let manager1 = Arc::clone(&manager);
@@ -2286,9 +2255,6 @@ mod tests {
         handle2.await.unwrap();
 
         // Verify nonce is reset (both resets should work fine)
-        {
-            let nonce_lock = manager.nonces.get(&test_address).unwrap();
-            assert_eq!(*nonce_lock.lock().await, u64::MAX);
-        }
+        assert_eq!(read_nonce(&manager, test_address).await, Some(u64::MAX));
     }
 }

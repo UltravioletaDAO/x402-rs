@@ -28,13 +28,18 @@
 //! 3. **Stranded-NFT recovery record (FAC-1 #2).** `/register` mints the NFT to
 //!    the facilitator, then transfers it to the recipient in a second tx. If the
 //!    transfer fails after the mint lands, the NFT is stranded in the
-//!    facilitator wallet. [`finalize_from_response`] records the stranded
-//!    `agentId` keyed by the same `network|agentUri|recipient` triple; a later
-//!    retry for that exact key reclaims the token via [`get_stranded`] instead
-//!    of minting a fresh one (see `try_recover_stranded_nft` in the handler).
-//!    Because the key is recipient-bound and only the facilitator's own recorded
-//!    self-mints are trusted, this cannot mis-deliver across recipients or be
-//!    poisoned by a token an attacker transfers into the facilitator wallet.
+//!    facilitator wallet. The register handler records the stranded `agentId`
+//!    via [`record_stranded`], keyed by the same `network|agentUri|recipient`
+//!    triple, and *only* when the registration is recoverable (EVM recipient +
+//!    non-empty agentURI); a later retry for that exact key reclaims the token
+//!    via [`get_stranded`] instead of minting a fresh one (see
+//!    `try_recover_stranded_nft` in the handler), and any successful delivery
+//!    for the key [`clear_stranded`]s it so a record never outlives its NFT.
+//!    Because recording and recovery share one precondition (computed once as
+//!    `recovery_key`), the key is recipient-bound, and only the facilitator's
+//!    own recorded self-mints are trusted, this cannot mis-deliver across
+//!    recipients or be poisoned by a token an attacker transfers into the
+//!    facilitator wallet.
 //!
 //! The store is process-local (single ECS task) and intentionally simple: an
 //! in-memory map swept lazily on access. Terminal jobs (`Done`/`Failed`) live
@@ -168,14 +173,6 @@ fn sweep(inner: &mut Inner) {
         .retain(|_, r| t.saturating_sub(r.updated_at) < STRANDED_RECORD_TTL_SECONDS);
 }
 
-/// Whether an in-flight key (`network|agentUri|recipient`) carries a non-empty
-/// recipient segment. Addresses contain no `|`, so the final segment is the
-/// recipient; an empty recipient means the NFT staying with the facilitator is
-/// by-design (not stranded).
-fn key_has_recipient(key: &str) -> bool {
-    key.rsplit('|').next().map_or(false, |r| !r.is_empty())
-}
-
 /// Compute the in-flight de-dup key. Returns `None` when there is nothing
 /// meaningful to de-dup on (anonymous mint with neither `agentUri` nor
 /// `recipient`) — such requests each get their own job.
@@ -257,7 +254,6 @@ pub fn finalize_from_response(job_id: &str, resp: &RegisterAgentResponse) {
     };
 
     let mut g = STORE.lock().unwrap();
-    let mut stranded_record: Option<(String, u64, Option<TransactionHash>)> = None;
     let released_key = {
         if let Some(j) = g.jobs.get_mut(job_id) {
             j.status = terminal;
@@ -275,23 +271,6 @@ pub fn finalize_from_response(job_id: &str, resp: &RegisterAgentResponse) {
             }
             j.error = resp.error.clone();
             j.updated_at = now();
-
-            // FAC-1 #2: mint landed (agentId known) but the transfer did not
-            // (no transfer tx) on a failed registration => the NFT is stranded in
-            // the facilitator wallet. Remember it keyed by this exact triple so a
-            // later retry for the SAME recipient+uri reclaims THIS token instead
-            // of minting a fresh one. Requires a recipient in the key.
-            if terminal == RegisterJobStatus::Failed && resp.transfer_transaction.is_none() {
-                if let (Some(k), Some(id)) = (
-                    j.key.clone(),
-                    resp.agent_id.as_ref().and_then(|s| s.parse::<u64>().ok()),
-                ) {
-                    if key_has_recipient(&k) {
-                        stranded_record = Some((k, id, resp.transaction.clone()));
-                    }
-                }
-            }
-
             j.key.clone()
         } else {
             None
@@ -299,16 +278,6 @@ pub fn finalize_from_response(job_id: &str, resp: &RegisterAgentResponse) {
     };
     if let Some(k) = released_key {
         g.inflight.remove(&k);
-    }
-    if let Some((k, agent_id, mint_tx)) = stranded_record {
-        g.stranded.insert(
-            k,
-            StrandedRecord {
-                agent_id,
-                mint_tx,
-                updated_at: now(),
-            },
-        );
     }
 }
 
@@ -319,9 +288,30 @@ pub fn get(job_id: &str) -> Option<RegisterJob> {
     g.jobs.get(job_id).cloned()
 }
 
+/// Record a stranded self-minted agent NFT (FAC-1 #2): a mint that landed but
+/// whose transfer to the recipient failed, so the NFT sits in the facilitator
+/// wallet. Keyed by the exact `network|agentUri|recipient` triple; a later retry
+/// for that key reclaims this token via [`get_stranded`]. The caller (the
+/// register handler) only records when the registration is genuinely recoverable
+/// (EVM recipient + non-empty agentURI), keeping recording and recovery
+/// symmetric. A repeated stranded mint for the same key overwrites the prior
+/// record (latest-wins).
+pub fn record_stranded(key: String, agent_id: u64, mint_tx: Option<TransactionHash>) {
+    let mut g = STORE.lock().unwrap();
+    g.stranded.insert(
+        key,
+        StrandedRecord {
+            agent_id,
+            mint_tx,
+            updated_at: now(),
+        },
+    );
+}
+
 /// Look up a stranded-NFT record for an in-flight key (FAC-1 #2). Non-consuming:
-/// the record is cleared explicitly by the handler on a successful recovery (or
-/// when it is found to be stale), so a transient failure keeps it for a retry.
+/// the record is cleared explicitly by the handler on a successful recovery, a
+/// stale record, or any successful delivery for the key, so a transient failure
+/// keeps it for a retry.
 pub fn get_stranded(key: &str) -> Option<Stranded> {
     let mut g = STORE.lock().unwrap();
     sweep(&mut g);
@@ -404,39 +394,41 @@ mod tests {
     }
 
     #[test]
-    fn stranded_recorded_on_failed_transfer_and_recoverable() {
+    fn stranded_record_roundtrip() {
         use crate::types::EvmAddress;
-        // A recipient-specified registration whose mint landed (agentId=77) but
-        // whose transfer failed (no transfer tx) must leave a recoverable record.
+        // The handler records a stranded self-mint (agentId=77) after a failed
+        // transfer; a retry reads it via get_stranded, then clears it on a
+        // successful delivery / stale record.
         let recipient = MixedAddress::Evm(EvmAddress(alloy::primitives::Address::from([0xAB; 20])));
-        let key = inflight_key(&Network::Base, "ipfs://strand", &Some(recipient.clone())).unwrap();
-        let job_id = match begin(Network::Base, Some(key.clone())) {
-            BeginOutcome::Started(id) => id,
-            _ => unreachable!(),
-        };
-        let failed = RegisterAgentResponse {
-            success: true,
-            agent_id: Some("77".to_string()),
-            transaction: None,
-            transfer_transaction: None,
-            owner: Some(recipient),
-            error: Some("registered but transfer failed".to_string()),
-            network: Network::Base,
-        };
-        finalize_from_response(&job_id, &failed);
-
-        let stranded = get_stranded(&key).expect("stranded record present");
-        assert_eq!(stranded.agent_id, 77);
-        // Recovery consumes the record explicitly.
+        let key = inflight_key(&Network::Base, "ipfs://strand", &Some(recipient)).unwrap();
+        assert!(get_stranded(&key).is_none());
+        record_stranded(key.clone(), 77, None);
+        assert_eq!(get_stranded(&key).unwrap().agent_id, 77);
         clear_stranded(&key);
         assert!(get_stranded(&key).is_none());
     }
 
     #[test]
-    fn no_stranded_record_without_recipient() {
-        // A recipient-less registration retains its NFT by design, so a failed
-        // finalize must NOT create a stranded record.
-        let key = inflight_key(&Network::Base, "ipfs://norecip", &None).unwrap();
+    fn record_stranded_latest_wins() {
+        // A repeated stranded mint for the same key overwrites the prior record
+        // (FAC-1 #1 double-fail case: recover the most-recent stranded token).
+        use crate::types::EvmAddress;
+        let recipient = MixedAddress::Evm(EvmAddress(alloy::primitives::Address::from([0xCD; 20])));
+        let key = inflight_key(&Network::Base, "ipfs://strand2", &Some(recipient)).unwrap();
+        record_stranded(key.clone(), 5, None);
+        record_stranded(key.clone(), 9, None);
+        assert_eq!(get_stranded(&key).unwrap().agent_id, 9);
+        clear_stranded(&key);
+    }
+
+    #[test]
+    fn finalize_does_not_record_stranded() {
+        // Recording moved to the handler (gated on the exact recovery
+        // preconditions), so finalize must never create a stranded record itself
+        // — this is what keeps recording and recovery symmetric (FAC-1 #2).
+        use crate::types::EvmAddress;
+        let recipient = MixedAddress::Evm(EvmAddress(alloy::primitives::Address::from([0xEF; 20])));
+        let key = inflight_key(&Network::Base, "ipfs://nofin", &Some(recipient.clone())).unwrap();
         let job_id = match begin(Network::Base, Some(key.clone())) {
             BeginOutcome::Started(id) => id,
             _ => unreachable!(),
@@ -446,7 +438,7 @@ mod tests {
             agent_id: Some("88".to_string()),
             transaction: None,
             transfer_transaction: None,
-            owner: None,
+            owner: Some(recipient),
             error: Some("registered but transfer failed".to_string()),
             network: Network::Base,
         };

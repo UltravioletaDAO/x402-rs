@@ -1,5 +1,35 @@
 # Changelog
 
+## [1.49.1] - 2026-07-09
+
+### Reliability — ERC-8004 `/register` stranded-record hygiene (FAC-1 #2 follow-ups)
+
+Closes two low-severity record-keeping asymmetries in the v1.49.0 stranded-NFT
+recovery, surfaced by the pre-deploy adversarial review. No change to the safety
+model; purely tightens when a recovery record is created and cleared.
+
+- **Symmetric record/recover key.** Recording a stranded self-mint and recovering
+  it now share a single precondition, computed once as `recovery_key` in the
+  register handler: it is `Some` only when a retry could actually reclaim the
+  token (EVM recipient **and** non-empty, trimmed `agentURI`). Previously the
+  record was written from `finalize_from_response` whenever the key carried a
+  recipient, so an **empty-`agentURI`** (or non-EVM-recipient) registration could
+  leave a record that the recovery path — gated on a non-empty URI — could never
+  consume. Recording moved out of `finalize` into the handler's transfer-failure
+  branch; `finalize` is back to job-status + in-flight-lock release only.
+- **Clear on successful delivery.** Any successful transfer to the recipient now
+  `clear_stranded`s the key. This removes the dangling record left when a
+  transient recovery failure fell through to a fresh mint that then delivered
+  successfully (after which the idempotency short-circuit would never revisit the
+  key), so a record can no longer outlive the delivery it tracked. A repeated
+  stranded mint for the same key overwrites the prior record (latest-wins).
+
+Files: `src/handlers.rs`, `src/erc8004/register_jobs.rs` (new `record_stranded`;
+removed the `finalize`-side recording and `key_has_recipient`). Still gated by
+`ENABLE_REGISTER_RECOVERY` (default ON). Remaining documented residual: an NFT
+orphaned in the facilitator's own wallet by a mid-flow process restart is
+recoverable only out-of-band.
+
 ## [1.49.0] - 2026-07-09
 
 ### Reliability — ERC-8004 `/register` atomicity + a fund-safety fix (FACILITATOR security handoff FAC-1)

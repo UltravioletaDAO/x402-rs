@@ -4474,6 +4474,19 @@ where
         }
     };
 
+    // The stranded-NFT recovery key for this registration (FAC-1 #2). It is
+    // `Some` ONLY when a later retry could actually reclaim a stranded token —
+    // i.e. an EVM recipient and a non-empty (trimmed) agentURI — so recording a
+    // stranded NFT (on transfer failure) and recovering it (on retry) share this
+    // exact precondition and can never drift: we never record what recovery
+    // could not consume, and never orphan a record after a successful delivery.
+    let recovery_key: Option<String> = match &recipient {
+        Some(MixedAddress::Evm(_)) if !agent_uri.trim().is_empty() => {
+            register_jobs::inflight_key(&network, &agent_uri, &recipient)
+        }
+        _ => None,
+    };
+
     // ── Idempotency check: if recipient already owns an agent, return it ──
     // Uses ownerOf() iteration — works on ALL chains including SKALE which lacks
     // ERC-721 Enumerable and limits eth_getLogs to 2000 blocks.
@@ -4537,60 +4550,60 @@ where
     // scan and thus no planted-token poisoning and no cross-recipient
     // mis-delivery. It costs zero extra RPC on the happy path — the on-chain
     // view calls run only when a stranded record actually exists for this key.
-    if register_recovery_enabled() && !agent_uri.trim().is_empty() {
-        if let Some(MixedAddress::Evm(ref recip)) = recipient {
+    if register_recovery_enabled() {
+        if let (Some(key), Some(MixedAddress::Evm(ref recip))) = (&recovery_key, &recipient) {
             let recipient_address = recip.0;
-            if let Some(key) = register_jobs::inflight_key(&network, &agent_uri, &recipient) {
-                if let Some(stranded) = register_jobs::get_stranded(&key) {
-                    info!(
-                        network = %network,
-                        agent_id = stranded.agent_id,
-                        recipient = %recipient_address,
-                        "Found a stranded agent NFT for this key; attempting recovery instead of minting"
-                    );
-                    match try_recover_stranded_nft(
-                        provider,
-                        contracts.identity_registry,
-                        facilitator_address,
-                        recipient_address,
-                        stranded.agent_id,
-                        &agent_uri,
-                        network,
-                    )
-                    .await
-                    {
-                        StrandedRecovery::Recovered(transfer_tx) => {
-                            register_jobs::clear_stranded(&key);
-                            info!(
-                                network = %network,
-                                agent_id = stranded.agent_id,
-                                recipient = %recipient_address,
-                                "Recovered stranded agent NFT to recipient (no new mint)"
-                            );
-                            return (
-                                StatusCode::OK,
-                                RegisterAgentResponse {
-                                    success: true,
-                                    agent_id: Some(stranded.agent_id.to_string()),
-                                    transaction: stranded.mint_tx.clone(),
-                                    transfer_transaction: Some(transfer_tx),
-                                    owner: recipient.clone(),
-                                    error: None,
-                                    network,
-                                },
-                            );
-                        }
-                        StrandedRecovery::Gone => {
-                            // The token is no longer facilitator-held (moved) or
-                            // its on-chain URI does not match: the record is
-                            // stale. Drop it and fall through to a fresh mint.
-                            register_jobs::clear_stranded(&key);
-                        }
-                        StrandedRecovery::Transient => {
-                            // A transient RPC/transfer error: keep the record for
-                            // a later retry, but still mint now so the caller
-                            // gets an identity on this call.
-                        }
+            if let Some(stranded) = register_jobs::get_stranded(key) {
+                info!(
+                    network = %network,
+                    agent_id = stranded.agent_id,
+                    recipient = %recipient_address,
+                    "Found a stranded agent NFT for this key; attempting recovery instead of minting"
+                );
+                match try_recover_stranded_nft(
+                    provider,
+                    contracts.identity_registry,
+                    facilitator_address,
+                    recipient_address,
+                    stranded.agent_id,
+                    &agent_uri,
+                    network,
+                )
+                .await
+                {
+                    StrandedRecovery::Recovered(transfer_tx) => {
+                        register_jobs::clear_stranded(key);
+                        info!(
+                            network = %network,
+                            agent_id = stranded.agent_id,
+                            recipient = %recipient_address,
+                            "Recovered stranded agent NFT to recipient (no new mint)"
+                        );
+                        return (
+                            StatusCode::OK,
+                            RegisterAgentResponse {
+                                success: true,
+                                agent_id: Some(stranded.agent_id.to_string()),
+                                transaction: stranded.mint_tx.clone(),
+                                transfer_transaction: Some(transfer_tx),
+                                owner: recipient.clone(),
+                                error: None,
+                                network,
+                            },
+                        );
+                    }
+                    StrandedRecovery::Gone => {
+                        // The token is no longer facilitator-held (moved) or its
+                        // on-chain URI does not match: the record is stale. Drop
+                        // it and fall through to a fresh mint.
+                        register_jobs::clear_stranded(key);
+                    }
+                    StrandedRecovery::Transient => {
+                        // A transient RPC/transfer error: keep the record for a
+                        // later retry, but still mint now so the caller gets an
+                        // identity on this call. If that fresh mint then delivers
+                        // successfully, the transfer path clears this record
+                        // (FAC-1 #1) so it can't dangle past the delivery.
                     }
                 }
             }
@@ -4841,9 +4854,32 @@ where
                 );
                 transfer_tx = Some(tx);
                 final_owner = recipient.clone();
+                // FAC-1 #1: a successful delivery clears any stranded record for
+                // this key, so a transient-recovery-then-fresh-mint success can't
+                // leave a dangling record pointing at an orphaned self-mint that
+                // the idempotency short-circuit would never revisit.
+                if let Some(k) = &recovery_key {
+                    register_jobs::clear_stranded(k);
+                }
             }
             Err(e) => {
                 error!(error = %e, "Transfer failed - agent registered but NOT transferred");
+                // FAC-1 #2: remember the stranded self-mint keyed by the exact
+                // triple so a later retry for this recipient+uri reclaims THIS
+                // token instead of minting a fresh one. `recovery_key` is `Some`
+                // only when recovery could consume it (EVM recipient + non-empty
+                // agentURI). Gated on the same kill-switch as the recovery read
+                // so we never write a record recovery is disabled from consuming;
+                // the ungated success-path clear still reaps any leftover record.
+                if register_recovery_enabled() {
+                    if let Some(k) = &recovery_key {
+                        register_jobs::record_stranded(
+                            k.clone(),
+                            agent_id,
+                            Some(crate::types::TransactionHash::Evm(reg_tx_hash.0)),
+                        );
+                    }
+                }
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     RegisterAgentResponse {

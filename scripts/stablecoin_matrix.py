@@ -50,7 +50,7 @@ def parse_network_rs():
                 continue
 
             # Only include known stablecoins
-            if token in ['USDC', 'EURC', 'AUSD', 'PYUSD', 'USDT', 'CUSD']:
+            if token in ['USDC', 'EURC', 'AUSD', 'PYUSD', 'USDT', 'CUSD', 'USDG']:
                 matrix[network].add(token)
                 stablecoins.add(token)
                 networks.add(network)

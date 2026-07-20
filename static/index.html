@@ -511,6 +511,16 @@
             box-shadow: 0 8px 24px rgba(255, 238, 218, 0.3);
         }
 
+        .network-badge.robinhood {
+            border-color: #CCFF00;
+            box-shadow: 0 0 20px rgba(204, 255, 0, 0.2);
+        }
+
+        .network-badge.robinhood:hover {
+            border-color: #CCFF00;
+            box-shadow: 0 8px 24px rgba(204, 255, 0, 0.3);
+        }
+
         .network-badge.zama {
             border-color: #ffcc00;
             box-shadow: 0 0 20px rgba(255, 204, 0, 0.2);
@@ -1096,6 +1106,10 @@
             border-color: rgba(80, 175, 149, 0.3);
         }
 
+        .token-pill.usdg {
+            border-color: rgba(204, 255, 0, 0.3);
+        }
+
         .token-pill:hover {
             transform: scale(1.15);
             filter: brightness(1.2);
@@ -1491,6 +1505,20 @@
                             <div style="font-size: 0.7rem; color: var(--text-muted);">ETH Balance</div>
                             <div data-tokens="scroll-mainnet"></div>
                         </div>
+                        <div class="network-badge robinhood"
+                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
+                            onclick="window.open('https://robinhoodchain.blockscout.com/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
+                            <div style="display: flex; align-items: center; gap: 0.75rem;">
+                                <img src="/robinhood.png" alt="Robinhood Chain" style="width: 32px; height: 32px; object-fit: contain;">
+                                <span style="font-weight: 700;">Robinhood Chain</span>
+                            </div>
+                            <div class="balance-amount" data-balance="robinhood-mainnet"
+                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
+                                Loading...
+                            </div>
+                            <div style="font-size: 0.7rem; color: var(--text-muted);">ETH Balance</div>
+                            <div data-tokens="robinhood-mainnet"></div>
+                        </div>
 
                     </div>
                 </div>
@@ -1742,6 +1770,20 @@
                             </div>
                             <div style="font-size: 0.7rem; color: var(--text-muted);">CREDIT Balance</div>
                             <div data-tokens="skale-testnet"></div>
+                        </div>
+                        <div class="network-badge robinhood"
+                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
+                            onclick="window.open('https://explorer.testnet.chain.robinhood.com/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
+                            <div style="display: flex; align-items: center; gap: 0.75rem;">
+                                <img src="/robinhood.png" alt="Robinhood Chain Testnet" style="width: 32px; height: 32px; object-fit: contain;">
+                                <span style="font-weight: 700;">Robinhood Testnet</span>
+                            </div>
+                            <div class="balance-amount" data-balance="robinhood-testnet"
+                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
+                                Loading...
+                            </div>
+                            <div style="font-size: 0.7rem; color: var(--text-muted);">ETH Balance</div>
+                            <div data-tokens="robinhood-testnet"></div>
                         </div>
                         <!-- Zama FHE Special Card -->
                         <div class="network-badge zama"
@@ -2102,7 +2144,7 @@ result = <span class="code-function">verify_payment</span>(
                     </div>
                     <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; text-align: center;">
                         <span style="font-size: 1.25rem;">🌐</span>
-                        <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.5rem;" data-i18n="sdk.networks" data-live-count="payment-mainnets">20 mainnets supported</p>
+                        <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.5rem;" data-i18n="sdk.networks" data-live-count="payment-mainnets">21 mainnets supported</p>
                     </div>
                     <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; text-align: center;">
                         <span style="font-size: 1.25rem;">⚡</span>
@@ -2405,7 +2447,7 @@ result = <span class="code-function">verify_payment</span>(
                     <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.5rem;" data-i18n="upto.contractsLabel">Smart Contract (CREATE2, same on all EVM chains)</div>
                     <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;">
                         <span style="color: #3b82f6;">x402UptoPermit2Proxy:</span>
-                        <a href="https://basescan.org/address/0x4020633461b2895a48930Ff97eE8fCdE8E520002" target="_blank" style="color: var(--text); text-decoration: none;">0x4020...0002</a>
+                        <a href="https://basescan.org/address/0x4020A4f3b7b90ccA423B9fabCc0CE57C6C240002" target="_blank" style="color: var(--text); text-decoration: none;">0x4020...0002</a>
                     </div>
                     <div style="display: flex; gap: 0.5rem; justify-content: center; margin-top: 1rem;">
                         <a href="https://x402.org" target="_blank"
@@ -2750,7 +2792,7 @@ result = <span class="code-function">verify_payment</span>(
                 "features.instant.description": "Complete payment verification and on-chain settlement in ~2-3 seconds end-to-end.",
                 "features.reputation.title": "On-Chain Reputation",
                 "features.reputation.description": "ERC-8004 Trustless Agents with identity, reputation, and validation registries across 20 networks (EVM + Solana).",
-                "sdk.networks": "20 mainnets supported",
+                "sdk.networks": "21 mainnets supported",
                 "erc8004.badge": "ERC-8004 Standard",
                 "erc8004.title": "Trustless Agent Reputation",
                 "erc8004.description": "On-chain identity, reputation, and validation for AI agents. Rate service quality, verify agent identities, and build trust across the agentic economy \u2014 all verifiable on-chain through ERC-8004 registries.",
@@ -2846,7 +2888,7 @@ result = <span class="code-function">verify_payment</span>(
                 "features.instant.description": "Verificaci\u00f3n y liquidaci\u00f3n completa de pagos en ~2-3 segundos de extremo a extremo.",
                 "features.reputation.title": "Reputaci\u00f3n On-Chain",
                 "features.reputation.description": "Agentes sin confianza ERC-8004 con registros de identidad, reputaci\u00f3n y validaci\u00f3n en 20 redes (EVM + Solana).",
-                "sdk.networks": "20 mainnets soportadas",
+                "sdk.networks": "21 mainnets soportadas",
                 "erc8004.badge": "Est\u00e1ndar ERC-8004",
                 "erc8004.title": "Reputaci\u00f3n de Agentes Sin Confianza",
                 "erc8004.description": "Identidad, reputaci\u00f3n y validaci\u00f3n on-chain para agentes IA. Califica la calidad del servicio, verifica identidades de agentes y construye confianza en la econom\u00eda ag\u00e9ntica \u2014 todo verificable on-chain a trav\u00e9s de los registros ERC-8004.",
@@ -2946,7 +2988,7 @@ result = <span class="code-function">verify_payment</span>(
 
             // Re-apply the live /supported count after every (re)render so it
             // survives EN/ES language switches. The translation strings carry a
-            // "20" fallback; this overwrites it with the real number on-chain.
+            // "21" fallback; this overwrites it with the real number on-chain.
             applyCanonicalCounts();
         }
 
@@ -2983,8 +3025,8 @@ result = <span class="code-function">verify_payment</span>(
                 if (n > 0) {
                     window.__paymentMainnets = n;
                     applyCanonicalCounts();
-                    if (n !== 20) {
-                        console.warn('[canonical] /supported reports ' + n + ' mainnet payment networks but the landing fallback is 20. Update the landing and run scripts/verify_landing_canonical.py.');
+                    if (n !== 21) {
+                        console.warn('[canonical] /supported reports ' + n + ' mainnet payment networks but the landing fallback is 21. Update the landing and run scripts/verify_landing_canonical.py.');
                     }
                 }
             }).catch(() => { /* keep the hardcoded fallback on network error */ });
@@ -3089,6 +3131,8 @@ result = <span class="code-function">verify_payment</span>(
             'skale-mainnet': { rpc: 'https://skale-base.skalenodes.com/v1/base', addr: WALLET_MAINNET, type: 'evm' },
             'skale-testnet': { rpc: 'https://base-sepolia-testnet.skalenodes.com/v1/jubilant-horrible-ancha', addr: WALLET_TESTNET, type: 'evm' },
             'scroll-mainnet': { rpcs: ['https://scroll.drpc.org', 'https://1rpc.io/scroll', 'https://rpc.scroll.io'], addr: WALLET_MAINNET, type: 'evm' },
+            'robinhood-mainnet': { rpc: 'https://rpc.mainnet.chain.robinhood.com', addr: WALLET_MAINNET, type: 'evm' },
+            'robinhood-testnet': { rpc: 'https://rpc.testnet.chain.robinhood.com', addr: WALLET_TESTNET, type: 'evm' },
             'near-mainnet': { rpcs: ['https://free.rpc.fastnear.com', 'https://near.lava.build'], addr: NEAR_MAINNET, type: 'near' },
             'near-testnet': { rpcs: ['https://test.rpc.fastnear.com', 'https://near-testnet.drpc.org'], addr: NEAR_TESTNET, type: 'near' },
             'stellar-mainnet': { api: 'https://horizon.stellar.org/accounts/' + STELLAR_MAINNET, addr: STELLAR_MAINNET, type: 'stellar' },
@@ -3415,6 +3459,8 @@ result = <span class="code-function">verify_payment</span>(
             'skale-mainnet': ['usdc'],
             'skale-testnet': ['usdc'],
             'scroll-mainnet': ['usdc'],
+            'robinhood-mainnet': ['usdg'],
+            'robinhood-testnet': ['usdg'],
         };
 
         const TOKEN_INFO = {
@@ -3423,6 +3469,7 @@ result = <span class="code-function">verify_payment</span>(
             'ausd': { name: 'AUSD', decimals: 6, logo: '/ausd.png' },
             'pyusd': { name: 'PYUSD', decimals: 6, logo: '/pyusd.png' },
             'usdt': { name: 'USDT', decimals: 6, logo: '/usdt.png' },
+            'usdg': { name: 'USDG', decimals: 6, logo: '/usdg.png' },
         };
 
         // Display supported tokens for each network card

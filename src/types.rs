@@ -161,6 +161,10 @@ pub enum TokenType {
     /// Tether USD (USDT0) by Tether (6 decimals)
     #[serde(rename = "usdt")]
     Usdt,
+    /// Global Dollar by Paxos (6 decimals). Primary settlement token on
+    /// Robinhood Chain, which has no native Circle USDC.
+    #[serde(rename = "usdg")]
+    Usdg,
     /// Ripple USD stablecoin on XRPL (6 decimals). XRPL-only; no EVM deployment.
     #[serde(rename = "rlusd")]
     Rlusd,
@@ -181,6 +185,7 @@ impl TokenType {
             TokenType::Ausd => 6,
             TokenType::Pyusd => 6,
             TokenType::Usdt => 6,
+            TokenType::Usdg => 6,
             TokenType::Rlusd => 6,
             TokenType::Xrp => 6, // 1 XRP = 1_000_000 drops
         }
@@ -195,6 +200,7 @@ impl TokenType {
             TokenType::Ausd => "AUSD",
             TokenType::Pyusd => "PYUSD",
             TokenType::Usdt => "USDT",
+            TokenType::Usdg => "USDG",
             TokenType::Rlusd => "RLUSD",
             TokenType::Xrp => "XRP",
         }
@@ -209,6 +215,7 @@ impl TokenType {
             TokenType::Ausd => "Agora USD",
             TokenType::Pyusd => "PayPal USD",
             TokenType::Usdt => "Tether USD",
+            TokenType::Usdg => "Global Dollar",
             TokenType::Rlusd => "Ripple USD",
             TokenType::Xrp => "XRP",
         }
@@ -223,6 +230,7 @@ impl TokenType {
             TokenType::Ausd => "$",
             TokenType::Pyusd => "$",
             TokenType::Usdt => "$",
+            TokenType::Usdg => "$",
             TokenType::Rlusd => "$",
             TokenType::Xrp => "XRP",
         }
@@ -237,8 +245,9 @@ impl TokenType {
             TokenType::Ausd => true,
             TokenType::Pyusd => true,
             TokenType::Usdt => true,
-            TokenType::Rlusd => true,  // USD-backed stablecoin
-            TokenType::Xrp => false,   // Native digital asset, not fiat-backed
+            TokenType::Usdg => true,
+            TokenType::Rlusd => true, // USD-backed stablecoin
+            TokenType::Xrp => false,  // Native digital asset, not fiat-backed
         }
     }
 
@@ -251,6 +260,7 @@ impl TokenType {
             TokenType::Ausd,
             TokenType::Pyusd,
             TokenType::Usdt,
+            TokenType::Usdg,
         ]
     }
 
@@ -268,6 +278,10 @@ impl TokenType {
             // Note: USDT0 uses different names per network - "USD₮0" (Arbitrum/Optimism) or "Tether USD" (Celo)
             // The network-specific name is stored in TokenDeployment.eip712
             TokenType::Usdt => "USD\u{20AE}0", // USD₮0 (Unicode TUGRIK SIGN)
+            // USDG's on-chain version() getter reverts (Paxos facet dispatcher),
+            // so the static domain below is the only reliable source: verified
+            // against DOMAIN_SEPARATOR() on Robinhood Chain mainnet and testnet.
+            TokenType::Usdg => "Global Dollar",
             // XRPL tokens do not use EIP-712 (no EVM contract); these are sentinel values.
             TokenType::Rlusd => "",
             TokenType::Xrp => "",
@@ -286,6 +300,7 @@ impl TokenType {
             TokenType::Ausd => "1",
             TokenType::Pyusd => "1",
             TokenType::Usdt => "1",
+            TokenType::Usdg => "1",
             // XRPL tokens do not use EIP-712.
             TokenType::Rlusd => "",
             TokenType::Xrp => "",
@@ -320,6 +335,7 @@ impl FromStr for TokenType {
             "ausd" => Ok(TokenType::Ausd),
             "pyusd" => Ok(TokenType::Pyusd),
             "usdt" => Ok(TokenType::Usdt),
+            "usdg" => Ok(TokenType::Usdg),
             "rlusd" => Ok(TokenType::Rlusd),
             "xrp" => Ok(TokenType::Xrp),
             _ => Err(TokenTypeParseError(s.to_string())),
@@ -329,7 +345,7 @@ impl FromStr for TokenType {
 
 /// Error returned when parsing an invalid token type string.
 #[derive(Debug, Clone, thiserror::Error)]
-#[error("Unknown token type: {0}. Supported: usdc, eurc, ausd, pyusd, usdt, rlusd, xrp")]
+#[error("Unknown token type: {0}. Supported: usdc, eurc, ausd, pyusd, usdt, usdg, rlusd, xrp")]
 pub struct TokenTypeParseError(pub String);
 
 /// Represents an EVM signature used in EIP-712 typed data.
@@ -2082,12 +2098,13 @@ mod tests {
     #[test]
     fn test_token_type_all() {
         let all = TokenType::all();
-        assert_eq!(all.len(), 5);
+        assert_eq!(all.len(), 6);
         assert!(all.contains(&TokenType::Usdc));
         assert!(all.contains(&TokenType::Eurc));
         assert!(all.contains(&TokenType::Ausd));
         assert!(all.contains(&TokenType::Pyusd));
         assert!(all.contains(&TokenType::Usdt));
+        assert!(all.contains(&TokenType::Usdg));
     }
 
     #[test]

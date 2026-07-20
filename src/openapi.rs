@@ -26,10 +26,10 @@ The x402 facilitator enables gasless micropayments across multiple blockchain ne
 ## Supported Networks
 
 ### EVM Chains (Mainnet)
-Ethereum, Base, Polygon, Optimism, Avalanche, Arbitrum, Celo, HyperEVM, Unichain, Monad, Scroll, BSC, SKALE Base
+Ethereum, Base, Polygon, Optimism, Avalanche, Arbitrum, Celo, HyperEVM, Unichain, Monad, Scroll, Robinhood Chain (settles Paxos USDG - no native USDC), BSC, SKALE Base
 
 ### EVM Chains (Testnet)
-Ethereum Sepolia, Base Sepolia, Polygon Amoy, Optimism Sepolia, Avalanche Fuji, Arbitrum Sepolia, Celo Sepolia, HyperEVM Testnet, Unichain Sepolia, SKALE Base Sepolia, Monad Testnet
+Ethereum Sepolia, Base Sepolia, Polygon Amoy, Optimism Sepolia, Avalanche Fuji, Arbitrum Sepolia, Celo Sepolia, HyperEVM Testnet, Unichain Sepolia, SKALE Base Sepolia, Monad Testnet, Robinhood Chain Testnet
 
 ### SVM Chains (Solana Virtual Machine)
 - **Solana**: Mainnet (`solana`) and Devnet (`solana-devnet`)
@@ -497,7 +497,7 @@ Returns all supported payment kinds (network + scheme + version combinations).
 - `escrow` - x402r PaymentOperator escrow (v2 only, CAIP-2 networks)
 - `fhe_transfer` - FHE encrypted transfer via Zama (v1 and v2)
 
-**Upto networks:** All EVM networks that support the `exact` scheme also support `upto` via the x402UptoPermit2Proxy contract (Permit2-based, CREATE2 address `0x4020633461b2895a48930Ff97eE8fCdE8E520002`).
+**Upto networks:** All EVM networks that support the `exact` scheme also support `upto` via the x402UptoPermit2Proxy contract (Permit2-based, canonical CREATE2 address `0x4020A4f3b7b90ccA423B9fabCc0CE57C6C240002`, per the upstream x402 spec and @x402/evm SDK).
 
 **Escrow networks (9 total):** Base, Ethereum, Polygon, Arbitrum, Celo, Monad, Avalanche, Base Sepolia, Ethereum Sepolia.
 Only networks with a deployed PaymentOperator appear in the response.

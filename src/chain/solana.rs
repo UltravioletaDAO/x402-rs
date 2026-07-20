@@ -130,6 +130,8 @@ impl TryFrom<Network> for SolanaChain {
             Network::SkaleBase => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::SkaleBaseSepolia => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::Scroll => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
+            Network::Robinhood => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
+            Network::RobinhoodTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::Near => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::NearTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::Stellar => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
@@ -1982,8 +1984,7 @@ impl Facilitator for SolanaProvider {
             // SECURITY (audit 03): settlement-account scheme is opt-in and OFF by default.
             if !is_settlement_account_enabled() {
                 return Err(FacilitatorLocalError::Other(
-                    "settlement_account_disabled: ENABLE_SETTLEMENT_ACCOUNT=false"
-                        .to_string(),
+                    "settlement_account_disabled: ENABLE_SETTLEMENT_ACCOUNT=false".to_string(),
                 ));
             }
             let result = self
@@ -2015,8 +2016,7 @@ impl Facilitator for SolanaProvider {
             // SECURITY (audit 03): settlement-account scheme is opt-in and OFF by default.
             if !is_settlement_account_enabled() {
                 return Err(FacilitatorLocalError::Other(
-                    "settlement_account_disabled: ENABLE_SETTLEMENT_ACCOUNT=false"
-                        .to_string(),
+                    "settlement_account_disabled: ENABLE_SETTLEMENT_ACCOUNT=false".to_string(),
                 ));
             }
             return self

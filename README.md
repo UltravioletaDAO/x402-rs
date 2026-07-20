@@ -30,7 +30,7 @@ Includes [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) on-chain reputation
 
 > **Note**: Network counts may be outdated. Verify with: `curl -s https://facilitator.ultravioletadao.xyz/supported | jq '[.kinds[].network] | unique | map(select(contains("testnet") or contains("sepolia") or contains("devnet") or contains("fuji") or contains("amoy") or contains("alfajores") | not)) | length'`
 
-### Mainnets (20)
+### Mainnets (21)
 
 | Network | Chain ID | Token | Explorer |
 |---------|----------|-------|----------|
@@ -47,6 +47,7 @@ Includes [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) on-chain reputation
 | **BSC** | 56 | USDC | [bscscan.com](https://bscscan.com) |
 | **SKALE Base** | 1187947933 | USDC.e | [skale-base-explorer](https://skale-base-explorer.skalenodes.com) |
 | **Scroll** | 534352 | USDC | [scrollscan.com](https://scrollscan.com) |
+| **Robinhood Chain** | 4663 | USDG | [robinhoodchain.blockscout.com](https://robinhoodchain.blockscout.com) |
 | **Sui** | - | USDC | [suiscan.xyz](https://suiscan.xyz) |
 | **Solana** | - | USDC, AUSD | [solscan.io](https://solscan.io) |
 | **Fogo** | - | USDC | [fogoscan.com](https://fogoscan.com) |
@@ -55,7 +56,7 @@ Includes [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) on-chain reputation
 | **Algorand** | - | USDC | [allo.info](https://allo.info) |
 | **XRPL** | - | XRP, USDC, RLUSD | [livenet.xrpl.org](https://livenet.xrpl.org) |
 
-### Testnets (17)
+### Testnets (18)
 
 | Network | Chain ID | Faucet |
 |---------|----------|--------|
@@ -76,6 +77,7 @@ Includes [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) on-chain reputation
 | Algorand Testnet | - | [dispenser.testnet.aws.algodev.network](https://dispenser.testnet.aws.algodev.network) |
 | Sui Testnet | - | [suifaucet.com](https://suifaucet.com) |
 | Monad Testnet | 10143 | [monad.xyz](https://monad.xyz) |
+| Robinhood Chain Testnet | 46630 | [faucet.testnet.chain.robinhood.com](https://faucet.testnet.chain.robinhood.com) |
 
 ### Supported Stablecoins
 
@@ -83,38 +85,40 @@ Includes [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) on-chain reputation
 
 | Token | Networks |
 |-------|----------|
-| **USDC** | All 20 payment networks |
+| **USDC** | All payment networks except Robinhood Chain (no Circle USDC there) |
 | **AUSD** | Ethereum, Polygon, Arbitrum, Avalanche, Monad, BSC, Solana, Sui |
 | **EURC** | Ethereum, Base, Avalanche |
 | **USDT** | Arbitrum, Celo, Optimism, Monad |
 | **PYUSD** | Ethereum |
+| **USDG** | Robinhood Chain (Paxos Global Dollar, EIP-712 domain "Global Dollar" v1) |
 | **RLUSD** | XRPL |
 | **XRP** | XRPL (native) |
 
 **Full Matrix:**
 
-| Network | USDC | AUSD | EURC | USDT | PYUSD |
-|---------|:----:|:----:|:----:|:----:|:-----:|
-| Ethereum | Y | Y | Y | - | Y |
-| Base | Y | - | Y | - | - |
-| Arbitrum | Y | Y | - | Y | - |
-| Optimism | Y | - | - | Y | - |
-| Polygon | Y | Y | - | - | - |
-| Avalanche | Y | Y | Y | - | - |
-| Celo | Y | - | - | Y | - |
-| BSC | Y | Y | - | - | - |
-| Monad | Y | Y | - | Y | - |
-| HyperEVM | Y | - | - | - | - |
-| Unichain | Y | - | - | - | - |
-| Scroll | Y | - | - | - | - |
-| SKALE Base | Y | - | - | - | - |
-| Solana | Y | Y | - | - | - |
-| Sui | Y | Y | - | - | - |
-| Fogo | Y | - | - | - | - |
-| NEAR | Y | - | - | - | - |
-| Stellar | Y | - | - | - | - |
-| Algorand | Y | - | - | - | - |
-| XRPL | Y | - | - | - | - |
+| Network | USDC | AUSD | EURC | USDT | PYUSD | USDG |
+|---------|:----:|:----:|:----:|:----:|:-----:|:----:|
+| Ethereum | Y | Y | Y | - | Y | - |
+| Base | Y | - | Y | - | - | - |
+| Arbitrum | Y | Y | - | Y | - | - |
+| Optimism | Y | - | - | Y | - | - |
+| Polygon | Y | Y | - | - | - | - |
+| Avalanche | Y | Y | Y | - | - | - |
+| Celo | Y | - | - | Y | - | - |
+| BSC | Y | Y | - | - | - | - |
+| Monad | Y | Y | - | Y | - | - |
+| HyperEVM | Y | - | - | - | - | - |
+| Unichain | Y | - | - | - | - | - |
+| Scroll | Y | - | - | - | - | - |
+| Robinhood Chain | - | - | - | - | - | Y |
+| SKALE Base | Y | - | - | - | - | - |
+| Solana | Y | Y | - | - | - | - |
+| Sui | Y | Y | - | - | - | - |
+| Fogo | Y | - | - | - | - | - |
+| NEAR | Y | - | - | - | - | - |
+| Stellar | Y | - | - | - | - | - |
+| Algorand | Y | - | - | - | - | - |
+| XRPL | Y | - | - | - | - | - |
 
 > **XRPL note**: In addition to USDC (issued token), XRPL also supports **RLUSD** (issued token) and **native XRP**. These are not EIP-3009 tokens, so they are not tracked by `scripts/stablecoin_matrix.py` (which only enumerates EIP-3009 stablecoins). See `docs/plans/xrpl-native-x402-integration-plan.md`.
 

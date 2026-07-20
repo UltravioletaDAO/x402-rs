@@ -15,8 +15,19 @@ pub const PERMIT2_ADDRESS: Address =
     alloy::primitives::address!("0x000000000022D473030F116dDEE9F6B43aC78BA3");
 
 /// x402 UptoPermit2Proxy contract address (vanity-mined, same on all EVM chains via CREATE2).
+///
+/// This is the canonical address pinned by the upstream x402 spec
+/// (specs/schemes/upto/scheme_upto_evm.md) and exported by @x402/evm as
+/// `x402UptoPermit2ProxyAddress`. Deployed via Arachnid's deterministic
+/// deployment proxy (0x4e59b44847b379578588920cA78FbF26c0B4956C); bytecode
+/// verified byte-identical on Base, Ethereum, Arbitrum, World Chain, Monad,
+/// and Robinhood Chain (Sourcify match on Base, solc 0.8.28, Cancun).
+///
+/// NOTE: the previous value 0x4020633461b2895a48930Ff97eE8fCdE8E520002 had no
+/// code on ANY chain (miscopied at implementation time), which made every
+/// upto settlement target an empty address.
 pub const UPTO_PERMIT2_PROXY_ADDRESS: Address =
-    alloy::primitives::address!("0x4020633461b2895a48930Ff97eE8fCdE8E520002");
+    alloy::primitives::address!("0x4020A4f3b7b90ccA423B9fabCc0CE57C6C240002");
 
 // ============================================================================
 // Permit2 Wire Types (deserialized from JSON payload)

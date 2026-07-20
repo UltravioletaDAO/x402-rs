@@ -48,7 +48,7 @@ use crate::facilitator::Facilitator;
 use crate::from_env;
 use crate::network::{
     get_token_deployment, is_supported_asset, supported_tokens_for_network, AUSDDeployment,
-    EURCDeployment, Network, PYUSDDeployment, USDCDeployment, USDTDeployment,
+    EURCDeployment, Network, PYUSDDeployment, USDCDeployment, USDGDeployment, USDTDeployment,
 };
 use crate::timestamp::UnixTimestamp;
 use crate::types::{
@@ -157,6 +157,8 @@ impl TryFrom<Network> for EvmChain {
             Network::SkaleBase => Ok(EvmChain::new(value, 1187947933)),
             Network::SkaleBaseSepolia => Ok(EvmChain::new(value, 324705682)),
             Network::Scroll => Ok(EvmChain::new(value, 534352)),
+            Network::Robinhood => Ok(EvmChain::new(value, 4663)),
+            Network::RobinhoodTestnet => Ok(EvmChain::new(value, 46630)),
             Network::Near => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::NearTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::Stellar => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
@@ -622,16 +624,18 @@ impl FromEnvByNetworkBuild for EvmProvider {
             Network::SkaleBase => false, // SKALE does NOT support EIP-1559, uses legacy tx
             Network::SkaleBaseSepolia => false, // SKALE does NOT support EIP-1559, uses legacy tx
             Network::Scroll => true,     // Scroll zkEVM supports EIP-1559
-            Network::Near => false,      // NEAR is not an EVM chain
-            Network::NearTestnet => false, // NEAR is not an EVM chain
-            Network::Stellar => false,   // Stellar is not an EVM chain
+            Network::Robinhood => true,  // Arbitrum Orbit: type-2 txs accepted (tips no-op, FCFS)
+            Network::RobinhoodTestnet => true,
+            Network::Near => false,           // NEAR is not an EVM chain
+            Network::NearTestnet => false,    // NEAR is not an EVM chain
+            Network::Stellar => false,        // Stellar is not an EVM chain
             Network::StellarTestnet => false, // Stellar is not an EVM chain
             #[cfg(feature = "xrpl")]
             Network::Xrpl => false, // XRPL is not an EVM chain
             #[cfg(feature = "xrpl")]
             Network::XrplTestnet => false, // XRPL is not an EVM chain
-            Network::Fogo => false,      // Fogo is a Solana network, not EVM
-            Network::FogoTestnet => false, // Fogo is a Solana network, not EVM
+            Network::Fogo => false,           // Fogo is a Solana network, not EVM
+            Network::FogoTestnet => false,    // Fogo is a Solana network, not EVM
             #[cfg(feature = "algorand")]
             Network::Algorand => false, // Algorand is not an EVM chain
             #[cfg(feature = "algorand")]
@@ -1492,6 +1496,17 @@ fn find_known_eip712_metadata(
         }
     }
 
+    // Check USDG (Global Dollar by Paxos). The static entry is mandatory here:
+    // USDG's on-chain version() getter reverts, so the RPC fallback in
+    // assert_domain can never resolve this token's domain.
+    if let Some(usdg) = USDGDeployment::by_network(network) {
+        if usdg.address() == asset_mixed {
+            if let Some(eip712) = &usdg.eip712 {
+                return Some((eip712.name.clone(), eip712.version.clone()));
+            }
+        }
+    }
+
     None
 }
 
@@ -2164,7 +2179,10 @@ mod tests {
     // CI test hang).
     async fn set_nonce(m: &PendingNonceManager, addr: alloy::primitives::Address, val: u64) {
         let lock = {
-            let rm = m.nonces.entry(addr).or_insert_with(|| Arc::new(Mutex::new(0)));
+            let rm = m
+                .nonces
+                .entry(addr)
+                .or_insert_with(|| Arc::new(Mutex::new(0)));
             Arc::clone(rm.value())
         };
         *lock.lock().await = val;

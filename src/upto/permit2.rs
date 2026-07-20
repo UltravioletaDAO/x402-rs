@@ -65,6 +65,12 @@ where
     let token = parse_address(&permit2_auth.permitted.token)?;
     let max_amount = parse_amount(&permit2_auth.permitted.amount)?;
 
+    // On-chain: the canonical proxy must actually exist on this chain.
+    // /supported advertises upto for every EVM network, but the CREATE2
+    // deployment is per-chain; without this guard the settlement simulation
+    // against a code-less address succeeds vacuously.
+    assert_proxy_deployed(evm_provider).await?;
+
     // On-chain: Check Permit2 allowance
     check_permit2_allowance(evm_provider, token, payer, max_amount).await?;
 
@@ -152,6 +158,11 @@ where
             amount: "0".to_string(),
         });
     }
+
+    // The canonical proxy must exist on this chain: a transaction to a
+    // code-less address succeeds without moving any tokens, which would
+    // report a fake successful settlement to the merchant.
+    assert_proxy_deployed(evm_provider).await?;
 
     // Execute the on-chain settlement
     let tx_hash = execute_settlement(evm_provider, &request, actual_amount).await?;
@@ -294,6 +305,31 @@ fn validate_offchain(request: &UptoRequest) -> Result<(), UptoError> {
 // ============================================================================
 // On-chain checks
 // ============================================================================
+
+/// Refuse to operate against a chain where the canonical upto proxy is not
+/// deployed.
+///
+/// Both `eth_call` and a real transaction against an address with no code
+/// succeed vacuously (empty return data, status=1), so without this guard
+/// verification would "pass" simulation and settlement would return
+/// `success=true` with a tx hash while transferring no tokens.
+async fn assert_proxy_deployed(provider: &EvmProvider) -> Result<(), UptoError> {
+    let code = provider
+        .inner()
+        .get_code_at(UPTO_PERMIT2_PROXY_ADDRESS)
+        .await
+        .map_err(|e| {
+            UptoError::ContractCall(crate::redact::scrub_urls(&format!(
+                "eth_getCode failed: {e}"
+            )))
+        })?;
+    if code.is_empty() {
+        return Err(UptoError::VerificationFailed(format!(
+            "x402UptoPermit2Proxy {UPTO_PERMIT2_PROXY_ADDRESS:#x} has no code on this network; the upto scheme is unavailable here until the CREATE2 deployment is replayed"
+        )));
+    }
+    Ok(())
+}
 
 /// Check that the payer has sufficient Permit2 allowance.
 async fn check_permit2_allowance(

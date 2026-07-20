@@ -802,6 +802,14 @@ resource "aws_ecs_task_definition" "facilitator" {
           name  = "RPC_URL_SCROLL"
           value = "https://rpc.scroll.io"
         },
+        {
+          name  = "RPC_URL_ROBINHOOD"
+          value = "https://rpc.mainnet.chain.robinhood.com"
+        },
+        {
+          name  = "RPC_URL_ROBINHOOD_TESTNET"
+          value = "https://rpc.testnet.chain.robinhood.com"
+        },
         # Discovery API (Bazaar) configuration
         {
           name  = "DISCOVERY_S3_BUCKET"

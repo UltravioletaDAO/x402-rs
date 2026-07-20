@@ -98,6 +98,10 @@ pub const ENV_RPC_SKALE_BASE_SEPOLIA: &str = "RPC_URL_SKALE_BASE_SEPOLIA";
 // Scroll RPC URL (zkEVM L2 on Ethereum)
 pub const ENV_RPC_SCROLL: &str = "RPC_URL_SCROLL";
 
+// Robinhood Chain RPC URLs (Arbitrum Orbit L2 on Ethereum)
+pub const ENV_RPC_ROBINHOOD: &str = "RPC_URL_ROBINHOOD";
+pub const ENV_RPC_ROBINHOOD_TESTNET: &str = "RPC_URL_ROBINHOOD_TESTNET";
+
 // Sui wallet private key environment variables
 #[cfg(feature = "sui")]
 pub const ENV_SUI_PRIVATE_KEY: &str = "SUI_PRIVATE_KEY";
@@ -154,6 +158,8 @@ pub fn rpc_env_name_from_network(network: Network) -> &'static str {
         Network::SkaleBase => ENV_RPC_SKALE_BASE,
         Network::SkaleBaseSepolia => ENV_RPC_SKALE_BASE_SEPOLIA,
         Network::Scroll => ENV_RPC_SCROLL,
+        Network::Robinhood => ENV_RPC_ROBINHOOD,
+        Network::RobinhoodTestnet => ENV_RPC_ROBINHOOD_TESTNET,
     }
 }
 
@@ -448,9 +454,9 @@ impl SignerType {
                 // Basic validation: XRPL family seeds start with 's'
                 // (classic 's...' secp256k1 or 'sEd...' ed25519).
                 if !seed.starts_with('s') {
-                    return Err(
-                        "Invalid XRPL seed format: must start with 's'".to_string().into(),
-                    );
+                    return Err("Invalid XRPL seed format: must start with 's'"
+                        .to_string()
+                        .into());
                 }
 
                 Ok(seed)

@@ -525,9 +525,7 @@ where
             #[cfg(feature = "xrpl")]
             ExactPaymentPayload::Xrpl(_xrpl_payload) => {
                 // XRPL pre-signed transactions: no compliance screening at this layer.
-                tracing::debug!(
-                    "XRPL payment compliance check: allowing transaction"
-                );
+                tracing::debug!("XRPL payment compliance check: allowing transaction");
                 Ok(())
             }
         }

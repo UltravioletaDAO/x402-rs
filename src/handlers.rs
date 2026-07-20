@@ -168,11 +168,13 @@ where
         .route("/sui.png", get(get_sui_logo))
         .route("/skale.png", get(get_skale_logo))
         .route("/scroll.png", get(get_scroll_logo))
+        .route("/robinhood.png", get(get_robinhood_logo))
         .route("/usdc.png", get(get_usdc_logo))
         .route("/usdt.png", get(get_usdt_logo))
         .route("/eurc.png", get(get_eurc_logo))
         .route("/ausd.png", get(get_ausd_logo))
         .route("/pyusd.png", get(get_pyusd_logo))
+        .route("/usdg.png", get(get_usdg_logo))
 }
 
 /// ERC-8004 gas-spending write routes, carved out so a strict rate limit can be
@@ -675,6 +677,16 @@ pub async fn get_scroll_logo() -> impl IntoResponse {
     )
 }
 
+/// `GET /robinhood.png`: Returns Robinhood Chain logo.
+pub async fn get_robinhood_logo() -> impl IntoResponse {
+    let bytes = include_bytes!("../static/robinhood.png");
+    (
+        StatusCode::OK,
+        [("content-type", "image/png")],
+        bytes.as_slice(),
+    )
+}
+
 /// `GET /usdc.png`: Returns USDC stablecoin logo.
 pub async fn get_usdc_logo() -> impl IntoResponse {
     let bytes = include_bytes!("../static/usdc.png");
@@ -718,6 +730,16 @@ pub async fn get_ausd_logo() -> impl IntoResponse {
 /// `GET /pyusd.png`: Returns PYUSD stablecoin logo.
 pub async fn get_pyusd_logo() -> impl IntoResponse {
     let bytes = include_bytes!("../static/pyusd.png");
+    (
+        StatusCode::OK,
+        [("content-type", "image/png")],
+        bytes.as_slice(),
+    )
+}
+
+/// `GET /usdg.png`: Returns USDG (Global Dollar) stablecoin logo.
+pub async fn get_usdg_logo() -> impl IntoResponse {
+    let bytes = include_bytes!("../static/usdg.png");
     (
         StatusCode::OK,
         [("content-type", "image/png")],

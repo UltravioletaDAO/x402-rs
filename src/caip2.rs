@@ -156,12 +156,12 @@ impl Caip2NetworkId {
                 // Reference must be a valid u32 network ID (0..=4294967295).
                 // XRPL mainnet=0, testnet=1. The u32 ceiling matches the XRPL
                 // protocol's NetworkID field (UInt32).
-                reference.parse::<u32>().map_err(|_| {
-                    Caip2ParseError::InvalidNetworkName {
+                reference
+                    .parse::<u32>()
+                    .map_err(|_| Caip2ParseError::InvalidNetworkName {
                         namespace: "xrpl".to_string(),
                         reference: reference.clone(),
-                    }
-                })?;
+                    })?;
             }
         }
 

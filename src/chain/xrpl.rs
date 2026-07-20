@@ -45,7 +45,9 @@ use xrpl::wallet::Wallet;
 use crate::chain::{FacilitatorLocalError, FromEnvByNetworkBuild, NetworkProviderOps};
 use crate::facilitator::Facilitator;
 use crate::from_env;
-use crate::network::{Network, USDCDeployment, RLUSD_XRPL, RLUSD_XRPL_TESTNET, XRP_XRPL, XRP_XRPL_TESTNET};
+use crate::network::{
+    Network, USDCDeployment, RLUSD_XRPL, RLUSD_XRPL_TESTNET, XRP_XRPL, XRP_XRPL_TESTNET,
+};
 use crate::types::{
     ExactPaymentPayload, FacilitatorErrorReason, MixedAddress, Scheme, SettleRequest,
     SettleResponse, SupportedPaymentKind, SupportedPaymentKindExtra, SupportedPaymentKindsResponse,
@@ -120,7 +122,9 @@ pub enum XrplError {
     #[error("RPC error: {0}")]
     RpcError(String),
 
-    #[error("transaction submission rejected by rippled: {engine_result} ({engine_result_message})")]
+    #[error(
+        "transaction submission rejected by rippled: {engine_result} ({engine_result_message})"
+    )]
     SubmissionRejected {
         engine_result: String,
         engine_result_message: String,
@@ -389,9 +393,8 @@ impl XrplProvider {
 
         // --- Check 4: decode the signed tx blob ---
         // xrpl_decode returns a serde_json::Value with PascalCase field names.
-        let tx_json: Value = xrpl_decode(&xrpl_payload.signed_tx_blob).map_err(|e| {
-            FacilitatorLocalError::from(XrplError::InvalidTxBlob(e.to_string()))
-        })?;
+        let tx_json: Value = xrpl_decode(&xrpl_payload.signed_tx_blob)
+            .map_err(|e| FacilitatorLocalError::from(XrplError::InvalidTxBlob(e.to_string())))?;
 
         // --- Check 5: TransactionType == Payment ---
         let tx_type = tx_json
@@ -411,9 +414,7 @@ impl XrplProvider {
             .get("Account")
             .and_then(|v| v.as_str())
             .ok_or_else(|| {
-                FacilitatorLocalError::from(XrplError::InvalidTxBlob(
-                    "missing Account".to_string(),
-                ))
+                FacilitatorLocalError::from(XrplError::InvalidTxBlob("missing Account".to_string()))
             })?;
         let payer = XrplAddress::try_from(account.to_string())?;
 
@@ -620,18 +621,21 @@ impl XrplProvider {
                     .into());
                 }
                 // Split the requirement asset into "<currency>.<issuer>".
-                let (req_currency, req_issuer) =
-                    asset_str.split_once('.').ok_or_else(|| {
-                        FacilitatorLocalError::from(XrplError::PaymentRequirementsMismatch(
-                            format!("malformed XRPL asset string: {}", asset_str),
-                        ))
-                    })?;
-
-                let tx_currency = map.get("currency").and_then(|v| v.as_str()).ok_or_else(|| {
-                    FacilitatorLocalError::from(XrplError::AmountMismatch(
-                        "issued-token Amount missing currency".to_string(),
-                    ))
+                let (req_currency, req_issuer) = asset_str.split_once('.').ok_or_else(|| {
+                    FacilitatorLocalError::from(XrplError::PaymentRequirementsMismatch(format!(
+                        "malformed XRPL asset string: {}",
+                        asset_str
+                    )))
                 })?;
+
+                let tx_currency =
+                    map.get("currency")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| {
+                            FacilitatorLocalError::from(XrplError::AmountMismatch(
+                                "issued-token Amount missing currency".to_string(),
+                            ))
+                        })?;
                 let tx_issuer = map.get("issuer").and_then(|v| v.as_str()).ok_or_else(|| {
                     FacilitatorLocalError::from(XrplError::AmountMismatch(
                         "issued-token Amount missing issuer".to_string(),
@@ -863,15 +867,11 @@ impl XrplProvider {
         // derive_classic_address takes the hex-encoded public key and returns
         // the base58check classic address (r...). This is the same derivation
         // that XRPL nodes perform when validating master-key signatures.
-        let derived_address =
-            derive_classic_address(signing_pub_key).map_err(|e| {
-                FacilitatorLocalError::from(XrplError::InvalidSignature {
-                    account: format!(
-                        "{} (pubkey->address derivation failed: {})",
-                        account, e
-                    ),
-                })
-            })?;
+        let derived_address = derive_classic_address(signing_pub_key).map_err(|e| {
+            FacilitatorLocalError::from(XrplError::InvalidSignature {
+                account: format!("{} (pubkey->address derivation failed: {})", account, e),
+            })
+        })?;
         if derived_address != account {
             // The signing key does not control this account (e.g. attacker's
             // key, or a Regular Key / SignerList signer which is out of scope
@@ -929,44 +929,35 @@ impl XrplProvider {
     /// The rippled JSON-RPC wire format is:
     ///   request: `{ "method": "<cmd>", "params": [{ ...fields... }] }`
     ///   response: `{ "result": { ...fields... }, ... }`
-    async fn rpc_call(
-        &self,
-        method: &str,
-        params: Value,
-    ) -> Result<Value, FacilitatorLocalError> {
+    async fn rpc_call(&self, method: &str, params: Value) -> Result<Value, FacilitatorLocalError> {
         let (client, url) = self.reqwest_client();
         let body = json!({
             "method": method,
             "params": [params],
         });
-        let resp = client
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| {
-                // Strip the URL (which may contain an API key in the path) from
-                // the reqwest error before emitting to logs / CloudWatch.
-                let safe_url = crate::redact::rpc_url(&url);
-                FacilitatorLocalError::from(XrplError::RpcError(format!(
-                    "{} (endpoint: {})",
-                    e.without_url(),
-                    safe_url
-                )))
-            })?;
-        let json: Value = resp
-            .json()
-            .await
-            .map_err(|e| {
-                let safe_url = crate::redact::rpc_url(&url);
-                FacilitatorLocalError::from(XrplError::RpcError(format!(
-                    "response decode error: {} (endpoint: {})",
-                    e.without_url(),
-                    safe_url
-                )))
-            })?;
+        let resp = client.post(&url).json(&body).send().await.map_err(|e| {
+            // Strip the URL (which may contain an API key in the path) from
+            // the reqwest error before emitting to logs / CloudWatch.
+            let safe_url = crate::redact::rpc_url(&url);
+            FacilitatorLocalError::from(XrplError::RpcError(format!(
+                "{} (endpoint: {})",
+                e.without_url(),
+                safe_url
+            )))
+        })?;
+        let json: Value = resp.json().await.map_err(|e| {
+            let safe_url = crate::redact::rpc_url(&url);
+            FacilitatorLocalError::from(XrplError::RpcError(format!(
+                "response decode error: {} (endpoint: {})",
+                e.without_url(),
+                safe_url
+            )))
+        })?;
         // rippled wraps its response in a "result" object.
-        Ok(json.get("result").cloned().unwrap_or(Value::Object(serde_json::Map::new())))
+        Ok(json
+            .get("result")
+            .cloned()
+            .unwrap_or(Value::Object(serde_json::Map::new())))
     }
 
     /// Submit the pre-signed blob via rippled `submit` (submit-only mode), then
@@ -1104,9 +1095,7 @@ impl XrplProvider {
                     return Err(XrplError::TransactionFailed(result_code).into());
                 }
 
-                let ledger_index = result_val
-                    .get("ledger_index")
-                    .and_then(|v| v.as_u64());
+                let ledger_index = result_val.get("ledger_index").and_then(|v| v.as_u64());
 
                 tracing::info!(
                     tx_hash = %tx_hash_hex,
@@ -1380,7 +1369,9 @@ mod tests {
     use super::*;
     use crate::network::Network;
     use serde_json::json;
-    use xrpl::core::binarycodec::{decode as xrpl_decode, encode as xrpl_encode, encode_for_signing};
+    use xrpl::core::binarycodec::{
+        decode as xrpl_decode, encode as xrpl_encode, encode_for_signing,
+    };
     use xrpl::core::keypairs::{derive_classic_address, sign as xrpl_sign};
     use xrpl::wallet::Wallet;
 
@@ -1432,12 +1423,11 @@ mod tests {
         // Encode the signing payload (STX prefix + canonicalized fields).
         let signing_hex = encode_for_signing(&tx)
             .expect("encode_for_signing must succeed on well-formed Payment");
-        let message = alloy::hex::decode(&signing_hex)
-            .expect("signing_hex must be valid hex");
+        let message = alloy::hex::decode(&signing_hex).expect("signing_hex must be valid hex");
 
         // Sign with the wallet's private key.
-        let signature_hex = xrpl_sign(&message, &wallet.private_key)
-            .expect("xrpl_sign must succeed");
+        let signature_hex =
+            xrpl_sign(&message, &wallet.private_key).expect("xrpl_sign must succeed");
 
         // Inject TxnSignature and encode to the final signed blob.
         tx.as_object_mut()
@@ -1467,7 +1457,8 @@ mod tests {
     fn xrpl_signature_valid_roundtrip() {
         let wallet = test_wallet_a();
         let destination = "rPT1Sjq2YGrBMTttX4GZHjKu9dyfzbpAYe"; // arbitrary valid r-addr
-        let blob = make_signed_payment_blob(&wallet, &wallet.classic_address, destination, "1000000");
+        let blob =
+            make_signed_payment_blob(&wallet, &wallet.classic_address, destination, "1000000");
 
         let tx_json: Value = xrpl_decode(&blob).expect("decode must succeed");
         let provider = xrpl_provider();
@@ -1509,7 +1500,8 @@ mod tests {
     fn xrpl_signature_tampered_rejected() {
         let wallet = test_wallet_a();
         let destination = "rPT1Sjq2YGrBMTttX4GZHjKu9dyfzbpAYe";
-        let blob = make_signed_payment_blob(&wallet, &wallet.classic_address, destination, "1000000");
+        let blob =
+            make_signed_payment_blob(&wallet, &wallet.classic_address, destination, "1000000");
 
         let mut tx_json: Value = xrpl_decode(&blob).expect("decode must succeed");
 
@@ -1527,10 +1519,7 @@ mod tests {
 
         let provider = xrpl_provider();
         let result = provider.verify_signature(&tx_json, &wallet.classic_address);
-        assert!(
-            result.is_err(),
-            "tampered signature must be rejected"
-        );
+        assert!(result.is_err(), "tampered signature must be rejected");
     }
 
     // -------------------------------------------------------------------------
@@ -1717,8 +1706,8 @@ mod tests {
         asset_str: &str,
         amount_base_units: &str,
     ) -> crate::types::PaymentRequirements {
-        use alloy::primitives::U256;
         use crate::types::{MixedAddress, PaymentRequirements, Scheme, TokenAmount};
+        use alloy::primitives::U256;
         use url::Url;
 
         let amount = U256::from_str_radix(amount_base_units, 10)

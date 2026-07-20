@@ -144,6 +144,13 @@ pub enum Network {
     /// Scroll mainnet (chain ID 534352) - zkEVM L2 on Ethereum.
     #[serde(rename = "scroll")]
     Scroll,
+    /// Robinhood Chain mainnet (chain ID 4663) - Arbitrum Orbit L2 on Ethereum.
+    /// No native Circle USDC; settlement stablecoin is Paxos USDG.
+    #[serde(rename = "robinhood")]
+    Robinhood,
+    /// Robinhood Chain testnet (chain ID 46630) - settles to Ethereum Sepolia.
+    #[serde(rename = "robinhood-testnet")]
+    RobinhoodTestnet,
 }
 
 impl Display for Network {
@@ -195,6 +202,8 @@ impl Display for Network {
             Network::SkaleBase => write!(f, "skale-base"),
             Network::SkaleBaseSepolia => write!(f, "skale-base-sepolia"),
             Network::Scroll => write!(f, "scroll"),
+            Network::Robinhood => write!(f, "robinhood"),
+            Network::RobinhoodTestnet => write!(f, "robinhood-testnet"),
         }
     }
 }
@@ -255,6 +264,8 @@ impl FromStr for Network {
             "skale-base" | "skale" => Ok(Network::SkaleBase),
             "skale-base-sepolia" | "skale-testnet" => Ok(Network::SkaleBaseSepolia),
             "scroll" | "scroll-mainnet" => Ok(Network::Scroll),
+            "robinhood" | "robinhood-mainnet" | "robinhood-chain" => Ok(Network::Robinhood),
+            "robinhood-testnet" => Ok(Network::RobinhoodTestnet),
             _ => Err(NetworkParseError(s.to_string())),
         }
     }
@@ -323,6 +334,8 @@ impl From<Network> for NetworkFamily {
             Network::SkaleBase => NetworkFamily::Evm,
             Network::SkaleBaseSepolia => NetworkFamily::Evm,
             Network::Scroll => NetworkFamily::Evm,
+            Network::Robinhood => NetworkFamily::Evm,
+            Network::RobinhoodTestnet => NetworkFamily::Evm,
         }
     }
 }
@@ -371,6 +384,8 @@ impl Network {
             Network::SkaleBase,
             Network::SkaleBaseSepolia,
             Network::Scroll,
+            Network::Robinhood,
+            Network::RobinhoodTestnet,
         ]
     }
 
@@ -415,6 +430,8 @@ impl Network {
             Network::SkaleBase,
             Network::SkaleBaseSepolia,
             Network::Scroll,
+            Network::Robinhood,
+            Network::RobinhoodTestnet,
         ]
     }
 
@@ -459,6 +476,8 @@ impl Network {
             Network::SkaleBase,
             Network::SkaleBaseSepolia,
             Network::Scroll,
+            Network::Robinhood,
+            Network::RobinhoodTestnet,
         ]
     }
 
@@ -501,6 +520,8 @@ impl Network {
             Network::SkaleBase,
             Network::SkaleBaseSepolia,
             Network::Scroll,
+            Network::Robinhood,
+            Network::RobinhoodTestnet,
         ]
     }
 
@@ -535,6 +556,7 @@ impl Network {
                 | Network::StellarTestnet
                 | Network::FogoTestnet
                 | Network::SkaleBaseSepolia
+                | Network::RobinhoodTestnet
         )
     }
 
@@ -609,6 +631,9 @@ impl Network {
             Network::SkaleBaseSepolia => "eip155:324705682".to_string(),
             // Scroll - eip155:{chain_id}
             Network::Scroll => "eip155:534352".to_string(),
+            // Robinhood Chain - eip155:{chain_id}
+            Network::Robinhood => "eip155:4663".to_string(),
+            Network::RobinhoodTestnet => "eip155:46630".to_string(),
         }
     }
 
@@ -673,6 +698,9 @@ impl Network {
             "eip155:324705682" => Some(Network::SkaleBaseSepolia),
             // Scroll
             "eip155:534352" => Some(Network::Scroll),
+            // Robinhood Chain
+            "eip155:4663" => Some(Network::Robinhood),
+            "eip155:46630" => Some(Network::RobinhoodTestnet),
             _ => None,
         }
     }
@@ -1429,6 +1457,10 @@ impl USDCDeployment {
             Network::SkaleBase => Some(&USDC_SKALE_BASE),
             Network::SkaleBaseSepolia => Some(&USDC_SKALE_BASE_SEPOLIA),
             Network::Scroll => Some(&USDC_SCROLL),
+            // Robinhood Chain has NO Circle USDC (native or bridged); Paxos
+            // USDG is the settlement stablecoin there (see USDGDeployment).
+            Network::Robinhood => None,
+            Network::RobinhoodTestnet => None,
         }
     }
 }
@@ -1896,13 +1928,97 @@ impl USDTDeployment {
 }
 
 // ============================================================================
+// USDG (Global Dollar) Deployments - Paxos
+// ============================================================================
+
+/// USDG deployment on Robinhood Chain mainnet.
+/// Contract: 0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168 (Paxos-issued, listed
+/// at https://docs.paxos.com/guides/stablecoin/usdg/mainnet).
+/// EIP-712 domain verified against on-chain DOMAIN_SEPARATOR(): name
+/// "Global Dollar", version "1". The contract's version() getter reverts
+/// (Paxos facet dispatcher), so this static entry is REQUIRED - the on-chain
+/// fallback in assert_domain cannot resolve the version for this token.
+static USDG_ROBINHOOD: Lazy<USDGDeployment> = Lazy::new(|| {
+    USDGDeployment(TokenDeployment {
+        asset: TokenAsset {
+            address: address!("0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168").into(),
+            network: Network::Robinhood,
+        },
+        decimals: 6,
+        eip712: Some(TokenDeploymentEip712 {
+            name: "Global Dollar".into(),
+            version: "1".into(),
+        }),
+    })
+});
+
+/// USDG deployment on Robinhood Chain testnet.
+/// Contract: 0x7E955252E15c84f5768B83c41a71F9eba181802F (listed at
+/// https://docs.paxos.com/guides/stablecoin/usdg/testnet).
+/// EIP-712 domain verified against on-chain DOMAIN_SEPARATOR().
+static USDG_ROBINHOOD_TESTNET: Lazy<USDGDeployment> = Lazy::new(|| {
+    USDGDeployment(TokenDeployment {
+        asset: TokenAsset {
+            address: address!("0x7E955252E15c84f5768B83c41a71F9eba181802F").into(),
+            network: Network::RobinhoodTestnet,
+        },
+        decimals: 6,
+        eip712: Some(TokenDeploymentEip712 {
+            name: "Global Dollar".into(),
+            version: "1".into(),
+        }),
+    })
+});
+
+/// A known USDG (Global Dollar) deployment as a wrapper around [`TokenDeployment`].
+///
+/// USDG is Paxos' USD stablecoin (Global Dollar Network). It supports EIP-3009
+/// `transferWithAuthorization` in both the v,r,s and bytes signature variants,
+/// verified against the TokenExtensionsFacet source on Robinhood Chain.
+#[derive(Clone, Debug)]
+pub struct USDGDeployment(pub TokenDeployment);
+
+impl Deref for USDGDeployment {
+    type Target = TokenDeployment;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl From<&USDGDeployment> for TokenDeployment {
+    fn from(deployment: &USDGDeployment) -> Self {
+        deployment.0.clone()
+    }
+}
+
+impl USDGDeployment {
+    /// Return the known USDG deployment for the given network.
+    ///
+    /// Returns `None` if USDG is not deployed on the specified network.
+    pub fn by_network<N: Borrow<Network>>(network: N) -> Option<&'static USDGDeployment> {
+        match network.borrow() {
+            Network::Robinhood => Some(&USDG_ROBINHOOD),
+            Network::RobinhoodTestnet => Some(&USDG_ROBINHOOD_TESTNET),
+            _ => None,
+        }
+    }
+
+    /// Return all networks where USDG is deployed.
+    pub fn supported_networks() -> &'static [Network] {
+        &[Network::Robinhood, Network::RobinhoodTestnet]
+    }
+}
+
+// ============================================================================
 // Generic Token Deployment Lookup
 // ============================================================================
 
 /// Get a token deployment for any supported token type on a given network.
 ///
 /// Returns `None` if the token is not deployed on the specified network.
-/// For USDC, this always returns `Some` as USDC is deployed on all networks.
+/// For USDC, this returns `Some` on every network except Robinhood Chain,
+/// which has no Circle USDC (its settlement stablecoin is Paxos USDG).
 ///
 /// # Example
 /// ```ignore
@@ -1919,6 +2035,7 @@ pub fn get_token_deployment(network: Network, token_type: TokenType) -> Option<T
         TokenType::Ausd => AUSDDeployment::by_network(network).map(|d| d.0.clone()),
         TokenType::Pyusd => PYUSDDeployment::by_network(network).map(|d| d.0.clone()),
         TokenType::Usdt => USDTDeployment::by_network(network).map(|d| d.0.clone()),
+        TokenType::Usdg => USDGDeployment::by_network(network).map(|d| d.0.clone()),
         // XRPL-only tokens: no EVM deployment registry.
         TokenType::Rlusd | TokenType::Xrp => None,
     }
@@ -1968,11 +2085,18 @@ pub fn supported_tokens_for_network(network: Network) -> Vec<TokenType> {
 /// ```
 pub fn supported_networks_for_token(token_type: TokenType) -> Vec<Network> {
     match token_type {
-        TokenType::Usdc => Network::variants().to_vec(),
+        // Not all networks carry USDC (Robinhood Chain has none), so filter
+        // by actual registered deployments instead of assuming variants().
+        TokenType::Usdc => Network::variants()
+            .iter()
+            .filter(|network| USDCDeployment::by_network(*network).is_some())
+            .copied()
+            .collect(),
         TokenType::Eurc => EURCDeployment::supported_networks().to_vec(),
         TokenType::Ausd => AUSDDeployment::supported_networks().to_vec(),
         TokenType::Pyusd => PYUSDDeployment::supported_networks().to_vec(),
         TokenType::Usdt => USDTDeployment::supported_networks().to_vec(),
+        TokenType::Usdg => USDGDeployment::supported_networks().to_vec(),
         // XRPL-only tokens: surfaced by the XrplProvider::supported() method.
         TokenType::Rlusd | TokenType::Xrp => vec![],
     }
@@ -1980,7 +2104,7 @@ pub fn supported_networks_for_token(token_type: TokenType) -> Vec<Network> {
 
 /// Return the canonical asset addresses (MixedAddress) that the facilitator
 /// accepts on this network, aggregating all known stablecoin deployments
-/// (USDC, EURC, AUSD, PYUSD, USDT) from this module.
+/// (USDC, EURC, AUSD, PYUSD, USDT, USDG) from this module.
 ///
 /// Used as the **strict allow-list** for asset validation in verify/settle:
 /// any `PaymentRequirements.asset` that is not in this list is rejected
@@ -1991,7 +2115,7 @@ pub fn supported_networks_for_token(token_type: TokenType) -> Vec<Network> {
 ///
 /// Returns an empty `Vec` if no stablecoin is deployed on the given network.
 pub fn supported_asset_addresses(network: Network) -> Vec<MixedAddress> {
-    let mut addrs: Vec<MixedAddress> = Vec::with_capacity(5);
+    let mut addrs: Vec<MixedAddress> = Vec::with_capacity(6);
     if let Some(d) = USDCDeployment::by_network(network) {
         addrs.push(d.0.asset.address.clone());
     }
@@ -2005,6 +2129,9 @@ pub fn supported_asset_addresses(network: Network) -> Vec<MixedAddress> {
         addrs.push(d.0.asset.address.clone());
     }
     if let Some(d) = USDTDeployment::by_network(network) {
+        addrs.push(d.0.asset.address.clone());
+    }
+    if let Some(d) = USDGDeployment::by_network(network) {
         addrs.push(d.0.asset.address.clone());
     }
     addrs
@@ -2033,8 +2160,16 @@ mod tests {
 
     #[test]
     fn test_usdc_available_on_all_networks() {
-        // USDC should be available on all networks in variants()
+        // USDC should be available on all networks in variants(),
+        // except Robinhood Chain which has no Circle USDC (USDG instead).
         for network in Network::variants() {
+            if matches!(network, Network::Robinhood | Network::RobinhoodTestnet) {
+                assert!(
+                    !is_token_supported(*network, TokenType::Usdc),
+                    "Robinhood Chain must NOT claim USDC support"
+                );
+                continue;
+            }
             assert!(
                 is_token_supported(*network, TokenType::Usdc),
                 "USDC should be supported on {:?}",
@@ -2051,6 +2186,10 @@ mod tests {
     #[test]
     fn test_usdc_decimals() {
         for network in Network::variants() {
+            // No USDC on Robinhood Chain (USDG is its settlement token).
+            if matches!(network, Network::Robinhood | Network::RobinhoodTestnet) {
+                continue;
+            }
             let deployment = get_token_deployment(*network, TokenType::Usdc).unwrap();
             let expected_decimals = match network {
                 Network::Stellar | Network::StellarTestnet => 7,
@@ -2326,8 +2465,88 @@ mod tests {
     #[test]
     fn test_supported_networks_for_usdc() {
         let networks = supported_networks_for_token(TokenType::Usdc);
-        // USDC is on all networks
-        assert_eq!(networks.len(), Network::variants().len());
+        // USDC is on all networks except the two Robinhood Chain variants
+        assert_eq!(networks.len(), Network::variants().len() - 2);
+        assert!(!networks.contains(&Network::Robinhood));
+        assert!(!networks.contains(&Network::RobinhoodTestnet));
+    }
+
+    // ============================================================
+    // USDG (Global Dollar) Deployment Tests
+    // ============================================================
+
+    #[test]
+    fn test_usdg_robinhood_only() {
+        let networks = supported_networks_for_token(TokenType::Usdg);
+        assert_eq!(networks.len(), 2);
+        assert!(networks.contains(&Network::Robinhood));
+        assert!(networks.contains(&Network::RobinhoodTestnet));
+        assert!(USDGDeployment::by_network(Network::Base).is_none());
+        assert!(USDGDeployment::by_network(Network::Ethereum).is_none());
+    }
+
+    #[test]
+    fn test_usdg_robinhood_addresses() {
+        let mainnet = get_token_deployment(Network::Robinhood, TokenType::Usdg).unwrap();
+        assert_eq!(
+            mainnet.asset.address,
+            MixedAddress::Evm(address!("5fc5360D0400a0Fd4f2af552ADD042D716F1d168").into())
+        );
+        assert_eq!(mainnet.decimals, 6);
+
+        let testnet = get_token_deployment(Network::RobinhoodTestnet, TokenType::Usdg).unwrap();
+        assert_eq!(
+            testnet.asset.address,
+            MixedAddress::Evm(address!("7E955252E15c84f5768B83c41a71F9eba181802F").into())
+        );
+        assert_eq!(testnet.decimals, 6);
+    }
+
+    #[test]
+    fn test_usdg_eip712_domain() {
+        // Verified against on-chain DOMAIN_SEPARATOR() on chains 4663 and 46630:
+        // name "Global Dollar", version "1". The static entry is mandatory
+        // because USDG's version() getter reverts on-chain.
+        for network in [Network::Robinhood, Network::RobinhoodTestnet] {
+            let deployment = get_token_deployment(network, TokenType::Usdg).unwrap();
+            let eip712 = deployment
+                .eip712
+                .expect("USDG must carry a static EIP-712 domain");
+            assert_eq!(eip712.name, "Global Dollar");
+            assert_eq!(eip712.version, "1");
+        }
+    }
+
+    #[test]
+    fn test_robinhood_asset_allowlist_is_usdg_only() {
+        // The strict allow-list for Robinhood Chain must contain exactly USDG:
+        // no USDC exists there, and impostor 18-decimal "USDC"/"PYUSD"/"USDT0"
+        // scam tokens on that chain must never pass is_supported_asset.
+        for (network, usdg_addr) in [
+            (
+                Network::Robinhood,
+                address!("5fc5360D0400a0Fd4f2af552ADD042D716F1d168"),
+            ),
+            (
+                Network::RobinhoodTestnet,
+                address!("7E955252E15c84f5768B83c41a71F9eba181802F"),
+            ),
+        ] {
+            let addrs = supported_asset_addresses(network);
+            assert_eq!(addrs.len(), 1, "only USDG should be allowed on {network:?}");
+            assert!(is_supported_asset(
+                network,
+                &MixedAddress::Evm(usdg_addr.into())
+            ));
+        }
+    }
+
+    #[test]
+    fn test_supported_tokens_for_robinhood() {
+        let tokens = supported_tokens_for_network(Network::Robinhood);
+        assert_eq!(tokens, vec![TokenType::Usdg]);
+        let tokens = supported_tokens_for_network(Network::RobinhoodTestnet);
+        assert_eq!(tokens, vec![TokenType::Usdg]);
     }
 
     #[test]

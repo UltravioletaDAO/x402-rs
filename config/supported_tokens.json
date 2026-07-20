@@ -1,7 +1,7 @@
 {
   "_comment": "Source of truth for all supported networks, tokens, and facilitator wallet addresses. MUST be updated when adding new chains or stablecoins. Wallet addresses sourced from lambda/balances/handler.py.",
-  "_lastUpdated": "2026-05-30",
-  "_version": "1.45.2",
+  "_lastUpdated": "2026-07-20",
+  "_version": "1.50.0",
 
   "evm_mainnets": {
     "ethereum": {
@@ -81,6 +81,12 @@
       "tokens": ["usdc"],
       "explorer": "https://scrollscan.com",
       "facilitatorWallet": "0x103040545AC5031A11E8C03dd11324C7333a13C7"
+    },
+    "robinhood": {
+      "chainId": 4663,
+      "tokens": ["usdg"],
+      "explorer": "https://robinhoodchain.blockscout.com",
+      "facilitatorWallet": "0x103040545AC5031A11E8C03dd11324C7333a13C7"
     }
   },
 
@@ -143,6 +149,12 @@
       "chainId": 324705682,
       "tokens": ["usdc"],
       "explorer": "https://base-sepolia-testnet.skalenodes.com",
+      "facilitatorWallet": "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8"
+    },
+    "robinhood-testnet": {
+      "chainId": 46630,
+      "tokens": ["usdg"],
+      "explorer": "https://explorer.testnet.chain.robinhood.com",
       "facilitatorWallet": "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8"
     }
   },
@@ -289,6 +301,12 @@
       "decimals": 6,
       "issuer": "Tether/LayerZero OFT"
     },
+    "usdg": {
+      "name": "USDG",
+      "fullName": "Global Dollar",
+      "decimals": 6,
+      "issuer": "Paxos (Global Dollar Network)"
+    },
     "xrp": {
       "name": "XRP",
       "fullName": "XRP (native)",
@@ -340,19 +358,23 @@
       "celo": "0x48065fbBE25f71C9282ddf5e1cD6D6A887483D5e",
       "optimism": "0x01bff41798a0bcf287b996046ca68b395dbc1071",
       "monad": "0xe7cd86e13AC4309349F30B3435a9d337750fC82D"
+    },
+    "usdg": {
+      "robinhood": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+      "robinhood-testnet": "0x7E955252E15c84f5768B83c41a71F9eba181802F"
     }
   },
 
   "summary": {
-    "total_networks": 37,
-    "evm_mainnets": 13,
-    "evm_testnets": 10,
+    "total_networks": 39,
+    "evm_mainnets": 14,
+    "evm_testnets": 11,
     "svm_networks": 4,
     "sui_networks": 2,
     "near_networks": 2,
     "stellar_networks": 2,
     "algorand_networks": 2,
     "xrpl_networks": 2,
-    "total_stablecoins": 6
+    "total_stablecoins": 7
   }
 }

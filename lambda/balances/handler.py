@@ -374,6 +374,17 @@ def get_network_configs() -> dict[str, dict]:
             "address": MAINNET_ADDRESS,
             "type": "evm"
         },
+        # Robinhood Chain (Arbitrum Orbit L2; official RPC is the only keyless endpoint)
+        "robinhood-mainnet": {
+            "rpcs": ["https://rpc.mainnet.chain.robinhood.com"],
+            "address": MAINNET_ADDRESS,
+            "type": "evm"
+        },
+        "robinhood-testnet": {
+            "rpcs": ["https://rpc.testnet.chain.robinhood.com"],
+            "address": TESTNET_ADDRESS,
+            "type": "evm"
+        },
         # XRPL (native XRP Ledger; public JSON-RPC, balance in drops, 1 XRP = 1e6 drops)
         "xrpl-mainnet": {
             "rpcs": ["https://s1.ripple.com:51234/", "https://xrplcluster.com/"],

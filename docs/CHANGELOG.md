@@ -1,5 +1,60 @@
 # Changelog
 
+## [1.50.0] - 2026-07-20
+
+### Feature — Robinhood Chain (mainnet 4663 + testnet 46630) settling Paxos USDG
+
+Adds Robinhood Chain, the Arbitrum Orbit L2 by Robinhood (mainnet live since
+2026-07-01), as payment network #21. The chain has NO Circle USDC (native or
+bridged) — the settlement stablecoin is Paxos **USDG (Global Dollar)**, the
+first non-USDC-only network in the facilitator:
+
+- New `Network::Robinhood` (`robinhood`, `eip155:4663`) and
+  `Network::RobinhoodTestnet` (`robinhood-testnet`, `eip155:46630`).
+- New `TokenType::Usdg` + `USDGDeployment` registry: mainnet
+  `0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168`, testnet
+  `0x7E955252E15c84f5768B83c41a71F9eba181802F` (both from Paxos official docs,
+  6 decimals). EIP-3009 `transferWithAuthorization` verified on-chain
+  (typehash + verified source + live dispatch probe).
+- EIP-712 domain `{name: "Global Dollar", version: "1"}` cryptographically
+  verified against on-chain `DOMAIN_SEPARATOR()` on BOTH chains. The static
+  entry is mandatory: USDG's `version()` getter reverts (Paxos facet
+  dispatcher), so the on-chain fallback cannot resolve it.
+- `USDCDeployment::by_network` now returns `None` for Robinhood;
+  `supported_networks_for_token(Usdc)` filters by real deployments instead of
+  assuming `variants()`. The strict asset allow-list on Robinhood is USDG-only
+  (the chain is full of impostor 18-decimal "USDC"/"PYUSD"/"USDT0" scam
+  tokens, which remain rejected).
+- Landing page cards (mainnet + testnet), balance lambda, OpenAPI docs,
+  `config/supported_tokens.json`, terraform RPC env vars
+  (`RPC_URL_ROBINHOOD`, `RPC_URL_ROBINHOOD_TESTNET`), stablecoin matrix.
+
+### Security fix — upto scheme: wrong proxy address + vacuous-success guard
+
+- **The hardcoded `UPTO_PERMIT2_PROXY_ADDRESS` was
+  `0x4020633461b2895a48930Ff97eE8fCdE8E520002`, which has NO code on ANY
+  chain** (miscopied at implementation time in v1.44.x). Corrected to the
+  canonical upstream address `0x4020A4f3b7b90ccA423B9fabCc0CE57C6C240002`
+  (pinned by the x402 spec and @x402/evm; Sourcify-verified on Base;
+  byte-identical bytecode confirmed on Base, Ethereum, Arbitrum, Optimism,
+  BSC, HyperEVM, SKALE Base, Monad, World Chain, and Robinhood Chain). Our
+  `settle()` ABI and `Witness{to,facilitator,validAfter}` struct match the
+  verified source, so only the address needed fixing.
+- **New `assert_proxy_deployed` guard in upto verify AND settle**: an
+  `eth_call`/transaction against a code-less address succeeds vacuously, so
+  before the fix an upto settlement would have returned `success=true` with a
+  real tx hash while moving ZERO tokens (silent merchant fund loss). Now both
+  paths hard-fail with a clear error on chains where the CREATE2 deployment
+  has not been replayed (currently: Avalanche, Celo, Scroll, Unichain,
+  Robinhood testnet).
+
+Files: `src/network.rs`, `src/types.rs`, `src/chain/evm.rs`,
+`src/chain/solana.rs`, `src/from_env.rs`, `src/handlers.rs`, `src/openapi.rs`,
+`src/upto/types.rs`, `src/upto/permit2.rs`, `static/index.html`,
+`static/robinhood.png`, `static/usdg.png`, `lambda/balances/handler.py`,
+`config/supported_tokens.json`, `scripts/stablecoin_matrix.py`,
+`terraform/environments/production/main.tf`, `.env.example`, `README.md`.
+
 ## [1.49.2] - 2026-07-10
 
 ### Reliability — nonce manager: no dashmap guard held across `.await`

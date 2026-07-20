@@ -16,7 +16,11 @@ async fn buy_evm() -> Result<(), Box<dyn std::error::Error>> {
     let http_client = Client::new()
         .with_payments(sender)
         .prefer(USDCDeployment::by_network(Network::BaseSepolia).unwrap())
-        .max(USDCDeployment::by_network(Network::BaseSepolia).unwrap().amount(0.1)?)
+        .max(
+            USDCDeployment::by_network(Network::BaseSepolia)
+                .unwrap()
+                .amount(0.1)?,
+        )
         .build();
 
     let response = http_client
@@ -41,7 +45,11 @@ async fn buy_solana() -> Result<(), Box<dyn std::error::Error>> {
     let http_client = Client::new()
         .with_payments(sender)
         .prefer(USDCDeployment::by_network(Network::Solana).unwrap())
-        .max(USDCDeployment::by_network(Network::Solana).unwrap().amount(0.1)?)
+        .max(
+            USDCDeployment::by_network(Network::Solana)
+                .unwrap()
+                .amount(0.1)?,
+        )
         .build();
 
     let response = http_client

@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.50.1] - 2026-07-21
+
+### Landing — stablecoin count 5 -> 6 (USDG)
+
+- Hero badge "5 Stablecoins Supported" -> "6" (fallback + EN + ES i18n) and
+  USDG icon added to both stablecoin icon rows (hero + x402r section) —
+  v1.50.0 added the USDG token but missed these hero counters.
+- New `docs/ROBINHOOD_CHAIN.md`: full integration reference (chain data, USDG
+  gotchas, scheme matrix, upto-proxy bug history, verified bridge routes for
+  funding, session log).
+
+Files: `static/index.html`, `docs/ROBINHOOD_CHAIN.md`.
+
 ## [1.50.0] - 2026-07-20
 
 ### Feature — Robinhood Chain (mainnet 4663 + testnet 46630) settling Paxos USDG

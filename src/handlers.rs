@@ -295,7 +295,10 @@ fn admin_reject(auth: AdminAuth) -> Option<Response<axum::body::Body>> {
 
 #[derive(Debug, Deserialize)]
 pub struct AdminUrlQuery {
-    pub url: String,
+    /// Optional at the extractor level on purpose: a missing param must not
+    /// produce a 400 before authentication, which would reveal that the admin
+    /// route exists while the surface is supposed to be disabled.
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -315,11 +318,18 @@ pub async fn delete_discovery_resource(
     if let Some(r) = admin_reject(admin_auth(&headers)) {
         return r;
     }
+    let Some(url) = q.url else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "missing required query parameter: url"})),
+        )
+            .into_response();
+    };
     // Normalize before hitting the registry: keys are stored normalized, so a
     // raw query string would silently no-op.
-    let key = match crate::discovery_security::canonical_url(&q.url) {
+    let key = match crate::discovery_security::canonical_url(&url) {
         Ok(c) => c.key,
-        Err(_) => q.url.clone(),
+        Err(_) => url.clone(),
     };
     match registry.unregister(&key).await {
         Ok(_) => {
@@ -338,16 +348,33 @@ pub async fn delete_discovery_resource(
     }
 }
 
+/// Parse an admin request body AFTER authentication. Taking raw bytes (rather
+/// than the `Json` extractor) keeps a malformed body from returning 400 while
+/// the admin surface is disabled — which would reveal that the route exists.
+fn parse_admin_body(raw: &[u8]) -> Result<AdminUrlBody, Response<axum::body::Body>> {
+    serde_json::from_slice::<AdminUrlBody>(raw).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": format!("invalid request body: {e}")})),
+        )
+            .into_response()
+    })
+}
+
 /// `POST /discovery/admin/suppress`: hide a resource without deleting it.
 #[instrument(skip_all)]
 pub async fn post_discovery_suppress(
     State(registry): State<Arc<DiscoveryRegistry>>,
     headers: axum::http::HeaderMap,
-    Json(body): Json<AdminUrlBody>,
+    raw: axum::body::Bytes,
 ) -> impl IntoResponse {
     if let Some(r) = admin_reject(admin_auth(&headers)) {
         return r;
     }
+    let body = match parse_admin_body(&raw) {
+        Ok(b) => b,
+        Err(r) => return r,
+    };
     let changed = registry.suppress(&body.url).await;
     info!(url = %body.url, reason = ?body.reason, changed, "Admin suppressed resource");
     (
@@ -362,11 +389,15 @@ pub async fn post_discovery_suppress(
 pub async fn post_discovery_release(
     State(registry): State<Arc<DiscoveryRegistry>>,
     headers: axum::http::HeaderMap,
-    Json(body): Json<AdminUrlBody>,
+    raw: axum::body::Bytes,
 ) -> impl IntoResponse {
     if let Some(r) = admin_reject(admin_auth(&headers)) {
         return r;
     }
+    let body = match parse_admin_body(&raw) {
+        Ok(b) => b,
+        Err(r) => return r,
+    };
     let changed = registry.release(&body.url).await;
     info!(url = %body.url, changed, "Admin released resource");
     (

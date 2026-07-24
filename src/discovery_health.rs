@@ -71,6 +71,11 @@ pub struct HealthRecord {
     pub next_probe_at: u64,
     #[serde(default)]
     pub quarantined_at: Option<u64>,
+    /// Cumulative probe totals (for WS-E uptime attestation).
+    #[serde(default)]
+    pub total_probes: u64,
+    #[serde(default)]
+    pub total_ok: u64,
 }
 
 impl HealthRecord {
@@ -152,6 +157,18 @@ impl HealthTracker {
         });
     }
 
+    /// Cumulative uptime for a URL as `(uptime_bps, total_probes, total_ok)`
+    /// (WS-E attestation). `None` until the URL has at least one probe.
+    pub async fn uptime(&self, url: &str) -> Option<(u16, u64, u64)> {
+        let records = self.records.read().await;
+        let r = records.get(url)?;
+        if r.total_probes == 0 {
+            return None;
+        }
+        let bps = ((r.total_ok as u128 * 10_000) / r.total_probes as u128) as u16;
+        Some((bps, r.total_probes, r.total_ok))
+    }
+
     /// Response-facing snapshot: url -> HealthState, for annotating listings.
     pub async fn snapshot(&self) -> HashMap<String, HealthState> {
         self.records
@@ -206,10 +223,21 @@ impl HealthTracker {
             consecutive_fail: 0,
             next_probe_at: 0,
             quarantined_at: None,
+            total_probes: 0,
+            total_ok: 0,
         });
         rec.last_checked = Some(now);
         rec.http_status = http;
         rec.latency_ms = Some(latency);
+        if class != ProbeClass::Unprobeable {
+            rec.total_probes = rec.total_probes.saturating_add(1);
+            if matches!(
+                class,
+                ProbeClass::Alive | ProbeClass::AuthGated | ProbeClass::Degraded
+            ) {
+                rec.total_ok = rec.total_ok.saturating_add(1);
+            }
+        }
 
         match class {
             ProbeClass::Alive => {

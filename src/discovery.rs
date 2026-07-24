@@ -197,6 +197,10 @@ pub struct DiscoveryRegistry {
     health: Arc<crate::discovery_health::HealthTracker>,
     /// Curated tier manifest (WS-C).
     curation: Arc<crate::discovery_curation::CurationManifest>,
+    /// On-chain reputation cache (WS-E), keyed by resource URL.
+    reputation: Arc<RwLock<HashMap<String, crate::types_v2::VerificationInfo>>>,
+    /// Hosted attestation evidence bodies (WS-E), keyed by sha256(url) hex.
+    evidence: Arc<RwLock<HashMap<String, Vec<u8>>>>,
 }
 
 impl Clone for DiscoveryRegistry {
@@ -206,6 +210,8 @@ impl Clone for DiscoveryRegistry {
             store: Arc::clone(&self.store),
             health: Arc::clone(&self.health),
             curation: Arc::clone(&self.curation),
+            reputation: Arc::clone(&self.reputation),
+            evidence: Arc::clone(&self.evidence),
         }
     }
 }
@@ -227,12 +233,34 @@ impl DiscoveryRegistry {
             store: Arc::new(NoOpStore::new()),
             health: Arc::new(crate::discovery_health::HealthTracker::new()),
             curation: Arc::new(crate::discovery_curation::CurationManifest::load()),
+            reputation: Arc::new(RwLock::new(HashMap::new())),
+            evidence: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
     /// The liveness overlay (WS-B). Used by the health prober and by `list()`.
     pub fn health(&self) -> Arc<crate::discovery_health::HealthTracker> {
         Arc::clone(&self.health)
+    }
+
+    /// The curation manifest (WS-C). Used to build attestation targets.
+    pub fn curation(&self) -> Arc<crate::discovery_curation::CurationManifest> {
+        Arc::clone(&self.curation)
+    }
+
+    /// The on-chain reputation cache (WS-E), for the attestation task to fill.
+    pub fn reputation(&self) -> Arc<RwLock<HashMap<String, crate::types_v2::VerificationInfo>>> {
+        Arc::clone(&self.reputation)
+    }
+
+    /// The hosted attestation evidence store (WS-E).
+    pub fn evidence(&self) -> Arc<RwLock<HashMap<String, Vec<u8>>>> {
+        Arc::clone(&self.evidence)
+    }
+
+    /// Serve a hosted evidence body by its sha256(url) hex key.
+    pub async fn get_evidence(&self, key: &str) -> Option<Vec<u8>> {
+        self.evidence.read().await.get(key).cloned()
     }
 
     /// Snapshot of every registered resource URL (for the health prober).
@@ -276,6 +304,8 @@ impl DiscoveryRegistry {
             store: Arc::new(store),
             health: Arc::new(crate::discovery_health::HealthTracker::new()),
             curation: Arc::new(crate::discovery_curation::CurationManifest::load()),
+            reputation: Arc::new(RwLock::new(HashMap::new())),
+            evidence: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -437,6 +467,7 @@ impl DiscoveryRegistry {
         // the tracker is behind its own async lock, and holding the resources
         // guard across its `.await` is the guard-across-await hazard.
         let health = self.health.snapshot().await;
+        let reputation = self.reputation.read().await.clone();
         let health_filter = filters.as_ref().and_then(|f| f.health.clone());
         let tier_filter = filters.as_ref().and_then(|f| f.tier.clone());
 
@@ -457,7 +488,11 @@ impl DiscoveryRegistry {
                     .get(r.url.as_str())
                     .map(|h| h.status == HealthStatus::Alive)
                     .unwrap_or(false);
-                (r, self.curation.resolve(&r.url, alive))
+                let mut cur = self.curation.resolve(&r.url, alive);
+                if let Some(c) = cur.as_mut() {
+                    c.verification = reputation.get(r.url.as_str()).cloned();
+                }
+                (r, cur)
             })
             .filter(|(_, cur)| tier_matches(cur, tier_filter.as_deref()))
             .collect();

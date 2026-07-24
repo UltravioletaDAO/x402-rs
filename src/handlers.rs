@@ -203,7 +203,37 @@ where
 /// rate limit (it triggers DNS lookups + outbound fetches against
 /// attacker-supplied URLs).
 pub fn discovery_routes() -> Router<Arc<DiscoveryRegistry>> {
-    Router::new().route("/discovery/resources", get(get_discovery_resources))
+    Router::new()
+        .route("/discovery/resources", get(get_discovery_resources))
+        .route(
+            "/discovery/attestation/{hash}",
+            get(get_attestation_evidence),
+        )
+}
+
+/// `GET /discovery/attestation/{hash}`: serve a hosted ERC-8004 attestation
+/// evidence body (WS-E). Keyed by `sha256(url)` hex; only `[0-9a-f]{64}` keys
+/// are accepted so a URL path segment can never be mapped to arbitrary content.
+#[instrument(skip_all)]
+pub async fn get_attestation_evidence(
+    State(registry): State<Arc<DiscoveryRegistry>>,
+    Path(hash): Path<String>,
+) -> impl IntoResponse {
+    if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return (StatusCode::BAD_REQUEST, "invalid evidence key").into_response();
+    }
+    match registry.get_evidence(&hash.to_ascii_lowercase()).await {
+        Some(body) => (
+            StatusCode::OK,
+            [
+                ("content-type", "application/json"),
+                ("x-content-type-options", "nosniff"),
+            ],
+            String::from_utf8_lossy(&body).into_owned(),
+        )
+            .into_response(),
+        None => (StatusCode::NOT_FOUND, "evidence not found").into_response(),
+    }
 }
 
 /// `POST /discovery/register` carved out into its own router so the strict

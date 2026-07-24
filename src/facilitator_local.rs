@@ -68,6 +68,23 @@ impl<A: ProviderMap> HasProviderMap for FacilitatorLocal<A> {
     }
 }
 
+// Delegate ProviderMap so the WS-E attestation task can look up providers
+// straight from the shared `Arc<FacilitatorLocal<_>>` axum state.
+impl<A: ProviderMap> ProviderMap for FacilitatorLocal<A> {
+    type Value = A::Value;
+
+    fn by_network<N: std::borrow::Borrow<crate::network::Network>>(
+        &self,
+        network: N,
+    ) -> Option<&Self::Value> {
+        self.provider_map.by_network(network)
+    }
+
+    fn values(&self) -> impl Iterator<Item = &Self::Value> + Send {
+        self.provider_map.values()
+    }
+}
+
 impl<A, E> Facilitator for FacilitatorLocal<A>
 where
     A: ProviderMap + Sync,

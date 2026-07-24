@@ -1066,9 +1066,26 @@ impl Tier {
     }
 }
 
+/// On-chain reputation attestation (WS-E) surfaced on curated items.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerificationInfo {
+    /// Attestation protocol (e.g. `erc8004`).
+    pub protocol: String,
+    /// Network the identity + reputation live on.
+    pub network: String,
+    /// ERC-8004 agent (token) id.
+    pub agent_id: u64,
+    /// Number of feedback entries from the trusted reviewer.
+    pub feedback_count: u64,
+    /// Aggregated uptime percent (0..100), when any feedback exists.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uptime: Option<f64>,
+}
+
 /// Response-facing curation annotation. Set on listings from the manifest;
 /// never persisted onto the resource.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CurationInfo {
     pub tier: Tier,
@@ -1076,6 +1093,9 @@ pub struct CurationInfo {
     pub label: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub first_party: bool,
+    /// On-chain verification (WS-E), populated from the reputation cache.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verification: Option<VerificationInfo>,
 }
 
 /// The `source` and `source_facilitator` fields enable filtering and attribution.

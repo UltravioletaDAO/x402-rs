@@ -22,10 +22,19 @@ struct Prefix {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+struct Erc8004Ref {
+    network: String,
+    #[serde(rename = "agentId")]
+    agent_id: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 struct ManifestEntry {
     name: String,
     tier: Tier,
     prefixes: Vec<Prefix>,
+    #[serde(default)]
+    erc8004: Option<Erc8004Ref>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -110,6 +119,7 @@ impl CurationManifest {
                         tier: e.tier,
                         label: Some(e.name.clone()),
                         first_party: e.tier == Tier::FirstParty,
+                        verification: None,
                     });
                 }
             }
@@ -119,10 +129,30 @@ impl CurationManifest {
                 tier: Tier::Verified,
                 label: None,
                 first_party: false,
+                verification: None,
             })
         } else {
             None
         }
+    }
+
+    /// Manifest entries that carry an ERC-8004 identity, as
+    /// `(representative_url, network_string, agent_id)` for the attestation
+    /// task (WS-E). The representative URL is `https://{host}{path}` of the
+    /// first prefix.
+    pub fn attest_targets(&self) -> Vec<(String, String, u64)> {
+        self.entries
+            .iter()
+            .filter_map(|e| {
+                let r = e.erc8004.as_ref()?;
+                let p = e.prefixes.first()?;
+                Some((
+                    format!("https://{}{}", p.host, p.path),
+                    r.network.clone(),
+                    r.agent_id,
+                ))
+            })
+            .collect()
     }
 }
 
@@ -139,6 +169,7 @@ mod tests {
                     host: "api.meshrelay.xyz".to_string(),
                     path: "/payments/access/".to_string(),
                 }],
+                erc8004: None,
             }],
             suppressed: vec![SuppressEntry {
                 host: "facilitator.ultravioletadao.xyz".to_string(),

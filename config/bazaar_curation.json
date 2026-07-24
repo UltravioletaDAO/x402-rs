@@ -10,7 +10,8 @@
       ],
       "homepage": "https://execution.market",
       "expectedPayTo": ["0x857fe6150401bFB4641Fe0D2B2621cc3B05543Cd"],
-      "$evidence": "self_registered MCP listing + /.well-known/x402 (facilitator=ours). /tasks is bounty-model + ERC-8004-gated (see reference-execution-market-tasks-not-payable); tier applies to the listed MCP entry."
+      "erc8004": { "network": "base", "agentId": 2106 },
+      "$evidence": "self_registered MCP listing + /.well-known/x402 (facilitator=ours, ERC-8004 agentId 2106 on Base, registry 0x8004A169FB4a3325136EB29fA0ceB6D2e539a432). /tasks is bounty-model + ERC-8004-gated; tier applies to the listed MCP entry."
     },
     {
       "name": "MeshRelay",

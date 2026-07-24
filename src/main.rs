@@ -59,6 +59,7 @@ mod caip2;
 mod chain;
 mod discovery;
 mod discovery_aggregator;
+mod discovery_attestation;
 mod discovery_crawler;
 mod discovery_curation;
 mod discovery_health;
@@ -335,6 +336,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     } else {
         tracing::info!("Discovery health prober is disabled (DISCOVERY_ENABLE_HEALTH=false)");
+    }
+
+    // Start the ERC-8004 attestation task (WS-E). ON-CHAIN writes are gated by
+    // ENABLE_BAZAAR_ATTESTATIONS (default OFF, no gas spent); the reputation
+    // reader runs regardless so the `verification` field reflects any existing
+    // on-chain reputation.
+    {
+        let attest_config = discovery_attestation::AttestationConfig::from_env();
+        let targets: Vec<discovery_attestation::AttestTarget> = discovery_registry
+            .curation()
+            .attest_targets()
+            .into_iter()
+            .filter_map(|(url, net, agent_id)| {
+                <crate::network::Network as std::str::FromStr>::from_str(&net)
+                    .ok()
+                    .map(|network| discovery_attestation::AttestTarget {
+                        url,
+                        network,
+                        agent_id,
+                    })
+            })
+            .collect();
+        if targets.is_empty() {
+            tracing::info!("No ERC-8004 attestation targets configured; attestation task idle");
+        } else {
+            let _attest_handle = discovery_attestation::start_attestation_task(
+                Arc::clone(&axum_state),
+                discovery_registry.health(),
+                attest_config,
+                targets,
+                discovery_registry.reputation(),
+                discovery_registry.evidence(),
+            );
+        }
     }
 
     // F4: Idempotency-Key cache for /settle retries. Backed by DynamoDB in

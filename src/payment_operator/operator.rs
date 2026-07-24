@@ -1250,6 +1250,88 @@ mod tests {
         assert_eq!(encoded, signature);
     }
 
+    /// Build the ERC-1271 envelope a 7702-delegated wallet produces: the
+    /// delegate's fallback-validation locator followed by the inner ECDSA
+    /// signature. Assembled at runtime on purpose — a hex literal of a full
+    /// signature trips the pre-commit secret scanner.
+    fn erc1271_wrapped_signature() -> Bytes {
+        let mut wrapped = vec![0x00u8]; // validation type 0
+        wrapped.extend_from_slice(&[0x00; 4]); // entity id 0 (fallback validation)
+        wrapped.push(0xFF); // reserved validation data index — final segment
+        wrapped.push(0x00); // signature type: EOA
+        wrapped.extend_from_slice(&[0xAB; 65]); // the inner ECDSA signature
+        Bytes::from(wrapped)
+    }
+
+    /// Signatures longer than 65 bytes must survive untouched.
+    ///
+    /// Once a wallet's EOA is delegated (EIP-7702), the token validates through
+    /// ERC-1271 instead of ecrecover, so the signature arrives wrapped and is no
+    /// longer 65 bytes. The facilitator does not verify signatures — it forwards
+    /// them and lets the contract decide. A length check here would silently
+    /// break every delegated wallet, on every chain, and the docstring on
+    /// `EscrowPayload::signature` still says "65 bytes", so the temptation to add
+    /// one is real. This test exists to fail if anyone does.
+    #[test]
+    fn test_encode_collector_data_preserves_wrapped_signature() {
+        let signature = erc1271_wrapped_signature();
+        assert_eq!(signature.len(), 72, "wrapped signature exceeds 65 bytes");
+        assert_eq!(encode_collector_data(&signature), signature);
+    }
+
+    /// Same invariant one layer up: deserialization must not reject a signature
+    /// whose length is not 65, and must hand the bytes through unchanged.
+    #[test]
+    fn test_escrow_payload_accepts_wrapped_signature() {
+        let signature = erc1271_wrapped_signature();
+        let body = format!(
+            r#"{{
+            "x402Version": 2,
+            "scheme": "escrow",
+            "payload": {{
+                "authorization": {{
+                    "from": "0x1111111111111111111111111111111111111111",
+                    "to": "0x0E3dF9510de65469C4518D7843919c0b8C7A7757",
+                    "value": "1000000",
+                    "validAfter": "0",
+                    "validBefore": "1738500000",
+                    "nonce": "0x0000000000000000000000000000000000000000000000000000000000003039"
+                }},
+                "signature": "{signature}",
+                "paymentInfo": {{
+                    "operator": "0xFa8C4Cb156053b867Ae7489220A29b5939E3Df70",
+                    "receiver": "0x2222222222222222222222222222222222222222",
+                    "token": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+                    "maxAmount": "1000000",
+                    "preApprovalExpiry": 281474976710655,
+                    "authorizationExpiry": 281474976710655,
+                    "refundExpiry": 281474976710655,
+                    "minFeeBps": 0,
+                    "maxFeeBps": 100,
+                    "feeReceiver": "0xFa8C4Cb156053b867Ae7489220A29b5939E3Df70",
+                    "salt": "0x0000000000000000000000000000000000000000000000000000000000003039"
+                }}
+            }},
+            "paymentRequirements": {{
+                "scheme": "escrow",
+                "network": "eip155:84532",
+                "extra": {{
+                    "escrowAddress": "0xb9488351E48b23D798f24e8174514F28B741Eb4f",
+                    "operatorAddress": "0xFa8C4Cb156053b867Ae7489220A29b5939E3Df70",
+                    "tokenCollector": "0x0E3dF9510de65469C4518D7843919c0b8C7A7757"
+                }}
+            }}
+        }}"#
+        );
+
+        match parse_escrow_request(&body).unwrap() {
+            ParsedEscrowRequest::Authorize { payload, .. } => {
+                assert_eq!(payload.signature, signature);
+            }
+            _ => panic!("expected Authorize"),
+        }
+    }
+
     #[test]
     fn test_escrow_state_query_deserialization() {
         let body = r#"{

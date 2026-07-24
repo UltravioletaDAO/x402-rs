@@ -25,7 +25,7 @@ use tracing::{info, warn};
 
 use crate::chain::evm::{EvmProvider, MetaEvmProvider};
 use crate::chain::NetworkProvider;
-use crate::erc8004::{get_contracts, IReputationRegistry};
+use crate::erc8004::{get_contracts, IIdentityRegistry, IReputationRegistry};
 use crate::network::Network;
 use crate::provider_cache::ProviderMap;
 use crate::types_v2::VerificationInfo;
@@ -119,20 +119,40 @@ fn evm_provider<'a>(
     }
 }
 
-/// Read the on-chain reputation summary for `agent_id`, scoped to the reviewer
-/// address when configured (defeats reputation spam). RPC read only — no gas.
+/// Read the on-chain verification for `agent_id`: first confirm the ERC-8004
+/// identity exists (`ownerOf`), then — only when a reviewer is configured —
+/// read the reputation `getSummary` scoped to that reviewer (the contract
+/// requires a non-empty `clientAddresses`, so an unscoped summary is not
+/// possible). Returns `(feedback_count, summary_value, decimals)` when the
+/// identity exists (`(0, 0, _)` when there is no reviewer/feedback), or `None`
+/// when the identity does not exist. RPC reads only — no gas.
 pub async fn read_reputation(
     provider: &EvmProvider,
+    identity_registry: Address,
     reputation_registry: Address,
     agent_id: u64,
     reviewer: Option<Address>,
 ) -> Option<(u64, i128, u8)> {
+    // 1) Identity must exist (owner != zero).
+    let identity = IIdentityRegistry::new(identity_registry, provider.inner().clone());
+    match identity.ownerOf(U256::from(agent_id)).call().await {
+        Ok(owner) if owner != Address::ZERO => {}
+        Ok(_) => return None,
+        Err(e) => {
+            warn!(agent_id, error = %format!("{e:?}"), "ownerOf read failed");
+            return None;
+        }
+    }
+
+    // 2) Reputation summary is only queryable with a concrete reviewer set.
+    let Some(reviewer) = reviewer else {
+        return Some((0, 0, UPTIME_DECIMALS));
+    };
     let reg = IReputationRegistry::new(reputation_registry, provider.inner().clone());
-    let clients: Vec<Address> = reviewer.into_iter().collect();
     match reg
         .getSummary(
             U256::from(agent_id),
-            clients,
+            vec![reviewer],
             UPTIME_TAG.to_string(),
             String::new(),
         )
@@ -142,7 +162,7 @@ pub async fn read_reputation(
         Ok(r) => Some((r.count, r.summaryValue, r.summaryValueDecimals)),
         Err(e) => {
             warn!(agent_id, error = %format!("{e:?}"), "getSummary read failed");
-            None
+            Some((0, 0, UPTIME_DECIMALS))
         }
     }
 }
@@ -236,6 +256,7 @@ pub async fn run_cycle<M, F>(
         // Read-back (free) — populate the verification cache for the response.
         if let Some((count, value, decimals)) = read_reputation(
             provider,
+            contracts.identity_registry,
             contracts.reputation_registry,
             t.agent_id,
             config.reviewer,

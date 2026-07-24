@@ -1,5 +1,38 @@
 # Changelog
 
+## [1.55.0] - 2026-07-24
+
+### Bazaar WS-E — ERC-8004 attested curation (on-chain verification, writes default-OFF)
+
+The differentiator: probe-derived uptime turned into ON-CHAIN, independently
+verifiable reputation. Nobody else ships this.
+
+- **`src/discovery_attestation.rs`**: `attest_uptime` writes
+  `giveFeedback(agentId, uptimeBps, 2, "uptime", endpoint, feedbackURI,
+  feedbackHash)` to the ERC-8004 Reputation Registry (reusing the existing
+  `/feedback` provider + EIP-1559/legacy gas path); `read_reputation` reads
+  `getSummary` back. A daily task refreshes both.
+- **ON-CHAIN writes are gated by `ENABLE_BAZAAR_ATTESTATIONS` (default OFF) — no
+  gas is ever spent until you enable it.** The reputation READER runs regardless
+  (RPC reads are free), so the new `curation.verification` field on
+  `/discovery/resources` reflects any existing on-chain reputation
+  (`{protocol, network, agentId, feedbackCount, uptime}`).
+- Manifest gains an `erc8004: {network, agentId}` field; Execution Market is
+  wired to its Base agent (id 2106, registry `0x8004A169…`).
+- Uptime is computed from the health prober's cumulative probe counters.
+- Evidence hosting: `GET /discovery/attestation/{hash}` serves the sha256-keyed
+  evidence body committed on-chain (only `[0-9a-f]{64}` keys — F9); `nosniff`.
+- Bazaar logo aspect-ratio fix (was squished into a square box).
+
+Env (all optional; writes stay off unless the flag is set): `ENABLE_BAZAAR_ATTESTATIONS`,
+`BAZAAR_ATTESTATION_REVIEWER`, `BAZAAR_ATTESTATION_INTERVAL`. Follow-ups: dedicated
+attestation wallet + S3-persisted evidence before enabling writes.
+
+Files: `src/discovery_attestation.rs` (new), `src/discovery.rs`, `src/types_v2.rs`,
+`src/discovery_curation.rs`, `src/discovery_health.rs`, `src/handlers.rs`,
+`src/facilitator_local.rs`, `src/main.rs`, `src/lib.rs`, `config/bazaar_curation.json`,
+`static/bazaar.html`.
+
 ## [1.54.0] - 2026-07-24
 
 ### Bazaar WS-D — visual explorer at `/bazaar`

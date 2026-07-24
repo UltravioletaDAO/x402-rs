@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.54.0] - 2026-07-24
+
+### Bazaar WS-D — visual explorer at `/bazaar`
+
+A branded, visual front-end for the curated bazaar, served at `GET /bazaar`
+(standalone `static/bazaar.html`, compile-time embedded like the landing page).
+
+- Metrics band (listed / verified-alive / first-party+VIP / sources).
+- "First-class citizens" band pinning Execution Market, MeshRelay, 402Milly
+  (first-party) and Tenjin (VIP).
+- Paginated card grid over `/discovery/resources` with tier + health + network +
+  price badges; per-item detail dialog (all accepts, health, source).
+- Filters (tier, health, network, source), debounced search, deep-linkable URL
+  state, EN/ES i18n, and the shared Ultravioleta dark design system. All item
+  fields are HTML-escaped (no trust conferred from free-text provider/description).
+- Nav link added to the landing page header.
+
+Files: `static/bazaar.html` (new), `src/handlers.rs`, `static/index.html`.
+
 ## [1.53.0] - 2026-07-24
 
 ### Bazaar WS-C — curated tiers (first-class citizens)

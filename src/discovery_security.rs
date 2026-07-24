@@ -121,7 +121,6 @@ pub fn canonical_url(raw: &str) -> Result<CanonicalUrl, SecurityReject> {
 /// tier to `https://api.meshrelay.xyz.evil.com/`, `…xyz@evil.com/`,
 /// `…xyzevil.com/`, or `/api-evil` (F1).
 // Called by WS-C tier resolution against `config/bazaar_curation.json`.
-#[allow(dead_code)]
 pub fn match_manifest_prefix(url: &Url, manifest_host: &str, manifest_path: &str) -> bool {
     if url.scheme() != "https" {
         return false;

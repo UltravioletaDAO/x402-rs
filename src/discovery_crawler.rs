@@ -260,6 +260,7 @@ impl DiscoveryCrawler {
             first_seen: Some(now),
             settlement_count: None,
             health: None,
+            curation: None,
         }
     }
 

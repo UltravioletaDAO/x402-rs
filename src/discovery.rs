@@ -58,8 +58,8 @@ use tracing::{debug, error, info, warn};
 
 use crate::discovery_store::{DiscoveryStore, NoOpStore, StoreError};
 use crate::types_v2::{
-    DiscoveryFilters, DiscoveryResource, DiscoveryResponse, DiscoverySource, HealthState,
-    HealthStatus, Pagination,
+    CurationInfo, DiscoveryFilters, DiscoveryResource, DiscoveryResponse, DiscoverySource,
+    HealthState, HealthStatus, Pagination, Tier,
 };
 
 // ============================================================================
@@ -141,6 +141,42 @@ fn health_status_label(s: HealthStatus) -> &'static str {
     }
 }
 
+/// Secondary sort key: liveness rank (alive first).
+fn health_rank(health: &HashMap<String, HealthState>, url: &str) -> u8 {
+    match health
+        .get(url)
+        .map(|h| h.status)
+        .unwrap_or(HealthStatus::Unknown)
+    {
+        HealthStatus::Alive => 0,
+        HealthStatus::AuthGated => 1,
+        HealthStatus::Degraded => 2,
+        HealthStatus::Unknown => 3,
+        HealthStatus::Unprobeable => 4,
+        HealthStatus::Quarantined => 5,
+    }
+}
+
+fn tier_label(t: Tier) -> &'static str {
+    match t {
+        Tier::FirstParty => "first_party",
+        Tier::Vip => "vip",
+        Tier::Verified => "verified",
+        Tier::Listed => "listed",
+    }
+}
+
+/// `tier=` filter predicate. Resources with no curation info are `listed`.
+fn tier_matches(cur: &Option<CurationInfo>, filter: Option<&str>) -> bool {
+    match filter {
+        None => true,
+        Some(f) => {
+            let label = cur.as_ref().map(|c| tier_label(c.tier)).unwrap_or("listed");
+            label.eq_ignore_ascii_case(f)
+        }
+    }
+}
+
 // ============================================================================
 // Discovery Registry
 // ============================================================================
@@ -159,6 +195,8 @@ pub struct DiscoveryRegistry {
     store: Arc<dyn DiscoveryStore>,
     /// Liveness overlay (WS-B health prober).
     health: Arc<crate::discovery_health::HealthTracker>,
+    /// Curated tier manifest (WS-C).
+    curation: Arc<crate::discovery_curation::CurationManifest>,
 }
 
 impl Clone for DiscoveryRegistry {
@@ -167,6 +205,7 @@ impl Clone for DiscoveryRegistry {
             resources: Arc::clone(&self.resources),
             store: Arc::clone(&self.store),
             health: Arc::clone(&self.health),
+            curation: Arc::clone(&self.curation),
         }
     }
 }
@@ -187,6 +226,7 @@ impl DiscoveryRegistry {
             resources: Arc::new(RwLock::new(HashMap::new())),
             store: Arc::new(NoOpStore::new()),
             health: Arc::new(crate::discovery_health::HealthTracker::new()),
+            curation: Arc::new(crate::discovery_curation::CurationManifest::load()),
         }
     }
 
@@ -235,6 +275,7 @@ impl DiscoveryRegistry {
             resources: Arc::new(RwLock::new(cache)),
             store: Arc::new(store),
             health: Arc::new(crate::discovery_health::HealthTracker::new()),
+            curation: Arc::new(crate::discovery_curation::CurationManifest::load()),
         })
     }
 
@@ -397,34 +438,60 @@ impl DiscoveryRegistry {
         // guard across its `.await` is the guard-across-await hazard.
         let health = self.health.snapshot().await;
         let health_filter = filters.as_ref().and_then(|f| f.health.clone());
+        let tier_filter = filters.as_ref().and_then(|f| f.tier.clone());
 
         let resources = self.resources.read().await;
 
         // Cap limit at 100 to prevent abuse
         let limit = limit.min(100);
 
-        // Collect, filter, and apply the visibility policy (default hides
-        // quarantined resources; `health=<status>`/`any` overrides it).
-        let mut filtered: Vec<&DiscoveryResource> = resources
+        // Filter (user filters + suppression + health visibility), then resolve
+        // each survivor's curated tier for ordering + annotation.
+        let mut scored: Vec<(&DiscoveryResource, Option<CurationInfo>)> = resources
             .values()
             .filter(|r| self.matches_filters(r, &filters))
+            .filter(|r| !self.curation.is_suppressed(&r.url))
             .filter(|r| health_visible(&health, r.url.as_str(), health_filter.as_deref()))
+            .map(|r| {
+                let alive = health
+                    .get(r.url.as_str())
+                    .map(|h| h.status == HealthStatus::Alive)
+                    .unwrap_or(false);
+                (r, self.curation.resolve(&r.url, alive))
+            })
+            .filter(|(_, cur)| tier_matches(cur, tier_filter.as_deref()))
             .collect();
 
-        // Sort by last_updated descending (newest first)
-        filtered.sort_by(|a, b| b.last_updated.cmp(&a.last_updated));
+        // Order: curated tier (first_party > vip > verified > listed), then
+        // liveness (alive first), then last_updated descending.
+        scored.sort_by(|(a, ca), (b, cb)| {
+            let ta = ca
+                .as_ref()
+                .map(|c| c.tier.rank())
+                .unwrap_or(Tier::Listed.rank());
+            let tb = cb
+                .as_ref()
+                .map(|c| c.tier.rank())
+                .unwrap_or(Tier::Listed.rank());
+            ta.cmp(&tb)
+                .then_with(|| {
+                    health_rank(&health, a.url.as_str()).cmp(&health_rank(&health, b.url.as_str()))
+                })
+                .then_with(|| b.last_updated.cmp(&a.last_updated))
+        });
 
-        let total = filtered.len() as u32;
+        let total = scored.len() as u32;
 
-        // Apply pagination, annotating each returned item with its health
-        // (response-only; the cached/persisted copy stays health-free).
-        let items: Vec<DiscoveryResource> = filtered
+        // Apply pagination, annotating each returned item with its health +
+        // curation (response-only; the cached/persisted copy stays clean).
+        let items: Vec<DiscoveryResource> = scored
             .into_iter()
             .skip(offset as usize)
             .take(limit as usize)
-            .map(|r| {
+            .map(|(r, cur)| {
                 let mut c = r.clone();
                 c.health = health.get(r.url.as_str()).cloned();
+                c.curation = cur;
                 c
             })
             .collect();

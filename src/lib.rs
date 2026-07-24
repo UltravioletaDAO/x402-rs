@@ -21,6 +21,7 @@ pub mod caip2;
 pub mod chain;
 pub mod discovery;
 pub mod discovery_aggregator;
+pub mod discovery_curation;
 pub mod discovery_health;
 pub mod discovery_security;
 pub mod discovery_store;

@@ -1,0 +1,45 @@
+{
+  "$comment": "Curated tier manifest for the Ultravioleta bazaar. Loaded at runtime (fail-open) via BAZAAR_CURATION_PATH (default config/bazaar_curation.json). Matching is host-exact + path-boundary on the PARSED URL (discovery_security::match_manifest_prefix), NEVER a raw string prefix. Tiers order the listing: first_party > vip > verified > listed. Every URL/payTo below is live-verified evidence (see docs/plans/bazaar/01 SS6). Do not add entries from memory.",
+  "entries": [
+    {
+      "name": "Execution Market",
+      "tier": "first_party",
+      "prefixes": [
+        { "host": "mcp.execution.market", "path": "/mcp" },
+        { "host": "api.execution.market", "path": "/api/v1/tasks" }
+      ],
+      "homepage": "https://execution.market",
+      "expectedPayTo": ["0x857fe6150401bFB4641Fe0D2B2621cc3B05543Cd"],
+      "$evidence": "self_registered MCP listing + /.well-known/x402 (facilitator=ours). /tasks is bounty-model + ERC-8004-gated (see reference-execution-market-tasks-not-payable); tier applies to the listed MCP entry."
+    },
+    {
+      "name": "MeshRelay",
+      "tier": "first_party",
+      "prefixes": [{ "host": "api.meshrelay.xyz", "path": "/payments/access/" }],
+      "homepage": "https://meshrelay.xyz",
+      "expectedPayTo": ["0xe4dc963c56979E0260fc146b87eE24F18220e545"],
+      "$evidence": "live 402 probe 2026-07-23 (x402 v2, Base + SKALE Base); 7 channels registered."
+    },
+    {
+      "name": "402Milly",
+      "tier": "first_party",
+      "prefixes": [
+        { "host": "mcp.402milly.xyz", "path": "/mcp" },
+        { "host": "api.402milly.xyz", "path": "/purchase" }
+      ],
+      "homepage": "https://402milly.xyz",
+      "expectedPayTo": ["0x80238a1C73367591BF17e2f4DBAc652e479b077A"],
+      "$evidence": "live 402 probe api.402milly.xyz/purchase 2026-07-23 + self_registered MCP listing."
+    },
+    {
+      "name": "Tenjin",
+      "tier": "vip",
+      "prefixes": [{ "host": "tenjin.blog", "path": "/api/read/" }],
+      "homepage": "https://tenjin.blog",
+      "$note": "User-confirmed VIP 2026-07-23 (was 'Tangent', which does not exist). payTo varies per creator so no expectedPayTo baseline; promote checks are health-based. Shown as vip; drift-quarantine (WS-B security probe) not enforced here since payTo is per-creator by design."
+    }
+  ],
+  "suppressed": [
+    { "host": "facilitator.ultravioletadao.xyz", "path": "/__bazaar_debug__", "reason": "internal debug entry" }
+  ]
+}

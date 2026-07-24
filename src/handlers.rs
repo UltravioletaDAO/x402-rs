@@ -248,6 +248,9 @@ pub struct DiscoveryQueryParams {
 
     /// Filter by liveness: alive|degraded|auth_gated|quarantined|unknown|unprobeable|any
     pub health: Option<String>,
+
+    /// Filter by curated tier: first_party|vip|verified|listed
+    pub tier: Option<String>,
 }
 
 fn default_limit() -> u32 {
@@ -263,6 +266,7 @@ impl From<DiscoveryQueryParams> for Option<DiscoveryFilters> {
             && params.source.is_none()
             && params.source_facilitator.is_none()
             && params.health.is_none()
+            && params.tier.is_none()
         {
             None
         } else {
@@ -274,6 +278,7 @@ impl From<DiscoveryQueryParams> for Option<DiscoveryFilters> {
                 source: params.source,
                 source_facilitator: params.source_facilitator,
                 health: params.health,
+                tier: params.tier,
             })
         }
     }

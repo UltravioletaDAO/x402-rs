@@ -1038,6 +1038,46 @@ pub struct HealthState {
     pub latency_ms: Option<u64>,
 }
 
+/// Curated tier of a resource (WS-C). Orders the listing:
+/// `first_party` > `vip` > `verified` > `listed`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Tier {
+    /// Our own products (Execution Market, MeshRelay, 402Milly).
+    FirstParty,
+    /// Curated external partners.
+    Vip,
+    /// Health-verified (answers 402) but not curated.
+    Verified,
+    /// Passes ingestion filters, not otherwise curated (default).
+    #[default]
+    Listed,
+}
+
+impl Tier {
+    /// Sort rank (lower = shown first).
+    pub fn rank(self) -> u8 {
+        match self {
+            Tier::FirstParty => 0,
+            Tier::Vip => 1,
+            Tier::Verified => 2,
+            Tier::Listed => 3,
+        }
+    }
+}
+
+/// Response-facing curation annotation. Set on listings from the manifest;
+/// never persisted onto the resource.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CurationInfo {
+    pub tier: Tier,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub first_party: bool,
+}
+
 /// The `source` and `source_facilitator` fields enable filtering and attribution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1087,6 +1127,11 @@ pub struct DiscoveryResource {
     /// the separate health overlay so imports can never clobber it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub health: Option<HealthState>,
+
+    /// Curated tier (WS-C). Response-only, resolved from the manifest at read
+    /// time; never persisted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub curation: Option<CurationInfo>,
 }
 
 impl DiscoveryResource {
@@ -1116,6 +1161,7 @@ impl DiscoveryResource {
             first_seen: Some(now),
             settlement_count: None,
             health: None,
+            curation: None,
         }
     }
 
@@ -1147,6 +1193,7 @@ impl DiscoveryResource {
             first_seen: Some(now),
             settlement_count: None,
             health: None,
+            curation: None,
         }
     }
 
@@ -1176,6 +1223,7 @@ impl DiscoveryResource {
             first_seen: Some(now),
             settlement_count: Some(1),
             health: None,
+            curation: None,
         }
     }
 
@@ -1326,6 +1374,10 @@ pub struct DiscoveryFilters {
     /// Absent = default visibility (hide quarantined).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub health: Option<String>,
+
+    /// Filter by curated tier (WS-C): `first_party|vip|verified|listed`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tier: Option<String>,
 }
 
 impl DiscoveryFilters {
@@ -1337,6 +1389,7 @@ impl DiscoveryFilters {
             && self.source.is_none()
             && self.source_facilitator.is_none()
             && self.health.is_none()
+            && self.tier.is_none()
     }
 }
 

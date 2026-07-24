@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.55.2] - 2026-07-24
+
+### Fix — WS-E verification cache keyed by manifest label (URL variants never matched)
+
+`verification` still did not surface after 1.55.1: the cache was keyed by a URL
+synthesized from the manifest (`https://mcp.execution.market/mcp`) while the
+registry stores the real resource URL (`…/mcp/`, trailing slash), so the join
+never hit. The cache is now keyed by the manifest entry **label**, which
+`CurationInfo` already carries, making the annotation independent of URL
+variants. Attested uptime is also now aggregated across every probed URL under
+the product's prefix (`uptime_prefix`) rather than a single representative URL —
+a curated product usually owns many resources (all MeshRelay channels, every
+Tenjin article).
+
 ## [1.55.1] - 2026-07-24
 
 ### Fix — WS-E verification populates via ERC-8004 `ownerOf`

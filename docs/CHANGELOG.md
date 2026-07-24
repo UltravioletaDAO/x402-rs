@@ -1,5 +1,43 @@
 # Changelog
 
+## [1.51.0] - 2026-07-24
+
+### Bazaar WS-A — ingestion filter + retention GC (curated catalog)
+
+The core of the curated-bazaar plan: junk never enters the catalog, and the
+historical ~5k junk items are cleaned out. Built on the F1/F2 primitives from
+1.50.2.
+
+- **`CurationFilter`** (`discovery_security::curation_check`, rules R1-R7):
+  rejects non-http(s) schemes (`monopoly://` et al.), private/metadata/encoded
+  IP hosts, bare no-dot hosts, userinfo/oversized/whitespace URLs, non-whitelisted
+  types, oversized description/tags/metadata, and unpayable resources (no accepts
+  entry with a non-zero amount; `facilitator` type exempt). Spec-legal
+  `/:param` template URLs are kept, flagged unprobeable.
+- **`ImportPolicy`** replaces the `skip_validation` bool in `bulk_import`:
+  `Strict` (register path, unchanged) vs `Filtered` (aggregator + crawler now
+  run the curation filter instead of importing everything).
+- **Field-preserving merge**: on a colliding URL, incoming wins for content but
+  `first_seen` keeps the earliest, `settlement_count` the max, and a
+  self-registered/settlement record is never downgraded to aggregated (F4).
+- **Future-timestamp reject** (F5): feed `last_updated > now+300s` is dropped,
+  so a poisoned timestamp can't pin an item to the top or evade retention.
+- **Retention GC** (`apply_retention`, runs after each aggregation cycle):
+  removes already-stored resources that fail the static rules — deterministic on
+  stored data, never on fetch success, so a transient upstream outage can't
+  mass-delete. Disable with `DISCOVERY_ENABLE_RETENTION_GC=false`. Expected
+  first-run removal ≈ 5,063 of 26,233 (verified against a full prod snapshot):
+  scheme 2,817 + unpayable 2,193 + no-dot-host 43 + private-ip 10 → ~21,170 kept.
+- **Snapshot persistence**: `bulk_import` and the GC now persist the full cache
+  as one `save_all` (single S3 PUT), sequentially within the aggregation task,
+  eliminating the per-item read-modify-write race that could re-add GC'd junk.
+- **Aggregator pagination fix**: sources that return items with no pagination
+  block are now paged until a short page (bounded by a 50k/source cap) instead
+  of stopping after page one.
+
+Files: `src/discovery_security.rs`, `src/discovery.rs`,
+`src/discovery_aggregator.rs`, `src/discovery_crawler.rs`.
+
 ## [1.50.3] - 2026-07-23
 
 ### Bazaar — Phase-0 curation ops (source config, first-party REST, audit tool)

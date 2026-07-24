@@ -1,5 +1,39 @@
 # Changelog
 
+## [1.52.0] - 2026-07-24
+
+### Bazaar WS-B — health prober (the pre-ping / dead-endpoint sweep)
+
+The catalog is now not just payable but **alive**. A background prober checks
+every listed URL and hides the dead ones from the default listing.
+
+- **Prober** (`discovery_health`): every `DISCOVERY_HEALTH_TICK` (60s) probes the
+  due URLs with the SSRF-hardened `safe_get` connector (no payment attached).
+  `402` = alive; `401/403/405/415` = auth-gated (healthy for its design, e.g.
+  Execution Market or POST-only endpoints); `200/201/429` = degraded; `404/410`
+  / dead / 5xx / DNS-fail = fail; SSRF-refused / template / non-http =
+  unprobeable.
+- **Hysteresis state machine**: quarantine after 3 consecutive fails (with
+  1h→6h→24h→72h backoff), recover after 2 consecutive alives. Liveness lives in
+  a **separate S3 overlay** (`bazaar/health.json`), never inline on the resource,
+  so the ingestion filter and retention GC can never clobber it.
+- **Politeness / safety**: global concurrency (`DISCOVERY_HEALTH_CONCURRENCY`,
+  15), average rate cap (`DISCOVERY_HEALTH_MAX_RPS`, 20), and max 3 probes per
+  host per tick so a mega-host (e.g. thousands of listings on one origin) is
+  spread across ticks instead of hammered. Kill-switch `DISCOVERY_ENABLE_HEALTH`.
+- **Read side**: `GET /discovery/resources` now hides `quarantined` resources by
+  default and annotates each item with its `health` (`status`, `lastChecked`,
+  `httpStatus`, `latencyMs`). New `?health=alive|degraded|auth_gated|quarantined|
+  unknown|unprobeable|any` filter (`any` restores the full view). The health
+  snapshot is taken before the resources read guard to avoid a guard-across-await.
+
+Over the first ~day after deploy the default view converges from ~21k to the
+subset that actually answers 402, as the ~62% host-alive-but-404 listings hit
+their third fail and quarantine.
+
+Files: `src/discovery_health.rs` (new), `src/discovery.rs`, `src/types_v2.rs`,
+`src/handlers.rs`, `src/main.rs`, `src/discovery_crawler.rs`, `src/lib.rs`.
+
 ## [1.51.0] - 2026-07-24
 
 ### Bazaar WS-A — ingestion filter + retention GC (curated catalog)

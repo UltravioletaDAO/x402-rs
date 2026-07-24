@@ -399,6 +399,77 @@ impl FacilitatorConfig {
             Self::virtuals(),
         ]
     }
+
+    /// Load per-source enable/disable overrides from `config/bazaar_sources.json`
+    /// (or `$BAZAAR_SOURCES_PATH`) on top of [`FacilitatorConfig::all`].
+    ///
+    /// Fail-open: a missing or malformed file, or an id not present in the file,
+    /// leaves every source at its built-in default (enabled), so a config
+    /// mistake can never silently empty the bazaar. Only `id` + `enabled` are
+    /// honored today; the richer `trust`/`maxItems` fields are consumed by the
+    /// full WS-A ingestion filter (docs/plans/bazaar/02-ingestion-filter.md).
+    pub fn all_with_source_config() -> Vec<Self> {
+        let mut configs = Self::all();
+        let path = std::env::var("BAZAAR_SOURCES_PATH")
+            .unwrap_or_else(|_| "config/bazaar_sources.json".to_string());
+
+        let raw = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) => {
+                info!(path = %path, error = %e, "No bazaar sources config found; all sources enabled");
+                return configs;
+            }
+        };
+
+        let disabled = match apply_source_config(&mut configs, &raw) {
+            Ok(d) => d,
+            Err(e) => {
+                warn!(path = %path, error = %e, "Malformed bazaar sources config; all sources enabled");
+                return Self::all();
+            }
+        };
+        if disabled.is_empty() {
+            info!(path = %path, "Loaded bazaar sources config; no sources disabled");
+        } else {
+            info!(path = %path, disabled = ?disabled, "Loaded bazaar sources config");
+        }
+        configs
+    }
+}
+
+/// Apply `enabled` overrides from a `bazaar_sources.json` string to `configs`
+/// in place, returning the ids that were disabled. Pure (no I/O) so it is unit
+/// testable; unknown fields (`trust`/`maxItems`/`note`/`$comment`) are ignored,
+/// and an id absent from the file keeps its built-in default.
+fn apply_source_config(
+    configs: &mut [FacilitatorConfig],
+    raw: &str,
+) -> Result<Vec<String>, serde_json::Error> {
+    #[derive(Deserialize)]
+    struct SourceEntry {
+        id: String,
+        enabled: bool,
+    }
+    #[derive(Deserialize)]
+    struct SourcesFile {
+        sources: Vec<SourceEntry>,
+    }
+    let parsed: SourcesFile = serde_json::from_str(raw)?;
+    let overrides: std::collections::HashMap<String, bool> = parsed
+        .sources
+        .into_iter()
+        .map(|s| (s.id, s.enabled))
+        .collect();
+    let mut disabled = Vec::new();
+    for c in configs.iter_mut() {
+        if let Some(&enabled) = overrides.get(&c.id) {
+            c.enabled = enabled;
+            if !enabled {
+                disabled.push(c.id.clone());
+            }
+        }
+    }
+    Ok(disabled)
 }
 
 // ============================================================================
@@ -855,7 +926,10 @@ pub fn start_aggregation_task(
     );
 
     tokio::spawn(async move {
-        let aggregator = DiscoveryAggregator::new();
+        // Honor per-source enable/disable from config/bazaar_sources.json so
+        // transport-broken feeds (openx402/x402rs/virtuals) are not hit hourly.
+        let aggregator =
+            DiscoveryAggregator::with_facilitators(FacilitatorConfig::all_with_source_config());
         let interval = Duration::from_secs(interval_secs);
 
         // Run immediately on startup
@@ -991,6 +1065,33 @@ mod tests {
         assert!(ids.contains(&"polymer"));
         assert!(ids.contains(&"meridian"));
         assert!(ids.contains(&"virtuals"));
+    }
+
+    #[test]
+    fn test_apply_source_config() {
+        let mut configs = FacilitatorConfig::all();
+        let raw = r#"{
+            "$comment": "ignored",
+            "sources": [
+                { "id": "openx402", "enabled": false, "note": "broken" },
+                { "id": "x402rs",   "enabled": false },
+                { "id": "virtuals", "enabled": false },
+                { "id": "coinbase", "enabled": true, "trust": "standard", "maxItems": 5 }
+            ]
+        }"#;
+        let disabled = apply_source_config(&mut configs, raw).unwrap();
+        assert_eq!(disabled.len(), 3);
+        let find = |id: &str| configs.iter().find(|c| c.id == id).unwrap().enabled;
+        assert!(!find("openx402"));
+        assert!(!find("x402rs"));
+        assert!(!find("virtuals"));
+        assert!(find("coinbase"));
+        // an id absent from the file keeps its built-in default (enabled)
+        assert!(find("payai"));
+
+        // malformed JSON -> Err so the caller fails open
+        let mut c2 = FacilitatorConfig::all();
+        assert!(apply_source_config(&mut c2, "not json").is_err());
     }
 
     #[test]

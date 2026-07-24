@@ -1,0 +1,17 @@
+{
+  "$comment": "Per-source policy for the Bazaar discovery aggregator. Loaded at runtime (fail-open: a missing/invalid file or an unknown id leaves all sources enabled). Only `id` + `enabled` are honored today; `trust`/`maxItems`/`note` are documented for the full WS-A ingestion filter (docs/plans/bazaar/02-ingestion-filter.md). Override path via BAZAAR_SOURCES_PATH.",
+  "sources": [
+    { "id": "coinbase",   "enabled": true,  "trust": "standard" },
+    { "id": "payai",      "enabled": true,  "trust": "probation", "maxItems": 30000, "note": "95% of catalog, ~20% 402-alive; probation-gate in WS-B" },
+    { "id": "thirdweb",   "enabled": true,  "trust": "standard" },
+    { "id": "questflow",  "enabled": true,  "trust": "trusted", "note": "100% 402-alive in audit; 500s intermittently but recovers" },
+    { "id": "aurracloud", "enabled": true,  "trust": "probation", "note": "77% dead hosts (audit 2026-07-23); candidate for disable after WS-B probation gating" },
+    { "id": "anyspend",   "enabled": true,  "trust": "probation" },
+    { "id": "openx402",   "enabled": false, "note": "DISABLED: TLS cert hostname mismatch — endpoint broken (verified 2026-07-23)" },
+    { "id": "x402rs",     "enabled": false, "note": "DISABLED: endpoint returns an HTML landing page, not discovery JSON (verified 2026-07-23)" },
+    { "id": "heurist",    "enabled": true,  "trust": "standard" },
+    { "id": "polymer",    "enabled": true,  "trust": "standard" },
+    { "id": "meridian",   "enabled": true,  "trust": "standard" },
+    { "id": "virtuals",   "enabled": false, "note": "DISABLED: 404 NotFoundError — endpoint moved/removed (verified 2026-07-23)" }
+  ]
+}

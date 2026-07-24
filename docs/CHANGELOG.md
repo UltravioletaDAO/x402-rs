@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.55.1] - 2026-07-24
+
+### Fix — WS-E verification populates via ERC-8004 `ownerOf`
+
+The `curation.verification` badge was never populating: the Reputation Registry's
+`getSummary` reverts with `clientAddresses required` when called with an empty
+client set (which it always was without a configured reviewer / any attestations).
+Fixed by confirming the ERC-8004 identity via `IIdentityRegistry.ownerOf(agentId)`
+(verified: Execution Market's agent 2106 exists on Base) and only calling
+`getSummary` when a reviewer is configured. Verification now shows the on-chain
+identity (`feedbackCount: 0`) even before any attestations are written.
+
 ## [1.55.0] - 2026-07-24
 
 ### Bazaar WS-E — ERC-8004 attested curation (on-chain verification, writes default-OFF)

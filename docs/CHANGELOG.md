@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.53.0] - 2026-07-24
+
+### Bazaar WS-C — curated tiers (first-class citizens)
+
+Our products now rank first, and internal debug entries are delisted.
+
+- **`config/bazaar_curation.json`** manifest (runtime-loaded, fail-open via
+  `BAZAAR_CURATION_PATH`): `first_party` = Execution Market, MeshRelay, 402Milly;
+  `vip` = Tenjin (user-confirmed). Matching is host-exact + path-boundary on the
+  parsed URL (`match_manifest_prefix`), so `api.meshrelay.xyz.evil.com` can never
+  impersonate a curated product (F1).
+- **Tier-aware ordering** in `GET /discovery/resources`: `first_party` > `vip` >
+  `verified` (health-alive) > `listed`, then by liveness, then `lastUpdated`.
+  Each item is annotated with `curation { tier, label, firstParty }`. New
+  `?tier=first_party|vip|verified|listed` filter.
+- **Suppression**: the manifest `suppressed[]` list delists entries (the leftover
+  `__bazaar_debug__` internal entry is now hidden).
+
+Files: `src/discovery_curation.rs` (new), `config/bazaar_curation.json` (new),
+`src/discovery.rs`, `src/types_v2.rs`, `src/handlers.rs`, `src/discovery_security.rs`,
+`src/discovery_crawler.rs`, `src/main.rs`, `src/lib.rs`.
+
 ## [1.52.0] - 2026-07-24
 
 ### Bazaar WS-B — health prober (the pre-ping / dead-endpoint sweep)

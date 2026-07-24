@@ -201,6 +201,11 @@ pub struct DiscoveryRegistry {
     reputation: Arc<RwLock<HashMap<String, crate::types_v2::VerificationInfo>>>,
     /// Hosted attestation evidence bodies (WS-E), keyed by sha256(url) hex.
     evidence: Arc<RwLock<HashMap<String, Vec<u8>>>>,
+    /// `GET /discovery/stats` cache: `(computed_at_unix, payload)`.
+    stats_cache: Arc<RwLock<Option<(u64, serde_json::Value)>>>,
+    /// Runtime suppression set (admin API), keyed by canonical URL. Additive to
+    /// the manifest's static `suppressed[]` list.
+    suppressed: Arc<RwLock<std::collections::HashSet<String>>>,
 }
 
 impl Clone for DiscoveryRegistry {
@@ -212,6 +217,8 @@ impl Clone for DiscoveryRegistry {
             curation: Arc::clone(&self.curation),
             reputation: Arc::clone(&self.reputation),
             evidence: Arc::clone(&self.evidence),
+            stats_cache: Arc::clone(&self.stats_cache),
+            suppressed: Arc::clone(&self.suppressed),
         }
     }
 }
@@ -235,6 +242,8 @@ impl DiscoveryRegistry {
             curation: Arc::new(crate::discovery_curation::CurationManifest::load()),
             reputation: Arc::new(RwLock::new(HashMap::new())),
             evidence: Arc::new(RwLock::new(HashMap::new())),
+            stats_cache: Arc::new(RwLock::new(None)),
+            suppressed: Arc::new(RwLock::new(std::collections::HashSet::new())),
         }
     }
 
@@ -263,6 +272,124 @@ impl DiscoveryRegistry {
         self.evidence.read().await.get(key).cloned()
     }
 
+    /// Normalize a URL to the key used by the suppression set. Falls back to a
+    /// trimmed lowercase form when the URL does not parse.
+    fn suppression_key(url: &str) -> String {
+        match crate::discovery_security::canonical_url(url) {
+            Ok(c) => c.key,
+            Err(_) => url.trim().to_ascii_lowercase(),
+        }
+    }
+
+    /// Hide a resource from every listing without deleting it (admin API).
+    /// Returns `true` if it was not already suppressed.
+    pub async fn suppress(&self, url: &str) -> bool {
+        let key = Self::suppression_key(url);
+        let added = self.suppressed.write().await.insert(key.clone());
+        if added {
+            info!(url = %key, "Resource suppressed by admin");
+            self.invalidate_stats().await;
+        }
+        added
+    }
+
+    /// Un-suppress a resource (admin API). Returns `true` if it was suppressed.
+    pub async fn release(&self, url: &str) -> bool {
+        let key = Self::suppression_key(url);
+        let removed = self.suppressed.write().await.remove(&key);
+        if removed {
+            info!(url = %key, "Resource released by admin");
+            self.invalidate_stats().await;
+        }
+        removed
+    }
+
+    /// Snapshot of runtime-suppressed keys (taken before the resources guard).
+    async fn suppressed_snapshot(&self) -> std::collections::HashSet<String> {
+        self.suppressed.read().await.clone()
+    }
+
+    async fn invalidate_stats(&self) {
+        *self.stats_cache.write().await = None;
+    }
+
+    /// Aggregate catalog metrics for `GET /discovery/stats`, served from a
+    /// 60-second in-process cache: the computation is a full pass over the
+    /// catalog, and this route is public and unauthenticated.
+    pub async fn stats(&self) -> serde_json::Value {
+        const TTL_SECS: u64 = 60;
+        let now = now_secs();
+
+        if let Some((at, payload)) = self.stats_cache.read().await.as_ref() {
+            if now.saturating_sub(*at) < TTL_SECS {
+                return payload.clone();
+            }
+        }
+
+        // Snapshot the overlays before taking the resources guard (no awaits
+        // while it is held).
+        let health = self.health.snapshot().await;
+        let suppressed = self.suppressed_snapshot().await;
+
+        let mut by_source: HashMap<String, u64> = HashMap::new();
+        let mut by_facilitator: HashMap<String, u64> = HashMap::new();
+        let mut by_network: HashMap<String, u64> = HashMap::new();
+        let mut by_tier: HashMap<String, u64> = HashMap::new();
+        let mut by_health: HashMap<String, u64> = HashMap::new();
+        let (mut total, mut visible) = (0u64, 0u64);
+
+        {
+            let resources = self.resources.read().await;
+            for r in resources.values() {
+                if self.curation.is_suppressed(&r.url)
+                    || suppressed.contains(&Self::suppression_key(r.url.as_str()))
+                {
+                    continue;
+                }
+                total += 1;
+
+                let status = health
+                    .get(r.url.as_str())
+                    .map(|h| h.status)
+                    .unwrap_or(HealthStatus::Unknown);
+                *by_health
+                    .entry(health_status_label(status).to_string())
+                    .or_insert(0) += 1;
+                if status != HealthStatus::Quarantined {
+                    visible += 1;
+                }
+
+                *by_source.entry(r.source.to_string()).or_insert(0) += 1;
+                if let Some(sf) = r.source_facilitator.as_ref() {
+                    *by_facilitator.entry(sf.clone()).or_insert(0) += 1;
+                }
+                for a in &r.accepts {
+                    *by_network.entry(a.network.to_string()).or_insert(0) += 1;
+                }
+
+                let tier = self
+                    .curation
+                    .resolve(&r.url, status == HealthStatus::Alive)
+                    .map(|c| tier_label(c.tier))
+                    .unwrap_or("listed");
+                *by_tier.entry(tier.to_string()).or_insert(0) += 1;
+            }
+        }
+
+        let payload = serde_json::json!({
+            "total": total,
+            "visible": visible,
+            "bySource": by_source,
+            "bySourceFacilitator": by_facilitator,
+            "byNetwork": by_network,
+            "byTier": by_tier,
+            "byHealth": by_health,
+            "generatedAt": now,
+        });
+        *self.stats_cache.write().await = Some((now, payload.clone()));
+        payload
+    }
+
     /// Snapshot of every registered resource URL (for the health prober).
     pub async fn all_urls(&self) -> Vec<url::Url> {
         self.resources
@@ -270,6 +397,27 @@ impl DiscoveryRegistry {
             .await
             .values()
             .map(|r| r.url.clone())
+            .collect()
+    }
+
+    /// Snapshot of probe targets: `(url, resource_type, expected_pay_to)`.
+    /// `expected_pay_to` is the set of recipients currently listed for the
+    /// resource, so the prober can detect a payTo swap in the live 402 body.
+    pub async fn probe_targets(&self) -> Vec<(url::Url, String, Vec<String>)> {
+        self.resources
+            .read()
+            .await
+            .values()
+            .map(|r| {
+                (
+                    r.url.clone(),
+                    r.resource_type.clone(),
+                    r.accepts
+                        .iter()
+                        .map(|a| a.pay_to.to_string().to_ascii_lowercase())
+                        .collect(),
+                )
+            })
             .collect()
     }
 
@@ -306,6 +454,8 @@ impl DiscoveryRegistry {
             curation: Arc::new(crate::discovery_curation::CurationManifest::load()),
             reputation: Arc::new(RwLock::new(HashMap::new())),
             evidence: Arc::new(RwLock::new(HashMap::new())),
+            stats_cache: Arc::new(RwLock::new(None)),
+            suppressed: Arc::new(RwLock::new(std::collections::HashSet::new())),
         })
     }
 
@@ -468,8 +618,14 @@ impl DiscoveryRegistry {
         // guard across its `.await` is the guard-across-await hazard.
         let health = self.health.snapshot().await;
         let reputation = self.reputation.read().await.clone();
+        let suppressed = self.suppressed_snapshot().await;
         let health_filter = filters.as_ref().and_then(|f| f.health.clone());
         let tier_filter = filters.as_ref().and_then(|f| f.tier.clone());
+        // Normalize the search needle once (matching is a substring scan).
+        let filters = filters.map(|mut f| {
+            f.q = f.q.map(|q| q.trim().to_ascii_lowercase());
+            f
+        });
 
         let resources = self.resources.read().await;
 
@@ -481,7 +637,10 @@ impl DiscoveryRegistry {
         let mut scored: Vec<(&DiscoveryResource, Option<CurationInfo>)> = resources
             .values()
             .filter(|r| self.matches_filters(r, &filters))
-            .filter(|r| !self.curation.is_suppressed(&r.url))
+            .filter(|r| {
+                !self.curation.is_suppressed(&r.url)
+                    && !suppressed.contains(&Self::suppression_key(r.url.as_str()))
+            })
             .filter(|r| health_visible(&health, r.url.as_str(), health_filter.as_deref()))
             .map(|r| {
                 let alive = health
@@ -803,6 +962,34 @@ impl DiscoveryRegistry {
                 .unwrap_or(false);
             if !matches {
                 return false;
+            }
+        }
+
+        // Free-text search over url / description / provider / tags. The needle
+        // is lowercased once by the caller (`list`), so this is a plain
+        // case-insensitive substring scan.
+        if let Some(ref needle) = f.q {
+            if !needle.is_empty() {
+                let url_hit = resource.url.as_str().to_ascii_lowercase().contains(needle);
+                let desc_hit = resource.description.to_ascii_lowercase().contains(needle);
+                let meta_hit = resource
+                    .metadata
+                    .as_ref()
+                    .map(|m| {
+                        m.provider
+                            .as_ref()
+                            .is_some_and(|p| p.to_ascii_lowercase().contains(needle))
+                            || m.category
+                                .as_ref()
+                                .is_some_and(|c| c.to_ascii_lowercase().contains(needle))
+                            || m.tags
+                                .iter()
+                                .any(|t| t.to_ascii_lowercase().contains(needle))
+                    })
+                    .unwrap_or(false);
+                if !(url_hit || desc_hit || meta_hit) {
+                    return false;
+                }
             }
         }
 
@@ -1160,6 +1347,84 @@ mod tests {
         let retrieved = registry.get("https://api.example.com/data").await;
         assert!(retrieved.is_some());
         assert_eq!(retrieved.unwrap().url, resource.url);
+    }
+
+    #[tokio::test]
+    async fn test_free_text_search_filters() {
+        let registry = DiscoveryRegistry::new();
+        let mut a = create_test_resource("https://api.tenjin.blog/read/x", None);
+        a.description = "Pay-per-read blogs for agents".to_string();
+        let b = create_test_resource("https://other.example.com/weather", None);
+        registry.register(a).await.unwrap();
+        registry.register(b).await.unwrap();
+
+        let q = |s: &str| DiscoveryFilters {
+            q: Some(s.to_string()),
+            ..Default::default()
+        };
+        // matches on URL
+        let r = registry.list(10, 0, Some(q("tenjin"))).await;
+        assert_eq!(r.pagination.total, 1);
+        // matches on description, case-insensitively
+        let r = registry.list(10, 0, Some(q("BLOGS"))).await;
+        assert_eq!(r.pagination.total, 1);
+        // no match
+        let r = registry.list(10, 0, Some(q("nonexistent-needle"))).await;
+        assert_eq!(r.pagination.total, 0);
+        // empty filter set returns everything
+        let r = registry.list(10, 0, None).await;
+        assert_eq!(r.pagination.total, 2);
+    }
+
+    #[tokio::test]
+    async fn test_suppress_and_release_hide_resource() {
+        let registry = DiscoveryRegistry::new();
+        let url = "https://api.example.com/hidden";
+        registry
+            .register(create_test_resource(url, None))
+            .await
+            .unwrap();
+        assert_eq!(registry.list(10, 0, None).await.pagination.total, 1);
+
+        assert!(
+            registry.suppress(url).await,
+            "first suppress reports change"
+        );
+        assert!(!registry.suppress(url).await, "second suppress is a no-op");
+        assert_eq!(
+            registry.list(10, 0, None).await.pagination.total,
+            0,
+            "suppressed resource must be hidden from listings"
+        );
+
+        assert!(registry.release(url).await, "release reports change");
+        assert_eq!(registry.list(10, 0, None).await.pagination.total, 1);
+    }
+
+    #[tokio::test]
+    async fn test_stats_counts_and_cache() {
+        let registry = DiscoveryRegistry::new();
+        registry
+            .register(create_test_resource("https://api.example.com/a", None))
+            .await
+            .unwrap();
+        registry
+            .register(create_test_resource("https://api.example.com/b", None))
+            .await
+            .unwrap();
+
+        let s = registry.stats().await;
+        assert_eq!(s["total"], 2);
+        assert_eq!(s["visible"], 2, "nothing quarantined yet");
+        assert_eq!(s["bySource"]["self_registered"], 2);
+        // Base is the network used by the test fixture.
+        assert_eq!(s["byNetwork"]["eip155:8453"], 2);
+        assert!(s["generatedAt"].as_u64().is_some());
+
+        // A suppression invalidates the cache, so the next call recomputes.
+        registry.suppress("https://api.example.com/a").await;
+        let s2 = registry.stats().await;
+        assert_eq!(s2["total"], 1, "suppressed resources drop out of stats");
     }
 
     fn junk_empty_accepts(url: &str) -> DiscoveryResource {

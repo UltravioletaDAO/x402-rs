@@ -28,7 +28,7 @@ use tokio::sync::{RwLock, Semaphore};
 use tracing::{debug, error, info, warn};
 
 use crate::discovery::DiscoveryRegistry;
-use crate::discovery_security::{safe_get, SecurityReject};
+use crate::discovery_security::{safe_get, safe_post_json, SecurityReject};
 use crate::types_v2::{HealthState, HealthStatus};
 
 /// Consecutive fail-class probes before a resource is quarantined.
@@ -97,6 +97,9 @@ enum ProbeClass {
     Degraded,
     Fail,
     Unprobeable,
+    /// The live 402 pays a recipient the listing never declared — a hijack
+    /// signal. Quarantines immediately, bypassing the failure hysteresis.
+    PayToDrift,
 }
 
 struct S3Overlay {
@@ -301,13 +304,81 @@ impl HealthTracker {
                 rec.status = HealthStatus::Unprobeable;
                 rec.next_probe_at = now + HEALTHY_REPROBE_SECS;
             }
+            ProbeClass::PayToDrift => {
+                // Security event, not a liveness event: quarantine on the first
+                // observation rather than after the usual failure streak.
+                rec.consecutive_ok = 0;
+                rec.consecutive_fail = QUARANTINE_AFTER_FAILS;
+                if rec.status != HealthStatus::Quarantined {
+                    rec.quarantined_at = Some(now);
+                }
+                rec.status = HealthStatus::Quarantined;
+                rec.next_probe_at = now + BACKOFF_SECS[BACKOFF_SECS.len() - 1];
+            }
         }
         self.dirty.store(true, Ordering::SeqCst);
     }
 }
 
-/// Classify a single probe of `url` (GET, no payment attached).
-async fn probe(url: &url::Url) -> (ProbeClass, Option<u16>, u64) {
+/// JSON-RPC `initialize` handshake used to probe MCP endpoints, which answer
+/// POST-only JSON-RPC rather than a bare GET 402.
+const MCP_INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"uvd-bazaar-health","version":"1.0"}}}"#;
+
+/// Probe an MCP endpoint with a JSON-RPC `initialize`. A 2xx JSON-RPC reply (or
+/// a 402 challenge) means the server is live; anything else falls back to the
+/// standard classification.
+async fn probe_mcp(url: &url::Url) -> (ProbeClass, Option<u16>, u64) {
+    let start = std::time::Instant::now();
+    let result = safe_post_json(PROBE_UA, PROBE_TIMEOUT, url, MCP_INITIALIZE.to_string()).await;
+    let latency = start.elapsed().as_millis() as u64;
+    match result {
+        Ok(resp) => {
+            let code = resp.status().as_u16();
+            let class = match code {
+                402 => ProbeClass::Alive,
+                // A JSON-RPC handshake that the server answers is a live MCP
+                // service — that is this resource type's healthy signal.
+                200 | 201 => ProbeClass::Alive,
+                401 | 403 | 405 | 415 => ProbeClass::AuthGated,
+                429 => ProbeClass::Degraded,
+                404 | 410 => ProbeClass::Fail,
+                c if (500..600).contains(&c) => ProbeClass::Fail,
+                _ => ProbeClass::Degraded,
+            };
+            (class, Some(code), latency)
+        }
+        Err(SecurityReject::DisallowedAddress(_))
+        | Err(SecurityReject::Scheme(_))
+        | Err(SecurityReject::Userinfo)
+        | Err(SecurityReject::Port(_))
+        | Err(SecurityReject::NoHost) => (ProbeClass::Unprobeable, None, latency),
+        Err(_) => (ProbeClass::Fail, None, latency),
+    }
+}
+
+/// Extract the `payTo` recipients advertised by a live 402 body (x402 v2
+/// `accepts[]`, or a v1-style top-level `payTo`). Lowercased for comparison.
+fn pay_to_from_402(body: &str) -> Vec<String> {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    if let Some(accepts) = v.get("accepts").and_then(|a| a.as_array()) {
+        for a in accepts {
+            if let Some(p) = a.get("payTo").and_then(|p| p.as_str()) {
+                out.push(p.to_ascii_lowercase());
+            }
+        }
+    }
+    if let Some(p) = v.get("payTo").and_then(|p| p.as_str()) {
+        out.push(p.to_ascii_lowercase());
+    }
+    out
+}
+
+/// Classify a single probe of `url` (GET, no payment attached). On a 402 the
+/// body is read so the caller can check for a payTo swap.
+async fn probe(url: &url::Url) -> (ProbeClass, Option<u16>, u64, Option<String>) {
     let start = std::time::Instant::now();
     let result = safe_get(PROBE_UA, PROBE_TIMEOUT, url).await;
     let latency = start.elapsed().as_millis() as u64;
@@ -322,7 +393,13 @@ async fn probe(url: &url::Url) -> (ProbeClass, Option<u16>, u64) {
                 c if (500..600).contains(&c) => ProbeClass::Fail,
                 _ => ProbeClass::Degraded,
             };
-            (class, Some(code), latency)
+            // Only 402 bodies carry payment terms worth diffing.
+            let body = if code == 402 {
+                resp.text().await.ok()
+            } else {
+                None
+            };
+            return (class, Some(code), latency, body);
         }
         // A URL the SSRF connector refuses (private/template/bad-port) is not a
         // dead endpoint — it is simply not probeable this way.
@@ -330,9 +407,9 @@ async fn probe(url: &url::Url) -> (ProbeClass, Option<u16>, u64) {
         | Err(SecurityReject::Scheme(_))
         | Err(SecurityReject::Userinfo)
         | Err(SecurityReject::Port(_))
-        | Err(SecurityReject::NoHost) => (ProbeClass::Unprobeable, None, latency),
+        | Err(SecurityReject::NoHost) => (ProbeClass::Unprobeable, None, latency, None),
         // Resolution failure / connection error / redirect loop -> dead.
-        Err(_) => (ProbeClass::Fail, None, latency),
+        Err(_) => (ProbeClass::Fail, None, latency, None),
     }
 }
 
@@ -367,8 +444,8 @@ pub fn start_health_task(
             // per host per tick so a mega-host (e.g. orbisapi.com with thousands
             // of listings) is spread across ticks rather than hammered.
             let mut per_host: HashMap<String, usize> = HashMap::new();
-            let mut due: Vec<url::Url> = Vec::new();
-            for u in registry.all_urls().await {
+            let mut due: Vec<(url::Url, String, Vec<String>)> = Vec::new();
+            for (u, ty, pay_to) in registry.probe_targets().await {
                 if due.len() >= max_per_tick {
                     break;
                 }
@@ -381,7 +458,7 @@ pub fn start_health_task(
                     continue;
                 }
                 *c += 1;
-                due.push(u);
+                due.push((u, ty, pay_to));
             }
 
             if due.is_empty() {
@@ -390,12 +467,43 @@ pub fn start_health_task(
             debug!(due = due.len(), "Health prober cycle");
 
             let mut handles = Vec::with_capacity(due.len());
-            for u in due {
+            for (u, resource_type, expected_pay_to) in due {
                 let sem = Arc::clone(&sem);
                 let tracker = Arc::clone(&tracker);
                 handles.push(tokio::spawn(async move {
                     let _permit = sem.acquire().await.ok();
-                    let (class, http, latency) = probe(&u).await;
+                    // MCP endpoints answer a POST JSON-RPC handshake, not a GET
+                    // 402 — probing them with GET would mark our own first-party
+                    // MCP services dead.
+                    let (mut class, http, latency, body) = if resource_type == "mcp" {
+                        let (c, h, l) = probe_mcp(&u).await;
+                        (c, h, l, None)
+                    } else {
+                        probe(&u).await
+                    };
+
+                    // payTo drift (F4): a live 402 that now pays a recipient the
+                    // listing never declared is a hijack signal, not a health
+                    // signal. Quarantine immediately and alarm.
+                    if let Some(body) = body.as_deref() {
+                        if !expected_pay_to.is_empty() {
+                            let live = pay_to_from_402(body);
+                            let drifted: Vec<&String> = live
+                                .iter()
+                                .filter(|p| !expected_pay_to.contains(p))
+                                .collect();
+                            if !live.is_empty() && !drifted.is_empty() {
+                                warn!(
+                                    url = %u,
+                                    expected = ?expected_pay_to,
+                                    observed = ?live,
+                                    "paytoswap: live 402 pays an undeclared recipient; quarantining"
+                                );
+                                class = ProbeClass::PayToDrift;
+                            }
+                        }
+                    }
+
                     tracker.record_probe(u.as_str(), class, http, latency).await;
                 }));
             }
@@ -441,6 +549,35 @@ mod tests {
         assert_eq!(status_of(&t, u).await, HealthStatus::Quarantined);
         t.record_probe(u, ProbeClass::Alive, Some(402), 10).await;
         assert_eq!(status_of(&t, u).await, HealthStatus::Alive);
+    }
+
+    #[test]
+    fn pay_to_extraction_handles_v2_and_v1_bodies() {
+        // x402 v2: accepts[]
+        let v2 = r#"{"x402Version":2,"accepts":[
+            {"network":"eip155:8453","payTo":"0xAAAa0000000000000000000000000000000000aa"},
+            {"network":"eip155:1","payTo":"0xBBBb0000000000000000000000000000000000bb"}]}"#;
+        let got = pay_to_from_402(v2);
+        assert_eq!(got.len(), 2);
+        assert!(got.contains(&"0xaaaa0000000000000000000000000000000000aa".to_string()));
+        // v1-style top-level payTo
+        let v1 = r#"{"payTo":"0xCCCc0000000000000000000000000000000000cc","amount":"1"}"#;
+        assert_eq!(
+            pay_to_from_402(v1),
+            vec!["0xcccc0000000000000000000000000000000000cc".to_string()]
+        );
+        // garbage body yields nothing (so drift never fires on unparseable input)
+        assert!(pay_to_from_402("not json").is_empty());
+    }
+
+    #[tokio::test]
+    async fn paytodrift_quarantines_immediately() {
+        let t = HealthTracker::new();
+        let u = "https://hijacked.example/pay";
+        // A single drift observation quarantines — no failure streak required.
+        t.record_probe(u, ProbeClass::PayToDrift, Some(402), 12)
+            .await;
+        assert_eq!(status_of(&t, u).await, HealthStatus::Quarantined);
     }
 
     #[tokio::test]

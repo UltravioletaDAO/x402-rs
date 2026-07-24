@@ -1398,6 +1398,11 @@ pub struct DiscoveryFilters {
     /// Filter by curated tier (WS-C): `first_party|vip|verified|listed`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tier: Option<String>,
+
+    /// Free-text search over url / description / provider / category / tags.
+    /// Stored lowercased by `list()` so matching is a plain substring scan.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub q: Option<String>,
 }
 
 impl DiscoveryFilters {
@@ -1410,6 +1415,7 @@ impl DiscoveryFilters {
             && self.source_facilitator.is_none()
             && self.health.is_none()
             && self.tier.is_none()
+            && self.q.is_none()
     }
 }
 

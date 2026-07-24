@@ -424,6 +424,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .finish()
             .expect("discovery_register governor config must be valid"),
     );
+    // Bazaar read routes (/discovery/resources, /discovery/stats) were
+    // previously ungoverned. Each call scans the in-memory catalog under a read
+    // lock — with `q=` it is O(catalog) per request — so an unauthenticated
+    // loop is a cheap CPU/lock-contention sink that also slows the aggregator
+    // and health prober. ~30 req/min per IP is far above any real UI usage.
+    let discovery_read_config = Arc::new(
+        GovernorConfigBuilder::default()
+            .per_second(2)
+            .burst_size(30)
+            .key_extractor(SmartIpKeyExtractor)
+            .finish()
+            .expect("discovery_read governor config must be valid"),
+    );
 
     let verify_settle = handlers::verify_settle_routes()
         .with_state(axum_state.clone())
@@ -457,9 +470,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .layer(GovernorLayer::new(Arc::clone(&discovery_register_config)));
         http_endpoints = http_endpoints.merge(erc8004_writes);
     }
+    // Admin curation routes share the strict register governor; they 404 unless
+    // BAZAAR_ADMIN_TOKEN is configured.
+    let discovery_admin = handlers::discovery_admin_routes()
+        .with_state(Arc::clone(&discovery_registry))
+        .layer(GovernorLayer::new(Arc::clone(&discovery_register_config)));
+
     let http_endpoints = http_endpoints
         .merge(discovery_register)
-        .merge(handlers::discovery_routes().with_state(Arc::clone(&discovery_registry)))
+        .merge(discovery_admin)
+        .merge(
+            handlers::discovery_routes()
+                .with_state(Arc::clone(&discovery_registry))
+                .layer(GovernorLayer::new(discovery_read_config)),
+        )
         .merge(openapi::swagger_routes())
         // Share discovery registry with all handlers via Extension for settlement tracking
         .layer(Extension(discovery_registry))

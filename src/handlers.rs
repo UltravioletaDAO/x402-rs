@@ -16,6 +16,7 @@ use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{response::IntoResponse, Json, Router};
 use base64::Engine;
+use serde::Deserialize;
 use serde_json::json;
 use tracing::{debug, error, info, instrument, warn};
 
@@ -205,10 +206,174 @@ where
 pub fn discovery_routes() -> Router<Arc<DiscoveryRegistry>> {
     Router::new()
         .route("/discovery/resources", get(get_discovery_resources))
+        .route("/discovery/stats", get(get_discovery_stats))
         .route(
             "/discovery/attestation/{hash}",
             get(get_attestation_evidence),
         )
+}
+
+/// Admin routes for curating the Bazaar. Mounted behind the strict governor and
+/// gated by `BAZAAR_ADMIN_TOKEN`; when that env var is unset every route here
+/// answers 404 so the surface does not exist unless deliberately configured.
+pub fn discovery_admin_routes() -> Router<Arc<DiscoveryRegistry>> {
+    Router::new()
+        .route(
+            "/discovery/resources",
+            axum::routing::delete(delete_discovery_resource),
+        )
+        .route("/discovery/admin/suppress", post(post_discovery_suppress))
+        .route("/discovery/admin/release", post(post_discovery_release))
+}
+
+/// `GET /discovery/stats`: aggregate catalog metrics (60s cached).
+#[instrument(skip_all)]
+pub async fn get_discovery_stats(
+    State(registry): State<Arc<DiscoveryRegistry>>,
+) -> impl IntoResponse {
+    (StatusCode::OK, Json(registry.stats().await))
+}
+
+/// Constant-time byte comparison. The length is not secret (and comparing it
+/// first is what lets the loop stay fixed-width), but the contents are.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+/// Outcome of admin bearer authentication.
+enum AdminAuth {
+    Ok,
+    /// No `BAZAAR_ADMIN_TOKEN` configured — the admin surface is disabled.
+    Disabled,
+    Unauthorized,
+}
+
+/// Authenticate an admin request. Never logs the supplied credential.
+fn admin_auth(headers: &axum::http::HeaderMap) -> AdminAuth {
+    let Ok(expected) = std::env::var("BAZAAR_ADMIN_TOKEN") else {
+        return AdminAuth::Disabled;
+    };
+    if expected.is_empty() {
+        return AdminAuth::Disabled;
+    }
+    let presented = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .unwrap_or("");
+    if constant_time_eq(presented.as_bytes(), expected.as_bytes()) {
+        AdminAuth::Ok
+    } else {
+        AdminAuth::Unauthorized
+    }
+}
+
+/// Map a non-OK auth outcome to its response. 404 when disabled so the routes
+/// are indistinguishable from not existing.
+fn admin_reject(auth: AdminAuth) -> Option<Response<axum::body::Body>> {
+    match auth {
+        AdminAuth::Ok => None,
+        AdminAuth::Disabled => {
+            Some((StatusCode::NOT_FOUND, Json(json!({"error": "not found"}))).into_response())
+        }
+        AdminAuth::Unauthorized => Some(
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error": "invalid or missing admin credentials"})),
+            )
+                .into_response(),
+        ),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AdminUrlQuery {
+    pub url: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AdminUrlBody {
+    pub url: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// `DELETE /discovery/resources?url=...`: permanently unregister a resource.
+#[instrument(skip_all)]
+pub async fn delete_discovery_resource(
+    State(registry): State<Arc<DiscoveryRegistry>>,
+    headers: axum::http::HeaderMap,
+    Query(q): Query<AdminUrlQuery>,
+) -> impl IntoResponse {
+    if let Some(r) = admin_reject(admin_auth(&headers)) {
+        return r;
+    }
+    // Normalize before hitting the registry: keys are stored normalized, so a
+    // raw query string would silently no-op.
+    let key = match crate::discovery_security::canonical_url(&q.url) {
+        Ok(c) => c.key,
+        Err(_) => q.url.clone(),
+    };
+    match registry.unregister(&key).await {
+        Ok(_) => {
+            info!(url = %key, "Admin deleted discovery resource");
+            (
+                StatusCode::OK,
+                Json(json!({"success": true, "url": key, "removed": true})),
+            )
+                .into_response()
+        }
+        Err(_) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"success": false, "url": key, "error": "resource not found"})),
+        )
+            .into_response(),
+    }
+}
+
+/// `POST /discovery/admin/suppress`: hide a resource without deleting it.
+#[instrument(skip_all)]
+pub async fn post_discovery_suppress(
+    State(registry): State<Arc<DiscoveryRegistry>>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<AdminUrlBody>,
+) -> impl IntoResponse {
+    if let Some(r) = admin_reject(admin_auth(&headers)) {
+        return r;
+    }
+    let changed = registry.suppress(&body.url).await;
+    info!(url = %body.url, reason = ?body.reason, changed, "Admin suppressed resource");
+    (
+        StatusCode::OK,
+        Json(json!({"success": true, "url": body.url, "suppressed": true, "changed": changed})),
+    )
+        .into_response()
+}
+
+/// `POST /discovery/admin/release`: un-suppress a resource.
+#[instrument(skip_all)]
+pub async fn post_discovery_release(
+    State(registry): State<Arc<DiscoveryRegistry>>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<AdminUrlBody>,
+) -> impl IntoResponse {
+    if let Some(r) = admin_reject(admin_auth(&headers)) {
+        return r;
+    }
+    let changed = registry.release(&body.url).await;
+    info!(url = %body.url, changed, "Admin released resource");
+    (
+        StatusCode::OK,
+        Json(json!({"success": true, "url": body.url, "suppressed": false, "changed": changed})),
+    )
+        .into_response()
 }
 
 /// `GET /discovery/attestation/{hash}`: serve a hosted ERC-8004 attestation
@@ -282,7 +447,15 @@ pub struct DiscoveryQueryParams {
 
     /// Filter by curated tier: first_party|vip|verified|listed
     pub tier: Option<String>,
+
+    /// Free-text search over url / description / provider / category / tags.
+    /// Capped at `MAX_SEARCH_LEN` characters.
+    pub q: Option<String>,
 }
+
+/// Maximum accepted length of the `q` search parameter. The scan is O(items),
+/// so an unbounded needle from an unauthenticated caller is a cheap CPU sink.
+pub const MAX_SEARCH_LEN: usize = 128;
 
 fn default_limit() -> u32 {
     10
@@ -298,6 +471,7 @@ impl From<DiscoveryQueryParams> for Option<DiscoveryFilters> {
             && params.source_facilitator.is_none()
             && params.health.is_none()
             && params.tier.is_none()
+            && params.q.is_none()
         {
             None
         } else {
@@ -310,6 +484,7 @@ impl From<DiscoveryQueryParams> for Option<DiscoveryFilters> {
                 source_facilitator: params.source_facilitator,
                 health: params.health,
                 tier: params.tier,
+                q: params.q,
             })
         }
     }
@@ -337,6 +512,20 @@ pub async fn get_discovery_resources(
         "Discovery resources query"
     );
 
+    // Bound the free-text needle: the scan is O(catalog) per request on a
+    // public, unauthenticated route.
+    if let Some(q) = params.q.as_deref() {
+        if q.chars().count() > MAX_SEARCH_LEN {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": format!("q must be at most {MAX_SEARCH_LEN} characters")
+                })),
+            )
+                .into_response();
+        }
+    }
+
     let filters: Option<DiscoveryFilters> = params.clone().into();
     let response = registry.list(params.limit, params.offset, filters).await;
 
@@ -346,7 +535,7 @@ pub async fn get_discovery_resources(
         "Discovery query completed"
     );
 
-    (StatusCode::OK, Json(response))
+    (StatusCode::OK, Json(response)).into_response()
 }
 
 /// `POST /discovery/register`: Register a new paid resource.
@@ -3927,37 +4116,138 @@ where
     (StatusCode::OK, Json(identity)).into_response()
 }
 
-/// Resolve the first (lowest) token ID owned by `target` in an ERC-721 contract.
+/// Largest number of `ownerOf` calls packed into a single Multicall3 `aggregate3`.
 ///
-/// Uses Multicall3 to batch `ownerOf()` calls — 1 RPC round-trip instead of N.
-/// Falls back to sequential calls if Multicall3 fails (e.g., not deployed).
+/// Sized empirically against the Base ERC-8004 registry (2026-07-24). A
+/// whole-registry batch (~58.4k tokens) is rejected by the production RPC with
+/// `-32003 out of gas: gas exhausted during memory expansion: 600000000`, and a
+/// public Base node caps the response body at ~16.4k calls (~2.5 MB). 2,000
+/// calls is roughly 6M gas and a ~320 KB response, which also fits inside the
+/// tighter `eth_call` caps of small public nodes.
+const OWNER_SCAN_BATCH: u64 = 2_000;
+
+/// Hard ceiling on batches per scan, so a single lookup can never turn into an
+/// unbounded RPC storm as the registry keeps growing (INC-2026-07-06).
+const OWNER_SCAN_MAX_BATCHES: u64 = 64;
+
+/// How long a successful owner -> agent ID resolution stays cached.
 ///
-/// Strategy:
-/// 1. Binary search (exponential probe) to find max token ID
-/// 2. Batch all `ownerOf(1..=max)` via Multicall3
-/// 3. Return first ID where owner matches target
-async fn resolve_first_token_by_owner(
+/// A cold resolution costs tens of RPC calls, and Execution Market performs one
+/// per signed request: 6,965 lookups in 72h exhausted the shared Base RPC
+/// budget and produced 258 `-32007` rate limits, which in turn starved
+/// `/settle` (INC-2026-07-06). Only positive results are cached — a negative
+/// answer flips as soon as the agent registers, so caching it would be wrong.
+const OWNER_LOOKUP_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Cache of resolved `(network, registry, owner)` -> `agentId`.
+///
+/// The network is part of the key because the ERC-8004 registries are deployed
+/// at the same deterministic address on every chain, so `(registry, owner)`
+/// alone would serve a Base agent ID for a Polygon lookup.
+#[allow(clippy::type_complexity)]
+static OWNER_LOOKUP_CACHE: Lazy<
+    dashmap::DashMap<
+        (
+            crate::network::Network,
+            alloy::primitives::Address,
+            alloy::primitives::Address,
+        ),
+        (u64, std::time::Instant),
+    >,
+> = Lazy::new(dashmap::DashMap::new);
+
+/// Classify an `eth_call` failure.
+///
+/// Returns `true` only when the node actually executed the call and the
+/// contract reverted — which, for `ownerOf`, means the token does not exist.
+///
+/// Everything else (rate limits, out-of-gas, malformed provider errors,
+/// transport failures) carries **no verdict** about the token and must return
+/// `false`. Conflating the two is what silently truncated the scan range and
+/// let `POST /register` mint duplicate agent NFTs: an unrecognised error is
+/// therefore treated as inconclusive, never as "token absent".
+fn is_execution_revert(error: &str) -> bool {
+    let lower = error.to_lowercase();
+    lower.contains("execution reverted")
+        // `ERC721NonexistentToken(uint256)` selector (OpenZeppelin v5), returned
+        // as revert data by the ERC-8004 registries.
+        || lower.contains("0x7e273289")
+        || lower.contains("nonexistent")
+        || lower.contains("invalid token")
+}
+
+/// Whether `agent_id` currently exists in the registry.
+///
+/// `Err` means the node returned no verdict; callers must not read that as
+/// "does not exist".
+async fn agent_token_exists(
     provider: &crate::chain::evm::InnerProvider,
     registry: alloy::primitives::Address,
+    agent_id: u64,
+) -> Result<bool, String> {
+    let identity = IIdentityRegistry::new(registry, provider.clone());
+    match identity
+        .ownerOf(alloy::primitives::U256::from(agent_id))
+        .call()
+        .await
+    {
+        Ok(_) => Ok(true),
+        Err(e) => {
+            let msg = format!("{e:?}");
+            if is_execution_revert(&msg) {
+                Ok(false)
+            } else {
+                Err(format!("ownerOf({agent_id}) probe was inconclusive: {msg}"))
+            }
+        }
+    }
+}
+
+/// Resolve the first (lowest) token ID owned by `target` in an ERC-721 contract.
+///
+/// Returns `Ok(Some(id))` on a match, `Ok(None)` when the registry was scanned
+/// cleanly and holds no token for `target`, and `Err` when the scan could not
+/// reach a verdict (RPC failure, registry too large). The three outcomes are
+/// deliberately distinct: callers must not treat an unreachable RPC as proof
+/// that an address owns nothing.
+///
+/// Strategy:
+/// 1. Binary search (exponential probe) to find the max token ID
+/// 2. Scan `ownerOf(1..=max)` in bounded Multicall3 batches, stopping at the
+///    first match — one batch covers the whole registry on small chains
+/// 3. Cache the hit, since a cold scan is expensive and rarely changes
+///
+/// Uses `ownerOf` rather than `tokenOfOwnerByIndex` or event scans because it
+/// is the only approach that works on every supported chain: the ERC-8004
+/// registries are not `ERC721Enumerable` (verified on Base: `supportsInterface`
+/// returns false and `tokenOfOwnerByIndex` reverts) and SKALE limits
+/// `eth_getLogs` to 2000 blocks.
+async fn resolve_first_token_by_owner(
+    provider: &crate::chain::evm::InnerProvider,
+    network: crate::network::Network,
+    registry: alloy::primitives::Address,
     target: alloy::primitives::Address,
-) -> Result<u64, String> {
+) -> Result<Option<u64>, String> {
     use alloy::providers::bindings::IMulticall3;
     use alloy::providers::MULTICALL3_ADDRESS;
     use alloy::sol_types::SolCall;
 
-    let identity = IIdentityRegistry::new(registry, provider.clone());
+    // Serve a fresh cached resolution before spending any RPC budget.
+    if let Some(entry) = OWNER_LOOKUP_CACHE.get(&(network, registry, target)) {
+        let (agent_id, cached_at) = *entry;
+        if cached_at.elapsed() < OWNER_LOOKUP_TTL {
+            debug!(agent_id, %target, "Owner lookup served from cache");
+            return Ok(Some(agent_id));
+        }
+    }
 
     // Step 1: Find max token ID via exponential probe + binary search
     let mut hi: u64 = 1;
     loop {
-        match identity
-            .ownerOf(alloy::primitives::U256::from(hi))
-            .call()
-            .await
-        {
-            Ok(_) => hi = hi.saturating_mul(2),
-            Err(_) => break,
+        if !agent_token_exists(provider, registry, hi).await? {
+            break;
         }
+        hi = hi.saturating_mul(2);
         if hi > 1_000_000 {
             break;
         }
@@ -3965,66 +4255,84 @@ async fn resolve_first_token_by_owner(
     let mut lo: u64 = hi / 2;
     while lo < hi.saturating_sub(1) {
         let mid = lo + (hi - lo) / 2;
-        match identity
-            .ownerOf(alloy::primitives::U256::from(mid))
-            .call()
-            .await
-        {
-            Ok(_) => lo = mid,
-            Err(_) => hi = mid,
+        if agent_token_exists(provider, registry, mid).await? {
+            lo = mid;
+        } else {
+            hi = mid;
         }
     }
     let max_id = lo;
     if max_id == 0 {
-        return Err("No tokens exist in registry".to_string());
+        // Callers only scan when `balanceOf` is non-zero, so an apparently
+        // empty registry contradicts the balance and is not a clean "owns
+        // nothing" answer.
+        return Err("registry probe found no tokens despite a non-zero balance".to_string());
     }
 
-    // Step 2: Batch ownerOf calls via Multicall3 (1 RPC call instead of N)
-    let calls: Vec<IMulticall3::Call3> = (1..=max_id)
-        .map(|id| {
-            let calldata = IIdentityRegistry::ownerOfCall {
-                agentId: alloy::primitives::U256::from(id),
-            }
-            .abi_encode();
-            IMulticall3::Call3 {
-                target: registry,
-                allowFailure: true,
-                callData: calldata.into(),
-            }
-        })
-        .collect();
-
-    let aggregate_call = IMulticall3::aggregate3Call { calls };
-    let encoded = aggregate_call.abi_encode();
-    let tx = alloy::rpc::types::TransactionRequest::default()
-        .to(MULTICALL3_ADDRESS)
-        .input(alloy::rpc::types::TransactionInput::new(encoded.into()));
-
-    let raw_result = provider
-        .call(tx)
-        .await
-        .map_err(|e| format!("Multicall3 call failed: {e}"))?;
-
-    // Decode aggregate3 return: Result[] where Result = (bool success, bytes returnData)
-    let results = IMulticall3::aggregate3Call::abi_decode_returns(&raw_result)
-        .map_err(|e| format!("Failed to decode multicall results: {e}"))?;
-
-    // Step 3: Find first token where owner matches target
-    // aggregate3 returns Vec<IMulticall3::Result>
-    for (i, result) in results.iter().enumerate() {
-        if !result.success || result.returnData.len() < 32 {
-            continue;
-        }
-        // ownerOf returns abi-encoded address (32 bytes, left-padded)
-        let owner = alloy::primitives::Address::from_slice(&result.returnData[12..32]);
-        if owner == target {
-            return Ok((i as u64) + 1); // token IDs start at 1
-        }
+    let batches = max_id.div_ceil(OWNER_SCAN_BATCH);
+    if batches > OWNER_SCAN_MAX_BATCHES {
+        return Err(format!(
+            "registry too large to scan: {max_id} tokens need {batches} batches \
+             (cap {OWNER_SCAN_MAX_BATCHES})"
+        ));
     }
 
-    Err(format!(
-        "No token found owned by {target} (scanned 1..={max_id})"
-    ))
+    // Step 2: Scan in bounded Multicall3 batches, ascending, stopping at the
+    // first match so the lowest ID is returned and the common case stays cheap.
+    let mut start: u64 = 1;
+    while start <= max_id {
+        let end = (start + OWNER_SCAN_BATCH - 1).min(max_id);
+
+        let calls: Vec<IMulticall3::Call3> = (start..=end)
+            .map(|id| {
+                let calldata = IIdentityRegistry::ownerOfCall {
+                    agentId: alloy::primitives::U256::from(id),
+                }
+                .abi_encode();
+                IMulticall3::Call3 {
+                    target: registry,
+                    allowFailure: true,
+                    callData: calldata.into(),
+                }
+            })
+            .collect();
+
+        let aggregate_call = IMulticall3::aggregate3Call { calls };
+        let encoded = aggregate_call.abi_encode();
+        let tx = alloy::rpc::types::TransactionRequest::default()
+            .to(MULTICALL3_ADDRESS)
+            .input(alloy::rpc::types::TransactionInput::new(encoded.into()));
+
+        let raw_result = provider
+            .call(tx)
+            .await
+            .map_err(|e| format!("Multicall3 batch {start}..={end} failed: {e}"))?;
+
+        // Decode aggregate3 return: Result[] where Result = (bool success, bytes returnData)
+        let results = IMulticall3::aggregate3Call::abi_decode_returns(&raw_result)
+            .map_err(|e| format!("Failed to decode multicall results: {e}"))?;
+
+        // Find the first token in this batch whose owner matches target.
+        for (i, result) in results.iter().enumerate() {
+            if !result.success || result.returnData.len() < 32 {
+                continue;
+            }
+            // ownerOf returns abi-encoded address (32 bytes, left-padded)
+            let owner = alloy::primitives::Address::from_slice(&result.returnData[12..32]);
+            if owner == target {
+                let agent_id = start + i as u64;
+                OWNER_LOOKUP_CACHE.insert(
+                    (network, registry, target),
+                    (agent_id, std::time::Instant::now()),
+                );
+                return Ok(Some(agent_id));
+            }
+        }
+
+        start = end + 1;
+    }
+
+    Ok(None)
 }
 
 /// Path parameters for identity-by-owner query
@@ -4139,14 +4447,19 @@ where
             .into_response();
     }
 
-    // Resolve token ID using Multicall3 batched ownerOf() calls.
-    // This replaces sequential iteration (250 RPC calls = ~14s) with a single
-    // batched call (~200ms). Works on all chains — Multicall3 is at the canonical
-    // address 0xcA11bde05977b3631167028862bE2a173976CA11.
-    match resolve_first_token_by_owner(provider.inner(), contracts.identity_registry, owner_address)
-        .await
+    // Resolve token ID using Multicall3 batched ownerOf() calls, split into
+    // bounded batches so the request cost does not grow with registry size.
+    // Multicall3 is at the canonical address
+    // 0xcA11bde05977b3631167028862bE2a173976CA11 on every supported chain.
+    match resolve_first_token_by_owner(
+        provider.inner(),
+        network,
+        contracts.identity_registry,
+        owner_address,
+    )
+    .await
     {
-        Ok(agent_id) => {
+        Ok(Some(agent_id)) => {
             let uri = identity_registry
                 .tokenURI(alloy::primitives::U256::from(agent_id))
                 .call()
@@ -4165,12 +4478,30 @@ where
             )
                 .into_response()
         }
-        Err(e) => {
-            warn!(network = %network, owner = %owner_address, error = %e, "Failed to resolve token by owner");
+        // Scanned cleanly: the balance is held by tokens we could not attribute,
+        // which for a well-formed registry means there is nothing to return.
+        Ok(None) => {
+            info!(network = %network, owner = %owner_address, "Owner holds no agent in registry");
             (
                 StatusCode::NOT_FOUND,
                 Json(json!({
-                    "error": format!("Could not resolve agent ID for {} on {}: {}", owner_address, network, e),
+                    "error": format!("Address {} does not own any agent on {}", owner_address, network),
+                    "balance": balance.to_string()
+                })),
+            )
+                .into_response()
+        }
+        // The scan never reached a verdict. This must NOT be a 404: callers
+        // persist "not registered" from a 404 and stop asking, which is how a
+        // transient RPC failure turned into a permanent null agent ID
+        // (INC-2026-07-21). 503 tells the client to retry instead.
+        Err(e) => {
+            warn!(network = %network, owner = %owner_address, error = %e, "Owner lookup inconclusive");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "error": format!("Could not determine agent ID for {} on {}: {}", owner_address, network, e),
+                    "retryable": true,
                     "balance": balance.to_string()
                 })),
             ).into_response()
@@ -4573,12 +4904,13 @@ where
             if balance > alloy::primitives::U256::ZERO {
                 match resolve_first_token_by_owner(
                     provider.inner(),
+                    network,
                     contracts.identity_registry,
                     target_owner,
                 )
                 .await
                 {
-                    Ok(id) => {
+                    Ok(Some(id)) => {
                         info!(
                             network = %network,
                             agent_id = id,
@@ -4600,13 +4932,46 @@ where
                             },
                         );
                     }
+                    // Clean scan, no token attributable to the recipient: the
+                    // balance comes from somewhere we cannot map, so minting a
+                    // fresh identity is the intended behaviour.
+                    Ok(None) => {
+                        warn!(
+                            network = %network,
+                            owner = %target_owner,
+                            balance = %balance,
+                            "Recipient has balance but no matching token, proceeding with mint"
+                        );
+                    }
+                    // Inconclusive scan: we do NOT know whether this recipient
+                    // already has an identity. Minting here is what produced
+                    // duplicate agent NFTs on Base — each duplicate grows the
+                    // registry that made the scan fail in the first place
+                    // (INC-2026-07-06). Fail closed and let the caller retry.
                     Err(e) => {
                         warn!(
                             network = %network,
                             owner = %target_owner,
                             balance = %balance,
                             error = %e,
-                            "Recipient has balance but multicall scan found no match, proceeding with mint"
+                            "Register aborted: could not determine whether recipient already owns an agent"
+                        );
+                        return (
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            RegisterAgentResponse {
+                                success: false,
+                                agent_id: None,
+                                transaction: None,
+                                transfer_transaction: None,
+                                owner: Some(MixedAddress::Evm(crate::types::EvmAddress(
+                                    target_owner,
+                                ))),
+                                error: Some(format!(
+                                    "Could not verify existing identity for {target_owner} \
+                                     (retryable, no mint attempted): {e}"
+                                )),
+                                network,
+                            },
                         );
                     }
                 }
@@ -5671,5 +6036,66 @@ where
                     .into_response()
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod owner_scan_tests {
+    use super::*;
+
+    /// Real revert payloads observed on Base and Optimism mainnet (2026-07-24)
+    /// for `ownerOf` on a nonexistent token. `0x7e273289` is the
+    /// `ERC721NonexistentToken(uint256)` selector.
+    #[test]
+    fn classifies_contract_reverts_as_token_absent() {
+        assert!(is_execution_revert(
+            r#"ErrorResp(ErrorPayload { code: 3, message: "execution reverted", data: Some(RawValue("0x7e273289000000000000000000000000000000000000000000000000000000003b9ac9ff")) })"#
+        ));
+        assert!(is_execution_revert(
+            r#"server returned an error response: error code 3: execution reverted"#
+        ));
+        assert!(is_execution_revert("ERC721: invalid token ID"));
+    }
+
+    /// These carry no verdict about the token. Treating any of them as
+    /// "token absent" truncated the scan range and let `/register` mint
+    /// duplicate agent NFTs (INC-2026-07-06).
+    #[test]
+    fn classifies_rpc_failures_as_inconclusive() {
+        assert!(!is_execution_revert(
+            "server returned an error response: error code -32003: out of gas: \
+             gas exhausted during memory expansion: 600000000"
+        ));
+        assert!(!is_execution_revert(
+            "server returned an error response: error code -32007: rate limit exceeded"
+        ));
+        assert!(!is_execution_revert("HTTP error 429 Too Many Requests"));
+        // Non-standard provider error shape (observed from polygon-rpc.com).
+        assert!(!is_execution_revert(
+            "message: API key disabled, reason: tenant disabled, json-rpc code: -32051"
+        ));
+        assert!(!is_execution_revert("operation timed out"));
+        assert!(!is_execution_revert("error sending request for url"));
+    }
+
+    /// An unrecognised error must default to inconclusive, never to
+    /// "token absent" — the whole point of failing closed.
+    #[test]
+    fn unknown_errors_default_to_inconclusive() {
+        assert!(!is_execution_revert("something nobody has seen before"));
+        assert!(!is_execution_revert(""));
+    }
+
+    /// The batch cap must keep a whole-registry scan inside both limits that
+    /// were measured against Base: the 600M gas cap the production RPC
+    /// enforces, and the ~16.4k-call response-body cap of the public node.
+    #[test]
+    fn batch_size_stays_within_measured_rpc_limits() {
+        const MEASURED_PUBLIC_NODE_CALL_CAP: u64 = 16_383;
+        assert!(OWNER_SCAN_BATCH < MEASURED_PUBLIC_NODE_CALL_CAP);
+        // The Base registry held ~58.4k agents when the scan broke; it must
+        // still be reachable within the batch ceiling.
+        let base_registry_size: u64 = 58_400;
+        assert!(base_registry_size.div_ceil(OWNER_SCAN_BATCH) <= OWNER_SCAN_MAX_BATCHES);
     }
 }

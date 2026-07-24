@@ -216,6 +216,29 @@ pub async fn safe_get(
     timeout: Duration,
     url: &Url,
 ) -> Result<reqwest::Response, SecurityReject> {
+    safe_request(user_agent, timeout, url, None).await
+}
+
+/// SSRF-hardened POST of a JSON body, with the same resolve-check-pin and
+/// manual-redirect handling as [`safe_get`]. Used for probing endpoints that
+/// only answer to POST (e.g. an MCP JSON-RPC handshake).
+pub async fn safe_post_json(
+    user_agent: &str,
+    timeout: Duration,
+    url: &Url,
+    body: String,
+) -> Result<reqwest::Response, SecurityReject> {
+    safe_request(user_agent, timeout, url, Some(body)).await
+}
+
+/// Shared implementation for [`safe_get`] / [`safe_post_json`]: `body = None`
+/// issues a GET, `Some(json)` issues a POST with `content-type: application/json`.
+async fn safe_request(
+    user_agent: &str,
+    timeout: Duration,
+    url: &Url,
+    body: Option<String>,
+) -> Result<reqwest::Response, SecurityReject> {
     let mut current = url.clone();
     for _hop in 0..=MAX_REDIRECTS {
         let addrs = check_url_target(&current).await?;
@@ -232,8 +255,14 @@ pub async fn safe_get(
             .build()
             .map_err(|e| SecurityReject::Http(e.to_string()))?;
 
-        let resp = client
-            .get(current.clone())
+        let req = match body.as_ref() {
+            None => client.get(current.clone()),
+            Some(b) => client
+                .post(current.clone())
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(b.clone()),
+        };
+        let resp = req
             .send()
             .await
             .map_err(|e| SecurityReject::Http(e.to_string()))?;

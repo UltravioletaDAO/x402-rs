@@ -205,6 +205,8 @@
       if(state.health) p.set('health', state.health);
       if(state.network) p.set('network', state.network);
       if(state.source) p.set('source', state.source);
+      // Server-side search: the whole catalog is searched, not just this page.
+      if(state.q) p.set('q', state.q.slice(0, 128));
       if(extra) for(const k in extra) p.set(k, extra[k]);
       return p.toString();
     }
@@ -212,16 +214,17 @@
     async function fetchJSON(url){ const r = await fetch(url, inflight ? {signal: inflight.signal} : {}); if(!r.ok) throw new Error(r.status); return r.json(); }
 
     async function loadStats(){
+      // One call to the server-side aggregate (60s cached) instead of four
+      // count-probes.
       try {
-        const [tot, alive, fp, vip] = await Promise.all([
-          fetchJSON('/discovery/resources?limit=1'),
-          fetchJSON('/discovery/resources?limit=1&health=alive'),
-          fetchJSON('/discovery/resources?limit=1&tier=first_party&health=any'),
-          fetchJSON('/discovery/resources?limit=1&tier=vip&health=any'),
-        ]);
-        document.getElementById('s-total').textContent = (tot.pagination.total||0).toLocaleString();
-        document.getElementById('s-alive').textContent = (alive.pagination.total||0).toLocaleString();
-        document.getElementById('s-firstparty').textContent = ((fp.pagination.total||0)+(vip.pagination.total||0)).toLocaleString();
+        const s = await fetchJSON('/discovery/stats');
+        const tier = s.byTier || {}, health = s.byHealth || {};
+        const n = v => (v||0).toLocaleString();
+        document.getElementById('s-total').textContent = n(s.visible ?? s.total);
+        document.getElementById('s-alive').textContent = n(health.alive);
+        document.getElementById('s-firstparty').textContent = n((tier.first_party||0)+(tier.vip||0));
+        const sources = Object.keys(s.bySourceFacilitator || {}).length;
+        if(sources) document.getElementById('s-sources').textContent = n(sources);
       } catch(e){ /* leave dashes */ }
     }
 
@@ -264,9 +267,9 @@
         else { data = await fetchJSON('/discovery/resources?'+qs()); }
       } catch(e){ if(e.name==='AbortError') return; grid.innerHTML = '<div class="empty">Could not load the bazaar. <a class="link" href="javascript:location.reload()">Retry</a></div>'; return; }
       inflight = null;
-      // client-side substring search over the returned page (server has no q= yet)
-      let items = data.items||[];
-      if(state.q){ const t=state.q.toLowerCase(); items = items.filter(i => (i.url||'').toLowerCase().includes(t) || (i.description||'').toLowerCase().includes(t) || ((i.metadata&&i.metadata.provider)||'').toLowerCase().includes(t)); }
+      // Search is server-side (`q=`), so the whole catalog is searched and the
+      // pagination totals stay correct.
+      const items = data.items||[];
       cache.set(key, data); if(cache.size>30) cache.delete(cache.keys().next().value);
 
       if(!items.length){ grid.innerHTML = '<div class="empty">No endpoints match these filters.</div>'; }

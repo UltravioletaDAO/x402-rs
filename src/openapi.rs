@@ -71,10 +71,21 @@ The facilitator supports [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) for
 
 ## Bazaar Discovery
 
-Decentralized resource discovery for x402-enabled services:
+Curated resource discovery for x402-enabled services. Entries carry a discovery `source`,
+a liveness `health` status from periodic probing, and a curated `tier`
+(`first_party` > `vip` > `verified` > `listed`) which also drives listing order.
 
-- `GET /discovery/resources` - List all registered resources
-- `POST /discovery/register` - Register a new resource
+- `GET /discovery/resources` - List curated resources (filters: category, provider, tag, network, source, sourceFacilitator, q, health, tier)
+- `GET /discovery/stats` - Aggregate catalog metrics (60s cache)
+- `GET /bazaar` - HTML Bazaar explorer UI
+- `GET /discovery/attestation/{hash}` - ERC-8004 attestation evidence body
+- `POST /discovery/register` - Register a new resource (rate limited)
+
+**Admin** (require `Authorization: Bearer <BAZAAR_ADMIN_TOKEN>`; return 404 when no admin token is configured):
+
+- `DELETE /discovery/resources?url=...` - Permanently unregister a resource
+- `POST /discovery/admin/suppress` - Hide a resource from listings without deleting it
+- `POST /discovery/admin/release` - Un-suppress a resource
 
 ## Protocol Documentation
 
@@ -131,7 +142,13 @@ Decentralized resource discovery for x402-enabled services:
         path_identity_total_supply,
         // Bazaar endpoints
         path_bazaar_list,
+        path_bazaar_stats,
+        path_bazaar_ui,
+        path_bazaar_attestation,
         path_bazaar_register,
+        path_bazaar_admin_delete,
+        path_bazaar_admin_suppress,
+        path_bazaar_admin_release,
         // Compliance
         path_blacklist,
         // Health
@@ -1005,45 +1022,244 @@ async fn path_identity_total_supply() {}
     get,
     path = "/discovery/resources",
     tag = "Bazaar",
-    summary = "List registered resources",
+    summary = "List curated bazaar resources",
     description = r#"
-Lists all resources registered in the discovery registry.
+Lists x402-enabled resources known to the curated Bazaar catalog.
 
-**Query parameters:**
-- `type` (optional): Filter by resource type (e.g., "facilitator", "agent", "service")
-- `category` (optional): Filter by category
-- `tag` (optional): Filter by tag
+**Ordering:** results are sorted by curated tier first (`first_party` > `vip` > `verified` > `listed`),
+then by liveness (`alive` resources first), then by `lastUpdated` descending.
+
+**Health visibility:** when `health` is omitted, quarantined resources are hidden.
+Pass `health=any` to return everything, or a specific status to filter to it.
 
 **Response:**
 ```json
 {
-  "resources": [
+  "x402Version": 2,
+  "items": [
     {
-      "id": "uuid-here",
-      "url": "https://example.com/api",
-      "type": "service",
-      "description": "Example AI service",
-      "paymentRequirements": [...],
+      "url": "https://api.meshrelay.xyz/payments/access/alpha-test",
+      "type": "http",
+      "x402Version": 2,
+      "description": "MeshRelay premium IRC channel access",
+      "accepts": [
+        {
+          "scheme": "exact",
+          "network": "eip155:8453",
+          "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+          "amount": "100000",
+          "payTo": "0xe4dc963c56979E0260fc146b87eE24F18220e545",
+          "maxTimeoutSeconds": 300
+        }
+      ],
+      "lastUpdated": 1784818083,
       "metadata": {
-        "category": "ai-agent",
-        "provider": "Example Inc",
-        "tags": ["ai", "nlp"]
+        "provider": "MeshRelay",
+        "category": "communication",
+        "tags": ["irc"]
+      },
+      "source": "self_registered",
+      "sourceFacilitator": null,
+      "firstSeen": 1784818112,
+      "health": {
+        "status": "alive",
+        "lastChecked": 1784900000,
+        "httpStatus": 402,
+        "latencyMs": 240
+      },
+      "curation": {
+        "tier": "first_party",
+        "label": "MeshRelay",
+        "firstParty": true,
+        "verification": {
+          "protocol": "erc8004",
+          "network": "base",
+          "agentId": 2106,
+          "feedbackCount": 0,
+          "uptime": 99.77
+        }
       }
     }
-  ]
+  ],
+  "pagination": { "limit": 10, "offset": 0, "total": 21195 }
+}
+```
+
+**Optional fields:** `metadata`, `sourceFacilitator`, `firstSeen`, `health` and `curation` are
+omitted when unknown. Only `url`, `type`, `x402Version`, `accepts`, `lastUpdated` and `source`
+are always present.
+"#,
+    params(
+        ("limit" = Option<u32>, Query, description = "Maximum number of resources to return (default: 10, max: 100)"),
+        ("offset" = Option<u32>, Query, description = "Number of resources to skip (default: 0)"),
+        ("category" = Option<String>, Query, description = "Filter by metadata category (e.g., finance, communication)"),
+        ("provider" = Option<String>, Query, description = "Filter by metadata provider name"),
+        ("tag" = Option<String>, Query, description = "Filter by metadata tag"),
+        ("network" = Option<String>, Query, description = "Exact CAIP-2 network match (e.g., eip155:8453, solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp)"),
+        ("source" = Option<String>, Query, description = "Discovery source: self_registered | settlement | crawled | aggregated"),
+        ("sourceFacilitator" = Option<String>, Query, description = "Facilitator the entry was aggregated from (e.g., coinbase, payai, thirdweb)"),
+        ("q" = Option<String>, Query, description = "Free-text search over url, description, provider and tags. Max 128 characters (longer returns 400)"),
+        ("health" = Option<String>, Query, description = "Liveness filter: alive | degraded | auth_gated | quarantined | unknown | unprobeable | any. When omitted, quarantined resources are hidden; 'any' returns everything"),
+        ("tier" = Option<String>, Query, description = "Curated tier filter: first_party | vip | verified | listed")
+    ),
+    responses(
+        (status = 200, description = "Curated resource listing", body = Object,
+            example = json!({
+                "x402Version": 2,
+                "items": [{
+                    "url": "https://api.meshrelay.xyz/payments/access/alpha-test",
+                    "type": "http",
+                    "x402Version": 2,
+                    "description": "MeshRelay premium IRC channel access",
+                    "accepts": [{
+                        "scheme": "exact",
+                        "network": "eip155:8453",
+                        "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+                        "amount": "100000",
+                        "payTo": "0xe4dc963c56979E0260fc146b87eE24F18220e545",
+                        "maxTimeoutSeconds": 300
+                    }],
+                    "lastUpdated": 1784818083,
+                    "metadata": {
+                        "provider": "MeshRelay",
+                        "category": "communication",
+                        "tags": ["irc"]
+                    },
+                    "source": "self_registered",
+                    "sourceFacilitator": null,
+                    "firstSeen": 1784818112,
+                    "health": {
+                        "status": "alive",
+                        "lastChecked": 1784900000,
+                        "httpStatus": 402,
+                        "latencyMs": 240
+                    },
+                    "curation": {
+                        "tier": "first_party",
+                        "label": "MeshRelay",
+                        "firstParty": true,
+                        "verification": {
+                            "protocol": "erc8004",
+                            "network": "base",
+                            "agentId": 2106,
+                            "feedbackCount": 0,
+                            "uptime": 99.77
+                        }
+                    }
+                }],
+                "pagination": { "limit": 10, "offset": 0, "total": 21195 }
+            })
+        ),
+        (status = 400, description = "Invalid query (for example, `q` longer than 128 characters)", body = Object)
+    )
+)]
+async fn path_bazaar_list() {}
+
+#[utoipa::path(
+    get,
+    path = "/discovery/stats",
+    tag = "Bazaar",
+    summary = "Bazaar catalog statistics",
+    description = r#"
+Aggregate metrics for the curated Bazaar catalog. Served from a 60-second in-process cache,
+so counters can lag recent registrations or health probes by up to a minute.
+
+- `total` counts every resource in the catalog.
+- `visible` counts the resources returned by the default `GET /discovery/resources` listing
+  (quarantined resources excluded).
+
+**Response:**
+```json
+{
+  "total": 21195,
+  "visible": 19263,
+  "bySource": { "aggregated": 21067, "self_registered": 128 },
+  "bySourceFacilitator": { "payai": 19800, "thirdweb": 622, "coinbase": 336 },
+  "byNetwork": { "eip155:8453": 20991, "eip155:1": 56 },
+  "byTier": { "first_party": 10, "vip": 127, "verified": 1814, "listed": 19244 },
+  "byHealth": { "alive": 1814, "quarantined": 1932, "auth_gated": 263, "unknown": 17029 },
+  "generatedAt": 1784900000
+}
+```
+"#,
+    responses(
+        (status = 200, description = "Catalog metrics", body = Object,
+            example = json!({
+                "total": 21195,
+                "visible": 19263,
+                "bySource": { "aggregated": 21067, "self_registered": 128 },
+                "bySourceFacilitator": { "payai": 19800, "thirdweb": 622, "coinbase": 336 },
+                "byNetwork": { "eip155:8453": 20991, "eip155:1": 56 },
+                "byTier": { "first_party": 10, "vip": 127, "verified": 1814, "listed": 19244 },
+                "byHealth": { "alive": 1814, "quarantined": 1932, "auth_gated": 263, "unknown": 17029 },
+                "generatedAt": 1784900000
+            })
+        )
+    )
+)]
+async fn path_bazaar_stats() {}
+
+#[utoipa::path(
+    get,
+    path = "/bazaar",
+    tag = "Bazaar",
+    summary = "Bazaar explorer UI",
+    description = r#"
+Serves the HTML Bazaar explorer: a browsable view of the curated catalog backed by
+`GET /discovery/resources` and `GET /discovery/stats`.
+
+Returns `text/html`, not JSON. Use the discovery endpoints for programmatic access.
+"#,
+    responses(
+        (status = 200, description = "Bazaar explorer HTML page", content_type = "text/html", body = String)
+    )
+)]
+async fn path_bazaar_ui() {}
+
+#[utoipa::path(
+    get,
+    path = "/discovery/attestation/{hash}",
+    tag = "Bazaar",
+    summary = "Get attestation evidence",
+    description = r#"
+Serves the hosted ERC-8004 attestation evidence body referenced by an on-chain curation
+attestation. The path key is a lowercase sha256 hex digest of the attested resource URL:
+exactly 64 characters matching `[0-9a-f]{64}`. Any other shape is rejected with 400 so a URL
+path segment can never be mapped to arbitrary content.
+
+**Response (application/json):**
+```json
+{
+  "type": "uptime",
+  "endpoint": "https://mcp.execution.market/mcp",
+  "network": "base",
+  "agentId": 2106,
+  "uptime": 99.77,
+  "window": { "probes": 100, "ok": 99 },
+  "prober": "uvd-bazaar-health/1.0"
 }
 ```
 "#,
     params(
-        ("type" = Option<String>, Query, description = "Filter by resource type"),
-        ("category" = Option<String>, Query, description = "Filter by category"),
-        ("tag" = Option<String>, Query, description = "Filter by tag")
+        ("hash" = String, Path, description = "Lowercase sha256 hex digest of the resource URL (64 chars, [0-9a-f]{64})")
     ),
     responses(
-        (status = 200, description = "List of resources", body = Object)
+        (status = 200, description = "Attestation evidence body", content_type = "application/json", body = Object,
+            example = json!({
+                "type": "uptime",
+                "endpoint": "https://mcp.execution.market/mcp",
+                "network": "base",
+                "agentId": 2106,
+                "uptime": 99.77,
+                "window": { "probes": 100, "ok": 99 },
+                "prober": "uvd-bazaar-health/1.0"
+            })
+        ),
+        (status = 400, description = "Invalid evidence key format (not a 64-char lowercase hex digest)", body = String),
+        (status = 404, description = "No evidence stored for that key", body = String)
     )
 )]
-async fn path_bazaar_list() {}
+async fn path_bazaar_attestation() {}
 
 #[utoipa::path(
     post,
@@ -1051,38 +1267,181 @@ async fn path_bazaar_list() {}
     tag = "Bazaar",
     summary = "Register a resource",
     description = r#"
-Registers a new resource in the discovery registry.
+Registers a paid resource in the Bazaar catalog so clients can discover it via
+`GET /discovery/resources`.
+
+**Rate limited** to roughly 5 requests per minute per IP: registration triggers DNS lookups and
+outbound fetches against caller-supplied URLs.
 
 **Request body:**
 ```json
 {
-  "url": "https://example.com/api",
-  "type": "service",
-  "description": "Example AI service",
-  "paymentRequirements": [
+  "url": "https://api.example.com/paid",
+  "type": "http",
+  "description": "Premium market data API",
+  "accepts": [
     {
       "scheme": "exact",
-      "network": "base",
-      "maxAmountRequired": "1000000",
+      "network": "eip155:8453",
+      "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "amount": "10000",
       "payTo": "0x...",
-      "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+      "maxTimeoutSeconds": 300
     }
   ],
   "metadata": {
-    "category": "ai-agent",
-    "provider": "Example Inc",
-    "tags": ["ai", "nlp"]
+    "provider": "Example",
+    "category": "data",
+    "tags": ["api"]
   }
 }
 ```
+
+**Fields:**
+- `type` (required): one of `http`, `mcp`, `a2a`, `facilitator`.
+- `accepts` (required, except for `facilitator` entries): payment options in x402 v2 shape with
+  CAIP-2 `network` values.
+- `metadata` (optional): `provider`, `category`, `tags`.
+
+**Validation (400):** unsupported `scheme`, userinfo embedded in the URL
+(`https://user:pass@host`), a host resolving to a private / loopback / link-local / cloud metadata
+IP, or an empty `accepts` array on a non-`facilitator` type.
 "#,
     request_body(content = Object, description = "Resource registration request"),
     responses(
-        (status = 201, description = "Resource registered", body = Object),
-        (status = 400, description = "Invalid request", body = Object)
+        (status = 201, description = "Resource registered", body = Object,
+            example = json!({
+                "success": true,
+                "message": "Resource registered successfully",
+                "url": "https://api.example.com/paid"
+            })
+        ),
+        (status = 400, description = "Validation failure (bad scheme, URL userinfo, private/metadata IP host, empty accepts)", body = Object),
+        (status = 409, description = "Resource already registered", body = Object),
+        (status = 429, description = "Rate limited (roughly 5 requests per minute per IP)", body = Object)
     )
 )]
 async fn path_bazaar_register() {}
+
+#[utoipa::path(
+    delete,
+    path = "/discovery/resources",
+    tag = "Bazaar",
+    summary = "Unregister a resource (admin)",
+    description = r#"
+**Admin only.** Permanently removes a resource from the Bazaar catalog.
+
+Requires an `Authorization: Bearer <BAZAAR_ADMIN_TOKEN>` header. When the server has no admin
+token configured the whole admin surface is absent and this route returns **404**.
+
+Rate limited to roughly 5 requests per minute per IP.
+
+**Response:**
+```json
+{ "success": true, "url": "https://api.example.com/paid", "removed": true }
+```
+"#,
+    params(
+        ("url" = String, Query, description = "Exact resource URL to unregister"),
+        ("Authorization" = String, Header, description = "Bearer <BAZAAR_ADMIN_TOKEN>")
+    ),
+    responses(
+        (status = 200, description = "Resource removed", body = Object,
+            example = json!({
+                "success": true,
+                "url": "https://api.example.com/paid",
+                "removed": true
+            })
+        ),
+        (status = 401, description = "Missing or invalid bearer token", body = Object),
+        (status = 404, description = "Unknown URL, or admin surface disabled (no admin token configured)", body = Object)
+    )
+)]
+async fn path_bazaar_admin_delete() {}
+
+#[utoipa::path(
+    post,
+    path = "/discovery/admin/suppress",
+    tag = "Bazaar",
+    summary = "Suppress a resource (admin)",
+    description = r#"
+**Admin only.** Hides a resource from every listing without deleting it, so the entry can be
+released later.
+
+Requires an `Authorization: Bearer <BAZAAR_ADMIN_TOKEN>` header. When the server has no admin
+token configured the whole admin surface is absent and this route returns **404**.
+
+Rate limited to roughly 5 requests per minute per IP.
+
+**Request body:**
+```json
+{ "url": "https://api.example.com/paid", "reason": "spam" }
+```
+
+**Response:**
+```json
+{ "success": true, "url": "https://api.example.com/paid", "suppressed": true }
+```
+"#,
+    params(
+        ("Authorization" = String, Header, description = "Bearer <BAZAAR_ADMIN_TOKEN>")
+    ),
+    request_body(content = Object, description = "Suppression request: url plus a reason string"),
+    responses(
+        (status = 200, description = "Resource suppressed", body = Object,
+            example = json!({
+                "success": true,
+                "url": "https://api.example.com/paid",
+                "suppressed": true
+            })
+        ),
+        (status = 401, description = "Missing or invalid bearer token", body = Object),
+        (status = 404, description = "Admin surface disabled (no admin token configured)", body = Object)
+    )
+)]
+async fn path_bazaar_admin_suppress() {}
+
+#[utoipa::path(
+    post,
+    path = "/discovery/admin/release",
+    tag = "Bazaar",
+    summary = "Release a suppressed resource (admin)",
+    description = r#"
+**Admin only.** Reverses `POST /discovery/admin/suppress`, making the resource visible in
+listings again.
+
+Requires an `Authorization: Bearer <BAZAAR_ADMIN_TOKEN>` header. When the server has no admin
+token configured the whole admin surface is absent and this route returns **404**.
+
+Rate limited to roughly 5 requests per minute per IP.
+
+**Request body:**
+```json
+{ "url": "https://api.example.com/paid" }
+```
+
+**Response:**
+```json
+{ "success": true, "url": "https://api.example.com/paid", "suppressed": false }
+```
+"#,
+    params(
+        ("Authorization" = String, Header, description = "Bearer <BAZAAR_ADMIN_TOKEN>")
+    ),
+    request_body(content = Object, description = "Release request: url of the suppressed resource"),
+    responses(
+        (status = 200, description = "Resource released", body = Object,
+            example = json!({
+                "success": true,
+                "url": "https://api.example.com/paid",
+                "suppressed": false
+            })
+        ),
+        (status = 401, description = "Missing or invalid bearer token", body = Object),
+        (status = 404, description = "Admin surface disabled (no admin token configured)", body = Object)
+    )
+)]
+async fn path_bazaar_admin_release() {}
 
 // ============================================================================
 // Compliance Endpoints

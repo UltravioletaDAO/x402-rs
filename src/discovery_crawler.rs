@@ -259,6 +259,7 @@ impl DiscoveryCrawler {
             source_facilitator: Some(source_domain.to_string()),
             first_seen: Some(now),
             settlement_count: None,
+            health: None,
         }
     }
 

@@ -245,6 +245,9 @@ pub struct DiscoveryQueryParams {
 
     /// Filter by source facilitator (e.g., "coinbase", "ultravioleta")
     pub source_facilitator: Option<String>,
+
+    /// Filter by liveness: alive|degraded|auth_gated|quarantined|unknown|unprobeable|any
+    pub health: Option<String>,
 }
 
 fn default_limit() -> u32 {
@@ -259,6 +262,7 @@ impl From<DiscoveryQueryParams> for Option<DiscoveryFilters> {
             && params.tag.is_none()
             && params.source.is_none()
             && params.source_facilitator.is_none()
+            && params.health.is_none()
         {
             None
         } else {
@@ -269,6 +273,7 @@ impl From<DiscoveryQueryParams> for Option<DiscoveryFilters> {
                 tag: params.tag,
                 source: params.source,
                 source_facilitator: params.source_facilitator,
+                health: params.health,
             })
         }
     }

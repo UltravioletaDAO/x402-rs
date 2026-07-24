@@ -58,7 +58,8 @@ use tracing::{debug, error, info, warn};
 
 use crate::discovery_store::{DiscoveryStore, NoOpStore, StoreError};
 use crate::types_v2::{
-    DiscoveryFilters, DiscoveryResource, DiscoveryResponse, DiscoverySource, Pagination,
+    DiscoveryFilters, DiscoveryResource, DiscoveryResponse, DiscoverySource, HealthState,
+    HealthStatus, Pagination,
 };
 
 // ============================================================================
@@ -115,6 +116,31 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
+/// `list()` visibility predicate: default hides `quarantined`; `health=any`
+/// shows everything; `health=<status>` filters to that exact status.
+fn health_visible(health: &HashMap<String, HealthState>, url: &str, filter: Option<&str>) -> bool {
+    let status = health
+        .get(url)
+        .map(|h| h.status)
+        .unwrap_or(HealthStatus::Unknown);
+    match filter {
+        Some(f) if f.eq_ignore_ascii_case("any") => true,
+        Some(f) => health_status_label(status).eq_ignore_ascii_case(f),
+        None => status != HealthStatus::Quarantined,
+    }
+}
+
+fn health_status_label(s: HealthStatus) -> &'static str {
+    match s {
+        HealthStatus::Unknown => "unknown",
+        HealthStatus::Alive => "alive",
+        HealthStatus::Degraded => "degraded",
+        HealthStatus::AuthGated => "auth_gated",
+        HealthStatus::Quarantined => "quarantined",
+        HealthStatus::Unprobeable => "unprobeable",
+    }
+}
+
 // ============================================================================
 // Discovery Registry
 // ============================================================================
@@ -126,12 +152,13 @@ fn now_secs() -> u64 {
 ///
 /// Thread-safe using `Arc<RwLock>` for concurrent read access with
 /// exclusive write access during registration.
-#[derive(Debug)]
 pub struct DiscoveryRegistry {
     /// In-memory cache: Map of URL -> DiscoveryResource
     resources: Arc<RwLock<HashMap<String, DiscoveryResource>>>,
     /// Persistent storage backend
     store: Arc<dyn DiscoveryStore>,
+    /// Liveness overlay (WS-B health prober).
+    health: Arc<crate::discovery_health::HealthTracker>,
 }
 
 impl Clone for DiscoveryRegistry {
@@ -139,6 +166,7 @@ impl Clone for DiscoveryRegistry {
         Self {
             resources: Arc::clone(&self.resources),
             store: Arc::clone(&self.store),
+            health: Arc::clone(&self.health),
         }
     }
 }
@@ -158,7 +186,23 @@ impl DiscoveryRegistry {
         Self {
             resources: Arc::new(RwLock::new(HashMap::new())),
             store: Arc::new(NoOpStore::new()),
+            health: Arc::new(crate::discovery_health::HealthTracker::new()),
         }
+    }
+
+    /// The liveness overlay (WS-B). Used by the health prober and by `list()`.
+    pub fn health(&self) -> Arc<crate::discovery_health::HealthTracker> {
+        Arc::clone(&self.health)
+    }
+
+    /// Snapshot of every registered resource URL (for the health prober).
+    pub async fn all_urls(&self) -> Vec<url::Url> {
+        self.resources
+            .read()
+            .await
+            .values()
+            .map(|r| r.url.clone())
+            .collect()
     }
 
     /// Create a new discovery registry with persistent storage.
@@ -190,6 +234,7 @@ impl DiscoveryRegistry {
         Ok(Self {
             resources: Arc::new(RwLock::new(cache)),
             store: Arc::new(store),
+            health: Arc::new(crate::discovery_health::HealthTracker::new()),
         })
     }
 
@@ -347,15 +392,23 @@ impl DiscoveryRegistry {
         offset: u32,
         filters: Option<DiscoveryFilters>,
     ) -> DiscoveryResponse {
+        // Snapshot the health overlay BEFORE taking the resources read guard —
+        // the tracker is behind its own async lock, and holding the resources
+        // guard across its `.await` is the guard-across-await hazard.
+        let health = self.health.snapshot().await;
+        let health_filter = filters.as_ref().and_then(|f| f.health.clone());
+
         let resources = self.resources.read().await;
 
         // Cap limit at 100 to prevent abuse
         let limit = limit.min(100);
 
-        // Collect and filter resources
+        // Collect, filter, and apply the visibility policy (default hides
+        // quarantined resources; `health=<status>`/`any` overrides it).
         let mut filtered: Vec<&DiscoveryResource> = resources
             .values()
             .filter(|r| self.matches_filters(r, &filters))
+            .filter(|r| health_visible(&health, r.url.as_str(), health_filter.as_deref()))
             .collect();
 
         // Sort by last_updated descending (newest first)
@@ -363,12 +416,17 @@ impl DiscoveryRegistry {
 
         let total = filtered.len() as u32;
 
-        // Apply pagination
+        // Apply pagination, annotating each returned item with its health
+        // (response-only; the cached/persisted copy stays health-free).
         let items: Vec<DiscoveryResource> = filtered
             .into_iter()
             .skip(offset as usize)
             .take(limit as usize)
-            .cloned()
+            .map(|r| {
+                let mut c = r.clone();
+                c.health = health.get(r.url.as_str()).cloned();
+                c
+            })
             .collect();
 
         debug!(

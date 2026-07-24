@@ -1005,6 +1005,39 @@ impl Default for DiscoveryMetadata {
 /// - `Crawled`: Discovered from /.well-known/x402 endpoints
 /// - `Aggregated`: Pulled from another facilitator's Bazaar
 ///
+/// Liveness classification of a resource (WS-B health prober).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum HealthStatus {
+    /// Never probed yet.
+    #[default]
+    Unknown,
+    /// Answers HTTP 402 (a live x402 resource).
+    Alive,
+    /// Responds but does not challenge for payment (200, unparseable 402, …).
+    Degraded,
+    /// Auth is required before payment (401/403/405) — healthy for its design.
+    AuthGated,
+    /// Failing probes (404/dead) — hidden from the default listing.
+    Quarantined,
+    /// Cannot be probed by a plain request (route templates, mcp/a2a).
+    Unprobeable,
+}
+
+/// Response-facing health snapshot for a resource. Set on list responses from
+/// the health overlay; never persisted onto the resource in S3.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HealthState {
+    pub status: HealthStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_checked: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_status: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<u64>,
+}
+
 /// The `source` and `source_facilitator` fields enable filtering and attribution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1048,6 +1081,12 @@ pub struct DiscoveryResource {
     /// Number of settlements observed (for Settlement source)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settlement_count: Option<u32>,
+
+    /// Liveness health (WS-B). Response-only: the cache/S3 copy keeps this
+    /// `None` (skipped on serialize); `list()` annotates response clones from
+    /// the separate health overlay so imports can never clobber it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health: Option<HealthState>,
 }
 
 impl DiscoveryResource {
@@ -1076,6 +1115,7 @@ impl DiscoveryResource {
             source_facilitator: None,
             first_seen: Some(now),
             settlement_count: None,
+            health: None,
         }
     }
 
@@ -1106,6 +1146,7 @@ impl DiscoveryResource {
             source_facilitator: Some(source_facilitator),
             first_seen: Some(now),
             settlement_count: None,
+            health: None,
         }
     }
 
@@ -1134,6 +1175,7 @@ impl DiscoveryResource {
             source_facilitator: None,
             first_seen: Some(now),
             settlement_count: Some(1),
+            health: None,
         }
     }
 
@@ -1279,6 +1321,11 @@ pub struct DiscoveryFilters {
     /// Filter by source facilitator (e.g., "coinbase", "ultravioleta")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_facilitator: Option<String>,
+
+    /// Filter by liveness (WS-B): `alive|degraded|auth_gated|quarantined|unknown|unprobeable|any`.
+    /// Absent = default visibility (hide quarantined).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub health: Option<String>,
 }
 
 impl DiscoveryFilters {
@@ -1289,6 +1336,7 @@ impl DiscoveryFilters {
             && self.tag.is_none()
             && self.source.is_none()
             && self.source_facilitator.is_none()
+            && self.health.is_none()
     }
 }
 

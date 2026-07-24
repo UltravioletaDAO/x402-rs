@@ -60,6 +60,7 @@ mod chain;
 mod discovery;
 mod discovery_aggregator;
 mod discovery_crawler;
+mod discovery_health;
 mod discovery_security;
 mod discovery_store;
 mod erc8004;
@@ -295,6 +296,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     } else {
         tracing::info!("Discovery crawler is disabled (DISCOVERY_ENABLE_CRAWLER=false)");
+    }
+
+    // Start the Bazaar health prober (WS-B). Probes registered URLs with the
+    // SSRF-hardened connector; 402 = alive, dead endpoints are quarantined and
+    // hidden from the default listing. Liveness lives in a separate S3 overlay.
+    let enable_health = std::env::var("DISCOVERY_ENABLE_HEALTH")
+        .map(|v| v != "false" && v != "0")
+        .unwrap_or(true);
+    if enable_health {
+        let health_tick = std::env::var("DISCOVERY_HEALTH_TICK")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(60);
+        let health_concurrency = std::env::var("DISCOVERY_HEALTH_CONCURRENCY")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(15);
+        let health_max_rps = std::env::var("DISCOVERY_HEALTH_MAX_RPS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(20);
+
+        let tracker = discovery_registry.health();
+        if let Ok(bucket) = std::env::var("DISCOVERY_S3_BUCKET") {
+            let key = std::env::var("DISCOVERY_HEALTH_S3_KEY")
+                .unwrap_or_else(|_| "bazaar/health.json".to_string());
+            tracker.configure_s3(bucket, key).await;
+        }
+        let registry_for_health = Arc::clone(&discovery_registry);
+        let _health_handle = discovery_health::start_health_task(
+            (*registry_for_health).clone(),
+            tracker,
+            health_tick,
+            health_concurrency,
+            health_max_rps,
+        );
+    } else {
+        tracing::info!("Discovery health prober is disabled (DISCOVERY_ENABLE_HEALTH=false)");
     }
 
     // F4: Idempotency-Key cache for /settle retries. Backed by DynamoDB in

@@ -57,7 +57,9 @@ use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 use crate::discovery_store::{DiscoveryStore, NoOpStore, StoreError};
-use crate::types_v2::{DiscoveryFilters, DiscoveryResource, DiscoveryResponse, Pagination};
+use crate::types_v2::{
+    DiscoveryFilters, DiscoveryResource, DiscoveryResponse, DiscoverySource, Pagination,
+};
 
 // ============================================================================
 // Error Types
@@ -89,6 +91,28 @@ pub enum DiscoveryError {
     /// Storage error
     #[error("Storage error: {0}")]
     StorageError(#[from] StoreError),
+}
+
+/// How a bulk import treats incoming resources.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImportPolicy {
+    /// Full `validate_resource()` — used by `POST /discovery/register`.
+    Strict,
+    /// Apply the curation filter, silently dropping failures with per-rule
+    /// counters — used by the aggregator and crawler.
+    Filtered,
+}
+
+/// Clock skew allowed on feed-supplied `last_updated` before it is treated as
+/// a future-timestamp poisoning attempt (F5).
+const FUTURE_TIMESTAMP_SKEW_SECS: u64 = 300;
+
+/// Current Unix time in seconds (0 if the clock is before the epoch).
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 // ============================================================================
@@ -379,72 +403,164 @@ impl DiscoveryRegistry {
     pub async fn bulk_import(
         &self,
         resources: Vec<DiscoveryResource>,
-        skip_validation: bool,
+        policy: ImportPolicy,
     ) -> Result<(usize, usize, usize), DiscoveryError> {
+        use crate::discovery_security::{curation_check, FilterVerdict};
+
         let mut added = 0;
         let mut updated = 0;
         let mut skipped = 0;
+        let mut reject_counts: HashMap<&'static str, usize> = HashMap::new();
+        let now = now_secs();
 
         let mut cache = self.resources.write().await;
-        let mut to_persist = Vec::new();
 
         for resource in resources {
-            // Optionally validate
-            if !skip_validation {
-                if let Err(e) = self.validate_resource(&resource) {
-                    debug!(url = %resource.url, error = %e, "Skipping invalid resource during bulk import");
-                    skipped += 1;
-                    continue;
+            // Filter (aggregator/crawler) or strict-validate (register).
+            match policy {
+                ImportPolicy::Strict => {
+                    if let Err(e) = self.validate_resource(&resource) {
+                        debug!(url = %resource.url, error = %e, "Skipping invalid resource during strict bulk import");
+                        skipped += 1;
+                        continue;
+                    }
                 }
+                ImportPolicy::Filtered => {
+                    if let FilterVerdict::Reject(rule) = curation_check(&resource) {
+                        *reject_counts.entry(rule).or_insert(0) += 1;
+                        skipped += 1;
+                        continue;
+                    }
+                }
+            }
+
+            // F5: reject future timestamps (poisoning) — a feed cannot pin an
+            // item to the top forever or evade age-based retention.
+            if resource.last_updated > now + FUTURE_TIMESTAMP_SKEW_SECS {
+                *reject_counts.entry("future-timestamp").or_insert(0) += 1;
+                skipped += 1;
+                continue;
             }
 
             let url_key = resource.url.to_string();
 
             if let Some(existing) = cache.get(&url_key) {
-                // Only update if newer
                 if resource.last_updated > existing.last_updated {
-                    cache.insert(url_key.clone(), resource.clone());
-                    to_persist.push(resource);
+                    // Field-preserving merge: incoming wins for content, but
+                    // provenance is protected (F4) — first_seen keeps the
+                    // earliest, settlement_count the max, and a self-registered
+                    // or settlement record is never downgraded to aggregated by
+                    // a colliding feed item.
+                    let mut merged = resource;
+                    merged.first_seen = match (existing.first_seen, merged.first_seen) {
+                        (Some(a), Some(b)) => Some(a.min(b)),
+                        (a, b) => a.or(b),
+                    };
+                    merged.settlement_count =
+                        match (existing.settlement_count, merged.settlement_count) {
+                            (Some(a), Some(b)) => Some(a.max(b)),
+                            (a, b) => a.or(b),
+                        };
+                    merged.source = match existing.source {
+                        DiscoverySource::SelfRegistered | DiscoverySource::Settlement => {
+                            existing.source
+                        }
+                        _ => merged.source,
+                    };
+                    cache.insert(url_key, merged);
                     updated += 1;
                 } else {
                     skipped += 1;
                 }
             } else {
-                // New resource
-                cache.insert(url_key.clone(), resource.clone());
-                to_persist.push(resource);
+                cache.insert(url_key, resource);
                 added += 1;
             }
         }
 
-        // Release lock before async persistence
+        // Persist the FULL cache as one snapshot (single PUT) rather than
+        // per-item read-modify-write. This avoids the S3 race where a stale
+        // per-item save would re-add items the retention GC just removed.
+        let changed = added + updated;
+        let snapshot: Vec<DiscoveryResource> = if changed > 0 {
+            cache.values().cloned().collect()
+        } else {
+            Vec::new()
+        };
         drop(cache);
 
-        // Persist all changes
-        if !to_persist.is_empty() {
-            let store = Arc::clone(&self.store);
-            let persist_count = to_persist.len();
-            tokio::spawn(async move {
-                for resource in to_persist {
-                    if let Err(e) = store.save(&resource).await {
-                        error!(url = %resource.url, error = %e, "Failed to persist imported resource");
-                    }
-                }
-                info!(
-                    count = persist_count,
-                    "Persisted bulk-imported resources to store"
-                );
-            });
+        if changed > 0 {
+            // Persist synchronously so that, within the single aggregation task,
+            // this write completes BEFORE the retention GC's snapshot — otherwise
+            // an out-of-order spawned write could re-persist junk the GC removed.
+            let n = snapshot.len();
+            if let Err(e) = self.store.save_all(&snapshot).await {
+                error!(error = %e, "Failed to persist bulk import snapshot");
+            } else {
+                info!(count = n, "Persisted bulk import snapshot to store");
+            }
         }
 
         info!(
             added = added,
             updated = updated,
             skipped = skipped,
+            rejects = ?reject_counts,
             "Bulk import completed"
         );
 
         Ok((added, updated, skipped))
+    }
+
+    /// Retention GC (WS-A): remove already-stored resources that fail the
+    /// static curation rules (junk schemes, private/no-dot hosts, empty
+    /// accepts, bad types, oversized fields). This is the one-time cleanup of
+    /// the historical catalog plus ongoing hygiene. Deterministic on stored
+    /// data (never based on fetch success), so a transient upstream outage
+    /// cannot trigger a mass delete. Persists the surviving set as one snapshot
+    /// (`save_all`), not N deletes. Disable with `DISCOVERY_ENABLE_RETENTION_GC=false`.
+    pub async fn apply_retention(&self) -> usize {
+        use crate::discovery_security::{curation_check, FilterVerdict};
+
+        if std::env::var("DISCOVERY_ENABLE_RETENTION_GC")
+            .map(|v| v.eq_ignore_ascii_case("false"))
+            .unwrap_or(false)
+        {
+            info!("Retention GC disabled (DISCOVERY_ENABLE_RETENTION_GC=false)");
+            return 0;
+        }
+
+        let mut cache = self.resources.write().await;
+        let before = cache.len();
+        let mut removed_by_rule: HashMap<&'static str, usize> = HashMap::new();
+        cache.retain(|_url, r| match curation_check(r) {
+            FilterVerdict::Accept { .. } => true,
+            FilterVerdict::Reject(rule) => {
+                *removed_by_rule.entry(rule).or_insert(0) += 1;
+                false
+            }
+        });
+        let removed = before - cache.len();
+        let keep: Vec<DiscoveryResource> = cache.values().cloned().collect();
+        drop(cache);
+
+        if removed > 0 {
+            info!(
+                removed = removed,
+                before = before,
+                by_rule = ?removed_by_rule,
+                "Retention GC removed non-conforming resources"
+            );
+            // Synchronous snapshot: this is the authoritative last write of the
+            // aggregation cycle (see bulk_import note).
+            let kept = keep.len();
+            if let Err(e) = self.store.save_all(&keep).await {
+                error!(error = %e, "Failed to persist retention GC snapshot");
+            } else {
+                info!(kept = kept, "Retention GC snapshot persisted");
+            }
+        }
+        removed
     }
 
     /// Check if a resource matches the given filters.
@@ -880,6 +996,55 @@ mod tests {
         let retrieved = registry.get("https://api.example.com/data").await;
         assert!(retrieved.is_some());
         assert_eq!(retrieved.unwrap().url, resource.url);
+    }
+
+    fn junk_empty_accepts(url: &str) -> DiscoveryResource {
+        DiscoveryResource::new(
+            Url::parse(url).unwrap(),
+            "http".to_string(),
+            "d".to_string(),
+            vec![],
+        )
+    }
+
+    #[tokio::test]
+    async fn test_bulk_import_filtered_drops_junk() {
+        let registry = DiscoveryRegistry::new();
+        let good = create_test_resource("https://api.good.com/x", None);
+        let empty = junk_empty_accepts("https://api.empty.com/x");
+        let private = create_test_resource("http://127.0.0.1/x", None); // R2 private-ip
+        let (added, _updated, skipped) = registry
+            .bulk_import(vec![good, empty, private], ImportPolicy::Filtered)
+            .await
+            .unwrap();
+        assert_eq!(added, 1, "only the good resource should be added");
+        assert_eq!(skipped, 2, "empty-accepts + private-ip must be filtered");
+    }
+
+    #[tokio::test]
+    async fn test_apply_retention_removes_stored_junk() {
+        use crate::discovery_store::MemoryStore;
+        // Preload the store with historical data (bypassing the import filter,
+        // as pre-WS-A junk in S3 would be).
+        let store = MemoryStore::new();
+        store
+            .save(&create_test_resource("https://api.good.com/x", None))
+            .await
+            .unwrap();
+        store
+            .save(&junk_empty_accepts("https://api.empty.com/x"))
+            .await
+            .unwrap();
+        store
+            .save(&create_test_resource("http://127.0.0.1/x", None))
+            .await
+            .unwrap();
+        let registry = DiscoveryRegistry::with_store(store).await.unwrap();
+        assert_eq!(registry.count().await, 3);
+
+        let removed = registry.apply_retention().await;
+        assert_eq!(removed, 2, "empty-accepts + private-ip must be GC'd");
+        assert_eq!(registry.count().await, 1);
     }
 
     #[tokio::test]

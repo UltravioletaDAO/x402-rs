@@ -203,6 +203,11 @@ use crate::caip2::Caip2NetworkId;
 use crate::types::{MixedAddress, Scheme, TokenAmount};
 use crate::types_v2::{DiscoveryMetadata, DiscoveryResource, PaymentRequirementsV2};
 
+/// Hard cap on items pulled from a single facilitator per fetch — bounds a
+/// misbehaving or hostile source that returns full pages without a pagination
+/// terminus.
+const MAX_AGGREGATION_ITEMS_PER_SOURCE: usize = 50_000;
+
 // ============================================================================
 // Error Types
 // ============================================================================
@@ -683,15 +688,22 @@ impl DiscoveryAggregator {
             let resources = self.convert_coinbase_resources(items, &config.id);
             all_resources.extend(resources);
 
-            // Check if we need to fetch more
-            let total = pagination.as_ref().and_then(|p| p.total).unwrap_or(0);
+            // Check if we need to fetch more. A source that returns items but
+            // NO pagination block must not stop after page one — keep going
+            // while pages come back full, bounded by a hard page cap.
+            let total = pagination.as_ref().and_then(|p| p.total);
             offset += batch_count as u32;
 
-            if batch_count < limit as usize || offset >= total {
+            let full_page = batch_count >= limit as usize;
+            let done = match total {
+                Some(t) => !full_page || offset >= t,
+                None => !full_page,
+            };
+            if done || offset as usize >= MAX_AGGREGATION_ITEMS_PER_SOURCE {
                 break;
             }
 
-            debug!(offset = offset, total = total, "Fetching next page");
+            debug!(offset = offset, total = ?total, "Fetching next page");
         }
 
         Ok(all_resources)
@@ -932,13 +944,16 @@ pub fn start_aggregation_task(
             DiscoveryAggregator::with_facilitators(FacilitatorConfig::all_with_source_config());
         let interval = Duration::from_secs(interval_secs);
 
-        // Run immediately on startup
+        // Run immediately on startup, then apply the retention GC to clean the
+        // historical catalog of items that fail the curation rules.
         run_aggregation(&aggregator, &registry).await;
+        registry.apply_retention().await;
 
-        // Then run periodically
+        // Then run periodically, GC-ing after each cycle.
         loop {
             tokio::time::sleep(interval).await;
             run_aggregation(&aggregator, &registry).await;
+            registry.apply_retention().await;
         }
     })
 }
@@ -957,7 +972,10 @@ async fn run_aggregation(
         return;
     }
 
-    match registry.bulk_import(resources, true).await {
+    match registry
+        .bulk_import(resources, crate::discovery::ImportPolicy::Filtered)
+        .await
+    {
         Ok((added, updated, skipped)) => {
             info!(
                 added = added,

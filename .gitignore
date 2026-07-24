@@ -113,3 +113,6 @@ terraform/environments/production/balances_lambda.zip
 deployment-result.json
 current-task-def.json
 tmpclaude-*
+
+# Local S3 registry backups (large)
+/backups/

@@ -297,6 +297,122 @@ pub fn aggregator_redirect_policy(max: usize) -> reqwest::redirect::Policy {
     })
 }
 
+// ============================================================================
+// Ingestion curation filter (WS-A)
+// ============================================================================
+
+use crate::types_v2::DiscoveryResource;
+
+/// Field-length caps (F12/R7) — anti-bloat on aggregated/registered resources.
+pub const MAX_URL_LEN: usize = 2048;
+pub const MAX_DESCRIPTION_LEN: usize = 2048;
+pub const MAX_TAG_LEN: usize = 64;
+pub const MAX_TAGS: usize = 20;
+pub const MAX_META_FIELD_LEN: usize = 128;
+
+/// Verdict of the import-time [`curation_check`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FilterVerdict {
+    /// Passes. `route_template` = the URL uses `/:param` / `{}` templating
+    /// (spec-legal per bazaar.md, but unprobeable — flagged, not dropped).
+    Accept { route_template: bool },
+    /// Rejected by a rule; the payload is a kebab id for metrics/logs.
+    Reject(&'static str),
+}
+
+/// Import-time curation filter (WS-A, rules R1-R7 from
+/// docs/plans/bazaar/02-ingestion-filter.md). Evaluated in order, first
+/// failure wins. Operates on an already-converted [`DiscoveryResource`]
+/// (accepts carry parsed network/asset/amount). A `facilitator`-typed resource
+/// may have empty accepts; every other type needs at least one payable entry.
+pub fn curation_check(r: &DiscoveryResource) -> FilterVerdict {
+    let url = &r.url;
+
+    // R1: scheme must be http/https.
+    let scheme = url.scheme();
+    if scheme != "http" && scheme != "https" {
+        return FilterVerdict::Reject("scheme");
+    }
+
+    // R4: URL sanity — no userinfo, no whitespace, bounded length.
+    if !url.username().is_empty() || url.password().is_some() {
+        return FilterVerdict::Reject("userinfo");
+    }
+    let url_str = url.as_str();
+    if url_str.len() > MAX_URL_LEN || url_str.chars().any(|c| c.is_whitespace()) {
+        return FilterVerdict::Reject("url-sanity");
+    }
+
+    // R2: host must be public — reject private/metadata IP literals (any
+    // encoding) and bare single-label hosts (e.g. http://gittipstream:8080).
+    match url.host() {
+        None => return FilterVerdict::Reject("no-host"),
+        Some(url::Host::Ipv4(ip)) => {
+            if is_disallowed_target_ip(&IpAddr::V4(ip)) {
+                return FilterVerdict::Reject("private-ip");
+            }
+        }
+        Some(url::Host::Ipv6(ip)) => {
+            if is_disallowed_target_ip(&IpAddr::V6(ip)) {
+                return FilterVerdict::Reject("private-ip");
+            }
+        }
+        Some(url::Host::Domain(d)) => {
+            if let Some(ip) = host_as_encoded_ipv4(d) {
+                if is_disallowed_target_ip(&IpAddr::V4(ip)) {
+                    return FilterVerdict::Reject("private-ip");
+                }
+            } else if !d.contains('.') {
+                return FilterVerdict::Reject("no-dot-host");
+            }
+        }
+    }
+
+    // R5: resource type whitelist.
+    if !matches!(
+        r.resource_type.as_str(),
+        "http" | "mcp" | "a2a" | "facilitator"
+    ) {
+        return FilterVerdict::Reject("type");
+    }
+
+    // R7: length caps.
+    if r.description.len() > MAX_DESCRIPTION_LEN {
+        return FilterVerdict::Reject("description-len");
+    }
+    if let Some(meta) = &r.metadata {
+        if meta.tags.len() > MAX_TAGS || meta.tags.iter().any(|t| t.len() > MAX_TAG_LEN) {
+            return FilterVerdict::Reject("tags-len");
+        }
+        if meta
+            .provider
+            .as_ref()
+            .is_some_and(|p| p.len() > MAX_META_FIELD_LEN)
+            || meta
+                .category
+                .as_ref()
+                .is_some_and(|c| c.len() > MAX_META_FIELD_LEN)
+        {
+            return FilterVerdict::Reject("meta-len");
+        }
+    }
+
+    // R3: at least one payable accepts entry (network is always present on a
+    // stored entry; amount must be non-zero). Facilitators are exempt.
+    if r.resource_type != "facilitator" {
+        let has_payable = r.accepts.iter().any(|a| !a.amount.0.is_zero());
+        if !has_payable {
+            return FilterVerdict::Reject("unpayable");
+        }
+    }
+
+    // R6: template URLs are allowed but flagged (unprobeable).
+    let path = url.path();
+    let route_template =
+        path.contains("/:") || path.contains('{') || url_str.to_ascii_lowercase().contains("%7b");
+    FilterVerdict::Accept { route_template }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -406,5 +522,89 @@ mod tests {
     fn aggregator_policy_builds() {
         // Smoke test: the policy constructs without panicking.
         let _ = aggregator_redirect_policy(3);
+    }
+
+    fn res(url: &str, ty: &str, payable: bool) -> DiscoveryResource {
+        use crate::caip2::Caip2NetworkId;
+        use crate::types::{MixedAddress, Scheme, TokenAmount};
+        use crate::types_v2::PaymentRequirementsV2;
+        let accepts = if payable {
+            vec![PaymentRequirementsV2 {
+                scheme: Scheme::Exact,
+                network: Caip2NetworkId::eip155(8453),
+                asset: MixedAddress::Evm(
+                    "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+                        .parse()
+                        .unwrap(),
+                ),
+                amount: TokenAmount::from(1000000u64),
+                pay_to: MixedAddress::Evm(
+                    "0x1234567890123456789012345678901234567890"
+                        .parse()
+                        .unwrap(),
+                ),
+                max_timeout_seconds: 300,
+                extra: None,
+            }]
+        } else {
+            vec![]
+        };
+        DiscoveryResource::new(
+            Url::parse(url).unwrap(),
+            ty.to_string(),
+            "d".to_string(),
+            accepts,
+        )
+    }
+
+    #[test]
+    fn curation_check_rules() {
+        // good payable https resource
+        assert!(matches!(
+            curation_check(&res("https://api.example.com/x", "http", true)),
+            FilterVerdict::Accept {
+                route_template: false
+            }
+        ));
+        // R3: empty accepts on non-facilitator -> unpayable
+        assert_eq!(
+            curation_check(&res("https://api.example.com/x", "http", false)),
+            FilterVerdict::Reject("unpayable")
+        );
+        // facilitator type may have empty accepts
+        assert!(matches!(
+            curation_check(&res(
+                "https://facilitator.example.com/",
+                "facilitator",
+                false
+            )),
+            FilterVerdict::Accept { .. }
+        ));
+        // R2: private / encoded-IP host
+        assert_eq!(
+            curation_check(&res("http://127.0.0.1/x", "http", true)),
+            FilterVerdict::Reject("private-ip")
+        );
+        // R2: bare no-dot host
+        assert_eq!(
+            curation_check(&res("http://gittipstream:8080/tip", "http", true)),
+            FilterVerdict::Reject("no-dot-host")
+        );
+        // R6: template URL accepted but flagged
+        assert!(matches!(
+            curation_check(&res(
+                "https://api.laevitas.ch/api/v1/options/:var1",
+                "http",
+                true
+            )),
+            FilterVerdict::Accept {
+                route_template: true
+            }
+        ));
+        // R5: bad type
+        assert_eq!(
+            curation_check(&res("https://api.example.com/x", "weird", true)),
+            FilterVerdict::Reject("type")
+        );
     }
 }

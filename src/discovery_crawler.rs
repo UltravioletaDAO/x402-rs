@@ -284,7 +284,10 @@ impl DiscoveryCrawler {
 
                     let resource_count = resources.len();
 
-                    match registry.bulk_import(resources, true).await {
+                    match registry
+                        .bulk_import(resources, crate::discovery::ImportPolicy::Filtered)
+                        .await
+                    {
                         Ok((added, updated, skipped)) => {
                             summary.targets_crawled += 1;
                             summary.resources_added += added;

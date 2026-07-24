@@ -513,6 +513,7 @@ impl DiscoveryAggregator {
         let client = Client::builder()
             .timeout(Duration::from_secs(60))
             .user_agent("x402-rs-aggregator/1.0")
+            .redirect(crate::discovery_security::aggregator_redirect_policy(3))
             .build()
             .expect("Failed to create HTTP client");
 
@@ -527,6 +528,7 @@ impl DiscoveryAggregator {
         let client = Client::builder()
             .timeout(Duration::from_secs(60))
             .user_agent("x402-rs-aggregator/1.0")
+            .redirect(crate::discovery_security::aggregator_redirect_policy(3))
             .build()
             .expect("Failed to create HTTP client");
 

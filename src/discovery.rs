@@ -604,16 +604,39 @@ impl DiscoveryRegistry {
             )));
         }
 
+        // Reject userinfo in the authority. `https://trusted.example@evil.com/`
+        // parses with host=evil.com, but the userinfo segment fools a naive
+        // string/prefix match (e.g. a curation tier matcher) into treating it
+        // as `trusted.example`. No legitimate paid resource embeds credentials
+        // in its discovery URL, so drop the whole class here.
+        if !resource.url.username().is_empty() || resource.url.password().is_some() {
+            return Err(DiscoveryError::InvalidUrl(
+                "URL must not contain userinfo (user[:pass]@host)".to_string(),
+            ));
+        }
+
         // SSRF guard: reject IP-literal hosts in private / link-local / loopback
         // address ranges. The classic case is `169.254.169.254` (AWS instance
         // metadata) — anyone able to convince the facilitator to fetch from
-        // that host can read EC2/Fargate credentials. Domain-name hosts pass
-        // this gate; the secondary DNS-resolution gate happens at fetch time.
+        // that host can read EC2/Fargate credentials.
+        //
+        // `url` 2.5.x (WHATWG host parser) already normalizes alternate IPv4
+        // encodings for http(s) — `http://0x7f000001/` becomes host
+        // `127.0.0.1` — so `host_str().parse::<IpAddr>()` catches them. The
+        // `host_as_encoded_ipv4` fallback is defense-in-depth in case that
+        // behavior changes and is shared with the prober's raw-host checks.
+        // A DNS name whose A-record points at a private IP cannot be caught
+        // here without resolving; that gate lives in the outbound HTTP
+        // connector used by the health prober (see docs/plans/bazaar/08).
         if let Some(host) = resource.url.host_str() {
-            if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+            let literal = host
+                .parse::<std::net::IpAddr>()
+                .ok()
+                .or_else(|| host_as_encoded_ipv4(host).map(std::net::IpAddr::V4));
+            if let Some(ip) = literal {
                 if is_disallowed_target_ip(&ip) {
                     return Err(DiscoveryError::InvalidUrl(format!(
-                        "URL host {ip} resolves to a non-routable, private, or link-local address"
+                        "URL host {host} resolves to a non-routable, private, or link-local address"
                     )));
                 }
             }
@@ -648,8 +671,9 @@ impl DiscoveryRegistry {
 /// - Multicast and reserved
 ///
 /// Used by [`DiscoveryRegistry::validate_resource`] to block SSRF against
-/// instance metadata and internal services.
-fn is_disallowed_target_ip(ip: &std::net::IpAddr) -> bool {
+/// instance metadata and internal services. Shared with `discovery_security`
+/// for the outbound HTTP connector guarding the crawler/aggregator/prober.
+pub(crate) fn is_disallowed_target_ip(ip: &std::net::IpAddr) -> bool {
     use std::net::IpAddr;
     match ip {
         IpAddr::V4(v4) => {
@@ -681,6 +705,14 @@ fn is_disallowed_target_ip(ip: &std::net::IpAddr) -> bool {
             }
             // Reserved 192.0.0.0/24 (IETF protocol assignments)
             if o[0] == 192 && o[1] == 0 && o[2] == 0 {
+                return true;
+            }
+            // 6to4 relay anycast 192.88.99.0/24
+            if o[0] == 192 && o[1] == 88 && o[2] == 99 {
+                return true;
+            }
+            // Class E / reserved 240.0.0.0/4 (includes 255.255.255.255 broadcast)
+            if o[0] >= 240 {
                 return true;
             }
             // Documentation (192.0.2/24, 198.51.100/24, 203.0.113/24)
@@ -719,6 +751,73 @@ fn is_disallowed_target_ip(ip: &std::net::IpAddr) -> bool {
             false
         }
     }
+}
+
+/// Emulate the parts of libc `inet_aton` that the `url` crate does NOT treat
+/// as IP literals, so alternate encodings of an address cannot smuggle a
+/// private / metadata target past the SSRF guard in
+/// [`DiscoveryRegistry::validate_resource`]. Handles 1-4 dot-separated parts,
+/// each decimal / hex (`0x` prefix) / octal (`0` prefix):
+///   - `2130706433`     -> 127.0.0.1  (single 32-bit value)
+///   - `0x7f000001`     -> 127.0.0.1  (hex)
+///   - `017700000001`   -> 127.0.0.1  (octal)
+///   - `127.1`          -> 127.0.0.1  (a.d, d is 24-bit)
+///
+/// Returns `None` for ordinary hostnames (any label that is not fully numeric
+/// in one of those bases makes the whole host bail out) and for canonical
+/// dotted-decimal IPv4 (which `IpAddr::parse` already handles upstream).
+pub(crate) fn host_as_encoded_ipv4(host: &str) -> Option<std::net::Ipv4Addr> {
+    if host.is_empty() {
+        return None;
+    }
+    let parts: Vec<&str> = host.split('.').collect();
+    if parts.len() > 4 {
+        return None;
+    }
+    fn parse_part(s: &str) -> Option<u64> {
+        if s.is_empty() {
+            return None;
+        }
+        if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+            u64::from_str_radix(hex, 16).ok()
+        } else if s.len() > 1 && s.starts_with('0') {
+            u64::from_str_radix(&s[1..], 8).ok()
+        } else {
+            s.parse::<u64>().ok()
+        }
+    }
+    let vals: Vec<u64> = parts
+        .iter()
+        .map(|p| parse_part(p))
+        .collect::<Option<Vec<_>>>()?;
+    // Compose per inet_aton semantics; each non-final part is one octet, the
+    // final part absorbs the remaining low-order bytes.
+    let addr: u64 = match vals.as_slice() {
+        [a] => *a,
+        [a, b] => {
+            if *a > 0xff || *b > 0x00ff_ffff {
+                return None;
+            }
+            (*a << 24) | *b
+        }
+        [a, b, c] => {
+            if *a > 0xff || *b > 0xff || *c > 0xffff {
+                return None;
+            }
+            (*a << 24) | (*b << 16) | *c
+        }
+        [a, b, c, d] => {
+            if *a > 0xff || *b > 0xff || *c > 0xff || *d > 0xff {
+                return None;
+            }
+            (*a << 24) | (*b << 16) | (*c << 8) | *d
+        }
+        _ => return None,
+    };
+    if addr > 0xffff_ffff {
+        return None;
+    }
+    Some(std::net::Ipv4Addr::from(addr as u32))
 }
 
 // ============================================================================
@@ -781,6 +880,97 @@ mod tests {
         let retrieved = registry.get("https://api.example.com/data").await;
         assert!(retrieved.is_some());
         assert_eq!(retrieved.unwrap().url, resource.url);
+    }
+
+    #[tokio::test]
+    async fn test_register_rejects_userinfo_url() {
+        // F1: `trusted@evil.com` must not slip past validation (host is evil.com).
+        let registry = DiscoveryRegistry::new();
+        let resource = create_test_resource("https://api.meshrelay.xyz@evil.com/x", None);
+        let result = registry.register(resource).await;
+        assert!(
+            matches!(result, Err(DiscoveryError::InvalidUrl(_))),
+            "userinfo URL must be rejected, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_register_rejects_encoded_ip_ssrf() {
+        // F2: alternate encodings of 127.0.0.1 / 169.254.169.254 must be rejected.
+        // Whether `Url::parse` normalizes these to a canonical IP (caught by the
+        // existing literal check) or keeps them as a numeric host (caught by
+        // `host_as_encoded_ipv4`), the outcome must be rejection. URLs that
+        // `Url::parse` refuses outright are skipped — they never become a resource.
+        let registry = DiscoveryRegistry::new();
+        for host in [
+            "http://2130706433/x",   // decimal 127.0.0.1
+            "http://0x7f000001/x",   // hex 127.0.0.1
+            "http://017700000001/x", // octal 127.0.0.1
+            "http://127.1/x",        // short form 127.0.0.1
+            "http://2852039166/x",   // decimal 169.254.169.254
+        ] {
+            let Ok(url) = Url::parse(host) else { continue };
+            let mut resource = create_test_resource("https://placeholder.example/x", None);
+            resource.url = url;
+            let result = registry.register(resource).await;
+            assert!(
+                matches!(result, Err(DiscoveryError::InvalidUrl(_))),
+                "encoded-IP host {host} must be rejected, got {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_host_as_encoded_ipv4() {
+        use std::net::Ipv4Addr;
+        assert_eq!(
+            host_as_encoded_ipv4("2130706433"),
+            Some(Ipv4Addr::new(127, 0, 0, 1))
+        );
+        assert_eq!(
+            host_as_encoded_ipv4("0x7f000001"),
+            Some(Ipv4Addr::new(127, 0, 0, 1))
+        );
+        assert_eq!(
+            host_as_encoded_ipv4("017700000001"),
+            Some(Ipv4Addr::new(127, 0, 0, 1))
+        );
+        assert_eq!(
+            host_as_encoded_ipv4("127.1"),
+            Some(Ipv4Addr::new(127, 0, 0, 1))
+        );
+        assert_eq!(
+            host_as_encoded_ipv4("2852039166"),
+            Some(Ipv4Addr::new(169, 254, 169, 254))
+        );
+        // ordinary hostnames must not be interpreted as encoded IPs
+        assert_eq!(host_as_encoded_ipv4("api.meshrelay.xyz"), None);
+        assert_eq!(host_as_encoded_ipv4("example.com"), None);
+        assert_eq!(host_as_encoded_ipv4("123.example.com"), None);
+    }
+
+    #[test]
+    fn test_is_disallowed_target_ip_extended_ranges() {
+        use std::net::{IpAddr, Ipv4Addr};
+        // 240.0.0.0/4 Class E + broadcast
+        assert!(is_disallowed_target_ip(&IpAddr::V4(Ipv4Addr::new(
+            240, 0, 0, 1
+        ))));
+        assert!(is_disallowed_target_ip(&IpAddr::V4(Ipv4Addr::new(
+            255, 255, 255, 255
+        ))));
+        // 6to4 relay anycast
+        assert!(is_disallowed_target_ip(&IpAddr::V4(Ipv4Addr::new(
+            192, 88, 99, 1
+        ))));
+        // AWS/GCP metadata still blocked
+        assert!(is_disallowed_target_ip(&IpAddr::V4(Ipv4Addr::new(
+            169, 254, 169, 254
+        ))));
+        // a normal public IP is allowed
+        assert!(!is_disallowed_target_ip(&IpAddr::V4(Ipv4Addr::new(
+            93, 184, 216, 34
+        ))));
     }
 
     #[tokio::test]

@@ -60,6 +60,7 @@ mod chain;
 mod discovery;
 mod discovery_aggregator;
 mod discovery_crawler;
+mod discovery_security;
 mod discovery_store;
 mod erc8004;
 mod escrow;

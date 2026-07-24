@@ -47,7 +47,6 @@
 //! }
 //! ```
 
-use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
@@ -140,9 +139,11 @@ impl CrawlTarget {
     }
 }
 
+/// User-Agent used for well-known crawl fetches.
+const CRAWLER_USER_AGENT: &str = "x402-facilitator/1.0 (discovery-crawler)";
+
 /// Crawler for discovering x402 resources from well-known endpoints.
 pub struct DiscoveryCrawler {
-    client: Client,
     targets: Vec<CrawlTarget>,
     timeout: Duration,
 }
@@ -151,11 +152,6 @@ impl DiscoveryCrawler {
     /// Create a new crawler with default settings.
     pub fn new() -> Self {
         Self {
-            client: Client::builder()
-                .timeout(Duration::from_secs(30))
-                .user_agent("x402-facilitator/1.0 (discovery-crawler)")
-                .build()
-                .expect("Failed to create HTTP client"),
             targets: Vec::new(),
             timeout: Duration::from_secs(30),
         }
@@ -202,11 +198,11 @@ impl DiscoveryCrawler {
         let target_name = target.name.as_deref().unwrap_or(target.base_url.as_str());
         debug!(url = %url, target = %target_name, "Fetching well-known x402");
 
-        let response = self
-            .client
-            .get(url.clone())
-            .timeout(self.timeout)
-            .send()
+        // SSRF-hardened fetch: resolves + vets the host, pins the connection to
+        // the checked address, and follows redirects manually re-checking each
+        // hop. Crawl seeds are operator-supplied but a malicious seed (or a
+        // redirect from one) must not reach internal/metadata targets.
+        let response = crate::discovery_security::safe_get(CRAWLER_USER_AGENT, self.timeout, &url)
             .await
             .map_err(|e| CrawlError::NetworkError(e.to_string()))?;
 

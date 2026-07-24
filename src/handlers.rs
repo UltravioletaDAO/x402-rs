@@ -114,6 +114,7 @@ where
 {
     Router::new()
         .route("/", get(get_root))
+        .route("/bazaar", get(get_bazaar))
         // Escrow state query endpoint
         .route("/escrow/state", post(post_escrow_state::<A>))
         // ERC-8004 Registration endpoints (GET info only; gas-spending POST writes are
@@ -444,6 +445,17 @@ pub async fn get_root() -> impl IntoResponse {
 /// Alias for `get_root` to match main.rs routing.
 pub async fn get_index() -> impl IntoResponse {
     get_root().await
+}
+
+/// `GET /bazaar`: Returns the curated Bazaar resource explorer (WS-D).
+#[instrument(skip_all)]
+pub async fn get_bazaar() -> impl IntoResponse {
+    let html = include_str!("../static/bazaar.html");
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "text/html; charset=utf-8")
+        .body(html.to_string())
+        .unwrap()
 }
 
 /// `GET /logo.png`: Returns Ultravioleta DAO logo.

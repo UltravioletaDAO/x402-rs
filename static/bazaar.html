@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Bazaar — Ultravioleta DAO x402 Facilitator</title>
+  <meta name="description" content="Curated x402 Bazaar: browse live, payable agent endpoints across the ecosystem." />
+  <link rel="icon" href="/favicon.ico" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg-dark: #0a0a0f; --bg-card: #13131a; --bg-card-hover: #1a1a24;
+      --text: #ffffff; --text-muted: #9ca3af; --border: #1f1f2e;
+      --accent: #00d4ff; --success: #10b981; --gold: #ffcc00; --purple: #8c52ff;
+      --amber: #f59e0b; --red: #ef4444; --glow: rgba(0, 212, 255, 0.15);
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg-dark); color: var(--text); line-height: 1.5;
+      min-height: 100vh; -webkit-font-smoothing: antialiased;
+    }
+    .bg-grid {
+      position: fixed; inset: 0; z-index: 0; opacity: 0.4;
+      background-image: linear-gradient(rgba(0,212,255,0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0,212,255,0.04) 1px, transparent 1px);
+      background-size: 48px 48px; pointer-events: none;
+    }
+    .container { position: relative; z-index: 1; max-width: 1400px; margin: 0 auto; padding: 0 1.5rem; }
+    header {
+      border-bottom: 1px solid var(--border); position: sticky; top: 0;
+      background: rgba(10,10,15,0.85); backdrop-filter: blur(12px); z-index: 10;
+    }
+    .header-content { display: flex; align-items: center; justify-content: space-between; padding: 1rem 0; gap: 1rem; }
+    .logo-section { display: flex; align-items: center; gap: 0.75rem; }
+    .logo-img { width: 38px; height: 38px; border-radius: 9px; }
+    .logo-text { font-weight: 800; font-size: 1.05rem; letter-spacing: -0.02em; }
+    .logo-text span { color: var(--accent); }
+    nav { display: flex; gap: 0.5rem; align-items: center; }
+    .nav-btn {
+      color: var(--text-muted); text-decoration: none; font-size: 0.85rem; font-weight: 500;
+      padding: 0.45rem 0.8rem; border-radius: 8px; border: 1px solid transparent; transition: all 0.15s;
+    }
+    .nav-btn:hover { color: var(--text); background: var(--bg-card); border-color: var(--border); }
+    .hero { padding: 2.5rem 0 1.5rem; }
+    .hero h1 { font-size: clamp(1.8rem, 4vw, 2.6rem); font-weight: 900; letter-spacing: -0.03em; }
+    .grad { background: linear-gradient(120deg, var(--accent), var(--purple)); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+    .hero p { color: var(--text-muted); margin-top: 0.5rem; max-width: 640px; }
+    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin: 1.5rem 0; }
+    .stat-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 14px; padding: 1.1rem 1.25rem; }
+    .stat-value { font-family: 'JetBrains Mono', monospace; font-size: 1.7rem; font-weight: 700; color: var(--accent); }
+    .stat-value.green { color: var(--success); }
+    .stat-label { color: var(--text-muted); font-size: 0.8rem; margin-top: 0.2rem; }
+    .section-title { font-size: 1.2rem; font-weight: 700; margin: 2rem 0 0.4rem; display: flex; align-items: center; gap: 0.5rem; }
+    .section-sub { color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1rem; }
+    .vip-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1rem; }
+    .vip-card {
+      background: linear-gradient(135deg, rgba(255,204,0,0.08) 0%, var(--bg-card) 60%);
+      border: 1px solid rgba(255,204,0,0.25); border-radius: 14px; padding: 1.1rem;
+      text-decoration: none; color: inherit; transition: all 0.15s; display: block;
+    }
+    .vip-card.partner { background: linear-gradient(135deg, rgba(140,82,255,0.1) 0%, var(--bg-card) 60%); border-color: rgba(140,82,255,0.3); }
+    .vip-card:hover { transform: translateY(-2px); box-shadow: 0 10px 30px rgba(0,0,0,0.4); }
+    .vip-name { font-weight: 700; font-size: 1.05rem; display: flex; align-items: center; gap: 0.5rem; }
+    .vip-blurb { color: var(--text-muted); font-size: 0.82rem; margin-top: 0.35rem; }
+    .controls { display: flex; flex-wrap: wrap; gap: 0.75rem; margin: 1.5rem 0 1rem; align-items: center; }
+    .search { flex: 1; min-width: 240px; position: relative; }
+    .search input {
+      width: 100%; background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px;
+      color: var(--text); padding: 0.7rem 0.9rem 0.7rem 2.4rem; font-size: 0.9rem; font-family: inherit;
+    }
+    .search input:focus { outline: none; border-color: var(--accent); }
+    .search svg { position: absolute; left: 0.75rem; top: 50%; transform: translateY(-50%); color: var(--text-muted); }
+    select {
+      background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; color: var(--text);
+      padding: 0.65rem 0.8rem; font-size: 0.85rem; font-family: inherit; cursor: pointer;
+    }
+    select:focus { outline: none; border-color: var(--accent); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 1rem; }
+    .card {
+      background: var(--bg-card); border: 1px solid var(--border); border-radius: 14px; padding: 1.1rem;
+      transition: all 0.15s; cursor: pointer; display: flex; flex-direction: column; gap: 0.55rem;
+    }
+    .card:hover { border-color: var(--accent); background: var(--bg-card-hover); box-shadow: 0 8px 24px var(--glow); }
+    .card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 0.5rem; }
+    .card-host { font-weight: 600; font-size: 0.95rem; word-break: break-word; }
+    .card-path { color: var(--text-muted); font-size: 0.78rem; font-family: 'JetBrains Mono', monospace; word-break: break-all; }
+    .card-desc { color: var(--text-muted); font-size: 0.82rem; }
+    .badges { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: auto; }
+    .badge { font-size: 0.7rem; font-weight: 600; padding: 0.2rem 0.55rem; border-radius: 999px; border: 1px solid var(--border); color: var(--text-muted); white-space: nowrap; }
+    .badge.first_party { background: rgba(255,204,0,0.12); color: var(--gold); border-color: rgba(255,204,0,0.3); }
+    .badge.vip { background: rgba(140,82,255,0.12); color: #c4a8ff; border-color: rgba(140,82,255,0.3); }
+    .badge.verified { background: rgba(0,212,255,0.1); color: var(--accent); border-color: rgba(0,212,255,0.25); }
+    .badge.alive { background: rgba(16,185,129,0.12); color: var(--success); border-color: rgba(16,185,129,0.3); }
+    .badge.auth_gated { background: rgba(0,212,255,0.08); color: #7dd3fc; }
+    .badge.degraded, .badge.unknown { color: var(--text-muted); }
+    .badge.quarantined { background: rgba(239,68,68,0.12); color: var(--red); border-color: rgba(239,68,68,0.3); }
+    .badge.price { color: var(--success); font-family: 'JetBrains Mono', monospace; }
+    .pager { display: flex; justify-content: center; align-items: center; gap: 0.75rem; margin: 2rem 0 3rem; }
+    .pager button { background: var(--bg-card); border: 1px solid var(--border); color: var(--text); padding: 0.55rem 1rem; border-radius: 9px; cursor: pointer; font-family: inherit; font-size: 0.85rem; }
+    .pager button:disabled { opacity: 0.4; cursor: not-allowed; }
+    .pager .pinfo { color: var(--text-muted); font-size: 0.85rem; font-family: 'JetBrains Mono', monospace; }
+    .empty, .loading { text-align: center; color: var(--text-muted); padding: 3rem 1rem; }
+    .skeleton { height: 130px; border-radius: 14px; background: linear-gradient(90deg, var(--bg-card) 25%, var(--bg-card-hover) 50%, var(--bg-card) 75%); background-size: 200% 100%; animation: shimmer 1.4s infinite; }
+    @keyframes shimmer { to { background-position: -200% 0; } }
+    dialog { background: var(--bg-card); color: var(--text); border: 1px solid var(--border); border-radius: 16px; padding: 0; max-width: 620px; width: 92%; }
+    dialog::backdrop { background: rgba(0,0,0,0.7); backdrop-filter: blur(3px); }
+    .modal-head { padding: 1.2rem 1.4rem; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; gap: 1rem; }
+    .modal-body { padding: 1.2rem 1.4rem; }
+    .modal-body h4 { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin: 1rem 0 0.4rem; }
+    .kv { font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; word-break: break-all; }
+    .accept-row { border: 1px solid var(--border); border-radius: 10px; padding: 0.6rem 0.8rem; margin-bottom: 0.5rem; }
+    .close-x { background: none; border: none; color: var(--text-muted); font-size: 1.4rem; cursor: pointer; }
+    a.link { color: var(--accent); text-decoration: none; }
+    footer { border-top: 1px solid var(--border); padding: 1.5rem 0; color: var(--text-muted); font-size: 0.8rem; text-align: center; }
+    @media (max-width: 600px) { .grid, .vip-grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="bg-grid"></div>
+  <header>
+    <div class="container header-content">
+      <a href="/" class="logo-section" style="text-decoration:none;color:inherit">
+        <img src="/logo.png" alt="Ultravioleta DAO" class="logo-img" onerror="this.style.display='none'" />
+        <span class="logo-text">Ultravioleta <span>Bazaar</span></span>
+      </a>
+      <nav>
+        <a class="nav-btn" href="/">Home</a>
+        <a class="nav-btn" href="/docs">API Docs</a>
+        <select id="lang" aria-label="language"><option value="en">EN</option><option value="es">ES</option></select>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="hero">
+      <h1><span class="grad" data-i18n="title">The Curated x402 Bazaar</span></h1>
+      <p data-i18n="subtitle">Live, payable agent endpoints across the x402 ecosystem — filtered for junk, swept for dead links, and ranked with our products first.</p>
+    </section>
+
+    <div class="stats" id="stats">
+      <div class="stat-card"><div class="stat-value" id="s-total">—</div><div class="stat-label" data-i18n="s_total">Listed endpoints</div></div>
+      <div class="stat-card"><div class="stat-value green" id="s-alive">—</div><div class="stat-label" data-i18n="s_alive">Verified alive (402)</div></div>
+      <div class="stat-card"><div class="stat-value" id="s-firstparty">—</div><div class="stat-label" data-i18n="s_fp">First-party + VIP</div></div>
+      <div class="stat-card"><div class="stat-value" id="s-sources">12</div><div class="stat-label" data-i18n="s_src">Aggregated facilitators</div></div>
+    </div>
+
+    <div class="section-title" data-i18n="fp_title">★ First-class citizens</div>
+    <div class="section-sub" data-i18n="fp_sub">Our products and curated partners, always first.</div>
+    <div class="vip-grid" id="vip"></div>
+
+    <div class="section-title" data-i18n="browse_title">Browse the bazaar</div>
+    <div class="controls">
+      <div class="search">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input id="q" placeholder="Search url / description…" data-i18n-ph="search" />
+      </div>
+      <select id="f-tier"><option value="">All tiers</option><option value="first_party">First-party</option><option value="vip">VIP</option><option value="verified">Verified</option><option value="listed">Listed</option></select>
+      <select id="f-health"><option value="">Alive + unknown</option><option value="alive">Alive (402)</option><option value="auth_gated">Auth-gated</option><option value="degraded">Degraded</option><option value="any">All (incl. quarantined)</option></select>
+      <select id="f-network"><option value="">All networks</option><option value="eip155:8453">Base</option><option value="eip155:1">Ethereum</option><option value="eip155:42161">Arbitrum</option><option value="eip155:137">Polygon</option><option value="eip155:10">Optimism</option><option value="eip155:43114">Avalanche</option><option value="eip155:42220">Celo</option><option value="eip155:1187947933">SKALE</option></select>
+      <select id="f-source"><option value="">All sources</option><option value="self_registered">Ultravioleta natives</option><option value="aggregated">Aggregated</option></select>
+    </div>
+
+    <div class="grid" id="grid"></div>
+    <div class="pager" id="pager"></div>
+  </main>
+
+  <dialog id="detail"></dialog>
+  <footer><span data-i18n="footer">Ultravioleta DAO — x402 Facilitator Bazaar.</span> <a class="link" href="/discovery/resources">/discovery/resources</a></footer>
+
+  <script>
+    const PAGE = 24;
+    const USDC_DECIMALS = 6; // known 6-dec stablecoins (USDC/USDT/EURC/AUSD/PYUSD/USDG)
+    const NET_NAMES = {
+      'eip155:8453':'Base','eip155:1':'Ethereum','eip155:42161':'Arbitrum','eip155:137':'Polygon',
+      'eip155:10':'Optimism','eip155:43114':'Avalanche','eip155:42220':'Celo','eip155:1187947933':'SKALE',
+      'eip155:999':'HyperEVM','eip155:130':'Unichain','eip155:143':'Monad','eip155:84532':'Base Sepolia'
+    };
+    const VIP = [
+      { name:'Execution Market', tier:'first_party', url:'https://execution.market', match:'execution.market', blurb:{en:'Universal execution layer — agents publish bounties for real-world tasks.',es:'Capa universal de ejecución — agentes publican bounties para tareas reales.'} },
+      { name:'MeshRelay', tier:'first_party', url:'https://meshrelay.xyz', match:'meshrelay', blurb:{en:'Pay-per-access IRC channels for agents and humans.',es:'Canales IRC de pago por acceso para agentes y humanos.'} },
+      { name:'402Milly', tier:'first_party', url:'https://402milly.xyz', match:'402milly', blurb:{en:'Pixel advertising marketplace, x402-native.',es:'Marketplace de pixeles publicitarios, nativo x402.'} },
+      { name:'Tenjin', tier:'vip', url:'https://tenjin.blog', match:'tenjin.blog', blurb:{en:'Pay-per-read blogs and research for AI agents.',es:'Blogs e investigación de pago por lectura para agentes IA.'} },
+    ];
+    const I18N = {
+      en:{ title:'The Curated x402 Bazaar', subtitle:'Live, payable agent endpoints across the x402 ecosystem — filtered for junk, swept for dead links, and ranked with our products first.', s_total:'Listed endpoints', s_alive:'Verified alive (402)', s_fp:'First-party + VIP', s_src:'Aggregated facilitators', fp_title:'★ First-class citizens', fp_sub:'Our products and curated partners, always first.', browse_title:'Browse the bazaar', search:'Search url / description…', footer:'Ultravioleta DAO — x402 Facilitator Bazaar.' },
+      es:{ title:'El Bazar x402 Curado', subtitle:'Endpoints de agentes vivos y pagables del ecosistema x402 — filtrados de basura, barridos de enlaces muertos y con nuestros productos de primeros.', s_total:'Endpoints listados', s_alive:'Verificados vivos (402)', s_fp:'First-party + VIP', s_src:'Facilitadores agregados', fp_title:'★ Ciudadanos de primera clase', fp_sub:'Nuestros productos y socios curados, siempre de primeros.', browse_title:'Explora el bazar', search:'Buscar url / descripción…', footer:'Ultravioleta DAO — Bazar del Facilitador x402.' },
+    };
+
+    let state = { page: 0, q: '', tier: '', health: '', network: '', source: '' };
+    const cache = new Map();
+    let inflight = null;
+
+    function fmtPrice(a){ if(!a||!a.length) return null; const x=a[0]; const amt=Number(x.amount); if(!isFinite(amt)) return null; const v=amt/10**USDC_DECIMALS; return '$'+(v<0.01? v.toFixed(4): v.toFixed(2)); }
+    function hostOf(u){ try { return new URL(u).host; } catch { return u; } }
+    function pathOf(u){ try { const p=new URL(u); return p.pathname+p.search; } catch { return ''; } }
+    function esc(s){ const d=document.createElement('div'); d.textContent=s==null?'':String(s); return d.innerHTML; }
+
+    function qs(extra){
+      const p = new URLSearchParams();
+      p.set('limit', PAGE); p.set('offset', state.page*PAGE);
+      if(state.tier) p.set('tier', state.tier);
+      if(state.health) p.set('health', state.health);
+      if(state.network) p.set('network', state.network);
+      if(state.source) p.set('source', state.source);
+      if(extra) for(const k in extra) p.set(k, extra[k]);
+      return p.toString();
+    }
+
+    async function fetchJSON(url){ const r = await fetch(url, inflight ? {signal: inflight.signal} : {}); if(!r.ok) throw new Error(r.status); return r.json(); }
+
+    async function loadStats(){
+      try {
+        const [tot, alive, fp, vip] = await Promise.all([
+          fetchJSON('/discovery/resources?limit=1'),
+          fetchJSON('/discovery/resources?limit=1&health=alive'),
+          fetchJSON('/discovery/resources?limit=1&tier=first_party&health=any'),
+          fetchJSON('/discovery/resources?limit=1&tier=vip&health=any'),
+        ]);
+        document.getElementById('s-total').textContent = (tot.pagination.total||0).toLocaleString();
+        document.getElementById('s-alive').textContent = (alive.pagination.total||0).toLocaleString();
+        document.getElementById('s-firstparty').textContent = ((fp.pagination.total||0)+(vip.pagination.total||0)).toLocaleString();
+      } catch(e){ /* leave dashes */ }
+    }
+
+    function renderVip(){
+      const el = document.getElementById('vip');
+      el.innerHTML = VIP.map(v => `
+        <a class="vip-card ${v.tier==='vip'?'partner':''}" href="${esc(v.url)}" target="_blank" rel="noopener">
+          <div class="vip-name">${esc(v.name)} <span class="badge ${v.tier}">${v.tier==='first_party'?'first-party':'VIP'}</span></div>
+          <div class="vip-blurb">${esc(v.blurb[curLang()]||v.blurb.en)}</div>
+        </a>`).join('');
+    }
+
+    function cardHTML(it){
+      const cur = it.curation||{}; const h = it.health||{};
+      const price = fmtPrice(it.accepts);
+      const net = it.accepts && it.accepts[0] ? (NET_NAMES[it.accepts[0].network]||it.accepts[0].network) : null;
+      const badges = [];
+      if(cur.tier && cur.tier!=='listed') badges.push(`<span class="badge ${cur.tier}">${esc(cur.label||cur.tier.replace('_',' '))}</span>`);
+      if(h.status) badges.push(`<span class="badge ${h.status}">${esc(h.status.replace('_',' '))}</span>`);
+      if(net) badges.push(`<span class="badge">${esc(net)}</span>`);
+      if(price) badges.push(`<span class="badge price">${esc(price)}</span>`);
+      return `<div class="card" data-url="${esc(it.url)}">
+        <div class="card-top"><div><div class="card-host">${esc(hostOf(it.url))}</div><div class="card-path">${esc(pathOf(it.url))}</div></div></div>
+        ${it.description?`<div class="card-desc">${esc(it.description.slice(0,140))}</div>`:''}
+        <div class="badges">${badges.join('')}</div>
+      </div>`;
+    }
+
+    function skeletons(){ return Array.from({length:9}).map(()=>'<div class="skeleton"></div>').join(''); }
+
+    async function load(){
+      const grid = document.getElementById('grid');
+      grid.innerHTML = skeletons();
+      if(inflight) inflight.abort();
+      inflight = new AbortController();
+      const key = qs({q: state.q});
+      let data;
+      try {
+        if(cache.has(key)) { data = cache.get(key); }
+        else { data = await fetchJSON('/discovery/resources?'+qs()); }
+      } catch(e){ if(e.name==='AbortError') return; grid.innerHTML = '<div class="empty">Could not load the bazaar. <a class="link" href="javascript:location.reload()">Retry</a></div>'; return; }
+      inflight = null;
+      // client-side substring search over the returned page (server has no q= yet)
+      let items = data.items||[];
+      if(state.q){ const t=state.q.toLowerCase(); items = items.filter(i => (i.url||'').toLowerCase().includes(t) || (i.description||'').toLowerCase().includes(t) || ((i.metadata&&i.metadata.provider)||'').toLowerCase().includes(t)); }
+      cache.set(key, data); if(cache.size>30) cache.delete(cache.keys().next().value);
+
+      if(!items.length){ grid.innerHTML = '<div class="empty">No endpoints match these filters.</div>'; }
+      else { grid.innerHTML = items.map(cardHTML).join(''); }
+      grid.querySelectorAll('.card').forEach(c => c.addEventListener('click', () => openDetail(c.dataset.url, data.items)));
+
+      const total = data.pagination.total||0;
+      const from = state.page*PAGE+1, to = Math.min((state.page+1)*PAGE, total);
+      document.getElementById('pager').innerHTML =
+        `<button ${state.page===0?'disabled':''} id="prev">← Prev</button>
+         <span class="pinfo">${total? `${from}–${to} of ${total.toLocaleString()}`:'0'}</span>
+         <button ${(state.page+1)*PAGE>=total?'disabled':''} id="next">Next →</button>`;
+      const prev=document.getElementById('prev'), next=document.getElementById('next');
+      if(prev) prev.onclick=()=>{ state.page--; syncUrl(); load(); window.scrollTo({top:0,behavior:'smooth'}); };
+      if(next) next.onclick=()=>{ state.page++; syncUrl(); load(); window.scrollTo({top:0,behavior:'smooth'}); };
+    }
+
+    function openDetail(url, items){
+      const it = (items||[]).find(i=>i.url===url); if(!it) return;
+      const d = document.getElementById('detail');
+      const accepts = (it.accepts||[]).map(a=>`<div class="accept-row"><div class="kv"><b>${esc(NET_NAMES[a.network]||a.network)}</b> · ${esc(a.asset)}</div><div class="kv">${esc(fmtPrice([a])||a.amount)} → ${esc(a.payTo)}</div></div>`).join('') || '<div class="card-desc">No payment methods declared.</div>';
+      const h = it.health||{}; const cur = it.curation||{};
+      d.innerHTML = `
+        <div class="modal-head"><div><div class="card-host">${esc(hostOf(it.url))}</div><div class="card-path">${esc(pathOf(it.url))}</div></div><button class="close-x" onclick="document.getElementById('detail').close()">×</button></div>
+        <div class="modal-body">
+          <div class="badges">
+            ${cur.tier&&cur.tier!=='listed'?`<span class="badge ${cur.tier}">${esc(cur.label||cur.tier)}</span>`:''}
+            ${h.status?`<span class="badge ${h.status}">${esc(h.status)}</span>`:''}
+            <span class="badge">${esc(it.source||'')}</span>
+            ${it.sourceFacilitator?`<span class="badge">via ${esc(it.sourceFacilitator)}</span>`:''}
+          </div>
+          ${it.description?`<h4>Description</h4><div class="card-desc">${esc(it.description)}</div>`:''}
+          <h4>Full URL</h4><div class="kv"><a class="link" href="${esc(it.url)}" target="_blank" rel="noopener">${esc(it.url)}</a></div>
+          <h4>Accepts</h4>${accepts}
+          ${h.lastChecked?`<h4>Health</h4><div class="kv">${esc(h.status)} · HTTP ${esc(h.httpStatus||'?')} · ${esc(h.latencyMs||'?')}ms · checked ${new Date((h.lastChecked||0)*1000).toISOString().slice(0,16).replace('T',' ')}</div>`:''}
+        </div>`;
+      d.showModal();
+    }
+
+    // ---- filters + URL state ----
+    function syncUrl(){
+      const p = new URLSearchParams();
+      for(const k of ['q','tier','health','network','source']) if(state[k]) p.set(k, state[k]);
+      if(state.page) p.set('page', state.page);
+      history.replaceState(null,'', location.pathname + (p.toString()?'?'+p:''));
+    }
+    function readUrl(){
+      const p = new URLSearchParams(location.search);
+      state.q=p.get('q')||''; state.tier=p.get('tier')||''; state.health=p.get('health')||'';
+      state.network=p.get('network')||''; state.source=p.get('source')||''; state.page=parseInt(p.get('page')||'0',10)||0;
+      document.getElementById('q').value=state.q;
+      document.getElementById('f-tier').value=state.tier;
+      document.getElementById('f-health').value=state.health;
+      document.getElementById('f-network').value=state.network;
+      document.getElementById('f-source').value=state.source;
+    }
+    let deb;
+    document.getElementById('q').addEventListener('input', e=>{ clearTimeout(deb); deb=setTimeout(()=>{ state.q=e.target.value.trim(); state.page=0; syncUrl(); load(); }, 300); });
+    for(const [id,key] of [['f-tier','tier'],['f-health','health'],['f-network','network'],['f-source','source']]){
+      document.getElementById(id).addEventListener('change', e=>{ state[key]=e.target.value; state.page=0; syncUrl(); load(); });
+    }
+
+    // ---- i18n ----
+    function curLang(){ const s=document.getElementById('lang'); return (s && s.value) || 'en'; }
+    function applyLang(l){
+      const t = I18N[l]||I18N.en;
+      document.querySelectorAll('[data-i18n]').forEach(e=>{ const k=e.getAttribute('data-i18n'); if(t[k]) e.textContent=t[k]; });
+      document.querySelectorAll('[data-i18n-ph]').forEach(e=>{ const k=e.getAttribute('data-i18n-ph'); if(t[k]) e.setAttribute('placeholder',t[k]); });
+      document.documentElement.lang=l; document.getElementById('lang').value=l; renderVip();
+    }
+    document.getElementById('lang').addEventListener('change', e=>{ localStorage.setItem('uvd-lang', e.target.value); applyLang(e.target.value); });
+
+    // ---- boot ----
+    readUrl();
+    applyLang((localStorage.getItem('uvd-lang') || ((navigator.language||'en').slice(0,2)==='es'?'es':'en')));
+    renderVip();
+    loadStats();
+    load();
+  </script>
+</body>
+</html>

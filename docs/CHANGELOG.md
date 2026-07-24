@@ -1,5 +1,50 @@
 # Changelog
 
+## [1.56.0] - 2026-07-24
+
+### Bazaar — search, stats, admin curation, MCP probing, payTo-drift alarm, rate limits
+
+Closes every deferred item from the curated-bazaar plan.
+
+- **Server-side search**: `GET /discovery/resources?q=` searches the whole
+  catalog (url / description / provider / category / tags, case-insensitive)
+  instead of only the loaded page. Capped at 128 characters (400 beyond that),
+  since the scan is O(catalog) on a public route. The `/bazaar` UI now uses it,
+  so result counts are accurate.
+- **`GET /discovery/stats`** (new): catalog aggregates — `total`, `visible`, and
+  breakdowns by source, sourceFacilitator, network, tier and health — served
+  from a 60-second in-process cache. The UI's metrics band is now one request
+  instead of four count-probes.
+- **Admin curation API** (gated by `BAZAAR_ADMIN_TOKEN`; every route answers 404
+  when it is unset, so the surface does not exist unless configured):
+  `DELETE /discovery/resources?url=`, `POST /discovery/admin/suppress`,
+  `POST /discovery/admin/release`. Bearer token compared in constant time, the
+  credential is never logged, URLs are normalized before lookup, and the routes
+  sit behind the strict ~5 req/min governor. Suppression hides a resource from
+  every listing and from stats without deleting it.
+- **MCP handshake probing**: `type: mcp` resources are probed with a JSON-RPC
+  `initialize` POST instead of a GET. Previously our own first-party MCP
+  endpoints (Execution Market, 402Milly) could never report `alive`, since MCP
+  servers do not answer a bare GET with a 402.
+- **payTo-drift alarm (F4)**: when a live 402 advertises a recipient the listing
+  never declared, the resource is quarantined immediately (bypassing the failure
+  hysteresis) and a `paytoswap` warning is logged with both the expected and the
+  observed recipients. This is a hijack signal, not a liveness signal.
+- **Read-route rate limiting (F6)**: `/discovery/resources` and
+  `/discovery/stats` were ungoverned; they now carry a ~30 req/min per-IP limit,
+  so an unauthenticated loop can no longer contend on the catalog read lock and
+  slow the aggregator and health prober.
+- **OpenAPI rewritten for the Bazaar**: the section documented a `type` param
+  that never existed and a v1-shaped response. It now documents the real wire
+  format (including `health` and `curation.verification`), all 11 query params,
+  the tier ordering, and every new endpoint — list, stats, UI, attestation
+  evidence, register and the three admin routes.
+
+Also: `docs/handoffs/2026-07-24-execution-market-bazaar-listing.md` — handoff for
+the Execution Market team covering why `POST /api/v1/tasks` cannot be listed as a
+fixed-price payable, the verified ERC-8128 signing recipe, and the three
+decisions needed from them (plus adjacent MeshRelay / 402Milly fixes).
+
 ## [1.55.2] - 2026-07-24
 
 ### Fix — WS-E verification cache keyed by manifest label (URL variants never matched)

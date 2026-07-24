@@ -1,5 +1,38 @@
 # Changelog
 
+## [1.50.2] - 2026-07-23
+
+### Security — Bazaar discovery SSRF hardening + tier-matcher primitives (F1/F2)
+
+Hardens the Bazaar discovery subsystem against the two CRITICAL findings from
+the curated-bazaar security review (`docs/plans/bazaar/08-security-hardening.md`).
+These are the reusable security primitives; the not-yet-built consumers (the
+health prober / manifest tier resolver) will call them in their workstreams.
+
+- **F1 (tier impersonation)**: `validate_resource` now rejects URLs carrying
+  userinfo (`https://trusted@evil.com/` parsed with host `evil.com`). New
+  `discovery_security::canonical_url` (single URL normalizer) and
+  `match_manifest_prefix` (host-exact + path-boundary match on a *parsed* URL,
+  never `starts_with` on a raw string) — defeats `api.host.xyz.evil.com`,
+  `…@evil.com`, `…xyzevil.com`, and `/api-evil` prefix tricks.
+- **F2 (SSRF to instance metadata)**: `is_disallowed_target_ip` extended for
+  `240.0.0.0/4` and 6to4; `host_as_encoded_ipv4` rejects decimal/hex/octal IP
+  encodings. New `check_url_target` (resolve DNS, reject if ANY resolved
+  address is non-routable/private/metadata — a mixed answer is an attack) and
+  `safe_get` (pin the socket to the checked address, disable auto-redirects,
+  follow ≤3 redirects manually re-checking each hop, port allowlist
+  {80,443,8080,8443}).
+- **Wiring (F15)**: the discovery crawler now fetches via `safe_get`; the
+  aggregator uses a redirect policy that refuses internal/userinfo/bad-port
+  redirect targets.
+- **Test (escrow)**: two regression tests pinning that the ERC-3009 signature
+  travels verbatim as `collectorData` (EIP-7702-delegated / ERC-1271 wallets
+  send a wrapped >65-byte signature that a length assert would silently break).
+
+Files: `src/discovery_security.rs` (new), `src/discovery.rs`,
+`src/discovery_aggregator.rs`, `src/discovery_crawler.rs`, `src/main.rs`,
+`src/lib.rs`, `src/payment_operator/operator.rs`, `docs/plans/bazaar/*`.
+
 ## [1.50.1] - 2026-07-21
 
 ### Landing — stablecoin count 5 -> 6 (USDG)

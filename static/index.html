@@ -2034,6 +2034,45 @@
                 </div>
             </section>
 
+            <section class="fade-in" style="margin: 3rem 0;">
+                <div style="background: linear-gradient(135deg, rgba(0, 212, 255, 0.07) 0%, var(--bg-card) 55%); border: 1px solid rgba(0, 212, 255, 0.28); border-radius: 16px; padding: 2rem;">
+                    <div style="display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;">
+                        <span style="font-size: 1.6rem;">🛒</span>
+                        <h2 style="font-size: 1.5rem; margin: 0;" data-i18n="bazaar.title">The Curated Bazaar</h2>
+                        <span style="font-size: 0.65rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--accent); border: 1px solid rgba(0, 212, 255, 0.4); border-radius: 999px; padding: 0.15rem 0.6rem;" data-i18n="bazaar.badge">Live</span>
+                    </div>
+                    <p style="color: var(--text-muted); margin: 0.75rem 0 1.5rem; max-width: 720px;" data-i18n="bazaar.description">
+                        We aggregate paid endpoints from a dozen x402 facilitators — then filter the junk, sweep the dead
+                        links with a live 402 health probe, and rank our own products first. Only payable, reachable
+                        endpoints are shown by default.
+                    </p>
+                    <div class="stats" style="margin: 0 0 1.5rem;">
+                        <div class="stat-card">
+                            <div class="stat-value" id="bz-visible">—</div>
+                            <div class="stat-label" data-i18n="bazaar.listed">Listed endpoints</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value" id="bz-alive" style="color: var(--success);">—</div>
+                            <div class="stat-label" data-i18n="bazaar.alive">Verified alive (402)</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value" id="bz-curated">—</div>
+                            <div class="stat-label" data-i18n="bazaar.curated">First-party + VIP</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value" id="bz-sources">—</div>
+                            <div class="stat-label" data-i18n="bazaar.sources">Aggregated facilitators</div>
+                        </div>
+                    </div>
+                    <a href="/bazaar" style="display: inline-flex; align-items: center; gap: 0.5rem; background: var(--accent); color: #06121a; font-weight: 700; text-decoration: none; padding: 0.7rem 1.4rem; border-radius: 10px;">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                        </svg>
+                        <span data-i18n="bazaar.cta">Explore the Bazaar</span>
+                    </a>
+                </div>
+            </section>
+
             <section class="features fade-in" style="grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));">
                 <div class="feature-card">
                     <span class="feature-icon">⚡</span>
@@ -2783,6 +2822,14 @@ result = <span class="code-function">verify_payment</span>(
     <script>
         const translations = {
             en: {
+                "bazaar.title": "The Curated Bazaar",
+                "bazaar.badge": "Live",
+                "bazaar.description": "We aggregate paid endpoints from a dozen x402 facilitators — then filter the junk, sweep the dead links with a live 402 health probe, and rank our own products first. Only payable, reachable endpoints are shown by default.",
+                "bazaar.listed": "Listed endpoints",
+                "bazaar.alive": "Verified alive (402)",
+                "bazaar.curated": "First-party + VIP",
+                "bazaar.sources": "Aggregated facilitators",
+                "bazaar.cta": "Explore the Bazaar",
                 "header.subtitle": "Payment infrastructure for autonomous agents",
                 "hero.title": "Payment infrastructure for autonomous agents",
                 "hero.description": "Enable AI agents to transact autonomously without gas fees. Built on x402 protocol with EIP-3009 meta-transactions.",
@@ -2879,6 +2926,14 @@ result = <span class="code-function">verify_payment</span>(
                 "footer.powered": "Powered by"
             },
             es: {
+                "bazaar.title": "El Bazar Curado",
+                "bazaar.badge": "En vivo",
+                "bazaar.description": "Agregamos endpoints de pago de una docena de facilitadores x402 — luego filtramos la basura, barremos los enlaces muertos con un probe de salud 402 en vivo, y ponemos nuestros productos de primeros. Por defecto solo se muestran endpoints pagables y alcanzables.",
+                "bazaar.listed": "Endpoints listados",
+                "bazaar.alive": "Verificados vivos (402)",
+                "bazaar.curated": "First-party + VIP",
+                "bazaar.sources": "Facilitadores agregados",
+                "bazaar.cta": "Explorar el Bazar",
                 "header.subtitle": "Infraestructura de pagos para agentes autónomos",
                 "hero.title": "Infraestructura de pagos para agentes autónomos",
                 "hero.description": "Permite que los agentes IA transaccionen de forma autónoma sin comisiones de gas. Construido sobre el protocolo x402 con meta-transacciones EIP-3009.",
@@ -3038,6 +3093,22 @@ result = <span class="code-function">verify_payment</span>(
                     }
                 }
             }).catch(() => { /* keep the hardcoded fallback on network error */ });
+        })();
+
+        // Curated Bazaar counters. Served from the facilitator's own 60s-cached
+        // aggregate; on any failure the dashes stay rather than showing a lie.
+        (function loadBazaarStats() {
+            fetch('/discovery/stats').then(r => r.json()).then(s => {
+                const tier = s.byTier || {}, health = s.byHealth || {};
+                const set = (id, v) => {
+                    const el = document.getElementById(id);
+                    if (el && Number.isFinite(v)) el.textContent = v.toLocaleString();
+                };
+                set('bz-visible', s.visible ?? s.total);
+                set('bz-alive', health.alive || 0);
+                set('bz-curated', (tier.first_party || 0) + (tier.vip || 0));
+                set('bz-sources', Object.keys(s.bySourceFacilitator || {}).length);
+            }).catch(() => { /* leave the dashes */ });
         })();
 
         document.querySelectorAll('.lang-btn').forEach(btn => {

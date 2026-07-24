@@ -167,8 +167,11 @@ curl http://localhost:8080/
 | `/feedback` | GET/POST | ERC-8004 reputation (query/submit) |
 | `/identity/:network/:agentId` | GET | Agent identity lookup |
 | `/reputation/:network/:agentId` | GET | Agent reputation summary |
-| `/discovery/resources` | GET | List registered paid APIs |
+| `/discovery/resources` | GET | Browse the curated Bazaar (filter by `q`, `network`, `tier`, `health`, …) |
+| `/discovery/stats` | GET | Bazaar totals by source, network, tier and health |
 | `/discovery/register` | POST | Register a paid endpoint |
+| `/bazaar` | GET | Visual Bazaar explorer (HTML) |
+| `/docs` | GET | Interactive Swagger UI |
 
 ### Example: Check supported networks
 
@@ -183,6 +186,67 @@ curl -X POST https://facilitator.ultravioletadao.xyz/settle \
   -H "Content-Type: application/json" \
   -d '{"payload": "...", "network": "base"}'
 ```
+
+---
+
+## The Curated Bazaar
+
+The facilitator runs a **meta-bazaar**: it aggregates discoverable x402 resources
+from a dozen external facilitators (Coinbase CDP, PayAI, Thirdweb, QuestFlow,
+AnySpend, Heurist, Polymer, Meridian, …) into one catalog at
+`GET /discovery/resources`, with a visual explorer at
+[`/bazaar`](https://facilitator.ultravioletadao.xyz/bazaar).
+
+Aggregating a firehose means inheriting its junk, so the catalog is **curated**
+rather than merely mirrored:
+
+**1. Ingestion filter.** Nothing enters the registry unless it is actually
+payable. Rejected at import: non-`http(s)` schemes (the ecosystem is full of
+`monopoly://`-style entries), private/metadata/encoded-IP hosts, URLs carrying
+userinfo, resources whose `accepts` declares no network or a zero amount, and
+oversized fields. Spec-legal `routeTemplate` URLs (`/users/:id`) are kept but
+flagged unprobeable. A retention GC applies the same rules to already-stored
+entries — the first pass removed ~5,000 junk listings.
+
+**2. Liveness probing ("pre-ping").** A background prober checks every listed
+URL with an SSRF-hardened connector and never attaches payment. For an x402
+resource **HTTP 402 is the healthy signal**; `401/403/405` is auth-gated (healthy
+by design), `404/410`/dead/5xx counts toward quarantine. MCP endpoints are probed
+with a JSON-RPC `initialize` handshake instead. A resource is quarantined after 3
+consecutive failures (backoff 1h → 6h → 24h → 72h) and recovers automatically
+after 2 consecutive successes. Quarantined resources are hidden from the default
+listing but retained — pass `?health=any` to see everything.
+
+**3. Curated tiers.** Listings are ordered `first_party` > `vip` > `verified`
+(probe-confirmed 402) > `listed`, then by liveness, then recency. Tiers come from
+`config/bazaar_curation.json` and are matched host-exact with a path boundary on
+the parsed URL, so a lookalike host can never inherit a curated tier.
+
+**4. On-chain verification (ERC-8004).** Curated entries can carry a
+`curation.verification` object resolved from the ERC-8004 registries, so a
+consumer can check an agent's identity and reputation on-chain instead of
+trusting this API. Writing probe-derived uptime attestations on-chain is
+implemented behind `ENABLE_BAZAAR_ATTESTATIONS` (default off).
+
+**5. Security.** The prober resolves DNS and refuses the request if *any*
+resolved address is private/metadata (a mixed answer is treated as an attack),
+pins the socket to the checked address, follows redirects manually re-checking
+each hop, and restricts ports. If a live 402 ever advertises a `payTo` the
+listing never declared, the resource is quarantined immediately and a
+`paytoswap` alarm is logged — that is a hijack signal, not a health signal.
+
+```bash
+# Search the whole catalog
+curl -s '.../discovery/resources?q=weather&limit=5' | jq '.items[].url'
+
+# Only endpoints confirmed to answer 402 right now
+curl -s '.../discovery/resources?health=alive&limit=5' | jq '.items[].url'
+
+# Catalog composition
+curl -s '.../discovery/stats' | jq '{total, visible, byTier, byHealth}'
+```
+
+Design docs: [`docs/plans/bazaar/`](docs/plans/bazaar/).
 
 ---
 

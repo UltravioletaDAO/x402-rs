@@ -311,10 +311,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .ok()
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(60);
+        // Global in-flight probe cap. Politeness toward any single target is
+        // enforced separately (max 3 probes per host per tick), so this bound
+        // only governs our own outbound fan-out. At 15 the initial sweep of a
+        // ~21k catalog took ~19h because most of the wall-clock is probes
+        // sitting on the 12s timeout; 40 converges in well under a day without
+        // touching the per-host rate any target actually sees.
         let health_concurrency = std::env::var("DISCOVERY_HEALTH_CONCURRENCY")
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(15);
+            .unwrap_or(40);
         let health_max_rps = std::env::var("DISCOVERY_HEALTH_MAX_RPS")
             .ok()
             .and_then(|s| s.parse::<u64>().ok())

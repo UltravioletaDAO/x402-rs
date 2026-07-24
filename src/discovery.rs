@@ -490,7 +490,11 @@ impl DiscoveryRegistry {
                     .unwrap_or(false);
                 let mut cur = self.curation.resolve(&r.url, alive);
                 if let Some(c) = cur.as_mut() {
-                    c.verification = reputation.get(r.url.as_str()).cloned();
+                    // The verification cache is keyed by manifest label, so the
+                    // annotation joins regardless of URL variants.
+                    if let Some(label) = c.label.as_deref() {
+                        c.verification = reputation.get(label).cloned();
+                    }
                 }
                 (r, cur)
             })

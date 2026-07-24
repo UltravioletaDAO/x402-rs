@@ -75,7 +75,12 @@ impl AttestationConfig {
 /// A curated product with an ERC-8004 identity to attest/verify.
 #[derive(Debug, Clone)]
 pub struct AttestTarget {
-    /// Representative resource URL (feedback `endpoint`).
+    /// Manifest entry name — the key of the verification cache. Keyed by label
+    /// (not URL) so the annotation joins regardless of URL variants such as a
+    /// trailing slash.
+    pub label: String,
+    /// Representative resource URL prefix (on-chain feedback `endpoint`, and
+    /// the prefix used to aggregate probe uptime).
     pub url: String,
     pub network: Network,
     pub agent_id: u64,
@@ -269,7 +274,7 @@ pub async fn run_cycle<M, F>(
                 value as f64
             };
             cache.write().await.insert(
-                t.url.clone(),
+                t.label.clone(),
                 VerificationInfo {
                     protocol: "erc8004".to_string(),
                     network: t.network.to_string(),
@@ -304,7 +309,8 @@ mod tests {
     #[test]
     fn evidence_hash_and_json_roundtrip() {
         let t = AttestTarget {
-            url: "https://mcp.execution.market/mcp/".to_string(),
+            label: "Execution Market".to_string(),
+            url: "https://mcp.execution.market/mcp".to_string(),
             network: crate::network::Network::Base,
             agent_id: 2106,
         };
@@ -351,7 +357,8 @@ where
             // closure stays synchronous.
             let mut up: HashMap<String, (u16, u64, u64)> = HashMap::new();
             for t in &targets {
-                if let Some(u) = health.uptime(&t.url).await {
+                // Aggregate across every probed URL under the product's prefix.
+                if let Some(u) = health.uptime_prefix(&t.url).await {
                     up.insert(t.url.clone(), u);
                 }
             }

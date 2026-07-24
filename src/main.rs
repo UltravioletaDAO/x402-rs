@@ -348,10 +348,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .curation()
             .attest_targets()
             .into_iter()
-            .filter_map(|(url, net, agent_id)| {
+            .filter_map(|(label, url, net, agent_id)| {
                 <crate::network::Network as std::str::FromStr>::from_str(&net)
                     .ok()
                     .map(|network| discovery_attestation::AttestTarget {
+                        label,
                         url,
                         network,
                         agent_id,

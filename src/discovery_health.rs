@@ -169,6 +169,26 @@ impl HealthTracker {
         Some((bps, r.total_probes, r.total_ok))
     }
 
+    /// Cumulative uptime aggregated over every probed URL starting with
+    /// `prefix` — a curated product usually owns many resource URLs (all of
+    /// MeshRelay's channels, every Tenjin article), so its attested uptime is
+    /// the aggregate rather than one representative URL.
+    pub async fn uptime_prefix(&self, prefix: &str) -> Option<(u16, u64, u64)> {
+        let records = self.records.read().await;
+        let (mut probes, mut oks) = (0u64, 0u64);
+        for (url, r) in records.iter() {
+            if url.starts_with(prefix) {
+                probes = probes.saturating_add(r.total_probes);
+                oks = oks.saturating_add(r.total_ok);
+            }
+        }
+        if probes == 0 {
+            return None;
+        }
+        let bps = ((oks as u128 * 10_000) / probes as u128) as u16;
+        Some((bps, probes, oks))
+    }
+
     /// Response-facing snapshot: url -> HealthState, for annotating listings.
     pub async fn snapshot(&self) -> HashMap<String, HealthState> {
         self.records

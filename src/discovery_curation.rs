@@ -137,16 +137,20 @@ impl CurationManifest {
     }
 
     /// Manifest entries that carry an ERC-8004 identity, as
-    /// `(representative_url, network_string, agent_id)` for the attestation
-    /// task (WS-E). The representative URL is `https://{host}{path}` of the
-    /// first prefix.
-    pub fn attest_targets(&self) -> Vec<(String, String, u64)> {
+    /// `(label, url_prefix, network_string, agent_id)` for the attestation task
+    /// (WS-E). `label` is the entry name — the join key for the verification
+    /// cache, since a synthesized URL would not match registry URL variants
+    /// (e.g. a trailing slash). `url_prefix` is `https://{host}{path}` of the
+    /// first prefix: the on-chain feedback `endpoint` and the health-uptime
+    /// aggregation prefix.
+    pub fn attest_targets(&self) -> Vec<(String, String, String, u64)> {
         self.entries
             .iter()
             .filter_map(|e| {
                 let r = e.erc8004.as_ref()?;
                 let p = e.prefixes.first()?;
                 Some((
+                    e.name.clone(),
                     format!("https://{}{}", p.host, p.path),
                     r.network.clone(),
                     r.agent_id,

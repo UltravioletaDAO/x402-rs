@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.57.0] - 2026-07-24
+
+### Bazaar — documentation, landing section, and a faster initial sweep
+
+- **README**: the curated Bazaar was entirely undocumented. Added a section
+  covering the ingestion filter, the 402 liveness probe (including the MCP
+  handshake and the quarantine/recovery hysteresis), curated tiers, on-chain
+  ERC-8004 verification, and the prober's SSRF hardening plus the payTo-drift
+  alarm. The API table now lists `/discovery/stats`, `/bazaar` and `/docs`, and
+  documents the real filters on `/discovery/resources`.
+- **Landing page**: new Bazaar section (EN/ES) with live counters — listed
+  endpoints, verified-alive, first-party + VIP, aggregated facilitators — read
+  from `/discovery/stats`, plus a call to action into `/bazaar`. Counters fall
+  back to dashes rather than a stale number if the request fails.
+- **Prober throughput**: default `DISCOVERY_HEALTH_CONCURRENCY` raised from 15 to
+  40. Most of the sweep's wall-clock is probes sitting on the 12s timeout, so at
+  15 the initial pass over the ~21k catalog was tracking to ~19 hours. Politeness
+  toward any individual target is unchanged — that is enforced separately by the
+  per-host cap of 3 probes per tick.
+
 ## [1.56.1] - 2026-07-24
 
 ### Fix — admin routes no longer reveal themselves via a 400 on a malformed body

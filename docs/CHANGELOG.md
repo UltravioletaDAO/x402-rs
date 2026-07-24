@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.56.1] - 2026-07-24
+
+### Fix — admin routes no longer reveal themselves via a 400 on a malformed body
+
+With `BAZAAR_ADMIN_TOKEN` unset the admin routes are supposed to be
+indistinguishable from routes that do not exist (404). They were not: axum's
+`Json` / required-`Query` extractors run *before* the handler, so a malformed
+body (or a missing `url` param) returned 400 and leaked the route's existence.
+The bodies are now taken as raw bytes and the query param as `Option`, and both
+are parsed only after authentication succeeds.
+
 ## [1.56.0] - 2026-07-24
 
 ### Bazaar — search, stats, admin curation, MCP probing, payTo-drift alarm, rate limits

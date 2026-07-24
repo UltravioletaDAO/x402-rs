@@ -1,5 +1,29 @@
 # Changelog
 
+## [1.50.3] - 2026-07-23
+
+### Bazaar — Phase-0 curation ops (source config, first-party REST, audit tool)
+
+First curation quick-wins ahead of the full ingestion filter (WS-A):
+
+- **Per-source config** `config/bazaar_sources.json` (runtime-loaded, fail-open
+  via `FacilitatorConfig::all_with_source_config`): disables the three
+  transport-broken aggregation feeds — **openx402** (TLS cert mismatch),
+  **x402rs** (returns HTML, not JSON) and **virtuals** (404) — so they are no
+  longer hit every aggregation cycle. Unknown ids / a missing or malformed file
+  leave all sources enabled, so a config mistake can never empty the bazaar.
+- **`scripts/bazaar_audit.py`**: reproducible discovery-quality audit (junk /
+  unpayable / staleness / per-source quality + optional 402 health probe) — the
+  tool behind the audit doc and the post-deploy verification gates.
+- **`tests/fixtures/bazaar/payai-page.json`**: real captured junk sample for
+  offline ingestion-filter tests.
+- First-party REST endpoint `api.402milly.xyz/purchase` registered in the
+  production bazaar (Execution Market `/tasks` pending its team's terms — it is
+  auth-gated before the 402).
+
+Files: `config/bazaar_sources.json` (new), `src/discovery_aggregator.rs`,
+`scripts/bazaar_audit.py` (new), `tests/fixtures/bazaar/payai-page.json` (new).
+
 ## [1.50.2] - 2026-07-23
 
 ### Security — Bazaar discovery SSRF hardening + tier-matcher primitives (F1/F2)

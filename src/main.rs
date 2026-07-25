@@ -430,15 +430,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .finish()
             .expect("discovery_register governor config must be valid"),
     );
-    // Bazaar read routes (/discovery/resources, /discovery/stats) were
-    // previously ungoverned. Each call scans the in-memory catalog under a read
-    // lock — with `q=` it is O(catalog) per request — so an unauthenticated
-    // loop is a cheap CPU/lock-contention sink that also slows the aggregator
-    // and health prober. ~30 req/min per IP is far above any real UI usage.
+    // Bazaar read routes (/discovery/resources, /discovery/stats). These are
+    // cheap in-memory reads (~100ms even with a `q=` scan), and the whole point
+    // of a bazaar is that consumers page through it: a 21k-item catalog is ~212
+    // requests at the 100/page cap. An earlier 30 req/min setting throttled
+    // exactly that legitimate traffic (every 429 observed in production was a
+    // paginating client on /discovery/resources), so the budget is sized for
+    // full-catalog pagination while still cutting off a hammering loop:
+    // 1 token per 200ms = ~300 req/min sustained, burst 120.
     let discovery_read_config = Arc::new(
         GovernorConfigBuilder::default()
-            .per_second(2)
-            .burst_size(30)
+            .per_millisecond(200)
+            .burst_size(120)
             .key_extractor(SmartIpKeyExtractor)
             .finish()
             .expect("discovery_read governor config must be valid"),

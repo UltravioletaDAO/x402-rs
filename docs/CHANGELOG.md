@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.57.1] - 2026-07-25
+
+### Fix — the Bazaar read limit was throttling legitimate pagination (429s)
+
+The read-route rate limit added in 1.56.0 was sized wrong: 30 req/min per IP.
+Paging a 21k-item catalog is ~212 requests at the 100/page cap, so any consumer
+walking the bazaar exhausted the budget in seconds and then got 429s. Production
+confirmed it — every 429 observed (502 of them in six hours) was a paginating
+client on `/discovery/resources`, and the ALB's 4xx rate stepped up right after
+1.56.0 rolled out.
+
+Raised to 1 token per 200ms with a burst of 120 (~300 req/min sustained), which
+covers a full-catalog walk in about 45 seconds while still cutting off a
+hammering loop. These are in-memory reads (~100ms even with a `q=` scan), so the
+tighter budget was never justified.
+
+Note for the record: the facilitator was not returning 500s during this window.
+Target 5xx totalled 3 responses in 12 hours (503s consistent with ECS task
+replacement during the day's deploys) and no `status=500` was logged at all.
+
 ## [1.57.0] - 2026-07-24
 
 ### Bazaar — documentation, landing section, and a faster initial sweep

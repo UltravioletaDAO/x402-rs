@@ -238,7 +238,33 @@ impl EvmProvider {
         }
         let signer_addresses = Arc::new(signer_addresses);
         let signer_cursor = Arc::new(AtomicUsize::new(0));
+        // Retry rate-limited RPC calls instead of failing the settle outright.
+        // Alloy's default policy recognises HTTP 429 plus the provider-specific
+        // rate-limit codes (-32005 Infura, -32016 Alchemy, -32012/-32007
+        // QuickNode) and honours any backoff hint in the response. Execution
+        // Market's INC-2026-07-06 was 258 of these on a shared 50 req/s Base
+        // budget, each of which killed a settle or a refund with no retry.
+        //
+        // `compute_units_per_second` is a CLIENT-SIDE throttle and defaults to
+        // effectively off, so this change only adds retries. Operators can dial
+        // it down per deployment via `RPC_MAX_CU_PER_SECOND` to stay under a
+        // known provider budget (alloy bills ~20 CU per request by default, so
+        // 1000 CU/s is roughly 50 requests/s).
+        const MAX_RATE_LIMIT_RETRIES: u32 = 3;
+        const INITIAL_BACKOFF_MS: u64 = 200;
+        const DEFAULT_MAX_CU_PER_SECOND: u64 = 10_000_000;
+        let max_cu_per_second = std::env::var("RPC_MAX_CU_PER_SECOND")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(DEFAULT_MAX_CU_PER_SECOND);
+
         let client = RpcClient::builder()
+            .layer(alloy::transports::layers::RetryBackoffLayer::new(
+                MAX_RATE_LIMIT_RETRIES,
+                INITIAL_BACKOFF_MS,
+                max_cu_per_second,
+            ))
             .connect(rpc_url)
             .await
             .map_err(|e| format!("Failed to connect to {network}: {e}"))?;
@@ -384,17 +410,31 @@ impl MetaEvmProvider for EvmProvider {
         let calldata = tx.calldata;
         let confirmations = tx.confirmations;
 
-        const MAX_NONCE_RETRIES: u32 = 1;
+        // Two retries rather than one: with several settles queued on the same
+        // signer, the first retry can lose the race again to a sibling that
+        // resynced a moment earlier. Each retry re-sends the same EIP-3009
+        // authorization, which is safe — if the original mined, the guard below
+        // catches it, and failing that the token rejects the replay.
+        const MAX_NONCE_RETRIES: u32 = 2;
 
         // Snapshot confirmed TX count before sending. If this advances after a
         // nonce error, the "failed" TX was actually mined (RPC load-balancer
         // returned a stale error). Retrying would replay an already-consumed
         // EIP-3009 auth → "FiatTokenV2: invalid signature".
-        let pre_send_nonce = self
+        //
+        // `None` means the RPC never answered. It must NOT collapse to 0: a
+        // rate-limited probe reading as nonce 0 makes the "already mined" guard
+        // below trivially true for any funded signer, which silently suppresses
+        // the one retry we allow — precisely under the rate-limit conditions
+        // where the retry matters most.
+        let pre_send_nonce: Option<u64> = self
             .inner
             .get_transaction_count(from_address)
             .await
-            .unwrap_or(0);
+            .inspect_err(
+                |e| tracing::warn!(%from_address, error = ?e, "pre-send nonce probe failed"),
+            )
+            .ok();
 
         for attempt in 0..=MAX_NONCE_RETRIES {
             // Build TX request (calldata.clone() is O(1) - Bytes is ref-counted)
@@ -403,23 +443,14 @@ impl MetaEvmProvider for EvmProvider {
                 .with_from(from_address)
                 .with_input(calldata.clone());
 
-            // For Ethereum L1: explicitly set nonce from confirmed count to avoid
-            // stale pending TXs in RPC mempool causing nonce gaps. Alloy's default
-            // uses "pending" count which can be ahead of confirmed if prior TXs were
-            // dropped from the network but still in the RPC node's local pool.
-            if self.chain.network == Network::Ethereum {
-                let confirmed_nonce = self
-                    .inner
-                    .get_transaction_count(from_address)
-                    .await
-                    .unwrap_or(0);
-                txr.set_nonce(confirmed_nonce);
-                tracing::info!(
-                    confirmed_nonce,
-                    %from_address,
-                    "Ethereum L1 nonce from confirmed count"
-                );
-            }
+            // The nonce is deliberately left unset so `NonceFiller` +
+            // `PendingNonceManager` allocate it. Setting it here makes alloy
+            // skip the filler entirely (`FillerControlFlow::Finished` once
+            // `tx.nonce()` is `Some`), which is what previously gave two
+            // concurrent Ethereum L1 settles the same nonce. The stale-mempool
+            // case that override was written for is now handled inside the
+            // manager: it resyncs with `.pending()` on failure and never
+            // rewinds below its high-water mark while a TX may be in flight.
 
             if !self.eip1559 {
                 let gas: u128 = self
@@ -524,22 +555,48 @@ impl MetaEvmProvider for EvmProvider {
                             .inner
                             .get_transaction_count(from_address)
                             .await
-                            .unwrap_or(0);
-                        if post_nonce > pre_send_nonce {
-                            tracing::warn!(
-                                %from_address,
-                                network = %self.chain.network,
-                                pre_nonce = pre_send_nonce,
-                                post_nonce = post_nonce,
-                                error = %error_str,
-                                "Nonce error but confirmed TX count advanced, \
-                                 original TX likely mined - skipping retry"
-                            );
-                            return Err(FacilitatorLocalError::ContractCall(format!(
-                                "Nonce error but TX count advanced \
-                                 ({pre_send_nonce} -> {post_nonce}), \
-                                 original TX may have been mined: {error_str}"
-                            )));
+                            .inspect_err(|e| {
+                                tracing::warn!(%from_address, error = ?e, "post-send nonce probe failed")
+                            })
+                            .ok();
+
+                        // Only trust the guard when BOTH probes answered. If
+                        // either failed we cannot tell a mined TX from a lost
+                        // one, so we decline to retry: a replayed EIP-3009 auth
+                        // burns gas and returns a misleading "invalid
+                        // signature", and the caller can retry safely under its
+                        // own idempotency key.
+                        match (pre_send_nonce, post_nonce) {
+                            (Some(pre), Some(post)) if post > pre => {
+                                tracing::warn!(
+                                    %from_address,
+                                    network = %self.chain.network,
+                                    pre_nonce = pre,
+                                    post_nonce = post,
+                                    error = %error_str,
+                                    "Nonce error but confirmed TX count advanced, \
+                                     original TX likely mined - skipping retry"
+                                );
+                                return Err(FacilitatorLocalError::ContractCall(format!(
+                                    "Nonce error but TX count advanced \
+                                     ({pre} -> {post}), \
+                                     original TX may have been mined: {error_str}"
+                                )));
+                            }
+                            (Some(_), Some(_)) => {}
+                            _ => {
+                                tracing::warn!(
+                                    %from_address,
+                                    network = %self.chain.network,
+                                    error = %error_str,
+                                    "Nonce error and the TX count probe was unavailable - \
+                                     cannot rule out that the original TX mined, skipping retry"
+                                );
+                                return Err(FacilitatorLocalError::ContractCall(format!(
+                                    "Nonce error and TX count could not be verified, \
+                                     original TX may have been mined: {error_str}"
+                                )));
+                            }
                         }
 
                         tracing::warn!(
@@ -550,8 +607,18 @@ impl MetaEvmProvider for EvmProvider {
                             network = %self.chain.network,
                             "Nonce error detected, retrying after backoff"
                         );
-                        // Brief backoff to let RPC sync pending state
-                        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                        // Backoff to let the RPC sync its pending state. It is
+                        // exponential and jittered because a fixed delay makes
+                        // settles that just collided wake up together and
+                        // collide again on the same nonce.
+                        let backoff_ms = {
+                            use rand::Rng as _;
+                            let base = 250u64 << attempt.min(3);
+                            // Scoped so the non-Send `ThreadRng` is dropped
+                            // before the await below.
+                            base + rand::thread_rng().gen_range(0..=base / 2)
+                        };
+                        tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
                         continue;
                     }
 
@@ -565,11 +632,23 @@ impl MetaEvmProvider for EvmProvider {
 }
 
 /// Check if a transport error is a nonce-related error that can be retried.
+///
+/// Node phrasings vary more than the original `nonce && ...` conjunction
+/// allowed: geth answers a duplicate submission with a bare `already known`
+/// (no "nonce" anywhere), several clients shorten the replacement error to
+/// `replacement underpriced`, and a nonce left ahead of the chain surfaces as
+/// `nonce too high`. All three are recoverable by resyncing and retrying, so
+/// each is matched on its own rather than behind the `nonce` guard.
 fn is_nonce_error(error: &str) -> bool {
     let lower = error.to_lowercase();
-    (lower.contains("nonce")
-        && (lower.contains("too low") || lower.contains("already known") || lower.contains("gap")))
+    lower.contains("already known")
         || lower.contains("replacement transaction underpriced")
+        || lower.contains("replacement underpriced")
+        || (lower.contains("nonce")
+            && (lower.contains("too low")
+                || lower.contains("too high")
+                || lower.contains("gap")
+                || lower.contains("has already been used")))
 }
 
 impl NetworkProviderOps for EvmProvider {
@@ -2029,8 +2108,33 @@ impl TryFrom<Vec<u8>> for StructuredSignature {
 /// ```
 #[derive(Clone, Debug, Default)]
 pub struct PendingNonceManager {
-    /// Cache of nonces per address. Each address has its own mutex-protected nonce value.
-    nonces: Arc<DashMap<alloy::primitives::Address, Arc<Mutex<u64>>>>,
+    /// Cache of nonce state per address, each behind its own mutex.
+    nonces: Arc<DashMap<alloy::primitives::Address, Arc<Mutex<NonceState>>>>,
+}
+
+/// How long after the last allocation the chain's pending count is trusted
+/// unconditionally on a resync.
+///
+/// Inside this window a transaction this process allocated may still be
+/// propagating, and an RPC load balancer can route the resync to a node that
+/// has not seen it yet — so the resync must not rewind below the high-water
+/// mark. Past it, anything we allocated has been mined or dropped, and trusting
+/// the chain lets a gap left by a dropped transaction heal instead of wedging
+/// the signer behind a nonce that will never be used.
+const NONCE_TRUST_CHAIN_AFTER: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Per-address nonce bookkeeping.
+#[derive(Debug, Default)]
+struct NonceState {
+    /// Next nonce to hand out, or `None` when this address must be resynced
+    /// against the chain before the next allocation.
+    next: Option<u64>,
+    /// Highest nonce this process has ever handed out for this address. Never
+    /// decreases, so a resync cannot reissue a nonce that is still in flight.
+    high_water: Option<u64>,
+    /// When the last nonce was handed out, used to decide whether anything we
+    /// allocated could still be pending.
+    last_allocated: Option<std::time::Instant>,
 }
 
 #[async_trait]
@@ -2044,40 +2148,63 @@ impl NonceManager for PendingNonceManager {
         P: Provider<N>,
         N: alloy::network::Network,
     {
-        // Use `u64::MAX` as a sentinel value to indicate that the nonce has not been fetched yet.
-        const NONE: u64 = u64::MAX;
-
         // Locks dashmap internally for a short duration to clone the `Arc`.
         // We also don't want to hold the dashmap lock through the await point below.
-        let nonce = {
+        let state = {
             let rm = self
                 .nonces
                 .entry(address)
-                .or_insert_with(|| Arc::new(Mutex::new(NONE)));
+                .or_insert_with(|| Arc::new(Mutex::new(NonceState::default())));
             Arc::clone(rm.value())
         };
 
-        let mut nonce = nonce.lock().await;
-        let new_nonce = if *nonce == NONE {
-            // Initialize the nonce if we haven't seen this account before.
-            tracing::trace!(%address, "fetching nonce");
-            provider.get_transaction_count(address).pending().await?
-        } else {
-            tracing::trace!(%address, current_nonce = *nonce, "incrementing nonce");
-            *nonce + 1
+        let mut state = state.lock().await;
+
+        let next = match state.next {
+            Some(next) => {
+                tracing::trace!(%address, next, "allocating cached nonce");
+                next
+            }
+            None => {
+                // Resync against the chain. `.pending()` includes transactions
+                // sitting in the node's mempool, so a restart mid-flight does
+                // not reuse a nonce that is already queued.
+                tracing::trace!(%address, "resyncing nonce against chain");
+                let pending = provider.get_transaction_count(address).pending().await?;
+                match (state.high_water, state.last_allocated) {
+                    // Nothing we allocated can still be in flight: trust the
+                    // chain so a gap left by a dropped transaction heals.
+                    (_, Some(last)) if last.elapsed() >= NONCE_TRUST_CHAIN_AFTER => pending,
+                    // A transaction we allocated may still be propagating and
+                    // this node may not have seen it. Handing back a nonce at or
+                    // below the high-water mark would try to REPLACE that
+                    // in-flight transaction instead of queueing behind it,
+                    // which is exactly the "replacement transaction
+                    // underpriced" failure reported under concurrent settles.
+                    (Some(high_water), _) if pending <= high_water => high_water.saturating_add(1),
+                    _ => pending,
+                }
+            }
         };
-        *nonce = new_nonce;
-        Ok(new_nonce)
+
+        state.next = Some(next.saturating_add(1));
+        state.high_water = Some(state.high_water.map_or(next, |hw| hw.max(next)));
+        state.last_allocated = Some(std::time::Instant::now());
+        Ok(next)
     }
 }
 
 impl PendingNonceManager {
-    /// Resets the cached nonce for a given address, forcing a fresh query on next use.
+    /// Forces the next allocation for `address` to resync against the chain.
     ///
-    /// This should be called when a transaction fails, as we cannot be certain of the
-    /// actual on-chain state (the transaction may or may not have reached the mempool).
-    /// By resetting to the sentinel value, the next call to `get_next_nonce` will query
-    /// the RPC provider using `.pending()`, which includes mempool transactions.
+    /// Called when a transaction fails, since we cannot be certain of the actual
+    /// on-chain state (the transaction may or may not have reached the mempool).
+    ///
+    /// The high-water mark is deliberately preserved: other settles from the
+    /// same signer may still be in flight, and wiping it would let the refetched
+    /// chain nonce rewind underneath them. [`NONCE_TRUST_CHAIN_AFTER`] is what
+    /// eventually releases the mark so a genuinely dropped transaction does not
+    /// wedge the signer forever.
     pub async fn reset_nonce(&self, address: Address) {
         // Clone the `Arc` and drop the dashmap guard BEFORE the await point,
         // exactly as `get_next_nonce` does. A dashmap shard guard (here the read
@@ -2086,11 +2213,15 @@ impl PendingNonceManager {
         // lock can block another task that needs the same shard). This path runs
         // on settlement failure (`is_nonce_error` retry), so the hazard is on the
         // hot path, not just in tests.
-        let nonce_lock = self.nonces.get(&address).map(|r| Arc::clone(r.value()));
-        if let Some(nonce_lock) = nonce_lock {
-            let mut nonce = nonce_lock.lock().await;
-            *nonce = u64::MAX; // NONE sentinel - will trigger fresh query
-            tracing::debug!(%address, "reset nonce cache, will requery on next use");
+        let state = self.nonces.get(&address).map(|r| Arc::clone(r.value()));
+        if let Some(state) = state {
+            let mut state = state.lock().await;
+            state.next = None;
+            tracing::debug!(
+                %address,
+                high_water = ?state.high_water,
+                "reset nonce cache, will resync on next use"
+            );
         }
     }
 }
@@ -2114,6 +2245,28 @@ mod tests {
         assert!(!is_nonce_error("insufficient funds for gas"));
         assert!(!is_nonce_error("execution reverted"));
         assert!(!is_nonce_error("Invalid signature"));
+    }
+
+    /// Phrasings the original `nonce && ...` conjunction let through untreated,
+    /// so a recoverable collision surfaced to the caller as a hard settle
+    /// failure instead of a resync + retry.
+    #[test]
+    fn test_is_nonce_error_short_phrasings() {
+        // geth answers a duplicate submission without the word "nonce".
+        assert!(is_nonce_error("already known"));
+        assert!(is_nonce_error(
+            "ErrorResp(ErrorPayload { code: -32000, message: \"already known\" })"
+        ));
+        // Several clients shorten the replacement error.
+        assert!(is_nonce_error("replacement underpriced"));
+        // A local nonce left ahead of the chain.
+        assert!(is_nonce_error("nonce too high"));
+        assert!(is_nonce_error("nonce has already been used"));
+
+        // Still not nonce errors: retrying these would burn gas for nothing.
+        assert!(!is_nonce_error("already mined"));
+        assert!(!is_nonce_error("intrinsic gas too low"));
+        assert!(!is_nonce_error("max fee per gas less than block base fee"));
     }
 
     // FAC-2 regression guard: the historical inverted-comparison bug rejected
@@ -2173,52 +2326,117 @@ mod tests {
     }
 
     // Test helpers that mirror the production get_next_nonce/reset_nonce
-    // discipline: clone the per-address `Arc<Mutex<u64>>` out of the dashmap and
-    // DROP the dashmap guard BEFORE `.lock().await`, so a shard guard is never
-    // held across an await point (the guard-across-await hazard behind the flaky
-    // CI test hang).
-    async fn set_nonce(m: &PendingNonceManager, addr: alloy::primitives::Address, val: u64) {
+    // discipline: clone the per-address `Arc<Mutex<NonceState>>` out of the
+    // dashmap and DROP the dashmap guard BEFORE `.lock().await`, so a shard
+    // guard is never held across an await point (the guard-across-await hazard
+    // behind the flaky CI test hang).
+    async fn seed_state(
+        m: &PendingNonceManager,
+        addr: alloy::primitives::Address,
+        next: Option<u64>,
+        high_water: Option<u64>,
+        last_allocated: Option<std::time::Instant>,
+    ) {
         let lock = {
             let rm = m
                 .nonces
                 .entry(addr)
-                .or_insert_with(|| Arc::new(Mutex::new(0)));
+                .or_insert_with(|| Arc::new(Mutex::new(NonceState::default())));
             Arc::clone(rm.value())
         };
-        *lock.lock().await = val;
+        let mut state = lock.lock().await;
+        state.next = next;
+        state.high_water = high_water;
+        state.last_allocated = last_allocated;
     }
 
-    async fn read_nonce(m: &PendingNonceManager, addr: alloy::primitives::Address) -> Option<u64> {
+    async fn read_next(m: &PendingNonceManager, addr: alloy::primitives::Address) -> Option<u64> {
         let lock = m.nonces.get(&addr).map(|r| Arc::clone(r.value()));
         match lock {
-            Some(l) => Some(*l.lock().await),
+            Some(l) => l.lock().await.next,
             None => None,
         }
     }
 
-    #[tokio::test]
-    async fn test_reset_nonce_clears_cache() {
-        let manager = PendingNonceManager::default();
-        let test_address = address!("0000000000000000000000000000000000000001");
-        set_nonce(&manager, test_address, 42).await;
-        assert_eq!(read_nonce(&manager, test_address).await, Some(42));
-        manager.reset_nonce(test_address).await;
-        assert_eq!(read_nonce(&manager, test_address).await, Some(u64::MAX));
+    async fn read_high_water(
+        m: &PendingNonceManager,
+        addr: alloy::primitives::Address,
+    ) -> Option<u64> {
+        let lock = m.nonces.get(&addr).map(|r| Arc::clone(r.value()));
+        match lock {
+            Some(l) => l.lock().await.high_water,
+            None => None,
+        }
+    }
+
+    /// Mirrors the resync decision inside `get_next_nonce` so the branch can be
+    /// exercised without a live provider.
+    fn resync_nonce(
+        pending: u64,
+        high_water: Option<u64>,
+        last_allocated: Option<std::time::Instant>,
+    ) -> u64 {
+        match (high_water, last_allocated) {
+            (_, Some(last)) if last.elapsed() >= NONCE_TRUST_CHAIN_AFTER => pending,
+            (Some(high_water), _) if pending <= high_water => high_water.saturating_add(1),
+            _ => pending,
+        }
     }
 
     #[tokio::test]
-    async fn test_reset_nonce_after_allocation_sequence() {
+    async fn test_reset_nonce_forces_resync() {
+        let manager = PendingNonceManager::default();
+        let test_address = address!("0000000000000000000000000000000000000001");
+        seed_state(&manager, test_address, Some(42), Some(41), None).await;
+        assert_eq!(read_next(&manager, test_address).await, Some(42));
+
+        manager.reset_nonce(test_address).await;
+
+        // The next allocation must go back to the chain...
+        assert_eq!(read_next(&manager, test_address).await, None);
+        // ...but the high-water mark survives, so the resync cannot rewind
+        // underneath a transaction that is still in flight.
+        assert_eq!(read_high_water(&manager, test_address).await, Some(41));
+    }
+
+    #[tokio::test]
+    async fn test_reset_nonce_preserves_high_water_after_allocations() {
         let manager = PendingNonceManager::default();
         let test_address = address!("0000000000000000000000000000000000000002");
 
-        // Simulate nonce allocations, then a transaction failure -> reset.
-        set_nonce(&manager, test_address, 50).await;
-        set_nonce(&manager, test_address, 51).await;
-        set_nonce(&manager, test_address, 52).await;
+        // Three concurrent settles allocated 50, 51 and 52; then one failed.
+        seed_state(&manager, test_address, Some(53), Some(52), None).await;
         manager.reset_nonce(test_address).await;
 
-        // Nonce is back to the sentinel for requery.
-        assert_eq!(read_nonce(&manager, test_address).await, Some(u64::MAX));
+        assert_eq!(read_next(&manager, test_address).await, None);
+        assert_eq!(read_high_water(&manager, test_address).await, Some(52));
+    }
+
+    /// The regression that motivated the high-water mark: a resync that lands on
+    /// a node lagging behind the mempool reports a nonce we already handed out.
+    /// Reusing it would replace an in-flight settle rather than queue behind it.
+    #[test]
+    fn test_resync_never_rewinds_below_in_flight_high_water() {
+        let just_now = Some(std::time::Instant::now());
+        assert_eq!(resync_nonce(50, Some(52), just_now), 53);
+        assert_eq!(resync_nonce(52, Some(52), just_now), 53);
+    }
+
+    /// A resync that is genuinely ahead of us is trusted as-is.
+    #[test]
+    fn test_resync_accepts_chain_when_ahead() {
+        let just_now = Some(std::time::Instant::now());
+        assert_eq!(resync_nonce(60, Some(52), just_now), 60);
+        assert_eq!(resync_nonce(7, None, None), 7);
+    }
+
+    /// Once nothing we allocated can still be in flight, the chain wins even if
+    /// that rewinds — otherwise a dropped transaction would leave the signer
+    /// stuck behind a nonce gap forever.
+    #[test]
+    fn test_resync_trusts_chain_after_quiet_period() {
+        let long_ago = Some(std::time::Instant::now() - NONCE_TRUST_CHAIN_AFTER);
+        assert_eq!(resync_nonce(50, Some(52), long_ago), 50);
     }
 
     #[tokio::test]
@@ -2239,14 +2457,15 @@ mod tests {
         let address1 = address!("0000000000000000000000000000000000000001");
         let address2 = address!("0000000000000000000000000000000000000002");
 
-        set_nonce(&manager, address1, 10).await;
-        set_nonce(&manager, address2, 20).await;
+        seed_state(&manager, address1, Some(10), Some(9), None).await;
+        seed_state(&manager, address2, Some(20), Some(19), None).await;
 
         manager.reset_nonce(address1).await;
 
-        // address1 is reset; address2 is unchanged.
-        assert_eq!(read_nonce(&manager, address1).await, Some(u64::MAX));
-        assert_eq!(read_nonce(&manager, address2).await, Some(20));
+        // address1 is reset; address2 is untouched. Signers in a pool must not
+        // share a nonce lane.
+        assert_eq!(read_next(&manager, address1).await, None);
+        assert_eq!(read_next(&manager, address2).await, Some(20));
     }
 
     #[tokio::test]
@@ -2254,8 +2473,7 @@ mod tests {
         let manager = Arc::new(PendingNonceManager::default());
         let test_address = address!("0000000000000000000000000000000000000003");
 
-        // Set initial nonce
-        set_nonce(&manager, test_address, 100).await;
+        seed_state(&manager, test_address, Some(100), Some(99), None).await;
 
         // Spawn concurrent tasks
         let manager1 = Arc::clone(&manager);
@@ -2272,7 +2490,7 @@ mod tests {
         handle1.await.unwrap();
         handle2.await.unwrap();
 
-        // Verify nonce is reset (both resets should work fine)
-        assert_eq!(read_nonce(&manager, test_address).await, Some(u64::MAX));
+        assert_eq!(read_next(&manager, test_address).await, None);
+        assert_eq!(read_high_water(&manager, test_address).await, Some(99));
     }
 }

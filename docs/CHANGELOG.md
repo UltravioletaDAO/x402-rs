@@ -1,5 +1,83 @@
 # Changelog
 
+## [1.58.0] - 2026-07-26
+
+### Fix — the EVM nonce lane under concurrent settles
+
+Response to Execution Market's report of `nonce too low` / `replacement
+transaction underpriced` under concurrent settles (their INC-2026-07-06, and the
+handoff in `docs/HANDOFF-2026-07-24-signer-pool-concurrencia.md`). The handoff
+asked for a signer pool; the pool already exists and works
+(`next_signer_address`, comma-separated `EVM_PRIVATE_KEY_MAINNET`), so the work
+went to the defects that actually break concurrency. Full analysis in
+`docs/plans/em-concurrency-response-2026-07-24.md`.
+
+**A resync could rewind under an in-flight transaction.** `reset_nonce` wiped the
+cached nonce entirely, so the next allocation refetched the chain's pending
+count. When an RPC load balancer routed that refetch to a node that had not yet
+seen our transactions, the refetched value sat *below* nonces already handed out
+— and reusing one tries to replace an in-flight transaction rather than queue
+behind it, which is exactly `replacement transaction underpriced`. The manager
+now keeps a per-address high-water mark that a resync can never rewind below.
+The mark is released after `NONCE_TRUST_CHAIN_AFTER` (120s) so that a genuinely
+dropped transaction does not wedge the signer behind a nonce gap forever.
+
+**Ethereum L1 bypassed the nonce manager entirely.** The L1 branch set the nonce
+by hand from a *latest*-block transaction count. Setting a nonce makes alloy skip
+`NonceFiller` completely, so two concurrent L1 settles deterministically received
+the same nonce; the retry re-derived the same value and failed again. Worse, the
+lookup was `unwrap_or(0)` — a rate-limited probe stamped nonce 0 into the
+transaction, a guaranteed `nonce too low` for any funded signer. The override is
+gone; the manager handles L1 like every other chain.
+
+**A failed probe suppressed the retry.** The "did the transaction actually mine?"
+guard compared two transaction counts, both `unwrap_or(0)`. Under rate limiting
+the pre-send probe collapsed to 0, making `post > pre` trivially true, so the
+guard concluded the transaction had mined and skipped the retry — under exactly
+the conditions where the retry matters. Both probes are now fallible and the
+guard only fires when both answered; when either fails we decline to retry rather
+than guess.
+
+**Rate limits now retry instead of killing the settle.** There was no retry or
+backoff at the transport layer at all. Added alloy's `RetryBackoffLayer`, which
+recognises HTTP 429 and the provider rate-limit codes (`-32005` Infura, `-32016`
+Alchemy, `-32012`/`-32007` QuickNode) and honours any backoff hint. EM measured
+258 of these on a shared 50 req/s Base budget, each one killing a settle or
+refund. The client-side throttle is off by default; set `RPC_MAX_CU_PER_SECOND`
+to stay under a known provider budget (~20 CU per request, so 1000 CU/s is
+roughly 50 req/s).
+
+**Recoverable collisions were reported as hard failures.** `is_nonce_error`
+required the literal word "nonce", so geth's bare `already known`, the short
+`replacement underpriced`, and `nonce too high` all fell through untreated.
+Retries raised from 1 to 2, with exponential jittered backoff — a fixed delay
+made settles that had just collided wake together and collide again.
+
+### Fix — ERC-8004 owner resolution (`-32003 out of gas`)
+
+`GET /identity/{network}/owner/{address}` had been failing on Base since
+2026-07-05. `resolve_first_token_by_owner` built a single Multicall3 batch with
+one `ownerOf` call per token — about 58,400 on Base — which exceeds the node's
+600M gas cap. Measured limits: the production RPC fails on gas, and a public Base
+node caps the response body at ~16,383 calls (~2.5 MB). The scan is now split
+into batches of 2,000 (~6M gas, ~320 KB) with early exit at the first match, and
+a hard ceiling on batches per scan.
+
+**RPC failures were read as "token does not exist".** The probe and binary search
+treated any error as a missing token, so a rate limit silently truncated the scan
+range. `is_execution_revert` now only accepts a recognised contract revert;
+anything else is inconclusive. The resolver returns three distinct outcomes, and
+`POST /register` **fails closed** on the inconclusive one instead of minting —
+previously each such failure minted a duplicate identity NFT, growing the very
+registry that broke the scan.
+
+The inconclusive case also returns `503 + retryable: true` rather than `404`.
+Callers persist "not registered" from a `404` and stop asking, which is how a
+transient RPC failure turned into a permanently null agent ID downstream.
+
+Successful resolutions are cached for 5 minutes, keyed by network (the ERC-8004
+registries share one deterministic address across chains).
+
 ## [1.57.1] - 2026-07-25
 
 ### Fix — the Bazaar read limit was throttling legitimate pagination (429s)

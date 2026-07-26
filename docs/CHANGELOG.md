@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.59.1] - 2026-07-26
+
+### Fix — reject an unsettleable UPTO witness before spending RPC
+
+`resolve_settling_signer` ran after the Permit2 allowance and balance checks, so a payload
+naming a facilitator address we do not hold still cost two on-chain round-trips before being
+rejected — and the allowance error masked the real reason. Verified against production during
+the first end-to-end mainnet settlement: a deliberately wrong `witness.facilitator` came back
+as "Insufficient Permit2 allowance" instead of the mismatch. It now resolves immediately after
+the off-chain validations, before any RPC.
+
+Closes out the UPTO path: settlement proven end-to-end on Base mainnet
+(tx `0x52e93c878bc3e0337e1741f30646d0671c92e02cf9a858f2f869eca62fdab573`, 0.01 USDC charged
+against 0.03 authorised, sender the pinned facilitator EOA), and replay correctly rejected by
+Permit2 with `InvalidNonce()`.
+
 ## [1.59.0] - 2026-07-26
 
 ### Fix — reverted transactions were reported to merchants as successful

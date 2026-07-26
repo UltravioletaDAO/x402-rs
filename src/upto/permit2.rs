@@ -60,6 +60,13 @@ where
     // Off-chain validations
     validate_offchain(&request)?;
 
+    // The witness pins which of our keys may settle. Resolve it BEFORE any RPC:
+    // a payload naming an address we do not hold can never settle, so spending
+    // allowance and balance round-trips on it only feeds the RPC pressure that
+    // caused INC-2026-07-06. Resolving it here also guarantees verify and
+    // settle agree about the sender.
+    let settler = resolve_settling_signer(evm_provider, &request)?;
+
     // Parse amounts and addresses for on-chain checks
     let payer = parse_address(&permit2_auth.from)?;
     let token = parse_address(&permit2_auth.permitted.token)?;
@@ -78,9 +85,6 @@ where
     check_token_balance(evm_provider, token, payer, max_amount).await?;
 
     // On-chain: Simulate settlement with max amount (worst case)
-    // The witness pins which of our keys may settle; resolve it before
-    // simulating so verify and settle can never disagree about the sender.
-    let settler = resolve_settling_signer(evm_provider, &request)?;
     simulate_settlement(evm_provider, &request, max_amount, settler).await?;
 
     info!(

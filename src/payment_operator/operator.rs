@@ -723,7 +723,7 @@ async fn execute_authorize(
         collectorData: collector_data,
     };
 
-    send_operator_tx(provider, target, &call).await
+    send_operator_tx(provider, target, &call, Some(provider.pinned_signer())).await
 }
 
 /// Execute release on PaymentOperator
@@ -765,7 +765,7 @@ async fn execute_release(
             amount,
             data: alloy::primitives::Bytes::new(),
         };
-        send_operator_tx(provider, target, &call).await
+        send_operator_tx(provider, target, &call, Some(provider.pinned_signer())).await
     } else {
         // Legacy ABI: release(PaymentInfo, uint256) without bytes data
         // Manually encode with old selector 0xecf39b0a
@@ -778,9 +778,12 @@ async fn execute_release(
             calldata: Bytes::from(calldata),
             confirmations: 1,
         };
-        let receipt = provider.send_transaction(meta_tx).await.map_err(|e| {
-            OperatorError::ContractCall(crate::redact::scrub_urls(&format!("{e:?}")))
-        })?;
+        let receipt = provider
+            .send_transaction_from(provider.pinned_signer(), meta_tx)
+            .await
+            .map_err(|e| {
+                OperatorError::ContractCall(crate::redact::scrub_urls(&format!("{e:?}")))
+            })?;
         Ok(receipt.transaction_hash)
     }
 }
@@ -835,7 +838,7 @@ async fn execute_refund_in_escrow(
             amount,
             data: alloy::primitives::Bytes::new(),
         };
-        send_operator_tx(provider, target, &call).await
+        send_operator_tx(provider, target, &call, Some(provider.pinned_signer())).await
     } else {
         // Legacy ABI: refundInEscrow(PaymentInfo, uint120) without bytes data
         // Manually encode with old selector 0xe2b8996f
@@ -848,9 +851,12 @@ async fn execute_refund_in_escrow(
             calldata: Bytes::from(calldata),
             confirmations: 1,
         };
-        let receipt = provider.send_transaction(meta_tx).await.map_err(|e| {
-            OperatorError::ContractCall(crate::redact::scrub_urls(&format!("{e:?}")))
-        })?;
+        let receipt = provider
+            .send_transaction_from(provider.pinned_signer(), meta_tx)
+            .await
+            .map_err(|e| {
+                OperatorError::ContractCall(crate::redact::scrub_urls(&format!("{e:?}")))
+            })?;
         Ok(receipt.transaction_hash)
     }
 }
@@ -887,11 +893,17 @@ fn is_create3_network(network: Network) -> bool {
     matches!(network, Network::SkaleBase)
 }
 
-/// Send a transaction to the PaymentOperator contract
+/// Send a transaction to the PaymentOperator contract.
+///
+/// `from` selects the sender: `Some(addr)` pins it, `None` takes the
+/// round-robin signer. `release` and `refundInEscrow` MUST pin, because every
+/// deployed operator gates them behind a `StaticAddressCondition` naming the
+/// canonical facilitator EOA; `authorize` is caller-agnostic and may rotate.
 async fn send_operator_tx(
     provider: &EvmProvider,
     target: alloy::primitives::Address,
     call: &impl SolCall,
+    from: Option<alloy::primitives::Address>,
 ) -> Result<B256, OperatorError> {
     let calldata = call.abi_encode();
 
@@ -901,10 +913,11 @@ async fn send_operator_tx(
         confirmations: 1,
     };
 
-    let receipt = provider
-        .send_transaction(meta_tx)
-        .await
-        .map_err(|e| OperatorError::ContractCall(crate::redact::scrub_urls(&format!("{e:?}"))))?;
+    let receipt = match from {
+        Some(sender) => provider.send_transaction_from(sender, meta_tx).await,
+        None => provider.send_transaction(meta_tx).await,
+    }
+    .map_err(|e| OperatorError::ContractCall(crate::redact::scrub_urls(&format!("{e:?}"))))?;
 
     Ok(receipt.transaction_hash)
 }

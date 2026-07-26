@@ -1,5 +1,69 @@
 # Changelog
 
+## [1.59.0] - 2026-07-26
+
+### Fix — reverted transactions were reported to merchants as successful
+
+`send_transaction` never checked `receipt.status()`; only the EIP-3009 path did. A reverted
+`release` or `refundInEscrow` therefore came back as `success: true` with a real transaction
+hash — roughly 297 caller-pinned calls a month across 9 mainnets were exposed. Same defect
+class as FAC-1, fixed for ERC-8004 in v1.49.0 and still open everywhere else. The check now
+lives inside the send path rather than at each call site.
+
+### Fix — signer pinning for every write that binds `msg.sender`
+
+Added `send_transaction_from`, which errors rather than silently falling back when asked for
+a signer the wallet does not hold. Three families are now pinned:
+
+**UPTO.** Proven on-chain against the deployed proxy: it enforces
+`msg.sender == witness.facilitator` unconditionally, and `Address::ZERO` is *not* a wildcard
+— it reverts `UnauthorizedFacilitator` (`0x0f6fae87`) exactly like a mismatch. Since
+`facilitator` sits inside the EIP-712 witness typehash, the payer commits to one address at
+signing time and it can never be rotated without breaking the signature. `witness.facilitator`
+is now required and must equal the pinned signer, validated before any RPC call, and both
+simulation and broadcast use it. Previously it was parsed, defaulted to zero, and never
+checked — so a client that omitted it got a guaranteed revert, and verify could approve a
+payment that settle could not complete.
+
+**x402r PaymentOperator.** All 8 reachable legacy mainnets pin the canonical EOA in a
+`StaticAddressCondition` on both `release` and `refundInEscrow`; the condition bytecode is
+byte-identical across chains, and a differential `eth_call` on Optimism confirms a
+non-canonical sender gets `ConditionNotMet`. All three operator writes are pinned.
+
+**ERC-8004** stays on the default signer, as before: feedback is keyed by
+`(agentId, msg.sender)`, so a rotated writer would fragment the facilitator's reputation
+identity.
+
+### Fix — a reverting payload could stall settlement (regression from 1.58.0)
+
+Alloy fills gas and nonce concurrently (`try_join!` in `JoinFill::prepare`), so
+`NonceFiller` consumes a nonce before a failing gas estimate can return. The high-water mark
+added in 1.58.0 then held that gap for up to 120s — and `/settle` is unauthenticated, so a
+stream of invalid payloads could stall legitimate settles. Gas is now estimated *before* the
+nonce is reserved, so a revert costs nothing, and failures that provably never reached the
+mempool hand their nonce back via `release_nonce`. The explicit gas limit also saves the
+filler's own estimate round-trip on the happy path.
+
+### Add — single-writer lease for EVM submission
+
+ECS runs two tasks on every rolling deploy (`minimumHealthyPercent=100` /
+`maximumPercent=200`), each with a private nonce cache, about 32 times a month. Measured
+exposure is entirely deploy-driven — the service has never autoscaled.
+
+A conditional `PutItem` on the existing `facilitator-nonces` table elects one writer: 15s
+TTL, 5s renewal, explicit release on shutdown for immediate handover. Non-holders keep
+serving reads and refuse only EVM writes. **Fail-open** — if DynamoDB is unreachable the
+process assumes the writer role and logs loudly, degrading to the previous behaviour rather
+than refusing payments. Kill-switch: `ENABLE_WRITER_LEASE=false`.
+
+No terraform or IAM change: the table, its TTL, the VPC gateway endpoint and
+`dynamodb:PutItem` all already existed.
+
+Rejected alternatives, with reasons, in
+`docs/plans/upto-blockers-and-single-writer-2026-07-26.md`: forcing serial deploys costs
+~130s of hard downtime each; moving nonces to DynamoDB turns a race into a permanent gap;
+sharding by task index is impossible because ECS exposes no ordinal.
+
 ## [1.58.0] - 2026-07-26
 
 ### Fix — the EVM nonce lane under concurrent settles

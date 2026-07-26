@@ -86,6 +86,7 @@ mod timestamp;
 mod types;
 mod types_v2;
 mod upto;
+mod writer_lease;
 
 use discovery::DiscoveryRegistry;
 #[allow(unused_imports)]
@@ -119,6 +120,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(1);
         }
     };
+
+    // Elect a single EVM writer across overlapping tasks. ECS runs two tasks
+    // on every rolling deploy, and the in-process nonce allocator is only
+    // sound while one process signs for a given EOA. Fail-open by design: if
+    // the lease cannot be reached this process keeps writing.
+    let writer_lease = writer_lease::spawn().await;
 
     // Initialize compliance checker (OFAC + blacklist)
     tracing::info!("Initializing compliance checker...");
@@ -532,6 +539,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     axum::serve(listener, http_endpoints)
         .with_graceful_shutdown(axum_graceful_shutdown)
         .await?;
+
+    // Hand the write lease over explicitly instead of making the successor
+    // wait out the TTL: during a rolling deploy the incoming task is already
+    // healthy and serving, so a fast handover is the difference between a
+    // couple of seconds of refused settles and fifteen.
+    if let Some(lease) = writer_lease {
+        lease.release().await;
+    }
 
     Ok(())
 }

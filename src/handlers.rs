@@ -4197,7 +4197,7 @@ static OWNER_LOOKUP_CACHE: Lazy<
 /// `false`. Conflating the two is what silently truncated the scan range and
 /// let `POST /register` mint duplicate agent NFTs: an unrecognised error is
 /// therefore treated as inconclusive, never as "token absent".
-fn is_execution_revert(error: &str) -> bool {
+pub(crate) fn is_execution_revert(error: &str) -> bool {
     let lower = error.to_lowercase();
     lower.contains("execution reverted")
         // `ERC721NonexistentToken(uint256)` selector (OpenZeppelin v5), returned

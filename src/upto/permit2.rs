@@ -6,7 +6,7 @@
 
 use alloy::network::TransactionBuilder as _;
 use alloy::primitives::{Address, Bytes, U256};
-use alloy::providers::{Provider, WalletProvider};
+use alloy::providers::Provider;
 use alloy::rpc::types::TransactionRequest;
 use alloy::sol_types::SolCall;
 use tracing::{debug, info, instrument, warn};
@@ -78,7 +78,10 @@ where
     check_token_balance(evm_provider, token, payer, max_amount).await?;
 
     // On-chain: Simulate settlement with max amount (worst case)
-    simulate_settlement(evm_provider, &request, max_amount).await?;
+    // The witness pins which of our keys may settle; resolve it before
+    // simulating so verify and settle can never disagree about the sender.
+    let settler = resolve_settling_signer(evm_provider, &request)?;
+    simulate_settlement(evm_provider, &request, max_amount, settler).await?;
 
     info!(
         payer = %payer,
@@ -164,8 +167,10 @@ where
     // report a fake successful settlement to the merchant.
     assert_proxy_deployed(evm_provider).await?;
 
-    // Execute the on-chain settlement
-    let tx_hash = execute_settlement(evm_provider, &request, actual_amount).await?;
+    // Execute the on-chain settlement from the exact signer the payer's
+    // witness authorises — the proxy rejects any other sender.
+    let settler = resolve_settling_signer(evm_provider, &request)?;
+    let tx_hash = execute_settlement(evm_provider, &request, actual_amount, settler).await?;
 
     info!(
         payer = %payer,
@@ -382,11 +387,64 @@ async fn check_token_balance(
     Ok(())
 }
 
+/// Resolve which of our signers is allowed to broadcast this settlement.
+///
+/// The proxy enforces `msg.sender == witness.facilitator` unconditionally.
+/// Verified on Base against the deployed contract (2026-07-26): a zero
+/// facilitator is NOT a wildcard — it reverts `UnauthorizedFacilitator`
+/// (`0x0f6fae87`) exactly like a mismatched address, while a witness whose
+/// facilitator equals the sender passes the gate and proceeds to Permit2
+/// signature checks.
+///
+/// The payer signs the witness, so the payload decides which key may settle.
+/// A witness naming an address we do not hold can never be settled at all —
+/// rejecting it here turns a guaranteed on-chain revert into a clear error
+/// before verify tells the merchant the payment is good.
+fn resolve_settling_signer(
+    provider: &EvmProvider,
+    request: &UptoRequest,
+) -> Result<Address, UptoError> {
+    let witness = &request
+        .payment_payload
+        .payload
+        .permit_2_authorization
+        .witness;
+
+    let declared = witness.facilitator.as_ref().ok_or_else(|| {
+        UptoError::InvalidPayload(
+            "witness.facilitator is required: the proxy rejects every sender that does not \
+             match it, so an omitted facilitator can only revert"
+                .to_string(),
+        )
+    })?;
+
+    let declared = parse_address(declared)?;
+
+    // Must equal the pinned signer specifically, not merely any key we hold.
+    // `facilitator` sits inside the EIP-712 witness typehash, so the payer has
+    // to commit to one address at signing time — which means the facilitator
+    // can only ever advertise a single settling address for this scheme.
+    // Rotating it across a pool is a protocol change, not a scheduling one.
+    let expected = provider.pinned_signer();
+    if declared != expected {
+        return Err(UptoError::InvalidPayload(format!(
+            "witness.facilitator {declared:#x} does not match this facilitator's \
+             settling address {expected:#x}"
+        )));
+    }
+    Ok(declared)
+}
+
 /// Simulate settlement with the specified amount via eth_call.
+///
+/// `from` must be the same address that will broadcast, otherwise verify and
+/// settle can disagree: the merchant would be told the payment is valid and
+/// then find it unsettleable.
 async fn simulate_settlement(
     provider: &EvmProvider,
     request: &UptoRequest,
     amount: U256,
+    from: Address,
 ) -> Result<(), UptoError> {
     let settle_call = build_settle_call(request, amount)?;
     let calldata = settle_call.abi_encode();
@@ -394,10 +452,6 @@ async fn simulate_settlement(
     let tx = TransactionRequest::default()
         .with_to(UPTO_PERMIT2_PROXY_ADDRESS)
         .with_input(Bytes::from(calldata));
-
-    // Use the facilitator's signer as the from address for simulation
-    // The proxy contract checks msg.sender == witness.facilitator
-    let from = provider.inner().default_signer_address();
 
     let tx = tx.with_from(from);
 
@@ -421,6 +475,7 @@ async fn execute_settlement(
     provider: &EvmProvider,
     request: &UptoRequest,
     actual_amount: U256,
+    from: Address,
 ) -> Result<alloy::primitives::B256, UptoError> {
     let settle_call = build_settle_call(request, actual_amount)?;
     let calldata = settle_call.abi_encode();
@@ -431,8 +486,10 @@ async fn execute_settlement(
         confirmations: 1,
     };
 
+    // Pinned, never round-robin: the proxy only accepts the facilitator address
+    // the payer signed into the witness.
     let receipt = provider
-        .send_transaction(meta_tx)
+        .send_transaction_from(from, meta_tx)
         .await
         .map_err(|e| UptoError::SettlementFailed(crate::redact::scrub_urls(&format!("{e}"))))?;
 

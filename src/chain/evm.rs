@@ -405,7 +405,69 @@ impl MetaEvmProvider for EvmProvider {
         &self,
         tx: MetaTransaction,
     ) -> Result<TransactionReceipt, Self::Error> {
-        let from_address = self.next_signer_address();
+        self.send_transaction_from(self.next_signer_address(), tx)
+            .await
+    }
+}
+
+impl EvmProvider {
+    /// The single signer that identity-bound writes must always use.
+    ///
+    /// Some destinations bind the facilitator's address on-chain and cannot be
+    /// rotated: the x402r PaymentOperator gates `release` and `refundInEscrow`
+    /// behind a `StaticAddressCondition` pinning this exact EOA (verified on
+    /// all 8 legacy mainnets and on SKALE — a call from any other sender
+    /// reverts `ConditionNotMet`), and ERC-8004 reputation records are keyed by
+    /// their author, so a rotated writer would fragment the facilitator's
+    /// on-chain identity. `authorize` and plain EIP-3009 settles carry no such
+    /// binding and stay on the round-robin path.
+    pub fn pinned_signer(&self) -> Address {
+        self.inner.default_signer_address()
+    }
+
+    /// Whether `address` is one of the signers this provider can sign with.
+    ///
+    /// Used to reject payloads that bind settlement to an address we do not
+    /// hold, before spending gas on a transaction that can only revert.
+    pub fn controls_signer(&self, address: Address) -> bool {
+        self.signer_addresses.contains(&address)
+    }
+
+    /// Sends a meta-transaction from a SPECIFIC signer instead of the
+    /// round-robin one.
+    ///
+    /// Required wherever the destination contract binds `msg.sender`: the UPTO
+    /// proxy reverts `UnauthorizedFacilitator` unless the sender equals the
+    /// `facilitator` the payer signed into the Permit2 witness, and ERC-8004
+    /// reputation records are keyed by author, so rotating them would split the
+    /// facilitator's on-chain identity.
+    pub async fn send_transaction_from(
+        &self,
+        from_address: Address,
+        tx: MetaTransaction,
+    ) -> Result<TransactionReceipt, FacilitatorLocalError> {
+        // Hard error, never a fallback to the default or the round-robin
+        // cursor: silently substituting a signer is exactly the failure this
+        // API exists to prevent, and on a caller-pinned contract it produces a
+        // revert that looks like a contract bug.
+        if !self.controls_signer(from_address) {
+            return Err(FacilitatorLocalError::ContractCall(format!(
+                "refusing to send from {from_address}: not a signer this facilitator holds"
+            )));
+        }
+
+        // Only the elected writer may allocate nonces for the shared EOA. Two
+        // ECS tasks overlap on every rolling deploy, and each keeps a private
+        // nonce cache; without this gate they race for the same nonce and one
+        // of them loses. Fails open when the lease is unreachable, so a
+        // control-plane outage degrades to the old behaviour rather than
+        // halting settlement.
+        if !crate::writer_lease::is_writer() {
+            return Err(FacilitatorLocalError::ContractCall(
+                "this instance does not hold the EVM writer lease; retry".to_string(),
+            ));
+        }
+
         let to = tx.to;
         let calldata = tx.calldata;
         let confirmations = tx.confirmations;
@@ -442,15 +504,6 @@ impl MetaEvmProvider for EvmProvider {
                 .with_to(to)
                 .with_from(from_address)
                 .with_input(calldata.clone());
-
-            // The nonce is deliberately left unset so `NonceFiller` +
-            // `PendingNonceManager` allocate it. Setting it here makes alloy
-            // skip the filler entirely (`FillerControlFlow::Finished` once
-            // `tx.nonce()` is `Some`), which is what previously gave two
-            // concurrent Ethereum L1 settles the same nonce. The stale-mempool
-            // case that override was written for is now handled inside the
-            // manager: it resyncs with `.pending()` on failure and never
-            // rewinds below its high-water mark while a TX may be in flight.
 
             if !self.eip1559 {
                 let gas: u128 = self
@@ -500,6 +553,65 @@ impl MetaEvmProvider for EvmProvider {
                 );
             }
 
+            // Estimate gas BEFORE reserving a nonce.
+            //
+            // Alloy fills gas and nonce CONCURRENTLY — `JoinFill::prepare` is a
+            // `try_join!` — and `NonceFiller::prepare` commits our allocation as
+            // soon as it runs. So when estimation reverts, the nonce has already
+            // been consumed for a transaction that is never broadcast, leaving a
+            // gap that stalls every later settle from this signer. `/settle` is
+            // unauthenticated, so a stream of reverting payloads was a self-DoS
+            // on real settlements. Estimating first means a revert costs us
+            // nothing, and the explicit limit also saves the filler's own
+            // estimate round-trip on the happy path.
+            //
+            // Only a revert is treated as fatal here: if estimation fails for
+            // transport reasons we fall through and let the filler try, which
+            // preserves the previous behaviour on flaky RPCs.
+            match self.inner.estimate_gas(txr.clone()).await {
+                Ok(gas) => {
+                    // Head-room for state drift between estimate and inclusion.
+                    txr.set_gas_limit(gas.saturating_mul(5) / 4);
+                }
+                Err(e) => {
+                    let msg = format!("{e:?}");
+                    if crate::handlers::is_execution_revert(&msg) {
+                        tracing::warn!(
+                            %from_address,
+                            network = %self.chain.network,
+                            error = %msg,
+                            "Gas estimation reverted; no nonce consumed"
+                        );
+                        return Err(FacilitatorLocalError::ContractCall(msg));
+                    }
+                    tracing::warn!(
+                        %from_address,
+                        error = %msg,
+                        "Gas estimation unavailable, falling back to filler"
+                    );
+                }
+            }
+
+            // Reserve the nonce explicitly so that a failure below can hand it
+            // back precisely, rather than leaving the shared counter ahead of
+            // the chain. `NonceFiller` short-circuits once the nonce is set.
+            let reserved_nonce = match self
+                .nonce_manager
+                .get_next_nonce(&self.inner, from_address)
+                .await
+            {
+                Ok(nonce) => {
+                    txr.set_nonce(nonce);
+                    Some(nonce)
+                }
+                Err(e) => {
+                    // Could not reach the chain to resync; let the filler retry
+                    // the allocation as part of the send.
+                    tracing::warn!(%from_address, error = ?e, "Nonce reservation failed, deferring to filler");
+                    None
+                }
+            };
+
             // Send transaction
             match self.inner.send_transaction(txr).await {
                 Ok(pending_tx) => {
@@ -534,6 +646,24 @@ impl MetaEvmProvider for EvmProvider {
                         .with_timeout(Some(timeout));
 
                     return match watcher.get_receipt().await {
+                        // A mined transaction is not a successful one. Without
+                        // this check a reverted release/refundInEscrow came back
+                        // as a receipt with a real hash and was reported to the
+                        // merchant as `success: true` — the same defect class
+                        // fixed for ERC-8004 in v1.49.0, still open on every
+                        // other write path until now.
+                        Ok(receipt) if !receipt.status() => {
+                            tracing::error!(
+                                tx_hash = %receipt.transaction_hash,
+                                %from_address,
+                                network = %self.chain.network,
+                                "Transaction mined but REVERTED"
+                            );
+                            Err(FacilitatorLocalError::ContractCall(format!(
+                                "transaction {} reverted on {}",
+                                receipt.transaction_hash, self.chain.network
+                            )))
+                        }
                         Ok(receipt) => Ok(receipt),
                         Err(e) => {
                             // Receipt fetch failed (timeout or other) - reset nonce
@@ -545,7 +675,17 @@ impl MetaEvmProvider for EvmProvider {
                 }
                 Err(e) => {
                     let error_str = format!("{e:?}");
-                    self.nonce_manager.reset_nonce(from_address).await;
+
+                    // A transaction the node refused before it ever entered the
+                    // mempool consumed no nonce on-chain, so hand ours back
+                    // instead of leaving a gap the whole signer queues behind.
+                    // Anything ambiguous keeps the conservative reset.
+                    match (reserved_nonce, is_pre_broadcast_rejection(&error_str)) {
+                        (Some(nonce), true) => {
+                            self.nonce_manager.release_nonce(from_address, nonce).await
+                        }
+                        _ => self.nonce_manager.reset_nonce(from_address).await,
+                    }
 
                     if is_nonce_error(&error_str) && attempt < MAX_NONCE_RETRIES {
                         // Safety check: if the confirmed TX count advanced, the
@@ -629,6 +769,28 @@ impl MetaEvmProvider for EvmProvider {
 
         unreachable!("retry loop always returns")
     }
+}
+
+/// Whether the node rejected the transaction *before* it could enter the
+/// mempool, so it provably consumed no nonce on-chain.
+///
+/// Used to decide whether a reserved nonce can be handed back. Anything not
+/// listed here is treated as ambiguous — the transaction may be propagating —
+/// and keeps the conservative reset instead.
+fn is_pre_broadcast_rejection(error: &str) -> bool {
+    let lower = error.to_lowercase();
+    // A nonce error means the node evaluated our nonce against its own view;
+    // the transaction never queued, but the resync path (not release) is the
+    // right recovery because our counter is what is wrong.
+    if is_nonce_error(&lower) {
+        return false;
+    }
+    lower.contains("execution reverted")
+        || lower.contains("gas required exceeds")
+        || lower.contains("intrinsic gas too low")
+        || lower.contains("exceeds block gas limit")
+        || lower.contains("insufficient funds")
+        || lower.contains("max fee per gas less than block base fee")
 }
 
 /// Check if a transport error is a nonce-related error that can be retried.
@@ -2205,6 +2367,34 @@ impl PendingNonceManager {
     /// chain nonce rewind underneath them. [`NONCE_TRUST_CHAIN_AFTER`] is what
     /// eventually releases the mark so a genuinely dropped transaction does not
     /// wedge the signer forever.
+    /// Hands back a nonce that was reserved but provably never broadcast.
+    ///
+    /// Rolls back only when nothing else has allocated since — if a sibling
+    /// settle took the next nonce, the gap is real and healing it is the
+    /// resync path's job. Without this, a reverting payload on the
+    /// unauthenticated `/settle` endpoint would advance the shared counter by
+    /// one each time and stall every subsequent settle from that signer.
+    pub async fn release_nonce(&self, address: Address, nonce: u64) {
+        let state = self.nonces.get(&address).map(|r| Arc::clone(r.value()));
+        if let Some(state) = state {
+            let mut state = state.lock().await;
+            if state.next == Some(nonce.saturating_add(1)) {
+                state.next = Some(nonce);
+                // The high-water mark has to step back with it, or a resync
+                // would refuse to reuse a nonce that never reached the network.
+                state.high_water = nonce.checked_sub(1);
+                tracing::debug!(%address, nonce, "released unbroadcast nonce");
+            } else {
+                tracing::debug!(
+                    %address,
+                    nonce,
+                    next = ?state.next,
+                    "not releasing nonce: another allocation followed it"
+                );
+            }
+        }
+    }
+
     pub async fn reset_nonce(&self, address: Address) {
         // Clone the `Arc` and drop the dashmap guard BEFORE the await point,
         // exactly as `get_next_nonce` does. A dashmap shard guard (here the read
@@ -2437,6 +2627,73 @@ mod tests {
     fn test_resync_trusts_chain_after_quiet_period() {
         let long_ago = Some(std::time::Instant::now() - NONCE_TRUST_CHAIN_AFTER);
         assert_eq!(resync_nonce(50, Some(52), long_ago), 50);
+    }
+
+    /// The self-DoS guard. Alloy fills gas and nonce concurrently, so a
+    /// reverting payload consumes a nonce for a transaction that never reaches
+    /// the network. Handing it back keeps the signer usable; leaving it would
+    /// stall every later settle behind a gap for NONCE_TRUST_CHAIN_AFTER.
+    #[tokio::test]
+    async fn test_release_nonce_rolls_back_unbroadcast_allocation() {
+        let manager = PendingNonceManager::default();
+        let addr = address!("0000000000000000000000000000000000000010");
+
+        // Allocated nonce 7; nothing followed it.
+        seed_state(&manager, addr, Some(8), Some(7), None).await;
+        manager.release_nonce(addr, 7).await;
+
+        assert_eq!(read_next(&manager, addr).await, Some(7));
+        assert_eq!(read_high_water(&manager, addr).await, Some(6));
+    }
+
+    /// If a sibling settle already took the next nonce, rolling back would
+    /// hand out a nonce that is genuinely in flight. The gap is real and the
+    /// resync path owns healing it.
+    #[tokio::test]
+    async fn test_release_nonce_declines_when_another_allocation_followed() {
+        let manager = PendingNonceManager::default();
+        let addr = address!("0000000000000000000000000000000000000011");
+
+        // We took 7, then a sibling took 8.
+        seed_state(&manager, addr, Some(9), Some(8), None).await;
+        manager.release_nonce(addr, 7).await;
+
+        assert_eq!(read_next(&manager, addr).await, Some(9));
+        assert_eq!(read_high_water(&manager, addr).await, Some(8));
+    }
+
+    #[tokio::test]
+    async fn test_release_nonce_zero_clears_high_water() {
+        let manager = PendingNonceManager::default();
+        let addr = address!("0000000000000000000000000000000000000012");
+        seed_state(&manager, addr, Some(1), Some(0), None).await;
+        manager.release_nonce(addr, 0).await;
+        assert_eq!(read_next(&manager, addr).await, Some(0));
+        assert_eq!(read_high_water(&manager, addr).await, None);
+    }
+
+    /// Only failures that provably never entered the mempool may return their
+    /// nonce. Anything ambiguous keeps the conservative reset.
+    #[test]
+    fn test_pre_broadcast_rejection_classification() {
+        assert!(is_pre_broadcast_rejection("execution reverted"));
+        assert!(is_pre_broadcast_rejection("gas required exceeds allowance"));
+        assert!(is_pre_broadcast_rejection("intrinsic gas too low"));
+        assert!(is_pre_broadcast_rejection(
+            "insufficient funds for transfer"
+        ));
+        assert!(is_pre_broadcast_rejection(
+            "max fee per gas less than block base fee"
+        ));
+
+        // Nonce errors resync rather than release: our counter is what is wrong.
+        assert!(!is_pre_broadcast_rejection("nonce too low"));
+        assert!(!is_pre_broadcast_rejection("already known"));
+        assert!(!is_pre_broadcast_rejection("replacement underpriced"));
+        // Ambiguous: the transaction may be propagating.
+        assert!(!is_pre_broadcast_rejection("operation timed out"));
+        assert!(!is_pre_broadcast_rejection("error sending request for url"));
+        assert!(!is_pre_broadcast_rejection(""));
     }
 
     #[tokio::test]

@@ -46,6 +46,7 @@ pub mod timestamp;
 pub mod types;
 pub mod types_v2;
 pub mod upto;
+pub mod writer_lease;
 
 // Hidden re-exports just for macro expansion.
 #[doc(hidden)]

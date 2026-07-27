@@ -325,10 +325,14 @@ impl DiscoveryCrawler {
                             );
                         }
                         _ => {
+                            // Labelled outbound so an upstream's status can
+                            // never be mistaken for one of our own responses
+                            // (see the note in discovery_aggregator::fetch_all).
                             warn!(
+                                direction = "outbound",
                                 target = %target_name,
-                                error = %e,
-                                "Failed to crawl target"
+                                upstream_error = %e,
+                                "Upstream crawl target unavailable"
                             );
                         }
                     }

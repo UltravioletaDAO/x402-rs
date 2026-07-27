@@ -492,6 +492,48 @@ Key code locations:
 - `src/network.rs:925` - EURC_ETHEREUM uses `name: "Euro Coin"`
 - `src/chain/evm.rs:assert_domain()` - Domain resolution logic
 
+### "The facilitator is returning 5xx" — confirm before chasing
+
+Establish the actual status code first. A report of "500s" has already once turned
+out to be zero 500s (the real symptom was HTTP 429 from a mis-sized rate limit,
+2026-07-24). Two things make a healthy facilitator look broken:
+
+1. **Outbound failures read like our own.** The aggregator and crawler fetch from
+   upstream bazaar feeds, several of which are permanently broken. Those log lines
+   carry `direction=outbound` and `upstream_error=...` and may quote the upstream's
+   own status ("HTTP 500"). They are not our responses.
+2. **Our responses are the ones with `status=NNN`** (emitted by `telemetry`).
+
+```bash
+# 1) Ground truth from the ALB — is anything actually 5xx?
+DIM=$(aws elbv2 describe-load-balancers --region us-east-2 \
+  --query "LoadBalancers[?contains(LoadBalancerName,'facilitator')].LoadBalancerArn" \
+  --output text | sed 's|.*loadbalancer/||')
+for m in HTTPCode_Target_5XX_Count HTTPCode_ELB_5XX_Count HTTPCode_Target_4XX_Count; do
+  echo "--- $m"; aws cloudwatch get-metric-statistics --region us-east-2 \
+    --namespace AWS/ApplicationELB --metric-name $m \
+    --dimensions Name=LoadBalancer,Value="$DIM" \
+    --start-time "$(date -u -d '12 hours ago' +%Y-%m-%dT%H:%M:%S)" \
+    --end-time "$(date -u +%Y-%m-%dT%H:%M:%S)" --period 3600 --statistics Sum \
+    --query 'sort_by(Datapoints,&Timestamp)[*].[Timestamp,Sum]' --output text
+done
+
+# 2) Our own response codes only (NOT upstream noise)
+S=$(( ($(date +%s) - 21600) * 1000 ))
+for c in 500 502 503 429 404; do
+  echo -n "status=$c : "
+  aws logs filter-log-events --log-group-name /ecs/facilitator-production \
+    --region us-east-2 --start-time $S --filter-pattern "\"status=$c\"" \
+    --query 'length(events)' --output text
+done
+```
+
+A handful of `503`s clustered around a deploy is ECS replacing tasks, not an
+outage. If 4xx is climbing instead, suspect a rate limit: see
+`feedback-rate-limit-pagination` — limits on list endpoints must cover a full
+`total/page_size` walk, and `tower_governor`'s `per_second(n)` means *one token
+every n seconds*, not n per second.
+
 ### RPC timeouts
 - Use premium RPC endpoints (QuickNode, Alchemy)
 - Set `QUICKNODE_BASE_RPC` in `.env`

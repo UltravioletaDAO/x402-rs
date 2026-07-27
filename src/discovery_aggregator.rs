@@ -634,10 +634,22 @@ impl DiscoveryAggregator {
                     all_resources.extend(resources);
                 }
                 Err(e) => {
-                    error!(
+                    // WARN, not ERROR, and explicitly labelled outbound. An
+                    // upstream bazaar feed being down is routine — several of
+                    // the configured sources are permanently broken — and it
+                    // has no effect on any response we serve. Logging it at
+                    // ERROR with the upstream's own status inline ("HTTP 500")
+                    // made a healthy facilitator look like it was returning
+                    // 500s, and cost real time chasing an incident that did not
+                    // exist. Our own responses are logged as `status=NNN`;
+                    // upstream failures carry `direction=outbound` and never
+                    // that field.
+                    warn!(
+                        direction = "outbound",
                         facilitator = %config.id,
-                        error = %e,
-                        "Failed to fetch from facilitator"
+                        upstream_url = %config.discovery_url,
+                        upstream_error = %e,
+                        "Upstream bazaar feed unavailable; skipping this source for this cycle"
                     );
                 }
             }

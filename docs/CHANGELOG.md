@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.59.2] - 2026-07-27
+
+### Fix — upstream feed failures no longer read like our own 5xx
+
+When an upstream bazaar feed is down, the aggregator logged
+`ERROR ... Failed to fetch from facilitator ... error=Facilitator error: HTTP 500`.
+Three problems: ERROR severity for a routine condition (several configured
+sources are permanently broken and it affects no response we serve), no
+indication the failure was outbound, and the upstream's own status quoted inline
+so the line reads as though the facilitator returned a 500. That combination cost
+real time chasing a 500 incident that never happened — the actual symptom that
+day was HTTP 429 from a mis-sized rate limit.
+
+- Aggregator and crawler now log upstream failures at WARN with
+  `direction=outbound`, `upstream_url` and `upstream_error`. Only our own
+  responses carry `status=NNN` (emitted by `telemetry`), so the two can no longer
+  be confused by a grep. Internal failures (e.g. importing into the registry)
+  remain ERROR.
+- `CLAUDE.md` gains a "confirm before chasing" runbook: check ALB
+  `HTTPCode_Target_5XX_Count` first, then count our own `status=NNN` in logs, and
+  note that a few `503`s around a deploy are ECS task replacement.
+
 ## [1.59.1] - 2026-07-26
 
 ### Fix — reject an unsettleable UPTO witness before spending RPC

@@ -1,5 +1,38 @@
 # Changelog
 
+## [1.59.3] - 2026-07-27
+
+### Fix — an ignored query parameter is not a search
+
+`GET /discovery/resources` accepted any query parameter and applied only the ones
+it knew. `?q=logs` filtered server-side and returned 3 of 13,590; `?search=logs`
+was accepted, ignored, and returned the full unfiltered page. From the caller's
+side those two responses are indistinguishable from a filter that matched
+everything, so a consumer read the ignored parameter as a working search and
+spent months filtering 100 arbitrary rows locally and calling that the result.
+
+- Any parameter outside `limit`, `offset`, `category`, `network`, `provider`,
+  `tag`, `source`, `sourceFacilitator`, `health`, `tier`, `q` is now a 400 whose
+  body lists the supported set, so the fix is in the error.
+- When exactly one parameter is rejected and its intent is obvious, the response
+  carries a hint: `search`/`query`/`text`/`keyword`/`filter` point at `q`,
+  `page` at `offset`, `status` at `health`, `curation` at `tier`. The names are
+  bounded in count and length before they are echoed back — they come from an
+  unauthenticated caller.
+- OpenAPI documents the rejection, the 400 example, and that timestamps are
+  epoch **seconds** as JSON numbers.
+
+Reported by KarmaCadabra. The same report turned up two SDK bugs, both fixed and
+published: `uvd-x402-sdk` **0.27.0** (PyPI) — `firstSeen` is an epoch int but the
+Python model declared it `str`, so every `list_resources()` call raised
+`ValidationError`, and `health` / `curation` were dropped by the model entirely.
+`uvd-x402-sdk` **2.42.0** (npm) — `BazaarClient` targeted
+`bazaar.ultravioletadao.xyz`, a host that does not resolve and never has, with an
+invented schema; it now speaks the real `/discovery/*` contract.
+
+The registry itself was never at fault: 21,254 registered, 13,620 visible, 7,634
+quarantined, 1,879 alive, and 10 of 10 hand-probed URLs live.
+
 ## [1.59.2] - 2026-07-27
 
 ### Fix — upstream feed failures no longer read like our own 5xx

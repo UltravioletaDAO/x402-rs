@@ -75,7 +75,7 @@ Curated resource discovery for x402-enabled services. Entries carry a discovery 
 a liveness `health` status from periodic probing, and a curated `tier`
 (`first_party` > `vip` > `verified` > `listed`) which also drives listing order.
 
-- `GET /discovery/resources` - List curated resources (filters: category, provider, tag, network, source, sourceFacilitator, q, health, tier)
+- `GET /discovery/resources` - List curated resources (filters: category, provider, tag, network, source, sourceFacilitator, q, health, tier; any other parameter is a 400)
 - `GET /discovery/stats` - Aggregate catalog metrics (60s cache)
 - `GET /bazaar` - HTML Bazaar explorer UI
 - `GET /discovery/attestation/{hash}` - ERC-8004 attestation evidence body
@@ -1088,6 +1088,13 @@ Pass `health=any` to return everything, or a specific status to filter to it.
 **Optional fields:** `metadata`, `sourceFacilitator`, `firstSeen`, `health` and `curation` are
 omitted when unknown. Only `url`, `type`, `x402Version`, `accepts`, `lastUpdated` and `source`
 are always present.
+
+**Timestamps** (`firstSeen`, `lastUpdated`, `health.lastChecked`) are Unix epoch **seconds**,
+serialized as JSON numbers -- not ISO-8601 strings and not milliseconds.
+
+**Unknown parameters are rejected with a 400**, listing the ones supported. A parameter the
+server accepted and ignored would be indistinguishable from a filter that matched everything,
+so `?search=logs` fails loudly and points at `q` instead of quietly returning the whole catalog.
 "#,
     params(
         ("limit" = Option<u32>, Query, description = "Maximum number of resources to return (default: 10, max: 100)"),
@@ -1150,7 +1157,16 @@ are always present.
                 "pagination": { "limit": 10, "offset": 0, "total": 21195 }
             })
         ),
-        (status = 400, description = "Invalid query (for example, `q` longer than 128 characters)", body = Object)
+        (status = 400, description = "Invalid query: an unsupported parameter, or `q` longer than 128 characters", body = Object,
+            example = json!({
+                "error": "unknown query parameter: search",
+                "hint": "did you mean q?",
+                "supported": [
+                    "limit", "offset", "category", "network", "provider", "tag",
+                    "source", "sourceFacilitator", "health", "tier", "q"
+                ]
+            })
+        )
     )
 )]
 async fn path_bazaar_list() {}

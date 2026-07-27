@@ -10,7 +10,7 @@
 //! and is compatible with official x402 client SDKs.
 
 use axum::body::Bytes;
-use axum::extract::{Extension, Path, Query, State};
+use axum::extract::{Extension, Path, Query, RawQuery, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use axum::routing::{get, post};
@@ -488,6 +488,98 @@ pub struct DiscoveryQueryParams {
 /// so an unbounded needle from an unauthenticated caller is a cheap CPU sink.
 pub const MAX_SEARCH_LEN: usize = 128;
 
+/// Every query parameter `GET /discovery/resources` understands.
+///
+/// Anything else is a 400. A parameter the server accepts and then ignores is
+/// indistinguishable from a filter that matched everything: a caller passing
+/// `?search=logs` got back the full unfiltered page and read it as a search
+/// that matched the whole catalog, then filtered those hundred arbitrary rows
+/// locally and called that the result. Silence is the bug; the rejection is
+/// the fix.
+pub const DISCOVERY_QUERY_PARAMS: &[&str] = &[
+    "limit",
+    "offset",
+    "category",
+    "network",
+    "provider",
+    "tag",
+    "source",
+    "sourceFacilitator",
+    "health",
+    "tier",
+    "q",
+];
+
+/// Cap on how many rejected parameters are echoed back, and how much of each.
+/// The names come from an unauthenticated caller and land in a response body.
+const MAX_REPORTED_UNKNOWN: usize = 5;
+const MAX_REPORTED_PARAM_LEN: usize = 64;
+
+/// Map a rejected parameter to the one that does the job, when the intent is
+/// obvious. Callers reach for `search` far more often than for `q`.
+fn discovery_param_hint(unknown: &str) -> Option<&'static str> {
+    match unknown.to_ascii_lowercase().as_str() {
+        "search" | "query" | "text" | "term" | "keyword" | "filter" | "search_query" => Some("q"),
+        "source_facilitator" | "facilitator" => Some("sourceFacilitator"),
+        "page" | "skip" | "start" => Some("offset"),
+        "count" | "size" | "limits" | "page_size" | "pagesize" | "per_page" | "perpage" => {
+            Some("limit")
+        }
+        "status" | "liveness" | "alive" => Some("health"),
+        "curation" | "tiers" | "label" => Some("tier"),
+        "networks" | "chain" | "chain_id" | "chainid" => Some("network"),
+        "tags" => Some("tag"),
+        "categories" => Some("category"),
+        _ => None,
+    }
+}
+
+/// Collect the parameters in `raw` that the listing does not understand,
+/// in the order they were sent and without repeats.
+fn unknown_discovery_params(raw: &str) -> Vec<String> {
+    let mut unknown: Vec<String> = Vec::new();
+    for (key, _) in url::form_urlencoded::parse(raw.as_bytes()) {
+        if DISCOVERY_QUERY_PARAMS.contains(&key.as_ref()) {
+            continue;
+        }
+        if unknown.iter().any(|seen| seen == key.as_ref()) {
+            continue;
+        }
+        unknown.push(key.into_owned());
+    }
+    unknown
+}
+
+/// Build the 400 body for rejected parameters.
+fn unknown_params_response(unknown: &[String]) -> Response {
+    let reported: Vec<String> = unknown
+        .iter()
+        .take(MAX_REPORTED_UNKNOWN)
+        .map(|name| name.chars().take(MAX_REPORTED_PARAM_LEN).collect())
+        .collect();
+
+    let error = if reported.len() == 1 {
+        format!("unknown query parameter: {}", reported[0])
+    } else {
+        format!("unknown query parameters: {}", reported.join(", "))
+    };
+
+    let mut body = json!({
+        "error": error,
+        "supported": DISCOVERY_QUERY_PARAMS,
+    });
+
+    // Only hint when it is unambiguous: one rejected parameter with one
+    // obvious replacement.
+    if let [only] = reported.as_slice() {
+        if let Some(hint) = discovery_param_hint(only) {
+            body["hint"] = json!(format!("did you mean {hint}?"));
+        }
+    }
+
+    (StatusCode::BAD_REQUEST, Json(body)).into_response()
+}
+
 fn default_limit() -> u32 {
     10
 }
@@ -526,6 +618,10 @@ impl From<DiscoveryQueryParams> for Option<DiscoveryFilters> {
 /// Supports pagination via `limit` and `offset` query parameters.
 /// Supports filtering by `category`, `network`, `provider`, and `tag`.
 ///
+/// Parameters outside `DISCOVERY_QUERY_PARAMS` are rejected with a 400 rather
+/// than ignored, so a caller can tell a filter that matched everything apart
+/// from a filter that was never applied.
+///
 /// # Example
 /// ```text
 /// GET /discovery/resources?limit=10&offset=0&category=finance&network=eip155:8453
@@ -533,8 +629,20 @@ impl From<DiscoveryQueryParams> for Option<DiscoveryFilters> {
 #[instrument(skip_all, fields(limit, offset, category, network))]
 pub async fn get_discovery_resources(
     State(registry): State<Arc<DiscoveryRegistry>>,
+    RawQuery(raw_query): RawQuery,
     Query(params): Query<DiscoveryQueryParams>,
 ) -> impl IntoResponse {
+    if let Some(raw) = raw_query.as_deref() {
+        let unknown = unknown_discovery_params(raw);
+        if !unknown.is_empty() {
+            warn!(
+                unknown = ?unknown,
+                "Discovery query rejected: unknown parameters"
+            );
+            return unknown_params_response(&unknown);
+        }
+    }
+
     debug!(
         limit = params.limit,
         offset = params.offset,
@@ -6128,5 +6236,193 @@ mod owner_scan_tests {
         // still be reachable within the batch ceiling.
         let base_registry_size: u64 = 58_400;
         assert!(base_registry_size.div_ceil(OWNER_SCAN_BATCH) <= OWNER_SCAN_MAX_BATCHES);
+    }
+}
+
+#[cfg(test)]
+mod discovery_query_tests {
+    use super::*;
+
+    /// The papercut this rejection exists for: `q` filters server-side, but
+    /// `search` used to be accepted and ignored, so the caller got the whole
+    /// unfiltered page back and could not tell.
+    #[test]
+    fn rejects_the_parameter_that_used_to_be_ignored() {
+        assert_eq!(unknown_discovery_params("limit=3&search=logs"), ["search"]);
+        assert_eq!(discovery_param_hint("search"), Some("q"));
+    }
+
+    #[test]
+    fn accepts_every_documented_parameter() {
+        let raw = "limit=10&offset=0&category=finance&network=eip155:8453\
+                   &provider=tenjin&tag=market-data&source=self_registered\
+                   &sourceFacilitator=ultravioleta&health=alive&tier=vip&q=logs";
+        assert!(unknown_discovery_params(raw).is_empty());
+    }
+
+    #[test]
+    fn accepts_an_empty_query_string() {
+        assert!(unknown_discovery_params("").is_empty());
+    }
+
+    /// Parameter names are case-sensitive on the wire; only the hint lookup
+    /// is case-insensitive.
+    #[test]
+    fn rejects_a_miscased_parameter_but_still_points_at_the_right_one() {
+        assert_eq!(unknown_discovery_params("Limit=3"), ["Limit"]);
+        assert_eq!(discovery_param_hint("Search"), Some("q"));
+        assert_eq!(
+            discovery_param_hint("source_facilitator"),
+            Some("sourceFacilitator")
+        );
+    }
+
+    #[test]
+    fn reports_each_rejected_parameter_once_in_order() {
+        assert_eq!(
+            unknown_discovery_params("search=a&limit=1&page=2&search=b"),
+            ["search", "page"]
+        );
+    }
+
+    #[test]
+    fn decodes_percent_encoded_parameter_names() {
+        // `%71` is `q`, which is valid and must not be rejected.
+        assert!(unknown_discovery_params("%71=logs").is_empty());
+    }
+
+    #[test]
+    fn a_valueless_parameter_is_still_a_parameter() {
+        assert_eq!(unknown_discovery_params("search"), ["search"]);
+    }
+
+    #[test]
+    fn hints_only_when_a_single_replacement_is_obvious() {
+        assert_eq!(discovery_param_hint("q"), None);
+        assert_eq!(discovery_param_hint("wat"), None);
+        assert_eq!(discovery_param_hint("page"), Some("offset"));
+        assert_eq!(discovery_param_hint("per_page"), Some("limit"));
+        assert_eq!(discovery_param_hint("status"), Some("health"));
+        assert_eq!(discovery_param_hint("curation"), Some("tier"));
+    }
+
+    /// The names come from an unauthenticated caller and land in a response
+    /// body, so both the count and each name are bounded.
+    #[test]
+    fn caps_what_is_echoed_back() {
+        let many: Vec<String> = (0..20).map(|i| format!("bogus{i}")).collect();
+        let response = unknown_params_response(&many);
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let long = vec!["x".repeat(500)];
+        let capped: String = long[0].chars().take(MAX_REPORTED_PARAM_LEN).collect();
+        assert_eq!(capped.len(), MAX_REPORTED_PARAM_LEN);
+        assert_eq!(
+            unknown_params_response(&long).status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    /// A caller reading `supported` should be able to send every name back
+    /// unchanged and be accepted.
+    #[test]
+    fn the_advertised_parameter_list_is_self_consistent() {
+        let raw = DISCOVERY_QUERY_PARAMS
+            .iter()
+            .map(|name| format!("{name}=x"))
+            .collect::<Vec<_>>()
+            .join("&");
+        assert!(unknown_discovery_params(&raw).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod discovery_handler_tests {
+    use super::*;
+
+    fn default_params() -> DiscoveryQueryParams {
+        DiscoveryQueryParams {
+            limit: 10,
+            offset: 0,
+            category: None,
+            network: None,
+            provider: None,
+            tag: None,
+            source: None,
+            source_facilitator: None,
+            health: None,
+            tier: None,
+            q: None,
+        }
+    }
+
+    async fn list(raw_query: &str) -> (StatusCode, serde_json::Value) {
+        let registry = Arc::new(DiscoveryRegistry::new());
+        let response = get_discovery_resources(
+            State(registry),
+            RawQuery(Some(raw_query.to_string())),
+            Query(default_params()),
+        )
+        .await
+        .into_response();
+
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .expect("response body");
+        let body = serde_json::from_slice(&bytes).expect("json body");
+        (status, body)
+    }
+
+    /// The exact request that used to come back as an unfiltered page.
+    #[tokio::test]
+    async fn search_is_rejected_and_points_at_q() {
+        let (status, body) = list("limit=3&search=logs").await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"], "unknown query parameter: search");
+        assert_eq!(body["hint"], "did you mean q?");
+        assert!(body["supported"]
+            .as_array()
+            .expect("supported list")
+            .contains(&json!("q")));
+    }
+
+    #[tokio::test]
+    async fn a_supported_query_still_lists() {
+        let (status, body) = list("limit=10&offset=0&q=logs&health=alive").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(body["items"].is_array());
+        assert_eq!(body["pagination"]["total"], 0);
+    }
+
+    #[tokio::test]
+    async fn an_empty_query_string_still_lists() {
+        let (status, body) = list("").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(body["items"].is_array());
+    }
+
+    /// No hint when the intent is not obvious, but still a 400 rather than
+    /// silence.
+    #[tokio::test]
+    async fn an_unrecognizable_parameter_is_rejected_without_a_hint() {
+        let (status, body) = list("wat=1").await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"], "unknown query parameter: wat");
+        assert!(body["hint"].is_null());
+    }
+
+    #[tokio::test]
+    async fn several_rejected_parameters_are_listed_together() {
+        let (status, body) = list("search=a&page=2").await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"], "unknown query parameters: search, page");
+        // Ambiguous: two rejects with two different replacements, no hint.
+        assert!(body["hint"].is_null());
     }
 }

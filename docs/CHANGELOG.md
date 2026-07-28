@@ -1,5 +1,35 @@
 # Changelog
 
+## [1.59.4] - 2026-07-28
+
+### Fix — four dead block explorers reached the public landing page
+
+`config/supported_tokens.json` is the JSON source of truth other projects sync
+their explorer links from, and four of its entries no longer resolved. Two of
+them were also hardcoded as clickable links on the landing page, so a real
+settlement looked fabricated when the operator tried to open its receipt.
+
+| Network | Was | Now |
+|---|---|---|
+| monad (143) | `monad.socialscan.io` — 429 always | `monadscan.com` |
+| skale-base (1187947933) | `skale-base.explorer.skalenodes.com` — no DNS | `skale-base-explorer.skalenodes.com` |
+| hyperevm (999) | `purrsec.com` — 404 | `hyperevmscan.io` |
+| skale-base-sepolia | `base-sepolia-testnet.skalenodes.com` — 404 | `base-sepolia-testnet-explorer.skalenodes.com` |
+
+Every domain was checked with a browser user-agent, and the mainnets with a real
+address. `monadscan.com` and `skale-base-explorer` are also the chainlist
+canonical explorers for those chain IDs, and `hyperevmscan.io` was already in
+`static/index.html` — the JSON had drifted from the HTML in the same repo.
+
+Left alone deliberately: `testnet.purrsec.com` 404s but `testnet.hyperevmscan.io`
+does not resolve, so there is no verified improvement to make. Avalanche and BSC
+return 403 to curl, which is Cloudflare's anti-bot check, not a dead explorer —
+they open fine in a browser.
+
+`static/index.html` is baked into the binary via `include_str!`, so the landing
+page kept serving the dead links until this rebuild. Reported from KarmaCadabra,
+fixed in `ff3c4123`.
+
 ## [1.59.3] - 2026-07-27
 
 ### Fix — an ignored query parameter is not a search

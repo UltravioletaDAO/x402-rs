@@ -105,7 +105,8 @@ como lo reportó el operador ("¿alucinaste las transacciones?").
 
 **Commits:** `cfc35491` (plan) · `dc52bdc1` (bus) · `be9a0f38` (endpoint + hook)
 **Plan completo:** `docs/plans/traffic-events-stream.md`
-**Estado:** ✅ implementado, compila, `cargo test --lib` = **305 passed / 0 failed** · ⏳ **sin desplegar**
+**Estado:** ✅ **DESPLEGADO en v1.59.5** por la sesión principal, con tres correcciones
+sobre lo entregado (ver *Revisión* al final). `cargo test --lib` = **308 passed / 0 failed**.
 
 ## Qué se agregó
 
@@ -133,6 +134,7 @@ Un suscriptor `Lagged` pierde mensajes y **sigue conectado** en vez de tirar la 
 | `X402_EVENTS_ALLOWLIST` | *(vacío)* | direcciones por coma — aquí irían las wallets de KK |
 | `X402_EVENTS_DETAIL` | `full` | `minimal` = solo `{ts, kind, network, ok}` |
 | `X402_EVENTS_BUFFER` | `256` | |
+| `X402_EVENTS_MAX_SUBSCRIBERS` | `64` | Al tope, `/events` da 503 + `Retry-After` |
 
 ⚠️ **Decisión consciente de Saul:** el default es `full` (payer + tx + monto) y `all`.
 Se le señaló que ~la mayoría del tráfico NO es de KarmaCadabra y que eso difunde en vivo
@@ -154,3 +156,41 @@ El dashboard ya consume el stream (`EventSource`) y pinta cada evento como una *
 ámbar** que cae sobre la placa de su cadena — visualmente distinta de las pepitas de KK,
 porque ese tráfico es del riel, no de nuestros agentes. Degrada en silencio mientras el
 endpoint no exista.
+
+---
+
+## Revisión de la sesión principal antes de desplegar (v1.59.5)
+
+Tres cosas se corrigieron sobre lo entregado. Ninguna invalida el diseño — el invariante
+del camino del dinero estaba bien planteado y se respetó.
+
+1. **`network` viajaba mal formado.** El evento usaba `format!("{:?}")`, que imprime el
+   nombre de la *variante* del enum, no el slug. Para `Base` coincide por casualidad
+   (`base`), pero `SkaleBase` salía como `skalebase` y `BaseSepolia` como `basesepolia` —
+   nombres que no existen en `/supported` ni corresponden a ninguna placa. Como
+   `facilitatorWave()` hace `nodeIndex.get("chain:"+network)` y descarta lo que no
+   reconoce ("unknown chain: no guessing"), esas ondas se habrían perdido **en silencio**,
+   que es justo el modo de fallo que hace parecer que el stream "casi funciona". Ahora usa
+   `Display`, el slug canónico que ya hablan `/supported` y el feed de trades.
+
+2. **El rate limit y el tope de suscriptores no estaban.** El propio plan los lista como
+   invariante **no negociable** (`## Invariantes de seguridad`), pero no se implementaron.
+   `/events` es público, sin auth y de conexión larga, sobre la MISMA task que liquida
+   pagos: `publish()` no puede frenarse por un observador, pero N observadores sí podían
+   agotar el proceso sin tocar nunca el camino del dinero. Ahora hay governor
+   (1 token/2s, burst 10, `SmartIpKeyExtractor` como el resto) y admisión tope 64
+   (`X402_EVENTS_MAX_SUBSCRIBERS`) que responde 503 + `Retry-After` en vez de aceptar.
+
+3. **Faltaban el hook de `verify` y el OpenAPI.** F1 dice "hook en `verify`/`settle`" y el
+   dashboard ya registra `addEventListener("verify", …)`, pero solo `settle` publicaba: ese
+   listener era código muerto. Un `verify` publica sin `tx` (no se liquidó nada todavía;
+   inventar un hash haría mentir al stream). Y `CLAUDE.md` exige documentar todo endpoint
+   nuevo en `src/openapi.rs` — `/events` ya sale en `/docs`.
+
+**Sobre el default `full` + `all`:** se respetó la decisión de Saul, no se cambió. Queda
+dicho una vez más para que no se pierda: el stream difunde payer, tx y monto de **todos**
+los clientes del facilitador, no solo de KK. `X402_EVENTS_DETAIL=minimal` lo apaga sin
+tocar código.
+
+**F3 sigue abierto tal cual:** con `desired_count > 1` cada cliente pega a una instancia y
+la ola sub-reporta. Hoy hay 1 task, así que no aplica.

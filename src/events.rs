@@ -32,12 +32,20 @@ const ENV_SCOPE: &str = "X402_EVENTS_SCOPE";
 const ENV_ALLOWLIST: &str = "X402_EVENTS_ALLOWLIST";
 const ENV_DETAIL: &str = "X402_EVENTS_DETAIL";
 const ENV_BUFFER: &str = "X402_EVENTS_BUFFER";
+const ENV_MAX_SUBSCRIBERS: &str = "X402_EVENTS_MAX_SUBSCRIBERS";
 
 const DEFAULT_BUFFER: usize = 256;
+/// Concurrent SSE subscribers allowed. `/events` is public and unauthenticated, and
+/// every subscriber is a long-lived connection on the SAME task that settles payments,
+/// so an uncapped stream is a way to starve the money path without ever touching it.
+const DEFAULT_MAX_SUBSCRIBERS: usize = 64;
 
 /// Epoch millis UTC — no date crate needed, and the dashboard already normalises it.
 pub fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// How much of each event reaches subscribers.
@@ -97,20 +105,35 @@ pub struct EventBus {
     enabled: bool,
     scope: Scope,
     detail: Detail,
+    max_subscribers: usize,
 }
 
 impl EventBus {
     /// Build from env. Never fails: an unparseable value falls back to the safe default.
     pub fn from_env() -> Self {
         let enabled = !matches!(
-            env::var(ENV_ENABLED).unwrap_or_default().trim().to_ascii_lowercase().as_str(),
+            env::var(ENV_ENABLED)
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase()
+                .as_str(),
             "0" | "false" | "no" | "off"
         );
-        let detail = match env::var(ENV_DETAIL).unwrap_or_default().trim().to_ascii_lowercase().as_str() {
+        let detail = match env::var(ENV_DETAIL)
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
             "minimal" | "min" => Detail::Minimal,
             _ => Detail::Full,
         };
-        let scope = match env::var(ENV_SCOPE).unwrap_or_default().trim().to_ascii_lowercase().as_str() {
+        let scope = match env::var(ENV_SCOPE)
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
             "allowlist" | "allow" => {
                 let list: Vec<String> = env::var(ENV_ALLOWLIST)
                     .unwrap_or_default()
@@ -127,9 +150,20 @@ impl EventBus {
             .and_then(|v| v.trim().parse::<usize>().ok())
             .filter(|n| *n > 0)
             .unwrap_or(DEFAULT_BUFFER);
+        let max_subscribers = env::var(ENV_MAX_SUBSCRIBERS)
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .filter(|n| *n > 0)
+            .unwrap_or(DEFAULT_MAX_SUBSCRIBERS);
 
         let (tx, _rx) = broadcast::channel(buffer);
-        Self { tx, enabled, scope, detail }
+        Self {
+            tx,
+            enabled,
+            scope,
+            detail,
+            max_subscribers,
+        }
     }
 
     /// Is the stream serving at all? `false` → `/events` 404s and nothing is published.
@@ -137,9 +171,32 @@ impl EventBus {
         self.enabled
     }
 
-    /// A new SSE subscriber. Lagging subscribers lose messages, never block producers.
-    pub fn subscribe(&self) -> broadcast::Receiver<TrafficEvent> {
+    /// A new SSE subscriber, or `None` when the stream is already at capacity.
+    ///
+    /// Lagging subscribers lose messages, never block producers. The cap is the other
+    /// half of that promise: `publish()` cannot be slowed by an observer, but an
+    /// unbounded number of observers could still exhaust the task that settles
+    /// payments, so admission is bounded here (`X402_EVENTS_MAX_SUBSCRIBERS`).
+    ///
+    /// Deliberately a SOFT cap: two connections racing the check can both pass, which
+    /// overshoots by a handful — never by an order of magnitude, which is what matters.
+    pub fn try_subscribe(&self) -> Option<broadcast::Receiver<TrafficEvent>> {
+        if self.tx.receiver_count() >= self.max_subscribers {
+            return None;
+        }
+        Some(self.tx.subscribe())
+    }
+
+    /// Uncapped subscribe. Tests only — production admission goes through
+    /// [`EventBus::try_subscribe`] so the cap cannot be bypassed by accident.
+    #[cfg(test)]
+    fn subscribe(&self) -> broadcast::Receiver<TrafficEvent> {
         self.tx.subscribe()
+    }
+
+    /// Concurrent subscribers allowed before `/events` starts shedding connections.
+    pub fn max_subscribers(&self) -> usize {
+        self.max_subscribers
     }
 
     /// Current subscriber count (for metrics / diagnostics).
@@ -202,8 +259,18 @@ mod tests {
     }
 
     fn bus(enabled: bool, scope: Scope, detail: Detail) -> EventBus {
+        bus_capped(enabled, scope, detail, DEFAULT_MAX_SUBSCRIBERS)
+    }
+
+    fn bus_capped(enabled: bool, scope: Scope, detail: Detail, max_subscribers: usize) -> EventBus {
         let (tx, _rx) = broadcast::channel(16);
-        EventBus { tx, enabled, scope, detail }
+        EventBus {
+            tx,
+            enabled,
+            scope,
+            detail,
+            max_subscribers,
+        }
     }
 
     /// The money path must survive publishing into the void.
@@ -229,7 +296,10 @@ mod tests {
         let mut rx = b.subscribe();
 
         b.publish(ev(Some("0xAAA"))); // same address, different case
-        assert_eq!(rx.try_recv().unwrap().payer.unwrap().to_ascii_lowercase(), "0xaaa");
+        assert_eq!(
+            rx.try_recv().unwrap().payer.unwrap().to_ascii_lowercase(),
+            "0xaaa"
+        );
 
         b.publish(ev(Some("0xbbb"))); // not in the list
         assert!(rx.try_recv().is_err());
@@ -238,7 +308,11 @@ mod tests {
     /// An allowlist that lets through what it cannot identify is not an allowlist.
     #[test]
     fn allowlist_fails_closed_when_there_is_no_payer() {
-        let b = bus(true, Scope::Allowlist(Arc::new(vec!["0xaaa".into()])), Detail::Full);
+        let b = bus(
+            true,
+            Scope::Allowlist(Arc::new(vec!["0xaaa".into()])),
+            Detail::Full,
+        );
         let mut rx = b.subscribe();
         b.publish(ev(None));
         assert!(rx.try_recv().is_err());
@@ -250,9 +324,14 @@ mod tests {
         let mut rx = b.subscribe();
         b.publish(ev(Some("0xabc")));
         let got = rx.try_recv().unwrap();
-        assert!(got.payer.is_none() && got.tx.is_none() && got.amount.is_none() && got.asset.is_none());
+        assert!(
+            got.payer.is_none() && got.tx.is_none() && got.amount.is_none() && got.asset.is_none()
+        );
         // the shape that makes the wave still survives
-        assert_eq!((got.kind, got.network.as_str(), got.ok), ("settle", "base", true));
+        assert_eq!(
+            (got.kind, got.network.as_str(), got.ok),
+            ("settle", "base", true)
+        );
     }
 
     #[test]
@@ -262,5 +341,42 @@ mod tests {
         assert!(b.enabled());
         assert_eq!(b.scope, Scope::All);
         assert_eq!(b.detail, Detail::Full);
+        assert_eq!(b.max_subscribers(), DEFAULT_MAX_SUBSCRIBERS);
+    }
+
+    /// An unauthenticated public endpoint must not accept unbounded connections on the
+    /// same task that settles payments.
+    #[test]
+    fn try_subscribe_stops_admitting_at_the_cap() {
+        let b = bus_capped(true, Scope::All, Detail::Full, 2);
+        let _a = b.try_subscribe().expect("first subscriber admitted");
+        let _c = b.try_subscribe().expect("second subscriber admitted");
+        assert!(
+            b.try_subscribe().is_none(),
+            "third must be shed, not queued"
+        );
+        assert_eq!(b.subscribers(), 2);
+    }
+
+    /// Shedding is not a permanent close: a freed slot must be reusable, or one burst
+    /// of connections would take the stream down until the next deploy.
+    #[test]
+    fn a_dropped_subscriber_frees_its_slot() {
+        let b = bus_capped(true, Scope::All, Detail::Full, 1);
+        let first = b.try_subscribe().expect("first subscriber admitted");
+        assert!(b.try_subscribe().is_none());
+        drop(first);
+        assert!(b.try_subscribe().is_some(), "the slot must come back");
+    }
+
+    /// The cap bounds observers, never producers: publishing at capacity is still a
+    /// no-op for the money path.
+    #[test]
+    fn publishing_while_at_capacity_still_cannot_fail() {
+        let b = bus_capped(true, Scope::All, Detail::Full, 1);
+        let mut rx = b.try_subscribe().unwrap();
+        assert!(b.try_subscribe().is_none());
+        b.publish(ev(Some("0xabc"))); // must not panic
+        assert_eq!(rx.try_recv().unwrap().kind, "settle");
     }
 }

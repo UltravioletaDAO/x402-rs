@@ -156,6 +156,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let event_bus = Arc::new(events::EventBus::from_env());
     tracing::info!(
         enabled = event_bus.enabled(),
+        max_subscribers = event_bus.max_subscribers(),
         "traffic event stream (GET /events)"
     );
 
@@ -463,6 +464,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .expect("discovery_read governor config must be valid"),
     );
 
+    // /events is a public, unauthenticated, long-lived connection on the same task that
+    // settles payments. The concurrent-subscriber cap (X402_EVENTS_MAX_SUBSCRIBERS) bounds
+    // how many can be held at once; this bounds how fast they can be opened, so a
+    // reconnect loop cannot churn through admission slots. A browser EventSource
+    // reconnects rarely, so 1 token every 2s with burst 10 is invisible to real clients.
+    let events_config = Arc::new(
+        GovernorConfigBuilder::default()
+            .per_second(2)
+            .burst_size(10)
+            .key_extractor(SmartIpKeyExtractor)
+            .finish()
+            .expect("events governor config must be valid"),
+    );
+
     let verify_settle = handlers::verify_settle_routes()
         .with_state(axum_state.clone())
         .layer(GovernorLayer::new(verify_settle_config));
@@ -510,7 +525,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .layer(GovernorLayer::new(discovery_read_config)),
         )
         .merge(openapi::swagger_routes())
-        .merge(handlers::events_routes().with_state(Arc::clone(&event_bus)))
+        .merge(
+            handlers::events_routes()
+                .with_state(Arc::clone(&event_bus))
+                .layer(GovernorLayer::new(events_config)),
+        )
         // Share discovery registry with all handlers via Extension for settlement tracking
         .layer(Extension(discovery_registry))
         // ...and the event bus, so post_settle can publish after a settle resolves

@@ -1,5 +1,54 @@
 # Changelog
 
+## [1.59.5] - 2026-07-28
+
+### Feature — `GET /events`, a live traffic stream (Server-Sent Events)
+
+One SSE message per `verify` / `settle`, so an observer can render facilitator traffic
+without scraping CloudWatch. Built for KarmaCadabra's observatory but deliberately
+generic: `src/events.rs` knows nothing about any client — filtering is an address
+allowlist fed by env.
+
+**The money path never blocks on the stream.** The bus is a lossy `tokio::sync::broadcast`
+channel: `publish()` returns `()`, never propagates an error, and runs only after the
+operation already resolved. A subscriber that falls behind loses events and stays
+connected rather than applying back-pressure. Zero subscribers is the normal case, not an
+error.
+
+Config (all optional, safe defaults, an unparseable value falls back rather than failing):
+
+| Variable | Default | Notes |
+|---|---|---|
+| `X402_EVENTS_ENABLED` | `true` | `false` → `/events` 404s and nothing is published |
+| `X402_EVENTS_SCOPE` | `all` | `allowlist` = only payers in the list, and it fails **closed** |
+| `X402_EVENTS_ALLOWLIST` | *(empty)* | comma-separated addresses, case-insensitive |
+| `X402_EVENTS_DETAIL` | `full` | `minimal` = only `{ts, kind, network, ok}` |
+| `X402_EVENTS_BUFFER` | `256` | broadcast channel capacity |
+| `X402_EVENTS_MAX_SUBSCRIBERS` | `64` | at the cap `/events` returns 503 + `Retry-After` |
+
+Operators should know what the default means: with `scope=all` + `detail=full` the stream
+is public and carries the payer, tx hash and amount of **every** client of this
+facilitator. Both dials narrow it without a code change.
+
+### Fix — three defects in the first pass, caught in review before deploy
+
+- **The event's `network` was not a network name.** It was built with `format!("{:?}")`,
+  which prints the enum *variant*, so `SkaleBase` went out as `skalebase` and
+  `BaseSepolia` as `basesepolia` — names that match nothing in `/supported`. A consumer
+  that maps by slug drops those events silently, which looks like a stream that almost
+  works. Now uses `Display`, the canonical slug.
+- **The rate limit and subscriber cap the plan called non-negotiable were missing.**
+  `/events` is public, unauthenticated and long-lived, on the same task that settles
+  payments — `publish()` cannot be slowed by one observer, but unbounded observers could
+  starve the process without ever touching the money path. Now behind the same
+  `SmartIpKeyExtractor` governor as the rest (1 token/2s, burst 10) with bounded
+  admission.
+- **`verify` never published**, though the design lists `verify`/`settle` and consumers
+  already listen for it. A verify publishes without a `tx`: nothing settled yet, and
+  inventing a hash would make the stream lie.
+
+`/events` is documented in `src/openapi.rs`, so it shows up in `/docs`.
+
 ## [1.59.4] - 2026-07-28
 
 ### Fix — four dead block explorers reached the public landing page

@@ -225,7 +225,23 @@ pub async fn get_events(
     if !bus.enabled() {
         return (StatusCode::NOT_FOUND, "events stream disabled").into_response();
     }
-    let stream = BroadcastStream::new(bus.subscribe()).filter_map(|res| match res {
+    // Public, unauthenticated, and long-lived: admission is capped so a burst of
+    // observers cannot exhaust the task that settles payments. Shedding here is a
+    // plain 503 the client can retry — `EventSource` reconnects on its own.
+    let Some(rx) = bus.try_subscribe() else {
+        tracing::warn!(
+            subscribers = bus.subscribers(),
+            max = bus.max_subscribers(),
+            "events stream at capacity, shedding subscriber"
+        );
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [(axum::http::header::RETRY_AFTER, "30")],
+            "events stream at capacity",
+        )
+            .into_response();
+    };
+    let stream = BroadcastStream::new(rx).filter_map(|res| match res {
         Ok(ev) => Event::default()
             .event(ev.kind)
             .json_data(&ev)
@@ -1396,6 +1412,7 @@ where
 #[instrument(skip_all)]
 pub async fn post_verify<A>(
     State(facilitator): State<A>,
+    Extension(event_bus): Extension<Arc<crate::events::EventBus>>,
     headers: HeaderMap,
     raw_body: Bytes,
 ) -> impl IntoResponse
@@ -1711,7 +1728,33 @@ where
 
     // Standard exact scheme - process locally
     match facilitator.verify(&v1_request).await {
-        Ok(valid_response) => (StatusCode::OK, Json(valid_response)).into_response(),
+        Ok(valid_response) => {
+            // Live traffic stream — after the verification resolved, best-effort and
+            // infallible by design (see src/events.rs). A verify carries no tx hash:
+            // nothing has been settled yet, and inventing one would make the stream lie.
+            let (ok, payer) = match &valid_response {
+                VerifyResponse::Valid { payer } => (true, Some(payer.to_string())),
+                VerifyResponse::Invalid { payer, .. } => {
+                    (false, payer.as_ref().map(|p| p.to_string()))
+                }
+            };
+            event_bus.publish(crate::events::TrafficEvent {
+                ts: crate::events::now_ms(),
+                kind: "verify",
+                network: v1_request.payment_requirements.network.to_string(),
+                ok,
+                payer,
+                tx: None,
+                amount: Some(
+                    v1_request
+                        .payment_requirements
+                        .max_amount_required
+                        .to_string(),
+                ),
+                asset: Some(v1_request.payment_requirements.asset.to_string()),
+            });
+            (StatusCode::OK, Json(valid_response)).into_response()
+        }
         Err(error) => {
             tracing::warn!(
                 error = ?error,
@@ -2420,7 +2463,11 @@ where
             event_bus.publish(crate::events::TrafficEvent {
                 ts: crate::events::now_ms(),
                 kind: "settle",
-                network: format!("{:?}", valid_response.network).to_ascii_lowercase(),
+                // `Display`, NOT `{:?}`: Debug prints the variant name, so multi-word
+                // networks came out as `skalebase` / `basesepolia` — names that match
+                // nothing in `/supported` and no plate in the observatory. Display is
+                // the canonical slug the rest of the facilitator already speaks.
+                network: valid_response.network.to_string(),
                 ok: valid_response.success,
                 payer: Some(valid_response.payer.to_string()),
                 tx: valid_response.transaction.as_ref().map(|t| t.to_string()),

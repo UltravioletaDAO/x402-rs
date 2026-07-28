@@ -128,6 +128,7 @@ a liveness `health` status from periodic probing, and a curated `tier`
         // Discovery endpoints
         path_supported,
         path_version,
+        path_events,
         // ERC-8004 endpoints
         path_register_get,
         path_register_post,
@@ -574,6 +575,43 @@ async fn path_supported() {}
     )
 )]
 async fn path_version() {}
+
+#[utoipa::path(
+    get,
+    path = "/events",
+    tag = "Discovery",
+    summary = "Live traffic stream (Server-Sent Events)",
+    description = "Streams one Server-Sent Event per facilitator operation, so observers can \
+render live traffic without scraping logs. The SSE `event:` name is the operation \
+(`verify` or `settle`) and `data:` is the JSON payload below; a `:keepalive` comment every \
+15s holds the connection open through the load balancer.\n\n\
+`network` is the facilitator's canonical slug, the same one `/supported` uses. A `settle` \
+carries the transaction hash; a `verify` has none, because nothing has settled yet.\n\n\
+The stream is lossy on purpose: it can never slow down or fail a payment, so a subscriber \
+that falls behind loses events and stays connected. It is also bounded — the endpoint \
+returns **503** with `Retry-After` once the concurrent-subscriber cap is reached, and **404** \
+when the operator has disabled it with `X402_EVENTS_ENABLED=false`.\n\n\
+Operators can narrow what is published without a code change: `X402_EVENTS_DETAIL=minimal` \
+drops `payer`/`tx`/`amount`/`asset`, and `X402_EVENTS_SCOPE=allowlist` restricts the stream \
+to payers in `X402_EVENTS_ALLOWLIST`.",
+    responses(
+        (status = 200, description = "SSE stream of traffic events (`text/event-stream`)", body = Object,
+            example = json!({
+                "ts": 1769000000000_u64,
+                "kind": "settle",
+                "network": "base",
+                "ok": true,
+                "payer": "0x...",
+                "tx": "0x...",
+                "amount": "20000",
+                "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+            })
+        ),
+        (status = 404, description = "Stream disabled by the operator (X402_EVENTS_ENABLED=false)"),
+        (status = 503, description = "Concurrent-subscriber cap reached; retry after the `Retry-After` delay")
+    )
+)]
+async fn path_events() {}
 
 // ============================================================================
 // ERC-8004 Endpoints

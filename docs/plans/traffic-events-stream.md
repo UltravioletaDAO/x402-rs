@@ -42,6 +42,7 @@ sirve para tiempo real.
 | `X402_EVENTS_ALLOWLIST` | *(vacío)* | Direcciones separadas por coma (case-insensitive). Aquí irían las wallets del swarm KK |
 | `X402_EVENTS_DETAIL` | `full` | `full` = payer + tx + monto · `minimal` = solo `{ts, kind, network, ok}` |
 | `X402_EVENTS_BUFFER` | `256` | Capacidad del canal broadcast |
+| `X402_EVENTS_MAX_SUBSCRIBERS` | `64` | Suscriptores concurrentes admitidos. Al tope, `/events` responde 503 + `Retry-After` |
 
 ## Contrato del evento
 
@@ -67,11 +68,18 @@ cada 15s mantiene viva la conexión a través del ALB.
 
 ## Fases
 
-### F1 · Facilitador (este repo)
+### F1 · Facilitador (este repo) — COMPLETO, desplegado en v1.59.5
 - `src/events.rs`: `TrafficEvent`, `EventBus` (broadcast + config desde env), `publish()`.
 - Hook en `verify`/`settle` — al final, best-effort.
 - `GET /events` → `Sse<impl Stream>` con keepalive.
-- Tests: el bus no bloquea sin suscriptores; `allowlist` filtra; `minimal` no filtra campos sensibles.
+- Rate limit (`tower_governor`, 1 token/2s, burst 10) + tope de suscriptores concurrentes
+  con 503 al llegar: el invariante de arriba, que la primera pasada dejó sin implementar.
+- `network` sale por `Display` (el slug canónico), **no** por `{:?}`: Debug imprime el
+  nombre de la variante, así que `SkaleBase` viajaba como `skalebase` y no correspondía a
+  ninguna placa ni a ningún nombre de `/supported`.
+- Documentado en `src/openapi.rs` (`/docs`).
+- Tests: el bus no bloquea sin suscriptores; `allowlist` filtra; `minimal` no filtra campos
+  sensibles; el tope corta, libera slot al desconectar y nunca afecta a `publish()`.
 
 ### F2 · Dashboard KarmaCadabra (repo karmakadabra)
 - `EventSource("https://facilitator.ultravioletadao.xyz/events")` en `live.js` → bus.

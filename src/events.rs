@@ -22,6 +22,7 @@
 
 use std::env;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use tokio::sync::broadcast;
@@ -33,6 +34,11 @@ const ENV_DETAIL: &str = "X402_EVENTS_DETAIL";
 const ENV_BUFFER: &str = "X402_EVENTS_BUFFER";
 
 const DEFAULT_BUFFER: usize = 256;
+
+/// Epoch millis UTC — no date crate needed, and the dashboard already normalises it.
+pub fn now_ms() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+}
 
 /// How much of each event reaches subscribers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,8 +61,8 @@ pub enum Scope {
 /// One facilitator operation, as seen by an observer.
 #[derive(Debug, Clone, Serialize)]
 pub struct TrafficEvent {
-    /// RFC3339 UTC.
-    pub ts: String,
+    /// Epoch milliseconds UTC.
+    pub ts: u64,
     /// `"verify"` or `"settle"`.
     pub kind: &'static str,
     /// Network slug as the facilitator names it (`base`, `celo`, `skale`…).
@@ -184,7 +190,7 @@ mod tests {
 
     fn ev(payer: Option<&str>) -> TrafficEvent {
         TrafficEvent {
-            ts: "2026-07-28T00:00:00Z".into(),
+            ts: 1_769_000_000_000,
             kind: "settle",
             network: "base".into(),
             ok: true,

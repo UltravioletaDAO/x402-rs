@@ -67,6 +67,7 @@ mod discovery_security;
 mod discovery_store;
 mod erc8004;
 mod escrow;
+mod events;
 mod facilitator;
 mod facilitator_local;
 mod fhe_proxy;
@@ -149,6 +150,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let facilitator = FacilitatorLocal::new(provider_cache, compliance_checker);
     let axum_state = Arc::new(facilitator);
+
+    // Live traffic stream (GET /events, SSE). Lossy broadcast: an observer can never
+    // slow down or fail a payment. Config + kill switch via X402_EVENTS_* env.
+    let event_bus = Arc::new(events::EventBus::from_env());
+    tracing::info!(
+        enabled = event_bus.enabled(),
+        "traffic event stream (GET /events)"
+    );
 
     // Initialize Bazaar discovery registry with optional S3 persistence
     tracing::info!("Initializing Bazaar discovery registry...");
@@ -501,8 +510,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .layer(GovernorLayer::new(discovery_read_config)),
         )
         .merge(openapi::swagger_routes())
+        .merge(handlers::events_routes().with_state(Arc::clone(&event_bus)))
         // Share discovery registry with all handlers via Extension for settlement tracking
         .layer(Extension(discovery_registry))
+        // ...and the event bus, so post_settle can publish after a settle resolves
+        .layer(Extension(event_bus))
         .layer(telemetry.http_tracing())
         // CORS stays permissive — facilitator is intentionally public.
         // First-party callers: photo2melee, ExecutionMarket, meshrelay, plus arbitrary third

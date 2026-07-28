@@ -203,6 +203,43 @@ where
 /// is split out into [`discovery_register_routes`] so it can carry a stricter
 /// rate limit (it triggers DNS lookups + outbound fetches against
 /// attacker-supplied URLs).
+/// Live traffic stream. Its own router + state so the generic `Facilitator` state is
+/// untouched (same shape as `discovery_routes`).
+pub fn events_routes() -> Router<Arc<crate::events::EventBus>> {
+    Router::new().route("/events", get(get_events))
+}
+
+/// `GET /events` — Server-Sent Events, one message per facilitator operation.
+///
+/// SSE (not WebSocket) on purpose: the flow is one-way, `EventSource` reconnects on its
+/// own in the browser, and a plain GET traverses the ALB without an upgrade handshake.
+/// A lagging subscriber loses messages rather than applying back-pressure — the money
+/// path must never wait on an observer.
+pub async fn get_events(
+    State(bus): State<Arc<crate::events::EventBus>>,
+) -> axum::response::Response {
+    use axum::response::sse::{Event, KeepAlive, Sse};
+    use tokio_stream::wrappers::BroadcastStream;
+    use tokio_stream::StreamExt as _;
+
+    if !bus.enabled() {
+        return (StatusCode::NOT_FOUND, "events stream disabled").into_response();
+    }
+    let stream = BroadcastStream::new(bus.subscribe()).filter_map(|res| match res {
+        Ok(ev) => Event::default()
+            .event(ev.kind)
+            .json_data(&ev)
+            .ok()
+            .map(Ok::<_, std::convert::Infallible>),
+        // Lagged(n): this subscriber fell behind and n events were dropped for it.
+        // Skip and keep the connection alive rather than tearing it down.
+        Err(_) => None,
+    });
+    Sse::new(stream)
+        .keep_alive(KeepAlive::new().interval(std::time::Duration::from_secs(15)))
+        .into_response()
+}
+
 pub fn discovery_routes() -> Router<Arc<DiscoveryRegistry>> {
     Router::new()
         .route("/discovery/resources", get(get_discovery_resources))
@@ -1803,6 +1840,7 @@ fn log_settle_deserialization_error(body_str: &str, e: &serde_json::Error) {
 pub async fn post_settle<A>(
     State(facilitator): State<A>,
     Extension(discovery_registry): Extension<Arc<DiscoveryRegistry>>,
+    Extension(event_bus): Extension<Arc<crate::events::EventBus>>,
     headers: HeaderMap,
     raw_body: Bytes,
 ) -> impl IntoResponse
@@ -2376,6 +2414,19 @@ where
     // Standard exact scheme - process locally
     match facilitator.settle(&body).await {
         Ok(valid_response) => {
+            // Live traffic stream — LAST thing after the settle resolved, best-effort and
+            // infallible by design (lossy broadcast; see src/events.rs). A subscriber can
+            // never slow down or fail a payment.
+            event_bus.publish(crate::events::TrafficEvent {
+                ts: crate::events::now_ms(),
+                kind: "settle",
+                network: format!("{:?}", valid_response.network).to_ascii_lowercase(),
+                ok: valid_response.success,
+                payer: Some(valid_response.payer.to_string()),
+                tx: valid_response.transaction.as_ref().map(|t| t.to_string()),
+                amount: Some(body.payment_requirements.max_amount_required.to_string()),
+                asset: Some(body.payment_requirements.asset.to_string()),
+            });
             // Log successful settlement with details
             if valid_response.success {
                 if let Some(ref tx_hash) = valid_response.transaction {

@@ -15368,6 +15368,7 @@ dependencies = [
  "sui-types",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-stream",
  "tokio-util",
  "tower-http 0.6.8",
  "tower_governor",

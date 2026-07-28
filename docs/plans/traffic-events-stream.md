@@ -93,11 +93,48 @@ cada 15s mantiene viva la conexión a través del ALB.
   sub-reporta. Opciones: documentarlo, o fan-out por Redis. **Hoy no aplica** (1 task).
 - Métricas del propio stream (suscriptores, eventos descartados).
 
+## Backlog
+
+### B1 · Emitir también las operaciones que FALLAN
+
+**Decisión de Saul (2026-07-28): por ahora NO. Queda anotado por si algún día lo queremos.**
+
+Hoy solo se publica desde la rama `Ok(...)` de `verify` y `settle`. Una operación que
+revienta sale por `Err(...)` y **no emite nada**. Consecuencia concreta: `ok:false` solo
+aparece cuando la operación se resolvió y dio negativa (`SettleResponse.success == false`,
+`VerifyResponse::Invalid`), nunca cuando falló de verdad.
+
+Probado empíricamente, no deducido: un `POST /verify` con la autorización expirada
+devuelve `InvalidTiming` por `Err`, y el stream no ve absolutamente nada.
+
+Por qué podría quererse algún día: para un panel de observabilidad, un settle que falla es
+justo lo que querés ver — un RPC caído o una firma mal formada son la señal, no el ruido.
+Con el diseño actual el observatorio pinta un riel que siempre se ve sano, porque los
+fallos son invisibles por construcción.
+
+Si se implementa, dos cosas que no se pueden pasar por alto:
+
+1. **No difundir el motivo del error tal cual.** Los `Err` llevan detalle interno
+   (direcciones, a veces URLs de RPC — ver `src/redact.rs`, que existe justamente porque
+   ya se filtraron claves de RPC en strings de error). El evento debería llevar una
+   categoría acotada, nunca el `Display` del error.
+2. **El invariante sigue mandando.** Publicar tiene que seguir siendo lo último y seguir
+   siendo infalible; un fallo no puede volverse más caro por estar siendo observado.
+
+Alternativa más barata si solo se busca visibilidad de salud: exponer contadores por
+métricas (F3) en vez de ampliar lo que el stream difunde.
+
 ## Criterio de "listo"
 
 1. `curl -N https://facilitator.ultravioletadao.xyz/events` imprime eventos reales según
-   ocurren (verificable contra `[SETTLEMENT]` en CloudWatch).
+   ocurren. Contrastar con el filtro `"POST /settle"` en CloudWatch — **no** con
+   `[SETTLEMENT]`, que no existe como marcador y devuelve 0 siempre.
 2. Con `X402_EVENTS_ENABLED=false` el endpoint da 404 y el facilitador sigue liquidando igual.
 3. Con `X402_EVENTS_SCOPE=allowlist` + las wallets de KK, solo aparecen settlements del swarm.
-4. En el observatorio, las ondas llegan a las placas de cadena correctas y el ritmo se
-   parece a los ~12/min medidos.
+4. En el observatorio, las ondas llegan a las placas de cadena correctas.
+
+**Ritmo real, medido 2026-07-28 (corrige el ~12/min que se venía repitiendo):** 467
+`POST /settle` en 6 h = **~1,3/min**, más 8 `verify` en las mismas 6 h. Es ~9x menos de lo
+que decía el handoff, y es **a ráfagas**: hubo tramos de 35 min con CERO settlements. Quien
+diseñe la UI tiene que asumir que el estado normal es "quieto" — escuchar 40 s y no ver
+nada es lo esperado, no un síntoma.

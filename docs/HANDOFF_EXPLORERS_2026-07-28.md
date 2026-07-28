@@ -1,4 +1,4 @@
-# Handoff — 4 block explorers muertos, corregidos · pendiente DEPLOY
+# Handoff — explorers muertos + stream `/events` · pendiente DEPLOY
 
 **Para:** la sesión principal del facilitador (x402-rs)
 **De:** una **sesión alterna** de Claude Code, trabajando desde el repo de
@@ -91,3 +91,60 @@ El docstring de `agents_sdk/networks.py` (KK) dice que los explorers se sincroni
 la que estaba mal: **verificar el dominio antes de propagar**. Un explorer muerto no
 falla ruidosamente — simplemente hace que una tx real parezca falsa, que es exactamente
 como lo reportó el operador ("¿alucinaste las transacciones?").
+
+
+---
+
+# ADENDA — Stream de tráfico en tiempo real (`GET /events`, SSE)
+
+**Commits:** `cfc35491` (plan) · `dc52bdc1` (bus) · `be9a0f38` (endpoint + hook)
+**Plan completo:** `docs/plans/traffic-events-stream.md`
+**Estado:** ✅ implementado, compila, `cargo test --lib` = **305 passed / 0 failed** · ⏳ **sin desplegar**
+
+## Qué se agregó
+
+`GET /events` — Server-Sent Events, un mensaje por operación del facilitador, para que
+el observatorio de KarmaCadabra pinte el tráfico en vivo sin raspar CloudWatch.
+
+- `src/events.rs` — bus `tokio::sync::broadcast` + config por env (6 tests).
+- `handlers::events_routes()` + `get_events` — router con estado propio, keepalive 15s.
+- `post_settle` publica al final, **después** de que el settle resolvió.
+- `main.rs` — bus desde env, montado y compartido por `Extension`.
+
+## Invariante que NO se puede regresionar
+
+**El camino del dinero nunca se bloquea por el stream.** El canal es lossy: sin
+suscriptores (o con uno rezagado) el evento se descarta. `publish()` devuelve `()` y no
+propaga error jamás — un settle no puede fallar ni frenarse porque alguien esté mirando.
+Un suscriptor `Lagged` pierde mensajes y **sigue conectado** en vez de tirar la conexión.
+
+## Config al desplegar (todo opcional, defaults seguros)
+
+| Variable | Default | Notas |
+|---|---|---|
+| `X402_EVENTS_ENABLED` | `true` | `false` → `/events` da 404 y no se publica nada |
+| `X402_EVENTS_SCOPE` | `all` | `allowlist` = solo payers de la lista |
+| `X402_EVENTS_ALLOWLIST` | *(vacío)* | direcciones por coma — aquí irían las wallets de KK |
+| `X402_EVENTS_DETAIL` | `full` | `minimal` = solo `{ts, kind, network, ok}` |
+| `X402_EVENTS_BUFFER` | `256` | |
+
+⚠️ **Decisión consciente de Saul:** el default es `full` (payer + tx + monto) y `all`.
+Se le señaló que ~la mayoría del tráfico NO es de KarmaCadabra y que eso difunde en vivo
+la actividad de pagos de otros clientes; lo asumió a propósito. Por eso el detalle y el
+alcance son **variables**: se pueden bajar sin tocar código.
+
+## Verificación post-deploy
+
+```bash
+curl -N https://facilitator.ultravioletadao.xyz/events     # debe emitir eventos reales
+```
+Contrastar el ritmo contra `[SETTLEMENT]` en CloudWatch (~12/min medidos el 2026-07-28).
+Hoy ese endpoint responde **404** (aún no desplegado) — el dashboard de KK ya lo consume
+y simplemente se queda callado hasta que exista.
+
+## Lado KarmaCadabra: ya desplegado
+
+El dashboard ya consume el stream (`EventSource`) y pinta cada evento como una **ola
+ámbar** que cae sobre la placa de su cadena — visualmente distinta de las pepitas de KK,
+porque ese tráfico es del riel, no de nuestros agentes. Degrada en silencio mientras el
+endpoint no exista.

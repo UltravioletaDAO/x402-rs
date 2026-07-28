@@ -371,8 +371,8 @@ resource "aws_lb" "main" {
   subnets            = aws_subnet.public[*].id
 
   enable_deletion_protection = false
-  enable_http2              = true
-  idle_timeout              = var.alb_idle_timeout
+  enable_http2               = true
+  idle_timeout               = var.alb_idle_timeout
 
   tags = {
     Name = "facilitator-${var.environment}-alb"
@@ -857,8 +857,42 @@ resource "aws_ecs_task_definition" "facilitator" {
         {
           name  = "ENABLE_UPTO"
           value = "true"
+        },
+        # ============================================================
+        # Live traffic stream (GET /events, SSE) — EXPOSURE DIAL
+        # ============================================================
+        # These match the code defaults, and they are written out anyway
+        # ON PURPOSE: this file is the canonical control surface for how
+        # much the facilitator broadcasts, and an exposure decision that
+        # lives only as a Rust default is a decision nobody can audit or
+        # find.
+        #
+        # detail=full + scope=all means the stream carries the payer, tx
+        # hash and amount of EVERY client of this facilitator, publicly
+        # and without authentication — not just our own traffic. That is
+        # a deliberate owner decision (Saul, 2026-07-28), taken with the
+        # tradeoff on the table, against a recommendation to run minimal.
+        # It is written here so that it stays a decision instead of
+        # decaying into an accident.
+        #
+        # To narrow exposure WITHOUT a code change or a rebuild:
+        #   X402_EVENTS_DETAIL = "minimal"  -> only {ts, kind, network, ok}
+        #   X402_EVENTS_SCOPE  = "allowlist" + X402_EVENTS_ALLOWLIST
+        #   X402_EVENTS_ENABLED = "false"   -> /events 404s entirely
+        # ============================================================
+        {
+          name  = "X402_EVENTS_ENABLED"
+          value = "true"
+        },
+        {
+          name  = "X402_EVENTS_DETAIL"
+          value = "full"
+        },
+        {
+          name  = "X402_EVENTS_SCOPE"
+          value = "all"
         }
-      ], var.enable_observability ? [
+        ], var.enable_observability ? [
         # ============================================================
         # OpenTelemetry - Push to OTel Collector sidecar
         # (only when observability stack is enabled)
@@ -898,7 +932,7 @@ resource "aws_ecs_task_definition" "facilitator" {
         startPeriod = 60
       }
     }
-  ], var.enable_observability ? [
+    ], var.enable_observability ? [
     # ============================================================
     # OpenTelemetry Collector Sidecar
     # (only deployed when observability stack is enabled)

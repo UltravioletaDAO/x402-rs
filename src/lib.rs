@@ -28,6 +28,7 @@ pub mod discovery_security;
 pub mod discovery_store;
 pub mod erc8004;
 pub mod escrow;
+pub mod events;
 pub mod facilitator;
 pub mod facilitator_local;
 pub mod fhe_proxy;

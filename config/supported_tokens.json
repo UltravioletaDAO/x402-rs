@@ -49,7 +49,7 @@
     "hyperevm": {
       "chainId": 999,
       "tokens": ["usdc"],
-      "explorer": "https://purrsec.com",
+      "explorer": "https://hyperevmscan.io",
       "facilitatorWallet": "0x103040545AC5031A11E8C03dd11324C7333a13C7"
     },
     "unichain": {
@@ -61,7 +61,7 @@
     "monad": {
       "chainId": 143,
       "tokens": ["usdc", "ausd", "usdt"],
-      "explorer": "https://monad.socialscan.io",
+      "explorer": "https://monadscan.com",
       "facilitatorWallet": "0x103040545AC5031A11E8C03dd11324C7333a13C7"
     },
     "bsc": {
@@ -73,7 +73,7 @@
     "skale-base": {
       "chainId": 1187947933,
       "tokens": ["usdc"],
-      "explorer": "https://skale-base.explorer.skalenodes.com",
+      "explorer": "https://skale-base-explorer.skalenodes.com",
       "facilitatorWallet": "0x103040545AC5031A11E8C03dd11324C7333a13C7"
     },
     "scroll": {
@@ -148,7 +148,7 @@
     "skale-base-sepolia": {
       "chainId": 324705682,
       "tokens": ["usdc"],
-      "explorer": "https://base-sepolia-testnet.skalenodes.com",
+      "explorer": "https://base-sepolia-testnet-explorer.skalenodes.com",
       "facilitatorWallet": "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8"
     },
     "robinhood-testnet": {

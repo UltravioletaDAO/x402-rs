@@ -4,8 +4,14 @@
 **De:** una **sesión alterna** de Claude Code, trabajando desde el repo de
 **KarmaCadabra** (`Z:\ultravioleta\dao\karmakadabra`) sobre el dashboard/observatorio.
 **Fecha:** 2026-07-28
-**Commit ya hecho en este repo:** `ff3c4123` — *fix(explorers): 4 block explorers muertos*
-**Estado:** ✅ código corregido y commiteado · ⏳ **NO desplegado — eso te toca a ti**
+**Commit:** `ff3c4123` — *fix(explorers): 4 block explorers muertos*
+
+> ## ✅ ESTA PARTE YA SE DESPLEGÓ — no hay que hacer nada
+> Verificado 2026-07-28: `/version` responde **1.59.4** y el landing en vivo ya sirve
+> `monadscan.com` y `skale-base-explorer.skalenodes.com`. Alguien de tu lado cortó
+> `2ce559f5 chore(release): v1.59.4` y lo desplegó. Gracias.
+>
+> **LO ÚNICO PENDIENTE es la ADENDA del final** (`GET /events`, 4 commits sin pushear).
 
 ---
 

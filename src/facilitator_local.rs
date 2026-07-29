@@ -287,7 +287,14 @@ where
 
         // Add upto scheme support (Permit2-based variable amount settlement)
         // Only if ENABLE_UPTO=true
-        // Upto works on any EVM chain where Permit2 and x402UptoPermit2Proxy are deployed
+        //
+        // ONLY on chains where the proxy actually has code. The address is the
+        // same everywhere (deterministic CREATE2), and this used to be read as
+        // "therefore it works everywhere" — so `upto` was advertised on every
+        // EVM network carrying `exact`, including five where the deployment was
+        // never replayed. Advertising an unsettleable scheme is worse than not
+        // offering it: the client only finds out after signing a Permit2
+        // authorization, and a signed authorization does not un-sign itself.
         if crate::upto::is_enabled() {
             // Collect EVM networks from existing exact scheme entries (v2 CAIP-2 format)
             let evm_networks: Vec<String> = kinds
@@ -296,6 +303,13 @@ where
                     k.x402_version == X402Version::V2
                         && k.scheme == Scheme::Exact
                         && k.network.starts_with("eip155:")
+                })
+                .filter(|k| {
+                    // Resolved through the Network enum rather than matched as a
+                    // string, so a renamed CAIP-2 id fails to compile instead of
+                    // silently dropping a chain from the advertisement.
+                    Network::from_caip2(&k.network)
+                        .is_some_and(crate::upto::types::is_proxy_deployed_on)
                 })
                 .map(|k| k.network.clone())
                 .collect();

@@ -515,7 +515,9 @@ Returns all supported payment kinds (network + scheme + version combinations).
 - `escrow` - x402r PaymentOperator escrow (v2 only, CAIP-2 networks)
 - `fhe_transfer` - FHE encrypted transfer via Zama (v1 and v2)
 
-**Upto networks:** All EVM networks that support the `exact` scheme also support `upto` via the x402UptoPermit2Proxy contract (Permit2-based, canonical CREATE2 address `0x4020A4f3b7b90ccA423B9fabCc0CE57C6C240002`, per the upstream x402 spec and @x402/evm SDK).
+**Upto networks (11):** Base, Optimism, Arbitrum, Polygon, BSC, Ethereum, HyperEVM, Monad, Base Sepolia, Avalanche Fuji, Arbitrum Sepolia — via the x402UptoPermit2Proxy contract (Permit2-based, canonical CREATE2 address `0x4020A4f3b7b90ccA423B9fabCc0CE57C6C240002`).
+
+`upto` is **not** available on every EVM network that supports `exact`. The proxy address is identical on all chains because it is deployed with CREATE2, but the deployment still has to be replayed per chain, and on Avalanche, Celo, Scroll, Unichain and Optimism Sepolia it never was — the address has no code there. Query `/supported` rather than assuming: it now lists `upto` only where settlement can actually succeed.
 
 **Escrow networks (9 total):** Base, Ethereum, Polygon, Arbitrum, Celo, Monad, Avalanche, Base Sepolia, Ethereum Sepolia.
 Only networks with a deployed PaymentOperator appear in the response.

@@ -6,6 +6,8 @@
 use alloy::primitives::{Address, U256};
 use serde::{Deserialize, Serialize};
 
+use crate::network::Network;
+
 // ============================================================================
 // Constants
 // ============================================================================
@@ -28,6 +30,54 @@ pub const PERMIT2_ADDRESS: Address =
 /// upto settlement target an empty address.
 pub const UPTO_PERMIT2_PROXY_ADDRESS: Address =
     alloy::primitives::address!("0x4020A4f3b7b90ccA423B9fabCc0CE57C6C240002");
+
+/// Networks where [`UPTO_PERMIT2_PROXY_ADDRESS`] actually has code.
+///
+/// The address is the same on every chain (deterministic CREATE2), but being
+/// deterministic is not the same as being deployed: the deployment has to be
+/// replayed per chain, and on five of ours it never was. `/supported` used to
+/// advertise `upto` on every EVM network that supported `exact`, so it promised
+/// a scheme that could only ever fail there — and failing at settle time means
+/// the client has already signed a Permit2 authorization.
+///
+/// Verified by `eth_getCode` on 2026-07-29, every entry, 3142 bytes each.
+/// Measured absent: avalanche, celo, scroll, unichain, optimism-sepolia.
+///
+/// # Why a list and not a probe
+///
+/// Probing at startup looks more honest and is less reliable. Measuring polygon
+/// during this audit returned NO CODE from `polygon-rpc.com` and from Ankr, and
+/// the correct 3142 bytes from PublicNode — same address, same block height,
+/// three answers. A probe would have silently dropped a working network from
+/// `/supported` depending on which node happened to answer. The settle path
+/// keeps its own `assert_proxy_deployed` guard, so a stale entry here degrades
+/// to a clear rejection rather than a transfer into an empty address.
+///
+/// # When adding a network
+///
+/// Check the proxy with `eth_getCode` against **two independent RPCs** before
+/// adding it. One endpoint is not a measurement.
+pub const UPTO_DEPLOYED_NETWORKS: &[Network] = &[
+    Network::Base,
+    Network::Optimism,
+    Network::Arbitrum,
+    Network::Polygon,
+    Network::Bsc,
+    Network::Ethereum,
+    Network::HyperEvm,
+    Network::Monad,
+    Network::BaseSepolia,
+    Network::AvalancheFuji,
+    Network::ArbitrumSepolia,
+];
+
+/// Whether the `upto` scheme can actually settle on `network`.
+///
+/// See [`UPTO_DEPLOYED_NETWORKS`] for how the list is established and why it is
+/// not a runtime probe.
+pub fn is_proxy_deployed_on(network: Network) -> bool {
+    UPTO_DEPLOYED_NETWORKS.contains(&network)
+}
 
 // ============================================================================
 // Permit2 Wire Types (deserialized from JSON payload)
@@ -210,4 +260,76 @@ pub fn parse_amount(s: &str) -> Result<U256, super::UptoError> {
 pub fn parse_address(s: &str) -> Result<Address, super::UptoError> {
     s.parse::<Address>()
         .map_err(|e| super::UptoError::InvalidPayload(format!("invalid address '{}': {}", s, e)))
+}
+
+#[cfg(test)]
+mod proxy_deployment_tests {
+    use super::*;
+
+    /// The five networks `/supported` used to lie about.
+    ///
+    /// Measured absent with `eth_getCode` against two independent RPCs each on
+    /// 2026-07-29. Advertising `upto` here promised a scheme that could only
+    /// fail — and fail *after* the client signed a Permit2 authorization.
+    #[test]
+    fn networks_without_the_proxy_are_excluded() {
+        for network in [
+            Network::Avalanche,
+            Network::Celo,
+            Network::Scroll,
+            Network::Unichain,
+            Network::OptimismSepolia,
+        ] {
+            assert!(
+                !is_proxy_deployed_on(network),
+                "{network} has no proxy code but would be advertised as upto-capable"
+            );
+        }
+    }
+
+    /// The eleven where the proxy really is deployed, 3142 bytes each. Excluding
+    /// one of these would silently remove working functionality, which is the
+    /// opposite failure and just as quiet.
+    #[test]
+    fn networks_with_the_proxy_are_included() {
+        for network in [
+            Network::Base,
+            Network::Optimism,
+            Network::Arbitrum,
+            Network::Polygon,
+            Network::Bsc,
+            Network::Ethereum,
+            Network::HyperEvm,
+            Network::Monad,
+            Network::BaseSepolia,
+            Network::AvalancheFuji,
+            Network::ArbitrumSepolia,
+        ] {
+            assert!(
+                is_proxy_deployed_on(network),
+                "{network} has verified proxy code but would not be advertised"
+            );
+        }
+    }
+
+    /// Polygon earns its own test.
+    ///
+    /// During the audit it returned NO CODE from polygon-rpc.com and from Ankr,
+    /// and the correct 3142 bytes from PublicNode. Whoever next sees a "no code"
+    /// reading for polygon should get a second opinion before deleting this
+    /// entry — that is exactly the trap this test exists to hold open.
+    #[test]
+    fn polygon_is_deployed_despite_rpcs_that_say_otherwise() {
+        assert!(is_proxy_deployed_on(Network::Polygon));
+    }
+
+    /// A testnet being absent says nothing about its mainnet, and vice versa.
+    /// Avalanche is the live example: Fuji has the proxy, mainnet does not.
+    #[test]
+    fn testnet_and_mainnet_are_independent() {
+        assert!(is_proxy_deployed_on(Network::AvalancheFuji));
+        assert!(!is_proxy_deployed_on(Network::Avalanche));
+        assert!(is_proxy_deployed_on(Network::Optimism));
+        assert!(!is_proxy_deployed_on(Network::OptimismSepolia));
+    }
 }

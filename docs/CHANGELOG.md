@@ -1,5 +1,46 @@
 # Changelog
 
+## [1.59.7] - 2026-07-29
+
+### Fix — `/supported` advertised `upto` on five networks where it cannot settle
+
+The proxy address is identical on every chain because it is deployed with
+CREATE2. That was read as "therefore it works everywhere", so `/supported`
+offered `upto` on every EVM network carrying `exact`. Deterministic is not the
+same as deployed: the deployment has to be replayed per chain, and on five of
+ours it never was.
+
+Measured with `eth_getCode`, two independent RPCs per network:
+
+- **Deployed, 3142 bytes:** base, optimism, arbitrum, polygon, bsc, ethereum,
+  hyperevm, monad, base-sepolia, avalanche-fuji, arbitrum-sepolia.
+- **No code:** avalanche, celo, scroll, unichain, optimism-sepolia.
+
+Advertising an unsettleable scheme is worse than not offering it. The client
+discovers the problem only at settle time — after it has signed a Permit2
+authorization, and a signed authorization does not un-sign itself.
+
+Networks are resolved through the `Network` enum rather than matched as CAIP-2
+strings, so a renamed id fails to compile instead of silently dropping a chain
+from the advertisement.
+
+**Why a static list and not a startup probe.** A probe looks more honest and is
+less reliable. Polygon returned NO CODE from `polygon-rpc.com` and from Ankr, and
+the correct 3142 bytes from PublicNode — same address, three answers. A probe
+would have dropped a working network depending on which node answered. The settle
+path keeps its own `assert_proxy_deployed` guard, so a stale entry degrades to a
+clear rejection rather than a transfer into an empty address. Polygon has its own
+regression test saying exactly this, so the next person to see a "no code"
+reading gets a second opinion before deleting the entry.
+
+Also corrected in `src/openapi.rs`, which carried the same false claim in prose:
+it now names the eleven networks and says plainly that `upto` is not available
+wherever `exact` is.
+
+Reported by Execution Market. Verified here independently — including that
+Avalanche mainnet lacks the proxy while Fuji has it, so testnet and mainnet say
+nothing about each other.
+
 ## [1.59.6] - 2026-07-29
 
 ### Fix — ERC-8004 writes bypassed the EVM writer lease

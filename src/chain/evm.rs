@@ -2602,6 +2602,124 @@ mod tests {
         assert_eq!(read_high_water(&manager, test_address).await, Some(52));
     }
 
+    /// A provider pointed at a closed port.
+    ///
+    /// Used where the allocation must be served from cached state: if a refactor
+    /// ever makes that path touch the network, these tests fail loudly instead
+    /// of passing while quietly adding an RPC round-trip to every settle.
+    fn offline_provider() -> impl Provider<AlloyEthereum> {
+        ProviderBuilder::default().connect_client(RpcClient::new_http(
+            "http://127.0.0.1:1".parse().expect("static url"),
+        ))
+    }
+
+    /// **The success criterion from the concurrency handoff, actually executed.**
+    ///
+    /// It had been carried as "20 concurrent settles, zero `nonce too low`" and
+    /// verified by nobody — the nonce work was covered by unit tests that each
+    /// allocate once, which cannot observe the failure this guards against.
+    ///
+    /// A duplicate nonce IS `nonce too low`: two transactions signed with the
+    /// same number, the second rejected by the node. So the property to assert
+    /// is not "no error" but "no repeats" — 20 concurrent allocations must yield
+    /// 20 distinct, contiguous nonces.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn test_concurrent_allocations_never_hand_out_the_same_nonce() {
+        const CONCURRENT: u64 = 20;
+        const START: u64 = 100;
+
+        let manager = Arc::new(PendingNonceManager::default());
+        let addr = address!("0000000000000000000000000000000000000020");
+        seed_state(&manager, addr, Some(START), Some(START - 1), None).await;
+
+        let mut tasks = tokio::task::JoinSet::new();
+        for _ in 0..CONCURRENT {
+            let manager = Arc::clone(&manager);
+            tasks.spawn(async move {
+                let provider = offline_provider();
+                manager
+                    .get_next_nonce(&provider, addr)
+                    .await
+                    .expect("cached allocation must not need the network")
+            });
+        }
+
+        let mut allocated = Vec::new();
+        while let Some(result) = tasks.join_next().await {
+            allocated.push(result.expect("allocation task panicked"));
+        }
+        allocated.sort_unstable();
+
+        let unique: std::collections::HashSet<_> = allocated.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            CONCURRENT as usize,
+            "duplicate nonce handed out under concurrency: {allocated:?}"
+        );
+        // Contiguous, not merely distinct: a gap strands every later settle
+        // behind it until the chain-trust window expires.
+        let expected: Vec<u64> = (START..START + CONCURRENT).collect();
+        assert_eq!(
+            allocated, expected,
+            "nonces must be contiguous from {START}"
+        );
+
+        assert_eq!(read_next(&manager, addr).await, Some(START + CONCURRENT));
+        assert_eq!(
+            read_high_water(&manager, addr).await,
+            Some(START + CONCURRENT - 1)
+        );
+    }
+
+    /// The same race across several signers, which is what a pool actually
+    /// changes. Per-address state must stay independent: one busy signer must
+    /// not shift another's sequence.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn test_concurrent_allocations_stay_independent_per_signer() {
+        const PER_SIGNER: u64 = 10;
+        let manager = Arc::new(PendingNonceManager::default());
+        let signers = [
+            address!("0000000000000000000000000000000000000021"),
+            address!("0000000000000000000000000000000000000022"),
+            address!("0000000000000000000000000000000000000023"),
+        ];
+        for (i, addr) in signers.iter().enumerate() {
+            seed_state(&manager, *addr, Some(i as u64 * 1000), None, None).await;
+        }
+
+        let mut tasks = tokio::task::JoinSet::new();
+        for (i, addr) in signers.iter().enumerate() {
+            for _ in 0..PER_SIGNER {
+                let manager = Arc::clone(&manager);
+                let addr = *addr;
+                tasks.spawn(async move {
+                    let provider = offline_provider();
+                    (
+                        i,
+                        manager
+                            .get_next_nonce(&provider, addr)
+                            .await
+                            .expect("alloc"),
+                    )
+                });
+            }
+        }
+
+        let mut by_signer: std::collections::HashMap<usize, Vec<u64>> =
+            std::collections::HashMap::new();
+        while let Some(result) = tasks.join_next().await {
+            let (i, nonce) = result.expect("allocation task panicked");
+            by_signer.entry(i).or_default().push(nonce);
+        }
+
+        for (i, mut nonces) in by_signer {
+            nonces.sort_unstable();
+            let base = i as u64 * 1000;
+            let expected: Vec<u64> = (base..base + PER_SIGNER).collect();
+            assert_eq!(nonces, expected, "signer {i} sequence was disturbed");
+        }
+    }
+
     /// The regression that motivated the high-water mark: a resync that lands on
     /// a node lagging behind the mempool reports a nonce we already handed out.
     /// Reusing it would replace an in-flight settle rather than queue behind it.

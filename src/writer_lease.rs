@@ -69,6 +69,16 @@ pub fn is_writer() -> bool {
     IS_WRITER.load(Ordering::Relaxed)
 }
 
+/// Force the writer flag. Tests only.
+///
+/// This is process-global, so a test that flips it must flip it back. CI runs
+/// with `--test-threads=1`, which makes that safe; without it, a parallel test
+/// reading `is_writer()` could observe the flip.
+#[cfg(test)]
+pub fn set_writer_for_test(value: bool) {
+    IS_WRITER.store(value, Ordering::Relaxed);
+}
+
 /// Lease holder identity and DynamoDB plumbing.
 pub struct WriterLease {
     client: aws_sdk_dynamodb::Client,

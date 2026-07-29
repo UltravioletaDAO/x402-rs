@@ -1,5 +1,52 @@
 # Changelog
 
+## [1.59.6] - 2026-07-29
+
+### Fix — ERC-8004 writes bypassed the EVM writer lease
+
+The writer lease exists because a rolling deploy leaves two ECS tasks running for
+about a minute, each with its own in-memory nonce cache, and they race for the
+same nonce on the shared EOA. `chain/evm.rs` has gated the settle path on it
+since it shipped.
+
+The ERC-8004 write handlers never passed through that gate. They reach the chain
+through their own `contract.call().send()` sites — around ten of them across
+`/register`, `/feedback`, `/feedback/revoke` and `/feedback/response` — spending
+gas from the *same* signer. So during a deploy an ERC-8004 write on the old task
+and a settle on the new one collide on a nonce: precisely the failure the lease
+was built to prevent, entering through a door nobody had closed.
+
+Reported by Execution Market, who found it while auditing this repo before
+raising a request. They named one call site; there were ten.
+
+The gate is now applied to `erc8004_write_routes()` itself rather than to the
+call sites, so a write route added later is covered the moment it is registered
+and there is no per-site guard to forget. A non-writer is shed with **503 +
+`Retry-After`**, not 500 — during a deploy this state is expected and transient,
+and the caller should retry rather than treat the request as malformed.
+
+### Test — the concurrency criterion is finally executed
+
+"20 concurrent settles, zero `nonce too low`" had been carried as the success
+criterion of the nonce work and verified by nobody. The existing tests each
+allocate a single nonce, which cannot observe the failure they guard against.
+
+A duplicate nonce *is* `nonce too low` — two transactions signed with the same
+number, the second rejected. So the property asserted is not "no error" but "no
+repeats": 20 concurrent allocations must yield 20 distinct **and contiguous**
+nonces, contiguity mattering because a gap strands every later settle behind it
+until the chain-trust window expires. A second test runs the same race across
+three signers to pin that per-address state stays independent.
+
+Both drive the real `PendingNonceManager::get_next_nonce` against a provider
+pointed at a closed port: with cached state the allocation must not touch the
+network, so a refactor that reintroduces an RPC round-trip fails loudly instead
+of silently taxing every settle.
+
+Also added: the writer-lease gate's own behaviour tests, serialised against the
+process-global flag so they pass under a plain `cargo test` and not only under
+CI's `--test-threads=1`.
+
 ## [1.59.5] - 2026-07-28
 
 ### Feature — `GET /events`, a live traffic stream (Server-Sent Events)

@@ -183,6 +183,44 @@ where
 /// attached (audit 02): every `/register`, `/feedback`, `/feedback/revoke`,
 /// `/feedback/response` is a real on-chain tx the facilitator EOA pays gas for.
 /// Without a per-IP limit these are an unbounded gas-treasury drain.
+/// Reject writes from an instance that does not hold the EVM writer lease.
+///
+/// The settle path has enforced this since the lease existed (`chain/evm.rs`),
+/// but the ERC-8004 write handlers reach the chain through their own
+/// `contract.call().send()` sites — around ten of them — and none passed
+/// through that gate. They spend gas from the SAME shared EOA, so during a
+/// rolling deploy an ERC-8004 write on the old task and a settle on the new one
+/// race for the same nonce: exactly the failure the lease was built to prevent,
+/// entering through a door nobody had closed.
+///
+/// Gating the ROUTER rather than the ten send sites is deliberate. A new
+/// ERC-8004 write route is covered the moment it is added here, and there is no
+/// per-call-site guard for a future author to forget.
+///
+/// 503 rather than 500: not holding the lease is transient and expected — it
+/// lasts about a minute per deploy — so `Retry-After` tells the caller to come
+/// back rather than implying the request was malformed.
+async fn require_writer_lease(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if !crate::writer_lease::is_writer() {
+        warn!(
+            path = %request.uri().path(),
+            "rejecting ERC-8004 write: this instance does not hold the EVM writer lease"
+        );
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [(axum::http::header::RETRY_AFTER, "5")],
+            Json(json!({
+                "error": "this instance does not hold the EVM writer lease; retry",
+            })),
+        )
+            .into_response();
+    }
+    next.run(request).await
+}
+
 pub fn erc8004_write_routes<A>() -> Router<A>
 where
     A: Facilitator + HasProviderMap + Clone + Send + Sync + 'static,
@@ -194,6 +232,9 @@ where
         .route("/feedback", post(post_feedback::<A>))
         .route("/feedback/revoke", post(post_revoke_feedback::<A>))
         .route("/feedback/response", post(post_append_response::<A>))
+        // Applied here, not at the call sites, and not in main.rs: the gate
+        // travels with the routes it protects.
+        .layer(axum::middleware::from_fn(require_writer_lease))
 }
 
 /// Discovery API routes for the Bazaar feature.
@@ -6523,4 +6564,76 @@ mod discovery_handler_tests {
         // Ambiguous: two rejects with two different replacements, no hint.
         assert!(body["hint"].is_null());
     }
+}
+
+#[cfg(test)]
+mod writer_lease_gate_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    /// Serialises the tests that flip the process-global writer flag.
+    ///
+    /// Without this they pass under CI's `--test-threads=1` and fail on a plain
+    /// `cargo test` — a test that is green only under a specific flag is a trap
+    /// for whoever runs the suite next.
+    static WRITER_FLAG: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Build the same middleware over a trivial route.
+    ///
+    /// The handler is a stub on purpose: what is under test is the GATE and the
+    /// fact that it is wired, not what the ERC-8004 handlers do afterwards.
+    fn gated_router() -> Router {
+        Router::new()
+            .route("/write", post(|| async { "wrote" }))
+            .layer(axum::middleware::from_fn(require_writer_lease))
+    }
+
+    async fn status_of(router: Router) -> StatusCode {
+        router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/write")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+    }
+
+    /// The writer passes through untouched — the gate must not cost availability
+    /// on the instance that is supposed to be writing.
+    #[tokio::test]
+    async fn writer_is_allowed_through() {
+        let _guard = WRITER_FLAG.lock().unwrap_or_else(|e| e.into_inner());
+        crate::writer_lease::set_writer_for_test(true);
+        assert_eq!(status_of(gated_router()).await, StatusCode::OK);
+    }
+
+    /// A non-writer is shed with 503, not 500: during a rolling deploy this is
+    /// the expected state for about a minute, and the caller should retry rather
+    /// than treat the request as malformed.
+    #[tokio::test]
+    async fn non_writer_is_shed_with_503() {
+        let _guard = WRITER_FLAG.lock().unwrap_or_else(|e| e.into_inner());
+        crate::writer_lease::set_writer_for_test(false);
+        let status = status_of(gated_router()).await;
+        // Restored before the assert so a failure cannot leave the process
+        // wedged as a non-writer for every later test.
+        crate::writer_lease::set_writer_for_test(true);
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    // NOTE on what is NOT covered here: that the gate is actually ATTACHED to
+    // every ERC-8004 route. Asserting it needs a `Router<FacilitatorLocal>` with
+    // real state, and `ProviderCache::from_env()` is async and reads the
+    // environment — too heavy and too environment-dependent for a unit test, and
+    // a stub implementing `Facilitator + HasProviderMap` would be more mock than
+    // test. Rather than fake it, the layer is applied INSIDE
+    // `erc8004_write_routes()` itself so wiring is one reviewable line that
+    // travels with the routes, instead of a call-site detail in main.rs that a
+    // future caller can quietly drop.
 }

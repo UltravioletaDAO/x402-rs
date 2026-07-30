@@ -582,7 +582,74 @@ resource "aws_iam_role_policy" "dynamodb_nonce_access" {
   })
 }
 
-# F4: DynamoDB table for /settle idempotency-key cache.
+# Historical index of every operation the facilitator handled.
+#
+# NOT a ledger: the write is fire-and-forget AFTER settlement resolves, so an
+# outage here loses records and never blocks a payment. The chain stays the
+# source of truth; this exists so "how much have we settled on Polygon" stops
+# being a question you answer by grepping CloudWatch.
+#
+# Cost, measured 2026-07-30 rather than guessed: ~1,600 operations/day is about
+# 48k writes/month = ~$0.06. The read side is where money is actually at risk,
+# which is why aggregates live in their own partition and the stats page issues
+# one bounded Query instead of scanning.
+resource "aws_dynamodb_table" "transactions" {
+  name         = "facilitator_transactions"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "pk"
+  range_key    = "sk"
+
+  attribute {
+    name = "pk"
+    type = "S"
+  }
+
+  attribute {
+    name = "sk"
+    type = "S"
+  }
+
+  # Records carry expires_at; the aggregate items deliberately do NOT, so
+  # lifetime totals survive the expiry of the rows that produced them.
+  ttl {
+    attribute_name = "expires_at"
+    enabled        = true
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+
+  tags = {
+    Name        = "facilitator-transactions"
+    Environment = var.environment
+  }
+}
+
+resource "aws_iam_role_policy" "dynamodb_transactions_access" {
+  name = "DynamoDBTransactionStoreAccess"
+  role = aws_iam_role.ecs_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:Query",
+          "dynamodb:DescribeTable"
+        ]
+        # No Scan and no DeleteItem on purpose: a scan is the expensive mistake
+        # this schema exists to avoid, and expiry is DynamoDB's job via TTL.
+        Resource = aws_dynamodb_table.transactions.arn
+      }
+    ]
+  })
+}
+
+# DynamoDB table for /settle idempotency-key cache.
 # Holds the response_json for ~24h so a client retry with the same
 # Idempotency-Key header returns the original response verbatim without
 # re-running the on-chain settlement. TTL is enforced by DDB on the
@@ -891,6 +958,16 @@ resource "aws_ecs_task_definition" "facilitator" {
         {
           name  = "X402_EVENTS_SCOPE"
           value = "all"
+        },
+        {
+          name  = "TRANSACTIONS_TABLE_NAME"
+          value = aws_dynamodb_table.transactions.name
+        },
+        {
+          # 0 keeps records forever. 90 days is a decision someone made rather
+          # than an unbounded table nobody chose; aggregates never expire.
+          name  = "TRANSACTIONS_TTL_DAYS"
+          value = "90"
         }
         ], var.enable_observability ? [
         # ============================================================

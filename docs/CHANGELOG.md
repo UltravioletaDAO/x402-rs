@@ -1,5 +1,42 @@
 # Changelog
 
+## [1.61.0] - 2026-07-30
+
+### Feature — historical transaction store and `/api/stats`
+
+`GET /events` is a live hint and lossy by construction: an event nobody was
+connected for does not exist anywhere. This adds the other half — a durable,
+queryable index, so "how much have we settled on Polygon this month" stops being
+a question answered by grepping CloudWatch.
+
+- `GET /transactions?limit&network` — recent operations, newest first, capped at
+  200 because an unbounded limit from an unauthenticated caller turns a page
+  load into a bill.
+- `GET /api/stats` — totals per network and asset, read from pre-aggregated
+  counters.
+
+**This is an INDEX, not a ledger,** and both endpoints say so in their own
+payloads. The write is fire-and-forget *after* settlement resolves and runs in a
+spawned task, so it adds no latency and a DynamoDB outage loses records rather
+than blocking payments. The chain remains the source of truth.
+
+**Cost was measured, not assumed.** ~1,600 operations/day = ~48k writes/month
+≈ $0.06. The real exposure is the read side: scanning the table on every stats
+load is ~$0.011 a time, which is $330/month at a thousand views a day. So
+aggregates live in their own single partition and the stats page issues one
+bounded Query whose cost does not grow with history. The IAM policy grants no
+`Scan` at all, which makes that structural rather than a convention.
+
+Everything goes through a `TransactionStore` trait with a no-op implementation,
+so an unconfigured deployment records nothing and settles exactly as before, and
+moving off DynamoDB later is one new implementation touching no handler.
+
+Counters use DynamoDB's atomic `ADD`, so concurrent settles cannot lose an
+increment the way a read-modify-write would. Records carry a TTL
+(`TRANSACTIONS_TTL_DAYS`, default 90, `0` disables); aggregate items deliberately
+do not, so lifetime totals outlive the rows that produced them.
+
+
 ## [1.60.0] - 2026-07-30
 
 ### Feature — events now say WHAT was bought, not just how much

@@ -183,6 +183,26 @@ where
 /// attached (audit 02): every `/register`, `/feedback`, `/feedback/revoke`,
 /// `/feedback/response` is a real on-chain tx the facilitator EOA pays gas for.
 /// Without a per-IP limit these are an unbounded gas-treasury drain.
+
+/// Persist one operation, off the request path.
+///
+/// Spawned rather than awaited: `record` makes two DynamoDB round trips, and
+/// awaiting them would add tens of milliseconds to every settle response for a
+/// write the payer does not care about. Failures are logged and dropped — the
+/// store is an INDEX, and a payment that already happened must not be reported
+/// as failed because a table was unreachable.
+fn record_transaction(
+    store: &Arc<dyn crate::transaction_store::TransactionStore>,
+    record: crate::transaction_store::TransactionRecord,
+) {
+    let store = Arc::clone(store);
+    tokio::spawn(async move {
+        if let Err(e) = store.record(record).await {
+            warn!(error = %e, "transaction not recorded; the payment itself is unaffected");
+        }
+    });
+}
+
 /// Reject writes from an instance that does not hold the EVM writer lease.
 ///
 /// The settle path has enforced this since the lease existed (`chain/evm.rs`),
@@ -1454,6 +1474,7 @@ where
 pub async fn post_verify<A>(
     State(facilitator): State<A>,
     Extension(event_bus): Extension<Arc<crate::events::EventBus>>,
+    Extension(tx_store): Extension<Arc<dyn crate::transaction_store::TransactionStore>>,
     headers: HeaderMap,
     raw_body: Bytes,
 ) -> impl IntoResponse
@@ -1779,6 +1800,7 @@ where
                     (false, payer.as_ref().map(|p| p.to_string()))
                 }
             };
+            let payer_for_record = payer.clone();
             event_bus.publish(crate::events::TrafficEvent {
                 ts: crate::events::now_ms(),
                 kind: "verify",
@@ -1798,6 +1820,28 @@ where
                 description: Some(v1_request.payment_requirements.description.clone()),
                 scheme: Some(v1_request.payment_requirements.scheme.to_string()),
             });
+            record_transaction(
+                &tx_store,
+                crate::transaction_store::TransactionRecord {
+                    ts: crate::events::now_ms(),
+                    kind: "verify".into(),
+                    network: v1_request.payment_requirements.network.to_string(),
+                    ok,
+                    payer: payer_for_record,
+                    tx: None,
+                    amount: Some(
+                        v1_request
+                            .payment_requirements
+                            .max_amount_required
+                            .to_string(),
+                    ),
+                    asset: Some(v1_request.payment_requirements.asset.to_string()),
+                    resource: Some(v1_request.payment_requirements.resource.to_string()),
+                    pay_to: Some(v1_request.payment_requirements.pay_to.to_string()),
+                    description: Some(v1_request.payment_requirements.description.clone()),
+                    scheme: Some(v1_request.payment_requirements.scheme.to_string()),
+                },
+            );
             (StatusCode::OK, Json(valid_response)).into_response()
         }
         Err(error) => {
@@ -1929,6 +1973,7 @@ pub async fn post_settle<A>(
     State(facilitator): State<A>,
     Extension(discovery_registry): Extension<Arc<DiscoveryRegistry>>,
     Extension(event_bus): Extension<Arc<crate::events::EventBus>>,
+    Extension(tx_store): Extension<Arc<dyn crate::transaction_store::TransactionStore>>,
     headers: HeaderMap,
     raw_body: Bytes,
 ) -> impl IntoResponse
@@ -2526,6 +2571,23 @@ where
                 description: Some(body.payment_requirements.description.clone()),
                 scheme: Some(body.payment_requirements.scheme.to_string()),
             });
+            record_transaction(
+                &tx_store,
+                crate::transaction_store::TransactionRecord {
+                    ts: crate::events::now_ms(),
+                    kind: "settle".into(),
+                    network: valid_response.network.to_string(),
+                    ok: valid_response.success,
+                    payer: Some(valid_response.payer.to_string()),
+                    tx: valid_response.transaction.as_ref().map(|t| t.to_string()),
+                    amount: Some(body.payment_requirements.max_amount_required.to_string()),
+                    asset: Some(body.payment_requirements.asset.to_string()),
+                    resource: Some(body.payment_requirements.resource.to_string()),
+                    pay_to: Some(body.payment_requirements.pay_to.to_string()),
+                    description: Some(body.payment_requirements.description.clone()),
+                    scheme: Some(body.payment_requirements.scheme.to_string()),
+                },
+            );
             // Log successful settlement with details
             if valid_response.success {
                 if let Some(ref tx_hash) = valid_response.transaction {
@@ -6647,4 +6709,116 @@ mod writer_lease_gate_tests {
     // `erc8004_write_routes()` itself so wiring is one reviewable line that
     // travels with the routes, instead of a call-site detail in main.rs that a
     // future caller can quietly drop.
+}
+
+// ============================================================================
+// Historical transactions and aggregated stats
+// ============================================================================
+
+/// Routes backed by the transaction store.
+///
+/// Their own router with its own state, like `discovery_routes` — the generic
+/// `Facilitator` state stays untouched.
+pub fn transaction_routes() -> Router<Arc<dyn crate::transaction_store::TransactionStore>> {
+    Router::new()
+        .route("/transactions", get(get_transactions))
+        .route("/api/stats", get(get_stats))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TransactionsQuery {
+    limit: Option<usize>,
+    network: Option<String>,
+}
+
+/// `GET /transactions` — recent operations, newest first.
+///
+/// Deliberately capped: this reads a live table, and an unbounded `limit` from
+/// an unauthenticated caller is a way to turn a page load into a large bill.
+pub async fn get_transactions(
+    State(store): State<Arc<dyn crate::transaction_store::TransactionStore>>,
+    Query(q): Query<TransactionsQuery>,
+) -> impl IntoResponse {
+    const MAX_LIMIT: usize = 200;
+    let limit = q.limit.unwrap_or(50).clamp(1, MAX_LIMIT);
+
+    match store.recent(limit, q.network.as_deref()).await {
+        Ok(items) => (
+            StatusCode::OK,
+            Json(json!({
+                "transactions": items,
+                "count": items.len(),
+                // Said in the payload, not just the docs: someone will diff this
+                // against the chain and needs to know which way the gap points.
+                "source": "facilitator records",
+                "caveat": "Index of what the facilitator recorded, not a ledger. \
+            Recording is best-effort and happens after settlement, so the chain is authoritative.",
+            })),
+        )
+            .into_response(),
+        Err(e) => {
+            error!(error = %e, "transaction query failed");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": "transaction store unavailable"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// `GET /api/stats` — pre-aggregated totals, per network and asset.
+///
+/// Reads only the aggregate partition, so the cost is flat no matter how many
+/// transactions have accumulated. Scanning the records instead would grow more
+/// expensive every day the facilitator stays up.
+pub async fn get_stats(
+    State(store): State<Arc<dyn crate::transaction_store::TransactionStore>>,
+) -> impl IntoResponse {
+    let aggregates = match store.aggregates().await {
+        Ok(a) => a,
+        Err(e) => {
+            error!(error = %e, "stats query failed");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": "stats unavailable"})),
+            )
+                .into_response();
+        }
+    };
+
+    let settles_ok: u64 = aggregates.iter().map(|a| a.settles_ok).sum();
+    let settles_failed: u64 = aggregates.iter().map(|a| a.settles_failed).sum();
+    let verifies: u64 = aggregates.iter().map(|a| a.verifies).sum();
+    let networks: std::collections::BTreeSet<&str> =
+        aggregates.iter().map(|a| a.network.as_str()).collect();
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "totals": {
+                "settlesOk": settles_ok,
+                "settlesFailed": settles_failed,
+                "verifies": verifies,
+                "networks": networks.len(),
+            },
+            "byNetworkAndAsset": aggregates.iter().map(|a| json!({
+                "network": a.network,
+                "asset": a.asset,
+                "settlesOk": a.settles_ok,
+                "settlesFailed": a.settles_failed,
+                "verifies": a.verifies,
+                // A string: these are u256-shaped and a JSON number silently
+                // loses precision past 2^53.
+                "volumeAtomic": a.volume_atomic.to_string(),
+                "lastTs": a.last_ts,
+            })).collect::<Vec<_>>(),
+            "source": "facilitator records",
+            "since": "Counting began when the transaction store was enabled; \
+        operations before that are not included and are not zero.",
+            "caveat": "Operations that ERROR are not recorded at all, so a 100% \
+        success rate here means 'no failures were recorded', not 'no failures occurred'.",
+        })),
+    )
+        .into_response()
 }

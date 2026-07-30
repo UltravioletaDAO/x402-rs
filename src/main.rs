@@ -84,6 +84,7 @@ mod redact;
 mod sig_down;
 mod telemetry;
 mod timestamp;
+mod transaction_store;
 mod types;
 mod types_v2;
 mod upto;
@@ -158,6 +159,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         enabled = event_bus.enabled(),
         max_subscribers = event_bus.max_subscribers(),
         "traffic event stream (GET /events)"
+    );
+
+    // Historical index of what we processed. Separate from the live stream:
+    // /events is lossy by design, this is queryable after the fact. Failing to
+    // reach it is NOT fatal — payments do not depend on being recorded.
+    let transaction_store = transaction_store::create_transaction_store().await;
+    tracing::info!(
+        store = transaction_store.store_type(),
+        "transaction history store"
     );
 
     // Initialize Bazaar discovery registry with optional S3 persistence
@@ -522,7 +532,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .merge(
             handlers::discovery_routes()
                 .with_state(Arc::clone(&discovery_registry))
-                .layer(GovernorLayer::new(discovery_read_config)),
+                .layer(GovernorLayer::new(Arc::clone(&discovery_read_config))),
+        )
+        .merge(
+            handlers::transaction_routes()
+                .with_state(Arc::clone(&transaction_store))
+                .layer(GovernorLayer::new(Arc::clone(&discovery_read_config))),
         )
         .merge(openapi::swagger_routes())
         .merge(
@@ -534,6 +549,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .layer(Extension(discovery_registry))
         // ...and the event bus, so post_settle can publish after a settle resolves
         .layer(Extension(event_bus))
+        .layer(Extension(transaction_store))
         .layer(telemetry.http_tracing())
         // CORS stays permissive — facilitator is intentionally public.
         // First-party callers: photo2melee, ExecutionMarket, meshrelay, plus arbitrary third

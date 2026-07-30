@@ -44,6 +44,7 @@ pub mod redact;
 pub mod sig_down;
 pub mod telemetry;
 pub mod timestamp;
+pub mod transaction_store;
 pub mod types;
 pub mod types_v2;
 pub mod upto;

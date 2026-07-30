@@ -25,6 +25,15 @@ ALGORAND_MAINNET_ADDRESS # Algorand wallet
 
 Also read `config/supported_tokens.json` for chain IDs, explorer URLs, and token contract addresses.
 
+> **Prefer the scripts over doing this by hand.** `scripts/scan/run_all.py` does the
+> EVM sweep mechanically, driven by that same JSON, and filters to real x402
+> payments by method selector instead of counting wallet transactions. Reach for
+> this skill only for the chain families the scripts do not cover yet.
+>
+> **Never hardcode an explorer domain here.** The list above drifted once already:
+> it pointed at `skale-base.explorer.skalenodes.com`, which stopped resolving, and
+> every SKALE link produced from it was dead while looking perfectly valid.
+
 ## Step 2: Deploy 5 Parallel Agents
 
 Launch all 5 agents in background using the Agent tool. Each agent receives the wallet addresses read in Step 1.
@@ -36,7 +45,7 @@ Launch all 5 agents in background using the Agent tool. Each agent receives the 
 - Also: `action=txlist` for total tx count including escrow/ERC-8004 operations
 
 **SKALE Base (Chain ID 1187947933):**
-- Blockscout: `skale-base.explorer.skalenodes.com/api/v2/addresses/{WALLET}/transactions`
+- Blockscout: `skale-base-explorer.skalenodes.com/api/v2/addresses/{WALLET}/transactions`
 - Note: SKALE escrow may be blocked on Cancun EVM support (TSTORE/TLOAD)
 
 ### Agent 2: Core EVM (Ethereum + Arbitrum + Polygon)

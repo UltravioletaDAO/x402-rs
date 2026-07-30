@@ -1,0 +1,24 @@
+{
+  "generatedAt": 1785445021,
+  "source": "on-chain scan of facilitator wallets",
+  "caveat": "Counts x402 settlements identified by method selector. This is a DIFFERENT number from the facilitator's own records: this one covers all history but only sees what the chain shows, while the store covers only since it was enabled but sees every operation including verifies. Do not add them together.",
+  "scanners": {
+    "EVM mainnets": {
+      "ok": true,
+      "file": "docs/reports/onchain-scan/evm-mainnets.json",
+      "payments": 1,
+      "networksScanned": 1,
+      "networksSkipped": 13
+    },
+    "EVM testnets": {
+      "ok": true,
+      "file": "docs/reports/onchain-scan/evm-testnets.json",
+      "payments": 0,
+      "networksScanned": 0,
+      "networksSkipped": 11
+    }
+  },
+  "totalPayments": 1,
+  "networksScanned": 1,
+  "networksSkipped": 24
+}

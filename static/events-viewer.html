@@ -92,7 +92,12 @@
 </p>
 
 <script>
-const URL_EVENTS = "https://facilitator.ultravioletadao.xyz/events";
+// Same-origin when served by the facilitator; the absolute URL is only needed
+// when this file is opened from somewhere else. Deriving it means the page works
+// unchanged on localhost, on staging and in production.
+const URL_EVENTS = (location.protocol === 'file:')
+  ? "https://facilitator.ultravioletadao.xyz/events"
+  : new URL("/events", location.origin).toString();
 
 const bar=document.getElementById('bar'), status=document.getElementById('status');
 const rows=document.getElementById('rows'), tbl=document.getElementById('tbl');

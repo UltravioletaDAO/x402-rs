@@ -1,5 +1,34 @@
 # Changelog
 
+## [1.62.0] - 2026-07-30
+
+### Feature — `/events/live` and `/stats`, served by the facilitator
+
+Two pages, baked into the binary like the landing page.
+
+`GET /events/live` is the live traffic viewer. It exists as a route rather than
+a file you open because Chrome and Brave treat `file://` as an opaque origin and
+block its cross-origin requests no matter what CORS headers the server sends — a
+viewer opened by double-click could never reach the stream. Served from the
+facilitator it is same-origin, and the page derives its stream URL from
+`location.origin` so it works unchanged on localhost, staging and production.
+
+`GET /stats` is the metrics page, deliberately its own page rather than another
+section of the landing page: that one is already a monolith, and someone reading
+throughput is asking a different question than someone evaluating the service.
+
+The page states what it measures **and what it does not**, because a dashboard
+that omits its own limits is how a number gets believed: counting starts when
+the store was enabled so earlier operations are unknown rather than zero;
+errored operations are never recorded so a 100% success rate means "no failures
+were recorded"; and the record is best-effort and written after the payment, so
+the chain stays authoritative.
+
+Volume is scaled with BigInt rather than `Number` — atomic amounts are
+u256-shaped and lose precision above 2^53, which would understate exactly the
+totals the page exists to show.
+
+
 ## [1.61.0] - 2026-07-30
 
 ### Feature — historical transaction store and `/api/stats`

@@ -129,6 +129,8 @@ a liveness `health` status from periodic probing, and a curated `tier`
         path_supported,
         path_version,
         path_events,
+        path_transactions,
+        path_api_stats,
         // ERC-8004 endpoints
         path_register_get,
         path_register_post,
@@ -618,6 +620,36 @@ to payers in `X402_EVENTS_ALLOWLIST`.",
     )
 )]
 async fn path_events() {}
+
+#[utoipa::path(
+    get,
+    path = "/transactions",
+    tag = "Discovery",
+    summary = "Recent operations the facilitator recorded",
+    description = "Recent verify/settle operations, newest first.\n\n**This is an index, not a ledger.** The record is written best-effort AFTER the operation resolved, so an unreachable store loses rows and never blocks a payment. The chain is authoritative; a row missing here does not mean the payment did not happen.\n\nCounting starts when the store was enabled — earlier operations are absent, not zero. `limit` is capped at 200.",
+    params(
+        ("limit" = Option<usize>, Query, description = "Rows to return (1-200, default 50)"),
+        ("network" = Option<String>, Query, description = "Canonical slug, e.g. `base`")
+    ),
+    responses(
+        (status = 200, description = "Recent operations", body = Object),
+        (status = 503, description = "Transaction store unavailable or not configured")
+    )
+)]
+async fn path_transactions() {}
+
+#[utoipa::path(
+    get,
+    path = "/api/stats",
+    tag = "Discovery",
+    summary = "Pre-aggregated totals per network and asset",
+    description = "Totals maintained on write, so the cost of this call does not grow with history — it never scans.\n\nTwo caveats travel in the response body because they change how the numbers should be read. **Operations that ERROR are not recorded at all**, so a 100% success rate means 'no failures were recorded', not 'no failures occurred'. And **counting began when the store was enabled**, so anything settled before that is unknown rather than zero.\n\n`volumeAtomic` is a STRING: these are u256-shaped values and a JSON number silently loses precision above 2^53.",
+    responses(
+        (status = 200, description = "Aggregated totals", body = Object),
+        (status = 503, description = "Store unavailable or not configured")
+    )
+)]
+async fn path_api_stats() {}
 
 // ============================================================================
 // ERC-8004 Endpoints

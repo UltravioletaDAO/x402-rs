@@ -116,6 +116,8 @@ where
     Router::new()
         .route("/", get(get_root))
         .route("/bazaar", get(get_bazaar))
+        .route("/events/live", get(get_events_viewer))
+        .route("/stats", get(get_stats_page))
         // Escrow state query endpoint
         .route("/escrow/state", post(post_escrow_state::<A>))
         // ERC-8004 Registration endpoints (GET info only; gas-spending POST writes are
@@ -907,6 +909,37 @@ fn discovery_error_response(error: DiscoveryError) -> Response {
 #[instrument(skip_all)]
 pub async fn get_root() -> impl IntoResponse {
     let html = include_str!("../static/index.html");
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "text/html; charset=utf-8")
+        .body(html.to_string())
+        .unwrap()
+}
+
+/// `GET /events/live`: the live traffic viewer.
+///
+/// Served from the binary rather than a local file because Chrome and Brave
+/// treat `file://` as an opaque origin and block its cross-origin requests
+/// regardless of CORS headers — a page opened by double-click could never
+/// connect to the stream.
+#[instrument(skip_all)]
+pub async fn get_events_viewer() -> impl IntoResponse {
+    let html = include_str!("../static/events-viewer.html");
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "text/html; charset=utf-8")
+        .body(html.to_string())
+        .unwrap()
+}
+
+/// `GET /stats`: aggregated metrics, human-readable.
+///
+/// Its own page rather than another section of the landing page: the landing
+/// page is already a monolith, and metrics are read by someone asking a
+/// different question than someone evaluating the service.
+#[instrument(skip_all)]
+pub async fn get_stats_page() -> impl IntoResponse {
+    let html = include_str!("../static/stats.html");
     Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "text/html; charset=utf-8")

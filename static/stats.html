@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>x402 · métricas del facilitador</title>
+<style>
+  :root{
+    --bg:#12101a; --panel:#1a1726; --line:#2c2740; --txt:#e8e4f5;
+    --dim:#8a83a6; --ok:#5ee6a8; --bad:#ff6b6b; --amber:#e0a53f; --uv:#b496ff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+       font:14px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  header{padding:18px 22px;background:var(--panel);border-bottom:1px solid var(--line);
+         display:flex;gap:16px;align-items:baseline;flex-wrap:wrap}
+  h1{font-size:16px;margin:0;color:var(--uv);font-weight:600}
+  h2{font-size:13px;margin:26px 0 10px;color:var(--dim);font-weight:500;
+     text-transform:uppercase;letter-spacing:.06em}
+  a{color:var(--amber)}
+  main{padding:0 22px 40px;max-width:1100px}
+  .cards{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));
+         margin-top:18px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px 16px}
+  .card .v{font-size:26px;font-weight:600;color:var(--ok);line-height:1.2}
+  .card .k{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+  .card .src{color:var(--dim);font-size:10px;margin-top:6px;opacity:.75}
+  table{width:100%;border-collapse:collapse;margin-top:8px}
+  th{text-align:left;color:var(--dim);font-weight:500;padding:7px 9px;font-size:11px;
+     border-bottom:1px solid var(--line);text-transform:uppercase;letter-spacing:.04em}
+  td{padding:7px 9px;border-bottom:1px solid #221e33}
+  td.num{text-align:right;font-variant-numeric:tabular-nums}
+  .warn{background:rgba(224,165,63,.08);border:1px solid rgba(224,165,63,.3);
+        border-radius:8px;padding:14px 16px;margin-top:22px;color:var(--dim);
+        line-height:1.7;max-width:80ch}
+  .warn b{color:var(--amber)}
+  #err{color:var(--bad);padding:16px 0}
+  .muted{color:var(--dim)}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>x402 · métricas del facilitador</h1>
+  <span class="muted">actualizado <b id="upd">—</b></span>
+  <a href="/events/live">ver en vivo →</a>
+</header>
+
+<main>
+  <div id="err" hidden></div>
+
+  <div class="cards" id="cards"></div>
+
+  <h2>Por red y token</h2>
+  <table>
+    <thead><tr>
+      <th>red</th><th>token</th>
+      <th class="num">settles ok</th><th class="num">settles fallidos</th>
+      <th class="num">verifies</th><th class="num">volumen (unidades atómicas)</th>
+      <th>último</th>
+    </tr></thead>
+    <tbody id="rows"><tr><td colspan="7" class="muted">cargando…</td></tr></tbody>
+  </table>
+
+  <div class="warn">
+    <b>Qué mide esta página, y qué no.</b> Todo lo de arriba viene de
+    <b>registros del facilitador</b>: lo que nosotros procesamos y alcanzamos a
+    escribir. No es la cadena.
+    <br><br>
+    <b>El conteo empieza cuando se encendió el registro</b>, no cuando nació el
+    facilitador. Lo que se liquidó antes no está acá y <em>no es cero</em>: es
+    desconocido. Para historia completa hace falta el barrido on-chain, que se
+    reporta aparte y nunca mezclado con estos números.
+    <br><br>
+    <b>Las operaciones que fallan con error no se registran</b>, así que una tasa
+    de éxito del 100% acá significa «no se registró ningún fallo», no «no hubo
+    fallos». Un riel que se ve sano en esta página no está probado sano.
+    <br><br>
+    <b>El registro es best-effort y posterior al pago.</b> Si DynamoDB no estaba
+    disponible, el pago igual ocurrió y la fila no existe. La cadena es la fuente
+    de verdad; esto es un índice.
+  </div>
+</main>
+
+<script>
+const fmt = n => Number(n).toLocaleString('es');
+const esc = s => String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+// Atomic units are u256-shaped and arrive as strings for that reason. Scaling
+// them with Number() would lose precision above 2^53, so the division is done
+// on the string with BigInt and only the small remainder becomes a float.
+function human(atomic, decimals){
+  try{
+    const v = BigInt(atomic), d = BigInt(10) ** BigInt(decimals);
+    const whole = v / d, frac = v % d;
+    return `${whole.toLocaleString('es')}.${frac.toString().padStart(decimals,'0').slice(0,2)}`;
+  }catch{ return atomic; }
+}
+
+function card(k, v, src){
+  return `<div class="card"><div class="k">${esc(k)}</div>
+          <div class="v">${esc(v)}</div>
+          <div class="src">${esc(src)}</div></div>`;
+}
+
+async function load(){
+  let data;
+  try{
+    const r = await fetch('/api/stats', {cache:'no-store'});
+    if(!r.ok) throw new Error(`HTTP ${r.status}`);
+    data = await r.json();
+  }catch(e){
+    document.getElementById('err').hidden = false;
+    // Say which failure this is. "No data" and "the store is off" look identical
+    // on a dashboard and mean completely different things.
+    document.getElementById('err').textContent =
+      `No se pudo leer /api/stats (${e.message}). Si el store no está configurado, `+
+      `el facilitador funciona igual pero no registra historia.`;
+    document.getElementById('rows').innerHTML =
+      '<tr><td colspan="7" class="muted">sin datos</td></tr>';
+    return;
+  }
+
+  const t = data.totals || {};
+  document.getElementById('cards').innerHTML =
+    card('settles ok', fmt(t.settlesOk||0), 'registros del facilitador') +
+    card('settles fallidos', fmt(t.settlesFailed||0), 'resueltos negativo, no errores') +
+    card('verifies', fmt(t.verifies||0), 'registros del facilitador') +
+    card('redes con actividad', fmt(t.networks||0), 'con al menos una operación');
+
+  const rows = (data.byNetworkAndAsset||[]).slice().sort((a,b)=>b.settlesOk-a.settlesOk);
+  document.getElementById('rows').innerHTML = rows.length ? rows.map(r=>`
+    <tr>
+      <td>${esc(r.network)}</td>
+      <td class="muted">${esc((r.asset||'').slice(0,10))}…</td>
+      <td class="num">${fmt(r.settlesOk)}</td>
+      <td class="num">${fmt(r.settlesFailed)}</td>
+      <td class="num">${fmt(r.verifies)}</td>
+      <td class="num" title="${esc(r.volumeAtomic)}">${esc(human(r.volumeAtomic,6))}</td>
+      <td class="muted">${r.lastTs?new Date(r.lastTs).toLocaleString('es'):'—'}</td>
+    </tr>`).join('')
+    : '<tr><td colspan="7" class="muted">sin operaciones registradas todavía</td></tr>';
+
+  document.getElementById('upd').textContent = new Date().toLocaleTimeString('es');
+}
+
+load();
+setInterval(load, 30_000);
+</script>
+</body>
+</html>

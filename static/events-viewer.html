@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>x402 · /events en vivo</title>
+<style>
+  :root{
+    --bg:#12101a; --panel:#1a1726; --line:#2c2740; --txt:#e8e4f5;
+    --dim:#8a83a6; --ok:#5ee6a8; --bad:#ff6b6b; --amber:#e0a53f; --uv:#b496ff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+       font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  header{display:flex;gap:14px;align-items:center;flex-wrap:wrap;
+         padding:10px 14px;background:var(--panel);border-bottom:1px solid var(--line);
+         position:sticky;top:0;z-index:2}
+  h1{font-size:14px;margin:0;font-weight:600;color:var(--uv)}
+  .dot{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:6px}
+  .live .dot{background:var(--ok);box-shadow:0 0 8px var(--ok)}
+  .down .dot{background:var(--bad)}
+  .wait .dot{background:var(--amber)}
+  #status{font-weight:600}
+  .stat{color:var(--dim)}
+  .stat b{color:var(--txt);font-weight:600}
+  button,select{background:#241f36;color:var(--txt);border:1px solid var(--line);
+                border-radius:5px;padding:4px 9px;font:inherit;cursor:pointer}
+  main{padding:10px 14px}
+  table{width:100%;border-collapse:collapse}
+  th{text-align:left;color:var(--dim);font-weight:500;padding:5px 8px;
+     border-bottom:1px solid var(--line);font-size:11px;text-transform:uppercase;
+     letter-spacing:.04em}
+  td{padding:5px 8px;border-bottom:1px solid #221e33;vertical-align:top;
+     white-space:nowrap}
+  tr.settle td{background:rgba(94,230,168,.05)}
+  .kind{font-weight:600}
+  .kind.settle{color:var(--ok)} .kind.verify{color:var(--uv)}
+  .no{color:var(--bad);font-weight:600}
+  a{color:var(--amber)}
+  .mono{color:var(--dim)}
+  .res{color:var(--uv);max-width:34ch;overflow:hidden;text-overflow:ellipsis}
+  pre{margin:0;padding:10px 14px;background:#0d0b14;border:1px solid var(--line);
+      border-radius:6px;overflow-x:auto;white-space:pre-wrap;word-break:break-all;
+      color:#c9c2e6;font-size:12px}
+  .hint{color:var(--dim);padding:10px 14px;line-height:1.7;max-width:78ch}
+  .hint b{color:var(--amber)}
+  #empty{color:var(--dim);padding:26px 14px;text-align:center}
+</style>
+</head>
+<body>
+
+<header id="bar" class="wait">
+  <h1>x402 · /events</h1>
+  <span id="status"><span class="dot"></span>conectando…</span>
+  <span class="stat">eventos <b id="n">0</b></span>
+  <span class="stat">settles <b id="ns">0</b></span>
+  <span class="stat">último <b id="last">—</b></span>
+  <select id="view">
+    <option value="table">tabla</option>
+    <option value="raw">raw (tal cual el cable)</option>
+  </select>
+  <button id="clear">limpiar</button>
+  <button id="pause">pausar</button>
+</header>
+
+<main>
+  <div id="empty">
+    Conectado y esperando. <b>Silencio no es falla</b> — el riel mide ~1,3 settles/min
+    y tiene tramos de media hora en cero.
+  </div>
+  <table id="tbl" hidden>
+    <thead><tr>
+      <th>hora</th><th>tipo</th><th>red</th><th>ok</th><th>endpoint</th>
+      <th>vendedor</th><th>payer</th><th>monto</th><th>tx</th>
+    </tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <pre id="raw" hidden></pre>
+</main>
+
+<p class="hint">
+  <b>Lo que esta página NO puede mostrarte:</b> los keepalive. El facilitador manda un
+  comentario SSE cada 15 s para sostener la conexión, pero <code>EventSource</code> no
+  los expone a JavaScript. Por eso el indicador de arriba es lo único que distingue
+  «no está pasando nada» de «se cayó la conexión» — míralo a él, no a la lista vacía.
+  <br><br>
+  <b>El stream es lossy a propósito:</b> nunca frena ni hace fallar un pago para que un
+  observador se ponga al día. Un evento que ocurrió mientras no estabas conectado no
+  existe en ningún lado. Sirve como pista en vivo, <b>no como libro contable</b> —
+  la cadena es la fuente de verdad. Y las operaciones que <em>fallan</em> no se publican,
+  así que un riel que se ve sano aquí no está probado sano.
+</p>
+
+<script>
+const URL_EVENTS = "https://facilitator.ultravioletadao.xyz/events";
+
+const bar=document.getElementById('bar'), status=document.getElementById('status');
+const rows=document.getElementById('rows'), tbl=document.getElementById('tbl');
+const raw=document.getElementById('raw'), empty=document.getElementById('empty');
+const nEl=document.getElementById('n'), nsEl=document.getElementById('ns');
+const lastEl=document.getElementById('last'), view=document.getElementById('view');
+let n=0, ns=0, paused=false, lastTs=null;
+
+// Explorers verified reachable 2026-07-28. A dead explorer link makes a real
+// transaction look fabricated, so an unknown chain gets NO link rather than a guess.
+const EXPLORER={
+  base:"https://basescan.org", ethereum:"https://etherscan.io",
+  polygon:"https://polygonscan.com", arbitrum:"https://arbiscan.io",
+  optimism:"https://optimistic.etherscan.io", avalanche:"https://snowtrace.io",
+  celo:"https://celoscan.io", bsc:"https://bscscan.com",
+  monad:"https://monadscan.com", hyperevm:"https://hyperevmscan.io",
+  scroll:"https://scrollscan.com", unichain:"https://uniscan.xyz",
+  "skale-base":"https://skale-base-explorer.skalenodes.com",
+  "base-sepolia":"https://sepolia.basescan.org",
+};
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const short=s=>!s?'—':s.length>16?s.slice(0,8)+'…'+s.slice(-6):s;
+// Host + path, dropping the scheme: the host is what identifies the seller at a
+// glance and "https://" wastes a third of the column on every row.
+const shortUrl=u=>{
+  if(!u) return '—';
+  try{const x=new URL(u);const p=x.pathname==='/'?'':x.pathname;
+      const s=x.host+p;return s.length>38?s.slice(0,36)+'…':s;}
+  catch{return u.length>38?u.slice(0,36)+'…':u;}
+};
+
+function setState(cls,text){bar.className=cls;status.innerHTML='<span class="dot"></span>'+text;}
+
+function render(kind,data,rawLine){
+  if(paused) return;
+  n++; if(kind==='settle') ns++;
+  nEl.textContent=n; nsEl.textContent=ns;
+  const t=new Date(data.ts||Date.now());
+  lastTs=t; lastEl.textContent=t.toLocaleTimeString();
+  empty.hidden=true;
+
+  raw.textContent = rawLine + "\n" + raw.textContent;
+
+  const link = data.tx && EXPLORER[data.network]
+    ? `<a href="${EXPLORER[data.network]}/tx/${esc(data.tx)}" target="_blank" rel="noopener">${esc(short(data.tx))}</a>`
+    : esc(short(data.tx));
+  const tr=document.createElement('tr');
+  if(kind==='settle') tr.className='settle';
+  // The endpoint is the point of this column: two 1-USDC settles are
+  // indistinguishable until you can see WHAT was bought.
+  const res = data.resource
+    ? `<span title="${esc(data.resource)}">${esc(shortUrl(data.resource))}</span>`
+    : '—';
+  tr.innerHTML =
+    `<td class="mono">${t.toLocaleTimeString()}</td>`+
+    `<td class="kind ${esc(kind)}">${esc(kind)}</td>`+
+    `<td>${esc(data.network||'—')}</td>`+
+    `<td>${data.ok===false?'<span class="no">NO</span>':'ok'}</td>`+
+    `<td class="res">${res}</td>`+
+    `<td class="mono">${esc(short(data.payTo))}</td>`+
+    `<td class="mono">${esc(short(data.payer))}</td>`+
+    `<td>${esc(data.amount||'—')}</td>`+
+    `<td class="mono">${link}</td>`;
+  rows.prepend(tr);
+  while(rows.children.length>500) rows.lastChild.remove();
+  tbl.hidden=false;
+}
+
+function connect(){
+  setState('wait','conectando…');
+  const es=new EventSource(URL_EVENTS);
+  es.onopen=()=>setState('live','en vivo');
+  // EventSource cannot see the `:` keepalive comments, so "quiet" and "dead"
+  // look identical in the list. The connection state is the only honest signal.
+  es.onerror=()=>setState('down','sin conexión · reintentando…');
+  for(const kind of ['settle','verify']){
+    es.addEventListener(kind,msg=>{
+      let d; try{ d=JSON.parse(msg.data);}catch{ return; }
+      render(kind,d,`event: ${kind}\ndata: ${msg.data}\n`);
+    });
+  }
+}
+
+view.onchange=()=>{const r=view.value==='raw';raw.hidden=!r;tbl.hidden=r||!n;};
+document.getElementById('clear').onclick=()=>{
+  rows.innerHTML='';raw.textContent='';n=0;ns=0;
+  nEl.textContent=0;nsEl.textContent=0;lastEl.textContent='—';
+  tbl.hidden=true;empty.hidden=false;
+};
+document.getElementById('pause').onclick=e=>{
+  paused=!paused;e.target.textContent=paused?'reanudar':'pausar';
+};
+connect();
+</script>
+</body>
+</html>

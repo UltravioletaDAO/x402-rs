@@ -1,5 +1,35 @@
 # Changelog
 
+## [1.60.0] - 2026-07-30
+
+### Feature — events now say WHAT was bought, not just how much
+
+`resource`, `payTo`, `description` and `scheme` are added to every traffic event.
+The facilitator already had all four at publish time — they were simply not
+emitted.
+
+The gap was visible the moment anyone watched the stream: two 1-USDC settles on
+Base look identical, and the amount alone never says which endpoint was paid for
+or which seller received it. That is the first question anyone asks of a payment
+feed and it could not be answered.
+
+**This is a deliberate step up in exposure**, taken with the tradeoff on the
+table: the stream is public and unauthenticated, so it now shows that a given
+wallet bought a given thing from a given seller, not merely that a payment
+happened. Reversible without a deploy — `X402_EVENTS_DETAIL=minimal` drops the
+new fields along with the old ones, and `redacted()` was extended so the privacy
+dial keeps meaning what it says.
+
+Serialisation is now explicitly camelCase (`payTo`). Every other field is a
+single word so nothing else changes on the wire, but shipping `pay_to` beside
+the camelCase of the rest of the protocol would have forced consumers to
+special-case us. Pinned by a test that asserts the serialised JSON rather than
+the Rust field names, and that absent fields are *omitted* rather than sent as
+null.
+
+Both SDKs carry the fields (PyPI 0.32.0, npm 2.45.0), and the events viewer
+shows endpoint and seller as columns.
+
 ## [1.59.7] - 2026-07-29
 
 ### Fix — `/supported` advertised `upto` on five networks where it cannot settle

@@ -67,7 +67,13 @@ pub enum Scope {
 }
 
 /// One facilitator operation, as seen by an observer.
+///
+/// camelCase on the wire, like the rest of the x402 protocol. Every field except
+/// `pay_to` is a single word, so this only affects that one — but getting it
+/// wrong would ship `pay_to` next to `payTo` everywhere else, and consumers
+/// would have to special-case us.
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TrafficEvent {
     /// Epoch milliseconds UTC.
     pub ts: u64,
@@ -85,6 +91,23 @@ pub struct TrafficEvent {
     pub amount: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub asset: Option<String>,
+    /// The protected endpoint the payer is buying — `PaymentRequirements.resource`.
+    ///
+    /// Answers "what was bought", which amount alone never does. Note this is a
+    /// real exposure step: it turns "someone paid 1 USDC on Base" into "this
+    /// wallet bought THIS from THAT seller". Deliberate, and reversible without
+    /// a deploy through `X402_EVENTS_DETAIL=minimal`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource: Option<String>,
+    /// The seller being paid — `PaymentRequirements.pay_to`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pay_to: Option<String>,
+    /// Human-readable description the seller advertised.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Payment scheme: `exact`, `escrow`, `commerce`, `upto`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scheme: Option<String>,
 }
 
 impl TrafficEvent {
@@ -94,6 +117,13 @@ impl TrafficEvent {
         self.tx = None;
         self.amount = None;
         self.asset = None;
+        // `resource` and `pay_to` identify WHAT was bought and FROM WHOM, which
+        // is more revealing than the amount ever was. Minimal mode has to drop
+        // them or the privacy dial stops meaning what it says.
+        self.resource = None;
+        self.pay_to = None;
+        self.description = None;
+        self.scheme = None;
         self
     }
 }
@@ -255,6 +285,10 @@ mod tests {
             tx: Some("0xdeadbeef".into()),
             amount: Some("0.02".into()),
             asset: Some("usdc".into()),
+            resource: Some("https://api.example.com/thing".into()),
+            pay_to: Some("0xseller".into()),
+            description: Some("A thing".into()),
+            scheme: Some("exact".into()),
         }
     }
 
@@ -331,6 +365,32 @@ mod tests {
         assert_eq!(
             (got.kind, got.network.as_str(), got.ok),
             ("settle", "base", true)
+        );
+    }
+
+    /// The wire contract, asserted on the serialised form rather than the struct:
+    /// consumers read JSON, not Rust field names.
+    #[test]
+    fn serialises_camelcase_and_omits_absent_fields() {
+        let json = serde_json::to_string(&ev(Some("0xabc"))).expect("serialises");
+        assert!(
+            json.contains("\"payTo\""),
+            "pay_to must go out as payTo: {json}"
+        );
+        assert!(
+            !json.contains("pay_to"),
+            "snake_case leaked to the wire: {json}"
+        );
+
+        let mut bare = ev(None);
+        bare.resource = None;
+        bare.pay_to = None;
+        let json = serde_json::to_string(&bare).expect("serialises");
+        // Absent means ABSENT, never null — a consumer checking `"payTo" in ev`
+        // must not see a key whose value is null.
+        assert!(
+            !json.contains("payTo"),
+            "absent field emitted as null: {json}"
         );
     }
 

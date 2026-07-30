@@ -1793,6 +1793,10 @@ where
                         .to_string(),
                 ),
                 asset: Some(v1_request.payment_requirements.asset.to_string()),
+                resource: Some(v1_request.payment_requirements.resource.to_string()),
+                pay_to: Some(v1_request.payment_requirements.pay_to.to_string()),
+                description: Some(v1_request.payment_requirements.description.clone()),
+                scheme: Some(v1_request.payment_requirements.scheme.to_string()),
             });
             (StatusCode::OK, Json(valid_response)).into_response()
         }
@@ -2514,6 +2518,13 @@ where
                 tx: valid_response.transaction.as_ref().map(|t| t.to_string()),
                 amount: Some(body.payment_requirements.max_amount_required.to_string()),
                 asset: Some(body.payment_requirements.asset.to_string()),
+                // What was bought, and from whom. The amount alone never said
+                // that, which made the stream hard to reason about: two 1-USDC
+                // settles look identical until you can see the endpoint.
+                resource: Some(body.payment_requirements.resource.to_string()),
+                pay_to: Some(body.payment_requirements.pay_to.to_string()),
+                description: Some(body.payment_requirements.description.clone()),
+                scheme: Some(body.payment_requirements.scheme.to_string()),
             });
             // Log successful settlement with details
             if valid_response.success {

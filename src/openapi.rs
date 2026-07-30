@@ -606,7 +606,11 @@ to payers in `X402_EVENTS_ALLOWLIST`.",
                 "payer": "0x...",
                 "tx": "0x...",
                 "amount": "20000",
-                "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+                "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+                "resource": "https://api.example.com/premium-data",
+                "payTo": "0x...",
+                "description": "Premium data feed",
+                "scheme": "exact"
             })
         ),
         (status = 404, description = "Stream disabled by the operator (X402_EVENTS_ENABLED=false)"),

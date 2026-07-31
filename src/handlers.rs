@@ -408,6 +408,29 @@ struct AltRequestFields {
     resource: Option<String>,
 }
 
+/// Reduce whatever the caller wrote to the ONE name the rest of the system uses.
+///
+/// The alternate schemes read their network straight off the request, and x402
+/// accepts three spellings of the same chain: the canonical name (`base`), the
+/// CAIP-2 id (`eip155:8453`) and the inbound-only aliases `FromStr` tolerates.
+/// `/api/stats` keys its rows on this string, so leaving them as sent split one
+/// chain into several rows and inflated the "networks with activity" count —
+/// observed in production the moment the first escrow verify was recorded.
+///
+/// An unrecognised value is passed through untouched rather than dropped: a
+/// chain we cannot name still happened, and hiding it would be worse than
+/// showing it under an odd label.
+fn canonical_network_name(raw: &str) -> String {
+    if let Some(n) = crate::network::Network::from_caip2(raw) {
+        return n.to_string();
+    }
+    // Display, never Debug — Debug renders `SkaleBase`, which matches nothing.
+    if let Ok(n) = raw.parse::<crate::network::Network>() {
+        return n.to_string();
+    }
+    raw.to_string()
+}
+
 fn alt_request_fields(json_value: &serde_json::Value) -> AltRequestFields {
     // Candidate objects, most specific first: v1 requirements, v2 `accepted`
     // (object or first element of the array), and finally the envelope itself
@@ -1858,7 +1881,8 @@ where
             // than a plausible-looking wrong one.
             network: fields
                 .network
-                .clone()
+                .as_deref()
+                .map(canonical_network_name)
                 .unwrap_or_else(|| "unknown".to_string()),
             ok,
             payer: None,
@@ -2529,7 +2553,8 @@ where
             kind: "settle",
             network: fields
                 .network
-                .clone()
+                .as_deref()
+                .map(canonical_network_name)
                 .unwrap_or_else(|| "unknown".to_string()),
             ok,
             payer: None,
@@ -2618,7 +2643,7 @@ where
                 Ok(upto_response) => {
                     info!("Upto settlement complete");
                     let mut d = detail(upto_response.success, scheme, None);
-                    d.network = upto_response.network.clone();
+                    d.network = canonical_network_name(&upto_response.network);
                     d.tx = Some(upto_response.transaction.clone());
                     d.payer = upto_response.payer.clone();
                     // upto settles a VARIABLE amount, so the figure that matters
@@ -7321,5 +7346,45 @@ mod failure_category_tests {
             let c = failure_category(debug);
             assert!(!c.contains("0x") && !c.contains("http") && !c.contains('('));
         }
+    }
+}
+
+#[cfg(test)]
+mod canonical_network_name_tests {
+    use super::canonical_network_name;
+
+    /// The bug this guards: `/api/stats` keys rows on this string, and the
+    /// alternate schemes take the network from the request, where the same
+    /// chain legitimately arrives under three different spellings. Left alone
+    /// they became three rows and a "networks with activity" count that
+    /// overstated reality — seen in production the first time an escrow verify
+    /// was recorded, as `base` AND `eip155:8453`.
+    #[test]
+    fn every_spelling_of_one_chain_collapses_to_one_name() {
+        let base = canonical_network_name("base");
+        assert_eq!(canonical_network_name("eip155:8453"), base);
+        assert_eq!(canonical_network_name("base"), base);
+    }
+
+    #[test]
+    fn caip2_is_resolved_for_more_than_one_family() {
+        assert_eq!(canonical_network_name("eip155:1"), "ethereum");
+        assert_eq!(canonical_network_name("eip155:137"), "polygon");
+    }
+
+    /// Inbound-only aliases are accepted by `FromStr` but must never be stored:
+    /// `Display` emits one name and the index has to agree with it.
+    #[test]
+    fn inbound_alias_is_stored_under_the_emitted_name() {
+        let canonical = canonical_network_name("skale-base");
+        assert_eq!(canonical_network_name("skale"), canonical);
+    }
+
+    /// A chain we cannot name still happened. Passing it through under an odd
+    /// label beats dropping the row and reporting a quieter, wrong total.
+    #[test]
+    fn unknown_network_survives_instead_of_vanishing() {
+        assert_eq!(canonical_network_name("eip155:999999999"), "eip155:999999999");
+        assert_eq!(canonical_network_name("unknown"), "unknown");
     }
 }

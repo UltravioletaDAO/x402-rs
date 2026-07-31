@@ -597,7 +597,11 @@ returns **503** with `Retry-After` once the concurrent-subscriber cap is reached
 when the operator has disabled it with `X402_EVENTS_ENABLED=false`.\n\n\
 Operators can narrow what is published without a code change: `X402_EVENTS_DETAIL=minimal` \
 drops `payer`/`tx`/`amount`/`asset`, and `X402_EVENTS_SCOPE=allowlist` restricts the stream \
-to payers in `X402_EVENTS_ALLOWLIST`.",
+to payers in `X402_EVENTS_ALLOWLIST`.\n\n\
+By default operations that ERROR are not published, so `ok:false` only ever means \
+\"resolved and came back negative\". Set `X402_EVENTS_PUBLISH_FAILURES=true` to emit them; \
+they carry an `error` field holding a bounded CATEGORY (`contract_revert`, \
+`invalid_signature`, `insufficient_funds`, …) and never the error text.",
     responses(
         (status = 200, description = "SSE stream of traffic events (`text/event-stream`)", body = Object,
             example = json!({

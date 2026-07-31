@@ -186,6 +186,100 @@ where
 /// `/feedback/response` is a real on-chain tx the facilitator EOA pays gas for.
 /// Without a per-IP limit these are an unbounded gas-treasury drain.
 
+/// Publish and record a failed operation, when the operator has opted in.
+///
+/// Off by default. Two guarantees preserved from the success path, because the
+/// error branch is exactly where a system is already in trouble and least able
+/// to absorb extra work: publishing is the LAST thing done, and it is
+/// infallible — a failed payment cannot be made worse by someone watching.
+#[allow(clippy::too_many_arguments)]
+fn publish_failure(
+    event_bus: &Arc<crate::events::EventBus>,
+    tx_store: &Arc<dyn crate::transaction_store::TransactionStore>,
+    kind: &'static str,
+    requirements: &crate::types::PaymentRequirements,
+    error_debug: &str,
+) {
+    if !event_bus.publish_failures() {
+        return;
+    }
+    let category = failure_category(error_debug);
+    let ts = crate::events::now_ms();
+    event_bus.publish(crate::events::TrafficEvent {
+        ts,
+        kind,
+        network: requirements.network.to_string(),
+        ok: false,
+        // No payer: on the error path we frequently do not have a trustworthy
+        // one — a bad signature recovers to a meaningless address, and
+        // publishing that would name an innocent party.
+        payer: None,
+        tx: None,
+        amount: Some(requirements.max_amount_required.to_string()),
+        asset: Some(requirements.asset.to_string()),
+        resource: Some(requirements.resource.to_string()),
+        pay_to: Some(requirements.pay_to.to_string()),
+        description: Some(requirements.description.clone()),
+        scheme: Some(requirements.scheme.to_string()),
+        error: Some(category),
+    });
+    record_transaction(
+        tx_store,
+        crate::transaction_store::TransactionRecord {
+            ts,
+            kind: kind.into(),
+            network: requirements.network.to_string(),
+            ok: false,
+            payer: None,
+            tx: None,
+            amount: Some(requirements.max_amount_required.to_string()),
+            asset: Some(requirements.asset.to_string()),
+            resource: Some(requirements.resource.to_string()),
+            pay_to: Some(requirements.pay_to.to_string()),
+            description: Some(requirements.description.clone()),
+            scheme: Some(requirements.scheme.to_string()),
+        },
+    );
+}
+
+/// Map a facilitator error to a BOUNDED category for publication.
+///
+/// Classifies on the DEBUG VARIANT NAME, not on the message text. The handlers
+/// are generic over `A::Error`, so the concrete enum is not in scope here — but
+/// `{:?}` on any of these errors starts with the variant identifier, which is
+/// far more stable than the human-readable message someone will inevitably
+/// reword.
+///
+/// Deliberately lossy, and that is the point. The raw error carries addresses,
+/// and `ContractCall` wraps the transport error verbatim — which on a bad day
+/// is an RPC URL with the API key inside it. `src/redact.rs` exists because
+/// exactly that leaked once. So the stream gets a closed set of strings that
+/// cannot contain either.
+///
+/// The cost is real and worth stating: `rpc_error` does not say WHICH rpc. That
+/// detail stays in the logs, where it is not world-readable.
+fn failure_category(debug: &str) -> &'static str {
+    let variant = debug.split(['(', ' ', '{']).next().unwrap_or("");
+    match variant {
+        "ContractCall" => "contract_revert",
+        "InvalidSignature" => "invalid_signature",
+        "InsufficientFunds" => "insufficient_funds",
+        "InsufficientValue" => "insufficient_value",
+        "InvalidTiming" => "invalid_timing",
+        "BlockedAddress" => "blocked_address",
+        "UnsupportedNetwork" => "unsupported_network",
+        "NetworkMismatch" => "network_mismatch",
+        "SchemeMismatch" => "scheme_mismatch",
+        "ReceiverMismatch" => "receiver_mismatch",
+        "InvalidAddress" => "invalid_address",
+        "DecodingError" => "decoding_error",
+        "ClockError" => "clock_error",
+        // Anything unrecognised falls here rather than being echoed. A new
+        // variant becomes "other" instead of leaking its payload.
+        _ => "other",
+    }
+}
+
 /// Persist one operation, off the request path.
 ///
 /// Spawned rather than awaited: `record` makes two DynamoDB round trips, and
@@ -1852,6 +1946,7 @@ where
                 pay_to: Some(v1_request.payment_requirements.pay_to.to_string()),
                 description: Some(v1_request.payment_requirements.description.clone()),
                 scheme: Some(v1_request.payment_requirements.scheme.to_string()),
+                error: None,
             });
             record_transaction(
                 &tx_store,
@@ -1883,6 +1978,13 @@ where
                 version = ?version,
                 body = %serde_json::to_string(&v1_request).unwrap_or_else(|_| "<can-not-serialize>".to_string()),
                 "Verification failed"
+            );
+            publish_failure(
+                &event_bus,
+                &tx_store,
+                "verify",
+                &v1_request.payment_requirements,
+                &format!("{error:?}"),
             );
             error.into_response()
         }
@@ -2603,6 +2705,7 @@ where
                 pay_to: Some(body.payment_requirements.pay_to.to_string()),
                 description: Some(body.payment_requirements.description.clone()),
                 scheme: Some(body.payment_requirements.scheme.to_string()),
+                error: None,
             });
             record_transaction(
                 &tx_store,
@@ -2759,6 +2862,13 @@ where
                 error = ?error,
                 body = %serde_json::to_string(&body).unwrap_or_else(|_| "<can-not-serialize>".to_string()),
                 "Settlement failed"
+            );
+            publish_failure(
+                &event_bus,
+                &tx_store,
+                "settle",
+                &body.payment_requirements,
+                &format!("{error:?}"),
             );
             error.into_response()
         }
@@ -6854,4 +6964,62 @@ pub async fn get_stats(
         })),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod failure_category_tests {
+    use super::failure_category;
+
+    /// Classification keys on the variant NAME, which survives a reworded
+    /// message. Keying on the message text would silently degrade every
+    /// category to "other" the first time someone improved an error string.
+    #[test]
+    fn classifies_by_variant_not_by_message() {
+        assert_eq!(
+            failure_category(r#"InvalidSignature(0xabc, "recovered 0xdef, expected 0xabc")"#),
+            "invalid_signature"
+        );
+        assert_eq!(
+            failure_category(r#"InvalidSignature(0xabc, "totally different wording")"#),
+            "invalid_signature"
+        );
+    }
+
+    /// The reason this function exists. A ContractCall error wraps the raw
+    /// transport error, which has carried an RPC URL with an API key in it.
+    #[test]
+    fn never_returns_anything_derived_from_the_payload() {
+        let leaky = r#"ContractCall("TransportError(https://rpc.example/v1/SECRET_KEY_HERE)")"#;
+        let category = failure_category(leaky);
+        assert_eq!(category, "contract_revert");
+        assert!(!category.contains("SECRET"), "the key must not survive");
+        assert!(!category.contains("http"), "no URL may survive");
+    }
+
+    /// An unrecognised variant degrades to "other" rather than echoing itself.
+    /// A future error type must not be able to leak by simply being new.
+    #[test]
+    fn unknown_variants_become_other() {
+        assert_eq!(failure_category("SomeFutureError(0xdeadbeef)"), "other");
+        assert_eq!(failure_category(""), "other");
+    }
+
+    /// Every category is a closed-set literal with no address or URL shape.
+    #[test]
+    fn every_category_is_safe_to_broadcast() {
+        for debug in [
+            "ContractCall(x)",
+            "InvalidSignature(x)",
+            "InsufficientFunds(x)",
+            "InvalidTiming(x)",
+            "BlockedAddress(x)",
+            "UnsupportedNetwork(x)",
+            "DecodingError(x)",
+            "ClockError(x)",
+            "Whatever(x)",
+        ] {
+            let c = failure_category(debug);
+            assert!(!c.contains("0x") && !c.contains("http") && !c.contains('('));
+        }
+    }
 }

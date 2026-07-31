@@ -171,7 +171,38 @@ curl http://localhost:8080/
 | `/discovery/stats` | GET | Bazaar totals by source, network, tier and health |
 | `/discovery/register` | POST | Register a paid endpoint |
 | `/bazaar` | GET | Visual Bazaar explorer (HTML) |
+| `/events` | GET | Live traffic stream (SSE), one message per verify/settle |
+| `/events/live` | GET | Watch the stream in a browser (HTML) |
+| `/stats` | GET | Aggregated metrics (HTML) |
+| `/api/stats` | GET | Totals per network and asset (JSON) |
+| `/transactions` | GET | Recent recorded operations (JSON) |
 | `/docs` | GET | Interactive Swagger UI |
+
+### Live traffic and metrics
+
+Watch payments as they settle:
+
+```bash
+curl -N https://facilitator.ultravioletadao.xyz/events
+```
+
+Or open **[/events/live](https://facilitator.ultravioletadao.xyz/events/live)** in a
+browser. Each message names the network, the endpoint being bought, the seller,
+the amount and — on a settle — the transaction hash.
+
+Totals live at **[/stats](https://facilitator.ultravioletadao.xyz/stats)**
+(`/api/stats` for JSON).
+
+> **Neither of these is a ledger — the chain is.** The stream is *lossy by
+> design*: it will never slow down or fail a payment to keep an observer in
+> sync, so an event you were not connected for does not exist anywhere, and
+> **absence is not evidence that nothing happened**. The stored records are
+> written best-effort *after* settlement, so an outage loses rows without
+> affecting payments. Verify anything that matters against the transaction hash.
+>
+> By default, operations that **error** are published nowhere, so a 100% success
+> rate means "no failures were recorded" rather than "no failures occurred".
+> Operators can turn that on with `X402_EVENTS_PUBLISH_FAILURES=true`.
 
 ### Example: Check supported networks
 

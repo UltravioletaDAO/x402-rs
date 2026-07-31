@@ -1,5 +1,47 @@
 # Changelog
 
+## [1.63.0] - 2026-07-30
+
+### Feature — publishing failed operations, behind a switch
+
+`X402_EVENTS_PUBLISH_FAILURES` (default `false`). When on, operations that
+*error* — RPC down, bad signature, contract revert — reach both the stream and
+the store instead of vanishing.
+
+Until now `ok:false` could only mean "resolved and came back negative", never
+"blew up", so a 100% success rate meant *"no failures were recorded"*. That is a
+much weaker claim than it looks, and it was the difference between a rail that
+looks healthy and one that is.
+
+Failures carry an `error` field holding a **bounded category**
+(`contract_revert`, `invalid_signature`, `insufficient_funds`, …) and never the
+error text. That is not tidiness: `ContractCall` wraps the transport error
+verbatim, which on a bad day is an RPC URL with the API key inside it —
+`src/redact.rs` exists because exactly that leaked once. Classification keys on
+the Debug **variant name**, not the message, so a reworded error does not
+silently degrade every category to `other`; an unrecognised variant becomes
+`other` rather than echoing itself.
+
+No payer is published on the error path. A bad signature recovers to a
+meaningless address, and broadcasting it would name an innocent party.
+
+`error` deliberately survives `DETAIL=minimal`: it holds no counterparty data,
+and stripping it would leave minimal mode unable to answer the one question it
+is still good for.
+
+### Docs — the endpoints added in 1.60–1.62 were never documented
+
+`README.md`, `static/index.html` and `CLAUDE.md` did not mention `/events`,
+`/events/live`, `/stats`, `/api/stats` or `/transactions`. Only `openapi.rs` had
+been updated, so the pages existed for anyone who already knew they existed.
+
+All three now carry them, with the caveats attached rather than buried: neither
+the stream nor the store is a ledger, the stream is lossy so absence proves
+nothing, and while failure publishing is off a 100% success rate means "none
+were recorded". The landing page links **Stats** and **En vivo** from the header
+and footer.
+
+
 ## [1.62.0] - 2026-07-30
 
 ### Feature — `/events/live` and `/stats`, served by the facilitator

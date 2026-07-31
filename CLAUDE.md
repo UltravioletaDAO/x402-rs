@@ -638,9 +638,47 @@ The following networks exist in `src/network.rs` but are **NOT active priorities
 - `GET /settle` - Settlement schema
 - `POST /settle` - Settle payment on-chain (accepts both v1 and v2 request formats)
 - `POST /accepts` - Negotiate payment requirements (Faremeter middleware compatibility, enriches with feePayer/tokens/escrow)
+- `GET /events` - Live traffic stream (SSE), one message per verify/settle
+- `GET /events/live` - HTML viewer for the stream
+- `GET /stats` - Aggregated metrics page (HTML)
+- `GET /api/stats` - Aggregated totals per network and asset (JSON)
+- `GET /transactions` - Recent recorded operations (JSON, `limit` capped at 200)
 - `GET /docs` - Interactive Swagger UI (OpenAPI documentation)
 - `GET /api-docs/openapi.json` - Raw OpenAPI 3.0 JSON spec (version auto-syncs from Cargo.toml)
 - Asset endpoints: `/logo.png`, `/favicon.ico`, `/avalanche.png`, etc.
+
+### Traffic stream and metrics (v1.60.0+)
+
+`/events` publishes one SSE message per operation; `/transactions` and
+`/api/stats` read a DynamoDB index of the same operations.
+
+**Neither is a ledger — the chain is.** The record is written fire-and-forget
+*after* settlement resolves, so an unreachable store loses rows and never blocks
+a payment. Say this out loud whenever a number from these endpoints is quoted.
+
+Config (all optional, safe defaults):
+
+| Variable | Default | Notes |
+|---|---|---|
+| `X402_EVENTS_ENABLED` | `true` | `false` → `/events` 404s |
+| `X402_EVENTS_DETAIL` | `full` | `minimal` = only `{ts, kind, network, ok, error}` |
+| `X402_EVENTS_SCOPE` | `all` | `allowlist` = only payers in `X402_EVENTS_ALLOWLIST` |
+| `X402_EVENTS_MAX_SUBSCRIBERS` | `64` | at the cap `/events` returns 503 + `Retry-After` |
+| `X402_EVENTS_PUBLISH_FAILURES` | `false` | publish operations that ERRORED |
+| `TRANSACTIONS_TABLE_NAME` | *(unset)* | unset → nothing is recorded, payments unaffected |
+| `TRANSACTIONS_TTL_DAYS` | `90` | `0` keeps records forever; aggregates never expire |
+
+**`X402_EVENTS_PUBLISH_FAILURES` matters for how the numbers read.** While it is
+`false`, an operation that errors produces neither an event nor a row, so a 100%
+success rate means *"no failures were recorded"*, not *"no failures occurred"*.
+When failures are published they carry a **bounded category** (`contract_revert`,
+`invalid_signature`, …) and never the error text — raw errors carry addresses and
+sometimes RPC URLs with keys in them.
+
+**Adding a network?** It joins `/events` and the store for free. But
+`upto` is advertised only where the Permit2 proxy is actually deployed — see
+`UPTO_DEPLOYED_NETWORKS` in `src/upto/types.rs` and verify with `eth_getCode`
+against **two** independent RPCs before adding an entry.
 
 ### x402 Protocol v2 Support (v1.8.0+)
 

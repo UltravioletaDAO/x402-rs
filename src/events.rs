@@ -33,6 +33,7 @@ const ENV_ALLOWLIST: &str = "X402_EVENTS_ALLOWLIST";
 const ENV_DETAIL: &str = "X402_EVENTS_DETAIL";
 const ENV_BUFFER: &str = "X402_EVENTS_BUFFER";
 const ENV_MAX_SUBSCRIBERS: &str = "X402_EVENTS_MAX_SUBSCRIBERS";
+const ENV_PUBLISH_FAILURES: &str = "X402_EVENTS_PUBLISH_FAILURES";
 
 const DEFAULT_BUFFER: usize = 256;
 /// Concurrent SSE subscribers allowed. `/events` is public and unauthenticated, and
@@ -108,6 +109,15 @@ pub struct TrafficEvent {
     /// Payment scheme: `exact`, `escrow`, `commerce`, `upto`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scheme: Option<String>,
+    /// Why the operation failed, as a BOUNDED CATEGORY — never the error text.
+    ///
+    /// Present only on operations that errored, and only when the operator has
+    /// enabled failure publishing. The category is a closed set precisely so
+    /// this field cannot leak: raw error strings carry addresses and sometimes
+    /// RPC URLs with the API key inside them, which is why `src/redact.rs`
+    /// exists at all.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<&'static str>,
 }
 
 impl TrafficEvent {
@@ -124,6 +134,10 @@ impl TrafficEvent {
         self.pay_to = None;
         self.description = None;
         self.scheme = None;
+        // `error` deliberately SURVIVES minimal mode. It is a closed-set category
+        // with no counterparty data in it, and stripping it would leave minimal
+        // mode unable to answer "is anything failing?" — the one question it is
+        // still useful for.
         self
     }
 }
@@ -136,6 +150,7 @@ pub struct EventBus {
     scope: Scope,
     detail: Detail,
     max_subscribers: usize,
+    publish_failures: bool,
 }
 
 impl EventBus {
@@ -186,6 +201,18 @@ impl EventBus {
             .filter(|n| *n > 0)
             .unwrap_or(DEFAULT_MAX_SUBSCRIBERS);
 
+        // Default OFF: turning this on widens what a public, unauthenticated
+        // stream broadcasts, so it has to be a decision someone makes rather
+        // than one they inherit from an upgrade.
+        let publish_failures = matches!(
+            env::var(ENV_PUBLISH_FAILURES)
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase()
+                .as_str(),
+            "1" | "true" | "yes" | "on"
+        );
+
         let (tx, _rx) = broadcast::channel(buffer);
         Self {
             tx,
@@ -193,7 +220,17 @@ impl EventBus {
             scope,
             detail,
             max_subscribers,
+            publish_failures,
         }
+    }
+
+    /// Are operations that ERRORED published?
+    ///
+    /// When false, `ok:false` can only ever mean "resolved and came back
+    /// negative", never "blew up" — so a 100% success rate means "no failures
+    /// were recorded", which is a weaker claim than it looks.
+    pub fn publish_failures(&self) -> bool {
+        self.publish_failures
     }
 
     /// Is the stream serving at all? `false` → `/events` 404s and nothing is published.
@@ -285,6 +322,7 @@ mod tests {
             tx: Some("0xdeadbeef".into()),
             amount: Some("0.02".into()),
             asset: Some("usdc".into()),
+            error: None,
             resource: Some("https://api.example.com/thing".into()),
             pay_to: Some("0xseller".into()),
             description: Some("A thing".into()),
@@ -304,6 +342,7 @@ mod tests {
             scope,
             detail,
             max_subscribers,
+            publish_failures: false,
         }
     }
 
@@ -392,6 +431,54 @@ mod tests {
             !json.contains("payTo"),
             "absent field emitted as null: {json}"
         );
+    }
+
+    /// The category, not the message. Raw error text carries addresses and
+    /// sometimes RPC URLs with keys inside; redact.rs exists because that
+    /// already leaked once.
+    #[test]
+    fn error_category_is_a_closed_set_never_free_text() {
+        for variant in [
+            "rpc_error",
+            "invalid_signature",
+            "insufficient_funds",
+            "contract_revert",
+            "invalid_timing",
+            "blocked_address",
+            "unsupported_network",
+            "other",
+        ] {
+            assert!(
+                !variant.contains("0x"),
+                "a category must never embed an address"
+            );
+            assert!(
+                !variant.contains("http"),
+                "a category must never embed a URL"
+            );
+        }
+    }
+
+    /// Minimal mode strips identity, not health. Dropping `error` too would
+    /// leave minimal unable to answer the one question it is still good for.
+    #[test]
+    fn minimal_keeps_the_error_category() {
+        let b = bus(true, Scope::All, Detail::Minimal);
+        let mut rx = b.subscribe();
+        let mut e = ev(Some("0xabc"));
+        e.ok = false;
+        e.error = Some("rpc_error");
+        b.publish(e);
+        let got = rx.try_recv().unwrap();
+        assert_eq!(got.error, Some("rpc_error"));
+        assert!(got.payer.is_none(), "identity must still be stripped");
+    }
+
+    #[test]
+    fn publishing_failures_is_off_unless_asked() {
+        // Enabling it widens what a public stream broadcasts, so it must never
+        // arrive as a side effect of an upgrade.
+        assert!(!EventBus::from_env().publish_failures());
     }
 
     #[test]

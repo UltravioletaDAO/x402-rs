@@ -1,5 +1,35 @@
 # Changelog
 
+## [1.64.0] - 2026-07-30
+
+### Fix — USDC is 18 decimals on BSC, and two places assumed 6
+
+`/api/stats` now returns `decimals` per row, resolved against the actual
+deployment via the new `network::decimals_for_asset`.
+
+Decimals are a property of a **deployment**, not of a token. USDC is 6 nearly
+everywhere and **18 on BSC** — the deployment table had it right, with a comment
+saying so. Two things did not:
+
+- **`/stats` hardcoded 6.** On BSC it would have displayed a volume 10^12 too
+  large — a metrics page wrong by twelve orders of magnitude while looking
+  entirely plausible. Invisible today only because the only recorded volume is on
+  Base, which is 6.
+- **`TokenType::decimals()` asserted "All supported stablecoins use 6 decimals"**
+  in its doc comment, contradicting the data three files away. It is only called
+  from tests, so nothing shipped wrong — but a typed constant reads as
+  authoritative, which makes a wrong one worse than none. The doc now says it is
+  a default that is wrong on BSC and points at the deployment-aware resolver.
+
+Serving `decimals` from the API is the actual fix: every consumer joining
+against `/supported` and scaling by hand is one more place to make the same
+mistake. `null` means the asset is unregistered, and the honest render is the
+atomic value — never a guessed scale.
+
+Found while answering a KarmaCadabra integration question, before they built a
+dashboard on the same assumption.
+
+
 ## [1.63.0] - 2026-07-30
 
 ### Feature — publishing failed operations, behind a switch

@@ -90,6 +90,12 @@ const esc = s => String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&g
 // them with Number() would lose precision above 2^53, so the division is done
 // on the string with BigInt and only the small remainder becomes a float.
 function human(atomic, decimals){
+  // decimals comes from the API per row, resolved against the actual deployment.
+  // It used to be hardcoded to 6 here, which was WRONG on BSC where USDC has 18
+  // — the page would have shown a volume 10^12 too large while looking entirely
+  // plausible. When the API cannot identify the asset it sends null, and the
+  // honest answer is the raw atomic value, not a guessed scale.
+  if(decimals === null || decimals === undefined) return atomic + ' (atómico)';
   try{
     const v = BigInt(atomic), d = BigInt(10) ** BigInt(decimals);
     const whole = v / d, frac = v % d;
@@ -136,7 +142,7 @@ async function load(){
       <td class="num">${fmt(r.settlesOk)}</td>
       <td class="num">${fmt(r.settlesFailed)}</td>
       <td class="num">${fmt(r.verifies)}</td>
-      <td class="num" title="${esc(r.volumeAtomic)}">${esc(human(r.volumeAtomic,6))}</td>
+      <td class="num" title="${esc(r.volumeAtomic)} atómico · decimals=${esc(r.decimals ?? 'desconocido')}">${esc(human(r.volumeAtomic, r.decimals))}</td>
       <td class="muted">${r.lastTs?new Date(r.lastTs).toLocaleString('es'):'—'}</td>
     </tr>`).join('')
     : '<tr><td colspan="7" class="muted">sin operaciones registradas todavía</td></tr>';

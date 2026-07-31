@@ -6954,6 +6954,14 @@ pub async fn get_stats(
                 // A string: these are u256-shaped and a JSON number silently
                 // loses precision past 2^53.
                 "volumeAtomic": a.volume_atomic.to_string(),
+                // Resolved per DEPLOYMENT, and served here so no consumer has to
+                // join against /supported and guess. USDC is 6 nearly everywhere
+                // and 18 on BSC; a client scaling by a constant is wrong there by
+                // 10^12, and wrong in the direction that looks impressive rather
+                // than broken. null means "we do not know this asset" -- render
+                // the atomic value rather than inventing a scale.
+                "decimals": a.network.parse::<crate::network::Network>().ok()
+                    .and_then(|n| crate::network::decimals_for_asset(n, &a.asset)),
                 "lastTs": a.last_ts,
             })).collect::<Vec<_>>(),
             "source": "facilitator records",

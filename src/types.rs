@@ -174,9 +174,23 @@ pub enum TokenType {
 }
 
 impl TokenType {
-    /// Returns the number of decimal places for this token.
+    /// The token's USUAL decimals — a default, not an authority.
     ///
-    /// All supported stablecoins use 6 decimals.
+    /// # This is wrong on BSC, and knowing that is the point
+    ///
+    /// Decimals are a property of a DEPLOYMENT, not of a token. USDC is 6
+    /// decimals nearly everywhere and **18 on BSC**, so this function returns
+    /// the wrong answer there by a factor of 10^12 — in the direction that makes
+    /// a total look enormous rather than obviously broken.
+    ///
+    /// This docstring used to assert "All supported stablecoins use 6 decimals".
+    /// That was false while the deployment table three files over already said
+    /// otherwise, with a comment. A typed constant reads as authoritative, which
+    /// makes a wrong one worse than no constant at all.
+    ///
+    /// **Prefer [`crate::network::decimals_for_asset`]**, which resolves against
+    /// the actual deployment. Use this only where the network genuinely is not
+    /// known, and treat the answer as a guess.
     #[must_use]
     pub const fn decimals(&self) -> u8 {
         match self {
@@ -2079,6 +2093,8 @@ mod tests {
     #[test]
     fn test_token_type_decimals() {
         // Standard 6 decimal tokens
+        // The USUAL value. See the doc comment: BSC USDC is 18, and this
+        // function cannot know that because it has no network.
         assert_eq!(TokenType::Usdc.decimals(), 6);
         assert_eq!(TokenType::Eurc.decimals(), 6);
         assert_eq!(TokenType::Ausd.decimals(), 6);

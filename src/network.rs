@@ -2041,6 +2041,28 @@ pub fn get_token_deployment(network: Network, token_type: TokenType) -> Option<T
     }
 }
 
+/// Decimals for the token deployed at `asset` on `network`.
+///
+/// **Use this, not `TokenType::decimals()`.** Decimals are a property of a
+/// DEPLOYMENT, not of a token: USDC is 6 decimals nearly everywhere and **18 on
+/// BSC**. Anything that scales an amount with a per-token constant is wrong on
+/// BSC by a factor of 10^12 — and wrong in the direction that makes a total look
+/// enormous rather than obviously broken.
+///
+/// Matching is case-insensitive because addresses reach us in mixed EIP-55
+/// checksum form from some clients and lowercased from others.
+///
+/// Returns `None` when the asset is not one we have registered, so a caller can
+/// say "unknown" instead of guessing 6 and being confidently wrong.
+pub fn decimals_for_asset(network: Network, asset: &str) -> Option<u8> {
+    let needle = asset.trim().to_ascii_lowercase();
+    TokenType::all().iter().find_map(|token_type| {
+        let deployment = get_token_deployment(network, *token_type)?;
+        (deployment.asset.address.to_string().to_ascii_lowercase() == needle)
+            .then_some(deployment.decimals)
+    })
+}
+
 /// Check if a token type is supported on a given network.
 ///
 /// # Example
@@ -2585,5 +2607,74 @@ mod tests {
         let deployment = get_token_deployment(Network::Base, TokenType::Usdc).unwrap();
         let address = deployment.address();
         assert!(matches!(address, MixedAddress::Evm(_)));
+    }
+}
+
+#[cfg(test)]
+mod decimals_resolution_tests {
+    use super::*;
+
+    /// The case the whole function exists for.
+    ///
+    /// USDC is 6 decimals nearly everywhere and 18 on BSC. A metrics page that
+    /// scales by a per-token constant reports BSC volume 10^12 times too large —
+    /// and it looks impressive rather than broken, which is why nobody catches
+    /// it by eye.
+    #[test]
+    fn usdc_is_eighteen_decimals_on_bsc_and_six_on_base() {
+        let bsc = get_token_deployment(Network::Bsc, TokenType::Usdc).expect("USDC on BSC");
+        let base = get_token_deployment(Network::Base, TokenType::Usdc).expect("USDC on Base");
+        assert_eq!(bsc.decimals, 18, "BSC USDC is 18 decimals");
+        assert_eq!(base.decimals, 6);
+
+        assert_eq!(
+            decimals_for_asset(Network::Bsc, &bsc.asset.address.to_string()),
+            Some(18)
+        );
+        assert_eq!(
+            decimals_for_asset(Network::Base, &base.asset.address.to_string()),
+            Some(6)
+        );
+    }
+
+    /// The per-token constant disagrees with the deployment, deliberately
+    /// documented as a default. Pinned so nobody "fixes" the deployment to match
+    /// the constant instead of the other way round.
+    #[test]
+    fn the_per_token_constant_disagrees_with_bsc_on_purpose() {
+        let bsc = get_token_deployment(Network::Bsc, TokenType::Usdc).unwrap();
+        assert_ne!(
+            u8::from(TokenType::Usdc.decimals()),
+            bsc.decimals,
+            "TokenType::decimals() cannot know the network; the deployment wins"
+        );
+    }
+
+    /// Addresses arrive EIP-55 checksummed from some clients and lowercased from
+    /// others. A case-sensitive match would return None for half of them and the
+    /// caller would render an unscaled atomic amount.
+    #[test]
+    fn asset_matching_ignores_address_case() {
+        let d = get_token_deployment(Network::Base, TokenType::Usdc).unwrap();
+        let addr = d.asset.address.to_string();
+        assert_eq!(
+            decimals_for_asset(Network::Base, &addr.to_lowercase()),
+            Some(6)
+        );
+        assert_eq!(
+            decimals_for_asset(Network::Base, &addr.to_uppercase().replace("0X", "0x")),
+            Some(6)
+        );
+    }
+
+    /// An unregistered asset yields None, never a guess. A caller that receives
+    /// None can show the atomic value; one that receives a fabricated 6 shows a
+    /// number that is wrong and looks fine.
+    #[test]
+    fn unknown_assets_return_none_rather_than_a_default() {
+        assert_eq!(
+            decimals_for_asset(Network::Base, "0x00000000000000000000000000000000deadbeef"),
+            None
+        );
     }
 }

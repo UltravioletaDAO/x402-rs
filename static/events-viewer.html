@@ -45,40 +45,49 @@
   .hint{color:var(--dim);padding:10px 14px;line-height:1.7;max-width:78ch}
   .hint b{color:var(--amber)}
   #empty{color:var(--dim);padding:26px 14px;text-align:center}
+  .langsw{margin-left:auto;display:flex;gap:4px}
+  .langsw button{padding:3px 8px;font-size:11px;opacity:.55}
+  .langsw button.active{opacity:1;border-color:var(--uv);color:var(--uv)}
 </style>
 </head>
 <body>
 
 <header id="bar" class="wait">
   <h1>x402 · /events</h1>
-  <span id="status"><span class="dot"></span>conectando…</span>
-  <span class="stat">eventos <b id="n">0</b></span>
+  <span id="status"><span class="dot"></span></span>
+  <span class="stat"><span data-i18n="events">eventos</span> <b id="n">0</b></span>
   <span class="stat">settles <b id="ns">0</b></span>
-  <span class="stat">último <b id="last">—</b></span>
+  <span class="stat"><span data-i18n="last">último</span> <b id="last">—</b></span>
   <select id="view">
-    <option value="table">tabla</option>
-    <option value="raw">raw (tal cual el cable)</option>
+    <option value="table" data-i18n="viewTable">tabla</option>
+    <option value="raw" data-i18n="viewRaw">raw (tal cual el cable)</option>
   </select>
-  <button id="clear">limpiar</button>
-  <button id="pause">pausar</button>
+  <button id="clear" data-i18n="clear">limpiar</button>
+  <button id="pause" data-i18n="pause">pausar</button>
+  <span class="langsw">
+    <button data-lang="en">EN</button><button data-lang="es">ES</button>
+  </span>
 </header>
 
 <main>
-  <div id="empty">
+  <div id="empty" data-i18n-html="empty">
     Conectado y esperando. <b>Silencio no es falla</b> — el riel mide ~1,3 settles/min
     y tiene tramos de media hora en cero.
   </div>
   <table id="tbl" hidden>
     <thead><tr>
-      <th>hora</th><th>tipo</th><th>red</th><th>ok</th><th>endpoint</th>
-      <th>vendedor</th><th>payer</th><th>monto</th><th>tx</th>
+      <th data-i18n="th.time">hora</th><th data-i18n="th.kind">tipo</th>
+      <th data-i18n="th.network">red</th><th data-i18n="th.ok">ok</th>
+      <th data-i18n="th.endpoint">endpoint</th><th data-i18n="th.seller">vendedor</th>
+      <th data-i18n="th.payer">payer</th><th data-i18n="th.amount">monto</th>
+      <th data-i18n="th.tx">tx</th>
     </tr></thead>
     <tbody id="rows"></tbody>
   </table>
   <pre id="raw" hidden></pre>
 </main>
 
-<p class="hint">
+<p class="hint" data-i18n-html="hint">
   <b>Lo que esta página NO puede mostrarte:</b> los keepalive. El facilitador manda un
   comentario SSE cada 15 s para sostener la conexión, pero <code>EventSource</code> no
   los expone a JavaScript. Por eso el indicador de arriba es lo único que distingue
@@ -92,6 +101,79 @@
 </p>
 
 <script>
+// ---------------------------------------------------------------------------
+// i18n. This page used to be Spanish-only while the landing that links to it
+// defaults to English, so an EN visitor clicking "Live" fell off a language
+// cliff. The chosen language is shared with the landing through one localStorage
+// key, so the choice survives navigation in both directions.
+// ---------------------------------------------------------------------------
+const I18N = {
+  en: {
+    title:"x402 · /events live", events:"events", last:"last",
+    viewTable:"table", viewRaw:"raw (straight off the wire)",
+    clear:"clear", pause:"pause", resume:"resume",
+    connecting:"connecting…", live:"live", down:"no connection · retrying…",
+    "th.time":"time","th.kind":"kind","th.network":"network","th.ok":"ok",
+    "th.endpoint":"endpoint","th.seller":"seller","th.payer":"payer",
+    "th.amount":"amount","th.tx":"tx",
+    empty:"Connected and waiting. <b>Silence is not a failure</b> — the rail measures "+
+          "~1.3 settles/min and goes half an hour at zero.",
+    hint:"<b>What this page CANNOT show you:</b> the keepalives. The facilitator sends an "+
+         "SSE comment every 15s to hold the connection open, but <code>EventSource</code> "+
+         "never exposes those to JavaScript. That is why the indicator above is the only "+
+         "thing separating «nothing is happening» from «the connection dropped» — watch it, "+
+         "not the empty list.<br><br><b>The stream is lossy on purpose:</b> it will never "+
+         "slow down or fail a payment so an observer can keep up. An event that happened "+
+         "while you were disconnected exists nowhere. Treat it as a live hint, <b>not as a "+
+         "ledger</b> — the chain is the source of truth. And operations that <em>fail</em> "+
+         "are not published, so a rail that looks healthy here has not been shown to be healthy.",
+  },
+  es: {
+    title:"x402 · /events en vivo", events:"eventos", last:"último",
+    viewTable:"tabla", viewRaw:"raw (tal cual el cable)",
+    clear:"limpiar", pause:"pausar", resume:"reanudar",
+    connecting:"conectando…", live:"en vivo", down:"sin conexión · reintentando…",
+    "th.time":"hora","th.kind":"tipo","th.network":"red","th.ok":"ok",
+    "th.endpoint":"endpoint","th.seller":"vendedor","th.payer":"payer",
+    "th.amount":"monto","th.tx":"tx",
+    empty:"Conectado y esperando. <b>Silencio no es falla</b> — el riel mide ~1,3 settles/min "+
+          "y tiene tramos de media hora en cero.",
+    hint:"<b>Lo que esta página NO puede mostrarte:</b> los keepalive. El facilitador manda un "+
+         "comentario SSE cada 15 s para sostener la conexión, pero <code>EventSource</code> no "+
+         "los expone a JavaScript. Por eso el indicador de arriba es lo único que distingue "+
+         "«no está pasando nada» de «se cayó la conexión» — míralo a él, no a la lista vacía."+
+         "<br><br><b>El stream es lossy a propósito:</b> nunca frena ni hace fallar un pago para "+
+         "que un observador se ponga al día. Un evento que ocurrió mientras no estabas conectado "+
+         "no existe en ningún lado. Sirve como pista en vivo, <b>no como libro contable</b> — "+
+         "la cadena es la fuente de verdad. Y las operaciones que <em>fallan</em> no se publican, "+
+         "así que un riel que se ve sano aquí no está probado sano.",
+  },
+};
+let LANG = 'en';
+try { const s = localStorage.getItem('x402.lang'); if (I18N[s]) LANG = s; } catch (e) {}
+if (!I18N[LANG]) LANG = I18N[navigator.language.split('-')[0]] ? navigator.language.split('-')[0] : 'en';
+const t = k => (I18N[LANG] && I18N[LANG][k]) || (I18N.en[k] ?? k);
+
+function applyLang(lang){
+  if (I18N[lang]) LANG = lang;
+  document.documentElement.lang = LANG;
+  document.title = t('title');
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    el.textContent = t(el.getAttribute('data-i18n'));
+  });
+  document.querySelectorAll('[data-i18n-html]').forEach(el => {
+    el.innerHTML = t(el.getAttribute('data-i18n-html'));
+  });
+  document.querySelectorAll('.langsw button').forEach(b => {
+    b.classList.toggle('active', b.getAttribute('data-lang') === LANG);
+  });
+  // Re-render the pieces JS owns: the connection state and the pause button
+  // both hold text that no data-i18n attribute can reach.
+  setState(bar.className, t(bar.className === 'live' ? 'live'
+                          : bar.className === 'down' ? 'down' : 'connecting'));
+  document.getElementById('pause').textContent = paused ? t('resume') : t('pause');
+}
+
 // Same-origin when served by the facilitator; the absolute URL is only needed
 // when this file is opened from somewhere else. Deriving it means the page works
 // unchanged on localhost, on staging and in production.
@@ -167,12 +249,12 @@ function render(kind,data,rawLine){
 }
 
 function connect(){
-  setState('wait','conectando…');
+  setState('wait',t('connecting'));
   const es=new EventSource(URL_EVENTS);
-  es.onopen=()=>setState('live','en vivo');
+  es.onopen=()=>setState('live',t('live'));
   // EventSource cannot see the `:` keepalive comments, so "quiet" and "dead"
   // look identical in the list. The connection state is the only honest signal.
-  es.onerror=()=>setState('down','sin conexión · reintentando…');
+  es.onerror=()=>setState('down',t('down'));
   for(const kind of ['settle','verify']){
     es.addEventListener(kind,msg=>{
       let d; try{ d=JSON.parse(msg.data);}catch{ return; }
@@ -188,8 +270,16 @@ document.getElementById('clear').onclick=()=>{
   tbl.hidden=true;empty.hidden=false;
 };
 document.getElementById('pause').onclick=e=>{
-  paused=!paused;e.target.textContent=paused?'reanudar':'pausar';
+  paused=!paused;e.target.textContent=paused?t('resume'):t('pause');
 };
+document.querySelectorAll('.langsw button').forEach(b=>{
+  b.onclick=()=>{
+    const lang=b.getAttribute('data-lang');
+    applyLang(lang);
+    try{ localStorage.setItem('x402.lang',lang); }catch(e){}
+  };
+});
+applyLang(LANG);
 connect();
 </script>
 </body>

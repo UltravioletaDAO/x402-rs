@@ -36,14 +36,20 @@
   .warn b{color:var(--amber)}
   #err{color:var(--bad);padding:16px 0}
   .muted{color:var(--dim)}
+  .langsw{margin-left:auto;display:flex;gap:4px}
+  .langsw button{background:#241f36;color:var(--txt);border:1px solid var(--line);
+                 border-radius:5px;padding:3px 8px;font:inherit;font-size:11px;
+                 cursor:pointer;opacity:.55}
+  .langsw button.active{opacity:1;border-color:var(--uv);color:var(--uv)}
 </style>
 </head>
 <body>
 
 <header>
-  <h1>x402 · métricas del facilitador</h1>
-  <span class="muted">actualizado <b id="upd">—</b></span>
-  <a href="/events/live">ver en vivo →</a>
+  <h1 data-i18n="h1">x402 · métricas del facilitador</h1>
+  <span class="muted"><span data-i18n="updated">actualizado</span> <b id="upd">—</b></span>
+  <a href="/events/live" data-i18n="seeLive">ver en vivo →</a>
+  <span class="langsw"><button data-lang="en">EN</button><button data-lang="es">ES</button></span>
 </header>
 
 <main>
@@ -51,39 +57,107 @@
 
   <div class="cards" id="cards"></div>
 
-  <h2>Por red y token</h2>
+  <h2 data-i18n="byNetwork">Por red y token</h2>
   <table>
     <thead><tr>
-      <th>red</th><th>token</th>
-      <th class="num">settles ok</th><th class="num">settles fallidos</th>
-      <th class="num">verifies</th><th class="num">volumen (unidades atómicas)</th>
-      <th>último</th>
+      <th data-i18n="th.network">red</th><th data-i18n="th.token">token</th>
+      <th class="num" data-i18n="th.ok">settles ok</th>
+      <th class="num" data-i18n="th.failed">settles fallidos</th>
+      <th class="num" data-i18n="th.verifies">verifies</th>
+      <th class="num" data-i18n="th.volume">volumen (unidades atómicas)</th>
+      <th data-i18n="th.last">último</th>
     </tr></thead>
-    <tbody id="rows"><tr><td colspan="7" class="muted">cargando…</td></tr></tbody>
+    <tbody id="rows"><tr><td colspan="7" class="muted" data-i18n="loading">cargando…</td></tr></tbody>
   </table>
 
-  <div class="warn">
-    <b>Qué mide esta página, y qué no.</b> Todo lo de arriba viene de
-    <b>registros del facilitador</b>: lo que nosotros procesamos y alcanzamos a
-    escribir. No es la cadena.
-    <br><br>
-    <b>El conteo empieza cuando se encendió el registro</b>, no cuando nació el
-    facilitador. Lo que se liquidó antes no está acá y <em>no es cero</em>: es
-    desconocido. Para historia completa hace falta el barrido on-chain, que se
-    reporta aparte y nunca mezclado con estos números.
-    <br><br>
-    <b>Las operaciones que fallan con error no se registran</b>, así que una tasa
-    de éxito del 100% acá significa «no se registró ningún fallo», no «no hubo
-    fallos». Un riel que se ve sano en esta página no está probado sano.
-    <br><br>
-    <b>El registro es best-effort y posterior al pago.</b> Si DynamoDB no estaba
-    disponible, el pago igual ocurrió y la fila no existe. La cadena es la fuente
-    de verdad; esto es un índice.
-  </div>
+  <div class="warn" data-i18n-html="warn"></div>
 </main>
 
 <script>
-const fmt = n => Number(n).toLocaleString('es');
+// ---------------------------------------------------------------------------
+// i18n — shares the `x402.lang` key with the landing page and /events/live, so
+// picking a language anywhere holds everywhere. This page was Spanish-only
+// while the landing linking to it defaults to English.
+// ---------------------------------------------------------------------------
+const I18N = {
+  en: {
+    title:"x402 · facilitator metrics", h1:"x402 · facilitator metrics",
+    updated:"updated", seeLive:"watch live →", byNetwork:"By network and token",
+    "th.network":"network","th.token":"token","th.ok":"settles ok",
+    "th.failed":"settles failed","th.verifies":"verifies",
+    "th.volume":"volume (atomic units)","th.last":"last",
+    loading:"loading…", noData:"no data", noRows:"no operations recorded yet",
+    "card.ok":"settles ok","card.failed":"settles failed","card.verifies":"verifies",
+    "card.networks":"networks with activity",
+    "src.records":"facilitator records","src.resolved":"resolved negative, not errors",
+    "src.any":"with at least one operation",
+    atomic:"(atomic)", unknown:"unknown",
+    fetchErr:(m)=>`Could not read /api/stats (${m}). If the store is not configured, `+
+                  `the facilitator still works but records no history.`,
+    warn:"<b>What this page measures, and what it does not.</b> Everything above comes from "+
+      "<b>facilitator records</b>: what we processed and managed to write. It is not the chain."+
+      "<br><br><b>Counting started when recording was switched on</b>, not when the facilitator "+
+      "was born. Anything settled before that is not here and <em>is not zero</em>: it is unknown. "+
+      "Full history needs the on-chain sweep, reported separately and never mixed into these numbers."+
+      "<br><br><b>Operations that fail with an error are not recorded</b>, so a 100% success rate "+
+      "here means «no failure was recorded», not «there were no failures». A rail that looks "+
+      "healthy on this page has not been shown to be healthy."+
+      "<br><br><b>Recording is best-effort and happens after the payment.</b> If DynamoDB was "+
+      "unavailable, the payment still happened and the row does not exist. The chain is the "+
+      "source of truth; this is an index.",
+  },
+  es: {
+    title:"x402 · métricas del facilitador", h1:"x402 · métricas del facilitador",
+    updated:"actualizado", seeLive:"ver en vivo →", byNetwork:"Por red y token",
+    "th.network":"red","th.token":"token","th.ok":"settles ok",
+    "th.failed":"settles fallidos","th.verifies":"verifies",
+    "th.volume":"volumen (unidades atómicas)","th.last":"último",
+    loading:"cargando…", noData:"sin datos", noRows:"sin operaciones registradas todavía",
+    "card.ok":"settles ok","card.failed":"settles fallidos","card.verifies":"verifies",
+    "card.networks":"redes con actividad",
+    "src.records":"registros del facilitador","src.resolved":"resueltos negativo, no errores",
+    "src.any":"con al menos una operación",
+    atomic:"(atómico)", unknown:"desconocido",
+    fetchErr:(m)=>`No se pudo leer /api/stats (${m}). Si el store no está configurado, `+
+                  `el facilitador funciona igual pero no registra historia.`,
+    warn:"<b>Qué mide esta página, y qué no.</b> Todo lo de arriba viene de "+
+      "<b>registros del facilitador</b>: lo que nosotros procesamos y alcanzamos a escribir. "+
+      "No es la cadena.<br><br><b>El conteo empieza cuando se encendió el registro</b>, no "+
+      "cuando nació el facilitador. Lo que se liquidó antes no está acá y <em>no es cero</em>: "+
+      "es desconocido. Para historia completa hace falta el barrido on-chain, que se reporta "+
+      "aparte y nunca mezclado con estos números."+
+      "<br><br><b>Las operaciones que fallan con error no se registran</b>, así que una tasa "+
+      "de éxito del 100% acá significa «no se registró ningún fallo», no «no hubo fallos». "+
+      "Un riel que se ve sano en esta página no está probado sano."+
+      "<br><br><b>El registro es best-effort y posterior al pago.</b> Si DynamoDB no estaba "+
+      "disponible, el pago igual ocurrió y la fila no existe. La cadena es la fuente de "+
+      "verdad; esto es un índice.",
+  },
+};
+let LANG = 'en';
+try { const s = localStorage.getItem('x402.lang'); if (I18N[s]) LANG = s; } catch (e) {}
+if (!I18N[LANG]) { const b = navigator.language.split('-')[0]; LANG = I18N[b] ? b : 'en'; }
+const t = k => (I18N[LANG] && I18N[LANG][k]) ?? I18N.en[k] ?? k;
+
+function applyLang(lang){
+  if (I18N[lang]) LANG = lang;
+  document.documentElement.lang = LANG;
+  document.title = t('title');
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    el.textContent = t(el.getAttribute('data-i18n'));
+  });
+  document.querySelectorAll('[data-i18n-html]').forEach(el => {
+    el.innerHTML = t(el.getAttribute('data-i18n-html'));
+  });
+  document.querySelectorAll('.langsw button').forEach(b => {
+    b.classList.toggle('active', b.getAttribute('data-lang') === LANG);
+  });
+  load();   // the cards and rows are built in JS; re-render them in the new language
+}
+
+// Number grouping follows the displayed language, not the machine's locale —
+// otherwise an EN page shows "1.234,50" on a Spanish-configured browser.
+const fmt = n => Number(n).toLocaleString(LANG === 'es' ? 'es' : 'en');
 const esc = s => String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
 // Atomic units are u256-shaped and arrive as strings for that reason. Scaling
@@ -95,11 +169,12 @@ function human(atomic, decimals){
   // — the page would have shown a volume 10^12 too large while looking entirely
   // plausible. When the API cannot identify the asset it sends null, and the
   // honest answer is the raw atomic value, not a guessed scale.
-  if(decimals === null || decimals === undefined) return atomic + ' (atómico)';
+  if(decimals === null || decimals === undefined) return atomic + ' ' + t('atomic');
   try{
     const v = BigInt(atomic), d = BigInt(10) ** BigInt(decimals);
     const whole = v / d, frac = v % d;
-    return `${whole.toLocaleString('es')}.${frac.toString().padStart(decimals,'0').slice(0,2)}`;
+    const loc = LANG === 'es' ? 'es' : 'en';
+    return `${whole.toLocaleString(loc)}.${frac.toString().padStart(decimals,'0').slice(0,2)}`;
   }catch{ return atomic; }
 }
 
@@ -119,20 +194,20 @@ async function load(){
     document.getElementById('err').hidden = false;
     // Say which failure this is. "No data" and "the store is off" look identical
     // on a dashboard and mean completely different things.
-    document.getElementById('err').textContent =
-      `No se pudo leer /api/stats (${e.message}). Si el store no está configurado, `+
-      `el facilitador funciona igual pero no registra historia.`;
+    document.getElementById('err').textContent = t('fetchErr')(e.message);
     document.getElementById('rows').innerHTML =
-      '<tr><td colspan="7" class="muted">sin datos</td></tr>';
+      `<tr><td colspan="7" class="muted">${esc(t('noData'))}</td></tr>`;
     return;
   }
 
-  const t = data.totals || {};
+  // NOT `t` — that is the translation function, and shadowing it here silently
+  // turned every label back into a key.
+  const tot = data.totals || {};
   document.getElementById('cards').innerHTML =
-    card('settles ok', fmt(t.settlesOk||0), 'registros del facilitador') +
-    card('settles fallidos', fmt(t.settlesFailed||0), 'resueltos negativo, no errores') +
-    card('verifies', fmt(t.verifies||0), 'registros del facilitador') +
-    card('redes con actividad', fmt(t.networks||0), 'con al menos una operación');
+    card(t('card.ok'),       fmt(tot.settlesOk||0),     t('src.records')) +
+    card(t('card.failed'),   fmt(tot.settlesFailed||0), t('src.resolved')) +
+    card(t('card.verifies'), fmt(tot.verifies||0),      t('src.records')) +
+    card(t('card.networks'), fmt(tot.networks||0),      t('src.any'));
 
   const rows = (data.byNetworkAndAsset||[]).slice().sort((a,b)=>b.settlesOk-a.settlesOk);
   document.getElementById('rows').innerHTML = rows.length ? rows.map(r=>`
@@ -142,15 +217,23 @@ async function load(){
       <td class="num">${fmt(r.settlesOk)}</td>
       <td class="num">${fmt(r.settlesFailed)}</td>
       <td class="num">${fmt(r.verifies)}</td>
-      <td class="num" title="${esc(r.volumeAtomic)} atómico · decimals=${esc(r.decimals ?? 'desconocido')}">${esc(human(r.volumeAtomic, r.decimals))}</td>
-      <td class="muted">${r.lastTs?new Date(r.lastTs).toLocaleString('es'):'—'}</td>
+      <td class="num" title="${esc(r.volumeAtomic)} ${esc(t('atomic'))} · decimals=${esc(r.decimals ?? t('unknown'))}">${esc(human(r.volumeAtomic, r.decimals))}</td>
+      <td class="muted">${r.lastTs?new Date(r.lastTs).toLocaleString(LANG==='es'?'es':'en'):'—'}</td>
     </tr>`).join('')
-    : '<tr><td colspan="7" class="muted">sin operaciones registradas todavía</td></tr>';
+    : `<tr><td colspan="7" class="muted">${esc(t('noRows'))}</td></tr>`;
 
-  document.getElementById('upd').textContent = new Date().toLocaleTimeString('es');
+  document.getElementById('upd').textContent =
+    new Date().toLocaleTimeString(LANG==='es'?'es':'en');
 }
 
-load();
+document.querySelectorAll('.langsw button').forEach(b=>{
+  b.onclick=()=>{
+    const lang=b.getAttribute('data-lang');
+    applyLang(lang);
+    try{ localStorage.setItem('x402.lang',lang); }catch(e){}
+  };
+});
+applyLang(LANG);   // also performs the first load()
 setInterval(load, 30_000);
 </script>
 </body>

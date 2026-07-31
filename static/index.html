@@ -1152,19 +1152,19 @@
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
                         </svg>
-                        Bazaar
+                        <span data-i18n="nav.bazaar">Bazaar</span>
                     </a>
                     <a href="/stats" class="lang-btn" style="text-decoration: none; display: flex; align-items: center; gap: 0.4rem;">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>
                         </svg>
-                        Stats
+                        <span data-i18n="nav.stats">Stats</span>
                     </a>
                     <a href="/events/live" class="lang-btn" style="text-decoration: none; display: flex; align-items: center; gap: 0.4rem;">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <circle cx="12" cy="12" r="3"/><path d="M12 5a7 7 0 0 0-7 7"/><path d="M12 19a7 7 0 0 0 7-7"/>
                         </svg>
-                        En vivo
+                        <span data-i18n="nav.live">En vivo</span>
                     </a>
                     <a href="/docs" class="lang-btn" style="text-decoration: none; display: flex; align-items: center; gap: 0.4rem;">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -1174,7 +1174,7 @@
                             <line x1="16" y1="17" x2="8" y2="17"/>
                             <polyline points="10,9 9,9 8,9"/>
                         </svg>
-                        API Docs
+                        <span data-i18n="nav.apidocs">API Docs</span>
                     </a>
                     <div class="lang-switcher">
                         <button class="lang-btn active" data-lang="en">EN</button>
@@ -2669,9 +2669,9 @@ result = <span class="code-function">verify_payment</span>(
                     <div class="endpoint">
                         <span class="method post">POST</span>
                         <span class="endpoint-path">/register</span>
-                        <span class="endpoint-desc" data-i18n="endpoints.registerAgent">Register a new ERC-8004 agent on-chain. Facilitator pays gas. Supports optional <code style="color: var(--accent); background: rgba(0,212,255,0.1); padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.8rem;">recipient</code> field to mint the NFT and transfer it to a user address</span>
+                        <span class="endpoint-desc" data-i18n-html="endpoints.registerAgent">Register a new ERC-8004 agent on-chain. Facilitator pays gas. Supports optional <code style="color: var(--accent); background: rgba(0,212,255,0.1); padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.8rem;">recipient</code> field to mint the NFT and transfer it to a user address</span>
                     </div>
-                    <p style="color: var(--text-muted); font-size: 0.8rem; margin: 0.75rem 0 0 0; padding-left: 1rem; line-height: 1.6;" data-i18n="endpoints.registerNote">
+                    <p style="color: var(--text-muted); font-size: 0.8rem; margin: 0.75rem 0 0 0; padding-left: 1rem; line-height: 1.6;" data-i18n-html="endpoints.registerNote">
                         <strong style="color: #8b5cf6;">Gasless registration:</strong> The facilitator wallet pays all gas fees. Without <code style="color: var(--accent); font-size: 0.75rem;">recipient</code>, the NFT stays with the facilitator. With <code style="color: var(--accent); font-size: 0.75rem;">recipient</code>, the NFT is minted then transferred via ERC-721 <code style="color: var(--accent); font-size: 0.75rem;">safeTransferFrom</code> (2 transactions, both paid by facilitator). Note: <code style="color: var(--accent); font-size: 0.75rem;">agentWallet</code> is cleared on transfer and must be re-set by the new owner.
                     </p>
                 </div>
@@ -2820,14 +2820,14 @@ result = <span class="code-function">verify_payment</span>(
                         DAO</a>
                 </div>
                 <div class="footer-links">
-                    <a href="/stats">Stats</a>
-                    <a href="/events/live">En vivo</a>
-                    <a href="/docs" target="_blank">API Docs</a>
-                    <a href="https://x402.org" target="_blank">Protocol</a>
+                    <a href="/stats" data-i18n="nav.stats">Stats</a>
+                    <a href="/events/live" data-i18n="nav.live">En vivo</a>
+                    <a href="/docs" target="_blank" data-i18n="nav.apidocs">API Docs</a>
+                    <a href="https://x402.org" target="_blank" data-i18n="footer.protocol">Protocol</a>
                     <a href="https://github.com/x402-rs/x402-rs" target="_blank">GitHub</a>
-                    <a href="/health" target="_blank">Status</a>
-                    <a href="/supported" target="_blank">Networks</a>
-                    <a href="/discovery/resources" target="_blank">Bazaar</a>
+                    <a href="/health" target="_blank" data-i18n="footer.status">Status</a>
+                    <a href="/supported" target="_blank" data-i18n="footer.networks">Networks</a>
+                    <a href="/discovery/resources" target="_blank" data-i18n="nav.bazaar">Bazaar</a>
                 </div>
             </div>
         </footer>
@@ -2836,6 +2836,21 @@ result = <span class="code-function">verify_payment</span>(
     <script>
         const translations = {
             en: {
+                // --- nav / footer / ERC-8004: anadidas tras auditar el i18n
+                "nav.bazaar": "Bazaar",
+                "nav.stats": "Stats",
+                "nav.live": "Live",
+                "nav.apidocs": "API Docs",
+                "footer.protocol": "Protocol",
+                "footer.status": "Status",
+                "footer.networks": "Networks",
+                "endpoints.group.erc8004reg": "ERC-8004 Agent Registration",
+                "endpoints.group.erc8004identity": "ERC-8004 Agent Identity",
+                "endpoints.registerInfo": "Registration endpoint schema, supported networks, and request format",
+                "endpoints.identityMetadata": "Read a specific metadata key from the agent's on-chain profile (returns hex + UTF-8)",
+                "endpoints.identityTotalSupply": "Get total number of registered agents on a network",
+                "endpoints.registerAgent": "Register a new ERC-8004 agent on-chain. Facilitator pays gas. Supports optional <code style='color: var(--accent); background: rgba(0,212,255,0.1); padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.8rem;'>recipient</code> field to mint the NFT and transfer it to a user address",
+                "endpoints.registerNote": "<strong style='color: #8b5cf6;'>Gasless registration:</strong> The facilitator wallet pays all gas fees. Without <code style='color: var(--accent); font-size: 0.75rem;'>recipient</code>, the NFT stays with the facilitator. With <code style='color: var(--accent); font-size: 0.75rem;'>recipient</code>, the NFT is minted then transferred via ERC-721 <code style='color: var(--accent); font-size: 0.75rem;'>safeTransferFrom</code> (2 transactions, both paid by facilitator). Note: <code style='color: var(--accent); font-size: 0.75rem;'>agentWallet</code> is cleared on transfer and must be re-set by the new owner.",
                 "bazaar.title": "The Curated Bazaar",
                 "bazaar.badge": "Live",
                 "bazaar.description": "We aggregate paid endpoints from a dozen x402 facilitators — then filter the junk, sweep the dead links with a live 402 health probe, and rank our own products first. Only payable, reachable endpoints are shown by default.",
@@ -2940,12 +2955,27 @@ result = <span class="code-function">verify_payment</span>(
                 "footer.powered": "Powered by"
             },
             es: {
+                // --- nav / footer / ERC-8004: anadidas tras auditar el i18n
+                "nav.bazaar": "Bazaar",
+                "nav.stats": "Métricas",
+                "nav.live": "En vivo",
+                "nav.apidocs": "Docs API",
+                "footer.protocol": "Protocolo",
+                "footer.status": "Estado",
+                "footer.networks": "Redes",
+                "endpoints.group.erc8004reg": "Registro de agentes ERC-8004",
+                "endpoints.group.erc8004identity": "Identidad de agentes ERC-8004",
+                "endpoints.registerInfo": "Esquema del endpoint de registro, redes soportadas y formato de la petición",
+                "endpoints.identityMetadata": "Lee una clave de metadatos del perfil on-chain del agente (devuelve hex + UTF-8)",
+                "endpoints.identityTotalSupply": "Total de agentes registrados en una red",
+                "endpoints.registerAgent": "Registra un nuevo agente ERC-8004 on-chain. El facilitador paga el gas. Admite el campo opcional <code style='color: var(--accent); background: rgba(0,212,255,0.1); padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.8rem;'>recipient</code> para acuñar el NFT y transferirlo a la dirección de un usuario",
+                "endpoints.registerNote": "<strong style='color: #8b5cf6;'>Registro sin gas:</strong> La wallet del facilitador paga todo el gas. Sin <code style='color: var(--accent); font-size: 0.75rem;'>recipient</code>, el NFT se queda con el facilitador. Con <code style='color: var(--accent); font-size: 0.75rem;'>recipient</code>, el NFT se acuña y luego se transfiere vía ERC-721 <code style='color: var(--accent); font-size: 0.75rem;'>safeTransferFrom</code> (2 transacciones, ambas pagadas por el facilitador). Nota: <code style='color: var(--accent); font-size: 0.75rem;'>agentWallet</code> se borra al transferir y el nuevo dueño debe volver a fijarlo.",
                 "bazaar.title": "El Bazar Curado",
                 "bazaar.badge": "En vivo",
                 "bazaar.description": "Agregamos endpoints de pago de una docena de facilitadores x402 — luego filtramos la basura, barremos los enlaces muertos con un probe de salud 402 en vivo, y ponemos nuestros productos de primeros. Por defecto solo se muestran endpoints pagables y alcanzables.",
                 "bazaar.listed": "Endpoints listados",
                 "bazaar.alive": "Verificados vivos (402)",
-                "bazaar.curated": "First-party + VIP",
+                "bazaar.curated": "Propios + VIP",
                 "bazaar.sources": "Facilitadores agregados",
                 "bazaar.cta": "Explorar el Bazar",
                 "header.subtitle": "Infraestructura de pagos para agentes autónomos",
@@ -3056,6 +3086,25 @@ result = <span class="code-function">verify_payment</span>(
                 const key = el.getAttribute('data-i18n');
                 if (translations[lang] && translations[lang][key]) {
                     el.textContent = translations[lang][key];
+                } else {
+                    // A missing key leaves the hardcoded markup in place, which
+                    // is why seven of them went unnoticed for so long: the page
+                    // looks fine, it just silently stops switching language.
+                    // Say so where someone will see it.
+                    console.warn(`[i18n] falta la clave "${key}" en "${lang}"; queda el texto del HTML`);
+                }
+            });
+
+            // Entries whose text contains inline markup (<code>, <strong>).
+            // textContent would flatten those tags away, so these are applied as
+            // HTML. Safe because every value is an author-written literal in this
+            // file — never user input, never fetched.
+            document.querySelectorAll('[data-i18n-html]').forEach(el => {
+                const key = el.getAttribute('data-i18n-html');
+                if (translations[lang] && translations[lang][key]) {
+                    el.innerHTML = translations[lang][key];
+                } else {
+                    console.warn(`[i18n] falta la clave "${key}" en "${lang}"; queda el texto del HTML`);
                 }
             });
 
@@ -3125,10 +3174,19 @@ result = <span class="code-function">verify_payment</span>(
             }).catch(() => { /* leave the dashes */ });
         })();
 
-        document.querySelectorAll('.lang-btn').forEach(btn => {
+        // Only the real EN/ES buttons carry data-lang. The nav links reuse the
+        // .lang-btn class for styling, so without this guard clicking "Stats"
+        // called updateTranslations(null) on the way out — harmless while the
+        // page was already navigating, but it would spray the new missing-key
+        // warnings across the console for every key on the page.
+        document.querySelectorAll('.lang-btn[data-lang]').forEach(btn => {
             btn.addEventListener('click', () => {
                 const lang = btn.getAttribute('data-lang');
                 updateTranslations(lang);
+                // Remember the CHOICE. Without this the switcher only held until
+                // the next click on Stats or Live, which then rendered in the
+                // browser's language instead of the one just picked.
+                try { localStorage.setItem('x402.lang', lang); } catch (e) { /* private mode */ }
             });
         });
 
@@ -3143,10 +3201,15 @@ result = <span class="code-function">verify_payment</span>(
         };
         img.src = '/logo.png';
 
-        // Initialize with browser language
-        const browserLang = navigator.language.split('-')[0];
-        if (translations[browserLang]) {
-            updateTranslations(browserLang);
+        // An explicit choice outranks the browser's guess; the browser language
+        // is only the opening bid for someone who has never picked.
+        let storedLang = null;
+        try { storedLang = localStorage.getItem('x402.lang'); } catch (e) { /* private mode */ }
+        const initialLang = translations[storedLang]
+            ? storedLang
+            : navigator.language.split('-')[0];
+        if (translations[initialLang]) {
+            updateTranslations(initialLang);
         }
 
         // Fade-in animation on scroll

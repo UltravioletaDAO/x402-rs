@@ -299,6 +299,169 @@ fn record_transaction(
     });
 }
 
+/// One resolved operation, in the shape both sinks need.
+///
+/// `/events` and the transaction store take the same facts and used to be fed
+/// from two hand-written literals sitting next to each other, which is how they
+/// drifted. Building this once and fanning out in [`emit_operation`] means a
+/// field can no longer reach the stream but miss the index.
+struct OperationDetail {
+    kind: &'static str,
+    network: String,
+    ok: bool,
+    payer: Option<String>,
+    tx: Option<String>,
+    amount: Option<String>,
+    asset: Option<String>,
+    resource: Option<String>,
+    pay_to: Option<String>,
+    description: Option<String>,
+    scheme: Option<String>,
+    /// `Some(category)` only for operations that ERRORED, never for one that
+    /// merely resolved negative. The two are different events and conflating
+    /// them is what makes a failure rate meaningless.
+    error: Option<&'static str>,
+}
+
+/// Publish one operation to the live stream and the index.
+///
+/// Errored operations stay behind `X402_EVENTS_PUBLISH_FAILURES`, matching what
+/// [`publish_failure`] already did and what the /stats page promises. Resolved
+/// outcomes — including `isValid: false` — always go out: they are answers, not
+/// failures, and suppressing them would make a legitimate rejection invisible.
+fn emit_operation(
+    event_bus: &Arc<crate::events::EventBus>,
+    tx_store: &Arc<dyn crate::transaction_store::TransactionStore>,
+    detail: OperationDetail,
+) {
+    if detail.error.is_some() && !event_bus.publish_failures() {
+        return;
+    }
+    let ts = crate::events::now_ms();
+    event_bus.publish(crate::events::TrafficEvent {
+        ts,
+        kind: detail.kind,
+        network: detail.network.clone(),
+        ok: detail.ok,
+        payer: detail.payer.clone(),
+        tx: detail.tx.clone(),
+        amount: detail.amount.clone(),
+        asset: detail.asset.clone(),
+        resource: detail.resource.clone(),
+        pay_to: detail.pay_to.clone(),
+        description: detail.description.clone(),
+        scheme: detail.scheme.clone(),
+        error: detail.error,
+    });
+    record_transaction(
+        tx_store,
+        crate::transaction_store::TransactionRecord {
+            ts,
+            kind: detail.kind.into(),
+            network: detail.network,
+            ok: detail.ok,
+            payer: detail.payer,
+            tx: detail.tx,
+            amount: detail.amount,
+            asset: detail.asset,
+            resource: detail.resource,
+            pay_to: detail.pay_to,
+            description: detail.description,
+            scheme: detail.scheme,
+        },
+    );
+}
+
+/// A resolved alternate-scheme branch: the response AND what it records.
+///
+/// The pairing is the whole point. Every branch in the alternate-scheme block
+/// used to hand back a bare `Response` through an early `return`, while the
+/// recorder sat further down the function — so fhe-transfer, upto and escrow
+/// left no trace in `/events`, `/transactions` or `/api/stats`, and the numbers
+/// looked healthy because the one scheme that DID record was the only one being
+/// counted. Worse than incomplete: biased toward `exact`, silently.
+///
+/// Returning this struct makes the omission impossible to repeat. A new scheme
+/// cannot be bolted on with a bare `return` — it does not typecheck until the
+/// author decides what the operation records.
+struct AltSchemeOutcome {
+    response: Response,
+    detail: OperationDetail,
+}
+
+/// Fields the alternate schemes carry, dug out of the raw envelope.
+///
+/// fhe-transfer, upto and escrow each have their own payload shape and none of
+/// them parse into `PaymentRequirements`, so there is no typed path to these.
+/// This probes the places the fields actually appear across the v1 and v2
+/// envelopes and yields `None` where a field is genuinely absent.
+///
+/// Absent stays absent. Defaulting a missing asset or network to a plausible
+/// value would write a wrong address into the index, where nothing downstream
+/// could tell it apart from a measured one.
+#[derive(Default)]
+struct AltRequestFields {
+    network: Option<String>,
+    asset: Option<String>,
+    amount: Option<String>,
+    pay_to: Option<String>,
+    resource: Option<String>,
+}
+
+fn alt_request_fields(json_value: &serde_json::Value) -> AltRequestFields {
+    // Candidate objects, most specific first: v1 requirements, v2 `accepted`
+    // (object or first element of the array), and finally the envelope itself
+    // for the top-level escrow shape.
+    let payload = json_value.get("paymentPayload");
+    let mut candidates: Vec<&serde_json::Value> = Vec::new();
+    for owner in [Some(json_value), payload].into_iter().flatten() {
+        for key in ["paymentRequirements", "accepted", "paymentInfo"] {
+            if let Some(v) = owner.get(key) {
+                match v {
+                    serde_json::Value::Array(items) => candidates.extend(items.iter()),
+                    other => candidates.push(other),
+                }
+            }
+        }
+    }
+    candidates.push(json_value);
+    if let Some(p) = payload {
+        candidates.push(p);
+    }
+
+    let first_str = |keys: &[&str]| -> Option<String> {
+        for c in &candidates {
+            for k in keys {
+                match c.get(k) {
+                    Some(serde_json::Value::String(s)) if !s.is_empty() => {
+                        return Some(s.clone());
+                    }
+                    // v2 sends `resource` as an object; the url is the part
+                    // worth indexing.
+                    Some(serde_json::Value::Object(o)) => {
+                        if let Some(serde_json::Value::String(s)) = o.get("url") {
+                            return Some(s.clone());
+                        }
+                    }
+                    // Amounts are u256-shaped and arrive as strings, but some
+                    // clients send small ones as numbers.
+                    Some(serde_json::Value::Number(n)) => return Some(n.to_string()),
+                    _ => {}
+                }
+            }
+        }
+        None
+    };
+
+    AltRequestFields {
+        network: first_str(&["network"]),
+        asset: first_str(&["asset", "token"]),
+        amount: first_str(&["maxAmountRequired", "amount", "maxAmount"]),
+        pay_to: first_str(&["payTo", "receiver"]),
+        resource: first_str(&["resource"]),
+    }
+}
+
 /// Reject writes from an instance that does not hold the EVM writer lease.
 ///
 /// The settle path has enforced this since the lease existed (`chain/evm.rs`),
@@ -1680,7 +1843,36 @@ where
 
     // Check for special schemes BEFORE trying to parse as standard types
     // These schemes may have different payload structures that don't match standard x402 types
-    if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(body_str) {
+    // Alternate schemes resolve inside this block and yield an outcome instead
+    // of returning a response straight out of the handler. That indirection is
+    // what makes them countable: every branch here now carries the record it
+    // produces (see `AltSchemeOutcome`), so fhe-transfer, upto and escrow reach
+    // `/events` and the index like `exact` always has.
+    let alt_outcome: Option<AltSchemeOutcome> = async {
+        let json_value = serde_json::from_str::<serde_json::Value>(body_str).ok()?;
+        let fields = alt_request_fields(&json_value);
+        let detail = |ok: bool, scheme: Option<&str>, error: Option<&'static str>| OperationDetail {
+            kind: "verify",
+            // "unknown" rather than a guess. These payloads do not always name
+            // a network, and an honest "unknown" bucket in /stats is worth more
+            // than a plausible-looking wrong one.
+            network: fields
+                .network
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string()),
+            ok,
+            payer: None,
+            // A verify settles nothing, so there is no hash to carry.
+            tx: None,
+            amount: fields.amount.clone(),
+            asset: fields.asset.clone(),
+            resource: fields.resource.clone(),
+            pay_to: fields.pay_to.clone(),
+            description: None,
+            scheme: scheme.map(|s| s.to_string()),
+            error,
+        };
+
         // Detect scheme from paymentPayload.scheme (v1) or paymentPayload.accepted.scheme (v2)
         let scheme = json_value.get("paymentPayload").and_then(|pp| {
             pp.get("scheme").and_then(|s| s.as_str()).or_else(|| {
@@ -1699,18 +1891,26 @@ where
                         is_valid = fhe_response.is_valid,
                         "FHE verification complete"
                     );
-                    return (StatusCode::OK, Json(fhe_response)).into_response();
+                    let mut d = detail(fhe_response.is_valid, scheme, None);
+                    d.payer = fhe_response.payer.clone();
+                    return Some(AltSchemeOutcome {
+                        response: (StatusCode::OK, Json(fhe_response)).into_response(),
+                        detail: d,
+                    });
                 }
                 Err(e) => {
                     error!(error = %e, "FHE verification failed");
-                    return (
-                        StatusCode::BAD_GATEWAY,
-                        Json(json!({
-                            "isValid": false,
-                            "invalidReason": format!("FHE facilitator error: {}", e)
-                        })),
-                    )
-                        .into_response();
+                    return Some(AltSchemeOutcome {
+                        response: (
+                            StatusCode::BAD_GATEWAY,
+                            Json(json!({
+                                "isValid": false,
+                                "invalidReason": format!("FHE facilitator error: {}", e)
+                            })),
+                        )
+                            .into_response(),
+                        detail: detail(false, scheme, Some("fhe_error")),
+                    });
                 }
             }
         }
@@ -1719,14 +1919,17 @@ where
         if scheme == Some("upto") {
             if !crate::upto::is_enabled() {
                 warn!("Upto scheme verify requested but ENABLE_UPTO is not set to true");
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({
-                        "isValid": false,
-                        "invalidReason": "Upto scheme is disabled. Set ENABLE_UPTO=true to enable."
-                    })),
-                )
-                    .into_response();
+                return Some(AltSchemeOutcome {
+                    response: (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({
+                            "isValid": false,
+                            "invalidReason": "Upto scheme is disabled. Set ENABLE_UPTO=true to enable."
+                        })),
+                    )
+                        .into_response(),
+                    detail: detail(false, scheme, Some("scheme_disabled")),
+                });
             }
 
             info!("Detected upto scheme, routing to Permit2 verification");
@@ -1734,36 +1937,65 @@ where
             match crate::upto::verify_upto(body_str, &facilitator).await {
                 Ok(response) => {
                     info!("Upto verification complete");
-                    return (StatusCode::OK, Json(response)).into_response();
+                    // Untyped response: read the verdict off the wire, and treat
+                    // a missing `isValid` as not valid.
+                    let is_valid = response
+                        .get("isValid")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let mut d = detail(is_valid, scheme, None);
+                    d.payer = response
+                        .get("payer")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    return Some(AltSchemeOutcome {
+                        response: (StatusCode::OK, Json(response)).into_response(),
+                        detail: d,
+                    });
                 }
                 Err(e) => {
                     error!(error = %e, "Upto verification failed");
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(json!({
-                            "isValid": false,
-                            "invalidReason": format!("Upto verification error: {}", e)
-                        })),
-                    )
-                        .into_response();
+                    return Some(AltSchemeOutcome {
+                        response: (
+                            StatusCode::BAD_REQUEST,
+                            Json(json!({
+                                "isValid": false,
+                                "invalidReason": format!("Upto verification error: {}", e)
+                            })),
+                        )
+                            .into_response(),
+                        detail: detail(false, scheme, Some("upto_error")),
+                    });
                 }
             }
         }
 
-        // Check for escrow/commerce scheme (x402r PaymentOperator)
-        if crate::payment_operator::is_escrow_scheme(scheme) {
+        // Check for escrow/commerce scheme (x402r PaymentOperator), either
+        // nested in the payload or declared at the top level.
+        let top_level_scheme = json_value.get("scheme").and_then(|s| s.as_str());
+        let escrow_scheme = if crate::payment_operator::is_escrow_scheme(scheme) {
+            scheme
+        } else if crate::payment_operator::is_escrow_scheme(top_level_scheme) {
+            top_level_scheme
+        } else {
+            None
+        };
+        if escrow_scheme.is_some() {
             if !crate::payment_operator::is_enabled() {
                 warn!(
                     "Escrow scheme verify requested but ENABLE_PAYMENT_OPERATOR is not set to true"
                 );
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({
-                        "isValid": false,
-                        "invalidReason": "Escrow scheme is disabled. Set ENABLE_PAYMENT_OPERATOR=true to enable."
-                    })),
-                )
-                    .into_response();
+                return Some(AltSchemeOutcome {
+                    response: (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({
+                            "isValid": false,
+                            "invalidReason": "Escrow scheme is disabled. Set ENABLE_PAYMENT_OPERATOR=true to enable."
+                        })),
+                    )
+                        .into_response(),
+                    detail: detail(false, escrow_scheme, Some("scheme_disabled")),
+                });
             }
 
             info!("Detected escrow scheme, routing to PaymentOperator verification");
@@ -1771,59 +2003,47 @@ where
             match crate::payment_operator::verify_escrow(body_str, &facilitator).await {
                 Ok(response) => {
                     info!("Escrow verification complete");
-                    return (StatusCode::OK, Json(response)).into_response();
+                    // verify_escrow hands back an untyped Value, so the verdict
+                    // is read from the wire field. Absent reads as not-valid:
+                    // a response that does not say it is valid is not one.
+                    let is_valid = response
+                        .get("isValid")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let mut d = detail(is_valid, escrow_scheme, None);
+                    d.payer = response
+                        .get("payer")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    return Some(AltSchemeOutcome {
+                        response: (StatusCode::OK, Json(response)).into_response(),
+                        detail: d,
+                    });
                 }
                 Err(e) => {
                     error!(error = %e, "Escrow verification failed");
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(json!({
-                            "isValid": false,
-                            "invalidReason": format!("Escrow verification error: {}", e)
-                        })),
-                    )
-                        .into_response();
+                    return Some(AltSchemeOutcome {
+                        response: (
+                            StatusCode::BAD_REQUEST,
+                            Json(json!({
+                                "isValid": false,
+                                "invalidReason": format!("Escrow verification error: {}", e)
+                            })),
+                        )
+                            .into_response(),
+                        detail: detail(false, escrow_scheme, Some("escrow_error")),
+                    });
                 }
             }
         }
 
-        // Also check for top-level scheme (direct escrow/commerce request format)
-        let top_level_scheme = json_value.get("scheme").and_then(|s| s.as_str());
-        if crate::payment_operator::is_escrow_scheme(top_level_scheme) {
-            if !crate::payment_operator::is_enabled() {
-                warn!(
-                    "Escrow scheme verify requested but ENABLE_PAYMENT_OPERATOR is not set to true"
-                );
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({
-                        "isValid": false,
-                        "invalidReason": "Escrow scheme is disabled. Set ENABLE_PAYMENT_OPERATOR=true to enable."
-                    })),
-                )
-                    .into_response();
-            }
+        None
+    }
+    .await;
 
-            info!("Detected top-level escrow scheme, routing to PaymentOperator verification");
-
-            match crate::payment_operator::verify_escrow(body_str, &facilitator).await {
-                Ok(response) => {
-                    info!("Escrow verification complete");
-                    return (StatusCode::OK, Json(response)).into_response();
-                }
-                Err(e) => {
-                    error!(error = %e, "Escrow verification failed");
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(json!({
-                            "isValid": false,
-                            "invalidReason": format!("Escrow verification error: {}", e)
-                        })),
-                    )
-                        .into_response();
-                }
-            }
-        }
+    if let Some(outcome) = alt_outcome {
+        emit_operation(&event_bus, &tx_store, outcome.detail);
+        return outcome.response;
     }
 
     // Try to deserialize as envelope (supports both v1 and v2)
@@ -2293,7 +2513,36 @@ where
 
     // Check for special schemes BEFORE trying to parse as standard types
     // These schemes may have different payload structures that don't match standard x402 types
-    if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(body_str) {
+    // Alternate settlement schemes resolve inside this block and yield an
+    // outcome instead of returning straight out of the handler.
+    //
+    // This is the fix for a real, measured hole: escrow settlements were
+    // succeeding on-chain and leaving NO trace in `/events`, `/transactions` or
+    // `/api/stats`, because each branch below returned 200 before reaching the
+    // recorder further down. `/api/stats` was therefore not just incomplete but
+    // biased — it counted `exact` and nothing else, while escrow was the scheme
+    // actually carrying traffic.
+    let alt_outcome: Option<AltSchemeOutcome> = async {
+        let json_value = serde_json::from_str::<serde_json::Value>(body_str).ok()?;
+        let fields = alt_request_fields(&json_value);
+        let detail = |ok: bool, scheme: Option<&str>, error: Option<&'static str>| OperationDetail {
+            kind: "settle",
+            network: fields
+                .network
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string()),
+            ok,
+            payer: None,
+            tx: None,
+            amount: fields.amount.clone(),
+            asset: fields.asset.clone(),
+            resource: fields.resource.clone(),
+            pay_to: fields.pay_to.clone(),
+            description: None,
+            scheme: scheme.map(|s| s.to_string()),
+            error,
+        };
+
         // Detect scheme from paymentPayload.scheme (v1) or paymentPayload.accepted.scheme (v2)
         let scheme = json_value.get("paymentPayload").and_then(|pp| {
             pp.get("scheme").and_then(|s| s.as_str()).or_else(|| {
@@ -2309,18 +2558,39 @@ where
             match FHE_PROXY.settle(&json_value).await {
                 Ok(fhe_response) => {
                     info!("FHE settlement complete");
-                    return (StatusCode::OK, Json(fhe_response)).into_response();
+                    // Untyped response: read the verdict off the wire, and treat
+                    // a missing `success` as not successful.
+                    let ok = fhe_response
+                        .get("success")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let mut d = detail(ok, scheme, None);
+                    d.tx = fhe_response
+                        .get("transaction")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    d.payer = fhe_response
+                        .get("payer")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    return Some(AltSchemeOutcome {
+                        response: (StatusCode::OK, Json(fhe_response)).into_response(),
+                        detail: d,
+                    });
                 }
                 Err(e) => {
                     error!(error = %e, "FHE settlement failed");
-                    return (
-                        StatusCode::BAD_GATEWAY,
-                        Json(json!({
-                            "success": false,
-                            "errorReason": format!("FHE facilitator error: {}", e)
-                        })),
-                    )
-                        .into_response();
+                    return Some(AltSchemeOutcome {
+                        response: (
+                            StatusCode::BAD_GATEWAY,
+                            Json(json!({
+                                "success": false,
+                                "errorReason": format!("FHE facilitator error: {}", e)
+                            })),
+                        )
+                            .into_response(),
+                        detail: detail(false, scheme, Some("fhe_error")),
+                    });
                 }
             }
         }
@@ -2329,14 +2599,17 @@ where
         if scheme == Some("upto") {
             if !crate::upto::is_enabled() {
                 warn!("Upto scheme settle requested but ENABLE_UPTO is not set to true");
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({
-                        "success": false,
-                        "errorReason": "Upto scheme is disabled. Set ENABLE_UPTO=true to enable."
-                    })),
-                )
-                    .into_response();
+                return Some(AltSchemeOutcome {
+                    response: (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({
+                            "success": false,
+                            "errorReason": "Upto scheme is disabled. Set ENABLE_UPTO=true to enable."
+                        })),
+                    )
+                        .into_response(),
+                    detail: detail(false, scheme, Some("scheme_disabled")),
+                });
             }
 
             info!("Detected upto scheme, routing to Permit2 settlement");
@@ -2344,73 +2617,59 @@ where
             match crate::upto::settle_upto(body_str, &facilitator).await {
                 Ok(upto_response) => {
                     info!("Upto settlement complete");
-                    return (StatusCode::OK, Json(upto_response)).into_response();
+                    let mut d = detail(upto_response.success, scheme, None);
+                    d.network = upto_response.network.clone();
+                    d.tx = Some(upto_response.transaction.clone());
+                    d.payer = upto_response.payer.clone();
+                    // upto settles a VARIABLE amount, so the figure that matters
+                    // is what was actually pulled, not the ceiling requested.
+                    d.amount = Some(upto_response.amount.clone());
+                    return Some(AltSchemeOutcome {
+                        response: (StatusCode::OK, Json(upto_response)).into_response(),
+                        detail: d,
+                    });
                 }
                 Err(e) => {
                     error!(error = %e, "Upto settlement failed");
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(json!({
-                            "success": false,
-                            "errorReason": format!("Upto scheme error: {}", e)
-                        })),
-                    )
-                        .into_response();
+                    return Some(AltSchemeOutcome {
+                        response: (
+                            StatusCode::BAD_REQUEST,
+                            Json(json!({
+                                "success": false,
+                                "errorReason": format!("Upto scheme error: {}", e)
+                            })),
+                        )
+                            .into_response(),
+                        detail: detail(false, scheme, Some("upto_error")),
+                    });
                 }
             }
         }
 
-        // Check for escrow/commerce scheme in nested paymentPayload.scheme (v2 format)
-        // This mirrors the verify handler's nested escrow detection
-        if crate::payment_operator::is_escrow_scheme(scheme) {
-            if !crate::payment_operator::is_enabled() {
-                warn!("Escrow scheme settlement requested but ENABLE_PAYMENT_OPERATOR is not set to true");
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({
-                        "success": false,
-                        "errorReason": "Escrow scheme settlement is disabled. Set ENABLE_PAYMENT_OPERATOR=true to enable."
-                    })),
-                )
-                    .into_response();
-            }
-
-            info!("Detected nested escrow scheme in paymentPayload, routing to PaymentOperator settlement");
-
-            match crate::payment_operator::settle_escrow(body_str, &facilitator).await {
-                Ok(escrow_response) => {
-                    info!("Escrow scheme settlement complete");
-                    return (StatusCode::OK, Json(escrow_response)).into_response();
-                }
-                Err(e) => {
-                    error!(error = %e, "Escrow scheme settlement failed");
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(json!({
-                            "success": false,
-                            "errorReason": format!("Escrow scheme error: {}", e)
-                        })),
-                    )
-                        .into_response();
-                }
-            }
-        }
-
-        // Check for x402r escrow/commerce scheme (top-level scheme field)
-        // This is the new v2 scheme pattern from x402r-scheme reference implementation
+        // Check for escrow/commerce scheme (x402r PaymentOperator), nested in
+        // paymentPayload (v2) or declared at the top level.
         let top_level_scheme = json_value.get("scheme").and_then(|s| s.as_str());
-        if crate::payment_operator::is_escrow_scheme(top_level_scheme) {
-            // Check if escrow scheme (PaymentOperator) is enabled
+        let escrow_scheme = if crate::payment_operator::is_escrow_scheme(scheme) {
+            scheme
+        } else if crate::payment_operator::is_escrow_scheme(top_level_scheme) {
+            top_level_scheme
+        } else {
+            None
+        };
+        if escrow_scheme.is_some() {
             if !crate::payment_operator::is_enabled() {
                 warn!("Escrow scheme settlement requested but ENABLE_PAYMENT_OPERATOR is not set to true");
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({
-                        "success": false,
-                        "errorReason": "Escrow scheme settlement is disabled. Set ENABLE_PAYMENT_OPERATOR=true to enable."
-                    })),
-                )
-                    .into_response();
+                return Some(AltSchemeOutcome {
+                    response: (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({
+                            "success": false,
+                            "errorReason": "Escrow scheme settlement is disabled. Set ENABLE_PAYMENT_OPERATOR=true to enable."
+                        })),
+                    )
+                        .into_response(),
+                    detail: detail(false, escrow_scheme, Some("scheme_disabled")),
+                });
             }
 
             info!("Detected escrow scheme, routing to PaymentOperator settlement");
@@ -2418,18 +2677,30 @@ where
             match crate::payment_operator::settle_escrow(body_str, &facilitator).await {
                 Ok(escrow_response) => {
                     info!("Escrow scheme settlement complete");
-                    return (StatusCode::OK, Json(escrow_response)).into_response();
+                    let mut d = detail(escrow_response.success, escrow_scheme, None);
+                    // Display, not Debug: Debug renders `SkaleBase`, which
+                    // matches no network name any consumer knows.
+                    d.network = escrow_response.network.to_string();
+                    d.tx = escrow_response.transaction.as_ref().map(|t| t.to_string());
+                    d.payer = Some(escrow_response.payer.to_string());
+                    return Some(AltSchemeOutcome {
+                        response: (StatusCode::OK, Json(escrow_response)).into_response(),
+                        detail: d,
+                    });
                 }
                 Err(e) => {
                     error!(error = %e, "Escrow scheme settlement failed");
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(json!({
-                            "success": false,
-                            "errorReason": format!("Escrow scheme error: {}", e)
-                        })),
-                    )
-                        .into_response();
+                    return Some(AltSchemeOutcome {
+                        response: (
+                            StatusCode::BAD_REQUEST,
+                            Json(json!({
+                                "success": false,
+                                "errorReason": format!("Escrow scheme error: {}", e)
+                            })),
+                        )
+                            .into_response(),
+                        detail: detail(false, escrow_scheme, Some("escrow_error")),
+                    });
                 }
             }
         }
@@ -2444,14 +2715,17 @@ where
                 // Check if escrow feature is enabled
                 if !crate::escrow::is_escrow_enabled() {
                     warn!("Escrow settlement requested but ENABLE_ESCROW is not set to true");
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(json!({
-                            "success": false,
-                            "errorReason": "Escrow settlement is disabled. Set ENABLE_ESCROW=true to enable."
-                        })),
-                    )
-                        .into_response();
+                    return Some(AltSchemeOutcome {
+                        response: (
+                            StatusCode::BAD_REQUEST,
+                            Json(json!({
+                                "success": false,
+                                "errorReason": "Escrow settlement is disabled. Set ENABLE_ESCROW=true to enable."
+                            })),
+                        )
+                            .into_response(),
+                        detail: detail(false, Some("refund"), Some("scheme_disabled")),
+                    });
                 }
 
                 info!("Detected x402r refund extension, routing to escrow settlement");
@@ -2459,18 +2733,28 @@ where
                 match crate::escrow::settle_with_escrow(body_str, &facilitator).await {
                     Ok(escrow_response) => {
                         info!("Escrow settlement complete");
-                        return (StatusCode::OK, Json(escrow_response)).into_response();
+                        let mut d = detail(escrow_response.success, Some("refund"), None);
+                        d.network = escrow_response.network.to_string();
+                        d.tx = escrow_response.transaction.as_ref().map(|t| t.to_string());
+                        d.payer = Some(escrow_response.payer.to_string());
+                        return Some(AltSchemeOutcome {
+                            response: (StatusCode::OK, Json(escrow_response)).into_response(),
+                            detail: d,
+                        });
                     }
                     Err(e) => {
                         error!(error = %e, "Escrow settlement failed");
-                        return (
-                            StatusCode::BAD_REQUEST,
-                            Json(json!({
-                                "success": false,
-                                "errorReason": format!("Escrow error: {}", e)
-                            })),
-                        )
-                            .into_response();
+                        return Some(AltSchemeOutcome {
+                            response: (
+                                StatusCode::BAD_REQUEST,
+                                Json(json!({
+                                    "success": false,
+                                    "errorReason": format!("Escrow error: {}", e)
+                                })),
+                            )
+                                .into_response(),
+                            detail: detail(false, Some("refund"), Some("escrow_error")),
+                        });
                     }
                 }
             }
@@ -2478,6 +2762,14 @@ where
             // Note: PaymentOperator now uses scheme="escrow" at top level, not extensions
             // The old operator extension pattern is deprecated
         }
+
+        None
+    }
+    .await;
+
+    if let Some(outcome) = alt_outcome {
+        emit_operation(&event_bus, &tx_store, outcome.detail);
+        return outcome.response;
     }
 
     // Try to deserialize as envelope (supports both v1 and v2)

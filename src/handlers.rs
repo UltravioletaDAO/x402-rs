@@ -11,7 +11,7 @@
 
 use axum::body::Bytes;
 use axum::extract::{Extension, Path, Query, RawQuery, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{response::IntoResponse, Json, Router};
@@ -280,6 +280,39 @@ fn failure_category(debug: &str) -> &'static str {
     }
 }
 
+/// Did this failure come from the node we depend on, rather than the request?
+///
+/// The distinction decides the status code, and getting it wrong has a cost we
+/// measured: while Celo's RPC was down, every settle there returned 400 — which
+/// tells the caller "your request is malformed". Agents spent hours re-checking
+/// signatures that were fine, because the only signal they got pointed at
+/// themselves. Two of the three failure classes we see are not the caller's
+/// fault at all.
+///
+/// The split is on the JSON-RPC error code, which is stable in a way the prose
+/// is not:
+///   * `code: 3` is an EVM execution revert — the chain ran the call and
+///     rejected it. Bad signature, insufficient balance: genuinely about the
+///     request, so 400 stays correct.
+///   * `-32000`, `-32603`, `-32801` and transport errors are the node failing
+///     to answer at all — pruned history, missing headers, retries exhausted.
+///     Nothing in the request can fix those.
+///
+/// Conservative by design: anything unrecognised keeps the old 400. A wrong 502
+/// would tell a caller with a genuinely bad payload to go wait for us.
+fn is_upstream_rpc_failure(debug: &str) -> bool {
+    const NODE_CODES: [&str; 3] = ["-32000", "-32603", "-32801"];
+    // An execution revert can also carry a node code in a nested transport
+    // error, so the revert check wins: if the chain executed and rejected it,
+    // that is an answer, not an outage.
+    if debug.contains("execution reverted") {
+        return false;
+    }
+    NODE_CODES.iter().any(|c| debug.contains(c))
+        || debug.contains("Max retries exceeded")
+        || debug.contains("Transport(")
+}
+
 /// Persist one operation, off the request path.
 ///
 /// Spawned rather than awaited: `record` makes two DynamoDB round trips, and
@@ -336,6 +369,20 @@ fn emit_operation(
 ) {
     if detail.error.is_some() && !event_bus.publish_failures() {
         return;
+    }
+    // A settlement that succeeded but whose asset we could not name still gets
+    // recorded — dropping it would understate the operation count too — but it
+    // must not do so quietly. Until this warning existed, an unresolved asset
+    // produced a row indistinguishable from a legitimate one, and the gap grew
+    // to a third of all settles before anyone noticed. Absence of a field is a
+    // measurement failure and should read like one.
+    if detail.ok && detail.kind == "settle" && detail.asset.is_none() {
+        warn!(
+            scheme = detail.scheme.as_deref().unwrap_or("unknown"),
+            network = %detail.network,
+            "settle recorded WITHOUT asset: volume for this operation will read as zero, \
+             which is not the same as zero volume"
+        );
     }
     let ts = crate::events::now_ms();
     event_bus.publish(crate::events::TrafficEvent {
@@ -435,9 +482,21 @@ fn alt_request_fields(json_value: &serde_json::Value) -> AltRequestFields {
     // Candidate objects, most specific first: v1 requirements, v2 `accepted`
     // (object or first element of the array), and finally the envelope itself
     // for the top-level escrow shape.
-    let payload = json_value.get("paymentPayload");
+    //
+    // `payload` belongs in the owner list, not just `paymentPayload`. The
+    // top-level escrow envelope nests its fields under a bare `payload`, and
+    // leaving it out cost real accuracy: 84 of 317 recorded settles landed with
+    // asset and amount null, which split each network into a second phantom row
+    // with volume 0 — a figure that looked like a measurement and was an
+    // artifact. Two payments from named agents in the swarm were verified to be
+    // in that state.
+    let payment_payload = json_value.get("paymentPayload");
+    let bare_payload = json_value.get("payload");
     let mut candidates: Vec<&serde_json::Value> = Vec::new();
-    for owner in [Some(json_value), payload].into_iter().flatten() {
+    for owner in [Some(json_value), payment_payload, bare_payload]
+        .into_iter()
+        .flatten()
+    {
         for key in ["paymentRequirements", "accepted", "paymentInfo"] {
             if let Some(v) = owner.get(key) {
                 match v {
@@ -448,7 +507,7 @@ fn alt_request_fields(json_value: &serde_json::Value) -> AltRequestFields {
         }
     }
     candidates.push(json_value);
-    if let Some(p) = payload {
+    for p in [payment_payload, bare_payload].into_iter().flatten() {
         candidates.push(p);
     }
 
@@ -2715,16 +2774,36 @@ where
                 }
                 Err(e) => {
                     error!(error = %e, "Escrow scheme settlement failed");
-                    return Some(AltSchemeOutcome {
-                        response: (
-                            StatusCode::BAD_REQUEST,
-                            Json(json!({
-                                "success": false,
-                                "errorReason": format!("Escrow scheme error: {}", e)
-                            })),
+                    // A node that cannot answer is not a malformed request.
+                    // 502 + Retry-After tells the caller to come back rather
+                    // than go debug a payload that was fine.
+                    let upstream = is_upstream_rpc_failure(&format!("{e:?}"));
+                    let (code, reason, category) = if upstream {
+                        (
+                            StatusCode::BAD_GATEWAY,
+                            "Upstream RPC unavailable for this network; the request was not \
+                             rejected, the node could not answer. Retry later.".to_string(),
+                            "upstream_rpc_unavailable",
                         )
-                            .into_response(),
-                        detail: detail(false, escrow_scheme, Some("escrow_error")),
+                    } else {
+                        (
+                            StatusCode::BAD_REQUEST,
+                            format!("Escrow scheme error: {e}"),
+                            "escrow_error",
+                        )
+                    };
+                    let mut resp = (
+                        code,
+                        Json(json!({ "success": false, "errorReason": reason })),
+                    )
+                        .into_response();
+                    if upstream {
+                        resp.headers_mut()
+                            .insert(header::RETRY_AFTER, HeaderValue::from_static("30"));
+                    }
+                    return Some(AltSchemeOutcome {
+                        response: resp,
+                        detail: detail(false, escrow_scheme, Some(category)),
                     });
                 }
             }
@@ -7384,7 +7463,134 @@ mod canonical_network_name_tests {
     /// label beats dropping the row and reporting a quieter, wrong total.
     #[test]
     fn unknown_network_survives_instead_of_vanishing() {
-        assert_eq!(canonical_network_name("eip155:999999999"), "eip155:999999999");
+        assert_eq!(
+            canonical_network_name("eip155:999999999"),
+            "eip155:999999999"
+        );
         assert_eq!(canonical_network_name("unknown"), "unknown");
+    }
+}
+
+#[cfg(test)]
+mod alt_request_fields_tests {
+    use super::alt_request_fields;
+    use serde_json::json;
+
+    /// The shape that cost 84 of 317 settles their asset and amount.
+    ///
+    /// The top-level escrow envelope nests everything under a bare `payload`,
+    /// which the extractor never looked inside. The rows still counted as
+    /// operations, so `/api/stats` reported them as settles with volume 0 —
+    /// indistinguishable from a settle that genuinely moved nothing.
+    #[test]
+    fn top_level_escrow_envelope_yields_asset_and_amount() {
+        let body = json!({
+            "scheme": "escrow",
+            "payload": {
+                "authorization": { "from": "0xaaa", "to": "0xbbb", "value": "30000" },
+                "paymentInfo": {
+                    "token": "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
+                    "maxAmount": "30000",
+                    "receiver": "0xccc"
+                }
+            }
+        });
+        let f = alt_request_fields(&body);
+        assert_eq!(
+            f.asset.as_deref(),
+            Some("0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"),
+            "asset lives at payload.paymentInfo.token"
+        );
+        assert_eq!(f.amount.as_deref(), Some("30000"));
+        assert_eq!(f.pay_to.as_deref(), Some("0xccc"));
+    }
+
+    /// The shapes that already worked must keep working — this fix widens the
+    /// search, it does not move it.
+    #[test]
+    fn v1_requirements_still_resolve() {
+        let body = json!({
+            "paymentRequirements": {
+                "network": "base",
+                "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+                "maxAmountRequired": "10000",
+                "payTo": "0xddd",
+                "resource": "https://example.test/thing"
+            }
+        });
+        let f = alt_request_fields(&body);
+        assert_eq!(f.network.as_deref(), Some("base"));
+        assert_eq!(f.amount.as_deref(), Some("10000"));
+        assert_eq!(f.resource.as_deref(), Some("https://example.test/thing"));
+    }
+
+    #[test]
+    fn v2_accepted_still_resolves() {
+        let body = json!({
+            "paymentPayload": {
+                "accepted": { "network": "eip155:8453", "asset": "0xabc", "amount": "500" }
+            }
+        });
+        let f = alt_request_fields(&body);
+        assert_eq!(f.network.as_deref(), Some("eip155:8453"));
+        assert_eq!(f.amount.as_deref(), Some("500"));
+    }
+
+    /// Absent stays absent. A guessed asset would be written into the index
+    /// where nothing downstream could tell it from a measured one.
+    #[test]
+    fn nothing_is_invented_when_the_envelope_is_empty() {
+        let f = alt_request_fields(&json!({ "scheme": "escrow" }));
+        assert!(f.asset.is_none() && f.amount.is_none() && f.network.is_none());
+    }
+}
+
+#[cfg(test)]
+mod upstream_rpc_failure_tests {
+    use super::is_upstream_rpc_failure;
+
+    /// Real error strings captured from production while Celo's RPC was down.
+    /// Every one of these returned 400 to the caller, which reads as "your
+    /// request is wrong" for a failure the caller cannot influence.
+    #[test]
+    fn node_level_failures_are_recognised() {
+        for e in [
+            r#"ContractCall("ErrorResp(ErrorPayload { code: -32000, message: \"header not found\" })")"#,
+            r#"error code -32000: historical state fa81e909 is not available"#,
+            r#"ErrorResp(ErrorPayload { code: -32801, message: "no historical RPC is available for this historical (pre-L2) execution request" })"#,
+            r#"ContractCall("ErrorResp(ErrorPayload { code: -32603, message: \"json: unsupported value\" })")"#,
+            r#"Transport(Custom("Max retries exceeded server returned an error response"))"#,
+        ] {
+            assert!(is_upstream_rpc_failure(e), "should be upstream: {e}");
+        }
+    }
+
+    /// These the chain DID execute and reject. The caller can act on them —
+    /// fix the signature, fund the wallet — so 400 remains the honest answer.
+    #[test]
+    fn execution_reverts_stay_client_errors() {
+        for e in [
+            r#"ErrorResp(ErrorPayload { code: 3, message: "execution reverted: FiatTokenV2: invalid signature" })"#,
+            r#"ErrorResp(ErrorPayload { code: 3, message: "execution reverted: ERC20: transfer amount exceeds balance" })"#,
+        ] {
+            assert!(!is_upstream_rpc_failure(e), "should stay client error: {e}");
+        }
+    }
+
+    /// A revert wrapped in a transport error is still a revert: the chain
+    /// answered. Without this precedence a bad signature would be reported as
+    /// our outage, which is the same mistake in the opposite direction.
+    #[test]
+    fn revert_wins_over_a_nested_transport_code() {
+        let e = r#"Transport(Custom("... code: -32000 ... execution reverted: FiatTokenV2: invalid signature"))"#;
+        assert!(!is_upstream_rpc_failure(e));
+    }
+
+    /// Unrecognised text keeps the old behaviour. Guessing 502 would tell a
+    /// caller with a genuinely broken payload to sit and wait for us.
+    #[test]
+    fn unknown_errors_are_not_promoted_to_upstream() {
+        assert!(!is_upstream_rpc_failure("SchemeMismatch"));
+        assert!(!is_upstream_rpc_failure("something entirely new"));
     }
 }

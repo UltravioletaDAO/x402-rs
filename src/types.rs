@@ -1523,14 +1523,22 @@ pub enum FacilitatorErrorReason {
 /// When the `8004-reputation` extension is active in PaymentRequirements.extra,
 /// the response includes a `proof_of_payment` field containing cryptographic proof
 /// that can be used to submit reputation feedback on-chain.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SettleResponse {
     pub success: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_reason: Option<FacilitatorErrorReason>,
     pub payer: MixedAddress,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// The settlement transaction hash.
+    ///
+    /// Accepted under three spellings on the way in, and emitted under all
+    /// three on the way out — see the `Serialize` impl below for why.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        alias = "transactionHash",
+        alias = "transaction_hash"
+    )]
     pub transaction: Option<TransactionHash>,
     pub network: Network,
     /// ERC-8004 proof of payment (included when `8004-reputation` extension is active)
@@ -1541,6 +1549,51 @@ pub struct SettleResponse {
     /// and may populate extensions in responses for downstream consumers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extensions: Option<std::collections::HashMap<String, serde_json::Value>>,
+}
+
+/// Emit the settlement hash under every name the ecosystem reads it by.
+///
+/// This is a compatibility fix for a real, measured failure. The server called
+/// the field `transaction`; our own TypeScript SDK's `FacilitatorClient.settle`
+/// read `result.transactionHash || result.transaction_hash`. Neither name
+/// existed in the response, so the official client silently handed back
+/// `undefined` for the most important field it returns — and at least one
+/// consumer failed closed on that and revoked access to a payment that had
+/// already settled on-chain. The money moved; the receipt was unreadable.
+///
+/// Emitting all three costs a few bytes and fixes every client already pinned
+/// to an old SDK, which is the population that cannot act on a fix of their
+/// own. `transaction` stays the canonical name; the other two are aliases.
+///
+/// Written by hand rather than derived because serde's `alias` only applies to
+/// deserialization — there is no derive-level way to write one value out under
+/// several keys.
+impl Serialize for SettleResponse {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("success", &self.success)?;
+        if let Some(reason) = &self.error_reason {
+            map.serialize_entry("errorReason", reason)?;
+        }
+        map.serialize_entry("payer", &self.payer)?;
+        if let Some(tx) = &self.transaction {
+            map.serialize_entry("transaction", tx)?;
+            map.serialize_entry("transactionHash", tx)?;
+            map.serialize_entry("transaction_hash", tx)?;
+        }
+        map.serialize_entry("network", &self.network)?;
+        if let Some(proof) = &self.proof_of_payment {
+            map.serialize_entry("proofOfPayment", proof)?;
+        }
+        if let Some(ext) = &self.extensions {
+            map.serialize_entry("extensions", ext)?;
+        }
+        map.end()
+    }
 }
 
 /// Error returned when encoding a [`SettleResponse`] into base64 fails.
@@ -2277,5 +2330,70 @@ mod tests {
         let json = serde_json::to_string(&extra).unwrap();
         // All fields should be omitted (skip_serializing_if = None)
         assert_eq!(json, "{}");
+    }
+}
+
+#[cfg(test)]
+mod settle_response_tx_alias_tests {
+    use super::*;
+
+    fn sample() -> SettleResponse {
+        // The exact raw response a consumer received and could not parse,
+        // reported from production on 2026-08-01.
+        serde_json::from_str(
+            r#"{"success":true,
+                "payer":"0x7052cA449702e5ffafbE3dc63b74C7b7d8aF402B",
+                "transaction":"0x4e186e8c76658ea699ff55413d268e7b806d6b93cea880bd215ef1cdd187c3b7",
+                "network":"base"}"#,
+        )
+        .expect("the shape the server actually emits must deserialize")
+    }
+
+    /// The regression this guards: our own SDK reads `transactionHash ||
+    /// transaction_hash`, the server emitted only `transaction`, and a consumer
+    /// revoked access to an already-settled payment because the hash read as
+    /// undefined. All three names must go out together.
+    #[test]
+    fn hash_is_emitted_under_all_three_names() {
+        let v: serde_json::Value = serde_json::to_value(sample()).unwrap();
+        let expected = "0x4e186e8c76658ea699ff55413d268e7b806d6b93cea880bd215ef1cdd187c3b7";
+        for key in ["transaction", "transactionHash", "transaction_hash"] {
+            assert_eq!(
+                v.get(key).and_then(|x| x.as_str()),
+                Some(expected),
+                "consumers read the hash under `{key}`; dropping it breaks them silently"
+            );
+        }
+    }
+
+    /// A client that sends the hash back under either alias must be understood.
+    #[test]
+    fn every_spelling_is_accepted_on_the_way_in() {
+        for key in ["transaction", "transactionHash", "transaction_hash"] {
+            let body = format!(
+                r#"{{"success":true,"payer":"0x7052cA449702e5ffafbE3dc63b74C7b7d8aF402B",
+                     "{key}":"0x4e186e8c76658ea699ff55413d268e7b806d6b93cea880bd215ef1cdd187c3b7",
+                     "network":"base"}}"#
+            );
+            let parsed: SettleResponse =
+                serde_json::from_str(&body).unwrap_or_else(|e| panic!("`{key}` rejected: {e}"));
+            assert!(
+                parsed.transaction.is_some(),
+                "`{key}` did not populate the hash"
+            );
+        }
+    }
+
+    /// No hash means no keys at all — never an empty string, which a consumer
+    /// would happily treat as a real receipt.
+    #[test]
+    fn absent_hash_emits_no_alias_keys() {
+        let mut r = sample();
+        r.transaction = None;
+        let v: serde_json::Value = serde_json::to_value(r).unwrap();
+        for key in ["transaction", "transactionHash", "transaction_hash"] {
+            assert!(v.get(key).is_none(), "`{key}` must be absent, not empty");
+        }
+        assert_eq!(v.get("success").and_then(|x| x.as_bool()), Some(true));
     }
 }

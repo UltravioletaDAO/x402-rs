@@ -3418,6 +3418,24 @@ where
         }
         Err(e) => {
             error!(error = %e, "Escrow state query failed");
+            // Same split as the settle path: a node that cannot answer is not a
+            // malformed query. This branch was missed when the settle branches
+            // were fixed — 9 of the RPC failures observed over 48h came through
+            // here and went out as 400, telling callers their request was wrong
+            // about an outage they cannot influence.
+            if is_upstream_rpc_failure(&format!("{e:?}")) {
+                let mut resp = (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({
+                        "error": "Upstream RPC unavailable for this network; the query was not \
+                                  rejected, the node could not answer. Retry later."
+                    })),
+                )
+                    .into_response();
+                resp.headers_mut()
+                    .insert(header::RETRY_AFTER, HeaderValue::from_static("30"));
+                return resp;
+            }
             (
                 StatusCode::BAD_REQUEST,
                 Json(json!({

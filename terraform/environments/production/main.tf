@@ -768,8 +768,11 @@ resource "aws_ecs_task_definition" "facilitator" {
 
   container_definitions = jsonencode(concat([
     {
-      name      = "facilitator"
-      image     = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${data.aws_region.current.name}.amazonaws.com/${var.ecr_repository_name}:${var.image_tag}"
+      name = "facilitator"
+      # The image comes from what is RUNNING, not from tfvars — see
+      # local.facilitator_image. Applying the tfvars value blindly rolled
+      # production back two months on 2026-08-03.
+      image     = local.facilitator_image
       essential = true
 
       portMappings = [
@@ -958,6 +961,29 @@ resource "aws_ecs_task_definition" "facilitator" {
         {
           name  = "X402_EVENTS_SCOPE"
           value = "all"
+        },
+        {
+          # Publish operations that FAILED, not only the ones that resolved.
+          #
+          # While this was off, `/api/stats` reported settlesFailed=0 no matter
+          # what happened — the store only ever saw successes. Measured worst
+          # case on 2026-08-01: the panel showed "24 successes, 0 failures" for
+          # an hour that was really 24 of 38, and a network that was failing
+          # every single settle appeared nowhere at all, because a row is only
+          # created on success. A dashboard that cannot express failure does not
+          # read as incomplete, it reads as healthy.
+          #
+          # What goes out is a BOUNDED category (contract_revert,
+          # invalid_signature, insufficient_funds, upstream_rpc_unavailable, …)
+          # and never the raw error text: raw errors carry addresses and have
+          # carried an RPC URL with its key inside it. See `failure_category`
+          # in src/handlers.rs — anything unrecognised becomes "other" rather
+          # than being echoed.
+          #
+          # Turning this off again restores the old silence; it does not stop
+          # failures, only the reporting of them.
+          name  = "X402_EVENTS_PUBLISH_FAILURES"
+          value = "true"
         },
         {
           name  = "TRANSACTIONS_TABLE_NAME"

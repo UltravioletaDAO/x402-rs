@@ -226,7 +226,9 @@ function applyLang(lang){
   document.querySelectorAll('.langsw button').forEach(b => {
     b.classList.toggle('active', b.getAttribute('data-lang') === LANG);
   });
-  load();          // cards and rows are built in JS; re-render in the new language\n  loadHistory();   // same for the reconstructed history
+  // Both panels are built in JS, so both must re-render on a language switch.
+  load();
+  loadHistory();
 }
 
 // Number grouping follows the displayed language, not the machine's locale —

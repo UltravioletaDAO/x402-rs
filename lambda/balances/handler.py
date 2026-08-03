@@ -400,8 +400,18 @@ def get_network_configs() -> dict[str, dict]:
 
 
 def fetch_json(url: str, data: bytes | None = None, timeout: float = 10) -> dict:
-    """Make an HTTP request and return JSON response."""
-    headers = {"Content-Type": "application/json"}
+    """Make an HTTP request and return JSON response.
+
+    The User-Agent is not cosmetic. Providers behind Cloudflare bot protection
+    reject urllib's default "Python-urllib/3.x" outright -- celo-rpc.quickapi.com
+    answers it with HTTP 403 "error code: 1010" while serving the identical
+    request fine otherwise, which silently nulled the Celo mainnet balance.
+    """
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/126.0 Safari/537.36",
+        "Accept": "application/json",
+    }
     req = urllib.request.Request(url, data=data, headers=headers)
     with urllib.request.urlopen(req, timeout=timeout) as response:
         return json.loads(response.read().decode())

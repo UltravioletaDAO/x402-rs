@@ -29,9 +29,19 @@ import urllib.request
 
 TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
 
-# Public endpoints, used read-only. A wrong or unreachable RPC yields "unknown",
-# never a guessed amount.
-RPC = {
+# RPC endpoints, read-only.
+#
+# Public endpoints answered 403 for most receipts on the first run: 27 of 37
+# rows came back "unreadable" and it looked like the data was gone. It was not
+# — the endpoint was refusing us. That is why this now prefers the facilitator's
+# own premium RPCs from AWS Secrets Manager (`facilitator-rpc-mainnet`), the
+# same ones the service settles with.
+#
+# The URLs carry API keys. They are read into memory and never printed, never
+# written to a file, and never included in an error message — `rpc_call` reports
+# the network name, not the endpoint. `src/redact.rs` exists because an RPC URL
+# with its key leaked into a log once already.
+PUBLIC_FALLBACK = {
     "base": "https://mainnet.base.org",
     "arbitrum": "https://arb1.arbitrum.io/rpc",
     "optimism": "https://mainnet.optimism.io",
@@ -39,6 +49,35 @@ RPC = {
     "avalanche": "https://api.avax.network/ext/bc/C/rpc",
     "ethereum": "https://eth.llamarpc.com",
 }
+
+
+def load_rpcs():
+    """Premium endpoints from Secrets Manager, falling back to public ones.
+
+    A network with no endpoint at all is reported as such, never guessed at.
+    """
+    rpcs = dict(PUBLIC_FALLBACK)
+    try:
+        import subprocess
+        out = subprocess.run(
+            ["aws", "secretsmanager", "get-secret-value",
+             "--secret-id", "facilitator-rpc-mainnet",
+             "--region", "us-east-2", "--query", "SecretString", "--output", "text"],
+            capture_output=True, text=True, timeout=60,
+        )
+        if out.returncode == 0:
+            secret = json.loads(out.stdout)
+            for net, url in secret.items():
+                if isinstance(url, str) and url.startswith("http"):
+                    rpcs[net] = url
+            print(f"RPC premium cargados para: {sorted(secret.keys())}")
+        else:
+            print("AVISO: no se pudo leer el secreto; se usan endpoints publicos",
+                  file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001
+        print(f"AVISO: Secrets Manager no disponible ({type(exc).__name__}); "
+              f"se usan endpoints publicos", file=sys.stderr)
+    return rpcs
 
 
 def rpc_call(url, method, params):
@@ -66,6 +105,7 @@ def decode_transfer(receipt):
 
 
 def main():
+    RPC = load_rpcs()
     ap = argparse.ArgumentParser()
     ap.add_argument("--base-url", default="https://facilitator.ultravioletadao.xyz")
     ap.add_argument("--limit", type=int, default=200)
@@ -122,11 +162,38 @@ def main():
         print("\nDRY-RUN: no se escribio nada. Pasar --apply para aplicar.")
         return 0
 
-    table = os.environ.get("TRANSACTIONS_TABLE_NAME")
-    if not table:
-        print("ERROR: falta TRANSACTIONS_TABLE_NAME", file=sys.stderr)
-        return 1
-    print(f"\n[apply] escribiria en {table} — implementar el update tras revisar el diff")
+    table = os.environ.get("TRANSACTIONS_TABLE_NAME", "facilitator_transactions")
+    import subprocess
+
+    print(f"\n[apply] escribiendo en {table}")
+    ok = failed = 0
+    for (net, asset), agg in sorted(by_net.items()):
+        key = json.dumps({"pk": {"S": "AGG"}, "sk": {"S": f"{net}#{asset}"}})
+        # ADD, not SET: this only increments. And the condition means a row whose
+        # volume was already measured is left alone — a re-run cannot double-count,
+        # and a figure that came from the live path is never overwritten by one
+        # reconstructed here.
+        res = subprocess.run(
+            ["aws", "dynamodb", "update-item",
+             "--table-name", table, "--region", "us-east-2",
+             "--key", key,
+             "--update-expression", "ADD volume_atomic :v",
+             "--condition-expression", "attribute_not_exists(volume_atomic) OR volume_atomic = :zero",
+             "--expression-attribute-values",
+             json.dumps({":v": {"N": str(agg["vol"])}, ":zero": {"N": "0"}})],
+            capture_output=True, text=True, timeout=60,
+        )
+        if res.returncode == 0:
+            print(f"  OK   {net:<12} +{agg['vol']}")
+            ok += 1
+        else:
+            err = res.stderr.strip().splitlines()[-1] if res.stderr else "?"
+            # A failed condition is the expected, correct outcome for a row that
+            # already carries a measured volume. It is not an error.
+            note = "(ya tenia volumen medido, se respeta)" if "ConditionalCheckFailed" in err else err[:80]
+            print(f"  SKIP {net:<12} {note}")
+            failed += 1
+    print(f"\nfilas actualizadas: {ok} | omitidas: {failed}")
     return 0
 
 

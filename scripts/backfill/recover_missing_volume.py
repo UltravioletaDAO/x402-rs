@@ -104,6 +104,20 @@ def decode_transfer(receipt):
     return None
 
 
+
+def canonical_asset(network, asset_lower, rows):
+    """Return the spelling the aggregate already uses for this token.
+
+    Falls back to the lowercase form only when the token is genuinely new to the
+    index, in which case there is no existing row to disagree with.
+    """
+    for r in rows:
+        a = r.get("asset")
+        if a and a.lower() == asset_lower and r.get("network") == network:
+            return a
+    return asset_lower
+
+
 def main():
     RPC = load_rpcs()
     ap = argparse.ArgumentParser()
@@ -141,6 +155,13 @@ def main():
             unreadable.append((net, tx))
             continue
         token, value = decoded
+        # The live path writes the checksummed (EIP-55) address; DynamoDB sort
+        # keys are byte-compared, so writing the lowercase form a receipt log
+        # gives us creates a SECOND row for the same token. That happened on
+        # 2026-08-03: five orphan rows carried the recovered volume while the
+        # real rows kept the counts, and the totals still added up, which is
+        # why it survived review. Reuse the spelling already in the aggregate.
+        token = canonical_asset(net, token, rows)
         recovered.append({"network": net, "tx": tx, "asset": token, "amount": value})
 
     print(f"\nrecuperables : {len(recovered)}")

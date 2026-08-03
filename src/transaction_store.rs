@@ -47,6 +47,16 @@ pub const DEFAULT_TRANSACTIONS_TABLE_NAME: &str = "facilitator_transactions";
 /// too, and would get more expensive every day the facilitator stays up.
 const AGGREGATE_PK: &str = "AGG";
 
+/// Partition holding history reconstructed from the chain, NOT measured live.
+///
+/// Kept under its own key on purpose. The live aggregate answers "what did this
+/// facilitator observe and record"; this one answers "what happened on-chain,
+/// reconstructed after the fact". They have different reliability and different
+/// blind spots — the reconstruction knows amounts but not which endpoint was
+/// paid, because that never existed on-chain. Merging them into one number would
+/// produce a figure nobody could later interrogate.
+const BACKFILL_PK: &str = "AGG-BACKFILL";
+
 /// Default retention. Storage is not the reason for a TTL — 48k records a month
 /// at ~700 bytes is about $0.03 — but an unbounded table is a decision nobody
 /// made, and a TTL is far easier to lengthen than a mistake is to undo.
@@ -162,6 +172,28 @@ pub struct Aggregate {
     pub last_ts: u64,
 }
 
+/// One reconstructed row: either settled volume for a network/asset, or a count
+/// of a kind of operation the facilitator executed.
+///
+/// `op_kind` is present for work that moved no money — ERC-8004 registrations,
+/// feedback, agent-NFT transfers. Those are the majority of what the service
+/// does and belong in an activity total, but never in a volume total.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackfillRow {
+    pub network: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asset: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scheme: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub op_kind: Option<String>,
+    pub count: u64,
+    pub volume_atomic: u128,
+    pub first_ts: u64,
+    pub last_ts: u64,
+}
+
 #[async_trait]
 pub trait TransactionStore: Send + Sync + std::fmt::Debug {
     /// Persist one operation and fold it into the aggregates.
@@ -179,6 +211,13 @@ pub trait TransactionStore: Send + Sync + std::fmt::Debug {
 
     /// Every aggregate, in one bounded read. Never a scan.
     async fn aggregates(&self) -> Result<Vec<Aggregate>, TransactionStoreError>;
+
+    /// History reconstructed from the chain. Separate call, separate partition,
+    /// so a caller has to ask for it deliberately and can never receive it
+    /// blended into the measured figures by accident.
+    async fn backfill(&self) -> Result<Vec<BackfillRow>, TransactionStoreError> {
+        Ok(Vec::new())
+    }
 
     fn store_type(&self) -> &'static str;
 }

@@ -7268,6 +7268,7 @@ pub fn transaction_routes() -> Router<Arc<dyn crate::transaction_store::Transact
     Router::new()
         .route("/transactions", get(get_transactions))
         .route("/api/stats", get(get_stats))
+        .route("/api/stats/history", get(get_stats_history))
 }
 
 #[derive(Debug, Deserialize)]
@@ -7317,6 +7318,95 @@ pub async fn get_transactions(
 /// Reads only the aggregate partition, so the cost is flat no matter how many
 /// transactions have accumulated. Scanning the records instead would grow more
 /// expensive every day the facilitator stays up.
+/// `GET /api/stats/history`: settlement history reconstructed from the chain.
+///
+/// Deliberately NOT folded into `/api/stats`. That endpoint reports what this
+/// facilitator observed and recorded; this one reports what was reconstructed
+/// from on-chain evidence after the fact. Both are true and they are not the
+/// same claim:
+///
+///   * the live figures know which endpoint was paid, because the x402 request
+///     said so — but they only start when recording was switched on, and on
+///     2026-08-03 that covered under 3% of the service's life;
+///   * the reconstruction covers everything back to the first settlement in
+///     October 2025, but it is silent on `resource` and `description`, which
+///     never existed on-chain and cannot be recovered.
+///
+/// Serving them from one endpoint would let a consumer add a measured number to
+/// a reconstructed one without noticing. Every row here carries `source`.
+#[instrument(skip_all)]
+pub async fn get_stats_history(
+    State(store): State<Arc<dyn crate::transaction_store::TransactionStore>>,
+) -> impl IntoResponse {
+    let rows = match store.backfill().await {
+        Ok(r) => r,
+        Err(e) => {
+            error!(error = %e, "history query failed");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": "history unavailable"})),
+            )
+                .into_response();
+        }
+    };
+
+    // Rows carrying an asset moved money; rows carrying an op_kind are work the
+    // facilitator performed and paid gas for. Summing them into one figure would
+    // be the mistake this split exists to prevent.
+    let settle_rows: Vec<_> = rows.iter().filter(|r| r.op_kind.is_none()).collect();
+    let op_rows: Vec<_> = rows.iter().filter(|r| r.op_kind.is_some()).collect();
+
+    let settles: u64 = settle_rows.iter().map(|r| r.count).sum();
+    let volume: u128 = settle_rows.iter().map(|r| r.volume_atomic).sum();
+    let operations: u64 = op_rows.iter().map(|r| r.count).sum();
+    let networks: std::collections::BTreeSet<&str> =
+        rows.iter().map(|r| r.network.as_str()).collect();
+    let first = rows.iter().map(|r| r.first_ts).filter(|t| *t > 0).min();
+    let last = rows.iter().map(|r| r.last_ts).max();
+
+    let mut by_kind: std::collections::BTreeMap<&str, u64> = Default::default();
+    for r in &op_rows {
+        *by_kind
+            .entry(r.op_kind.as_deref().unwrap_or("unknown"))
+            .or_default() += r.count;
+    }
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "source": "onchain-backfill",
+            "note": "Reconstructed from on-chain evidence, not observed live. \
+                     Amounts are exact; `resource` and `description` are absent \
+                     because they never existed on-chain. Do NOT add these totals \
+                     to /api/stats — that endpoint counts the same operations it \
+                     recorded itself, and the two overlap.",
+            "totals": {
+                "settles": settles,
+                "volumeAtomic": volume.to_string(),
+                "operations": operations,
+                "networks": networks.len(),
+                "firstTs": first,
+                "lastTs": last,
+            },
+            "operationsByKind": by_kind,
+            "settlements": settle_rows.iter().map(|r| json!({
+                "network": r.network,
+                "asset": r.asset,
+                "scheme": r.scheme.clone().unwrap_or_else(|| "exact".into()),
+                "settles": r.count,
+                "volumeAtomic": r.volume_atomic.to_string(),
+                "decimals": r.asset.as_deref().and_then(|a| {
+                    r.network.parse::<crate::network::Network>().ok()
+                        .and_then(|n| crate::network::decimals_for_asset(n, a))
+                }),
+                "firstTs": r.first_ts,
+                "lastTs": r.last_ts,
+            })).collect::<Vec<_>>(),
+        })),
+    )
+        .into_response()
+}
+
 pub async fn get_stats(
     State(store): State<Arc<dyn crate::transaction_store::TransactionStore>>,
 ) -> impl IntoResponse {

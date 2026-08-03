@@ -24,8 +24,8 @@ use std::collections::HashMap;
 use tracing::info;
 
 use super::{
-    Aggregate, TransactionRecord, TransactionStore, TransactionStoreError, AGGREGATE_PK,
-    DEFAULT_TRANSACTIONS_TABLE_NAME, DEFAULT_TTL_DAYS,
+    Aggregate, BackfillRow, TransactionRecord, TransactionStore, TransactionStoreError,
+    AGGREGATE_PK, BACKFILL_PK, DEFAULT_TRANSACTIONS_TABLE_NAME, DEFAULT_TTL_DAYS,
 };
 
 #[derive(Debug)]
@@ -224,6 +224,57 @@ impl TransactionStore for DynamoTransactionStore {
             day = super::civil_from_days(days_from_civil(day) - 1);
         }
         Ok(out)
+    }
+
+    async fn backfill(&self) -> Result<Vec<BackfillRow>, TransactionStoreError> {
+        // One bounded Query against its own partition — same shape as
+        // `aggregates`, never a scan, and it cannot pick up a live row because
+        // the live rows are not in this partition.
+        let page = self
+            .client
+            .query()
+            .table_name(&self.table_name)
+            .key_condition_expression("pk = :pk")
+            .expression_attribute_values(":pk", Self::s(BACKFILL_PK))
+            .send()
+            .await
+            .map_err(|e| TransactionStoreError::Dynamo(format!("{e:?}")))?;
+
+        Ok(page
+            .items()
+            .iter()
+            .filter_map(|item| {
+                let num = |k: &str| -> u64 {
+                    item.get(k)
+                        .and_then(|v| v.as_n().ok())
+                        .and_then(|n| n.parse().ok())
+                        .unwrap_or(0)
+                };
+                let text = |k: &str| -> Option<String> {
+                    item.get(k).and_then(|v| v.as_s().ok()).cloned()
+                };
+                Some(BackfillRow {
+                    network: text("network")?,
+                    asset: text("asset"),
+                    scheme: text("scheme"),
+                    op_kind: text("op_kind"),
+                    // A settled row counts settles; an operation row counts
+                    // operations. Both are "how many times did this happen".
+                    count: if item.contains_key("op_count") {
+                        num("op_count")
+                    } else {
+                        num("settles_ok")
+                    },
+                    volume_atomic: item
+                        .get("volume_atomic")
+                        .and_then(|v| v.as_n().ok())
+                        .and_then(|n| n.parse().ok())
+                        .unwrap_or(0),
+                    first_ts: num("first_ts"),
+                    last_ts: num("last_ts"),
+                })
+            })
+            .collect())
     }
 
     async fn aggregates(&self) -> Result<Vec<Aggregate>, TransactionStoreError> {

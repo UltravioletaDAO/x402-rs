@@ -55,6 +55,39 @@
 <main>
   <div id="err" hidden></div>
 
+  <!-- HISTORY FIRST. This ordering is the fix for a real misreading: with the
+       live panel on top, its "342" read as the facilitator's lifetime total and
+       the real figure — 16,879 operations since October — sat below a wall of
+       explanatory text where nobody reached it. The question a visitor arrives
+       with is "how much has this thing done", and that is answered here. -->
+  <h2 data-i18n="histTitle">Todo lo procesado desde el lanzamiento</h2>
+  <div class="cards" id="histCards"></div>
+
+  <table>
+    <thead><tr>
+      <th data-i18n="th.network">red</th><th data-i18n="th.token">token</th>
+      <th data-i18n="hth.scheme">esquema</th>
+      <th class="num" data-i18n="hth.settles">settles</th>
+      <th class="num" data-i18n="th.volume">volumen</th>
+      <th data-i18n="hth.range">rango</th>
+    </tr></thead>
+    <tbody id="histRows"><tr><td colspan="6" class="muted" data-i18n="loading">cargando…</td></tr></tbody>
+  </table>
+
+  <h2 data-i18n="opsTitle">Operaciones por tipo</h2>
+  <table>
+    <thead><tr>
+      <th data-i18n="oth.kind">tipo de operación</th>
+      <th class="num" data-i18n="oth.count">cantidad</th>
+    </tr></thead>
+    <tbody id="opsRows"><tr><td colspan="2" class="muted" data-i18n="loading">cargando…</td></tr></tbody>
+  </table>
+
+  <p class="muted" style="max-width:80ch;line-height:1.7" data-i18n-html="histNote"></p>
+
+  <h2 data-i18n="liveTitle">Registro en vivo (ventana reciente)</h2>
+  <p class="muted" style="max-width:80ch;line-height:1.7" data-i18n-html="liveNote"></p>
+
   <div class="cards" id="cards"></div>
 
   <h2 data-i18n="byNetwork">Por red y token</h2>
@@ -70,31 +103,6 @@
     <tbody id="rows"><tr><td colspan="7" class="muted" data-i18n="loading">cargando…</td></tr></tbody>
   </table>
 
-  <h2 data-i18n="histTitle">Historia completa reconstruida on-chain</h2>
-  <p class="muted" style="max-width:80ch;line-height:1.7" data-i18n-html="histNote"></p>
-
-  <div class="cards" id="histCards"></div>
-
-  <table>
-    <thead><tr>
-      <th data-i18n="th.network">red</th><th data-i18n="th.token">token</th>
-      <th data-i18n="hth.scheme">esquema</th>
-      <th class="num" data-i18n="hth.settles">settles</th>
-      <th class="num" data-i18n="th.volume">volumen</th>
-      <th data-i18n="hth.range">rango</th>
-    </tr></thead>
-    <tbody id="histRows"><tr><td colspan="6" class="muted" data-i18n="loading">cargando…</td></tr></tbody>
-  </table>
-
-  <h2 data-i18n="opsTitle">Operaciones procesadas (histórico)</h2>
-  <table>
-    <thead><tr>
-      <th data-i18n="oth.kind">tipo de operación</th>
-      <th class="num" data-i18n="oth.count">cantidad</th>
-    </tr></thead>
-    <tbody id="opsRows"><tr><td colspan="2" class="muted" data-i18n="loading">cargando…</td></tr></tbody>
-  </table>
-
   <div class="warn" data-i18n-html="warn"></div>
 </main>
 
@@ -107,7 +115,13 @@
 const I18N = {
   en: {
     title:"x402 · facilitator metrics", h1:"x402 · facilitator metrics",
-    histTitle:"Full history reconstructed on-chain",
+    histTitle:"Everything processed since launch",
+    liveTitle:"Live record (recent window)",
+    liveNote:"<b>These are NOT the totals.</b> They count only what the facilitator recorded "+
+      "itself, and that recording was switched on days ago — a small slice of the figures above. "+
+      "What this window has that the reconstruction does not: it knows <em>which endpoint</em> "+
+      "was paid, and it counts verifies. Useful for watching current traffic, not for measuring "+
+      "the service.",
     opsTitle:"Operations processed (historical)",
     "hth.scheme":"scheme","hth.settles":"settles","hth.range":"range",
     "oth.kind":"operation type","oth.count":"count",
@@ -148,7 +162,12 @@ const I18N = {
   },
   es: {
     title:"x402 · métricas del facilitador", h1:"x402 · métricas del facilitador",
-    histTitle:"Historia completa reconstruida on-chain",
+    histTitle:"Todo lo procesado desde el lanzamiento",
+    liveTitle:"Registro en vivo (ventana reciente)",
+    liveNote:"<b>Estos NO son los totales.</b> Cuentan solo lo que el facilitador registró por su "+
+      "cuenta, y ese registro se encendió hace días — una porción pequeña de las cifras de arriba. "+
+      "Lo que esta ventana sí tiene y la reconstrucción no: sabe <em>qué endpoint</em> se pagó, y "+
+      "cuenta los verifies. Sirve para mirar el tráfico actual, no para medir el servicio.",
     opsTitle:"Operaciones procesadas (histórico)",
     "hth.scheme":"esquema","hth.settles":"settles","hth.range":"rango",
     "oth.kind":"tipo de operación","oth.count":"cantidad",
@@ -295,9 +314,9 @@ async function loadHistory(){
   const T = d.totals || {};
   const fecha = ms => ms ? new Date(Number(ms)).toLocaleDateString(LANG==='es'?'es':'en') : '—';
   document.getElementById('histCards').innerHTML =
+    card(t('card.hops'),     fmt(T.operations||0),                t('src.onchain')) +
     card(t('card.hsettles'), fmt(T.settles||0),                  t('src.onchain')) +
     card(t('card.hvolume'),  human(T.volumeAtomic||'0', 6)+' USDC', t('src.onchain')) +
-    card(t('card.hops'),     fmt(T.operations||0),                t('src.onchain')) +
     card(t('card.hsince'),   fecha(T.firstTs),                    t('src.onchain'));
 
   const rows = (d.settlements||[]).slice().sort((a,b)=>

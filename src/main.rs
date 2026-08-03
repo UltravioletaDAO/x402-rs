@@ -428,12 +428,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Per-IP rate limits. tower_governor's GCRA replenishes one token every
     // `per_second` seconds and caps the bucket at `burst_size`, so:
-    //   - 1 token every 2s, burst 30  ≈ 30 req/min sustained
-    //   - 1 token every 12s, burst 5  ≈ 5 req/min sustained
+    //   - 1 token every 2s, burst 30   ≈ 30 req/min sustained
+    //   - 1 token every 12s, burst 250 ≈ 5 req/min sustained, 250 in one go
     // Each /verify or /settle call burns RPC quota against the configured chain
-    // providers; /discovery/register triggers DNS + outbound fetches against
-    // attacker-supplied URLs (already SSRF-guarded but cheap to spam), so it
-    // gets the stricter limit.
+    // providers, which is why that one stays tight.
     //
     // SmartIpKeyExtractor reads X-Forwarded-For / X-Real-IP / Forwarded
     // headers before falling back to the peer IP — required behind the ALB,
@@ -449,10 +447,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .finish()
             .expect("verify/settle governor config must be valid"),
     );
+    // /discovery/register. The burst was 5, sized against a threat this endpoint
+    // does not actually pose: the comment here used to claim registration
+    // "triggers DNS + outbound fetches against attacker-supplied URLs". It does
+    // not. `DiscoveryRegistry::register` parses the URL, runs the syntactic SSRF
+    // checks (scheme, userinfo, private-IP literals) and writes to the store —
+    // `validate_resource` contains no `.await` at all. The only outbound
+    // fetching lives in the aggregator, which runs on its own background
+    // interval and is not reachable from this request.
+    //
+    // The cost of the wrong number was measured, not theoretical: three days
+    // running, a batch of ~200 registrations arrived at 06:00 UTC and 97% of it
+    // was rejected (209 attempts / 204 rejected on the last one). The clients
+    // then stopped trying entirely for the rest of the day.
+    //
+    // Raising the burst to 250 does NOT loosen the abuse ceiling, which is what
+    // makes this safe: the sustained rate is unchanged at one token every 12s,
+    // so a determined spammer could already push ~7200/day with burst 5. The
+    // burst only decided whether a legitimate batch survives its first minute.
+    // What it was actually protecting was nothing; what it was actually doing
+    // was breaking the one real use case.
+    //
+    // If outbound validation is ever added to the register path, this number
+    // must come back down — and the comment above it must say what the code
+    // does, not what someone intended it to do. That mismatch is the whole
+    // reason this sat wrong for three days.
     let discovery_register_config = Arc::new(
         GovernorConfigBuilder::default()
             .per_second(12)
-            .burst_size(5)
+            .burst_size(250)
             .key_extractor(SmartIpKeyExtractor)
             .finish()
             .expect("discovery_register governor config must be valid"),

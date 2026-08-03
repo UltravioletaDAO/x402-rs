@@ -151,7 +151,6 @@ where
         .route("/blacklist", get(get_blacklist::<A>))
         .route("/logo.png", get(get_logo))
         .route("/favicon.ico", get(get_favicon))
-        .route("/celo-colombia.png", get(get_celo_colombia_logo))
         .route("/avalanche.png", get(get_avalanche_logo))
         .route("/base.png", get(get_base_logo))
         .route("/celo.png", get(get_celo_logo))
@@ -1320,17 +1319,6 @@ pub async fn get_favicon() -> impl IntoResponse {
     (
         StatusCode::OK,
         [("content-type", "image/x-icon")],
-        bytes.as_slice(),
-    )
-}
-
-/// `GET /celo-colombia.png`: Returns Celo Colombia logo.
-#[instrument(skip_all)]
-pub async fn get_celo_colombia_logo() -> impl IntoResponse {
-    let bytes = include_bytes!("../static/celo-colombia.png");
-    (
-        StatusCode::OK,
-        [("content-type", "image/png")],
         bytes.as_slice(),
     )
 }

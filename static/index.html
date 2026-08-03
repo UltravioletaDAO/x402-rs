@@ -1264,15 +1264,6 @@
                             </div>
                             <div style="font-size: 0.7rem; color: var(--text-muted);">CELO Balance</div>
                             <div data-tokens="celo-mainnet"></div>
-                            <a href="https://www.celocolombia.org/" target="_blank"
-                                style="display: flex; flex-direction: column; align-items: center; justify-content: center; margin-top: 0.5rem; text-decoration: none; transition: all 0.2s ease; gap: 0.25rem;"
-                                onclick="event.stopPropagation();">
-                                <span style="font-size: 0.65rem; color: var(--text-muted); font-weight: 500;">Powered
-                                    by</span>
-                                <img src="/celo-colombia.png" alt="Celo Colombia"
-                                    style="width: 64px; height: 32px; object-fit: contain; opacity: 0.7;"
-                                    onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'">
-                            </a>
                         </div>
                         <div class="network-badge hyperevm"
                             style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
@@ -1591,14 +1582,6 @@
                                 Loading...
                             </div>
                             <div style="font-size: 0.7rem; color: var(--text-muted);">CELO</div>
-                            <a href="https://www.celocolombia.org/" target="_blank"
-                                style="display: flex; flex-direction: column; align-items: center; justify-content: center; margin-top: 0.5rem; text-decoration: none; transition: all 0.2s ease; gap: 0.25rem;">
-                                <span style="font-size: 0.65rem; color: var(--text-muted); font-weight: 500;">Powered
-                                    by</span>
-                                <img src="/celo-colombia.png" alt="Celo Colombia"
-                                    style="width: 64px; height: 32px; object-fit: contain; opacity: 0.7;"
-                                    onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'">
-                            </a>
                             <div data-tokens="celo-testnet"></div>
                         </div>
                         <div class="network-badge polygon"
@@ -3266,7 +3249,7 @@ result = <span class="code-function">verify_payment</span>(
             'polygon-testnet': { rpc: 'https://rpc-amoy.polygon.technology', addr: WALLET_TESTNET, type: 'evm' },
             'optimism-mainnet': { rpc: 'https://mainnet.optimism.io', addr: WALLET_MAINNET, type: 'evm' },
             'optimism-testnet': { rpc: 'https://sepolia.optimism.io', addr: WALLET_TESTNET, type: 'evm' },
-            'celo-mainnet': { rpc: 'https://rpc.celocolombia.org', addr: WALLET_MAINNET, type: 'evm' },
+            'celo-mainnet': { rpc: 'https://celo-rpc.quickapi.com', addr: WALLET_MAINNET, type: 'evm' },
             'celo-testnet': { rpc: 'https://rpc.ankr.com/celo_sepolia', addr: WALLET_TESTNET, type: 'evm' },
             'hyperevm-mainnet': { rpc: 'https://rpc.hyperliquid.xyz/evm', addr: WALLET_MAINNET, type: 'evm' },
             'hyperevm-testnet': { rpc: 'https://rpc.hyperliquid-testnet.xyz/evm', addr: WALLET_TESTNET, type: 'evm' },

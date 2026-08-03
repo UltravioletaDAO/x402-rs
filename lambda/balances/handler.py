@@ -103,7 +103,7 @@ PUBLIC_RPCS = {
     "avalanche": "https://avalanche-c-chain-rpc.publicnode.com",
     "polygon": "https://polygon.drpc.org",
     "optimism": "https://mainnet.optimism.io",
-    "celo": "https://rpc.celocolombia.org",
+    "celo": "https://celo-rpc.quickapi.com",
     "hyperevm": "https://rpc.hyperliquid.xyz/evm",
     "ethereum": "https://ethereum-rpc.publicnode.com",
     "arbitrum": "https://arb1.arbitrum.io/rpc",

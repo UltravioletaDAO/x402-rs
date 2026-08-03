@@ -228,8 +228,8 @@ This is a Cargo workspace with multiple crates:
    - Embeds HTML at compile time for performance
    - **Must preserve this pattern when merging upstream changes**
 
-3. **static/images/** - Network logos (9 PNG files)
-   - avalanche.png, base.png, celo.png, hyperevm.png, optimism.png, polygon.png, solana.png, celo-colombia.png, logo.png (DAO logo)
+3. **static/images/** - Network logos (8 PNG files)
+   - avalanche.png, base.png, celo.png, hyperevm.png, optimism.png, polygon.png, solana.png, logo.png (DAO logo)
    - Never overwrite from upstream
 
 4. **src/network.rs** - Custom networks added beyond upstream

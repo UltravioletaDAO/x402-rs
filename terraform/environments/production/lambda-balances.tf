@@ -85,7 +85,7 @@ resource "aws_lambda_function" "balances" {
       # Public RPC URLs (no API keys)
       RPC_URL_BASE       = "https://mainnet.base.org"
       RPC_URL_AVALANCHE  = "https://avalanche-c-chain-rpc.publicnode.com"
-      RPC_URL_CELO       = "https://rpc.celocolombia.org"
+      RPC_URL_CELO       = "https://celo-rpc.quickapi.com"
       RPC_URL_HYPEREVM   = "https://rpc.hyperliquid.xyz/evm"
       RPC_URL_POLYGON    = "https://polygon.drpc.org"
       RPC_URL_OPTIMISM   = "https://mainnet.optimism.io"

@@ -103,3 +103,17 @@ Python's default `Python-urllib/3.x` User-Agent.
 Sending a browser-shaped UA recovered every one of them. `probe_rpc.py` always
 sends one. If a sweep shows a suspicious cluster of 403s, suspect the client
 before the servers.
+
+**This is not only a measurement problem -- it ships.** After adopting
+`celo-rpc.quickapi.com`, the balances Lambda returned `celo-mainnet: null` while
+`celo-testnet` was fine. Cause: quickapi sits behind Cloudflare and answers
+`Python-urllib/3.13` with `HTTP 403 "error code: 1010"`, and
+`lambda/balances/handler.py` used `urllib.request` with the default UA. The
+outgoing endpoint (celocolombia) never filtered by UA, so the breakage appeared
+only at migration. Fixed by setting a browser UA in `fetch_json`.
+
+The Rust facilitator was unaffected: reqwest sends no User-Agent by default, and
+a request with the header absent is served normally. So **when swapping to a
+Cloudflare-fronted RPC, check every client that will talk to it**, not just the
+facilitator -- the Lambda and the landing page's browser fetch are separate
+clients with separate UA behaviour.

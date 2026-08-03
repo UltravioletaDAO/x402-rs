@@ -145,7 +145,19 @@ variable "ecr_repository_name" {
 }
 
 variable "image_tag" {
-  description = "Docker image tag (required). Set explicitly in terraform.tfvars to avoid accidentally rolling forward to an unintended build. Removing the default also prevents 'latest'-style drift on apply."
+  description = <<-EOT
+    Docker image tag to deploy. Pass it on the command line (`-var image_tag=…`),
+    which is what CI does on every release.
+
+    Leave it UNSET in terraform.tfvars. A value parked in that file ages on its
+    own — CI deploys by applying with the flag and never writes back — and then
+    every unrelated apply carries it as a silent rollback instruction. That is
+    not hypothetical: on 2026-08-03 a stale 1.47.0 in tfvars took production
+    back two months during an apply meant to add one environment variable.
+
+    Unset, a bare apply redeploys whatever is already running (see image-pin.tf)
+    and cannot change the version by accident.
+  EOT
   type        = string
-  # no default by design - must be set explicitly in tfvars
+  default     = ""
 }

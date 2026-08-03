@@ -38,32 +38,28 @@ data "aws_ecs_container_definition" "facilitator_current" {
   container_name  = "facilitator"
 }
 
-variable "image_tag_override" {
-  description = <<-EOT
-    Deploy a specific image tag instead of redeploying whatever is live.
-    Leave empty for every routine apply. Set it only when you intend to change
-    the running version, and pass it on the command line so the intent is
-    visible in the plan rather than buried in a file.
-  EOT
-  type        = string
-  default     = ""
-}
-
 locals {
-  # Precedence, most explicit first:
-  #   1. -var image_tag_override=...   an operator asking for a version
-  #   2. the image currently running   the safe no-op
-  #   3. var.image_tag                 bootstrap only, when nothing runs yet
+  # Precedence:
+  #   1. var.image_tag when set  -> somebody asked for a version out loud.
+  #      CI passes it as `-var image_tag=…` on every deploy, so releases work.
+  #   2. the image currently running -> the safe no-op for a bare apply.
+  #
+  # The original guard here got this backwards: it treated `image_tag` as a
+  # bootstrap-only fallback, which silently turned every CI deploy into a no-op.
+  # The pipeline went green, ECR filled with images nobody ran, and production
+  # sat on an old build. Protecting against one failure created a worse one.
+  #
+  # The rollback this file exists to prevent came from a STALE value sitting in
+  # terraform.tfvars, not from an explicit one on the command line. So the fix
+  # is to leave `image_tag` unset in tfvars: an operator running a bare apply
+  # then falls through to the running image and cannot roll production back,
+  # while CI, which always passes the flag, deploys exactly what it built.
   facilitator_image_registry = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${data.aws_region.current.name}.amazonaws.com/${var.ecr_repository_name}"
 
   facilitator_image = (
-    var.image_tag_override != ""
-    ? "${local.facilitator_image_registry}:${var.image_tag_override}"
-    : (
-      data.aws_ecs_container_definition.facilitator_current.image != ""
-      ? data.aws_ecs_container_definition.facilitator_current.image
-      : "${local.facilitator_image_registry}:${var.image_tag}"
-    )
+    var.image_tag != ""
+    ? "${local.facilitator_image_registry}:${var.image_tag}"
+    : data.aws_ecs_container_definition.facilitator_current.image
   )
 }
 

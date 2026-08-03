@@ -63,3 +63,48 @@ Comprobables con un comando, no con confianza:
 - **Ventana móvil contra hora de reloj** dibuja tendencias que no existen.
 - **Durante un rollout, ECS sirve dos versiones a la vez.** Una sola sonda a
   `/version` puede reportar desplegado algo que va a medias.
+
+## Backlog (decidido, no se hace por ahora)
+
+- **Trusted publishing en npm — DESCARTADO.** No hace falta: el push a GitHub con
+  tag ya publica el paquete por CI. Era un endurecimiento de seguridad opcional
+  (que no exista un token robable en CI), no un bloqueo de nada.
+- **Detección de split-brain.** El mismo evento puede ser éxito en nuestro
+  registro y fallo en el del consumidor, ambos coherentes consigo mismos. Hizo
+  falta cruzar los registros de dos dueños distintos para verlo. Sin propuesta.
+- **Consolidar las filas `red#unknown`.** El backfill del 2026-08-03 recuperó el
+  volumen y lo sumó a la fila del asset real, pero las filas fantasma siguen
+  con su cuenta de settles y volumen 0. Los totales por red son correctos si se
+  suman ambas; fila a fila, la pareja cuenta/volumen está descuadrada.
+
+## Cerrado el 2026-08-03
+
+- **Publicación de fallos**: `X402_EVENTS_PUBLISH_FAILURES=true` en Terraform,
+  desplegado y verificado en el task corriendo. `settlesFailed` ya puede dejar
+  de ser 0 por diseño.
+- **Backfill**: 36 de 36 filas recuperadas con los RPC premium (los públicos
+  daban 403). Idempotente, verificado re-ejecutando.
+- **Rollback por `image_tag`**: ver abajo. Ya no es posible por omisión.
+
+## El incidente que más vale recordar
+
+Un `terraform apply` dirigido, cuya única intención era añadir una variable de
+entorno, **revirtió producción de 1.68.0 a 1.47.0** — una imagen de junio —
+durante unos tres minutos.
+
+La causa no fue un fallo: el CI despliega actualizando ECS directamente y nunca
+reescribe `terraform.tfvars`, así que `image_tag` envejece solo y se convierte
+en una orden de rollback silenciosa que todo apply arrastra.
+
+**Ya estaba documentado como gotcha conocido y pasó igual.** Un aviso compite
+con la atención, y la atención va a lo que uno vino a cambiar. Por eso el
+arreglo no fue otro aviso sino invertir el default: Terraform lee ahora la
+imagen que está corriendo y redespliega esa misma (`image-pin.tf`). Cambiar de
+versión exige pedirlo en voz alta:
+
+```
+terraform apply -var 'image_tag_override=1.69.0-abc1234'
+```
+
+Probado saboteando `tfvars` a 1.47.0 a propósito: el plan mantiene la versión
+viva. Antes de ese commit, ese mismo estado revertía producción.

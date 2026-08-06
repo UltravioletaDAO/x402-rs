@@ -17,7 +17,7 @@ use alloy::providers::Provider;
 use alloy::rpc::types::TransactionRequest;
 use alloy::sol;
 use alloy::sol_types::SolCall;
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 use crate::chain::evm::{EvmProvider, MetaEvmProvider, MetaTransaction};
 use crate::chain::NetworkProvider;
@@ -906,6 +906,12 @@ async fn send_operator_tx(
     from: Option<alloy::primitives::Address>,
 ) -> Result<B256, OperatorError> {
     let calldata = call.abi_encode();
+    // Keep the selector: on a bare revert it is the only clue about *which*
+    // operator entrypoint was attempted.
+    let selector = calldata
+        .get(..4)
+        .map(|s| format!("0x{}", hex::encode(s)))
+        .unwrap_or_else(|| "0x".to_string());
 
     let meta_tx = MetaTransaction {
         to: target,
@@ -913,11 +919,55 @@ async fn send_operator_tx(
         confirmations: 1,
     };
 
-    let receipt = match from {
+    let outcome = match from {
         Some(sender) => provider.send_transaction_from(sender, meta_tx).await,
         None => provider.send_transaction(meta_tx).await,
-    }
-    .map_err(|e| OperatorError::ContractCall(crate::redact::scrub_urls(&format!("{e:?}"))))?;
+    };
+
+    let receipt = match outcome {
+        Ok(receipt) => receipt,
+        Err(e) => {
+            // `target` is the MERCHANT-supplied operator address: it is deliberately
+            // not validated (see `validate_addresses`), so a misconfigured merchant
+            // and a broken facilitator produce the same `execution reverted` with
+            // empty revert data. Logging the target only at `debug!` made those two
+            // indistinguishable in production and cost ~315 failed operations over
+            // three days before the address could even be named. Report it here.
+            let code_len = provider
+                .inner()
+                .get_code_at(target)
+                .await
+                .map(|code| code.len())
+                .ok();
+            match code_len {
+                // No code at the address the merchant told us to call: the call can
+                // only ever revert. This is a configuration error, not an outage.
+                Some(0) => error!(
+                    operator_target = %target,
+                    selector = %selector,
+                    "operator call failed: NO CONTRACT CODE at the merchant-supplied \
+                     operator address; every call to it will revert. Check the \
+                     PaymentOperator address configured for this network"
+                ),
+                Some(len) => error!(
+                    operator_target = %target,
+                    selector = %selector,
+                    code_len = len,
+                    "operator call failed: the merchant-supplied operator address holds \
+                     code but rejected this call; it may be a different contract or an \
+                     incompatible version"
+                ),
+                None => error!(
+                    operator_target = %target,
+                    selector = %selector,
+                    "operator call failed; could not read code at the operator address"
+                ),
+            }
+            return Err(OperatorError::ContractCall(crate::redact::scrub_urls(
+                &format!("{e:?} (operator={target}, selector={selector})"),
+            )));
+        }
+    };
 
     Ok(receipt.transaction_hash)
 }

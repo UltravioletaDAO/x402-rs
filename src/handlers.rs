@@ -5597,30 +5597,32 @@ where
 
     // ── Solana registration via Anchor register() ──
     if let Some(NetworkProvider::Solana(p)) = provider_map.by_network(&network) {
-        // Post-mint transfer is implemented for EVM only. Accepting `recipient` here
-        // and minting to the facilitator anyway would report success for an agent
-        // that was never delivered, so refuse instead of silently keeping it.
-        if request.recipient.is_some() {
-            warn!(network = %network, "recipient is not supported for Solana registration");
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(RegisterAgentResponse {
-                    success: false,
-                    agent_id: None,
-                    transaction: None,
-                    transfer_transaction: None,
-                    owner: None,
-                    error: Some(format!(
-                        "recipient is not supported on {}: the facilitator cannot transfer \
-                         the agent NFT after minting on Solana. Omit recipient to mint to \
-                         the facilitator, then transfer the Core asset yourself.",
-                        network
-                    )),
-                    network,
-                }),
-            )
-                .into_response();
-        }
+        // A Solana recipient must be a base58 pubkey; an EVM address here is a
+        // client bug that would otherwise burn a mint before failing.
+        let solana_recipient = match &request.recipient {
+            Some(addr) => match solana_erc8004::parse_agent_id(&addr.to_string()) {
+                Ok(pk) => Some(pk),
+                Err(_) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(RegisterAgentResponse {
+                            success: false,
+                            agent_id: None,
+                            transaction: None,
+                            transfer_transaction: None,
+                            owner: None,
+                            error: Some(format!(
+                                "recipient must be a base58 Solana address on {}",
+                                network
+                            )),
+                            network,
+                        }),
+                    )
+                        .into_response();
+                }
+            },
+            None => None,
+        };
 
         let programs = match solana_erc8004::get_program_ids(&network) {
             Some(prog) => prog,
@@ -5722,14 +5724,113 @@ where
                     }
                 }
 
+                // Initialize the ATOM stats account while the facilitator still owns
+                // the agent. Only the owner may do this, so after a transfer it is
+                // out of reach, and without it every feedback is recorded unscored.
+                let ix = solana_erc8004::build_initialize_stats_ix(
+                    &programs,
+                    &registry_ctx.collection,
+                    &asset_pubkey,
+                    &fee_payer.pubkey(),
+                );
+                let atom_ready = match solana_erc8004::send_erc8004_transaction(
+                    p.rpc_client(),
+                    fee_payer,
+                    vec![ix],
+                )
+                .await
+                {
+                    Ok(stats_sig) => {
+                        info!(
+                            network = %network, agent_id = %agent_id, tx = %stats_sig,
+                            "ATOM stats initialized"
+                        );
+                        true
+                    }
+                    Err(e) => {
+                        // Not fatal: the agent exists and is usable, it just cannot
+                        // accumulate reputation until someone initializes the stats.
+                        error!(
+                            network = %network, agent_id = %agent_id, error = %e,
+                            "Failed to initialize ATOM stats; feedback for this agent will not be scored"
+                        );
+                        false
+                    }
+                };
+
+                // Hand the agent to the requested owner, last so the steps above still
+                // run under facilitator ownership.
+                let mut transfer_tx = None;
+                let mut final_owner = MixedAddress::Solana(fee_payer.pubkey());
+                if let Some(recipient) = solana_recipient {
+                    let ix = solana_erc8004::build_transfer_agent_ix(
+                        &programs,
+                        &registry_ctx.collection,
+                        &asset_pubkey,
+                        &fee_payer.pubkey(),
+                        &recipient,
+                    );
+                    match solana_erc8004::send_erc8004_transaction(
+                        p.rpc_client(),
+                        fee_payer,
+                        vec![ix],
+                    )
+                    .await
+                    {
+                        Ok(xfer_sig) => {
+                            info!(
+                                network = %network, agent_id = %agent_id, tx = %xfer_sig,
+                                recipient = %recipient, "Agent transferred to recipient"
+                            );
+                            transfer_tx =
+                                Some(crate::types::TransactionHash::Solana(xfer_sig.into()));
+                            final_owner = MixedAddress::Solana(recipient);
+                        }
+                        Err(e) => {
+                            // The mint succeeded, so report the agent rather than lose
+                            // it, but do not claim it was delivered.
+                            error!(
+                                network = %network, agent_id = %agent_id, error = %e,
+                                "Agent minted but transfer to recipient failed"
+                            );
+                            return (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                Json(RegisterAgentResponse {
+                                    success: false,
+                                    agent_id: Some(agent_id),
+                                    transaction: Some(crate::types::TransactionHash::Solana(
+                                        sig.into(),
+                                    )),
+                                    transfer_transaction: None,
+                                    owner: Some(MixedAddress::Solana(fee_payer.pubkey())),
+                                    error: Some(format!(
+                                        "Agent minted but transfer to {} failed, it is still \
+                                         held by the facilitator: {}",
+                                        recipient, e
+                                    )),
+                                    network,
+                                }),
+                            )
+                                .into_response();
+                        }
+                    }
+                }
+
+                if !atom_ready {
+                    warn!(
+                        network = %network, agent_id = %agent_id,
+                        "Agent registered without ATOM stats"
+                    );
+                }
+
                 return (
                     StatusCode::OK,
                     Json(RegisterAgentResponse {
                         success: true,
                         agent_id: Some(agent_id),
                         transaction: Some(crate::types::TransactionHash::Solana(sig.into())),
-                        transfer_transaction: None,
-                        owner: Some(MixedAddress::Solana(fee_payer.pubkey())),
+                        transfer_transaction: transfer_tx,
+                        owner: Some(final_owner),
                         error: None,
                         network,
                     }),

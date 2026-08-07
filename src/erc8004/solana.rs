@@ -724,6 +724,9 @@ const IX_APPEND_RESPONSE: [u8; 8] = [162, 210, 186, 50, 180, 4, 47, 104];
 const IX_REGISTER: [u8; 8] = [211, 124, 67, 15, 211, 194, 178, 240];
 const IX_SET_AGENT_URI: [u8; 8] = [43, 254, 168, 104, 192, 51, 39, 46];
 const IX_SET_METADATA_PDA: [u8; 8] = [236, 60, 23, 48, 138, 69, 196, 153];
+const IX_TRANSFER_AGENT: [u8; 8] = [137, 80, 56, 147, 107, 99, 39, 192];
+/// On the ATOM Engine program, not the registry.
+const IX_INITIALIZE_STATS: [u8; 8] = [144, 201, 117, 76, 127, 118, 176, 16];
 
 // ============================================================================
 // SEAL v1 Domain Constants
@@ -1087,6 +1090,79 @@ pub fn build_set_agent_uri_ix(
             AccountMeta::new_readonly(METAPLEX_CORE_PROGRAM, false),
         ],
         data,
+    }
+}
+
+/// Build an `initialize_stats` instruction on the ATOM Engine program.
+///
+/// Accounts:
+/// 0. [signer, writable] owner (pays rent)
+/// 1. [] asset (NFT)
+/// 2. [] collection (Core Collection)
+/// 3. [] atom_config PDA (["atom_config"])
+/// 4. [writable] atom_stats PDA (["atom_stats", asset]) - created here
+/// 5. [] system_program
+///
+/// This must run once per agent before any feedback, and **only the current owner
+/// can call it**. Without the stats account, `give_feedback` degrades silently: the
+/// program logs `atom_enabled=false`, skips the CPI, and the feedback is recorded
+/// but never scored. When registering on behalf of someone else, initialize before
+/// transferring - afterwards the facilitator is no longer the owner and cannot.
+pub fn build_initialize_stats_ix(
+    programs: &SolanaErc8004Programs,
+    collection: &Pubkey,
+    asset: &Pubkey,
+    owner: &Pubkey,
+) -> Instruction {
+    let (atom_config_pda, _) = derive_atom_config_pda(&programs.atom_engine);
+    let (atom_stats_pda, _) = derive_atom_stats_pda(asset, &programs.atom_engine);
+
+    Instruction {
+        program_id: programs.atom_engine,
+        accounts: vec![
+            AccountMeta::new(*owner, true),
+            AccountMeta::new_readonly(*asset, false),
+            AccountMeta::new_readonly(*collection, false),
+            AccountMeta::new_readonly(atom_config_pda, false),
+            AccountMeta::new(atom_stats_pda, false),
+            AccountMeta::new_readonly(solana_sdk::system_program::id(), false),
+        ],
+        data: IX_INITIALIZE_STATS.to_vec(),
+    }
+}
+
+/// Build a `transfer_agent` instruction to hand the agent NFT to a new owner.
+///
+/// Accounts:
+/// 0. [writable] agent PDA
+/// 1. [writable] asset (NFT)
+/// 2. [writable] collection (Core Collection)
+/// 3. [signer, writable] owner (current owner)
+/// 4. [] new_owner
+/// 5. [] metaplex_core program
+///
+/// The agent's `agent_wallet` does not survive the transfer and must be re-set by
+/// the new owner, matching the ERC-721 behaviour on EVM.
+pub fn build_transfer_agent_ix(
+    programs: &SolanaErc8004Programs,
+    collection: &Pubkey,
+    asset: &Pubkey,
+    owner: &Pubkey,
+    new_owner: &Pubkey,
+) -> Instruction {
+    let (agent_pda, _) = derive_agent_pda(asset, &programs.agent_registry);
+
+    Instruction {
+        program_id: programs.agent_registry,
+        accounts: vec![
+            AccountMeta::new(agent_pda, false),
+            AccountMeta::new(*asset, false),
+            AccountMeta::new(*collection, false),
+            AccountMeta::new(*owner, true),
+            AccountMeta::new_readonly(*new_owner, false),
+            AccountMeta::new_readonly(METAPLEX_CORE_PROGRAM, false),
+        ],
+        data: IX_TRANSFER_AGENT.to_vec(),
     }
 }
 
@@ -1685,6 +1761,54 @@ mod tests {
         // mpl-core bumps num_minted/current_size, so the collection must be writable.
         assert!(ix.accounts[4].is_writable);
         assert!(ix.accounts[5].is_signer); // owner
+    }
+
+    #[test]
+    fn test_initialize_stats_instruction() {
+        let programs = get_program_ids(&Network::Solana).unwrap();
+        let collection = Pubkey::from_str(MAINNET_COLLECTION).unwrap();
+        let asset = Pubkey::new_unique();
+        let owner = Pubkey::new_unique();
+
+        let ix = build_initialize_stats_ix(&programs, &collection, &asset, &owner);
+
+        // Runs on the ATOM Engine, not the registry.
+        assert_eq!(ix.program_id, ATOM_ENGINE_MAINNET);
+        assert_eq!(ix.accounts.len(), 6);
+        assert_eq!(ix.data, IX_INITIALIZE_STATS.to_vec());
+
+        assert_eq!(ix.accounts[0].pubkey, owner);
+        assert!(ix.accounts[0].is_signer);
+        let (atom_config, _) = derive_atom_config_pda(&ATOM_ENGINE_MAINNET);
+        let (atom_stats, _) = derive_atom_stats_pda(&asset, &ATOM_ENGINE_MAINNET);
+        assert_eq!(ix.accounts[3].pubkey, atom_config);
+        assert_eq!(ix.accounts[4].pubkey, atom_stats);
+        assert!(ix.accounts[4].is_writable);
+    }
+
+    #[test]
+    fn test_transfer_agent_instruction() {
+        let programs = get_program_ids(&Network::Solana).unwrap();
+        let collection = Pubkey::from_str(MAINNET_COLLECTION).unwrap();
+        let asset = Pubkey::new_unique();
+        let owner = Pubkey::new_unique();
+        let new_owner = Pubkey::new_unique();
+
+        let ix = build_transfer_agent_ix(&programs, &collection, &asset, &owner, &new_owner);
+
+        assert_eq!(ix.program_id, AGENT_REGISTRY_MAINNET);
+        assert_eq!(ix.accounts.len(), 6);
+        assert_eq!(ix.data, IX_TRANSFER_AGENT.to_vec());
+
+        let (agent_pda, _) = derive_agent_pda(&asset, &AGENT_REGISTRY_MAINNET);
+        assert_eq!(ix.accounts[0].pubkey, agent_pda);
+        // mpl-core rewrites both the asset and the collection on transfer.
+        assert!(ix.accounts[1].is_writable);
+        assert!(ix.accounts[2].is_writable);
+        assert_eq!(ix.accounts[3].pubkey, owner);
+        assert!(ix.accounts[3].is_signer);
+        assert_eq!(ix.accounts[4].pubkey, new_owner);
+        assert!(!ix.accounts[4].is_signer);
     }
 
     #[test]

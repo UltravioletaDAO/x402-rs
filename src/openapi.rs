@@ -692,15 +692,28 @@ Registers a new ERC-8004 agent on-chain. The facilitator pays all gas fees.
 }
 ```
 
-**Solana request:**
+**Solana request:** `recipient` is a base58 Solana address.
 ```json
 {
   "x402Version": 1,
   "network": "solana",
   "agentUri": "ipfs://Qm.../agent.json",
-  "metadata": [{"key": "x402Support", "value": "true"}]
+  "metadata": [{"key": "x402Support", "value": "true"}],
+  "recipient": "6xNPewUdKRbEZDReQdpyfNUdgNg8QRc8Mt263T5GZSRv"
 }
 ```
+
+On Solana the facilitator mints, initializes the agent's ATOM stats account, then
+transfers the Metaplex Core asset to `recipient`, paying every fee. The ordering is
+required: only the owner can initialize the stats, so it happens before the transfer.
+Without that account the ATOM Engine records feedback but scores none of it.
+
+`agentWallet` does not survive the transfer and must be re-set by the new owner,
+the same as on EVM.
+
+If the mint succeeds but the transfer fails, the response is a 500 that still carries
+`agentId` and `transaction`: the agent exists and is held by the facilitator, and is
+never reported as delivered.
 
 **EVM response:** `agentId` is a numeric string (ERC-721 tokenId).
 **Solana response:** `agentId` is a base58 Pubkey (Metaplex Core NFT mint address).

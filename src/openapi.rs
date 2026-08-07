@@ -856,16 +856,25 @@ Revokes previously submitted reputation feedback.
 }
 ```
 
-**Solana request** (requires `sealHash` for SEAL v1 integrity):
+**Solana request** needs the SEAL v1 hash of the feedback being revoked. Send the
+content under `originalFeedback` and the facilitator derives it; the values must match
+the original submission exactly.
 ```json
 {
   "x402Version": 1,
   "network": "solana",
   "agentId": "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgHkv",
   "feedbackIndex": 1,
-  "sealHash": "0xabc123..."
+  "originalFeedback": {
+    "value": 95, "valueDecimals": 0,
+    "tag1": "uptime", "tag2": "verify",
+    "endpoint": "https://api.example.com",
+    "feedbackUri": "https://example.com/feedback.json"
+  }
 }
 ```
+`sealHash: "0x..."` is still accepted if you computed it yourself (keccak256 over the
+program's SEAL v1 layout) and takes precedence over `originalFeedback`.
 "#,
     request_body(content = Object, description = "Revoke feedback request"),
     responses(
@@ -955,8 +964,9 @@ Queries the reputation summary for an AI agent from the ERC-8004 Reputation Regi
   "summary": { "count": 47, "summaryValue": 78, "summaryValueDecimals": 0 },
   "atomStats": {
     "trustTier": 3, "trustTierName": "Trusted",
-    "qualityScore": 78, "confidence": 85, "riskScore": 12,
-    "diversityRatio": 67, "positiveCount": 42, "negativeCount": 5
+    "qualityScore": 78, "loyaltyScore": 64, "confidence": 85, "riskScore": 12,
+    "diversityRatio": 67, "minScore": 40, "maxScore": 99, "lastScore": 95,
+    "feedbackCount": 47, "lastFeedbackSlot": 301118422
   },
   "network": "solana"
 }
@@ -1066,6 +1076,9 @@ async fn path_identity_metadata() {}
 Returns the total number of registered agents on a specific network.
 
 **EVM networks** return the ERC-721 totalSupply from the AgentRegistry contract.
+The ATOM Engine tracks quality through EMA scores, not positive/negative tallies, so
+there are no such counters.
+
 **Solana networks** read the Metaplex Core collection referenced by the RootConfig PDA:
 `totalSupply` is its `current_size` (net of burns) and `numMinted` its all-time mint count.
 The registry itself keeps no agent counter on-chain.

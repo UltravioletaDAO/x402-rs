@@ -235,9 +235,49 @@ pub struct RevokeFeedbackRequest {
     /// Agent ID: numeric for EVM, base58 Pubkey for Solana
     pub agent_id: serde_json::Value,
     pub feedback_index: u64,
-    /// SEAL hash for Solana revocations (required for Solana, ignored for EVM)
+    /// SEAL hash for Solana revocations (ignored for EVM).
+    ///
+    /// Supply either this or `originalFeedback`. Computing it by hand means
+    /// reimplementing the program's keccak256 layout exactly, so prefer
+    /// `originalFeedback` and let the facilitator derive it.
     #[serde(default)]
     pub seal_hash: Option<String>,
+    /// Content of the feedback being revoked, used to derive the SEAL hash when
+    /// `sealHash` is not supplied directly. Solana only.
+    #[serde(default)]
+    pub original_feedback: Option<OriginalFeedbackParams>,
+}
+
+/// The content of an already-submitted feedback, sufficient to recompute its SEAL hash.
+///
+/// The values must match the original submission byte for byte; the program compares
+/// the derived hash against the one it stored.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OriginalFeedbackParams {
+    /// Feedback value (fixed point)
+    pub value: i128,
+    /// Decimal places for `value` (0-18)
+    #[serde(default)]
+    pub value_decimals: u8,
+    /// Score (0-100), if one was given
+    #[serde(default)]
+    pub score: Option<u8>,
+    /// Keccak256 hash of the off-chain feedback content, if one was given
+    #[serde(default)]
+    pub feedback_hash: Option<FixedBytes<32>>,
+    /// Primary categorization tag
+    #[serde(default)]
+    pub tag1: String,
+    /// Secondary categorization tag
+    #[serde(default)]
+    pub tag2: String,
+    /// Service endpoint that was used
+    #[serde(default)]
+    pub endpoint: String,
+    /// URI to the off-chain feedback file
+    #[serde(default)]
+    pub feedback_uri: String,
 }
 
 /// Request to append response to feedback
@@ -338,20 +378,24 @@ pub struct AtomStatsResponse {
     pub trust_tier: u8,
     /// Human-readable trust tier name
     pub trust_tier_name: String,
-    /// EMA quality score (centered at 0, positive = above average)
-    pub quality_score: i32,
+    /// Cached quality score from the ATOM Engine
+    pub quality_score: u16,
+    /// Cached loyalty score from the ATOM Engine
+    pub loyalty_score: u16,
     /// Statistical confidence (0-100)
-    pub confidence: u8,
+    pub confidence: u16,
     /// Risk assessment (0-100, lower is better)
     pub risk_score: u8,
     /// Client diversity from HyperLogLog (0-100)
     pub diversity_ratio: u8,
-    /// Positive feedback count
-    pub positive_count: u32,
-    /// Negative feedback count
-    pub negative_count: u32,
+    /// Lowest score ever recorded
+    pub min_score: u8,
+    /// Highest score ever recorded
+    pub max_score: u8,
+    /// Most recent score recorded
+    pub last_score: u8,
     /// Total feedback count
-    pub feedback_count: u32,
+    pub feedback_count: u64,
     /// Slot of most recent feedback
     pub last_feedback_slot: u64,
 }

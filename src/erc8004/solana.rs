@@ -165,45 +165,112 @@ pub struct MetadataEntryPda {
     pub metadata_value: Vec<u8>,
 }
 
-/// AtomStats (460 bytes on-chain, including 8-byte Anchor discriminator)
+/// AtomStats (561 bytes on-chain, including 8-byte Anchor discriminator)
 ///
 /// PDA Seeds: `["atom_stats", asset.key()]`
 ///
 /// ATOM Engine reputation analytics computed on-chain via CPI.
+///
+/// The engine's real record is far wider than the summary this facilitator exposes,
+/// and every field has to be declared to reach the ones at the end (`trust_tier`,
+/// `confidence`, `bump` all live past byte 540). A previous 16-field version of this
+/// struct sized ~430 bytes and never deserialized, which surfaced as a permanently
+/// null `atomStats` in `/reputation`.
+///
+/// Note there are no positive/negative counters: the engine tracks quality through
+/// EMA scores, not tallies.
 #[derive(Debug, Clone, BorshDeserialize)]
 pub struct AtomStats {
     /// Registry collection address
     pub collection: [u8; 32],
     /// Agent NFT mint address
     pub asset: [u8; 32],
-    /// Total feedback count
-    pub feedback_count: u32,
-    /// Positive feedback count
-    pub positive_count: u32,
-    /// Negative feedback count
-    pub negative_count: u32,
-    /// EMA quality score (centered at 0, positive = above-average)
-    pub quality_score: i32,
+    /// Slot of the first feedback ever recorded
+    pub first_feedback_slot: u64,
     /// Slot of most recent feedback
     pub last_feedback_slot: u64,
+    /// Total feedback count
+    pub feedback_count: u64,
+    /// Fast exponential moving average of the score
+    pub ema_score_fast: u16,
+    /// Slow exponential moving average of the score
+    pub ema_score_slow: u16,
+    /// EMA of score volatility
+    pub ema_volatility: u16,
+    /// EMA of the log of arrival intervals
+    pub ema_arrival_log: u16,
+    /// Highest EMA reached
+    pub peak_ema: u16,
+    /// Largest drawdown from the peak
+    pub max_drawdown: u16,
+    /// Number of epochs observed
+    pub epoch_count: u16,
+    /// Current epoch
+    pub current_epoch: u16,
+    /// Lowest score seen
+    pub min_score: u8,
+    /// Highest score seen
+    pub max_score: u8,
+    /// First score recorded
+    pub first_score: u8,
+    /// Most recent score recorded
+    pub last_score: u8,
     /// HyperLogLog registers (256 x 4-bit packed, for unique client estimation)
     pub hll_packed: [u8; 128],
     /// Per-agent salt for HLL grinding prevention
     pub hll_salt: u64,
     /// Ring buffer for burst detection (24 x 56-bit fingerprints)
     pub recent_callers: [u64; 24],
+    /// Burst pressure accumulator
+    pub burst_pressure: u8,
+    /// Updates observed since the HLL last changed
+    pub updates_since_hll_change: u8,
+    /// Negative-feedback pressure accumulator
+    pub neg_pressure: u8,
     /// Ring buffer cursor
     pub eviction_cursor: u8,
-    /// Trust tier (0-4): Unknown, New, Established, Trusted, Legendary
-    pub trust_tier: u8,
-    /// Statistical confidence (0-100)
-    pub confidence: u8,
+    /// Base slot for MRT eviction protection
+    pub ring_base_slot: u64,
+    /// Rate of quality change, for the circuit breaker
+    pub quality_velocity: u16,
+    /// Epoch the velocity was measured in
+    pub velocity_epoch: u16,
+    /// Epochs remaining in a quality freeze
+    pub freeze_epochs: u8,
+    /// Lower bound enforced on quality
+    pub quality_floor: u8,
+    /// Number of bypasses recorded
+    pub bypass_count: u8,
+    /// Average score across bypasses
+    pub bypass_score_avg: u8,
+    /// Fingerprints retained to support revocation
+    pub bypass_fingerprints: [u64; 10],
+    /// Bypass fingerprint ring cursor
+    pub bypass_fp_cursor: u8,
+    /// Cached loyalty score
+    pub loyalty_score: u16,
+    /// Cached quality score
+    pub quality_score: u16,
     /// Risk assessment (0-100)
     pub risk_score: u8,
     /// Client diversity measure from HyperLogLog (0-100)
     pub diversity_ratio: u8,
+    /// Trust tier (0-4): Unknown, New, Established, Trusted, Legendary
+    pub trust_tier: u8,
+    /// Tier awaiting vesting confirmation
+    pub tier_candidate: u8,
+    /// Epoch the candidate tier was proposed in
+    pub tier_candidate_epoch: u16,
+    /// Tier confirmed after vesting
+    pub tier_confirmed: u8,
+    /// Bit flags
+    pub flags: u8,
+    /// Statistical confidence (0-100)
+    pub confidence: u16,
     /// PDA bump seed
     pub bump: u8,
+    /// On-chain schema version
+    pub schema_version: u8,
 }
 
 /// RootConfig (73 bytes on-chain, including 8-byte Anchor discriminator)
@@ -481,7 +548,7 @@ pub async fn read_atom_stats(
         ));
     }
 
-    AtomStats::try_from_slice(&account_data[8..]).map_err(|e| {
+    AtomStats::deserialize(&mut &account_data[8..]).map_err(|e| {
         SolanaErc8004Error::InvalidAccountData(format!("Failed to deserialize AtomStats: {}", e))
     })
 }
@@ -662,80 +729,117 @@ const IX_SET_METADATA_PDA: [u8; 8] = [236, 60, 23, 48, 138, 69, 196, 153];
 // SEAL v1 Domain Constants
 // ============================================================================
 
+/// 16 bytes, matching `seal.rs` on-chain.
 const DOMAIN_SEAL_V1: &[u8] = b"8004_SEAL_V1____";
-const DOMAIN_FEEDBACK: &[u8] = b"8004_FEED_V1___";
-const DOMAIN_RESPONSE: &[u8] = b"8004_RESP_V1___";
-const DOMAIN_REVOKE: &[u8] = b"8004_REVK_V1___";
+/// 16 bytes, matching `seal.rs` on-chain.
+const DOMAIN_LEAF_V1: &[u8] = b"8004_LEAF_V1____";
+
+/// Max byte lengths enforced by the program before it hashes (`state.rs`).
+const MAX_TAG_LEN: usize = 32;
+const MAX_ENDPOINT_LEN: usize = 250;
+const MAX_URI_LEN: usize = 250;
 
 // ============================================================================
 // SEAL v1 Hash Computation
 // ============================================================================
 
-/// Compute the SEAL v1 hash for a feedback submission.
-///
-/// seal_hash = SHA256(DOMAIN_SEAL_V1 || DOMAIN_FEEDBACK || agent_key || client_key
-///                    || feedback_count_le || feedback_uri || feedback_hash)
-pub fn compute_feedback_seal_hash(
-    agent_pubkey: &Pubkey,
-    client_pubkey: &Pubkey,
-    feedback_count: u64,
-    feedback_uri: &str,
-    feedback_hash: &[u8; 32],
-) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(DOMAIN_SEAL_V1);
-    hasher.update(DOMAIN_FEEDBACK);
-    hasher.update(agent_pubkey.as_ref());
-    hasher.update(client_pubkey.as_ref());
-    hasher.update(feedback_count.to_le_bytes());
-    hasher.update(feedback_uri.as_bytes());
-    hasher.update(feedback_hash);
-    hasher.finalize().into()
+/// The feedback content a SEAL v1 hash commits to.
+#[derive(Debug, Clone)]
+pub struct SealParams<'a> {
+    /// Feedback value (fixed point)
+    pub value: i128,
+    /// Decimal places for `value` (0-18)
+    pub value_decimals: u8,
+    /// Optional score (0-100)
+    pub score: Option<u8>,
+    /// Optional hash of the off-chain feedback file
+    pub feedback_file_hash: Option<[u8; 32]>,
+    /// Primary tag
+    pub tag1: &'a str,
+    /// Secondary tag
+    pub tag2: &'a str,
+    /// Endpoint that was used
+    pub endpoint: &'a str,
+    /// URI of the off-chain feedback file
+    pub feedback_uri: &'a str,
 }
 
-/// Compute the SEAL v1 hash for a revocation.
+/// Compute the SEAL v1 hash of a feedback, byte-identical to the on-chain routine.
 ///
-/// seal_hash = SHA256(DOMAIN_SEAL_V1 || DOMAIN_REVOKE || agent_key || client_key
-///                    || feedback_index_le || revoke_count_le)
-pub fn compute_revoke_seal_hash(
-    agent_pubkey: &Pubkey,
-    client_pubkey: &Pubkey,
+/// This is keccak256, not SHA-256, and it commits to the feedback *content* only -
+/// no agent or client pubkey enters the hash. An earlier version of this module had
+/// three separate SHA-256 functions with invented domain constants
+/// (`8004_FEED_V1___`, `8004_REVK_V1___`, `8004_RESP_V1___`); none of those domains
+/// exist in the program, and no hash they produced could ever be accepted.
+///
+/// Layout: fixed 36-byte prefix, then the dynamic tail.
+///
+/// - `DOMAIN_SEAL_V1` (16) | `value` i128 LE (16) | `value_decimals` (1)
+/// - `score_flag` (1) | `score_value` (1) | `file_hash_flag` (1)
+/// - `file_hash` (32, only when present)
+/// - for each of tag1, tag2, endpoint, feedback_uri: `len` u16 LE (2) + UTF-8 bytes
+///
+/// Returns `None` when an input exceeds the on-chain limits, since the program
+/// would reject such a feedback before hashing it.
+pub fn compute_seal_hash(params: &SealParams<'_>) -> Option<[u8; 32]> {
+    if params.tag1.len() > MAX_TAG_LEN
+        || params.tag2.len() > MAX_TAG_LEN
+        || params.endpoint.len() > MAX_ENDPOINT_LEN
+        || params.feedback_uri.len() > MAX_URI_LEN
+        || params.value_decimals > 18
+    {
+        return None;
+    }
+    if let Some(score) = params.score {
+        if score > 100 {
+            return None;
+        }
+    }
+
+    let mut buf = Vec::with_capacity(128);
+    buf.extend_from_slice(DOMAIN_SEAL_V1);
+    buf.extend_from_slice(&params.value.to_le_bytes());
+    buf.push(params.value_decimals);
+    match params.score {
+        // Score always occupies two bytes: flag then value (0 as placeholder).
+        Some(score) => buf.extend_from_slice(&[1, score]),
+        None => buf.extend_from_slice(&[0, 0]),
+    }
+    buf.push(u8::from(params.feedback_file_hash.is_some()));
+    if let Some(hash) = params.feedback_file_hash {
+        buf.extend_from_slice(&hash);
+    }
+    for s in [
+        params.tag1,
+        params.tag2,
+        params.endpoint,
+        params.feedback_uri,
+    ] {
+        buf.extend_from_slice(&(s.len() as u16).to_le_bytes());
+        buf.extend_from_slice(s.as_bytes());
+    }
+
+    Some(alloy::primitives::keccak256(&buf).0)
+}
+
+/// Compute the SEAL v1 feedback leaf, which binds a seal hash to its context.
+///
+/// `keccak256(DOMAIN_LEAF_V1 || asset || client || feedback_index LE || seal_hash || slot LE)`
+pub fn compute_feedback_leaf_v1(
+    asset: &Pubkey,
+    client: &Pubkey,
     feedback_index: u64,
-    revoke_count: u64,
+    seal_hash: &[u8; 32],
+    slot: u64,
 ) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(DOMAIN_SEAL_V1);
-    hasher.update(DOMAIN_REVOKE);
-    hasher.update(agent_pubkey.as_ref());
-    hasher.update(client_pubkey.as_ref());
-    hasher.update(feedback_index.to_le_bytes());
-    hasher.update(revoke_count.to_le_bytes());
-    hasher.finalize().into()
-}
-
-/// Compute the SEAL v1 hash for a response.
-///
-/// seal_hash = SHA256(DOMAIN_SEAL_V1 || DOMAIN_RESPONSE || agent_key || responder_key
-///                    || response_count_le || response_uri || response_hash)
-pub fn compute_response_seal_hash(
-    agent_pubkey: &Pubkey,
-    responder_pubkey: &Pubkey,
-    response_count: u64,
-    response_uri: &str,
-    response_hash: &[u8; 32],
-) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(DOMAIN_SEAL_V1);
-    hasher.update(DOMAIN_RESPONSE);
-    hasher.update(agent_pubkey.as_ref());
-    hasher.update(responder_pubkey.as_ref());
-    hasher.update(response_count.to_le_bytes());
-    hasher.update(response_uri.as_bytes());
-    hasher.update(response_hash);
-    hasher.finalize().into()
+    let mut buf = Vec::with_capacity(128);
+    buf.extend_from_slice(DOMAIN_LEAF_V1);
+    buf.extend_from_slice(asset.as_ref());
+    buf.extend_from_slice(client.as_ref());
+    buf.extend_from_slice(&feedback_index.to_le_bytes());
+    buf.extend_from_slice(seal_hash);
+    buf.extend_from_slice(&slot.to_le_bytes());
+    alloy::primitives::keccak256(&buf).0
 }
 
 // ============================================================================
@@ -1324,6 +1428,60 @@ mod tests {
         assert_eq!(agent.nft_name, "Agent");
     }
 
+    /// The engine account is fixed-size: if our struct does not total exactly the
+    /// on-chain 561 bytes, the fields at the tail (trust_tier, confidence, bump) are
+    /// silently misread or the parse fails outright.
+    #[test]
+    fn test_atom_stats_is_561_bytes() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&[1u8; 32]); // collection
+        payload.extend_from_slice(&[2u8; 32]); // asset
+        payload.extend_from_slice(&10u64.to_le_bytes()); // first_feedback_slot
+        payload.extend_from_slice(&20u64.to_le_bytes()); // last_feedback_slot
+        payload.extend_from_slice(&3u64.to_le_bytes()); // feedback_count
+        for v in [11u16, 12, 13, 14, 15, 16, 17, 18] {
+            payload.extend_from_slice(&v.to_le_bytes()); // ema/peak/drawdown/epochs
+        }
+        payload.extend_from_slice(&[40u8, 90, 50, 95]); // min/max/first/last score
+        payload.extend_from_slice(&[0u8; 128]); // hll_packed
+        payload.extend_from_slice(&99u64.to_le_bytes()); // hll_salt
+        payload.extend_from_slice(&[0u8; 192]); // recent_callers
+        payload.extend_from_slice(&[1u8, 2, 3, 4]); // burst/updates/neg/eviction
+        payload.extend_from_slice(&77u64.to_le_bytes()); // ring_base_slot
+        payload.extend_from_slice(&5u16.to_le_bytes()); // quality_velocity
+        payload.extend_from_slice(&6u16.to_le_bytes()); // velocity_epoch
+        payload.extend_from_slice(&[0u8, 30]); // freeze_epochs, quality_floor
+        payload.extend_from_slice(&[0u8, 0]); // bypass_count, bypass_score_avg
+        payload.extend_from_slice(&[0u8; 80]); // bypass_fingerprints
+        payload.push(0); // bypass_fp_cursor
+        payload.extend_from_slice(&700u16.to_le_bytes()); // loyalty_score
+        payload.extend_from_slice(&850u16.to_le_bytes()); // quality_score
+        payload.extend_from_slice(&[12u8, 64, 3]); // risk, diversity, trust_tier
+        payload.extend_from_slice(&[3u8]); // tier_candidate
+        payload.extend_from_slice(&8u16.to_le_bytes()); // tier_candidate_epoch
+        payload.extend_from_slice(&[3u8, 0]); // tier_confirmed, flags
+        payload.extend_from_slice(&88u16.to_le_bytes()); // confidence
+        payload.extend_from_slice(&[254u8, 1]); // bump, schema_version
+
+        // 561 on-chain minus the 8-byte Anchor discriminator.
+        assert_eq!(payload.len(), 553);
+
+        let stats = AtomStats::deserialize(&mut payload.as_slice()).unwrap();
+        assert_eq!(stats.feedback_count, 3);
+        assert_eq!(stats.last_feedback_slot, 20);
+        assert_eq!(stats.min_score, 40);
+        assert_eq!(stats.max_score, 90);
+        assert_eq!(stats.last_score, 95);
+        assert_eq!(stats.loyalty_score, 700);
+        assert_eq!(stats.quality_score, 850);
+        assert_eq!(stats.risk_score, 12);
+        assert_eq!(stats.diversity_ratio, 64);
+        assert_eq!(stats.trust_tier, 3);
+        assert_eq!(stats.confidence, 88);
+        assert_eq!(stats.bump, 254);
+        assert_eq!(trust_tier_name(stats.trust_tier), "Trusted");
+    }
+
     #[test]
     fn test_metadata_entry_layout() {
         let mut payload = Vec::new();
@@ -1554,32 +1712,106 @@ mod tests {
         );
     }
 
+    /// Vectors produced by `computeSealHash` in 8004-solana@0.8.3 (`dist/core/seal.js`),
+    /// which the SDK documents as byte-identical to the on-chain routine. Pinning the
+    /// SDK's own output means a drift in our implementation fails here rather than
+    /// on-chain. Testing our function against itself is what let three entirely
+    /// fabricated SHA-256 seal functions pass CI indefinitely.
     #[test]
-    fn test_seal_hash_deterministic() {
-        let agent = Pubkey::new_unique();
-        let client = Pubkey::new_unique();
-        let hash1 = compute_feedback_seal_hash(&agent, &client, 0, "ipfs://QmTest", &[0u8; 32]);
-        let hash2 = compute_feedback_seal_hash(&agent, &client, 0, "ipfs://QmTest", &[0u8; 32]);
-        assert_eq!(hash1, hash2);
+    fn test_seal_hash_matches_sdk_vectors() {
+        // No score, no file hash.
+        let hash = compute_seal_hash(&SealParams {
+            value: 95,
+            value_decimals: 0,
+            score: None,
+            feedback_file_hash: None,
+            tag1: "uptime",
+            tag2: "verify",
+            endpoint: "https://facilitator.ultravioletadao.xyz/verify",
+            feedback_uri: "https://facilitator.ultravioletadao.xyz/.well-known/feedback.json",
+        })
+        .unwrap();
+        assert_eq!(
+            hex::encode(hash),
+            "e8b95971b2423b4345835044f2f7f4b4573011374fa482c5f3905d2a79f74158"
+        );
 
-        // Different feedback_count should produce different hash
-        let hash3 = compute_feedback_seal_hash(&agent, &client, 1, "ipfs://QmTest", &[0u8; 32]);
-        assert_ne!(hash1, hash3);
+        // Score present, file hash present, negative i128, empty strings.
+        let hash = compute_seal_hash(&SealParams {
+            value: -12345,
+            value_decimals: 6,
+            score: Some(77),
+            feedback_file_hash: Some([0xAB; 32]),
+            tag1: "",
+            tag2: "x",
+            endpoint: "",
+            feedback_uri: "ipfs://Qm",
+        })
+        .unwrap();
+        assert_eq!(
+            hex::encode(hash),
+            "ce2aa6bd7761378846463a3f80455c9dd1fa602ece035262453fa66ae0b5284b"
+        );
     }
 
     #[test]
-    fn test_seal_hash_domains() {
-        let agent = Pubkey::new_unique();
-        let client = Pubkey::new_unique();
+    fn test_feedback_leaf_matches_sdk_vector() {
+        let seal = hex::decode("e8b95971b2423b4345835044f2f7f4b4573011374fa482c5f3905d2a79f74158")
+            .unwrap();
+        let leaf = compute_feedback_leaf_v1(
+            &Pubkey::from_str("DmhTrXVF9ikJHpNeAgxMNx8aMaP8J8jLhzFwGMZ9A5vZ").unwrap(),
+            &Pubkey::from_str("6xNPewUdKRbEZDReQdpyfNUdgNg8QRc8Mt263T5GZSRv").unwrap(),
+            3,
+            &seal.try_into().unwrap(),
+            987_654,
+        );
+        assert_eq!(
+            hex::encode(leaf),
+            "d52395913e4ce3384c2635e6add34c169948109d1878edb8164fea7be13768c6"
+        );
+    }
 
-        let feedback_hash = compute_feedback_seal_hash(&agent, &client, 0, "uri", &[0u8; 32]);
-        let revoke_hash = compute_revoke_seal_hash(&agent, &client, 0, 0);
-        let response_hash = compute_response_seal_hash(&agent, &client, 0, "uri", &[0u8; 32]);
+    /// The program validates these bounds before hashing, so a hash we would compute
+    /// past them could never be accepted.
+    #[test]
+    fn test_seal_hash_rejects_out_of_bounds_input() {
+        let base = SealParams {
+            value: 1,
+            value_decimals: 0,
+            score: None,
+            feedback_file_hash: None,
+            tag1: "a",
+            tag2: "b",
+            endpoint: "e",
+            feedback_uri: "u",
+        };
+        assert!(compute_seal_hash(&base).is_some());
 
-        // All three should be different due to different domains
-        assert_ne!(feedback_hash, revoke_hash);
-        assert_ne!(feedback_hash, response_hash);
-        assert_ne!(revoke_hash, response_hash);
+        let long_tag = "x".repeat(MAX_TAG_LEN + 1);
+        assert!(compute_seal_hash(&SealParams {
+            tag1: &long_tag,
+            ..base.clone()
+        })
+        .is_none());
+
+        let long_uri = "x".repeat(MAX_URI_LEN + 1);
+        assert!(compute_seal_hash(&SealParams {
+            feedback_uri: &long_uri,
+            ..base.clone()
+        })
+        .is_none());
+
+        assert!(compute_seal_hash(&SealParams {
+            value_decimals: 19,
+            ..base.clone()
+        })
+        .is_none());
+
+        assert!(compute_seal_hash(&SealParams {
+            score: Some(101),
+            ..base.clone()
+        })
+        .is_none());
     }
 
     #[test]

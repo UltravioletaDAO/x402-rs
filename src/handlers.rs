@@ -3943,24 +3943,50 @@ where
             };
 
             // Decode seal_hash from hex string (required for Solana)
-            let seal_hash: [u8; 32] =
-                match &request.seal_hash {
-                    Some(hex_str) => {
-                        let bytes =
-                            hex::decode(hex_str.trim_start_matches("0x")).unwrap_or_default();
-                        if bytes.len() != 32 {
-                            return (StatusCode::BAD_REQUEST, Json(json!({
+            // Accept a precomputed hash, or derive it from the original feedback so
+            // callers do not have to reimplement the program's keccak256 layout.
+            let seal_hash: [u8; 32] = match (&request.seal_hash, &request.original_feedback) {
+                (Some(hex_str), _) => {
+                    let bytes = hex::decode(hex_str.trim_start_matches("0x")).unwrap_or_default();
+                    if bytes.len() != 32 {
+                        return (StatusCode::BAD_REQUEST, Json(json!({
                             "success": false, "error": "sealHash must be 32 bytes (64 hex chars)"
                         }))).into_response();
+                    }
+                    bytes.try_into().unwrap()
+                }
+                (None, Some(original)) => {
+                    let params = solana_erc8004::SealParams {
+                        value: original.value,
+                        value_decimals: original.value_decimals,
+                        score: original.score,
+                        feedback_file_hash: original.feedback_hash.map(|h| h.0),
+                        tag1: &original.tag1,
+                        tag2: &original.tag2,
+                        endpoint: &original.endpoint,
+                        feedback_uri: &original.feedback_uri,
+                    };
+                    match solana_erc8004::compute_seal_hash(&params) {
+                        Some(hash) => hash,
+                        None => {
+                            return (StatusCode::BAD_REQUEST, Json(json!({
+                                "success": false,
+                                "error": "originalFeedback exceeds on-chain limits (tags 32 bytes, endpoint/uri 250 bytes, valueDecimals 0-18, score 0-100)"
+                            }))).into_response();
                         }
-                        bytes.try_into().unwrap()
                     }
-                    None => {
-                        return (StatusCode::BAD_REQUEST, Json(json!({
-                        "success": false, "error": "sealHash is required for Solana revocations"
-                    }))).into_response();
-                    }
-                };
+                }
+                (None, None) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({
+                            "success": false,
+                            "error": "Solana revocations need either sealHash or originalFeedback"
+                        })),
+                    )
+                        .into_response();
+                }
+            };
 
             let ix = solana_erc8004::build_revoke_feedback_ix(
                 &programs,
@@ -4505,11 +4531,13 @@ where
                 trust_tier: stats.trust_tier,
                 trust_tier_name: solana_erc8004::trust_tier_name(stats.trust_tier).to_string(),
                 quality_score: stats.quality_score,
+                loyalty_score: stats.loyalty_score,
                 confidence: stats.confidence,
                 risk_score: stats.risk_score,
                 diversity_ratio: stats.diversity_ratio,
-                positive_count: stats.positive_count,
-                negative_count: stats.negative_count,
+                min_score: stats.min_score,
+                max_score: stats.max_score,
+                last_score: stats.last_score,
                 feedback_count: stats.feedback_count,
                 last_feedback_slot: stats.last_feedback_slot,
             }),
@@ -4518,14 +4546,16 @@ where
                 None
             }
             Err(e) => {
-                warn!(error = %e, "Failed to read ATOM stats, returning without ATOM data");
+                // A deserialization failure here is a bug, not an absent account, and
+                // silently nulling it once hid a wrong AtomStats layout for months.
+                error!(error = %e, "Failed to read ATOM stats, returning without ATOM data");
                 None
             }
         };
 
         // Build summary from ATOM stats or fall back to agent account counts
         let (count, summary_value) = if let Some(ref atom) = atom_stats_response {
-            (atom.feedback_count as u64, atom.quality_score as i128)
+            (atom.feedback_count, atom.quality_score as i128)
         } else {
             (feedback_count_from_agent, 0i128)
         };
@@ -5544,6 +5574,31 @@ where
 
     // ── Solana registration via Anchor register() ──
     if let Some(NetworkProvider::Solana(p)) = provider_map.by_network(&network) {
+        // Post-mint transfer is implemented for EVM only. Accepting `recipient` here
+        // and minting to the facilitator anyway would report success for an agent
+        // that was never delivered, so refuse instead of silently keeping it.
+        if request.recipient.is_some() {
+            warn!(network = %network, "recipient is not supported for Solana registration");
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(RegisterAgentResponse {
+                    success: false,
+                    agent_id: None,
+                    transaction: None,
+                    transfer_transaction: None,
+                    owner: None,
+                    error: Some(format!(
+                        "recipient is not supported on {}: the facilitator cannot transfer \
+                         the agent NFT after minting on Solana. Omit recipient to mint to \
+                         the facilitator, then transfer the Core asset yourself.",
+                        network
+                    )),
+                    network,
+                }),
+            )
+                .into_response();
+        }
+
         let programs = match solana_erc8004::get_program_ids(&network) {
             Some(prog) => prog,
             None => {

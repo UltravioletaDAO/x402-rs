@@ -3643,7 +3643,30 @@ where
 
             let fee_payer = p.keypair().pubkey();
             let feedback_hash_bytes: Option<[u8; 32]> = feedback.feedback_hash.map(|h| h.0);
-            let score: Option<u8> = None; // Score is optional, not in FeedbackParams
+
+            // Without a score the ATOM Engine records the feedback but scores nothing,
+            // so reputation would stay at zero however much feedback arrives.
+            let score = feedback.score;
+            if let Some(s) = score {
+                if s > 100 {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(FeedbackResponse {
+                            success: false,
+                            transaction: None,
+                            feedback_index: None,
+                            error: Some("score must be between 0 and 100".to_string()),
+                            network,
+                        }),
+                    )
+                        .into_response();
+                }
+            } else {
+                warn!(
+                    network = %network,
+                    "Feedback submitted without a score: it will not affect ATOM reputation"
+                );
+            }
 
             let ix = solana_erc8004::build_give_feedback_ix(
                 &programs,

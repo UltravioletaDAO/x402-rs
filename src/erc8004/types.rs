@@ -190,6 +190,13 @@ pub struct FeedbackParams {
     #[serde(default)]
     pub feedback_hash: Option<FixedBytes<32>>,
 
+    /// Quality score 0-100. Solana only, and the ATOM Engine ignores an unscored
+    /// feedback entirely: it is recorded on the agent but contributes nothing to
+    /// reputation (the program reports `had_impact=false`). Omit only when you
+    /// deliberately want a non-scoring record.
+    #[serde(default)]
+    pub score: Option<u8>,
+
     /// Proof of payment (required for authorized feedback)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proof: Option<ProofOfPayment>,
@@ -649,6 +656,7 @@ mod tests {
             endpoint: "https://agent.example/api".to_string(),
             feedback_uri: "ipfs://QmFeedback".to_string(),
             feedback_hash: None,
+            score: Some(85),
             proof: None,
         };
 
@@ -671,6 +679,7 @@ mod tests {
                 endpoint: "".to_string(),
                 feedback_uri: "".to_string(),
                 feedback_hash: None,
+                score: None,
                 proof: None,
             },
         };

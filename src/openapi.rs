@@ -823,12 +823,17 @@ Submits on-chain reputation feedback for an AI agent via the ERC-8004 Reputation
     "tag1": "quality",
     "tag2": "api",
     "endpoint": "https://agent.example/api",
-    "feedbackUri": "ipfs://Qm..."
+    "feedbackUri": "ipfs://Qm...",
+    "score": 95
   }
 }
 ```
 
 Solana feedback triggers ATOM Engine CPI for trust scoring (trust tiers, HyperLogLog diversity, EMA quality).
+
+**Send `score` (0-100) on Solana.** Without it the engine records the feedback on the
+agent but scores nothing - the program reports `had_impact=false` and reputation stays
+at zero no matter how much feedback accumulates.
 "#,
     request_body(content = Object, description = "ERC-8004 feedback request"),
     responses(

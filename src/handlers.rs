@@ -3617,12 +3617,37 @@ where
                 }
             };
 
+            // give_feedback verifies the agent NFT belongs to the registry collection
+            let collection = match solana_erc8004::read_collection_pubkey(
+                p.rpc_client(),
+                &programs.agent_registry,
+            )
+            .await
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    error!(network = %network, error = %e, "Failed to read collection pubkey");
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(FeedbackResponse {
+                            success: false,
+                            transaction: None,
+                            feedback_index: None,
+                            error: Some(format!("Failed to read registry config: {}", e)),
+                            network,
+                        }),
+                    )
+                        .into_response();
+                }
+            };
+
             let fee_payer = p.keypair().pubkey();
             let feedback_hash_bytes: Option<[u8; 32]> = feedback.feedback_hash.map(|h| h.0);
             let score: Option<u8> = None; // Score is optional, not in FeedbackParams
 
             let ix = solana_erc8004::build_give_feedback_ix(
                 &programs,
+                &collection,
                 &asset_pubkey,
                 &fee_payer,
                 feedback.value,
@@ -3940,6 +3965,7 @@ where
             let ix = solana_erc8004::build_revoke_feedback_ix(
                 &programs,
                 &asset_pubkey,
+                &p.keypair().pubkey(),
                 request.feedback_index,
                 seal_hash,
             );
@@ -5537,14 +5563,14 @@ where
             }
         };
 
-        // Read the collection pubkey from on-chain config
-        let collection =
-            match solana_erc8004::read_collection_pubkey(p.rpc_client(), &programs.agent_registry)
+        // Resolve root_config -> collection -> registry_config from on-chain state
+        let registry_ctx =
+            match solana_erc8004::read_registry_context(p.rpc_client(), &programs.agent_registry)
                 .await
             {
                 Ok(c) => c,
                 Err(e) => {
-                    error!(network = %network, error = %e, "Failed to read collection pubkey");
+                    error!(network = %network, error = %e, "Failed to resolve registry context");
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(RegisterAgentResponse {
@@ -5568,7 +5594,7 @@ where
 
         let ix = solana_erc8004::build_register_ix(
             &programs,
-            &collection,
+            &registry_ctx,
             &asset_pubkey,
             &fee_payer.pubkey(),
             &request.agent_uri,
@@ -6834,22 +6860,47 @@ where
             }
         };
 
+        // The registry keeps no agent counter on-chain; the Metaplex Core collection
+        // referenced by RootConfig is the golden source.
         let rpc = solana_provider.rpc_client();
-        match solana_erc8004::read_registry_config(rpc, &programs.agent_registry).await {
-            Ok(config) => {
-                let total = config.base_index as u64;
-                info!(network = %network, total_supply = total, "Queried Solana registry total supply");
+        let collection =
+            match solana_erc8004::read_collection_pubkey(rpc, &programs.agent_registry).await {
+                Ok(c) => c,
+                Err(e) => {
+                    error!(network = %network, error = %e, "Failed to read Solana root config");
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({
+                            "error": format!("Failed to query total supply: {}", e)
+                        })),
+                    )
+                        .into_response();
+                }
+            };
+
+        match solana_erc8004::read_collection_supply(rpc, &collection).await {
+            Ok(supply) => {
+                // current_size is net of burns, matching ERC-721 totalSupply semantics.
+                let total = supply.current_size as u64;
+                info!(
+                    network = %network,
+                    total_supply = total,
+                    num_minted = supply.num_minted,
+                    "Queried Solana registry total supply"
+                );
                 return (
                     StatusCode::OK,
                     Json(json!({
                         "totalSupply": total,
+                        "numMinted": supply.num_minted,
+                        "collection": collection.to_string(),
                         "network": network
                     })),
                 )
                     .into_response();
             }
             Err(e) => {
-                error!(network = %network, error = %e, "Failed to query Solana registry config");
+                error!(network = %network, error = %e, "Failed to query Solana collection supply");
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(json!({

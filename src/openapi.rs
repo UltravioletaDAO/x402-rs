@@ -1066,7 +1066,9 @@ async fn path_identity_metadata() {}
 Returns the total number of registered agents on a specific network.
 
 **EVM networks** return the ERC-721 totalSupply from the AgentRegistry contract.
-**Solana networks** return the `baseIndex` from the RegistryConfig PDA (total minted agents).
+**Solana networks** read the Metaplex Core collection referenced by the RootConfig PDA:
+`totalSupply` is its `current_size` (net of burns) and `numMinted` its all-time mint count.
+The registry itself keeps no agent counter on-chain.
 
 **EVM Response:**
 ```json

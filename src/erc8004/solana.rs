@@ -82,6 +82,12 @@ const ATOM_STATS_DISCRIMINATOR: [u8; 8] = [190, 187, 50, 59, 203, 39, 136, 244];
 /// Discriminator for RegistryConfig: SHA256("account:RegistryConfig")[..8]
 const REGISTRY_CONFIG_DISCRIMINATOR: [u8; 8] = [23, 118, 10, 246, 173, 231, 243, 156];
 
+/// Discriminator for RootConfig: SHA256("account:RootConfig")[..8]
+const ROOT_CONFIG_DISCRIMINATOR: [u8; 8] = [42, 216, 8, 82, 19, 209, 223, 246];
+
+/// Metaplex Core account discriminator byte for `CollectionV1` (first byte of the account).
+const MPL_CORE_COLLECTION_V1_KEY: u8 = 5;
+
 // ============================================================================
 // Borsh-Deserialized Account Structures
 // ============================================================================
@@ -158,23 +164,77 @@ pub struct AtomStats {
     pub bump: u8,
 }
 
-/// RegistryConfig (78 bytes on-chain, including 8-byte Anchor discriminator)
+/// RootConfig (73 bytes on-chain, including 8-byte Anchor discriminator)
 ///
-/// PDA Seeds: `["config"]`
+/// PDA Seeds: `["root_config"]`
 ///
-/// Global registry configuration.
+/// Global singleton pointing at the base Metaplex Core collection. Introduced in
+/// program v0.3.0; this is the entry point for resolving every other registry account.
+#[derive(Debug, Clone, BorshDeserialize)]
+pub struct RootConfig {
+    /// Base Metaplex Core collection address
+    pub base_collection: [u8; 32],
+    /// Upgrade authority
+    pub authority: [u8; 32],
+    /// PDA bump seed
+    pub bump: u8,
+}
+
+/// RegistryConfig (73 bytes on-chain, including 8-byte Anchor discriminator)
+///
+/// PDA Seeds: `["registry_config", collection]`
+///
+/// Per-collection registry configuration.
+///
+/// NOTE: this account carries no agent counter. Earlier revisions of this module
+/// declared `registry_type` and `base_index` fields that do not exist on-chain,
+/// which made every deserialization fail. Agent totals come from the Metaplex Core
+/// collection instead - see [`CollectionSupply`].
 #[derive(Debug, Clone, BorshDeserialize)]
 pub struct RegistryConfig {
     /// Metaplex Core collection address
     pub collection: [u8; 32],
-    /// Registry type identifier
-    pub registry_type: u8,
-    /// Upgrade authority
+    /// Registry authority
     pub authority: [u8; 32],
-    /// Total registered agents (sequential counter)
-    pub base_index: u32,
     /// PDA bump seed
     pub bump: u8,
+}
+
+/// Agent totals read from the Metaplex Core `CollectionV1` account.
+///
+/// The registry has no on-chain counter of its own; the collection is the golden
+/// source. `num_minted` only ever increases, `current_size` decreases on burn.
+#[derive(Debug, Clone, BorshDeserialize)]
+pub struct CollectionSupply {
+    /// Metaplex Core account discriminator byte (5 = CollectionV1)
+    pub key: u8,
+    /// Collection update authority
+    pub update_authority: [u8; 32],
+    /// Collection name
+    pub name: String,
+    /// Collection metadata URI
+    pub uri: String,
+    /// Agents minted since genesis (monotonic)
+    pub num_minted: u32,
+    /// Agents currently in the collection (net of burns)
+    pub current_size: u32,
+}
+
+/// Resolved registry accounts for one Solana network.
+///
+/// Building any identity instruction needs both config PDAs plus the collection,
+/// and the collection is only knowable after reading `root_config`. Resolve once
+/// with [`read_registry_context`] and thread this through.
+#[derive(Debug, Clone, Copy)]
+pub struct RegistryContext {
+    /// `["root_config"]` PDA
+    pub root_config: Pubkey,
+    /// `["registry_config", collection]` PDA
+    pub registry_config: Pubkey,
+    /// Metaplex Core collection holding the agent NFTs
+    pub collection: Pubkey,
+    /// Registry authority
+    pub authority: Pubkey,
 }
 
 // ============================================================================
@@ -195,24 +255,61 @@ pub fn derive_atom_stats_pda(asset: &Pubkey, program_id: &Pubkey) -> (Pubkey, u8
     Pubkey::find_program_address(&[b"atom_stats", asset.as_ref()], program_id)
 }
 
-/// Derive the RegistryConfig PDA.
+/// Derive the RootConfig PDA.
 ///
-/// Seeds: `["config"]`
-pub fn derive_registry_config_pda(program_id: &Pubkey) -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[b"config"], program_id)
+/// Seeds: `["root_config"]`
+pub fn derive_root_config_pda(program_id: &Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[b"root_config"], program_id)
+}
+
+/// Derive the RegistryConfig PDA for a collection.
+///
+/// Seeds: `["registry_config", collection]`
+///
+/// The collection is not a constant - read it from the RootConfig account first
+/// (see [`read_registry_context`]). The legacy `["config"]` seed used before
+/// program v0.3.0 derives an address that has never been initialized.
+pub fn derive_registry_config_pda(program_id: &Pubkey, collection: &Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[b"registry_config", collection.as_ref()], program_id)
+}
+
+/// Derive the AtomConfig PDA on the ATOM Engine program.
+///
+/// Seeds: `["atom_config"]`
+pub fn derive_atom_config_pda(atom_program_id: &Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[b"atom_config"], atom_program_id)
+}
+
+/// Derive the ATOM CPI authority PDA on the Agent Registry program.
+///
+/// Seeds: `["atom_cpi_authority"]`
+///
+/// The registry signs its CPI calls into the ATOM Engine with this PDA; the engine
+/// rejects feedback whose `registry_authority` account does not match.
+pub fn derive_atom_cpi_authority_pda(program_id: &Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[b"atom_cpi_authority"], program_id)
+}
+
+/// SHA-256 prefix of a metadata key, as used in both the PDA seed and the
+/// instruction payload.
+///
+/// 16 bytes, not 8: the program widened this in its v1.9 security update.
+fn metadata_key_hash(metadata_key: &str) -> [u8; 16] {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(metadata_key.as_bytes());
+    digest[..16].try_into().expect("sha256 yields 32 bytes")
 }
 
 /// Derive the MetadataEntryPda for a given asset and metadata key.
 ///
-/// Seeds: `["agent_meta", asset.key(), sha256(key)[0..8]]`
+/// Seeds: `["agent_meta", asset.key(), sha256(key)[0..16]]`
 pub fn derive_metadata_pda(
     asset: &Pubkey,
     metadata_key: &str,
     program_id: &Pubkey,
 ) -> (Pubkey, u8) {
-    use sha2::{Digest, Sha256};
-    let key_hash = Sha256::digest(metadata_key.as_bytes());
-    Pubkey::find_program_address(&[b"agent_meta", asset.as_ref(), &key_hash[..8]], program_id)
+    let key_hash = metadata_key_hash(metadata_key);
+    Pubkey::find_program_address(&[b"agent_meta", asset.as_ref(), &key_hash], program_id)
 }
 
 // ============================================================================
@@ -321,39 +418,129 @@ pub async fn read_atom_stats(
     })
 }
 
-/// Read and deserialize RegistryConfig from the chain.
-pub async fn read_registry_config(
+/// Fetch an Anchor account, checking its discriminator, and return the payload after it.
+///
+/// Deserialization tolerates trailing bytes: Anchor accounts may be allocated larger
+/// than the struct currently occupies.
+async fn fetch_anchor_account(
     rpc_client: &RpcClient,
-    program_id: &Pubkey,
-) -> Result<RegistryConfig, SolanaErc8004Error> {
-    let (pda, _bump) = derive_registry_config_pda(program_id);
-
-    let account_data = rpc_client.get_account_data(&pda).await.map_err(|e| {
+    pda: &Pubkey,
+    discriminator: &[u8; 8],
+    label: &str,
+) -> Result<Vec<u8>, SolanaErc8004Error> {
+    let account_data = rpc_client.get_account_data(pda).await.map_err(|e| {
         let err_str = e.to_string();
         if err_str.contains("AccountNotFound") || err_str.contains("could not find account") {
-            SolanaErc8004Error::AccountNotFound(format!("Registry config not found (PDA: {})", pda))
+            SolanaErc8004Error::AccountNotFound(format!("{} not found (PDA: {})", label, pda))
         } else {
             SolanaErc8004Error::RpcError(err_str)
         }
     })?;
 
-    // Verify Anchor discriminator
     if account_data.len() < 8 {
-        return Err(SolanaErc8004Error::InvalidAccountData(
-            "Account data too short for Anchor discriminator".to_string(),
-        ));
+        return Err(SolanaErc8004Error::InvalidAccountData(format!(
+            "{} data too short for Anchor discriminator",
+            label
+        )));
     }
 
-    if account_data[..8] != REGISTRY_CONFIG_DISCRIMINATOR {
-        return Err(SolanaErc8004Error::InvalidAccountData(
-            "Invalid Anchor discriminator for RegistryConfig".to_string(),
-        ));
+    if account_data[..8] != *discriminator {
+        return Err(SolanaErc8004Error::InvalidAccountData(format!(
+            "Invalid Anchor discriminator for {}",
+            label
+        )));
     }
 
-    RegistryConfig::try_from_slice(&account_data[8..]).map_err(|e| {
+    Ok(account_data[8..].to_vec())
+}
+
+/// Read and deserialize the RootConfig singleton from the chain.
+pub async fn read_root_config(
+    rpc_client: &RpcClient,
+    program_id: &Pubkey,
+) -> Result<RootConfig, SolanaErc8004Error> {
+    let (pda, _bump) = derive_root_config_pda(program_id);
+    let payload =
+        fetch_anchor_account(rpc_client, &pda, &ROOT_CONFIG_DISCRIMINATOR, "Root config").await?;
+
+    RootConfig::deserialize(&mut payload.as_slice()).map_err(|e| {
+        SolanaErc8004Error::InvalidAccountData(format!("Failed to deserialize RootConfig: {}", e))
+    })
+}
+
+/// Read and deserialize the RegistryConfig for a collection from the chain.
+pub async fn read_registry_config(
+    rpc_client: &RpcClient,
+    program_id: &Pubkey,
+    collection: &Pubkey,
+) -> Result<RegistryConfig, SolanaErc8004Error> {
+    let (pda, _bump) = derive_registry_config_pda(program_id, collection);
+    let payload = fetch_anchor_account(
+        rpc_client,
+        &pda,
+        &REGISTRY_CONFIG_DISCRIMINATOR,
+        "Registry config",
+    )
+    .await?;
+
+    RegistryConfig::deserialize(&mut payload.as_slice()).map_err(|e| {
         SolanaErc8004Error::InvalidAccountData(format!(
             "Failed to deserialize RegistryConfig: {}",
             e
+        ))
+    })
+}
+
+/// Resolve every registry account needed to build identity instructions.
+///
+/// Costs two RPC round trips: the collection lives in RootConfig and seeds the
+/// RegistryConfig PDA.
+pub async fn read_registry_context(
+    rpc_client: &RpcClient,
+    program_id: &Pubkey,
+) -> Result<RegistryContext, SolanaErc8004Error> {
+    let root = read_root_config(rpc_client, program_id).await?;
+    let collection = bytes_to_pubkey(&root.base_collection);
+
+    let (root_config, _) = derive_root_config_pda(program_id);
+    let (registry_config, _) = derive_registry_config_pda(program_id, &collection);
+
+    let config = read_registry_config(rpc_client, program_id, &collection).await?;
+
+    Ok(RegistryContext {
+        root_config,
+        registry_config,
+        collection,
+        authority: bytes_to_pubkey(&config.authority),
+    })
+}
+
+/// Read agent totals from the Metaplex Core collection account.
+pub async fn read_collection_supply(
+    rpc_client: &RpcClient,
+    collection: &Pubkey,
+) -> Result<CollectionSupply, SolanaErc8004Error> {
+    let account_data = rpc_client.get_account_data(collection).await.map_err(|e| {
+        let err_str = e.to_string();
+        if err_str.contains("AccountNotFound") || err_str.contains("could not find account") {
+            SolanaErc8004Error::AccountNotFound(format!("Collection not found: {}", collection))
+        } else {
+            SolanaErc8004Error::RpcError(err_str)
+        }
+    })?;
+
+    if account_data.first() != Some(&MPL_CORE_COLLECTION_V1_KEY) {
+        return Err(SolanaErc8004Error::InvalidAccountData(format!(
+            "Account {} is not a Metaplex Core CollectionV1",
+            collection
+        )));
+    }
+
+    // Trailing plugin data after the header is expected, so do not use try_from_slice.
+    CollectionSupply::deserialize(&mut account_data.as_slice()).map_err(|e| {
+        SolanaErc8004Error::InvalidAccountData(format!(
+            "Failed to deserialize CollectionV1 {}: {}",
+            collection, e
         ))
     })
 }
@@ -492,14 +679,18 @@ use solana_sdk::instruction::{AccountMeta, Instruction};
 /// Build a `give_feedback` instruction for the Agent Registry program.
 ///
 /// Accounts:
-/// 0. [writable] agent PDA (["agent", asset])
-/// 1. [] asset (NFT mint)
-/// 2. [signer] client (feedback author / fee payer)
-/// 3. [writable] atom_stats PDA (["atom_stats", asset]) on ATOM Engine
-/// 4. [] atom_engine program
-/// 5. [] system_program
+/// 0. [signer, writable] client (feedback author / fee payer)
+/// 1. [writable] agent PDA (["agent", asset])
+/// 2. [] asset (NFT mint)
+/// 3. [] collection (Core Collection)
+/// 4. [] system_program
+/// 5. [] atom_config PDA (["atom_config"]) on ATOM Engine
+/// 6. [writable] atom_stats PDA (["atom_stats", asset]) on ATOM Engine
+/// 7. [] atom_engine program
+/// 8. [] registry ATOM CPI authority PDA (["atom_cpi_authority"])
 pub fn build_give_feedback_ix(
     programs: &SolanaErc8004Programs,
+    collection: &Pubkey,
     asset: &Pubkey,
     client: &Pubkey,
     value: i128,
@@ -512,7 +703,9 @@ pub fn build_give_feedback_ix(
     feedback_hash: Option<[u8; 32]>,
 ) -> Instruction {
     let (agent_pda, _) = derive_agent_pda(asset, &programs.agent_registry);
+    let (atom_config_pda, _) = derive_atom_config_pda(&programs.atom_engine);
     let (atom_stats_pda, _) = derive_atom_stats_pda(asset, &programs.atom_engine);
+    let (atom_cpi_authority, _) = derive_atom_cpi_authority_pda(&programs.agent_registry);
 
     // Serialize args using Borsh (Anchor format)
     let mut data = Vec::with_capacity(256);
@@ -546,12 +739,15 @@ pub fn build_give_feedback_ix(
     Instruction {
         program_id: programs.agent_registry,
         accounts: vec![
+            AccountMeta::new(*client, true),
             AccountMeta::new(agent_pda, false),
             AccountMeta::new_readonly(*asset, false),
-            AccountMeta::new(*client, true),
+            AccountMeta::new_readonly(*collection, false),
+            AccountMeta::new_readonly(solana_sdk::system_program::id(), false),
+            AccountMeta::new_readonly(atom_config_pda, false),
             AccountMeta::new(atom_stats_pda, false),
             AccountMeta::new_readonly(programs.atom_engine, false),
-            AccountMeta::new_readonly(solana_sdk::system_program::id(), false),
+            AccountMeta::new_readonly(atom_cpi_authority, false),
         ],
         data,
     }
@@ -560,19 +756,25 @@ pub fn build_give_feedback_ix(
 /// Build a `revoke_feedback` instruction.
 ///
 /// Accounts:
-/// 0. [writable] agent PDA
-/// 1. [] asset
-/// 2. [writable] atom_stats PDA on ATOM Engine
-/// 3. [] atom_engine program
-/// 4. [] system_program
+/// 0. [signer, writable] client (revoker / fee payer)
+/// 1. [writable] agent PDA
+/// 2. [] asset
+/// 3. [] system_program
+/// 4. [] atom_config PDA on ATOM Engine
+/// 5. [writable] atom_stats PDA on ATOM Engine
+/// 6. [] atom_engine program
+/// 7. [] registry ATOM CPI authority PDA
 pub fn build_revoke_feedback_ix(
     programs: &SolanaErc8004Programs,
     asset: &Pubkey,
+    client: &Pubkey,
     feedback_index: u64,
     seal_hash: [u8; 32],
 ) -> Instruction {
     let (agent_pda, _) = derive_agent_pda(asset, &programs.agent_registry);
+    let (atom_config_pda, _) = derive_atom_config_pda(&programs.atom_engine);
     let (atom_stats_pda, _) = derive_atom_stats_pda(asset, &programs.atom_engine);
+    let (atom_cpi_authority, _) = derive_atom_cpi_authority_pda(&programs.agent_registry);
 
     let mut data = Vec::with_capacity(64);
     data.extend_from_slice(&IX_REVOKE_FEEDBACK);
@@ -582,11 +784,14 @@ pub fn build_revoke_feedback_ix(
     Instruction {
         program_id: programs.agent_registry,
         accounts: vec![
+            AccountMeta::new(*client, true),
             AccountMeta::new(agent_pda, false),
             AccountMeta::new_readonly(*asset, false),
+            AccountMeta::new_readonly(solana_sdk::system_program::id(), false),
+            AccountMeta::new_readonly(atom_config_pda, false),
             AccountMeta::new(atom_stats_pda, false),
             AccountMeta::new_readonly(programs.atom_engine, false),
-            AccountMeta::new_readonly(solana_sdk::system_program::id(), false),
+            AccountMeta::new_readonly(atom_cpi_authority, false),
         ],
         data,
     }
@@ -595,11 +800,11 @@ pub fn build_revoke_feedback_ix(
 /// Build an `append_response` instruction.
 ///
 /// Accounts:
-/// 0. [writable] agent PDA
-/// 1. [] asset
-/// 2. [] client_address (original feedback author)
-/// 3. [signer] responder
-/// 4. [] system_program
+/// 0. [signer] responder
+/// 1. [writable] agent PDA
+/// 2. [] asset
+///
+/// The original feedback author travels in the instruction payload, not as an account.
 pub fn build_append_response_ix(
     programs: &SolanaErc8004Programs,
     asset: &Pubkey,
@@ -614,6 +819,7 @@ pub fn build_append_response_ix(
 
     let mut data = Vec::with_capacity(128);
     data.extend_from_slice(&IX_APPEND_RESPONSE);
+    data.extend_from_slice(client_address.as_ref());
     data.extend_from_slice(&feedback_index.to_le_bytes());
     borsh_write_string(&mut data, response_uri);
     data.extend_from_slice(&response_hash);
@@ -622,11 +828,9 @@ pub fn build_append_response_ix(
     Instruction {
         program_id: programs.agent_registry,
         accounts: vec![
+            AccountMeta::new_readonly(*responder, true),
             AccountMeta::new(agent_pda, false),
             AccountMeta::new_readonly(*asset, false),
-            AccountMeta::new_readonly(*client_address, false),
-            AccountMeta::new(*responder, true),
-            AccountMeta::new_readonly(solana_sdk::system_program::id(), false),
         ],
         data,
     }
@@ -639,21 +843,21 @@ pub fn build_append_response_ix(
 /// Build a `register` instruction to mint a new agent NFT.
 ///
 /// Accounts:
-/// 0. [writable] config PDA (["config"])
-/// 1. [writable] agent PDA (["agent", asset])
-/// 2. [] collection (Core Collection)
-/// 3. [writable] asset (new NFT keypair - must be signer)
-/// 4. [signer] owner (registrant / fee payer)
-/// 5. [] system_program
-/// 6. [] metaplex_core program
+/// 0. [] root_config PDA (["root_config"])
+/// 1. [] registry_config PDA (["registry_config", collection])
+/// 2. [writable] agent PDA (["agent", asset])
+/// 3. [signer, writable] asset (new NFT keypair)
+/// 4. [writable] collection (Core Collection - mpl-core bumps its counters)
+/// 5. [signer, writable] owner (registrant / fee payer)
+/// 6. [] system_program
+/// 7. [] metaplex_core program
 pub fn build_register_ix(
     programs: &SolanaErc8004Programs,
-    collection: &Pubkey,
+    ctx: &RegistryContext,
     asset: &Pubkey,
     owner: &Pubkey,
     agent_uri: &str,
 ) -> Instruction {
-    let (config_pda, _) = derive_registry_config_pda(&programs.agent_registry);
     let (agent_pda, _) = derive_agent_pda(asset, &programs.agent_registry);
 
     let mut data = Vec::with_capacity(64);
@@ -663,10 +867,11 @@ pub fn build_register_ix(
     Instruction {
         program_id: programs.agent_registry,
         accounts: vec![
-            AccountMeta::new(config_pda, false),
+            AccountMeta::new_readonly(ctx.root_config, false),
+            AccountMeta::new_readonly(ctx.registry_config, false),
             AccountMeta::new(agent_pda, false),
-            AccountMeta::new_readonly(*collection, false),
             AccountMeta::new(*asset, true),
+            AccountMeta::new(ctx.collection, false),
             AccountMeta::new(*owner, true),
             AccountMeta::new_readonly(solana_sdk::system_program::id(), false),
             AccountMeta::new_readonly(METAPLEX_CORE_PROGRAM, false),
@@ -678,19 +883,20 @@ pub fn build_register_ix(
 /// Build a `set_agent_uri` instruction.
 ///
 /// Accounts:
-/// 0. [writable] config PDA
+/// 0. [] registry_config PDA (["registry_config", collection])
 /// 1. [writable] agent PDA
 /// 2. [writable] asset (NFT)
-/// 3. [signer] owner
-/// 4. [] system_program
-/// 5. [] metaplex_core program
+/// 3. [writable] collection (Core Collection)
+/// 4. [signer, writable] owner
+/// 5. [] system_program
+/// 6. [] metaplex_core program
 pub fn build_set_agent_uri_ix(
     programs: &SolanaErc8004Programs,
+    ctx: &RegistryContext,
     asset: &Pubkey,
     owner: &Pubkey,
     new_uri: &str,
 ) -> Instruction {
-    let (config_pda, _) = derive_registry_config_pda(&programs.agent_registry);
     let (agent_pda, _) = derive_agent_pda(asset, &programs.agent_registry);
 
     let mut data = Vec::with_capacity(64);
@@ -700,9 +906,10 @@ pub fn build_set_agent_uri_ix(
     Instruction {
         program_id: programs.agent_registry,
         accounts: vec![
-            AccountMeta::new(config_pda, false),
+            AccountMeta::new_readonly(ctx.registry_config, false),
             AccountMeta::new(agent_pda, false),
             AccountMeta::new(*asset, false),
+            AccountMeta::new(ctx.collection, false),
             AccountMeta::new(*owner, true),
             AccountMeta::new_readonly(solana_sdk::system_program::id(), false),
             AccountMeta::new_readonly(METAPLEX_CORE_PROGRAM, false),
@@ -714,10 +921,10 @@ pub fn build_set_agent_uri_ix(
 /// Build a `set_metadata_pda` instruction.
 ///
 /// Accounts:
-/// 0. [writable] agent PDA
-/// 1. [writable] metadata_entry PDA (["agent_meta", asset, key_hash[0..8]])
+/// 0. [writable] metadata_entry PDA (["agent_meta", asset, key_hash[0..16]])
+/// 1. [] agent PDA
 /// 2. [] asset
-/// 3. [signer] owner
+/// 3. [signer, writable] owner
 /// 4. [] system_program
 pub fn build_set_metadata_pda_ix(
     programs: &SolanaErc8004Programs,
@@ -727,9 +934,7 @@ pub fn build_set_metadata_pda_ix(
     value: &[u8],
     immutable: bool,
 ) -> Instruction {
-    use sha2::{Digest, Sha256};
-    let key_hash = Sha256::digest(key.as_bytes());
-    let key_hash_prefix: [u8; 8] = key_hash[..8].try_into().unwrap();
+    let key_hash_prefix = metadata_key_hash(key);
 
     let (agent_pda, _) = derive_agent_pda(asset, &programs.agent_registry);
     let (metadata_pda, _) = derive_metadata_pda(asset, key, &programs.agent_registry);
@@ -747,8 +952,8 @@ pub fn build_set_metadata_pda_ix(
     Instruction {
         program_id: programs.agent_registry,
         accounts: vec![
-            AccountMeta::new(agent_pda, false),
             AccountMeta::new(metadata_pda, false),
+            AccountMeta::new_readonly(agent_pda, false),
             AccountMeta::new_readonly(*asset, false),
             AccountMeta::new(*owner, true),
             AccountMeta::new_readonly(solana_sdk::system_program::id(), false),
@@ -818,13 +1023,13 @@ pub async fn send_erc8004_transaction_with_signers(
         .map_err(|e| SolanaErc8004Error::RpcError(format!("Transaction failed: {}", e)))
 }
 
-/// Read the collection pubkey from the RegistryConfig PDA.
+/// Read the collection pubkey from the RootConfig PDA.
 pub async fn read_collection_pubkey(
     rpc_client: &RpcClient,
     program_id: &Pubkey,
 ) -> Result<Pubkey, SolanaErc8004Error> {
-    let config = read_registry_config(rpc_client, program_id).await?;
-    Ok(bytes_to_pubkey(&config.collection))
+    let root = read_root_config(rpc_client, program_id).await?;
+    Ok(bytes_to_pubkey(&root.base_collection))
 }
 
 // ============================================================================
@@ -873,11 +1078,134 @@ mod tests {
         assert_ne!(agent_pda, atom_pda);
     }
 
+    /// Base collection held by RootConfig on mainnet (verified on-chain 2026-08-07).
+    const MAINNET_COLLECTION: &str = "DbjsWo7iUs7QZyJxLgNyVxvAAjQZCXroJHoGok8h8Umg";
+    /// Base collection held by RootConfig on devnet (verified on-chain 2026-08-07).
+    const DEVNET_COLLECTION: &str = "6CTyGPcn8dMwKEqgtvx2XCpkGUd7uqCVK6937RSM5bhA";
+
+    /// Config PDAs are pinned to addresses read from the live registries. An
+    /// `assert_ne!(pda, default)` check passes even with a wrong seed, which is how
+    /// the deprecated `["config"]` seed survived here undetected.
     #[test]
-    fn test_registry_config_pda() {
-        let (config_pda, bump) = derive_registry_config_pda(&AGENT_REGISTRY_MAINNET);
-        assert_ne!(config_pda, Pubkey::default());
-        assert!(bump <= 255);
+    fn test_root_config_pda_matches_mainnet() {
+        let (pda, _) = derive_root_config_pda(&AGENT_REGISTRY_MAINNET);
+        assert_eq!(
+            pda.to_string(),
+            "FkmKMw5a8HfE733zJ1qCaLVNR7iMFFhEU5dHWxkfBCue"
+        );
+
+        let (pda, _) = derive_root_config_pda(&AGENT_REGISTRY_DEVNET);
+        assert_eq!(
+            pda.to_string(),
+            "GGQfKNpXq8HchNxecLfXi8D7xz9PDppdPAPgr5Fx4Nvd"
+        );
+    }
+
+    #[test]
+    fn test_registry_config_pda_matches_mainnet() {
+        let collection = Pubkey::from_str(MAINNET_COLLECTION).unwrap();
+        let (pda, _) = derive_registry_config_pda(&AGENT_REGISTRY_MAINNET, &collection);
+        assert_eq!(
+            pda.to_string(),
+            "BXnjUb5ZqEXovwTCrRzh6JPRxFydprLERJV2JJyCFZUz"
+        );
+
+        let collection = Pubkey::from_str(DEVNET_COLLECTION).unwrap();
+        let (pda, _) = derive_registry_config_pda(&AGENT_REGISTRY_DEVNET, &collection);
+        assert_eq!(
+            pda.to_string(),
+            "Djy4TKPvFyEumcVTDCqJUHWErKqcaeRj4ULWwaPkedor"
+        );
+    }
+
+    /// The legacy seed must never come back: it derives an address that was never
+    /// initialized, so reads 404 and writes fail account validation.
+    #[test]
+    fn test_legacy_config_seed_is_not_used() {
+        let legacy = Pubkey::find_program_address(&[b"config"], &AGENT_REGISTRY_MAINNET).0;
+        assert_eq!(
+            legacy.to_string(),
+            "C9uJoGDyNQFp3gFrdYY27JsCd8utGF9TZmgH1vdzeVHL"
+        );
+
+        let (root, _) = derive_root_config_pda(&AGENT_REGISTRY_MAINNET);
+        let collection = Pubkey::from_str(MAINNET_COLLECTION).unwrap();
+        let (registry, _) = derive_registry_config_pda(&AGENT_REGISTRY_MAINNET, &collection);
+        assert_ne!(legacy, root);
+        assert_ne!(legacy, registry);
+    }
+
+    #[test]
+    fn test_atom_pdas() {
+        let (atom_config, _) = derive_atom_config_pda(&ATOM_ENGINE_MAINNET);
+        assert_eq!(
+            atom_config.to_string(),
+            "7mFFwuy7ryTnrRMKK246be2LwD8rgZ9DvWiZioQtuCtA"
+        );
+
+        // Derived on the registry program, not the engine.
+        let (cpi_authority, _) = derive_atom_cpi_authority_pda(&AGENT_REGISTRY_MAINNET);
+        assert_eq!(
+            cpi_authority.to_string(),
+            "BropKd6eEHTiTSsbecKKHr9d1zwW94BC9JXmGYg22BJx"
+        );
+        assert_ne!(atom_config, cpi_authority);
+    }
+
+    #[test]
+    fn test_registry_config_layout_is_73_bytes() {
+        // disc(8) + collection(32) + authority(32) + bump(1)
+        let mut account = Vec::new();
+        account.extend_from_slice(&REGISTRY_CONFIG_DISCRIMINATOR);
+        account.extend_from_slice(&[7u8; 32]);
+        account.extend_from_slice(&[9u8; 32]);
+        account.push(255);
+        assert_eq!(account.len(), 73);
+
+        let config = RegistryConfig::deserialize(&mut &account[8..]).unwrap();
+        assert_eq!(config.collection, [7u8; 32]);
+        assert_eq!(config.authority, [9u8; 32]);
+        assert_eq!(config.bump, 255);
+    }
+
+    #[test]
+    fn test_root_config_layout_is_73_bytes() {
+        let mut account = Vec::new();
+        account.extend_from_slice(&ROOT_CONFIG_DISCRIMINATOR);
+        account.extend_from_slice(&[3u8; 32]);
+        account.extend_from_slice(&[4u8; 32]);
+        account.push(254);
+        assert_eq!(account.len(), 73);
+
+        let root = RootConfig::deserialize(&mut &account[8..]).unwrap();
+        assert_eq!(root.base_collection, [3u8; 32]);
+        assert_eq!(root.authority, [4u8; 32]);
+        assert_eq!(root.bump, 254);
+    }
+
+    /// Byte-for-byte replay of the live mainnet collection account header.
+    #[test]
+    fn test_collection_supply_parses_mpl_core_header() {
+        let name = "8004 Agent Registry";
+        let mut account = Vec::new();
+        account.push(MPL_CORE_COLLECTION_V1_KEY);
+        account.extend_from_slice(&[1u8; 32]);
+        account.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        account.extend_from_slice(name.as_bytes());
+        account.extend_from_slice(&0u32.to_le_bytes()); // empty uri
+        account.extend_from_slice(&1465u32.to_le_bytes());
+        account.extend_from_slice(&1391u32.to_le_bytes());
+        assert_eq!(account.len(), 68);
+
+        let supply = CollectionSupply::deserialize(&mut account.as_slice()).unwrap();
+        assert_eq!(supply.name, name);
+        assert_eq!(supply.num_minted, 1465);
+        assert_eq!(supply.current_size, 1391);
+
+        // Trailing plugin bytes must not break the header parse.
+        account.extend_from_slice(&[0xAB; 16]);
+        let supply = CollectionSupply::deserialize(&mut account.as_slice()).unwrap();
+        assert_eq!(supply.current_size, 1391);
     }
 
     #[test]
@@ -888,6 +1216,17 @@ mod tests {
 
         // Different keys should produce different PDAs
         assert_ne!(pda1, pda2);
+    }
+
+    /// The program widened the metadata key hash from 8 to 16 bytes in its v1.9
+    /// security update; seed and payload must both carry 16.
+    #[test]
+    fn test_metadata_key_hash_is_16_bytes() {
+        use sha2::{Digest, Sha256};
+        let key = "x402Support";
+        let hash = metadata_key_hash(key);
+        assert_eq!(hash.len(), 16);
+        assert_eq!(hash[..], Sha256::digest(key.as_bytes())[..16]);
     }
 
     #[test]
@@ -934,14 +1273,29 @@ mod tests {
     // Phase 2 + 3 Tests
     // ====================================================================
 
+    /// Build a RegistryContext from the verified mainnet addresses.
+    fn mainnet_ctx() -> RegistryContext {
+        let collection = Pubkey::from_str(MAINNET_COLLECTION).unwrap();
+        let (root_config, _) = derive_root_config_pda(&AGENT_REGISTRY_MAINNET);
+        let (registry_config, _) = derive_registry_config_pda(&AGENT_REGISTRY_MAINNET, &collection);
+        RegistryContext {
+            root_config,
+            registry_config,
+            collection,
+            authority: Pubkey::new_unique(),
+        }
+    }
+
     #[test]
     fn test_give_feedback_instruction() {
         let programs = get_program_ids(&Network::Solana).unwrap();
         let asset = Pubkey::from_str("7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgHkv").unwrap();
+        let collection = Pubkey::from_str(MAINNET_COLLECTION).unwrap();
         let client = Pubkey::new_unique();
 
         let ix = build_give_feedback_ix(
             &programs,
+            &collection,
             &asset,
             &client,
             87,
@@ -955,24 +1309,41 @@ mod tests {
         );
 
         assert_eq!(ix.program_id, AGENT_REGISTRY_MAINNET);
-        assert_eq!(ix.accounts.len(), 6);
-        // First 8 bytes should be discriminator
+        // client, agent, asset, collection, system + the 4-account ATOM group
+        assert_eq!(ix.accounts.len(), 9);
         assert_eq!(&ix.data[..8], &IX_GIVE_FEEDBACK);
-        // client should be signer
-        assert!(ix.accounts[2].is_signer);
+
+        assert_eq!(ix.accounts[0].pubkey, client);
+        assert!(ix.accounts[0].is_signer);
+        assert_eq!(ix.accounts[3].pubkey, collection);
+
+        let (atom_config, _) = derive_atom_config_pda(&ATOM_ENGINE_MAINNET);
+        let (atom_stats, _) = derive_atom_stats_pda(&asset, &ATOM_ENGINE_MAINNET);
+        let (cpi_authority, _) = derive_atom_cpi_authority_pda(&AGENT_REGISTRY_MAINNET);
+        assert_eq!(ix.accounts[5].pubkey, atom_config);
+        assert_eq!(ix.accounts[6].pubkey, atom_stats);
+        assert!(ix.accounts[6].is_writable);
+        assert_eq!(ix.accounts[7].pubkey, ATOM_ENGINE_MAINNET);
+        assert_eq!(ix.accounts[8].pubkey, cpi_authority);
     }
 
     #[test]
     fn test_revoke_feedback_instruction() {
         let programs = get_program_ids(&Network::SolanaDevnet).unwrap();
         let asset = Pubkey::from_str("7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgHkv").unwrap();
+        let client = Pubkey::new_unique();
         let seal_hash = [0xABu8; 32];
 
-        let ix = build_revoke_feedback_ix(&programs, &asset, 1, seal_hash);
+        let ix = build_revoke_feedback_ix(&programs, &asset, &client, 1, seal_hash);
 
         assert_eq!(ix.program_id, AGENT_REGISTRY_DEVNET);
-        assert_eq!(ix.accounts.len(), 5);
+        assert_eq!(ix.accounts.len(), 8);
         assert_eq!(&ix.data[..8], &IX_REVOKE_FEEDBACK);
+        assert_eq!(ix.accounts[0].pubkey, client);
+        assert!(ix.accounts[0].is_signer);
+
+        let (cpi_authority, _) = derive_atom_cpi_authority_pda(&AGENT_REGISTRY_DEVNET);
+        assert_eq!(ix.accounts[7].pubkey, cpi_authority);
     }
 
     #[test]
@@ -994,25 +1365,34 @@ mod tests {
         );
 
         assert_eq!(ix.program_id, AGENT_REGISTRY_MAINNET);
-        assert_eq!(ix.accounts.len(), 5);
+        assert_eq!(ix.accounts.len(), 3);
         assert_eq!(&ix.data[..8], &IX_APPEND_RESPONSE);
-        assert!(ix.accounts[3].is_signer); // responder
+        assert_eq!(ix.accounts[0].pubkey, responder);
+        assert!(ix.accounts[0].is_signer);
+        // The feedback author rides in the payload, right after the discriminator.
+        assert_eq!(&ix.data[8..40], client.as_ref());
     }
 
     #[test]
     fn test_register_instruction() {
         let programs = get_program_ids(&Network::Solana).unwrap();
-        let collection = Pubkey::new_unique();
+        let ctx = mainnet_ctx();
         let asset = Pubkey::new_unique();
         let owner = Pubkey::new_unique();
 
-        let ix = build_register_ix(&programs, &collection, &asset, &owner, "ipfs://QmAgentSpec");
+        let ix = build_register_ix(&programs, &ctx, &asset, &owner, "ipfs://QmAgentSpec");
 
         assert_eq!(ix.program_id, AGENT_REGISTRY_MAINNET);
-        assert_eq!(ix.accounts.len(), 7);
+        assert_eq!(ix.accounts.len(), 8);
         assert_eq!(&ix.data[..8], &IX_REGISTER);
+
+        assert_eq!(ix.accounts[0].pubkey, ctx.root_config);
+        assert_eq!(ix.accounts[1].pubkey, ctx.registry_config);
         assert!(ix.accounts[3].is_signer); // asset
-        assert!(ix.accounts[4].is_signer); // owner
+        assert_eq!(ix.accounts[4].pubkey, ctx.collection);
+        // mpl-core bumps num_minted/current_size, so the collection must be writable.
+        assert!(ix.accounts[4].is_writable);
+        assert!(ix.accounts[5].is_signer); // owner
     }
 
     #[test]
@@ -1027,7 +1407,17 @@ mod tests {
         assert_eq!(ix.program_id, AGENT_REGISTRY_MAINNET);
         assert_eq!(ix.accounts.len(), 5);
         assert_eq!(&ix.data[..8], &IX_SET_METADATA_PDA);
+
+        let (metadata_pda, _) = derive_metadata_pda(&asset, "x402Support", &AGENT_REGISTRY_MAINNET);
+        assert_eq!(ix.accounts[0].pubkey, metadata_pda);
         assert!(ix.accounts[3].is_signer); // owner
+
+        // 16-byte key hash sits between the discriminator and the key string.
+        assert_eq!(&ix.data[8..24], &metadata_key_hash("x402Support"));
+        assert_eq!(
+            &ix.data[24..28],
+            &("x402Support".len() as u32).to_le_bytes()
+        );
     }
 
     #[test]
@@ -1074,10 +1464,14 @@ mod tests {
         let asset = Pubkey::new_unique();
         let owner = Pubkey::new_unique();
 
-        let ix = build_set_agent_uri_ix(&programs, &asset, &owner, "ipfs://QmNewUri");
+        let ctx = mainnet_ctx();
+        let ix = build_set_agent_uri_ix(&programs, &ctx, &asset, &owner, "ipfs://QmNewUri");
 
         assert_eq!(ix.program_id, AGENT_REGISTRY_MAINNET);
-        assert_eq!(ix.accounts.len(), 6);
+        assert_eq!(ix.accounts.len(), 7);
         assert_eq!(&ix.data[..8], &IX_SET_AGENT_URI);
+        assert_eq!(ix.accounts[0].pubkey, ctx.registry_config);
+        assert_eq!(ix.accounts[3].pubkey, ctx.collection);
+        assert!(ix.accounts[4].is_signer); // owner
     }
 }

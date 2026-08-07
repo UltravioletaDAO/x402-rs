@@ -6627,57 +6627,42 @@ where
             }
         };
 
-        // Derive the MetadataEntryPda
-        let (metadata_pda, _bump) = solana_erc8004::derive_metadata_pda(
+        let rpc = solana_provider.rpc_client();
+        match solana_erc8004::read_metadata_entry(
+            rpc,
             &asset_pubkey,
             &params.key,
             &programs.agent_registry,
-        );
-
-        let rpc = solana_provider.rpc_client();
-        match rpc.get_account_data(&metadata_pda).await {
-            Ok(data) => {
-                // Skip 8-byte Anchor discriminator, then deserialize
-                if data.len() < 8 {
-                    return (
-                        StatusCode::NOT_FOUND,
-                        Json(json!({
-                            "error": format!("Metadata key '{}' not set for agent {} on {}", params.key, params.agent_id, network)
-                        })),
-                    )
-                        .into_response();
-                }
-
-                // Try to extract value as UTF-8 (metadata_value is Vec<u8> in the PDA)
-                // Account layout after discriminator: asset(32) + metadata_key(string) + metadata_value(vec<u8>) + immutable(bool) + bump(u8)
-                // For simplicity, return the raw data hex-encoded
-                let hex_value = format!("0x{}", hex::encode(&data[8..]));
-                let utf8_value = String::from_utf8(data[8..].to_vec()).ok();
+        )
+        .await
+        {
+            Ok(entry) => {
+                let hex_value = format!("0x{}", hex::encode(&entry.metadata_value));
+                let utf8_value = String::from_utf8(entry.metadata_value.clone()).ok();
 
                 return (
                     StatusCode::OK,
                     Json(json!({
                         "agentId": params.agent_id,
-                        "key": params.key,
+                        "key": entry.metadata_key,
                         "value": hex_value,
                         "valueUtf8": utf8_value,
+                        "immutable": entry.immutable != 0,
                         "network": network
                     })),
                 )
                     .into_response();
             }
+            Err(solana_erc8004::SolanaErc8004Error::AccountNotFound(_)) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({
+                        "error": format!("Metadata key '{}' not set for agent {} on {}", params.key, params.agent_id, network)
+                    })),
+                )
+                    .into_response();
+            }
             Err(e) => {
-                let err_str = e.to_string();
-                if err_str.contains("AccountNotFound") || err_str.contains("could not find account")
-                {
-                    return (
-                        StatusCode::NOT_FOUND,
-                        Json(json!({
-                            "error": format!("Metadata key '{}' not set for agent {} on {}", params.key, params.agent_id, network)
-                        })),
-                    )
-                        .into_response();
-                }
                 error!(
                     network = %network,
                     agent_id = %params.agent_id,

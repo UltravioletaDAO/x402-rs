@@ -85,6 +85,9 @@ const REGISTRY_CONFIG_DISCRIMINATOR: [u8; 8] = [23, 118, 10, 246, 173, 231, 243,
 /// Discriminator for RootConfig: SHA256("account:RootConfig")[..8]
 const ROOT_CONFIG_DISCRIMINATOR: [u8; 8] = [42, 216, 8, 82, 19, 209, 223, 246];
 
+/// Discriminator for MetadataEntryPda: SHA256("account:MetadataEntryPda")[..8]
+const METADATA_ENTRY_DISCRIMINATOR: [u8; 8] = [48, 145, 12, 249, 176, 141, 197, 187];
+
 /// Metaplex Core account discriminator byte for `CollectionV1` (first byte of the account).
 const MPL_CORE_COLLECTION_V1_KEY: u8 = 5;
 
@@ -92,23 +95,33 @@ const MPL_CORE_COLLECTION_V1_KEY: u8 = 5;
 // Borsh-Deserialized Account Structures
 // ============================================================================
 
-/// AgentAccount (313 bytes on-chain, including 8-byte Anchor discriminator)
+/// AgentAccount (variable size; ~748 bytes as minted today, 8-byte discriminator included)
 ///
 /// PDA Seeds: `["agent", asset.key()]`
 ///
 /// The primary identity record for a Solana-registered agent.
+///
+/// Field order matters and is not obvious: the four pubkeys lead, the variable-length
+/// strings trail, and two `Option<Pubkey>` tags sit in between. An earlier revision of
+/// this struct omitted `collection`, `creator`, `atom_enabled`, `agent_wallet`,
+/// `parent_asset`, `parent_locked`, `col_locked` and `col`, and put the strings in the
+/// middle, so every read failed with "Unexpected length of input".
 #[derive(Debug, Clone, BorshDeserialize)]
 pub struct AgentAccount {
-    /// NFT owner address
+    /// Collection this agent belongs to
+    pub collection: [u8; 32],
+    /// Immutable creator snapshot
+    pub creator: [u8; 32],
+    /// NFT owner address (cached from the Core asset)
     pub owner: [u8; 32],
     /// Metaplex Core NFT mint address (unique agent identifier)
     pub asset: [u8; 32],
     /// PDA bump seed
     pub bump: u8,
-    /// URI to agent registration file (IPFS/HTTPS)
-    pub agent_uri: String,
-    /// Human-readable agent name
-    pub nft_name: String,
+    /// Whether the ATOM Engine is enabled for this agent
+    pub atom_enabled: u8,
+    /// Operational wallet (Ed25519 verified), if set
+    pub agent_wallet: Option<[u8; 32]>,
     /// Rolling hash chain for feedback integrity (SEAL v1)
     pub feedback_digest: [u8; 32],
     /// Total feedback received
@@ -121,6 +134,35 @@ pub struct AgentAccount {
     pub revoke_digest: [u8; 32],
     /// Total feedback revocations
     pub revoke_count: u64,
+    /// Parent agent asset, for hierarchical agents
+    pub parent_asset: Option<[u8; 32]>,
+    /// Whether the parent link is locked
+    pub parent_locked: u8,
+    /// Whether the collection pointer is locked
+    pub col_locked: u8,
+    /// URI to agent registration file (IPFS/HTTPS)
+    pub agent_uri: String,
+    /// Human-readable agent name
+    pub nft_name: String,
+    /// Canonical collection pointer (`c1:<cid>`)
+    pub col: String,
+}
+
+/// MetadataEntryPda (variable size, 8-byte Anchor discriminator included)
+///
+/// PDA Seeds: `["agent_meta", asset.key(), sha256(key)[0..16]]`
+#[derive(Debug, Clone, BorshDeserialize)]
+pub struct MetadataEntryPda {
+    /// Agent NFT mint this entry belongs to
+    pub asset: [u8; 32],
+    /// Whether the entry can still be changed
+    pub immutable: u8,
+    /// PDA bump seed
+    pub bump: u8,
+    /// Metadata key
+    pub metadata_key: String,
+    /// Metadata value bytes
+    pub metadata_value: Vec<u8>,
 }
 
 /// AtomStats (460 bytes on-chain, including 8-byte Anchor discriminator)
@@ -374,9 +416,35 @@ pub async fn read_agent_account(
         ));
     }
 
-    // Deserialize from bytes after the 8-byte discriminator
-    AgentAccount::try_from_slice(&account_data[8..]).map_err(|e| {
+    // Deserialize from bytes after the 8-byte discriminator. The account is allocated
+    // for max-length strings, so it carries slack past the struct: do not use
+    // try_from_slice, which rejects trailing bytes.
+    AgentAccount::deserialize(&mut &account_data[8..]).map_err(|e| {
         SolanaErc8004Error::InvalidAccountData(format!("Failed to deserialize AgentAccount: {}", e))
+    })
+}
+
+/// Read and deserialize a MetadataEntryPda from the chain.
+pub async fn read_metadata_entry(
+    rpc_client: &RpcClient,
+    asset_pubkey: &Pubkey,
+    metadata_key: &str,
+    program_id: &Pubkey,
+) -> Result<MetadataEntryPda, SolanaErc8004Error> {
+    let (pda, _bump) = derive_metadata_pda(asset_pubkey, metadata_key, program_id);
+    let payload = fetch_anchor_account(
+        rpc_client,
+        &pda,
+        &METADATA_ENTRY_DISCRIMINATOR,
+        "Metadata entry",
+    )
+    .await?;
+
+    MetadataEntryPda::deserialize(&mut payload.as_slice()).map_err(|e| {
+        SolanaErc8004Error::InvalidAccountData(format!(
+            "Failed to deserialize MetadataEntryPda: {}",
+            e
+        ))
     })
 }
 
@@ -1206,6 +1274,72 @@ mod tests {
         account.extend_from_slice(&[0xAB; 16]);
         let supply = CollectionSupply::deserialize(&mut account.as_slice()).unwrap();
         assert_eq!(supply.current_size, 1391);
+    }
+
+    /// Replays the on-chain field order. The struct that shipped before this had the
+    /// strings in the middle and eight fields missing, so `/identity/{net}/{agent}`
+    /// answered 500 for every agent that existed.
+    #[test]
+    fn test_agent_account_layout() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&[1u8; 32]); // collection
+        payload.extend_from_slice(&[2u8; 32]); // creator
+        payload.extend_from_slice(&[3u8; 32]); // owner
+        payload.extend_from_slice(&[4u8; 32]); // asset
+        payload.push(253); // bump
+        payload.push(1); // atom_enabled
+        payload.push(1); // agent_wallet: Some
+        payload.extend_from_slice(&[5u8; 32]);
+        payload.extend_from_slice(&[6u8; 32]); // feedback_digest
+        payload.extend_from_slice(&7u64.to_le_bytes()); // feedback_count
+        payload.extend_from_slice(&[8u8; 32]); // response_digest
+        payload.extend_from_slice(&9u64.to_le_bytes()); // response_count
+        payload.extend_from_slice(&[10u8; 32]); // revoke_digest
+        payload.extend_from_slice(&11u64.to_le_bytes()); // revoke_count
+        payload.push(0); // parent_asset: None
+        payload.push(0); // parent_locked
+        payload.push(0); // col_locked
+        borsh_write_string(&mut payload, "https://example.com/agent.json");
+        borsh_write_string(&mut payload, "Agent");
+        borsh_write_string(&mut payload, "c1:bafy");
+
+        let agent = AgentAccount::deserialize(&mut payload.as_slice()).unwrap();
+        assert_eq!(agent.collection, [1u8; 32]);
+        assert_eq!(agent.creator, [2u8; 32]);
+        assert_eq!(agent.owner, [3u8; 32]);
+        assert_eq!(agent.asset, [4u8; 32]);
+        assert_eq!(agent.atom_enabled, 1);
+        assert_eq!(agent.agent_wallet, Some([5u8; 32]));
+        assert_eq!(agent.feedback_count, 7);
+        assert_eq!(agent.response_count, 9);
+        assert_eq!(agent.revoke_count, 11);
+        assert_eq!(agent.parent_asset, None);
+        assert_eq!(agent.agent_uri, "https://example.com/agent.json");
+        assert_eq!(agent.nft_name, "Agent");
+        assert_eq!(agent.col, "c1:bafy");
+
+        // Accounts are allocated for max-length strings, so slack must not break the read.
+        payload.extend_from_slice(&[0u8; 64]);
+        let agent = AgentAccount::deserialize(&mut payload.as_slice()).unwrap();
+        assert_eq!(agent.nft_name, "Agent");
+    }
+
+    #[test]
+    fn test_metadata_entry_layout() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&[12u8; 32]); // asset
+        payload.push(0); // immutable
+        payload.push(255); // bump
+        borsh_write_string(&mut payload, "x402Support");
+        payload.extend_from_slice(&4u32.to_le_bytes()); // Vec<u8> len
+        payload.extend_from_slice(b"true");
+
+        let entry = MetadataEntryPda::deserialize(&mut payload.as_slice()).unwrap();
+        assert_eq!(entry.asset, [12u8; 32]);
+        assert_eq!(entry.immutable, 0);
+        assert_eq!(entry.metadata_key, "x402Support");
+        assert_eq!(entry.metadata_value, b"true".to_vec());
+        assert_eq!(String::from_utf8(entry.metadata_value).unwrap(), "true");
     }
 
     #[test]

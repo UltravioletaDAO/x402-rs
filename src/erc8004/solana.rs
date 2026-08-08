@@ -491,6 +491,71 @@ pub async fn read_agent_account(
     })
 }
 
+/// Byte offset of `owner` inside an AgentAccount, discriminator included:
+/// disc(8) + collection(32) + creator(32).
+const AGENT_OWNER_OFFSET: usize = 72;
+
+/// Find every agent currently owned by an address.
+///
+/// There is no owner index on-chain, so this is a `getProgramAccounts` scan
+/// filtered server-side by the account discriminator and the `owner` field. Only
+/// the matching accounts cross the wire, not the whole registry.
+///
+/// Note this reflects `AgentAccount.owner`, which the registry caches from the
+/// Core asset. A Core asset transferred outside the registry's `transfer_agent`
+/// leaves that field stale until someone calls `sync_owner`.
+///
+/// Some providers disable `getProgramAccounts`; the error surfaces as
+/// [`SolanaErc8004Error::RpcError`] rather than an empty result, so callers do
+/// not mistake "cannot look up" for "owns nothing".
+pub async fn find_agents_by_owner(
+    rpc_client: &RpcClient,
+    owner: &Pubkey,
+    program_id: &Pubkey,
+) -> Result<Vec<(Pubkey, AgentAccount)>, SolanaErc8004Error> {
+    use solana_client::rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig};
+    use solana_client::rpc_filter::{Memcmp, RpcFilterType};
+
+    let config = RpcProgramAccountsConfig {
+        filters: Some(vec![
+            RpcFilterType::Memcmp(Memcmp::new_base58_encoded(0, &AGENT_ACCOUNT_DISCRIMINATOR)),
+            RpcFilterType::Memcmp(Memcmp::new_base58_encoded(
+                AGENT_OWNER_OFFSET,
+                owner.as_ref(),
+            )),
+        ]),
+        account_config: RpcAccountInfoConfig {
+            encoding: Some(solana_account_decoder_client_types::UiAccountEncoding::Base64),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let accounts = rpc_client
+        .get_program_accounts_with_config(program_id, config)
+        .await
+        .map_err(|e| SolanaErc8004Error::RpcError(format!("getProgramAccounts failed: {}", e)))?;
+
+    let mut out = Vec::with_capacity(accounts.len());
+    for (pda, account) in accounts {
+        if account.data.len() < 8 {
+            continue;
+        }
+        match AgentAccount::deserialize(&mut &account.data[8..]) {
+            Ok(agent) => out.push((pda, agent)),
+            Err(e) => {
+                // One malformed account must not sink the whole lookup.
+                tracing::warn!(pda = %pda, error = %e, "Skipping undeserializable AgentAccount");
+            }
+        }
+    }
+
+    // Stable ordering so "the first agent" means the same thing across calls;
+    // getProgramAccounts makes no ordering guarantee.
+    out.sort_by_key(|(_, agent)| bytes_to_pubkey(&agent.asset).to_bytes());
+    Ok(out)
+}
+
 /// Read and deserialize a MetadataEntryPda from the chain.
 pub async fn read_metadata_entry(
     rpc_client: &RpcClient,
@@ -1761,6 +1826,43 @@ mod tests {
         // mpl-core bumps num_minted/current_size, so the collection must be writable.
         assert!(ix.accounts[4].is_writable);
         assert!(ix.accounts[5].is_signer); // owner
+    }
+
+    /// The owner filter is a raw byte offset into the account; if the struct
+    /// ahead of `owner` ever changes, the scan silently matches nothing and the
+    /// endpoint reports "owns no agent" for owners that do.
+    #[test]
+    fn test_agent_owner_offset_matches_layout() {
+        // disc(8) + collection(32) + creator(32)
+        assert_eq!(AGENT_OWNER_OFFSET, 8 + 32 + 32);
+
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&AGENT_ACCOUNT_DISCRIMINATOR);
+        payload.extend_from_slice(&[1u8; 32]); // collection
+        payload.extend_from_slice(&[2u8; 32]); // creator
+        let owner = Pubkey::new_unique();
+        payload.extend_from_slice(owner.as_ref());
+        payload.extend_from_slice(&[4u8; 32]); // asset
+        payload.extend_from_slice(&[253, 0, 0]); // bump, atom_enabled, wallet=None
+        payload.extend_from_slice(&[0u8; 32]); // feedback_digest
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&[0u8; 32]); // response_digest
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&[0u8; 32]); // revoke_digest
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&[0, 0, 0]); // parent=None, locks
+        borsh_write_string(&mut payload, "uri");
+        borsh_write_string(&mut payload, "name");
+        borsh_write_string(&mut payload, "col");
+
+        // The bytes the RPC filter compares must be exactly the owner.
+        assert_eq!(
+            &payload[AGENT_OWNER_OFFSET..AGENT_OWNER_OFFSET + 32],
+            owner.as_ref()
+        );
+
+        let agent = AgentAccount::deserialize(&mut &payload[8..]).unwrap();
+        assert_eq!(agent.owner, owner.to_bytes());
     }
 
     #[test]

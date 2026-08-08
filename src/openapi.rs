@@ -141,6 +141,7 @@ a liveness `health` status from periodic probing, and a curated `tier`
         path_feedback_response,
         path_reputation,
         path_identity,
+        path_identity_by_owner,
         path_identity_metadata,
         path_identity_total_supply,
         // Bazaar endpoints
@@ -1050,6 +1051,51 @@ Retrieves agent identity information from the ERC-8004 Identity Registry.
     )
 )]
 async fn path_identity() {}
+
+#[utoipa::path(
+    get,
+    path = "/identity/{network}/owner/{address}",
+    tag = "ERC-8004",
+    summary = "Resolve an agent by its owner",
+    description = r#"
+Returns the first agent held by an address, for callers that need to know whether
+an owner already has one before minting another.
+
+**EVM networks:** `balanceOf` then batched `ownerOf` via Multicall3.
+
+**Solana networks:** a `getProgramAccounts` scan filtered by the AgentAccount
+discriminator and the `owner` field. `balance` is the number of agents matched.
+The value read is `AgentAccount.owner`, which the registry caches from the Core
+asset: an asset moved outside the registry's own transfer leaves it stale until
+someone calls `sync_owner`.
+
+```json
+{
+  "agentId": "247Y4QLwz9ZbcuHR2nX2EQLZHCsMs1GTqvgd6fpdn85Q",
+  "owner": "6xNPewUdKRbEZDReQdpyfNUdgNg8QRc8Mt263T5GZSRv",
+  "agentUri": "https://example.com/agent.json",
+  "network": "solana",
+  "balance": "1"
+}
+```
+
+**404 means the owner holds nothing; 503 means the lookup could not reach a
+verdict.** Treat them differently: persisting "not registered" from a 503 is how
+a transient RPC failure becomes a permanent wrong answer, and on a mint path it
+leads to minting a duplicate agent. A 503 carries `"retryable": true`.
+"#,
+    params(
+        ("network" = String, Path, description = "Network name (e.g., base, solana, solana-devnet)"),
+        ("address" = String, Path, description = "Owner address: 0x-hex for EVM, base58 for Solana")
+    ),
+    responses(
+        (status = 200, description = "Agent found", body = Object),
+        (status = 400, description = "Invalid network or address", body = Object),
+        (status = 404, description = "Address owns no agent on this network", body = Object),
+        (status = 503, description = "Lookup inconclusive, retry", body = Object)
+    )
+)]
+async fn path_identity_by_owner() {}
 
 #[utoipa::path(
     get,

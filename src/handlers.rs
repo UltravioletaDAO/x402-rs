@@ -5358,6 +5358,11 @@ where
             .into_response();
     }
 
+    // ---- Solana branch: scan AgentAccount PDAs filtered by owner ----
+    if solana_erc8004::is_solana_erc8004_supported(&network) {
+        return get_identity_by_owner_solana(facilitator, network, &params.address).await;
+    }
+
     let owner_address: alloy::primitives::Address = match params.address.parse() {
         Ok(a) => a,
         Err(_) => {
@@ -5480,6 +5485,116 @@ where
                     "balance": balance.to_string()
                 })),
             ).into_response()
+        }
+    }
+}
+
+/// Solana half of `GET /identity/:network/owner/:address`.
+///
+/// There is no `balanceOf` on SVM, so ownership comes from a `getProgramAccounts`
+/// scan filtered by the AgentAccount discriminator and the `owner` field.
+async fn get_identity_by_owner_solana<A>(
+    facilitator: A,
+    network: crate::network::Network,
+    address: &str,
+) -> axum::response::Response
+where
+    A: Facilitator + HasProviderMap,
+    A::Error: IntoResponse,
+    A::Map: ProviderMap<Value = NetworkProvider>,
+{
+    let owner = match solana_erc8004::parse_agent_id(address) {
+        Ok(pk) => pk,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": format!("Invalid Solana address: {}", address)
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    let provider_map = facilitator.provider_map();
+    let provider = match provider_map.by_network(&network) {
+        Some(NetworkProvider::Solana(p)) => p,
+        _ => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("No Solana provider for {}", network) })),
+            )
+                .into_response();
+        }
+    };
+
+    let programs = match solana_erc8004::get_program_ids(&network) {
+        Some(p) => p,
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": format!("No Solana ERC-8004 program IDs for {}", network)
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    info!(network = %network, owner = %owner, "Resolving agent ID by owner (Solana)");
+
+    match solana_erc8004::find_agents_by_owner(
+        provider.rpc_client(),
+        &owner,
+        &programs.agent_registry,
+    )
+    .await
+    {
+        Ok(agents) if agents.is_empty() => {
+            info!(network = %network, owner = %owner, "Owner holds no agent in registry");
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({
+                    "error": format!("Address {} does not own any agent on {}", owner, network),
+                    "balance": "0"
+                })),
+            )
+                .into_response()
+        }
+        Ok(agents) => {
+            let balance = agents.len();
+            let (_, agent) = &agents[0];
+            let agent_id = solana_erc8004::bytes_to_pubkey(&agent.asset).to_string();
+            info!(
+                network = %network, agent_id = %agent_id, owner = %owner, balance,
+                "Resolved agent by owner (Solana)"
+            );
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "agentId": agent_id,
+                    "owner": owner.to_string(),
+                    "agentUri": agent.agent_uri,
+                    "network": network.to_string(),
+                    "balance": balance.to_string()
+                })),
+            )
+                .into_response()
+        }
+        // Never a 404: callers persist "not registered" from a 404 and stop
+        // asking, which is how a transient RPC failure became a permanent null
+        // agent ID once already (INC-2026-07-21). Here it would also let a
+        // caller re-mint an agent that already exists. 503 says retry.
+        Err(e) => {
+            warn!(network = %network, owner = %owner, error = %e, "Owner lookup inconclusive");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "error": format!("Could not determine agent ID for {} on {}: {}", owner, network, e),
+                    "retryable": true
+                })),
+            )
+                .into_response()
         }
     }
 }

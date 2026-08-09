@@ -1779,7 +1779,7 @@ pub async fn get_health() -> impl IntoResponse {
 #[instrument(skip_all)]
 pub async fn get_version() -> impl IntoResponse {
     Json(json!({
-        "version": env!("CARGO_PKG_VERSION")
+        "version": crate::version::facilitator_version()
     }))
 }
 

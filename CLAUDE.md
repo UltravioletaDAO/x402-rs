@@ -770,11 +770,25 @@ This complete checklist covers:
   - Upstream uses edition 2024 (requires Rust 1.86+)
   - Can upgrade to edition 2024 when ready to require Rust 1.86+
   - See v0.9.1 merge for details (commit 75b37e6)
-- **Version Bumping**: Before releasing, always check the deployed version first:
+- **Version Bumping**: the release version lives in the `VERSION` file at the repo
+  root, **not** in `Cargo.toml`. Check the deployed version first, then bump
+  `VERSION` from that, not from whatever is local:
   ```bash
   curl -s https://facilitator.ultravioletadao.xyz/version
+  echo "1.73.0" > VERSION
   ```
-  Then bump `Cargo.toml` version from the deployed version, NOT from the local version.
+  `Cargo.toml` holds a frozen `0.0.0` placeholder and must stay untouched. That is
+  what keeps the Docker dependency layer cached across releases: a release used to
+  edit `Cargo.toml`, which the image build reads before compiling dependencies, so
+  every deploy recompiled the whole dependency tree (~12 min → ~6 min measured).
+  It also means `Cargo.lock` no longer needs hand-syncing, which had already broken
+  a `--locked` build once.
+
+  CI reads `VERSION`, tags the image with it, and passes it as the
+  `FACILITATOR_VERSION` build arg; the binary resolves it at runtime in
+  `src/version.rs`. Never declare that ARG in the builder stage of the Dockerfile —
+  it would key every layer below it on the release version and undo the whole
+  thing.
 
 
 ## Using Gemini CLI for Large Codebase Analysis

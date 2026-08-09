@@ -88,6 +88,7 @@ mod transaction_store;
 mod types;
 mod types_v2;
 mod upto;
+mod version;
 mod writer_lease;
 
 use discovery::DiscoveryRegistry;
@@ -110,7 +111,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let telemetry = Telemetry::new()
         .with_name(env!("CARGO_PKG_NAME"))
-        .with_version(env!("CARGO_PKG_VERSION"))
+        .with_version(version::facilitator_version())
         .register();
 
     let provider_cache = ProviderCache::from_env().await;

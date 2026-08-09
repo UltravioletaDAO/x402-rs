@@ -3,8 +3,10 @@
 //! This module provides interactive API documentation via Swagger UI at `/docs`.
 //!
 //! **IMPORTANT**: Keep this file in sync with actual endpoints in `src/handlers.rs`.
-//! When adding new endpoints or changing the version, update this file accordingly.
-//! The version here should match `Cargo.toml` version.
+//! When adding new endpoints, update this file accordingly. The version needs no
+//! attention: it is patched at runtime from the `VERSION` file via
+//! `FACILITATOR_VERSION` (see `src/version.rs`), and the literal below is a
+//! placeholder that is always overridden.
 
 use axum::Router;
 use utoipa::OpenApi;
@@ -15,7 +17,7 @@ use utoipa_swagger_ui::SwaggerUi;
 #[openapi(
     info(
         title = "x402 Payment Facilitator API",
-        version = "0.0.0",  // Overridden at runtime by env!("CARGO_PKG_VERSION")
+        version = "0.0.0",  // Overridden at runtime by crate::version::facilitator_version()
         description = r#"
 Ultravioleta DAO x402 Payment Facilitator - Gasless micropayments for the agentic economy.
 
@@ -1667,10 +1669,10 @@ async fn path_health() {}
 
 /// Create the Swagger UI router.
 ///
-/// The OpenAPI version is patched at compile time from `Cargo.toml` via `env!("CARGO_PKG_VERSION")`,
+/// The OpenAPI version is patched at runtime from the `FACILITATOR_VERSION` env (see `src/version.rs`),
 /// so it always stays in sync without manual updates.
 pub fn swagger_routes() -> Router {
     let mut api_doc = ApiDoc::openapi();
-    api_doc.info.version = env!("CARGO_PKG_VERSION").to_string();
+    api_doc.info.version = crate::version::facilitator_version().to_string();
     Router::new().merge(SwaggerUi::new("/docs").url("/api-docs/openapi.json", api_doc))
 }

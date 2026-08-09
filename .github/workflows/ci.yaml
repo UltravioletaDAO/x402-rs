@@ -91,8 +91,14 @@ jobs:
       - name: Compute image tag (version + short SHA)
         id: tag
         run: |
-          VER=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"(.*)".*/\1/')
+          # The release version lives in ./VERSION, not Cargo.toml. Keeping it out
+          # of the manifest is what lets the Docker dependency layer survive a
+          # release: Cargo.toml no longer changes, so the ~15 min dependency
+          # recompile every deploy used to pay is gone. See src/version.rs.
+          VER=$(tr -d '[:space:]' < VERSION)
+          if [ -z "$VER" ]; then echo "::error::VERSION file is empty"; exit 1; fi
           SHA=$(git rev-parse --short HEAD)
+          echo "version=${VER}" >> "$GITHUB_OUTPUT"
           echo "image_tag=${VER}-${SHA}" >> "$GITHUB_OUTPUT"
           echo "Deploying image tag: ${VER}-${SHA}"
 
@@ -114,6 +120,8 @@ jobs:
           context: .
           platforms: linux/amd64
           push: true
+          build-args: |
+            FACILITATOR_VERSION=${{ steps.tag.outputs.version }}
           tags: |
             ${{ env.ECR_REPOSITORY }}:${{ steps.tag.outputs.image_tag }}
             ${{ env.ECR_REPOSITORY }}:latest

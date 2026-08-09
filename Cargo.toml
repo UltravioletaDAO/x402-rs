@@ -1,6 +1,6 @@
 [package]
 name = "x402-rs"
-version = "1.72.0"
+version = "0.0.0" # frozen placeholder -- the release version lives in ./VERSION (see src/version.rs)
 authors = ["Sergey Ukustov <sergey@ukstv.me>", "0xultravioleta <0xultravioleta@gmail.com>"]
 edition = "2021"
 license = "Apache-2.0"

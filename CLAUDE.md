@@ -9,7 +9,8 @@ This repository maintains a strict file organization structure. The root directo
 **Essential files in root:**
 - `README.md` - Project overview
 - `CLAUDE.md` - This file (Claude Code instructions)
-- Build configuration: `Cargo.toml`, `Dockerfile`, `docker-compose.yml`, `.env.example`, `.gitignore`, etc.
+- Release marker: `VERSION` - the release version lives here, NOT in `Cargo.toml`. Do not move or delete it.
+- Build/tooling: `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `justfile`, `Dockerfile`, `docker-compose.yml`, `docker-compose.observability.yml`, `LICENSE`, dotfiles (`.env.example`, `.gitignore`, `.dockerignore`, `.cargoignore`, `.editorconfig`)
 
 **All other files organized in directories:**
 - `docs/` - ALL documentation (CHANGELOG.md, CUSTOMIZATIONS.md, DEPLOYMENT.md, etc.)
@@ -20,6 +21,12 @@ This repository maintains a strict file organization structure. The root directo
 - `src/` - Rust source code
 - `crates/` - Workspace crates
 - `tests/` - Test suites
+- `guides/` - Operator guides (ADDING_NEW_CHAINS.md)
+- `lambda/` - AWS Lambda sources (`balances/handler.py` = authoritative wallet addresses)
+- `examples/` - Workspace example crates (x402-axum-example, x402-reqwest-example)
+- `abi/`, `contracts/` - Solidity ABIs and contract sources
+- `docker/`, `grafana/`, `conductor/` - Container and observability assets
+- `.github/` - CI/CD (`workflows/ci.yaml` - push to main deploys to production)
 - `.unused/` - **IGNORED** (contains secrets, never commit!)
 
 ## Project Overview
@@ -28,7 +35,7 @@ This is the **x402-rs Payment Facilitator** - a standalone Rust-based service en
 
 **Key characteristics**:
 - Production-ready service deployed on AWS ECS
-- Multi-chain support (EVM + Solana + NEAR + Stellar + Algorand + Sui + Fogo)
+- Multi-chain support (EVM + SVM/Solana incl. Fogo + NEAR + Stellar + Algorand + Sui + XRPL)
 - Custom Ultravioleta DAO branding (landing page, logos)
 - Forked from upstream [x402-rs/x402-rs](https://github.com/x402-rs/x402-rs)
 
@@ -38,11 +45,16 @@ Network counts and stablecoin coverage in documentation get outdated quickly. **
 
 **To verify network count:**
 ```bash
-# From production endpoint
+# NOTE: /supported lists every chain TWICE (v1 name + CAIP-2 alias), so this counts
+# identifier STRINGS, not networks. It returned 78 on 2026-08-10.
 curl -s https://facilitator.ultravioletadao.xyz/supported | jq '[.kinds[].network] | unique | length'
 
-# Count mainnets only (exclude testnets)
-curl -s https://facilitator.ultravioletadao.xyz/supported | jq '[.kinds[].network] | unique | map(select(contains("testnet") or contains("sepolia") or contains("devnet") or contains("fuji") or contains("amoy") or contains("alfajores") | not)) | length'
+# v1 names only - closer to a real chain count
+curl -s https://facilitator.ultravioletadao.xyz/supported | jq -r '[.kinds[].network]|unique|.[]' | grep -v ':' | wc -l
+
+# Canonical mainnet payment-network count (21). The old jq substring filter does NOT
+# work - CAIP-2 ids carry no "sepolia"/"testnet" substring, so it returned 55.
+python scripts/verify_landing_canonical.py
 ```
 
 **To verify stablecoin support matrix (GOLDEN SOURCE):**
@@ -85,7 +97,7 @@ just build-all
 ```bash
 # Integration tests (requires running facilitator)
 cd tests/integration
-python test_usdc_payment.py --network base-sepolia
+python test_usdc_payment.py   # NO flags exist: hardcoded to the PRODUCTION facilitator + Base MAINNET USDC
 
 # Test all endpoints
 python test_endpoints.py
@@ -109,6 +121,10 @@ just clippy-all
 cd crates/x402-axum && cargo fmt
 ```
 
+**Gotcha**: the `*-all` recipes predate `crates/x402-compliance` and skip it, but CI tests it
+(`.github/workflows/ci.yaml`). Before pushing also run:
+`cargo clippy -p x402-compliance && cargo test -p x402-compliance -- --test-threads=1`
+
 ### Docker
 ```bash
 # Build and run with Docker Compose
@@ -130,13 +146,19 @@ cross the WSL2-Windows boundary for every file operation, making builds 5-10x sl
 `fast-build.sh` rsyncs to `~/x402-rs-build` (native ext4) first, then builds there.
 First run ~3min, subsequent runs ~35s.
 
+**Caveat since the VERSION-file move:** `fast-build.sh` does NOT pass
+`--build-arg FACILITATOR_VERSION`, so an image it builds answers `/version` with `dev`
+(`Dockerfile:88`). CI passes it, and so do `build-and-push.sh` / `deploy-to-ecs.sh`.
+Use fast-build for local iteration; for a hand-shipped release image use
+`build-and-push.sh` or add the build-arg yourself.
+
 ### Diagnostics
 ```bash
 # Check configuration
 python scripts/check_config.py
 
-# Diagnose payment issues
-python scripts/diagnose_payment.py --network base-mainnet
+# Diagnose payment issues (Base mainnet only - no --network flag exists)
+python scripts/diagnose_payment.py
 
 # Verify full stack
 python scripts/verify_full_stack.py
@@ -155,20 +177,21 @@ python scripts/compare_usdc_contracts.py
 - CORS support for cross-origin clients
 - Serves custom Ultravioleta DAO landing page and static assets
 
-**src/network.rs**: Network definitions (14+ networks)
+**src/network.rs**: Network definitions (42 `Network` enum variants; 39 served in prod - Sei, SeiTestnet and XdcMainnet are enum-only). Verify: `curl -s https://facilitator.ultravioletadao.xyz/supported | jq -r '[.kinds[].network]|unique|.[]' | grep -v ':' | wc -l`
 - `Network` enum with chain IDs and display names
-- `NetworkFamily` (Evm vs Solana) for dual-chain support
+- `NetworkFamily` (Evm, Solana, Near, Stellar, Xrpl, Algorand, Sui - 7 variants, `src/network.rs:275`) for multi-family dispatch
 - Static USDC/token deployment addresses per network
-- **CRITICAL**: Contains custom networks added by Ultravioleta DAO (HyperEVM, Polygon, Optimism, Celo)
+- **CRITICAL**: nearly everything beyond Base/Avalanche/Solana is ours - HyperEVM, Polygon, Optimism, Celo, Ethereum, Arbitrum, Unichain, Monad, BSC, Scroll, SKALE, Robinhood, XDC, Sei, NEAR, Stellar, XRPL, Fogo, Algorand, Sui. Preserve ALL of them on upstream merges.
 
 **src/handlers.rs**: HTTP request handlers
-- `get_index()` - **Custom handler** serving Ultravioleta DAO branded landing page via `include_str!("../static/index.html")`
+- `get_root()` (`src/handlers.rs:1248`) - **Custom handler** serving the Ultravioleta DAO landing page via `include_str!("../static/index.html")`. `get_index()` (`:1289`) is a thin alias - the `include_str!` is NOT inside it.
 - Asset handlers for logos (favicon, network logos)
 - `/verify` - Verify payment authorization structure
 - `/settle` - Submit payment on-chain
 - `/supported` - List available networks/schemes
 - `/health` - Health check endpoint
 - `/accepts` - Negotiate payment requirements (Faremeter middleware compatibility)
+- Plus most of the live surface, registered in router builders in handlers.rs and merged in `src/main.rs`: discovery/bazaar, `/blacklist`, `/escrow/state`, ERC-8004 (`/register`, `/identity`, `/reputation`, `/feedback`), `/events`, `/stats`, `/api/stats`, `/transactions`, `/version`. Enumerate with `grep -rn '\.route(' src/` (67 routes) before assuming an endpoint does not exist.
 
 **src/facilitator.rs**: Core payment logic trait
 - `Facilitator` trait defining verification and settlement interface
@@ -176,17 +199,18 @@ python scripts/compare_usdc_contracts.py
 
 **src/facilitator_local.rs**: Local facilitator implementation
 - `FacilitatorLocal` implements `Facilitator` trait
-- Delegates to chain-specific implementations (EVM vs Solana)
+- Delegates to the 7 chain modules in `src/chain/` (evm, solana, near, stellar, sui, algorand, xrpl - see `src/chain/mod.rs`)
 - Manages provider cache for RPC connections
 
 **src/chain/**: Chain-specific payment logic
 - `chain/evm.rs` - EIP-3009 payment verification and settlement for EVM chains
+- `chain/near.rs`, `chain/stellar.rs`, `chain/sui.rs`, `chain/algorand.rs`, `chain/xrpl.rs` - the other chain families
 - `chain/solana.rs` - Solana token transfer authorization support
   - **Smart wallet support** (v1.36.0): Two-path verification for Squads, Crossmint, SWIG wallets
     - Path 1: Top-level TransferChecked (standard wallets, unchanged)
     - Path 2: Simulation inner instruction scanning (CPI-based smart wallets)
   - **Settlement account support** (v1.36.0): For Crossmint custodial wallets that can only `sendTransaction`
-    - `SettlementAccountPayload` type: `{ transactionSignature, settleSecretKey, settlementRentDestination }`
+    - `SettlementAccountPayload` type (**defined in `src/types.rs:552`**, only consumed by solana.rs): `{ transactionSignature, settleSecretKey, settlementRentDestination }`
     - Verify: fetches on-chain tx, checks confirmation, validates USDC transfer from token balances
     - Settle: sweeps USDC from settlement account to payTo (creates ATA if needed, transfers, closes)
 - Handles signature verification, nonce validation, on-chain submission
@@ -204,6 +228,15 @@ python scripts/compare_usdc_contracts.py
 - `PaymentPayload`, `TokenAsset`, `TokenDeployment`
 - Serde integration for x402 JSON protocol
 
+**Subsystems not covered above** (all declared in `src/main.rs`; read the module before assuming a feature is missing):
+- `discovery*.rs` (8 files) - Bazaar catalog: crawler, aggregator, curation, health, attestation, security, store
+- `erc8004/` - Trustless Agents: `/register`, `/identity`, `/reputation`, `/feedback` (EVM + Solana)
+- `escrow.rs`, `payment_operator/`, `upto/` - x402r escrow, PaymentOperator, Permit2 `upto` scheme
+- `events.rs`, `transaction_store{,.rs}` - SSE stream + DynamoDB index behind `/events`, `/transactions`, `/api/stats`
+- `nonce_store.rs`, `writer_lease.rs`, `idempotency_store.rs` - concurrency and replay control
+- `blocklist.rs`, `redact.rs`, `sig_down.rs`, `json_depth.rs`, `fhe_proxy.rs` - compliance and hardening
+- `version.rs` (resolves the VERSION file at runtime), `telemetry.rs`, `openapi.rs`, `from_env.rs`
+
 ### Workspace Structure
 
 This is a Cargo workspace with multiple crates:
@@ -211,6 +244,7 @@ This is a Cargo workspace with multiple crates:
 **Root crate (x402-rs)**: Main facilitator service
 **crates/x402-axum**: Axum middleware for x402 protocol (library)
 **crates/x402-reqwest**: Reqwest client for x402 payments (library)
+**crates/x402-compliance**: x402 protocol conformance suite (library; CI tests it alongside axum/reqwest)
 **examples/x402-axum-example**: Example server using x402-axum
 **examples/x402-reqwest-example**: Example client using x402-reqwest
 
@@ -218,18 +252,18 @@ This is a Cargo workspace with multiple crates:
 
 **⚠️ THESE FILES ARE PROTECTED - DO NOT OVERWRITE FROM UPSTREAM:**
 
-1. **static/index.html** (57KB) - Ultravioleta DAO branded landing page
+1. **static/index.html** (~225KB) - Ultravioleta DAO branded landing page
    - Replaces upstream's simple "Hello" message
    - Contains network grid, API documentation, DAO branding
    - **Recovery**: `git checkout HEAD~1 -- static/index.html`
 
-2. **src/handlers.rs** - `get_index()` function
+2. **src/handlers.rs** - `get_root()` function (aliased by `get_index()`)
    - Uses `include_str!("../static/index.html")` instead of plain text
    - Embeds HTML at compile time for performance
    - **Must preserve this pattern when merging upstream changes**
 
-3. **static/images/** - Network logos (8 PNG files)
-   - avalanche.png, base.png, celo.png, hyperevm.png, optimism.png, polygon.png, solana.png, logo.png (DAO logo)
+3. **static/*.png** - Network and token logos (29 PNG files served directly from `static/`; there is NO `static/images/` directory)
+   - Current set: `ls static/*.png`
    - Never overwrite from upstream
 
 4. **src/network.rs** - Custom networks added beyond upstream
@@ -241,10 +275,10 @@ This is a Cargo workspace with multiple crates:
    - Sui mainnet/testnet (requires `--features sui`)
    - **Merge strategy**: Preserve ALL custom networks when pulling upstream
 
-5. **Rust Edition** - Using edition 2021 for compatibility
-   - Currently on Rust edition 2021 (compatible with Rust 1.82+)
-   - Upstream uses edition 2024 (requires Rust 1.86+)
-   - Downgraded in v0.9.1 merge for broader compatibility
+5. **Rust Edition** - edition 2021 (`Cargo.toml:5`)
+   - This is NOT a low-MSRV guarantee: locked deps require **Rust >= 1.91** (aws-smithy-* 1.91.1). There is no `rust-version` key and the toolchain is unpinned `stable` (rust-toolchain.toml, ci.yaml, `FROM rust:bullseye`).
+   - Edition 2024 needs only 1.85, so MSRV no longer blocks it - only syntax/lint churn does.
+   - Downgraded in the v0.9.1 merge for broader compatibility
 
 See `docs/CUSTOMIZATIONS.md` for complete documentation of all customizations and merge strategies.
 
@@ -261,26 +295,25 @@ Copy `.env.example` to `.env` and configure:
 - `SOLANA_PRIVATE_KEY_TESTNET` - Facilitator wallet for Solana devnet (leave empty for AWS Secrets Manager)
 - `SUI_PRIVATE_KEY_MAINNET` - Facilitator wallet for Sui mainnet (leave empty for AWS Secrets Manager)
 - `SUI_PRIVATE_KEY_TESTNET` - Facilitator wallet for Sui testnet (leave empty for AWS Secrets Manager)
+- `NEAR_PRIVATE_KEY_MAINNET` / `NEAR_PRIVATE_KEY_TESTNET` + `NEAR_ACCOUNT_ID_MAINNET` / `NEAR_ACCOUNT_ID_TESTNET`
+- `STELLAR_PRIVATE_KEY_MAINNET` / `STELLAR_PRIVATE_KEY_TESTNET`
+- `ALGORAND_MNEMONIC_MAINNET` / `ALGORAND_MNEMONIC_TESTNET` (25-word mnemonic)
+- `XRPL_PRIVATE_KEY_MAINNET` / `XRPL_PRIVATE_KEY_TESTNET` (feature `xrpl`; prod runs relay-mode with no key)
+- Authoritative list of variable NAMES: `grep -n 'pub const ENV_' src/from_env.rs`
 
 **Backward Compatibility** (DEPRECATED):
 - `EVM_PRIVATE_KEY` - Generic wallet for ALL EVM chains (only used if network-specific keys are not set)
 - `SOLANA_PRIVATE_KEY` - Generic wallet for ALL Solana networks (only used if network-specific keys are not set)
 
-**RPC URLs** (defaults provided, override for premium endpoints):
-- `RPC_URL_BASE_MAINNET`, `RPC_URL_BASE_SEPOLIA`
-- `RPC_URL_AVALANCHE_MAINNET`, `RPC_URL_AVALANCHE_FUJI`
-- `RPC_URL_CELO_MAINNET`, `RPC_URL_CELO_ALFAJORES`
-- `RPC_URL_HYPEREVM_MAINNET`, `RPC_URL_HYPEREVM_TESTNET`
-- `RPC_URL_POLYGON_MAINNET`, `RPC_URL_POLYGON_AMOY`
-- `RPC_URL_OPTIMISM_MAINNET`, `RPC_URL_OPTIMISM_SEPOLIA`
-- `RPC_URL_SOLANA_MAINNET`, `RPC_URL_SOLANA_DEVNET`
-- `RPC_URL_SUI`, `RPC_URL_SUI_TESTNET`
-- Additional: SEI, XDC networks
+**RPC URLs** (defaults provided, override for premium endpoints). Canonical names live in `src/from_env.rs` - **mainnet vars have NO `_MAINNET` suffix** (the single exception is `RPC_URL_XRPL_MAINNET`):
+- Mainnet: `RPC_URL_BASE`, `RPC_URL_AVALANCHE`, `RPC_URL_CELO`, `RPC_URL_HYPEREVM`, `RPC_URL_POLYGON`, `RPC_URL_OPTIMISM`, `RPC_URL_ETHEREUM`, `RPC_URL_ARBITRUM`, `RPC_URL_BSC`, `RPC_URL_UNICHAIN`, `RPC_URL_SCROLL`, `RPC_URL_SKALE_BASE`, `RPC_URL_MONAD`, `RPC_URL_ROBINHOOD`, `RPC_URL_SOLANA`, `RPC_URL_FOGO`, `RPC_URL_SUI`, `RPC_URL_NEAR`, `RPC_URL_STELLAR`, `RPC_URL_ALGORAND`, `RPC_URL_XRPL_MAINNET`, `RPC_URL_SEI`, `RPC_URL_XDC`
+- Testnet: same stem + `_SEPOLIA` / `_TESTNET` / `_FUJI` / `_AMOY` / `_DEVNET`. Celo testnet is `RPC_URL_CELO_SEPOLIA` - `RPC_URL_CELO_ALFAJORES` does not exist.
+- Authoritative list (42 vars): `grep -oE 'RPC_URL_[A-Z0-9_]+' src/from_env.rs | sort -u`
 
 **Optional**:
-- `QUICKNODE_BASE_RPC` - Premium RPC for higher rate limits
 - `OTEL_EXPORTER_OTLP_ENDPOINT` - OpenTelemetry endpoint for observability
-- `RUST_LOG` - Logging level (default: info)
+- `RUST_LOG` - Logging level. **Code default is `trace`** (`src/telemetry.rs:290`), not info - production only gets `info` because the ECS task definition sets it explicitly. When `OTEL_EXPORTER_OTLP_ENDPOINT` is set, `RUST_LOG` is ignored entirely and the level is hardcoded (`src/telemetry.rs`).
+- (`QUICKNODE_BASE_RPC` is dead: it survives in `.env.example` but no code reads it. Use `RPC_URL_<NETWORK>`.)
 - `PORT`, `HOST` - Server binding (default: 8080, 0.0.0.0)
 
 ### AWS Secrets Manager (Production)
@@ -290,14 +323,16 @@ Leave wallet environment variables empty in `.env`. The facilitator will fetch t
 **IMPORTANT**: As of v1.3.0, the facilitator uses separate wallets for mainnet and testnet environments. This prevents the critical bug where testnet transactions were signed with mainnet keys.
 
 Secret names (configured in infrastructure):
-- `facilitator-evm-private-key-mainnet` - Mainnet EVM wallet
-- `facilitator-evm-private-key-testnet` - Testnet EVM wallet
-- `facilitator-solana-keypair-mainnet` - Solana mainnet wallet
-- `facilitator-solana-keypair-testnet` - Solana devnet wallet
-- `facilitator-sui-keypair-mainnet` - Sui mainnet wallet
-- `facilitator-sui-keypair-testnet` - Sui testnet wallet
-- `facilitator-rpc-mainnet` - Contains all mainnet RPC URLs (Base, Avalanche, Polygon, Optimism, HyperEVM, Solana, Sui, Ethereum, Arbitrum, Celo)
-- `facilitator-rpc-testnet` - Contains all testnet RPC URLs (Solana Devnet, Sui Testnet, Arbitrum Sepolia)
+Golden source is `terraform/environments/production/secrets.tf`. The naming is NOT uniform - EVM/Solana/NEAR use `<chain>-<env>-<kind>`, Sui/Stellar use `<chain>-keypair-<env>`, Algorand uses `algorand-mnemonic-<env>`:
+
+- `facilitator-evm-mainnet-private-key` / `facilitator-evm-testnet-private-key` - EVM wallets
+- `facilitator-solana-mainnet-keypair` / `facilitator-solana-testnet-keypair` - Solana wallets
+- `facilitator-near-mainnet-keypair` / `facilitator-near-testnet-keypair` - NEAR (JSON keys `private_key` + `account_id`)
+- `facilitator-stellar-keypair-mainnet` / `facilitator-stellar-keypair-testnet` - Stellar
+- `facilitator-sui-keypair-mainnet` / `facilitator-sui-keypair-testnet` - Sui
+- `facilitator-algorand-mnemonic-mainnet` / `facilitator-algorand-mnemonic-testnet` - Algorand 25-word mnemonic
+- `facilitator-rpc-mainnet` - premium mainnet RPC URLs, one JSON key per network: `base`, `avalanche`, `polygon`, `optimism`, `celo`, `hyperevm`, `ethereum`, `arbitrum`, `unichain`, `solana`, `near` (there is NO `sui` key - Sui/BSC/Scroll/SKALE/Monad/Fogo/Robinhood use free public endpoints declared inline in main.tf)
+- `facilitator-rpc-testnet` - JSON keys: `solana-devnet`, `arbitrum-sepolia`, `near` (no `sui-testnet`)
 
 **Legacy secrets** (deprecated, kept for backward compatibility):
 - `facilitator-evm-private-key` - Generic EVM wallet (not recommended)
@@ -362,6 +397,8 @@ Secret names (configured in infrastructure):
 
 Infrastructure managed with Terraform in `terraform/environments/production/`.
 
+**The deploy is automated.** Pushing to `main` runs `.github/workflows/ci.yaml`, which tests, builds the image, pushes it to ECR and `terraform apply -auto-approve`s it onto ECS (targeted at the task definition + service), then waits for the rollout and checks `/health`. The commands below are the manual fallback - do not run them in parallel with a CI deploy of the same commit.
+
 ```bash
 # Initialize Terraform backend (once)
 aws s3 mb s3://facilitator-terraform-state --region us-east-2
@@ -374,24 +411,28 @@ aws dynamodb create-table --table-name facilitator-terraform-locks \
 aws ecr create-repository --repository-name facilitator \
   --image-scanning-configuration scanOnPush=true --region us-east-2
 
-# Build and push Docker image (ALWAYS use fast-build on WSL2)
-./scripts/fast-build.sh v1.32.1 --push
+# Manual fallback build. NOTE: fast-build.sh does NOT pass --build-arg FACILITATOR_VERSION,
+# so its image reports /version = "dev". For a hand-shipped release image use build-and-push.sh.
+./scripts/fast-build.sh $(cat VERSION) --push
 
-# Deploy infrastructure
+# Roll ECS to a new image - TARGETED, never a full apply
 cd terraform/environments/production
 terraform init
-terraform plan -out=facilitator-prod.tfplan
-terraform apply facilitator-prod.tfplan
+terraform apply -target=aws_ecs_task_definition.facilitator -target=aws_ecs_service.facilitator
 
 # Update running service
 aws ecs update-service --cluster facilitator-production \
   --service facilitator-production --force-new-deployment --region us-east-2
 ```
 
-**Production URL**: `https://facilitator.ultravioletadao.xyz` (currently)
-**Target URL**: `https://facilitator.ultravioletadao.xyz` (after old stack destroyed)
+A **full** `terraform apply` is not an image deploy: it also re-uploads the balances Lambda
+and pulls in an ALB attribute modify. CI documents this and deliberately uses `-target`
+(`.github/workflows/ci.yaml`). Use a full apply only for a deliberate infra change, and read
+the whole plan first. Do NOT use `-refresh=false` (it invents drift).
 
-**Cost estimate**: ~$43-48/month (Fargate 1vCPU/2GB, ALB, NAT instance)
+**Production URL**: `https://facilitator.ultravioletadao.xyz`
+
+**Cost**: NOT the ~$43-48/month this file used to claim. Egress is a **NAT Gateway** (`aws_nat_gateway` in main.tf, priced in-repo at ~$32/mo - the `use_nat_instance` tfvar is dead, referenced by no resource), and Fargate alone measured $36.04/mo in July 2026. On top of that: ALB, Container Insights, 3 DynamoDB tables, the balances Lambda, CloudWatch and a Secrets Manager interface endpoint. Cost-allocation tags are not activated, so per-project totals are not queryable - see `docs/COST_RIGHTSIZING_HANDOFF_2026-08-07.md`. Do not quote a monthly figure you have not sourced.
 
 ## Testing Approach
 
@@ -415,9 +456,10 @@ Located in `tests/integration/`:
 
 ### Load Testing
 
-Located in `tests/load/`:
+Located in `tests/x402/load/`:
 - `k6_load_test.js` - k6 load test (100+ TPS)
-- Run: `k6 run --vus 100 --duration 5m k6_load_test.js`
+- `artillery_config.yml` - Artillery load profile
+- Run: `k6 run --vus 100 --duration 5m tests/x402/load/k6_load_test.js`
 
 ### Protocol Testing
 
@@ -442,7 +484,7 @@ Located in `tests/crossmint-smart-wallet/`:
 
 - **guides/ADDING_NEW_CHAINS.md** - Complete checklist and guide for adding new blockchain networks
 - **docs/CUSTOMIZATIONS.md** - Detailed inventory of all customizations vs upstream
-- **docs/CHANGELOG.md** - Version history and release notes
+- **docs/CHANGELOG.md** - Version history and release notes. **Lags the shipped release** (top entry 1.64.0 while prod is 1.73.0) — for the real version use `curl -s https://facilitator.ultravioletadao.xyz/version` and the `VERSION` file.
 - **docs/DEPLOYMENT.md** - Deployment procedures and infrastructure guide
 - **docs/TESTING.md** - Complete testing guide
 - **docs/WALLET_ROTATION.md** - Security procedures for rotating facilitator keys
@@ -456,7 +498,7 @@ Located in `tests/crossmint-smart-wallet/`:
 
 ### "Invalid signature" errors
 ```bash
-python scripts/diagnose_payment.py --network base-mainnet
+python scripts/diagnose_payment.py   # Base mainnet only - no --network flag exists
 python scripts/compare_domain_separator.py
 ```
 
@@ -464,17 +506,17 @@ python scripts/compare_domain_separator.py
 
 Different chains use different domain names for the same stablecoin:
 
-| Token | Ethereum/Avalanche | Base |
-|-------|-------------------|------|
-| EURC | `"Euro Coin"` | `"EURC"` |
-| USDC | `"USD Coin"` | `"USDC"` (on Celo/HyperEVM/Unichain/Monad) |
+| Token | Usual name | Exceptions |
+|-------|-----------|------------|
+| EURC | `"Euro Coin"` (Ethereum, Avalanche) | `"EURC"` on Base |
+| USDC | `"USD Coin"` - **including Base MAINNET** (`src/network.rs:733`) | `"USDC"` on Celo, HyperEVM, Unichain, Monad and most `-sepolia`/`-testnet` variants (Base Sepolia = `"USDC"`). The name FLIPS between a chain's mainnet and testnet (HyperEVM mainnet `"USDC"` vs testnet `"USD Coin"`). Bridged variants differ again: XDC `"Bridged USDC(XDC)"`, SKALE `"Bridged USDC (SKALE Bridge)"`. Never infer - grep `name:` in `src/network.rs`. |
 
-The facilitator resolves domains in this priority order:
-1. `PaymentRequirements.extra.name/version` (client-provided)
-2. Static lookup in `src/network.rs` (known deployments)
+The facilitator resolves domains in this priority order (`assert_domain()`, `src/chain/evm.rs:1588`):
+1. Static lookup in `src/network.rs` (`find_known_eip712_metadata`) - for KNOWN deployments this WINS, and a differing client value is only logged as a warning
+2. `PaymentRequirements.extra.name/version` - used only when the token is NOT in the static table
 3. On-chain `token.name()`/`token.version()` calls (fallback)
 
-**For custom tokens (EURC, AUSD, etc.), clients MUST provide domain info:**
+**For tokens NOT in the static table, clients MUST provide domain info** (EURC and AUSD are already static, so `extra` is ignored for them - warn-only):
 ```json
 {
   "paymentRequirements": {
@@ -488,8 +530,8 @@ The facilitator resolves domains in this priority order:
 ```
 
 Key code locations:
-- `src/network.rs:950` - EURC_BASE uses `name: "EURC"`
-- `src/network.rs:925` - EURC_ETHEREUM uses `name: "Euro Coin"`
+- `src/network.rs:1489` - EURC_BASE uses `name: "EURC"` (value at `:1497`)
+- `src/network.rs:1473` - EURC_ETHEREUM uses `name: "Euro Coin"` (value at `:1481`)
 - `src/chain/evm.rs:assert_domain()` - Domain resolution logic
 
 ### "The facilitator is returning 5xx" — confirm before chasing
@@ -528,24 +570,28 @@ for c in 500 502 503 429 404; do
 done
 ```
 
+**The AWS CLI paginates**: that loop prints one count PER PAGE, not a total. Sum the numbers
+before quoting one - reading only the first or last is off by ~2x.
+
 A handful of `503`s clustered around a deploy is ECS replacing tasks, not an
 outage. If 4xx is climbing instead, suspect a rate limit: see
-`feedback-rate-limit-pagination` — limits on list endpoints must cover a full
+`docs/plans/bazaar/09-SESSION-LOG-2026-07-24.md` — limits on list endpoints must cover a full
 `total/page_size` walk, and `tower_governor`'s `per_second(n)` means *one token
 every n seconds*, not n per second.
 
 ### RPC timeouts
 - Use premium RPC endpoints (QuickNode, Alchemy)
-- Set `QUICKNODE_BASE_RPC` in `.env`
+- Override the network's own `RPC_URL_<NETWORK>` - that is the only var the code reads, there is no fallback chain, and `QUICKNODE_BASE_RPC` is dead
+- In production `RPC_URL_*` comes from the `facilitator-rpc-mainnet` / `facilitator-rpc-testnet` secrets, not from `.env`
 - Check network connectivity to RPC URLs
 
 ### Missing branding after deployment
-- Verify `static/index.html` is 57KB (not small upstream version)
-- Verify `src/handlers.rs::get_index()` uses `include_str!()`
-- Rebuild Docker image: `./scripts/build-and-push.sh`
+- Verify `static/index.html` is >200KB (~225KB today, not the small upstream version): compare `ls -la static/index.html` against `curl -s https://facilitator.ultravioletadao.xyz/ | wc -c`
+- Verify `src/handlers.rs::get_root()` still uses `include_str!()` (`get_index()` is only an alias)
+- Rebuild and redeploy: push to `main` (CI builds + deploys). For local iteration use `./scripts/fast-build.sh <version> --push`; for a hand-shipped release image use `./scripts/build-and-push.sh <version>`, which passes `--build-arg FACILITATOR_VERSION`.
 
 ### Payment verification failures
-- Check facilitator wallet has gas funds: `python scripts/check_config.py`
+- Check facilitator wallet gas: `python scripts/check_config.py` - **partial**: it covers only Base/Avalanche/Polygon/Optimism and reads the *deprecated* `facilitator-evm-private-key` secret, not `-mainnet`, so it can validate the wrong wallet. Check the other chains' balances directly.
 - Verify token contract addresses in `src/network.rs`
 - Check EIP-3009 timestamp validity (must be in seconds, not milliseconds)
 
@@ -553,9 +599,9 @@ every n seconds*, not n per second.
 
 **Upstream**: https://github.com/x402-rs/x402-rs (golden source)
 **Your Fork**: https://github.com/UltravioletaDAO/x402-rs
-**Current fork base**: v0.9.1 (merged 2025-11-06)
-**Current version**: v1.2.0
-**Sync frequency**: Quarterly review for features, within 1 week for security patches
+**Current fork base**: upstream v0.10.0 (merged 2025-11-26, commit 35af558d)
+**Current version**: see `VERSION` at the repo root / `curl -s https://facilitator.ultravioletadao.xyz/version` - never hardcode it here
+**Sync frequency**: aspirational quarterly; **the last actual upstream merge was 2025-11-26** - assume significant drift and diff before relying on any upstream behaviour. Security patches: within 1 week.
 
 **Git Remotes:**
 - `origin` - Your fork (UltravioletaDAO/x402-rs)
@@ -601,11 +647,12 @@ git merge upstream/main      # Follow docs/CUSTOMIZATIONS.md strategy
 
 ## Low-Priority Networks — Do NOT Mention Unless Explicitly Asked
 
-The following networks exist in `src/network.rs` but are **NOT active priorities**. Do not mention them in conversations, recommendations, or sync discussions with other agents unless the user explicitly asks about them:
+The following networks exist as enum entries in `src/network.rs` but are **NOT served by production `/supported`** and are NOT active priorities. Do not mention them unless the user explicitly asks:
 
-- **Sei** (chain ID 1329) — implemented but not prioritized
-- **XDC** (chain ID 50) — implemented but not prioritized
-- **XRPL_EVM** (chain ID 1440002) — implemented but not prioritized
+- **Sei** (chain ID 1329) — enum-only, absent from prod `/supported` (still emits a row in `scripts/stablecoin_matrix.py` output — ignore it there)
+- **XDC** (chain ID 50) — same
+
+**XRPL (native XRP Ledger) IS active** — `xrpl` / `xrpl-testnet` / `xrpl:0` are live in `/supported`. There is no `xrpl-evm` chain in this codebase (`src/network.rs:108` says so explicitly) and chain id 1440002 appears nowhere in `src/`.
 
 **BSC (Binance Smart Chain, chain ID 56) IS active** — it is implemented and should be included normally in conversations and recommendations.
 
@@ -617,16 +664,16 @@ The following networks exist in `src/network.rs` but are **NOT active priorities
 4. **RPC rate limits** - Free RPC endpoints may throttle; use premium for production
 5. **Gas funds vs payment funds** - Facilitator wallet needs native tokens (ETH/AVAX/SOL) for gas, not payment tokens (USDC)
 6. **NEVER use emojis in Rust code** - No emojis in log messages, comments, or string literals. Use plain text like `[OK]`, `[FAIL]`, `[WARN]` instead of ✓, ✗, ⚠. Emojis cause encoding issues in CloudWatch logs and terminal output.
-7. **NEVER disable ENABLE_ESCROW** - The `ENABLE_ESCROW=true` environment variable in Terraform is CRITICAL. Without it, ALL payment settlements fail with "Escrow settlement is disabled". This must always be set to "true" in production.
+7. **NEVER disable ENABLE_ESCROW** - `ENABLE_ESCROW=true` is set in `terraform/environments/production/main.tf:924` and must stay. It gates the x402r escrow/refund path only (`src/handlers.rs:2808`, reached when `paymentPayload.extensions.refund` is present); without it those requests get 400 `"Escrow settlement is disabled. Set ENABLE_ESCROW=true to enable."`. Plain `/settle` calls never touch the flag - so 'settlements are failing' is NOT evidence this flag moved.
 8. **ALWAYS update `config/supported_tokens.json`** when adding a new network or stablecoin. This file is the JSON source of truth for all supported chains, tokens, and facilitator wallet addresses. **NEVER type wallet addresses from memory** — always copy them from `lambda/balances/handler.py` (the authoritative source). Previous AI-generated addresses were hallucinated and caused data integrity issues.
-9. **Facilitator wallet addresses are FIXED** — do not invent or guess them:
-   - EVM Mainnet: `0x103040545AC5031A11E8C03dd11324C7333a13C7`
-   - EVM Testnet: `0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8`
-   - Solana/Fogo: `F742C4VfFLQ9zRQyithoj5229ZgtX2WqKCSFKgH2EThq`
-   - SUI: `0xe7bbf2b13f7d72714760aa16e024fa1b35a978793f9893d0568a4fbf356a764a`
-   - NEAR: `uvd-facilitator.near`
-   - Stellar: `GCHPGXJT2WFFRFCA5TV4G4E3PMMXLNIDUH27PKDYA4QJ2XGYZWGFZNHB`
-   - Algorand: `KIMS5H6QLCUDL65L5UBTOXDPWLMTS7N3AAC3I6B2NCONEI5QIVK7LH2C2I`
+9. **Facilitator wallet addresses are FIXED** — do not invent or guess them. Full mainnet / testnet pairs live in `lambda/balances/handler.py`:
+   - EVM: `0x103040545AC5031A11E8C03dd11324C7333a13C7` / `0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8`
+   - Solana + Fogo: `F742C4VfFLQ9zRQyithoj5229ZgtX2WqKCSFKgH2EThq` / `6xNPewUdKRbEZDReQdpyfNUdgNg8QRc8Mt263T5GZSRv`
+   - SUI: `0xe7bbf2b13f7d72714760aa16e024fa1b35a978793f9893d0568a4fbf356a764a` / `0xabbd16a2fab2a502c9cfe835195a6fc7d70bfc27cffb40b8b286b52a97006e67`
+   - NEAR: `uvd-facilitator.near` / `uvd-facilitator.testnet`
+   - Stellar: `GCHPGXJT2WFFRFCA5TV4G4E3PMMXLNIDUH27PKDYA4QJ2XGYZWGFZNHB` / `GBBFZMLUJEZVI32EN4XA2KPP445XIBTMTRBLYWFIL556RDTHS2OWFQ2Z`
+   - Algorand: `KIMS5H6QLCUDL65L5UBTOXDPWLMTS7N3AAC3I6B2NCONEI5QIVK7LH2C2I` / `5DPPDQNYUPCTXRZWRYSF3WPYU6RKAUR25F3YG4EKXQRHV5AUAI62H5GXL4`
+   - XRPL (native, classic r-address — NOT the EVM sidechain): `rfADKkVXBNqK3z72tVSS3LVzAR3psYkonp` / `rGhTioKAFHe75KgVnQtacRiKFuPv28Wbwk`
 
 ## API Endpoints Reference
 
@@ -638,13 +685,19 @@ The following networks exist in `src/network.rs` but are **NOT active priorities
 - `GET /settle` - Settlement schema
 - `POST /settle` - Settle payment on-chain (accepts both v1 and v2 request formats)
 - `POST /accepts` - Negotiate payment requirements (Faremeter middleware compatibility, enriches with feePayer/tokens/escrow)
+- `GET /version` - Release version reported by the running binary (JSON)
+- `GET /blacklist` - Blocked payer addresses
+- `POST /escrow/state` - Query escrow state for a payment
+- `GET /bazaar` - Bazaar catalog page (HTML)
 - `GET /events` - Live traffic stream (SSE), one message per verify/settle
 - `GET /events/live` - HTML viewer for the stream
 - `GET /stats` - Aggregated metrics page (HTML)
 - `GET /api/stats` - Aggregated totals per network and asset (JSON)
+- `GET /api/stats/history` - Settlement history reconstructed from the chain. NOT the same claim as `/api/stats` (which is what the facilitator measured); every row carries `source`
 - `GET /transactions` - Recent recorded operations (JSON, `limit` capped at 200)
 - `GET /docs` - Interactive Swagger UI (OpenAPI documentation)
 - `GET /api-docs/openapi.json` - Raw OpenAPI 3.0 JSON spec (version resolved at runtime from `VERSION`, see below)
+- Discovery (Bazaar) API: `POST /discovery/register`, `GET /discovery/resources`, `GET /discovery/stats`, `GET /discovery/attestation/{hash}`; admin: `DELETE /discovery/resources`, `POST /discovery/admin/suppress`, `POST /discovery/admin/release`
 - Asset endpoints: `/logo.png`, `/favicon.ico`, `/avalanche.png`, etc.
 
 ### ERC-8004 endpoints
@@ -659,6 +712,8 @@ The following networks exist in `src/network.rs` but are **NOT active priorities
 - `GET /identity/:network/:agentId/metadata/:key` - One metadata entry
 - `GET /identity/:network/owner/:address` - Resolve an agent by owner (EVM + SVM)
 - `GET /identity/:network/total-supply` - Registered agents
+
+The supported-network set is `supported_networks()` in `src/erc8004/mod.rs` (currently **20**: 11 mainnets + 9 testnets, Solana included) — read it there, never from a hardcoded count. `src/openapi.rs` still claims "18 networks (10 mainnets + 8 testnets)" in four places and is stale; fix it whenever the set changes.
 
 **`/identity/:network/owner/:address` answers 404 and 503 for different things
 and callers must not collapse them.** 404 is "this address owns no agent"; 503 is
@@ -677,7 +732,7 @@ visible by running against the chain. Full account: `docs/handoffs/2026-08-07-er
 Three things worth carrying into any future change here:
 
 - **Account layouts are the golden source, and they are wide.** `AtomStats` is
-  561 bytes with 47 fields; every one has to be declared to reach `trust_tier`
+  561 bytes with 45 fields; every one has to be declared to reach `trust_tier`
   and `confidence` at the tail. Tests pin the exact byte sizes — keep them.
 - **The config PDA is two hops, not one.** `["root_config"]` holds the
   collection, and the collection seeds `["registry_config", collection]`. The
@@ -735,7 +790,7 @@ against **two** independent RPCs before adding an entry.
 
 The facilitator supports both x402 v1 and v2 protocol formats:
 
-- **V1 networks**: `"network": "base-mainnet"` (string enum)
+- **V1 networks**: `"network": "base"` (string enum — the serde name in `src/network.rs`; there is no `base-mainnet`)
 - **V2 networks**: `"network": "eip155:8453"` (CAIP-2 format)
 
 Both formats are auto-detected and processed identically. Existing v1 clients work unchanged.
@@ -751,10 +806,11 @@ Key files for v2 support:
 1. Make code changes
 2. Format: `just format-all`
 3. Lint: `just clippy-all`
-4. Test locally: `cargo run --release` + integration tests
-5. Build Docker: `docker build -t facilitator-test .`
-6. Test Docker locally: `docker-compose up`
-7. Commit with clear messages
+4. Test: `cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl -- --test-threads=1` — this is CI's green gate and a red one blocks the production deploy. `--test-threads=1` is not optional: parallel runs hang on CI runners.
+5. Test locally: `cargo run --release` + integration tests
+6. Build Docker: `./scripts/fast-build.sh <version>` (never a bare `docker build` on WSL2 — see the Docker section)
+7. Test Docker locally: `docker-compose up`
+8. Commit with clear messages
 
 **When adding new API endpoints**, always add corresponding documentation in `src/openapi.rs`. The version needs no attention — it is patched at runtime from the `VERSION` file via `FACILITATOR_VERSION` (`src/version.rs`) — but endpoint definitions must be added manually. Verify after deploy: `curl -s https://facilitator.ultravioletadao.xyz/api-docs/openapi.json | jq '.info.version'`
 
@@ -780,7 +836,7 @@ This complete checklist covers:
 **Quick summary** (refer to guide for full details):
 1. Add enum variant to `Network` in `src/network.rs`
 2. Add USDC deployment constants and chain ID mappings
-3. Add RPC environment variables to `src/from_env.rs`
+3. Add RPC environment variables in ALL live sites — `src/from_env.rs` (parsing), `.env.example` (local dev), `terraform/environments/production/main.tf` (ECS `environment`) or `secrets.tf` (if the URL carries an API key), and `lambda/balances/handler.py`. Declared only in `from_env.rs`, the container never receives it.
 4. Update `src/chain/evm.rs` or `src/chain/solana.rs`
 5. Add logo PNG file to `static/` directory
 6. Add logo handler to `src/handlers.rs`
@@ -789,6 +845,7 @@ This complete checklist covers:
 9. Fund both mainnet and testnet facilitator wallets with native tokens
 10. Build Docker image, push to ECR, and deploy to ECS
 11. Verify in `/supported` endpoint and test frontend
+11b. **UPDATE `src/openapi.rs`** - it hardcodes network lists in prose (`:31`, `:34`, `:57`, `:523`, `:527`, `:959`, `:1018`). A new network is invisible in `/docs` until these are edited.
 12. **UPDATE README.md** - Update the network count and add the new network to the tables
 13. **VERIFY STABLECOIN MATRIX** - Run `python scripts/stablecoin_matrix.py` and update README stablecoin tables
 14. **UPDATE `config/supported_tokens.json`** - Add the new network with chainId, tokens, explorer, and facilitatorWallet. Copy wallet address from `lambda/balances/handler.py` — NEVER type from memory.
@@ -801,32 +858,30 @@ This complete checklist covers:
 - Stablecoin coverage matrix must be regenerated with `python scripts/stablecoin_matrix.py --md`
 - Copy the markdown table output to README.md
 
-**Total work**: ~155 lines of code + 1 logo file + AWS config + wallet funding + README update
+**Total work**: ~500-700 changed lines across ~20-24 files + 1-2 logo PNGs + AWS config + wallet funding + README/CHANGELOG/openapi update. (Measured on the Robinhood Chain add, `git show --stat 7dbe194e`: 689 insertions across 24 files.)
 
-> **OpenAPI Sync**: If the new network introduces new API endpoints, add them to `src/openapi.rs`. The version resolves at runtime from `VERSION`; nothing to bump there.
+> **OpenAPI Sync**: EVERY new network needs `src/openapi.rs` edited — it enumerates networks and the upto/escrow lists and counts, not just endpoints. The version resolves at runtime from `VERSION`; nothing to bump there.
 
 ### Updating Branding
 
 1. Edit `static/index.html` (preserve structure)
-2. Update logos in `static/images/` (PNG format)
-3. Verify `src/handlers.rs::get_index()` still uses `include_str!()`
+2. Update logos in `static/` (flat PNG files, e.g. `static/base.png`; there is no `static/images/` directory)
+3. Verify `src/handlers.rs::get_root()` still uses `include_str!()`
 4. Rebuild: `cargo build --release`
 5. Test: `curl http://localhost:8080/ | grep "New Branding"`
 
 ### Important Notes
 
-- **NEVER compile or deploy the facilitator automatically** - The user will compile and deploy manually. Make code changes, inform the user, and wait for them to build/deploy.
-- **Never add emojis to Rust code** - it will break compilation
-- **Rust Edition**: Currently using **edition 2021** for compatibility with Rust 1.82
-  - Upstream uses edition 2024 (requires Rust 1.86+)
-  - Can upgrade to edition 2024 when ready to require Rust 1.86+
+- **NEVER compile or deploy the facilitator on your own initiative** - make the code change, tell the user, wait for them to build/deploy. But know what shipping means here: **pushing to `main` deploys to production.** `.github/workflows/ci.yaml` tests, builds the image, pushes it to ECR and `terraform apply -auto-approve`s it onto ECS, then waits for the rollout. The gate is armed today (the AWS repo secrets exist, so `preflight` emits `deploy=true`); only a red `test` job blocks it. A merge is a release; a `git push` is not a save. A failed deploy leaves `main` ahead of production - compare `curl -s https://facilitator.ultravioletadao.xyz/version` with `git log -1` before assuming your commit is live.
+- **Never add emojis to Rust code** - they do NOT break compilation (Rust source is UTF-8), but they corrupt CloudWatch log output and terminal rendering. Use `[OK]`/`[FAIL]`/`[WARN]`. Same rule as Common Pitfalls #6.
+- **Rust Edition**: edition 2021 (`Cargo.toml:5`). The real toolchain floor is **Rust >= 1.91** (highest `rust-version` among locked deps, e.g. aws-smithy-* 1.91.1), NOT 1.82. Edition 2024 needs only 1.85, so MSRV no longer blocks the migration - only syntax/lint churn does.
   - See v0.9.1 merge for details (commit 75b37e6)
 - **Version Bumping**: the release version lives in the `VERSION` file at the repo
   root, **not** in `Cargo.toml`. Check the deployed version first, then bump
   `VERSION` from that, not from whatever is local:
   ```bash
   curl -s https://facilitator.ultravioletadao.xyz/version
-  echo "1.73.0" > VERSION
+  echo "<deployed version + 1 minor>" > VERSION   # e.g. 1.73.0 deployed -> 1.74.0
   ```
   `Cargo.toml` holds a frozen `0.0.0` placeholder and must stay untouched. That is
   what keeps the Docker dependency layer cached across releases: a release used to
@@ -835,7 +890,8 @@ This complete checklist covers:
   It also means `Cargo.lock` no longer needs hand-syncing, which had already broken
   a `--locked` build once.
 
-  CI reads `VERSION`, tags the image with it, and passes it as the
+  CI reads `VERSION`, fails the run if it is empty, tags the image
+  `<version>-<short-sha>` (plus a moving `:latest`), and passes the version as the
   `FACILITATOR_VERSION` build arg; the binary resolves it at runtime in
   `src/version.rs`. Never declare that ARG in the builder stage of the Dockerfile —
   it would key every layer below it on the release version and undo the whole
@@ -890,9 +946,9 @@ gemini -m gemini-3-flash-preview -p "@src/ @tests/ Explain how the test suite co
 gemini -m gemini-3-flash-preview -p "@./ Give me a high-level overview of this project: tech stack, structure, and main responsibilities of each area."
 ```
 
-**Using all tracked files:**
+**Using all tracked files:** there is no `--all_files` in gemini 0.22.x (`gemini --help`) - use `@./`:
 ```bash
-gemini -m gemini-3-flash-preview --all_files -p "Analyze the project layout, build system, and external dependencies."
+gemini -m gemini-3-flash-preview -p "@./ Analyze the project layout, build system, and external dependencies."
 ```
 
 ### Implementation Checks

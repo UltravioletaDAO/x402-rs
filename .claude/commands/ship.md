@@ -23,8 +23,8 @@ Full automated deployment pipeline - from uncommitted changes to production veri
 
 **Phase 3: Version Tagging**
 10. Ask user for version tag (e.g., v1.2.1, v1.4.0) OR auto-suggest incrementing from DEPLOYED version (not local)
-11. **CRITICAL**: Update Cargo.toml version to match (without 'v' prefix, e.g., "1.7.9")
-12. Commit the version bump: `git add Cargo.toml && git commit -m "chore: bump version to [version]"`
+11. **CRITICAL**: Write the version to the `VERSION` file (without 'v' prefix, e.g. `echo "1.7.9" > VERSION`). Do **NOT** touch `Cargo.toml` — its version is a frozen `0.0.0` placeholder, and editing it invalidates the Docker dependency layer, adding ~15 min of pointless recompilation to the deploy (see CLAUDE.md "Version Bumping")
+12. Commit the version bump: `git add VERSION && git commit -m "chore: bump version to [version]"`
 13. Run: `git tag [version]`
 14. Optional: `git push && git push --tags` (ask user if they want to push to remote)
 
@@ -69,8 +69,11 @@ Full automated deployment pipeline - from uncommitted changes to production veri
     **If ANY family is missing (especially NEAR or Stellar), deployment FAILED - check logs**
 32. Verify blacklist loaded: `curl https://facilitator.ultravioletadao.xyz/blacklist | jq '{totalBlocked,loadedAtStartup}'`
 
-**Phase 7: Final Report**
-33. Display summary:
+**Phase 7: Release Tweet (build-in-public)**
+33. After verification passes, invoke the `ship-tweet` skill (Skill tool, skill: "ship-tweet") to generate 3 candidate tweets (EN + ES) about what shipped. Present them and let the user pick; the skill logs the pick to `docs/marketing/tweet-log.md`. Never post to X automatically. If the user declines, record the skip and move on — do not block the final report on this.
+
+**Phase 8: Final Report**
+34. Display summary:
     ```
     ✓ DEPLOYMENT SUCCESSFUL
 

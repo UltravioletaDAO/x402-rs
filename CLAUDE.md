@@ -644,8 +644,59 @@ The following networks exist in `src/network.rs` but are **NOT active priorities
 - `GET /api/stats` - Aggregated totals per network and asset (JSON)
 - `GET /transactions` - Recent recorded operations (JSON, `limit` capped at 200)
 - `GET /docs` - Interactive Swagger UI (OpenAPI documentation)
-- `GET /api-docs/openapi.json` - Raw OpenAPI 3.0 JSON spec (version auto-syncs from Cargo.toml)
+- `GET /api-docs/openapi.json` - Raw OpenAPI 3.0 JSON spec (version resolved at runtime from `VERSION`, see below)
 - Asset endpoints: `/logo.png`, `/favicon.ico`, `/avalanche.png`, etc.
+
+### ERC-8004 endpoints
+
+- `POST /register` - Register an agent. `Prefer: respond-async` returns 202 + `jobId` instead of holding the request open for the mint
+- `GET /register/status/{jobId}` - Poll an async registration (`pending` → `mint_confirmed` → `done`/`failed`; terminal jobs age out after 1h)
+- `POST /feedback` - Submit reputation feedback
+- `POST /feedback/revoke` - Revoke feedback
+- `POST /feedback/response` - Append an agent response to feedback
+- `GET /reputation/:network/:agentId` - Reputation summary (+ `atomStats` on Solana)
+- `GET /identity/:network/:agentId` - Agent identity
+- `GET /identity/:network/:agentId/metadata/:key` - One metadata entry
+- `GET /identity/:network/owner/:address` - Resolve an agent by owner (EVM + SVM)
+- `GET /identity/:network/total-supply` - Registered agents
+
+**`/identity/:network/owner/:address` answers 404 and 503 for different things
+and callers must not collapse them.** 404 is "this address owns no agent"; 503 is
+"the lookup reached no verdict", and carries `"retryable": true`. Persisting
+"not registered" from a 503 is how a transient RPC failure becomes a permanent
+wrong answer (INC-2026-07-21) — and on a registration path it mints a duplicate
+agent for someone who already has one. The same rule governs a `/register`
+timeout: it is not a failure, the mint may still land.
+
+### Solana ERC-8004 (realigned 2026-08-07, v1.70.0–v1.72.0)
+
+`src/erc8004/solana.rs` had been written against a pre-v0.3.0 revision of the
+QuantuLabs program; seven separate defects came out of that, four of them only
+visible by running against the chain. Full account: `docs/handoffs/2026-08-07-erc8004-solana-facilitator.md`.
+
+Three things worth carrying into any future change here:
+
+- **Account layouts are the golden source, and they are wide.** `AtomStats` is
+  561 bytes with 47 fields; every one has to be declared to reach `trust_tier`
+  and `confidence` at the tail. Tests pin the exact byte sizes — keep them.
+- **The config PDA is two hops, not one.** `["root_config"]` holds the
+  collection, and the collection seeds `["registry_config", collection]`. The
+  legacy `["config"]` seed derives an address that was never initialized;
+  `test_legacy_config_seed_is_not_used` fails if it returns.
+- **SEAL v1 is keccak256 over the feedback content only** — no agent or client
+  pubkey enters the hash. Vectors are pinned against the `8004-solana` npm SDK
+  rather than against our own implementation, because three fabricated SHA-256
+  variants passed CI for months by being compared only to themselves.
+
+Two behaviours that surprise integrators:
+
+- **Feedback without `score` is never scored.** The ATOM Engine records it on the
+  agent and reports `had_impact=false`; reputation stays at zero however much
+  accumulates, and it is not retroactive.
+- **The program forbids self-feedback** (`SelfFeedbackNotAllowed`, 12300). An
+  agent registered without `recipient` stays with the facilitator, which then
+  cannot rate it. `POST /register` with `recipient` mints, initializes the ATOM
+  stats, and transfers — in that order, because only the owner can initialize.
 
 ### Traffic stream and metrics (v1.60.0+)
 
@@ -705,7 +756,7 @@ Key files for v2 support:
 6. Test Docker locally: `docker-compose up`
 7. Commit with clear messages
 
-**When adding new API endpoints**, always add corresponding documentation in `src/openapi.rs`. The version syncs automatically from `Cargo.toml` via `env!("CARGO_PKG_VERSION")`, but endpoint definitions must be added manually. Verify after deploy: `curl -s https://facilitator.ultravioletadao.xyz/api-docs/openapi.json | jq '.info.version'`
+**When adding new API endpoints**, always add corresponding documentation in `src/openapi.rs`. The version needs no attention — it is patched at runtime from the `VERSION` file via `FACILITATOR_VERSION` (`src/version.rs`) — but endpoint definitions must be added manually. Verify after deploy: `curl -s https://facilitator.ultravioletadao.xyz/api-docs/openapi.json | jq '.info.version'`
 
 ### Adding a New Network
 
@@ -752,7 +803,7 @@ This complete checklist covers:
 
 **Total work**: ~155 lines of code + 1 logo file + AWS config + wallet funding + README update
 
-> **OpenAPI Sync**: If the new network introduces new API endpoints, add them to `src/openapi.rs`. The version auto-syncs from `Cargo.toml`.
+> **OpenAPI Sync**: If the new network introduces new API endpoints, add them to `src/openapi.rs`. The version resolves at runtime from `VERSION`; nothing to bump there.
 
 ### Updating Branding
 

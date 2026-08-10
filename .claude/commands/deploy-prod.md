@@ -10,7 +10,7 @@ Build and deploy the facilitator to production AWS ECS:
 
 **Phase 1: Version & Image Preparation**
 3. Ask the user for a version tag (e.g., v1.2.1) - must be HIGHER than current deployed version
-4. Update version in Cargo.toml to match the tag (without 'v' prefix)
+4. Write the version to the `VERSION` file to match the tag (without 'v' prefix). Do **NOT** touch `Cargo.toml` — its version is a frozen `0.0.0` placeholder; editing it invalidates the Docker dependency layer and costs ~15 min per deploy
 5. **CRITICAL**: Build Docker image with version information:
    ```bash
    docker build --platform linux/amd64 --build-arg FACILITATOR_VERSION=[version-tag] -t facilitator:[version-tag] .
@@ -86,7 +86,7 @@ Build and deploy the facilitator to production AWS ECS:
 
 **Important Notes:**
 - **MUST** pass `--build-arg FACILITATOR_VERSION=[version-tag]` to docker build
-- **MUST** update Cargo.toml version before building
+- **MUST** update the `VERSION` file before building, and leave `Cargo.toml` alone
 - **MUST** run secrets validation before deploying
 - Always clean task definition before registering (remove AWS metadata)
 - Task definition revisions increment automatically

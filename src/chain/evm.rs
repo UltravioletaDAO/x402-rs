@@ -29,6 +29,7 @@ use alloy::providers::ProviderBuilder;
 use alloy::providers::{
     Identity, MulticallItem, Provider, RootProvider, WalletProvider, MULTICALL3_ADDRESS,
 };
+use alloy::eips::BlockId;
 use alloy::rpc::client::RpcClient;
 use alloy::rpc::types::{TransactionReceipt, TransactionRequest};
 use alloy::sol_types::{eip712_domain, Eip712Domain, SolCall, SolStruct};
@@ -568,7 +569,15 @@ impl EvmProvider {
             // Only a revert is treated as fatal here: if estimation fails for
             // transport reasons we fall through and let the filler try, which
             // preserves the previous behaviour on flaky RPCs.
-            match self.inner.estimate_gas(txr.clone()).await {
+            // Estimate against `latest`, not alloy's default `pending`: some
+            // RPCs (publicnode's Fuji endpoint, 2026-08-11) reject state
+            // execution on the pending block with `-32000 state not available`,
+            // which is a transport error, not a revert — so it fell through to
+            // the filler, whose own estimate defaults to `pending` again and
+            // died identically. With the limit set here the filler never
+            // re-estimates. `verify` already simulates via `.call()`, which
+            // defaults to `latest` — this aligns settle with it.
+            match self.inner.estimate_gas(txr.clone()).block(BlockId::latest()).await {
                 Ok(gas) => {
                     // Head-room for state drift between estimate and inclusion.
                     txr.set_gas_limit(gas.saturating_mul(5) / 4);

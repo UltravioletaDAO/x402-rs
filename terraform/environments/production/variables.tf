@@ -93,7 +93,20 @@ variable "memory_target_value" {
 variable "alb_idle_timeout" {
   description = "ALB idle timeout in seconds"
   type        = number
-  default     = 180
+  # 600, matching terraform.tfvars, and the two MUST stay in agreement.
+  #
+  # terraform.tfvars is gitignored, so CI checks out this repo without it and
+  # every `terraform apply` there runs on these defaults. The deploy's targeted
+  # apply pulls `aws_lb.main` in as a dependency of the ECS service, so a default
+  # that disagreed with the tfvars value did not sit there harmlessly: it
+  # REVERTED the setting on every single deploy. CloudTrail on 2026-08-14 shows
+  # exactly that -- an operator setting 600, and the CI role putting it back to
+  # 180 thirteen minutes later, deploy after deploy.
+  #
+  # The value itself is load-bearing: an Ethereum L1 escrow settle can run past
+  # 60s and the facilitator's own timeout is 300s, so the ALB has to outlast it
+  # or the client gets a 504 for a payment that is still in flight.
+  default = 600
 }
 
 variable "domain_name" {

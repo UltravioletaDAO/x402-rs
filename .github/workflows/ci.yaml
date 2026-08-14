@@ -139,10 +139,16 @@ jobs:
           # Targeted apply scopes the deploy to the ECS task def + service so it ONLY rolls
           # the image. A *full* apply additionally wants lambda:UpdateFunctionCode every run
           # (the archive_file zip hashes differently in CI than in state) and an ALB attribute
-          # modify -- neither belongs in an image deploy. -target avoids the Lambda entirely;
-          # the one ALB-attribute modify it spuriously pulls in (the service's ALB dependency)
-          # is a no-op (config already matches reality) and is covered by the CI role's
-          # elasticloadbalancing:Modify* perms. Do NOT use -refresh=false (invents drift).
+          # modify -- neither belongs in an image deploy. -target avoids the Lambda entirely.
+          #
+          # The ALB-attribute modify it pulls in (the service's ALB dependency) is NOT a
+          # no-op, whatever this comment used to claim. terraform.tfvars is gitignored, so
+          # this checkout does not have it and every apply here runs on the DEFAULTS in
+          # variables.tf. When a default disagreed with the tfvars value, each deploy quietly
+          # reverted the setting -- CloudTrail on 2026-08-14 caught it doing exactly that to
+          # alb_idle_timeout, 600 -> 180, minutes after an operator set it. The defaults now
+          # match tfvars; if you change one, change the other, or the next deploy undoes you.
+          # Do NOT use -refresh=false (invents drift).
           terraform apply -input=false -auto-approve \
             -target=aws_ecs_task_definition.facilitator \
             -target=aws_ecs_service.facilitator \

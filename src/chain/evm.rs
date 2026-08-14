@@ -16,6 +16,7 @@
 
 use alloy::contract::SolCallBuilder;
 use alloy::dyn_abi::SolType;
+use alloy::eips::BlockId;
 use alloy::network::{
     Ethereum as AlloyEthereum, EthereumWallet, NetworkWallet, TransactionBuilder,
 };
@@ -29,7 +30,6 @@ use alloy::providers::ProviderBuilder;
 use alloy::providers::{
     Identity, MulticallItem, Provider, RootProvider, WalletProvider, MULTICALL3_ADDRESS,
 };
-use alloy::eips::BlockId;
 use alloy::rpc::client::RpcClient;
 use alloy::rpc::types::{TransactionReceipt, TransactionRequest};
 use alloy::sol_types::{eip712_domain, Eip712Domain, SolCall, SolStruct};
@@ -577,7 +577,12 @@ impl EvmProvider {
             // died identically. With the limit set here the filler never
             // re-estimates. `verify` already simulates via `.call()`, which
             // defaults to `latest` — this aligns settle with it.
-            match self.inner.estimate_gas(txr.clone()).block(BlockId::latest()).await {
+            match self
+                .inner
+                .estimate_gas(txr.clone())
+                .block(BlockId::latest())
+                .await
+            {
                 Ok(gas) => {
                     // Head-room for state drift between estimate and inclusion.
                     txr.set_gas_limit(gas.saturating_mul(5) / 4);

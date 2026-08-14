@@ -704,8 +704,10 @@ The following networks exist as enum entries in `src/network.rs` but are **NOT s
 
 - `POST /register` - Register an agent. `Prefer: respond-async` returns 202 + `jobId` instead of holding the request open for the mint
 - `GET /register/status/{jobId}` - Poll an async registration (`pending` → `mint_confirmed` → `done`/`failed`; terminal jobs age out after 1h)
-- `POST /feedback` - Submit reputation feedback
-- `POST /feedback/revoke` - Revoke feedback
+- `POST /feedback` - Submit reputation feedback. **The facilitator is the AUTHOR on this path** — the registry records `msg.sender` (EVM) / account 0 (SVM), and that is us. Use the prepare/submit pairs below for real authorship.
+- `POST /feedback/evm/prepare` + `POST /feedback/evm/submit` - EIP-7702 relayed rating: the rater delegates their EOA to Execution Market's `FeedbackDelegate`, signs a digest, and we send a type-4 tx **to the rater's address** so the registry sees the rater. Served only where a delegate is deployed AND verified on-chain — today **`base-sepolia` only** (`0x3A68085499B62286468A35b7D9Dfc237ef2d3768`); the table lives in `src/erc8004/relay.rs`. Mainnet awaits EM's deploy.
+- `POST /feedback/solana/prepare` + `POST /feedback/solana/submit` - partially-signed SVM tx: the rater signs as `client`, we stay fee payer. `submit` refuses any transaction that is not byte-for-byte the one it built.
+- `POST /feedback/revoke` - Revoke feedback. **ADMIN ONLY**: `Authorization: Bearer <ERC8004_ADMIN_TOKEN>`, and **404 when no token is configured** (fail-closed, so the route is indistinguishable from absent). Deliberately NOT `BAZAAR_ADMIN_TOKEN` — this one erases third-party reputation irreversibly. In production the token comes from the `facilitator-erc8004-admin-token` secret.
 - `POST /feedback/response` - Append an agent response to feedback
 - `GET /reputation/:network/:agentId` - Reputation summary (+ `atomStats` on Solana)
 - `GET /identity/:network/:agentId` - Agent identity
@@ -752,6 +754,41 @@ Two behaviours that surprise integrators:
   agent registered without `recipient` stays with the facilitator, which then
   cannot rate it. `POST /register` with `recipient` mints, initializes the ATOM
   stats, and transfers — in that order, because only the owner can initialize.
+
+### The proof-of-payment gate (v1.74.0+)
+
+`ProofOfPayment` used to be produced by the settle path and then dropped. It is
+now verified server-side on every feedback: the transaction exists on that
+network and succeeded, sits in the block the proof claims, contains an ERC-20
+`Transfer` of exactly `amount` in `token` from `payer` to `payee`, the payer is
+the new `rater` field, the payee is an address the Identity Registry ties to the
+agent, the block timestamp is inside the freshness window, `paymentHash`
+recomputes, and the (payment, agent) pair has not already been spent.
+
+| Variable | Default | Notes |
+|---|---|---|
+| `ERC8004_REQUIRE_PROOF` | `false` | **Phase 1**: verify and report, do not reject. Flip to `true` only after the logs show real traffic passes |
+| `ERC8004_PROOF_MAX_AGE_SECS` | `604800` | 7 days; also the TTL of the anti-replay record |
+| `ERC8004_ALLOW_FACILITATOR_AUTHORSHIP` | `true` | Deprecated SVM path where WE are the author; set `false` to close it |
+| `ERC8004_RELAY_DEADLINE_SECS` | `900` | How long a rater's 7702 relay authorisation stays valid |
+| `ERC8004_ADMIN_TOKEN` | *(unset)* | Gate on `/feedback/revoke`. Unset → 404 |
+
+Three things that are easy to get wrong:
+
+- **Two verdicts never block a write, in either phase.** `proof_rpc_unavailable`
+  is "no verdict" (our outage must not erase somebody's reputation) and
+  `proof_unverifiable_chain` is the Solana path, whose payment half has no EVM
+  receipt to read. Enforcing a check that never ran would silently disable
+  Solana reputation.
+- **`getAgentWallet` is zero for almost every real agent** (measured on Base:
+  18896, 58517, 100, 1000, 5000, 40000 all read `0x0`), so `ownerOf` is
+  load-bearing and both are accepted.
+- **Execution Market's payments carry TWO `Transfer`s** — a fee and the net to
+  the agent. The proof must declare the NET the payee actually receives, or the
+  gate answers `proof_transfer_not_found`.
+
+Full account: `docs/handoffs/2026-08-13-erc8004-autoria-reputacion-p0.md` and
+`docs/handoffs/2026-08-14-eip7702-stipend-h2.md`.
 
 ### Traffic stream and metrics (v1.60.0+)
 

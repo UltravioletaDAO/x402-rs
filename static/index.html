@@ -2508,6 +2508,51 @@ result = <span class="code-function">verify_payment</span>(
                 </div>
             </section>
 
+            <!-- DX402 durable-evidence -->
+            <section class="section fade-in" style="margin-top: 3rem;">
+                <div style="text-align: center; margin-bottom: 2rem;">
+                    <div style="display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.4rem 1rem; border-radius: 20px; background: rgba(168, 85, 247, 0.1); border: 1px solid rgba(168, 85, 247, 0.3); margin-bottom: 1rem;">
+                        <span style="font-size: 0.75rem; color: #a855f7; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;" data-i18n="dx402.badge">DX402 &middot; durable-evidence</span>
+                    </div>
+                    <h3 class="section-title" style="background: linear-gradient(135deg, #a855f7, #ec4899); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;" data-i18n="dx402.title">Responses That Outlive the Session</h3>
+                    <p class="section-description" data-i18n="dx402.description">
+                        x402 settles payment on-chain forever, but delivers the resource exactly once and keeps nothing. DX402 seals a copy of the response to the payer's own public key &mdash; recovered from the payment signature itself &mdash; and anchors it. Durable, private, and coupled to the payment with no registration and no extra round trip.
+                    </p>
+                </div>
+
+                <div class="features" style="grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); margin-bottom: 2rem;">
+                    <div class="feature-card">
+                        <h4 data-i18n="dx402.durable.title">Durable</h4>
+                        <p data-i18n="dx402.durable.text">The delivered body survives the session. Come back months later with a transaction hash and get the bytes you paid for.</p>
+                    </div>
+                    <div class="feature-card">
+                        <h4 data-i18n="dx402.private.title">Private</h4>
+                        <p data-i18n="dx402.private.text">Encrypted to the payer. Not the facilitator, not the storage backend, not us &mdash; retrieval is arithmetic, not an access-control decision anyone can misconfigure.</p>
+                    </div>
+                    <div class="feature-card">
+                        <h4 data-i18n="dx402.coupled.title">Coupled</h4>
+                        <p data-i18n="dx402.coupled.text">A payment authorization is a signature, and a signature yields a public key. Paying <em>is</em> publishing your encryption key.</p>
+                    </div>
+                </div>
+
+                <div style="text-align: center; margin-bottom: 1.5rem;">
+                    <span style="font-size: 2rem; font-weight: 700; color: #a855f7;" data-live-count="dx402-anchors">&mdash;</span>
+                    <span style="display: block; font-size: 0.8rem; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em;" data-i18n="dx402.counter">Evidence anchored</span>
+                </div>
+
+                <div style="display: flex; gap: 0.75rem; justify-content: center; flex-wrap: wrap;">
+                    <a href="/docs" style="font-size: 0.7rem; color: #a855f7; text-decoration: none; padding: 0.25rem 0.6rem; border: 1px solid #a855f7; border-radius: 4px; transition: all 0.2s;"
+                       onmouseover="this.style.background='#a855f7'; this.style.color='#fff';"
+                       onmouseout="this.style.background='transparent'; this.style.color='#a855f7';"
+                       data-i18n="dx402.link.docs">API Docs</a>
+                    <a href="https://github.com/UltravioletaDAO/x402-rs/blob/main/docs/plans/dx402/02-SPEC-v0.1.md" target="_blank"
+                       style="font-size: 0.7rem; color: #a855f7; text-decoration: none; padding: 0.25rem 0.6rem; border: 1px solid #a855f7; border-radius: 4px; transition: all 0.2s;"
+                       onmouseover="this.style.background='#a855f7'; this.style.color='#fff';"
+                       onmouseout="this.style.background='transparent'; this.style.color='#a855f7';"
+                       data-i18n="dx402.link.spec">Specification</a>
+                </div>
+            </section>
+
             <section class="endpoints fade-in">
                 <h3 data-i18n="endpoints.title">API Endpoints</h3>
 
@@ -2819,6 +2864,19 @@ result = <span class="code-function">verify_payment</span>(
     <script>
         const translations = {
             en: {
+                // --- DX402 durable-evidence
+                "dx402.badge": "DX402 \u00b7 durable-evidence",
+                "dx402.title": "Responses That Outlive the Session",
+                "dx402.description": "x402 settles payment on-chain forever, but delivers the resource exactly once and keeps nothing. DX402 seals a copy of the response to the payer's own public key \u2014 recovered from the payment signature itself \u2014 and anchors it. Durable, private, and coupled to the payment with no registration and no extra round trip.",
+                "dx402.durable.title": "Durable",
+                "dx402.durable.text": "The delivered body survives the session. Come back months later with a transaction hash and get the bytes you paid for.",
+                "dx402.private.title": "Private",
+                "dx402.private.text": "Encrypted to the payer. Not the facilitator, not the storage backend, not us \u2014 retrieval is arithmetic, not an access-control decision anyone can misconfigure.",
+                "dx402.coupled.title": "Coupled",
+                "dx402.coupled.text": "A payment authorization is a signature, and a signature yields a public key. Paying is publishing your encryption key.",
+                "dx402.counter": "Evidence anchored",
+                "dx402.link.docs": "API Docs",
+                "dx402.link.spec": "Specification",
                 // --- nav / footer / ERC-8004: anadidas tras auditar el i18n
                 "nav.bazaar": "Bazaar",
                 "nav.stats": "Stats",
@@ -2938,6 +2996,19 @@ result = <span class="code-function">verify_payment</span>(
                 "footer.powered": "Powered by"
             },
             es: {
+                // --- DX402 durable-evidence
+                "dx402.badge": "DX402 \u00b7 durable-evidence",
+                "dx402.title": "Respuestas que sobreviven a la sesi\u00f3n",
+                "dx402.description": "x402 liquida el pago on-chain para siempre, pero entrega el recurso una sola vez y no guarda nada. DX402 cifra una copia de la respuesta hacia la clave p\u00fablica del que pag\u00f3 \u2014 recuperada de la firma del pago \u2014 y la ancla. Durable, privada y acoplada al pago, sin registro previo ni round-trip extra.",
+                "dx402.durable.title": "Durable",
+                "dx402.durable.text": "El cuerpo entregado sobrevive a la sesi\u00f3n. Volv\u00e9s meses despu\u00e9s con un hash de transacci\u00f3n y recuper\u00e1s los bytes que pagaste.",
+                "dx402.private.title": "Privada",
+                "dx402.private.text": "Cifrada hacia el pagador. Ni el facilitador, ni el storage, ni nosotros \u2014 recuperarla es aritm\u00e9tica, no una decisi\u00f3n de permisos que alguien pueda configurar mal.",
+                "dx402.coupled.title": "Acoplada",
+                "dx402.coupled.text": "Una autorizaci\u00f3n de pago es una firma, y de una firma sale una clave p\u00fablica. Pagar es publicar tu clave de cifrado.",
+                "dx402.counter": "Evidencias ancladas",
+                "dx402.link.docs": "Docs API",
+                "dx402.link.spec": "Especificaci\u00f3n",
                 // --- nav / footer / ERC-8004: anadidas tras auditar el i18n
                 "nav.bazaar": "Bazaar",
                 "nav.stats": "Métricas",
@@ -3128,6 +3199,19 @@ result = <span class="code-function">verify_payment</span>(
                 el.textContent = el.textContent.replace(/\d+/, window.__paymentMainnets);
             });
         }
+        // DX402 anchored-evidence counter. Absent when the extension is off, in
+        // which case the section keeps its em-dash placeholder rather than
+        // claiming zero -- "not enabled" and "enabled with nothing yet" are
+        // different statements.
+        (function loadDx402Count() {
+            const nodes = document.querySelectorAll('[data-live-count="dx402-anchors"]');
+            if (!nodes.length) return;
+            fetch('/dx402/stats').then(r => r.ok ? r.json() : null).then(d => {
+                if (!d || typeof d.anchored !== 'number') return;
+                nodes.forEach(el => { el.textContent = d.anchored.toLocaleString(); });
+            }).catch(() => { /* leave the placeholder */ });
+        })();
+
         (function loadCanonicalCounts() {
             fetch('/supported').then(r => r.json()).then(d => {
                 const n = countSupportedMainnets(d);

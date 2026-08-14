@@ -62,6 +62,8 @@
 //! - ⚠️ Avoid relying on fallback `resource` value in production.
 
 use axum_core::body::Body;
+
+use crate::durable::{buffer_body, encode_header, DurableEvidenceHook, SettledContext};
 use axum_core::{
     extract::Request,
     response::{IntoResponse, Response},
@@ -129,6 +131,12 @@ pub struct X402Middleware<F> {
     /// - or a partial list without `resource`, in which case the resource URL will be computed dynamically per request.
     ///   In this case, please add `base_url` via [`X402Middleware::with_base_url`].
     payment_offers: Arc<PaymentOffers>,
+    /// Optional DX402 `durable-evidence` post-hook.
+    ///
+    /// `None` by default: a route that works today must keep working unchanged.
+    /// When set, a copy of the response body is sealed to the payer's public key
+    /// and anchored after settlement -- see [`crate::durable`].
+    durable: Option<Arc<DurableEvidenceHook>>,
 }
 
 impl TryFrom<&str> for X402Middleware<FacilitatorClient> {
@@ -163,7 +171,40 @@ impl<F> X402Middleware<F> {
             output_schema: None,
             settle_before_execution: false,
             payment_offers: Arc::new(PaymentOffers::Ready(Arc::new(Vec::new()))),
+            durable: None,
         }
+    }
+
+    /// Enable the DX402 `durable-evidence` post-hook on this route.
+    ///
+    /// After a successful settlement the response body is sealed to the payer's
+    /// own public key, written to `hook`'s sink, and registered with the
+    /// facilitator. The buyer receives an `X-Durable-Evidence` header pointing at
+    /// it and can decrypt it later with the same key they paid with.
+    ///
+    /// This never affects whether a payment succeeds. Any failure -- oversized
+    /// body, unreachable sink, a smart-contract wallet with no recoverable key --
+    /// downgrades to a skip notice in the header and the response is delivered
+    /// exactly as it would have been.
+    ///
+    /// ```rust,ignore
+    /// use std::sync::Arc;
+    /// use x402_axum::durable::{DurableConfig, DurableEvidenceHook, HttpPutSink};
+    ///
+    /// let hook = DurableEvidenceHook::new(
+    ///     DurableConfig::default(),
+    ///     Arc::new(HttpPutSink::new("https://evidence.example.com")),
+    ///     "https://facilitator.ultravioletadao.xyz",
+    /// );
+    /// let layer = x402.with_durable_evidence(hook);
+    /// ```
+    pub fn with_durable_evidence(&self, hook: DurableEvidenceHook) -> Self
+    where
+        F: Clone,
+    {
+        let mut this = self.clone();
+        this.durable = Some(Arc::new(hook));
+        this
     }
 
     /// Returns the configured base URL for x402-protected resources, or `http://localhost/` if not set.
@@ -532,6 +573,8 @@ pub struct X402MiddlewareService<F> {
     settle_before_execution: bool,
     /// The inner Axum service being wrapped
     inner: BoxCloneSyncService<Request, Response, Infallible>,
+    /// Optional DX402 `durable-evidence` post-hook.
+    durable: Option<Arc<DurableEvidenceHook>>,
 }
 
 impl<S, F> Layer<S> for X402Middleware<F>
@@ -554,6 +597,7 @@ where
             payment_offers: self.payment_offers.clone(),
             settle_before_execution: self.settle_before_execution,
             inner: BoxCloneSyncService::new(inner),
+            durable: self.durable.clone(),
         }
     }
 }
@@ -577,6 +621,7 @@ where
         let facilitator = self.facilitator.clone();
         let inner = self.inner.clone();
         let settle_before_execution = self.settle_before_execution;
+        let durable = self.durable.clone();
         Box::pin(async move {
             let payment_requirements =
                 gather_payment_requirements(offers.as_ref(), req.uri(), req.headers()).await;
@@ -584,6 +629,7 @@ where
                 facilitator,
                 payment_requirements,
                 settle_before_execution,
+                durable,
             };
             gate.call(inner, req).await
         })
@@ -683,6 +729,9 @@ pub struct X402Paygate<F> {
     pub facilitator: Arc<F>,
     pub payment_requirements: Arc<Vec<PaymentRequirements>>,
     pub settle_before_execution: bool,
+    /// Optional DX402 `durable-evidence` post-hook. `None` leaves the response
+    /// path byte-for-byte as it was.
+    pub durable: Option<Arc<DurableEvidenceHook>>,
 }
 
 impl<F> X402Paygate<F>
@@ -857,6 +906,65 @@ where
         })
     }
 
+    /// Seal the response body to the payer and anchor it, returning the response
+    /// (with its body intact) and the `X-Durable-Evidence` header value.
+    ///
+    /// The body has to be buffered to be encrypted, so it is read out and put
+    /// back byte-for-byte. The buyer receives exactly what the handler produced;
+    /// DX402 only observes it on the way past.
+    ///
+    /// Nothing in here can fail the request. Every error path yields a skip
+    /// notice, and a response is always returned.
+    async fn attach_durable_evidence(
+        hook: &Arc<DurableEvidenceHook>,
+        verify_request: &VerifyRequest,
+        settlement: &SettleResponse,
+        response: Response,
+    ) -> (Response, Option<HeaderValue>) {
+        use x402_rs::dx402::types::DurableEvidence;
+
+        let Some(tx_hash) = settlement.transaction.as_ref().map(|t| t.to_string()) else {
+            // Settled without a transaction hash: nothing stable to bind the
+            // ciphertext to, so no evidence rather than evidence keyed on
+            // something a verifier could not check.
+            return (response, None);
+        };
+
+        let (parts, body) = response.into_parts();
+        let limit = hook.config().max_body_bytes;
+
+        let bytes = match buffer_body(body, limit).await {
+            Ok(bytes) => bytes,
+            Err(reason) => {
+                // The body was consumed to discover it was too large. It cannot
+                // be replayed, so this is reported rather than silently dropped.
+                let evidence = DurableEvidence::skipped(reason);
+                let header = encode_header(&evidence).and_then(|v| HeaderValue::from_str(&v).ok());
+                return (Response::from_parts(parts, Body::empty()), header);
+            }
+        };
+
+        let payment_id = x402_rs::dx402::payment_id(settlement.network, &tx_hash);
+        let payer_key = x402_rs::dx402::payer::payer_public_key(
+            &verify_request.payment_payload,
+            &verify_request.payment_requirements,
+            &settlement.payer,
+        );
+
+        let ctx = SettledContext {
+            payment_id,
+            network: settlement.network,
+            tx_hash,
+            payer: settlement.payer.clone(),
+            payee: verify_request.payment_requirements.pay_to.clone(),
+        };
+
+        let evidence = hook.capture(&bytes, payer_key, &ctx).await;
+
+        let header = encode_header(&evidence).and_then(|v| HeaderValue::from_str(&v).ok());
+        (Response::from_parts(parts, Body::from(bytes)), header)
+    }
+
     /// Calls the inner service with proper telemetry instrumentation.
     async fn call_inner<
         ReqBody,
@@ -958,12 +1066,31 @@ where
                 Err(err) => return err.into_response(),
             };
 
+            // DX402: seal and anchor the body before `settlement` is consumed by
+            // the header encoder. This is the only point in the whole protocol
+            // where the delivered bytes and the settlement identity coexist.
+            let (response, durable_header) = match &self.durable {
+                Some(hook) => {
+                    Self::attach_durable_evidence(
+                        hook,
+                        &verify_request,
+                        &settlement,
+                        response.into_response(),
+                    )
+                    .await
+                }
+                None => (response.into_response(), None),
+            };
+
             let header_value = match self.settlement_to_header(settlement) {
                 Ok(header) => header,
                 Err(response) => return *response,
             };
 
             let mut res = response;
+            if let Some(value) = durable_header {
+                res.headers_mut().insert(crate::durable::HEADER_NAME, value);
+            }
             res.headers_mut().insert("X-Payment-Response", header_value);
             res.into_response()
         }

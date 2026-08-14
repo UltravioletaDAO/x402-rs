@@ -1,5 +1,53 @@
 # Changelog
 
+## [1.75.0] - 2026-08-14
+
+### Added — DX402 `durable-evidence` extension
+
+x402 settles payment on-chain permanently but delivers the purchased resource
+exactly once, in the body of a `200 OK`, and keeps nothing. A buyer who did not
+capture it at that instant cannot recover it, and neither party can later prove
+*what* was delivered — only *that* payment happened.
+
+DX402 seals a copy of the response body to the payer's own public key, recovered
+from the payment signature itself, and anchors it. Durable, private, and coupled
+to the payment with no registration and no extra round trip.
+
+- `src/dx402/` — facilitator as notary and index: EIP-712 `EvidenceReceipt`
+  signing, DynamoDB/S3 backends, `POST /dx402/anchor`,
+  `GET /dx402/{evidence,receipt}/{paymentId}`, `GET /dx402/stats`,
+  `POST /dx402/recover` (honest 501 — `direct` mode needs no recovery endpoint).
+- `crates/x402-axum/src/durable.rs` — the seller post-hook, wired into the
+  `settle_after_execution` branch of `layer.rs`. `.with_durable_evidence(hook)`.
+- `crates/x402-reqwest/src/durable.rs` — buyer-side fetch, decrypt and
+  `contentHash` verification.
+- Landing page section with a live anchor counter (EN + ES), OpenAPI entries,
+  `docs/DX402.md`, spec and research under `docs/plans/dx402/`, and handoffs for
+  KarmaCadabra, execution.market, MeshRelay and describe.net.
+
+Key coverage: EVM and XRPL recover the key from the signature; Solana, NEAR,
+Stellar and Algorand need only the address; Sui reads it from the signature
+envelope.
+
+**Off by default.** `ENABLE_DX402` is unset in production, so nothing on the
+payment path changes. Missing configuration disables the feature and logs why
+rather than falling back to a store that only looks durable.
+
+### Security
+
+- Reject small-order ed25519 public keys in ECDH (RFC 7748 §6.1, constant time).
+  `ed25519-dalek` accepts non-canonical and small-order encodings in
+  `VerifyingKey::from_bytes`; unchecked, an attacker able to influence the
+  recorded payer key could collapse the shared secret to a constant and derive
+  the content-key wrapping key. Tested against libsodium's 7-value blacklist.
+
+### Changed
+
+- `chain::evm::find_known_eip712_metadata` is now `pub`, so DX402 reuses the
+  facilitator's own EIP-712 domain resolution instead of carrying a second copy
+  that would drift and silently recover the wrong public key.
+
+
 ## [1.64.0] - 2026-07-30
 
 ### Fix — USDC is 18 decimals on BSC, and two places assumed 6

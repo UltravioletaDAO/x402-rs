@@ -24,11 +24,20 @@ http = { version = "1.4.0" }
 once_cell = { version = "1.21.3" }
 axum-core = { version = "0.5.6" }
 
+# DX402 durable-evidence post-hook (src/durable.rs)
+async-trait = { version = "0.1" }
+base64 = { version = "0.22" }
+bytes = { version = "1" }
+http-body-util = { version = "0.1" }
+
 # Telemetry
 tracing = { version = "0.1.44", optional = true }
 
 [dev-dependencies]
 axum = { version = "0.8.8" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+k256 = { version = "0.13" }
+rand = { version = "0.8" }
 
 [features]
 default = []

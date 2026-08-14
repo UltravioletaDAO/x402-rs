@@ -1703,8 +1703,14 @@ where
 {
     match facilitator.supported().await {
         Ok(supported) => {
-            // Convert v1 response to v2 with bazaar extension
-            let extensions = vec!["bazaar".to_string()];
+            // Convert v1 response to v2 with the extensions this deployment
+            // actually serves. `durable-evidence` is advertised only when DX402
+            // is configured -- announcing an extension whose routes 404 would
+            // make integrators build against a capability that is not there.
+            let mut extensions = vec!["bazaar".to_string()];
+            if crate::dx402::Dx402Config::from_env().enabled {
+                extensions.push(crate::dx402::EXTENSION_KEY.to_string());
+            }
             // Signers map is empty for now - will be populated in future version
             // when we add a method to get signer addresses from the facilitator
             let signers: HashMap<String, Vec<String>> = HashMap::new();

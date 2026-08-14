@@ -300,6 +300,73 @@ Fee pooling via atomic transaction groups. Facilitator signs transaction 0 (fee 
 
 ---
 
+## DX402 — Durable Evidence (`durable-evidence` extension)
+
+x402 settles payment on-chain **permanently**, then delivers the purchased
+resource **exactly once**, in the body of a `200 OK`, and keeps nothing. If the
+buyer did not capture it at that instant, it is gone — and neither party can
+later prove *what* was delivered, only *that* payment happened.
+
+DX402 seals a copy of the response to the payer's own public key and anchors it.
+
+**The idea:** a payment authorization is a digital signature, and a signature
+yields the signer's **public key**, not merely their address. So the seller can
+encrypt to the buyer using key material the payment already produced.
+
+> **Paying is publishing your encryption key.**
+
+No registration, no key exchange, no extra round trip.
+
+| Property | What it means |
+|---|---|
+| **Durable** | the delivered body survives the session |
+| **Private** | encrypted to the payer — not the facilitator, not the storage backend, not us |
+| **Coupled** | derived from the payment itself |
+
+Payer-key availability across all seven network families:
+
+| Family | Curve | Source |
+|---|---|---|
+| EVM | secp256k1 | ECDSA recovery over the EIP-712 digest |
+| Solana / Fogo | ed25519 | the address **is** the key |
+| NEAR | ed25519 | access key (`ed25519:…`) |
+| Stellar | ed25519 | the `G…` address is the encoded key |
+| Algorand | ed25519 | address is key + checksum |
+| Sui | either | the signature carries the key |
+| XRPL | either | `SigningPubKey` of the signed transaction |
+
+### Seller integration
+
+```rust
+use x402_axum::durable::{DurableConfig, DurableEvidenceHook, HttpPutSink};
+
+let hook = DurableEvidenceHook::new(
+    DurableConfig::default(),
+    Arc::new(HttpPutSink::new("https://evidence.example.com")),
+    "https://facilitator.ultravioletadao.xyz",
+);
+let layer = x402.with_price_tag(usdc.amount(0.01)?).with_durable_evidence(hook);
+```
+
+**DX402 can never fail a payment.** An oversized body, an unreachable sink, or a
+smart-contract wallet with no recoverable key all downgrade to a skip notice in
+the `X-Durable-Evidence` header; the response is delivered exactly as before.
+
+### Endpoints
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/dx402/anchor` | a resource server reports an anchor (metadata only) |
+| `GET` | `/dx402/evidence/{paymentId}` | pointer, content hash, mode, receipt |
+| `GET` | `/dx402/receipt/{paymentId}` | signed receipt, verifiable offline |
+| `GET` | `/dx402/stats` | anchors notarised |
+| `POST` | `/dx402/recover` | `escrowed` mode — **501 in v0.1** |
+
+Present only when `ENABLE_DX402=true`. Full documentation: **[docs/DX402.md](docs/DX402.md)**;
+normative spec: **[docs/plans/dx402/02-SPEC-v0.1.md](docs/plans/dx402/02-SPEC-v0.1.md)**.
+
+---
+
 ## ERC-8004 Trustless Agents (On-Chain Reputation)
 
 The facilitator integrates [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) for AI agent identity and reputation across 20 networks.

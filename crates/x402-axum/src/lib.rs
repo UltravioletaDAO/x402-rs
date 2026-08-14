@@ -41,6 +41,7 @@
 //! It provides builder-style helpers like [`IntoPriceTag`] and types like [`PriceTag`]
 //! for working with tokens, networks, and payment amounts.
 
+pub mod durable;
 pub mod facilitator_client;
 pub mod layer;
 pub mod price;

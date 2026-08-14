@@ -31,8 +31,14 @@ spl-associated-token-account = { version = "7.0.0" }
 
 bincode = { version = "1.3.3" } # Older version due to compatibility with solana-sdk
 
+# DX402 durable-evidence (src/durable.rs)
+base64 = { version = "0.22" }
+
 # Telemetry
 tracing = { version = "0.1.44" }
+
+[dev-dependencies]
+k256 = { version = "0.13" }
 
 [features]
 telemetry = ["x402-rs/telemetry"]

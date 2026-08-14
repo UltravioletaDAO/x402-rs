@@ -65,6 +65,7 @@ mod discovery_curation;
 mod discovery_health;
 mod discovery_security;
 mod discovery_store;
+mod dx402;
 mod erc8004;
 mod escrow;
 mod events;
@@ -170,6 +171,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         store = transaction_store.store_type(),
         "transaction history store"
     );
+
+    // DX402 durable-evidence. Off unless explicitly enabled: this is an addition
+    // to the payment path, never a gate in front of it, so a facilitator that
+    // works today must keep working if this stays unconfigured.
+    let dx402_service = dx402::Dx402Service::from_env().await.map(Arc::new);
 
     // Initialize Bazaar discovery registry with optional S3 persistence
     tracing::info!("Initializing Bazaar discovery registry...");
@@ -568,7 +574,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             handlers::events_routes()
                 .with_state(Arc::clone(&event_bus))
                 .layer(GovernorLayer::new(events_config)),
-        )
+        );
+
+    // DX402 durable-evidence. Absent unless ENABLE_DX402=true and the store and
+    // signing key are configured; `Dx402Service::from_env` logs precisely why it
+    // stayed off rather than falling back to something that only looks durable.
+    let http_endpoints = match dx402_service.clone() {
+        Some(svc) => http_endpoints.merge(
+            dx402::handlers::dx402_routes()
+                .with_state(svc)
+                .layer(GovernorLayer::new(Arc::clone(&discovery_read_config))),
+        ),
+        None => http_endpoints,
+    };
+
+    let http_endpoints = http_endpoints
         // Share discovery registry with all handlers via Extension for settlement tracking
         .layer(Extension(discovery_registry))
         // ...and the event bus, so post_settle can publish after a settle resolves

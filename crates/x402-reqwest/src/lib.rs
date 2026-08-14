@@ -142,6 +142,7 @@ mod builder;
 mod middleware;
 
 pub mod chains;
+pub mod durable;
 
 pub use builder::*;
 pub use middleware::*;

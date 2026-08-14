@@ -83,6 +83,16 @@ sui-keys = { git = "https://github.com/MystenLabs/sui", package = "sui-keys", ta
 shared-crypto = { git = "https://github.com/MystenLabs/sui", package = "shared-crypto", tag = "mainnet-v1.37.3", optional = true }
 bcs = { version = "0.1", optional = true }  # Binary Canonical Serialization for Sui
 
+# DX402 durable-evidence (src/dx402/)
+# All four are already in Cargo.lock transitively (alloy pulls k256/elliptic-curve,
+# ed25519-dalek pulls curve25519-dalek), so declaring them direct adds no new
+# vendored code -- it only makes the dependency explicit.
+aes-gcm = { version = "0.10" }        # AES-256-GCM envelope over the response body
+hkdf = { version = "0.12" }           # HKDF-SHA256 to derive the CEK wrapping key
+k256 = { version = "0.13", features = ["ecdh", "arithmetic"] }  # secp256k1 ECDH (EVM/XRPL payers)
+curve25519-dalek = { version = "4.1" }  # X25519 ECDH for ed25519 payers (Solana/NEAR/Stellar/Algorand/Sui)
+subtle = { version = "2.6" }          # constant-time small-order check (RFC 7748 6.1)
+
 # AWS SDK (for Bazaar discovery persistence and nonce store)
 aws-config = { version = "1.5" }
 aws-sdk-s3 = { version = "1.65" }

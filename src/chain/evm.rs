@@ -1723,7 +1723,12 @@ async fn assert_domain<P: Provider>(
 ///
 /// Checks all supported stablecoin deployments (USDC, EURC, AUSD, PYUSD)
 /// and returns the EIP-712 domain name and version if the asset address matches.
-fn find_known_eip712_metadata(
+/// Public so DX402 can derive the same EIP-712 digest the payer signed without
+/// reimplementing domain resolution. Duplicating it would be a real hazard:
+/// the domain name differs per chain and even flips between a chain's mainnet
+/// and testnet (HyperEVM mainnet is `"USDC"`, its testnet is `"USD Coin"`), so a
+/// second copy would drift and silently recover the wrong public key.
+pub fn find_known_eip712_metadata(
     network: Network,
     asset_address: &Address,
 ) -> Option<(String, String)> {

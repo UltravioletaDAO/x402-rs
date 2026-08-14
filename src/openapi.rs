@@ -163,6 +163,12 @@ a liveness `health` status from periodic probing, and a curated `tier`
         path_bazaar_admin_delete,
         path_bazaar_admin_suppress,
         path_bazaar_admin_release,
+        // DX402 durable-evidence
+        path_dx402_anchor,
+        path_dx402_evidence,
+        path_dx402_receipt,
+        path_dx402_stats,
+        path_dx402_recover,
         // Compliance
         path_blacklist,
         // Health
@@ -665,6 +671,74 @@ async fn path_transactions() {}
     )
 )]
 async fn path_api_stats() {}
+
+// ============================================================================
+// DX402 durable-evidence
+// ============================================================================
+
+#[utoipa::path(
+    post,
+    path = "/dx402/anchor",
+    tag = "DX402",
+    summary = "Register sealed evidence for a settled payment",
+    description = "A resource server reports that it sealed a response body and wrote the ciphertext somewhere durable. The facilitator notarises the claim with an EIP-712 `EvidenceReceipt` and indexes it.\n\n**This request carries metadata only.** The plaintext never reaches the facilitator, and in `direct` mode neither does anything that could decrypt it — the content key is wrapped to the payer's own public key, recovered from the payment signature. A leak of this facilitator's storage reveals pointers and hashes, never payloads.\n\nAvailable only when `ENABLE_DX402=true`; otherwise the route does not exist.",
+    responses(
+        (status = 201, description = "Evidence recorded; body carries the signed receipt", body = Object),
+        (status = 503, description = "Store or index unavailable — RETRYABLE, do not record as 'no evidence'")
+    )
+)]
+async fn path_dx402_anchor() {}
+
+#[utoipa::path(
+    get,
+    path = "/dx402/evidence/{paymentId}",
+    tag = "DX402",
+    summary = "Look up the evidence anchored for a payment",
+    description = "Returns the pointer, the plaintext content hash, the mode, and the signed receipt.\n\n`contentHash` is over the **plaintext**, deliberately. Hashing the ciphertext would only prove the blob was not corrupted in storage; hashing the plaintext lets a buyer prove the anchored blob decrypts to exactly the bytes they were served — the check that catches a seller anchoring something other than what it delivered.\n\n**404 and 410 are different answers.** 404 means no evidence was ever recorded; 410 means the retention window lapsed. In a dispute those are not interchangeable.",
+    params(("paymentId" = String, Path, description = "keccak256(caip2Network || txHash), or the `payment-identifier` value")),
+    responses(
+        (status = 200, description = "Evidence record", body = Object),
+        (status = 404, description = "No evidence recorded for this payment"),
+        (status = 410, description = "Past the retention window"),
+        (status = 503, description = "Index unavailable — RETRYABLE")
+    )
+)]
+async fn path_dx402_evidence() {}
+
+#[utoipa::path(
+    get,
+    path = "/dx402/receipt/{paymentId}",
+    tag = "DX402",
+    summary = "The signed evidence receipt, verifiable offline",
+    description = "The EIP-712 receipt alone, plus the domain and the signer address.\n\nAnyone can verify this without calling the facilitator again — which is precisely the property the IETF x402 receipt drafts identify as missing from a bare `PAYMENT-RESPONSE`, where an auditor cannot validate a retained receipt without contacting the facilitator.\n\nDomain: `{name: \"DX402 Evidence\", version: \"1\", chainId}`. The receipt records `mode`, because a `direct` receipt and an `escrowed` receipt make materially different claims about who can read the payload.",
+    params(("paymentId" = String, Path, description = "Payment identifier")),
+    responses(
+        (status = 200, description = "Signed receipt with its domain and signer", body = Object),
+        (status = 404, description = "No evidence recorded"),
+        (status = 410, description = "Past the retention window")
+    )
+)]
+async fn path_dx402_receipt() {}
+
+#[utoipa::path(
+    get,
+    path = "/dx402/stats",
+    tag = "DX402",
+    summary = "How much evidence this facilitator has notarised",
+    description = "Anchor count, configured backend and retention, and the address that signs receipts.\n\n`anchored` is a **floor**, not a ledger. Evidence whose index write failed is real and is not counted here, in the same way `/api/stats` undercounts operations.",
+    responses((status = 200, description = "DX402 status and counters", body = Object))
+)]
+async fn path_dx402_stats() {}
+
+#[utoipa::path(
+    post,
+    path = "/dx402/recover",
+    tag = "DX402",
+    summary = "Release a wrapped content key (escrowed mode)",
+    description = "**Returns 501 in v0.1.**\n\n`direct` mode — the default and the whole point of DX402 — needs no recovery endpoint at all: the buyer already holds the only key that opens the payload, so retrieval is arithmetic rather than an authorization decision anyone could refuse or misconfigure.\n\nThis returns an honest 501 rather than a stub that appears to work, so no integrator builds an escrowed flow against a signature check that does not exist yet.",
+    responses((status = 501, description = "Escrowed mode is not implemented in v0.1"))
+)]
+async fn path_dx402_recover() {}
 
 // ============================================================================
 // ERC-8004 Endpoints

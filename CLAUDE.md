@@ -235,6 +235,7 @@ python scripts/compare_usdc_contracts.py
 - `events.rs`, `transaction_store{,.rs}` - SSE stream + DynamoDB index behind `/events`, `/transactions`, `/api/stats`
 - `nonce_store.rs`, `writer_lease.rs`, `idempotency_store.rs` - concurrency and replay control
 - `blocklist.rs`, `redact.rs`, `sig_down.rs`, `json_depth.rs`, `fhe_proxy.rs` - compliance and hardening
+- `dx402/` - **DX402 `durable-evidence`** (v1.75.0): seals a paid response to the payer's own public key and anchors it. OFF unless `ENABLE_DX402=true`. See below and `docs/DX402.md`.
 - `version.rs` (resolves the VERSION file at runtime), `telemetry.rs`, `openapi.rs`, `from_env.rs`
 
 ### Workspace Structure
@@ -695,10 +696,70 @@ The following networks exist as enum entries in `src/network.rs` but are **NOT s
 - `GET /api/stats` - Aggregated totals per network and asset (JSON)
 - `GET /api/stats/history` - Settlement history reconstructed from the chain. NOT the same claim as `/api/stats` (which is what the facilitator measured); every row carries `source`
 - `GET /transactions` - Recent recorded operations (JSON, `limit` capped at 200)
+- DX402: `POST /dx402/anchor`, `GET /dx402/evidence/{paymentId}`, `GET /dx402/receipt/{paymentId}`, `GET /dx402/stats`, `POST /dx402/recover` (501 in v0.1). Present only when `ENABLE_DX402=true`.
 - `GET /docs` - Interactive Swagger UI (OpenAPI documentation)
 - `GET /api-docs/openapi.json` - Raw OpenAPI 3.0 JSON spec (version resolved at runtime from `VERSION`, see below)
 - Discovery (Bazaar) API: `POST /discovery/register`, `GET /discovery/resources`, `GET /discovery/stats`, `GET /discovery/attestation/{hash}`; admin: `DELETE /discovery/resources`, `POST /discovery/admin/suppress`, `POST /discovery/admin/release`
 - Asset endpoints: `/logo.png`, `/favicon.ico`, `/avalanche.png`, etc.
+
+### DX402 durable-evidence (v1.75.0)
+
+x402 settles payment permanently but delivers the resource **once** and keeps
+nothing. DX402 closes that: the seller seals a copy of the response body to the
+payer's own public key and anchors it; the buyer recovers it later with the same
+wallet they paid with.
+
+**The insight**: a payment authorization is a signature, and a signature yields
+the signer's *public key*, not just their address. Paying is publishing your
+encryption key — so there is no registration and no extra round trip. Four of the
+seven network families need nothing but the address (Solana, Stellar, Algorand,
+NEAR are ed25519); EVM and XRPL recover from the signature; Sui reads it out of
+the signature envelope.
+
+**Where each piece runs** — the facilitator is NOT in the response path (it only
+sees `/verify` and `/settle`, never a body), so:
+- `crates/x402-axum/src/durable.rs` — the seller post-hook. Holds the plaintext,
+  encrypts, uploads. Hooked into the `settle_after_execution` branch of
+  `layer.rs`, the one point where the delivered body and the settlement identity
+  coexist.
+- `src/dx402/` — the facilitator as **notary and index**. Signs EIP-712 receipts,
+  records pointers. In `direct` mode it never holds plaintext or key material.
+- `crates/x402-reqwest/src/durable.rs` — the buyer. Fetches, decrypts, and
+  verifies `contentHash`.
+
+**Rules that are load-bearing:**
+- **DX402 can never fail a payment.** Every failure degrades to a `SkipReason`
+  (`too_large`, `anchor_failed`, `no_payer_key`, `disabled`) carried in the
+  `X-Durable-Evidence` header. Same discipline as `transaction_store`.
+- **`contentHash` is over the PLAINTEXT.** Over the ciphertext it would only
+  prove the blob was not corrupted; over the plaintext it proves the anchor
+  decrypts to what was actually delivered.
+- **`paymentId` is the AEAD associated data** — `keccak256(caip2Network || txHash)`.
+  Derive it differently on either side and decryption fails with no obvious cause.
+- **Anchoring is publishing.** `retention` defaults to `90d` on purpose;
+  `permanent` is irrevocable.
+- **Small-order ed25519 keys are rejected** (RFC 7748 §6.1, constant time).
+  `ed25519-dalek` accepts non-canonical and small-order encodings in
+  `VerifyingKey::from_bytes`; unchecked, that collapses the ECDH shared secret to
+  a constant. Tested against libsodium's 7-value blacklist — **not** against
+  invented vectors, which is how the fabricated SEAL v1 hashes passed CI for
+  months.
+- `find_known_eip712_metadata` in `chain/evm.rs` is now `pub` **so DX402 does not
+  duplicate domain resolution**. A second copy would drift and silently recover a
+  different, perfectly valid public key.
+
+Config (all optional; **default OFF**): `ENABLE_DX402`, `DX402_STORE_BACKEND`
+(only `s3` in v0.1), `DX402_STORE_BUCKET`, `DX402_STORE_PUBLIC_BASE`,
+`DX402_REGISTRY_TABLE_NAME`, `DX402_SIGNING_KEY`, `DX402_RETENTION`. Missing
+config **disables** the feature and logs why — it never falls back to an
+in-memory store that would report evidence for data that dies with the process.
+
+Spec: `docs/plans/dx402/02-SPEC-v0.1.md`. Guide: `docs/DX402.md`. Research and
+prior-art survey: `docs/plans/dx402/00-RESEARCH.md`. Handoffs for KarmaCadabra,
+execution.market, MeshRelay and describe.net: `docs/handoffs/2026-08-14-dx402-*.md`.
+
+**Not yet proposed upstream** — the x402 Foundation requires a reviewed PR, and a
+proposal without production usage gets discarded. Propose after real traffic.
 
 ### ERC-8004 endpoints
 

@@ -641,6 +641,14 @@ where
         // as `submit` because a prepared transaction is useless if `submit`
         // is shed anyway.
         .route(
+            "/feedback/evm/prepare",
+            post(post_prepare_relay_feedback::<A>),
+        )
+        .route(
+            "/feedback/evm/submit",
+            post(post_submit_relay_feedback::<A>),
+        )
+        .route(
             "/feedback/solana/prepare",
             post(post_prepare_solana_feedback::<A>),
         )
@@ -4205,6 +4213,483 @@ where
                     transaction: None,
                     feedback_index: None,
                     error: Some(format!("No provider available for network {}", network)),
+                    network,
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Everything both halves of the EIP-7702 relayed-feedback flow need, resolved
+/// once so `prepare` and `submit` cannot drift apart.
+///
+/// If they derived the calldata differently, the rater's signature would cover
+/// one call and we would relay another -- and the digest check would be
+/// comparing two things we made up.
+struct RelayContext {
+    delegate: alloy::primitives::Address,
+    registry: alloy::primitives::Address,
+    rater: alloy::primitives::Address,
+    agent_id: u64,
+    chain_id: u64,
+    data: alloy::primitives::Bytes,
+}
+
+async fn relay_context(
+    provider: &crate::chain::evm::EvmProvider,
+    network: crate::network::Network,
+    feedback: &crate::erc8004::FeedbackParams,
+) -> Result<RelayContext, (StatusCode, String)> {
+    use crate::chain::evm::MetaEvmProvider as _;
+
+    let contracts = get_contracts(&network).ok_or((
+        StatusCode::BAD_REQUEST,
+        format!("No ERC-8004 contracts for network {}", network),
+    ))?;
+
+    let delegate = crate::erc8004::relay::feedback_delegate(&network).ok_or((
+        StatusCode::BAD_REQUEST,
+        format!(
+            "relayed feedback is not available on {}: no FeedbackDelegate is deployed there yet",
+            network
+        ),
+    ))?;
+
+    let rater = match feedback.rater.as_ref() {
+        Some(mixed) => alloy::primitives::Address::try_from(mixed.clone()).map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                "rater must be an EVM address on this network".to_string(),
+            )
+        })?,
+        None => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "rater is required: it is the account whose EOA is delegated and \
+                 whose key authorises the rating, which is the entire point of \
+                 this endpoint"
+                    .to_string(),
+            ))
+        }
+    };
+
+    let agent_id_str =
+        parse_agent_id_value(&feedback.agent_id).unwrap_or_else(|| feedback.agent_id.to_string());
+    let agent_id: u64 = agent_id_str.parse().map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("Invalid EVM agent ID (expected numeric): {}", agent_id_str),
+        )
+    })?;
+
+    // An address in a table is a claim; eth_getCode is evidence. A delegate
+    // address with no contract behind it would produce a transaction that looks
+    // like it worked and rated nobody.
+    crate::erc8004::relay::assert_delegate_usable(
+        provider.inner(),
+        delegate,
+        contracts.reputation_registry,
+    )
+    .await
+    .map_err(|e| {
+        error!(network = %network, reason = e.as_str(), "FeedbackDelegate is not usable");
+        (StatusCode::SERVICE_UNAVAILABLE, e.as_str().to_string())
+    })?;
+
+    let data = crate::erc8004::relay::give_feedback_calldata(
+        agent_id,
+        feedback.value,
+        feedback.value_decimals,
+        &feedback.tag1,
+        &feedback.tag2,
+        &feedback.endpoint,
+        &feedback.feedback_uri,
+        feedback.feedback_hash.unwrap_or_default(),
+    );
+
+    Ok(RelayContext {
+        delegate,
+        registry: contracts.reputation_registry,
+        rater,
+        agent_id,
+        chain_id: provider.chain().chain_id,
+        data,
+    })
+}
+
+/// `POST /feedback/evm/prepare`: everything the rater must sign so the chain
+/// records THEM as the author.
+///
+/// The ERC-8004 Reputation Registry records `msg.sender` as the author and the
+/// deployed implementation has no delegation path at all -- no
+/// `giveFeedbackWithSignature`, no ERC-2771 forwarder. So a rating we relay
+/// normally is a rating attributed to US: 87,2% of the feedback on Base, and the
+/// same address can revoke any of it.
+///
+/// EIP-7702 fixes it without touching the registry: the rater delegates their
+/// own EOA to the FeedbackDelegate, and we send the transaction TO THE RATER'S
+/// ADDRESS, so the registry sees the rater as `msg.sender` while we pay.
+#[instrument(skip_all)]
+pub async fn post_prepare_relay_feedback<A>(
+    State(facilitator): State<A>,
+    raw_body: Bytes,
+) -> impl IntoResponse
+where
+    A: Facilitator + HasProviderMap,
+    A::Error: IntoResponse,
+    A::Map: ProviderMap<Value = NetworkProvider>,
+{
+    use crate::chain::evm::MetaEvmProvider as _;
+
+    let request: FeedbackRequest =
+        match serde_json::from_slice(&raw_body) {
+            Ok(r) => r,
+            Err(e) => return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"success": false, "error": format!("Invalid request format: {}", e)})),
+            )
+                .into_response(),
+        };
+    let network = request.network;
+    let feedback = &request.feedback;
+
+    let provider_map = facilitator.provider_map();
+    let Some(NetworkProvider::Evm(provider)) = provider_map.by_network(&network) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "success": false,
+                "error": format!("{} is not an EVM network served by this facilitator", network)
+            })),
+        )
+            .into_response();
+    };
+
+    let ctx = match relay_context(provider, network, feedback).await {
+        Ok(c) => c,
+        Err((code, msg)) => {
+            return (code, Json(json!({"success": false, "error": msg}))).into_response()
+        }
+    };
+
+    let state =
+        match crate::erc8004::relay::delegation_state(provider.inner(), ctx.rater, ctx.delegate)
+            .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({"success": false, "error": e.as_str()})),
+                )
+                    .into_response()
+            }
+        };
+    if state == crate::erc8004::relay::DelegationState::Foreign {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "success": false,
+                "error": crate::erc8004::relay::RelayError::ForeignDelegation.as_str()
+            })),
+        )
+            .into_response();
+    }
+    let delegated = state == crate::erc8004::relay::DelegationState::Delegated;
+
+    let account_nonce = if delegated {
+        None
+    } else {
+        match provider.inner().get_transaction_count(ctx.rater).await {
+            Ok(n) => Some(n),
+            Err(_) => {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({"success": false, "error": "relay_rpc_unavailable"})),
+                )
+                    .into_response()
+            }
+        }
+    };
+
+    // Short deadline: `relayFeedback` is permissionless by design, so a signed
+    // authorisation is live in the wild until it expires. Minutes, not forever.
+    let deadline = crate::erc8004::proof::unix_now_secs()
+        .saturating_add(crate::erc8004::relay::relay_deadline_secs());
+    let nonce: alloy::primitives::FixedBytes<32> = {
+        use rand::RngCore as _;
+        let mut bytes = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut bytes);
+        alloy::primitives::FixedBytes::from(bytes)
+    };
+    let digest = crate::erc8004::relay::relay_digest(
+        ctx.chain_id,
+        ctx.rater,
+        ctx.registry,
+        &ctx.data,
+        deadline,
+        nonce,
+    );
+
+    (
+        StatusCode::OK,
+        Json(crate::erc8004::PrepareRelayFeedbackResponse {
+            success: true,
+            delegate: Some(ctx.delegate),
+            data: Some(ctx.data),
+            digest: Some(digest),
+            deadline: Some(deadline),
+            nonce: Some(nonce),
+            delegated,
+            account_nonce,
+            chain_id: ctx.chain_id,
+            error: None,
+            network,
+        }),
+    )
+        .into_response()
+}
+
+/// `POST /feedback/evm/submit`: relay a rater-authorised rating as a type-4
+/// transaction, paying the gas without becoming the author.
+///
+/// Same discipline as the Solana path: the facilitator does NOT relay what it is
+/// handed. It rebuilds the registry calldata from the declared parameters and
+/// requires the rater's signature to cover exactly that. The delegate is a
+/// second line of defence -- it accepts two selectors and can never move funds --
+/// but a facilitator that relayed arbitrary calldata would be leaning on
+/// somebody else's audit instead of doing its own check.
+#[instrument(skip_all)]
+pub async fn post_submit_relay_feedback<A>(
+    State(facilitator): State<A>,
+    raw_body: Bytes,
+) -> impl IntoResponse
+where
+    A: Facilitator + HasProviderMap,
+    A::Error: IntoResponse,
+    A::Map: ProviderMap<Value = NetworkProvider>,
+{
+    use crate::chain::evm::MetaEvmProvider as _;
+    use crate::erc8004::relay::{self, DelegationState, RelayError};
+
+    let request: crate::erc8004::SubmitRelayFeedbackRequest =
+        match serde_json::from_slice(&raw_body) {
+            Ok(r) => r,
+            Err(e) => return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"success": false, "error": format!("Invalid request format: {}", e)})),
+            )
+                .into_response(),
+        };
+    let network = request.network;
+    let feedback = &request.feedback;
+
+    let provider_map = facilitator.provider_map();
+    let Some(NetworkProvider::Evm(provider)) = provider_map.by_network(&network) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "success": false,
+                "error": format!("{} is not an EVM network served by this facilitator", network)
+            })),
+        )
+            .into_response();
+    };
+
+    let ctx = match relay_context(provider, network, feedback).await {
+        Ok(c) => c,
+        Err((code, msg)) => {
+            return (code, Json(json!({"success": false, "error": msg}))).into_response()
+        }
+    };
+    let agent_id_str = ctx.agent_id.to_string();
+
+    let refuse = |e: RelayError, report: Option<crate::erc8004::proof::ProofReport>| {
+        warn!(
+            network = %network,
+            reason = e.as_str(),
+            "refusing to relay an ERC-8004 feedback"
+        );
+        (
+            StatusCode::BAD_REQUEST,
+            Json(FeedbackResponse {
+                proof: report,
+                success: false,
+                transaction: None,
+                feedback_index: None,
+                error: Some(e.as_str().to_string()),
+                network,
+            }),
+        )
+            .into_response()
+    };
+
+    if request.deadline <= crate::erc8004::proof::unix_now_secs() {
+        return refuse(RelayError::Expired, None);
+    }
+
+    // The signature must cover the calldata WE rebuilt, not one we were handed.
+    let digest = relay::relay_digest(
+        ctx.chain_id,
+        ctx.rater,
+        ctx.registry,
+        &ctx.data,
+        request.deadline,
+        request.nonce,
+    );
+    if !relay::signature_authorises(digest, &request.signature, ctx.rater) {
+        return refuse(RelayError::BadSignature, None);
+    }
+
+    let state = match relay::delegation_state(provider.inner(), ctx.rater, ctx.delegate).await {
+        Ok(s) => s,
+        Err(e) => return refuse(e, None),
+    };
+    if state == DelegationState::Foreign {
+        return refuse(RelayError::ForeignDelegation, None);
+    }
+
+    // Only needed when the account is not delegated yet; installing it again
+    // would just burn an account nonce.
+    let authorization_list = if state == DelegationState::Delegated {
+        // The delegate stores spent nonces in the RATER's own storage, so this
+        // reads the rater's address. It is only meaningful once the account
+        // carries the code.
+        match relay::nonce_already_used(provider.inner(), ctx.rater, request.nonce).await {
+            Ok(true) => return refuse(RelayError::NonceAlreadyUsed, None),
+            Ok(false) => {}
+            Err(e) => return refuse(e, None),
+        }
+        None
+    } else {
+        let Some(params) = request.authorization.as_ref() else {
+            return refuse(RelayError::MissingAuthorization, None);
+        };
+        let signed = relay::signed_authorization(
+            alloy::primitives::U256::from(params.chain_id),
+            params.address,
+            params.nonce,
+            params.y_parity,
+            params.r,
+            params.s,
+        );
+        if let Err(e) = relay::accept_authorization(&signed, ctx.rater, ctx.delegate, ctx.chain_id)
+        {
+            return refuse(e, None);
+        }
+        Some(vec![signed])
+    };
+
+    // The proof gate applies to a relayed rating exactly as it does to a direct
+    // one: who authored it and whether a payment backs it are separate questions.
+    let proof_report = crate::erc8004::proof::evaluate_feedback_proof(
+        provider.inner(),
+        match get_contracts(&network) {
+            Some(c) => c.identity_registry,
+            None => alloy::primitives::Address::ZERO,
+        },
+        network,
+        ctx.agent_id,
+        feedback,
+    )
+    .await;
+    log_proof_verdict(&network, &agent_id_str, &proof_report);
+    if proof_report.should_reject() {
+        let reason = proof_report
+            .rejection
+            .map(|r| r.as_str())
+            .unwrap_or("proof_rejected");
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(FeedbackResponse {
+                proof: Some(proof_report),
+                success: false,
+                transaction: None,
+                feedback_index: None,
+                error: Some(format!("proof of payment rejected: {}", reason)),
+                network,
+            }),
+        )
+            .into_response();
+    }
+
+    let claim = match (proof_report.is_verified(), feedback.proof.as_ref()) {
+        (true, Some(p)) => claim_feedback_proof(&network, p, &agent_id_str).await,
+        _ => ProofClaim::NotApplicable,
+    };
+    if matches!(claim, ProofClaim::Replayed) && crate::erc8004::proof::is_proof_required() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(FeedbackResponse {
+                proof: Some(proof_report),
+                success: false,
+                transaction: None,
+                feedback_index: None,
+                error: Some(format!(
+                    "proof of payment rejected: {}",
+                    crate::erc8004::proof::ProofRejection::Replayed.as_str()
+                )),
+                network,
+            }),
+        )
+            .into_response();
+    }
+
+    let calldata = relay::relay_feedback_calldata(
+        &ctx.data,
+        request.deadline,
+        request.nonce,
+        &request.signature,
+    );
+
+    // Sent TO THE RATER'S ADDRESS: that is what makes the registry observe the
+    // rater as msg.sender while our EOA only pays.
+    let meta = crate::chain::evm::MetaTransaction {
+        to: ctx.rater,
+        calldata,
+        confirmations: 1,
+        authorization_list,
+    };
+
+    match provider
+        .send_transaction_from(provider.pinned_signer(), meta)
+        .await
+    {
+        Ok(receipt) => {
+            let tx_hash = receipt.transaction_hash;
+            info!(
+                network = %network,
+                tx = %tx_hash,
+                agent_id = %agent_id_str,
+                rater = %ctx.rater,
+                "[OK] ERC-8004 feedback relayed with the RATER as author"
+            );
+            (
+                StatusCode::OK,
+                Json(FeedbackResponse {
+                    proof: Some(proof_report),
+                    success: true,
+                    transaction: Some(crate::types::TransactionHash::Evm(tx_hash.0)),
+                    feedback_index: None,
+                    error: None,
+                    network,
+                }),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            error!(network = %network, error = %e, "relayed feedback transaction failed");
+            // Nothing landed, so the proof has not been spent.
+            release_feedback_proof(&claim).await;
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(FeedbackResponse {
+                    proof: Some(proof_report),
+                    success: false,
+                    transaction: None,
+                    feedback_index: None,
+                    error: Some("relayed feedback transaction failed".to_string()),
                     network,
                 }),
             )

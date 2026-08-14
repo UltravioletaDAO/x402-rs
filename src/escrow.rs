@@ -850,6 +850,7 @@ async fn execute_escrow_deposit(
 
     // Create meta transaction
     let meta_tx = MetaTransaction {
+        authorization_list: None,
         to: request.proxy_address,
         calldata: Bytes::from(calldata),
         confirmations: 1,

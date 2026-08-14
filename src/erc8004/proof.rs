@@ -663,6 +663,12 @@ fn evm_address(mixed: &MixedAddress) -> Result<Address, ProofRejection> {
     Address::try_from(mixed.clone()).map_err(|_| ProofRejection::NotEvmAddress)
 }
 
+/// Seconds since the epoch. Shared with the relay path so a deadline and a
+/// freshness window are measured against the same clock.
+pub fn unix_now_secs() -> u64 {
+    unix_now()
+}
+
 fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

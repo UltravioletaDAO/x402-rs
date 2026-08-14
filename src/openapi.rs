@@ -65,6 +65,8 @@ The facilitator supports [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) for
 - `GET /register/status/{job_id}` - Poll an async registration until `agentId` is ready
 - `POST /feedback` - Submit on-chain reputation feedback (EVM only)
 - `POST /feedback/revoke` - Revoke previously submitted feedback (EVM only). **Admin only**: requires `Authorization: Bearer <ERC8004_ADMIN_TOKEN>` and returns 404 when no token is configured
+- `POST /feedback/evm/prepare` - Build the digest the RATER signs, for an EIP-7702 relayed rating (EVM)
+- `POST /feedback/evm/submit` - Relay a rater-authored rating as a type-4 transaction, paying the gas (EVM)
 - `POST /feedback/solana/prepare` - Build a feedback transaction for the RATER to sign (Solana)
 - `POST /feedback/solana/submit` - Co-sign and send a rater-signed feedback transaction (Solana)
 - `POST /feedback/response` - Append agent response to feedback (EVM only)
@@ -141,6 +143,8 @@ a liveness `health` status from periodic probing, and a curated `tier`
         path_register_status,
         path_feedback_get,
         path_feedback_post,
+        path_feedback_evm_prepare,
+        path_feedback_evm_submit,
         path_feedback_solana_prepare,
         path_feedback_solana_submit,
         path_feedback_revoke,
@@ -882,6 +886,102 @@ at zero no matter how much feedback accumulates.
     )
 )]
 async fn path_feedback_post() {}
+
+#[utoipa::path(
+    post,
+    path = "/feedback/evm/prepare",
+    tag = "ERC-8004",
+    summary = "Prepare a rater-authored feedback (EVM, EIP-7702)",
+    description = r#"
+Returns everything the **rater** must sign so that the chain records THEM as the author of the
+rating while the facilitator pays the gas.
+
+**Why this exists.** The Reputation Registry records `msg.sender` as the author and the deployed
+implementation has no delegation path at all - no `giveFeedbackWithSignature`, no ERC-2771
+forwarder. A rating the facilitator relays normally is a rating attributed to the *facilitator*:
+87,2% of the feedback on Base, and the same address can revoke any of it.
+
+EIP-7702 fixes it without touching the registry. The rater delegates their own EOA to Execution
+Market's `FeedbackDelegate`, and the facilitator sends the transaction **to the rater's own
+address**, so the registry observes the rater as `msg.sender`.
+
+`rater` is REQUIRED (EVM address). The response carries:
+
+- `delegate` - the FeedbackDelegate the account must be pointed at
+- `data` - the registry calldata being authorised
+- `digest` - the EIP-191 digest to sign with the rater's key
+- `deadline`, `nonce` - the authorisation window and its single-use value
+- `delegated` - whether the account already carries the delegation; when `false` the submission
+  must include an EIP-7702 `authorization` signed by the rater, and `accountNonce` is the nonce
+  to put in it
+
+**Availability:** only where a `FeedbackDelegate` has actually been deployed and verified on-chain.
+Today that is **Base Sepolia** only; other networks answer 400. The delegate takes its registry
+address through an immutable constructor argument, so its address differs per chain and each one
+has to be verified before it is served.
+
+Deadlines are deliberately short (default 15 minutes, `ERC8004_RELAY_DEADLINE_SECS`): relaying is
+permissionless by design, so a signed authorisation is live in the wild until it expires.
+"#,
+    request_body(content = Object, description = "ERC-8004 feedback request with a `rater`"),
+    responses(
+        (status = 200, description = "Digest and parameters for the rater to sign", body = Object),
+        (status = 400, description = "Missing rater, no delegate on this network, or the account is delegated elsewhere", body = Object),
+        (status = 503, description = "Could not reach the chain, or the delegate is not usable", body = Object)
+    )
+)]
+async fn path_feedback_evm_prepare() {}
+
+#[utoipa::path(
+    post,
+    path = "/feedback/evm/submit",
+    tag = "ERC-8004",
+    summary = "Relay a rater-authored feedback (EVM, EIP-7702)",
+    description = r#"
+Relays a rating the rater authorised, as an EIP-7702 type-4 transaction sent to the rater's own
+address. The facilitator pays the gas and never becomes the author.
+
+Send back the same feedback parameters used for `/feedback/evm/prepare`, plus `deadline`, `nonce`,
+the rater's `signature` over the prepared digest, and - when the account is not delegated yet - the
+EIP-7702 `authorization`:
+
+```json
+{
+  "x402Version": 1,
+  "network": "base-sepolia",
+  "feedback": { "...": "exactly what you sent to /prepare" },
+  "deadline": 1786400000,
+  "nonce": "0x2222...",
+  "signature": "0x...",
+  "authorization": {
+    "chainId": 84532,
+    "address": "0x3A68085499B62286468A35b7D9Dfc237ef2d3768",
+    "nonce": 7,
+    "yParity": 0,
+    "r": "0x...",
+    "s": "0x..."
+  }
+}
+```
+
+**The parameters are not redundant.** The facilitator rebuilds the registry calldata from them and
+recomputes the digest; a signature that does not cover exactly that calldata is refused
+(`relay_bad_signature`). It also refuses an authorization pointing at any delegate other than the
+one it offered (`relay_authorization_wrong_delegate`) or signed by anyone other than the rater
+(`relay_authorization_not_by_rater`) - otherwise a caller could have the facilitator pay to delegate
+an account to a contract of their choosing.
+
+The proof-of-payment gate applies here exactly as it does to `POST /feedback`: who authored a rating
+and whether a payment backs it are separate questions.
+"#,
+    request_body(content = Object, description = "Feedback parameters, the rater's signature, and the EIP-7702 authorization"),
+    responses(
+        (status = 200, description = "Feedback relayed, authored by the rater", body = Object),
+        (status = 400, description = "Signature, authorization, deadline or replay check failed", body = Object),
+        (status = 500, description = "The relayed transaction failed", body = Object)
+    )
+)]
+async fn path_feedback_evm_submit() {}
 
 #[utoipa::path(
     post,

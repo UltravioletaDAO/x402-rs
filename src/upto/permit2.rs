@@ -485,6 +485,7 @@ async fn execute_settlement(
     let calldata = settle_call.abi_encode();
 
     let meta_tx = MetaTransaction {
+        authorization_list: None,
         to: UPTO_PERMIT2_PROXY_ADDRESS,
         calldata: Bytes::from(calldata),
         confirmations: 1,

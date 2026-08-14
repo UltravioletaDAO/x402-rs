@@ -774,6 +774,7 @@ async fn execute_release(
         let mut calldata = vec![0xec, 0xf3, 0x9b, 0x0a]; // old release selector
         calldata.extend_from_slice(&encoded_args);
         let meta_tx = MetaTransaction {
+            authorization_list: None,
             to: target,
             calldata: Bytes::from(calldata),
             confirmations: 1,
@@ -847,6 +848,7 @@ async fn execute_refund_in_escrow(
         let mut calldata = vec![0xe2, 0xb8, 0x99, 0x6f]; // old refundInEscrow selector
         calldata.extend_from_slice(&encoded_args);
         let meta_tx = MetaTransaction {
+            authorization_list: None,
             to: target,
             calldata: Bytes::from(calldata),
             confirmations: 1,
@@ -914,6 +916,7 @@ async fn send_operator_tx(
         .unwrap_or_else(|| "0x".to_string());
 
     let meta_tx = MetaTransaction {
+        authorization_list: None,
         to: target,
         calldata: Bytes::from(calldata),
         confirmations: 1,

@@ -273,6 +273,24 @@ resource "aws_vpc_endpoint" "dynamodb" {
   }
 }
 
+# S3 Gateway endpoint — free, same deal as DynamoDB above.
+# This one is not just defense-in-depth: the discovery health tracker rewrites
+# the whole ~5.8 MB health.json overlay to S3 on every tick, and the resource
+# catalog is a ~12.8 MB read-modify-write per registration. Without this
+# endpoint every one of those bytes crossed the NAT gateway and got billed at
+# $0.045/GB — ~277 GB/month, the single largest line item in NAT data
+# processing. On the backbone it is free.
+resource "aws_vpc_endpoint" "s3" {
+  vpc_id            = aws_vpc.main.id
+  service_name      = "com.amazonaws.${data.aws_region.current.name}.s3"
+  vpc_endpoint_type = "Gateway"
+  route_table_ids   = aws_route_table.private[*].id
+
+  tags = {
+    Name = "facilitator-${var.environment}-s3-endpoint"
+  }
+}
+
 # Security group dedicated to the Interface endpoints below. The endpoints
 # expose ENIs inside our private subnets; this SG limits the source to the
 # ECS task SG (port 443 only) so nothing else in the VPC can poke them.
@@ -574,7 +592,15 @@ resource "aws_iam_role_policy" "dynamodb_nonce_access" {
         Action = [
           "dynamodb:PutItem",
           "dynamodb:GetItem",
-          "dynamodb:DescribeTable"
+          "dynamodb:DescribeTable",
+          # DeleteItem is what lets a claim be GIVEN BACK. The ERC-8004
+          # proof gate claims the (payment, agent) pair before writing
+          # on-chain -- claiming after would let two concurrent requests
+          # both pass -- so when the write never lands the claim has to be
+          # released or that payment could never buy its rating again.
+          # Without this permission the release fails silently and the
+          # caller is locked out by our own retry.
+          "dynamodb:DeleteItem"
         ]
         Resource = aws_dynamodb_table.nonce_store.arn
       }
@@ -927,6 +953,52 @@ resource "aws_ecs_task_definition" "facilitator" {
         {
           name  = "ENABLE_UPTO"
           value = "true"
+        },
+        # ============================================================
+        # ERC-8004 reputation: authorship and the proof-of-payment gate
+        # ============================================================
+        # Written out explicitly even though they match the code defaults,
+        # for the same reason as the events dial below: these decide who
+        # can write reputation and under what evidence, and a decision
+        # that lives only as a Rust default is one nobody can audit.
+        #
+        # Phase 1 of a two-phase rollout. With REQUIRE_PROOF=false the
+        # facilitator runs every check on the ProofOfPayment attached to a
+        # feedback (transaction exists and succeeded, right block, right
+        # Transfer, payer == rater, payee tied to the agent, fresh,
+        # paymentHash recomputes, not already spent) and REPORTS the
+        # verdict without rejecting. That is how we measure how much real
+        # traffic a hard gate would break BEFORE it breaks it. Flip to
+        # "true" once the logs show the failures are gone.
+        {
+          name  = "ERC8004_REQUIRE_PROOF"
+          value = "false"
+        },
+        # Seven days. Also the TTL of the anti-replay record, deliberately:
+        # once a proof is too old to be accepted it no longer needs one.
+        {
+          name  = "ERC8004_PROOF_MAX_AGE_SECS"
+          value = "604800"
+        },
+        # DEPRECATED authorship path, still open. Account 0 of the Solana
+        # program's give_feedback instruction is the feedback AUTHOR, and
+        # POST /feedback puts our keypair there - which is why 87,2% of the
+        # feedback on Base is attributed to the facilitator's wallet. The
+        # replacement is /feedback/solana/prepare + /feedback/solana/submit,
+        # where the rater signs as `client` and we only pay the fee.
+        # Set to "false" to close the old path once callers have migrated.
+        {
+          name  = "ERC8004_ALLOW_FACILITATOR_AUTHORSHIP"
+          value = "true"
+        },
+        # How long a rater's EIP-7702 relay authorisation stays valid.
+        # Short on purpose: `relayFeedback` is permissionless by design, so
+        # a signed authorisation is live in the wild until its deadline.
+        # Fifteen minutes is the mitigation agreed with Execution Market
+        # for finding 4 of the delegate audit.
+        {
+          name  = "ERC8004_RELAY_DEADLINE_SECS"
+          value = "900"
         },
         # ============================================================
         # Live traffic stream (GET /events, SSE) — EXPOSURE DIAL

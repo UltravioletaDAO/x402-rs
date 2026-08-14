@@ -55,6 +55,7 @@
 mod abi;
 pub mod proof;
 pub mod register_jobs;
+pub mod relay;
 pub mod solana;
 mod types;
 

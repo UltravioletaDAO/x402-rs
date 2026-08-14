@@ -347,6 +347,14 @@ pub struct MetaTransaction {
     pub calldata: Bytes,
     /// Number of block confirmations to wait for.
     pub confirmations: u64,
+    /// EIP-7702 authorizations to install with this transaction, which makes it
+    /// a type-4.
+    ///
+    /// Carried here rather than sent through a separate path on purpose: the
+    /// relayed-feedback flow needs the same writer lease, the same nonce lane
+    /// and the same receipt-status check as every other write. A second send
+    /// path would be a second place to forget them.
+    pub authorization_list: Option<Vec<alloy::eips::eip7702::SignedAuthorization>>,
 }
 
 impl MetaEvmProvider for EvmProvider {
@@ -472,6 +480,7 @@ impl EvmProvider {
         let to = tx.to;
         let calldata = tx.calldata;
         let confirmations = tx.confirmations;
+        let authorization_list = tx.authorization_list;
 
         // Two retries rather than one: with several settles queued on the same
         // signer, the first retry can lose the race again to a sibling that
@@ -505,6 +514,14 @@ impl EvmProvider {
                 .with_to(to)
                 .with_from(from_address)
                 .with_input(calldata.clone());
+
+            // Present only for relayed ERC-8004 feedback, and what turns this
+            // into a type-4 transaction: the rater's authorization delegating
+            // their EOA to the FeedbackDelegate, so the registry observes THEM
+            // as msg.sender while we pay.
+            if let Some(list) = authorization_list.as_ref() {
+                txr.authorization_list = Some(list.clone());
+            }
 
             if !self.eip1559 {
                 let gas: u128 = self
@@ -1110,6 +1127,7 @@ where
                     if is_contract_deployed {
                         // transferWithAuthorization with v,r,s signature (PYUSD)
                         self.send_transaction(MetaTransaction {
+                            authorization_list: None,
                             to: transfer_call.tx.target(),
                             calldata: transfer_call.tx.calldata().clone(),
                             confirmations: 1,
@@ -1146,6 +1164,7 @@ where
                             calls: vec![deployment_call, transfer_with_authorization_call],
                         };
                         self.send_transaction(MetaTransaction {
+                            authorization_list: None,
                             to: MULTICALL3_ADDRESS,
                             calldata: aggregate_call.abi_encode().into(),
                             confirmations: 1,
@@ -1173,6 +1192,7 @@ where
                     if is_contract_deployed {
                         // transferWithAuthorization with inner signature
                         self.send_transaction(MetaTransaction {
+                            authorization_list: None,
                             to: transfer_call.tx.target(),
                             calldata: transfer_call.tx.calldata().clone(),
                             confirmations: 1,
@@ -1207,6 +1227,7 @@ where
                             calls: vec![deployment_call, transfer_with_authorization_call],
                         };
                         self.send_transaction(MetaTransaction {
+                            authorization_list: None,
                             to: MULTICALL3_ADDRESS,
                             calldata: aggregate_call.abi_encode().into(),
                             confirmations: 1,
@@ -1235,6 +1256,7 @@ where
                         transferWithAuthorization_1(&contract, &payment, eip1271_signature).await?;
                     // transferWithAuthorization with v,r,s signature for PYUSD
                     self.send_transaction(MetaTransaction {
+                        authorization_list: None,
                         to: transfer_call.tx.target(),
                         calldata: transfer_call.tx.calldata().clone(),
                         confirmations: 1,
@@ -1260,6 +1282,7 @@ where
                         transferWithAuthorization_0(&contract, &payment, eip1271_signature).await?;
                     // transferWithAuthorization with eip1271 signature
                     self.send_transaction(MetaTransaction {
+                        authorization_list: None,
                         to: transfer_call.tx.target(),
                         calldata: transfer_call.tx.calldata().clone(),
                         confirmations: 1,

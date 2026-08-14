@@ -73,6 +73,25 @@ data "aws_secretsmanager_secret" "algorand_testnet_mnemonic" {
 }
 
 # ----------------------------------------------------------------------------
+# Admin Credentials
+# ----------------------------------------------------------------------------
+
+# Bearer token for POST /feedback/revoke.
+#
+# Deliberately NOT the bazaar admin token: the ERC-8004 Reputation Registry
+# authorises revokeFeedback by msg.sender, which is the facilitator, so this one
+# credential can erase any feedback the registry attributes to our wallet -
+# irreversibly, and for third parties. Leaking the bazaar token hides a catalog
+# listing; leaking this one destroys reputation. Different blast radius,
+# different secret.
+#
+# The facilitator fails CLOSED: with no ERC8004_ADMIN_TOKEN in the environment
+# the route answers 404 and is indistinguishable from one that does not exist.
+data "aws_secretsmanager_secret" "erc8004_admin_token" {
+  name = "facilitator-erc8004-admin-token"
+}
+
+# ----------------------------------------------------------------------------
 # RPC URL Secrets (Premium Endpoints)
 # ----------------------------------------------------------------------------
 
@@ -109,6 +128,11 @@ locals {
     data.aws_secretsmanager_secret.algorand_testnet_mnemonic.arn,
   ]
 
+  # Admin credential ARNs that need IAM permissions
+  admin_secret_arns = [
+    data.aws_secretsmanager_secret.erc8004_admin_token.arn,
+  ]
+
   # All RPC secret ARNs that need IAM permissions
   rpc_secret_arns = [
     data.aws_secretsmanager_secret.rpc_mainnet.arn,
@@ -116,7 +140,11 @@ locals {
   ]
 
   # Combined list for IAM policy
-  all_secret_arns = concat(local.wallet_secret_arns, local.rpc_secret_arns)
+  all_secret_arns = concat(
+    local.wallet_secret_arns,
+    local.rpc_secret_arns,
+    local.admin_secret_arns
+  )
 }
 
 # ============================================================================
@@ -285,10 +313,21 @@ locals {
     },
   ]
 
+  # ----------------------------------------------------------------------------
+  # Admin credentials
+  # ----------------------------------------------------------------------------
+  admin_secrets = [
+    {
+      name      = "ERC8004_ADMIN_TOKEN"
+      valueFrom = "${data.aws_secretsmanager_secret.erc8004_admin_token.arn}:token::"
+    },
+  ]
+
   # Combined secrets array for task definition
   all_task_secrets = concat(
     local.wallet_secrets,
     local.mainnet_rpc_secrets,
-    local.testnet_rpc_secrets
+    local.testnet_rpc_secrets,
+    local.admin_secrets
   )
 }

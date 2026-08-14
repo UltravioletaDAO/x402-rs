@@ -299,6 +299,78 @@ pub struct SubmitFeedbackRequest {
     pub transaction: String,
 }
 
+/// An EIP-7702 authorization as a wallet produces it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelayAuthorizationParams {
+    /// Chain the authorization is for. `0` is EIP-7702's wildcard and is valid
+    /// on every chain -- a broader grant than pinning this one.
+    pub chain_id: u64,
+    /// The delegate the account is pointed at. Must be the one the facilitator
+    /// offered; anything else is refused before a transaction is paid for.
+    pub address: alloy::primitives::Address,
+    /// The rater account's nonce at the time the authorization executes.
+    pub nonce: u64,
+    pub y_parity: u8,
+    pub r: alloy::primitives::U256,
+    pub s: alloy::primitives::U256,
+}
+
+/// Response from `POST /feedback/evm/prepare`.
+///
+/// Everything the rater needs to sign so that the CHAIN records them as the
+/// author while the facilitator pays the gas.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrepareRelayFeedbackResponse {
+    pub success: bool,
+    /// The FeedbackDelegate the rater's EOA must be delegated to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delegate: Option<alloy::primitives::Address>,
+    /// Registry calldata the rater is authorising, hex-encoded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<alloy::primitives::Bytes>,
+    /// EIP-191 digest to sign with the rater's key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub digest: Option<FixedBytes<32>>,
+    /// Unix timestamp after which the authorisation is void. Short on purpose.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deadline: Option<u64>,
+    /// Single-use value binding this authorisation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nonce: Option<FixedBytes<32>>,
+    /// Whether the account is already delegated. When false the submission must
+    /// carry an `authorization`.
+    pub delegated: bool,
+    /// The account nonce to put in the EIP-7702 authorization, when one is
+    /// needed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_nonce: Option<u64>,
+    pub chain_id: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub network: Network,
+}
+
+/// Request body for `POST /feedback/evm/submit`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubmitRelayFeedbackRequest {
+    pub x402_version: crate::types::X402Version,
+    pub network: Network,
+    /// The same parameters that produced the digest. The facilitator rebuilds
+    /// the calldata from these and refuses to relay anything the rater's
+    /// signature does not cover.
+    pub feedback: FeedbackParams,
+    pub deadline: u64,
+    pub nonce: FixedBytes<32>,
+    /// The rater's EIP-191 signature over the prepared digest.
+    pub signature: alloy::primitives::Bytes,
+    /// Required only when the account is not delegated yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorization: Option<RelayAuthorizationParams>,
+}
+
 /// Request to revoke feedback
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -3529,15 +3529,23 @@ pub async fn get_feedback_info() -> impl IntoResponse {
                 "endpoint": "string (optional) - Service endpoint that was used",
                 "feedbackUri": "string (optional) - URI to off-chain feedback file (IPFS, HTTPS)",
                 "feedbackHash": "string (optional) - Keccak256 hash of feedback content (32 bytes hex)",
-                // Truth in advertising: the shape below is published field by
-                // field, but nothing in this service verifies it yet -- the
-                // struct is carried and dropped. Saying so is the difference
-                // between "we check this" and "we transcribe this"; the gate
-                // that makes it true is P1, and this note comes out with it.
-                "proofStatus": "NOT VERIFIED YET - the facilitator accepts and forwards this \
-                                structure but does not currently check that the transaction \
-                                exists, that the payer is the rater, or that the amount matches. \
-                                Do not treat its presence as evidence of payment.",
+                "rater": "address (recommended) - who is doing the rating. Compared against proof.payer. \
+                          A claim, not an authenticated identity: nothing here is signed by the rater yet.",
+                // Truth in advertising, resolved at runtime rather than
+                // hardcoded: the same binary answers differently depending on
+                // whether the operator has switched enforcement on, and a
+                // static sentence would be wrong in one of the two states.
+                "proofStatus": if crate::erc8004::proof::is_proof_required() {
+                    "VERIFIED AND ENFORCED - the facilitator checks the transaction on-chain \
+                     (exists, succeeded, right block, right Transfer, payer == rater, payee tied to \
+                     the agent, fresh, paymentHash recomputed, not already spent) and REJECTS the \
+                     submission when it does not hold."
+                } else {
+                    "VERIFIED BUT NOT ENFORCED - the facilitator runs every check and reports the \
+                     verdict in the response `proof` field, but does NOT reject a failing proof \
+                     while ERC8004_REQUIRE_PROOF is off. Do not treat its presence alone as \
+                     evidence of payment; read the verdict."
+                },
                 "proof": {
                     "transactionHash": "string - Settlement transaction hash",
                     "blockNumber": "number - Block number of settlement",
@@ -3563,6 +3571,117 @@ pub async fn get_feedback_info() -> impl IntoResponse {
         },
         "supportedNetworks": networks
     }))
+}
+
+/// Replay records for the proof gate. Lazily built like the Solana one so a
+/// facilitator that never sees a feedback never talks to DynamoDB.
+static ERC8004_PROOF_STORE: once_cell::sync::OnceCell<Arc<dyn crate::nonce_store::NonceStore>> =
+    once_cell::sync::OnceCell::new();
+
+async fn erc8004_proof_store() -> Arc<dyn crate::nonce_store::NonceStore> {
+    if let Some(store) = ERC8004_PROOF_STORE.get() {
+        return store.clone();
+    }
+    let store = crate::nonce_store::create_nonce_store().await;
+    let _ = ERC8004_PROOF_STORE.set(store.clone());
+    store
+}
+
+/// Outcome of trying to spend a proof on one rating.
+enum ProofClaim {
+    /// Nothing to claim (no proof, or the proof did not verify).
+    NotApplicable,
+    /// Claimed. Release it if the on-chain write never lands.
+    Held(String),
+    /// This payment already bought a rating for this agent.
+    Replayed,
+}
+
+/// Spend the (payment, agent) pair, atomically.
+///
+/// A payment must not yield fifty ratings. The claim happens BEFORE the
+/// on-chain write rather than after, because a check-then-act would let two
+/// concurrent requests both pass; the cost of claiming first is that a write
+/// which never lands has to give the claim back, which is what
+/// `NonceStore::release` is for.
+///
+/// A store that is unreachable does NOT block the write. The gate is anti-sybil,
+/// not custody of funds: losing a replay record costs a duplicate rating, while
+/// refusing every rating because DynamoDB blinked costs real reputation. The
+/// failure is logged loudly instead.
+async fn claim_feedback_proof(
+    network: &crate::network::Network,
+    proof: &crate::erc8004::ProofOfPayment,
+    agent_id: &str,
+) -> ProofClaim {
+    let key = crate::erc8004::proof::proof_replay_key(network, &proof.transaction_hash, agent_id);
+    let store = erc8004_proof_store().await;
+    match store
+        .check_and_mark_used(&key, crate::erc8004::proof::replay_ttl_secs())
+        .await
+    {
+        Ok(()) => ProofClaim::Held(key),
+        Err(crate::nonce_store::NonceStoreError::NonceAlreadyUsed(_)) => {
+            warn!(
+                network = %network,
+                agent_id = %agent_id,
+                "proof replay: this payment already bought a rating for this agent"
+            );
+            ProofClaim::Replayed
+        }
+        Err(e) => {
+            error!(
+                network = %network,
+                agent_id = %agent_id,
+                error = %crate::redact::scrub_urls(&e.to_string()),
+                "proof replay store unavailable; proceeding WITHOUT replay protection"
+            );
+            ProofClaim::NotApplicable
+        }
+    }
+}
+
+/// Give a claim back after a write that never landed.
+async fn release_feedback_proof(claim: &ProofClaim) {
+    if let ProofClaim::Held(key) = claim {
+        let store = erc8004_proof_store().await;
+        if let Err(e) = store.release(key).await {
+            // Not fatal: the key stays claimed, which costs the caller a retry
+            // and never costs a duplicate rating.
+            warn!(
+                error = %crate::redact::scrub_urls(&e.to_string()),
+                "could not release the proof claim after a failed feedback write"
+            );
+        }
+    }
+}
+
+/// One line per submission carrying the verdict, in phase 1 and phase 2 alike.
+///
+/// This IS the measurement the two-phase rollout is for: with
+/// `ERC8004_REQUIRE_PROOF` off, these lines are how we find out how much real
+/// traffic a hard gate would break before it breaks it.
+fn log_proof_verdict(
+    network: &crate::network::Network,
+    agent_id: &str,
+    report: &crate::erc8004::proof::ProofReport,
+) {
+    match report.rejection {
+        None => info!(
+            network = %network,
+            agent_id = %agent_id,
+            anchor = report.anchor.as_str(),
+            "[OK] feedback proof verified"
+        ),
+        Some(reason) => warn!(
+            network = %network,
+            agent_id = %agent_id,
+            reason = reason.as_str(),
+            anchor = report.anchor.as_str(),
+            enforced = report.enforced,
+            "[WARN] feedback proof did not verify"
+        ),
+    }
 }
 
 /// `POST /feedback`: Submit ERC-8004 reputation feedback on-chain.
@@ -3599,6 +3718,7 @@ where
             return (
                 StatusCode::BAD_REQUEST,
                 Json(FeedbackResponse {
+                    proof: None,
                     success: false,
                     transaction: None,
                     feedback_index: None,
@@ -3622,6 +3742,7 @@ where
         return (
             StatusCode::BAD_REQUEST,
             Json(FeedbackResponse {
+                proof: None,
                 success: false,
                 transaction: None,
                 feedback_index: None,
@@ -3660,6 +3781,7 @@ where
                     return (
                         StatusCode::BAD_REQUEST,
                         Json(FeedbackResponse {
+                            proof: None,
                             success: false,
                             transaction: None,
                             feedback_index: None,
@@ -3680,6 +3802,7 @@ where
                     return (
                         StatusCode::BAD_REQUEST,
                         Json(FeedbackResponse {
+                            proof: None,
                             success: false,
                             transaction: None,
                             feedback_index: None,
@@ -3704,6 +3827,7 @@ where
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(FeedbackResponse {
+                            proof: None,
                             success: false,
                             transaction: None,
                             feedback_index: None,
@@ -3726,6 +3850,7 @@ where
                     return (
                         StatusCode::BAD_REQUEST,
                         Json(FeedbackResponse {
+                            proof: None,
                             success: false,
                             transaction: None,
                             feedback_index: None,
@@ -3741,6 +3866,15 @@ where
                     "Feedback submitted without a score: it will not affect ATOM reputation"
                 );
             }
+
+            // The document half of the proof gate runs here too -- keccak does
+            // not care which chain anchors it -- but the payment half does not:
+            // checking an SVM payment means reading an SVM transaction, which
+            // the gate does not do. Recorded as an explicit gap
+            // (`proof_unverifiable_chain`) that never blocks the write, rather
+            // than as a check that quietly did not run.
+            let proof_report = crate::erc8004::proof::evaluate_svm_feedback_proof(feedback).await;
+            log_proof_verdict(&network, &agent_id_str, &proof_report);
 
             let ix = solana_erc8004::build_give_feedback_ix(
                 &programs,
@@ -3770,6 +3904,7 @@ where
                     (
                         StatusCode::OK,
                         Json(FeedbackResponse {
+                            proof: Some(proof_report),
                             success: true,
                             transaction: Some(crate::types::TransactionHash::Solana(sig.into())),
                             feedback_index: None,
@@ -3784,6 +3919,7 @@ where
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(FeedbackResponse {
+                            proof: None,
                             success: false,
                             transaction: None,
                             feedback_index: None,
@@ -3803,6 +3939,7 @@ where
                     return (
                         StatusCode::BAD_REQUEST,
                         Json(FeedbackResponse {
+                            proof: None,
                             success: false,
                             transaction: None,
                             feedback_index: None,
@@ -3820,6 +3957,7 @@ where
                     return (
                         StatusCode::BAD_REQUEST,
                         Json(FeedbackResponse {
+                            proof: None,
                             success: false,
                             transaction: None,
                             feedback_index: None,
@@ -3833,6 +3971,66 @@ where
                         .into_response();
                 }
             };
+
+            // ── Proof-of-payment gate (anti-sybil) ──
+            //
+            // The registry lets any address rate any agent, so without this the
+            // only thing rationing reputation is the fact that we are the ones
+            // signing. Two-phase by design: with ERC8004_REQUIRE_PROOF off the
+            // verdict is measured and logged, not enforced.
+            let proof_report = crate::erc8004::proof::evaluate_feedback_proof(
+                provider.inner(),
+                contracts.identity_registry,
+                network,
+                agent_id_u64,
+                feedback,
+            )
+            .await;
+            log_proof_verdict(&network, &agent_id_str, &proof_report);
+            if proof_report.should_reject() {
+                let reason = proof_report
+                    .rejection
+                    .map(|r| r.as_str())
+                    .unwrap_or("proof_rejected");
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(FeedbackResponse {
+                        // A BOUNDED reason, never the raw error: those carry
+                        // addresses and RPC URLs with keys in them.
+                        proof: Some(proof_report),
+                        success: false,
+                        transaction: None,
+                        feedback_index: None,
+                        error: Some(format!("proof of payment rejected: {}", reason)),
+                        network,
+                    }),
+                )
+                    .into_response();
+            }
+
+            // Spend the proof only once it has actually verified: claiming on a
+            // proof we just refused would burn a key on the strength of garbage.
+            let claim = match (proof_report.is_verified(), feedback.proof.as_ref()) {
+                (true, Some(p)) => claim_feedback_proof(&network, p, &agent_id_str).await,
+                _ => ProofClaim::NotApplicable,
+            };
+            if matches!(claim, ProofClaim::Replayed) && crate::erc8004::proof::is_proof_required() {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(FeedbackResponse {
+                        proof: Some(proof_report),
+                        success: false,
+                        transaction: None,
+                        feedback_index: None,
+                        error: Some(format!(
+                            "proof of payment rejected: {}",
+                            crate::erc8004::proof::ProofRejection::Replayed.as_str()
+                        )),
+                        network,
+                    }),
+                )
+                    .into_response();
+            }
 
             let reputation_registry =
                 IReputationRegistry::new(contracts.reputation_registry, provider.inner().clone());
@@ -3861,9 +4059,12 @@ where
                     Ok(gas_price) => call.gas_price(gas_price).send().await,
                     Err(e) => {
                         error!(error = %e, "Failed to get gas price");
+                        // Nothing was written, so the proof has not been spent.
+                        release_feedback_proof(&claim).await;
                         return (
                             StatusCode::INTERNAL_SERVER_ERROR,
                             Json(FeedbackResponse {
+                                proof: Some(proof_report),
                                 success: false,
                                 transaction: None,
                                 feedback_index: None,
@@ -3892,6 +4093,7 @@ where
                         (
                             StatusCode::OK,
                             Json(FeedbackResponse {
+                                proof: Some(proof_report),
                                 success: true,
                                 transaction: Some(crate::types::TransactionHash::Evm(tx_hash.0)),
                                 feedback_index,
@@ -3903,9 +4105,14 @@ where
                     }
                     Err(e) => {
                         error!(network = %network, error = %e, "Failed to get transaction receipt");
+                        // The receipt never arrived, so we do NOT know whether
+                        // the write landed. Keeping the claim is the safe
+                        // direction: a lost rating can be retried by a human, a
+                        // duplicated one cannot be taken back.
                         (
                             StatusCode::INTERNAL_SERVER_ERROR,
                             Json(FeedbackResponse {
+                                proof: Some(proof_report),
                                 success: false,
                                 transaction: None,
                                 feedback_index: None,
@@ -3918,9 +4125,12 @@ where
                 },
                 Err(e) => {
                     error!(network = %network, error = %e, "Failed to submit feedback transaction");
+                    // The submission itself was refused, so nothing was written.
+                    release_feedback_proof(&claim).await;
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(FeedbackResponse {
+                            proof: Some(proof_report),
                             success: false,
                             transaction: None,
                             feedback_index: None,
@@ -3937,6 +4147,7 @@ where
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(FeedbackResponse {
+                    proof: None,
                     success: false,
                     transaction: None,
                     feedback_index: None,

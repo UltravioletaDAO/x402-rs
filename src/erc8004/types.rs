@@ -200,6 +200,20 @@ pub struct FeedbackParams {
     /// Proof of payment (required for authorized feedback)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proof: Option<ProofOfPayment>,
+
+    /// Who is doing the rating.
+    ///
+    /// Until this field existed the request could not express WHO was rating,
+    /// so "the payer is the one rating" was not a check anyone could run: the
+    /// facilitator signs, and the registry only ever sees `msg.sender`. The
+    /// proof gate compares this against `proof.payer`.
+    ///
+    /// It is a CLAIM, not an authenticated identity -- nothing here is signed by
+    /// the rater yet. It is what makes the payment gate decidable; real
+    /// authorship arrives with the partially-signed SVM transaction and the
+    /// EIP-7702 delegation on EVM.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rater: Option<MixedAddress>,
 }
 
 /// Request body for POST /feedback endpoint.
@@ -231,6 +245,14 @@ pub struct FeedbackResponse {
     pub error: Option<String>,
     /// Network where feedback was submitted
     pub network: Network,
+    /// What the facilitator checked about the `proof` that came with this
+    /// submission, and whether the check was enforced or only measured.
+    ///
+    /// Reported rather than kept private: while `ERC8004_REQUIRE_PROOF` is off
+    /// a failing proof still gets written on-chain, and the caller is entitled
+    /// to know that what it just anchored is unverified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proof: Option<crate::erc8004::proof::ProofReport>,
 }
 
 /// Request to revoke feedback
@@ -463,6 +485,23 @@ impl ProofOfPayment {
         }
     }
 
+    /// Recompute this proof's `payment_hash` from the fields it commits to.
+    ///
+    /// Comparing the result against the stored `payment_hash` is what catches a
+    /// struct that was edited after the settle produced it -- an inflated
+    /// `amount`, a swapped `payee`. Note what is NOT covered: `network`,
+    /// `token` and `timestamp` are outside the preimage, so they have to be
+    /// checked against the chain rather than against this hash.
+    pub fn recompute_payment_hash(&self) -> FixedBytes<32> {
+        Self::compute_payment_hash(
+            &self.transaction_hash,
+            self.block_number,
+            &self.payer,
+            &self.payee,
+            &self.amount,
+        )
+    }
+
     /// Compute the payment hash from core fields.
     fn compute_payment_hash(
         transaction_hash: &TransactionHash,
@@ -658,6 +697,7 @@ mod tests {
             feedback_hash: None,
             score: Some(85),
             proof: None,
+            rater: None,
         };
 
         let json = serde_json::to_string(&params).unwrap();
@@ -681,6 +721,7 @@ mod tests {
                 feedback_hash: None,
                 score: None,
                 proof: None,
+                rater: None,
             },
         };
 

@@ -845,6 +845,26 @@ Submits on-chain reputation feedback for an AI agent via the ERC-8004 Reputation
 }
 ```
 
+**Proof of payment (anti-sybil gate).** The Reputation Registry lets any address rate any agent, so
+a `proof` (the `ProofOfPayment` the settle response already returns) plus a `rater` address turn a
+rating into something backed by a real payment. When both are present the facilitator checks, on-chain
+and server-side: the transaction exists on that network and succeeded, sits in the block the proof
+claims, contains an ERC-20 `Transfer` of exactly `amount` in `token` from `payer` to `payee`, the payer
+is the `rater`, the payee is an address the Identity Registry ties to the agent (`getAgentWallet` when
+set, otherwise `ownerOf`), the block timestamp is within `ERC8004_PROOF_MAX_AGE_SECS`, `paymentHash`
+recomputes, and this (payment, agent) pair has not already been spent on a rating.
+
+The verdict comes back in the response `proof` field with a bounded reason. While
+`ERC8004_REQUIRE_PROOF` is off, a failing proof is reported but the feedback is still written; with it
+on, the submission is rejected with 400. Two verdicts never block a write: `proof_rpc_unavailable`
+(no verdict reached - our outage must not erase reputation) and `proof_unverifiable_chain` (a Solana
+feedback, where the payment half of the gate has no EVM receipt to read).
+
+If a `feedbackUri` + `feedbackHash` pair is supplied, the facilitator also fetches the document and
+verifies `keccak256(document) == feedbackHash`, reporting whether the anchor is `auditable`,
+`hash_only`, `unreachable` or a `mismatch`. A mismatch is refused: the hash would commit to something
+other than what was shown.
+
 Solana feedback triggers ATOM Engine CPI for trust scoring (trust tiers, HyperLogLog diversity, EMA quality).
 
 **Send `score` (0-100) on Solana.** Without it the engine records the feedback on the

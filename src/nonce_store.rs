@@ -100,6 +100,22 @@ pub trait NonceStore: Send + Sync + std::fmt::Debug {
     /// Use this for verification without marking. For settlement, use check_and_mark_used().
     async fn is_used(&self, key: &str) -> Result<bool, NonceStoreError>;
 
+    /// Give a claimed key back, best-effort.
+    ///
+    /// For flows that must claim BEFORE doing the irreversible thing (the only
+    /// way to avoid a check-then-act race) and then discover the irreversible
+    /// thing did not happen. Without this, a failed on-chain write would burn
+    /// the claim and the caller could never retry.
+    ///
+    /// Best-effort by design: a release that fails leaves the key claimed,
+    /// which is the safe direction -- it costs a retry, never a double spend.
+    /// The default is a no-op so an implementation that cannot delete simply
+    /// keeps the stricter behaviour.
+    async fn release(&self, key: &str) -> Result<(), NonceStoreError> {
+        let _ = key;
+        Ok(())
+    }
+
     /// Check if the store is healthy and accessible.
     async fn health_check(&self) -> Result<(), NonceStoreError>;
 
@@ -208,6 +224,12 @@ impl NonceStore for MemoryNonceStore {
             return Ok(expires_at > now);
         }
         Ok(false)
+    }
+
+    async fn release(&self, key: &str) -> Result<(), NonceStoreError> {
+        self.data.write().await.remove(key);
+        debug!(key = %key, "Released nonce claim (memory)");
+        Ok(())
     }
 
     async fn health_check(&self) -> Result<(), NonceStoreError> {
@@ -344,6 +366,20 @@ impl NonceStore for DynamoNonceStore {
         Ok(false)
     }
 
+    async fn release(&self, key: &str) -> Result<(), NonceStoreError> {
+        use aws_sdk_dynamodb::types::AttributeValue;
+
+        self.client
+            .delete_item()
+            .table_name(&self.table_name)
+            .key("pk", AttributeValue::S(key.to_string()))
+            .send()
+            .await
+            .map_err(|e| NonceStoreError::WriteError(e.into_service_error().to_string()))?;
+        debug!(key = %key, "Released nonce claim (DynamoDB)");
+        Ok(())
+    }
+
     async fn health_check(&self) -> Result<(), NonceStoreError> {
         // Try to describe the table to verify connectivity
         self.client
@@ -426,6 +462,33 @@ mod tests {
 
         // Now it's used
         assert!(store.is_used(key).await.unwrap());
+    }
+
+    /// A claim that is released can be claimed again.
+    ///
+    /// This is what lets a caller retry after the on-chain write it claimed for
+    /// never landed -- without it, one failed submission would burn that
+    /// payment's right to rate forever.
+    #[tokio::test]
+    async fn test_memory_store_release_allows_a_retry() {
+        let store = MemoryNonceStore::new();
+        let key = "erc8004-proof#base#abc#42";
+
+        store.check_and_mark_used(key, 3600).await.unwrap();
+        assert!(store.check_and_mark_used(key, 3600).await.is_err());
+
+        store.release(key).await.unwrap();
+        assert!(!store.is_used(key).await.unwrap());
+        assert!(store.check_and_mark_used(key, 3600).await.is_ok());
+    }
+
+    /// Releasing something never claimed is not an error: the caller releases
+    /// on a failure path where it cannot know whether the claim went through.
+    #[tokio::test]
+    async fn test_memory_store_release_is_idempotent() {
+        let store = MemoryNonceStore::new();
+        assert!(store.release("never#claimed#key").await.is_ok());
+        assert!(store.release("never#claimed#key").await.is_ok());
     }
 
     #[test]

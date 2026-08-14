@@ -53,6 +53,7 @@
 //! - x402 Extension: `8004-reputation`
 
 mod abi;
+pub mod proof;
 pub mod register_jobs;
 pub mod solana;
 mod types;

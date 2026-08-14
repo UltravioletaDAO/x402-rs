@@ -581,20 +581,67 @@ async fn require_writer_lease(
     next.run(request).await
 }
 
+/// Reject a `/feedback/revoke` call that does not carry the ERC-8004 admin
+/// bearer token.
+///
+/// Why this route and not the others: `revokeFeedback` takes only
+/// `agentId + feedbackIndex` and the registry authorises by `msg.sender`, which
+/// is US. Every feedback the registry attributes to the facilitator wallet is
+/// therefore revocable by whoever asks us to sign it, and until this gate
+/// existed the only layer in front of the route was [`require_writer_lease`] —
+/// a concurrency lease between ECS tasks, not authentication of the caller. An
+/// anonymous POST could erase third-party reputation, permanently.
+///
+/// Middleware rather than a check inside the handler, deliberately: the handler
+/// parses the body first, so a malformed body would answer 400 and reveal that
+/// the route exists while the admin surface is supposed to be indistinguishable
+/// from absent. Same reasoning as [`parse_admin_body`].
+///
+/// Fail-closed: with no `ERC8004_ADMIN_TOKEN` configured the route answers 404,
+/// so deploying this turns revoke OFF until someone sets the secret on purpose.
+async fn require_erc8004_admin(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if let Some(rejection) = admin_reject(admin_auth(request.headers(), ERC8004_ADMIN_TOKEN_VAR)) {
+        warn!(
+            path = %request.uri().path(),
+            "rejecting ERC-8004 revoke: missing or invalid admin credentials"
+        );
+        return rejection;
+    }
+    next.run(request).await
+}
+
 pub fn erc8004_write_routes<A>() -> Router<A>
 where
     A: Facilitator + HasProviderMap + Clone + Send + Sync + 'static,
     A::Error: IntoResponse,
     A::Map: ProviderMap<Value = NetworkProvider> + Sync,
 {
+    // `/feedback/revoke` carries a second gate the other writes do not; see
+    // [`require_erc8004_admin`]. It keeps its own `Router` so both layers travel
+    // with it and the public path does not change.
+    //
+    // Layer order matters: `.layer()` wraps, so the LAST one added runs FIRST.
+    // Admin outermost means an unauthenticated caller gets the same answer
+    // whether or not this instance holds the writer lease — a 503 that only
+    // appears for the revoke path would leak that the route is live while the
+    // admin surface is meant to look absent.
+    let revoke = Router::new()
+        .route("/feedback/revoke", post(post_revoke_feedback::<A>))
+        .layer(axum::middleware::from_fn(require_writer_lease))
+        .layer(axum::middleware::from_fn(require_erc8004_admin));
+
     Router::new()
         .route("/register", post(post_register::<A>))
         .route("/feedback", post(post_feedback::<A>))
-        .route("/feedback/revoke", post(post_revoke_feedback::<A>))
         .route("/feedback/response", post(post_append_response::<A>))
         // Applied here, not at the call sites, and not in main.rs: the gate
-        // travels with the routes it protects.
+        // travels with the routes it protects. Merged AFTER this layer so the
+        // revoke router keeps its own stack instead of being wrapped twice.
         .layer(axum::middleware::from_fn(require_writer_lease))
+        .merge(revoke)
 }
 
 /// Discovery API routes for the Bazaar feature.
@@ -704,14 +751,32 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 /// Outcome of admin bearer authentication.
 enum AdminAuth {
     Ok,
-    /// No `BAZAAR_ADMIN_TOKEN` configured — the admin surface is disabled.
+    /// No token configured in the env var this surface reads — the admin
+    /// surface is disabled.
     Disabled,
     Unauthorized,
 }
 
-/// Authenticate an admin request. Never logs the supplied credential.
-fn admin_auth(headers: &axum::http::HeaderMap) -> AdminAuth {
-    let Ok(expected) = std::env::var("BAZAAR_ADMIN_TOKEN") else {
+/// The env var guarding the Bazaar curation admin routes.
+const BAZAAR_ADMIN_TOKEN_VAR: &str = "BAZAAR_ADMIN_TOKEN";
+
+/// The env var guarding `POST /feedback/revoke`.
+///
+/// Deliberately NOT `BAZAAR_ADMIN_TOKEN`: the blast radii are different. Leaking
+/// the bazaar token hides or deletes a catalog listing; leaking this one signs
+/// the destruction of third-party reputation on-chain, irreversibly. One
+/// credential for both would mean the weaker surface sets the risk of the
+/// stronger one.
+const ERC8004_ADMIN_TOKEN_VAR: &str = "ERC8004_ADMIN_TOKEN";
+
+/// Authenticate an admin request against the token in `env_var`. Never logs the
+/// supplied credential.
+///
+/// The env var is a parameter rather than a constant because the admin surfaces
+/// guarded by this function are not interchangeable — see
+/// [`ERC8004_ADMIN_TOKEN_VAR`].
+fn admin_auth(headers: &axum::http::HeaderMap, env_var: &str) -> AdminAuth {
+    let Ok(expected) = std::env::var(env_var) else {
         return AdminAuth::Disabled;
     };
     if expected.is_empty() {
@@ -769,7 +834,7 @@ pub async fn delete_discovery_resource(
     headers: axum::http::HeaderMap,
     Query(q): Query<AdminUrlQuery>,
 ) -> impl IntoResponse {
-    if let Some(r) = admin_reject(admin_auth(&headers)) {
+    if let Some(r) = admin_reject(admin_auth(&headers, BAZAAR_ADMIN_TOKEN_VAR)) {
         return r;
     }
     let Some(url) = q.url else {
@@ -822,7 +887,7 @@ pub async fn post_discovery_suppress(
     headers: axum::http::HeaderMap,
     raw: axum::body::Bytes,
 ) -> impl IntoResponse {
-    if let Some(r) = admin_reject(admin_auth(&headers)) {
+    if let Some(r) = admin_reject(admin_auth(&headers, BAZAAR_ADMIN_TOKEN_VAR)) {
         return r;
     }
     let body = match parse_admin_body(&raw) {
@@ -845,7 +910,7 @@ pub async fn post_discovery_release(
     headers: axum::http::HeaderMap,
     raw: axum::body::Bytes,
 ) -> impl IntoResponse {
-    if let Some(r) = admin_reject(admin_auth(&headers)) {
+    if let Some(r) = admin_reject(admin_auth(&headers, BAZAAR_ADMIN_TOKEN_VAR)) {
         return r;
     }
     let body = match parse_admin_body(&raw) {
@@ -3464,6 +3529,15 @@ pub async fn get_feedback_info() -> impl IntoResponse {
                 "endpoint": "string (optional) - Service endpoint that was used",
                 "feedbackUri": "string (optional) - URI to off-chain feedback file (IPFS, HTTPS)",
                 "feedbackHash": "string (optional) - Keccak256 hash of feedback content (32 bytes hex)",
+                // Truth in advertising: the shape below is published field by
+                // field, but nothing in this service verifies it yet -- the
+                // struct is carried and dropped. Saying so is the difference
+                // between "we check this" and "we transcribe this"; the gate
+                // that makes it true is P1, and this note comes out with it.
+                "proofStatus": "NOT VERIFIED YET - the facilitator accepts and forwards this \
+                                structure but does not currently check that the transaction \
+                                exists, that the payer is the rater, or that the amount matches. \
+                                Do not treat its presence as evidence of payment.",
                 "proof": {
                     "transactionHash": "string - Settlement transaction hash",
                     "blockNumber": "number - Block number of settlement",
@@ -3480,7 +3554,7 @@ pub async fn get_feedback_info() -> impl IntoResponse {
         "endpoints": {
             "POST /register": "Register a new ERC-8004 agent (with optional recipient for delegation)",
             "POST /feedback": "Submit new feedback",
-            "POST /feedback/revoke": "Revoke previously submitted feedback",
+            "POST /feedback/revoke": "Revoke previously submitted feedback (ADMIN ONLY: requires Authorization: Bearer <ERC8004_ADMIN_TOKEN>; 404 when no token is configured)",
             "POST /feedback/response": "Append response to feedback (agent only)",
             "GET /reputation/:network/:agentId": "Get reputation summary for an agent",
             "GET /identity/:network/:agentId": "Get agent identity from Identity Registry",
@@ -7526,7 +7600,10 @@ mod writer_lease_gate_tests {
     /// Without this they pass under CI's `--test-threads=1` and fail on a plain
     /// `cargo test` — a test that is green only under a specific flag is a trap
     /// for whoever runs the suite next.
-    static WRITER_FLAG: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    ///
+    /// `pub(super)` so the ERC-8004 admin-gate tests can take the same lock: they
+    /// flip the same global to assert which of the two layers runs first.
+    pub(super) static WRITER_FLAG: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// Build the same middleware over a trivial route.
     ///
@@ -7584,6 +7661,150 @@ mod writer_lease_gate_tests {
     // `erc8004_write_routes()` itself so wiring is one reviewable line that
     // travels with the routes, instead of a call-site detail in main.rs that a
     // future caller can quietly drop.
+}
+
+/// The admin gate on `POST /feedback/revoke`.
+///
+/// What is under test is the GATE and its position in the stack, not what the
+/// revoke handler does afterwards — reaching the real handler needs a provider
+/// map and an RPC, and this route must be closed long before any of that.
+#[cfg(test)]
+mod erc8004_admin_gate_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    /// Serialises the tests that mutate `ERC8004_ADMIN_TOKEN`, which is
+    /// process-global. Same reasoning as `WRITER_FLAG`.
+    static ADMIN_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    const GOOD_TOKEN: &str = "test-erc8004-admin-token";
+
+    fn gated_router() -> Router {
+        Router::new()
+            .route("/feedback/revoke", post(|| async { "revoked" }))
+            .layer(axum::middleware::from_fn(require_erc8004_admin))
+    }
+
+    /// Both layers in the same order `erc8004_write_routes()` applies them.
+    fn lease_and_admin_router() -> Router {
+        Router::new()
+            .route("/feedback/revoke", post(|| async { "revoked" }))
+            .layer(axum::middleware::from_fn(require_writer_lease))
+            .layer(axum::middleware::from_fn(require_erc8004_admin))
+    }
+
+    async fn status_with(router: Router, bearer: Option<&str>) -> StatusCode {
+        let mut builder = Request::builder().method("POST").uri("/feedback/revoke");
+        if let Some(token) = bearer {
+            builder = builder.header(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {}", token),
+            );
+        }
+        router
+            .oneshot(builder.body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+            .status()
+    }
+
+    /// Fail-closed. With no token configured the route is indistinguishable from
+    /// one that does not exist — including for a caller who guesses a token.
+    #[tokio::test]
+    async fn without_a_configured_token_the_route_answers_404() {
+        let _guard = ADMIN_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var(ERC8004_ADMIN_TOKEN_VAR);
+
+        assert_eq!(
+            status_with(gated_router(), None).await,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            status_with(gated_router(), Some(GOOD_TOKEN)).await,
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    /// An empty value is not a configured token: setting the var to "" must not
+    /// turn the surface on with a credential that a missing header also matches.
+    #[tokio::test]
+    async fn an_empty_token_does_not_open_the_route() {
+        let _guard = ADMIN_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var(ERC8004_ADMIN_TOKEN_VAR, "");
+
+        let status = status_with(gated_router(), None).await;
+        std::env::remove_var(ERC8004_ADMIN_TOKEN_VAR);
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    /// Configured, but the caller does not present the right credential.
+    ///
+    /// 401 rather than 404 here is deliberate and matches the bazaar admin
+    /// routes: once the operator has switched the surface on, a wrong token is a
+    /// rejected request, not a missing route.
+    #[tokio::test]
+    async fn a_missing_or_wrong_token_is_401() {
+        let _guard = ADMIN_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var(ERC8004_ADMIN_TOKEN_VAR, GOOD_TOKEN);
+
+        let no_header = status_with(gated_router(), None).await;
+        let wrong = status_with(gated_router(), Some("not-the-token")).await;
+        // A prefix of the real token must not pass: the comparison is
+        // constant-time over equal lengths, never a `starts_with`.
+        let prefix = status_with(gated_router(), Some(&GOOD_TOKEN[..8])).await;
+        std::env::remove_var(ERC8004_ADMIN_TOKEN_VAR);
+
+        assert_eq!(no_header, StatusCode::UNAUTHORIZED);
+        assert_eq!(wrong, StatusCode::UNAUTHORIZED);
+        assert_eq!(prefix, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn the_configured_token_reaches_the_handler() {
+        let _guard = ADMIN_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var(ERC8004_ADMIN_TOKEN_VAR, GOOD_TOKEN);
+
+        let status = status_with(gated_router(), Some(GOOD_TOKEN)).await;
+        std::env::remove_var(ERC8004_ADMIN_TOKEN_VAR);
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    /// The revoke gate must NOT reuse `BAZAAR_ADMIN_TOKEN`: different blast
+    /// radii, different credential. Asserted rather than commented, because the
+    /// tempting refactor is to collapse the two into one constant.
+    #[tokio::test]
+    async fn the_bazaar_token_does_not_unlock_the_revoke() {
+        let _guard = ADMIN_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var(ERC8004_ADMIN_TOKEN_VAR);
+        std::env::set_var(BAZAAR_ADMIN_TOKEN_VAR, "bazaar-only-token");
+
+        let status = status_with(gated_router(), Some("bazaar-only-token")).await;
+        std::env::remove_var(BAZAAR_ADMIN_TOKEN_VAR);
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    /// Authentication runs BEFORE the writer lease.
+    ///
+    /// If the order flipped, an unauthenticated probe against a task that does
+    /// not hold the lease would get 503 — telling an anonymous caller that the
+    /// route is live while the admin surface is supposed to look absent.
+    #[tokio::test]
+    async fn auth_runs_before_the_writer_lease() {
+        let _env = ADMIN_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let _flag = super::writer_lease_gate_tests::WRITER_FLAG
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var(ERC8004_ADMIN_TOKEN_VAR);
+        crate::writer_lease::set_writer_for_test(false);
+
+        let status = status_with(lease_and_admin_router(), None).await;
+        // Restored before the assert so a failure cannot leave the process
+        // wedged as a non-writer for every later test.
+        crate::writer_lease::set_writer_for_test(true);
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
 }
 
 // ============================================================================

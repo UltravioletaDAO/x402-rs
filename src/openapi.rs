@@ -64,7 +64,7 @@ The facilitator supports [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) for
 - `POST /register` - Register a new agent on-chain (gasless; sync or async via `Prefer: respond-async`)
 - `GET /register/status/{job_id}` - Poll an async registration until `agentId` is ready
 - `POST /feedback` - Submit on-chain reputation feedback (EVM only)
-- `POST /feedback/revoke` - Revoke previously submitted feedback (EVM only)
+- `POST /feedback/revoke` - Revoke previously submitted feedback (EVM only). **Admin only**: requires `Authorization: Bearer <ERC8004_ADMIN_TOKEN>` and returns 404 when no token is configured
 - `POST /feedback/response` - Append agent response to feedback (EVM only)
 - `GET /reputation/:network/:agentId` - Query agent reputation summary (EVM + Solana)
 - `GET /identity/:network/:agentId` - Get agent identity from registry (EVM + Solana)
@@ -863,9 +863,18 @@ async fn path_feedback_post() {}
     post,
     path = "/feedback/revoke",
     tag = "ERC-8004",
-    summary = "Revoke feedback",
+    summary = "Revoke feedback (admin only)",
     description = r#"
 Revokes previously submitted reputation feedback.
+
+**Requires an `Authorization: Bearer <ERC8004_ADMIN_TOKEN>` header. When the server has no
+ERC-8004 admin token configured this route answers 404, so it is indistinguishable from a
+route that does not exist.**
+
+The credential is deliberately NOT `BAZAAR_ADMIN_TOKEN`: the registry authorises
+`revokeFeedback` by `msg.sender`, which is the facilitator, so this endpoint can erase any
+feedback the registry attributes to the facilitator wallet - permanently, and for third
+parties. It is gated separately from the catalog admin surface for that reason.
 
 **EVM request:**
 ```json
@@ -898,9 +907,14 @@ the original submission exactly.
 program's SEAL v1 layout) and takes precedence over `originalFeedback`.
 "#,
     request_body(content = Object, description = "Revoke feedback request"),
+    params(
+        ("Authorization" = String, Header, description = "Bearer <ERC8004_ADMIN_TOKEN>")
+    ),
     responses(
         (status = 200, description = "Revocation result", body = Object),
-        (status = 400, description = "Revocation failed", body = Object)
+        (status = 400, description = "Revocation failed", body = Object),
+        (status = 401, description = "Missing or invalid bearer token", body = Object),
+        (status = 404, description = "Revoke surface disabled (no ERC8004_ADMIN_TOKEN configured)", body = Object)
     )
 )]
 async fn path_feedback_revoke() {}

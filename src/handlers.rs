@@ -636,6 +636,18 @@ where
     Router::new()
         .route("/register", post(post_register::<A>))
         .route("/feedback", post(post_feedback::<A>))
+        // Real authorship on SVM: the rater signs as `client`, we only pay.
+        // `prepare` writes nothing, but it carries the same lease and rate limit
+        // as `submit` because a prepared transaction is useless if `submit`
+        // is shed anyway.
+        .route(
+            "/feedback/solana/prepare",
+            post(post_prepare_solana_feedback::<A>),
+        )
+        .route(
+            "/feedback/solana/submit",
+            post(post_submit_solana_feedback::<A>),
+        )
         .route("/feedback/response", post(post_append_response::<A>))
         // Applied here, not at the call sites, and not in main.rs: the gate
         // travels with the routes it protects. Merged AFTER this layer so the
@@ -3876,6 +3888,47 @@ where
             let proof_report = crate::erc8004::proof::evaluate_svm_feedback_proof(feedback).await;
             log_proof_verdict(&network, &agent_id_str, &proof_report);
 
+            // DEPRECATED authorship path. `client` below is the facilitator's
+            // own keypair, so the chain records US as the author of somebody
+            // else's opinion -- the defect this whole workstream exists to
+            // close. `/feedback/solana/prepare` + `/feedback/solana/submit`
+            // does the same write with the rater signing as `client`.
+            //
+            // Left ON by default so integrations do not break the day this
+            // ships, behind a switch so an operator can close it, and loud in
+            // the logs so the deprecation is visible instead of theoretical.
+            if !solana_erc8004::is_facilitator_authorship_allowed() {
+                warn!(
+                    network = %network,
+                    agent_id = %agent_id_str,
+                    "refusing facilitator-authored Solana feedback: \
+                     ERC8004_ALLOW_FACILITATOR_AUTHORSHIP=false"
+                );
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(FeedbackResponse {
+                        proof: Some(proof_report),
+                        success: false,
+                        transaction: None,
+                        feedback_index: None,
+                        error: Some(
+                            "this facilitator no longer signs feedback as the author; \
+                             use POST /feedback/solana/prepare and /feedback/solana/submit \
+                             so the rater signs as `client`"
+                                .to_string(),
+                        ),
+                        network,
+                    }),
+                )
+                    .into_response();
+            }
+            warn!(
+                network = %network,
+                agent_id = %agent_id_str,
+                "[WARN] DEPRECATED: writing Solana feedback authored by the FACILITATOR, \
+                 not by the rater. Use /feedback/solana/prepare + /feedback/solana/submit"
+            );
+
             let ix = solana_erc8004::build_give_feedback_ix(
                 &programs,
                 &collection,
@@ -4152,6 +4205,349 @@ where
                     transaction: None,
                     feedback_index: None,
                     error: Some(format!("No provider available for network {}", network)),
+                    network,
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Shared setup for both halves of the partially-signed Solana feedback flow:
+/// resolve the programs, the agent asset, the collection and the rater.
+///
+/// Returned as a tuple rather than inlined twice so `prepare` and `submit`
+/// cannot drift: if they built the instruction from different inputs, the
+/// byte-for-byte comparison in `submit` would be comparing two things we made
+/// up, and the guarantee would be theatre.
+struct SvmFeedbackContext {
+    programs: solana_erc8004::SolanaErc8004Programs,
+    collection: solana_sdk::pubkey::Pubkey,
+    asset: solana_sdk::pubkey::Pubkey,
+    rater: solana_sdk::pubkey::Pubkey,
+}
+
+async fn svm_feedback_context(
+    provider: &crate::chain::solana::SolanaProvider,
+    network: crate::network::Network,
+    feedback: &crate::erc8004::FeedbackParams,
+) -> Result<SvmFeedbackContext, (StatusCode, String)> {
+    let programs = solana_erc8004::get_program_ids(&network).ok_or((
+        StatusCode::BAD_REQUEST,
+        format!("No Solana ERC-8004 programs for network {}", network),
+    ))?;
+
+    let agent_id_str =
+        parse_agent_id_value(&feedback.agent_id).unwrap_or_else(|| feedback.agent_id.to_string());
+    let asset = solana_erc8004::parse_agent_id(&agent_id_str)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("{}", e)))?;
+
+    let rater = match feedback.rater.as_ref() {
+        Some(MixedAddress::Solana(pk)) => *pk,
+        Some(_) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "rater must be a base58 Solana pubkey on this network".to_string(),
+            ))
+        }
+        None => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "rater is required: it is the account that signs as `client`, and \
+                 the whole point of this endpoint is that the chain records the \
+                 rater as the author instead of the facilitator"
+                    .to_string(),
+            ))
+        }
+    };
+    if let Some(score) = feedback.score {
+        if score > 100 {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "score must be between 0 and 100".to_string(),
+            ));
+        }
+    }
+
+    let collection =
+        solana_erc8004::read_collection_pubkey(provider.rpc_client(), &programs.agent_registry)
+            .await
+            .map_err(|e| {
+                error!(network = %network, error = %e, "Failed to read collection pubkey");
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Failed to read registry config".to_string(),
+                )
+            })?;
+
+    Ok(SvmFeedbackContext {
+        programs,
+        collection,
+        asset,
+        rater,
+    })
+}
+
+/// `POST /feedback/solana/prepare`: build the feedback transaction for the RATER
+/// to sign.
+///
+/// Account 0 of the program's `give_feedback` instruction is declared
+/// `[signer, writable] client (feedback author / fee payer)`, and the facilitator
+/// had been putting its own keypair there -- which is why the chain records US as
+/// the author of the overwhelming majority of feedback. Solana supports several
+/// signers per transaction natively, so the fix needs no delegation and no
+/// program change: the rater signs as `client`, we stay the fee payer.
+///
+/// It does change the contract of the endpoint, though. This is no longer
+/// "send me the data and I will write it"; it is "sign this and I will pay for
+/// it", which is a different (and honest) relationship.
+#[instrument(skip_all)]
+pub async fn post_prepare_solana_feedback<A>(
+    State(facilitator): State<A>,
+    raw_body: Bytes,
+) -> impl IntoResponse
+where
+    A: Facilitator + HasProviderMap,
+    A::Error: IntoResponse,
+    A::Map: ProviderMap<Value = NetworkProvider>,
+{
+    let request: FeedbackRequest =
+        match serde_json::from_slice(&raw_body) {
+            Ok(r) => r,
+            Err(e) => return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"success": false, "error": format!("Invalid request format: {}", e)})),
+            )
+                .into_response(),
+        };
+    let network = request.network;
+    let feedback = &request.feedback;
+
+    let provider_map = facilitator.provider_map();
+    let Some(NetworkProvider::Solana(provider)) = provider_map.by_network(&network) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "success": false,
+                "error": format!("{} is not a Solana network served by this facilitator", network)
+            })),
+        )
+            .into_response();
+    };
+
+    let ctx = match svm_feedback_context(provider, network, feedback).await {
+        Ok(c) => c,
+        Err((code, msg)) => {
+            return (code, Json(json!({"success": false, "error": msg}))).into_response()
+        }
+    };
+
+    let (blockhash, last_valid_block_height) = match provider
+        .rpc_client()
+        .get_latest_blockhash_with_commitment(
+            solana_commitment_config::CommitmentConfig::finalized(),
+        )
+        .await
+    {
+        Ok(pair) => pair,
+        Err(e) => {
+            error!(network = %network, error = %e, "Failed to get blockhash");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"success": false, "error": "could not reach the network"})),
+            )
+                .into_response();
+        }
+    };
+
+    let fee_payer = provider.keypair().pubkey();
+    let tx = solana_erc8004::build_feedback_transaction(
+        &ctx.programs,
+        &ctx.collection,
+        &ctx.asset,
+        &ctx.rater,
+        &fee_payer,
+        feedback.value,
+        feedback.value_decimals,
+        feedback.score,
+        &feedback.tag1,
+        &feedback.tag2,
+        &feedback.endpoint,
+        &feedback.feedback_uri,
+        feedback.feedback_hash.map(|h| h.0),
+        blockhash,
+    );
+
+    match solana_erc8004::encode_transaction(&tx) {
+        Ok(encoded) => (
+            StatusCode::OK,
+            Json(crate::erc8004::PrepareFeedbackResponse {
+                success: true,
+                transaction: Some(encoded),
+                rater: Some(MixedAddress::Solana(ctx.rater)),
+                fee_payer: Some(MixedAddress::Solana(fee_payer)),
+                blockhash: Some(blockhash.to_string()),
+                last_valid_block_height: Some(last_valid_block_height),
+                error: None,
+                network,
+            }),
+        )
+            .into_response(),
+        Err(e) => {
+            error!(network = %network, error = %e, "Failed to encode feedback transaction");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"success": false, "error": "could not encode the transaction"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// `POST /feedback/solana/submit`: co-sign and send a rater-signed feedback
+/// transaction.
+///
+/// The security boundary of the flow lives here. We do NOT sign what we are
+/// given: we rebuild the message from the declared parameters and the blockhash
+/// carried by the submission, and refuse anything that is not byte-for-byte what
+/// we would have offered. Signing an arbitrary blob would hand the fee-payer
+/// keypair to whoever asks -- one `system_program::transfer` and the wallet is
+/// empty, with our signature on it.
+#[instrument(skip_all)]
+pub async fn post_submit_solana_feedback<A>(
+    State(facilitator): State<A>,
+    raw_body: Bytes,
+) -> impl IntoResponse
+where
+    A: Facilitator + HasProviderMap,
+    A::Error: IntoResponse,
+    A::Map: ProviderMap<Value = NetworkProvider>,
+{
+    let request: crate::erc8004::SubmitFeedbackRequest =
+        match serde_json::from_slice(&raw_body) {
+            Ok(r) => r,
+            Err(e) => return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"success": false, "error": format!("Invalid request format: {}", e)})),
+            )
+                .into_response(),
+        };
+    let network = request.network;
+    let feedback = &request.feedback;
+
+    let provider_map = facilitator.provider_map();
+    let Some(NetworkProvider::Solana(provider)) = provider_map.by_network(&network) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "success": false,
+                "error": format!("{} is not a Solana network served by this facilitator", network)
+            })),
+        )
+            .into_response();
+    };
+
+    let submitted = match solana_erc8004::decode_transaction(&request.transaction) {
+        Ok(tx) => tx,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"success": false, "error": format!("{}", e)})),
+            )
+                .into_response()
+        }
+    };
+
+    let ctx = match svm_feedback_context(provider, network, feedback).await {
+        Ok(c) => c,
+        Err((code, msg)) => {
+            return (code, Json(json!({"success": false, "error": msg}))).into_response()
+        }
+    };
+
+    // The document half of the proof gate still applies here.
+    let proof_report = crate::erc8004::proof::evaluate_svm_feedback_proof(feedback).await;
+    let agent_id_str =
+        parse_agent_id_value(&feedback.agent_id).unwrap_or_else(|| feedback.agent_id.to_string());
+    log_proof_verdict(&network, &agent_id_str, &proof_report);
+
+    // Rebuild from the DECLARED parameters, using the blockhash the caller
+    // brought back. Everything else is ours.
+    let fee_payer = provider.keypair().pubkey();
+    let expected = solana_erc8004::build_feedback_transaction(
+        &ctx.programs,
+        &ctx.collection,
+        &ctx.asset,
+        &ctx.rater,
+        &fee_payer,
+        feedback.value,
+        feedback.value_decimals,
+        feedback.score,
+        &feedback.tag1,
+        &feedback.tag2,
+        &feedback.endpoint,
+        &feedback.feedback_uri,
+        feedback.feedback_hash.map(|h| h.0),
+        submitted.message.recent_blockhash,
+    );
+
+    if let Err(e) =
+        solana_erc8004::accept_rater_signed_transaction(&submitted, &expected, &ctx.rater)
+    {
+        warn!(
+            network = %network,
+            agent_id = %agent_id_str,
+            reason = %e,
+            "refusing to co-sign a Solana feedback transaction"
+        );
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(FeedbackResponse {
+                proof: Some(proof_report),
+                success: false,
+                transaction: None,
+                feedback_index: None,
+                error: Some(format!("{}", e)),
+                network,
+            }),
+        )
+            .into_response();
+    }
+
+    match solana_erc8004::cosign_and_send(provider.rpc_client(), provider.keypair(), submitted)
+        .await
+    {
+        Ok(sig) => {
+            info!(
+                network = %network,
+                tx = %sig,
+                agent_id = %agent_id_str,
+                rater = %ctx.rater,
+                "[OK] ERC-8004 Solana feedback submitted with the RATER as author"
+            );
+            (
+                StatusCode::OK,
+                Json(FeedbackResponse {
+                    proof: Some(proof_report),
+                    success: true,
+                    transaction: Some(crate::types::TransactionHash::Solana(sig.into())),
+                    feedback_index: None,
+                    error: None,
+                    network,
+                }),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            error!(network = %network, error = %e, "Solana feedback co-sign/send failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(FeedbackResponse {
+                    proof: Some(proof_report),
+                    success: false,
+                    transaction: None,
+                    feedback_index: None,
+                    error: Some(format!("Transaction failed: {}", e)),
                     network,
                 }),
             )

@@ -442,6 +442,9 @@ pub enum SolanaErc8004Error {
 
     #[error("RPC error: {0}")]
     RpcError(String),
+
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
 }
 
 /// Parse a base58 agent ID string into a Pubkey
@@ -915,6 +918,9 @@ pub fn compute_feedback_leaf_v1(
 // ============================================================================
 
 use solana_sdk::instruction::{AccountMeta, Instruction};
+use solana_sdk::signature::{Keypair, Signature};
+use solana_sdk::signer::Signer;
+use solana_sdk::transaction::Transaction;
 
 /// Build a `give_feedback` instruction for the Agent Registry program.
 ///
@@ -991,6 +997,167 @@ pub fn build_give_feedback_ix(
         ],
         data,
     }
+}
+
+// ============================================================================
+// Real authorship: partially-signed feedback transactions
+// ============================================================================
+
+/// Errors from the partially-signed feedback flow.
+#[derive(Debug, thiserror::Error)]
+pub enum PartialSignError {
+    /// The submitted blob is not a Solana transaction.
+    #[error("not a deserializable transaction")]
+    Undecodable,
+    /// The submitted transaction is not the one we offered.
+    #[error("submitted transaction does not match the one this facilitator built")]
+    NotOurs,
+    /// The rater is not among the required signers of the message.
+    #[error("the rater is not a required signer of the submitted transaction")]
+    RaterNotASigner,
+    /// The rater's slot carries no signature, or one that does not verify.
+    #[error("the rater's signature is missing or invalid")]
+    BadRaterSignature,
+}
+
+/// Build the feedback transaction with the RATER as `client`, UNSIGNED.
+///
+/// This is the whole point of the SVM path: account 0 of `give_feedback` is
+/// declared `[signer, writable] client (feedback author / fee payer)`, and the
+/// facilitator had been passing its own keypair there -- which is why the chain
+/// records the facilitator as the author of 87% of the feedback. Solana takes
+/// multiple signers per transaction natively, so the rater signs as `client`
+/// while we stay the fee payer. No delegation, no hardfork, no change to the
+/// program.
+///
+/// The fee payer is the message's first account, so the returned transaction
+/// expects two signatures: ours (index 0) and the rater's.
+#[allow(clippy::too_many_arguments)]
+pub fn build_feedback_transaction(
+    programs: &SolanaErc8004Programs,
+    collection: &Pubkey,
+    asset: &Pubkey,
+    rater: &Pubkey,
+    fee_payer: &Pubkey,
+    value: i128,
+    value_decimals: u8,
+    score: Option<u8>,
+    tag1: &str,
+    tag2: &str,
+    endpoint: &str,
+    feedback_uri: &str,
+    feedback_hash: Option<[u8; 32]>,
+    recent_blockhash: solana_sdk::hash::Hash,
+) -> Transaction {
+    let ix = build_give_feedback_ix(
+        programs,
+        collection,
+        asset,
+        rater,
+        value,
+        value_decimals,
+        score,
+        tag1,
+        tag2,
+        endpoint,
+        feedback_uri,
+        feedback_hash,
+    );
+    let message =
+        solana_sdk::message::Message::new_with_blockhash(&[ix], Some(fee_payer), &recent_blockhash);
+    Transaction::new_unsigned(message)
+}
+
+/// Base64 of the bincode-serialised transaction, which is what every Solana
+/// wallet and RPC expects on the wire.
+pub fn encode_transaction(tx: &Transaction) -> Result<String, SolanaErc8004Error> {
+    use base64::Engine as _;
+    let bytes = bincode::serialize(tx)
+        .map_err(|e| SolanaErc8004Error::InvalidInput(format!("serialize: {}", e)))?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
+/// Inverse of [`encode_transaction`].
+pub fn decode_transaction(encoded: &str) -> Result<Transaction, PartialSignError> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded.trim())
+        .map_err(|_| PartialSignError::Undecodable)?;
+    bincode::deserialize(&bytes).map_err(|_| PartialSignError::Undecodable)
+}
+
+/// Accept a rater-signed transaction ONLY if it is byte-for-byte the message we
+/// built, and only if the rater really signed it.
+///
+/// This is the security boundary of the whole flow. Signing whatever blob a
+/// caller submits would hand our fee-payer keypair to anyone: a transaction
+/// carrying a `system_program::transfer` would drain the wallet, and it would be
+/// us who signed it. So the rule is narrow and mechanical -- we re-derive the
+/// message we would have offered for these exact parameters and require
+/// equality. The caller controls the parameters, never the instructions.
+///
+/// The rater's signature is verified BEFORE we add ours: without it we would pay
+/// the fee for a transaction the network is going to reject.
+pub fn accept_rater_signed_transaction(
+    submitted: &Transaction,
+    expected: &Transaction,
+    rater: &Pubkey,
+) -> Result<(), PartialSignError> {
+    if submitted.message != expected.message {
+        return Err(PartialSignError::NotOurs);
+    }
+
+    let index = submitted
+        .message
+        .account_keys
+        .iter()
+        .position(|k| k == rater)
+        .ok_or(PartialSignError::RaterNotASigner)?;
+    if index >= submitted.message.header.num_required_signatures as usize {
+        return Err(PartialSignError::RaterNotASigner);
+    }
+
+    let signature = submitted
+        .signatures
+        .get(index)
+        .ok_or(PartialSignError::BadRaterSignature)?;
+    if *signature == Signature::default() {
+        return Err(PartialSignError::BadRaterSignature);
+    }
+    if !signature.verify(rater.as_ref(), &submitted.message.serialize()) {
+        return Err(PartialSignError::BadRaterSignature);
+    }
+    Ok(())
+}
+
+/// Add the fee-payer signature to an already rater-signed transaction and send it.
+///
+/// `try_partial_sign` fills only our slot and leaves the rater's untouched.
+pub async fn cosign_and_send(
+    rpc_client: &RpcClient,
+    fee_payer: &Keypair,
+    mut tx: Transaction,
+) -> Result<Signature, SolanaErc8004Error> {
+    let blockhash = tx.message.recent_blockhash;
+    tx.try_partial_sign(&[fee_payer], blockhash)
+        .map_err(|e| SolanaErc8004Error::InvalidInput(format!("co-sign failed: {}", e)))?;
+    rpc_client
+        .send_and_confirm_transaction(&tx)
+        .await
+        .map_err(|e| SolanaErc8004Error::RpcError(format!("Transaction failed: {}", e)))
+}
+
+/// Is the facilitator still allowed to sign feedback AS the rater?
+///
+/// DEPRECATED path. It is what put the facilitator's address on 1384 feedbacks
+/// in Base and the equivalent on Solana: the chain records `msg.sender` /
+/// account 0, and that was us. Kept default-ON so existing integrations do not
+/// break the day this ships, behind a switch so an operator can close it, and
+/// noisy in the logs so the deprecation is visible rather than theoretical.
+pub fn is_facilitator_authorship_allowed() -> bool {
+    std::env::var("ERC8004_ALLOW_FACILITATOR_AUTHORSHIP")
+        .map(|v| !(v.eq_ignore_ascii_case("false") || v == "0"))
+        .unwrap_or(true)
 }
 
 /// Build a `revoke_feedback` instruction.
@@ -1278,10 +1445,6 @@ pub fn build_set_metadata_pda_ix(
 // ============================================================================
 // Transaction Helpers
 // ============================================================================
-
-use solana_sdk::signature::{Keypair, Signature};
-use solana_sdk::signer::Signer;
-use solana_sdk::transaction::Transaction;
 
 /// Build, sign, send, and confirm a single-instruction transaction.
 ///
@@ -1720,6 +1883,283 @@ mod tests {
             collection,
             authority: Pubkey::new_unique(),
         }
+    }
+
+    // ── Partially-signed feedback: the co-signing boundary ────────────────
+    //
+    // What is under test is the ONE rule that keeps the fee-payer keypair from
+    // being a public signing oracle: we co-sign only a message we can rebuild
+    // ourselves, and only when the rater really signed it.
+
+    fn svm_fixture() -> (
+        SolanaErc8004Programs,
+        Pubkey,
+        Pubkey,
+        Keypair,
+        Keypair,
+        solana_sdk::hash::Hash,
+    ) {
+        let programs = get_program_ids(&Network::SolanaDevnet).unwrap();
+        let collection = Pubkey::new_unique();
+        let asset = Pubkey::new_unique();
+        let rater = Keypair::new();
+        let fee_payer = Keypair::new();
+        let blockhash = solana_sdk::hash::Hash::new_from_array([7u8; 32]);
+        (programs, collection, asset, rater, fee_payer, blockhash)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build_fixture_tx(
+        programs: &SolanaErc8004Programs,
+        collection: &Pubkey,
+        asset: &Pubkey,
+        rater: &Pubkey,
+        fee_payer: &Pubkey,
+        blockhash: solana_sdk::hash::Hash,
+        value: i128,
+    ) -> Transaction {
+        build_feedback_transaction(
+            programs,
+            collection,
+            asset,
+            rater,
+            fee_payer,
+            value,
+            0,
+            Some(95),
+            "quality",
+            "api",
+            "https://agent.example/api",
+            "https://example.com/feedback.json",
+            None,
+            blockhash,
+        )
+    }
+
+    /// The rater is a required signer and the facilitator is only the fee payer.
+    #[test]
+    fn the_prepared_transaction_makes_the_rater_the_author() {
+        let (programs, collection, asset, rater, fee_payer, blockhash) = svm_fixture();
+        let tx = build_fixture_tx(
+            &programs,
+            &collection,
+            &asset,
+            &rater.pubkey(),
+            &fee_payer.pubkey(),
+            blockhash,
+            87,
+        );
+
+        // Fee payer is always account 0 of the message.
+        assert_eq!(tx.message.account_keys[0], fee_payer.pubkey());
+        // ...and the rater is a required signer too, which is what makes the
+        // program record THEM as `client`.
+        let rater_index = tx
+            .message
+            .account_keys
+            .iter()
+            .position(|k| *k == rater.pubkey())
+            .expect("rater must be in the message");
+        assert!(rater_index < tx.message.header.num_required_signatures as usize);
+        assert_eq!(tx.message.header.num_required_signatures, 2);
+
+        // Account 0 of the INSTRUCTION (the program's `client`) is the rater.
+        let ix = &tx.message.instructions[0];
+        assert_eq!(
+            tx.message.account_keys[ix.accounts[0] as usize],
+            rater.pubkey()
+        );
+    }
+
+    #[test]
+    fn a_rater_signed_transaction_round_trips_and_is_accepted() {
+        let (programs, collection, asset, rater, fee_payer, blockhash) = svm_fixture();
+        let expected = build_fixture_tx(
+            &programs,
+            &collection,
+            &asset,
+            &rater.pubkey(),
+            &fee_payer.pubkey(),
+            blockhash,
+            87,
+        );
+
+        let mut signed = expected.clone();
+        signed.try_partial_sign(&[&rater], blockhash).unwrap();
+
+        let encoded = encode_transaction(&signed).unwrap();
+        let decoded = decode_transaction(&encoded).unwrap();
+
+        assert!(accept_rater_signed_transaction(&decoded, &expected, &rater.pubkey()).is_ok());
+    }
+
+    /// The attack this whole check exists for: a transaction that is NOT the one
+    /// we offered. If it were accepted, the fee-payer keypair would sign
+    /// arbitrary instructions -- a `transfer` would empty the wallet, with our
+    /// signature on it.
+    #[test]
+    fn a_transaction_we_did_not_build_is_refused() {
+        let (programs, collection, asset, rater, fee_payer, blockhash) = svm_fixture();
+        let expected = build_fixture_tx(
+            &programs,
+            &collection,
+            &asset,
+            &rater.pubkey(),
+            &fee_payer.pubkey(),
+            blockhash,
+            87,
+        );
+
+        // Same parties, same blockhash, one different parameter.
+        let mut tampered = build_fixture_tx(
+            &programs,
+            &collection,
+            &asset,
+            &rater.pubkey(),
+            &fee_payer.pubkey(),
+            blockhash,
+            100,
+        );
+        tampered.try_partial_sign(&[&rater], blockhash).unwrap();
+
+        assert!(matches!(
+            accept_rater_signed_transaction(&tampered, &expected, &rater.pubkey()),
+            Err(PartialSignError::NotOurs)
+        ));
+    }
+
+    /// An outright hostile payload: a plain SOL transfer out of the fee payer.
+    #[test]
+    fn an_unrelated_transaction_is_refused() {
+        let (programs, collection, asset, rater, fee_payer, blockhash) = svm_fixture();
+        let expected = build_fixture_tx(
+            &programs,
+            &collection,
+            &asset,
+            &rater.pubkey(),
+            &fee_payer.pubkey(),
+            blockhash,
+            87,
+        );
+
+        let thief = Pubkey::new_unique();
+        let drain =
+            solana_sdk::system_instruction::transfer(&fee_payer.pubkey(), &thief, 1_000_000_000);
+        let message = solana_sdk::message::Message::new_with_blockhash(
+            &[drain],
+            Some(&fee_payer.pubkey()),
+            &blockhash,
+        );
+        let hostile = Transaction::new_unsigned(message);
+
+        assert!(matches!(
+            accept_rater_signed_transaction(&hostile, &expected, &rater.pubkey()),
+            Err(PartialSignError::NotOurs)
+        ));
+    }
+
+    /// The right message with nobody's signature on it. Co-signing this would
+    /// spend our fee on a transaction the network is going to reject.
+    #[test]
+    fn an_unsigned_transaction_is_refused() {
+        let (programs, collection, asset, rater, fee_payer, blockhash) = svm_fixture();
+        let expected = build_fixture_tx(
+            &programs,
+            &collection,
+            &asset,
+            &rater.pubkey(),
+            &fee_payer.pubkey(),
+            blockhash,
+            87,
+        );
+
+        assert!(matches!(
+            accept_rater_signed_transaction(&expected, &expected, &rater.pubkey()),
+            Err(PartialSignError::BadRaterSignature)
+        ));
+    }
+
+    /// Signed by SOMEBODY, just not by the rater. Without this check, any
+    /// keypair could author feedback in a stranger's name.
+    #[test]
+    fn a_signature_from_the_wrong_key_is_refused() {
+        let (programs, collection, asset, rater, fee_payer, blockhash) = svm_fixture();
+        let expected = build_fixture_tx(
+            &programs,
+            &collection,
+            &asset,
+            &rater.pubkey(),
+            &fee_payer.pubkey(),
+            blockhash,
+            87,
+        );
+
+        let impostor = Keypair::new();
+        let mut signed = expected.clone();
+        let rater_index = signed
+            .message
+            .account_keys
+            .iter()
+            .position(|k| *k == rater.pubkey())
+            .unwrap();
+        // Forge a valid signature over the right message, from the wrong key.
+        signed.signatures[rater_index] = impostor.sign_message(&signed.message.serialize());
+
+        assert!(matches!(
+            accept_rater_signed_transaction(&signed, &expected, &rater.pubkey()),
+            Err(PartialSignError::BadRaterSignature)
+        ));
+    }
+
+    /// The facilitator's own signature must not stand in for the rater's.
+    #[test]
+    fn the_fee_payer_signature_does_not_count_as_the_raters() {
+        let (programs, collection, asset, rater, fee_payer, blockhash) = svm_fixture();
+        let expected = build_fixture_tx(
+            &programs,
+            &collection,
+            &asset,
+            &rater.pubkey(),
+            &fee_payer.pubkey(),
+            blockhash,
+            87,
+        );
+
+        let mut signed = expected.clone();
+        signed.try_partial_sign(&[&fee_payer], blockhash).unwrap();
+
+        assert!(matches!(
+            accept_rater_signed_transaction(&signed, &expected, &rater.pubkey()),
+            Err(PartialSignError::BadRaterSignature)
+        ));
+    }
+
+    /// Garbage in, refusal out -- not a panic.
+    #[test]
+    fn an_undecodable_blob_is_refused() {
+        assert!(matches!(
+            decode_transaction("not base64 at all !!"),
+            Err(PartialSignError::Undecodable)
+        ));
+        assert!(matches!(
+            decode_transaction("aGVsbG8gd29ybGQ="),
+            Err(PartialSignError::Undecodable)
+        ));
+    }
+
+    /// The legacy path stays on until an operator turns it off, and the switch
+    /// really switches.
+    #[test]
+    fn facilitator_authorship_is_allowed_by_default_and_can_be_closed() {
+        std::env::remove_var("ERC8004_ALLOW_FACILITATOR_AUTHORSHIP");
+        assert!(is_facilitator_authorship_allowed());
+        std::env::set_var("ERC8004_ALLOW_FACILITATOR_AUTHORSHIP", "false");
+        assert!(!is_facilitator_authorship_allowed());
+        std::env::set_var("ERC8004_ALLOW_FACILITATOR_AUTHORSHIP", "0");
+        assert!(!is_facilitator_authorship_allowed());
+        std::env::set_var("ERC8004_ALLOW_FACILITATOR_AUTHORSHIP", "true");
+        assert!(is_facilitator_authorship_allowed());
+        std::env::remove_var("ERC8004_ALLOW_FACILITATOR_AUTHORSHIP");
     }
 
     #[test]

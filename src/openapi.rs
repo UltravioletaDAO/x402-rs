@@ -65,6 +65,8 @@ The facilitator supports [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) for
 - `GET /register/status/{job_id}` - Poll an async registration until `agentId` is ready
 - `POST /feedback` - Submit on-chain reputation feedback (EVM only)
 - `POST /feedback/revoke` - Revoke previously submitted feedback (EVM only). **Admin only**: requires `Authorization: Bearer <ERC8004_ADMIN_TOKEN>` and returns 404 when no token is configured
+- `POST /feedback/solana/prepare` - Build a feedback transaction for the RATER to sign (Solana)
+- `POST /feedback/solana/submit` - Co-sign and send a rater-signed feedback transaction (Solana)
 - `POST /feedback/response` - Append agent response to feedback (EVM only)
 - `GET /reputation/:network/:agentId` - Query agent reputation summary (EVM + Solana)
 - `GET /identity/:network/:agentId` - Get agent identity from registry (EVM + Solana)
@@ -139,6 +141,8 @@ a liveness `health` status from periodic probing, and a curated `tier`
         path_register_status,
         path_feedback_get,
         path_feedback_post,
+        path_feedback_solana_prepare,
+        path_feedback_solana_submit,
         path_feedback_revoke,
         path_feedback_response,
         path_reputation,
@@ -878,6 +882,88 @@ at zero no matter how much feedback accumulates.
     )
 )]
 async fn path_feedback_post() {}
+
+#[utoipa::path(
+    post,
+    path = "/feedback/solana/prepare",
+    tag = "ERC-8004",
+    summary = "Prepare a rater-signed feedback transaction (Solana)",
+    description = r#"
+Builds an UNSIGNED Solana transaction whose `client` account is the **rater**, for the rater to sign
+in their own wallet. The facilitator remains the fee payer.
+
+**Why this exists.** Account 0 of the program's `give_feedback` instruction is
+`[signer, writable] client (feedback author / fee payer)`, and `POST /feedback` puts the
+*facilitator's* keypair there - so the chain records the facilitator as the author of the rating,
+not the person who made it. Solana supports several signers per transaction natively, so the rater
+signs as `client` while the facilitator still pays. No delegation, no program change.
+
+`rater` is REQUIRED here (base58 pubkey), and the returned transaction expects two signatures: the
+fee payer's (added by `/feedback/solana/submit`) and the rater's.
+
+```json
+{
+  "x402Version": 1,
+  "network": "solana",
+  "feedback": {
+    "agentId": "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgHkv",
+    "rater": "9oSLm8Rk1kQ9y8dFcqbAcTNqYqcrTUR6cQ4mL8mYNXpB",
+    "value": 87, "valueDecimals": 0, "score": 95,
+    "tag1": "quality", "tag2": "api"
+  }
+}
+```
+
+The response carries `transaction` (base64 of the bincode-serialised transaction), `blockhash` and
+`lastValidBlockHeight`. Sign it and send it to `/feedback/solana/submit` before the blockhash expires.
+"#,
+    request_body(content = Object, description = "ERC-8004 feedback request with a `rater`"),
+    responses(
+        (status = 200, description = "Unsigned transaction for the rater to sign", body = Object),
+        (status = 400, description = "Missing rater, unsupported network, or invalid parameters", body = Object),
+        (status = 503, description = "Could not reach the network", body = Object)
+    )
+)]
+async fn path_feedback_solana_prepare() {}
+
+#[utoipa::path(
+    post,
+    path = "/feedback/solana/submit",
+    tag = "ERC-8004",
+    summary = "Submit a rater-signed feedback transaction (Solana)",
+    description = r#"
+Co-signs a rater-signed feedback transaction as fee payer and sends it.
+
+Send back the SAME feedback parameters used for `/feedback/solana/prepare`, plus the transaction
+with the rater's signature on it:
+
+```json
+{
+  "x402Version": 1,
+  "network": "solana",
+  "feedback": { "...": "exactly what you sent to /prepare" },
+  "transaction": "<base64 of the rater-signed transaction>"
+}
+```
+
+**The parameters are not redundant.** The facilitator does not sign what it is given: it re-derives
+the message from those parameters plus the blockhash carried by your submission, and refuses to
+co-sign anything that is not byte-for-byte what it would have offered (`400`, error
+`submitted transaction does not match the one this facilitator built`). Signing arbitrary blobs
+would turn the fee-payer keypair into a public signing oracle - a single `system_program::transfer`
+would empty the wallet with the facilitator's signature on it.
+
+The rater's signature is verified *before* the facilitator adds its own, so a transaction the
+network would reject never costs a fee.
+"#,
+    request_body(content = Object, description = "Feedback parameters plus the rater-signed transaction"),
+    responses(
+        (status = 200, description = "Feedback submitted, authored by the rater", body = Object),
+        (status = 400, description = "Transaction does not match, or the rater's signature is missing or invalid", body = Object),
+        (status = 500, description = "Submission failed", body = Object)
+    )
+)]
+async fn path_feedback_solana_submit() {}
 
 #[utoipa::path(
     post,

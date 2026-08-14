@@ -255,6 +255,50 @@ pub struct FeedbackResponse {
     pub proof: Option<crate::erc8004::proof::ProofReport>,
 }
 
+/// Response from `POST /feedback/solana/prepare`.
+///
+/// Carries an UNSIGNED transaction whose `client` account is the rater, for the
+/// rater to sign in their own wallet. The facilitator is only the fee payer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrepareFeedbackResponse {
+    pub success: bool,
+    /// base64 of the bincode-serialised unsigned transaction.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transaction: Option<String>,
+    /// Who must sign as `client`, i.e. who the chain will record as the author.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rater: Option<MixedAddress>,
+    /// Who pays the fee. Still us -- that is the point.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fee_payer: Option<MixedAddress>,
+    /// The blockhash baked into the message. Submit before it expires.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blockhash: Option<String>,
+    /// Last block height at which this transaction is still valid.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_valid_block_height: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub network: Network,
+}
+
+/// Request body for `POST /feedback/solana/submit`.
+///
+/// The same feedback parameters that produced the prepared transaction, plus
+/// that transaction with the rater's signature on it. The parameters are not
+/// redundant: the facilitator re-derives the message from them and refuses to
+/// co-sign anything that does not match byte for byte.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubmitFeedbackRequest {
+    pub x402_version: crate::types::X402Version,
+    pub network: Network,
+    pub feedback: FeedbackParams,
+    /// base64 of the rater-signed transaction.
+    pub transaction: String,
+}
+
 /// Request to revoke feedback
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

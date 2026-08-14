@@ -1378,14 +1378,17 @@ mod tests {
         let asset = Pubkey::from_str("7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgHkv").unwrap();
 
         // Agent PDA
+        // The bump is a u8, so `bump <= 255` asserted nothing (and clippy
+        // denies it). What is worth pinning is that the derivation found a
+        // canonical bump rather than falling off the end of the search.
         let (agent_pda, bump) = derive_agent_pda(&asset, &AGENT_REGISTRY_MAINNET);
         assert_ne!(agent_pda, Pubkey::default());
-        assert!(bump <= 255);
+        assert!(bump > 0, "no canonical bump found for the agent PDA");
 
         // AtomStats PDA
         let (atom_pda, bump) = derive_atom_stats_pda(&asset, &ATOM_ENGINE_MAINNET);
         assert_ne!(atom_pda, Pubkey::default());
-        assert!(bump <= 255);
+        assert!(bump > 0, "no canonical bump found for the AtomStats PDA");
 
         // PDAs should be different
         assert_ne!(agent_pda, atom_pda);

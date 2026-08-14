@@ -696,7 +696,7 @@ The following networks exist as enum entries in `src/network.rs` but are **NOT s
 - `GET /api/stats` - Aggregated totals per network and asset (JSON)
 - `GET /api/stats/history` - Settlement history reconstructed from the chain. NOT the same claim as `/api/stats` (which is what the facilitator measured); every row carries `source`
 - `GET /transactions` - Recent recorded operations (JSON, `limit` capped at 200)
-- DX402: `POST /dx402/anchor`, `GET /dx402/evidence/{paymentId}`, `GET /dx402/receipt/{paymentId}`, `GET /dx402/stats`, `POST /dx402/recover` (501 in v0.1). Present only when `ENABLE_DX402=true`.
+- DX402: `POST /dx402/anchor`, `GET /dx402/evidence/{paymentId}`, `GET /dx402/receipt/{paymentId}`, `GET /dx402/blob/{paymentId}`, `GET /dx402/stats`, `POST /dx402/recover` (501 in v0.1). Present only when `ENABLE_DX402=true`.
 - `GET /docs` - Interactive Swagger UI (OpenAPI documentation)
 - `GET /api-docs/openapi.json` - Raw OpenAPI 3.0 JSON spec (version resolved at runtime from `VERSION`, see below)
 - Discovery (Bazaar) API: `POST /discovery/register`, `GET /discovery/resources`, `GET /discovery/stats`, `GET /discovery/attestation/{hash}`; admin: `DELETE /discovery/resources`, `POST /discovery/admin/suppress`, `POST /discovery/admin/release`
@@ -753,6 +753,17 @@ Config (all optional; **default OFF**): `ENABLE_DX402`, `DX402_STORE_BACKEND`
 `DX402_REGISTRY_TABLE_NAME`, `DX402_SIGNING_KEY`, `DX402_RETENTION`. Missing
 config **disables** the feature and logs why — it never falls back to an
 in-memory store that would report evidence for data that dies with the process.
+
+**Infra** lives in `terraform/environments/production/dx402.tf` (S3 bucket +
+DynamoDB table + IAM). Provisioning and switching on are SEPARATE: those
+resources are created regardless (~$0 idle), while `var.enable_dx402` only
+controls the container's environment. The evidence bucket is **private** — a
+pointer resolves through `GET /dx402/blob/{paymentId}` on the facilitator, never
+through a public bucket, and pointers address the *payment* rather than the S3
+key layout so old pointers survive a re-layout. The receipt-signing key
+(`facilitator-dx402-signing-key`) is created by
+`scripts/dx402-bootstrap-secret.sh` and signs attestations only — no funds, no
+gas. Runbook: `docs/plans/dx402/03-DEPLOY-RUNBOOK.md`.
 
 Spec: `docs/plans/dx402/02-SPEC-v0.1.md`. Guide: `docs/DX402.md`. Research and
 prior-art survey: `docs/plans/dx402/00-RESEARCH.md`. Handoffs for KarmaCadabra,

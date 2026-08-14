@@ -168,6 +168,7 @@ a liveness `health` status from periodic probing, and a curated `tier`
         path_dx402_evidence,
         path_dx402_receipt,
         path_dx402_stats,
+        path_dx402_blob,
         path_dx402_recover,
         // Compliance
         path_blacklist,
@@ -729,6 +730,22 @@ async fn path_dx402_receipt() {}
     responses((status = 200, description = "DX402 status and counters", body = Object))
 )]
 async fn path_dx402_stats() {}
+
+#[utoipa::path(
+    get,
+    path = "/dx402/blob/{paymentId}",
+    tag = "DX402",
+    summary = "The sealed ciphertext for a payment",
+    description = "Streams the sealed evidence blob. **Unauthenticated on purpose.**\n\nIn `direct` mode the bytes are sealed to the payer's own public key, so handing them to anyone who asks reveals nothing — the access control lives in the cryptography rather than in an ACL that could be misconfigured. This is also why the evidence bucket is private and never exposed: this route is the only way in, and it can only ever serve ciphertext.\n\nA DX402 pointer (`s3+https://…/dx402/blob/{paymentId}`) resolves here. Pointers address the *payment*, not the storage layout, so one a buyer is holding a year from now keeps working even if the backing keys are reorganised.\n\nResponses are cacheable for the same reason they are public: an intermediary that caches this stores something unreadable. Attack III of *Five Attacks on x402* measured 100% leakage of paid responses through an nginx cache; DX402 makes that leak worthless.",
+    params(("paymentId" = String, Path, description = "Payment identifier")),
+    responses(
+        (status = 200, description = "Sealed ciphertext (application/octet-stream)", body = String),
+        (status = 404, description = "No evidence recorded"),
+        (status = 410, description = "Past the retention window"),
+        (status = 503, description = "Store unavailable — RETRYABLE")
+    )
+)]
+async fn path_dx402_blob() {}
 
 #[utoipa::path(
     post,

@@ -34,6 +34,7 @@ pub fn dx402_routes() -> Router<Arc<Dx402Service>> {
         .route("/dx402/receipt/{payment_id}", get(get_receipt))
         .route("/dx402/recover", post(post_recover))
         .route("/dx402/stats", get(get_stats))
+        .route("/dx402/blob/{payment_id}", get(get_blob))
 }
 
 /// Render an error code as the response shape callers branch on.
@@ -130,6 +131,39 @@ pub async fn get_receipt(
                     "chainId": crate::dx402::service::chain_id_of(record.receipt.network),
                 },
             })),
+        )
+            .into_response(),
+        Err(code) => error_response(code),
+    }
+}
+
+/// `GET /dx402/blob/{paymentId}` — the sealed ciphertext itself.
+///
+/// Unauthenticated on purpose. In `direct` mode the bytes are sealed to the
+/// payer's own public key, so handing them to anyone who asks reveals nothing:
+/// the access control lives in the cryptography rather than in an ACL that could
+/// be misconfigured. That is also why the evidence bucket stays private and is
+/// never exposed to the internet — this route is the only way in, and it can
+/// only ever serve ciphertext.
+///
+/// `Cache-Control: public` is deliberate and safe for the same reason. Attack III
+/// of *Five Attacks on x402* measured 100% leakage of paid responses through an
+/// nginx cache; an intermediary that caches *this* stores something unreadable.
+pub async fn get_blob(
+    State(svc): State<Arc<Dx402Service>>,
+    Path(payment_id): Path<String>,
+) -> axum::response::Response {
+    match svc.fetch_sealed(&payment_id, now_secs()).await {
+        Ok(bytes) => (
+            StatusCode::OK,
+            [
+                (axum::http::header::CONTENT_TYPE, "application/octet-stream"),
+                (
+                    axum::http::header::CACHE_CONTROL,
+                    "public, max-age=31536000, immutable",
+                ),
+            ],
+            bytes,
         )
             .into_response(),
         Err(code) => error_response(code),

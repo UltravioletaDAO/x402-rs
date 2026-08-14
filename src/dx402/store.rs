@@ -86,16 +86,38 @@ impl S3EvidenceStore {
         format!("evidence/{payment_id}.dx402")
     }
 
+    /// The pointer a buyer receives, which addresses the *payment*, not the
+    /// bucket layout.
+    ///
+    /// The bucket stays private and the pointer resolves through the
+    /// facilitator's own `GET /dx402/blob/{paymentId}`. Serving ciphertext this
+    /// way costs one hop and buys two things: no publicly-readable bucket to
+    /// misconfigure, and freedom to reorganise the S3 key layout later without
+    /// breaking pointers that buyers already hold — and those pointers are meant
+    /// to still work in a year.
+    ///
+    /// It is safe precisely because the bytes behind it are sealed to the payer:
+    /// an unauthenticated GET hands out ciphertext nobody else can open.
+    fn pointer_for(&self, payment_id: &str) -> DurablePointer {
+        DurablePointer(format!("s3+{}/{}", self.public_base, payment_id))
+    }
+
     /// Recover the object key from a pointer we previously issued.
+    ///
+    /// Rejects anything not under our own `public_base`. Without that check this
+    /// would dereference attacker-chosen URLs through our credentials, which is
+    /// an SSRF.
     fn key_from_pointer(&self, pointer: &DurablePointer) -> Result<String, StoreError> {
         let raw = pointer.as_str();
         let rest = raw
             .strip_prefix("s3+")
             .ok_or_else(|| StoreError::ForeignPointer(raw.to_string()))?;
-        let path = rest
+        let payment_id = rest
             .strip_prefix(&self.public_base)
+            .map(|p| p.trim_start_matches('/'))
+            .filter(|p| !p.is_empty() && !p.contains('/'))
             .ok_or_else(|| StoreError::ForeignPointer(raw.to_string()))?;
-        Ok(path.trim_start_matches('/').to_string())
+        Ok(Self::object_key(payment_id))
     }
 }
 
@@ -129,7 +151,7 @@ impl EvidenceStore for S3EvidenceStore {
             .await
             .map_err(|e| StoreError::Unavailable(format!("s3 put_object: {e}")))?;
 
-        Ok(DurablePointer(format!("s3+{}/{}", self.public_base, key)))
+        Ok(self.pointer_for(payment_id))
     }
 
     async fn get(&self, pointer: &DurablePointer) -> Result<Vec<u8>, StoreError> {
@@ -274,9 +296,17 @@ mod tests {
             "https://evidence.ultravioletadao.xyz/".into(),
         );
 
-        let key = S3EvidenceStore::object_key("0xabc");
-        let pointer = DurablePointer(format!("s3+https://evidence.ultravioletadao.xyz/{key}"));
-        assert_eq!(store.key_from_pointer(&pointer).unwrap(), key);
+        // The pointer addresses the payment, not the bucket layout, so buyers
+        // holding a year-old pointer keep working if the S3 keys are reorganised.
+        let pointer = store.pointer_for("0xabc");
+        assert_eq!(
+            pointer.as_str(),
+            "s3+https://evidence.ultravioletadao.xyz/0xabc"
+        );
+        assert_eq!(
+            store.key_from_pointer(&pointer).unwrap(),
+            S3EvidenceStore::object_key("0xabc")
+        );
     }
 
     #[test]
@@ -294,10 +324,17 @@ mod tests {
         );
 
         for hostile in [
-            "s3+https://evil.example/evidence/x.dx402",
-            "https://evidence.ultravioletadao.xyz/evidence/x.dx402",
+            "s3+https://evil.example/0xabc",
+            "https://evidence.ultravioletadao.xyz/0xabc", // no s3+ tag
             "ipfs://bafyfoo",
             "s3+http://169.254.169.254/latest/meta-data/",
+            // Path traversal: the payment id is interpolated into an S3 key, so
+            // anything with a separator in it must be refused outright rather
+            // than sanitised.
+            "s3+https://evidence.ultravioletadao.xyz/../../etc/passwd",
+            "s3+https://evidence.ultravioletadao.xyz/a/b",
+            "s3+https://evidence.ultravioletadao.xyz/", // empty payment id
+            "s3+https://evidence.ultravioletadao.xyz.evil.example/0xabc",
         ] {
             assert!(
                 matches!(

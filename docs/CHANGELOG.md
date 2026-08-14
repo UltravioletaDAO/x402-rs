@@ -1,5 +1,31 @@
 # Changelog
 
+## [1.76.0] - 2026-08-17
+
+### Added — DX402 infrastructure and a pointer buyers can resolve without AWS
+
+- `terraform/environments/production/dx402.tf`: private S3 bucket for sealed
+  ciphertext, DynamoDB index, and the two task-role policies. Provisioning and
+  switching on are **separate**: those resources cost ~$0 idle and are created
+  regardless, while `var.enable_dx402` (default `false`) only controls the
+  container's environment.
+- `GET /dx402/blob/{paymentId}` serves the ciphertext from the private bucket.
+  Pointers now address the **payment** rather than the S3 key layout, so a
+  pointer a buyer holds a year from now keeps resolving through a re-layout.
+- `scripts/dx402-bootstrap-secret.sh` creates the receipt-signing key. It signs
+  attestations only — no funds, no gas — and refuses to overwrite an existing
+  secret, which would silently invalidate the address every issued receipt
+  verifies against.
+- Runbook: `docs/plans/dx402/03-DEPLOY-RUNBOOK.md`.
+
+### Security
+
+- `key_from_pointer` rejects any pointer containing a path separator. The
+  `paymentId` is interpolated into an S3 key, so `../../etc/passwd` and `a/b` are
+  refused outright rather than sanitised. Tests cover traversal, a foreign host,
+  the EC2 metadata endpoint, and a lookalike domain suffix.
+
+
 ## [1.75.0] - 2026-08-14
 
 ### Added — DX402 `durable-evidence` extension

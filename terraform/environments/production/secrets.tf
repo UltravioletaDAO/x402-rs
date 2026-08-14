@@ -91,6 +91,24 @@ data "aws_secretsmanager_secret" "erc8004_admin_token" {
   name = "facilitator-erc8004-admin-token"
 }
 
+# DX402 receipt signing key.
+#
+# The facilitator signs an EIP-712 EvidenceReceipt with this so a third party can
+# verify, offline and without calling us, that we attested a given payment
+# produced a given piece of evidence.
+#
+# This is NOT a payment wallet and must never be one. It signs attestations, not
+# transfers, so it holds no funds and needs no gas — keeping it separate means a
+# leak forges receipts but moves no money, and rotating it costs nothing.
+#
+# Looked up only when enable_dx402 is true, so the bucket and table can be
+# provisioned before the secret exists. Create it with
+# scripts/dx402-bootstrap-secret.sh.
+data "aws_secretsmanager_secret" "dx402_signing_key" {
+  count = var.enable_dx402 ? 1 : 0
+  name  = "facilitator-dx402-signing-key"
+}
+
 # ----------------------------------------------------------------------------
 # RPC URL Secrets (Premium Endpoints)
 # ----------------------------------------------------------------------------
@@ -129,9 +147,10 @@ locals {
   ]
 
   # Admin credential ARNs that need IAM permissions
-  admin_secret_arns = [
-    data.aws_secretsmanager_secret.erc8004_admin_token.arn,
-  ]
+  admin_secret_arns = concat(
+    [data.aws_secretsmanager_secret.erc8004_admin_token.arn],
+    var.enable_dx402 ? [data.aws_secretsmanager_secret.dx402_signing_key[0].arn] : []
+  )
 
   # All RPC secret ARNs that need IAM permissions
   rpc_secret_arns = [
@@ -316,12 +335,17 @@ locals {
   # ----------------------------------------------------------------------------
   # Admin credentials
   # ----------------------------------------------------------------------------
-  admin_secrets = [
+  admin_secrets = concat([
     {
       name      = "ERC8004_ADMIN_TOKEN"
       valueFrom = "${data.aws_secretsmanager_secret.erc8004_admin_token.arn}:token::"
     },
-  ]
+    ], var.enable_dx402 ? [
+    {
+      name      = "DX402_SIGNING_KEY"
+      valueFrom = "${data.aws_secretsmanager_secret.dx402_signing_key[0].arn}:private_key::"
+    },
+  ] : [])
 
   # Combined secrets array for task definition
   all_task_secrets = concat(

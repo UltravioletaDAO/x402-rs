@@ -1067,7 +1067,53 @@ resource "aws_ecs_task_definition" "facilitator" {
           name  = "TRANSACTIONS_TTL_DAYS"
           value = "90"
         }
-        ], var.enable_observability ? [
+        ], var.enable_dx402 ? [
+        # ============================================================
+        # DX402 -- durable-evidence extension
+        # ============================================================
+        # Off unless enable_dx402 is set. With these absent the /dx402/*
+        # routes are never registered and /supported does not advertise
+        # the extension, so the payment path is byte-for-byte unchanged.
+        #
+        # Missing or unusable config DISABLES the feature and logs why
+        # (src/dx402/service.rs). It never falls back to an in-memory
+        # store, which would report durable evidence for data that dies
+        # with the process.
+        # ============================================================
+        {
+          name  = "ENABLE_DX402"
+          value = "true"
+        },
+        {
+          name  = "DX402_STORE_BACKEND"
+          value = "s3"
+        },
+        {
+          name  = "DX402_STORE_BUCKET"
+          value = aws_s3_bucket.dx402_evidence.id
+        },
+        {
+          # Base for the pointers buyers receive. It points at the
+          # facilitator's own blob route, NOT at S3: the bucket stays
+          # private and this is the only way in. Safe to serve
+          # unauthenticated because the bytes are sealed to the payer.
+          #
+          # Changing this breaks pointers already in the wild -- treat it
+          # as permanent.
+          name  = "DX402_STORE_PUBLIC_BASE"
+          value = "https://facilitator.ultravioletadao.xyz/dx402/blob"
+        },
+        {
+          name  = "DX402_REGISTRY_TABLE_NAME"
+          value = aws_dynamodb_table.dx402_evidence.name
+        },
+        {
+          # Bounded on purpose. Anchoring is publishing, and `permanent`
+          # is irrevocable -- a seller can still opt into it per route.
+          name  = "DX402_RETENTION"
+          value = "90d"
+        },
+        ] : [], var.enable_observability ? [
         # ============================================================
         # OpenTelemetry - Push to OTel Collector sidecar
         # (only when observability stack is enabled)

@@ -174,3 +174,23 @@ variable "image_tag" {
   type        = string
   default     = ""
 }
+
+variable "enable_dx402" {
+  description = <<-EOT
+    Turn on the DX402 `durable-evidence` extension.
+
+    The bucket, table and IAM policies in dx402.tf are created regardless — they
+    cost effectively nothing idle — so provisioning and switching on are separate
+    steps. This flag only controls the environment the container receives.
+
+    Prerequisite: the secret `facilitator-dx402-signing-key` must EXIST before
+    setting this to true, or the apply fails resolving the data source. Create it
+    with scripts/dx402-bootstrap-secret.sh.
+
+    Off, the facilitator never advertises `durable-evidence` in /supported and
+    the /dx402/* routes are not registered at all, so nothing on the payment path
+    changes.
+  EOT
+  type        = bool
+  default     = false
+}

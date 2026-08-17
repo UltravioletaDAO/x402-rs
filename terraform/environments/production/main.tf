@@ -1090,7 +1090,7 @@ resource "aws_ecs_task_definition" "facilitator" {
         },
         {
           name  = "DX402_STORE_BUCKET"
-          value = aws_s3_bucket.dx402_evidence.id
+          value = local.dx402_bucket_name
         },
         {
           # Base for the pointers buyers receive. It points at the
@@ -1105,7 +1105,7 @@ resource "aws_ecs_task_definition" "facilitator" {
         },
         {
           name  = "DX402_REGISTRY_TABLE_NAME"
-          value = aws_dynamodb_table.dx402_evidence.name
+          value = local.dx402_table_name
         },
         {
           # Bounded on purpose. Anchoring is publishing, and `permanent`

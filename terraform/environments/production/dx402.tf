@@ -25,16 +25,35 @@
 # ----------------------------------------------------------------------------
 
 # ----------------------------------------------------------------------------
+# Names, as plain strings
+# ----------------------------------------------------------------------------
+#
+# The ECS task definition needs these names in its environment. If it read them
+# off the resources (`aws_s3_bucket.dx402_evidence.id`) Terraform would record a
+# dependency edge, and CI -- which applies with `-target` on the task definition
+# and service -- would drag the bucket and table into every deploy. It does not
+# have, and should not have, permission to create S3 buckets, so that turns a
+# routine release into a failed deploy. Measured the hard way: CI run
+# 32063044613, `AccessDenied ... s3:CreateBucket`.
+#
+# Naming them here instead keeps the payment path completely independent of
+# whether the DX402 infrastructure exists yet.
+locals {
+  dx402_bucket_name = "facilitator-dx402-evidence-${var.environment}"
+  dx402_table_name  = "facilitator_dx402_evidence"
+}
+
+# ----------------------------------------------------------------------------
 # S3 -- sealed evidence
 # ----------------------------------------------------------------------------
 
 resource "aws_s3_bucket" "dx402_evidence" {
-  bucket = "facilitator-dx402-evidence-${var.environment}"
+  bucket = local.dx402_bucket_name
 
   tags = {
     Name        = "facilitator-dx402-evidence"
     Environment = var.environment
-    Purpose     = "DX402 sealed response bodies (ciphertext only)"
+    Purpose     = "DX402 sealed response bodies - ciphertext only"
   }
 }
 
@@ -168,7 +187,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "dx402_evidence" {
 # What it buys is the case where a buyer returns months later with nothing but a
 # transaction hash and asks "what did I actually buy?".
 resource "aws_dynamodb_table" "dx402_evidence" {
-  name         = "facilitator_dx402_evidence"
+  name         = local.dx402_table_name
   billing_mode = "PAY_PER_REQUEST"
   hash_key     = "payment_id"
 
@@ -194,7 +213,7 @@ resource "aws_dynamodb_table" "dx402_evidence" {
   tags = {
     Name        = "facilitator-dx402-evidence"
     Environment = var.environment
-    Purpose     = "DX402 paymentId -> pointer index (no key material)"
+    Purpose     = "DX402 evidence index - pointers and hashes only"
   }
 }
 

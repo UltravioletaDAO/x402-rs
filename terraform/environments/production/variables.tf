@@ -190,7 +190,13 @@ variable "enable_dx402" {
     Off, the facilitator never advertises `durable-evidence` in /supported and
     the /dx402/* routes are not registered at all, so nothing on the payment path
     changes.
+
+    DEFAULT IS TRUE, and it has to be. terraform.tfvars is gitignored, so CI
+    applies with the defaults in this file. A default that disagrees with the
+    local tfvars silently reverts the setting on every deploy -- that is exactly
+    how alb_idle_timeout sat reverted for months. If you turn DX402 off, turn it
+    off HERE.
   EOT
   type        = bool
-  default     = false
+  default     = true
 }

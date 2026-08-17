@@ -298,6 +298,11 @@ Para que no lo busquen:
 - **La evidencia hoy se cifra SOLO hacia el comprador.** El vendedor no puede
   abrir la suya, así que todavía no les sirve para defenderse de un reclamo
   falso. El envelope multi-destinatario está diseñado para v0.2 (mismo doc).
+- **`/dx402/anchor` NO verifica que el pago exista.** No consulta la cadena
+  todavía. Para ustedes es cómodo —pueden probar con un `txHash` de mentira antes
+  de tener un pago real— pero significa que cualquiera puede anclar cualquier
+  cosa. Lo vamos a cerrar reutilizando el gate on-chain de ERC-8004. Está en el
+  backlog §2-ter y **no proponemos upstream sin eso resuelto**.
 
 ---
 

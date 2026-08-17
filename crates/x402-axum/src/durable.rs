@@ -231,7 +231,11 @@ impl DurableEvidenceHook {
             tx_hash: ctx.tx_hash.clone(),
             payer: ctx.payer.clone(),
             payee: ctx.payee.clone(),
-            pointer,
+            // This hook uploads through its own sink, so it always supplies a
+            // pointer. A seller with no storage of its own can instead send the
+            // sealed bytes as `sealed` and let the facilitator host them.
+            pointer: Some(pointer),
+            sealed: None,
             backend: self.config.backend,
             content_hash,
             key_alg,

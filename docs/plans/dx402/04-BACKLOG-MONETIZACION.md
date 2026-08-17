@@ -182,6 +182,45 @@ opcional.
 
 ---
 
+## 2-ter. `POST /dx402/anchor` no verifica que el pago exista
+
+**Superficie de abuso real, hoy, en producción.** Va acá para que no se descubra
+sola.
+
+El endpoint acepta cualquier `paymentId` / `txHash` que le manden. No consulta la
+cadena. Entonces cualquiera puede:
+
+- anclar blobs de hasta ~48 KB sin haber pagado nada → **storage gratis**;
+- registrar evidencia con un `txHash` inventado → un recibo firmado por nosotros
+  atestiguando un pago que no existió.
+
+Lo segundo es lo más feo: el recibo lleva **nuestra firma**. No dice "este pago
+ocurrió" —dice "esto fue anclado para este paymentId"— pero la distinción es
+demasiado fina como para confiar en que nadie la va a malinterpretar.
+
+Lo que hoy lo contiene (parcialmente):
+
+- rate limit en las rutas `/dx402/*` (el mismo governor que las de lectura)
+- tope de 64 KiB de body
+- expiración por lifecycle a los 90 días
+- el bucket es privado; solo se sirve por `/dx402/blob`
+
+Lo que hay que hacer, en orden de peso:
+
+1. **Verificar el pago on-chain antes de anclar**, igual que hace el gate de
+   proof-of-payment de ERC-8004 (`src/erc8004/proof.rs`): que la tx exista, que
+   haya tenido éxito, y que `payer`/`payee` coincidan. Ya está el patrón escrito,
+   se reutiliza.
+2. **Anti-replay por (paymentId)**: un pago ancla una vez. Hoy un segundo anchor
+   con el mismo id pisa el registro.
+3. Mientras tanto: **fase 1 como en ERC-8004** — verificar y *reportar* sin
+   rechazar, mirar los logs, y recién ahí cerrar.
+
+**No proponer upstream sin esto resuelto.** Un endpoint de escritura público sin
+verificación es lo primero que va a saltar en una revisión, y con razón.
+
+---
+
 ## 3. La parte incómoda: el costo no justifica el precio
 
 Saul dijo "eso ya está accounted for" respecto al storage. Vale la pena poner

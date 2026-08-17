@@ -273,7 +273,25 @@ ciphertext, wrapped CEK, and `contentHash`.
 
 ## 13. Open items for v0.2
 
+Design notes: **[04-BACKLOG-MONETIZACION.md](04-BACKLOG-MONETIZACION.md)**.
+
+### Blocking the upstream proposal
+
+1. **Multi-recipient envelopes.** v0.1 seals to the payer alone, which means a
+   seller cannot open the evidence for a payment it served — it has no way to
+   answer a false "I never got it" or "it was garbage". Evidence that protects
+   only one side of a two-sided exchange is an obvious and fair criticism, and
+   the fix changes the on-disk format (`recipients[]` instead of one wrapped
+   CEK). **Do not propose upstream with a single-recipient format**: changing it
+   after other implementations exist is far more expensive than changing it now,
+   while we are the only user.
+2. **Buyer opt-in through the existing `accepts` array.** A seller offers the
+   same resource twice — plain, and with `durable-evidence` at a higher price —
+   and the buyer picks. This needs no change to the x402 core, which is worth
+   stating explicitly in the proposal.
+
+### Not blocking
+
 - `derived` mode for browser wallets (deterministic EIP-712 signature → HKDF →
   X25519). Blocked on validating RFC 6979 determinism across wallet vendors.
 - On-chain anchoring of receipt digests.
-- Multi-recipient encryption (payer + designated auditor).

@@ -1,8 +1,9 @@
-# DX402 — Backlog: opt-in del comprador y monetización
+# DX402 — Backlog v0.2: opt-in bidireccional y monetización
 
 **Fecha:** 2026-08-17
-**Origen:** pregunta de Saul durante el despliegue de v1.76.0
-**Estado:** investigación pendiente. **No implementado.**
+**Origen:** dos preguntas de Saul durante el despliegue de v1.76.0
+**Estado:** diseño. **No implementado.** Resolver ANTES de proponer upstream,
+porque la parte 2 cambia el formato del envelope.
 
 ---
 
@@ -89,6 +90,98 @@ Ventajas de esta forma:
 
 ---
 
+## 2-bis. Bidireccionalidad: la evidencia tiene que servirle a los DOS
+
+> "Debería vivir a un nivel en que el vendedor elija si lo quiere o no, como un
+> seguro opcional, y si el vendedor lo provee, que sea de las dos partes."
+
+Esto es un hueco real de v0.1, y es más grave de lo que parece.
+
+### El problema
+
+Hoy el envelope se cifra **solo hacia el pagador**. Consecuencia incómoda: en una
+disputa, **el vendedor no puede abrir su propia evidencia**. Vendió algo, lo
+ancló, y no puede demostrar qué entregó.
+
+Las dos partes quieren cosas distintas y ambas legítimas:
+
+| Parte | Qué quiere probar | ¿Puede hoy? |
+|---|---|---|
+| Comprador | "esto es lo que me entregaron" | ✅ sí |
+| Vendedor | "esto es lo que entregué, no lo que dice que recibió" | ❌ **no** |
+
+Un comprador de mala fe puede decir "me llegó basura" o "nunca me llegó" y el
+vendedor no tiene con qué responder — aunque él mismo pagó por anclarlo. Eso
+convierte a DX402 en un arma de una sola dirección, que no es lo que queremos si
+la idea es que se adopte como estándar.
+
+### El diseño: envelope multi-destinatario
+
+La CEK se envuelve **N veces**, una por destinatario, en vez de una sola:
+
+```
+CEK          := random 32 bytes
+ciphertext   := AES-256-GCM(CEK, body, aad = paymentId)   # una sola vez
+
+recipients[] := [
+  { role: "payer",   keyAlg, ephemeralPub, wrappedCEK },
+  { role: "seller",  keyAlg, ephemeralPub, wrappedCEK },
+  { role: "auditor", keyAlg, ephemeralPub, wrappedCEK },  # opcional
+]
+```
+
+El ciphertext del body **no se duplica** — es el mismo blob. Solo se repite el
+wrap de la CEK, que son ~60 bytes por destinatario. El costo de storage
+prácticamente no se mueve.
+
+Cada quien abre con su propia clave privada. Nadie más, y sigue sin haber una
+parte confiable en el medio.
+
+**Roles a considerar:**
+
+- `payer` — siempre. Es el mínimo de v0.1.
+- `seller` — para que pueda defenderse. Su clave sale de `payTo`… con un
+  detalle: `payTo` suele ser una dirección de cobro, y en EVM **una address no
+  da la clave pública**. El vendedor tendría que declarar una clave de cifrado
+  explícita en su config (no la misma con la que cobra — separar roles de clave
+  es sano).
+- `auditor` — un tercero designado (árbitro, regulador, la DAO). Opt-in
+  explícito y visible en el recibo, nunca implícito.
+
+### Lo que hay que resolver antes de escribirlo
+
+1. **Cómo obtiene el vendedor su clave pública de cifrado.** En ed25519 la
+   address sirve; en EVM no. Probablemente un campo `sellerPublicKey` en la
+   declaración de la ruta.
+2. **Que el recibo diga quiénes pueden leer.** Si el recibo no lista los
+   destinatarios, un comprador no puede saber que el vendedor —o un auditor—
+   también tiene acceso. Eso sería una sorpresa desagradable y arruinaría la
+   propiedad de privacidad que estamos vendiendo. **Los destinatarios son parte
+   de la atestación firmada, no metadata suelta.**
+3. **Versión del formato.** El envelope actual tiene un solo `wrappedCEK`.
+   Agregar `recipients[]` es un bump del byte de versión (`FORMAT_VERSION = 1`
+   → `2`) con lectura compatible hacia atrás: un blob v1 se interpreta como un
+   único destinatario `payer`.
+
+### Cómo se combina con el opt-in
+
+Las dos cosas son ortogonales y se declaran juntas:
+
+```jsonc
+"durable-evidence": {
+  "mode": "direct",
+  "retention": "1y",
+  "recipients": ["payer", "seller"]   // el vendedor también se guarda copia
+}
+```
+
+Y el comprador elige si quiere la oferta con evidencia vía el array `accepts`
+(§2). O sea: **el vendedor decide qué ofrece, el comprador decide si lo toma, y
+si se toma, protege a los dos.** Que es exactamente el modelo de un seguro
+opcional.
+
+---
+
 ## 3. La parte incómoda: el costo no justifica el precio
 
 Saul dijo "eso ya está accounted for" respecto al storage. Vale la pena poner
@@ -153,17 +246,28 @@ volumen es de decenas o de millones al mes, y la respuesta cambia con eso.
 
 1. **Primero probar que funciona** (KarmaCadabra, el objetivo de hoy). Sin un
    solo anclaje real, todo esto es especulación.
-2. Después el opt-in del comprador vía `accepts` — es el cambio que más habilita
-   y el que menos protocolo toca.
-3. La monetización del facilitador al final, con números reales en la mano.
+2. **Envelope multi-destinatario** (§2-bis). Va primero entre los cambios de
+   diseño porque toca el formato en disco: cuanto más evidencia haya anclada en
+   v1, más caro es migrar. Y sin esto la extensión sale al mundo protegiendo a
+   una sola de las dos partes, que es una crítica obvia y justa.
+3. Opt-in del comprador vía `accepts` (§2) — no toca el formato, solo la
+   declaración, así que puede ir después sin costo de migración.
+4. La monetización del facilitador al final, con números reales en la mano.
 
 ---
 
 ## 6. Para la propuesta upstream
 
-Que el opt-in salga del `accepts` que x402 **ya tiene** es un argumento fuerte
-frente a la Foundation: la extensión no pide tocar el core, se apoya en un
-mecanismo existente, y degrada sola con clientes viejos.
+Dos argumentos fuertes de cara a la Foundation, y conviene que el spec v0.2 los
+diga explícitamente:
 
-Vale la pena que el spec v0.2 lo diga explícitamente, con el ejemplo del array de
-dos ofertas.
+1. **El opt-in sale del `accepts` que x402 ya tiene.** La extensión no pide
+   tocar el core, se apoya en un mecanismo existente y degrada sola con clientes
+   viejos. Incluir el ejemplo del array de dos ofertas.
+2. **La evidencia protege a las dos partes.** "Solo el comprador puede leerla"
+   invita de inmediato a la pregunta *¿y el vendedor cómo se defiende?*. Mejor
+   llegar con la respuesta escrita que con el hueco.
+
+**No proponer con el formato de un solo destinatario.** Un cambio de formato
+después de que otros ya implementaron es mucho más caro que hacerlo ahora, que
+el único usuario somos nosotros.

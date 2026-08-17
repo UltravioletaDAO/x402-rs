@@ -1,4 +1,4 @@
-//! Rust opens what the PYTHON SDK sealed.
+//! Rust opens what the PYTHON and TYPESCRIPT SDKs sealed.
 //!
 //! The other direction (Rust seals, Python opens) is covered by
 //! `tests/dx402_vector_gen.rs` plus the SDK test suites. This file closes the
@@ -46,5 +46,24 @@ fn rust_opens_a_python_sealed_x25519_envelope() {
     let envelope = SealedEnvelope::from_bytes(&blob).expect("python blob should parse");
     let plaintext = open(&envelope, &PayerSecretKey::Ed25519Seed([0x37u8; 32]), PID)
         .expect("rust should open a python-sealed envelope");
+    assert_eq!(plaintext, BODY);
+}
+
+#[test]
+fn rust_opens_a_typescript_sealed_secp256k1_envelope() {
+    let blob = load("typescript-sealed-secp256k1.hex");
+    let envelope = SealedEnvelope::from_bytes(&blob).expect("typescript blob should parse");
+    let sk = k256::SecretKey::from_slice(&[0x42u8; 32]).unwrap();
+    let plaintext = open(&envelope, &PayerSecretKey::Secp256k1(Box::new(sk)), PID)
+        .expect("rust should open a typescript-sealed envelope");
+    assert_eq!(plaintext, BODY);
+}
+
+#[test]
+fn rust_opens_a_typescript_sealed_x25519_envelope() {
+    let blob = load("typescript-sealed-x25519.hex");
+    let envelope = SealedEnvelope::from_bytes(&blob).expect("typescript blob should parse");
+    let plaintext = open(&envelope, &PayerSecretKey::Ed25519Seed([0x37u8; 32]), PID)
+        .expect("rust should open a typescript-sealed envelope");
     assert_eq!(plaintext, BODY);
 }

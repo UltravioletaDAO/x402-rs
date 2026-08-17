@@ -21,8 +21,8 @@ const BODY: &[u8] = b"the paid response that must outlive the session";
 
 fn load(name: &str) -> Vec<u8> {
     let path = format!("{}/tests/vectors/{name}", env!("CARGO_MANIFEST_DIR"));
-    let hex_str = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("missing fixture {path}: {e}"));
+    let hex_str =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("missing fixture {path}: {e}"));
     hex::decode(hex_str.trim()).expect("fixture should be valid hex")
 }
 

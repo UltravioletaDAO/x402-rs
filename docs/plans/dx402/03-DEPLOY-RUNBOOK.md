@@ -1,5 +1,13 @@
 # DX402 — Runbook de despliegue
 
+> **DESPLEGADO Y VERIFICADO el 2026-08-17** en v1.77.0.
+> `scripts/dx402-e2e-check.py` pasa 17/17 contra producción: sella, ancla, baja
+> el ciphertext, descifra con la clave del pagador, y confirma que **otra wallet
+> no puede**. Firmante de recibos: `0x7bC4b9cc90a057A95A0F5a8F93C3e3996EE4e0DF`.
+>
+> Lo que sigue queda como referencia de cómo se hizo y para reproducirlo en otro
+> entorno.
+
 **Fecha:** 2026-08-14
 **Objetivo:** DX402 corriendo en `facilitator.ultravioletadao.xyz`, usado por
 nosotros, antes de proponer nada upstream.
@@ -72,6 +80,17 @@ con calma.
 > **Ojo con el `-target`.** CI apunta solo al task definition y al service, así
 > que **no crea el bucket ni la tabla**. Para eso hace falta un apply que
 > incluya `dx402.tf` — ver paso 2.
+>
+> **Y el task definition NO puede referenciar esos recursos.** Terraform arma el
+> grafo de dependencias de forma estática: no le importa que
+> `var.enable_dx402 ? [...] : []` sea falso. Referenciar
+> `aws_s3_bucket.dx402_evidence.id` hacía que el `-target` de CI arrastrara el
+> bucket a **cada** deploy, y el usuario de CI no tiene `s3:CreateBucket` →
+> release muerto (run 32063044613). Por eso los nombres viven en `locals`.
+>
+> **Además**: el rol de EJECUCIÓN necesita el ARN del secreto nuevo, y CI
+> tampoco toca `aws_iam_role_policy.secrets_access` con su `-target`. Hay que
+> aplicarlo a mano antes de encender, o el contenedor no arranca.
 
 ### 2. Aprovisionar la infra
 
@@ -115,12 +134,12 @@ una filtración falsifica recibos pero no mueve plata, y rotarla no cuesta nada.
 
 ### 4. Encender
 
-En `terraform/environments/production/terraform.tfvars` (que está en
-`.gitignore`, por eso no lo puedo tocar yo):
+El default de `enable_dx402` en `variables.tf` es **`true`**, y tiene que serlo:
+`terraform.tfvars` está gitignoreado, así que CI aplica con los defaults de ese
+archivo. Un default en `false` apagaría DX402 en cada deploy — la misma trampa
+que tuvo `alb_idle_timeout` revertido durante meses.
 
-```hcl
-enable_dx402 = true
-```
+Si alguien quiere apagarlo, lo apaga en `variables.tf`.
 
 ```bash
 terraform apply -target=aws_ecs_task_definition.facilitator \

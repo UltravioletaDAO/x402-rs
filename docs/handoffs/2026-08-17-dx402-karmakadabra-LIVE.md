@@ -21,6 +21,11 @@ Lo que hay que hacer, en orden:
 3. En el buyer, leer un header más
 4. Avisarnos cuando haya un anclaje real
 
+**No necesitan storage propio.** Le mandan el ciphertext al facilitador en la
+misma llamada del anchor y él lo guarda. Límite: ~48 KB de ciphertext por el
+tope de body de 64 KiB (base64 infla un tercio). Si un body es más grande,
+pueden subirlo a su bucket y mandar `pointer` en vez de `sealed`.
+
 ---
 
 ## 1. Qué problema les resuelve, concreto
@@ -111,6 +116,7 @@ después.** Es la diferencia entre 20 líneas en un lugar y 5 parches.
 ### 4.3 El código
 
 ```python
+import base64
 from uvd_x402_sdk.dx402 import (
     seal_evidence, content_hash, payment_id,
     payer_key_from_solana_address, payer_key_from_evm_signature,
@@ -119,26 +125,26 @@ import httpx
 
 FACILITATOR = "https://facilitator.ultravioletadao.xyz"
 
-def anclar_evidencia(body_bytes, *, network_caip2, tx_hash, payer, payee,
+def anclar_evidencia(body_bytes, *, network_caip2, network, tx_hash, payer, payee,
                      payer_key, retention="90d"):
-    """Sella el body hacia el comprador y lo ancla. Nunca levanta hacia arriba."""
+    """Sella el body hacia el comprador y lo ancla. Nunca levanta hacia arriba.
+
+    NO necesitan bucket propio: mandan el ciphertext y el facilitador lo guarda
+    y les devuelve el pointer. Una sola llamada HTTP.
+    """
     try:
-        pid = payment_id(network_caip2, tx_hash)
+        pid  = payment_id(network_caip2, tx_hash)
         blob = seal_evidence(body_bytes, payer_key, pid)
 
-        # 1) subir el ciphertext a donde ustedes quieran (su bucket sirve)
-        pointer = subir_a_su_storage(pid, blob)   # devuelve una URL
-
-        # 2) avisarle al facilitador. SOLO metadata: ni el plaintext ni la clave
-        r = httpx.post(f"{FACILITATOR}/dx402/anchor", timeout=10, json={
+        r = httpx.post(f"{FACILITATOR}/dx402/anchor", timeout=15, json={
             "paymentId":   pid,
-            "network":     "base",              # o "solana"
+            "network":     network,             # "base" | "solana"
             "txHash":      tx_hash,
             "payer":       payer,
             "payee":       payee,
-            "pointer":     f"s3+{pointer}",
+            "sealed":      base64.b64encode(blob).decode(),   # <- el ciphertext
             "backend":     "s3",
-            "contentHash": content_hash(body_bytes),   # sobre el PLAINTEXT
+            "contentHash": content_hash(body_bytes),          # sobre el PLAINTEXT
             "keyAlg":      "ECIES-X25519",      # o "ECIES-secp256k1" en EVM
             "mode":        "direct",
             "retention":   retention,
@@ -162,7 +168,9 @@ body_bytes = json.dumps(payload).encode()
 # Solana: la address ES la clave. No hace falta la firma.
 payer_key = payer_key_from_solana_address(payer)
 
-ev = anclar_evidencia(body_bytes, network_caip2="solana:5eykt4Us...",
+ev = anclar_evidencia(body_bytes,
+                      network_caip2="solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+                      network="solana",
                       tx_hash=tx_hash, payer=payer, payee=PAY_TO,
                       payer_key=payer_key)
 

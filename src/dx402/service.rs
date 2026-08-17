@@ -236,10 +236,48 @@ impl Dx402Service {
     ) -> Result<AnchoredEvidence, Dx402ErrorCode> {
         let retention_until = req.retention.until(now);
 
+        // Host the blob ourselves when the seller sends one. This is what lets a
+        // resource server produce evidence without operating any storage at all:
+        // one HTTP call, no bucket, no credentials, no public object store of
+        // their own to misconfigure.
+        //
+        // Storing ciphertext does not make us a custodian. In `direct` mode the
+        // bytes are sealed to the payer and we cannot read them.
+        let pointer = match (&req.sealed, &req.pointer) {
+            (Some(encoded), _) => {
+                use base64::Engine as _;
+                let blob = base64::engine::general_purpose::STANDARD
+                    .decode(encoded)
+                    .or_else(|_| {
+                        base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(encoded)
+                    })
+                    .map_err(|e| {
+                        warn!(error = %e, payment_id = %req.payment_id, "DX402 sealed blob is not base64");
+                        Dx402ErrorCode::Dx402StoreUnavailable
+                    })?;
+
+                self.store
+                    .put(&req.payment_id, &blob, req.retention)
+                    .await
+                    .map_err(|e| {
+                        warn!(error = %e, payment_id = %req.payment_id, "DX402 blob upload failed");
+                        Dx402ErrorCode::Dx402StoreUnavailable
+                    })?
+            }
+            (None, Some(p)) => p.clone(),
+            (None, None) => {
+                warn!(
+                    payment_id = %req.payment_id,
+                    "DX402 anchor carried neither `sealed` nor `pointer`"
+                );
+                return Err(Dx402ErrorCode::Dx402StoreUnavailable);
+            }
+        };
+
         let receipt_body = EvidenceReceipt {
             payment_id: req.payment_id.clone(),
             content_hash: req.content_hash.clone(),
-            pointer: req.pointer.clone(),
+            pointer: pointer.clone(),
             payer: req.payer.clone(),
             payee: req.payee.clone(),
             tx_hash: req.tx_hash.clone(),
@@ -256,7 +294,7 @@ impl Dx402Service {
 
         let record = EvidenceRecord {
             payment_id: req.payment_id.clone(),
-            pointer: req.pointer.clone(),
+            pointer: pointer.clone(),
             backend: req.backend,
             content_hash: req.content_hash.clone(),
             key_alg: req.key_alg,
@@ -282,7 +320,7 @@ impl Dx402Service {
         Ok(AnchoredEvidence {
             v: DX402_VERSION,
             payment_id: req.payment_id,
-            pointer: req.pointer,
+            pointer,
             backend: req.backend,
             content_hash: req.content_hash,
             cipher: "AES-256-GCM".to_string(),
@@ -379,7 +417,8 @@ mod tests {
             tx_hash: format!("0x{}", "33".repeat(32)),
             payer: addr("0x103040545AC5031A11E8C03dd11324C7333a13C7"),
             payee: addr("0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8"),
-            pointer: DurablePointer("mem://x".into()),
+            pointer: Some(DurablePointer("mem://x".into())),
+            sealed: None,
             backend: StorageBackend::S3,
             content_hash: format!("0x{}", "22".repeat(32)),
             key_alg: KeyAlg::Secp256k1,
@@ -454,6 +493,56 @@ mod tests {
             svc.lookup("0xnever-existed", 1_000).await.unwrap_err(),
             Dx402ErrorCode::Dx402UnknownPayment
         );
+    }
+
+    #[tokio::test]
+    async fn a_seller_with_no_storage_can_anchor_by_sending_the_blob() {
+        // The path that matters for adoption: a resource server with no bucket,
+        // no credentials and no public object store sends the ciphertext and
+        // gets back a pointer it can hand to the buyer.
+        use base64::Engine as _;
+
+        let svc = Dx402Service::in_memory(PrivateKeySigner::random());
+        let blob = b"DX402\x01\x01pretend-this-is-a-sealed-envelope";
+
+        let req = AnchorRequest {
+            pointer: None,
+            sealed: Some(base64::engine::general_purpose::STANDARD.encode(blob)),
+            ..anchor_request(EvidenceMode::Direct)
+        };
+        let out = svc.anchor(req, 8453, 1_000).await.unwrap();
+
+        // The facilitator issued the pointer, and the bytes come back verbatim.
+        let record = svc.lookup(&out.payment_id, 1_000).await.unwrap();
+        assert_eq!(record.pointer, out.pointer);
+        assert_eq!(
+            svc.fetch_sealed(&out.payment_id, 1_000).await.unwrap(),
+            blob
+        );
+    }
+
+    #[tokio::test]
+    async fn an_anchor_with_neither_blob_nor_pointer_is_refused() {
+        // Recording an anchor that points at nothing would produce a signed
+        // receipt attesting to evidence that does not exist.
+        let svc = Dx402Service::in_memory(PrivateKeySigner::random());
+        let req = AnchorRequest {
+            pointer: None,
+            sealed: None,
+            ..anchor_request(EvidenceMode::Direct)
+        };
+        assert!(svc.anchor(req, 8453, 1_000).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_malformed_blob_is_refused_rather_than_stored() {
+        let svc = Dx402Service::in_memory(PrivateKeySigner::random());
+        let req = AnchorRequest {
+            pointer: None,
+            sealed: Some("!!! not base64 !!!".into()),
+            ..anchor_request(EvidenceMode::Direct)
+        };
+        assert!(svc.anchor(req, 8453, 1_000).await.is_err());
     }
 
     #[tokio::test]

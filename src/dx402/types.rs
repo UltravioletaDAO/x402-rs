@@ -306,7 +306,21 @@ pub struct AnchorRequest {
     pub tx_hash: String,
     pub payer: MixedAddress,
     pub payee: MixedAddress,
-    pub pointer: DurablePointer,
+    /// Where the resource server put the ciphertext.
+    ///
+    /// Optional, and omitting it is the easy path: send `sealed` instead and the
+    /// facilitator stores the blob and issues the pointer itself. A seller that
+    /// already has durable storage can keep using it by supplying a pointer;
+    /// one that does not should not have to stand up a bucket to get evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pointer: Option<DurablePointer>,
+    /// The sealed envelope itself, base64. Present when the seller wants the
+    /// facilitator to host it.
+    ///
+    /// This is ciphertext. Accepting it does not make the facilitator a
+    /// custodian: in `direct` mode it cannot read what it stores.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sealed: Option<String>,
     pub backend: StorageBackend,
     pub content_hash: String,
     pub key_alg: KeyAlg,

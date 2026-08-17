@@ -1,5 +1,37 @@
 # Changelog
 
+## [1.77.0] - 2026-08-17
+
+### Fixed — a seller with no storage could not produce evidence
+
+`POST /dx402/anchor` recorded metadata but never wrote the ciphertext anywhere,
+and the resource server has no credentials for the facilitator's private bucket.
+The result was a dangling design: `GET /dx402/blob/{paymentId}` could serve
+nothing, and any seller wanting evidence had to stand up their own **publicly
+readable** object store — the exact failure mode this design set out to avoid.
+
+`anchor` now accepts the sealed envelope inline as `sealed` (base64) and stores
+it, issuing the pointer itself. `pointer` becomes optional: a seller that already
+has durable storage keeps using it; one that does not sends the bytes and is
+done. One HTTP call, no bucket, no credentials.
+
+Storing ciphertext does not make the facilitator a custodian — in `direct` mode
+it cannot read what it stores.
+
+**Size ceiling:** the inline path is bounded by `MAX_REQUEST_BODY_BYTES`
+(64 KiB default), and base64 inflates by a third, so roughly 48 KiB of
+ciphertext. Larger bodies need the seller-hosted pointer path.
+
+### Added
+
+- Seller-side sealing in both SDKs (Python 0.48.0, TypeScript 2.55.0). It
+  previously existed only in Rust, so any non-Rust resource server could read
+  evidence but not produce it.
+- `tests/dx402_cross_seal.rs`: Rust opens envelopes sealed by the Python **and**
+  TypeScript SDKs, on both curves, from committed fixtures. The envelope format
+  is now verified by three independent implementations in both directions.
+
+
 ## [1.76.0] - 2026-08-17
 
 ### Added — DX402 infrastructure and a pointer buyers can resolve without AWS

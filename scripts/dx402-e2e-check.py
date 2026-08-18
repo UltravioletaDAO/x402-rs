@@ -88,7 +88,9 @@ BODY = json.dumps(
     {"message": "DX402 end-to-end check", "secret": "only-the-payer-should-read-this"}
 ).encode()
 
-TX = "0x" + "ab" * 32
+# A fresh transaction hash per run. Anchoring is once-only since v1.78.0, so a
+# fixed one would collide with the previous run and report a false failure.
+TX = "0x" + os.urandom(32).hex()
 PID = payment_id("eip155:8453", TX)
 blob = seal_evidence(BODY, payer_key, PID)
 check("sealed the body", len(blob) > len(BODY), f"{len(blob)} bytes")
@@ -147,6 +149,28 @@ try:
     check("a different wallet CANNOT decrypt it", False, "it decrypted — privacy is broken")
 except Exception:
     check("a different wallet CANNOT decrypt it", True)
+
+# --- 5b. anchoring is once-only ----------------------------------------------
+status, resp = post_json(
+    "/dx402/anchor",
+    {
+        "paymentId": PID,
+        "network": "base",
+        "txHash": TX,
+        "payer": "0x103040545AC5031A11E8C03dd11324C7333a13C7",
+        "payee": "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8",
+        "sealed": base64.b64encode(blob).decode(),
+        "backend": "s3",
+        "contentHash": content_hash(BODY),
+        "keyAlg": "ECIES-secp256k1",
+        "mode": "direct",
+        "retention": "90d",
+    },
+)
+# 409, not 201: a second anchor must not overwrite the first, or an observer of
+# the settlement could replace real evidence after the fact — and the receipt
+# would still verify, because we would have signed the replacement.
+check("a second anchor for the same payment is refused", status == 409, str(resp)[:120])
 
 # --- 6. unknown payments 404 rather than 500 ---------------------------------
 try:

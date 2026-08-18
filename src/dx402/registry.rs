@@ -169,13 +169,18 @@ impl EvidenceRegistry for DynamoEvidenceRegistry {
         // replacement.
         req = req.condition_expression("attribute_not_exists(payment_id)");
 
+        // Match the TYPED error, not its Display text. The string form of an AWS
+        // SDK error does not reliably contain the exception name, and getting
+        // this wrong is not cosmetic: it made a duplicate anchor answer
+        // `store_unavailable` with `retryable: true`, telling the caller to
+        // retry something that can never succeed.
         req.send().await.map_err(|e| {
-            let msg = format!("{e}");
-            if msg.contains("ConditionalCheckFailed") {
+            let service_error = e.into_service_error();
+            if service_error.is_conditional_check_failed_exception() {
                 return RegistryError::AlreadyAnchored;
             }
-            warn!(error = %e, "DX402 registry put_item failed");
-            RegistryError::Unavailable(format!("dynamodb put_item: {e}"))
+            warn!(error = %service_error, "DX402 registry put_item failed");
+            RegistryError::Unavailable(format!("dynamodb put_item: {service_error}"))
         })?;
         Ok(())
     }

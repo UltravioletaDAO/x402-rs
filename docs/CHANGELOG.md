@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.80.0] - 2026-08-18
+
+### Fixed
+
+A duplicate anchor answered `dx402_store_unavailable` with `"retryable": true`
+instead of `dx402_already_anchored` (409). The anti-replay itself worked — the
+second anchor was refused — but the verdict told the caller to retry something
+that can never succeed, and this codebase's own rule is that a retryable failure
+must not be persisted as a permanent answer. A seller would have retried forever.
+
+Cause: the duplicate was detected by matching `"ConditionalCheckFailed"` against
+the *Display text* of the AWS SDK error, which does not reliably contain the
+exception name. Now matched on the typed error
+(`is_conditional_check_failed_exception`). Found by the end-to-end check against
+production, not by a unit test — the in-memory registry returns the right variant
+either way, so only the real DynamoDB path exercised the string match.
+
+
 ## [1.79.0] - 2026-08-17
 
 ### Added — bidirectional evidence (envelope format v2)

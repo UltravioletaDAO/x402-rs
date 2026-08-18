@@ -66,9 +66,9 @@ El custodio recibe el digest y devuelve la firma. **La semilla no sale nunca.**
 Es exactamente la separación en dos pasos que ustedes ya habían hecho a mano, y
 ahora es la interfaz.
 
-Si su custodio solo firma transacciones y no bytes arbitrarios, ahí sí no hay
-salida hoy: sus anchors quedan provisionales. No es urgente —nadie se los puede
-quitar sin firmar tampoco— y está en el backlog con dos caminos.
+Con eso, **firmar sus anchors deja de ser un problema**. Habíamos anotado en el
+backlog que un custodio que sólo firma transacciones no podría — ustedes nos
+corrigieron: ese límite no existe en su custodia. El ítem quedó retirado.
 
 ---
 
@@ -122,7 +122,10 @@ Para que nadie lo busque:
   única no-EVM priorizada.
 - **El gate on-chain está en fase 1** (`DX402_REQUIRE_PROOF=false`): verifica y
   reporta, no rechaza. Sus pruebas con `txHash` sintético siguen pasando.
-- **Un custodio que solo firma transacciones** no puede firmar anchors. Backlog.
+- **El comprador en custodia** sigue sin poder abrir su evidencia. Es asimétrico
+  respecto del vendedor: el vendedor elige su clave de cifrado, el comprador no
+  —se deriva del pago—, así que no puede usar una local. Es el `escrowed` de
+  arriba, y el único hueco de custodia que queda.
 
 ---
 

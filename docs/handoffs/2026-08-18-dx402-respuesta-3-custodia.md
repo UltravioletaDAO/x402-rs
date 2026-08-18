@@ -75,19 +75,15 @@ Sobre la segunda: **un custodio que sí firme digests crudos no necesita nada**.
 Su decisión de separar digest y firma en dos pasos es exactamente lo que hace
 falta, y es la razón por la que funciona donde funciona.
 
-Donde el custodio sólo firma transacciones y no mensajes, hoy no hay salida y sus
-anchors quedan provisionales. **No es urgente** —nadie se los puede quitar sin
-firmar tampoco— pero tampoco pueden reclamarlos. Quedan dos caminos en el
-backlog, ninguno decidido:
+> **Corregido el 2026-08-18**, después de que ustedes lo señalaran: acá decía que
+> un custodio que sólo firma transacciones no tendría salida, y que eso les
+> dejaría los anchors provisionales para siempre. **Ese límite no existe en su
+> custodia.** Lo asumí de una conversación anterior en vez de preguntarlo, y lo
+> dejé anotado en el backlog como si fuera un problema real. Retirado.
 
-1. **Delegación de autoridad de anclaje**: declarar una clave de firma de anchors
-   distinta de `payTo`. El problema es cómo sabemos que esa clave está autorizada
-   — probarlo pide una firma de `payTo`, que es justo lo que falta. Quizá una sola
-   vez, al registrarse.
-2. **Modo `escrowed`**, que resuelve el lado comprador y de paso este.
-
-Es la tercera vez que aparece el mismo caso de uso con distinta ropa. Queda
-anotado con su nombre.
+Queda **un solo** hueco de custodia: el **comprador**. Es asimétrico respecto del
+vendedor y por eso no se arregla igual — el vendedor elige su clave de cifrado, el
+comprador no, porque se deriva del pago. Ese es el `escrowed` original.
 
 ---
 

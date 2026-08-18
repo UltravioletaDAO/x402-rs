@@ -27,7 +27,8 @@ pub enum RegistryError {
     Unavailable(String),
     #[error("no evidence recorded for this payment")]
     NotFound,
-    /// This payment already has evidence. Anchoring is once-only.
+    /// This payment already has evidence, and the existing record is at least as
+    /// authoritative as the incoming one.
     #[error("this payment already has evidence anchored")]
     AlreadyAnchored,
 }
@@ -60,6 +61,19 @@ pub struct EvidenceRecord {
     /// facilitator unable to read `direct` payloads even if this table leaks.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wrapped_cek: Option<String>,
+    /// Whether the payee proved, by signature, that this anchor is theirs.
+    ///
+    /// This is what separates a claim anyone can make from one only the seller
+    /// can. An unverified record is **provisional**: it holds the slot so the
+    /// same anchor is not written twice, but it can be superseded by a verified
+    /// one for the same payment. A verified record is final.
+    ///
+    /// Without that asymmetry the anti-replay became a weapon: whoever anchored
+    /// first owned the evidence of a payment forever, and the real seller was
+    /// locked out with a 409. Reported by KarmaKadabra, 2026-08-18, reproduced
+    /// against production.
+    #[serde(default)]
+    pub verified: bool,
 }
 
 impl EvidenceRecord {
@@ -94,8 +108,13 @@ impl MemoryEvidenceRegistry {
 impl EvidenceRegistry for MemoryEvidenceRegistry {
     async fn put(&self, record: &EvidenceRecord) -> Result<(), RegistryError> {
         let mut inner = self.inner.lock().expect("poisoned");
-        if inner.contains_key(&record.payment_id) {
-            return Err(RegistryError::AlreadyAnchored);
+        // A provisional claim never locks out the seller who can prove the
+        // anchor is theirs. See `EvidenceRecord::verified`.
+        if let Some(existing) = inner.get(&record.payment_id) {
+            let supersedes = record.verified && !existing.verified;
+            if !supersedes {
+                return Err(RegistryError::AlreadyAnchored);
+            }
         }
         inner.insert(record.payment_id.clone(), record.clone());
         Ok(())
@@ -162,12 +181,22 @@ impl EvidenceRegistry for DynamoEvidenceRegistry {
             );
         }
 
-        // One payment anchors ONCE. Without this a second anchor silently
-        // overwrites the first, which is how an observer of a settlement could
-        // replace real evidence with their own after the fact -- and the
-        // receipt would still verify, because we would have signed the
-        // replacement.
-        req = req.condition_expression("attribute_not_exists(payment_id)");
+        req = req.item("verified", AttributeValue::Bool(record.verified));
+
+        // One payment anchors once -- but a claim nobody proved must never lock
+        // out the seller who can prove it.
+        //
+        // A verified anchor may supersede an unverified one; anything else is
+        // refused. Without that asymmetry the anti-replay became a weapon:
+        // whoever anchored first owned the evidence forever, and the legitimate
+        // seller got a permanent 409 while the attacker's artifact was the one
+        // that existed in a dispute.
+        req = if record.verified {
+            req.condition_expression("attribute_not_exists(payment_id) OR verified = :f")
+                .expression_attribute_values(":f", AttributeValue::Bool(false))
+        } else {
+            req.condition_expression("attribute_not_exists(payment_id)")
+        };
 
         // Match the TYPED error, not its Display text. The string form of an AWS
         // SDK error does not reliably contain the exception name, and getting
@@ -258,6 +287,7 @@ mod tests {
             receipt,
             signature: "0xsig".into(),
             wrapped_cek: None,
+            verified: false,
         }
     }
 
@@ -270,6 +300,34 @@ mod tests {
         reg.put(&r).await.unwrap();
         assert_eq!(reg.get("0xaaa").await.unwrap(), r);
         assert_eq!(reg.count().await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_proven_record_supersedes_an_unproven_one() {
+        // The rule that keeps the anti-replay from becoming a weapon.
+        let reg = MemoryEvidenceRegistry::new();
+
+        let unproven = record("0xaaa", 2_000);
+        reg.put(&unproven).await.unwrap();
+
+        let mut proven = record("0xaaa", 2_000);
+        proven.verified = true;
+        proven.content_hash = format!("0x{}", "77".repeat(32));
+        reg.put(&proven)
+            .await
+            .expect("proven must supersede unproven");
+        assert_eq!(
+            reg.get("0xaaa").await.unwrap().content_hash,
+            proven.content_hash
+        );
+
+        // And nothing supersedes a proven record.
+        let mut another = record("0xaaa", 2_000);
+        another.verified = true;
+        assert!(matches!(
+            reg.put(&another).await,
+            Err(RegistryError::AlreadyAnchored)
+        ));
     }
 
     #[tokio::test]

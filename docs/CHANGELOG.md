@@ -1,5 +1,45 @@
 # Changelog
 
+## [1.82.0] - 2026-08-18
+
+### Security — the anchor could be hijacked
+
+Reported by KarmaKadabra and reproduced against production: **anyone could claim
+the evidence slot of any payment**, and the legitimate seller was then locked out
+permanently with a 409.
+
+The two halves of the defence were in different phases. The `paymentId` claim was
+**unconditional and permanent**; the proof that you are the seller was gated
+behind `DX402_REQUIRE_PROOF`, which is off by default. So the part that protects
+was the part that did not run — and the anti-replay added in v1.78.0 made it
+worse, because before it the real seller could at least overwrite the garbage.
+
+**Fix: a claim nobody proved is provisional.** An anchor carrying a valid payee
+signature is `verified` and final. One without is provisional: it still blocks a
+duplicate, but a verified anchor for the same payment supersedes it. The seller
+can never be locked out by someone who cannot prove anything.
+
+The signature check is deliberately **not** behind `DX402_REQUIRE_PROOF`. That
+flag phases in the *on-chain* half, which needs an RPC and cannot run on every
+family. A signature needs neither, so it is enforced from day one — and it has to
+be, because the claim it guards is permanent.
+
+### Added — ed25519 seller signatures
+
+A Solana payee is an ed25519 address and cannot produce an EIP-712 signature at
+all, so requiring one would have left Solana permanently unable to prove
+authorship — exactly the hole the check exists to close. `verify_authorization_for`
+now dispatches on the payee's own curve: secp256k1 recovery for EVM, raw ed25519
+verification for Solana and Stellar, over the same canonical digest.
+
+This is what makes the fix real on Solana **today**, without waiting for the
+on-chain gate there: it needs no RPC, so it works while `unverifiable_chain` is
+still non-blocking. The approach was KarmaKadabra's suggestion.
+
+Addresses that cannot yield a verifying key (NEAR account ids, Sui hashes) report
+"not proven" rather than being quietly accepted.
+
+
 ## [1.81.0] - 2026-08-18
 
 ### Fixed — Solana settlements silently dropped

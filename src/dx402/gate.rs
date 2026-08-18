@@ -209,7 +209,106 @@ pub fn sign_authorization(
         .map_err(|e| e.to_string())
 }
 
-/// Check that a seller signature recovers to `expected_payee`.
+/// Check that a seller signature proves control of `expected_payee`.
+///
+/// Dispatches on the payee's own curve, because "prove you control the address
+/// that got paid" means different arithmetic per chain and the point is the
+/// claim, not the algorithm:
+///
+/// - **EVM** (secp256k1): recover the signer from the EIP-712 digest.
+/// - **Solana / ed25519 families**: verify a raw ed25519 signature over the same
+///   digest, against the public key the address already is.
+///
+/// The ed25519 path exists because a Solana seller cannot produce an EIP-712
+/// signature at all — its payee is an ed25519 address. Requiring one would have
+/// left Solana permanently unable to prove authorship, which is exactly the hole
+/// this check exists to close. Raised by KarmaKadabra, 2026-08-18.
+///
+/// Verifiable with no RPC on either curve, which is what lets it be enforced
+/// even while the on-chain half of the gate is still reporting-only.
+pub fn verify_authorization_for(
+    payee: &crate::types::MixedAddress,
+    signature: &str,
+    payment_id: B256,
+    content_hash: B256,
+    pointer: &str,
+    chain_id: u64,
+) -> bool {
+    use crate::types::MixedAddress;
+
+    let Ok(raw) = hex::decode(signature.trim_start_matches("0x")) else {
+        return false;
+    };
+
+    match payee {
+        MixedAddress::Evm(addr) => {
+            let expected: Address = (*addr).into();
+            let Ok(sig) = alloy::primitives::Signature::try_from(raw.as_slice()) else {
+                return false;
+            };
+            let digest =
+                authorization_digest(payment_id, content_hash, pointer, expected, chain_id);
+            sig.recover_address_from_prehash(&digest)
+                .map(|a| a == expected)
+                .unwrap_or(false)
+        }
+        MixedAddress::Solana(pubkey) => verify_ed25519(
+            &pubkey.to_bytes(),
+            &raw,
+            payment_id,
+            content_hash,
+            pointer,
+            chain_id,
+        ),
+        MixedAddress::Stellar(addr) => {
+            match stellar_strkey::ed25519::PublicKey::from_string(addr) {
+                Ok(pk) => verify_ed25519(&pk.0, &raw, payment_id, content_hash, pointer, chain_id),
+                Err(_) => false,
+            }
+        }
+        // NEAR account ids, Sui hashes and the rest cannot be turned into a
+        // verifying key from the address alone. Reported honestly as "not
+        // proven" rather than quietly accepted.
+        _ => false,
+    }
+}
+
+/// Verify a raw ed25519 signature over the anchor digest.
+///
+/// The digest is the *same* EIP-712 hash the secp256k1 path uses, so there is
+/// one canonical message across curves rather than a second thing to keep in
+/// sync. `payee` is the zero address inside it: an ed25519 address does not fit
+/// the `address` field, and the binding to the payee is already established by
+/// which public key verifies the signature.
+fn verify_ed25519(
+    pubkey: &[u8],
+    signature: &[u8],
+    payment_id: B256,
+    content_hash: B256,
+    pointer: &str,
+    chain_id: u64,
+) -> bool {
+    let Ok(pubkey): Result<[u8; 32], _> = pubkey.try_into() else {
+        return false;
+    };
+    let Ok(signature): Result<[u8; 64], _> = signature.try_into() else {
+        return false;
+    };
+    let Ok(verifying) = ed25519_dalek::VerifyingKey::from_bytes(&pubkey) else {
+        return false;
+    };
+
+    let digest = authorization_digest(payment_id, content_hash, pointer, Address::ZERO, chain_id);
+    use ed25519_dalek::Verifier;
+    verifying
+        .verify(
+            digest.as_slice(),
+            &ed25519_dalek::Signature::from_bytes(&signature),
+        )
+        .is_ok()
+}
+
+/// Check that a seller signature recovers to `expected_payee` (EVM only).
 pub fn verify_authorization(
     signature: &str,
     payment_id: B256,
@@ -385,6 +484,94 @@ mod tests {
                 8453
             ));
         }
+    }
+
+    #[test]
+    fn a_solana_seller_can_prove_authorship_with_ed25519() {
+        // The path that makes the fix real on Solana. A Solana payee is an
+        // ed25519 address and cannot produce an EIP-712 signature at all, so
+        // requiring one would leave that chain permanently unable to prove
+        // authorship -- which is the hole the check exists to close.
+        use ed25519_dalek::Signer;
+
+        let seed = [0x37u8; 32];
+        let signing = ed25519_dalek::SigningKey::from_bytes(&seed);
+        let address = bs58::encode(signing.verifying_key().to_bytes()).into_string();
+        let payee: crate::types::MixedAddress =
+            serde_json::from_value(serde_json::Value::String(address)).unwrap();
+
+        let digest = authorization_digest(b256(1), b256(2), "p", Address::ZERO, 0);
+        let sig = format!(
+            "0x{}",
+            hex::encode(signing.sign(digest.as_slice()).to_bytes())
+        );
+
+        assert!(verify_authorization_for(
+            &payee,
+            &sig,
+            b256(1),
+            b256(2),
+            "p",
+            0
+        ));
+
+        // And it is bound to the content, not just the payment.
+        assert!(!verify_authorization_for(
+            &payee,
+            &sig,
+            b256(1),
+            b256(9),
+            "p",
+            0
+        ));
+        assert!(!verify_authorization_for(
+            &payee,
+            &sig,
+            b256(1),
+            b256(2),
+            "otro",
+            0
+        ));
+    }
+
+    #[test]
+    fn another_solana_wallet_cannot_claim_the_anchor() {
+        use ed25519_dalek::Signer;
+
+        let mine = ed25519_dalek::SigningKey::from_bytes(&[0x37u8; 32]);
+        let theirs = ed25519_dalek::SigningKey::from_bytes(&[0x99u8; 32]);
+        let their_address = bs58::encode(theirs.verifying_key().to_bytes()).into_string();
+        let payee: crate::types::MixedAddress =
+            serde_json::from_value(serde_json::Value::String(their_address)).unwrap();
+
+        let digest = authorization_digest(b256(1), b256(2), "p", Address::ZERO, 0);
+        let sig = format!("0x{}", hex::encode(mine.sign(digest.as_slice()).to_bytes()));
+
+        assert!(!verify_authorization_for(
+            &payee,
+            &sig,
+            b256(1),
+            b256(2),
+            "p",
+            0
+        ));
+    }
+
+    #[test]
+    fn an_address_with_no_verifying_key_is_reported_as_unproven() {
+        // NEAR account ids and Sui hashes cannot be turned into a key from the
+        // address alone. Say "not proven" rather than quietly accepting.
+        let near: crate::types::MixedAddress =
+            serde_json::from_value(serde_json::Value::String("uvd-facilitator.near".into()))
+                .unwrap();
+        assert!(!verify_authorization_for(
+            &near,
+            "0xdead",
+            b256(1),
+            b256(2),
+            "p",
+            0
+        ));
     }
 
     #[test]

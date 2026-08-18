@@ -313,6 +313,45 @@ impl Dx402Service {
             );
         }
 
+        // Does the payee prove this anchor is theirs?
+        //
+        // Deliberately NOT behind `DX402_REQUIRE_PROOF`. That flag phases in the
+        // ON-CHAIN half of the gate, which needs an RPC and cannot run on every
+        // family. This half needs neither -- it is a signature check -- so it
+        // can be enforced from day one, and it has to be: the paymentId claim it
+        // guards is permanent.
+        //
+        // The signature covers the pointer the SELLER supplied, or the empty
+        // string when they sent `sealed` and the facilitator issues the pointer
+        // itself. The seller cannot sign a value it has not seen, and in that
+        // case the pointer is derived from the paymentId anyway, which is
+        // already covered.
+        let signed_pointer = req.pointer.as_ref().map(|p| p.as_str()).unwrap_or("");
+        let verified = match (
+            req.seller_signature.as_deref(),
+            req.payment_id.parse::<alloy::primitives::B256>(),
+            req.content_hash.parse::<alloy::primitives::B256>(),
+        ) {
+            (Some(signature), Ok(payment_id), Ok(content_hash)) => {
+                super::gate::verify_authorization_for(
+                    &req.payee,
+                    signature,
+                    payment_id,
+                    content_hash,
+                    signed_pointer,
+                    chain_id,
+                )
+            }
+            _ => false,
+        };
+        if !verified {
+            warn!(
+                payment_id = %req.payment_id,
+                "DX402 anchor is PROVISIONAL: the payee did not prove it is theirs. \
+                 A signed anchor for this payment will supersede it."
+            );
+        }
+
         let retention_until = req.retention.until(now);
 
         // Host the blob ourselves when the seller sends one. This is what lets a
@@ -383,6 +422,7 @@ impl Dx402Service {
             retention_until,
             receipt: receipt_body,
             signature: signature.clone(),
+            verified,
             // Only carried in `escrowed` mode. In `direct` mode this stays None,
             // which is what makes a leak of the index harmless.
             wrapped_cek: match req.mode {
@@ -637,6 +677,110 @@ mod tests {
             ..anchor_request(EvidenceMode::Direct)
         };
         assert!(svc.anchor(req, 8453, 1_000).await.is_err());
+    }
+
+    /// Sign an anchor the way a real EVM seller would.
+    fn sign_as(signer: &PrivateKeySigner, req: &AnchorRequest, chain_id: u64) -> String {
+        super::super::gate::sign_authorization(
+            signer,
+            req.payment_id.parse().unwrap(),
+            req.content_hash.parse().unwrap(),
+            req.pointer.as_ref().map(|p| p.as_str()).unwrap_or(""),
+            chain_id,
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn an_unsigned_anchor_cannot_lock_out_the_real_seller() {
+        // THE hijack, reported by KarmaKadabra 2026-08-18 and reproduced against
+        // production. An observer of a settlement anchors garbage first; the
+        // anti-replay then gives the legitimate seller a permanent 409, and in a
+        // dispute the artifact that exists is the attacker's.
+        //
+        // A claim nobody proved is provisional and must yield to one that is.
+        let svc = Dx402Service::in_memory(PrivateKeySigner::random());
+        let seller = PrivateKeySigner::random();
+
+        // The attacker gets there first, with no proof of anything.
+        let mut hijack = anchor_request(EvidenceMode::Direct);
+        hijack.content_hash = format!("0x{}", "ee".repeat(32));
+        hijack.seller_signature = None;
+        svc.anchor(hijack, 8453, 1_000)
+            .await
+            .expect("provisional claim lands");
+
+        // The real seller shows up and proves it.
+        let mut real = anchor_request(EvidenceMode::Direct);
+        real.payee = addr(&seller.address().to_string());
+        real.seller_signature = Some(sign_as(&seller, &real, 8453));
+        let out = svc
+            .anchor(real.clone(), 8453, 1_100)
+            .await
+            .expect("a signed anchor must supersede an unproven one");
+
+        // The seller's content is what survives, not the attacker's.
+        let record = svc.lookup(&out.payment_id, 1_100).await.unwrap();
+        assert!(record.verified);
+        assert_eq!(record.content_hash, real.content_hash);
+    }
+
+    #[tokio::test]
+    async fn a_verified_anchor_is_final() {
+        let svc = Dx402Service::in_memory(PrivateKeySigner::random());
+        let seller = PrivateKeySigner::random();
+
+        let mut real = anchor_request(EvidenceMode::Direct);
+        real.payee = addr(&seller.address().to_string());
+        real.seller_signature = Some(sign_as(&seller, &real, 8453));
+        svc.anchor(real, 8453, 1_000).await.unwrap();
+
+        // Neither an unsigned claim nor another signed one may replace it.
+        let mut later = anchor_request(EvidenceMode::Direct);
+        later.seller_signature = None;
+        assert_eq!(
+            svc.anchor(later, 8453, 1_100).await.unwrap_err(),
+            Dx402ErrorCode::Dx402AlreadyAnchored
+        );
+
+        let impostor = PrivateKeySigner::random();
+        let mut forged = anchor_request(EvidenceMode::Direct);
+        forged.payee = addr(&impostor.address().to_string());
+        forged.seller_signature = Some(sign_as(&impostor, &forged, 8453));
+        assert_eq!(
+            svc.anchor(forged, 8453, 1_200).await.unwrap_err(),
+            Dx402ErrorCode::Dx402AlreadyAnchored
+        );
+    }
+
+    #[tokio::test]
+    async fn one_unproven_claim_still_blocks_another() {
+        // The anti-replay has to keep doing its job against plain duplicates;
+        // only a PROVEN anchor earns the right to supersede.
+        let svc = Dx402Service::in_memory(PrivateKeySigner::random());
+        svc.anchor(anchor_request(EvidenceMode::Direct), 8453, 1_000)
+            .await
+            .unwrap();
+        assert_eq!(
+            svc.anchor(anchor_request(EvidenceMode::Direct), 8453, 1_100)
+                .await
+                .unwrap_err(),
+            Dx402ErrorCode::Dx402AlreadyAnchored
+        );
+    }
+
+    #[tokio::test]
+    async fn a_signature_from_the_wrong_payee_does_not_verify() {
+        let svc = Dx402Service::in_memory(PrivateKeySigner::random());
+        let impostor = PrivateKeySigner::random();
+
+        let mut req = anchor_request(EvidenceMode::Direct);
+        req.seller_signature = Some(sign_as(&impostor, &req, 8453)); // payee is somebody else
+        let out = svc.anchor(req, 8453, 1_000).await.unwrap();
+
+        // It still anchors -- signatures gate authority, not admission -- but it
+        // is provisional, so the real seller can still claim it.
+        assert!(!svc.lookup(&out.payment_id, 1_000).await.unwrap().verified);
     }
 
     #[tokio::test]

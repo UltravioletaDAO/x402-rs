@@ -299,6 +299,32 @@ verificación de pago.
 **Todas tienen que terminar funcionando igual**, pero solo Solana bloquea. Las
 demás quedan explícitamente para más adelante.
 
+### Wallets en custodia — el caso que ya apareció tres veces
+
+Una flota cuyas wallets están en custodia (Paybox, en el caso de KarmaKadabra)
+choca con DX402 en dos puntos. **Sólo uno es un hueco real:**
+
+| Qué necesita | ¿Bloquea a un custodio? |
+|---|---|
+| Ser destinatario del sobre (ECDH) | **No.** La clave de *cifrado* no tiene por qué ser la de *cobro*: se genera un keypair local sin fondos ni gas y se lista como destinatario `seller`. Probado. Falta decirlo en la guía — ya está |
+| Firmar el anchor | **Sí**, si el custodio no firma bytes arbitrarios. La firma ES el reclamo de que controlás `payTo`, así que no se puede delegar a otra clave sin diseño |
+| Descifrar como **comprador** | **Sí.** Es el caso original de `escrowed` |
+
+Consecuencia hoy: los anchors de una flota en custodia **quedan provisionales
+para siempre**. No es urgente —nadie se los puede quitar sin firmar tampoco— pero
+tampoco pueden reclamarlos.
+
+Dos caminos a evaluar, ninguno decidido:
+
+1. **Delegación de autoridad de anclaje**: el vendedor declara una clave de
+   firma de anchors distinta de `payTo`. El problema es cómo el facilitador sabe
+   que esa clave está autorizada — probarlo requiere una firma de `payTo`, que es
+   justo lo que no se puede hacer. Quizá una sola vez, al registrarse.
+2. **Modo `escrowed`**, que resuelve el lado comprador y de paso este.
+
+**Un custodio que sí firme digests crudos no necesita nada de esto** — KarmaKadabra
+separó digest y firma en dos pasos justamente para eso, y funciona.
+
 ### El PR a la x402 Foundation — EN PAUSA
 
 Los dos bloqueantes técnicos están cerrados (gate del anchor v1.78.0, envelope

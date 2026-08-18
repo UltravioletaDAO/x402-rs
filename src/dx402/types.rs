@@ -298,7 +298,10 @@ pub struct EvidenceReceipt {
 /// Note what is absent: the plaintext, and in `direct` mode the CEK. The
 /// resource server encrypts and uploads on its own; it tells the facilitator
 /// only where the ciphertext went and what it hashes to.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// No `Eq`: it now carries a `ProofOfPayment`, which holds token amounts that
+/// do not implement it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnchorRequest {
     pub payment_id: String,
@@ -329,6 +332,20 @@ pub struct AnchorRequest {
     /// `escrowed` mode only: the CEK wrapped to the facilitator's key.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wrapped_cek: Option<String>,
+    /// The `ProofOfPayment` the facilitator handed back from `/settle`.
+    ///
+    /// Optional on the wire so existing callers keep working while the gate is
+    /// in phase 1, but it is what makes an anchor believable: without it the
+    /// facilitator is signing a receipt for a payment it never checked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proof_of_payment: Option<crate::erc8004::ProofOfPayment>,
+    /// EIP-712 signature by the payee over `(paymentId, contentHash, pointer)`.
+    ///
+    /// Proves the anchor comes from whoever got paid. Without it, an observer of
+    /// the settlement could anchor garbage first and let anti-replay lock the
+    /// real seller out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seller_signature: Option<String>,
 }
 
 /// A single-use challenge for `escrowed` recovery.
@@ -366,6 +383,13 @@ pub enum Dx402ErrorCode {
     Dx402DirectMode,
     Dx402EvidenceExpired,
     Dx402StoreUnavailable,
+    /// The anchor gate refused it: no proof, a proof that did not check out, or
+    /// evidence sealed to somebody who did not pay.
+    ///
+    /// Only reachable with `DX402_REQUIRE_PROOF=true`.
+    Dx402ProofRejected,
+    /// This payment already has evidence anchored. Anchoring is once-only.
+    Dx402AlreadyAnchored,
 }
 
 impl Dx402ErrorCode {
@@ -389,6 +413,8 @@ impl Dx402ErrorCode {
             Dx402ErrorCode::Dx402DirectMode => "dx402_direct_mode",
             Dx402ErrorCode::Dx402EvidenceExpired => "dx402_evidence_expired",
             Dx402ErrorCode::Dx402StoreUnavailable => "dx402_store_unavailable",
+            Dx402ErrorCode::Dx402ProofRejected => "dx402_proof_rejected",
+            Dx402ErrorCode::Dx402AlreadyAnchored => "dx402_already_anchored",
         }
     }
 }

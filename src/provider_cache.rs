@@ -50,6 +50,24 @@ pub trait ProviderMap {
     fn values(&self) -> impl Iterator<Item = &Self::Value> + Send;
 }
 
+/// Share one provider map between the facilitator and everything else that
+/// needs RPC access, without handing out a second copy of every connection.
+///
+/// DX402's anchor gate needs to read transaction receipts, and the facilitator
+/// already holds the only configured set of providers. Cloning the cache would
+/// duplicate every RPC client; forwarding through the `Arc` shares them.
+impl<T: ProviderMap> ProviderMap for Arc<T> {
+    type Value = T::Value;
+
+    fn by_network<N: Borrow<Network>>(&self, network: N) -> Option<&Self::Value> {
+        (**self).by_network(network)
+    }
+
+    fn values(&self) -> impl Iterator<Item = &Self::Value> + Send {
+        (**self).values()
+    }
+}
+
 /// Trait for types that provide access to an underlying [`ProviderMap`].
 ///
 /// This is used by the escrow module to access network-specific providers

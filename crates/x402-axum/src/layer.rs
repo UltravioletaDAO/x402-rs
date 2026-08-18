@@ -957,6 +957,7 @@ where
             tx_hash,
             payer: settlement.payer.clone(),
             payee: verify_request.payment_requirements.pay_to.clone(),
+            proof: settlement.proof_of_payment.clone(),
         };
 
         let evidence = hook.capture(&bytes, payer_key, &ctx).await;

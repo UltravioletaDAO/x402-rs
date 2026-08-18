@@ -152,6 +152,12 @@ pub struct SettledContext {
     pub tx_hash: String,
     pub payer: MixedAddress,
     pub payee: MixedAddress,
+    /// The proof the facilitator returned from `/settle`.
+    ///
+    /// Passed straight back on the anchor so the facilitator can verify the
+    /// payment it is about to sign a receipt for. Absent on chains that do not
+    /// produce one; the anchor gate reports that and never enforces it.
+    pub proof: Option<x402_rs::erc8004::ProofOfPayment>,
 }
 
 /// The DX402 post-hook.
@@ -161,6 +167,12 @@ pub struct DurableEvidenceHook {
     sink: Arc<dyn EvidenceSink>,
     facilitator_base: String,
     client: reqwest::Client,
+    /// Key that signs the anchor authorization, proving this anchor comes from
+    /// whoever got paid.
+    ///
+    /// Separate from any payment wallet on purpose: it authorises evidence, not
+    /// transfers, so a leak forges anchors but moves no money.
+    anchor_signer: Option<Arc<alloy::signers::local::PrivateKeySigner>>,
 }
 
 impl DurableEvidenceHook {
@@ -174,7 +186,18 @@ impl DurableEvidenceHook {
             sink,
             facilitator_base: facilitator_base.into().trim_end_matches('/').to_string(),
             client: reqwest::Client::new(),
+            anchor_signer: None,
         }
+    }
+
+    /// Attach the key that signs anchor authorizations.
+    ///
+    /// Without it the facilitator cannot tell this anchor came from the payee,
+    /// and once the gate reaches phase 2 the anchor is refused. Evidence is
+    /// still produced and stored; only the notarised receipt is lost.
+    pub fn with_anchor_signer(mut self, signer: alloy::signers::local::PrivateKeySigner) -> Self {
+        self.anchor_signer = Some(Arc::new(signer));
+        self
     }
 
     pub fn config(&self) -> &DurableConfig {
@@ -225,6 +248,22 @@ impl DurableEvidenceHook {
             }
         };
 
+        // Sign the anchor so the facilitator can tell it came from the payee.
+        // Best-effort: a missing or unusable key costs the receipt, never the
+        // response.
+        let seller_signature = self.anchor_signer.as_ref().and_then(|signer| {
+            let payment_id = ctx.payment_id.parse().ok()?;
+            let hash = content_hash.parse().ok()?;
+            x402_rs::dx402::gate::sign_authorization(
+                signer,
+                payment_id,
+                hash,
+                pointer.as_str(),
+                x402_rs::dx402::service::chain_id_of(ctx.network),
+            )
+            .ok()
+        });
+
         let anchor = AnchorRequest {
             payment_id: ctx.payment_id.clone(),
             network: ctx.network,
@@ -236,6 +275,8 @@ impl DurableEvidenceHook {
             // sealed bytes as `sealed` and let the facilitator host them.
             pointer: Some(pointer),
             sealed: None,
+            proof_of_payment: ctx.proof.clone(),
+            seller_signature,
             backend: self.config.backend,
             content_hash,
             key_alg,
@@ -326,6 +367,7 @@ mod tests {
             tx_hash: format!("0x{}", "33".repeat(32)),
             payer: addr("0x103040545AC5031A11E8C03dd11324C7333a13C7"),
             payee: addr("0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8"),
+            proof: None,
         }
     }
 

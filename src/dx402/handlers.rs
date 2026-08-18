@@ -52,6 +52,13 @@ fn error_response(code: Dx402ErrorCode) -> axum::response::Response {
         Dx402ErrorCode::Dx402ChallengeExpired
         | Dx402ErrorCode::Dx402ChallengeReplayed
         | Dx402ErrorCode::Dx402DirectMode => StatusCode::BAD_REQUEST,
+        // 402: the anchor describes a payment we could not confirm happened.
+        // Not 403 -- this is not about who the caller is, it is about whether
+        // the payment behind the evidence is real.
+        Dx402ErrorCode::Dx402ProofRejected => StatusCode::PAYMENT_REQUIRED,
+        // 409: the request is well-formed, it just lost the race. A retry will
+        // not help, so this must not read as a transient failure.
+        Dx402ErrorCode::Dx402AlreadyAnchored => StatusCode::CONFLICT,
         Dx402ErrorCode::Dx402StoreUnavailable => StatusCode::SERVICE_UNAVAILABLE,
     };
     (
@@ -240,6 +247,8 @@ mod tests {
             key_alg: KeyAlg::Secp256k1,
             mode: EvidenceMode::Direct,
             retention: Retention::Days90,
+            proof_of_payment: None,
+            seller_signature: None,
             wrapped_cek: None,
         }
     }

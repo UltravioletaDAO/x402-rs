@@ -97,6 +97,13 @@ pub struct Dx402Service {
     registry: Arc<dyn EvidenceRegistry>,
     store: Arc<dyn EvidenceStore>,
     signer: Arc<PrivateKeySigner>,
+    /// RPC access, for verifying that an anchor describes a real payment.
+    ///
+    /// Optional so the service is still constructible in tests and on a
+    /// deployment with no EVM providers. Absent, the gate reports
+    /// `RpcUnavailable` -- which never blocks, because "we could not check" must
+    /// not be recorded as "this anchor is fraudulent".
+    providers: Option<Arc<crate::provider_cache::ProviderCache>>,
 }
 
 impl std::fmt::Debug for Dx402Service {
@@ -106,6 +113,7 @@ impl std::fmt::Debug for Dx402Service {
             .field("registry", &self.registry)
             .field("store", &self.store)
             .field("signer", &self.signer.address())
+            .field("providers", &self.providers.is_some())
             .finish()
     }
 }
@@ -122,7 +130,14 @@ impl Dx402Service {
             registry,
             store,
             signer,
+            providers: None,
         }
+    }
+
+    /// Attach the provider cache so the anchor gate can verify payments.
+    pub fn with_providers(mut self, providers: Arc<crate::provider_cache::ProviderCache>) -> Self {
+        self.providers = Some(providers);
+        self
     }
 
     /// Build from the environment, or return `None` when DX402 is off.
@@ -224,6 +239,49 @@ impl Dx402Service {
         &self.store
     }
 
+    /// Run the anchor gate: does this anchor describe a payment that happened?
+    ///
+    /// Returns the verdict rather than acting on it, so the caller decides
+    /// whether phase 1 (report) or phase 2 (reject) applies. Never returns an
+    /// error -- an unverifiable anchor is a verdict, not a crash.
+    async fn evaluate_gate(&self, req: &AnchorRequest) -> Option<super::gate::AnchorRejection> {
+        use super::gate::{verify_anchor, AnchorClaim, AnchorRejection};
+        use crate::chain::evm::MetaEvmProvider;
+        use crate::provider_cache::ProviderMap;
+
+        let Some(providers) = self.providers.as_ref() else {
+            return Some(AnchorRejection::RpcUnavailable);
+        };
+        // Only EVM chains carry a receipt this gate can read. The others get
+        // `UnverifiableChain`, which is reported and never enforced -- rejecting
+        // a check that cannot run would silently disable DX402 on Solana, NEAR,
+        // Stellar and Algorand.
+        let Some(crate::chain::NetworkProvider::Evm(provider)) = providers.by_network(req.network)
+        else {
+            return Some(AnchorRejection::UnverifiableChain);
+        };
+
+        let (Ok(payment_id), Ok(content_hash)) = (
+            req.payment_id.parse::<alloy::primitives::B256>(),
+            req.content_hash.parse::<alloy::primitives::B256>(),
+        ) else {
+            return Some(AnchorRejection::Payment("malformed identifiers".into()));
+        };
+
+        let claim = AnchorClaim {
+            network: req.network,
+            proof: req.proof_of_payment.as_ref(),
+            sealed_to: &req.payer,
+            payment_id,
+            content_hash,
+            pointer: req.pointer.as_ref().map(|p| p.as_str()).unwrap_or(""),
+            seller_signature: req.seller_signature.as_deref(),
+            chain_id: chain_id_of(req.network),
+        };
+
+        verify_anchor(provider.inner(), &claim).await.err()
+    }
+
     /// Record an anchor reported by a resource server, and notarise it.
     ///
     /// The `chain_id` binds the receipt to the settlement chain, so evidence for
@@ -234,6 +292,27 @@ impl Dx402Service {
         chain_id: u64,
         now: u64,
     ) -> Result<AnchoredEvidence, Dx402ErrorCode> {
+        // The gate. Phase 1 (`DX402_REQUIRE_PROOF=false`, the default) verifies
+        // and reports; phase 2 rejects. Two verdicts never block in either
+        // phase -- see `AnchorRejection::is_enforceable`.
+        if let Some(rejection) = self.evaluate_gate(&req).await {
+            let enforced = super::gate::require_proof() && rejection.is_enforceable();
+            if enforced {
+                warn!(
+                    payment_id = %req.payment_id,
+                    verdict = rejection.as_str(),
+                    "DX402 anchor REJECTED by the proof gate"
+                );
+                return Err(Dx402ErrorCode::Dx402ProofRejected);
+            }
+            warn!(
+                payment_id = %req.payment_id,
+                verdict = rejection.as_str(),
+                enforceable = rejection.is_enforceable(),
+                "DX402 anchor would be rejected by the proof gate (phase 1: reporting only)"
+            );
+        }
+
         let retention_until = req.retention.until(now);
 
         // Host the blob ourselves when the seller sends one. This is what lets a
@@ -312,9 +391,18 @@ impl Dx402Service {
             },
         };
 
-        self.registry.put(&record).await.map_err(|e| {
-            warn!(error = %e, payment_id = %req.payment_id, "DX402 registry write failed");
-            Dx402ErrorCode::Dx402StoreUnavailable
+        self.registry.put(&record).await.map_err(|e| match e {
+            RegistryError::AlreadyAnchored => {
+                warn!(
+                    payment_id = %req.payment_id,
+                    "DX402 anchor refused: this payment already has evidence"
+                );
+                Dx402ErrorCode::Dx402AlreadyAnchored
+            }
+            other => {
+                warn!(error = %other, payment_id = %req.payment_id, "DX402 registry write failed");
+                Dx402ErrorCode::Dx402StoreUnavailable
+            }
         })?;
 
         Ok(AnchoredEvidence {
@@ -339,7 +427,11 @@ impl Dx402Service {
     ) -> Result<EvidenceRecord, Dx402ErrorCode> {
         let record = self.registry.get(payment_id).await.map_err(|e| match e {
             RegistryError::NotFound => Dx402ErrorCode::Dx402UnknownPayment,
-            RegistryError::Unavailable(_) => Dx402ErrorCode::Dx402StoreUnavailable,
+            // Unreachable on a read, but spelled out rather than lumped in: a
+            // catch-all here would silently mistranslate a future variant.
+            RegistryError::AlreadyAnchored | RegistryError::Unavailable(_) => {
+                Dx402ErrorCode::Dx402StoreUnavailable
+            }
         })?;
 
         // "It expired" and "it never existed" are different answers to a
@@ -424,6 +516,8 @@ mod tests {
             key_alg: KeyAlg::Secp256k1,
             mode,
             retention: Retention::Days90,
+            proof_of_payment: None,
+            seller_signature: None,
             wrapped_cek: Some("0xdeadbeef".into()),
         }
     }
@@ -543,6 +637,55 @@ mod tests {
             ..anchor_request(EvidenceMode::Direct)
         };
         assert!(svc.anchor(req, 8453, 1_000).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_payment_can_only_be_anchored_once() {
+        // Without this, an observer of a settlement could overwrite real
+        // evidence with their own after the fact -- and the receipt would still
+        // verify, because we would have signed the replacement.
+        let svc = Dx402Service::in_memory(PrivateKeySigner::random());
+
+        svc.anchor(anchor_request(EvidenceMode::Direct), 8453, 1_000)
+            .await
+            .expect("first anchor should succeed");
+
+        assert_eq!(
+            svc.anchor(anchor_request(EvidenceMode::Direct), 8453, 1_000)
+                .await
+                .unwrap_err(),
+            Dx402ErrorCode::Dx402AlreadyAnchored
+        );
+    }
+
+    #[tokio::test]
+    async fn the_first_anchor_survives_a_second_attempt() {
+        // The winner must be the ORIGINAL record, not the last writer.
+        let svc = Dx402Service::in_memory(PrivateKeySigner::random());
+        let first = svc
+            .anchor(anchor_request(EvidenceMode::Direct), 8453, 1_000)
+            .await
+            .unwrap();
+
+        let mut overwrite = anchor_request(EvidenceMode::Direct);
+        overwrite.content_hash = format!("0x{}", "99".repeat(32));
+        let _ = svc.anchor(overwrite, 8453, 2_000).await;
+
+        let record = svc.lookup(&first.payment_id, 1_000).await.unwrap();
+        assert_eq!(record.content_hash, first.content_hash);
+        assert_eq!(record.anchored_at, 1_000);
+    }
+
+    #[tokio::test]
+    async fn the_gate_reports_but_does_not_block_in_phase_one() {
+        // No providers attached, so the gate cannot reach a verdict. Phase 1
+        // must let the anchor through anyway -- and even in phase 2,
+        // RpcUnavailable is not enforceable.
+        let svc = Dx402Service::in_memory(PrivateKeySigner::random());
+        assert!(svc
+            .anchor(anchor_request(EvidenceMode::Direct), 8453, 1_000)
+            .await
+            .is_ok());
     }
 
     #[tokio::test]

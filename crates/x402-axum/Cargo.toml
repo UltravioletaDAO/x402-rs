@@ -29,6 +29,7 @@ async-trait = { version = "0.1" }
 base64 = { version = "0.22" }
 bytes = { version = "1" }
 http-body-util = { version = "0.1" }
+alloy = { version = "1.0.12", features = ["signer-local"] }  # signs the anchor authorization
 
 # Telemetry
 tracing = { version = "0.1.44", optional = true }

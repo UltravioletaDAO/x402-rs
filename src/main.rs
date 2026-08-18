@@ -151,7 +151,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let facilitator = FacilitatorLocal::new(provider_cache, compliance_checker);
+    // Shared behind an Arc so DX402's anchor gate can read transaction receipts
+    // through the same connections the facilitator already opened, instead of
+    // building a second set.
+    let provider_cache = Arc::new(provider_cache);
+    let facilitator = FacilitatorLocal::new(Arc::clone(&provider_cache), compliance_checker);
     let axum_state = Arc::new(facilitator);
 
     // Live traffic stream (GET /events, SSE). Lossy broadcast: an observer can never
@@ -175,7 +179,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // DX402 durable-evidence. Off unless explicitly enabled: this is an addition
     // to the payment path, never a gate in front of it, so a facilitator that
     // works today must keep working if this stays unconfigured.
-    let dx402_service = dx402::Dx402Service::from_env().await.map(Arc::new);
+    let dx402_service = dx402::Dx402Service::from_env()
+        .await
+        .map(|svc| Arc::new(svc.with_providers(Arc::clone(&provider_cache))));
 
     // Initialize Bazaar discovery registry with optional S3 persistence
     tracing::info!("Initializing Bazaar discovery registry...");

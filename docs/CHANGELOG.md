@@ -1,5 +1,57 @@
 # Changelog
 
+## [1.78.0] - 2026-08-17
+
+### Security — the anchor gate
+
+`POST /dx402/anchor` shipped in v1.77.0 checking nothing: anyone could park
+bytes in the evidence store without paying, and — worse — obtain a receipt
+**signed by this facilitator** for a payment that never happened.
+
+The gate verifies, per anchor:
+
+- the payment is real, succeeded, and is in the block it claims (reused wholesale
+  from the ERC-8004 proof module, not reimplemented);
+- **the payer is the address the evidence was sealed to** — without this, someone
+  could seal evidence to their own key and hang it off a stranger's payment;
+- **the anchor is signed by the payee** (EIP-712 over paymentId + contentHash +
+  pointer). Comparing a declared payee instead would leave a race where an
+  observer anchors garbage first and anti-replay locks out the real seller.
+
+Plus **anti-replay**: one payment anchors once, enforced by a conditional
+`PutItem`. A second anchor previously overwrote the first, and the receipt would
+still verify because we had signed the replacement.
+
+**Phase 1 by default.** `DX402_REQUIRE_PROOF=false` verifies and reports without
+rejecting. Two verdicts never block in either phase: `rpc_unavailable` (no
+verdict reached — our outage must not be recorded as someone's anchor being
+fraudulent) and `unverifiable_chain` (non-EVM families have no receipt to read;
+enforcing a check that never ran would silently disable DX402 there).
+
+`DX402_ANCHOR_MAX_AGE_SECS` defaults to 900s, against ERC-8004's 7 days: an
+anchor happens inside the same handler as the settle, and a window wider than the
+operation only widens the attack surface.
+
+### Changed
+
+- `verify_proof_of_payment` split: the payment-level half is now
+  `verify_payment_facts`, shared by both gates. A second copy of those checks
+  would drift, and a drifted payment check does not fail loudly — it quietly
+  accepts a payment that never happened.
+- `ProviderMap` gains a blanket impl for `Arc<T>`, so DX402 reads receipts
+  through the connections the facilitator already opened instead of a second set.
+- `x402-axum`'s post-hook now forwards the settle proof and signs the anchor
+  (`with_anchor_signer`). Best-effort: a missing key costs the receipt, never the
+  response.
+
+### Fixed
+
+- Restored check ordering in the ERC-8004 gate. Extracting the shared half moved
+  the rater checks after the RPC calls, so an unreachable RPC masked a definite
+  "wrong rater" as `RpcUnavailable` — the one verdict that does *not* block a
+  write. Two existing tests caught it.
+
+
 ## [1.77.0] - 2026-08-17
 
 ### Fixed — a seller with no storage could not produce evidence

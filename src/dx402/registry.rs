@@ -27,6 +27,9 @@ pub enum RegistryError {
     Unavailable(String),
     #[error("no evidence recorded for this payment")]
     NotFound,
+    /// This payment already has evidence. Anchoring is once-only.
+    #[error("this payment already has evidence anchored")]
+    AlreadyAnchored,
 }
 
 impl RegistryError {
@@ -90,10 +93,11 @@ impl MemoryEvidenceRegistry {
 #[async_trait]
 impl EvidenceRegistry for MemoryEvidenceRegistry {
     async fn put(&self, record: &EvidenceRecord) -> Result<(), RegistryError> {
-        self.inner
-            .lock()
-            .expect("poisoned")
-            .insert(record.payment_id.clone(), record.clone());
+        let mut inner = self.inner.lock().expect("poisoned");
+        if inner.contains_key(&record.payment_id) {
+            return Err(RegistryError::AlreadyAnchored);
+        }
+        inner.insert(record.payment_id.clone(), record.clone());
         Ok(())
     }
 
@@ -158,7 +162,18 @@ impl EvidenceRegistry for DynamoEvidenceRegistry {
             );
         }
 
+        // One payment anchors ONCE. Without this a second anchor silently
+        // overwrites the first, which is how an observer of a settlement could
+        // replace real evidence with their own after the fact -- and the
+        // receipt would still verify, because we would have signed the
+        // replacement.
+        req = req.condition_expression("attribute_not_exists(payment_id)");
+
         req.send().await.map_err(|e| {
+            let msg = format!("{e}");
+            if msg.contains("ConditionalCheckFailed") {
+                return RegistryError::AlreadyAnchored;
+            }
             warn!(error = %e, "DX402 registry put_item failed");
             RegistryError::Unavailable(format!("dynamodb put_item: {e}"))
         })?;

@@ -1222,7 +1222,22 @@ async fn path_feedback_revoke() {}
     tag = "ERC-8004",
     summary = "Append response to feedback",
     description = r#"
-Appends an agent's response to existing feedback.
+Appends a response to existing feedback.
+
+**This is NOT restricted to the agent, and the responder recorded on-chain is the facilitator.**
+Verified against Base mainnet on 2026-08-18 by simulating `appendResponse` on a real feedback
+entry: the call succeeds from an unrelated address, from the agent owner and from the facilitator
+alike (with a negative control — the same call on a non-existent index reverts `index out of
+bounds` — so the probe does distinguish success from failure).
+
+Two consequences worth stating plainly rather than discovering later:
+
+- the **registry** applies no access control, so anyone can attach a response to anyone's feedback;
+- this **endpoint** is unauthenticated and the facilitator signs the transaction, so the
+  `ResponseAppended` event records the FACILITATOR as `responder`. Real authorship here would need
+  `appendResponse` added to the delegate's selector allowlist, which is a contract change.
+
+Do not read a response as coming from the agent.
 
 **EVM request:**
 ```json

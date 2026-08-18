@@ -90,125 +90,210 @@ impl PayerPublicKey {
 /// holder of the payer private key needs nothing else to decrypt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SealedEnvelope {
+    /// Who can open this. At least one; the first is conventionally the payer.
+    pub recipients: Vec<Recipient>,
+    pub body_nonce: [u8; NONCE_LEN],
+    pub ciphertext: Vec<u8>,
+}
+
+/// One party who can decrypt the body.
+///
+/// The **body ciphertext is not duplicated** -- every recipient unwraps the same
+/// CEK. Adding a party costs about sixty bytes, not a second copy of the
+/// payload, which is what makes bidirectional evidence practically free.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Recipient {
+    pub role: RecipientRole,
     pub key_alg: KeyAlg,
     /// Ephemeral public key: 33 bytes SEC1-compressed, or 32 bytes Montgomery.
     pub ephemeral_public: Vec<u8>,
     pub cek_nonce: [u8; NONCE_LEN],
     pub wrapped_cek: Vec<u8>,
-    pub body_nonce: [u8; NONCE_LEN],
-    pub ciphertext: Vec<u8>,
+}
+
+/// Why a party holds a key to this evidence.
+///
+/// Recorded because it is not decoration: a buyer has to be able to see that the
+/// seller -- or a designated auditor -- can also read what they bought.
+/// Discovering that afterwards would destroy the privacy property DX402 sells.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecipientRole {
+    /// The address that paid. Always present.
+    Payer,
+    /// The resource server, so it can answer a false "that is not what you sent".
+    Seller,
+    /// A designated third party. Opt-in, never implicit.
+    Auditor,
+}
+
+impl RecipientRole {
+    fn as_u8(self) -> u8 {
+        match self {
+            RecipientRole::Payer => 0,
+            RecipientRole::Seller => 1,
+            RecipientRole::Auditor => 2,
+        }
+    }
+
+    fn from_u8(b: u8) -> Option<Self> {
+        match b {
+            0 => Some(RecipientRole::Payer),
+            1 => Some(RecipientRole::Seller),
+            2 => Some(RecipientRole::Auditor),
+            _ => None,
+        }
+    }
 }
 
 /// Magic prefix so a stray blob is identifiable, and a version byte so the
 /// format can change without ambiguity.
 const MAGIC: &[u8; 5] = b"DX402";
-const FORMAT_VERSION: u8 = 1;
+/// Single recipient. Still EMITTED for the one-recipient case so every reader
+/// already in the wild keeps working.
+const FORMAT_VERSION_V1: u8 = 1;
+/// Multiple recipients. Only emitted when there actually are several, so a v2
+/// blob is a positive signal that somebody besides the payer can read it.
+const FORMAT_VERSION_V2: u8 = 2;
 
 impl SealedEnvelope {
     /// Serialize to the byte layout that is actually stored.
     ///
-    /// `MAGIC | version | alg | eph_len | eph | cek_nonce | wrapped_len | wrapped | body_nonce | ciphertext`
+    /// v1 (one recipient, the payer):
+    /// `MAGIC | 1 | alg | eph_len | eph | cek_nonce | wrapped_len | wrapped | body_nonce | ciphertext`
+    ///
+    /// v2 (several):
+    /// `MAGIC | 2 | count | count×(role | alg | eph_len | eph | cek_nonce | wrapped_len | wrapped) | body_nonce | ciphertext`
+    ///
+    /// A single-payer envelope is still emitted as **v1**, byte-for-byte as
+    /// before. Every reader already deployed keeps working, and a v2 blob
+    /// becomes a positive signal that somebody besides the payer can open it,
+    /// rather than a version bump nobody can interpret.
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(
-            5 + 1
-                + 1
-                + 1
-                + self.ephemeral_public.len()
-                + NONCE_LEN
-                + 2
-                + self.wrapped_cek.len()
-                + NONCE_LEN
-                + self.ciphertext.len(),
-        );
+        let mut out = Vec::with_capacity(64 + self.ciphertext.len());
         out.extend_from_slice(MAGIC);
-        out.push(FORMAT_VERSION);
-        out.push(match self.key_alg {
-            KeyAlg::Secp256k1 => 1,
-            KeyAlg::X25519 => 2,
-        });
-        out.push(self.ephemeral_public.len() as u8);
-        out.extend_from_slice(&self.ephemeral_public);
-        out.extend_from_slice(&self.cek_nonce);
-        out.extend_from_slice(&(self.wrapped_cek.len() as u16).to_be_bytes());
-        out.extend_from_slice(&self.wrapped_cek);
+
+        let single_payer =
+            self.recipients.len() == 1 && self.recipients[0].role == RecipientRole::Payer;
+
+        if single_payer {
+            out.push(FORMAT_VERSION_V1);
+            write_recipient_body(&mut out, &self.recipients[0]);
+        } else {
+            out.push(FORMAT_VERSION_V2);
+            out.push(self.recipients.len() as u8);
+            for r in &self.recipients {
+                out.push(r.role.as_u8());
+                write_recipient_body(&mut out, r);
+            }
+        }
+
         out.extend_from_slice(&self.body_nonce);
         out.extend_from_slice(&self.ciphertext);
         out
     }
 
-    /// Parse the stored layout back.
+    /// Parse the stored layout back. Accepts v1 and v2.
     pub fn from_bytes(raw: &[u8]) -> Result<Self, EnvelopeError> {
         let mut cur = 0usize;
-        let need = |cur: usize, n: usize, what: &str| -> Result<(), EnvelopeError> {
+
+        let mut take = |n: usize, what: &str| -> Result<&[u8], EnvelopeError> {
             if raw.len() < cur + n {
-                Err(EnvelopeError::Malformed(format!("truncated at {what}")))
-            } else {
-                Ok(())
+                return Err(EnvelopeError::Malformed(format!("truncated at {what}")));
             }
+            let out = &raw[cur..cur + n];
+            cur += n;
+            Ok(out)
         };
 
-        need(cur, 5, "magic")?;
-        if &raw[cur..cur + 5] != MAGIC {
+        if take(5, "magic")? != MAGIC {
             return Err(EnvelopeError::Malformed("bad magic".into()));
         }
-        cur += 5;
 
-        need(cur, 1, "version")?;
-        let version = raw[cur];
-        if version != FORMAT_VERSION {
-            return Err(EnvelopeError::Malformed(format!(
-                "unsupported format version {version}"
-            )));
-        }
-        cur += 1;
-
-        need(cur, 1, "alg")?;
-        let key_alg = match raw[cur] {
-            1 => KeyAlg::Secp256k1,
-            2 => KeyAlg::X25519,
+        let version = take(1, "version")?[0];
+        let count = match version {
+            FORMAT_VERSION_V1 => 1usize,
+            FORMAT_VERSION_V2 => take(1, "recipient count")?[0] as usize,
             other => {
                 return Err(EnvelopeError::Malformed(format!(
-                    "unknown key algorithm {other}"
+                    "unsupported format version {other}"
                 )))
             }
         };
-        cur += 1;
+        if count == 0 {
+            // An envelope nobody can open is not evidence.
+            return Err(EnvelopeError::Malformed("no recipients".into()));
+        }
 
-        need(cur, 1, "eph_len")?;
-        let eph_len = raw[cur] as usize;
-        cur += 1;
-        need(cur, eph_len, "ephemeral key")?;
-        let ephemeral_public = raw[cur..cur + eph_len].to_vec();
-        cur += eph_len;
+        let mut recipients = Vec::with_capacity(count);
+        for _ in 0..count {
+            let role = if version == FORMAT_VERSION_V1 {
+                RecipientRole::Payer
+            } else {
+                let b = take(1, "role")?[0];
+                RecipientRole::from_u8(b)
+                    .ok_or_else(|| EnvelopeError::Malformed(format!("unknown role {b}")))?
+            };
 
-        need(cur, NONCE_LEN, "cek nonce")?;
-        let mut cek_nonce = [0u8; NONCE_LEN];
-        cek_nonce.copy_from_slice(&raw[cur..cur + NONCE_LEN]);
-        cur += NONCE_LEN;
+            let alg_byte = take(1, "alg")?[0];
+            let key_alg = match alg_byte {
+                1 => KeyAlg::Secp256k1,
+                2 => KeyAlg::X25519,
+                other => {
+                    return Err(EnvelopeError::Malformed(format!(
+                        "unknown key algorithm {other}"
+                    )))
+                }
+            };
 
-        need(cur, 2, "wrapped len")?;
-        let wrapped_len = u16::from_be_bytes([raw[cur], raw[cur + 1]]) as usize;
-        cur += 2;
-        need(cur, wrapped_len, "wrapped cek")?;
-        let wrapped_cek = raw[cur..cur + wrapped_len].to_vec();
-        cur += wrapped_len;
+            let eph_len = take(1, "eph_len")?[0] as usize;
+            let ephemeral_public = take(eph_len, "ephemeral key")?.to_vec();
 
-        need(cur, NONCE_LEN, "body nonce")?;
+            let mut cek_nonce = [0u8; NONCE_LEN];
+            cek_nonce.copy_from_slice(take(NONCE_LEN, "cek nonce")?);
+
+            let len_bytes = take(2, "wrapped len")?;
+            let wrapped_len = u16::from_be_bytes([len_bytes[0], len_bytes[1]]) as usize;
+            let wrapped_cek = take(wrapped_len, "wrapped cek")?.to_vec();
+
+            recipients.push(Recipient {
+                role,
+                key_alg,
+                ephemeral_public,
+                cek_nonce,
+                wrapped_cek,
+            });
+        }
+
         let mut body_nonce = [0u8; NONCE_LEN];
-        body_nonce.copy_from_slice(&raw[cur..cur + NONCE_LEN]);
-        cur += NONCE_LEN;
-
+        body_nonce.copy_from_slice(take(NONCE_LEN, "body nonce")?);
         let ciphertext = raw[cur..].to_vec();
 
         Ok(SealedEnvelope {
-            key_alg,
-            ephemeral_public,
-            cek_nonce,
-            wrapped_cek,
+            recipients,
             body_nonce,
             ciphertext,
         })
     }
+
+    /// The roles that can open this envelope.
+    ///
+    /// Callers surface this so a buyer can see who else holds a key. It belongs
+    /// in the signed receipt, not only here.
+    pub fn roles(&self) -> Vec<RecipientRole> {
+        self.recipients.iter().map(|r| r.role).collect()
+    }
+}
+
+fn write_recipient_body(out: &mut Vec<u8>, r: &Recipient) {
+    out.push(match r.key_alg {
+        KeyAlg::Secp256k1 => 1,
+        KeyAlg::X25519 => 2,
+    });
+    out.push(r.ephemeral_public.len() as u8);
+    out.extend_from_slice(&r.ephemeral_public);
+    out.extend_from_slice(&r.cek_nonce);
+    out.extend_from_slice(&(r.wrapped_cek.len() as u16).to_be_bytes());
+    out.extend_from_slice(&r.wrapped_cek);
 }
 
 /// Reject an all-zero X25519 output, per RFC 7748 section 6.1.
@@ -253,29 +338,20 @@ fn aead_open(
         .map_err(|_| EnvelopeError::Aead)
 }
 
-/// Encrypt `body` so that only the holder of the payer's private key can read it.
-///
-/// `payment_id` is bound in as AEAD associated data, which is what stops a
-/// ciphertext from being replayed as the evidence for a different payment.
-pub fn seal(
-    body: &[u8],
-    payer: &PayerPublicKey,
+/// Wrap `cek` to one public key, producing a [`Recipient`].
+fn wrap_for(
+    role: RecipientRole,
+    key: &PayerPublicKey,
+    cek: &[u8; CEK_LEN],
     payment_id: &[u8],
-) -> Result<SealedEnvelope, EnvelopeError> {
-    let mut rng = rand::rngs::OsRng;
-
-    let mut cek = [0u8; CEK_LEN];
-    rng.fill_bytes(&mut cek);
-    let mut body_nonce = [0u8; NONCE_LEN];
-    rng.fill_bytes(&mut body_nonce);
+    rng: &mut impl RngCore,
+) -> Result<Recipient, EnvelopeError> {
     let mut cek_nonce = [0u8; NONCE_LEN];
     rng.fill_bytes(&mut cek_nonce);
 
-    let ciphertext = aead_seal(&cek, &body_nonce, body, payment_id);
-
-    let (ephemeral_public, shared) = match payer {
+    let (ephemeral_public, shared) = match key {
         PayerPublicKey::Secp256k1(pk) => {
-            let eph = k256::SecretKey::random(&mut rng);
+            let eph = k256::SecretKey::random(&mut rand::rngs::OsRng);
             let shared = k256::ecdh::diffie_hellman(eph.to_nonzero_scalar(), pk.as_affine());
             let eph_pub = eph.public_key().to_encoded_point(true).as_bytes().to_vec();
             (eph_pub, shared.raw_secret_bytes().to_vec())
@@ -291,13 +367,63 @@ pub fn seal(
     };
 
     let wk = wrap_key(&shared, payment_id);
-    let wrapped_cek = aead_seal(&wk, &cek_nonce, &cek, payment_id);
-
-    Ok(SealedEnvelope {
-        key_alg: payer.key_alg(),
+    Ok(Recipient {
+        role,
+        key_alg: key.key_alg(),
         ephemeral_public,
         cek_nonce,
-        wrapped_cek,
+        wrapped_cek: aead_seal(&wk, &cek_nonce, cek, payment_id),
+    })
+}
+
+/// Encrypt `body` so that only the holder of the payer's private key can read it.
+///
+/// `payment_id` is bound in as AEAD associated data, which is what stops a
+/// ciphertext from being replayed as the evidence for a different payment.
+pub fn seal(
+    body: &[u8],
+    payer: &PayerPublicKey,
+    payment_id: &[u8],
+) -> Result<SealedEnvelope, EnvelopeError> {
+    seal_to(body, &[(RecipientRole::Payer, payer.clone())], payment_id)
+}
+
+/// Encrypt `body` so that every listed recipient can read it, and nobody else.
+///
+/// The body is encrypted **once**; only the content key is wrapped per
+/// recipient. Adding the seller so it can defend itself against a false
+/// "that is not what you sent" costs about sixty bytes, not a second copy.
+///
+/// Order is preserved and carried into the stored bytes, so a reader can report
+/// exactly who holds a key -- which belongs in the signed receipt, because a
+/// buyer discovering after the fact that somebody else could read their purchase
+/// would destroy the property this whole design sells.
+pub fn seal_to(
+    body: &[u8],
+    recipients: &[(RecipientRole, PayerPublicKey)],
+    payment_id: &[u8],
+) -> Result<SealedEnvelope, EnvelopeError> {
+    if recipients.is_empty() {
+        return Err(EnvelopeError::Malformed(
+            "an envelope with no recipients could never be opened".into(),
+        ));
+    }
+
+    let mut rng = rand::rngs::OsRng;
+    let mut cek = [0u8; CEK_LEN];
+    rng.fill_bytes(&mut cek);
+    let mut body_nonce = [0u8; NONCE_LEN];
+    rng.fill_bytes(&mut body_nonce);
+
+    let ciphertext = aead_seal(&cek, &body_nonce, body, payment_id);
+
+    let wrapped = recipients
+        .iter()
+        .map(|(role, key)| wrap_for(*role, key, &cek, payment_id, &mut rng))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(SealedEnvelope {
+        recipients: wrapped,
         body_nonce,
         ciphertext,
     })
@@ -326,59 +452,88 @@ fn ed25519_seed_to_x25519(seed: &[u8; 32]) -> [u8; 32] {
 }
 
 /// Recover the plaintext body from a sealed envelope.
+///
+/// Tries every recipient slot, because a holder does not necessarily know which
+/// one is theirs -- and in a multi-recipient envelope the payer is not always
+/// first. Only a slot on the same curve is attempted; the rest are skipped
+/// rather than reported, since "that slot was not for me" is not an error.
 pub fn open(
     envelope: &SealedEnvelope,
     secret: &PayerSecretKey,
     payment_id: &[u8],
 ) -> Result<Vec<u8>, EnvelopeError> {
-    let shared = match (secret, envelope.key_alg) {
-        (PayerSecretKey::Secp256k1(sk), KeyAlg::Secp256k1) => {
-            let eph = k256::PublicKey::from_sec1_bytes(&envelope.ephemeral_public)
-                .map_err(|e| EnvelopeError::InvalidEphemeralKey(e.to_string()))?;
-            k256::ecdh::diffie_hellman(sk.to_nonzero_scalar(), eph.as_affine())
-                .raw_secret_bytes()
-                .to_vec()
-        }
-        (PayerSecretKey::Ed25519Seed(seed), KeyAlg::X25519) => {
-            if envelope.ephemeral_public.len() != 32 {
-                return Err(EnvelopeError::InvalidEphemeralKey(format!(
-                    "expected 32 bytes, got {}",
-                    envelope.ephemeral_public.len()
-                )));
-            }
-            let mut eph = [0u8; 32];
-            eph.copy_from_slice(&envelope.ephemeral_public);
-            let scalar = ed25519_seed_to_x25519(seed);
-            let shared = MontgomeryPoint(eph).mul_clamped(scalar);
-            reject_degenerate(&shared)?;
-            shared.to_bytes().to_vec()
-        }
-        (PayerSecretKey::Secp256k1(_), other) => {
-            return Err(EnvelopeError::CurveMismatch {
-                envelope: other,
-                key: KeyAlg::Secp256k1,
-            })
-        }
-        (PayerSecretKey::Ed25519Seed(_), other) => {
-            return Err(EnvelopeError::CurveMismatch {
-                envelope: other,
-                key: KeyAlg::X25519,
-            })
-        }
+    let want = match secret {
+        PayerSecretKey::Secp256k1(_) => KeyAlg::Secp256k1,
+        PayerSecretKey::Ed25519Seed(_) => KeyAlg::X25519,
     };
 
-    let wk = wrap_key(&shared, payment_id);
-    let cek_vec = aead_open(&wk, &envelope.cek_nonce, &envelope.wrapped_cek, payment_id)?;
-    if cek_vec.len() != CEK_LEN {
-        return Err(EnvelopeError::Malformed(format!(
-            "unwrapped CEK is {} bytes, expected {CEK_LEN}",
-            cek_vec.len()
-        )));
-    }
-    let mut cek = [0u8; CEK_LEN];
-    cek.copy_from_slice(&cek_vec);
+    let mut saw_any_matching_curve = false;
 
-    aead_open(&cek, &envelope.body_nonce, &envelope.ciphertext, payment_id)
+    for recipient in &envelope.recipients {
+        if recipient.key_alg != want {
+            continue;
+        }
+        saw_any_matching_curve = true;
+
+        let shared = match (secret, recipient.key_alg) {
+            (PayerSecretKey::Secp256k1(sk), KeyAlg::Secp256k1) => {
+                let Ok(eph) = k256::PublicKey::from_sec1_bytes(&recipient.ephemeral_public) else {
+                    continue;
+                };
+                k256::ecdh::diffie_hellman(sk.to_nonzero_scalar(), eph.as_affine())
+                    .raw_secret_bytes()
+                    .to_vec()
+            }
+            (PayerSecretKey::Ed25519Seed(seed), KeyAlg::X25519) => {
+                if recipient.ephemeral_public.len() != 32 {
+                    continue;
+                }
+                let mut eph = [0u8; 32];
+                eph.copy_from_slice(&recipient.ephemeral_public);
+                let scalar = ed25519_seed_to_x25519(seed);
+                let shared = MontgomeryPoint(eph).mul_clamped(scalar);
+                reject_degenerate(&shared)?;
+                shared.to_bytes().to_vec()
+            }
+            _ => continue,
+        };
+
+        let wk = wrap_key(&shared, payment_id);
+        let Ok(cek_vec) = aead_open(
+            &wk,
+            &recipient.cek_nonce,
+            &recipient.wrapped_cek,
+            payment_id,
+        ) else {
+            // Not our slot. Keep looking.
+            continue;
+        };
+        if cek_vec.len() != CEK_LEN {
+            return Err(EnvelopeError::Malformed(format!(
+                "unwrapped CEK is {} bytes, expected {CEK_LEN}",
+                cek_vec.len()
+            )));
+        }
+        let mut cek = [0u8; CEK_LEN];
+        cek.copy_from_slice(&cek_vec);
+
+        return aead_open(&cek, &envelope.body_nonce, &envelope.ciphertext, payment_id);
+    }
+
+    if saw_any_matching_curve {
+        // The right curve was present but no slot opened: wrong key, or the
+        // blob belongs to a different payment.
+        Err(EnvelopeError::Aead)
+    } else {
+        Err(EnvelopeError::CurveMismatch {
+            envelope: envelope
+                .recipients
+                .first()
+                .map(|r| r.key_alg)
+                .unwrap_or(want),
+            key: want,
+        })
+    }
 }
 
 /// Map an ed25519 verifying key to the Montgomery point used for X25519 ECDH.
@@ -415,8 +570,8 @@ mod tests {
         let (pk, sk) = secp_pair();
         let body = b"the response body that must survive the session";
         let env = seal(body, &pk, PID).unwrap();
-        assert_eq!(env.key_alg, KeyAlg::Secp256k1);
-        assert_eq!(env.ephemeral_public.len(), 33);
+        assert_eq!(env.recipients[0].key_alg, KeyAlg::Secp256k1);
+        assert_eq!(env.recipients[0].ephemeral_public.len(), 33);
         assert_eq!(open(&env, &sk, PID).unwrap(), body);
     }
 
@@ -425,8 +580,8 @@ mod tests {
         let (pk, sk) = ed_pair();
         let body = b"solana payer, ed25519 key, no signature needed";
         let env = seal(body, &pk, PID).unwrap();
-        assert_eq!(env.key_alg, KeyAlg::X25519);
-        assert_eq!(env.ephemeral_public.len(), 32);
+        assert_eq!(env.recipients[0].key_alg, KeyAlg::X25519);
+        assert_eq!(env.recipients[0].ephemeral_public.len(), 32);
         assert_eq!(open(&env, &sk, PID).unwrap(), body);
     }
 
@@ -517,7 +672,155 @@ mod tests {
         let a = seal(b"same body", &pk, PID).unwrap();
         let b = seal(b"same body", &pk, PID).unwrap();
         assert_ne!(a.ciphertext, b.ciphertext);
-        assert_ne!(a.ephemeral_public, b.ephemeral_public);
+        assert_ne!(
+            a.recipients[0].ephemeral_public,
+            b.recipients[0].ephemeral_public
+        );
+    }
+
+    #[test]
+    fn both_parties_can_open_a_bidirectional_envelope() {
+        // The whole point of v2: the seller can answer a false "that is not
+        // what you sent", which it could not do when the envelope was sealed to
+        // the buyer alone.
+        let (buyer_pub, buyer_sk) = secp_pair();
+        let (seller_pub, seller_sk) = secp_pair();
+        let body = b"what was actually delivered";
+
+        let env = seal_to(
+            body,
+            &[
+                (RecipientRole::Payer, buyer_pub),
+                (RecipientRole::Seller, seller_pub),
+            ],
+            PID,
+        )
+        .unwrap();
+
+        assert_eq!(open(&env, &buyer_sk, PID).unwrap(), body);
+        assert_eq!(open(&env, &seller_sk, PID).unwrap(), body);
+    }
+
+    #[test]
+    fn the_body_is_encrypted_once_regardless_of_recipients() {
+        // Adding a party costs a wrapped key, not a second copy of the payload.
+        // If this ever regressed, bidirectional evidence would double storage.
+        let (a, _) = secp_pair();
+        let (b, _) = secp_pair();
+        let (c, _) = secp_pair();
+        let body = vec![7u8; 4096];
+
+        let one = seal_to(&body, &[(RecipientRole::Payer, a.clone())], PID).unwrap();
+        let three = seal_to(
+            &body,
+            &[
+                (RecipientRole::Payer, a),
+                (RecipientRole::Seller, b),
+                (RecipientRole::Auditor, c),
+            ],
+            PID,
+        )
+        .unwrap();
+
+        assert_eq!(one.ciphertext.len(), three.ciphertext.len());
+        let overhead = three.to_bytes().len() - one.to_bytes().len();
+        assert!(overhead < 200, "two extra recipients cost {overhead} bytes");
+    }
+
+    #[test]
+    fn a_stranger_still_cannot_open_a_multi_recipient_envelope() {
+        let (buyer, _) = secp_pair();
+        let (seller, _) = secp_pair();
+        let (_, stranger_sk) = secp_pair();
+
+        let env = seal_to(
+            b"private",
+            &[
+                (RecipientRole::Payer, buyer),
+                (RecipientRole::Seller, seller),
+            ],
+            PID,
+        )
+        .unwrap();
+        assert!(matches!(
+            open(&env, &stranger_sk, PID),
+            Err(EnvelopeError::Aead)
+        ));
+    }
+
+    #[test]
+    fn a_single_payer_envelope_is_still_emitted_as_v1() {
+        // Byte-for-byte compatibility with every reader already deployed. If
+        // this flipped to v2, the SDKs in the wild would stop reading new
+        // evidence.
+        let (pk, _) = secp_pair();
+        let blob = seal(b"body", &pk, PID).unwrap().to_bytes();
+        assert_eq!(blob[5], 1, "single-payer envelopes must stay v1");
+
+        let (a, _) = secp_pair();
+        let (b, _) = secp_pair();
+        let multi = seal_to(
+            b"body",
+            &[(RecipientRole::Payer, a), (RecipientRole::Seller, b)],
+            PID,
+        )
+        .unwrap()
+        .to_bytes();
+        assert_eq!(multi[5], 2, "multi-recipient envelopes must be v2");
+    }
+
+    #[test]
+    fn roles_survive_a_serialization_round_trip() {
+        // A buyer has to be able to see who else holds a key.
+        let (a, _) = secp_pair();
+        let (b, _) = secp_pair();
+        let (c, _) = ed_pair();
+        let env = seal_to(
+            b"body",
+            &[
+                (RecipientRole::Payer, a),
+                (RecipientRole::Seller, b),
+                (RecipientRole::Auditor, c),
+            ],
+            PID,
+        )
+        .unwrap();
+
+        let parsed = SealedEnvelope::from_bytes(&env.to_bytes()).unwrap();
+        assert_eq!(
+            parsed.roles(),
+            vec![
+                RecipientRole::Payer,
+                RecipientRole::Seller,
+                RecipientRole::Auditor
+            ]
+        );
+    }
+
+    #[test]
+    fn mixed_curves_across_recipients_both_open() {
+        // A Solana buyer and an EVM seller on the same evidence.
+        let (buyer, buyer_sk) = ed_pair();
+        let (seller, seller_sk) = secp_pair();
+        let env = seal_to(
+            b"cross-curve",
+            &[
+                (RecipientRole::Payer, buyer),
+                (RecipientRole::Seller, seller),
+            ],
+            PID,
+        )
+        .unwrap();
+
+        assert_eq!(open(&env, &buyer_sk, PID).unwrap(), b"cross-curve");
+        assert_eq!(open(&env, &seller_sk, PID).unwrap(), b"cross-curve");
+    }
+
+    #[test]
+    fn an_envelope_with_no_recipients_is_refused() {
+        let (pk, _) = secp_pair();
+        let _ = pk;
+        assert!(seal_to(b"body", &[], PID).is_err());
     }
 
     #[test]

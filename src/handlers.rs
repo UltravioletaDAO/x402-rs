@@ -3589,7 +3589,7 @@ pub async fn get_feedback_info() -> impl IntoResponse {
             "POST /register": "Register a new ERC-8004 agent (with optional recipient for delegation)",
             "POST /feedback": "Submit new feedback",
             "POST /feedback/revoke": "Revoke previously submitted feedback (ADMIN ONLY: requires Authorization: Bearer <ERC8004_ADMIN_TOKEN>; 404 when no token is configured)",
-            "POST /feedback/response": "Append response to feedback (agent only)",
+            "POST /feedback/response": "Append a response to feedback. NOT agent-only, despite what this line used to claim: verified on-chain 2026-08-18, the registry accepts appendResponse from ANY address. This endpoint is unauthenticated and the facilitator signs, so the on-chain `responder` recorded is the FACILITATOR, not the agent.",
             "GET /reputation/:network/:agentId": "Get reputation summary for an agent",
             "GET /identity/:network/:agentId": "Get agent identity from Identity Registry",
             "GET /identity/:network/:agentId/metadata/:key": "Read specific agent metadata",

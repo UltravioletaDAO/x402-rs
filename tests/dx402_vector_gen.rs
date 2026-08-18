@@ -36,6 +36,31 @@ fn emit_vectors() {
     println!("ED25519_ADDRESS={address}");
     println!("ED25519_BLOB={}", hex::encode(sealed.to_bytes()));
 
+    // Multi-recipient (v2): buyer + seller on the same evidence. This is the
+    // vector that proves an SDK can open a bidirectional envelope from EITHER
+    // side -- the property a seal/unseal round trip inside one implementation
+    // cannot establish.
+    let buyer = k256::SecretKey::from_slice(&[0x42u8; 32]).unwrap();
+    let seller = k256::SecretKey::from_slice(&[0x55u8; 32]).unwrap();
+    let sealed = x402_rs::dx402::envelope::seal_to(
+        body,
+        &[
+            (
+                x402_rs::dx402::envelope::RecipientRole::Payer,
+                PayerPublicKey::Secp256k1(Box::new(buyer.public_key())),
+            ),
+            (
+                x402_rs::dx402::envelope::RecipientRole::Seller,
+                PayerPublicKey::Secp256k1(Box::new(seller.public_key())),
+            ),
+        ],
+        payment_id,
+    )
+    .unwrap();
+    println!("MULTI_BUYER_PRIV={}", hex::encode(buyer.to_bytes()));
+    println!("MULTI_SELLER_PRIV={}", hex::encode(seller.to_bytes()));
+    println!("MULTI_BLOB={}", hex::encode(sealed.to_bytes()));
+
     println!("PAYMENT_ID={}", String::from_utf8_lossy(payment_id));
     println!("BODY={}", String::from_utf8_lossy(body));
     println!("CONTENT_HASH={}", x402_rs::dx402::content_hash(body));

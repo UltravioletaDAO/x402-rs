@@ -237,7 +237,12 @@ impl DurableEvidenceHook {
                 return DurableEvidence::skipped(SkipReason::AnchorFailed);
             }
         };
-        let key_alg = sealed.key_alg;
+        // The payer is always the first recipient this hook writes.
+        let key_alg = sealed
+            .recipients
+            .first()
+            .map(|r| r.key_alg)
+            .unwrap_or(x402_rs::dx402::types::KeyAlg::Secp256k1);
 
         let pointer = match self.sink.put(&ctx.payment_id, &sealed.to_bytes()).await {
             Ok(p) => p,

@@ -1,5 +1,34 @@
 # Changelog
 
+## [1.79.0] - 2026-08-17
+
+### Added — bidirectional evidence (envelope format v2)
+
+Evidence sealed to the payer alone protects one side of a two-sided exchange.
+The seller could not open the evidence for a payment it served, so it had no way
+to answer a false "that is not what you sent" — while paying to anchor it.
+
+The envelope now carries **several recipients**: `payer`, optionally `seller`,
+optionally a designated `auditor`. The body is encrypted **once**; only the
+content key is wrapped per recipient, so adding the seller costs about sixty
+bytes rather than a second copy of the payload.
+
+`seal_to()` takes the recipient list; `seal()` is unchanged and still means
+"payer only". `open()` tries every slot, because a holder does not necessarily
+know which one is theirs.
+
+**A single-payer envelope is still emitted as v1, byte-for-byte.** Every reader
+already deployed keeps working, and a v2 blob becomes a positive signal that
+somebody besides the payer can open it. Both SDKs read v1 and v2; the roles are
+readable from the blob without decrypting (`sealed_roles` / `sealedRoles`),
+because a buyer has to be able to see who else holds a key — discovering that
+afterwards would destroy the property this design sells.
+
+Verified across three implementations in both directions, including a v2
+envelope sealed by Rust and opened by Python and TypeScript **from both the
+buyer and the seller slot**.
+
+
 ## [1.78.0] - 2026-08-17
 
 ### Security — the anchor gate

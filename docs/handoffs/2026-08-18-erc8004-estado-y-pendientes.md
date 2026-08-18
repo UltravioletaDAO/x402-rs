@@ -67,6 +67,25 @@ del rater se redacta con el costo leve ("te van a ver code en la cuenta"), no co
 
 ---
 
+## 3bis. El relay 7702, verificado contra PRODUCCIÓN
+
+El ensayo end-to-end original fue contra `anvil`. Esto es contra el servicio
+desplegado y el `FeedbackDelegate` real de Base Sepolia:
+
+- `POST /feedback/evm/prepare` encuentra el delegate `0x3A68…3768`, pasa las tres
+  verificaciones on-chain (`assert_delegate_usable`), arma el calldata con el
+  selector correcto `0x3c036a7e`, lee el nonce de cuenta del rater de la cadena y
+  devuelve digest, deadline y nonce.
+- **El digest que produce producción es byte a byte el mismo** que una
+  recomputación independiente con `cast` (keccak del `abi.encode` de chainid,
+  rater, registry, keccak(data), deadline, nonce, dentro del sobre EIP-191). Dos
+  implementaciones distintas coincidiendo, más el test unitario que ya lo fija
+  contra el `relayDigest()` del contrato real.
+- El límite de seguridad responde como debe: firma basura →
+  `relay_bad_signature` (rechazada antes de gastar gas), deadline vencido →
+  `relay_expired`, y una red sin delegate desplegado se niega explícitamente en
+  vez de inventar una dirección.
+
 ## 4. Hallazgo J, respondido: `appendResponse` no tiene control de acceso
 
 Estaba pendiente de verificar desde el plan (§4, P2-c). **Verificado contra Base mainnet el
@@ -130,6 +149,9 @@ acumulada, no caudal actual.
   callers migren a `/feedback/solana/prepare` + `/submit`. Hoy está abierto y ruidoso en logs.
 - **`POST /feedback/response`**: decidir qué hacer con §4. Las opciones son gate admin (como el
   revoke), exigir prueba de titularidad del agente, o esperar el cambio de contrato de EM.
+  Lo que **sí** se corrigió ya, porque era nuestro y no rompe nada: dejamos de anunciarlo como
+  "agent only" en `GET /feedback` y en el OpenAPI. Publicar una restricción que no existe es
+  peor que no publicar nada.
 
 ### De Execution Market
 

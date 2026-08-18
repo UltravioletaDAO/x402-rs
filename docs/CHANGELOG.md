@@ -1,5 +1,34 @@
 # Changelog
 
+## [1.81.0] - 2026-08-18
+
+### Fixed — Solana settlements silently dropped
+
+Reported by KarmaKadabra: `/settle` on Solana returned
+`contract_call_failed` with "confirmation timed out", naming a signature that
+never appeared on chain. Measured in production over 24h: **10 timeouts against
+2 successful Solana settlements** — intermittent, not dead, and the RPC (a
+QuickNode premium endpoint) was healthy throughout.
+
+Three changes, none of which guess at a root cause — they make the real one
+visible and stop reporting a wrong outcome:
+
+- **Preflight is now ON by default.** `skip_preflight: true` made the RPC
+  validate nothing — not the blockhash, not the signatures — and return a
+  signature regardless. A transaction that could never land looked exactly like
+  one that would: a signature, thirty seconds of silence, then a timeout. With
+  preflight the same failure comes back immediately saying what it was.
+  `SOLANA_SKIP_PREFLIGHT=true` restores the old behaviour.
+- **Confirmation window 30s → 90s.** A Solana blockhash stays valid for ~150
+  slots (~60–90s), so giving up at 30 abandoned transactions that could still
+  land — and told the caller the payment failed while it was in flight.
+- **One final status read before declaring failure.** "TX may have been
+  submitted" is the worst answer available: the money may have moved while the
+  seller is told it did not. The timeout path now re-checks and distinguishes
+  *did not settle, retry* from *status unreadable, check on chain first*.
+- `max_retries` 5 → 20 for leader re-forwarding under congestion.
+
+
 ## [1.80.0] - 2026-08-18
 
 ### Fixed

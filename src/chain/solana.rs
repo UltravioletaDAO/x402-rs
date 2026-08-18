@@ -2248,12 +2248,35 @@ impl TransactionInt {
     }
 
     pub async fn send(&self, rpc_client: &RpcClient) -> Result<Signature, FacilitatorLocalError> {
+        // Preflight is ON by default, and that is a deliberate reversal.
+        //
+        // With `skip_preflight: true` the RPC validates nothing -- not the
+        // blockhash, not the signatures -- and hands back a signature
+        // regardless. A transaction that can never land looks identical to one
+        // that will: you get a signature, then thirty seconds of silence, then
+        // a timeout naming a signature that does not exist on chain. Measured
+        // on 2026-08-18: 10 such timeouts against 2 successful Solana
+        // settlements in 24h, with a healthy premium RPC.
+        //
+        // With preflight on, the same failure comes back immediately and says
+        // what it was ("blockhash not found", "signature verification failure"),
+        // which is the difference between a diagnosable error and a mystery.
+        //
+        // `SOLANA_SKIP_PREFLIGHT=true` restores the old behaviour for anyone who
+        // has already simulated and wants the round trip back.
+        let skip_preflight = std::env::var("SOLANA_SKIP_PREFLIGHT")
+            .map(|v| v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
         rpc_client
             .send_transaction_with_config(
                 &self.inner,
                 RpcSendTransactionConfig {
-                    skip_preflight: true,
-                    max_retries: Some(5),
+                    skip_preflight,
+                    // The RPC keeps re-forwarding to upcoming leaders. Under
+                    // congestion five attempts inside a ~60s blockhash window is
+                    // thin; 20 costs nothing when the transaction lands early.
+                    max_retries: Some(20),
                     ..RpcSendTransactionConfig::default()
                 },
             )
@@ -2270,10 +2293,15 @@ impl TransactionInt {
 
         // Timeout for confirmation - configurable via environment variable
         // Default: 30 seconds (Solana blocks are ~400ms, 30s = ~75 blocks)
+        // 90s, not 30. A Solana blockhash stays valid for ~150 slots (~60-90s),
+        // so giving up at 30 abandons transactions that can still land -- and
+        // the caller is told the payment failed while it is still in flight.
+        // Waiting out the blockhash means a timeout now genuinely implies the
+        // transaction can never confirm.
         let timeout_secs = std::env::var("SOLANA_CONFIRM_TIMEOUT_SECS")
             .ok()
             .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(30);
+            .unwrap_or(90);
         let timeout_duration = Duration::from_secs(timeout_secs);
 
         let confirmation_future = async {
@@ -2292,15 +2320,53 @@ impl TransactionInt {
         match tokio::time::timeout(timeout_duration, confirmation_future).await {
             Ok(result) => result,
             Err(_) => {
-                tracing::warn!(
-                    tx_sig = %tx_sig,
-                    timeout_secs = timeout_secs,
-                    "Transaction confirmation timed out"
-                );
-                Err(FacilitatorLocalError::ContractCall(format!(
-                    "Transaction confirmation timed out after {}s. TX may have been submitted: {}",
-                    timeout_secs, tx_sig
-                )))
+                // Before calling it a failure, ask the chain one more time
+                // whether it landed.
+                //
+                // "May have been submitted" is the worst thing to tell a
+                // caller: the money may have moved while the seller is being
+                // told the payment failed. One last status read turns that into
+                // a definite answer whenever the chain has one -- the same
+                // discipline as checking `receipt.status()` on EVM rather than
+                // assuming a submitted transaction succeeded.
+                match rpc_client
+                    .confirm_transaction_with_commitment(&tx_sig, commitment_config)
+                    .await
+                {
+                    Ok(c) if c.value => {
+                        tracing::info!(
+                            tx_sig = %tx_sig,
+                            "Transaction confirmed on the final check after the timeout window"
+                        );
+                        return Ok(tx_sig);
+                    }
+                    Ok(_) => {
+                        tracing::warn!(
+                            tx_sig = %tx_sig,
+                            timeout_secs,
+                            "Solana transaction never confirmed; the blockhash window has passed so it cannot land"
+                        );
+                        Err(FacilitatorLocalError::ContractCall(format!(
+                            "Solana transaction {tx_sig} did not confirm within {timeout_secs}s. \
+                             The blockhash window has passed, so it can no longer land and the \
+                             payment did NOT settle. Retry with a fresh blockhash."
+                        )))
+                    }
+                    Err(e) => {
+                        // We genuinely do not know. Say so rather than
+                        // asserting a failure that may not have happened.
+                        tracing::warn!(
+                            tx_sig = %tx_sig,
+                            error = %crate::redact::scrub_urls(&e.to_string()),
+                            "Could not determine the fate of a Solana transaction after the timeout"
+                        );
+                        Err(FacilitatorLocalError::ContractCall(format!(
+                            "Solana transaction {tx_sig} did not confirm within {timeout_secs}s \
+                             and its status could not be read. It MAY still have settled -- check \
+                             the signature on chain before retrying."
+                        )))
+                    }
+                }
             }
         }
     }

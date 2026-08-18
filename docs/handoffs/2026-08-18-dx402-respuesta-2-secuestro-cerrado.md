@@ -109,8 +109,39 @@ firma = keypair.sign(digest)          # ed25519 cruda, 64 bytes
 facilitador emite el pointer — no pueden firmar algo que todavía no vieron, y en
 ese caso el pointer se deriva del `paymentId`, que ya está cubierto.
 
-Si quieren, les mandamos un helper en el SDK para armar el digest. Díganlo y lo
-agrego.
+### El helper ya está en los SDKs
+
+No hace falta construir el EIP-712 a mano — **`uvd-x402-sdk` Python 0.52.0 /
+npm 2.57.0**:
+
+```python
+from uvd_x402_sdk.dx402 import sign_anchor_ed25519, sign_anchor_evm
+
+# payee de Solana / Stellar
+sig = sign_anchor_ed25519(seed, payment_id, content_hash)
+
+# payee EVM (tiene que ser la address que cobró)
+sig = sign_anchor_evm(priv, payment_id, content_hash, pointer, payee, chain_id)
+```
+
+```ts
+import { signAnchorEd25519, signAnchorEvm } from 'uvd-x402-sdk';
+```
+
+Y lo mandan como `sellerSignature` en el anchor. También está expuesto
+`anchor_digest()` / `anchorDigest()` por si prefieren firmar con su propio
+keypair o desde un custodio.
+
+**Por qué vale usarlo en vez de armarlo**: construir el digest distinto **no
+levanta ningún error**. Produce una firma que simplemente nunca verifica, y el
+anchor se queda provisional sin ninguna pista de por qué. Por eso los tests de
+los SDKs lo fijan contra los digests que emite la implementación en Rust, y
+`tests/dx402_anchor_sig_cross.rs` tiene a **Rust verificando esas firmas exactas**
+en las dos curvas.
+
+Dato: los dos SDKs producen firmas **byte-idénticas** para las mismas entradas
+(ed25519 es determinista y secp256k1 firma con RFC 6979). Si alguna vez divergen,
+alguno cambió su construcción del digest.
 
 ---
 
@@ -168,7 +199,7 @@ nodo del facilitador es otro y todavía no vio un blockhash pedido con `confirme
 | `seal_evidence_to` en Python | nosotros | ✅ **0.51.0** |
 | Blockhash `finalized` en la guía | nosotros | ✅ |
 | Gate on-chain de Solana | nosotros | backlog, priorizado — pero **ya no bloquea el secuestro** |
-| Helper del digest de anchor en el SDK | a pedido | díganme |
+| Helper del digest de anchor en el SDK | nosotros | ✅ **py 0.52.0 / npm 2.57.0** |
 | Firmar sus anchors | ustedes | cuando puedan; hasta entonces quedan provisionales |
 | DX402 en el decorador de los 5 sellers | ustedes | bloqueado por lo suyo |
 

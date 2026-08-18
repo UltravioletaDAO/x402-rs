@@ -281,6 +281,37 @@ volumen es de decenas o de millones al mes, y la respuesta cambia con eso.
 
 ---
 
+## 4-bis. Pendientes con prioridad fijada (Saul, 2026-08-18)
+
+### El gate del anchor en cadenas no-EVM
+
+`verify_payment_facts` lee un receipt EVM. Fuera de EVM el gate reporta
+`unverifiable_chain` y **nunca bloquea**, así que esas cadenas funcionan pero sin
+verificación de pago.
+
+| Cadena | Prioridad | Cómo se verifica |
+|---|---|---|
+| **Solana** | **ALTA — la única que se quiere sí o sí** | `getTransaction` + parseo de token balances. Ya hay algo parecido en `src/chain/solana.rs` para el camino del settlement account |
+| Stellar | después | Horizon: operaciones de pago de la tx |
+| Algorand | después | Indexer: transacciones de asset transfer |
+| NEAR, Sui, XRPL | después | por familia |
+
+**Todas tienen que terminar funcionando igual**, pero solo Solana bloquea. Las
+demás quedan explícitamente para más adelante.
+
+### El PR a la x402 Foundation — EN PAUSA
+
+Los dos bloqueantes técnicos están cerrados (gate del anchor v1.78.0, envelope
+bidireccional v1.79.0). **No se propone hasta tener tráfico real.** Una propuesta
+sin uso en producción se descarta, y hoy el contador de anclajes son pruebas
+nuestras, no compras.
+
+Anotado acá para que no se pierda: cuando KarmaCadabra (o execution.market)
+acumule N transacciones reales con evidencia recuperable, se retoma. Ahí el
+argumento se escribe solo.
+
+---
+
 ## 5. Orden sugerido
 
 1. **Primero probar que funciona** (KarmaCadabra, el objetivo de hoy). Sin un

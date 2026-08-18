@@ -61,6 +61,42 @@ fn emit_vectors() {
     println!("MULTI_SELLER_PRIV={}", hex::encode(seller.to_bytes()));
     println!("MULTI_BLOB={}", hex::encode(sealed.to_bytes()));
 
+    // Anchor authorization digest, so the SDKs can check their EIP-712
+    // construction against this one instead of against themselves. Getting it
+    // wrong does not error -- it produces a signature that simply never
+    // verifies, and the anchor stays provisional with no clue why.
+    let pid_b256: alloy::primitives::B256 =
+        "0x1111111111111111111111111111111111111111111111111111111111111111"
+            .parse()
+            .unwrap();
+    let ch_b256: alloy::primitives::B256 =
+        "0x2222222222222222222222222222222222222222222222222222222222222222"
+            .parse()
+            .unwrap();
+    let payee: alloy::primitives::Address = "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8"
+        .parse()
+        .unwrap();
+    println!(
+        "ANCHOR_DIGEST_EVM={}",
+        x402_rs::dx402::gate::authorization_digest(
+            pid_b256,
+            ch_b256,
+            "s3+https://e/x",
+            payee,
+            8453
+        )
+    );
+    println!(
+        "ANCHOR_DIGEST_ED25519={}",
+        x402_rs::dx402::gate::authorization_digest(
+            pid_b256,
+            ch_b256,
+            "",
+            alloy::primitives::Address::ZERO,
+            0
+        )
+    );
+
     println!("PAYMENT_ID={}", String::from_utf8_lossy(payment_id));
     println!("BODY={}", String::from_utf8_lossy(body));
     println!("CONTENT_HASH={}", x402_rs::dx402::content_hash(body));

@@ -92,3 +92,25 @@ fn rust_opens_a_python_sealed_bidirectional_envelope_from_both_slots() {
         BODY
     );
 }
+
+#[test]
+fn rust_opens_a_typescript_sealed_bidirectional_envelope_from_both_slots() {
+    // Same check as the Python one, for the TypeScript v2 write path. Both SDKs
+    // now emit multi-recipient envelopes, and neither is trusted on its own
+    // round trip.
+    let blob = load("typescript-sealed-multi.hex");
+    let envelope = SealedEnvelope::from_bytes(&blob).expect("typescript v2 blob should parse");
+    assert_eq!(envelope.recipients.len(), 2);
+
+    let buyer = k256::SecretKey::from_slice(&[0x42u8; 32]).unwrap();
+    let seller = k256::SecretKey::from_slice(&[0x55u8; 32]).unwrap();
+
+    assert_eq!(
+        open(&envelope, &PayerSecretKey::Secp256k1(Box::new(buyer)), PID).unwrap(),
+        BODY
+    );
+    assert_eq!(
+        open(&envelope, &PayerSecretKey::Secp256k1(Box::new(seller)), PID).unwrap(),
+        BODY
+    );
+}

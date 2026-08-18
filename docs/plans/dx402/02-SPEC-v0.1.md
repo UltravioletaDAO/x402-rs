@@ -271,24 +271,33 @@ ciphertext, wrapped CEK, and `contentHash`.
 `durable-evidence` composes with both; it reuses `payment-identifier` for
 `paymentId` when present.
 
-## 13. Open items for v0.2
+## 13. Status of the v0.2 items
 
-Design notes: **[04-BACKLOG-MONETIZACION.md](04-BACKLOG-MONETIZACION.md)**.
+Design notes: **[04-BACKLOG-MONETIZACION.md](04-BACKLOG-MONETIZACION.md)** and
+**[05-DISENO-v0.2.md](05-DISENO-v0.2.md)**.
 
-### Blocking the upstream proposal
+### Done — both former upstream blockers are closed
 
-1. **Multi-recipient envelopes.** v0.1 seals to the payer alone, which means a
-   seller cannot open the evidence for a payment it served — it has no way to
-   answer a false "I never got it" or "it was garbage". Evidence that protects
-   only one side of a two-sided exchange is an obvious and fair criticism, and
-   the fix changes the on-disk format (`recipients[]` instead of one wrapped
-   CEK). **Do not propose upstream with a single-recipient format**: changing it
-   after other implementations exist is far more expensive than changing it now,
-   while we are the only user.
-2. **Buyer opt-in through the existing `accepts` array.** A seller offers the
-   same resource twice — plain, and with `durable-evidence` at a higher price —
-   and the buyer picks. This needs no change to the x402 core, which is worth
-   stating explicitly in the proposal.
+1. **Multi-recipient envelopes** — shipped in v1.79.0. The envelope carries
+   `payer`, optionally `seller`, optionally an `auditor`. The body is encrypted
+   once; only the content key is wrapped per recipient. A single-payer envelope
+   is still emitted as format v1 byte-for-byte, so nothing already anchored
+   becomes unreadable, and roles are readable from the blob without decrypting.
+2. **The anchor gate** — shipped in v1.78.0. Every anchor is checked against the
+   chain, the payer must be the address the evidence was sealed to, the payee
+   must have signed the anchor, and one payment anchors once. Phase 1 by default
+   (`DX402_REQUIRE_PROOF=false`: verify and report).
+
+### Still open
+
+- **Buyer opt-in through the existing `accepts` array.** A seller offers the same
+  resource twice — plain, and with `durable-evidence` at a higher price — and the
+  buyer picks. Needs no change to the x402 core, which is worth stating
+  explicitly in the proposal.
+- **The anchor gate on non-EVM chains.** `verify_payment_facts` reads an EVM
+  receipt; Solana, NEAR, Stellar and Algorand report `unverifiable_chain`, which
+  is never enforced. Closing it means writing a per-family verification, not
+  reusing one.
 
 ### Not blocking
 

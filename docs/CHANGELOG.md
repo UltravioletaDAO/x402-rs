@@ -158,6 +158,67 @@ rather than falling back to a store that only looks durable.
   that would drift and silently recover the wrong public key.
 
 
+## [1.74.0] - 2026-08-14
+
+### Security — reputation authorship and the proof-of-payment gate
+
+The ERC-8004 Reputation Registry records `msg.sender` as the author of every
+feedback, and the facilitator was the one signing: **87,2% of the feedback on
+Base — 1384 entries across 28 agents — is attributed to our wallet instead of
+the person who wrote it.** And `POST /feedback/revoke` authenticated nobody, so
+an anonymous POST made us sign the destruction of exactly that reputation.
+Measured against production before the fix: the unauthenticated call returned
+500, meaning it had already reached the on-chain signing path.
+
+- **`POST /feedback/revoke` is admin-only and fail-closed.** New credential
+  `ERC8004_ADMIN_TOKEN`, deliberately not the bazaar's: one hides a catalog
+  listing, the other erases third-party reputation irreversibly. With no token
+  configured the route answers 404 and is indistinguishable from absent.
+- **`src/erc8004/proof.rs` — the proof-of-payment gate.** Verifies on-chain that
+  the transaction exists and succeeded, sits in the block claimed, carries an
+  ERC-20 `Transfer` of exactly `amount` in `token` from `payer` to `payee`, that
+  the payer is the new `rater` field, that the payee is an address the Identity
+  Registry ties to the agent, that the block timestamp is inside the freshness
+  window, that `paymentHash` recomputes, and that the (payment, agent) pair has
+  not already been spent. Two-phase rollout: `ERC8004_REQUIRE_PROOF=false`
+  verifies and reports without rejecting, so the blast radius is measured before
+  it is enforced.
+- **Real authorship on Solana** — `POST /feedback/solana/prepare` + `/submit`.
+  The rater signs as `client`, the facilitator stays fee payer. `submit` refuses
+  any transaction that is not byte-for-byte the one it built; otherwise the
+  fee-payer keypair would be a public signing oracle.
+- **Real authorship on EVM via EIP-7702** — `POST /feedback/evm/prepare` +
+  `/submit`. The rater delegates their EOA to Execution Market's
+  `FeedbackDelegate`; the transaction goes **to the rater's own address**, so the
+  registry observes the rater while we pay the gas. Served only where a delegate
+  is deployed and verified on-chain — today `base-sepolia`.
+- `scripts/verify_feedback_anchor.py` and `scripts/spike_eip7702_stipend.sh`.
+
+### Measured, not assumed
+
+- `getAgentWallet` returns zero for almost every real agent on Base, so `ownerOf`
+  is load-bearing and both are accepted — the wallet alone would have rejected
+  nearly every genuine payment.
+- `readFeedback` does not expose `feedbackHash` at all (29 selectors of the
+  deployed implementation enumerated); it exists only in the `NewFeedback` event.
+- Execution Market's payments carry **two** `Transfer` events, a fee and the net
+  to the agent, so a proof must declare the net the payee actually receives.
+- EIP-7702: the cold account-access charge for loading the delegate's code is
+  billed to the caller, not taken out of the callee's 2300-gas stipend, so
+  `transfer()` into a delegated wallet still works. Closes finding H2, which
+  Execution Market had honestly marked NOT CONCLUSIVE rather than claim.
+- A `.call()` to an address with no code returns **success**, so a delegate
+  pinned to an undeployed registry would report ratings that never happened.
+  Guarded.
+
+### Fixed
+
+- `dynamodb:DeleteItem` was missing from the task policy, so the anti-replay
+  claim could never be released after a write that did not land.
+- `alb_idle_timeout` had been silently reverted 600 → 180 on every deploy for
+  months: `terraform.tfvars` is gitignored, CI applies with the defaults in
+  `variables.tf`, and the targeted apply pulls the ALB in as a dependency.
+
 ## [1.64.0] - 2026-07-30
 
 ### Fix — USDC is 18 decimals on BSC, and two places assumed 6

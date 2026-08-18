@@ -499,6 +499,26 @@ mod tests {
     }
 
     #[test]
+    /// The count that `src/openapi.rs` states in prose, pinned here.
+    ///
+    /// That prose said "18 networks (10 mainnets + 8 testnets)" in four places
+    /// while the real set was 20 -- it counted only the EVM half and dropped
+    /// Solana. A number written in a doc string ages silently; this test is what
+    /// makes it fail loudly instead. If it breaks, update `supported_networks()`
+    /// AND the four strings in `src/openapi.rs`.
+    #[test]
+    fn the_supported_network_count_matches_what_openapi_advertises() {
+        let networks = supported_networks();
+        assert_eq!(networks.len(), 20, "openapi.rs advertises 20 networks");
+
+        let solana = networks
+            .iter()
+            .filter(|n| matches!(n, Network::Solana | Network::SolanaDevnet))
+            .count();
+        assert_eq!(solana, 2, "Solana mainnet + devnet are part of the count");
+        assert_eq!(networks.len() - solana, 18, "18 EVM networks");
+    }
+
     fn test_supported_networks_list() {
         let networks = supported_networks();
         // EVM Mainnets

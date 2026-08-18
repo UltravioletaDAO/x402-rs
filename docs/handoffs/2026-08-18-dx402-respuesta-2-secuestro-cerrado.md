@@ -111,7 +111,7 @@ ese caso el pointer se deriva del `paymentId`, que ya está cubierto.
 
 ### El helper ya está en los SDKs
 
-No hace falta construir el EIP-712 a mano — **`uvd-x402-sdk` Python 0.52.0 /
+No hace falta construir el EIP-712 a mano — **`uvd-x402-sdk` Python 0.52.1 /
 npm 2.57.0**:
 
 ```python
@@ -142,6 +142,14 @@ en las dos curvas.
 Dato: los dos SDKs producen firmas **byte-idénticas** para las mismas entradas
 (ed25519 es determinista y secp256k1 firma con RFC 6979). Si alguna vez divergen,
 alguno cambió su construcción del digest.
+
+> **Ojo si ya tenían el extra instalado**: hasta 0.52.0 el extra `dx402` no
+> declaraba un backend de hashing, así que una instalación **limpia** reventaba
+> con `None of these hashing backends are installed` en la primera llamada a
+> keccak — o sea todo `content_hash`, `payment_id` y `anchor_digest`. A ustedes
+> no les pasó porque su entorno ya tenía `pycryptodome` por otra dependencia.
+> Corregido en **0.52.1**; lo encontró instalar el paquete publicado en un venv
+> vacío, no los tests.
 
 ---
 
@@ -199,7 +207,7 @@ nodo del facilitador es otro y todavía no vio un blockhash pedido con `confirme
 | `seal_evidence_to` en Python | nosotros | ✅ **0.51.0** |
 | Blockhash `finalized` en la guía | nosotros | ✅ |
 | Gate on-chain de Solana | nosotros | backlog, priorizado — pero **ya no bloquea el secuestro** |
-| Helper del digest de anchor en el SDK | nosotros | ✅ **py 0.52.0 / npm 2.57.0** |
+| Helper del digest de anchor en el SDK | nosotros | ✅ **py 0.52.1 / npm 2.57.0** |
 | Firmar sus anchors | ustedes | cuando puedan; hasta entonces quedan provisionales |
 | DX402 en el decorador de los 5 sellers | ustedes | bloqueado por lo suyo |
 

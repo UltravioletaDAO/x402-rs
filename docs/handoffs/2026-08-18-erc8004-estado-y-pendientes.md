@@ -81,7 +81,20 @@ desplegado y el `FeedbackDelegate` real de Base Sepolia:
   rater, registry, keccak(data), deadline, nonce, dentro del sobre EIP-191). Dos
   implementaciones distintas coincidiendo, más el test unitario que ya lo fija
   contra el `relayDigest()` del contrato real.
-- El límite de seguridad responde como debe: firma basura →
+- En SVM, la misma verificación contra producción (`/feedback/solana/prepare`,
+`solana-devnet`), decodificando la transacción devuelta: **2 firmas requeridas y
+ninguna presente** (viene sin firmar, el rater firma primero), el fee payer es
+nuestra wallet de testnet, el programa invocado es el Agent Registry de devnet, y
+**la cuenta 0 de la instrucción — el `client` que el programa lee como autor — es
+el RATER**, no nosotros. Ese es exactamente el defecto que este trabajo existe
+para cerrar, verificado sobre el servicio desplegado.
+
+(Detalle de método, por si alguien repite esto: la transacción de Solana se
+serializa con `short_vec` — compact-u16 — no con un prefijo de 8 bytes. Un
+decodificador que asuma `u64` corre todos los offsets siete bytes y devuelve
+basura que *parece* un header válido.)
+
+El límite de seguridad responde como debe: firma basura →
   `relay_bad_signature` (rechazada antes de gastar gas), deadline vencido →
   `relay_expired`, y una red sin delegate desplegado se niega explícitamente en
   vez de inventar una dirección.

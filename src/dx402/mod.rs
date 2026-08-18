@@ -43,6 +43,7 @@
 #![allow(dead_code, unused_imports)]
 
 pub mod envelope;
+pub mod gate;
 pub mod handlers;
 pub mod payer;
 pub mod pubkey;

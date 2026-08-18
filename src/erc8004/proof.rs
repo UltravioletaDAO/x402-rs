@@ -347,16 +347,32 @@ pub async fn evaluate_svm_feedback_proof(params: &FeedbackParams) -> ProofReport
 
 /// The payment half of the gate: does this proof describe a real payment from
 /// the rater to this agent?
-pub async fn verify_proof_of_payment<P: Provider>(
+/// The payment-level half of proof verification, shared by every consumer.
+///
+/// Establishes that a real, successful, on-chain transfer of `amount` in `token`
+/// moved from `payer` to `payee`, in the block the proof names, on the network
+/// the caller expects, recently enough.
+///
+/// It deliberately says nothing about **who may cash the proof in**. ERC-8004
+/// requires the payer to be the rater and the payee to be the agent; DX402
+/// requires the payer to be the address the evidence was sealed to and the payee
+/// to have signed the anchor. Those are the callers' business.
+///
+/// Factored out rather than copied: a second implementation of these seven
+/// checks would drift, and a drifted payment check does not fail loudly -- it
+/// quietly accepts a payment that never happened.
+///
+/// `max_age_secs` is a parameter because the right window differs by caller.
+/// A rating can legitimately arrive a week after the purchase; a DX402 anchor
+/// happens inside the same handler as the settle, so it gets minutes.
+pub async fn verify_payment_facts<P: Provider>(
     rpc: &P,
-    identity_registry: Address,
     request_network: Network,
-    agent_id: u64,
-    rater: Option<&MixedAddress>,
     proof: &ProofOfPayment,
-) -> Result<(), ProofRejection> {
-    // 1. Same chain as the feedback. Without this, a payment on a cheap chain
-    //    would buy reputation on an expensive one.
+    max_age_secs: u64,
+) -> Result<PaymentFacts, ProofRejection> {
+    // 1. Same chain the caller expects. Without this, a payment on a cheap chain
+    //    would buy something on an expensive one.
     if proof.network != request_network {
         return Err(ProofRejection::NetworkMismatch);
     }
@@ -377,16 +393,7 @@ pub async fn verify_proof_of_payment<P: Provider>(
     let payee = evm_address(&proof.payee)?;
     let token = evm_address(&proof.token)?;
 
-    // 3. The rater has to be named before "payer == rater" can mean anything.
-    let Some(rater) = rater else {
-        return Err(ProofRejection::RaterMissing);
-    };
-    let rater = evm_address(rater)?;
-    if payer != rater {
-        return Err(ProofRejection::PayerIsNotRater);
-    }
-
-    // 4. The transaction exists and succeeded.
+    // 3. The transaction exists and succeeded.
     let receipt = match rpc.get_transaction_receipt(tx_hash).await {
         Ok(Some(r)) => r,
         Ok(None) => return Err(ProofRejection::TransactionNotFound),
@@ -404,12 +411,12 @@ pub async fn verify_proof_of_payment<P: Provider>(
         return Err(ProofRejection::TransactionReverted);
     }
 
-    // 5. Same block the proof claims.
+    // 4. Same block the proof claims.
     if receipt.block_number != Some(proof.block_number) {
         return Err(ProofRejection::BlockNumberMismatch);
     }
 
-    // 6. Freshness, measured against the BLOCK's timestamp rather than the
+    // 5. Freshness, measured against the BLOCK's timestamp rather than the
     //    caller's. `payment_hash` does not commit to `timestamp`, so a
     //    caller-supplied one is unauthenticated and a stale proof could be made
     //    to look fresh simply by rewriting the field.
@@ -431,11 +438,11 @@ pub async fn verify_proof_of_payment<P: Provider>(
     if block_ts > now.saturating_add(FUTURE_SKEW_TOLERANCE_SECS) {
         return Err(ProofRejection::TimestampMismatch);
     }
-    if now.saturating_sub(block_ts) > proof_max_age_secs() {
+    if now.saturating_sub(block_ts) > max_age_secs {
         return Err(ProofRejection::Expired);
     }
 
-    // 7. The transfer the proof describes is actually in that transaction.
+    // 6. The transfer the proof describes is actually in that transaction.
     //    Reading the logs (not the calldata) is what makes this robust to
     //    however the payment was routed: EIP-3009, a proxy, or a batch all emit
     //    the same event.
@@ -453,7 +460,49 @@ pub async fn verify_proof_of_payment<P: Provider>(
         return Err(ProofRejection::TransferNotFound);
     }
 
-    // 8. The money went to this agent.
+    Ok(PaymentFacts { payer, payee })
+}
+
+/// Who the verified payment moved value between.
+///
+/// Returned so a caller does not have to re-parse the addresses it just had
+/// checked, and cannot accidentally check one address and then authorise
+/// against another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaymentFacts {
+    pub payer: Address,
+    pub payee: Address,
+}
+
+pub async fn verify_proof_of_payment<P: Provider>(
+    rpc: &P,
+    identity_registry: Address,
+    request_network: Network,
+    agent_id: u64,
+    rater: Option<&MixedAddress>,
+    proof: &ProofOfPayment,
+) -> Result<(), ProofRejection> {
+    // The rater checks run BEFORE any RPC call, and the order is load-bearing.
+    //
+    // They need nothing but the request itself, and `RpcUnavailable` is the one
+    // verdict that does NOT block a write -- it means "no verdict reached".
+    // Checking them after the network calls would let an RPC outage turn a
+    // definite "wrong rater" into "we could not tell", which is exactly how a
+    // proof for somebody else's payment would slip through phase 2. Two tests
+    // pin this ordering; they caught it when the shared verification was
+    // factored out.
+    let Some(rater) = rater else {
+        return Err(ProofRejection::RaterMissing);
+    };
+    let rater = evm_address(rater)?;
+    if evm_address(&proof.payer)? != rater {
+        return Err(ProofRejection::PayerIsNotRater);
+    }
+
+    let facts = verify_payment_facts(rpc, request_network, proof, proof_max_age_secs()).await?;
+    let payee = facts.payee;
+
+    // The money went to this agent.
     //
     // MEASURED, not assumed (2026-08-13, Base mainnet, identity registry
     // 0x8004A169...): `getAgentWallet(agentId)` returns the zero address for

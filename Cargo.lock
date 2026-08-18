@@ -15223,6 +15223,7 @@ dependencies = [
 name = "x402-axum"
 version = "0.6.3"
 dependencies = [
+ "alloy",
  "async-trait",
  "axum 0.8.8",
  "axum-core 0.5.6",

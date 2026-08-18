@@ -67,3 +67,28 @@ fn rust_opens_a_typescript_sealed_x25519_envelope() {
         .expect("rust should open a typescript-sealed envelope");
     assert_eq!(plaintext, BODY);
 }
+
+#[test]
+fn rust_opens_a_python_sealed_bidirectional_envelope_from_both_slots() {
+    // The v2 write path in the Python SDK, checked the only way that means
+    // anything: an independent implementation opening it. A seal/unseal round
+    // trip inside the SDK would pass even with a wrong recipient layout,
+    // because both halves would share the mistake.
+    let blob = load("python-sealed-multi.hex");
+    let envelope = SealedEnvelope::from_bytes(&blob).expect("python v2 blob should parse");
+    assert_eq!(envelope.recipients.len(), 2);
+
+    let buyer = k256::SecretKey::from_slice(&[0x42u8; 32]).unwrap();
+    let seller = k256::SecretKey::from_slice(&[0x55u8; 32]).unwrap();
+
+    assert_eq!(
+        open(&envelope, &PayerSecretKey::Secp256k1(Box::new(buyer)), PID).unwrap(),
+        BODY
+    );
+    // The half that did not exist before: the seller can open the evidence for
+    // a payment it served, and answer a false "that is not what you sent".
+    assert_eq!(
+        open(&envelope, &PayerSecretKey::Secp256k1(Box::new(seller)), PID).unwrap(),
+        BODY
+    );
+}

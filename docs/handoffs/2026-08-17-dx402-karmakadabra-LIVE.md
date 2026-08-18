@@ -16,7 +16,7 @@ lo use. **Ustedes son el primero.**
 
 Lo que hay que hacer, en orden:
 
-1. `pip install -U 'uvd-x402-sdk[dx402]>=0.48.0'` (tienen pineado `0.42.0`)
+1. `pip install -U 'uvd-x402-sdk[dx402]>=0.49.0'` (tienen pineado `0.42.0`)
 2. En el seller, después del settle: sellar el body y anclarlo (~20 líneas)
 3. En el buyer, leer un header más
 4. Avisarnos cuando haya un anclaje real
@@ -295,14 +295,39 @@ Para que no lo busquen:
 - **No hay opt-in del comprador todavía.** Hoy el vendedor decide por ruta. Que
   el comprador elija (y pague un poco más) está diseñado pero no implementado —
   `docs/plans/dx402/04-BACKLOG-MONETIZACION.md`.
-- **La evidencia hoy se cifra SOLO hacia el comprador.** El vendedor no puede
-  abrir la suya, así que todavía no les sirve para defenderse de un reclamo
-  falso. El envelope multi-destinatario está diseñado para v0.2 (mismo doc).
-- **`/dx402/anchor` NO verifica que el pago exista.** No consulta la cadena
-  todavía. Para ustedes es cómodo —pueden probar con un `txHash` de mentira antes
-  de tener un pago real— pero significa que cualquiera puede anclar cualquier
-  cosa. Lo vamos a cerrar reutilizando el gate on-chain de ERC-8004. Está en el
-  backlog §2-ter y **no proponemos upstream sin eso resuelto**.
+- **El modo `escrowed`** (que el facilitador guarde la clave) no existe.
+
+### Dos cosas que SÍ existen ya (nuevas, v1.78.0 y v1.79.0)
+
+**Evidencia bidireccional.** Pueden sellar hacia ustedes también, y así responder
+a un "eso no es lo que me mandaste" falso:
+
+```python
+from uvd_x402_sdk.dx402 import seal_evidence  # payer-only, como antes
+# multi-destinatario: por ahora se arma desde el facilitador/Rust;
+# el SDK de Python LEE v2 y expone quién tiene llave:
+from uvd_x402_sdk.dx402 import sealed_roles
+sealed_roles(blob)   # -> ["payer", "seller"]
+```
+
+Un blob de un solo pagador se sigue emitiendo como v1, así que nada de lo que
+anclen hoy se vuelve ilegible después.
+
+**El gate del anchor.** `/dx402/anchor` ahora verifica contra la cadena que el
+pago existe, que **el payer es la address a la que cifraron**, y que el anchor
+viene firmado por el payee. Además un pago ancla **una sola vez**.
+
+Está en **fase 1**: verifica y reporta, no rechaza. Así que sus pruebas pasan
+igual mientras ajustan. Cuando lo pasemos a fase 2 van a necesitar mandar:
+
+```python
+"proofOfPayment": settle_response.get("proofOfPayment"),   # tal cual del /settle
+"sellerSignature": "0x...",                                # EIP-712, ver abajo
+```
+
+En EVM el `proofOfPayment` sale directo de la respuesta del `/settle`. En Solana
+no hay receipt que leer, así que el gate reporta `unverifiable_chain` y **nunca
+bloquea** — su camino de Solana sigue funcionando igual.
 
 ---
 

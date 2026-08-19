@@ -172,6 +172,52 @@ status, resp = post_json(
 # would still verify, because we would have signed the replacement.
 check("a second anchor for the same payment is refused", status == 409, str(resp)[:120])
 
+# --- 5-bis. the 409 must not absorb a rejected signature ---------------------
+# KarmaKadabra, 2026-08-19: an anchor whose sellerSignature did not verify was
+# answered `dx402_already_anchored`. True, but it names the wrong cause, and the
+# wrong cause is credible -- the reader audits retries and races, finds
+# candidates because those always exist, and never suspects the digest.
+status, resp = post_json(
+    "/dx402/anchor",
+    {
+        "paymentId": PID,
+        "network": "base",
+        "txHash": TX,
+        "payer": "0x103040545AC5031A11E8C03dd11324C7333a13C7",
+        "payee": "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8",
+        "sealed": base64.b64encode(blob).decode(),
+        "backend": "s3",
+        "contentHash": content_hash(BODY),
+        "keyAlg": "ECIES-secp256k1",
+        "mode": "direct",
+        "retention": "90d",
+        # 65 bytes of nothing: present, parseable in shape, recovers to nobody.
+        "sellerSignature": "0x" + "11" * 65,
+    },
+)
+check(
+    "a rejected signature says so instead of blaming a duplicate",
+    status == 422 and "dx402_signature_not_verified" in str(resp),
+    f"{status} {str(resp)[:90]}",
+)
+
+# --- 5-ter. `verified` is visible, or nobody can tell evidence from a claim ---
+# The quieter half of the same bug: with no prior record the anchor SUCCEEDS, so
+# a seller signing the wrong digest form got a 201 that looked perfect while its
+# anchor stayed provisional forever.
+_, raw_evidence = get(f"/dx402/evidence/{PID}")
+evidence = json.loads(raw_evidence)
+check(
+    "GET /dx402/evidence reports whether the payee proved the anchor",
+    "verified" in evidence,
+    f"verified={evidence.get('verified')}",
+)
+check(
+    "an unsigned anchor is reported as unproven, not as verified",
+    evidence.get("verified") is False,
+    f"verified={evidence.get('verified')}",
+)
+
 # --- 6. unknown payments 404 rather than 500 ---------------------------------
 try:
     get("/dx402/evidence/0xdoesnotexist")

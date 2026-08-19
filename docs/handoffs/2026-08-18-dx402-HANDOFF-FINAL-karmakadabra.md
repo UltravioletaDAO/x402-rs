@@ -8,8 +8,15 @@
 
 ## 0. Qué cambia para ustedes
 
-**Actualicen a `uvd-x402-sdk` 0.53.0** (npm 2.58.0) y borren el código de
+**Actualicen a `uvd-x402-sdk` 0.54.0** (npm 2.59.0) y borren el código de
 anclaje que escribieron a mano. Ahora es una llamada.
+
+> **No usen 0.53.0 / 2.58.0.** Esa versión de `anchor_evidence()` construía
+> **siempre** la forma ed25519 del digest, así que **un vendedor con payee EVM
+> firmaba algo que nunca verifica** y su anchor quedaba provisional para siempre
+> — sin error en ningún lado. Es exactamente el modo de falla que este mismo
+> documento advertía, y lo shippeé igual. Corregido en 0.54.0 / 2.59.0: la forma
+> del digest se elige por la curva del payee.
 
 ```python
 from uvd_x402_sdk.dx402 import anchor_evidence, evidence_header
@@ -87,7 +94,7 @@ corrigieron: ese límite no existe en su custodia. El ítem quedó retirado.
 | Helper del digest | ✅ 0.52.0 |
 | El extra sin backend de hashing | ✅ 0.52.1 |
 | `chainId: 0` en no-EVM | ✅ documentado con crédito |
-| Armar el anchor a mano | ✅ **0.53.0 / 2.58.0** |
+| Armar el anchor a mano | ✅ **0.54.0 / 2.59.0** |
 
 ---
 
@@ -96,8 +103,8 @@ corrigieron: ese límite no existe en su custodia. El ítem quedó retirado.
 | | Versión |
 |---|---|
 | Facilitador | **1.82.0** |
-| PyPI `uvd-x402-sdk` | **0.53.0** |
-| npm `uvd-x402-sdk` | **2.58.0** |
+| PyPI `uvd-x402-sdk` | **0.54.0** |
+| npm `uvd-x402-sdk` | **2.59.0** |
 
 Los dos SDKs están **a la par**: los dos sellan v1 y v2, leen los dos, decodifican
 addresses de Solana, arman el digest, firman en ambas curvas y anclan en una

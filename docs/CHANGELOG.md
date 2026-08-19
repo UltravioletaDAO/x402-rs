@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.86.0] - 2026-08-19
+
+`POST /dx402/anchor` now accepts a CAIP-2 network id (`eip155:8453`) as well as
+the v1 name (`base`). Every other route takes either — that is what the v2
+format is for — so a client speaking CAIP-2 everywhere else got a bare `422`
+here with no field named. Worse than an unknown network: the caller has no
+reason to suspect the one field it spells exactly as it does on `/verify`.
+
 ## [1.85.0] - 2026-08-19
 
 ### The proof did not have to be a proof of THIS payment

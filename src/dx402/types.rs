@@ -332,10 +332,34 @@ pub struct EvidenceReceipt {
 ///
 /// No `Eq`: it now carries a `ProofOfPayment`, which holds token amounts that
 /// do not implement it.
+/// Deserialize a `Network` from either the v1 serde name or a CAIP-2 id.
+fn deserialize_network_or_caip2<'de, D>(d: D) -> Result<Network, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error as _;
+    let raw = String::deserialize(d)?;
+    // CAIP-2 first: it is unambiguous (it always contains a colon) and the v1
+    // names never do.
+    if let Some(network) = Network::from_caip2(&raw) {
+        return Ok(network);
+    }
+    serde_json::from_value(serde_json::Value::String(raw.clone()))
+        .map_err(|_| D::Error::custom(format!("unknown network `{raw}`")))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnchorRequest {
     pub payment_id: String,
+    /// Accepts both the v1 name (`base`) and the v2 CAIP-2 id (`eip155:8453`).
+    ///
+    /// Every other route on this facilitator takes either -- that is the whole
+    /// point of the v2 format -- so a client that speaks CAIP-2 everywhere else
+    /// got a bare `422` here with no field named. Worse than an unknown network:
+    /// the caller has no reason to suspect the one field it spells the same way
+    /// it does on `/verify` and `/settle`.
+    #[serde(deserialize_with = "deserialize_network_or_caip2")]
     pub network: Network,
     pub tx_hash: String,
     pub payer: MixedAddress,
@@ -543,5 +567,39 @@ mod tests {
             serde_json::to_value(KeyAlg::X25519).unwrap(),
             "ECIES-X25519"
         );
+    }
+}
+
+#[cfg(test)]
+mod anchor_network_tests {
+    use super::*;
+
+    #[test]
+    fn the_anchor_route_takes_a_caip2_network_like_every_other_route() {
+        // A client that speaks v2 everywhere else got a bare 422 here, with no
+        // field named -- worse than an unknown network, because it has no reason
+        // to suspect the one field it spells exactly as it does on /verify.
+        let body = |net: &str| {
+            format!(
+                r#"{{"paymentId":"0x{id}","network":"{net}","txHash":"0x{tx}",
+                     "payer":"0x{a}","payee":"0x{b}","sealed":"AA==","backend":"s3",
+                     "contentHash":"0x{id}","keyAlg":"ECIES-X25519","mode":"direct",
+                     "retention":"90d"}}"#,
+                id = "ab".repeat(32),
+                tx = "cd".repeat(32),
+                a = "11".repeat(20),
+                b = "22".repeat(20),
+            )
+        };
+
+        let v1: AnchorRequest = serde_json::from_str(&body("base")).expect("v1 name");
+        let v2: AnchorRequest = serde_json::from_str(&body("eip155:8453")).expect("CAIP-2 id");
+        assert_eq!(v1.network, v2.network);
+        assert_eq!(v1.network, Network::Base);
+
+        // And an unknown one still fails, by name.
+        let err = serde_json::from_str::<AnchorRequest>(&body("eip155:99999999"))
+            .expect_err("unknown network must not deserialize");
+        assert!(err.to_string().contains("eip155:99999999"), "{err}");
     }
 }

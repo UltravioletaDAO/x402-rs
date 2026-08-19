@@ -110,6 +110,16 @@ pub enum AnchorRejection {
     SellerSignatureMissing,
     /// The seller signature does not recover to the payee of the payment.
     SellerSignatureInvalid,
+    /// The `proofOfPayment` is for a different transaction than the `paymentId`
+    /// being claimed.
+    ///
+    /// A real payment proves a real payment -- it does not prove *which* payment
+    /// the claim is about. Unbound, an attacker pays itself one wei and reuses
+    /// that valid proof to claim any stranger's paymentId, passing every other
+    /// check because it is genuinely both payer and payee of its own tiny
+    /// transfer. Found by an audit 2026-08-19, on the fix for the previous
+    /// version of this same hole.
+    PaymentIdNotBound,
     /// This payment already has evidence anchored.
     Replayed,
     /// Not an EVM chain, so there is no receipt to read.
@@ -145,6 +155,7 @@ impl AnchorRejection {
             AnchorRejection::PayerIsNotRecipient => "dx402_payer_is_not_recipient",
             AnchorRejection::SellerSignatureMissing => "dx402_seller_signature_missing",
             AnchorRejection::SellerSignatureInvalid => "dx402_seller_signature_invalid",
+            AnchorRejection::PaymentIdNotBound => "dx402_payment_id_not_bound",
             AnchorRejection::Replayed => "dx402_replayed",
             AnchorRejection::UnverifiableChain => "dx402_unverifiable_chain",
             AnchorRejection::RpcUnavailable => "dx402_rpc_unavailable",
@@ -156,8 +167,19 @@ impl From<ProofRejection> for AnchorRejection {
     fn from(r: ProofRejection) -> Self {
         match r {
             ProofRejection::RpcUnavailable => AnchorRejection::RpcUnavailable,
-            ProofRejection::NotEvmTransaction | ProofRejection::UnverifiableChain => {
-                AnchorRejection::UnverifiableChain
+            // `UnverifiableChain` means "not checked here" -- reported, never
+            // enforced, because refusing a check that never ran would silently
+            // disable DX402 on every non-EVM family.
+            ProofRejection::UnverifiableChain => AnchorRejection::UnverifiableChain,
+            // `NotEvmTransaction` is the opposite: its own definition says "this
+            // one DOES refuse" (erc8004/proof.rs). We only reach this arm after
+            // resolving an EVM provider for the network, so a non-EVM tx hash
+            // here is a definitely-bad proof, not an absent verdict. Lumping it
+            // in above made it unenforceable in phase 2 -- the exact mistake
+            // already documented for the ERC-8004 gate, where an ordering
+            // change once masked a definite rejection as "we could not tell".
+            ProofRejection::NotEvmTransaction => {
+                AnchorRejection::Payment("proof_not_evm_transaction".into())
             }
             other => AnchorRejection::Payment(format!("{other:?}")),
         }
@@ -364,6 +386,21 @@ pub async fn verify_anchor<P: Provider>(
         return Err(AnchorRejection::SellerSignatureMissing);
     };
 
+    // The proof must be a proof OF THIS PAYMENT. Without this the gate verifies
+    // a real payment and then certifies a paymentId that has nothing to do with
+    // it: an attacker sends itself one wei, gets a perfectly valid proof where
+    // payer == payee == itself, and presents it to claim a stranger's paymentId.
+    // Every downstream check then passes -- the payer it sealed to is itself,
+    // and the signature it made is over the payee the chain reports, itself --
+    // so it reaches the FINAL rung and locks the real seller out forever.
+    //
+    // `paymentId` is a pure function of (network, txHash), so binding it is one
+    // comparison. Local, and therefore before any RPC call.
+    let bound = crate::dx402::payment_id(claim.network, &proof.transaction_hash.to_string());
+    if !bound.eq_ignore_ascii_case(&format!("{:#x}", claim.payment_id)) {
+        return Err(AnchorRejection::PaymentIdNotBound);
+    }
+
     let sealed_to: Address = claim
         .sealed_to
         .clone()
@@ -398,6 +435,25 @@ mod tests {
 
     fn b256(byte: u8) -> B256 {
         B256::from([byte; 32])
+    }
+
+    #[test]
+    fn a_definitely_bad_proof_is_enforceable_but_an_unread_chain_is_not() {
+        // The two verdicts that never block exist so our own blind spots cannot
+        // erase somebody's evidence. A proof we DID read and found wrong is not
+        // one of them -- `NotEvmTransaction` documents itself as "this one DOES
+        // refuse", and we only get here after resolving an EVM provider.
+        let unread: AnchorRejection = ProofRejection::UnverifiableChain.into();
+        assert!(!unread.is_enforceable(), "an unread chain must never block");
+
+        let rpc = AnchorRejection::RpcUnavailable;
+        assert!(!rpc.is_enforceable(), "our outage must never block");
+
+        let bad: AnchorRejection = ProofRejection::NotEvmTransaction.into();
+        assert!(
+            bad.is_enforceable(),
+            "a proof read and found invalid must be refusable in phase 2"
+        );
     }
 
     #[test]
@@ -595,14 +651,23 @@ mod tests {
     }
 
     #[test]
-    fn non_evm_proof_rejections_map_to_unverifiable_chain() {
+    fn only_an_ABSENT_verdict_maps_to_unverifiable_chain() {
+        // This test used to assert that `NotEvmTransaction` mapped to
+        // `UnverifiableChain`, which made a definitely-bad proof unenforceable
+        // in phase 2 -- pinning the bug as intended behaviour. Its own
+        // definition in erc8004/proof.rs says "this one DOES refuse", and we
+        // only reach the mapping after resolving an EVM provider.
         assert_eq!(
-            AnchorRejection::from(ProofRejection::NotEvmTransaction),
+            AnchorRejection::from(ProofRejection::UnverifiableChain),
             AnchorRejection::UnverifiableChain
         );
         assert_eq!(
             AnchorRejection::from(ProofRejection::RpcUnavailable),
             AnchorRejection::RpcUnavailable
+        );
+        assert!(
+            AnchorRejection::from(ProofRejection::NotEvmTransaction).is_enforceable(),
+            "a proof we read and found invalid is a refusal, not a missing verdict"
         );
     }
 
@@ -624,5 +689,82 @@ mod tests {
         if let Some(v) = prior {
             std::env::set_var("DX402_REQUIRE_PROOF", v);
         }
+    }
+
+    #[tokio::test]
+    async fn a_proof_for_another_transaction_cannot_claim_this_payment() {
+        // THE ATTACK: a real payment proves a real payment -- it does not prove
+        // WHICH payment the claim is about. Mallory sends herself one wei, gets
+        // a genuinely valid proof where she is both payer and payee, and points
+        // it at Alice's paymentId. Every later check then passes: the payer
+        // matches what she sealed to (herself), and her signature is over the
+        // payee the chain reports (herself). She reaches the FINAL rung.
+        //
+        // The binding must also be LOCAL and run BEFORE the RPC -- an outage
+        // must never turn a definite rejection into "we could not tell".
+        // This test points at a dead port to prove it: if the check reached the
+        // network we would get RpcUnavailable instead.
+        use crate::erc8004::ProofOfPayment;
+
+        let dead_rpc = alloy::providers::ProviderBuilder::new()
+            .connect_http("http://127.0.0.1:1/".parse().unwrap());
+
+        let mallorys_tx_hash = crate::types::TransactionHash::Evm([0xab; 32]);
+        let mallorys_own_tx = mallorys_tx_hash.to_string();
+        let proof = ProofOfPayment {
+            transaction_hash: mallorys_tx_hash.clone(),
+            block_number: 1,
+            network: crate::network::Network::Base,
+            payer: addr_of("0x1111111111111111111111111111111111111111"),
+            payee: addr_of("0x1111111111111111111111111111111111111111"),
+            amount: 1u64.into(),
+            token: addr_of("0x2222222222222222222222222222222222222222"),
+            timestamp: 0,
+            payment_hash: b256(0),
+        };
+
+        // The paymentId of somebody else's payment, not of `mallorys_own_tx`.
+        let alices_payment_id: B256 = crate::dx402::payment_id(
+            crate::network::Network::Base,
+            &format!("0x{}", "cd".repeat(32)),
+        )
+        .parse()
+        .unwrap();
+
+        let claim = AnchorClaim {
+            network: crate::network::Network::Base,
+            proof: Some(&proof),
+            sealed_to: &addr_of("0x1111111111111111111111111111111111111111"),
+            payment_id: alices_payment_id,
+            content_hash: b256(9),
+            pointer: "",
+            seller_signature: Some("0x00"),
+            chain_id: 8453,
+        };
+
+        assert_eq!(
+            verify_anchor(&dead_rpc, &claim).await.unwrap_err(),
+            AnchorRejection::PaymentIdNotBound,
+            "a proof for another transaction must not certify this paymentId"
+        );
+
+        // And the honest case still gets past the binding: same proof, but the
+        // paymentId that actually derives from its transaction.
+        let bound: B256 = crate::dx402::payment_id(crate::network::Network::Base, &mallorys_own_tx)
+            .parse()
+            .unwrap();
+        let ok_claim = AnchorClaim {
+            payment_id: bound,
+            ..claim
+        };
+        assert_ne!(
+            verify_anchor(&dead_rpc, &ok_claim).await.unwrap_err(),
+            AnchorRejection::PaymentIdNotBound,
+            "a correctly bound paymentId must pass this check and go on to the chain"
+        );
+    }
+
+    fn addr_of(s: &str) -> crate::types::MixedAddress {
+        s.parse::<alloy::primitives::Address>().unwrap().into()
     }
 }

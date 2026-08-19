@@ -1,5 +1,51 @@
 # Changelog
 
+## [1.83.0] - 2026-08-19
+
+### The 409 that pointed at the wrong thing
+
+An anchor whose `sellerSignature` did not verify was answered
+`dx402_already_anchored` (409). True — a record did hold the payment — but not
+the cause, and the cause it *implied* was credible: the reader goes to audit
+retries, races and repeated heartbeats, finds candidates because those always
+exist, and never suspects the shape of a digest they do not know has shapes.
+KarmaKadabra isolated it with three anchors to one paymentId and reported it
+2026-08-19.
+
+The verdict already existed one layer up — `service.rs` computes `verified` and
+logs `anchor is PROVISIONAL` — and was then discarded before answering. Now:
+
+- `dx402_signature_not_verified` (**422**) when a signature was supplied and did
+  not verify, instead of the misleading 409.
+- `verified` is returned on the `201` from `POST /dx402/anchor` and on
+  `GET /dx402/evidence/{paymentId}`. It was recorded but exposed nowhere, which
+  is the quieter half of the same bug: with no prior record the anchor SUCCEEDS,
+  so a seller signing the wrong digest form got a 201 that looked perfect while
+  its anchor stayed provisional forever. It should not take a collision — which
+  may never come — to find that out. A consumer treating a provisional record as
+  proof of *who* produced the artifact is trusting a claim anyone could make.
+
+A rejected signature still does not cost the anchor when nothing else holds the
+slot. Refusing to write would make a seller-side signing bug cost the **buyer**
+its copy, and DX402 degrades rather than withholds.
+
+### The anchor size limit, measured and enforced early
+
+`POST /dx402/anchor` accepts 64 KiB of request body (`MAX_REQUEST_BODY_BYTES`, an
+anti-OOM bound on every route). Inline `sealed` blobs travel base64, so the
+ceiling is ~47 KB of plaintext — KarmaKadabra measured 47 KB fits, 48 KB does
+not. Both SDKs now check the **serialised** request, not the plaintext, and skip
+with `too_large` before touching the network; measuring the plaintext lets
+through bodies the facilitator rejects, and the failure lands long after sealing
+is done. The Rust `x402-axum` hook is unaffected — it uploads via its sink and
+sends a pointer.
+
+Also in the SDKs: HTTP failures now carry the facilitator's own `error` and
+`status` out of `anchor_evidence()` instead of flattening to `anchor_failed`,
+which would have reproduced the 409 problem one layer down. The TypeScript
+base64 conversion no longer spreads the blob into function arguments, where a
+large body overflowed the call stack and surfaced as an unrelated failure.
+
 ## [1.82.0] - 2026-08-18
 
 ### Security — the anchor could be hijacked

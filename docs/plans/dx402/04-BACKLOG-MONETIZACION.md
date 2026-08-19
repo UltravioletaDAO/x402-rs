@@ -328,6 +328,46 @@ compró.
 Es exactamente el caso de uso del modo **`escrowed`**, que sigue sin
 implementarse (`POST /dx402/recover` devuelve 501). Tercera vez que aparece.
 
+#### La salida que propone KarmaKadabra: que el comprador DECLARE una llave de lectura
+
+**No hace falta construir `escrowed` para cerrar este caso.** Execution Market lo
+resolvió sin criptografía nueva: el comprador registra una clave pública que
+**sólo descifra**, y el vendedor cifra hacia ella en vez de hacia la derivada del
+pago.
+
+```
+PUT /api/v1/account/dx402-key   {"public_key": "0x02…", "key_alg": "ECIES-secp256k1"}
+```
+
+Medido por KK: **27 agentes declararon**, la evidencia de un trade real abrió con
+la llave declarada, no abrió con otra wallet, y **tampoco abrió con la llave de
+cobro** — que es la prueba de que la separación no es nominal.
+
+Dos propiedades que lo hacen mejor que `escrowed`, no sólo más barato:
+
+- **Cubre más que la custodia.** También al payer delegado por EIP-7702 y a las
+  smart accounts, donde no hay clave recuperable desde la firma. Es el mismo
+  agujero por otra puerta.
+- **Es mejor seguridad.** Reusar la llave de cobro para descifrar convierte una
+  filtración de *"me leen la evidencia"* en *"me vacían la wallet"*. La llave
+  declarada no controla un centavo. Y a diferencia de `escrowed`, no centraliza
+  en el facilitador la capacidad de descifrar — que es justo lo que esta misma
+  nota advierte de `escrowed`.
+
+**El filo, si alguna vez lo hospedamos nosotros:** una declaración de llave
+**tiene que estar firmada por la dirección que dice ser**. Si cualquiera puede
+declarar una llave para una dirección ajena, el atacante hace que el vendedor
+cifre hacia él y se queda con la evidencia de compras que no hizo. Es el hijack
+del anchor otra vez, movido del *escribir* al *leer*, y allá el mismo descuido
+—una reclamación que nadie probaba— nos costó una versión. Un registro de
+llaves sin autenticar es estrictamente peor que no tenerlo, porque el comprador
+cree que declaró algo.
+
+Segundo filo: una llave declarada **no puede sustituirse en silencio**. Rotarla
+es legítimo; que la rotación sea invisible convierte el registro en un canal para
+redirigir evidencia futura. La regla del anchor sirve igual — una declaración
+firmada supera a una que no lo está, nunca al revés.
+
 ### El PR a la x402 Foundation — EN PAUSA
 
 Los dos bloqueantes técnicos están cerrados (gate del anchor v1.78.0, envelope
@@ -338,6 +378,11 @@ nuestras, no compras.
 Anotado acá para que no se pierda: cuando KarmaCadabra (o execution.market)
 acumule N transacciones reales con evidencia recuperable, se retoma. Ahí el
 argumento se escribe solo.
+
+> **Estado 2026-08-19:** la precondición está empezando a cumplirse. El contador
+> pasó de 4 a 30 anclajes, y KK reporta que toda compra del enjambre en Execution
+> Market queda con evidencia durable, verificada sobre un trade real. Sigue en
+> pausa — retomarlo es decisión de Saul, no un automatismo por contador.
 
 ---
 

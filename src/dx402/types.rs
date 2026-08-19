@@ -269,6 +269,19 @@ pub struct AnchoredEvidence {
     /// EIP-712 signature by the facilitator over [`EvidenceReceipt`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub receipt: Option<String>,
+    /// Whether the payee proved by signature that this anchor is theirs.
+    ///
+    /// Emitted so a seller learns on the FIRST anchor that its signature was
+    /// rejected. Without it the only symptom was a later `409` on a collision
+    /// that may never come -- a 201 that looks entirely successful while the
+    /// anchor stays provisional forever.
+    ///
+    /// `default` on purpose: this header is already in the wild without the
+    /// field, and a buyer must keep being able to parse evidence a seller
+    /// emitted before it existed. Absent reads as "not proven", which is the
+    /// safe direction -- it never upgrades an old claim to verified.
+    #[serde(default)]
+    pub verified: bool,
 }
 
 /// The notarised claim the facilitator signs.
@@ -390,6 +403,18 @@ pub enum Dx402ErrorCode {
     Dx402ProofRejected,
     /// This payment already has evidence anchored. Anchoring is once-only.
     Dx402AlreadyAnchored,
+    /// A `sellerSignature` was supplied and did not verify against the payee, so
+    /// the anchor could not supersede the record already holding this payment.
+    ///
+    /// Split out of `Dx402AlreadyAnchored` because that code, while true, sends
+    /// the integrator to audit the wrong thing. "You already anchored this" is a
+    /// plausible story -- they go looking for a retry, a race, a repeated
+    /// heartbeat -- and they find candidates, because those always exist. Nobody
+    /// suspects the shape of a digest they do not know has shapes.
+    ///
+    /// Reported by KarmaKadabra, 2026-08-19, after isolating it with three
+    /// anchors to one paymentId.
+    Dx402SignatureNotVerified,
 }
 
 impl Dx402ErrorCode {
@@ -415,6 +440,7 @@ impl Dx402ErrorCode {
             Dx402ErrorCode::Dx402StoreUnavailable => "dx402_store_unavailable",
             Dx402ErrorCode::Dx402ProofRejected => "dx402_proof_rejected",
             Dx402ErrorCode::Dx402AlreadyAnchored => "dx402_already_anchored",
+            Dx402ErrorCode::Dx402SignatureNotVerified => "dx402_signature_not_verified",
         }
     }
 }

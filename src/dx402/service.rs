@@ -431,7 +431,20 @@ impl Dx402Service {
             },
         };
 
+        let signed_but_unverified = req.seller_signature.is_some() && !verified;
         self.registry.put(&record).await.map_err(|e| match e {
+            // Losing to an existing record has two causes that do not look
+            // alike, and answering both with "already anchored" points the
+            // caller at the wrong one. If they signed and the signature did not
+            // verify, THAT is why they could not supersede -- say so.
+            RegistryError::AlreadyAnchored if signed_but_unverified => {
+                warn!(
+                    payment_id = %req.payment_id,
+                    "DX402 anchor refused: the sellerSignature did not verify against the payee, \
+                     so it could not supersede the record already holding this payment"
+                );
+                Dx402ErrorCode::Dx402SignatureNotVerified
+            }
             RegistryError::AlreadyAnchored => {
                 warn!(
                     payment_id = %req.payment_id,
@@ -456,6 +469,7 @@ impl Dx402Service {
             mode: req.mode,
             retention: req.retention,
             receipt: Some(signature),
+            verified,
         })
     }
 
@@ -751,6 +765,70 @@ mod tests {
             svc.anchor(forged, 8453, 1_200).await.unwrap_err(),
             Dx402ErrorCode::Dx402AlreadyAnchored
         );
+    }
+
+    #[tokio::test]
+    async fn a_rejected_signature_says_so_instead_of_blaming_a_duplicate() {
+        // KarmaKadabra, 2026-08-19. A seller whose signature did not verify was
+        // told `dx402_already_anchored`, which is TRUE and points at the wrong
+        // thing: they go audit their retries and their idempotency, where
+        // plausible suspects always exist, and never look at the digest.
+        let svc = Dx402Service::in_memory(PrivateKeySigner::random());
+        let seller = PrivateKeySigner::random();
+        let impostor = PrivateKeySigner::random();
+
+        // Something already holds the slot.
+        svc.anchor(anchor_request(EvidenceMode::Direct), 8453, 1_000)
+            .await
+            .unwrap();
+
+        // The seller signs, but the signature does not check out against payee.
+        let mut bad = anchor_request(EvidenceMode::Direct);
+        bad.payee = addr(&seller.address().to_string());
+        bad.seller_signature = Some(sign_as(&impostor, &bad, 8453));
+
+        assert_eq!(
+            svc.anchor(bad, 8453, 1_100).await.unwrap_err(),
+            Dx402ErrorCode::Dx402SignatureNotVerified,
+            "the reason it could not supersede is the signature, not a duplicate"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rejected_signature_is_visible_on_the_very_first_anchor() {
+        // The quieter half of the same bug: with no prior record the anchor
+        // SUCCEEDS, so a seller signing the wrong digest form got a 201 that
+        // looked perfect while its anchor stayed provisional forever. It should
+        // not take a collision -- which may never come -- to find that out.
+        let svc = Dx402Service::in_memory(PrivateKeySigner::random());
+        let seller = PrivateKeySigner::random();
+        let impostor = PrivateKeySigner::random();
+
+        let mut bad = anchor_request(EvidenceMode::Direct);
+        bad.payee = addr(&seller.address().to_string());
+        bad.seller_signature = Some(sign_as(&impostor, &bad, 8453));
+
+        let out = svc.anchor(bad, 8453, 1_000).await.expect("still anchors");
+        assert!(
+            !out.verified,
+            "a 201 must not hide that the signature was rejected"
+        );
+
+        // And durability is NOT sacrificed to make the point: the evidence is
+        // recorded, so a seller-side signing bug never costs the buyer its copy.
+        assert!(svc.lookup(&out.payment_id, 1_000).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_good_signature_reports_verified_on_the_response() {
+        let svc = Dx402Service::in_memory(PrivateKeySigner::random());
+        let seller = PrivateKeySigner::random();
+
+        let mut real = anchor_request(EvidenceMode::Direct);
+        real.payee = addr(&seller.address().to_string());
+        real.seller_signature = Some(sign_as(&seller, &real, 8453));
+
+        assert!(svc.anchor(real, 8453, 1_000).await.unwrap().verified);
     }
 
     #[tokio::test]

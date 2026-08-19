@@ -59,6 +59,10 @@ fn error_response(code: Dx402ErrorCode) -> axum::response::Response {
         // 409: the request is well-formed, it just lost the race. A retry will
         // not help, so this must not read as a transient failure.
         Dx402ErrorCode::Dx402AlreadyAnchored => StatusCode::CONFLICT,
+        // 422: the request is well-formed and the payment may be perfectly
+        // real; what failed is the proof of authorship. Distinct from 409 so
+        // the caller looks at its signature rather than at its idempotency.
+        Dx402ErrorCode::Dx402SignatureNotVerified => StatusCode::UNPROCESSABLE_ENTITY,
         Dx402ErrorCode::Dx402StoreUnavailable => StatusCode::SERVICE_UNAVAILABLE,
     };
     (
@@ -113,6 +117,10 @@ pub async fn get_evidence(
                 "retentionUntil": record.retention_until,
                 "receipt": record.signature,
                 "receiptSigner": svc.receipt_signer().to_string(),
+                // Whether the payee proved this anchor is theirs. A consumer
+                // that treats a provisional record as proof of who produced the
+                // artifact is trusting a claim anyone could have made.
+                "verified": record.verified,
             })),
         )
             .into_response(),

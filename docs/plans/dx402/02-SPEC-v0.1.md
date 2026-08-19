@@ -227,6 +227,21 @@ signer. A nonce is consumed on first successful use.
 | `dx402_direct_mode` | `/recover` called for a `direct`-mode payment (no key held) |
 | `dx402_evidence_expired` | Past `retentionUntil` |
 | `dx402_store_unavailable` | Backend unreachable (retryable) |
+| `dx402_proof_rejected` | The anchor gate refused it: no proof, a proof that did not check out, or evidence sealed to somebody who did not pay (402) |
+| `dx402_already_anchored` | This payment already has evidence and the incoming anchor is not more authoritative (409) |
+| `dx402_signature_not_verified` | A `sellerSignature` was supplied and did not verify against the payee, so it could not supersede the record holding this payment (422) |
+
+An implementation MUST NOT answer `dx402_already_anchored` when a
+`sellerSignature` was supplied and failed to verify. Both statements are true,
+but only the second names the cause, and the first is *plausible* — it sends the
+integrator to audit idempotency, where suspects always exist, and never to the
+signature. A correct error that explains the wrong thing costs more than a vague
+one.
+
+An implementation MUST NOT refuse to anchor solely because a supplied
+`sellerSignature` did not verify. If nothing else holds the slot the record is
+written **provisionally**, so a seller-side signing bug never costs the buyer its
+evidence. `verified: false` on the response is how the seller learns.
 
 `dx402_store_unavailable` is retryable and MUST carry `"retryable": true`.
 Following the rule established for `/identity/:network/owner/:address`, callers

@@ -151,6 +151,28 @@ mod tests {
         DurablePointer, EvidenceMode, KeyAlg, Retention, SkipReason, StorageBackend, DX402_VERSION,
     };
 
+    #[test]
+    fn evidence_emitted_before_verified_existed_still_parses() {
+        // `X-Durable-Evidence` headers are already in the wild without this
+        // field. A buyer on a newer SDK must keep being able to open evidence a
+        // seller anchored before it existed, and an absent field must read as
+        // "not proven" -- never as verified.
+        let old = serde_json::json!({
+            "v": 1,
+            "paymentId": "0xabc",
+            "pointer": "s3+https://example.test/blob/0xabc",
+            "backend": "s3",
+            "contentHash": "0xdef",
+            "cipher": "AES-256-GCM",
+            "keyAlg": "ECIES-secp256k1",
+            "mode": "direct",
+            "retention": "90d"
+        });
+        let parsed: AnchoredEvidence =
+            serde_json::from_value(old).expect("old evidence must still parse");
+        assert!(!parsed.verified);
+    }
+
     fn anchored(content_hash: String) -> AnchoredEvidence {
         AnchoredEvidence {
             v: DX402_VERSION,
@@ -163,6 +185,7 @@ mod tests {
             mode: EvidenceMode::Direct,
             retention: Retention::Days90,
             receipt: None,
+            verified: false,
         }
     }
 

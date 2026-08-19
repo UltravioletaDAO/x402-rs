@@ -1,5 +1,71 @@
 # Changelog
 
+## [1.84.0] - 2026-08-19
+
+Two criticals from an adversarial audit of the v1.82.0/v1.83.0 anchor fixes.
+Both were introduced by those fixes, and both were found by attacking them
+rather than by re-reading them.
+
+### Finality was self-asserted
+
+`verified` — the flag that makes an anchor record unsupersedable — was decided by
+checking `sellerSignature` against `req.payee`, **a field the HTTP caller
+supplies**. So proving "I control the address I typed into my own request" was
+enough to own a stranger's evidence permanently. `paymentId` is
+`keccak256(caip2 || txHash)` over public data, so any observer of a settlement
+can compute it, front-run the seller, and — worse than the v1.79 hijack v1.82.0
+was written to fix — *supersede* the real seller's record.
+
+The fix separates two questions that were collapsed into one flag, and ranks
+them:
+
+| rung | means | may supersede |
+|---|---|---|
+| 2 `verified` | the **chain** says this address is the payee | anything below |
+| 1 `signed` | the claimant committed to an identity it controls | rung 0 only |
+| 0 | anonymous claim | an empty slot only |
+
+Equal rungs never overwrite each other — the anti-replay still holds, first
+writer keeps the slot. `verified` now comes only from the gate, which checks the
+signature against `facts.payee` read off-chain.
+
+**This changes what `verified` reports.** An anchor with a valid
+`sellerSignature` but no `proofOfPayment` now answers `verified: false`,
+`signed: true`, `notVerifiedReason: "proof_missing"` — where before it answered
+`verified: true`. Nothing breaks: the anchor still lands, still holds the slot,
+still decrypts. It simply stops claiming an authorship nobody checked. Send
+`proofOfPayment` to reach rung 2.
+
+The DynamoDB condition was also wrong in a way the in-memory tests could not
+see: it tested `verified = :f`, and every item written before the attribute
+existed **lacks** it, where a comparison against a missing attribute is false.
+The rule refused to supersede exactly the legacy records that most needed it.
+Now guarded with `attribute_not_exists` on each flag.
+
+### An oversized paid response was delivered empty
+
+When the body exceeded `max_body_bytes`, the hook returned the original response
+parts with `Body::empty()`. With `settle_after_execution` the payment has
+**already settled** and the authorization nonce is spent, so the buyer was
+charged and received a 200 with zero bytes, unrecoverably.
+
+`buffer_body` now returns a `BufferedBody` that always carries something
+deliverable. It also asks `size_hint()` first: a body that announces it is over
+the limit is passed through untouched instead of being collected into memory to
+be measured — which made a multi-gigabyte download an OOM of the 2 GB task
+rather than a skip.
+
+Skipping evidence must never change the bytes the buyer receives.
+
+### Also
+
+A refused duplicate could destroy the evidence it lost to: the `sealed` blob was
+uploaded to the paymentId-keyed S3 object **before** the anti-replay decided,
+and the bucket has versioning disabled. An anonymous caller could POST an
+already-anchored paymentId with garbage, irreversibly overwrite the real
+ciphertext, and receive a tidy 409 as if nothing had happened. The slot is now
+reserved before any bytes are written.
+
 ## [1.83.0] - 2026-08-19
 
 ### The 409 that pointed at the wrong thing

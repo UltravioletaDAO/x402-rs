@@ -121,6 +121,9 @@ pub async fn get_evidence(
                 // that treats a provisional record as proof of who produced the
                 // artifact is trusting a claim anyone could have made.
                 "verified": record.verified,
+                // The rung below `verified`: the claimant committed to an
+                // identity, but no chain confirmed it is the payee.
+                "signed": record.signed,
             })),
         )
             .into_response(),

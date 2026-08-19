@@ -68,6 +68,24 @@ pub trait EvidenceSink: Send + Sync + std::fmt::Debug {
     async fn put(&self, payment_id: &str, blob: &[u8]) -> Result<DurablePointer, String>;
 }
 
+/// How long evidence work may hold a paid response hostage.
+///
+/// Unbounded, a facilitator or sink that accepts a connection and then stalls
+/// blocks the buyer's already-settled response for as long as it stalls. DX402
+/// is an addition to the payment path and must never be a gate in front of it:
+/// a slow anchor has to cost the receipt, never the delivery.
+const EVIDENCE_HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+fn evidence_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(EVIDENCE_HTTP_TIMEOUT)
+        .connect_timeout(std::time::Duration::from_secs(3))
+        .build()
+        // A builder failure means no TLS backend; the default client is still
+        // better than panicking inside a payment path.
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
 /// Writes evidence with an HTTP `PUT`, which covers presigned S3 URLs, most IPFS
 /// pinning gateways, and any plain object store.
 #[derive(Debug, Clone)]
@@ -81,7 +99,7 @@ pub struct HttpPutSink {
 impl HttpPutSink {
     pub fn new(base: impl Into<String>) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: evidence_http_client(),
             base: base.into().trim_end_matches('/').to_string(),
             bearer: None,
         }
@@ -185,7 +203,7 @@ impl DurableEvidenceHook {
             config,
             sink,
             facilitator_base: facilitator_base.into().trim_end_matches('/').to_string(),
-            client: reqwest::Client::new(),
+            client: evidence_http_client(),
             anchor_signer: None,
         }
     }

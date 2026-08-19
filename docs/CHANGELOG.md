@@ -1,5 +1,32 @@
 # Changelog
 
+## [1.85.0] - 2026-08-19
+
+### The proof did not have to be a proof of THIS payment
+
+`verify_anchor` read the payment facts off the chain and then certified a
+`paymentId` that had nothing to do with them. A real payment proves a real
+payment; it does not prove *which* payment the claim is about.
+
+So the fix shipped one version earlier was defeated by anyone willing to spend
+one wei: send yourself a token, obtain a perfectly valid `proofOfPayment` where
+payer and payee are both you, and present it against a stranger's `paymentId`.
+Every remaining check passes — the payer matches what you sealed to (yourself),
+and your signature is over the payee the chain reports (yourself) — so the claim
+reaches the FINAL rung and locks the real seller out permanently.
+
+`paymentId` is a pure function of `(network, txHash)`, so binding it is one
+comparison. It runs before any RPC call, because a definite rejection must never
+be masked as `RpcUnavailable`, the verdict that never blocks. New verdict:
+`dx402_payment_id_not_bound`, enforceable.
+
+### Evidence work can no longer hold a paid response hostage
+
+Both HTTP clients in the seller hook were `reqwest::Client::new()` — no timeout.
+A facilitator or sink that accepts the connection and then stalls blocked the
+buyer's already-settled response for as long as it stalled. Now 10s total, 3s
+connect. A slow anchor costs the receipt, never the delivery.
+
 ## [1.84.0] - 2026-08-19
 
 Two criticals from an adversarial audit of the v1.82.0/v1.83.0 anchor fixes.

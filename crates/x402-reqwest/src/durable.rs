@@ -186,6 +186,8 @@ mod tests {
             retention: Retention::Days90,
             receipt: None,
             verified: false,
+            signed: false,
+            not_verified_reason: None,
         }
     }
 

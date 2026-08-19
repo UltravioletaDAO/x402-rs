@@ -29,6 +29,9 @@ async-trait = { version = "0.1" }
 base64 = { version = "0.22" }
 bytes = { version = "1" }
 http-body-util = { version = "0.1" }
+# for Body::size_hint: lets an oversized body be passed through
+# untouched instead of being buffered whole just to be measured.
+http-body = { version = "1.0" }
 alloy = { version = "1.0.12", features = ["signer-local"] }  # signs the anchor authorization
 
 # Telemetry

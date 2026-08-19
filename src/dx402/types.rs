@@ -282,6 +282,24 @@ pub struct AnchoredEvidence {
     /// safe direction -- it never upgrades an old claim to verified.
     #[serde(default)]
     pub verified: bool,
+    /// Why finality was not granted, when it was not.
+    ///
+    /// Carried so a seller learns on the FIRST anchor instead of discovering it
+    /// through a collision that may never come. `proof_missing` is the common
+    /// one: without a `proofOfPayment` the gate reaches no conclusion, so the
+    /// anchor is provisional -- it holds the slot and decrypts, it just does not
+    /// claim an authorship nobody checked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_verified_reason: Option<String>,
+    /// Whether the claimant proved it controls the address it declared as payee.
+    ///
+    /// The rung below [`Self::verified`], reported separately so a seller can
+    /// tell "my signature was accepted, the chain half just is not available on
+    /// this network" from "my signature was rejected". Collapsing them would
+    /// make a correct signature look like a failed one everywhere the gate
+    /// cannot read a receipt -- which is every non-EVM family today.
+    #[serde(default)]
+    pub signed: bool,
 }
 
 /// The notarised claim the facilitator signs.

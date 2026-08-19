@@ -15230,6 +15230,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "http 1.4.0",
+ "http-body 1.0.1",
  "http-body-util",
  "k256 0.13.4",
  "once_cell",

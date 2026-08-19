@@ -63,7 +63,9 @@
 
 use axum_core::body::Body;
 
-use crate::durable::{buffer_body, encode_header, DurableEvidenceHook, SettledContext};
+use crate::durable::{
+    buffer_body, encode_header, BufferedBody, DurableEvidenceHook, SettledContext,
+};
 use axum_core::{
     extract::Request,
     response::{IntoResponse, Response},
@@ -933,14 +935,16 @@ where
         let (parts, body) = response.into_parts();
         let limit = hook.config().max_body_bytes;
 
+        // Skipping evidence must never change the bytes the buyer receives. The
+        // settlement already happened (`settle_after_execution`), so returning an
+        // empty body here would charge for goods and then deliver nothing --
+        // unrecoverably, since the authorization nonce is spent.
         let bytes = match buffer_body(body, limit).await {
-            Ok(bytes) => bytes,
-            Err(reason) => {
-                // The body was consumed to discover it was too large. It cannot
-                // be replayed, so this is reported rather than silently dropped.
+            BufferedBody::Ready(bytes) => bytes,
+            BufferedBody::Skip { body, reason } => {
                 let evidence = DurableEvidence::skipped(reason);
                 let header = encode_header(&evidence).and_then(|v| HeaderValue::from_str(&v).ok());
-                return (Response::from_parts(parts, Body::empty()), header);
+                return (Response::from_parts(parts, body), header);
             }
         };
 

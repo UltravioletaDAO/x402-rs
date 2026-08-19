@@ -295,7 +295,8 @@ impl Dx402Service {
         // The gate. Phase 1 (`DX402_REQUIRE_PROOF=false`, the default) verifies
         // and reports; phase 2 rejects. Two verdicts never block in either
         // phase -- see `AnchorRejection::is_enforceable`.
-        if let Some(rejection) = self.evaluate_gate(&req).await {
+        let gate_verdict = self.evaluate_gate(&req).await;
+        if let Some(rejection) = gate_verdict.as_ref() {
             let enforced = super::gate::require_proof() && rejection.is_enforceable();
             if enforced {
                 warn!(
@@ -313,21 +314,16 @@ impl Dx402Service {
             );
         }
 
-        // Does the payee prove this anchor is theirs?
+        // Two different questions, deliberately kept apart. Collapsing them is
+        // what produced the critical below.
         //
-        // Deliberately NOT behind `DX402_REQUIRE_PROOF`. That flag phases in the
-        // ON-CHAIN half of the gate, which needs an RPC and cannot run on every
-        // family. This half needs neither -- it is a signature check -- so it
-        // can be enforced from day one, and it has to be: the paymentId claim it
-        // guards is permanent.
-        //
-        // The signature covers the pointer the SELLER supplied, or the empty
-        // string when they sent `sealed` and the facilitator issues the pointer
-        // itself. The seller cannot sign a value it has not seen, and in that
-        // case the pointer is derived from the paymentId anyway, which is
-        // already covered.
+        // 1. DIAGNOSTIC: does the signature match the payee the CALLER declared?
+        //    This tells a seller its digest form is right (the forms differ by
+        //    payee curve, and signing the wrong one produces a signature that
+        //    never verifies with no error). It proves NOTHING about authorship,
+        //    because the caller also chose `req.payee`.
         let signed_pointer = req.pointer.as_ref().map(|p| p.as_str()).unwrap_or("");
-        let verified = match (
+        let signature_matches_declared_payee = match (
             req.seller_signature.as_deref(),
             req.payment_id.parse::<alloy::primitives::B256>(),
             req.content_hash.parse::<alloy::primitives::B256>(),
@@ -344,25 +340,55 @@ impl Dx402Service {
             }
             _ => false,
         };
+
+        // 2. FINALITY: `verified` makes a record unsupersedable, so it may only
+        //    come from the gate, which checks the signature against the payee it
+        //    read OFF THE CHAIN.
+        //
+        //    This used to be question 1's answer. That made finality
+        //    self-asserted: proving "I control the address I typed into my own
+        //    request" was enough. Any observer of a settlement can compute the
+        //    paymentId (keccak256(caip2 || txHash), all public), declare its own
+        //    address as payee, sign with its own key, and permanently own a
+        //    stranger's evidence slot -- and, worse than the hijack v1.82.0 was
+        //    written to fix, SUPERSEDE the real seller's record. Found by an
+        //    audit of that very fix, 2026-08-19.
+        let verified = gate_verdict.is_none();
+
+        // Say WHY when we did not certify it. Silence here is how the wrong
+        // digest form stayed invisible for two releases: a 201 that looks
+        // perfect while the anchor is provisional forever.
+        let not_verified_reason = gate_verdict.as_ref().map(|r| r.as_str().to_string());
+
         if !verified {
             warn!(
                 payment_id = %req.payment_id,
-                "DX402 anchor is PROVISIONAL: the payee did not prove it is theirs. \
-                 A signed anchor for this payment will supersede it."
+                verdict = gate_verdict.as_ref().map(|r| r.as_str()).unwrap_or("none"),
+                signature_matches_declared_payee,
+                "DX402 anchor is PROVISIONAL: authorship was not proven against the chain. \
+                 A gate-verified anchor for this payment will supersede it."
             );
         }
 
         let retention_until = req.retention.until(now);
 
-        // Host the blob ourselves when the seller sends one. This is what lets a
-        // resource server produce evidence without operating any storage at all:
-        // one HTTP call, no bucket, no credentials, no public object store of
-        // their own to misconfigure.
+        // Decode the blob but do NOT write it yet.
         //
-        // Storing ciphertext does not make us a custodian. In `direct` mode the
-        // bytes are sealed to the payer and we cannot read them.
-        let pointer = match (&req.sealed, &req.pointer) {
-            (Some(encoded), _) => {
+        // The write order here is load-bearing. `put_object` is unconditional,
+        // the bucket has versioning deliberately Disabled (a retention promise
+        // that keeps noncurrent versions is not a retention promise), and the
+        // key is derived from `paymentId` -- which is keccak256 over public
+        // data. Uploading before the registry decides meant any anonymous
+        // caller could POST an already-anchored paymentId with garbage,
+        // irreversibly destroy the real ciphertext, and receive a tidy 409 as
+        // if nothing had happened. The bytes were gone, the recorded
+        // contentHash could never be reproduced again, and the retention tag
+        // had been rewritten too. Found by an audit, 2026-08-19.
+        //
+        // So: decode (cheap, no side effect), reserve the slot, and only the
+        // caller that actually won it gets to write bytes.
+        let sealed_blob = match &req.sealed {
+            Some(encoded) => {
                 use base64::Engine as _;
                 let blob = base64::engine::general_purpose::STANDARD
                     .decode(encoded)
@@ -373,15 +399,15 @@ impl Dx402Service {
                         warn!(error = %e, payment_id = %req.payment_id, "DX402 sealed blob is not base64");
                         Dx402ErrorCode::Dx402StoreUnavailable
                     })?;
-
-                self.store
-                    .put(&req.payment_id, &blob, req.retention)
-                    .await
-                    .map_err(|e| {
-                        warn!(error = %e, payment_id = %req.payment_id, "DX402 blob upload failed");
-                        Dx402ErrorCode::Dx402StoreUnavailable
-                    })?
+                Some(blob)
             }
+            None => None,
+        };
+
+        // The pointer is known before the upload: for a blob we host, it is
+        // derived from the paymentId, so the record can be written first.
+        let pointer = match (&sealed_blob, &req.pointer) {
+            (Some(_), _) => self.store.pointer_for_payment(&req.payment_id),
             (None, Some(p)) => p.clone(),
             (None, None) => {
                 warn!(
@@ -423,6 +449,7 @@ impl Dx402Service {
             receipt: receipt_body,
             signature: signature.clone(),
             verified,
+            signed: signature_matches_declared_payee,
             // Only carried in `escrowed` mode. In `direct` mode this stays None,
             // which is what makes a leak of the index harmless.
             wrapped_cek: match req.mode {
@@ -431,7 +458,8 @@ impl Dx402Service {
             },
         };
 
-        let signed_but_unverified = req.seller_signature.is_some() && !verified;
+        let signed_but_unverified =
+            req.seller_signature.is_some() && !signature_matches_declared_payee;
         self.registry.put(&record).await.map_err(|e| match e {
             // Losing to an existing record has two causes that do not look
             // alike, and answering both with "already anchored" points the
@@ -458,6 +486,24 @@ impl Dx402Service {
             }
         })?;
 
+        // Slot won -- now, and only now, write the bytes. A caller that did not
+        // earn the slot never reaches this line, so it cannot overwrite evidence
+        // it does not own.
+        //
+        // If this upload fails the record exists with no blob behind it:
+        // `/dx402/blob` will 404 for that payment. That is a visible, honest
+        // degradation, and strictly better than the alternative it replaces --
+        // silently destroying somebody else's ciphertext.
+        if let Some(blob) = sealed_blob {
+            self.store
+                .put(&req.payment_id, &blob, req.retention)
+                .await
+                .map_err(|e| {
+                    warn!(error = %e, payment_id = %req.payment_id, "DX402 blob upload failed after the slot was reserved");
+                    Dx402ErrorCode::Dx402StoreUnavailable
+                })?;
+        }
+
         Ok(AnchoredEvidence {
             v: DX402_VERSION,
             payment_id: req.payment_id,
@@ -470,6 +516,8 @@ impl Dx402Service {
             retention: req.retention,
             receipt: Some(signature),
             verified,
+            not_verified_reason,
+            signed: signature_matches_declared_payee,
         })
     }
 
@@ -551,6 +599,7 @@ mod tests {
     use super::*;
     use crate::dx402::types::{DurablePointer, KeyAlg};
     use crate::network::Network;
+    use base64::Engine as _;
 
     fn addr(s: &str) -> crate::types::MixedAddress {
         serde_json::from_value(serde_json::Value::String(s.to_string())).unwrap()
@@ -735,8 +784,49 @@ mod tests {
 
         // The seller's content is what survives, not the attacker's.
         let record = svc.lookup(&out.payment_id, 1_100).await.unwrap();
-        assert!(record.verified);
+        assert_eq!(
+            record.authority(),
+            1,
+            "a signature outranks an anonymous claim -- without certifying authorship"
+        );
         assert_eq!(record.content_hash, real.content_hash);
+    }
+
+    #[tokio::test]
+    async fn an_attacker_cannot_self_sign_a_final_anchor_for_someone_elses_payment() {
+        // `paymentId` is keccak256 over public data, so any observer of a
+        // settlement can compute it and race the seller. What must NOT happen is
+        // that racing + signing produces a FINAL record: a signature over a
+        // caller-supplied `payee` proves only "I control the address I typed
+        // into my own request".
+        //
+        // Before the fix this recorded `verified = true`, which nothing may
+        // supersede -- so an observer owned a stranger's evidence permanently,
+        // and the real seller got a 409 forever.
+        let svc = Dx402Service::in_memory(PrivateKeySigner::random());
+        let mallory = PrivateKeySigner::random();
+
+        let mut hijack = anchor_request(EvidenceMode::Direct);
+        hijack.payee = addr(&mallory.address().to_string());
+        hijack.content_hash = format!("0x{}", "ee".repeat(32));
+        hijack.seller_signature = Some(sign_as(&mallory, &hijack, 8453));
+        let out = svc.anchor(hijack, 8453, 1_000).await.expect("it lands");
+
+        // It holds the slot -- but only at the rank it actually earned.
+        assert!(
+            !out.verified,
+            "self-signing one's own declared payee must never certify authorship"
+        );
+        let record = svc.lookup(&out.payment_id, 1_000).await.unwrap();
+        assert_eq!(
+            record.authority(),
+            1,
+            "identity-committed, not chain-checked"
+        );
+        assert!(
+            record.authority() < 2,
+            "a self-signed claim must stay supersedable by a chain-verified one"
+        );
     }
 
     #[tokio::test]
@@ -820,7 +910,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_good_signature_reports_verified_on_the_response() {
+    async fn a_good_signature_is_reported_as_signed_but_not_chain_verified() {
         let svc = Dx402Service::in_memory(PrivateKeySigner::random());
         let seller = PrivateKeySigner::random();
 
@@ -828,7 +918,61 @@ mod tests {
         real.payee = addr(&seller.address().to_string());
         real.seller_signature = Some(sign_as(&seller, &real, 8453));
 
-        assert!(svc.anchor(real, 8453, 1_000).await.unwrap().verified);
+        // `verified` means the CHAIN says so. A signature over a self-declared
+        // payee cannot reach that rung, and reporting that it did is what made
+        // the hijack final.
+        let out = svc.anchor(real, 8453, 1_000).await.unwrap();
+        assert!(
+            !out.verified,
+            "no proofOfPayment -> the gate reached no verdict"
+        );
+        assert_eq!(
+            svc.lookup(&out.payment_id, 1_000)
+                .await
+                .unwrap()
+                .authority(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_duplicate_cannot_destroy_the_evidence_it_lost_to() {
+        // The blob used to be uploaded BEFORE the anti-replay check, to a key
+        // derived from the (public) paymentId, in a bucket with versioning
+        // deliberately off. So a duplicate got its 409 -- after irreversibly
+        // overwriting the real ciphertext with whatever it sent.
+        use base64::Engine as _;
+        let svc = Dx402Service::in_memory(PrivateKeySigner::random());
+        let real_blob = b"DX402\x01\x01the-sellers-actual-sealed-envelope";
+
+        let real = AnchorRequest {
+            pointer: None,
+            sealed: Some(base64::engine::general_purpose::STANDARD.encode(real_blob)),
+            ..anchor_request(EvidenceMode::Direct)
+        };
+        let out = svc.anchor(real, 8453, 1_000).await.unwrap();
+        assert_eq!(
+            svc.fetch_sealed(&out.payment_id, 1_000).await.unwrap(),
+            real_blob,
+            "precondition: the seller's bytes are stored"
+        );
+
+        // Mallory sends junk for the same, publicly derivable, paymentId.
+        let junk = AnchorRequest {
+            pointer: None,
+            sealed: Some(base64::engine::general_purpose::STANDARD.encode(b"destroyed")),
+            ..anchor_request(EvidenceMode::Direct)
+        };
+        assert!(
+            svc.anchor(junk, 8453, 1_100).await.is_err(),
+            "the duplicate must be refused"
+        );
+
+        assert_eq!(
+            svc.fetch_sealed(&out.payment_id, 1_100).await.unwrap(),
+            real_blob,
+            "a refused anchor must not have touched the stored bytes"
+        );
     }
 
     #[tokio::test]

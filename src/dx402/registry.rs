@@ -33,6 +33,24 @@ pub enum RegistryError {
     AlreadyAnchored,
 }
 
+impl EvidenceRecord {
+    /// How much this record proved, as a rank. Only a strictly higher rank may
+    /// supersede: equal ranks are indistinguishable claims, and there the
+    /// anti-replay holds -- first writer keeps the slot.
+    ///
+    /// 2 = the chain says this is the payee. 1 = the claimant committed to an
+    /// identity. 0 = anyone could have written this.
+    pub fn authority(&self) -> u8 {
+        if self.verified {
+            2
+        } else if self.signed {
+            1
+        } else {
+            0
+        }
+    }
+}
+
 impl RegistryError {
     pub fn is_retryable(&self) -> bool {
         matches!(self, RegistryError::Unavailable(_))
@@ -74,6 +92,21 @@ pub struct EvidenceRecord {
     /// against production.
     #[serde(default)]
     pub verified: bool,
+    /// Whether the claimant proved, by signature, that it controls the address
+    /// it *declared* as payee.
+    ///
+    /// Strictly weaker than [`Self::verified`], and the distinction is the whole
+    /// point: a signature over a caller-supplied `payee` proves only "I control
+    /// the address I typed into my own request". That is not authorship -- but
+    /// it is not nothing either, because it commits the claimant to an identity.
+    /// So it ranks above an anonymous claim and below a chain-checked one.
+    ///
+    /// Collapsing these two into one flag is what let an observer of any
+    /// settlement own a stranger's evidence slot permanently: `paymentId` is
+    /// public, so it could front-run the seller, declare its own address, sign,
+    /// and be recorded as FINAL. Found by an audit 2026-08-19.
+    #[serde(default)]
+    pub signed: bool,
 }
 
 impl EvidenceRecord {
@@ -108,11 +141,10 @@ impl MemoryEvidenceRegistry {
 impl EvidenceRegistry for MemoryEvidenceRegistry {
     async fn put(&self, record: &EvidenceRecord) -> Result<(), RegistryError> {
         let mut inner = self.inner.lock().expect("poisoned");
-        // A provisional claim never locks out the seller who can prove the
-        // anchor is theirs. See `EvidenceRecord::verified`.
+        // A weaker claim never locks out one that proved more.
+        // See `EvidenceRecord::authority`.
         if let Some(existing) = inner.get(&record.payment_id) {
-            let supersedes = record.verified && !existing.verified;
-            if !supersedes {
+            if record.authority() <= existing.authority() {
                 return Err(RegistryError::AlreadyAnchored);
             }
         }
@@ -191,11 +223,28 @@ impl EvidenceRegistry for DynamoEvidenceRegistry {
         // whoever anchored first owned the evidence forever, and the legitimate
         // seller got a permanent 409 while the attacker's artifact was the one
         // that existed in a dispute.
-        req = if record.verified {
-            req.condition_expression("attribute_not_exists(payment_id) OR verified = :f")
-                .expression_attribute_values(":f", AttributeValue::Bool(false))
-        } else {
-            req.condition_expression("attribute_not_exists(payment_id)")
+        //
+        // `attribute_not_exists` on each flag is load-bearing, not defensive:
+        // every item written before these flags existed LACKS them, and in
+        // DynamoDB a comparison against a missing attribute is false. Testing
+        // only `verified = :f` therefore refused to supersede exactly the
+        // legacy records that most needed it -- the rule would have read as
+        // working in the in-memory tests and done nothing against the table.
+        let unverified = "(attribute_not_exists(verified) OR verified = :f)";
+        let unsigned = "(attribute_not_exists(signed) OR signed = :f)";
+        req = match record.authority() {
+            // Chain-checked: may take the slot from anything not chain-checked.
+            2 => req
+                .condition_expression(format!("attribute_not_exists(payment_id) OR {unverified}"))
+                .expression_attribute_values(":f", AttributeValue::Bool(false)),
+            // Identity-committed: may take it only from an anonymous claim.
+            1 => req
+                .condition_expression(format!(
+                    "attribute_not_exists(payment_id) OR ({unverified} AND {unsigned})"
+                ))
+                .expression_attribute_values(":f", AttributeValue::Bool(false)),
+            // Anonymous: may only take an empty slot.
+            _ => req.condition_expression("attribute_not_exists(payment_id)"),
         };
 
         // Match the TYPED error, not its Display text. The string form of an AWS
@@ -288,7 +337,61 @@ mod tests {
             signature: "0xsig".into(),
             wrapped_cek: None,
             verified: false,
+            signed: false,
         }
+    }
+
+    #[tokio::test]
+    async fn the_ladder_only_climbs() {
+        // The whole point of ranking instead of a single flag: each rung may
+        // take the slot from a lower one, never from an equal or higher one.
+        let anon = |id: &str| record(id, 10_000);
+        let signed = |id: &str| EvidenceRecord {
+            signed: true,
+            ..record(id, 10_000)
+        };
+        let chain = |id: &str| EvidenceRecord {
+            verified: true,
+            ..record(id, 10_000)
+        };
+
+        // 0 -> 1 -> 2 climbs.
+        let reg = MemoryEvidenceRegistry::new();
+        reg.put(&anon("0xa")).await.unwrap();
+        reg.put(&signed("0xa"))
+            .await
+            .expect("identity beats anonymous");
+        reg.put(&chain("0xa"))
+            .await
+            .expect("the chain beats a self-claim");
+
+        // 2 is final: nothing takes it back.
+        assert!(matches!(
+            reg.put(&signed("0xa")).await,
+            Err(RegistryError::AlreadyAnchored)
+        ));
+        assert!(matches!(
+            reg.put(&anon("0xa")).await,
+            Err(RegistryError::AlreadyAnchored)
+        ));
+
+        // Equal ranks tie to the first writer -- the anti-replay still holds.
+        let reg2 = MemoryEvidenceRegistry::new();
+        reg2.put(&signed("0xb")).await.unwrap();
+        assert!(
+            matches!(
+                reg2.put(&signed("0xb")).await,
+                Err(RegistryError::AlreadyAnchored)
+            ),
+            "two indistinguishable claims must not overwrite each other"
+        );
+
+        // And the hijack that started this: a self-signed squatter is NOT final.
+        let reg3 = MemoryEvidenceRegistry::new();
+        reg3.put(&signed("0xc")).await.unwrap();
+        reg3.put(&chain("0xc"))
+            .await
+            .expect("the real seller, proving it on-chain, reclaims its slot");
     }
 
     #[tokio::test]

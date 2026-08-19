@@ -55,6 +55,12 @@ pub trait EvidenceStore: Send + Sync + std::fmt::Debug {
 
     /// Retrieve the sealed blob a pointer refers to.
     async fn get(&self, pointer: &DurablePointer) -> Result<Vec<u8>, StoreError>;
+
+    /// The pointer this store WOULD issue for `payment_id`, without writing.
+    ///
+    /// Lets the caller reserve the registry slot before uploading any bytes.
+    /// The write order is load-bearing: see the note in `Dx402Service::anchor`.
+    fn pointer_for_payment(&self, payment_id: &str) -> DurablePointer;
 }
 
 /// S3-backed store. The default: no external dependency, no per-file cost, and
@@ -123,6 +129,10 @@ impl S3EvidenceStore {
 
 #[async_trait]
 impl EvidenceStore for S3EvidenceStore {
+    fn pointer_for_payment(&self, payment_id: &str) -> DurablePointer {
+        self.pointer_for(payment_id)
+    }
+
     fn backend(&self) -> StorageBackend {
         StorageBackend::S3
     }
@@ -210,6 +220,10 @@ impl MemoryEvidenceStore {
 
 #[async_trait]
 impl EvidenceStore for MemoryEvidenceStore {
+    fn pointer_for_payment(&self, payment_id: &str) -> DurablePointer {
+        DurablePointer(format!("mem://{payment_id}"))
+    }
+
     fn backend(&self) -> StorageBackend {
         StorageBackend::S3
     }

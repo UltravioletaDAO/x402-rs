@@ -338,21 +338,58 @@ pub const HEADER_NAME: &str = EVIDENCE_HEADER;
 
 /// Buffer a response body into memory.
 ///
-/// Bounded by `limit`: a streaming or very large body is abandoned rather than
-/// buffered, and the caller skips evidence for it. Without this bound a large
-/// download would be held twice in memory purely to produce a receipt.
-pub async fn buffer_body(body: axum_core::body::Body, limit: usize) -> Result<Bytes, SkipReason> {
+/// Bounded by `limit`. Whatever happens, the caller gets back something it can
+/// still deliver: skipping evidence must never change the bytes the buyer
+/// receives. `settle_after_execution` settles BEFORE this runs and the
+/// authorization nonce is spent, so a body dropped here is paid-for goods that
+/// can never be re-fetched.
+pub enum BufferedBody {
+    /// Small enough to hash and seal.
+    Ready(Bytes),
+    /// No evidence for this one -- but here is the body to deliver anyway.
+    Skip {
+        body: axum_core::body::Body,
+        reason: SkipReason,
+    },
+}
+
+pub async fn buffer_body(body: axum_core::body::Body, limit: usize) -> BufferedBody {
+    use http_body::Body as _;
     use http_body_util::BodyExt;
+
+    // Ask before swallowing. A body that ANNOUNCES it is over the limit is
+    // passed through untouched -- never collected. Without this, `collect()`
+    // buffers the whole thing into memory and only then measures it, so a
+    // multi-gigabyte download is an OOM of the 2 GB task rather than a skip.
+    let hint = body.size_hint();
+    let announced_too_big =
+        hint.lower() as usize > limit || hint.upper().is_some_and(|upper| upper as usize > limit);
+    if announced_too_big {
+        return BufferedBody::Skip {
+            body,
+            reason: SkipReason::TooLarge,
+        };
+    }
+
     match body.collect().await {
         Ok(collected) => {
             let bytes = collected.to_bytes();
             if bytes.len() > limit {
-                Err(SkipReason::TooLarge)
+                // A body that under-reported its size. The bytes are already in
+                // hand, so hand them back rather than lose them.
+                BufferedBody::Skip {
+                    body: axum_core::body::Body::from(bytes),
+                    reason: SkipReason::TooLarge,
+                }
             } else {
-                Ok(bytes)
+                BufferedBody::Ready(bytes)
             }
         }
-        Err(_) => Err(SkipReason::AnchorFailed),
+        // The stream itself failed: there is nothing to deliver either way.
+        Err(_) => BufferedBody::Skip {
+            body: axum_core::body::Body::empty(),
+            reason: SkipReason::AnchorFailed,
+        },
     }
 }
 
@@ -495,12 +532,42 @@ mod tests {
     #[tokio::test]
     async fn buffering_respects_the_limit() {
         let body = axum_core::body::Body::from(vec![0u8; 100]);
-        assert_eq!(buffer_body(body, 1000).await.unwrap().len(), 100);
+        match buffer_body(body, 1000).await {
+            BufferedBody::Ready(bytes) => assert_eq!(bytes.len(), 100),
+            BufferedBody::Skip { .. } => panic!("a body under the limit must be sealed"),
+        }
+    }
 
-        let big = axum_core::body::Body::from(vec![0u8; 100]);
-        assert_eq!(
-            buffer_body(big, 10).await.unwrap_err(),
-            SkipReason::TooLarge
-        );
+    #[tokio::test]
+    async fn an_oversized_body_is_still_delivered_in_full() {
+        // The buyer already paid: `settle_after_execution` settles BEFORE the
+        // hook runs and the authorization nonce is spent, so a body dropped
+        // here is paid-for goods that can never be re-fetched. "No evidence"
+        // must never become "no goods".
+        use http_body_util::BodyExt;
+        let big = axum_core::body::Body::from(vec![7u8; 100]);
+        match buffer_body(big, 10).await {
+            BufferedBody::Ready(_) => panic!("must not seal an oversized body"),
+            BufferedBody::Skip { body, reason } => {
+                assert_eq!(reason, SkipReason::TooLarge);
+                let delivered = body.collect().await.unwrap().to_bytes();
+                assert_eq!(delivered.len(), 100, "the oversized body must survive");
+                assert!(delivered.iter().all(|b| *b == 7), "delivered byte-for-byte");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_body_that_announces_it_is_too_big_is_never_buffered() {
+        // The size hint is consulted BEFORE collect(). Without that, a
+        // multi-gigabyte download is held whole in memory just to be measured
+        // and thrown away -- an OOM of the task rather than a skip.
+        use http_body::Body as _;
+        let big = axum_core::body::Body::from(vec![3u8; 4096]);
+        assert_eq!(big.size_hint().upper(), Some(4096), "precondition");
+        match buffer_body(big, 16).await {
+            BufferedBody::Ready(_) => panic!("must not seal"),
+            BufferedBody::Skip { reason, .. } => assert_eq!(reason, SkipReason::TooLarge),
+        }
     }
 }

@@ -185,26 +185,22 @@ pub fn from_algorand_address(address: &str) -> Result<PayerPublicKey, PubKeyErro
     from_ed25519_bytes(&decoded[..32])
 }
 
-/// Minimal RFC 4648 base32 decoder (uppercase alphabet, no padding).
+/// RFC 4648 base32 decode (uppercase alphabet, no padding).
 ///
-/// Hand-rolled rather than pulling a dependency, and kept separate from the
-/// `algorand` cargo feature so evidence works on a build without it.
+/// Delegated to `data-encoding` rather than hand-rolled. That is not only less
+/// code: the hand-written loop never checked that the leftover encoding bits
+/// were zero. An Algorand address is 58 characters = 290 bits carrying a
+/// 36-byte (288-bit) payload, so 2 bits are padding — and silently discarding
+/// them made the address-to-key mapping non-injective, accepting strings that
+/// are not canonical encodings of any address. `BASE32_NOPAD` rejects those.
+/// It rejects a strict superset of what the old decoder rejected, never a
+/// subset, which is the only direction a decoder guarding key material may move.
+///
+/// `data-encoding` is an unconditional dependency, so this still works on a
+/// build without the `algorand` cargo feature — the property the hand-rolled
+/// version existed to preserve.
 fn base32_decode(s: &str) -> Option<Vec<u8>> {
-    const ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-    let mut out = Vec::with_capacity(s.len() * 5 / 8);
-    let mut buffer: u16 = 0;
-    let mut bits: u8 = 0;
-    for ch in s.bytes() {
-        let val = ALPHABET.iter().position(|&c| c == ch)? as u16;
-        buffer = (buffer << 5) | val;
-        bits += 5;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((buffer >> bits) as u8);
-            buffer &= (1 << bits) - 1;
-        }
-    }
-    Some(out)
+    data_encoding::BASE32_NOPAD.decode(s.as_bytes()).ok()
 }
 
 /// Sui and XRPL carry the signer's public key inside the signature envelope
@@ -412,6 +408,29 @@ mod tests {
     fn algorand_rejects_malformed_input() {
         assert!(from_algorand_address("not-base32-at-all!").is_err());
         assert!(from_algorand_address("AAAA").is_err());
+    }
+
+    #[test]
+    fn base32_rejects_a_non_canonical_address() {
+        // 58 base32 chars carry 290 bits for a 36-byte (288-bit) payload, so the
+        // last 2 bits are padding and MUST be zero. The hand-rolled decoder
+        // discarded them without checking, so distinct strings decoded to the
+        // same key and non-addresses were accepted as addresses.
+        let real = "KIMS5H6QLCUDL65L5UBTOXDPWLMTS7N3AAC3I6B2NCONEI5QIVK7LH2C2I";
+        assert!(
+            base32_decode(real).is_some(),
+            "a real address must still decode"
+        );
+        assert_eq!(base32_decode(real).unwrap().len(), 36);
+
+        // Same string with the final character's padding bits set. 'I' -> 'J'
+        // differs only in the low bit, which lands in the discarded padding.
+        let non_canonical = format!("{}J", &real[..real.len() - 1]);
+        assert_ne!(non_canonical, real, "precondition: a different string");
+        assert!(
+            base32_decode(&non_canonical).is_none(),
+            "non-canonical trailing bits must be rejected, not silently dropped"
+        );
     }
 
     #[test]

@@ -2,7 +2,7 @@
 
 **Para:** KarmaKadabra
 **De:** facilitador (x402-rs), 2026-08-19
-**Versiones:** facilitador **1.87.0** · Python **0.58.0** · npm **2.63.0**
+**Versiones:** facilitador **1.87.0** · Python **0.59.0** · npm **2.64.0**
 
 ---
 
@@ -10,7 +10,7 @@
 
 Dos cosas, en orden:
 
-1. **Actualizar a `uvd-x402-sdk` 0.58.0 (PyPI) / 2.63.0 (npm).**
+1. **Actualizar a `uvd-x402-sdk` 0.59.0 (PyPI) / 2.64.0 (npm).**
 2. **Si quieren `verified: true`, ahora hay que mandar `proofOfPayment`.** Antes
    les alcanzaba con la firma. Cambió por una vulnerabilidad crítica, y el SDK
    recién ahora tiene cómo mandarlo.
@@ -160,6 +160,27 @@ cuando no lo es sería peor que un rechazo.
 
 Si el (4) falla, mándennos el `notVerifiedReason` y el hash de la transacción;
 con eso se diagnostica sin adivinar.
+
+---
+
+## 4-bis. Ejemplos que corren, por si prefieren leer código
+
+El README de los dos SDKs no mencionaba DX402 **ni una vez** hasta hoy — y el
+"ejemplo" de la guía era una línea de `import`. Ya no:
+
+| archivo | muestra |
+|---|---|
+| `examples/dx402/seller_anchor.py` | el lado vendedor entero en una llamada |
+| `examples/dx402/buyer_recover.py` | recuperar, detectar manipulación, y que otra wallet NO abre |
+| `examples/dx402/verified_anchor.py` | llegar a `verified: true` con `proof_of_payment` |
+| `examples/dx402/choose_storage.py` | descubrir backends y qué promete cada uno |
+
+Son archivos que la CI **ejecuta**, no bloques de código. Un snippet se pudre en
+silencio; ya nos pasó con la mitad vendedora de este SDK, que estuvo varias
+versiones sin poder importarse desde la raíz del paquete.
+
+Y los README ahora explican `verified` vs `signed`, que es el cambio que más les
+afecta y no estaba escrito en ningún lado.
 
 ---
 

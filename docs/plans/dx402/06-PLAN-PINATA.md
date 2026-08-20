@@ -228,6 +228,31 @@ para cualquier operador que corra este fork es una promesa falsa.
 **Arreglo:** la sección se muestra sólo si `/supported` incluye `durable-evidence`
 en `extensions`. Una condición, sin backend nuevo -- ese campo ya existe.
 
+### Prerrequisito: hoy el anuncio miente cuando la config está a medias
+
+La señal existe y es la correcta: `/supported` arma `extensions` desde
+`Dx402Config::from_env().enabled` (`handlers.rs:1711`), o sea **desde
+`ENABLE_DX402`**. El frontend puede confiar en eso.
+
+Pero las rutas se registran sólo si el *servicio* se construyó
+(`main.rs:588`, `match dx402_service`), y el servicio devuelve `None` si falta el
+bucket, el public base, o si el backend pedido no está implementado. Entonces:
+
+```
+ENABLE_DX402=true + DX402_STORE_BUCKET sin definir
+  -> el servicio es None      -> /dx402/* NO existe
+  -> /supported igual anuncia "durable-evidence"
+```
+
+El comentario en `handlers.rs:1707` dice que existe justamente para no *"anunciar
+una extensión cuyas rutas dan 404"*, y no lo consigue: mira el flag, no el
+servicio. Es cosmético hoy (nuestra config está completa) y deja de serlo en el
+momento en que el frontend se cuelgue de esa señal, que es lo que este plan hace.
+
+**Arreglo, previo a lo del frontend:** anunciar según el servicio exista, no según
+el flag. Con Pinata suma un caso más -- `ENABLE_DX402=true` con la llave de Pinata
+vencida y sin fallback -- así que el problema crece con este trabajo.
+
 ### El cambio de API que lo habilita
 
 `/dx402/stats` hoy devuelve el backend **activo**, no los **disponibles**:
@@ -301,6 +326,55 @@ que hacer nosotros.
 
 ---
 
+## 3-bis. Documentación al cerrar (facilitador y SDKs)
+
+No es un paso opcional al final: es parte del entregable. Enumerado sobre lo que
+**realmente** existe hoy, verificado con grep, no supuesto.
+
+### Facilitador
+
+| archivo | qué cambia |
+|---|---|
+| `docs/DX402.md` | la guía: elección de backend, tabla retención/revocabilidad, y que `public` es irreversible |
+| `docs/plans/dx402/02-SPEC-v0.1.md` | `storage` en `AnchorRequest`, esquemas de puntero (`ipfs+https://` vs `ipfs://`), nuevos códigos de error |
+| `CLAUDE.md` | dice *"only `s3` in v0.1"* -- queda falso el día que Pinata entre |
+| `src/openapi.rs` | 19 menciones de dx402; `/dx402/stats` cambia de forma (`backends[]`) y `/dx402/anchor` gana un campo |
+| `README.md` | 16 menciones; la sección DX402 describe el almacenamiento |
+| `docs/plans/dx402/03-DEPLOY-RUNBOOK.md` | el secreto de Pinata, el barredor de retención, y la alarma del JWT |
+| `docs/CHANGELOG.md` | entrada de la versión |
+| **`.env.example`** | **hoy no tiene NINGUNA variable DX402** -- quien desarrolla local no sabe que existen |
+
+### SDKs — el hueco es peor de lo que parece
+
+**Los README de los dos SDKs no mencionan DX402 ni una sola vez** (verificado:
+0 coincidencias en ambos). Publicamos `anchor_evidence`, `recover_evidence`,
+`seal_evidence`, los helpers de firma y el opt-in entero, y **no está documentado
+en el lugar donde alguien lo buscaría**. Eso no es "actualizar la doc", es
+escribirla por primera vez.
+
+| entregable | contenido mínimo |
+|---|---|
+| README de Python y de TS | sección DX402: lado vendedor en una llamada, lado comprador, y **qué significa `verified` vs `signed`** (cambió en 1.84.0 y no está escrito en ningún README) |
+| docstrings / JSDoc de `anchor_evidence` | el nuevo parámetro `storage`, y que `public` es irreversible |
+| Ambos | que `proofOfPayment` es lo único que llega a `verified: true` |
+| Ambos | tabla de backends y su retención, con el enlace a `/dx402/stats` como fuente viva |
+
+**Regla:** la doc de los SDKs no puede traer una lista de backends escrita a
+mano, por el mismo motivo que la landing. Se documenta *cómo preguntar*
+(`GET /dx402/stats`), no *qué hay* -- porque lo que hay depende del despliegue
+contra el que se hable, y un integrador puede apuntar a un facilitador que no es
+el nuestro.
+
+### Verificación de la doc
+
+- `verify_landing_dx402.py` cubre la landing (§2.6).
+- Para los SDKs: un test que importe los símbolos que el README promete. Es
+  barato y ataca el modo de falla real -- un README que documenta una función
+  que se renombró. Ya nos pasó con la mitad vendedora que no era importable
+  desde la raíz del paquete.
+
+---
+
 ## 4. Criterio de terminado
 
 1. `DX402_STORE_BACKEND=pinata` levanta y ancla.
@@ -322,6 +396,12 @@ que hacer nosotros.
     prometer una función apagada.
 11. `verify_landing_dx402.py` falla si la landing y `/dx402/stats` discrepan, y
     si una cadena i18n existe en un idioma y no en el otro.
+12. `/supported` anuncia `durable-evidence` **sólo si el servicio existe**, no
+    sólo si el flag está: con `ENABLE_DX402=true` y el bucket sin configurar,
+    la extensión NO se anuncia y la landing no muestra la sección.
+13. Los README de ambos SDKs tienen sección DX402, y un test importa cada símbolo
+    que prometen.
+14. `.env.example` documenta todas las variables DX402, incluidas las de Pinata.
 
 ---
 

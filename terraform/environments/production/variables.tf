@@ -172,7 +172,7 @@ variable "image_tag" {
     and cannot change the version by accident.
   EOT
   type        = string
-  default     = "amaranth-broad-whippet-395.mypinata.cloud"
+  default     = ""
 }
 
 variable "enable_dx402" {
@@ -253,5 +253,5 @@ variable "dx402_pinata_gateway" {
     a hostname, and a read still needs a URL only we can sign.
   EOT
   type        = string
-  default     = ""
+  default     = "amaranth-broad-whippet-395.mypinata.cloud"
 }

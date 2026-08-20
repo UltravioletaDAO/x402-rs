@@ -319,6 +319,7 @@ Extender `scripts/verify_landing_canonical.py` (o un hermano
 | 8 | `/dx402/stats` devuelve `backends[]` con `retention`/`revocable`/`public` | es lo que alimenta al frontend Y al vendedor que elige |
 | 9 | Landing: tarjeta "Dónde vive" poblada desde la API + i18n EN/ES + ocultar la sección si la extensión no está | anunciar sólo lo que existe |
 | 10 | `verify_landing_dx402.py` en CI | sin esto la landing vuelve a mentir en dos releases |
+| 11 | Doc + **ejemplos ejecutables** (4 por SDK + el hook en `x402-axum-example`) | hoy el "ejemplo" de py y ts es un `import` sin llamadas |
 
 El paso 6 es el que convierte esto de "implementar un trait" en trabajo de
 verdad: en S3 la expiración la hace una regla del bucket; en Pinata la tenemos
@@ -365,6 +366,57 @@ mano, por el mismo motivo que la landing. Se documenta *cómo preguntar*
 contra el que se hable, y un integrador puede apuntar a un facilitador que no es
 el nuestro.
 
+### Ejemplos: hoy prácticamente no hay
+
+Verificado, no supuesto. `docs/DX402.md` tiene 4 bloques de código:
+
+| bloque | qué muestra de verdad |
+|---|---|
+| Rust (`x402-axum`) | el hook del vendedor -- **es un ejemplo real** |
+| Rust (`x402-reqwest`) | el comprador recuperando -- **es un ejemplo real** |
+| Python | **sólo la línea de `import`** de dos helpers de firma |
+| TypeScript | **sólo la línea de `import`**, dos líneas en total |
+
+Y fuera de la guía:
+
+- `examples/x402-axum-example` existe y tiene **0** uso de DX402: el servidor de
+  referencia no demuestra la función.
+- Los 3 ejemplos del SDK de Python (`fastapi`, `flask`, `lambda`) tienen **0**
+  menciones de DX402.
+- El SDK de TypeScript **no tiene carpeta de ejemplos**.
+
+O sea: para los dos lenguajes que usan los integradores, el "ejemplo" es un
+`import` sin una sola llamada.
+
+### Los 4 ejemplos que hay que escribir
+
+Uno por rol, porque los roles son asimétricos y casi nadie es los dos:
+
+1. **Vendedor, una llamada** (py + ts). `anchor_evidence()` completo: sellar,
+   firmar, postear, y adjuntar `X-Durable-Evidence` a la respuesta. Con el
+   `signer` como **callable**, que es lo que permite firmar desde un custodio.
+2. **Comprador, recuperar meses después** (py + ts). Del hash de transacción al
+   cuerpo en claro, incluyendo la verificación de `contentHash` -- y qué
+   significa que falle.
+3. **Llegar a `verified: true`** (py + ts). Mandar `proofOfPayment`. **Hoy no
+   está documentado en ningún lado**, y sin él nadie pasa del escalón 1.
+4. **Elegir dónde se guarda** (py + ts). Preguntar `GET /dx402/stats`, elegir
+   entre lo que ese despliegue ofrezca, y qué implica `public` (irreversible).
+
+Más uno en Rust: agregar el hook DX402 a `examples/x402-axum-example`, que es el
+servidor que la gente copia.
+
+### Los ejemplos van como archivos que corren, no como snippets
+
+Un bloque fenced se pudre en silencio: nadie lo compila, nadie lo importa, y
+sigue ahí prometiendo una función que se renombró. Ya nos pasó -- la mitad
+vendedora del SDK de Python no era importable desde la raíz del paquete y el
+único modo de descubrirlo fue instalar el paquete publicado en un venv vacío.
+
+Entonces: cada ejemplo es un archivo en `examples/`, la CI **lo ejecuta** contra
+un facilitador de mentira (o al menos importa cada símbolo que usa), y el README
+lo referencia en vez de duplicarlo.
+
 ### Verificación de la doc
 
 - `verify_landing_dx402.py` cubre la landing (§2.6).
@@ -402,6 +454,11 @@ el nuestro.
 13. Los README de ambos SDKs tienen sección DX402, y un test importa cada símbolo
     que prometen.
 14. `.env.example` documenta todas las variables DX402, incluidas las de Pinata.
+15. Los 4 ejemplos por SDK existen como **archivos ejecutables**, la CI los corre
+    (o al menos importa cada símbolo que usan), y el README los referencia en vez
+    de duplicar el código.
+16. `examples/x402-axum-example` usa el hook DX402: el servidor de referencia
+    demuestra la función, no sólo la menciona.
 
 ---
 

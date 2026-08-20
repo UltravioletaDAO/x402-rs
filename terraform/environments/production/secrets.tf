@@ -109,6 +109,20 @@ data "aws_secretsmanager_secret" "dx402_signing_key" {
   name  = "facilitator-dx402-signing-key"
 }
 
+# Pinata credentials for the ipfs storage backend.
+#
+# Looked up only when dx402_storage_backend is "ipfs", so a deployment that never
+# wanted IPFS does not need the secret to exist. The JWT embeds the API key AND
+# secret in its payload, so it is equivalent to full credentials -- it lives here
+# and never in a task-definition environment variable, same rule as the RPC URLs.
+#
+# NOTE: the JWT carries an `exp`. When it expires the failure is SILENT: anchors
+# fall back to S3 and only the logs say so. Watch the expiry.
+data "aws_secretsmanager_secret" "dx402_pinata" {
+  count = var.enable_dx402 && var.dx402_storage_backend == "ipfs" ? 1 : 0
+  name  = "facilitator-dx402-pinata"
+}
+
 # ----------------------------------------------------------------------------
 # RPC URL Secrets (Premium Endpoints)
 # ----------------------------------------------------------------------------
@@ -149,7 +163,8 @@ locals {
   # Admin credential ARNs that need IAM permissions
   admin_secret_arns = concat(
     [data.aws_secretsmanager_secret.erc8004_admin_token.arn],
-    var.enable_dx402 ? [data.aws_secretsmanager_secret.dx402_signing_key[0].arn] : []
+    var.enable_dx402 ? [data.aws_secretsmanager_secret.dx402_signing_key[0].arn] : [],
+    var.enable_dx402 && var.dx402_storage_backend == "ipfs" ? [data.aws_secretsmanager_secret.dx402_pinata[0].arn] : []
   )
 
   # All RPC secret ARNs that need IAM permissions
@@ -344,6 +359,13 @@ locals {
     {
       name      = "DX402_SIGNING_KEY"
       valueFrom = "${data.aws_secretsmanager_secret.dx402_signing_key[0].arn}:private_key::"
+    },
+    ] : [], var.enable_dx402 && var.dx402_storage_backend == "ipfs" ? [
+    {
+      # The JWT alone -- it is what the v3 upload API takes, and its payload
+      # already embeds the api key and secret, so nothing else needs to travel.
+      name      = "DX402_PINATA_JWT"
+      valueFrom = "${data.aws_secretsmanager_secret.dx402_pinata[0].arn}:jwt::"
     },
   ] : [])
 

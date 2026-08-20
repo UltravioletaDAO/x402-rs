@@ -200,3 +200,54 @@ variable "enable_dx402" {
   type        = bool
   default     = true
 }
+
+variable "dx402_storage_backend" {
+  description = <<-EOT
+    Where DX402 anchors sealed evidence: "s3" (default) or "ipfs" (Pinata).
+
+    With "ipfs", Pinata sits IN FRONT of S3 rather than replacing it: an outage
+    costs latency, never the evidence, and the record says where the bytes
+    actually landed. The fallback only ever goes toward the more conservative
+    store -- S3 is private, deletable, and its retention is enforced by a bucket
+    rule -- so it can never turn a revocable promise into an irrevocable one.
+
+    Requires the `facilitator-dx402-pinata` secret to exist.
+  EOT
+  type        = string
+  default     = "s3"
+
+  validation {
+    condition     = contains(["s3", "ipfs"], var.dx402_storage_backend)
+    error_message = "dx402_storage_backend must be \"s3\" or \"ipfs\"."
+  }
+}
+
+variable "dx402_allow_public_ipfs" {
+  description = <<-EOT
+    Whether to OFFER the `ipfs-public` backend at all.
+
+    Off on purpose, and not because of a missing credential. Public IPFS is
+    irreversible: unpinning removes our copy, not the network's, so the
+    `retentionUntil` the facilitator SIGNS stops being true. And the ciphertext
+    that becomes permanent is the BUYER's, who today has no way to consent --
+    that arrives with the `accepts` opt-in.
+
+    Turning this on is a decision about somebody else's data. Read
+    docs/plans/dx402/06-PLAN-PINATA.md before you do.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "dx402_pinata_gateway" {
+  description = <<-EOT
+    The Pinata account's own gateway domain, e.g.
+    "amaranth-broad-whippet-395.mypinata.cloud".
+
+    Required for the ipfs backend: minting a signed URL for a private object
+    against the generic `gateway.pinata.cloud` answers 403. Not a secret -- it is
+    a hostname, and a read still needs a URL only we can sign.
+  EOT
+  type        = string
+  default     = ""
+}

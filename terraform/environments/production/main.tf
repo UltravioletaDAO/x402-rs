@@ -1086,7 +1086,21 @@ resource "aws_ecs_task_definition" "facilitator" {
         },
         {
           name  = "DX402_STORE_BACKEND"
-          value = "s3"
+          value = var.dx402_storage_backend
+        },
+        {
+          # The account's OWN gateway. Signing a private read URL against the
+          # generic gateway.pinata.cloud answers 403, so this is not cosmetic.
+          # Not a secret: it is a hostname, and reads still need a signed URL.
+          name  = "DX402_PINATA_GATEWAY"
+          value = var.dx402_pinata_gateway
+        },
+        {
+          # Offering `ipfs-public` at all. See the variable: it is off because
+          # the data made permanent belongs to the BUYER, not because a
+          # credential is missing.
+          name  = "DX402_ALLOW_PUBLIC_IPFS"
+          value = tostring(var.dx402_allow_public_ipfs)
         },
         {
           name  = "DX402_STORE_BUCKET"

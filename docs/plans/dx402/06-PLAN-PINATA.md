@@ -199,6 +199,86 @@ opt-in por ruta, y elegir permanencia es una decisión explícita del vendedor.
 
 ---
 
+## 2.6 Frontend: anunciar lo que realmente hay
+
+**Regla rectora: la landing no puede tener una lista de backends escrita a mano.**
+Es la misma disciplina que ya impone `scripts/verify_landing_canonical.py` sobre
+el conteo de redes -- una landing que promete algo que el facilitador no ofrece es
+peor que una landing sin esa sección.
+
+### Lo que ya existe (verificado en `static/index.html`)
+
+| pieza | estado |
+|---|---|
+| Sección DX402 con 3 tarjetas (Durable / Private / Coupled) | ya está, ~línea 2515 |
+| Contador vivo `data-live-count="dx402-anchors"` desde `/dx402/stats` | ya está, ~línea 3209 |
+| Degradación suave (si el fetch falla, queda el placeholder) | ya está |
+| i18n EN/ES (128 `data-i18n`, dos diccionarios al final) | ya está |
+| Mención de storage **agnóstica** ("not the storage backend") | ya está -- no hay que corregir nada |
+
+O sea que no hay que construir la sección: hay que **alimentarla**.
+
+### Hueco encontrado al revisar: la landing anuncia DX402 aunque esté apagado
+
+La sección es HTML estático, así que se renderiza siempre. Con `ENABLE_DX402=false`
+(el default del fork), `/dx402/stats` da 404, el contador queda en `—` y la página
+igual promete evidencia durable. Para nosotros es cosmético porque está encendido;
+para cualquier operador que corra este fork es una promesa falsa.
+
+**Arreglo:** la sección se muestra sólo si `/supported` incluye `durable-evidence`
+en `extensions`. Una condición, sin backend nuevo -- ese campo ya existe.
+
+### El cambio de API que lo habilita
+
+`/dx402/stats` hoy devuelve el backend **activo**, no los **disponibles**:
+
+```json
+{"anchored":86, "mode":"90d", "backend":"s3", "receiptSigner":"0x7bC4…"}
+```
+
+Se agrega el allowlist, sin romper el campo actual:
+
+```json
+{"anchored":86, "mode":"90d",
+ "backend":"s3",                                  // el default, se mantiene
+ "backends":[                                     // NUEVO: lo que este despliegue ofrece
+   {"id":"s3",           "retention":"90d", "revocable":true,  "public":false},
+   {"id":"ipfs-private", "retention":"90d", "revocable":true,  "public":false},
+   {"id":"ipfs-public",  "retention":"permanent", "revocable":false, "public":true, "enabled":false}
+ ],
+ "receiptSigner":"0x7bC4…"}
+```
+
+`revocable` y `public` no son decoración: son **la diferencia de producto** que el
+vendedor necesita ver para elegir. Un backend con `enabled:false` se muestra en
+gris con su motivo (hoy `ipfs-public` espera el opt-in del comprador, §2.4).
+
+### Lo que se agrega en la landing
+
+1. Una cuarta tarjeta **"Dónde vive"** en la grilla de DX402, poblada desde
+   `backends`. Cero listas escritas a mano.
+2. Por backend: nombre, retención, y si es **revocable o irreversible**. Esa
+   última es la que le importa a quien decide, y es la que una landing tiende a
+   omitir porque no vende.
+3. Un aviso explícito en `ipfs-public`: *"permanente e irrevocable; ni nosotros lo
+   podemos bajar"*. Si se anuncia permanencia hay que anunciar también que no hay
+   vuelta atrás.
+4. **i18n en los DOS diccionarios** (EN y ES). Es el olvido clásico de esta página.
+5. Degradación suave igual que el contador: si `/dx402/stats` no responde, la
+   tarjeta no aparece -- nunca una lista por defecto inventada.
+
+### Verificación
+
+Extender `scripts/verify_landing_canonical.py` (o un hermano
+`verify_landing_dx402.py`) para que falle si:
+
+- la landing nombra un backend que `/dx402/stats` no lista;
+- `/dx402/stats` lista uno que la landing no sabe renderizar;
+- una cadena i18n existe en EN y falta en ES, o al revés;
+- la sección DX402 se muestra con la extensión ausente de `/supported`.
+
+---
+
 ## 3. Orden de trabajo
 
 | # | qué | por qué en ese orden |
@@ -211,6 +291,9 @@ opt-in por ruta, y elegir permanencia es una decisión explícita del vendedor.
 | 5 | Terraform: leer el secreto, IAM, variable `dx402_storage_backend` | despliegue |
 | 6 | Barredor de retención (borra lo vencido en Pinata privado) | **sin esto, "90d" es mentira en el camino Pinata** |
 | 7 | `scripts/dx402-e2e-check.py` contra el backend Pinata | la verificación real |
+| 8 | `/dx402/stats` devuelve `backends[]` con `retention`/`revocable`/`public` | es lo que alimenta al frontend Y al vendedor que elige |
+| 9 | Landing: tarjeta "Dónde vive" poblada desde la API + i18n EN/ES + ocultar la sección si la extensión no está | anunciar sólo lo que existe |
+| 10 | `verify_landing_dx402.py` en CI | sin esto la landing vuelve a mentir en dos releases |
 
 El paso 6 es el que convierte esto de "implementar un trait" en trabajo de
 verdad: en S3 la expiración la hace una regla del bucket; en Pinata la tenemos
@@ -233,6 +316,12 @@ que hacer nosotros.
    **no** un anclaje silencioso en otro lado.
 8. `/supported` anuncia los backends disponibles, y coincide con lo que el
    facilitador realmente acepta.
+9. La landing muestra los backends **que devuelve la API**, no una lista fija:
+   apagar Pinata y recargar hace desaparecer la opción sin tocar el HTML.
+10. Con `ENABLE_DX402=false` la sección DX402 **no se muestra**, en vez de
+    prometer una función apagada.
+11. `verify_landing_dx402.py` falla si la landing y `/dx402/stats` discrepan, y
+    si una cadena i18n existe en un idioma y no en el otro.
 
 ---
 

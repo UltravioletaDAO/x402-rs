@@ -290,6 +290,7 @@ impl Dx402Service {
             StorageBackend::Ipfs => {
                 match (config.pinata_jwt.clone(), config.pinata_gateway.clone()) {
                     (Some(jwt), Some(gateway)) => {
+                        let public_base_for_sweeper = public_base.clone();
                         use super::store_pinata::{
                             FallbackEvidenceStore, PinataEvidenceStore, PinataNetwork,
                         };
@@ -302,6 +303,18 @@ impl Dx402Service {
                             PinataNetwork::Private,
                         ));
                         info!("DX402 storage: pinata (private) with an s3 fallback");
+                        // Pinata expires nothing on its own. Without this the
+                        // `retentionUntil` in every receipt we sign would never
+                        // come true on this backend.
+                        super::store_pinata::spawn_retention_sweeper(
+                            Arc::new(PinataEvidenceStore::new(
+                                config.pinata_jwt.clone().unwrap_or_default(),
+                                config.pinata_gateway.clone().unwrap_or_default(),
+                                public_base_for_sweeper,
+                                PinataNetwork::Private,
+                            )),
+                            3600,
+                        );
                         Arc::new(FallbackEvidenceStore::new(pinata, s3))
                     }
                     _ => {

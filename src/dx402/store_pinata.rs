@@ -29,7 +29,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use tracing::warn;
 
-use super::store::{EvidenceStore, StoreError};
+use super::store::{EvidenceStore, StoreError, StoredObject};
 use super::types::{DurablePointer, Retention, StorageBackend};
 
 const UPLOAD_URL: &str = "https://uploads.pinata.cloud/v3/files";
@@ -212,12 +212,22 @@ impl EvidenceStore for PinataEvidenceStore {
         payment_id: &str,
         blob: &[u8],
         retention: Retention,
-    ) -> Result<DurablePointer, StoreError> {
+    ) -> Result<StoredObject, StoreError> {
         // `keyvalues`, not `name`: a name containing a slash is truncated at it,
         // so the paymentId has to travel somewhere that survives.
+        // `retentionUntil` as an absolute deadline, not just the retention
+        // name: the sweeper reads it back off the object, and a name would
+        // force it to re-derive the deadline from an anchoring time it does not
+        // have. Written at upload because the object id does not exist yet when
+        // the registry record is written.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
         let keyvalues = serde_json::json!({
             "paymentId": payment_id,
             "retention": retention.to_string(),
+            "retentionUntil": retention.until(now).to_string(),
         })
         .to_string();
 
@@ -273,11 +283,18 @@ impl EvidenceStore for PinataEvidenceStore {
             );
         }
 
-        Ok(match landed {
+        let pointer = match landed {
             // Public: the CID is the address, and anyone resolves it without us.
             PinataNetwork::Public => DurablePointer(format!("ipfs://{}", data.cid)),
             // Private: only we can mint a read URL, so it dereferences here.
             PinataNetwork::Private => self.private_pointer(payment_id),
+        };
+        Ok(StoredObject {
+            pointer,
+            // Pinata's own object id, persisted so retention can actually be
+            // enforced later. A private pointer names the payment, not the
+            // object, so without this there is nothing to hand `delete`.
+            reference: Some(format!("{}/{}", landed.as_str(), data.id)),
         })
     }
 
@@ -362,13 +379,17 @@ impl PinataEvidenceStore {
 
     /// Delete an object. This is what makes retention real on the private
     /// network -- there is no bucket lifecycle rule doing it for us.
-    pub async fn delete(&self, pinata_id: &str) -> Result<(), StoreError> {
+    ///
+    /// `reference` is `"<network>/<id>"` as `put` recorded it. The network is
+    /// carried rather than re-read from `self` because an object written while
+    /// the store was configured differently must still be deletable.
+    pub async fn delete_reference(&self, reference: &str) -> Result<(), StoreError> {
+        let (network, pinata_id) = reference
+            .split_once('/')
+            .unwrap_or((self.network.as_str(), reference));
         let res = self
             .client
-            .delete(format!(
-                "{API_BASE}/v3/files/{}/{pinata_id}",
-                self.network.as_str()
-            ))
+            .delete(format!("{API_BASE}/v3/files/{network}/{pinata_id}"))
             .bearer_auth(&self.jwt)
             .send()
             .await
@@ -499,9 +520,9 @@ impl EvidenceStore for FallbackEvidenceStore {
         payment_id: &str,
         blob: &[u8],
         retention: Retention,
-    ) -> Result<DurablePointer, StoreError> {
+    ) -> Result<StoredObject, StoreError> {
         match self.primary.put(payment_id, blob, retention).await {
-            Ok(pointer) => Ok(pointer),
+            Ok(stored) => Ok(stored),
             Err(e) => {
                 // A category of its own, not a generic error: this is the line
                 // that tells an operator the Pinata credential expired months
@@ -565,7 +586,7 @@ mod fallback_tests {
         fn backend(&self) -> StorageBackend {
             StorageBackend::Ipfs
         }
-        async fn put(&self, _: &str, _: &[u8], _: Retention) -> Result<DurablePointer, StoreError> {
+        async fn put(&self, _: &str, _: &[u8], _: Retention) -> Result<StoredObject, StoreError> {
             Err(StoreError::Unavailable("simulated outage".into()))
         }
         async fn get(&self, _: &DurablePointer) -> Result<Vec<u8>, StoreError> {
@@ -581,16 +602,17 @@ mod fallback_tests {
         // The whole point: evidence is not lost because a third party is down.
         let store =
             FallbackEvidenceStore::new(Arc::new(DeadStore), Arc::new(MemoryEvidenceStore::new()));
-        let pointer = store
+        let stored = store
             .put("0xabc", b"sealed", Retention::Days90)
             .await
             .expect("the fallback takes over");
 
         assert!(
-            !pointer.as_str().starts_with("ipfs"),
-            "the pointer must name where the bytes ACTUALLY landed, not where we tried: {pointer}"
+            !stored.pointer.as_str().starts_with("ipfs"),
+            "the pointer must name where the bytes ACTUALLY landed, not where we tried: {}",
+            stored.pointer
         );
-        assert_eq!(store.get(&pointer).await.unwrap(), b"sealed");
+        assert_eq!(store.get(&stored.pointer).await.unwrap(), b"sealed");
     }
 
     #[tokio::test]
@@ -601,7 +623,7 @@ mod fallback_tests {
             .put("0xabc", b"sealed", Retention::Days90)
             .await
             .unwrap();
-        assert_eq!(store.get(&pointer).await.unwrap(), b"sealed");
+        assert_eq!(store.get(&pointer.pointer).await.unwrap(), b"sealed");
     }
 
     #[tokio::test]
@@ -614,4 +636,194 @@ mod fallback_tests {
             .await
             .is_err());
     }
+}
+
+// ============================================================================
+// Retention sweeper
+// ============================================================================
+//
+// S3 expires objects with a bucket lifecycle rule. Pinata expires nothing on
+// its own, so on that backend `retentionUntil` -- which the facilitator SIGNS
+// into every receipt -- is a promise with no mechanism behind it unless
+// something deletes the object. This is that something.
+//
+// Objects are found by `keyvalues.retentionUntil`, written at upload time,
+// rather than by a reference stored in the registry. That ordering matters: the
+// upload happens AFTER the registry write (so a caller that loses the
+// anti-replay cannot overwrite evidence it does not own), so Pinata's object id
+// does not exist yet when the record is written. Reading the deadline off the
+// object itself needs no second write and works on objects already uploaded.
+
+#[derive(Debug, Deserialize)]
+struct FileListEnvelope {
+    data: FileListData,
+}
+
+#[derive(Debug, Deserialize)]
+struct FileListData {
+    #[serde(default)]
+    files: Vec<FileEntry>,
+    #[serde(default)]
+    next_page_token: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FileEntry {
+    id: String,
+    #[serde(default)]
+    keyvalues: std::collections::HashMap<String, String>,
+}
+
+/// What a sweep did, so an operator can see it working rather than assume it.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct SweepReport {
+    pub examined: usize,
+    pub expired: usize,
+    pub deleted: usize,
+    pub failed: usize,
+    /// Objects with no `retentionUntil` we could read. Reported rather than
+    /// deleted: an object we cannot date is one we must not destroy.
+    pub undatable: usize,
+}
+
+impl PinataEvidenceStore {
+    /// Delete every object whose retention has expired.
+    ///
+    /// Conservative on purpose. An object whose `retentionUntil` cannot be read
+    /// is counted and left alone -- deleting evidence because we could not
+    /// parse its deadline would be the worst possible failure of a component
+    /// whose whole job is honouring a deadline.
+    ///
+    /// Never deletes on the public network: unpinning there does not remove the
+    /// bytes from IPFS, so it would report a deletion that did not happen.
+    pub async fn sweep_expired(
+        &self,
+        now: u64,
+        max_pages: usize,
+    ) -> Result<SweepReport, StoreError> {
+        let mut report = SweepReport::default();
+        if self.network == PinataNetwork::Public {
+            warn!(
+                "DX402 retention sweep skipped: public IPFS objects cannot be deleted, \
+                 only unpinned -- reporting a deletion there would be a lie"
+            );
+            return Ok(report);
+        }
+
+        let mut token: Option<String> = None;
+        for _ in 0..max_pages {
+            let mut url = format!("{API_BASE}/v3/files/private?limit=100");
+            if let Some(t) = &token {
+                url.push_str(&format!("&pageToken={t}"));
+            }
+            let res = self
+                .client
+                .get(&url)
+                .bearer_auth(&self.jwt)
+                .send()
+                .await
+                .map_err(|e| StoreError::Unavailable(format!("pinata list: {e}")))?;
+            if !res.status().is_success() {
+                return Err(StoreError::Unavailable(format!(
+                    "pinata list returned {}",
+                    res.status()
+                )));
+            }
+            let page = res
+                .json::<FileListEnvelope>()
+                .await
+                .map_err(|e| StoreError::Unavailable(format!("pinata list body: {e}")))?;
+
+            for f in &page.data.files {
+                report.examined += 1;
+                let Some(until) = f
+                    .keyvalues
+                    .get("retentionUntil")
+                    .and_then(|v| v.parse::<u64>().ok())
+                else {
+                    report.undatable += 1;
+                    continue;
+                };
+                if until > now {
+                    continue;
+                }
+                report.expired += 1;
+                match self.delete_reference(&format!("private/{}", f.id)).await {
+                    Ok(()) => report.deleted += 1,
+                    Err(e) => {
+                        report.failed += 1;
+                        warn!(id = %f.id, error = %e, "DX402 retention sweep could not delete");
+                    }
+                }
+            }
+
+            token = page.data.next_page_token.clone();
+            if token.is_none() {
+                break;
+            }
+        }
+        Ok(report)
+    }
+}
+
+#[cfg(test)]
+mod sweep_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn the_public_network_is_never_swept() {
+        // Unpinning does not delete from IPFS. A sweep that reported deletions
+        // there would be attesting to something that did not happen -- and the
+        // receipt already carries our signature over `retentionUntil`.
+        let store = PinataEvidenceStore::new("j", "g", "https://f.test", PinataNetwork::Public);
+        let report = store.sweep_expired(9_999_999_999, 1).await.unwrap();
+        assert_eq!(
+            report,
+            SweepReport::default(),
+            "nothing examined, nothing deleted"
+        );
+    }
+}
+
+/// Run the retention sweep on a timer.
+///
+/// Only meaningful for Pinata: S3 expires objects with a bucket lifecycle rule,
+/// so nothing has to run. Without this, choosing the ipfs backend would mean
+/// evidence that never expires while every receipt we signed says it does --
+/// which is why the backend stayed off until this existed.
+///
+/// Hourly by default. Retention is measured in days, so an hour of lag past the
+/// deadline is immaterial, and a slow cadence keeps the list calls negligible.
+pub fn spawn_retention_sweeper(
+    store: std::sync::Arc<PinataEvidenceStore>,
+    tick_secs: u64,
+) -> tokio::task::JoinHandle<()> {
+    tokio::task::spawn(async move {
+        let interval = std::time::Duration::from_secs(tick_secs.max(300));
+        tracing::info!(
+            tick_secs = interval.as_secs(),
+            "DX402 retention sweeper started (pinata has no lifecycle rule of its own)"
+        );
+        loop {
+            tokio::time::sleep(interval).await;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            match store.sweep_expired(now, 20).await {
+                Ok(r) if r.expired > 0 || r.undatable > 0 => tracing::info!(
+                    examined = r.examined,
+                    expired = r.expired,
+                    deleted = r.deleted,
+                    failed = r.failed,
+                    undatable = r.undatable,
+                    "DX402 retention sweep"
+                ),
+                Ok(_) => {}
+                // Never fatal: a sweep that could not run leaves objects in
+                // place, which is the safe direction. The next tick retries.
+                Err(e) => tracing::warn!(error = %e, "DX402 retention sweep failed"),
+            }
+        }
+    })
 }

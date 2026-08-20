@@ -172,7 +172,7 @@ variable "image_tag" {
     and cannot change the version by accident.
   EOT
   type        = string
-  default     = ""
+  default     = "amaranth-broad-whippet-395.mypinata.cloud"
 }
 
 variable "enable_dx402" {
@@ -211,10 +211,14 @@ variable "dx402_storage_backend" {
     store -- S3 is private, deletable, and its retention is enforced by a bucket
     rule -- so it can never turn a revocable promise into an irrevocable one.
 
-    Requires the `facilitator-dx402-pinata` secret to exist.
+    Requires the `facilitator-dx402-pinata` secret to exist, and the retention
+    sweeper (spawn_retention_sweeper) to be running -- Pinata expires nothing on
+    its own, so without it `retentionUntil` would be a promise with no mechanism
+    while every receipt carries our signature over it. That is why this stayed
+    "s3" until the sweeper existed.
   EOT
   type        = string
-  default     = "s3"
+  default     = "ipfs"
 
   validation {
     condition     = contains(["s3", "ipfs"], var.dx402_storage_backend)

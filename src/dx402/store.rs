@@ -45,13 +45,23 @@ impl StoreError {
 pub trait EvidenceStore: Send + Sync + std::fmt::Debug {
     fn backend(&self) -> StorageBackend;
 
-    /// Store `blob` under `payment_id` and return a pointer to it.
+    /// Store `blob` under `payment_id`.
     async fn put(
         &self,
         payment_id: &str,
         blob: &[u8],
         retention: Retention,
-    ) -> Result<DurablePointer, StoreError>;
+    ) -> Result<StoredObject, StoreError>;
+
+    /// Delete a stored object, by the reference `put` handed back.
+    ///
+    /// This is what makes retention real on a backend that has no lifecycle
+    /// rule doing it for us. S3 expires by bucket policy and ignores this;
+    /// Pinata does not expire anything on its own, so without this the
+    /// `retentionUntil` in a receipt we SIGNED would never come true.
+    async fn delete(&self, _reference: &str) -> Result<(), StoreError> {
+        Ok(())
+    }
 
     /// Retrieve the sealed blob a pointer refers to.
     async fn get(&self, pointer: &DurablePointer) -> Result<Vec<u8>, StoreError>;
@@ -65,6 +75,28 @@ pub trait EvidenceStore: Send + Sync + std::fmt::Debug {
     /// payment -- an IPFS CID is a hash of the bytes, so it cannot be derived
     /// from the paymentId alone. Backends that name by payment ignore it.
     fn pointer_for(&self, payment_id: &str, blob: &[u8]) -> DurablePointer;
+}
+
+/// Where a stored object landed, and how to address it again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredObject {
+    /// What a buyer dereferences.
+    pub pointer: DurablePointer,
+    /// Backend-specific handle for deletion, when the backend needs one.
+    ///
+    /// A private IPFS pointer names the PAYMENT, not the object, so it cannot
+    /// be turned back into something Pinata will delete. Without persisting
+    /// this, retention on that backend is a promise with no mechanism.
+    pub reference: Option<String>,
+}
+
+impl From<DurablePointer> for StoredObject {
+    fn from(pointer: DurablePointer) -> Self {
+        Self {
+            pointer,
+            reference: None,
+        }
+    }
 }
 
 /// S3-backed store. The default: no external dependency, no per-file cost, and
@@ -146,7 +178,7 @@ impl EvidenceStore for S3EvidenceStore {
         payment_id: &str,
         blob: &[u8],
         retention: Retention,
-    ) -> Result<DurablePointer, StoreError> {
+    ) -> Result<StoredObject, StoreError> {
         let key = Self::object_key(payment_id);
         let mut req = self
             .client
@@ -165,7 +197,7 @@ impl EvidenceStore for S3EvidenceStore {
             .await
             .map_err(|e| StoreError::Unavailable(format!("s3 put_object: {e}")))?;
 
-        Ok(self.pointer_for_payment_id(payment_id))
+        Ok(self.pointer_for_payment_id(payment_id).into())
     }
 
     async fn get(&self, pointer: &DurablePointer) -> Result<Vec<u8>, StoreError> {
@@ -237,13 +269,18 @@ impl EvidenceStore for MemoryEvidenceStore {
         payment_id: &str,
         blob: &[u8],
         _retention: Retention,
-    ) -> Result<DurablePointer, StoreError> {
+    ) -> Result<StoredObject, StoreError> {
         let pointer = format!("mem://{payment_id}");
         self.inner
             .lock()
             .expect("poisoned")
             .insert(pointer.clone(), blob.to_vec());
-        Ok(DurablePointer(pointer))
+        Ok(DurablePointer(pointer).into())
+    }
+
+    async fn delete(&self, reference: &str) -> Result<(), StoreError> {
+        self.inner.lock().expect("poisoned").remove(reference);
+        Ok(())
     }
 
     async fn get(&self, pointer: &DurablePointer) -> Result<Vec<u8>, StoreError> {
@@ -276,7 +313,7 @@ mod tests {
             .await
             .unwrap();
 
-        let fetched = store.get(&pointer).await.unwrap();
+        let fetched = store.get(&pointer.pointer).await.unwrap();
         let parsed = SealedEnvelope::from_bytes(&fetched).unwrap();
         let secret = PayerSecretKey::Secp256k1(Box::new(sk));
         assert_eq!(open(&parsed, &secret, b"pid-1").unwrap(), body);

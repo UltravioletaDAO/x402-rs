@@ -1,5 +1,34 @@
 # Changelog
 
+## [1.89.0] - 2026-08-20
+
+### Pinata turned ON, because the thing that was blocking it now exists
+
+`dx402_storage_backend` defaults to `ipfs`. It stayed on `s3` for a day and the
+reason was not caution: **Pinata expires nothing on its own.** S3 deletes
+objects with a bucket lifecycle rule; Pinata has no equivalent. Enabling it
+without a sweeper would have meant evidence that never expires while every
+receipt we SIGN says `retentionUntil`. A promise with no mechanism.
+
+`spawn_retention_sweeper` is that mechanism. Hourly, and deliberately timid:
+
+- An object whose `retentionUntil` cannot be read is **counted and left alone**.
+  Deleting evidence because we failed to parse its deadline would be the worst
+  possible failure of the one component whose job is honouring deadlines.
+- The public network is **never** swept. Unpinning does not remove bytes from
+  IPFS, so a sweep there would report a deletion that did not happen.
+- A sweep that cannot run leaves everything in place and retries next tick.
+
+Objects are found by `keyvalues.retentionUntil`, written at upload. That is not
+a shortcut around storing a reference: the upload happens **after** the registry
+write — the ordering v1.84.0 established so a caller that loses the anti-replay
+cannot overwrite evidence it does not own — so Pinata's object id does not exist
+yet when the record is written. Reading the deadline off the object needs no
+second write and works on objects already uploaded.
+
+`EvidenceStore::put` now returns `StoredObject { pointer, reference }` so a
+backend that needs a handle to delete later can hand one back. S3 ignores it.
+
 ## [1.88.0] - 2026-08-20
 
 ### The x402 challenge lives in a header, and two of our readers only looked at the body

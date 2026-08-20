@@ -56,11 +56,15 @@ pub trait EvidenceStore: Send + Sync + std::fmt::Debug {
     /// Retrieve the sealed blob a pointer refers to.
     async fn get(&self, pointer: &DurablePointer) -> Result<Vec<u8>, StoreError>;
 
-    /// The pointer this store WOULD issue for `payment_id`, without writing.
+    /// The pointer this store WOULD issue, without writing anything.
     ///
     /// Lets the caller reserve the registry slot before uploading any bytes.
     /// The write order is load-bearing: see the note in `Dx402Service::anchor`.
-    fn pointer_for_payment(&self, payment_id: &str) -> DurablePointer;
+    ///
+    /// `blob` is passed because some backends name by CONTENT rather than by
+    /// payment -- an IPFS CID is a hash of the bytes, so it cannot be derived
+    /// from the paymentId alone. Backends that name by payment ignore it.
+    fn pointer_for(&self, payment_id: &str, blob: &[u8]) -> DurablePointer;
 }
 
 /// S3-backed store. The default: no external dependency, no per-file cost, and
@@ -104,7 +108,7 @@ impl S3EvidenceStore {
     ///
     /// It is safe precisely because the bytes behind it are sealed to the payer:
     /// an unauthenticated GET hands out ciphertext nobody else can open.
-    fn pointer_for(&self, payment_id: &str) -> DurablePointer {
+    fn pointer_for_payment_id(&self, payment_id: &str) -> DurablePointer {
         DurablePointer(format!("s3+{}/{}", self.public_base, payment_id))
     }
 
@@ -129,8 +133,8 @@ impl S3EvidenceStore {
 
 #[async_trait]
 impl EvidenceStore for S3EvidenceStore {
-    fn pointer_for_payment(&self, payment_id: &str) -> DurablePointer {
-        self.pointer_for(payment_id)
+    fn pointer_for(&self, payment_id: &str, _blob: &[u8]) -> DurablePointer {
+        self.pointer_for_payment_id(payment_id)
     }
 
     fn backend(&self) -> StorageBackend {
@@ -161,7 +165,7 @@ impl EvidenceStore for S3EvidenceStore {
             .await
             .map_err(|e| StoreError::Unavailable(format!("s3 put_object: {e}")))?;
 
-        Ok(self.pointer_for(payment_id))
+        Ok(self.pointer_for_payment_id(payment_id))
     }
 
     async fn get(&self, pointer: &DurablePointer) -> Result<Vec<u8>, StoreError> {
@@ -220,7 +224,7 @@ impl MemoryEvidenceStore {
 
 #[async_trait]
 impl EvidenceStore for MemoryEvidenceStore {
-    fn pointer_for_payment(&self, payment_id: &str) -> DurablePointer {
+    fn pointer_for(&self, payment_id: &str, _blob: &[u8]) -> DurablePointer {
         DurablePointer(format!("mem://{payment_id}"))
     }
 
@@ -312,7 +316,7 @@ mod tests {
 
         // The pointer addresses the payment, not the bucket layout, so buyers
         // holding a year-old pointer keep working if the S3 keys are reorganised.
-        let pointer = store.pointer_for("0xabc");
+        let pointer = store.pointer_for("0xabc", b"");
         assert_eq!(
             pointer.as_str(),
             "s3+https://evidence.ultravioletadao.xyz/0xabc"

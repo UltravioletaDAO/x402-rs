@@ -51,6 +51,7 @@ pub mod receipt;
 pub mod registry;
 pub mod service;
 pub mod store;
+pub mod store_pinata;
 pub mod types;
 
 pub use envelope::{open, seal, PayerPublicKey, PayerSecretKey, SealedEnvelope};
@@ -90,6 +91,16 @@ pub mod env {
     pub const ENABLE_DX402: &str = "ENABLE_DX402";
     /// `s3` | `ipfs` | `arweave`.
     pub const DX402_STORE_BACKEND: &str = "DX402_STORE_BACKEND";
+    /// Pinata JWT. Its presence is what makes the ipfs backends offerable.
+    pub const DX402_PINATA_JWT: &str = "DX402_PINATA_JWT";
+    /// The account's OWN gateway domain. The generic `gateway.pinata.cloud`
+    /// answers 403 when signing a private read URL.
+    pub const DX402_PINATA_GATEWAY: &str = "DX402_PINATA_GATEWAY";
+    /// `true` to also offer `ipfs-public`. Off by default and deliberately so:
+    /// public IPFS is irreversible, and it is the BUYER's ciphertext that ends
+    /// up permanent. Until the buyer can consent through `accepts`, only an
+    /// operator can turn it on.
+    pub const DX402_ALLOW_PUBLIC_IPFS: &str = "DX402_ALLOW_PUBLIC_IPFS";
     /// S3 bucket holding sealed evidence.
     pub const DX402_STORE_BUCKET: &str = "DX402_STORE_BUCKET";
     /// Public base URL a pointer dereferences through.

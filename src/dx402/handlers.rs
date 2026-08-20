@@ -200,6 +200,11 @@ pub async fn get_stats(State(svc): State<Arc<Dx402Service>>) -> axum::response::
             "anchored": svc.count().await,
             "mode": svc.config().default_retention.to_string(),
             "backend": svc.config().backend.to_string(),
+            // What this deployment can offer, derived from its configuration.
+            // The landing page and any SDK read THIS instead of carrying a
+            // hardcoded list: what exists depends on the deployment, and an
+            // integrator may be pointed at a facilitator that is not ours.
+            "backends": svc.config().offers(),
             "receiptSigner": svc.receipt_signer().to_string(),
             "note": "anchored is a floor: records whose index write failed are not counted",
         })),

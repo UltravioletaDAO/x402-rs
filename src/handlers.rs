@@ -1708,7 +1708,10 @@ where
             // is configured -- announcing an extension whose routes 404 would
             // make integrators build against a capability that is not there.
             let mut extensions = vec!["bazaar".to_string()];
-            if crate::dx402::Dx402Config::from_env().enabled {
+            // `is_serviceable`, not `enabled`: the flag can be on while the
+            // bucket is missing, in which case the service is never built and
+            // every /dx402 route 404s. See `Dx402Config::is_serviceable`.
+            if crate::dx402::Dx402Config::from_env().is_serviceable() {
                 extensions.push(crate::dx402::EXTENSION_KEY.to_string());
             }
             // Signers map is empty for now - will be populated in future version

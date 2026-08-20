@@ -1,5 +1,66 @@
 # Changelog
 
+## [1.87.0] - 2026-08-19
+
+### Pinata (IPFS) as a storage backend, with S3 as the automatic fallback
+
+`DX402_STORE_BACKEND=ipfs` now works. Pinata sits in front of S3 rather than
+replacing it: an outage costs latency, never the evidence. The fallback is
+deliberately one-directional -- S3 is the more conservative store (private,
+deletable, retention enforced by a bucket rule), so falling back can never turn
+a revocable promise into an irrevocable one.
+
+**The record says where the bytes actually landed**, not what was configured. A
+record claiming `ipfs` for an object sitting in S3 sends every later read to the
+wrong place, and perfectly intact evidence looks lost.
+
+Three things about Pinata's API differ from its documentation, and each one
+changed the code (all measured against the live API, not read):
+
+- A `name` containing `/` is truncated at the slash, so the S3-style key layout
+  does not survive. The reliable index is `keyvalues.paymentId`.
+- Uploads deduplicate by content, and a duplicate returns the FIRST record
+  *including its network* -- an upload requested as `public` came back
+  `"network":"private"`. The store records what came back, not what it asked for.
+- Private reads need a signed URL against the account's OWN gateway; the generic
+  `gateway.pinata.cloud` answers 403.
+
+The CID is computed locally (CIDv1/raw/sha2-256) so the registry slot is still
+reserved before a byte is uploaded -- the ordering that v1.84.0 established after
+a refused duplicate was found to destroy the evidence it lost to. Its test vector
+comes from a real upload, because the first one written here was invented and did
+not match.
+
+### `/dx402/stats` advertises what this deployment can actually offer
+
+New `backends[]`, derived from configuration rather than declared:
+
+```json
+{"id":"ipfs-public","retention":"permanent","revocable":false,"public":true,
+ "enabled":false,"disabledReason":"irreversible; awaiting buyer opt-in"}
+```
+
+`revocable` and `public` are not decoration: they are the difference between the
+products. `revocable:false` means the `retentionUntil` the facilitator SIGNS
+cannot be honoured -- unpinning removes our copy, not the network's. So
+`ipfs-public` stays off by default even with a working credential: it is the
+BUYER's ciphertext that becomes permanent, and the buyer cannot consent yet.
+
+A backend without its credential is listed but disabled, with a reason. Hiding it
+would read as "not a thing" rather than "not here".
+
+### `/supported` no longer advertises an extension whose routes 404
+
+It keyed off `ENABLE_DX402` alone, but the routes are registered only if the
+service was built -- which it is not when the bucket is missing. So the flag
+could be on, every `/dx402/*` route 404, and `/supported` still announce
+`durable-evidence`. The comment on that code says it exists to prevent exactly
+that. Both paths now read one predicate, `Dx402Config::is_serviceable`, so they
+cannot drift.
+
+Cosmetic until something keys off the signal -- which the landing page is about
+to do.
+
 ## [1.86.0] - 2026-08-19
 
 `POST /dx402/anchor` now accepts a CAIP-2 network id (`eip155:8453`) as well as

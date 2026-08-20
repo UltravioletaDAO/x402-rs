@@ -34,6 +34,12 @@ pub struct Dx402Config {
     pub public_base: Option<String>,
     pub registry_table: Option<String>,
     pub default_retention: Retention,
+    /// Pinata credential. Present -> the ipfs backends can be offered.
+    pub pinata_jwt: Option<String>,
+    /// The account's own gateway domain.
+    pub pinata_gateway: Option<String>,
+    /// Whether `ipfs-public` is offered at all. See `DX402_ALLOW_PUBLIC_IPFS`.
+    pub allow_public_ipfs: bool,
 }
 
 impl Default for Dx402Config {
@@ -45,6 +51,9 @@ impl Default for Dx402Config {
             public_base: None,
             registry_table: None,
             default_retention: Retention::Days90,
+            pinata_jwt: None,
+            pinata_gateway: None,
+            allow_public_ipfs: false,
         }
     }
 }
@@ -86,6 +95,88 @@ impl Dx402Config {
                 .ok()
                 .filter(|v| !v.is_empty()),
             default_retention,
+            pinata_jwt: std::env::var(DX402_PINATA_JWT)
+                .ok()
+                .filter(|v| !v.is_empty()),
+            pinata_gateway: std::env::var(DX402_PINATA_GATEWAY)
+                .ok()
+                .filter(|v| !v.is_empty()),
+            allow_public_ipfs: std::env::var(DX402_ALLOW_PUBLIC_IPFS)
+                .map(|v| v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false),
+        }
+    }
+
+    /// What this deployment can actually offer, in the order a caller sees it.
+    ///
+    /// Derived from configuration rather than declared, so it cannot promise a
+    /// backend whose credential is missing -- the failure mode this whole
+    /// mechanism exists to prevent.
+    pub fn offers(&self) -> Vec<super::types::BackendOffer> {
+        use super::types::BackendOffer;
+        let has_pinata = self.pinata_jwt.is_some() && self.pinata_gateway.is_some();
+        let retention = self.default_retention.to_string();
+        vec![
+            BackendOffer {
+                id: "s3".into(),
+                retention: retention.clone(),
+                revocable: true,
+                public: false,
+                enabled: self.bucket.is_some() && self.public_base.is_some(),
+                disabled_reason: (self.bucket.is_none() || self.public_base.is_none())
+                    .then(|| "no bucket configured".to_string()),
+            },
+            BackendOffer {
+                id: "ipfs-private".into(),
+                retention,
+                revocable: true,
+                public: false,
+                enabled: has_pinata,
+                disabled_reason: (!has_pinata).then(|| "no pinata credential".to_string()),
+            },
+            BackendOffer {
+                id: "ipfs-public".into(),
+                // Not the configured default: public IPFS cannot expire.
+                retention: "permanent".into(),
+                revocable: false,
+                public: true,
+                enabled: has_pinata && self.allow_public_ipfs,
+                disabled_reason: if !has_pinata {
+                    Some("no pinata credential".to_string())
+                } else if !self.allow_public_ipfs {
+                    // Named precisely: it is not missing config, it is a
+                    // deliberate hold until the buyer -- whose ciphertext this
+                    // makes permanent -- can consent through `accepts`.
+                    Some("irreversible; awaiting buyer opt-in".to_string())
+                } else {
+                    None
+                },
+            },
+        ]
+    }
+
+    /// Whether this configuration can actually produce a working service.
+    ///
+    /// `enabled` alone is not enough: the flag can be on while the bucket or the
+    /// public base is missing, in which case `Dx402Service::from_env` returns
+    /// `None`, the `/dx402/*` routes are never registered, and every one of them
+    /// 404s. Advertising the extension off the flag alone therefore announced a
+    /// capability that was not there -- exactly what the comment on
+    /// `get_supported` says it exists to prevent.
+    ///
+    /// Both the construction path and the advertisement read THIS, so they
+    /// cannot drift apart.
+    pub fn is_serviceable(&self) -> bool {
+        if !self.enabled || self.bucket.is_none() || self.public_base.is_none() {
+            // S3 config is required even for the ipfs backend: it is the
+            // fallback, so without it a Pinata outage would lose evidence.
+            return false;
+        }
+        match self.backend {
+            StorageBackend::S3 => true,
+            StorageBackend::Ipfs => self.pinata_jwt.is_some() && self.pinata_gateway.is_some(),
+            // No implementation, so it must not be advertised.
+            StorageBackend::Arweave => false,
         }
     }
 }
@@ -171,24 +262,64 @@ impl Dx402Service {
             }
         };
 
-        if config.backend != StorageBackend::S3 {
+        // Same predicate the /supported advertisement reads, so a deployment can
+        // never announce an extension whose routes were not registered.
+        if !config.is_serviceable() {
             warn!(
                 backend = %config.backend,
-                "only the s3 backend is implemented in v0.1 -- DX402 stays off"
+                has_bucket = config.bucket.is_some(),
+                has_public_base = config.public_base.is_some(),
+                "DX402 is enabled but not serviceable -- it stays off, and \
+                 /supported will not advertise it"
             );
             return None;
         }
         let (Some(bucket), Some(public_base)) = (config.bucket.clone(), config.public_base.clone())
         else {
-            warn!(
-                "{} and {} are both required for the s3 backend -- DX402 stays off",
-                super::env::DX402_STORE_BUCKET,
-                super::env::DX402_STORE_PUBLIC_BASE
-            );
-            return None;
+            unreachable!("is_serviceable() guarantees both are present")
         };
 
-        let store = Arc::new(S3EvidenceStore::from_env(bucket, public_base).await);
+        // S3 is always built: it is the default AND the fallback. Pinata sits in
+        // front of it when configured, so a Pinata outage costs latency, never
+        // the evidence -- and never upgrades a revocable promise into an
+        // irrevocable one, because the fallback is the more conservative store.
+        let s3: Arc<dyn EvidenceStore> =
+            Arc::new(S3EvidenceStore::from_env(bucket, public_base.clone()).await);
+
+        let store: Arc<dyn EvidenceStore> = match config.backend {
+            StorageBackend::Ipfs => {
+                match (config.pinata_jwt.clone(), config.pinata_gateway.clone()) {
+                    (Some(jwt), Some(gateway)) => {
+                        use super::store_pinata::{
+                            FallbackEvidenceStore, PinataEvidenceStore, PinataNetwork,
+                        };
+                        // Private: the only network on which `retentionUntil`
+                        // -- which we sign -- can actually be honoured.
+                        let pinata: Arc<dyn EvidenceStore> = Arc::new(PinataEvidenceStore::new(
+                            jwt,
+                            gateway,
+                            public_base,
+                            PinataNetwork::Private,
+                        ));
+                        info!("DX402 storage: pinata (private) with an s3 fallback");
+                        Arc::new(FallbackEvidenceStore::new(pinata, s3))
+                    }
+                    _ => {
+                        // Refuse rather than quietly serve S3: a seller that
+                        // asked for IPFS and silently got something else builds
+                        // on a promise nobody made.
+                        warn!(
+                            "{} is `ipfs` but {} / {} are not set -- DX402 stays off",
+                            super::env::DX402_STORE_BACKEND,
+                            super::env::DX402_PINATA_JWT,
+                            super::env::DX402_PINATA_GATEWAY,
+                        );
+                        return None;
+                    }
+                }
+            }
+            _ => s3,
+        };
 
         let registry: Arc<dyn EvidenceRegistry> = match &config.registry_table {
             Some(table) => Arc::new(DynamoEvidenceRegistry::from_env(table.clone()).await),
@@ -407,7 +538,7 @@ impl Dx402Service {
         // The pointer is known before the upload: for a blob we host, it is
         // derived from the paymentId, so the record can be written first.
         let pointer = match (&sealed_blob, &req.pointer) {
-            (Some(_), _) => self.store.pointer_for_payment(&req.payment_id),
+            (Some(blob), _) => self.store.pointer_for(&req.payment_id, blob),
             (None, Some(p)) => p.clone(),
             (None, None) => {
                 warn!(
@@ -1086,6 +1217,122 @@ mod tests {
         f();
         if let Some(v) = prior {
             std::env::set_var(key, v);
+        }
+    }
+}
+
+#[cfg(test)]
+mod advertisement_tests {
+    use super::*;
+
+    fn cfg(enabled: bool, bucket: Option<&str>, base: Option<&str>) -> Dx402Config {
+        Dx402Config {
+            enabled,
+            bucket: bucket.map(str::to_string),
+            public_base: base.map(str::to_string),
+            ..Dx402Config::default()
+        }
+    }
+
+    #[test]
+    fn the_flag_alone_does_not_make_it_serviceable() {
+        // The gap this closes: ENABLE_DX402=true with no bucket meant the
+        // service was never built and every /dx402 route 404'd -- while
+        // /supported still advertised `durable-evidence`. Harmless until a
+        // frontend keys off that signal, which is exactly what it now does.
+        assert!(!cfg(true, None, Some("https://f.test")).is_serviceable());
+        assert!(!cfg(true, Some("b"), None).is_serviceable());
+        assert!(!cfg(false, Some("b"), Some("https://f.test")).is_serviceable());
+        assert!(cfg(true, Some("b"), Some("https://f.test")).is_serviceable());
+    }
+
+    #[test]
+    fn a_backend_we_cannot_serve_is_not_advertised() {
+        let mut c = cfg(true, Some("b"), Some("https://f.test"));
+        c.backend = StorageBackend::Arweave;
+        assert!(
+            !c.is_serviceable(),
+            "asking for a backend with no implementation must not advertise the extension"
+        );
+    }
+}
+
+#[cfg(test)]
+mod offer_tests {
+    use super::*;
+
+    fn base() -> Dx402Config {
+        Dx402Config {
+            enabled: true,
+            bucket: Some("b".into()),
+            public_base: Some("https://f.test".into()),
+            ..Dx402Config::default()
+        }
+    }
+
+    #[test]
+    fn a_backend_without_its_credential_is_listed_but_not_enabled() {
+        // Listed rather than hidden: a caller has to be able to tell "not on
+        // this deployment" from "not a thing", and a silent omission reads as
+        // the second.
+        let offers = base().offers();
+        let ipfs = offers.iter().find(|o| o.id == "ipfs-private").unwrap();
+        assert!(!ipfs.enabled);
+        assert_eq!(
+            ipfs.disabled_reason.as_deref(),
+            Some("no pinata credential")
+        );
+        assert!(offers.iter().find(|o| o.id == "s3").unwrap().enabled);
+    }
+
+    #[test]
+    fn public_ipfs_stays_off_even_with_a_working_credential() {
+        // The credential is not the gate. It is irreversible, and it is the
+        // BUYER's ciphertext that becomes permanent -- so it waits for consent
+        // the buyer can actually give.
+        let mut c = base();
+        c.pinata_jwt = Some("jwt".into());
+        c.pinata_gateway = Some("gw.mypinata.cloud".into());
+        let offers = c.offers();
+        assert!(
+            offers
+                .iter()
+                .find(|o| o.id == "ipfs-private")
+                .unwrap()
+                .enabled
+        );
+
+        let public = offers.iter().find(|o| o.id == "ipfs-public").unwrap();
+        assert!(!public.enabled);
+        assert_eq!(
+            public.disabled_reason.as_deref(),
+            Some("irreversible; awaiting buyer opt-in")
+        );
+    }
+
+    #[test]
+    fn only_public_ipfs_is_irrevocable_and_it_says_so() {
+        // `revocable` is what makes the signed `retentionUntil` true or not, so
+        // it must never be inferred from the name.
+        let mut c = base();
+        c.pinata_jwt = Some("jwt".into());
+        c.pinata_gateway = Some("gw".into());
+        c.allow_public_ipfs = true;
+        for o in c.offers() {
+            match o.id.as_str() {
+                "ipfs-public" => {
+                    assert!(!o.revocable);
+                    assert!(o.public);
+                    assert_eq!(
+                        o.retention, "permanent",
+                        "it cannot expire, so it must not claim to"
+                    );
+                }
+                _ => {
+                    assert!(o.revocable, "{} must be deletable", o.id);
+                    assert!(!o.public);
+                }
+            }
         }
     }
 }

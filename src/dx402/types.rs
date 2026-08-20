@@ -80,6 +80,34 @@ pub enum StorageBackend {
     Arweave,
 }
 
+/// What a deployment can offer, and what each option actually promises.
+///
+/// Advertised so a seller can choose from what EXISTS here rather than from a
+/// list written into a document, and so the landing page can render the real
+/// set instead of a hardcoded one. `revocable` and `public` are not decoration:
+/// they are the difference between the products, and they are what a page
+/// selling durability tends to leave out.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BackendOffer {
+    /// Stable id a caller passes as `storage` on an anchor.
+    pub id: String,
+    /// Default retention for this backend.
+    pub retention: String,
+    /// Whether the bytes can actually be removed when retention expires.
+    /// `false` means `retentionUntil` -- which the facilitator SIGNS -- cannot
+    /// be honoured, only stopped being paid for.
+    pub revocable: bool,
+    /// Whether anyone can resolve it without going through the facilitator.
+    pub public: bool,
+    /// Offered right now. A `false` entry is still listed, with a reason, so a
+    /// caller can tell "not here" from "not a thing".
+    pub enabled: bool,
+    /// Why it is not enabled, when it is not.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disabled_reason: Option<String>,
+}
+
 impl fmt::Display for StorageBackend {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

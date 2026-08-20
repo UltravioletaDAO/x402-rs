@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.91.0] - 2026-08-20
+
+### `paymentRequirements` is the v1 spelling of `accepts`, and nothing here knew it
+
+Found by KarmaKadabra on the Python SDK: their buyer matches both keys in
+production, ours matched one. A seller answering `{"paymentRequirements": [...]}`
+therefore read as "no terms here" — the exact false negative these readers exist
+to prevent, one key away.
+
+Two places carried the gap:
+
+- **`PaymentRequiredResponse.accepts`** now has a serde alias. Without it the
+  challenge simply failed to deserialize, so `x402-reqwest` could not pay a v1
+  seller at all.
+- **The Bazaar payTo-hijack check** read only `accepts`, so a v1 seller was one
+  more resource where the security check saw nothing and read as "nothing
+  drifted".
+
+Contributed upstream to the Python SDK as 0.61.0; TypeScript 2.66.0 brings the
+third implementation level.
+
 ## [1.90.0] - 2026-08-20
 
 ### The first real anchor to Pinata wrote evidence that could not be read back

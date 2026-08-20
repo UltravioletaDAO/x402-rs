@@ -425,11 +425,16 @@ fn decode_payment_required(raw: &str) -> Option<serde_json::Value> {
 /// made the check pass while seeing nothing.
 fn collect_pay_to(v: &serde_json::Value, terms: &mut LiveTerms) {
     let mut found_shape = false;
-    if let Some(accepts) = v.get("accepts").and_then(|a| a.as_array()) {
-        found_shape = true;
-        for a in accepts {
-            if let Some(p) = a.get("payTo").and_then(|p| p.as_str()) {
-                terms.pay_to.push(p.to_ascii_lowercase());
+    // `paymentRequirements` is the v1 spelling of `accepts`. Missing it made a
+    // seller using it look like "no terms here" -- which is exactly the state
+    // that let the hijack check pass while seeing nothing.
+    for key in ["accepts", "paymentRequirements"] {
+        if let Some(accepts) = v.get(key).and_then(|a| a.as_array()) {
+            found_shape = true;
+            for a in accepts {
+                if let Some(p) = a.get("payTo").and_then(|p| p.as_str()) {
+                    terms.pay_to.push(p.to_ascii_lowercase());
+                }
             }
         }
     }

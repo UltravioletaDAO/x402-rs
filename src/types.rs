@@ -2035,6 +2035,11 @@ impl From<TokenDeployment> for TokenAsset {
 #[allow(dead_code)] // Public for consumption by downstream crates.
 pub struct PaymentRequiredResponse {
     pub error: String,
+    /// `paymentRequirements` is the v1 spelling of the same field. A seller
+    /// answering with it was unpayable by this crate -- the challenge simply
+    /// failed to deserialize. Found by KarmaKadabra's buyer, which matched both
+    /// keys in production, 2026-08-20.
+    #[serde(alias = "paymentRequirements")]
     pub accepts: Vec<PaymentRequirements>,
     pub x402_version: X402Version,
 }

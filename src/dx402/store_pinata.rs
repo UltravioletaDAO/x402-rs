@@ -155,17 +155,31 @@ impl PinataEvidenceStore {
 
     /// The pointer for a private object: our own host, because dereferencing it
     /// requires minting a signed URL and only we hold the key.
-    fn private_pointer(&self, payment_id: &str) -> DurablePointer {
-        DurablePointer(format!(
-            "ipfs+https://{}/dx402/blob/{payment_id}",
-            self.host()
-        ))
+    /// The pointer for a private object.
+    ///
+    /// `public_base` ALREADY carries the blob route (`https://…/dx402/blob`),
+    /// exactly as the S3 store assumes. Appending the route again produced
+    /// `…/dx402/blob/dx402/blob/0x…`, a pointer that 404s on the way back --
+    /// caught by the e2e on the first real anchor against production.
+    ///
+    /// The CID rides in the fragment because a private object is addressed by
+    /// PAYMENT for the buyer and by CONTENT for Pinata, and the store has no
+    /// registry to translate between them. Carrying it makes the pointer
+    /// self-sufficient: `get` can mint a signed URL from the pointer alone,
+    /// with no lookup and no dependence on Pinata's list filtering.
+    ///
+    /// It also travels inside the SIGNED receipt, so the content address of the
+    /// evidence becomes part of what the facilitator attested.
+    fn private_pointer(&self, payment_id: &str, cid: &str) -> DurablePointer {
+        DurablePointer(format!("ipfs+{}/{payment_id}#{cid}", self.public_base))
     }
 
-    fn host(&self) -> &str {
-        self.public_base
-            .trim_start_matches("https://")
-            .trim_start_matches("http://")
+    /// The CID a private pointer carries, if it carries one.
+    fn cid_of(pointer: &str) -> Option<&str> {
+        pointer
+            .split_once('#')
+            .map(|(_, cid)| cid)
+            .filter(|c| !c.is_empty())
     }
 
     async fn signed_url(&self, cid: &str) -> Result<String, StoreError> {
@@ -287,7 +301,7 @@ impl EvidenceStore for PinataEvidenceStore {
             // Public: the CID is the address, and anyone resolves it without us.
             PinataNetwork::Public => DurablePointer(format!("ipfs://{}", data.cid)),
             // Private: only we can mint a read URL, so it dereferences here.
-            PinataNetwork::Private => self.private_pointer(payment_id),
+            PinataNetwork::Private => self.private_pointer(payment_id, &data.cid),
         };
         Ok(StoredObject {
             pointer,
@@ -305,14 +319,14 @@ impl EvidenceStore for PinataEvidenceStore {
             // Public: our own gateway still serves it, and using it keeps the
             // read off a third party we do not control.
             format!("https://{}/ipfs/{cid}", self.gateway)
-        } else if raw.starts_with("ipfs+https://") {
-            // Private: the pointer names the payment, so the CID has to be
-            // looked up. The caller resolves it from the registry and hands us
-            // an `ipfs://` pointer; a bare payment pointer cannot be fetched
-            // without that lookup.
-            return Err(StoreError::ForeignPointer(format!(
-                "{raw} needs its CID resolved from the registry first"
-            )));
+        } else if raw.starts_with("ipfs+") {
+            // Private: mint a signed read URL from the CID the pointer carries.
+            let Some(cid) = Self::cid_of(raw) else {
+                return Err(StoreError::ForeignPointer(format!(
+                    "{raw} carries no CID, so it cannot be resolved"
+                )));
+            };
+            return self.get_private_by_cid(cid).await;
         } else {
             return Err(StoreError::ForeignPointer(raw.to_string()));
         };
@@ -344,7 +358,9 @@ impl EvidenceStore for PinataEvidenceStore {
             // Computed locally, so the registry slot can still be reserved
             // before a single byte is uploaded.
             PinataNetwork::Public => DurablePointer(format!("ipfs://{}", cid_v1_raw(blob))),
-            PinataNetwork::Private => self.private_pointer(payment_id),
+            // Same locally computed CID the upload will produce, so the
+            // reserved pointer and the written one agree.
+            PinataNetwork::Private => self.private_pointer(payment_id, &cid_v1_raw(blob)),
         }
     }
 }
@@ -465,7 +481,7 @@ mod tests {
         );
         assert_eq!(
             private.pointer_for("0xabc", blob).as_str(),
-            "ipfs+https://f.test/dx402/blob/0xabc",
+            &format!("ipfs+https://f.test/0xabc#{}", cid_v1_raw(blob)),
             "private addresses the PAYMENT -- only we can mint a read URL"
         );
     }
@@ -826,4 +842,70 @@ pub fn spawn_retention_sweeper(
             }
         }
     })
+}
+
+#[cfg(test)]
+mod pointer_roundtrip_tests {
+    use super::*;
+
+    fn store(net: PinataNetwork) -> PinataEvidenceStore {
+        // `public_base` as production sets it: it ALREADY carries the blob route.
+        PinataEvidenceStore::new(
+            "jwt",
+            "gw.mypinata.cloud",
+            "https://facilitator.ultravioletadao.xyz/dx402/blob",
+            net,
+        )
+    }
+
+    #[test]
+    fn the_blob_route_is_not_doubled() {
+        // The first real anchor against production produced
+        // `…/dx402/blob/dx402/blob/0x…` and 404'd on the way back, because
+        // `public_base` already ends in the route the pointer was appending.
+        let p = store(PinataNetwork::Private).pointer_for("0xabc", b"x");
+        assert!(
+            !p.as_str().contains("/dx402/blob/dx402/blob/"),
+            "the route must appear once: {p}"
+        );
+        assert!(p
+            .as_str()
+            .starts_with("ipfs+https://facilitator.ultravioletadao.xyz/dx402/blob/0xabc#"));
+    }
+
+    #[test]
+    fn a_private_pointer_carries_the_cid_it_needs_to_be_read() {
+        // A private object is addressed by PAYMENT for the buyer and by CONTENT
+        // for Pinata, and this store has no registry to translate. Carrying the
+        // CID is what lets `get` mint a signed URL from the pointer alone.
+        let blob = b"sealed bytes";
+        let p = store(PinataNetwork::Private).pointer_for("0xabc", blob);
+        assert_eq!(
+            PinataEvidenceStore::cid_of(p.as_str()),
+            Some(cid_v1_raw(blob).as_str())
+        );
+    }
+
+    #[test]
+    fn a_pointer_without_a_cid_is_refused_rather_than_guessed() {
+        assert_eq!(
+            PinataEvidenceStore::cid_of("ipfs+https://f.test/dx402/blob/0xabc"),
+            None
+        );
+        assert_eq!(
+            PinataEvidenceStore::cid_of("ipfs+https://f.test/dx402/blob/0xabc#"),
+            None
+        );
+    }
+
+    #[test]
+    fn the_reserved_pointer_matches_what_the_upload_will_write() {
+        // `pointer_for` reserves the registry slot BEFORE the upload. If it
+        // disagreed with what `put` records, the receipt would be signed over a
+        // pointer that never resolves.
+        let blob = b"sealed";
+        let reserved = store(PinataNetwork::Private).pointer_for("0xabc", blob);
+        let as_written = store(PinataNetwork::Private).private_pointer("0xabc", &cid_v1_raw(blob));
+        assert_eq!(reserved, as_written);
+    }
 }

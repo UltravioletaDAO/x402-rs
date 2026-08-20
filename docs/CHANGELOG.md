@@ -1,5 +1,33 @@
 # Changelog
 
+## [1.90.0] - 2026-08-20
+
+### The first real anchor to Pinata wrote evidence that could not be read back
+
+Two defects, both caught by the e2e on the very first production anchor, and
+both mine from the version before.
+
+**The blob route was doubled.** `DX402_STORE_PUBLIC_BASE` already ends in
+`/dx402/blob`, exactly as the S3 store assumes, and the Pinata pointer appended
+it again: `…/dx402/blob/dx402/blob/0x…`. That pointer 404s, and it is the pointer
+the receipt is SIGNED over.
+
+**A private pointer had no way to be resolved.** It names the PAYMENT, while
+Pinata addresses by CONTENT, and the store has no registry to translate between
+them — `get` answered "resolve the CID from the registry first", which nothing
+did. Evidence was being written and could not be read.
+
+The CID now rides in the pointer's fragment
+(`ipfs+https://…/dx402/blob/0x…#bafkrei…`). The pointer becomes self-sufficient:
+`get` mints a signed URL from it alone, with no lookup and no dependence on
+Pinata's list filtering — which does not filter by `keyvalues` the way its docs
+suggest, measured. It also means the content address of the evidence is part of
+what the facilitator attested, since the pointer is inside the signed receipt.
+
+A test pins that the reserved pointer and the written one agree: `pointer_for`
+reserves the registry slot before the upload, so a disagreement there would sign
+a receipt over a pointer that never resolves.
+
 ## [1.89.0] - 2026-08-20
 
 ### Pinata turned ON, because the thing that was blocking it now exists

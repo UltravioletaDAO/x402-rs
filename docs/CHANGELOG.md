@@ -1,5 +1,44 @@
 # Changelog
 
+## [1.88.0] - 2026-08-20
+
+### The x402 challenge lives in a header, and two of our readers only looked at the body
+
+Reported by an external prober measuring our own catalog's walls. Verified
+against production the same day: of 40 live Bazaar resources, **36 of 36 that
+answer 402 carry the challenge in the `PAYMENT-REQUIRED` header, and none in the
+body**. Both transports are legal x402; sellers picked the one we did not read.
+
+Worse than an empty body: sellers like Tenjin use the 402 body for a **free
+preview of the paid content**. So the body is valid JSON that simply has no
+`accepts` — a parse that succeeds and finds nothing.
+
+**`x402-reqwest` could not pay any of them.** The buyer middleware did
+`res.json::<PaymentRequiredResponse>()` and nothing else, so every header-transport
+seller was unpayable. It now reads the header first and falls back to the body,
+and an unparseable header falls through rather than refusing a seller whose body
+is fine.
+
+**The Bazaar payTo-hijack check had never fired.** `pay_to_from_402` parsed the
+body only, and its caller guarded with `if !live.is_empty()` — so on every
+header-transport resource the security check saw nothing and read as "nothing
+drifted". A check that did not run looked exactly like one that passed.
+
+The fix separates those two states: `LiveTerms { pay_to, readable }`. `readable`
+is set only when the value actually looks like an x402 challenge, so a free
+preview no longer counts as having been read, and a resource whose terms we
+cannot parse now says so in the logs instead of passing silently.
+
+Test vectors are real base64 challenges captured from production, and the "body"
+vector is Tenjin's actual article preview.
+
+### Not affected
+
+The DX402 seller post-hook never inspects a 402 at all — it runs in
+`settle_after_execution`, after the payment has already settled, on a response
+that is not an error. And liveness classification (`402 => alive`) is by status
+code, so no listing was ever buried by this.
+
 ## [1.87.0] - 2026-08-19
 
 ### Pinata (IPFS) as a storage backend, with S3 as the automatic fallback

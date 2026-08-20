@@ -307,7 +307,7 @@ impl rqm::Middleware for X402Payments {
         #[cfg(feature = "telemetry")]
         tracing::debug!("Received 402 Payment Required");
 
-        let payment_required_response = res.json::<PaymentRequiredResponse>().await?;
+        let payment_required_response = challenge_from(res).await?;
 
         let retry_req = async {
             let payment_header = self
@@ -325,5 +325,122 @@ impl rqm::Middleware for X402Payments {
         .await
         .map_err(Into::<rqm::Error>::into)?;
         next.run(retry_req, extensions).await
+    }
+}
+
+/// Read the 402 challenge from wherever the seller put it.
+///
+/// x402 allows BOTH transports and sellers pick freely:
+///
+/// * base64 JSON in the `PAYMENT-REQUIRED` (or `X-PAYMENT-REQUIRED`) header
+/// * JSON in the response body
+///
+/// This read the body only. Measured against production on 2026-08-20, that was
+/// the wrong half: of 40 live Bazaar resources, **36 of 36 that answered 402
+/// carried the challenge in the header and none in the body**. Worse, sellers
+/// like Tenjin use the body for a free preview of the paid content -- so the
+/// body is valid JSON that simply has no `accepts`, and this failed to
+/// deserialize rather than finding the terms one header away.
+///
+/// The header is tried first because that is where live sellers put it; the body
+/// is the fallback so the sellers who use it keep working.
+async fn challenge_from(res: Response) -> Result<PaymentRequiredResponse, reqwest::Error> {
+    use base64::Engine as _;
+
+    let header = res
+        .headers()
+        .get("payment-required")
+        .or_else(|| res.headers().get("x-payment-required"))
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+
+    if let Some(raw) = header {
+        let raw = raw.trim();
+        // Bare JSON first (a few sellers skip the encoding), then base64.
+        let decoded = serde_json::from_str::<PaymentRequiredResponse>(raw)
+            .ok()
+            .or_else(|| {
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(raw)
+                    .or_else(|_| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(raw))
+                    .ok()?;
+                serde_json::from_slice::<PaymentRequiredResponse>(&bytes).ok()
+            });
+        if let Some(challenge) = decoded {
+            #[cfg(feature = "telemetry")]
+            tracing::debug!("402 challenge read from the PAYMENT-REQUIRED header");
+            return Ok(challenge);
+        }
+        // An unparseable header is not fatal on its own -- fall through to the
+        // body rather than refusing a seller whose header we simply did not
+        // understand.
+        #[cfg(feature = "telemetry")]
+        tracing::debug!("PAYMENT-REQUIRED header present but unparseable; trying the body");
+    }
+
+    res.json::<PaymentRequiredResponse>().await
+}
+
+#[cfg(test)]
+mod challenge_transport_tests {
+    use super::*;
+
+    /// A real `PAYMENT-REQUIRED` header value: base64 of an x402 challenge, the
+    /// shape live sellers serve.
+    const HEADER_CHALLENGE: &str = "eyJ4NDAyVmVyc2lvbiI6IDEsICJlcnJvciI6ICJQYXltZW50IHJlcXVpcmVkIiwgImFjY2VwdHMiOiBbeyJzY2hlbWUiOiAiZXhhY3QiLCAibmV0d29yayI6ICJiYXNlIiwgIm1heEFtb3VudFJlcXVpcmVkIjogIjEwMDAwMCIsICJyZXNvdXJjZSI6ICJodHRwczovL3Rlbmppbi5ibG9nL3giLCAiZGVzY3JpcHRpb24iOiAiZCIsICJtaW1lVHlwZSI6ICJhcHBsaWNhdGlvbi9qc29uIiwgInBheVRvIjogIjB4YjA1OWVBQzkzMzBEQzVmMjNGNTM0NmE4MTM0OEFmMUU5OWYzNzliZCIsICJtYXhUaW1lb3V0U2Vjb25kcyI6IDMwMCwgImFzc2V0IjogIjB4ODMzNTg5ZkNENmVEYjZFMDhmNGM3QzMyRDRmNzFiNTRiZEEwMjkxMyJ9XX0=";
+
+    /// What a real seller puts in the 402 BODY: a free preview of the paid
+    /// content. Valid JSON, no `accepts` -- so deserializing it as a challenge
+    /// fails, which is exactly how this crate could not pay them.
+    const PREVIEW_BODY: &str = r#"{"id":"01a01a4c","slug":"china-macro-weekly","title":"China Macro Weekly","price":"100000"}"#;
+
+    fn response(header: Option<&str>, body: &str) -> Response {
+        let mut builder = http::Response::builder().status(402);
+        if let Some(h) = header {
+            builder = builder.header("payment-required", h);
+        }
+        Response::from(builder.body(body.to_string()).unwrap())
+    }
+
+    #[tokio::test]
+    async fn the_challenge_is_found_in_the_header() {
+        // Measured 2026-08-20: 36 of 36 live Bazaar resources answering 402 put
+        // the challenge here and none in the body. Reading the body only meant
+        // this crate could not pay any of them.
+        let res = response(Some(HEADER_CHALLENGE), PREVIEW_BODY);
+        let challenge = challenge_from(res).await.expect("header transport");
+        assert_eq!(challenge.accepts.len(), 1);
+        assert_eq!(
+            challenge.accepts[0].pay_to.to_string().to_lowercase(),
+            "0xb059eac9330dc5f23f5346a81348af1e99f379bd"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_body_transport_still_works() {
+        // Both are legal. Supporting the header must not drop the sellers who
+        // use the body.
+        let body = r#"{"x402Version":1,"error":"Payment required","accepts":[{"scheme":"exact","network":"base","maxAmountRequired":"1","resource":"https://x.test/","description":"d","mimeType":"application/json","payTo":"0xb059eAC9330DC5f23F5346a81348Af1E99f379bd","maxTimeoutSeconds":300,"asset":"0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"}]}"#;
+        let challenge = challenge_from(response(None, body))
+            .await
+            .expect("body transport");
+        assert_eq!(challenge.accepts.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_unparseable_header_falls_through_to_the_body() {
+        // A header we do not understand must not refuse a seller whose body is
+        // perfectly good.
+        let body = r#"{"x402Version":1,"error":"Payment required","accepts":[{"scheme":"exact","network":"base","maxAmountRequired":"1","resource":"https://x.test/","description":"d","mimeType":"application/json","payTo":"0xb059eAC9330DC5f23F5346a81348Af1E99f379bd","maxTimeoutSeconds":300,"asset":"0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"}]}"#;
+        let challenge = challenge_from(response(Some("!!!not base64!!!"), body))
+            .await
+            .expect("must fall back rather than refuse");
+        assert_eq!(challenge.accepts.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn neither_transport_is_still_an_error() {
+        // No challenge anywhere is a genuine failure, and must stay loud.
+        assert!(challenge_from(response(None, PREVIEW_BODY)).await.is_err());
     }
 }

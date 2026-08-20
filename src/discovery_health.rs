@@ -356,29 +356,99 @@ async fn probe_mcp(url: &url::Url) -> (ProbeClass, Option<u16>, u64) {
     }
 }
 
-/// Extract the `payTo` recipients advertised by a live 402 body (x402 v2
-/// `accepts[]`, or a v1-style top-level `payTo`). Lowercased for comparison.
-fn pay_to_from_402(body: &str) -> Vec<String> {
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
+/// The payment terms a live 402 advertised, and -- separately -- whether we
+/// managed to read them at all.
+///
+/// The distinction is the whole point. "The recipients match" and "we could not
+/// find any recipients" are different answers, and collapsing them is what let
+/// the hijack check pass silently on every resource we probe.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct LiveTerms {
+    /// `payTo` recipients, lowercased.
+    pub pay_to: Vec<String>,
+    /// Whether a parseable x402 challenge was found in either transport.
+    pub readable: bool,
+}
+
+/// Extract the `payTo` recipients a live 402 advertises.
+///
+/// x402 allows the challenge in EITHER transport and sellers pick freely:
+///
+/// * base64 JSON in the `PAYMENT-REQUIRED` (or `X-PAYMENT-REQUIRED`) header
+/// * JSON in the response body
+///
+/// This read the body only, and measured against production on 2026-08-20 that
+/// was the wrong half: of 40 real Bazaar resources, **36 of 36 that answered
+/// 402 carried the terms in the header and none in the body**. On Tenjin the
+/// body is the free preview of the article -- perfectly valid JSON with no
+/// payment terms in it at all -- so the parse succeeded and returned nothing.
+///
+/// Reported by an external prober measuring our catalog's walls.
+fn pay_to_from_402(body: Option<&str>, header: Option<&str>) -> LiveTerms {
+    let mut terms = LiveTerms::default();
+
+    // Header first: it is where real sellers put it.
+    if let Some(raw) = header {
+        if let Some(v) = decode_payment_required(raw) {
+            collect_pay_to(&v, &mut terms);
+        }
+    }
+    if let Some(b) = body {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(b) {
+            collect_pay_to(&v, &mut terms);
+        }
+    }
+    terms
+}
+
+/// Decode a `PAYMENT-REQUIRED` header value into the challenge it carries.
+///
+/// Base64 in practice; a few sellers send bare JSON, so both are accepted.
+fn decode_payment_required(raw: &str) -> Option<serde_json::Value> {
+    use base64::Engine as _;
+    let trimmed = raw.trim();
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        return Some(v);
+    }
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(trimmed)
+        .or_else(|_| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(trimmed))
+        .ok()?;
+    serde_json::from_slice(&decoded).ok()
+}
+
+/// Pull `accepts[].payTo` (v2) and a top-level `payTo` (v1) out of a challenge.
+///
+/// Marks `readable` only when the value actually looks like an x402 challenge.
+/// A body that parses as JSON but carries no payment terms -- a free preview,
+/// an error object -- must NOT count as "read": that is exactly the case that
+/// made the check pass while seeing nothing.
+fn collect_pay_to(v: &serde_json::Value, terms: &mut LiveTerms) {
+    let mut found_shape = false;
     if let Some(accepts) = v.get("accepts").and_then(|a| a.as_array()) {
+        found_shape = true;
         for a in accepts {
             if let Some(p) = a.get("payTo").and_then(|p| p.as_str()) {
-                out.push(p.to_ascii_lowercase());
+                terms.pay_to.push(p.to_ascii_lowercase());
             }
         }
     }
     if let Some(p) = v.get("payTo").and_then(|p| p.as_str()) {
-        out.push(p.to_ascii_lowercase());
+        found_shape = true;
+        terms.pay_to.push(p.to_ascii_lowercase());
     }
-    out
+    if found_shape {
+        terms.readable = true;
+    }
 }
 
-/// Classify a single probe of `url` (GET, no payment attached). On a 402 the
-/// body is read so the caller can check for a payTo swap.
-async fn probe(url: &url::Url) -> (ProbeClass, Option<u16>, u64, Option<String>) {
+/// Classify a single probe of `url` (GET, no payment attached).
+///
+/// On a 402 BOTH transports are captured -- the body and the `PAYMENT-REQUIRED`
+/// header -- because the caller has to check for a payTo swap and sellers put
+/// the challenge in either one. Reading only the body found nothing on 36 of 36
+/// live resources measured 2026-08-20.
+async fn probe(url: &url::Url) -> (ProbeClass, Option<u16>, u64, Option<String>, Option<String>) {
     let start = std::time::Instant::now();
     let result = safe_get(PROBE_UA, PROBE_TIMEOUT, url).await;
     let latency = start.elapsed().as_millis() as u64;
@@ -393,13 +463,19 @@ async fn probe(url: &url::Url) -> (ProbeClass, Option<u16>, u64, Option<String>)
                 c if (500..600).contains(&c) => ProbeClass::Fail,
                 _ => ProbeClass::Degraded,
             };
-            // Only 402 bodies carry payment terms worth diffing.
-            let body = if code == 402 {
-                resp.text().await.ok()
+            // Only a 402 carries payment terms worth diffing.
+            let (body, header) = if code == 402 {
+                let header = resp
+                    .headers()
+                    .get("payment-required")
+                    .or_else(|| resp.headers().get("x-payment-required"))
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_string);
+                (resp.text().await.ok(), header)
             } else {
-                None
+                (None, None)
             };
-            return (class, Some(code), latency, body);
+            return (class, Some(code), latency, body, header);
         }
         // A URL the SSRF connector refuses (private/template/bad-port) is not a
         // dead endpoint — it is simply not probeable this way.
@@ -407,9 +483,9 @@ async fn probe(url: &url::Url) -> (ProbeClass, Option<u16>, u64, Option<String>)
         | Err(SecurityReject::Scheme(_))
         | Err(SecurityReject::Userinfo)
         | Err(SecurityReject::Port(_))
-        | Err(SecurityReject::NoHost) => (ProbeClass::Unprobeable, None, latency, None),
+        | Err(SecurityReject::NoHost) => (ProbeClass::Unprobeable, None, latency, None, None),
         // Resolution failure / connection error / redirect loop -> dead.
-        Err(_) => (ProbeClass::Fail, None, latency, None),
+        Err(_) => (ProbeClass::Fail, None, latency, None, None),
     }
 }
 
@@ -475,9 +551,9 @@ pub fn start_health_task(
                     // MCP endpoints answer a POST JSON-RPC handshake, not a GET
                     // 402 — probing them with GET would mark our own first-party
                     // MCP services dead.
-                    let (mut class, http, latency, body) = if resource_type == "mcp" {
+                    let (mut class, http, latency, body, pr_header) = if resource_type == "mcp" {
                         let (c, h, l) = probe_mcp(&u).await;
-                        (c, h, l, None)
+                        (c, h, l, None, None)
                     } else {
                         probe(&u).await
                     };
@@ -485,22 +561,34 @@ pub fn start_health_task(
                     // payTo drift (F4): a live 402 that now pays a recipient the
                     // listing never declared is a hijack signal, not a health
                     // signal. Quarantine immediately and alarm.
-                    if let Some(body) = body.as_deref() {
-                        if !expected_pay_to.is_empty() {
-                            let live = pay_to_from_402(body);
-                            let drifted: Vec<&String> = live
-                                .iter()
-                                .filter(|p| !expected_pay_to.contains(p))
-                                .collect();
-                            if !live.is_empty() && !drifted.is_empty() {
-                                warn!(
-                                    url = %u,
-                                    expected = ?expected_pay_to,
-                                    observed = ?live,
-                                    "paytoswap: live 402 pays an undeclared recipient; quarantining"
-                                );
-                                class = ProbeClass::PayToDrift;
-                            }
+                    if class == ProbeClass::Alive && !expected_pay_to.is_empty() {
+                        let live = pay_to_from_402(body.as_deref(), pr_header.as_deref());
+                        let drifted: Vec<&String> = live
+                            .pay_to
+                            .iter()
+                            .filter(|p| !expected_pay_to.contains(p))
+                            .collect();
+                        if !drifted.is_empty() {
+                            warn!(
+                                url = %u,
+                                expected = ?expected_pay_to,
+                                observed = ?live.pay_to,
+                                "paytoswap: live 402 pays an undeclared recipient; quarantining"
+                            );
+                            class = ProbeClass::PayToDrift;
+                        } else if !live.readable {
+                            // A check that did NOT run must not look like one
+                            // that passed. This is the state that hid the bug:
+                            // the terms were in the header, the body parsed as
+                            // a free preview, and the swap check quietly saw
+                            // nothing on every resource it examined.
+                            warn!(
+                                url = %u,
+                                has_body = body.is_some(),
+                                has_header = pr_header.is_some(),
+                                "paytoswap: could not read payment terms from either transport -- \
+                                 the hijack check did not run for this resource"
+                            );
                         }
                     }
 
@@ -557,17 +645,22 @@ mod tests {
         let v2 = r#"{"x402Version":2,"accepts":[
             {"network":"eip155:8453","payTo":"0xAAAa0000000000000000000000000000000000aa"},
             {"network":"eip155:1","payTo":"0xBBBb0000000000000000000000000000000000bb"}]}"#;
-        let got = pay_to_from_402(v2);
-        assert_eq!(got.len(), 2);
-        assert!(got.contains(&"0xaaaa0000000000000000000000000000000000aa".to_string()));
+        let got = pay_to_from_402(Some(v2), None);
+        assert_eq!(got.pay_to.len(), 2);
+        assert!(got
+            .pay_to
+            .contains(&"0xaaaa0000000000000000000000000000000000aa".to_string()));
         // v1-style top-level payTo
         let v1 = r#"{"payTo":"0xCCCc0000000000000000000000000000000000cc","amount":"1"}"#;
         assert_eq!(
-            pay_to_from_402(v1),
+            pay_to_from_402(Some(v1), None).pay_to,
             vec!["0xcccc0000000000000000000000000000000000cc".to_string()]
         );
-        // garbage body yields nothing (so drift never fires on unparseable input)
-        assert!(pay_to_from_402("not json").is_empty());
+        // Garbage yields nothing AND is not marked readable, so the caller can
+        // tell "no drift" from "we never got to look".
+        let junk = pay_to_from_402(Some("not json"), None);
+        assert!(junk.pay_to.is_empty());
+        assert!(!junk.readable);
     }
 
     #[tokio::test]
@@ -589,5 +682,90 @@ mod tests {
         t.record_probe("https://b/x", ProbeClass::AuthGated, Some(401), 5)
             .await;
         assert_eq!(status_of(&t, "https://b/x").await, HealthStatus::AuthGated);
+    }
+}
+
+#[cfg(test)]
+mod payment_required_transport_tests {
+    use super::*;
+
+    /// A real `PAYMENT-REQUIRED` header, base64 of the challenge Tenjin serves:
+    /// x402 v2 with `accepts[].payTo` on Base. Shortened to the fields that
+    /// matter, but the shape and the encoding are what production sends.
+    const REAL_HEADER: &str = "eyJ4NDAyVmVyc2lvbiI6IDIsICJlcnJvciI6ICJQYXltZW50IHJlcXVpcmVkIiwgImFjY2VwdHMiOiBbeyJzY2hlbWUiOiAiZXhhY3QiLCAibmV0d29yayI6ICJlaXAxNTU6ODQ1MyIsICJhbW91bnQiOiAiMTAwMDAwIiwgImFzc2V0IjogIjB4ODMzNTg5ZkNENmVEYjZFMDhmNGM3QzMyRDRmNzFiNTRiZEEwMjkxMyIsICJwYXlUbyI6ICIweGIwNTllQUM5MzMwREM1ZjIzRjUzNDZhODEzNDhBZjFFOTlmMzc5YmQiLCAibWF4VGltZW91dFNlY29uZHMiOiAzMDB9XX0=";
+
+    /// What Tenjin actually puts in the 402 BODY: the free preview of the
+    /// article. Valid JSON, zero payment terms.
+    const REAL_BODY: &str =
+        r#"{"id":"01a01a4c","slug":"china-macro-weekly-3","title":"China Macro Weekly"}"#;
+
+    #[test]
+    fn the_terms_are_read_from_the_header() {
+        // The bug: this returned nothing for 36 of 36 live resources, because
+        // it looked only at the body -- where the terms are not.
+        let terms = pay_to_from_402(Some(REAL_BODY), Some(REAL_HEADER));
+        assert!(
+            terms.readable,
+            "a challenge in the header must count as read"
+        );
+        assert_eq!(
+            terms.pay_to,
+            vec!["0xb059eac9330dc5f23f5346a81348af1e99f379bd".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_body_that_is_not_a_challenge_is_not_readable() {
+        // THE failure that hid everything: the body parses fine and carries no
+        // payment terms, so the old code returned an empty vec -- and the
+        // caller's `if !live.is_empty()` guard read that as "nothing drifted".
+        let terms = pay_to_from_402(Some(REAL_BODY), None);
+        assert!(terms.pay_to.is_empty());
+        assert!(
+            !terms.readable,
+            "valid JSON without payment terms is NOT a challenge we read"
+        );
+    }
+
+    #[test]
+    fn the_body_transport_still_works() {
+        // Both transports are legal. Supporting the header must not drop the
+        // sellers who use the body.
+        let body = r#"{"accepts":[{"payTo":"0xAAAA"}],"x402Version":2}"#;
+        let terms = pay_to_from_402(Some(body), None);
+        assert!(terms.readable);
+        assert_eq!(terms.pay_to, vec!["0xaaaa".to_string()]);
+    }
+
+    #[test]
+    fn a_v1_top_level_pay_to_is_read_too() {
+        let terms = pay_to_from_402(Some(r#"{"payTo":"0xBBBB"}"#), None);
+        assert!(terms.readable);
+        assert_eq!(terms.pay_to, vec!["0xbbbb".to_string()]);
+    }
+
+    #[test]
+    fn a_hijack_in_the_header_is_now_visible() {
+        // The whole point: a live 402 paying an undeclared recipient. Before
+        // this, a swap hidden in the header was invisible.
+        let declared = ["0x1111111111111111111111111111111111111111".to_string()];
+        let terms = pay_to_from_402(Some(REAL_BODY), Some(REAL_HEADER));
+        let drifted: Vec<_> = terms
+            .pay_to
+            .iter()
+            .filter(|p| !declared.contains(p))
+            .collect();
+        assert!(!drifted.is_empty(), "the swap must be detectable");
+    }
+
+    #[test]
+    fn a_garbage_header_does_not_masquerade_as_a_reading() {
+        for junk in ["not base64!!", "", "e30=", "bnVsbA=="] {
+            let terms = pay_to_from_402(None, Some(junk));
+            assert!(
+                !terms.readable,
+                "{junk:?} must not count as a challenge we read"
+            );
+        }
     }
 }

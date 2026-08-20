@@ -127,7 +127,71 @@ Reglas que no son negociables:
 - Timeout obligatorio (10 s, igual que el hook del vendedor). **Un fallo de
   Pinata no puede bloquear un pago**; si los dos fallan, se degrada a skip.
 
-### 2.4 Opt-in por anclaje
+### 2.4 Quién elige: tres decisiones, tres actores
+
+**Definido por Saul, 2026-08-19.** La pregunta "¿variable global o elección por
+llamada?" mezcla tres decisiones distintas:
+
+| decisión | quién | dónde vive |
+|---|---|---|
+| qué backends **puede** ofrecer este facilitador | operador | variable global |
+| cuál **usa** este anclaje | vendedor | `AnchorRequest`, por llamada |
+| **qué cuesta** | vendedor <-> comprador | x402, que ya existe |
+
+La variable global no es la elección de producto: es la **capacidad del
+despliegue**. Un operador sin llave de Pinata no puede ofrecer IPFS, y eso no
+debe impedirle al vendedor elegir entre lo que sí hay.
+
+Se elige por llamada porque **no son el mismo producto**. Privado/S3 promete "lo
+guardamos 90 días y lo podemos borrar"; IPFS público promete "es permanente y
+nadie lo baja, nosotros incluidos". Un switch global mete a todos los vendedores
+del facilitador en la misma promesa.
+
+#### El límite duro: `public` necesita el consentimiento del COMPRADOR
+
+`public` es irreversible, y **no afecta a quien lo elige**. El blob es la compra
+del comprador, cifrada a su clave. Si el vendedor elige unilateralmente
+"permanente y público", el ciphertext del comprador queda en IPFS para siempre
+sin que el comprador lo haya aceptado — y el spec ya advierte que ECDH sobre
+secp256k1 no es post-cuántico, así que "permanente" es una apuesta sobre un
+futuro que el comprador no firmó.
+
+> El vendedor elige libremente entre las opciones **reversibles**. `public` --lo
+> único irrevocable-- exige el consentimiento del comprador, no sólo el del
+> vendedor.
+
+El canal ya está diseñado: el opt-in del comprador vía `accepts`
+(`05-DISENO-v0.2.md`), que es la misma negociación donde el comprador pide
+evidencia durable y aporta su clave.
+
+**Regla intermedia, porque ese opt-in todavía no está implementado:** `public`
+queda apagado por operador hasta que exista. `private` y `s3` se eligen por
+llamada desde ya. Entregable ahora, sin comprometer a nadie.
+
+#### Precios: fuera del facilitador
+
+El costo real de 50 KB por 90 días es **$0.0000035** (§3 del backlog). Cobrar
+"para cubrir el storage" sería deshonesto. Lo que tiene valor es *poder
+reclamar*.
+
+El vendedor le pone precio a la variante durable en su propio `accepts` -- que es
+exactamente cómo x402 cobra distinto por recursos distintos. **El facilitador no
+necesita conocer ningún precio.** Construir una tarifa acá sería inventar un
+segundo protocolo de pago al lado del que estamos extendiendo.
+
+#### Dos consecuencias operativas
+
+- **Nunca degradar en silencio.** Si el vendedor pide un backend que el operador
+  no ofrece, se responde con error claro. Guardarlo en otro lado calladamente
+  deja a un vendedor creyendo que su evidencia es permanente cuando no lo es --
+  peor que decirle que no. (Distinto del **fallback por FALLO** de §2.3, que sí
+  es correcto porque no cambia la promesa: S3 es el backend más conservador, y
+  el registro declara dónde aterrizó.)
+- **Publicar qué se ofrece.** `/supported` (o `/dx402/stats`) anuncia los
+  backends disponibles. Nadie elige bien a ciegas, y sin esto la elección por
+  llamada no es usable.
+
+### 2.5 Opt-in por anclaje
 
 `AnchorRequest.storage_network: Option<StorageNetwork>` (`private` | `public`),
 **default `private`**. Mismo precedente que `retention: permanent`: global con
@@ -142,7 +206,8 @@ opt-in por ruta, y elegir permanencia es una decisión explícita del vendedor.
 | 1 | `pointer_for(payment_id, blob)` en el trait + S3 sin cambios de conducta | cambio mecánico, aislado, con los tests actuales de guardia |
 | 2 | `PinataEvidenceStore` (upload, signed-url read, delete) + tests contra un mock | el grueso; sin tocar producción |
 | 3 | `FallbackEvidenceStore` + test de "primario caído -> aterriza en el fallback y el registro lo dice" | la parte que puede mentir sobre dónde está la evidencia |
-| 4 | `storage_network` en `AnchorRequest` + esquema del puntero | superficie de API |
+| 4 | `DX402_STORE_BACKENDS` como **allowlist** (no elección única) + anunciarlos en `/supported` | sin esto la elección por llamada no es usable |
+| 4b | `storage` en `AnchorRequest` + esquema del puntero, con error claro si el operador no lo ofrece | superficie de API |
 | 5 | Terraform: leer el secreto, IAM, variable `dx402_storage_backend` | despliegue |
 | 6 | Barredor de retención (borra lo vencido en Pinata privado) | **sin esto, "90d" es mentira en el camino Pinata** |
 | 7 | `scripts/dx402-e2e-check.py` contra el backend Pinata | la verificación real |
@@ -164,6 +229,10 @@ que hacer nosotros.
 5. Un anclaje `public` es resoluble desde `ipfs.io` **sin** credenciales; uno
    `private` **no**.
 6. El barredor borra un objeto vencido y `GET /dx402/blob` devuelve 410, no 500.
+7. Pedir un backend que el operador NO ofrece devuelve un error nombrándolo --
+   **no** un anclaje silencioso en otro lado.
+8. `/supported` anuncia los backends disponibles, y coincide con lo que el
+   facilitador realmente acepta.
 
 ---
 

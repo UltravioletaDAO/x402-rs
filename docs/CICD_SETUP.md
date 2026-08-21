@@ -18,7 +18,15 @@ is **skipped** (the run still goes green on the `test` job), so merging the work
 ### 1. Create an IAM user for CI
 
 Create an IAM user (e.g. `github-actions-facilitator-deploy`) with **programmatic access** (no console),
-then give it two policies:
+then give it the policies below.
+
+> **There is a third, managed policy in production that this section does not cover:**
+> `facilitator-cicd-infra` (account-local, not AWS-managed). Its `BalancesLambdaDeploy` statement
+> (added 2026-08-20, `v2`) grants `lambda:UpdateFunctionConfiguration`, `UpdateFunctionCode`,
+> `TagResource` and `UntagResource` scoped to the single ARN
+> `arn:aws:lambda:us-east-2:518898403364:function:facilitator-production-balances`. Without it the
+> balances-Lambda step fails with `AccessDeniedException`. **None of these IAM policies live in
+> Terraform** — they are applied by hand, so this document is their only record. Keep it current.
 
 **(a) Reads — attach the AWS managed `ReadOnlyAccess` policy.** A full `terraform apply` refreshes the
 whole prod config (ECS, ALB, ACM, Route53, DynamoDB, Secrets metadata, CloudWatch, Lambda, …), so the
@@ -127,9 +135,21 @@ That's it. The next push to `main` will build → push to ECR → `terraform app
   -target=aws_ecs_service.facilitator -var image_tag=...`. This scopes the deploy to **only** rolling
   the image. A full apply would additionally re-upload the balances Lambda every run (the
   `archive_file` zip hashes differently in CI than in state) and touch the ALB — neither belongs in
-  an image deploy. `-target` avoids the Lambda; the one no-op ALB-attribute modify it spuriously pulls
-  in (the service's ALB dependency) is covered by the role's `elasticloadbalancing:Modify*` perms.
+  an image deploy. The one no-op ALB-attribute modify it spuriously pulls in (the service's ALB
+  dependency) is covered by the role's `elasticloadbalancing:Modify*` perms.
   `-refresh=false` is avoided (it invents drift from stale state).
+- **Balances Lambda:** a **separate step**, applied only when `lambda/balances/**` or
+  `lambda-balances.tf` changed in the push (detected via the compare API). Until 2026-08-20 the
+  Lambda was excluded from every run, and the zip-hash reason above was only half the story — the
+  deploy user held **no `lambda:*` write permissions at all**, so a full apply could not have
+  succeeded either. A change to `lambda/balances/` would land in `main` and never reach AWS: that is
+  how `RPC_URL_SUI` stayed pointed at a dead endpoint in the Lambda while the same commit fixed it
+  for the facilitator. The `BalancesLambdaDeploy` statement in `facilitator-cicd-infra` (added
+  2026-08-20, scoped to that one function ARN) grants the four writes Terraform needs.
+  If the compare call fails the step applies anyway — a redundant `UpdateFunctionCode` is cheap, a
+  silently unapplied change is the bug being fixed. That fallback doubles as the manual escape
+  hatch: a `workflow_dispatch` run has no `github.event.before`, so it always applies the Lambda.
+  **Use it to resync the Lambda whenever it drifts from `main`.**
 - **Verify:** waits for `services-stable`, then polls `/health` for `200`.
 - `concurrency: deploy-production` serializes deploys so two merges can't apply at once.
 

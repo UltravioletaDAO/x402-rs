@@ -303,7 +303,11 @@ def get_network_configs() -> dict[str, dict]:
         },
         # Sui
         # fullnode.{mainnet,testnet}.sui.io are NOT usable as fallbacks: they
-        # stopped serving JSON-RPC entirely and answer -32601 to every method.
+        # stopped serving JSON-RPC entirely and answer -32601 to every method,
+        # including the SDK handshake. Sui mainnet was dead in production until
+        # 2026-08-20 and nothing alarmed on it, because there is no per-chain
+        # health check -- only this balance readout, which nobody watches.
+        # Verified working on 2026-08-20 against the facilitator's real wallets.
         "sui-mainnet": {
             "rpcs": [
                 os.environ.get("RPC_URL_SUI"),

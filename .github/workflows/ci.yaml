@@ -154,6 +154,38 @@ jobs:
             -target=aws_ecs_service.facilitator \
             -var="image_tag=${{ steps.tag.outputs.image_tag }}"
 
+      - name: Deploy balances Lambda (only when its sources changed)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        working-directory: terraform/environments/production
+        run: |
+          # The image deploy above deliberately excludes the Lambda, for the archive_file
+          # hash reason explained there. But excluding it from EVERY run means a change to
+          # lambda/balances/ lands in main and is never applied -- which is exactly how
+          # RPC_URL_SUI stayed pointed at a dead endpoint in the Lambda on 2026-08-20 while
+          # the same fix went live for the facilitator in the very same commit.
+          #
+          # So apply it, but only when its own sources changed. Failure to determine that
+          # falls through to applying: a redundant UpdateFunctionCode is cheap, a silently
+          # unapplied change is what we are fixing.
+          #
+          # That fallback doubles as the manual escape hatch: a workflow_dispatch run has no
+          # `github.event.before`, so the compare fails and the Lambda is applied. Use it to
+          # resync the Lambda when it drifted from main (which is how it was first fixed).
+          if files=$(gh api "repos/${{ github.repository }}/compare/${{ github.event.before }}...${{ github.sha }}" --jq '.files[].filename' 2>/dev/null); then
+            if printf '%s\n' "$files" | grep -qE '^(lambda/balances/|terraform/environments/production/lambda-balances\.tf$)'; then
+              echo "Balances Lambda sources changed; applying."
+            else
+              echo "No balances Lambda changes in this push; skipping."
+              exit 0
+            fi
+          else
+            echo "Could not list changed files; applying to be safe."
+          fi
+          terraform init -input=false
+          terraform apply -input=false -auto-approve \
+            -target=aws_lambda_function.balances
+
       - name: Wait for ECS rollout to stabilize
         run: |
           aws ecs wait services-stable \

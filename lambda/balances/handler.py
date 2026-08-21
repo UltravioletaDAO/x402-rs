@@ -302,16 +302,22 @@ def get_network_configs() -> dict[str, dict]:
             "type": "solana"
         },
         # Sui
+        # fullnode.{mainnet,testnet}.sui.io are NOT usable as fallbacks: they
+        # stopped serving JSON-RPC entirely and answer -32601 to every method.
         "sui-mainnet": {
             "rpcs": [
                 os.environ.get("RPC_URL_SUI"),
-                "https://fullnode.mainnet.sui.io:443",
+                "https://sui-rpc.publicnode.com",
+                "https://rpc-mainnet.suiscan.xyz",
             ],
             "address": SUI_MAINNET_ADDRESS,
             "type": "sui"
         },
         "sui-testnet": {
-            "rpcs": ["https://fullnode.testnet.sui.io:443"],
+            "rpcs": [
+                "https://sui-testnet-rpc.publicnode.com",
+                "https://rpc-testnet.suiscan.xyz",
+            ],
             "address": SUI_TESTNET_ADDRESS,
             "type": "sui"
         },

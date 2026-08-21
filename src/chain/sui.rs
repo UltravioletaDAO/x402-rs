@@ -720,10 +720,13 @@ impl FromEnvByNetworkBuild for SuiProvider {
         let rpc_url = match std::env::var(rpc_env) {
             Ok(url) => url,
             Err(_) => {
-                // Use public RPC endpoints as fallback
+                // Use public RPC endpoints as fallback.
+                // NOT fullnode.{mainnet,testnet}.sui.io: those stopped serving
+                // JSON-RPC entirely and answer -32601 to every method, including
+                // the SDK handshake, so this fallback silently disabled Sui.
                 match network {
-                    Network::Sui => "https://fullnode.mainnet.sui.io:443".to_string(),
-                    Network::SuiTestnet => "https://fullnode.testnet.sui.io:443".to_string(),
+                    Network::Sui => "https://sui-rpc.publicnode.com".to_string(),
+                    Network::SuiTestnet => "https://sui-testnet-rpc.publicnode.com".to_string(),
                     _ => unreachable!(),
                 }
             }

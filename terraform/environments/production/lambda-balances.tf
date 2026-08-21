@@ -94,7 +94,7 @@ resource "aws_lambda_function" "balances" {
       RPC_URL_UNICHAIN   = "https://unichain-rpc.publicnode.com"
       RPC_URL_MONAD      = "https://rpc.monad.xyz"
       RPC_URL_BSC        = "https://bsc-dataseed.binance.org"
-      RPC_URL_SUI        = "https://fullnode.mainnet.sui.io:443"
+      RPC_URL_SUI        = "https://sui-rpc.publicnode.com" # fullnode.mainnet.sui.io dropped JSON-RPC; keep in sync with main.tf
       # Private RPC URLs (with API keys) - override via Secrets Manager
       # RPC_URL_SOLANA will be set from secretsmanager
     }

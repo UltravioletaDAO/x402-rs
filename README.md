@@ -20,7 +20,7 @@
 
 A payment settlement service implementing the [HTTP 402](https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/402) protocol. Users sign payment authorizations off-chain, the facilitator submits them on-chain and pays gas fees.
 
-Includes [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) on-chain reputation for AI agents across 20 networks (11 mainnets + 9 testnets).
+Includes [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) on-chain reputation for AI agents across 21 networks (12 mainnets + 9 testnets).
 
 **No custody. No trust. Just payments.**
 
@@ -369,7 +369,7 @@ normative spec: **[docs/plans/dx402/02-SPEC-v0.1.md](docs/plans/dx402/02-SPEC-v0
 
 ## ERC-8004 Trustless Agents (On-Chain Reputation)
 
-The facilitator integrates [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) for AI agent identity and reputation across 20 networks.
+The facilitator integrates [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) for AI agent identity and reputation across 21 networks.
 
 ### What is ERC-8004?
 
@@ -379,7 +379,16 @@ Three on-chain registries enabling trust in the agentic economy:
 - **Reputation Registry** - Standardized feedback posting with proof-of-payment
 - **Validation Registry** - Third-party attestation of agent capabilities
 
-### Supported ERC-8004 Networks (20)
+### Supported ERC-8004 Networks (21)
+
+Addresses come from the canonical [erc-8004 reference deployment](https://github.com/erc-8004/erc-8004-contracts)
+and are identical on every EVM chain (CREATE2) -- there is no chain-specific fork:
+
+| Registry | Mainnet | Testnet |
+|----------|---------|---------|
+| Identity | `0x8004A169FB4a3325136EB29fA0ceB6D2e539a432` | `0x8004A818BFB912233c491871b3d84c89A494BD9e` |
+| Reputation | `0x8004BAa17C55a88189AE136b182e5fdA19dE9b63` | `0x8004B663056A597Dffe9eCcC1965A193B7388713` |
+| Validation | `0x8004Cc8439f36fd5F9F049D9fF86523Df6dAAB58` (not on SKALE Base) | `0x8004Cb1BF31DAf7788923b405b754f57acEB4272` |
 
 | Network | Type | Identity Registry | Reputation Registry |
 |---------|------|-------------------|---------------------|
@@ -392,6 +401,7 @@ Three on-chain registries enabling trust in the agentic economy:
 | BSC | Mainnet | Same (CREATE2) | Same (CREATE2) |
 | Monad | Mainnet | Same (CREATE2) | Same (CREATE2) |
 | Avalanche | Mainnet | Same (CREATE2) | Same (CREATE2) |
+| Scroll | Mainnet | Same (CREATE2) | Same (CREATE2) |
 | SKALE Base | Mainnet | Same (CREATE2) | Same (CREATE2) |
 | Solana | Mainnet | Anchor program | Anchor program |
 | Ethereum Sepolia | Testnet | `0x8004A818...4BD9e` | `0x8004B663...8713` |

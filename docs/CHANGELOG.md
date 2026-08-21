@@ -1,5 +1,48 @@
 # Changelog
 
+
+## [1.92.0] - 2026-08-21
+
+### Added
+- **ERC-8004 on Scroll** (chain 534352) -- 21st network, 12th mainnet. Scroll already
+  settled x402 payments; the canonical registries were simply never wired up.
+  Verified before wiring, not assumed:
+  - `eth_getCode` on two independent RPCs (`rpc.scroll.io`, `scroll.drpc.org`), both
+    reporting chainId `0x82750`.
+  - The ERC-1967 implementation behind each proxy is the *same address* as on Base,
+    Arbitrum and Avalanche (`0x7274e874...` identity, `0x16e0fa7f...` reputation,
+    `0xdb31f5d9...` validation), so the ABI we already ship applies unchanged.
+  - `name()` on the Identity Registry returns `AgentIdentity`.
+  - `totalSupply()` reverts on Scroll -- and equally on Base, so this is the existing
+    registry behaviour and not a Scroll-specific gap.
+
+### Fixed
+- **Mainnet ValidationRegistry was declared `None` on every chain.** The canonical
+  mainnet ValidationRegistry `0x8004Cc8439f36fd5F9F049D9fF86523Df6dAAB58` was deployed
+  after the identity/reputation pair and never picked up here. Verified live on
+  Ethereum, Base, Polygon, Arbitrum, Optimism, Celo, BSC, Monad, Avalanche and Scroll;
+  SKALE Base has no code at that address and correctly stays `None`.
+- **Landing page no longer frames ERC-8004 as an Avalanche-specific deployment.** The
+  Avalanche card carried an "ERC-8004 Beta" badge and a button both pointing at
+  `ava-labs/8004-boilerplate`, implying Avalanche ran its own registry. It never did:
+  the facilitator has always used the canonical CREATE2 addresses. Those links are
+  gone, replaced by the canonical deployment list, and the landing now publishes all
+  six registry addresses (identity/reputation/validation x mainnet/testnet) with a
+  note that they are identical on every EVM chain.
+
+### Contract addresses (golden source: `erc-8004/erc-8004-contracts`)
+
+| Registry | Mainnet | Testnet |
+|----------|---------|---------|
+| Identity | `0x8004A169FB4a3325136EB29fA0ceB6D2e539a432` | `0x8004A818BFB912233c491871b3d84c89A494BD9e` |
+| Reputation | `0x8004BAa17C55a88189AE136b182e5fdA19dE9b63` | `0x8004B663056A597Dffe9eCcC1965A193B7388713` |
+| Validation | `0x8004Cc8439f36fd5F9F049D9fF86523Df6dAAB58` | `0x8004Cb1BF31DAf7788923b405b754f57acEB4272` |
+
+### Operator note
+- The mainnet EVM wallet holds **0.0051 ETH on Scroll**. Enough for registrations and
+  feedback at Scroll gas prices, but it is the thinnest balance of any 8004 mainnet --
+  top it up before pointing real agent traffic at it.
+
 ## [1.91.0] - 2026-08-20
 
 ### `paymentRequirements` is the v1 spelling of `accepts`, and nothing here knew it

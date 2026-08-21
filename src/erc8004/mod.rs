@@ -22,6 +22,7 @@
 //! - BSC (BNB Smart Chain)
 //! - Monad Mainnet
 //! - Avalanche C-Chain
+//! - Scroll
 //! - SKALE Base Mainnet (gasless L3)
 //!
 //! ## EVM Testnets
@@ -80,11 +81,19 @@ pub struct Erc8004Contracts {
     pub validation_registry: Option<Address>,
 }
 
+/// Mainnet ValidationRegistry proxy, deployed after the identity/reputation pair.
+///
+/// Verified live via `eth_getCode` on Ethereum, Base, Polygon, Arbitrum, Optimism,
+/// Celo, BSC, Monad, Avalanche and Scroll (2026-08-21). SKALE Base has no code at
+/// this address, so it stays `None` there.
+const MAINNET_VALIDATION_REGISTRY: Address =
+    alloy::primitives::address!("8004Cc8439f36fd5F9F049D9fF86523Df6dAAB58");
+
 // Ethereum Mainnet - Official deployment (January 29, 2026)
 pub const ETHEREUM_MAINNET_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
     identity_registry: alloy::primitives::address!("8004A169FB4a3325136EB29fA0ceB6D2e539a432"),
     reputation_registry: alloy::primitives::address!("8004BAa17C55a88189AE136b182e5fdA19dE9b63"),
-    validation_registry: None, // Not yet deployed
+    validation_registry: Some(MAINNET_VALIDATION_REGISTRY),
 };
 
 // Ethereum Sepolia - Official testnet deployment
@@ -104,56 +113,64 @@ pub const ETHEREUM_SEPOLIA_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
 pub const BASE_MAINNET_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
     identity_registry: alloy::primitives::address!("8004A169FB4a3325136EB29fA0ceB6D2e539a432"),
     reputation_registry: alloy::primitives::address!("8004BAa17C55a88189AE136b182e5fdA19dE9b63"),
-    validation_registry: None,
+    validation_registry: Some(MAINNET_VALIDATION_REGISTRY),
 };
 
 // Polygon Mainnet - Official deployment (February 2026)
 pub const POLYGON_MAINNET_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
     identity_registry: alloy::primitives::address!("8004A169FB4a3325136EB29fA0ceB6D2e539a432"),
     reputation_registry: alloy::primitives::address!("8004BAa17C55a88189AE136b182e5fdA19dE9b63"),
-    validation_registry: None,
+    validation_registry: Some(MAINNET_VALIDATION_REGISTRY),
 };
 
 // Arbitrum One Mainnet - Official deployment (February 2026)
 pub const ARBITRUM_MAINNET_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
     identity_registry: alloy::primitives::address!("8004A169FB4a3325136EB29fA0ceB6D2e539a432"),
     reputation_registry: alloy::primitives::address!("8004BAa17C55a88189AE136b182e5fdA19dE9b63"),
-    validation_registry: None,
+    validation_registry: Some(MAINNET_VALIDATION_REGISTRY),
 };
 
 // Optimism Mainnet - Official deployment (February 9, 2026)
 pub const OPTIMISM_MAINNET_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
     identity_registry: alloy::primitives::address!("8004A169FB4a3325136EB29fA0ceB6D2e539a432"),
     reputation_registry: alloy::primitives::address!("8004BAa17C55a88189AE136b182e5fdA19dE9b63"),
-    validation_registry: None,
+    validation_registry: Some(MAINNET_VALIDATION_REGISTRY),
 };
 
 // Celo Mainnet - Official deployment (February 2026)
 pub const CELO_MAINNET_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
     identity_registry: alloy::primitives::address!("8004A169FB4a3325136EB29fA0ceB6D2e539a432"),
     reputation_registry: alloy::primitives::address!("8004BAa17C55a88189AE136b182e5fdA19dE9b63"),
-    validation_registry: None,
+    validation_registry: Some(MAINNET_VALIDATION_REGISTRY),
 };
 
 // BSC (BNB Smart Chain) Mainnet - Official deployment (February 2026)
 pub const BSC_MAINNET_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
     identity_registry: alloy::primitives::address!("8004A169FB4a3325136EB29fA0ceB6D2e539a432"),
     reputation_registry: alloy::primitives::address!("8004BAa17C55a88189AE136b182e5fdA19dE9b63"),
-    validation_registry: None,
+    validation_registry: Some(MAINNET_VALIDATION_REGISTRY),
 };
 
 // Monad Mainnet - Official deployment (February 2026)
 pub const MONAD_MAINNET_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
     identity_registry: alloy::primitives::address!("8004A169FB4a3325136EB29fA0ceB6D2e539a432"),
     reputation_registry: alloy::primitives::address!("8004BAa17C55a88189AE136b182e5fdA19dE9b63"),
-    validation_registry: None,
+    validation_registry: Some(MAINNET_VALIDATION_REGISTRY),
 };
 
 // Avalanche C-Chain Mainnet - Official deployment (February 2026)
 pub const AVALANCHE_MAINNET_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
     identity_registry: alloy::primitives::address!("8004A169FB4a3325136EB29fA0ceB6D2e539a432"),
     reputation_registry: alloy::primitives::address!("8004BAa17C55a88189AE136b182e5fdA19dE9b63"),
-    validation_registry: None,
+    validation_registry: Some(MAINNET_VALIDATION_REGISTRY),
+};
+
+// Scroll Mainnet - Official deployment (chain 534352)
+// Proxy implementations verified identical to Base/Arbitrum/Avalanche (2026-08-21).
+pub const SCROLL_MAINNET_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
+    identity_registry: alloy::primitives::address!("8004A169FB4a3325136EB29fA0ceB6D2e539a432"),
+    reputation_registry: alloy::primitives::address!("8004BAa17C55a88189AE136b182e5fdA19dE9b63"),
+    validation_registry: Some(MAINNET_VALIDATION_REGISTRY),
 };
 
 // SKALE Base Mainnet - Official deployment (CREATE2 deterministic)
@@ -242,6 +259,7 @@ pub fn get_contracts(network: &Network) -> Option<Erc8004Contracts> {
         Network::Bsc => Some(BSC_MAINNET_CONTRACTS),
         Network::Monad => Some(MONAD_MAINNET_CONTRACTS),
         Network::Avalanche => Some(AVALANCHE_MAINNET_CONTRACTS),
+        Network::Scroll => Some(SCROLL_MAINNET_CONTRACTS),
         Network::SkaleBase => Some(SKALE_BASE_MAINNET_CONTRACTS),
         // Testnets
         Network::EthereumSepolia => Some(ETHEREUM_SEPOLIA_CONTRACTS),
@@ -274,6 +292,7 @@ pub fn supported_networks() -> Vec<Network> {
         Network::Bsc,
         Network::Monad,
         Network::Avalanche,
+        Network::Scroll,
         Network::SkaleBase,
         // EVM Testnets
         Network::EthereumSepolia,
@@ -423,6 +442,26 @@ mod tests {
     }
 
     #[test]
+    fn scroll_uses_the_canonical_registries_and_has_a_validation_registry() {
+        assert!(is_erc8004_supported(&Network::Scroll));
+        let contracts = get_contracts(&Network::Scroll).unwrap();
+        assert_eq!(
+            contracts.identity_registry,
+            ETHEREUM_MAINNET_CONTRACTS.identity_registry
+        );
+        assert_eq!(
+            contracts.reputation_registry,
+            ETHEREUM_MAINNET_CONTRACTS.reputation_registry
+        );
+        // Verified live on chain 534352 via two independent RPCs; SKALE Base is the
+        // only mainnet without it, so a blanket None here would be wrong.
+        assert_eq!(
+            contracts.validation_registry,
+            Some(MAINNET_VALIDATION_REGISTRY)
+        );
+    }
+
+    #[test]
     fn test_all_mainnets_use_deterministic_addresses() {
         let mainnet_networks = vec![
             Network::Ethereum,
@@ -434,6 +473,7 @@ mod tests {
             Network::Bsc,
             Network::Monad,
             Network::Avalanche,
+            Network::Scroll,
             Network::SkaleBase,
         ];
 
@@ -509,14 +549,14 @@ mod tests {
     #[test]
     fn the_supported_network_count_matches_what_openapi_advertises() {
         let networks = supported_networks();
-        assert_eq!(networks.len(), 20, "openapi.rs advertises 20 networks");
+        assert_eq!(networks.len(), 21, "openapi.rs advertises 21 networks");
 
         let solana = networks
             .iter()
             .filter(|n| matches!(n, Network::Solana | Network::SolanaDevnet))
             .count();
         assert_eq!(solana, 2, "Solana mainnet + devnet are part of the count");
-        assert_eq!(networks.len() - solana, 18, "18 EVM networks");
+        assert_eq!(networks.len() - solana, 19, "19 EVM networks");
     }
 
     fn test_supported_networks_list() {
@@ -531,6 +571,7 @@ mod tests {
         assert!(networks.contains(&Network::Bsc));
         assert!(networks.contains(&Network::Monad));
         assert!(networks.contains(&Network::Avalanche));
+        assert!(networks.contains(&Network::Scroll));
         // EVM Testnets
         assert!(networks.contains(&Network::EthereumSepolia));
         assert!(networks.contains(&Network::BaseSepolia));
@@ -562,6 +603,7 @@ mod tests {
         assert!(names.contains(&"bsc".to_string()));
         assert!(names.contains(&"monad".to_string()));
         assert!(names.contains(&"avalanche".to_string()));
+        assert!(names.contains(&"scroll".to_string()));
         assert!(names.contains(&"ethereum-sepolia".to_string()));
         assert!(names.contains(&"base-sepolia".to_string()));
         assert!(names.contains(&"polygon-amoy".to_string()));
@@ -575,7 +617,7 @@ mod tests {
         // SKALE names
         assert!(names.contains(&"skale-base".to_string()));
         assert!(names.contains(&"skale-base-sepolia".to_string()));
-        assert_eq!(names.len(), 20);
+        assert_eq!(names.len(), 21);
     }
 
     #[test]

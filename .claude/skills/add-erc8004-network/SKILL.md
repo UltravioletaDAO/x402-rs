@@ -23,7 +23,14 @@ Before adding ERC-8004 support for a network:
 ```
 IdentityRegistry:   0x8004A169FB4a3325136EB29fA0ceB6D2e539a432
 ReputationRegistry: 0x8004BAa17C55a88189AE136b182e5fdA19dE9b63
+ValidationRegistry: 0x8004Cc8439f36fd5F9F049D9fF86523Df6dAAB58
 ```
+
+Golden source: https://github.com/erc-8004/erc-8004-contracts (`scripts/addresses.ts`).
+These are the canonical registries for EVERY EVM chain -- there is no chain-specific
+fork. Always `eth_getCode` each address on the new chain before wiring it up: the
+mainnet ValidationRegistry was deployed later than the other two and is missing on
+SKALE Base.
 
 ### Testnet Addresses
 ```

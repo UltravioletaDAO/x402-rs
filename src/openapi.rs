@@ -52,7 +52,7 @@ Ethereum Sepolia, Base Sepolia, Polygon Amoy, Optimism Sepolia, Avalanche Fuji, 
 
 ## ERC-8004 Reputation (Trustless Agents)
 
-The facilitator supports [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) for AI agent identity and reputation across **20 networks** (11 mainnets + 9 testnets), spanning both EVM and Solana.
+The facilitator supports [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) for AI agent identity and reputation across **21 networks** (12 mainnets + 9 testnets), spanning both EVM and Solana.
 
 **EVM networks:** `ethereum`, `base`, `polygon`, `arbitrum`, `optimism`, `celo`, `bsc`, `monad`, `avalanche`, `ethereum-sepolia`, `base-sepolia`, `polygon-amoy`, `arbitrum-sepolia`, `optimism-sepolia`, `celo-sepolia`, `avalanche-fuji`
 
@@ -117,7 +117,7 @@ a liveness `health` status from periodic probing, and a curated `tier`
         (name = "Core", description = "Core x402 payment verification and settlement (exact, upto, escrow schemes)"),
         (name = "Escrow", description = "Gasless escrow lifecycle (authorize, release, refund, state query)"),
         (name = "Discovery", description = "Network and scheme discovery"),
-        (name = "ERC-8004", description = "AI Agent reputation and identity (ERC-8004 Trustless Agents) - 20 networks (EVM + Solana)"),
+        (name = "ERC-8004", description = "AI Agent reputation and identity (ERC-8004 Trustless Agents) - 21 networks (EVM + Solana)"),
         (name = "Bazaar", description = "Decentralized resource discovery registry"),
         (name = "Compliance", description = "OFAC compliance and sanctions screening"),
         (name = "Health", description = "Service health and status")
@@ -781,7 +781,7 @@ async fn path_register_get() {}
     description = r#"
 Registers a new ERC-8004 agent on-chain. The facilitator pays all gas fees.
 
-**Supported networks:** 20 networks (EVM + Solana). EVM chains use ERC-721 NFTs, Solana uses Metaplex Core NFTs.
+**Supported networks:** 21 networks (EVM + Solana). EVM chains use ERC-721 NFTs, Solana uses Metaplex Core NFTs.
 
 **EVM request:**
 ```json
@@ -905,7 +905,7 @@ async fn path_feedback_get() {}
     description = r#"
 Submits on-chain reputation feedback for an AI agent via the ERC-8004 Reputation Registry (EVM) or Agent Registry with ATOM Engine CPI (Solana).
 
-**Supported networks:** 20 networks (EVM + Solana).
+**Supported networks:** 21 networks (EVM + Solana).
 
 **agentId format:** Numeric (42) for EVM, base58 Pubkey string for Solana. Both JSON numbers and strings are accepted.
 
@@ -1282,7 +1282,7 @@ async fn path_feedback_response() {}
     description = r#"
 Queries the reputation summary for an AI agent from the ERC-8004 Reputation Registry.
 
-**EVM networks:** ethereum, base, polygon, arbitrum, optimism, celo, bsc, monad, avalanche + testnets
+**EVM networks:** ethereum, base, polygon, arbitrum, optimism, celo, bsc, monad, avalanche, scroll + testnets
 
 **Solana networks:** solana, solana-devnet (reads from ATOM Engine for enriched reputation data)
 
@@ -1341,7 +1341,7 @@ async fn path_reputation() {}
     description = r#"
 Retrieves agent identity information from the ERC-8004 Identity Registry.
 
-**EVM networks:** ethereum, base, polygon, arbitrum, optimism, celo, bsc, monad, avalanche + testnets
+**EVM networks:** ethereum, base, polygon, arbitrum, optimism, celo, bsc, monad, avalanche, scroll + testnets
 
 **Solana networks:** solana, solana-devnet (reads AgentAccount PDA from 8004-solana program)
 

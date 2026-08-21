@@ -186,6 +186,43 @@ jobs:
           terraform apply -input=false -auto-approve \
             -target=aws_lambda_function.balances
 
+      - name: Deploy observability (SNS topic, alarms, schedule)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        working-directory: terraform/environments/production
+        run: |
+          # Same shape as the balances-Lambda step above, and for the same reason: these
+          # resources are outside the image deploy's -target list, so without their own
+          # step they would sit in main unapplied.
+          #
+          # This is the alerting the facilitator did not have until 2026-08-21. Five alarms
+          # had `alarm_actions = []` and the other three published to Execution Market's
+          # SNS topic -- we found out about our own outages from another team's email.
+          if files=$(gh api "repos/${{ github.repository }}/compare/${{ github.event.before }}...${{ github.sha }}" --jq '.files[].filename' 2>/dev/null); then
+            if printf '%s\n' "$files" | grep -qE '^terraform/environments/production/(alerts\.tf|cloudwatch-.*\.tf|variables\.tf)$'; then
+              echo "Observability config changed; applying."
+            else
+              echo "No observability changes in this push; skipping."
+              exit 0
+            fi
+          else
+            echo "Could not list changed files; applying to be safe."
+          fi
+          terraform init -input=false
+          terraform apply -input=false -auto-approve \
+            -target=aws_sns_topic.alerts \
+            -target=aws_sns_topic_subscription.alerts_email \
+            -target=aws_cloudwatch_metric_alarm.chain_rpc_unreachable \
+            -target=aws_cloudwatch_metric_alarm.chain_balance_low \
+            -target=aws_cloudwatch_event_rule.balances_schedule \
+            -target=aws_cloudwatch_event_target.balances_schedule \
+            -target=aws_lambda_permission.balances_schedule \
+            -target=aws_iam_role_policy.balances_lambda_secrets \
+            -target=aws_cloudwatch_metric_alarm.near_settlement_failure_rate \
+            -target=aws_cloudwatch_metric_alarm.near_rpc_errors \
+            -target=aws_cloudwatch_metric_alarm.caip2_parsing_errors_high \
+            -target=aws_cloudwatch_metric_alarm.v2_settlement_failure_rate
+
       - name: Wait for ECS rollout to stabilize
         run: |
           aws ecs wait services-stable \

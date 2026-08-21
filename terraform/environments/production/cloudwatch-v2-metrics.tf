@@ -157,7 +157,7 @@ resource "aws_cloudwatch_metric_alarm" "caip2_parsing_errors_high" {
   alarm_description   = "Alert when CAIP-2 network identifier parsing fails frequently"
   treat_missing_data  = "notBreaching"
 
-  alarm_actions = [] # Add SNS topic ARN here for notifications
+  alarm_actions = [aws_sns_topic.alerts.arn]
 
   tags = {
     Name        = "facilitator-caip2-parsing-alarm"
@@ -179,7 +179,7 @@ resource "aws_cloudwatch_metric_alarm" "v2_settlement_failure_rate" {
   alarm_description   = "Alert when v2 settlement failure rate is high"
   treat_missing_data  = "notBreaching"
 
-  alarm_actions = [] # Add SNS topic ARN here for notifications
+  alarm_actions = [aws_sns_topic.alerts.arn]
 
   tags = {
     Name        = "facilitator-v2-settlement-failure-alarm"
@@ -201,9 +201,17 @@ resource "aws_cloudwatch_metric_alarm" "v1_traffic_unexpected_drop" {
   alarm_description   = "Alert when v1 traffic drops unexpectedly (may indicate client issues)"
   treat_missing_data  = "notBreaching"
 
-  # Only enable this alarm after establishing baseline traffic
-  # Comment out initially, enable after 1 week of monitoring
-  # alarm_actions = []
+  # DELIBERATELY still without actions, unlike the other four which were wired to
+  # the facilitator's own SNS topic on 2026-08-20. This one's threshold (5 req/h)
+  # was never calibrated against a real baseline, and an alarm that cries wolf is
+  # worse than a silent one: it teaches everyone to ignore the channel.
+  #
+  # To finish it, calibrate against the X402V1Requests metric itself -- NOT the
+  # ALB RequestCount, which counts every endpoint. For reference, total ALB
+  # traffic measured 2026-08-20 was ~900-1200 req/h at baseline and 2600-3300
+  # req/h during incidents, so 5/h is almost certainly far too low to ever fire
+  # for the right reason.
+  # alarm_actions = [aws_sns_topic.alerts.arn]
 
   tags = {
     Name        = "facilitator-v1-traffic-drop-alarm"

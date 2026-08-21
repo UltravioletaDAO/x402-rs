@@ -54,6 +54,19 @@ resource "aws_iam_role_policy" "balances_lambda_secrets" {
         Resource = [
           "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:facilitator-rpc-*"
         ]
+      },
+      {
+        # Per-chain health and balance metrics (see alerts.tf). PutMetricData
+        # takes no resource ARN -- the namespace condition is the only way to
+        # scope it, so the Lambda cannot write metrics anywhere else.
+        Effect   = "Allow"
+        Action   = ["cloudwatch:PutMetricData"]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "cloudwatch:namespace" = "Facilitator/Chains"
+          }
+        }
       }
     ]
   })

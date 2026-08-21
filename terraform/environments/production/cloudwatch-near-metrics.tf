@@ -89,7 +89,7 @@ resource "aws_cloudwatch_metric_alarm" "near_settlement_failure_rate" {
   alarm_description   = "Alert when NEAR settlement failure rate is high"
   treat_missing_data  = "notBreaching"
 
-  alarm_actions = []  # Add SNS topic ARN here if you want email/SMS notifications
+  alarm_actions = [aws_sns_topic.alerts.arn]
 
   tags = {
     Name        = "facilitator-near-settlement-failure-alarm"
@@ -111,7 +111,7 @@ resource "aws_cloudwatch_metric_alarm" "near_rpc_errors" {
   alarm_description   = "Alert when NEAR RPC error rate is high"
   treat_missing_data  = "notBreaching"
 
-  alarm_actions = []  # Add SNS topic ARN here if you want email/SMS notifications
+  alarm_actions = [aws_sns_topic.alerts.arn]
 
   tags = {
     Name        = "facilitator-near-rpc-error-alarm"

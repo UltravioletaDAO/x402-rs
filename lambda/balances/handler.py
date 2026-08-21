@@ -638,13 +638,69 @@ def fetch_all_balances() -> dict[str, str | None]:
     return balances
 
 
+METRIC_NAMESPACE = "Facilitator/Chains"
+
+
+def publish_chain_metrics(balances: dict[str, str | None]) -> None:
+    """
+    Publish per-chain health and balance to CloudWatch.
+
+    A null balance already means "we could not read this chain" -- an unreachable
+    RPC, a deprecated endpoint, a dead node all land here. That signal existed all
+    along and went only to the landing page, where nobody watched it: Celo ran dry
+    and the Sui RPC went away, both plainly visible in this readout, and neither
+    announced itself. Emitting it as a metric is what lets an alarm see it.
+
+    Never raises. This runs after the balances are already in hand, and a metrics
+    problem must not turn a working balance response into a 500 -- the same rule
+    the facilitator applies to its own transaction store.
+    """
+    try:
+        import boto3
+
+        cw = boto3.client("cloudwatch")
+        data = []
+
+        for network, balance in balances.items():
+            healthy = balance is not None
+            data.append({
+                "MetricName": "ChainRpcHealthy",
+                "Dimensions": [{"Name": "Chain", "Value": network}],
+                "Value": 1.0 if healthy else 0.0,
+                "Unit": "None",
+            })
+            if healthy:
+                try:
+                    data.append({
+                        "MetricName": "ChainNativeBalance",
+                        "Dimensions": [{"Name": "Chain", "Value": network}],
+                        "Value": float(balance),
+                        "Unit": "None",
+                    })
+                except (TypeError, ValueError):
+                    # Readable but not a number: report it as reachable and skip
+                    # the balance rather than guessing a value an alarm would act on.
+                    print(f"[WARN] non-numeric balance for {network}: {balance!r}")
+
+        # PutMetricData caps at 1000 metrics per call; we send ~80. Chunk anyway so
+        # adding chains never silently truncates the tail.
+        for i in range(0, len(data), 1000):
+            cw.put_metric_data(Namespace=METRIC_NAMESPACE, MetricData=data[i:i + 1000])
+
+        unreachable = [n for n, b in balances.items() if b is None]
+        print(f"[OK] published {len(data)} metrics; unreachable={unreachable or 'none'}")
+    except Exception as e:  # noqa: BLE001 - never fail the request over metrics
+        print(f"[WARN] could not publish chain metrics: {type(e).__name__}: {e}")
+
+
 def lambda_handler(event: dict, context: Any) -> dict:
     """
     AWS Lambda handler.
-    Returns all wallet balances as JSON.
+    Returns all wallet balances as JSON, and publishes per-chain metrics.
     """
     try:
         balances = fetch_all_balances()
+        publish_chain_metrics(balances)
 
         return {
             "statusCode": 200,

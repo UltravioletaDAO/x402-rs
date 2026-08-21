@@ -255,3 +255,18 @@ variable "dx402_pinata_gateway" {
   type        = string
   default     = "amaranth-broad-whippet-395.mypinata.cloud"
 }
+
+variable "alerts_email" {
+  description = <<-EOT
+    Email subscribed to the facilitator's own SNS alert topic. Empty disables the
+    subscription (the topic and alarms are still created, they just reach nobody).
+    AWS sends a one-time confirmation link that a human must click; until then the
+    subscription reads "PendingConfirmation" and delivers nothing.
+
+    NOTE: terraform.tfvars is gitignored, so CI runs on this default. Unlike a
+    capacity setting, a wrong value here fails quietly -- the alarms work and the
+    mail goes nowhere. Keep the default correct.
+  EOT
+  type        = string
+  default     = "0xultravioleta@gmail.com"
+}

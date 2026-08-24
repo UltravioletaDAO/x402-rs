@@ -4057,6 +4057,26 @@ where
             )
             .await;
             log_proof_verdict(&network, &agent_id_str, &proof_report);
+
+            // DEPRECATED authorship path, same shape as the SVM one above: the
+            // registry records `msg.sender`, and on this route that is US. Where
+            // a FeedbackDelegate is deployed there is now a route that writes
+            // the same rating with the RATER as author, so say so on every call
+            // instead of leaving the deprecation theoretical.
+            //
+            // Warn-only on purpose. Closing this route is a separate decision
+            // with its own switch (see ERC8004_ALLOW_FACILITATOR_AUTHORSHIP on
+            // the SVM side); turning a log line into a rejection here would
+            // break every caller the day mainnet delegates landed.
+            if crate::erc8004::relay::feedback_delegate(&network).is_some() {
+                warn!(
+                    network = %network,
+                    agent_id = %agent_id_str,
+                    "[WARN] DEPRECATED: writing EVM feedback authored by the FACILITATOR, \
+                     not by the rater. Use /feedback/evm/prepare + /feedback/evm/submit"
+                );
+            }
+
             if proof_report.should_reject() {
                 let reason = proof_report
                     .rejection

@@ -1007,9 +1007,15 @@ address**, so the registry observes the rater as `msg.sender`.
   to put in it
 
 **Availability:** only where a `FeedbackDelegate` has actually been deployed and verified on-chain.
-Today that is **Base Sepolia** only; other networks answer 400. The delegate takes its registry
-address through an immutable constructor argument, so its address differs per chain and each one
-has to be verified before it is served.
+Today that is `base`, `ethereum`, `polygon`, `arbitrum`, `optimism`, `celo`, `bsc`, `monad` and
+`base-sepolia`; other networks answer 400. The delegate takes its registry address through an
+immutable constructor argument, so its address differs per chain and each one is verified
+(`eth_getCode` plus a `REPUTATION_REGISTRY()` read back) before it is served.
+
+`avalanche` is not on that list and is not waiting to join it: the C-Chain rejects the transaction
+type itself (`-32000 transaction type not supported`), so relayed feedback is unavailable there by
+design. Anchor the rating on a chain that supports EIP-7702 instead; the payment stays where it
+was made.
 
 Deadlines are deliberately short (default 15 minutes, `ERC8004_RELAY_DEADLINE_SECS`): relaying is
 permissionless by design, so a signed authorisation is live in the wild until it expires.

@@ -72,25 +72,74 @@ pub const DEFAULT_RELAY_DEADLINE_SECS: u64 = 900;
 
 /// Deployed `FeedbackDelegate` per network.
 ///
-/// **Base Sepolia only, and that is not an oversight.** The delegate takes the
-/// registry address through its constructor (`immutable`, no setter), because
-/// mainnets share one CREATE2 registry address and testnets use another --
-/// hardcoding mainnet's would have meant the contract's first real execution
-/// ever happened on mainnet. The consequence is that the delegate address
-/// differs per chain and each one has to be handed to us after its deploy.
+/// The delegate takes the registry address through its constructor
+/// (`immutable`, no setter), because mainnets share one CREATE2 registry address
+/// and testnets use another. So the delegate address differs per chain and each
+/// one has to be handed to us after its deploy -- an entry invented here would
+/// be an address with no contract behind it, which is exactly how the upto proxy
+/// once produced fake-success settles.
 ///
-/// Base Sepolia `0x3A68085499B62286468A35b7D9Dfc237ef2d3768`, verified on-chain
-/// on 2026-08-14: it has code, and its `REPUTATION_REGISTRY()` reads back
-/// `0x8004B663056A597Dffe9eCcC1965A193B7388713`, the testnet registry -- so the
-/// per-network selection works.
+/// Every address below was read off the chain before it was written down, on two
+/// independent RPC endpoints each (2026-08-23): the address has code, its
+/// `REPUTATION_REGISTRY()` reads back that network's registry, and the registry
+/// itself has code there. The eight mainnet deploys are Execution Market's,
+/// delivered in `contracts/deployments/feedback-delegate.json`; all eight carry
+/// byte-identical runtime code (1996 bytes, sha256 `82adb6272f0f3f88...`), which
+/// is what the shared mainnet registry immutable predicts.
 ///
-/// Mainnet is deliberately absent: that deploy is a write on somebody else's
-/// chain with real gas, it puts code in third-party accounts, and it belongs to
-/// Execution Market. An entry invented here would be an address with no contract
-/// behind it, which is exactly how the upto proxy once produced fake-success
-/// settles.
+/// | network | delegate | registry read back |
+/// |---|---|---|
+/// | base | `0x754206C4...68BA4` | `0x8004BAa1...9b63` |
+/// | ethereum | `0xbeCeA467...57dd9` | `0x8004BAa1...9b63` |
+/// | polygon | `0xf670C69B...46A7f` | `0x8004BAa1...9b63` |
+/// | arbitrum | `0x794C907F...A31bA` | `0x8004BAa1...9b63` |
+/// | bsc | `0x9551263b...eF787` | `0x8004BAa1...9b63` |
+/// | optimism | `0x825E997F...2b82` | `0x8004BAa1...9b63` |
+/// | monad | `0x825E997F...2b82` | `0x8004BAa1...9b63` |
+/// | celo | `0xe25cF9B9...96B59` | `0x8004BAa1...9b63` |
+/// | base-sepolia | `0x3A680854...d3768` | `0x8004B663...8713` |
+///
+/// Optimism and Monad share an address because CREATE2 from the same deployer,
+/// salt and init code lands on the same address on both -- not a copy-paste
+/// error. It is still checked per chain at request time.
+///
+/// **Avalanche is absent and that is not a "not yet".** Its C-Chain rejects the
+/// transaction type outright (`-32000 transaction type not supported`, measured
+/// by Execution Market's `rehearse_7702.py`), so there is nothing to deploy
+/// against. Reputation for tasks paid on Avalanche is routed to another chain by
+/// Execution Market instead; the payment stays on Avalanche. Do not add an entry
+/// here until a C-Chain upgrade actually ships EIP-7702.
+///
+/// Scroll and SKALE Base are absent too: ERC-8004 is served there, but no
+/// delegate has been deployed on either (SKALE's EVM predates Shanghai).
 fn delegate_address(network: &Network) -> Option<Address> {
     match network {
+        // Mainnets -- Execution Market deploys, verified on-chain 2026-08-23.
+        Network::Base => Some(alloy::primitives::address!(
+            "754206C4247317768bD86459E829a174d9C68BA4"
+        )),
+        Network::Ethereum => Some(alloy::primitives::address!(
+            "beCeA4673C0105aF63d02688Be6DE6CA51D57dd9"
+        )),
+        Network::Polygon => Some(alloy::primitives::address!(
+            "f670C69BCbb2453FaE5Ec009c2b6dd934BE46A7f"
+        )),
+        Network::Arbitrum => Some(alloy::primitives::address!(
+            "794C907FdfC71BFaF0b86D0e463BBD6E949A31bA"
+        )),
+        Network::Bsc => Some(alloy::primitives::address!(
+            "9551263b9B83b1A737D55fd5e67Fb6D60e4eF787"
+        )),
+        Network::Optimism => Some(alloy::primitives::address!(
+            "825E997F2F7Ed5d3F59466cd754189fb19b62b82"
+        )),
+        Network::Monad => Some(alloy::primitives::address!(
+            "825E997F2F7Ed5d3F59466cd754189fb19b62b82"
+        )),
+        Network::Celo => Some(alloy::primitives::address!(
+            "e25cF9B9F5A3B5faa7628c751466df0166d96B59"
+        )),
+        // Testnet.
         Network::BaseSepolia => Some(alloy::primitives::address!(
             "3A68085499B62286468A35b7D9Dfc237ef2d3768"
         )),
@@ -460,24 +509,98 @@ mod tests {
         );
     }
 
-    /// Mainnet is absent ON PURPOSE until Execution Market deploys there and
-    /// hands us the address. Inventing one would put a transaction against an
-    /// address with no contract behind it.
+    /// The eight mainnet addresses Execution Market deployed, each read off its
+    /// own chain on two independent RPCs before being written here (2026-08-23).
+    /// Pinned so a typo in a later edit is a failing test rather than a type-4
+    /// transaction sent to an address with no delegate behind it.
     #[test]
-    fn no_mainnet_delegate_is_claimed_yet() {
+    fn the_mainnet_delegates_are_the_verified_ones() {
+        let expected = [
+            (Network::Base, "0x754206c4247317768bd86459e829a174d9c68ba4"),
+            (
+                Network::Ethereum,
+                "0xbecea4673c0105af63d02688be6de6ca51d57dd9",
+            ),
+            (
+                Network::Polygon,
+                "0xf670c69bcbb2453fae5ec009c2b6dd934be46a7f",
+            ),
+            (
+                Network::Arbitrum,
+                "0x794c907fdfc71bfaf0b86d0e463bbd6e949a31ba",
+            ),
+            (Network::Bsc, "0x9551263b9b83b1a737d55fd5e67fb6d60e4ef787"),
+            (
+                Network::Optimism,
+                "0x825e997f2f7ed5d3f59466cd754189fb19b62b82",
+            ),
+            (Network::Monad, "0x825e997f2f7ed5d3f59466cd754189fb19b62b82"),
+            (Network::Celo, "0xe25cf9b9f5a3b5faa7628c751466df0166d96b59"),
+        ];
+        for (network, want) in expected {
+            let got = feedback_delegate(&network)
+                .unwrap_or_else(|| panic!("{network} lost its FeedbackDelegate"));
+            assert_eq!(got.to_string().to_lowercase(), want, "{network}");
+        }
+    }
+
+    /// Avalanche must NEVER get an entry here, and this test is the guard.
+    ///
+    /// Its C-Chain rejects the transaction type itself -- `-32000 transaction
+    /// type not supported`, an explicit refusal from the node, not an absence of
+    /// traffic -- and no C-Chain upgrade has shipped EIP-7702. Reputation for
+    /// tasks paid on Avalanche is routed to another chain by Execution Market;
+    /// the payment stays on Avalanche. An address added here would build a
+    /// transaction every node on the network refuses to accept.
+    ///
+    /// Scroll and SKALE Base serve ERC-8004 but have no delegate deployed
+    /// (SKALE's EVM predates Shanghai, so 7702 cannot land there at all).
+    #[test]
+    fn the_chains_without_a_delegate_claim_none() {
         for network in [
-            Network::Base,
-            Network::Ethereum,
-            Network::Polygon,
-            Network::Arbitrum,
-            Network::Optimism,
-            Network::Celo,
             Network::Avalanche,
+            Network::AvalancheFuji,
+            Network::Scroll,
+            Network::SkaleBase,
+            Network::EthereumSepolia,
+            Network::PolygonAmoy,
+            Network::ArbitrumSepolia,
+            Network::OptimismSepolia,
+            Network::CeloSepolia,
         ] {
             assert!(
                 feedback_delegate(&network).is_none(),
                 "{network} must not claim a delegate that was never deployed"
             );
+        }
+    }
+
+    /// Optimism and Monad genuinely share an address: same deployer, same salt,
+    /// same init code through CREATE2 lands on the same address on both chains.
+    /// Asserted so a future reader does not "fix" what looks like a copy-paste
+    /// slip. The per-chain `assert_delegate_usable` check still runs at request
+    /// time on each of them.
+    #[test]
+    fn optimism_and_monad_share_an_address_on_purpose() {
+        assert_eq!(
+            feedback_delegate(&Network::Optimism),
+            feedback_delegate(&Network::Monad)
+        );
+    }
+
+    /// A delegate is only ever served where the facilitator also serves the
+    /// ERC-8004 registries: without contracts there is no registry address to
+    /// pin the delegate against, and `relay_context` would fail after we had
+    /// already promised the caller a delegate.
+    #[test]
+    fn every_delegate_network_has_erc8004_contracts() {
+        for network in Network::variants() {
+            if feedback_delegate(network).is_some() {
+                assert!(
+                    crate::erc8004::get_contracts(network).is_some(),
+                    "{network} has a delegate but no ERC-8004 contracts"
+                );
+            }
         }
     }
 

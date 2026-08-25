@@ -4460,6 +4460,16 @@ where
         deadline,
         nonce,
     );
+    // What a wallet signs. `digest` already carries the EIP-191 envelope, so a
+    // wallet handed that value wraps it a second time and recovers a stranger.
+    let signing_payload = crate::erc8004::relay::relay_signing_payload(
+        ctx.chain_id,
+        ctx.rater,
+        ctx.registry,
+        &ctx.data,
+        deadline,
+        nonce,
+    );
 
     (
         StatusCode::OK,
@@ -4468,6 +4478,7 @@ where
             delegate: Some(ctx.delegate),
             data: Some(ctx.data),
             digest: Some(digest),
+            signing_payload: Some(signing_payload),
             deadline: Some(deadline),
             nonce: Some(nonce),
             delegated,

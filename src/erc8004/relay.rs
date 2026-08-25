@@ -317,6 +317,51 @@ pub fn relay_digest(
     deadline: u64,
     nonce: FixedBytes<32>,
 ) -> B256 {
+    let inner = relay_signing_payload(chain_id, rater, registry, data, deadline, nonce);
+    // EIP-191 personal_sign envelope, the same one MessageHashUtils applies.
+    let mut prefixed = Vec::with_capacity(28 + 32);
+    prefixed.extend_from_slice(EIP191_PREFIX);
+    prefixed.extend_from_slice(inner.as_slice());
+    keccak256(&prefixed)
+}
+
+/// The EIP-191 prefix for a 32-byte payload.
+pub const EIP191_PREFIX: &[u8] = b"\x19Ethereum Signed Message:\n32";
+
+/// The hash a WALLET must be handed, i.e. `relay_digest` with the envelope
+/// still off.
+///
+/// # Why this exists, and why it is a separate field on the wire
+///
+/// `relay_digest` returns the digest with the EIP-191 envelope ALREADY applied,
+/// because that is what the contract's `relayDigest()` returns and what
+/// `signature_authorises` recovers against, with no further wrapping. A holder
+/// of a raw key signs that value directly (`unsafe_sign_hash`, prehash) and it
+/// works.
+///
+/// A browser or mobile wallet cannot. `personal_sign` applies the envelope
+/// itself, so handing it the digest wraps it TWICE and recovers a stranger --
+/// no error, no hint, just `relay_bad_signature` from a signature that looks
+/// perfectly well-formed.
+///
+/// That was not hypothetical. Every signed rating from every wallet surface
+/// failed this way, and it went unnoticed for exactly as long as the rail had
+/// no real caller: Execution Market's dashboard, mobile app and SDK all did
+/// `personal_sign(digest)`, and so did OUR OWN SDK documentation, which
+/// prescribed the broken path in both languages (measured 2026-08-25).
+///
+/// Serving this value is what lets a wallet sign at all. It is served rather
+/// than left to the client to rebuild from `data` because a reconstruction is a
+/// second implementation of the preimage, and a second implementation drifts --
+/// silently, into a payload that signs nothing.
+pub fn relay_signing_payload(
+    chain_id: u64,
+    rater: Address,
+    registry: Address,
+    data: &Bytes,
+    deadline: u64,
+    nonce: FixedBytes<32>,
+) -> B256 {
     let mut buf = Vec::with_capacity(6 * 32);
     buf.extend_from_slice(&U256::from(chain_id).to_be_bytes::<32>());
     buf.extend_from_slice(&[0u8; 12]);
@@ -326,13 +371,7 @@ pub fn relay_digest(
     buf.extend_from_slice(keccak256(data).as_slice());
     buf.extend_from_slice(&U256::from(deadline).to_be_bytes::<32>());
     buf.extend_from_slice(nonce.as_slice());
-
-    let inner = keccak256(&buf);
-    // EIP-191 personal_sign envelope, the same one MessageHashUtils applies.
-    let mut prefixed = Vec::with_capacity(28 + 32);
-    prefixed.extend_from_slice(b"\x19Ethereum Signed Message:\n32");
-    prefixed.extend_from_slice(inner.as_slice());
-    keccak256(&prefixed)
+    keccak256(&buf)
 }
 
 /// Does `signature` over `digest` recover to the rater?
@@ -760,6 +799,106 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Fixed inputs shared by the envelope tests. Same shape the pinned
+    /// contract test uses, so a change to one is visible next to the other.
+    fn digest_inputs() -> (u64, Address, Address, Bytes, u64, FixedBytes<32>) {
+        let data = give_feedback_calldata(
+            42,
+            87,
+            0,
+            "quality",
+            "api",
+            "https://agent.example",
+            "https://example.com/f.json",
+            FixedBytes::<32>::ZERO,
+        );
+        (
+            31337,
+            alloy::primitives::address!("70997970C51812dc3A010C7d01b50e0d17dc79C8"),
+            REGISTRY,
+            data,
+            1_786_400_000,
+            FixedBytes::<32>::from([0x22; 32]),
+        )
+    }
+
+    /// The envelope sits between the two values, and both are served.
+    ///
+    /// `digest` is what the signature must recover against; `signingPayload` is
+    /// the same hash BEFORE the EIP-191 envelope. Anything that signs with a
+    /// raw key uses the first as a prehash; anything that goes through a
+    /// wallet's `personal_sign` uses the second, because `personal_sign` adds
+    /// the envelope itself.
+    ///
+    /// Pinned because the relationship is the whole point: if a later edit
+    /// wrapped the payload, or unwrapped the digest, every wallet signature
+    /// would start recovering a stranger and the only symptom would be
+    /// `relay_bad_signature`.
+    #[test]
+    fn the_signing_payload_is_the_digest_without_the_envelope() {
+        let (chain_id, rater, registry, data, deadline, nonce) = digest_inputs();
+        let payload = relay_signing_payload(chain_id, rater, registry, &data, deadline, nonce);
+        let digest = relay_digest(chain_id, rater, registry, &data, deadline, nonce);
+
+        let mut prefixed = Vec::with_capacity(28 + 32);
+        prefixed.extend_from_slice(EIP191_PREFIX);
+        prefixed.extend_from_slice(payload.as_slice());
+        assert_eq!(alloy::primitives::keccak256(&prefixed), digest);
+        assert_ne!(payload, digest, "the envelope must actually do something");
+    }
+
+    /// Signing the DIGEST through a wallet does not authorise anything.
+    ///
+    /// This is the failure that kept the rail at zero real ratings. Execution
+    /// Market's dashboard, mobile app and SDK all called
+    /// `personal_sign(digest)`, and so did our own SDK documentation in both
+    /// languages. The signature is well-formed, the request is well-formed, and
+    /// it recovers somebody who does not exist -- the only symptom is
+    /// `relay_bad_signature`, which reads like the rater signed the wrong
+    /// thing rather than like the client wrapped it twice.
+    ///
+    /// Asserted as an INEQUALITY on purpose: the test has to fail if somebody
+    /// "fixes" it by making the double-wrapped path work, because that would
+    /// break every raw-key signer instead.
+    #[test]
+    fn double_wrapping_the_digest_recovers_a_stranger() {
+        use alloy::signers::{local::PrivateKeySigner, SignerSync};
+
+        let signer = PrivateKeySigner::random();
+        let rater = signer.address();
+        let (chain_id, _fixed_rater, registry, data, deadline, nonce) = digest_inputs();
+        let payload = relay_signing_payload(chain_id, rater, registry, &data, deadline, nonce);
+        let digest = relay_digest(chain_id, rater, registry, &data, deadline, nonce);
+
+        // The wallet path: personal_sign over the payload. `sign_hash_sync`
+        // takes a prehash, so applying the envelope to `payload` by hand is
+        // exactly what a wallet does to it.
+        let good = signer.sign_hash_sync(&digest).unwrap();
+        assert!(
+            signature_authorises(digest, &good.as_bytes().to_vec().into(), rater),
+            "a raw-key signature over the digest must authorise"
+        );
+
+        // The broken path: envelope applied a second time, on top of `digest`.
+        let mut twice = Vec::with_capacity(28 + 32);
+        twice.extend_from_slice(EIP191_PREFIX);
+        twice.extend_from_slice(digest.as_slice());
+        let double = signer
+            .sign_hash_sync(&alloy::primitives::keccak256(&twice))
+            .unwrap();
+        assert!(
+            !signature_authorises(digest, &double.as_bytes().to_vec().into(), rater),
+            "signing the already-enveloped digest through personal_sign must NOT authorise"
+        );
+
+        // And the payload signed through the envelope is the same thing as the
+        // raw-key signature over the digest -- that is why serving it works.
+        let mut once = Vec::with_capacity(28 + 32);
+        once.extend_from_slice(EIP191_PREFIX);
+        once.extend_from_slice(payload.as_slice());
+        assert_eq!(alloy::primitives::keccak256(&once), digest);
     }
 
     /// The digest is pinned against the CONTRACT, not against ourselves.

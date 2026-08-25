@@ -1000,7 +1000,14 @@ address**, so the registry observes the rater as `msg.sender`.
 
 - `delegate` - the FeedbackDelegate the account must be pointed at
 - `data` - the registry calldata being authorised
-- `digest` - the EIP-191 digest to sign with the rater's key
+- `digest` - the value the signature must recover against. **The EIP-191 envelope is already
+  applied.** Sign it RAW, as a prehash (`unsafe_sign_hash`, `signHash`, `sign_hash_sync`)
+- `signingPayload` - the same hash with the envelope still OFF. **This is what a wallet signs.**
+  `personal_sign` / `eth_sign` / `signMessage` apply the envelope themselves, so handing them
+  `digest` wraps it twice and recovers an address that is not the rater -- a well-formed signature
+  that fails with `relay_bad_signature` and no other hint. `keccak256("\\x19Ethereum Signed
+  Message:\\n32" || signingPayload) == digest`, so a client can check the two against each other
+  instead of rebuilding the preimage from `data`
 - `deadline`, `nonce` - the authorisation window and its single-use value
 - `delegated` - whether the account already carries the delegation; when `false` the submission
   must include an EIP-7702 `authorization` signed by the rater, and `accountNonce` is the nonce

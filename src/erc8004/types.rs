@@ -330,9 +330,22 @@ pub struct PrepareRelayFeedbackResponse {
     /// Registry calldata the rater is authorising, hex-encoded.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<alloy::primitives::Bytes>,
-    /// EIP-191 digest to sign with the rater's key.
+    /// The value the rater's signature must recover against.
+    ///
+    /// The EIP-191 envelope is ALREADY applied here. A holder of a raw key
+    /// signs this directly as a prehash (`unsafe_sign_hash` and friends). A
+    /// WALLET must NOT be handed this: `personal_sign` applies the envelope
+    /// itself, wrapping it twice and recovering a stranger. Wallets sign
+    /// `signingPayload` instead.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub digest: Option<FixedBytes<32>>,
+    /// The same hash with the envelope still OFF -- what a wallet signs.
+    ///
+    /// `keccak256("\x19Ethereum Signed Message:\n32" || signingPayload)` is
+    /// exactly `digest`, so a client can check the two against each other
+    /// instead of reimplementing the preimage.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signing_payload: Option<FixedBytes<32>>,
     /// Unix timestamp after which the authorisation is void. Short on purpose.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deadline: Option<u64>,

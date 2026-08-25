@@ -60,8 +60,20 @@ sol! {
         /// The registry this delegate is pinned to. Immutable, set at
         /// construction, no setter and no upgrade.
         function REPUTATION_REGISTRY() external view returns (address);
+
+        /// ERC-165. Used here as a VERSION discriminator, not as a feature
+        /// probe -- see `assert_delegate_usable`.
+        function supportsInterface(bytes4 interfaceId) external view returns (bool);
     }
 }
+
+/// ERC-721 receiver interface id.
+///
+/// v3 of the delegate answers `true`; v1 has no `supportsInterface` at all.
+/// That makes this the cheapest thing that tells the two apart on-chain, and
+/// telling them apart matters -- see `assert_delegate_usable`.
+const ERC721_RECEIVER_INTERFACE_ID: alloy::primitives::FixedBytes<4> =
+    alloy::primitives::FixedBytes([0x15, 0x0b, 0x7a, 0x02]);
 
 /// How long a relay authorisation stays valid.
 pub const ENV_RELAY_DEADLINE_SECS: &str = "ERC8004_RELAY_DEADLINE_SECS";
@@ -80,28 +92,53 @@ pub const DEFAULT_RELAY_DEADLINE_SECS: u64 = 900;
 /// once produced fake-success settles.
 ///
 /// Every address below was read off the chain before it was written down, on two
-/// independent RPC endpoints each (2026-08-23): the address has code, its
-/// `REPUTATION_REGISTRY()` reads back that network's registry, and the registry
-/// itself has code there. The eight mainnet deploys are Execution Market's,
-/// delivered in `contracts/deployments/feedback-delegate.json`; all eight carry
-/// byte-identical runtime code (1996 bytes, sha256 `82adb6272f0f3f88...`), which
-/// is what the shared mainnet registry immutable predicts.
+/// independent RPC endpoints each (**v3, 2026-08-24**): the address has code,
+/// its `REPUTATION_REGISTRY()` reads back that network's registry, the registry
+/// itself has code there, and `supportsInterface` answers -- which is what tells
+/// v3 apart from the version it replaced.
 ///
-/// | network | delegate | registry read back |
-/// |---|---|---|
-/// | base | `0x754206C4...68BA4` | `0x8004BAa1...9b63` |
-/// | ethereum | `0xbeCeA467...57dd9` | `0x8004BAa1...9b63` |
-/// | polygon | `0xf670C69B...46A7f` | `0x8004BAa1...9b63` |
-/// | arbitrum | `0x794C907F...A31bA` | `0x8004BAa1...9b63` |
-/// | bsc | `0x9551263b...eF787` | `0x8004BAa1...9b63` |
-/// | optimism | `0x825E997F...2b82` | `0x8004BAa1...9b63` |
-/// | monad | `0x825E997F...2b82` | `0x8004BAa1...9b63` |
-/// | celo | `0xe25cF9B9...96B59` | `0x8004BAa1...9b63` |
-/// | base-sepolia | `0x3A680854...d3768` | `0x8004B663...8713` |
+/// | network | delegate (v3) |
+/// |---|---|
+/// | base | `0xa7ca33Ca...eBc6` |
+/// | ethereum | `0x8Bf13c5d...A868` |
+/// | polygon | `0x77BecfB2...Fe55` |
+/// | arbitrum | `0xCE9871Fd...34a3` |
+/// | bsc | `0x825E997F...2b82` |
+/// | optimism | `0xDe762cFc...F5Ba` |
+/// | monad | `0xDe762cFc...F5Ba` |
+/// | celo | `0x794C907F...31bA` |
+/// | base-sepolia | `0x1AaEA468...5b45` |
 ///
-/// Optimism and Monad share an address because CREATE2 from the same deployer,
-/// salt and init code lands on the same address on both -- not a copy-paste
-/// error. It is still checked per chain at request time.
+/// The eight mainnets carry byte-identical runtime code (3216 bytes,
+/// sha256 `a3094693799a3f8d...`); base-sepolia differs, which is exactly what a
+/// different registry immutable predicts.
+///
+/// **The digest did not change between versions, and that was measured rather
+/// than taken on trust**: `relayDigest()` on the deployed v3 on Base returns
+/// `0xe0e04e0b35b6a7c7...` for a fixed input, and `relay_digest()` in this file
+/// computes the same value. So this was an address swap, not a protocol change.
+///
+/// # These addresses come from CREATE, not CREATE2
+///
+/// The address is a function of (deployer, nonce), so **the same address can
+/// hold a different version on a different chain**. Not hypothetical: celo's v3
+/// address is arbitrum's v1 address, and bsc's v3 address is what optimism and
+/// monad ran as v1. An address stopped identifying a version the moment there
+/// was a second version, which is why `assert_delegate_usable` probes ERC-165
+/// and not just `eth_getCode`.
+///
+/// Optimism and monad genuinely share an address: same deployer at the same
+/// nonce on both chains. Verified separately on each.
+///
+/// # Why the version matters, and not only the liveness
+///
+/// v1 had code and the right registry -- it passed every check we had. What it
+/// also did was break the rater's wallet the moment they delegated: an NFT sent
+/// with `safeTransferFrom` reverted, off-chain signatures stopped being
+/// accepted by anything branching on `code.length > 0`, and cancelling a signed
+/// authorisation required the account to hold gas, which is the very thing this
+/// rail exists to avoid. v3 adds the receiver hooks, ERC-1271 and
+/// `cancelNonceWithSig`.
 ///
 /// **Avalanche is absent and that is not a "not yet".** Its C-Chain rejects the
 /// transaction type outright (`-32000 transaction type not supported`, measured
@@ -111,37 +148,38 @@ pub const DEFAULT_RELAY_DEADLINE_SECS: u64 = 900;
 /// here until a C-Chain upgrade actually ships EIP-7702.
 ///
 /// Scroll and SKALE Base are absent too: ERC-8004 is served there, but no
-/// delegate has been deployed on either (SKALE's EVM predates Shanghai).
+/// delegate has been deployed on either (SKALE's EVM predates Shanghai, and
+/// Execution Market has since retired the chain entirely).
 fn delegate_address(network: &Network) -> Option<Address> {
     match network {
-        // Mainnets -- Execution Market deploys, verified on-chain 2026-08-23.
+        // Mainnets -- Execution Market v3 deploys, verified on-chain 2026-08-24.
         Network::Base => Some(alloy::primitives::address!(
-            "754206C4247317768bD86459E829a174d9C68BA4"
+            "a7ca33CaE3c5890F25DfD08079DB82701C9deBc6"
         )),
         Network::Ethereum => Some(alloy::primitives::address!(
-            "beCeA4673C0105aF63d02688Be6DE6CA51D57dd9"
+            "8Bf13c5d612EDA66D3AeA954C95cb77362b4A868"
         )),
         Network::Polygon => Some(alloy::primitives::address!(
-            "f670C69BCbb2453FaE5Ec009c2b6dd934BE46A7f"
+            "77BecfB266e3636C5Cf4555348305F134a48Fe55"
         )),
         Network::Arbitrum => Some(alloy::primitives::address!(
-            "794C907FdfC71BFaF0b86D0e463BBD6E949A31bA"
+            "CE9871Fd3D3a3F02A0d40FfA257C21C859c934a3"
         )),
         Network::Bsc => Some(alloy::primitives::address!(
-            "9551263b9B83b1A737D55fd5e67Fb6D60e4eF787"
+            "825E997F2F7Ed5d3F59466cd754189fb19b62b82"
         )),
         Network::Optimism => Some(alloy::primitives::address!(
-            "825E997F2F7Ed5d3F59466cd754189fb19b62b82"
+            "De762cFc63551Ad4D8C5be8F25Ec0bcaa82dF5Ba"
         )),
         Network::Monad => Some(alloy::primitives::address!(
-            "825E997F2F7Ed5d3F59466cd754189fb19b62b82"
+            "De762cFc63551Ad4D8C5be8F25Ec0bcaa82dF5Ba"
         )),
         Network::Celo => Some(alloy::primitives::address!(
-            "e25cF9B9F5A3B5faa7628c751466df0166d96B59"
+            "794C907FdfC71BFaF0b86D0e463BBD6E949A31bA"
         )),
         // Testnet.
         Network::BaseSepolia => Some(alloy::primitives::address!(
-            "3A68085499B62286468A35b7D9Dfc237ef2d3768"
+            "1AaEA468fB156AABd2617A507771FC8fE5085b45"
         )),
         _ => None,
     }
@@ -201,6 +239,8 @@ pub enum RelayError {
     RegistryNotDeployed(Address),
     #[error("the delegate is pinned to registry {got}, but this network uses {want}")]
     DelegateWrongRegistry { got: Address, want: Address },
+    #[error("the delegate at {0} is a superseded version that breaks the rater's wallet")]
+    DelegateSupersededVersion(Address),
 }
 
 impl RelayError {
@@ -220,6 +260,7 @@ impl RelayError {
             Self::DelegateNotDeployed(_) => "relay_delegate_not_deployed",
             Self::RegistryNotDeployed(_) => "relay_registry_not_deployed",
             Self::DelegateWrongRegistry { .. } => "relay_delegate_wrong_registry",
+            Self::DelegateSupersededVersion(_) => "relay_delegate_superseded_version",
         }
     }
 }
@@ -379,6 +420,47 @@ pub async fn assert_delegate_usable<P: Provider>(
     if registry_code.is_empty() {
         return Err(RelayError::RegistryNotDeployed(expected_registry));
     }
+
+    // And it must be the CURRENT delegate, not a superseded one.
+    //
+    // This check exists because the deploys use CREATE, not CREATE2: the
+    // address is a function of (deployer, nonce), so THE SAME ADDRESS CAN HOLD
+    // A DIFFERENT VERSION ON A DIFFERENT CHAIN. Measured on 2026-08-24: the v3
+    // address on celo is byte-for-byte the v1 address on arbitrum, and the v3
+    // address on bsc is the v1 address on optimism and monad. An address alone
+    // stopped identifying a version the moment there was a second version.
+    //
+    // Every check above passes on a superseded delegate: it has code, and it is
+    // pinned to the right registry. So without this the failure is SILENT --
+    // we would keep relaying against v1, the version that breaks the rater's
+    // wallet (a `safeTransferFrom` of an NFT into the delegated account
+    // reverts, off-chain signatures stop being accepted by anything that
+    // branches on `code.length > 0`, and cancelling a signed authorisation
+    // requires the account to hold gas, which is the whole thing this rail
+    // exists to avoid).
+    //
+    // ERC-165 is the discriminator because v1 has no `supportsInterface` at
+    // all: the call reverts there, and answers `true` on v3. Note it is a
+    // VERSION probe, not a feature probe -- v3 implements ERC-1271 but does not
+    // advertise 0x1626ba7e, so asking for that one would report a false
+    // negative on a perfectly good delegate.
+    //
+    // A REVERT is a verdict; anything else is not. Collapsing the two would
+    // make our own RPC outage report somebody's delegate as superseded, and
+    // refusing to relay is the one outcome a rater cannot work around. Same
+    // distinction the identity lookup draws between 404 and 503.
+    let is_current = match IFeedbackDelegate::new(delegate, rpc)
+        .supportsInterface(ERC721_RECEIVER_INTERFACE_ID)
+        .call()
+        .await
+    {
+        Ok(supported) => supported,
+        Err(e) if format!("{e:?}").contains("execution reverted") => false,
+        Err(_) => return Err(RelayError::RpcUnavailable),
+    };
+    if !is_current {
+        return Err(RelayError::DelegateSupersededVersion(delegate));
+    }
     Ok(())
 }
 
@@ -505,43 +587,119 @@ mod tests {
     fn the_base_sepolia_delegate_is_the_verified_one() {
         assert_eq!(
             delegate().to_string().to_lowercase(),
-            "0x3a68085499b62286468a35b7d9dfc237ef2d3768"
+            "0x1aaea468fb156aabd2617a507771fc8fe5085b45"
         );
     }
 
-    /// The eight mainnet addresses Execution Market deployed, each read off its
-    /// own chain on two independent RPCs before being written here (2026-08-23).
-    /// Pinned so a typo in a later edit is a failing test rather than a type-4
-    /// transaction sent to an address with no delegate behind it.
+    /// The eight mainnet **v3** addresses, each read off its own chain on two
+    /// independent RPCs before being written here (2026-08-24). Pinned so a
+    /// typo in a later edit is a failing test rather than a type-4 transaction
+    /// sent to an address with no delegate behind it.
+    ///
+    /// These replaced v1 the day after v1 shipped. v1 was live and correct by
+    /// every check we had -- it had code and the right registry -- but it broke
+    /// the rater's wallet on delegation (NFT receives reverted, off-chain
+    /// signatures stopped being honoured, cancelling required gas). The address
+    /// is the ONLY thing that changed: the relay digest is byte-identical, and
+    /// that was measured against the deployed contract, not assumed.
     #[test]
     fn the_mainnet_delegates_are_the_verified_ones() {
         let expected = [
-            (Network::Base, "0x754206c4247317768bd86459e829a174d9c68ba4"),
+            (Network::Base, "0xa7ca33cae3c5890f25dfd08079db82701c9debc6"),
             (
                 Network::Ethereum,
-                "0xbecea4673c0105af63d02688be6de6ca51d57dd9",
+                "0x8bf13c5d612eda66d3aea954c95cb77362b4a868",
             ),
             (
                 Network::Polygon,
-                "0xf670c69bcbb2453fae5ec009c2b6dd934be46a7f",
+                "0x77becfb266e3636c5cf4555348305f134a48fe55",
             ),
             (
                 Network::Arbitrum,
-                "0x794c907fdfc71bfaf0b86d0e463bbd6e949a31ba",
+                "0xce9871fd3d3a3f02a0d40ffa257c21c859c934a3",
             ),
-            (Network::Bsc, "0x9551263b9b83b1a737d55fd5e67fb6d60e4ef787"),
+            (Network::Bsc, "0x825e997f2f7ed5d3f59466cd754189fb19b62b82"),
             (
                 Network::Optimism,
-                "0x825e997f2f7ed5d3f59466cd754189fb19b62b82",
+                "0xde762cfc63551ad4d8c5be8f25ec0bcaa82df5ba",
             ),
-            (Network::Monad, "0x825e997f2f7ed5d3f59466cd754189fb19b62b82"),
-            (Network::Celo, "0xe25cf9b9f5a3b5faa7628c751466df0166d96b59"),
+            (Network::Monad, "0xde762cfc63551ad4d8c5be8f25ec0bcaa82df5ba"),
+            (Network::Celo, "0x794c907fdfc71bfaf0b86d0e463bbd6e949a31ba"),
         ];
         for (network, want) in expected {
             let got = feedback_delegate(&network)
                 .unwrap_or_else(|| panic!("{network} lost its FeedbackDelegate"));
             assert_eq!(got.to_string().to_lowercase(), want, "{network}");
         }
+    }
+
+    /// The superseded v1 addresses must never come back.
+    ///
+    /// They are still deployed, still hold code, and are still pinned to the
+    /// right registry -- so every liveness check we run passes on them. The
+    /// only thing wrong with them is that they are the wrong version, and that
+    /// is invisible to `eth_getCode`. Naming them here means a copy-paste from
+    /// an old handoff fails a test instead of shipping.
+    #[test]
+    fn the_superseded_v1_addresses_are_gone() {
+        let v1 = [
+            "0x754206c4247317768bd86459e829a174d9c68ba4", // base
+            "0xbecea4673c0105af63d02688be6de6ca51d57dd9", // ethereum
+            "0xf670c69bcbb2453fae5ec009c2b6dd934be46a7f", // polygon
+            "0x9551263b9b83b1a737d55fd5e67fb6d60e4ef787", // bsc
+            "0xe25cf9b9f5a3b5faa7628c751466df0166d96b59", // celo
+            "0x3a68085499b62286468a35b7d9dfc237ef2d3768", // base-sepolia
+        ];
+        for network in Network::variants() {
+            if let Some(addr) = feedback_delegate(network) {
+                let addr = addr.to_string().to_lowercase();
+                assert!(
+                    !v1.contains(&addr.as_str()),
+                    "{network} is back on a superseded v1 delegate ({addr})"
+                );
+            }
+        }
+    }
+
+    /// An address does NOT identify a version, and this test records why.
+    ///
+    /// The deploys use CREATE, not CREATE2, so the address is a function of
+    /// (deployer, nonce). Two of the v3 addresses were v1 addresses on OTHER
+    /// chains: celo's v3 is arbitrum's v1, and bsc's v3 is what optimism and
+    /// monad ran as v1. Anyone auditing this table will notice that and reach
+    /// for the conclusion that something got pasted wrong -- it did not.
+    ///
+    /// The consequence is real, and it is why `assert_delegate_usable` probes
+    /// ERC-165: a stale entry passes `eth_getCode` and the registry check, so
+    /// without a version probe the failure is silent.
+    #[test]
+    fn an_address_alone_does_not_identify_a_version() {
+        // arbitrum's v1 address is celo's v3 address.
+        assert_eq!(
+            feedback_delegate(&Network::Celo)
+                .unwrap()
+                .to_string()
+                .to_lowercase(),
+            "0x794c907fdfc71bfaf0b86d0e463bbd6e949a31ba"
+        );
+        // optimism/monad's v1 address is bsc's v3 address.
+        assert_eq!(
+            feedback_delegate(&Network::Bsc)
+                .unwrap()
+                .to_string()
+                .to_lowercase(),
+            "0x825e997f2f7ed5d3f59466cd754189fb19b62b82"
+        );
+        // ...and those two are NOT the same as each other, nor as what
+        // optimism and monad serve today.
+        assert_ne!(
+            feedback_delegate(&Network::Celo),
+            feedback_delegate(&Network::Bsc)
+        );
+        assert_ne!(
+            feedback_delegate(&Network::Bsc),
+            feedback_delegate(&Network::Optimism)
+        );
     }
 
     /// Avalanche must NEVER get an entry here, and this test is the guard.

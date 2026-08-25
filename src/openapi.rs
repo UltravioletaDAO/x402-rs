@@ -1010,7 +1010,14 @@ address**, so the registry observes the rater as `msg.sender`.
 Today that is `base`, `ethereum`, `polygon`, `arbitrum`, `optimism`, `celo`, `bsc`, `monad` and
 `base-sepolia`; other networks answer 400. The delegate takes its registry address through an
 immutable constructor argument, so its address differs per chain and each one is verified
-(`eth_getCode` plus a `REPUTATION_REGISTRY()` read back) before it is served.
+(`eth_getCode`, a `REPUTATION_REGISTRY()` read back, and an ERC-165 probe) before it is served.
+
+The ERC-165 probe is a **version** check, not a feature check. The delegates are deployed with
+CREATE rather than CREATE2, so an address is a function of (deployer, nonce) and the same address
+can hold a different version on a different chain. A superseded delegate still has code and is
+still pinned to the right registry, so without this probe a stale entry would relay silently
+against a version that breaks the rater's wallet. Such a delegate is refused with
+`relay_delegate_superseded_version`.
 
 `avalanche` is not on that list and is not waiting to join it: the C-Chain rejects the transaction
 type itself (`-32000 transaction type not supported`), so relayed feedback is unavailable there by

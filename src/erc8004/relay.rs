@@ -278,6 +278,8 @@ pub enum RelayError {
     DelegateWrongRegistry { got: Address, want: Address },
     #[error("the delegate at {0} is a superseded version that breaks the rater's wallet")]
     DelegateSupersededVersion(Address),
+    #[error("relayed responses need a v4 delegate; this network still runs v3")]
+    ResponseNeedsV4,
 }
 
 impl RelayError {
@@ -298,6 +300,7 @@ impl RelayError {
             Self::RegistryNotDeployed(_) => "relay_registry_not_deployed",
             Self::DelegateWrongRegistry { .. } => "relay_delegate_wrong_registry",
             Self::DelegateSupersededVersion(_) => "relay_delegate_superseded_version",
+            Self::ResponseNeedsV4 => "relay_response_needs_v4",
         }
     }
 }

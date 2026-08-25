@@ -1030,6 +1030,13 @@ delegate that answers neither is a superseded v1 and is refused. Nothing about t
 release: a chain starts serving `typedData` the moment a v4 delegate is deployed there, with no
 deploy of ours in between.
 
+`POST /feedback/response/evm/prepare` + `/feedback/response/evm/submit` are the same rail for
+`appendResponse`, and they are **v4 only**: the v3 delegate accepts exactly two selectors and this
+is not one of them, so a v3 network answers 400 `relay_response_needs_v4` instead of falling back
+to the route where the FACILITATOR is the author on record. `clientAddress` and `feedbackIndex`
+are inside the signed struct — without them one signature would answer any client's rating, or any
+rating at that index.
+
 A rater still pointed at a SUPERSEDED version of the delegate is reported as `delegated: false`,
 not as an error — they sign a fresh authorisation and move to the current version. An account
 delegated to somebody ELSE's implementation stays a 400: re-pointing it would break whatever

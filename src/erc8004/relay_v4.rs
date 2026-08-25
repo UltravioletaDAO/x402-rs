@@ -164,6 +164,110 @@ pub fn relay_give_feedback_calldata(p: &RelayedGiveFeedback, signature: &Bytes) 
     .into()
 }
 
+/// Calldata sent TO THE RESPONDER'S ADDRESS for a v4 `appendResponse`.
+///
+/// **v4 only, and there is no v3 fallback.** The v3 delegate accepts exactly two
+/// selectors -- `giveFeedback` and `revokeFeedback` -- so a response relayed
+/// there has nowhere to land. A chain still on v3 is refused explicitly rather
+/// than quietly falling back to the facilitator-authored route, which is the
+/// route this exists to replace.
+pub fn relay_append_response_calldata(p: &RelayedAppendResponse, signature: &Bytes) -> Bytes {
+    IFeedbackDelegateV4::relayAppendResponseCall {
+        p: p.clone(),
+        signature: signature.clone(),
+    }
+    .abi_encode()
+    .into()
+}
+
+/// Assemble the `RelayedAppendResponse` a responder is being asked to authorise.
+#[allow(clippy::too_many_arguments)]
+pub fn append_response_params(
+    registry: Address,
+    agent_id: u64,
+    client_address: Address,
+    feedback_index: u64,
+    response_uri: &str,
+    response_hash: FixedBytes<32>,
+    deadline: u64,
+    nonce: FixedBytes<32>,
+) -> RelayedAppendResponse {
+    RelayedAppendResponse {
+        registry,
+        agentId: U256::from(agent_id),
+        clientAddress: client_address,
+        feedbackIndex: feedback_index,
+        responseURI: response_uri.to_string(),
+        responseHash: response_hash,
+        deadline: U256::from(deadline),
+        nonce,
+    }
+}
+
+/// The `eth_signTypedData_v4` payload for a response.
+///
+/// `clientAddress` is inside the signed struct on purpose: it names WHOSE
+/// feedback is being answered. Left out, one signature would answer any client's
+/// rating at that index -- and the responder would have no way to see which.
+pub fn append_response_typed_data(
+    chain_id: u64,
+    responder: Address,
+    p: &RelayedAppendResponse,
+) -> Value {
+    json!({
+        "domain": {
+            "name": DOMAIN_NAME,
+            "version": DOMAIN_VERSION,
+            "chainId": chain_id,
+            "verifyingContract": p_addr(responder),
+        },
+        "primaryType": "RelayedAppendResponse",
+        "types": {
+            "EIP712Domain": [
+                {"name": "name", "type": "string"},
+                {"name": "version", "type": "string"},
+                {"name": "chainId", "type": "uint256"},
+                {"name": "verifyingContract", "type": "address"},
+            ],
+            "RelayedAppendResponse": [
+                {"name": "registry", "type": "address"},
+                {"name": "agentId", "type": "uint256"},
+                {"name": "clientAddress", "type": "address"},
+                {"name": "feedbackIndex", "type": "uint64"},
+                {"name": "responseURI", "type": "string"},
+                {"name": "responseHash", "type": "bytes32"},
+                {"name": "deadline", "type": "uint256"},
+                {"name": "nonce", "type": "bytes32"},
+            ],
+        },
+        "message": {
+            "registry": p_addr(p.registry),
+            "agentId": p.agentId.to_string(),
+            "clientAddress": p_addr(p.clientAddress),
+            "feedbackIndex": p.feedbackIndex.to_string(),
+            "responseURI": p.responseURI,
+            "responseHash": format!("{:#x}", p.responseHash),
+            "deadline": p.deadline.to_string(),
+            "nonce": format!("{:#x}", p.nonce),
+        },
+    })
+}
+
+/// Refuse a v4 response relay whose parameters do not reproduce the signature.
+pub fn append_response_signature_authorises(
+    chain_id: u64,
+    responder: Address,
+    p: &RelayedAppendResponse,
+    signature: &Bytes,
+) -> Result<(), RelayError> {
+    let digest = append_response_digest(chain_id, responder, p);
+    if super::relay::signature_authorises(digest, signature, responder) {
+        Ok(())
+    } else {
+        Err(RelayError::BadSignature)
+    }
+}
+
 /// Assemble the `RelayedGiveFeedback` a rater is being asked to authorise.
 #[allow(clippy::too_many_arguments)]
 pub fn give_feedback_params(
@@ -487,6 +591,123 @@ mod tests {
 
         // Same struct, wrong chain: refused. The chain is in the domain.
         assert!(signature_authorises(1, rater, &p, &sig).is_err());
+    }
+
+    /// `clientAddress` and `feedbackIndex` are INSIDE the signed struct.
+    ///
+    /// Both were missing from Execution Market's first proposal, and either
+    /// omission is total: without `feedbackIndex` a signature covers any of the
+    /// client's ratings; without `clientAddress` it covers that index for ANY
+    /// client. The responder would be answering something they cannot see.
+    #[test]
+    fn a_response_names_which_feedback_it_answers() {
+        let responder = address!("70997970C51812dc3A010C7d01b50e0d17dc79C8");
+        let client = address!("0B3520435d7Bc7197C55204f01261706e5c7DcA5");
+        let base = append_response_params(
+            REGISTRY,
+            42,
+            client,
+            7,
+            "ipfs://response",
+            FixedBytes::<32>::ZERO,
+            1_786_400_000,
+            FixedBytes::<32>::from([0x22; 32]),
+        );
+        let d = append_response_digest(8453, responder, &base);
+
+        let mut p = base.clone();
+        p.feedbackIndex = 8;
+        assert_ne!(
+            append_response_digest(8453, responder, &p),
+            d,
+            "feedbackIndex must bind, or one signature answers any rating"
+        );
+
+        let mut p = base.clone();
+        p.clientAddress = address!("09C32b8FC0a94A1EeD424499A42180e29667bEeE");
+        assert_ne!(
+            append_response_digest(8453, responder, &p),
+            d,
+            "clientAddress must bind, or one signature answers any client"
+        );
+
+        let mut p = base.clone();
+        p.responseURI = "ipfs://something-else".into();
+        assert_ne!(append_response_digest(8453, responder, &p), d);
+    }
+
+    /// The response payload declares exactly the fields the digest is built from.
+    #[test]
+    fn the_response_typed_data_matches_its_struct() {
+        let responder = address!("70997970C51812dc3A010C7d01b50e0d17dc79C8");
+        let p = append_response_params(
+            REGISTRY,
+            42,
+            address!("0B3520435d7Bc7197C55204f01261706e5c7DcA5"),
+            7,
+            "ipfs://response",
+            FixedBytes::<32>::ZERO,
+            1_786_400_000,
+            FixedBytes::<32>::from([0x22; 32]),
+        );
+        let td = append_response_typed_data(8453, responder, &p);
+        assert_eq!(td["primaryType"], "RelayedAppendResponse");
+        // The domain names the RESPONDER: they are the author on record.
+        assert_eq!(
+            td["domain"]["verifyingContract"],
+            responder.to_checksum(None)
+        );
+        assert_eq!(td["message"]["feedbackIndex"], "7");
+
+        let listed: Vec<String> = td["types"]["RelayedAppendResponse"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| {
+                format!(
+                    "{} {}",
+                    f["type"].as_str().unwrap(),
+                    f["name"].as_str().unwrap()
+                )
+            })
+            .collect();
+        let encoded = RelayedAppendResponse::eip712_encode_type();
+        for f in &listed {
+            assert!(encoded.contains(f.as_str()), "{f} is not in {encoded}");
+        }
+        assert_eq!(listed.len(), 8);
+    }
+
+    /// A responder authorises their own response and nobody else's.
+    #[test]
+    fn a_response_signature_authorises_only_what_it_covers() {
+        use alloy::signers::{local::PrivateKeySigner, SignerSync};
+
+        let signer = PrivateKeySigner::random();
+        let responder = signer.address();
+        let p = append_response_params(
+            REGISTRY,
+            42,
+            address!("0B3520435d7Bc7197C55204f01261706e5c7DcA5"),
+            7,
+            "ipfs://response",
+            FixedBytes::<32>::ZERO,
+            1_786_400_000,
+            FixedBytes::<32>::from([0x22; 32]),
+        );
+        let sig = signer
+            .sign_hash_sync(&append_response_digest(8453, responder, &p))
+            .unwrap();
+        let sig: Bytes = sig.as_bytes().to_vec().into();
+        assert!(append_response_signature_authorises(8453, responder, &p, &sig).is_ok());
+
+        let mut tampered = p.clone();
+        tampered.feedbackIndex = 8;
+        assert!(append_response_signature_authorises(8453, responder, &tampered, &sig).is_err());
+
+        // A different responder cannot reuse it: the domain names the account.
+        let other = address!("09C32b8FC0a94A1EeD424499A42180e29667bEeE");
+        assert!(append_response_signature_authorises(8453, other, &p, &sig).is_err());
     }
 
     /// The typed-data payload a wallet receives says exactly what is signed.

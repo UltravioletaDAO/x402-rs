@@ -397,6 +397,81 @@ pub struct SubmitRelayFeedbackRequest {
     pub authorization: Option<RelayAuthorizationParams>,
 }
 
+/// Request body for `POST /feedback/response/evm/prepare`.
+///
+/// `responder` is the address the chain will record as the author of the
+/// response. It is required for the same reason `rater` is on the feedback rail:
+/// without it there is nobody to attribute the write to, and the route degrades
+/// into the facilitator-authored one it replaces.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrepareRelayResponseRequest {
+    pub x402_version: crate::types::X402Version,
+    pub network: Network,
+    pub responder: alloy::primitives::Address,
+    pub agent_id: serde_json::Value,
+    /// Whose feedback is being answered. Inside the signed struct: without it
+    /// one signature would answer any client's rating at that index.
+    pub client_address: alloy::primitives::Address,
+    pub feedback_index: u64,
+    pub response_uri: String,
+    #[serde(default)]
+    pub response_hash: Option<FixedBytes<32>>,
+}
+
+/// Response from `POST /feedback/response/evm/prepare`.
+///
+/// There is no `signingPayload` and no EIP-191 digest here, because this rail
+/// exists only on v4: the v3 delegate accepts two selectors and `appendResponse`
+/// is not one of them. A v3 network answers 400 `relay_response_needs_v4` rather
+/// than falling back to the route where WE are the author.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrepareRelayResponseResponse {
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delegate: Option<alloy::primitives::Address>,
+    /// The value the responder's signature must recover against.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub digest: Option<FixedBytes<32>>,
+    /// The full `eth_signTypedData_v4` payload. Sign THIS.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub typed_data: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deadline: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nonce: Option<FixedBytes<32>>,
+    pub delegated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_nonce: Option<u64>,
+    pub chain_id: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub network: Network,
+}
+
+/// Request body for `POST /feedback/response/evm/submit`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubmitRelayResponseRequest {
+    pub x402_version: crate::types::X402Version,
+    pub network: Network,
+    pub responder: alloy::primitives::Address,
+    pub agent_id: serde_json::Value,
+    pub client_address: alloy::primitives::Address,
+    pub feedback_index: u64,
+    pub response_uri: String,
+    #[serde(default)]
+    pub response_hash: Option<FixedBytes<32>>,
+    pub deadline: u64,
+    pub nonce: FixedBytes<32>,
+    /// The responder's signature over the typed data.
+    pub signature: alloy::primitives::Bytes,
+    /// Required only when the account is not delegated yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorization: Option<RelayAuthorizationParams>,
+}
+
 /// Request to revoke feedback
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

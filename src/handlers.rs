@@ -657,6 +657,14 @@ where
             post(post_submit_solana_feedback::<A>),
         )
         .route("/feedback/response", post(post_append_response::<A>))
+        .route(
+            "/feedback/response/evm/prepare",
+            post(post_prepare_relay_response::<A>),
+        )
+        .route(
+            "/feedback/response/evm/submit",
+            post(post_submit_relay_response::<A>),
+        )
         // Applied here, not at the call sites, and not in main.rs: the gate
         // travels with the routes it protects. Merged AFTER this layer so the
         // revoke router keeps its own stack instead of being wrapped twice.
@@ -5434,6 +5442,361 @@ where
     }
 }
 
+/// `POST /feedback/response/evm/prepare`: what the RESPONDER must sign so the
+/// chain records THEM as the author of the response.
+///
+/// The mirror of the feedback rail, for the other write the registry accepts
+/// from anybody. `appendResponse` is not agent-only -- verified on-chain
+/// 2026-08-18, the registry takes it from any address -- so the old
+/// unauthenticated route made the FACILITATOR the `responder` on record. That
+/// is the same shape as the revoke problem: a POST with no credentials makes us
+/// sign. It does not destroy reputation, it ties our on-chain identity to a
+/// third party's content, which is its own kind of bad.
+///
+/// **v4 only.** The v3 delegate accepts exactly two selectors and this is not
+/// one of them, so a v3 network is refused explicitly instead of falling back to
+/// the route this replaces.
+#[instrument(skip_all)]
+pub async fn post_prepare_relay_response<A>(
+    State(facilitator): State<A>,
+    raw_body: Bytes,
+) -> impl IntoResponse
+where
+    A: Facilitator + HasProviderMap,
+    A::Error: IntoResponse,
+    A::Map: ProviderMap<Value = NetworkProvider>,
+{
+    use crate::chain::evm::MetaEvmProvider as _;
+    use crate::erc8004::relay::{self, DelegateVersion, DelegationState, RelayError};
+
+    let request: crate::erc8004::PrepareRelayResponseRequest =
+        match serde_json::from_slice(&raw_body) {
+            Ok(r) => r,
+            Err(e) => return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"success": false, "error": format!("Invalid request format: {}", e)})),
+            )
+                .into_response(),
+        };
+    let network = request.network;
+
+    let bad = |code: StatusCode, msg: String| {
+        (code, Json(json!({"success": false, "error": msg}))).into_response()
+    };
+
+    let Some(delegate) = relay::feedback_delegate(&network) else {
+        return bad(
+            StatusCode::BAD_REQUEST,
+            RelayError::NoDelegate(network).to_string(),
+        );
+    };
+    let Some(contracts) = get_contracts(&network) else {
+        return bad(
+            StatusCode::BAD_REQUEST,
+            format!("{} does not serve ERC-8004", network),
+        );
+    };
+    let provider_map = facilitator.provider_map();
+    let Some(NetworkProvider::Evm(provider)) = provider_map.by_network(&network) else {
+        return bad(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "{} is not an EVM network served by this facilitator",
+                network
+            ),
+        );
+    };
+
+    let agent_id_str =
+        parse_agent_id_value(&request.agent_id).unwrap_or_else(|| request.agent_id.to_string());
+    let Ok(agent_id) = agent_id_str.parse::<u64>() else {
+        return bad(
+            StatusCode::BAD_REQUEST,
+            format!("Invalid EVM agent ID (expected numeric): {agent_id_str}"),
+        );
+    };
+
+    let version = match relay::assert_delegate_usable(
+        provider.inner(),
+        delegate,
+        contracts.reputation_registry,
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => return bad(StatusCode::SERVICE_UNAVAILABLE, e.as_str().to_string()),
+    };
+    if version != DelegateVersion::V4 {
+        return bad(
+            StatusCode::BAD_REQUEST,
+            RelayError::ResponseNeedsV4.as_str().to_string(),
+        );
+    }
+
+    let state = match relay::delegation_state(
+        provider.inner(),
+        request.responder,
+        delegate,
+        contracts.reputation_registry,
+    )
+    .await
+    {
+        Ok(s) => s,
+        Err(e) => return bad(StatusCode::SERVICE_UNAVAILABLE, e.as_str().to_string()),
+    };
+    if state == DelegationState::Foreign {
+        return bad(
+            StatusCode::BAD_REQUEST,
+            RelayError::ForeignDelegation.as_str().to_string(),
+        );
+    }
+    let delegated = state == DelegationState::Delegated;
+
+    let account_nonce = if delegated {
+        None
+    } else {
+        match provider
+            .inner()
+            .get_transaction_count(request.responder)
+            .await
+        {
+            Ok(n) => Some(n),
+            Err(_) => {
+                return bad(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    RelayError::RpcUnavailable.as_str().to_string(),
+                )
+            }
+        }
+    };
+
+    let deadline =
+        crate::erc8004::proof::unix_now_secs().saturating_add(relay::relay_deadline_secs());
+    let nonce: alloy::primitives::FixedBytes<32> = {
+        use rand::RngCore as _;
+        let mut bytes = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut bytes);
+        alloy::primitives::FixedBytes::from(bytes)
+    };
+    let chain_id = provider.chain().chain_id;
+    let p = crate::erc8004::relay_v4::append_response_params(
+        contracts.reputation_registry,
+        agent_id,
+        request.client_address,
+        request.feedback_index,
+        &request.response_uri,
+        request.response_hash.unwrap_or_default(),
+        deadline,
+        nonce,
+    );
+
+    (
+        StatusCode::OK,
+        Json(crate::erc8004::PrepareRelayResponseResponse {
+            success: true,
+            delegate: Some(delegate),
+            digest: Some(crate::erc8004::relay_v4::append_response_digest(
+                chain_id,
+                request.responder,
+                &p,
+            )),
+            typed_data: Some(crate::erc8004::relay_v4::append_response_typed_data(
+                chain_id,
+                request.responder,
+                &p,
+            )),
+            deadline: Some(deadline),
+            nonce: Some(nonce),
+            delegated,
+            account_nonce,
+            chain_id,
+            error: None,
+            network,
+        }),
+    )
+        .into_response()
+}
+
+/// `POST /feedback/response/evm/submit`: relay a responder-authored response.
+///
+/// Same discipline as the feedback rail: the facilitator rebuilds the struct
+/// from the declared parameters and requires the responder's signature to cover
+/// exactly that. It does not relay a struct it was handed.
+#[instrument(skip_all)]
+pub async fn post_submit_relay_response<A>(
+    State(facilitator): State<A>,
+    raw_body: Bytes,
+) -> impl IntoResponse
+where
+    A: Facilitator + HasProviderMap,
+    A::Error: IntoResponse,
+    A::Map: ProviderMap<Value = NetworkProvider>,
+{
+    use crate::chain::evm::MetaEvmProvider as _;
+    use crate::erc8004::relay::{self, DelegateVersion, DelegationState, RelayError};
+
+    let request: crate::erc8004::SubmitRelayResponseRequest =
+        match serde_json::from_slice(&raw_body) {
+            Ok(r) => r,
+            Err(e) => return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"success": false, "error": format!("Invalid request format: {}", e)})),
+            )
+                .into_response(),
+        };
+    let network = request.network;
+
+    let refuse = |e: RelayError| {
+        warn!(network = %network, reason = e.as_str(), "refusing to relay a response");
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"success": false, "error": e.as_str(), "network": network})),
+        )
+            .into_response()
+    };
+
+    let Some(delegate) = relay::feedback_delegate(&network) else {
+        return refuse(RelayError::NoDelegate(network));
+    };
+    let Some(contracts) = get_contracts(&network) else {
+        return refuse(RelayError::NoDelegate(network));
+    };
+    let provider_map = facilitator.provider_map();
+    let Some(NetworkProvider::Evm(provider)) = provider_map.by_network(&network) else {
+        return refuse(RelayError::NoDelegate(network));
+    };
+
+    let agent_id_str =
+        parse_agent_id_value(&request.agent_id).unwrap_or_else(|| request.agent_id.to_string());
+    let Ok(agent_id) = agent_id_str.parse::<u64>() else {
+        return refuse(RelayError::NoDelegate(network));
+    };
+
+    if request.deadline <= crate::erc8004::proof::unix_now_secs() {
+        return refuse(RelayError::Expired);
+    }
+
+    let version = match relay::assert_delegate_usable(
+        provider.inner(),
+        delegate,
+        contracts.reputation_registry,
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => return refuse(e),
+    };
+    if version != DelegateVersion::V4 {
+        return refuse(RelayError::ResponseNeedsV4);
+    }
+
+    let chain_id = provider.chain().chain_id;
+    let p = crate::erc8004::relay_v4::append_response_params(
+        contracts.reputation_registry,
+        agent_id,
+        request.client_address,
+        request.feedback_index,
+        &request.response_uri,
+        request.response_hash.unwrap_or_default(),
+        request.deadline,
+        request.nonce,
+    );
+    if let Err(e) = crate::erc8004::relay_v4::append_response_signature_authorises(
+        chain_id,
+        request.responder,
+        &p,
+        &request.signature,
+    ) {
+        return refuse(e);
+    }
+
+    let state = match relay::delegation_state(
+        provider.inner(),
+        request.responder,
+        delegate,
+        contracts.reputation_registry,
+    )
+    .await
+    {
+        Ok(s) => s,
+        Err(e) => return refuse(e),
+    };
+    if state == DelegationState::Foreign {
+        return refuse(RelayError::ForeignDelegation);
+    }
+
+    let authorization_list = if state == DelegationState::Delegated {
+        match relay::nonce_already_used(provider.inner(), request.responder, request.nonce).await {
+            Ok(true) => return refuse(RelayError::NonceAlreadyUsed),
+            Ok(false) => {}
+            Err(e) => return refuse(e),
+        }
+        None
+    } else {
+        let Some(params) = request.authorization.as_ref() else {
+            return refuse(RelayError::MissingAuthorization);
+        };
+        let signed = relay::signed_authorization(
+            alloy::primitives::U256::from(params.chain_id),
+            params.address,
+            params.nonce,
+            params.y_parity,
+            params.r,
+            params.s,
+        );
+        if let Err(e) = relay::accept_authorization(&signed, request.responder, delegate, chain_id)
+        {
+            return refuse(e);
+        }
+        Some(vec![signed])
+    };
+
+    let calldata = crate::erc8004::relay_v4::relay_append_response_calldata(&p, &request.signature);
+    // Sent TO THE RESPONDER'S ADDRESS: that is what makes the registry observe
+    // them as msg.sender while our EOA only pays.
+    let meta = crate::chain::evm::MetaTransaction {
+        to: request.responder,
+        calldata,
+        confirmations: 1,
+        authorization_list,
+    };
+    match provider
+        .send_transaction_from(provider.pinned_signer(), meta)
+        .await
+    {
+        Ok(receipt) => {
+            info!(
+                network = %network,
+                agent_id = %agent_id_str,
+                responder = %request.responder,
+                tx = %receipt.transaction_hash,
+                "relayed an ERC-8004 response authored by the responder"
+            );
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "success": true,
+                    "transaction": format!("{:#x}", receipt.transaction_hash),
+                    "network": network,
+                })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            error!(network = %network, error = %e, "failed to relay a response");
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({
+                    "success": false,
+                    "error": "relay_submission_failed",
+                    "network": network,
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
 /// `POST /feedback/response`: Append a response to feedback.
 ///
 /// Allows an agent (or authorized party) to respond to feedback they received.
@@ -5499,6 +5862,25 @@ where
         feedback_index = request.feedback_index,
         "Appending response to ERC-8004 feedback"
     );
+
+    // DEPRECATED authorship path, same shape as the two above: the registry
+    // records `msg.sender` as the `responder`, and on this route that is US.
+    // It does not destroy reputation the way the revoke route could -- it ties
+    // our on-chain identity to a third party's content, which is its own kind
+    // of bad, and a POST with no credentials is what triggers it.
+    //
+    // Warn-only, and only where the replacement actually exists: the rater-
+    // authored response rail is v4-only, because the v3 delegate accepts two
+    // selectors and `appendResponse` is not one of them.
+    if crate::erc8004::relay::feedback_delegate(&network).is_some() {
+        warn!(
+            network = %network,
+            agent_id = %agent_id_str,
+            "[WARN] DEPRECATED: writing an EVM response authored by the FACILITATOR, \
+             not by the responder. Where the delegate is v4, use \
+             POST /feedback/response/evm/prepare + /feedback/response/evm/submit"
+        );
+    }
 
     let provider_map = facilitator.provider_map();
 

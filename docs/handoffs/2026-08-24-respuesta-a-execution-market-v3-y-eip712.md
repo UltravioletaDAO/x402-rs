@@ -19,8 +19,9 @@ related-files:
 > **Para:** Execution Market
 > **De:** el equipo del Facilitator (`x402-rs`)
 > **Responde a:** `2026-08-24-para-el-facilitador-v3-y-eip712.md`
-> **Estado:** v3 desplegado de nuestro lado (v1.94.0). El punto de EIP-712
-> necesita una decisión suya antes de que escriban el contrato.
+> **Estado:** v3 **vivo en producción** (v1.94.0, verificado contra el endpoint
+> real). El punto de EIP-712 necesita una decisión suya antes de que escriban el
+> contrato.
 
 ## 1. Las 9 direcciones v3 están servidas
 
@@ -259,11 +260,33 @@ coincidimos en no tocarlos.
 
 ---
 
-## Cómo comprobarlo
+## Verificado en producción
+
+No es una lectura del código: `assert_delegate_usable()` consulta la cadena en
+cada request, así que esta tabla es la respuesta real del endpoint, y de paso
+confirma que el probe de versión nuevo no rechaza delegates buenos.
+
+```
+$ curl -s https://facilitator.ultravioletadao.xyz/version
+{"version":"1.94.0"}
+
+base           0xa7ca33cae3c5890f25dfd08079db82701c9debc6  chainId=8453
+ethereum       0x8bf13c5d612eda66d3aea954c95cb77362b4a868  chainId=1
+polygon        0x77becfb266e3636c5cf4555348305f134a48fe55  chainId=137
+arbitrum       0xce9871fd3d3a3f02a0d40ffa257c21c859c934a3  chainId=42161
+optimism       0xde762cfc63551ad4d8c5be8f25ec0bcaa82df5ba  chainId=10
+celo           0x794c907fdfc71bfaf0b86d0e463bbd6e949a31ba  chainId=42220
+bsc            0x825e997f2f7ed5d3f59466cd754189fb19b62b82  chainId=56
+monad          0xde762cfc63551ad4d8c5be8f25ec0bcaa82df5ba  chainId=143
+base-sepolia   0x1aaea468fb156aabd2617a507771fc8fe5085b45  chainId=84532
+
+avalanche      400  "relayed feedback is not available on avalanche:
+                     no FeedbackDelegate is deployed there yet"
+```
+
+Para reproducirlo:
 
 ```bash
-curl -s https://facilitator.ultravioletadao.xyz/version   # 1.94.0
-
 curl -s -X POST https://facilitator.ultravioletadao.xyz/feedback/evm/prepare \
   -H 'content-type: application/json' -d '{
     "x402Version":1,
@@ -271,9 +294,12 @@ curl -s -X POST https://facilitator.ultravioletadao.xyz/feedback/evm/prepare \
     "feedback":{"agentId":"18896","rater":"<EOA del rater>",
                 "value":100,"valueDecimals":0,"tag1":"quality","tag2":"api",
                 "endpoint":"https://agent.example","feedbackUri":"https://example.com/f.json"}
-  }' | jq '{delegate, chainId, delegated}'
-# espera delegate = 0xa7ca33cae3c5890f25dfd08079db82701c9debc6
+  }' | jq '{delegate, chainId, delegated, deadline, nonce}'
 ```
 
-Y una advertencia de método que ya les dimos y sigue valiendo: **los RPC públicos
+`delegated: false` significa que esa cuenta todavía no está delegada: la primera
+vez hay que mandar también la autorización 7702 firmada, y el `accountNonce` que
+necesita viene en la misma respuesta. A partir de la segunda va sin ella.
+
+Una advertencia de método que ya les dimos y sigue valiendo: **los RPC públicos
 devuelven 403 sin `User-Agent`**. Un 403 no es un veredicto sobre la cadena.

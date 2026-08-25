@@ -99,7 +99,7 @@ impl OfacList {
         let last_updated = fs::metadata(&config.path)
             .ok()
             .and_then(|m| m.modified().ok())
-            .map(|time| chrono::DateTime::<chrono::Utc>::from(time));
+            .map(chrono::DateTime::<chrono::Utc>::from);
 
         tracing::info!(
             "Loaded OFAC list: {} addresses across {} currencies (generated: {})",

@@ -188,7 +188,6 @@ impl ComplianceCheckerBuilder {
             lists,
             blacklist,
             audit_logger,
-            config,
         }))
     }
 }
@@ -204,7 +203,10 @@ pub struct MultiListChecker {
     lists: Vec<Box<dyn SanctionsList>>,
     blacklist: Option<crate::lists::blacklist::Blacklist>,
     audit_logger: Arc<AuditLogger>,
-    config: Config,
+    // No `config` field: the builder consumes it here -- the audit logger takes
+    // the piece it needs and the lists are already built. Holding a second copy
+    // that nothing reads invites the next reader to branch on a value that is
+    // never consulted.
 }
 
 #[async_trait]

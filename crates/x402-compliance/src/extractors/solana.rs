@@ -39,7 +39,7 @@ impl SolanaExtractor {
         let payer = transaction
             .message
             .account_keys
-            .get(0)
+            .first()
             .ok_or_else(|| {
                 ComplianceError::AddressExtraction("No payer account found".to_string())
             })?

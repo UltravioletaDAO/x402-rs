@@ -152,32 +152,35 @@ pub const DEFAULT_RELAY_DEADLINE_SECS: u64 = 900;
 /// Execution Market has since retired the chain entirely).
 fn delegate_address(network: &Network) -> Option<Address> {
     match network {
-        // Mainnets -- Execution Market v3 deploys, verified on-chain 2026-08-24.
+        // Mainnets -- Execution Market v4 deploys, verified on-chain 2026-08-25.
         Network::Base => Some(alloy::primitives::address!(
-            "a7ca33CaE3c5890F25DfD08079DB82701C9deBc6"
+            "260D3D0258680aA458D0EBB8BcAE8A2f68bf6163"
         )),
         Network::Ethereum => Some(alloy::primitives::address!(
-            "8Bf13c5d612EDA66D3AeA954C95cb77362b4A868"
+            "9577F05D10D2052C75D115e3a0A8f9Dc0cBb7A7b"
         )),
         Network::Polygon => Some(alloy::primitives::address!(
-            "77BecfB266e3636C5Cf4555348305F134a48Fe55"
+            "1dfc1A578bf321A42c441B4bd60fD5d7bb4BFaD5"
         )),
         Network::Arbitrum => Some(alloy::primitives::address!(
-            "CE9871Fd3D3a3F02A0d40FfA257C21C859c934a3"
+            "f670C69BCbb2453FaE5Ec009c2b6dd934BE46A7f"
         )),
         Network::Bsc => Some(alloy::primitives::address!(
-            "825E997F2F7Ed5d3F59466cd754189fb19b62b82"
+            "e25cF9B9F5A3B5faa7628c751466df0166d96B59"
         )),
         Network::Optimism => Some(alloy::primitives::address!(
-            "De762cFc63551Ad4D8C5be8F25Ec0bcaa82dF5Ba"
-        )),
-        Network::Monad => Some(alloy::primitives::address!(
-            "De762cFc63551Ad4D8C5be8F25Ec0bcaa82dF5Ba"
-        )),
-        Network::Celo => Some(alloy::primitives::address!(
             "794C907FdfC71BFaF0b86D0e463BBD6E949A31bA"
         )),
-        // Testnet.
+        Network::Monad => Some(alloy::primitives::address!(
+            "794C907FdfC71BFaF0b86D0e463BBD6E949A31bA"
+        )),
+        Network::Celo => Some(alloy::primitives::address!(
+            "0Dff14dFF648769cB8C3D5F5a150f32Ca2BB9511"
+        )),
+        // Testnet. Still v3: Execution Market deployed v4 to the eight mainnets
+        // only. The version probe below reports it as v3 and the EIP-191 digest
+        // keeps being served there, which is exactly the point of detecting the
+        // version per chain instead of per release.
         Network::BaseSepolia => Some(alloy::primitives::address!(
             "1AaEA468fB156AABd2617A507771FC8fE5085b45"
         )),
@@ -206,8 +209,42 @@ pub enum DelegationState {
     None,
     /// Already delegated to the delegate we expect.
     Delegated,
-    /// Delegated somewhere else, or a contract account. Not usable.
+    /// Delegated to a SUPERSEDED version of our own delegate.
+    ///
+    /// Treated exactly like `None` -- the rater signs a fresh authorisation and
+    /// moves to the current version. It is a separate state because the check
+    /// that produces it is not free and because collapsing it either way is
+    /// wrong:
+    ///
+    /// - Called `Foreign`, every rater who ever rated is locked out the day we
+    ///   move a version. That was about to happen: the first signed rating's
+    ///   rater is delegated to v3, and swapping the table to v4 would have
+    ///   answered them 400 forever.
+    /// - Called `Foreign`'s opposite -- i.e. treating ALL foreign delegations as
+    ///   re-delegatable -- we would ask the six Paybox agents delegated to
+    ///   Alchemy's `SemiModularAccount7702` to point their wallet at us, which
+    ///   breaks their gasless money-ops. All three teams agreed not to touch
+    ///   them, and this rejection is what enforces it.
+    Supersedable,
+    /// Delegated to somebody else's implementation, or a contract account.
+    ///
+    /// NOT usable and NOT re-delegatable by us: re-pointing an account that a
+    /// wallet provider delegated would break whatever that provider is doing
+    /// with it.
     Foreign,
+}
+
+/// Which version of the delegate is deployed at an address.
+///
+/// Read from the chain per request, never assumed from the table: the deploys
+/// use CREATE, so an address does not identify a version, and the same address
+/// holds different versions on different chains.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DelegateVersion {
+    /// EIP-191 digest over `keccak256(abi.encode(...))`. Opaque to a wallet.
+    V3,
+    /// EIP-712 typed data: the rater sees named fields.
+    V4,
 }
 
 /// Errors that stop a relay before any gas is spent.
@@ -390,6 +427,7 @@ pub async fn delegation_state<P: Provider>(
     rpc: &P,
     rater: Address,
     delegate: Address,
+    expected_registry: Address,
 ) -> Result<DelegationState, RelayError> {
     let code = rpc
         .get_code_at(rater)
@@ -401,13 +439,42 @@ pub async fn delegation_state<P: Provider>(
     // EIP-7702 designator: 0xef0100 || 20-byte delegate address.
     if code.len() == 23 && code[0] == 0xef && code[1] == 0x01 && code[2] == 0x00 {
         let current = Address::from_slice(&code[3..23]);
-        return Ok(if current == delegate {
-            DelegationState::Delegated
-        } else {
-            DelegationState::Foreign
+        if current == delegate {
+            return Ok(DelegationState::Delegated);
+        }
+        // Delegated to something else -- but WHAT else decides everything.
+        //
+        // A superseded version of our own delegate is re-delegatable: the rater
+        // signs a new authorisation and moves forward. Somebody else's smart
+        // account is not, and re-pointing it would break the wallet provider
+        // that put it there.
+        //
+        // Told apart by BEHAVIOUR, not by a list of old addresses: with CREATE
+        // an address does not identify a contract across chains, so a hardcoded
+        // list of previous deploys would misfire exactly where it matters. A
+        // FeedbackDelegate of any version answers `REPUTATION_REGISTRY()` with
+        // this chain's registry; an Alchemy SMA has no such function and its
+        // call reverts.
+        return Ok(match delegate_pinned_registry(rpc, current).await {
+            Some(pinned) if pinned == expected_registry => DelegationState::Supersedable,
+            _ => DelegationState::Foreign,
         });
     }
     Ok(DelegationState::Foreign)
+}
+
+/// The registry a delegate is pinned to, or `None` if it is not one of ours.
+///
+/// `None` covers both "reverted" and "unreachable" on purpose. The caller uses
+/// it only to decide between `Supersedable` and `Foreign`, and `Foreign` is the
+/// conservative answer of the two: it refuses to relay rather than asking
+/// somebody to re-point an account we could not identify.
+async fn delegate_pinned_registry<P: Provider>(rpc: &P, target: Address) -> Option<Address> {
+    IFeedbackDelegate::new(target, rpc)
+        .REPUTATION_REGISTRY()
+        .call()
+        .await
+        .ok()
 }
 
 /// Refuse to use a delegate address that has no contract behind it, or one
@@ -420,7 +487,7 @@ pub async fn assert_delegate_usable<P: Provider>(
     rpc: &P,
     delegate: Address,
     expected_registry: Address,
-) -> Result<(), RelayError> {
+) -> Result<DelegateVersion, RelayError> {
     let code = rpc
         .get_code_at(delegate)
         .await
@@ -488,19 +555,29 @@ pub async fn assert_delegate_usable<P: Provider>(
     // make our own RPC outage report somebody's delegate as superseded, and
     // refusing to relay is the one outcome a rater cannot work around. Same
     // distinction the identity lookup draws between 404 and 503.
-    let is_current = match IFeedbackDelegate::new(delegate, rpc)
-        .supportsInterface(ERC721_RECEIVER_INTERFACE_ID)
-        .call()
-        .await
-    {
-        Ok(supported) => supported,
-        Err(e) if format!("{e:?}").contains("execution reverted") => false,
-        Err(_) => return Err(RelayError::RpcUnavailable),
+    let probe = |id: alloy::primitives::FixedBytes<4>| async move {
+        match IFeedbackDelegate::new(delegate, rpc)
+            .supportsInterface(id)
+            .call()
+            .await
+        {
+            Ok(supported) => Ok(supported),
+            Err(e) if format!("{e:?}").contains("execution reverted") => Ok(false),
+            Err(_) => Err(RelayError::RpcUnavailable),
+        }
     };
-    if !is_current {
-        return Err(RelayError::DelegateSupersededVersion(delegate));
+
+    // v4 first: it is what we want to serve, and asking for it costs the same
+    // call we were already making.
+    if probe(crate::erc8004::relay_v4::V4_RELAY_INTERFACE_ID).await? {
+        return Ok(DelegateVersion::V4);
     }
-    Ok(())
+    // v3 answers the ERC-721 receiver id; v1 has no `supportsInterface` at all
+    // and reverts, which is the branch that rejects it.
+    if probe(ERC721_RECEIVER_INTERFACE_ID).await? {
+        return Ok(DelegateVersion::V3);
+    }
+    Err(RelayError::DelegateSupersededVersion(delegate))
 }
 
 /// Validate a rater-supplied 7702 authorisation before it goes into a
@@ -644,26 +721,26 @@ mod tests {
     #[test]
     fn the_mainnet_delegates_are_the_verified_ones() {
         let expected = [
-            (Network::Base, "0xa7ca33cae3c5890f25dfd08079db82701c9debc6"),
+            (Network::Base, "0x260d3d0258680aa458d0ebb8bcae8a2f68bf6163"),
             (
                 Network::Ethereum,
-                "0x8bf13c5d612eda66d3aea954c95cb77362b4a868",
+                "0x9577f05d10d2052c75d115e3a0a8f9dc0cbb7a7b",
             ),
             (
                 Network::Polygon,
-                "0x77becfb266e3636c5cf4555348305f134a48fe55",
+                "0x1dfc1a578bf321a42c441b4bd60fd5d7bb4bfad5",
             ),
             (
                 Network::Arbitrum,
-                "0xce9871fd3d3a3f02a0d40ffa257c21c859c934a3",
+                "0xf670c69bcbb2453fae5ec009c2b6dd934be46a7f",
             ),
-            (Network::Bsc, "0x825e997f2f7ed5d3f59466cd754189fb19b62b82"),
+            (Network::Bsc, "0xe25cf9b9f5a3b5faa7628c751466df0166d96b59"),
             (
                 Network::Optimism,
-                "0xde762cfc63551ad4d8c5be8f25ec0bcaa82df5ba",
+                "0x794c907fdfc71bfaf0b86d0e463bbd6e949a31ba",
             ),
-            (Network::Monad, "0xde762cfc63551ad4d8c5be8f25ec0bcaa82df5ba"),
-            (Network::Celo, "0x794c907fdfc71bfaf0b86d0e463bbd6e949a31ba"),
+            (Network::Monad, "0x794c907fdfc71bfaf0b86d0e463bbd6e949a31ba"),
+            (Network::Celo, "0x0dff14dff648769cb8c3d5f5a150f32ca2bb9511"),
         ];
         for (network, want) in expected {
             let got = feedback_delegate(&network)
@@ -680,23 +757,60 @@ mod tests {
     /// is invisible to `eth_getCode`. Naming them here means a copy-paste from
     /// an old handoff fails a test instead of shipping.
     #[test]
-    fn the_superseded_v1_addresses_are_gone() {
-        let v1 = [
-            "0x754206c4247317768bd86459e829a174d9c68ba4", // base
-            "0xbecea4673c0105af63d02688be6de6ca51d57dd9", // ethereum
-            "0xf670c69bcbb2453fae5ec009c2b6dd934be46a7f", // polygon
-            "0x9551263b9b83b1a737d55fd5e67fb6d60e4ef787", // bsc
-            "0xe25cf9b9f5a3b5faa7628c751466df0166d96b59", // celo
-            "0x3a68085499b62286468a35b7d9dfc237ef2d3768", // base-sepolia
+    fn the_superseded_addresses_are_gone() {
+        // v1 (2026-08-23) and v3 (2026-08-24), PER NETWORK. Deliberately not a
+        // flat "any old address" list: with CREATE the same address is a
+        // different contract on another chain, and two of these are LIVE v4
+        // addresses elsewhere -- 0xf670C69B is polygon's v1 and arbitrum's v4,
+        // 0xe25cF9B9 is celo's v1 and bsc's v4. A flat list would fail on a
+        // perfectly good deploy.
+        let superseded: &[(Network, &str)] = &[
+            (Network::Base, "0x754206c4247317768bd86459e829a174d9c68ba4"),
+            (Network::Base, "0xa7ca33cae3c5890f25dfd08079db82701c9debc6"),
+            (
+                Network::Ethereum,
+                "0xbecea4673c0105af63d02688be6de6ca51d57dd9",
+            ),
+            (
+                Network::Ethereum,
+                "0x8bf13c5d612eda66d3aea954c95cb77362b4a868",
+            ),
+            (
+                Network::Polygon,
+                "0xf670c69bcbb2453fae5ec009c2b6dd934be46a7f",
+            ),
+            (
+                Network::Polygon,
+                "0x77becfb266e3636c5cf4555348305f134a48fe55",
+            ),
+            (
+                Network::Arbitrum,
+                "0x794c907fdfc71bfaf0b86d0e463bbd6e949a31ba",
+            ),
+            (
+                Network::Arbitrum,
+                "0xce9871fd3d3a3f02a0d40ffa257c21c859c934a3",
+            ),
+            (Network::Bsc, "0x9551263b9b83b1a737d55fd5e67fb6d60e4ef787"),
+            (Network::Bsc, "0x825e997f2f7ed5d3f59466cd754189fb19b62b82"),
+            (
+                Network::Optimism,
+                "0x825e997f2f7ed5d3f59466cd754189fb19b62b82",
+            ),
+            (
+                Network::Optimism,
+                "0xde762cfc63551ad4d8c5be8f25ec0bcaa82df5ba",
+            ),
+            (Network::Monad, "0x825e997f2f7ed5d3f59466cd754189fb19b62b82"),
+            (Network::Monad, "0xde762cfc63551ad4d8c5be8f25ec0bcaa82df5ba"),
+            (Network::Celo, "0xe25cf9b9f5a3b5faa7628c751466df0166d96b59"),
+            (Network::Celo, "0x794c907fdfc71bfaf0b86d0e463bbd6e949a31ba"),
         ];
-        for network in Network::variants() {
-            if let Some(addr) = feedback_delegate(network) {
-                let addr = addr.to_string().to_lowercase();
-                assert!(
-                    !v1.contains(&addr.as_str()),
-                    "{network} is back on a superseded v1 delegate ({addr})"
-                );
-            }
+        for (network, old) in superseded {
+            let served = feedback_delegate(network)
+                .map(|a| a.to_string().to_lowercase())
+                .unwrap_or_default();
+            assert_ne!(served, *old, "{network} is back on a superseded delegate");
         }
     }
 
@@ -713,31 +827,29 @@ mod tests {
     /// without a version probe the failure is silent.
     #[test]
     fn an_address_alone_does_not_identify_a_version() {
-        // arbitrum's v1 address is celo's v3 address.
+        // polygon's v1 address is arbitrum's v4 address.
         assert_eq!(
-            feedback_delegate(&Network::Celo)
+            feedback_delegate(&Network::Arbitrum)
+                .unwrap()
+                .to_string()
+                .to_lowercase(),
+            "0xf670c69bcbb2453fae5ec009c2b6dd934be46a7f"
+        );
+        // celo's v1 address is bsc's v4 address.
+        assert_eq!(
+            feedback_delegate(&Network::Bsc)
+                .unwrap()
+                .to_string()
+                .to_lowercase(),
+            "0xe25cf9b9f5a3b5faa7628c751466df0166d96b59"
+        );
+        // arbitrum's v3 address is what optimism and monad serve as v4.
+        assert_eq!(
+            feedback_delegate(&Network::Optimism)
                 .unwrap()
                 .to_string()
                 .to_lowercase(),
             "0x794c907fdfc71bfaf0b86d0e463bbd6e949a31ba"
-        );
-        // optimism/monad's v1 address is bsc's v3 address.
-        assert_eq!(
-            feedback_delegate(&Network::Bsc)
-                .unwrap()
-                .to_string()
-                .to_lowercase(),
-            "0x825e997f2f7ed5d3f59466cd754189fb19b62b82"
-        );
-        // ...and those two are NOT the same as each other, nor as what
-        // optimism and monad serve today.
-        assert_ne!(
-            feedback_delegate(&Network::Celo),
-            feedback_delegate(&Network::Bsc)
-        );
-        assert_ne!(
-            feedback_delegate(&Network::Bsc),
-            feedback_delegate(&Network::Optimism)
         );
     }
 

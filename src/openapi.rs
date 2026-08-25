@@ -1002,7 +1002,12 @@ address**, so the registry observes the rater as `msg.sender`.
 - `data` - the registry calldata being authorised
 - `digest` - the value the signature must recover against. **The EIP-191 envelope is already
   applied.** Sign it RAW, as a prehash (`unsafe_sign_hash`, `signHash`, `sign_hash_sync`)
-- `signingPayload` - the same hash with the envelope still OFF. **This is what a wallet signs.**
+- `typedData` - **present only on a v4 delegate**, and when it is there, sign IT. The full
+  `eth_signTypedData_v4` payload: the wallet renders the agent, the score, the tags and the
+  deadline as named fields, so the rater sees what they authorise instead of a hex blob. v4
+  carries no `signingPayload` and needs none — `signTypedData` has no envelope to apply twice
+- `signingPayload` - **v3 delegates only.** The same hash with the envelope still OFF, and what a
+  wallet signs there.
   `personal_sign` / `eth_sign` / `signMessage` apply the envelope themselves, so handing them
   `digest` wraps it twice and recovers an address that is not the rater -- a well-formed signature
   that fails with `relay_bad_signature` and no other hint. `keccak256("\\x19Ethereum Signed
@@ -1018,6 +1023,17 @@ Today that is `base`, `ethereum`, `polygon`, `arbitrum`, `optimism`, `celo`, `bs
 `base-sepolia`; other networks answer 400. The delegate takes its registry address through an
 immutable constructor argument, so its address differs per chain and each one is verified
 (`eth_getCode`, a `REPUTATION_REGISTRY()` read back, and an ERC-165 probe) before it is served.
+
+**Two protocol versions are served in parallel, chosen per chain per request.** The ERC-165 probe
+reports v4 (`0x378a0c90` → EIP-712 `typedData`) or v3 (`0x150b7a02` → the EIP-191 `digest`), and a
+delegate that answers neither is a superseded v1 and is refused. Nothing about this is pinned to a
+release: a chain starts serving `typedData` the moment a v4 delegate is deployed there, with no
+deploy of ours in between.
+
+A rater still pointed at a SUPERSEDED version of the delegate is reported as `delegated: false`,
+not as an error — they sign a fresh authorisation and move to the current version. An account
+delegated to somebody ELSE's implementation stays a 400: re-pointing it would break whatever
+wallet provider put it there.
 
 The ERC-165 probe is a **version** check, not a feature check. The delegates are deployed with
 CREATE rather than CREATE2, so an address is a function of (deployer, nonce) and the same address

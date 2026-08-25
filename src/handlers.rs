@@ -4258,6 +4258,9 @@ where
 /// comparing two things we made up.
 struct RelayContext {
     delegate: alloy::primitives::Address,
+    /// Which delegate version is actually deployed on this chain, read from
+    /// the chain on this request. Decides which digest the rater signs.
+    version: crate::erc8004::relay::DelegateVersion,
     registry: alloy::primitives::Address,
     rater: alloy::primitives::Address,
     agent_id: u64,
@@ -4315,7 +4318,11 @@ async fn relay_context(
     // An address in a table is a claim; eth_getCode is evidence. A delegate
     // address with no contract behind it would produce a transaction that looks
     // like it worked and rated nobody.
-    crate::erc8004::relay::assert_delegate_usable(
+    // ...and the VERSION comes from the same read, because an address does not
+    // carry one: the deploys use CREATE, so the same address is a different
+    // contract on a different chain. Detecting per request is also what lets
+    // Execution Market roll v4 chain by chain without us coordinating a deploy.
+    let version = crate::erc8004::relay::assert_delegate_usable(
         provider.inner(),
         delegate,
         contracts.reputation_registry,
@@ -4339,6 +4346,7 @@ async fn relay_context(
 
     Ok(RelayContext {
         delegate,
+        version,
         registry: contracts.reputation_registry,
         rater,
         agent_id,
@@ -4402,19 +4410,23 @@ where
         }
     };
 
-    let state =
-        match crate::erc8004::relay::delegation_state(provider.inner(), ctx.rater, ctx.delegate)
-            .await
-        {
-            Ok(s) => s,
-            Err(e) => {
-                return (
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    Json(json!({"success": false, "error": e.as_str()})),
-                )
-                    .into_response()
-            }
-        };
+    let state = match crate::erc8004::relay::delegation_state(
+        provider.inner(),
+        ctx.rater,
+        ctx.delegate,
+        ctx.registry,
+    )
+    .await
+    {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"success": false, "error": e.as_str()})),
+            )
+                .into_response()
+        }
+    };
     if state == crate::erc8004::relay::DelegationState::Foreign {
         return (
             StatusCode::BAD_REQUEST,
@@ -4425,6 +4437,11 @@ where
         )
             .into_response();
     }
+    // A rater still pointed at a SUPERSEDED version of our own delegate is not
+    // delegated for our purposes: they need a fresh authorisation, exactly like
+    // a plain EOA. Reporting them as delegated would send a type-4 transaction
+    // that runs the old contract; reporting them as Foreign would lock out
+    // everyone who ever rated, the day we move a version.
     let delegated = state == crate::erc8004::relay::DelegationState::Delegated;
 
     let account_nonce = if delegated {
@@ -4452,24 +4469,60 @@ where
         rand::thread_rng().fill_bytes(&mut bytes);
         alloy::primitives::FixedBytes::from(bytes)
     };
-    let digest = crate::erc8004::relay::relay_digest(
-        ctx.chain_id,
-        ctx.rater,
-        ctx.registry,
-        &ctx.data,
-        deadline,
-        nonce,
-    );
-    // What a wallet signs. `digest` already carries the EIP-191 envelope, so a
-    // wallet handed that value wraps it a second time and recovers a stranger.
-    let signing_payload = crate::erc8004::relay::relay_signing_payload(
-        ctx.chain_id,
-        ctx.rater,
-        ctx.registry,
-        &ctx.data,
-        deadline,
-        nonce,
-    );
+    // Both versions are served in parallel, chosen by what is deployed on THIS
+    // chain right now. Execution Market can therefore roll v4 network by network
+    // without a deploy of ours in between, and a client mid-migration never ends
+    // up unable to sign.
+    let (digest, signing_payload, typed_data) = match ctx.version {
+        crate::erc8004::relay::DelegateVersion::V4 => {
+            let p = crate::erc8004::relay_v4::give_feedback_params(
+                ctx.registry,
+                ctx.agent_id,
+                feedback.value,
+                feedback.value_decimals,
+                &feedback.tag1,
+                &feedback.tag2,
+                &feedback.endpoint,
+                &feedback.feedback_uri,
+                feedback.feedback_hash.unwrap_or_default(),
+                deadline,
+                nonce,
+            );
+            (
+                crate::erc8004::relay_v4::give_feedback_digest(ctx.chain_id, ctx.rater, &p),
+                // v4 needs no `signingPayload`: `signTypedData` has no envelope
+                // to apply twice, which is the whole class of bug it removes.
+                None,
+                Some(crate::erc8004::relay_v4::give_feedback_typed_data(
+                    ctx.chain_id,
+                    ctx.rater,
+                    &p,
+                )),
+            )
+        }
+        crate::erc8004::relay::DelegateVersion::V3 => {
+            let digest = crate::erc8004::relay::relay_digest(
+                ctx.chain_id,
+                ctx.rater,
+                ctx.registry,
+                &ctx.data,
+                deadline,
+                nonce,
+            );
+            // What a wallet signs on v3. `digest` already carries the EIP-191
+            // envelope, so a wallet handed that value wraps it a second time and
+            // recovers a stranger.
+            let payload = crate::erc8004::relay::relay_signing_payload(
+                ctx.chain_id,
+                ctx.rater,
+                ctx.registry,
+                &ctx.data,
+                deadline,
+                nonce,
+            );
+            (digest, Some(payload), None)
+        }
+    };
 
     (
         StatusCode::OK,
@@ -4478,7 +4531,8 @@ where
             delegate: Some(ctx.delegate),
             data: Some(ctx.data),
             digest: Some(digest),
-            signing_payload: Some(signing_payload),
+            signing_payload,
+            typed_data,
             deadline: Some(deadline),
             nonce: Some(nonce),
             delegated,
@@ -4569,20 +4623,59 @@ where
         return refuse(RelayError::Expired, None);
     }
 
-    // The signature must cover the calldata WE rebuilt, not one we were handed.
-    let digest = relay::relay_digest(
-        ctx.chain_id,
-        ctx.rater,
-        ctx.registry,
-        &ctx.data,
-        request.deadline,
-        request.nonce,
-    );
-    if !relay::signature_authorises(digest, &request.signature, ctx.rater) {
-        return refuse(RelayError::BadSignature, None);
-    }
+    // The signature must cover what WE rebuilt, not what we were handed -- in
+    // either version. v4 rebuilds the typed struct from the declared parameters
+    // and v3 rebuilds the calldata; both then require the rater's signature to
+    // cover exactly that.
+    let v4_params = match ctx.version {
+        relay::DelegateVersion::V4 => {
+            let p = crate::erc8004::relay_v4::give_feedback_params(
+                ctx.registry,
+                ctx.agent_id,
+                feedback.value,
+                feedback.value_decimals,
+                &feedback.tag1,
+                &feedback.tag2,
+                &feedback.endpoint,
+                &feedback.feedback_uri,
+                feedback.feedback_hash.unwrap_or_default(),
+                request.deadline,
+                request.nonce,
+            );
+            if let Err(e) = crate::erc8004::relay_v4::signature_authorises(
+                ctx.chain_id,
+                ctx.rater,
+                &p,
+                &request.signature,
+            ) {
+                return refuse(e, None);
+            }
+            Some(p)
+        }
+        relay::DelegateVersion::V3 => {
+            let digest = relay::relay_digest(
+                ctx.chain_id,
+                ctx.rater,
+                ctx.registry,
+                &ctx.data,
+                request.deadline,
+                request.nonce,
+            );
+            if !relay::signature_authorises(digest, &request.signature, ctx.rater) {
+                return refuse(RelayError::BadSignature, None);
+            }
+            None
+        }
+    };
 
-    let state = match relay::delegation_state(provider.inner(), ctx.rater, ctx.delegate).await {
+    let state = match relay::delegation_state(
+        provider.inner(),
+        ctx.rater,
+        ctx.delegate,
+        ctx.registry,
+    )
+    .await
+    {
         Ok(s) => s,
         Err(e) => return refuse(e, None),
     };
@@ -4676,12 +4769,20 @@ where
             .into_response();
     }
 
-    let calldata = relay::relay_feedback_calldata(
-        &ctx.data,
-        request.deadline,
-        request.nonce,
-        &request.signature,
-    );
+    // v4's entry point takes the typed struct itself, so the contract builds the
+    // registry calldata from the very thing that was signed and displayed. v3
+    // takes the pre-encoded calldata plus its window.
+    let calldata = match v4_params {
+        Some(ref p) => {
+            crate::erc8004::relay_v4::relay_give_feedback_calldata(p, &request.signature)
+        }
+        None => relay::relay_feedback_calldata(
+            &ctx.data,
+            request.deadline,
+            request.nonce,
+            &request.signature,
+        ),
+    };
 
     // Sent TO THE RATER'S ADDRESS: that is what makes the registry observe the
     // rater as msg.sender while our EOA only pays.

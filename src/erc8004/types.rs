@@ -346,6 +346,19 @@ pub struct PrepareRelayFeedbackResponse {
     /// instead of reimplementing the preimage.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signing_payload: Option<FixedBytes<32>>,
+    /// The full `eth_signTypedData_v4` payload. **v4 delegates only.**
+    ///
+    /// Present exactly when the delegate deployed on this chain is v4, which is
+    /// read from the chain per request rather than assumed from a release. When
+    /// it is present, sign IT: the wallet renders the agent, the score, the tags
+    /// and the deadline as named fields, so the rater can see what they are
+    /// authorising instead of a hex blob.
+    ///
+    /// v4 carries no `signingPayload` and needs none -- `signTypedData` has no
+    /// envelope to apply twice, which is the entire class of bug that kept the
+    /// v3 rail at zero signatures for days.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub typed_data: Option<serde_json::Value>,
     /// Unix timestamp after which the authorisation is void. Short on purpose.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deadline: Option<u64>,

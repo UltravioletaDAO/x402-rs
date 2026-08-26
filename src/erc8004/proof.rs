@@ -107,6 +107,18 @@ pub fn proof_max_age_secs() -> u64 {
 /// A BOUNDED set, never the raw error. Raw RPC and contract errors carry payer
 /// addresses and sometimes RPC URLs with the API key inside them; this enum is
 /// what reaches the client and the event stream, and `src/redact.rs` exists
+/// How many times a receipt is read before we conclude anything from a null.
+///
+/// A single read is what turned nine perfectly valid Celo payments into nine
+/// hard failures on Execution Market's side (2026-08-26): the node answered null
+/// once and the caller had no second opinion. Three is enough to ride out a node
+/// that is briefly behind without turning proof verification into a poll.
+const RECEIPT_READ_ATTEMPTS: usize = 3;
+
+/// Gap between those reads. Short: this runs on the feedback path, and the
+/// failure it covers is a node being a moment behind, not one being down.
+const RECEIPT_RETRY_DELAY_MS: u64 = 250;
+
 /// because that lesson was already learned once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -394,31 +406,62 @@ pub async fn verify_payment_facts<P: Provider>(
     let token = evm_address(&proof.token)?;
 
     // 3. The transaction exists and succeeded.
-    let receipt = match rpc.get_transaction_receipt(tx_hash).await {
-        Ok(Some(r)) => r,
-        // A null receipt is NOT proof the transaction never happened. A pruned
-        // or non-archive node answers exactly the same way for a transaction it
-        // simply no longer remembers, and then "not found" becomes an accusation
-        // that the payer invented a payment that is sitting right there on
-        // chain.
-        //
-        // Measured on Celo (2026-08-26): its L2 migration split the history, and
-        // for a PRE-migration transaction `forno.celo.org`, `rpc.ankr.com/celo`
-        // and our own `celo-rpc.quickapi.com` all return null while
-        // `celo.drpc.org` returns the real receipt. Nothing is wrong with those
-        // nodes; they just do not carry that history.
-        //
-        // So ask a question that separates the two: does this node have the
-        // BLOCK the proof claims? If it serves the block but not the receipt,
-        // the transaction genuinely is not in that block and the rejection is
-        // earned. If it has neither, we reached no verdict -- and no verdict
-        // must never block somebody's reputation (INC-2026-07-21).
-        Ok(None) => {
+    //
+    // A null receipt is NOT proof the transaction never happened, and there are
+    // TWO different reasons a node returns one. Both were measured on Celo:
+    //
+    //   * TRANSIENT. The node simply did not have it on that call and serves it
+    //     on the next. Karma Kadabra's sweep hit this on 9 of 9 Celo ratings
+    //     (2026-08-26): `forno.celo.org` answered null for nine payments in
+    //     blocks 72.9M-75.3M, and served every one of them minutes later. A
+    //     retry with nothing else changed passed 9/9.
+    //   * NO HISTORY. Celo's L2 migration split the chain's history, and for a
+    //     PRE-migration transaction `forno.celo.org`, `rpc.ankr.com/celo` and
+    //     our own `celo-rpc.quickapi.com` all return null while `celo.drpc.org`
+    //     returns the real receipt. Nothing is wrong with those nodes; they do
+    //     not carry that far back.
+    //
+    // Neither is "the payment does not exist", and the first one is the common
+    // one. So: RETRY before concluding anything, and only then ask the question
+    // that separates the second case from a real absence -- does this node have
+    // the BLOCK the proof claims? Serving the block but not the receipt means
+    // the transaction genuinely is not in it and the rejection is earned.
+    // Having neither means we reached no verdict, and no verdict must never
+    // block somebody's reputation (INC-2026-07-21).
+    let mut transport_failure: Option<String> = None;
+    let mut attempt = 0usize;
+    let found = loop {
+        attempt += 1;
+        match rpc.get_transaction_receipt(tx_hash).await {
+            Ok(Some(r)) => break Some(r),
+            Ok(None) => transport_failure = None,
+            // Scrubbed: alloy transport errors embed the full RPC URL, API key
+            // included.
+            Err(e) => transport_failure = Some(crate::redact::scrub_urls(&e.to_string())),
+        }
+        if attempt >= RECEIPT_READ_ATTEMPTS {
+            break None;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(RECEIPT_RETRY_DELAY_MS)).await;
+    };
+
+    let receipt = match found {
+        Some(r) => r,
+        None => {
+            if let Some(err) = transport_failure {
+                warn!(
+                    error = %err,
+                    attempts = attempt,
+                    "proof verification could not read the receipt"
+                );
+                return Err(ProofRejection::RpcUnavailable);
+            }
             return match rpc.get_block_by_number(proof.block_number.into()).await {
                 Ok(Some(_)) => Err(ProofRejection::TransactionNotFound),
                 Ok(None) => {
                     warn!(
                         block = proof.block_number,
+                        attempts = attempt,
                         "proof verification: the node has neither the receipt nor \
                          the block -- treating as no verdict, not as a missing \
                          transaction"
@@ -433,15 +476,6 @@ pub async fn verify_payment_facts<P: Provider>(
                     Err(ProofRejection::RpcUnavailable)
                 }
             };
-        }
-        Err(e) => {
-            // Scrubbed: alloy transport errors embed the full RPC URL, API key
-            // included.
-            warn!(
-                error = %crate::redact::scrub_urls(&e.to_string()),
-                "proof verification could not read the receipt"
-            );
-            return Err(ProofRejection::RpcUnavailable);
         }
     };
     if !receipt.status() {
@@ -1003,9 +1037,11 @@ mod tests {
         let ts = now() - 60;
         let params = params_with(good_proof(ts), Some(mixed(PAYER)));
         let a = Asserter::new();
-        // No receipt...
-        a.push_success(&serde_json::Value::Null);
-        // ...but the node DOES have the block, so it is telling us the
+        // No receipt, on EVERY attempt -- a genuine absence does not heal.
+        for _ in 0..RECEIPT_READ_ATTEMPTS {
+            a.push_success(&serde_json::Value::Null);
+        }
+        // ...and the node DOES have the block, so it is telling us the
         // transaction is genuinely not in it. That rejection is earned.
         a.push_success(&block_json(BLOCK, ts));
         assert_eq!(
@@ -1033,7 +1069,9 @@ mod tests {
         let params = params_with(good_proof(ts), Some(mixed(PAYER)));
         let a = Asserter::new();
         // Neither the receipt nor the block: this node does not remember.
-        a.push_success(&serde_json::Value::Null);
+        for _ in 0..RECEIPT_READ_ATTEMPTS {
+            a.push_success(&serde_json::Value::Null);
+        }
         a.push_success(&serde_json::Value::Null);
         let got = verdict(a, &params).await;
         assert_eq!(got, Err(ProofRejection::RpcUnavailable));
@@ -1041,6 +1079,48 @@ mod tests {
         // payment that is perfectly valid.
         assert!(ProofRejection::RpcUnavailable.is_retryable());
         assert!(!ProofRejection::TransactionNotFound.is_retryable());
+    }
+
+    /// A TRANSIENT null must not become a rejection, and this is the case that
+    /// actually happened.
+    ///
+    /// Karma Kadabra's sweep hit it on 9 of 9 Celo ratings (2026-08-26):
+    /// `forno.celo.org` answered null for nine payments and served every one of
+    /// them minutes later, unchanged. A retry passed 9/9.
+    ///
+    /// The first version of this fix would have MISSED it. It only asked
+    /// whether the node had the block, and for these payments it did -- they
+    /// were recent, blocks 72.9M-75.3M against a head of 75.8M. So a payment
+    /// that exists would still have been answered `proof_transaction_not_found`.
+    /// Finding a mechanism that produces a null is not the same as finding the
+    /// one that produced THIS null.
+    #[tokio::test]
+    async fn a_transient_null_is_retried_rather_than_refused() {
+        let ts = now() - 60;
+        let params = params_with(good_proof(ts), Some(mixed(PAYER)));
+        let a = Asserter::new();
+        // The node is briefly behind...
+        a.push_success(&serde_json::Value::Null);
+        // ...and then has it. No rejection, no second opinion needed.
+        a.push_success(&receipt_json(PAYER, PAYEE, TOKEN, 1_000_000, BLOCK));
+        a.push_success(&block_json(BLOCK, ts));
+        a.push_success(&word(PAYEE));
+        a.push_success(&word([0u8; 20]));
+        assert_eq!(verdict(a, &params).await, Ok(()));
+    }
+
+    /// A transport error is retried too, and still ends as NO VERDICT.
+    #[tokio::test]
+    async fn a_flaky_transport_recovers_on_the_next_read() {
+        let ts = now() - 60;
+        let params = params_with(good_proof(ts), Some(mixed(PAYER)));
+        let a = Asserter::new();
+        a.push_failure_msg("connection reset");
+        a.push_success(&receipt_json(PAYER, PAYEE, TOKEN, 1_000_000, BLOCK));
+        a.push_success(&block_json(BLOCK, ts));
+        a.push_success(&word(PAYEE));
+        a.push_success(&word([0u8; 20]));
+        assert_eq!(verdict(a, &params).await, Ok(()));
     }
 
     /// A node that serves the receipt but not the block is missing history too.

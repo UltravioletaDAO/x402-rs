@@ -396,7 +396,44 @@ pub async fn verify_payment_facts<P: Provider>(
     // 3. The transaction exists and succeeded.
     let receipt = match rpc.get_transaction_receipt(tx_hash).await {
         Ok(Some(r)) => r,
-        Ok(None) => return Err(ProofRejection::TransactionNotFound),
+        // A null receipt is NOT proof the transaction never happened. A pruned
+        // or non-archive node answers exactly the same way for a transaction it
+        // simply no longer remembers, and then "not found" becomes an accusation
+        // that the payer invented a payment that is sitting right there on
+        // chain.
+        //
+        // Measured on Celo (2026-08-26): its L2 migration split the history, and
+        // for a PRE-migration transaction `forno.celo.org`, `rpc.ankr.com/celo`
+        // and our own `celo-rpc.quickapi.com` all return null while
+        // `celo.drpc.org` returns the real receipt. Nothing is wrong with those
+        // nodes; they just do not carry that history.
+        //
+        // So ask a question that separates the two: does this node have the
+        // BLOCK the proof claims? If it serves the block but not the receipt,
+        // the transaction genuinely is not in that block and the rejection is
+        // earned. If it has neither, we reached no verdict -- and no verdict
+        // must never block somebody's reputation (INC-2026-07-21).
+        Ok(None) => {
+            return match rpc.get_block_by_number(proof.block_number.into()).await {
+                Ok(Some(_)) => Err(ProofRejection::TransactionNotFound),
+                Ok(None) => {
+                    warn!(
+                        block = proof.block_number,
+                        "proof verification: the node has neither the receipt nor \
+                         the block -- treating as no verdict, not as a missing \
+                         transaction"
+                    );
+                    Err(ProofRejection::RpcUnavailable)
+                }
+                Err(e) => {
+                    warn!(
+                        error = %crate::redact::scrub_urls(&e.to_string()),
+                        "proof verification could not read the block either"
+                    );
+                    Err(ProofRejection::RpcUnavailable)
+                }
+            };
+        }
         Err(e) => {
             // Scrubbed: alloy transport errors embed the full RPC URL, API key
             // included.
@@ -422,7 +459,13 @@ pub async fn verify_payment_facts<P: Provider>(
     //    to look fresh simply by rewriting the field.
     let block_ts = match rpc.get_block_by_number(proof.block_number.into()).await {
         Ok(Some(b)) => b.header.timestamp,
-        Ok(None) => return Err(ProofRejection::BlockNumberMismatch),
+        // Same distinction as above, and here the old answer was worse: a node
+        // that has pruned the block would have reported a BLOCK MISMATCH -- an
+        // accusation that the proof names the wrong block -- when the truth is
+        // only that we could not read it. We already hold a receipt for this
+        // block, so the block exists; a node that will not serve it is missing
+        // history, not catching a liar.
+        Ok(None) => return Err(ProofRejection::RpcUnavailable),
         Err(e) => {
             warn!(
                 error = %crate::redact::scrub_urls(&e.to_string()),
@@ -960,10 +1003,62 @@ mod tests {
         let ts = now() - 60;
         let params = params_with(good_proof(ts), Some(mixed(PAYER)));
         let a = Asserter::new();
+        // No receipt...
         a.push_success(&serde_json::Value::Null);
+        // ...but the node DOES have the block, so it is telling us the
+        // transaction is genuinely not in it. That rejection is earned.
+        a.push_success(&block_json(BLOCK, ts));
         assert_eq!(
             verdict(a, &params).await,
             Err(ProofRejection::TransactionNotFound)
+        );
+    }
+
+    /// A node with no history reaches NO VERDICT, and must not call it a lie.
+    ///
+    /// Measured on Celo (2026-08-26): after its L2 migration, a PRE-migration
+    /// transaction reads back as null from `forno.celo.org`, `rpc.ankr.com/celo`
+    /// and our own `celo-rpc.quickapi.com`, while `celo.drpc.org` returns the
+    /// real receipt. The payment is on chain; those nodes just do not carry that
+    /// far back.
+    ///
+    /// Before this, that answered `proof_transaction_not_found` -- telling a
+    /// payer their payment does not exist while it sits in a block anyone with
+    /// an archive node can read. With the gate in phase 2 that would have
+    /// rejected every pre-migration Celo payment, permanently, for a reason that
+    /// was never true.
+    #[tokio::test]
+    async fn a_pruned_node_is_no_verdict_not_a_missing_transaction() {
+        let ts = now() - 60;
+        let params = params_with(good_proof(ts), Some(mixed(PAYER)));
+        let a = Asserter::new();
+        // Neither the receipt nor the block: this node does not remember.
+        a.push_success(&serde_json::Value::Null);
+        a.push_success(&serde_json::Value::Null);
+        let got = verdict(a, &params).await;
+        assert_eq!(got, Err(ProofRejection::RpcUnavailable));
+        // And "no verdict" has to stay retryable, or the caller gives up on a
+        // payment that is perfectly valid.
+        assert!(ProofRejection::RpcUnavailable.is_retryable());
+        assert!(!ProofRejection::TransactionNotFound.is_retryable());
+    }
+
+    /// A node that serves the receipt but not the block is missing history too.
+    ///
+    /// The old answer here was `proof_block_number_mismatch`, which is an
+    /// accusation that the proof names the wrong block -- and we are holding a
+    /// receipt FROM that block while saying it. Not reading something is not the
+    /// same as it being wrong.
+    #[tokio::test]
+    async fn a_block_we_cannot_read_is_no_verdict_not_a_mismatch() {
+        let ts = now() - 60;
+        let params = params_with(good_proof(ts), Some(mixed(PAYER)));
+        let a = Asserter::new();
+        a.push_success(&receipt_json(PAYER, PAYEE, TOKEN, 1_000_000, BLOCK));
+        a.push_success(&serde_json::Value::Null);
+        assert_eq!(
+            verdict(a, &params).await,
+            Err(ProofRejection::RpcUnavailable)
         );
     }
 

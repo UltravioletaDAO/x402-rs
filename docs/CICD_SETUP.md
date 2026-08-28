@@ -20,13 +20,31 @@ is **skipped** (the run still goes green on the `test` job), so merging the work
 Create an IAM user (e.g. `github-actions-facilitator-deploy`) with **programmatic access** (no console),
 then give it the policies below.
 
-> **There is a third, managed policy in production that this section does not cover:**
-> `facilitator-cicd-infra` (account-local, not AWS-managed). Its `BalancesLambdaDeploy` statement
-> (added 2026-08-20, `v2`) grants `lambda:UpdateFunctionConfiguration`, `UpdateFunctionCode`,
-> `TagResource` and `UntagResource` scoped to the single ARN
-> `arn:aws:lambda:us-east-2:518898403364:function:facilitator-production-balances`. Without it the
-> balances-Lambda step fails with `AccessDeniedException`. **None of these IAM policies live in
-> Terraform** — they are applied by hand, so this document is their only record. Keep it current.
+> **A third, managed policy governs the infra writes: `facilitator-cicd-infra`** (account-local,
+> not AWS-managed). As of 2026-08-28 it is **declared in Terraform** at
+> `terraform/environments/production/cicd-iam-policy.tf` — read that file's header before changing
+> anything. It is deliberately absent from CI's `-target` list and **must stay that way**: if CI
+> could apply it, CI could grant itself permissions and `DenyPrivilegeEscalation` would be
+> decorative. Declaring it is safe only because the deploy user has no `iam:CreatePolicyVersion`.
+> Apply it by hand, with a human's credentials, on Terraform 1.9.8.
+>
+> Its nine statements at `v5`: `DynamoTableManage`, `IamRolePolicyForTaskRoleOnly`,
+> `DenyPrivilegeEscalation` (Deny), `BalancesLambdaDeploy`, `AlertTopicManage`,
+> `FacilitatorAlarmManage`, `FacilitatorScheduleManage`, `AlertsBackupQueueManage`,
+> `FacilitatorLogRetention`.
+>
+> **Three of those were added only after a deploy failed on their absence** — the pattern this
+> document exists to stop:
+>
+> | When | Missing permission | What it broke |
+> |---|---|---|
+> | 2026-08-20 | `lambda:UpdateFunctionConfiguration` | The balances Lambda had been silently un-deployable for as long as it existed |
+> | 2026-08-28 | `sqs:CreateQueue` | The alerts backup queue |
+> | 2026-08-28 | `logs:PutRetentionPolicy` | A log-retention change broke the **routine** deploy for the whole project |
+>
+> **AWS caps a managed policy at 5 versions.** `v1` was deleted on 2026-08-28 to make room for
+> `v5`. Terraform does not rotate them, so an apply that fails with `LimitExceeded` means you must
+> delete the oldest non-default version by hand.
 
 **(a) Reads — attach the AWS managed `ReadOnlyAccess` policy.** A full `terraform apply` refreshes the
 whole prod config (ECS, ALB, ACM, Route53, DynamoDB, Secrets metadata, CloudWatch, Lambda, …), so the

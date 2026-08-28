@@ -69,7 +69,10 @@ resource "aws_sqs_queue" "alerts_backup" {
   tags = {
     Name        = "facilitator-${var.environment}-alerts-backup"
     Environment = var.environment
-    Purpose     = "SNS backup subscriber -- auto-confirmed, never expires, nobody drains it"
+    # SQS tag values accept only letters, digits, whitespace and _ . : / = + - @
+    # -- no commas. The full explanation lives in the comment above the resource,
+    # which is where it belongs anyway.
+    Purpose = "sns-backup-subscriber"
   }
 }
 

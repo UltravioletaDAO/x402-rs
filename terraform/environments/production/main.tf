@@ -825,8 +825,25 @@ resource "aws_ecs_task_definition" "facilitator" {
 
       environment = concat([
         {
-          name  = "RUST_LOG"
-          value = "info"
+          name = "RUST_LOG"
+          # `evm=debug` is deliberate and load-bearing, not leftover verbosity.
+          #
+          # The nonce allocator is INVISIBLE at info. `resyncing nonce against
+          # chain` is trace! (chain/evm.rs) and `reset nonce cache` /
+          # `released unbroadcast nonce` are debug!, so a log search for them
+          # returns zero and that zero means "not emitted", never "did not
+          # happen" -- we read it the wrong way twice before catching it.
+          #
+          # It cost us a real investigation: the Celo episode of 2026-08-21 left
+          # NO trace at info (nonce frozen at 429 for 6+ hours, 59 settles lost,
+          # balance untouched, zero errors logged) and could not be closed. Any
+          # fix to the allocator without these lines is applied blind.
+          #
+          # Scoped to the one module on purpose. Drop back to plain `info` once
+          # the nonce work is closed -- this is a debugging window, not a
+          # permanent setting, and it costs CloudWatch volume against the 30-day
+          # retention.
+          value = "info,x402_rs::chain::evm=debug"
         },
         {
           name  = "SIGNER_TYPE"

@@ -296,6 +296,17 @@ fn failure_category(debug: &str) -> &'static str {
 ///   * `-32000`, `-32603`, `-32801` and transport errors are the node failing
 ///     to answer at all — pruned history, missing headers, retries exhausted.
 ///     Nothing in the request can fix those.
+///   * `txpool is full` is matched by MESSAGE via
+///     [`crate::chain::evm::is_mempool_full`], not by its `-32003` code — that
+///     code is overloaded (see that function's doc comment) and a caller
+///     retrying a genuine `-32003` payload rejection is not what this buys.
+///
+/// This retryable classification is only correct together with releasing the
+/// nonce on the same condition (`evm.rs`'s `is_pre_broadcast_rejection`): a
+/// `txpool is full` that keeps its nonce burned turns a client retry into a
+/// faster nonce-gap wedge, not a cure. Deploy that fix first — see "Los fixes,
+/// en el orden seguro" in
+/// docs/handoffs/2026-08-20-diagnostico-performance-facilitador.md.
 ///
 /// Conservative by design: anything unrecognised keeps the old 400. A wrong 502
 /// would tell a caller with a genuinely bad payload to go wait for us.
@@ -310,6 +321,7 @@ fn is_upstream_rpc_failure(debug: &str) -> bool {
     NODE_CODES.iter().any(|c| debug.contains(c))
         || debug.contains("Max retries exceeded")
         || debug.contains("Transport(")
+        || crate::chain::evm::is_mempool_full(debug)
 }
 
 /// Persist one operation, off the request path.
@@ -3401,13 +3413,51 @@ impl IntoResponse for FacilitatorLocalError {
                 // that appear in alloy RpcError messages. Full detail logged server-side.
                 let correlation_id = uuid::Uuid::new_v4();
                 tracing::error!(%correlation_id, error = %e, "ContractCall error");
-                (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: format!("contract_call_failed (ref: {correlation_id})"),
-                    }),
-                )
-                    .into_response()
+                // This is the generic `post_settle` error path -- the >95%
+                // EIP-3009 traffic, NOT the escrow branch (escrow errors are
+                // `OperatorError`, classified separately at `:2870`/`:3516` and
+                // never reach here). Wired to `is_upstream_rpc_failure` on
+                // 2026-08-28 (Saul, via team-lead), same predicate the escrow
+                // branch already uses: a node that cannot answer (Celo's RPC
+                // outage, `txpool is full`, `-32000`/`-32603`/`-32801`) is not
+                // a malformed request. Safe to retry as of the fix #1 nonce
+                // release (`chain/evm.rs`'s `is_pre_broadcast_rejection`) --
+                // before it, a client retrying `txpool is full` burned another
+                // nonce and widened the gap instead of curing it.
+                //
+                // The revert check inside `is_upstream_rpc_failure` runs BEFORE
+                // any node-code check, so a genuine contract revert -- bad
+                // signature, insufficient balance, an expired/used
+                // authorization, ANY custom Solidity error regardless of
+                // selector -- still gets 400. See
+                // `contract_call_response_tests` below, which exercises this
+                // exact arm (not just the classifier) against a revert shaped
+                // like `AuthCaptureEscrow.AfterAuthorizationExpiry`
+                // (`0x36f2d211`, confirmed against
+                // `contracts/out/AuthCaptureEscrow.sol/AuthCaptureEscrow.json`)
+                // -- 173 of 226 reverts on 2026-08-19/20 were exactly this, on
+                // the escrow path where it was already correctly classified.
+                // See docs/handoffs/2026-08-20-diagnostico-performance-facilitador.md.
+                if is_upstream_rpc_failure(e) {
+                    let mut resp = (
+                        StatusCode::BAD_GATEWAY,
+                        Json(ErrorResponse {
+                            error: format!("upstream_rpc_unavailable (ref: {correlation_id})"),
+                        }),
+                    )
+                        .into_response();
+                    resp.headers_mut()
+                        .insert(header::RETRY_AFTER, HeaderValue::from_static("30"));
+                    resp
+                } else {
+                    (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: format!("contract_call_failed (ref: {correlation_id})"),
+                        }),
+                    )
+                        .into_response()
+                }
             }
             FacilitatorLocalError::InvalidAddress(ref e) => {
                 let correlation_id = uuid::Uuid::new_v4();
@@ -4146,6 +4196,35 @@ where
                 feedback_hash,
             );
 
+            // KNOWN GAP (2026-08-28,
+            // docs/handoffs/2026-08-20-diagnostico-performance-facilitador.md):
+            // both `.send().await` calls below skip the estimate-first guard that
+            // `EvmProvider::settle()` uses (`chain/evm.rs`, next to
+            // `PendingNonceManager`'s doc comment). Sending straight to
+            // `.send()` lets alloy's `JoinFill` fill gas AND nonce CONCURRENTLY
+            // (`try_join!`): `NonceFiller::prepare` commits the nonce reservation
+            // before gas estimation can even fail, so a call that reverts on
+            // estimation still burns the nonce it never broadcast. `/settle`
+            // dodges this by calling `estimate_gas` before reserving a nonce at
+            // all; this handler — and 4 others sharing the same
+            // `PendingNonceManager` (`post_revoke_feedback`,
+            // `post_append_response`, `run_evm_registration`,
+            // `transfer_agent_nft`) — do not.
+            //
+            // Measured cost on Monad (2026-08-24, no global mempool to absorb
+            // the gap): a reverting `/feedback` at 03:58:40 burned a nonce;
+            // nonces 379/380/381 sat unmined for 151-283s until nonce 378
+            // finally landed at 04:02:57 and unstuck all three at once. The
+            // distribution was bimodal (0-1s or 151-283s, nothing between) —
+            // the gap does not fail transactions, it FREEZES them until
+            // something fills the hole.
+            //
+            // Deliberately not fixed here: `run_evm_registration` carries a
+            // `pending -> mint_confirmed -> done/failed` job state machine that
+            // a rushed guard could break, and none of the 5 call sites have a
+            // nonce-reservation regression test today. Extending the guard is
+            // a scoped follow-up, not a drive-by edit.
+            //
             // Legacy chains (SKALE) need explicit gasPrice to avoid EIP-1559 rejection
             let send_result = if !provider.is_eip1559() {
                 let gp = provider
@@ -9854,5 +9933,107 @@ mod upstream_rpc_failure_tests {
     fn unknown_errors_are_not_promoted_to_upstream() {
         assert!(!is_upstream_rpc_failure("SchemeMismatch"));
         assert!(!is_upstream_rpc_failure("something entirely new"));
+    }
+
+    /// `txpool is full` never entered the mempool -- retrying is the correct
+    /// caller behaviour (paired with `evm.rs` releasing the nonce on the same
+    /// condition, so the retry lands on a clean slot instead of widening a
+    /// gap).
+    #[test]
+    fn mempool_full_is_retryable() {
+        assert!(is_upstream_rpc_failure(
+            r#"ErrorResp(ErrorPayload { code: -32003, message: "txpool is full" })"#
+        ));
+    }
+
+    /// `-32003` is overloaded: `eth_call`'s out-of-gas rejection carries the
+    /// same code but is a real answer about the request, not an outage. This
+    /// must stay a 400, not follow `-32003` into retryable.
+    #[test]
+    fn out_of_gas_32003_stays_a_client_error() {
+        assert!(!is_upstream_rpc_failure(
+            "server returned an error response: error code -32003: out of gas: \
+             gas exhausted during memory expansion: 600000000"
+        ));
+    }
+}
+
+/// Exercises `impl IntoResponse for FacilitatorLocalError`'s `ContractCall`
+/// arm directly (not just the `is_upstream_rpc_failure` classifier) — this is
+/// the response the >95% plain-`/settle` EIP-3009 traffic actually gets,
+/// wired to `is_upstream_rpc_failure` on 2026-08-28.
+#[cfg(test)]
+mod contract_call_response_tests {
+    use super::*;
+
+    /// `AuthCaptureEscrow.AfterAuthorizationExpiry(uint48,uint48)` — selector
+    /// `0x36f2d211`, confirmed present in the compiled
+    /// `contracts/out/AuthCaptureEscrow.sol/AuthCaptureEscrow.json` — was 173
+    /// of 226 reverts on 2026-08-19/20 (a capture attempted after the
+    /// authorization window: genuinely the client's fault, not ours).
+    ///
+    /// That specific revert is escrow-only and in production is classified by
+    /// `OperatorError` at the escrow branch (`:2870`) / `/escrow/state`
+    /// (`:3516`), not by this arm — plain `/settle` never calls
+    /// `AuthCaptureEscrow`. This fixture is shaped like it anyway (real
+    /// selector, schematic ABI-encoded args) to prove the point requested:
+    /// the classifier is selector-agnostic. `is_upstream_rpc_failure` returns
+    /// false for ANY string containing "execution reverted" before it looks
+    /// at a single node code, so wiring it into this arm cannot turn an
+    /// expired/invalid payload into an infinite retry loop — not for this
+    /// selector, not for one we have never seen.
+    #[test]
+    fn a_genuine_contract_revert_stays_400_even_with_a_custom_error_selector() {
+        let err = FacilitatorLocalError::ContractCall(
+            r#"ErrorResp(ErrorPayload { code: 3, message: "execution reverted", data: Some(RawValue("0x36f2d211000000000000000000000000000000000000000000000000000000006901a2b400000000000000000000000000000000000000000000000000000000068ffab12")) })"#
+                .to_string(),
+        );
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// The two FiatTokenV2 (real USDC contract) reverts already proven in
+    /// `upstream_rpc_failure_tests::execution_reverts_stay_client_errors` —
+    /// re-asserted here against the actual response arm, since that is what
+    /// plain `/settle` calls on every mainnet USDC transfer.
+    #[test]
+    fn a_real_usdc_revert_stays_400() {
+        let err = FacilitatorLocalError::ContractCall(
+            r#"ErrorResp(ErrorPayload { code: 3, message: "execution reverted: FiatTokenV2: invalid signature" })"#
+                .to_string(),
+        );
+        assert_eq!(err.into_response().status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// The failure mode this change targets: a node that cannot answer now
+    /// gets 502 + `Retry-After` instead of the old unconditional 400 that
+    /// told Execution Market "your request is wrong" during Celo's outage.
+    #[test]
+    fn a_node_failure_is_now_retryable_on_plain_settle() {
+        let err = FacilitatorLocalError::ContractCall(
+            r#"ErrorResp(ErrorPayload { code: -32000, message: "header not found" })"#.to_string(),
+        );
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            resp.headers().get(axum::http::header::RETRY_AFTER).unwrap(),
+            "30"
+        );
+    }
+
+    /// `txpool is full` on the plain `/settle` path: retryable, same as the
+    /// escrow branch, now that fix #1 releases the nonce on this exact
+    /// condition so the retry lands on a clean slot.
+    #[test]
+    fn mempool_full_is_retryable_on_plain_settle() {
+        let err = FacilitatorLocalError::ContractCall(
+            r#"ErrorResp(ErrorPayload { code: -32003, message: "txpool is full" })"#.to_string(),
+        );
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            resp.headers().get(axum::http::header::RETRY_AFTER).unwrap(),
+            "30"
+        );
     }
 }

@@ -392,6 +392,21 @@ resource "aws_lb" "main" {
   enable_http2               = true
   idle_timeout               = var.alb_idle_timeout
 
+  # Bucket referenced by NAME (local.alb_access_logs_bucket_name, a plain
+  # string in alb-access-logs.tf), never by resource attribute. That is a
+  # deliberate choice, not an oversight -- see var.alb_access_logs_enabled for
+  # why a resource reference here would be dangerous. The dynamic block itself
+  # (present/absent) is what CI's routine deploy diffs on, so it stays a no-op
+  # until the flag flips.
+  dynamic "access_logs" {
+    for_each = var.alb_access_logs_enabled ? [1] : []
+    content {
+      bucket  = local.alb_access_logs_bucket_name
+      prefix  = "alb"
+      enabled = true
+    }
+  }
+
   tags = {
     Name = "facilitator-${var.environment}-alb"
   }
@@ -1286,8 +1301,18 @@ resource "aws_appautoscaling_target" "ecs_target" {
   service_namespace  = "ecs"
 }
 
-resource "aws_appautoscaling_policy" "ecs_cpu" {
-  name               = "facilitator-${var.environment}-cpu"
+# Request-count-based scaling, not CPU.
+#
+# The 2026-08 performance diagnosis measured CPU never exceeding 25% across
+# three separate degradation episodes -- the facilitator is I/O-bound (waiting
+# on RPC calls), so a CPU target-tracking policy never fires for this
+# workload. ALBRequestCountPerTarget actually tracks load: it is the average
+# number of requests each running task received, over the ALB itself, and it
+# is what caught the gap between "quiet" and "the incident is starting."
+#
+# See var.alb_request_count_target_value for how the target was calibrated.
+resource "aws_appautoscaling_policy" "ecs_alb_request_count" {
+  name               = "facilitator-${var.environment}-alb-request-count"
   policy_type        = "TargetTrackingScaling"
   resource_id        = aws_appautoscaling_target.ecs_target.resource_id
   scalable_dimension = aws_appautoscaling_target.ecs_target.scalable_dimension
@@ -1295,9 +1320,10 @@ resource "aws_appautoscaling_policy" "ecs_cpu" {
 
   target_tracking_scaling_policy_configuration {
     predefined_metric_specification {
-      predefined_metric_type = "ECSServiceAverageCPUUtilization"
+      predefined_metric_type = "ALBRequestCountPerTarget"
+      resource_label         = "${aws_lb.main.arn_suffix}/${aws_lb_target_group.main.arn_suffix}"
     }
-    target_value = var.cpu_target_value
+    target_value = var.alb_request_count_target_value
   }
 }
 

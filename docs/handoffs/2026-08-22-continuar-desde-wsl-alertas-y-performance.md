@@ -372,18 +372,44 @@ reintento quema otro nonce** — convierte un atasco ocasional en uno veloz.
 
 ### 7.3 Preguntas abiertas de verdad
 
-- **Qué abre el primer hueco de nonce en monad.** 159 de 181 transacciones no
-  existen en la cadena (88%), verificado contra 2 RPC. **No es** falta de fondos
-  (tiene ~1.400 settles) **ni** `txpool is full` (cero eventos ahí; los 7 fueron
-  todos en Celo) **ni** el piso de gas (alloy firma a 202 gwei contra un piso de
-  100 — hipótesis refutada midiendo la fórmula real del `GasFiller`).
+- ~~**Qué abre el primer hueco de nonce en monad.**~~ **RESUELTO 2026-08-28.**
+  Lo abre `/feedback`, que manda con `call.send().await` crudo
+  (`src/handlers.rs:4189`, y 13 sitios más) sobre el **mismo `EvmProvider` del
+  cache** — o sea el mismo `PendingNonceManager` — que usa `/settle`. Sin
+  `estimate_gas` previo, el `JoinFill` de alloy llena gas y nonce con un
+  `try_join!`: si la estimación revierte, `NonceFiller` **ya comprometió el
+  nonce** y nadie lo devuelve. `/settle` sí se blinda estimando primero
+  (`evm.rs:611-636`); el blindaje nunca se extendió a los otros caminos.
+  Monad duele más que polygon porque **no tiene mempool global**: el RPC reenvía
+  a los siguientes líderes, hasta 3 veces, y abandona — en polygon un hueco
+  demora, en monad mata. Prueba dura: la distribución es **bimodal** (33 de 41
+  minadas en ≤1s, 4 a 151-283s, 4 destruidas; nada en el medio) y el hueco quedó
+  reconstruido con timestamps de bloque (nonces 378-381, 24-ago).
+- **El 88% era un número inflado y NO es re-verificable.** Los logs de esa
+  ventana expiraron (retención de 7 días). El método marcaba ausencia si "ambos
+  RPC" devolvían `null`, pero el segundo (`monad.drpc.org`) está **podado** y
+  devuelve `null` para transacciones sí minadas, así que la regla corría con un
+  solo voto. Medido de nuevo el 2026-08-28: **19,5% (8/41)** en monad.
+  Se mantienen refutadas la falta de fondos (79,4 MON) y el piso de gas (base fee
+  constante en 100 gwei, alloy firma a 202). Lo de `txpool is full` hay que
+  leerlo distinto: **monad no implementa `txpool_*` en absoluto** (`-32601`), así
+  que "cero eventos ahí" estaba garantizado y nunca fue señal de nada.
+- **SIN VERIFICAR:** no se mandó ninguna transacción de prueba al RPC de monad,
+  así que "¿acepta y descarta?" no tiene test directo.
 - **Worker threads de tokio.** `available_parallelism()` usa `sched_getaffinity()`,
   no la cuota cgroup. En Fargate puede dar 1 worker (head-of-line blocking) o N con
   presupuesto de 1 (thrashing). **Patologías distintas con fixes opuestos.** Se
   resuelve con una línea de log al boot o habilitando ECS Exec.
-- **Dos transacciones se minaron mientras el cliente recibió 400**:
-  `0x097890ad379cacbb…` (monad, block 97453656) y `0xebc487425044186f…` (base,
-  block 50159925). No se sabe cuántas más hay.
+- ~~**Dos transacciones se minaron mientras el cliente recibió 400.**~~
+  **MEDIDO 2026-08-28: son 68.** Sobre las 957 emisiones de 7 días cruzadas
+  hash por hash contra la cadena: **68 minadas a las que se les devolvió error**
+  (celo 36, polygon 23, skale-base 4, monad 4, base 1) y **72 ausentes
+  confirmadas contra 2 RPC**. Fallo visible al cliente: **140/957 = 14,6%**.
+  **Celo es hoy la peor cadena: 95 de 160 = 59%.**
+  Para calibrar `TX_RECEIPT_TIMEOUT_SECS`: monad espera 151-283s y skale-base
+  210-1195s (un timeout de 300s los cubre casi todos), pero **celo y polygon
+  esperan de 2 minutos a 3,4 horas** — ahí ningún timeout HTTP alcanza y la
+  única salida es settlement asíncrono.
 - **`polygon-testnet` devuelve `None`** en el readout de balances — otra cadena
   ilegible, sin investigar (es testnet, no se alarma).
 

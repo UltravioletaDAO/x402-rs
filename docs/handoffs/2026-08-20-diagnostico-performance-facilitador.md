@@ -111,49 +111,243 @@ bajan rápido. Los de solana, algorand y xrpl son fees de protocolo y son firmes
 
 ---
 
-## P0 — Monad pierde el 88% de sus transacciones
+## P0 — Monad: por qué se pierden transacciones (RESUELTO 2026-08-28)
 
-Verificado contra 2 RPC independientes, ventana 08-19 21:45Z → 08-20 01:53Z:
+> **Corrección de esta sección.** La versión original de este documento tituló
+> "Monad pierde el 88% de sus transacciones" y dejó la causa como la pregunta
+> abierta más cara del diagnóstico. **La causa está identificada** (abajo), y **el
+> 88% era un número inflado por un defecto de método**. Ambas cosas se cerraron el
+> 2026-08-28.
 
-| Cadena | Emitidas | Existen en la cadena |
-|---|---|---|
-| **Monad** | 181 | ~22 — **88% se evaporan** |
-| **Polygon** | 16 | 16 — limpio |
-
-El nonce del signer de Monad avanzó de 254 a ~276 mientras se emitían 181
-transacciones. Todas devolvieron un hash. La cadena no las tiene.
-
-**No es falta de fondos** (monad tiene 81,8 MON, ~1.400 settles) y **no es
-`txpool is full`** — cero eventos de txpool en monad; los 7 de la ventana fueron
-todos en Celo.
-
-**La hipótesis del piso de gas fue REFUTADA.** Se replicó la fórmula real del
-`GasFiller` leyéndola de la fuente (`alloy-provider-1.7.3/src/utils.rs:111-121`):
-una sola llamada a `eth_feeHistory(10, "latest", [20.0])`, mediana de los rewards
-p20, y `max_fee = base_fee * 2 + priority`. Contra monad, ahora:
+### La cifra correcta
 
 | | valor |
 |---|---|
-| `feeHistory.baseFeePerGas` | 100,0 gwei — **idéntico al header, sin discrepancia** |
-| alloy `maxPriorityFee` | 2,0 gwei (lo que sugiere el nodo) |
-| **alloy `maxFeePerGas`** | **202,0 gwei** |
-| piso de la cadena | 100,0 gwei |
+| Original (19-20 ago) | 88% — **NO RE-VERIFICABLE**, ver abajo |
+| Medido 2026-08-28, 7 días, 41 emisiones | **19,5% (8/41)** de fallo visible al cliente |
 
-**Alloy paga el doble del piso, no por debajo.** El fix de una línea en
-`evm.rs:534` no serviría de nada.
+Desglose de las 41: **33 minadas dentro del timeout**, **4 minadas tarde**
+(151/153/215/283s — el cliente ya había recibido error a los 30s, pero la plata sí
+se movió) y **4 destruidas de verdad** (`null` en `rpc.monad.xyz` **y** en
+`rpc-mainnet.monadinfra.com`, los dos con archivo).
 
-**Lo que abre el primer hueco en monad sigue sin identificarse.** El nonce hoy
-está limpio (311/311), el episodio se curó, y desde afuera no queda rastro. Para
-cerrarlo hacen falta los logs con `evm=debug` — con `info`, `resyncing nonce
-against chain` (`evm.rs:2376`, `trace!`) **no se emite**.
+**Por qué el 88% no es re-verificable:** el log group `/ecs/facilitator-production`
+tiene **retención de 7 días**. La ventana 08-19 21:45Z → 08-20 01:53Z expiró y no
+quedó lista de hashes en ningún lado.
 
-**Datos colaterales del mismo test:** en **Base** alloy calcula un tip 160x por
+**Por qué el método original inflaba la cifra:** `spread.py` marcaba "NO EXISTE"
+solo si **ambos** RPC devolvían `null` — regla correcta en el papel. Pero el
+segundo RPC, `monad.drpc.org`, está **podado**: devuelve `null` para
+transacciones que `rpc.monad.xyz` confirma minadas (~1 día de historia). Con un
+votante que dice `null` casi siempre, la regla de dos votos degenera a **un solo
+voto**. El mismo defecto apareció al re-medir en 2026-08-28 con
+`mainnet.base.org` y `mainnet.optimism.io`: **160 transacciones "nunca minadas"
+resultaron estar minadas** — el RPC estaba limitando y la falla se leía igual que
+una ausencia. **Un fallo de RPC nunca debe contar como ausencia.**
+
+### La causa: un hueco de nonce que abrimos nosotros, sobre una cadena que no perdona huecos
+
+**La prueba es que la distribución es bimodal.** Sobre las 41 emisiones:
+
+| Resultado | N | Espera hasta minarse |
+|---|---|---|
+| Minadas | 33 | mediana **0,0s**, máx **1,0s** |
+| Minadas tarde | 4 | **151, 153, 215, 283s** |
+| Destruidas | 4 | — |
+
+**No hay nada entre 1s y 151s.** Eso descarta congestión, gas y RPC lento: es
+binario — el nonce era ejecutable o no lo era. Monad mina en menos de un segundo
+cuando el nonce está limpio.
+
+**Reconstrucción con timestamps de bloque reales (24-ago), la evidencia dura:**
+
+```
+03:59:27 → nonce 379 → minada 04:03:02  (215s)
+04:00:29 → nonce 380 → minada 04:03:02  (153s)
+04:00:31 → nonce 381 → minada 04:03:02  (151s)
+04:02:57 → nonce 378 → minada 04:02:57  (  0s)  <-- tapa el hueco
+```
+
+379-381 quedaron congeladas esperando a 378. A los 146s — por encima de
+`NONCE_TRUST_CHAIN_AFTER` = 120s (`evm.rs:2328`) — el cache resincronizó contra la
+cadena, un settle posterior recibió el 378, y las cuatro se minaron en 5 segundos.
+
+**Qué abre el hueco.** `/feedback` manda con `call.send().await` crudo
+(`src/handlers.rs:4189`, y **13 sitios más iguales**) sobre el **mismo
+`EvmProvider` del cache** — o sea el mismo `PendingNonceManager` — que usa
+`/settle`. Sin `estimate_gas` previo, el `JoinFill` de alloy llena gas y nonce con
+un `try_join!`: cuando la estimación revierte, `NonceFiller` **ya comprometió el
+nonce** y no hay camino que lo devuelva. Es exactamente el fallo que `/settle` sí
+blinda estimando primero (`evm.rs:611-636`, reserva explícita en `:663`); **ese
+blindaje nunca se extendió a los otros caminos**. En la ventana hay un revert de
+`/feedback` en monad a las 03:58:40, justo entre el nonce 377 (03:58:35) y el 379
+(03:59:27).
+
+**Por qué monad y no polygon.** Monad **no tiene mempool global**
+([docs oficiales](https://docs.monad.xyz/monad-arch/consensus/local-mempool)): el
+RPC reenvía a los siguientes líderes, y si la transacción no entra en 3 bloques
+reenvía, hasta 3 veces, y abandona. Geth guarda las *queued* por horas. **En
+polygon un hueco DEMORA; en monad MATA.**
+
+### Hipótesis eliminadas con prueba
+
+- **Nonce manager compartido entre redes** (habría sido catastrófico):
+  `PendingNonceManager::default()` se construye por `EvmProvider` en `evm.rs:311`.
+  No es `static` ni global. ELIMINADA.
+- **`txpool is full` en monad**: los cuatro métodos `txpool_*` responden `-32601`.
+  **Monad no los implementa.** "Cero eventos de txpool en monad" estaba
+  garantizado de antemano — nunca fue señal de nada.
+- **Piso de gas**: base fee **constante en 100 gwei**, medido en 5 bloques
+  espaciados. Alloy firma a 202 gwei. Se mantiene refutada.
+- **Fondos**: 79,4 MON al 2026-08-28.
+- **El poll de 7s del watcher**: no se nos escapan transacciones minadas. La
+  espera real es de 151-283s. El problema son los **30s de timeout**, no el
+  intervalo de sondeo.
+
+### Lo que sigue SIN VERIFICAR
+
+- **No se mandó ninguna transacción de prueba** al RPC de monad (se respetó
+  read-only), así que el test directo de "¿acepta y descarta?" **no se hizo**. La
+  evidencia es indirecta pero firme: 4 transacciones con hash devuelto que nunca
+  existieron en la cadena.
+- **El 88% original no es re-medible.** Logs expirados, sin lista de hashes.
+
+**Datos colaterales del test de gas:** en **Base** alloy calcula un tip 160x por
 debajo del sugerido por el nodo (0,00000625 vs 0,001 gwei) — queda sobre el piso,
 así que no explica pérdidas, pero es un tip de casi cero. En **polygon** es al
 revés: alloy calcula 114,7 gwei de tip contra los 30 del nodo, o sea **paga ~4x
 de más**.
 
 ---
+
+## P0 — Celo: 59% de fallo, y NO es la wallet sin gas (2026-08-28)
+
+**La wallet vacía del 20-ago no explica nada de esto.** La medición corre desde el
+**2026-08-21 08:13Z**, o sea entera *después* de la recarga; hay **cero
+`insufficient funds`** en toda la ventana; y en un nodo archive el balance marca
+**342,8 CELO constantes** durante todo el atasco. **El problema está vivo.**
+
+95 de 160 emisiones fallaron (59 ausentes + 36 minadas con error devuelto), y no
+están repartidas: son **dos episodios**.
+
+### Episodio 2 (08-22 13:19→14:18) — el mismo mecanismo que monad, con correlación 1:1
+
+Los saltos de nonce on-chain y los reverts de `/feedback` en Celo encajan uno a uno:
+
+| Reverts de `/feedback` | Nonces minados | Huecos |
+|---|---|---|
+| 13:19:17, 13:19:21, 13:22:57 | 471 → **475** | 472, 473, 474 |
+| 13:28:14 | 475 → **477** | 476 |
+| 13:33:55 | 477 → **479** | 478 |
+| 13:46:22 | 483 → **485** | 484 |
+
+**Seis reverts, seis nonces quemados.** Es la confirmación en una segunda cadena
+del mecanismo probado en monad: `call.send().await` crudo (`handlers.rs:4189`)
+sobre el mismo `PendingNonceManager` que `/settle`.
+
+**Y acá está la diferencia con monad: Celo NO destruye, retiene.** Las encoladas
+esperaron entre **97 y 203 minutos** y **se minaron todas**. Celo corre
+`reth/v2.2.0` (OP Stack L2, bloques de 1s) — `txpool_*` existe pero está
+`"not whitelisted"`, distinto del `"Method not found"` de monad. Guarda las
+*queued* por horas; monad las abandona en segundos.
+
+### Episodio 1 (08-21 15:42→19:51) — 59 transacciones, y el silencio total
+
+**El signer quedó clavado en el nonce 429 durante más de 6 horas.** Medido contra
+un nodo archive:
+
+```
+14:00Z  nonce 429   342,809 CELO
+15:45Z  nonce 429   342,809 CELO     <- 59 emisiones en curso
+17:30Z  nonce 429   342,809 CELO
+20:15Z  nonce 429   342,809 CELO
+20:25Z  nonce 431   342,729 CELO     <- se destrabó
+```
+
+A las 20:19:40 un settle recibió el 429 y **se minó en 1 segundo**; todo lo
+posterior corrió a 1-2s. Las 59 emisiones intermedias devolvieron hash y nunca
+existieron. Consistente con el cupo por cuenta de transacciones *queued* de reth
+(default 16) más su expiración: 59 encoladas detrás de un hueco no caben.
+**NO VERIFICADO** — no se puede leer la config de reth detrás de un endpoint
+gestionado.
+
+**Lo que hace caro este episodio es que no dejó rastro:** cero `insufficient
+funds`, cero errores de nonce, cero reverts de estimación, cero reverts de
+`/feedback` en la ventana ampliada 12:00-21:00Z. Solo **2** fallos del poller
+(`celo-rpc.quickapi.com`, 19 en 7 días y **el único host que falla de todos**) —
+insuficientes para explicar 59. **Qué abrió ese hueco sigue sin identificarse a
+nivel `info`.**
+
+### Por qué el hueco no se curó en 6 horas (hipótesis, no verificada)
+
+`NONCE_TRUST_CHAIN_AFTER` (120s, `evm.rs:2328`) es lo único que devuelve el
+allocator a la cadena, y su reloj **se reinicia en cada asignación**. La cadencia
+de escrituras en Celo durante el episodio fue de **mediana 72s**, con el **60% de
+los intervalos por debajo de 120s** (117 instantes de actividad medidos). Bajo esa
+cadencia la ventana de curación casi nunca se abre — monad se curó a los 146s
+justamente porque su tráfico era más ralo. **No es verificable a nivel `info`**:
+`resyncing nonce against chain` es `trace!`.
+
+### Estado hoy
+
+`latest == pending == 590`, sin cola, 338,5 CELO. Sin fallos desde el 08-24.
+Los dos episodios fueron ráfagas, no una degradación continua.
+## P0 — "Plata movida, error devuelto": el modo de falla más caro, medido en 9 cadenas (2026-08-28)
+
+Este documento ya citaba dos casos sueltos (`0x097890ad…` en monad,
+`0xebc48742…` en base) sin saber cuántos más había. **Ahora está medido.**
+
+Método: las **957** emisiones de `"Transaction submitted to mempool"` de los
+últimos 7 días, cruzadas hash por hash contra la cadena, comparando el timestamp
+del bloque contra el timeout de recepción de esa cadena
+(`evm.rs:663-679`; `TX_RECEIPT_TIMEOUT_SECS` **no está seteado en producción**,
+así que rigen los defaults del código).
+
+| Red | Timeout | Emitidas | OK | **Minada pero error al cliente** | Ausente (confirmada 2 RPC) |
+|---|---|---|---|---|---|
+| arbitrum | 30s | 434 | 434 | 0 | 0 |
+| celo | 30s | 160 | 65 | **36** | **59** |
+| base | 90s | 133 | 132 | 1 | 0 |
+| polygon | 30s | 65 | 42 | **23** | 0 |
+| skale-base | 30s | 44 | 40 | 4 | 0 |
+| ethereum | 900s | 43 | 35 | 0 | 8 |
+| monad | 30s | 41 | 33 | 4 | 4 |
+| optimism | 30s | 27 | 27 | 0 | 0 |
+| avalanche | 30s | 10 | 9 | 0 | 1 |
+| **TOTAL** | | **957** | **817** | **68** | **72** |
+
+**68 transacciones movieron plata mientras le devolvíamos un error al cliente.**
+Sumadas a las 72 ausentes, el fallo visible al cliente es **140/957 = 14,6%**.
+
+**Celo, no monad, es hoy la peor cadena: 95 de 160 = 59% de fallo.**
+
+### Advertencia de método (se repitió el mismo defecto)
+
+En la primera pasada, `mainnet.base.org` y `mainnet.optimism.io` limitaron las
+consultas y **160 transacciones aparecieron como "nunca minadas" estando
+minadas** — base daba 133/133 y optimism 27/27, cifras absurdas que delataron el
+artefacto. La tabla de arriba ya está corregida: cada ausencia exige **dos RPC
+independientes devolviendo `result: null` de verdad**; un timeout o un error de
+RPC cuenta como *indeterminado*, nunca como ausencia. Es el mismo defecto que
+infló el 88% de monad.
+
+### Calibración de `TX_RECEIPT_TIMEOUT_SECS` con datos reales
+
+Esperas reales de las que excedieron el timeout, en segundos:
+
+| Red | Timeout hoy | Esperas observadas |
+|---|---|---|
+| **monad** | 30s | 151, 153, 215, 283 |
+| **skale-base** | 30s | 210, 283, 1051, 1195 |
+| **polygon** | 30s | 137 … 4423 (23 casos) |
+| **celo** | 30s | 447 … **12179** (36 casos, mediana ~10200) |
+| **base** | 90s | 6245 (1 caso) |
+
+**La conclusión que importa: subir el timeout solo sirve para monad.** Con 300s
+se recuperarían las 4 de monad y 2 de las 4 de skale-base. **Celo y polygon
+esperan entre 2 minutos y 3,4 horas** — ningún timeout HTTP razonable cubre eso,
+y el ALB corta a los 600s de todos modos. Para esas dos la única salida es
+**settlement asíncrono** (CAUSA RAÍZ #2), no un número más grande.
 
 ## CAUSA RAÍZ #1 — El nonce quemado que no sana (P0)
 
@@ -249,6 +443,13 @@ timeout.
 correctamente mientras el cliente recibió `status=400`** —
 `0x097890ad379cacbb…` (monad, block 97453656) y `0xebc487425044186f…` (base,
 block 50159925). Plata movida, error devuelto.
+
+> **Actualización 2026-08-28 — ya no son dos, son 68.** El barrido de las 957
+> emisiones de 7 días encontró **68 transacciones minadas a las que se les
+> devolvió error al cliente**, repartidas en celo (36), polygon (23), skale-base
+> (4), monad (4) y base (1). Ver la sección *"Plata movida, error devuelto"*.
+> **Refuerza esta causa raíz, no la matiza:** el timeout síncrono es lo que las
+> produce.
 
 ---
 
@@ -468,6 +669,13 @@ colisión; con `true` la segunda instancia se autoexcluye.
   el rechazo de escrituras durante 90s; no confirmada la doble firma.
 - **Cuántas private keys tiene el secret de prod** (1 vs N signers): si son
   varias, el impacto del hueco se divide entre ellas.
-- **Si el nodo de Monad encola o rechaza las txs con nonce gapped.**
-- **La confirmación empírica del nonce gap en logs de producción** — falta cruzar
-  hashes de `"Transaction submitted to mempool"` contra la cadena.
+- ~~**Si el nodo de Monad encola o rechaza las txs con nonce gapped.**~~
+  **RESUELTO 2026-08-28: las encola brevemente y después las destruye.** Se
+  observaron esperas de 151-283s y 4 destrucciones. Monad no tiene mempool
+  global: el RPC reenvía a los siguientes líderes, hasta 3 veces, y abandona.
+- ~~**La confirmación empírica del nonce gap en logs de producción.**~~
+  **RESUELTO 2026-08-28:** se cruzaron las **957** emisiones de 7 días contra la
+  cadena. El hueco quedó reconstruido con timestamps de bloque (nonces 378-381,
+  24-ago). Ver la sección P0 de monad.
+- **Sigue sin verificar: no se mandó ninguna transacción de prueba** al RPC de
+  monad, así que "¿acepta y descarta?" no tiene test directo.

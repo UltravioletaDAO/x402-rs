@@ -482,10 +482,19 @@ impl StellarProvider {
             "Initialized Stellar provider"
         );
 
+        // Explicit timeouts: reqwest defaults to none, so an RPC that accepts the
+        // TCP connection and never responds would otherwise hang until the ALB's
+        // 600s idle timeout.
+        let http_client = reqwest::Client::builder()
+            .timeout(crate::chain::rpc_http_timeout())
+            .connect_timeout(crate::chain::rpc_http_connect_timeout())
+            .build()
+            .expect("static reqwest client config is always valid");
+
         Ok(Self {
             signing_key: Arc::new(signing_key),
             public_key,
-            http_client: Arc::new(reqwest::Client::new()),
+            http_client: Arc::new(http_client),
             chain,
             rpc_url,
         })
@@ -2107,7 +2116,13 @@ mod tests {
         StellarProvider {
             signing_key: Arc::new(signing_key),
             public_key: stellar_pk.to_string(),
-            http_client: Arc::new(reqwest::Client::new()),
+            http_client: Arc::new(
+                reqwest::Client::builder()
+                    .timeout(crate::chain::rpc_http_timeout())
+                    .connect_timeout(crate::chain::rpc_http_connect_timeout())
+                    .build()
+                    .expect("static reqwest client config is always valid"),
+            ),
             chain: StellarChain::try_from(network).unwrap(),
             rpc_url: None,
         }

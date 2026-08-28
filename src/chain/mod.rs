@@ -29,6 +29,51 @@ pub mod sui;
 #[cfg(feature = "xrpl")]
 pub mod xrpl;
 
+/// Default whole-request timeout for outbound HTTP calls made by chain
+/// RPC/API clients on the payment path (verify/settle). Algorand, Stellar and
+/// XRPL each build a `reqwest::Client` directly for calls their SDK doesn't
+/// cover (simulation, Horizon/Soroban, rippled JSON-RPC). Without this,
+/// reqwest's default is no timeout at all, so an RPC that accepts the TCP
+/// connection and never responds hangs the request until the ALB's 600s idle
+/// timeout. Override with the `RPC_REQUEST_TIMEOUT_SECS` env var.
+///
+/// Same name and default as EVM's local timeout in `chain/evm.rs` (which
+/// builds its own `reqwest::Client` for alloy's transport, since it needs a
+/// couple of RPC-specific layers these plain clients don't) - one operator
+/// knob (`RPC_REQUEST_TIMEOUT_SECS`) controls the request timeout everywhere
+/// a chain module talks HTTP, EVM included, even though EVM does not call the
+/// helpers below.
+pub const RPC_REQUEST_TIMEOUT_SECS: u64 = 10;
+
+/// Default TCP connect-phase timeout for the same clients. Override with
+/// `RPC_CONNECT_TIMEOUT_SECS`. See [`RPC_REQUEST_TIMEOUT_SECS`] for why this
+/// name and default are shared with `chain/evm.rs`.
+pub const RPC_CONNECT_TIMEOUT_SECS: u64 = 3;
+
+/// [`RPC_REQUEST_TIMEOUT_SECS`], honoring an `RPC_REQUEST_TIMEOUT_SECS` env override.
+pub fn rpc_http_timeout() -> std::time::Duration {
+    std::time::Duration::from_secs(env_secs_override(
+        "RPC_REQUEST_TIMEOUT_SECS",
+        RPC_REQUEST_TIMEOUT_SECS,
+    ))
+}
+
+/// [`RPC_CONNECT_TIMEOUT_SECS`], honoring an `RPC_CONNECT_TIMEOUT_SECS` env
+/// override.
+pub fn rpc_http_connect_timeout() -> std::time::Duration {
+    std::time::Duration::from_secs(env_secs_override(
+        "RPC_CONNECT_TIMEOUT_SECS",
+        RPC_CONNECT_TIMEOUT_SECS,
+    ))
+}
+
+fn env_secs_override(var: &str, default: u64) -> u64 {
+    std::env::var(var)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
 pub enum NetworkProvider {
     Evm(EvmProvider),
     Solana(SolanaProvider),

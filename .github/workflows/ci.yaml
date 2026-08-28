@@ -199,7 +199,7 @@ jobs:
           # had `alarm_actions = []` and the other three published to Execution Market's
           # SNS topic -- we found out about our own outages from another team's email.
           if files=$(gh api "repos/${{ github.repository }}/compare/${{ github.event.before }}...${{ github.sha }}" --jq '.files[].filename' 2>/dev/null); then
-            if printf '%s\n' "$files" | grep -qE '^terraform/environments/production/(alerts\.tf|cloudwatch-.*\.tf|variables\.tf)$'; then
+            if printf '%s\n' "$files" | grep -qE '^terraform/environments/production/(alerts\.tf|alerts-imported\.tf|cloudwatch-.*\.tf|variables\.tf)$'; then
               echo "Observability config changed; applying."
             else
               echo "No observability changes in this push; skipping."
@@ -209,9 +209,20 @@ jobs:
             echo "Could not list changed files; applying to be safe."
           fi
           terraform init -input=false
+          # orphan_5xx_errors / orphan_latency_p99 / orphan_no_running_tasks (alerts-imported.tf)
+          # describe three alarms that were created by hand, outside Terraform, years before
+          # this. PutMetricAlarm upserts by name, so applying these targets before anyone runs
+          # `terraform import` does not fail -- it just overwrites the hand-created alarm to
+          # match the .tf (adding our own SNS topic to its actions) and starts tracking it in
+          # state from here. That is a convenient side effect, not a substitute for import: if
+          # you import first (recommended, see alerts-imported.tf), this step becomes a no-op
+          # for that resource on the following run.
           terraform apply -input=false -auto-approve \
             -target=aws_sns_topic.alerts \
             -target=aws_sns_topic_subscription.alerts_email \
+            -target=aws_sqs_queue.alerts_backup \
+            -target=aws_sqs_queue_policy.alerts_backup \
+            -target=aws_sns_topic_subscription.alerts_backup_sqs \
             -target=aws_cloudwatch_metric_alarm.chain_rpc_unreachable \
             -target=aws_cloudwatch_metric_alarm.chain_balance_low \
             -target=aws_cloudwatch_event_rule.balances_schedule \
@@ -221,7 +232,11 @@ jobs:
             -target=aws_cloudwatch_metric_alarm.near_settlement_failure_rate \
             -target=aws_cloudwatch_metric_alarm.near_rpc_errors \
             -target=aws_cloudwatch_metric_alarm.caip2_parsing_errors_high \
-            -target=aws_cloudwatch_metric_alarm.v2_settlement_failure_rate
+            -target=aws_cloudwatch_metric_alarm.v2_settlement_failure_rate \
+            -target=aws_cloudwatch_metric_alarm.latency_p99_early \
+            -target=aws_cloudwatch_metric_alarm.orphan_5xx_errors \
+            -target=aws_cloudwatch_metric_alarm.orphan_latency_p99 \
+            -target=aws_cloudwatch_metric_alarm.orphan_no_running_tasks
 
       - name: Wait for ECS rollout to stabilize
         run: |

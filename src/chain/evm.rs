@@ -260,15 +260,35 @@ impl EvmProvider {
             .filter(|v| *v > 0)
             .unwrap_or(DEFAULT_MAX_CU_PER_SECOND);
 
+        // `.connect(rpc_url)` (the previous call here) hands reqwest a bare
+        // `Client::default()` under the hood, and reqwest's own defaults for
+        // `timeout` / `connect_timeout` / `read_timeout` are all `None` -- alloy
+        // adds nothing on top. An RPC that accepts the TCP handshake and then
+        // never answers held a settle open until the ALB's OWN 600s idle
+        // timeout, not ours (CAUSA RAIZ #3,
+        // docs/handoffs/2026-08-20-diagnostico-performance-facilitador.md).
+        // Timeouts come from `crate::chain` (shared with algorand/stellar/xrpl's
+        // own `reqwest::Client`s, coordinated over IRC 2026-08-28) rather than a
+        // second definition here -- "CONFIGURACION CENTRALIZADA" in CLAUDE.md.
+        let http_client = reqwest::Client::builder()
+            .timeout(crate::chain::rpc_http_timeout())
+            .connect_timeout(crate::chain::rpc_http_connect_timeout())
+            .build()
+            .map_err(|e| format!("Failed to build HTTP client for {network}: {e}"))?;
+        let parsed_rpc_url: url::Url = rpc_url
+            .parse()
+            .map_err(|e| format!("Invalid RPC URL for {network}: {e}"))?;
+
+        // NOTE: `.http_with_client(..)` is SYNCHRONOUS -- it returns `RpcClient`
+        // directly, not a `TransportResult`. No `.await`, no `.map_err` here;
+        // both belonged to the `.connect(rpc_url).await` call this replaced.
         let client = RpcClient::builder()
             .layer(alloy::transports::layers::RetryBackoffLayer::new(
                 MAX_RATE_LIMIT_RETRIES,
                 INITIAL_BACKOFF_MS,
                 max_cu_per_second,
             ))
-            .connect(rpc_url)
-            .await
-            .map_err(|e| format!("Failed to connect to {network}: {e}"))?;
+            .http_with_client(http_client, parsed_rpc_url);
 
         // Create nonce manager explicitly so we can store a reference for error handling
         let nonce_manager = PendingNonceManager::default();
@@ -583,6 +603,20 @@ impl EvmProvider {
             // nothing, and the explicit limit also saves the filler's own
             // estimate round-trip on the happy path.
             //
+            // KNOWN GAP (2026-08-28, docs/handoffs/2026-08-20-diagnostico-performance-facilitador.md):
+            // this guard protects ONLY this `settle()` path. It shares its
+            // `PendingNonceManager` with 5 handlers in `src/handlers.rs` that
+            // send a `SolCallBuilder` with a bare `call.send().await` and no
+            // estimate-first step: `post_feedback` (:4169, :4189),
+            // `post_revoke_feedback` (:5401, :5410), `post_append_response`
+            // (:6037, :6046), `run_evm_registration` (:8018-:8038, the async
+            // `/register` job) and `transfer_agent_nft` (:8412, :8414). Any of
+            // those can burn a nonce the same way this block prevents. Not
+            // extended here on purpose — `run_evm_registration` carries a
+            // `pending -> mint_confirmed -> done/failed` state machine that a
+            // rushed guard could break, and none of the 5 have a regression
+            // test for nonce reservation today. See the first call site
+            // (`handlers.rs:4189`) for the on-chain cost this pays.
             // Only a revert is treated as fatal here: if estimation fails for
             // transport reasons we fall through and let the filler try, which
             // preserves the previous behaviour on flaky RPCs.
@@ -822,6 +856,32 @@ fn is_pre_broadcast_rejection(error: &str) -> bool {
         || lower.contains("exceeds block gas limit")
         || lower.contains("insufficient funds")
         || lower.contains("max fee per gas less than block base fee")
+        || is_mempool_full(&lower)
+}
+
+/// Whether the node refused the transaction because its own mempool has no
+/// room for it (geth's `txpool is full: already have N pending transactions
+/// in queue`).
+///
+/// The transaction never reached the mempool, so — same as the other checks
+/// in [`is_pre_broadcast_rejection`] — it provably consumed no nonce and the
+/// reservation must be handed back, not just reset. Without this, `evm.rs`
+/// fell into `reset_nonce`, which keeps the high-water mark pinned on a nonce
+/// that will never be mined: every subsequent settle from that signer then
+/// resyncs to `high_water + 1`, permanently skipping the hole.
+///
+/// Matched by MESSAGE, not by the JSON-RPC code: `-32003` is overloaded and
+/// also carries `out of gas: gas exhausted during memory expansion` on
+/// `eth_call` (see `handlers.rs`'s `OWNER_SCAN_BATCH` doc comment and its
+/// `classifies_rpc_failures_as_inconclusive` test) — a real rejection of the
+/// call, not evidence the nonce was never consumed. Matching the code would
+/// silently release a nonce that MAY already be in flight.
+///
+/// `pub(crate)`: `handlers.rs` also matches on this (retryable-vs-terminal
+/// classification for the HTTP response), and the two must never drift onto
+/// separate string lists.
+pub(crate) fn is_mempool_full(error: &str) -> bool {
+    error.to_lowercase().contains("txpool is full")
 }
 
 /// Check if a transport error is a nonce-related error that can be retried.
@@ -2327,6 +2387,33 @@ pub struct PendingNonceManager {
 /// the signer behind a nonce that will never be used.
 const NONCE_TRUST_CHAIN_AFTER: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// Decides what a resync should hand out, given the chain's own pending count
+/// and this process's bookkeeping for the address.
+///
+/// Extracted out of [`PendingNonceManager::get_next_nonce`] so the decision has
+/// exactly one implementation. It used to be duplicated verbatim into a
+/// `resync_nonce` test helper — a trap documented in
+/// `docs/handoffs/2026-08-20-diagnostico-performance-facilitador.md`: editing
+/// one copy and not the other leaves the tests green against the OLD logic.
+fn resync_target(
+    pending: u64,
+    high_water: Option<u64>,
+    last_allocated: Option<std::time::Instant>,
+) -> u64 {
+    match (high_water, last_allocated) {
+        // Nothing we allocated can still be in flight: trust the chain so a
+        // gap left by a dropped transaction heals.
+        (_, Some(last)) if last.elapsed() >= NONCE_TRUST_CHAIN_AFTER => pending,
+        // A transaction we allocated may still be propagating and this node
+        // may not have seen it. Handing back a nonce at or below the
+        // high-water mark would try to REPLACE that in-flight transaction
+        // instead of queueing behind it, which is exactly the "replacement
+        // transaction underpriced" failure reported under concurrent settles.
+        (Some(high_water), _) if pending <= high_water => high_water.saturating_add(1),
+        _ => pending,
+    }
+}
+
 /// Per-address nonce bookkeeping.
 #[derive(Debug, Default)]
 struct NonceState {
@@ -2375,19 +2462,7 @@ impl NonceManager for PendingNonceManager {
                 // not reuse a nonce that is already queued.
                 tracing::trace!(%address, "resyncing nonce against chain");
                 let pending = provider.get_transaction_count(address).pending().await?;
-                match (state.high_water, state.last_allocated) {
-                    // Nothing we allocated can still be in flight: trust the
-                    // chain so a gap left by a dropped transaction heals.
-                    (_, Some(last)) if last.elapsed() >= NONCE_TRUST_CHAIN_AFTER => pending,
-                    // A transaction we allocated may still be propagating and
-                    // this node may not have seen it. Handing back a nonce at or
-                    // below the high-water mark would try to REPLACE that
-                    // in-flight transaction instead of queueing behind it,
-                    // which is exactly the "replacement transaction
-                    // underpriced" failure reported under concurrent settles.
-                    (Some(high_water), _) if pending <= high_water => high_water.saturating_add(1),
-                    _ => pending,
-                }
+                resync_target(pending, state.high_water, state.last_allocated)
             }
         };
 
@@ -2425,7 +2500,12 @@ impl PendingNonceManager {
                 // The high-water mark has to step back with it, or a resync
                 // would refuse to reuse a nonce that never reached the network.
                 state.high_water = nonce.checked_sub(1);
-                tracing::debug!(%address, nonce, "released unbroadcast nonce");
+                // `info!`, not `debug!`: production runs at `info`, and this
+                // is the only observable signal that fix #1 (releasing the
+                // nonce on `txpool is full`) is actually firing. At `debug!`
+                // it is invisible in prod logs — see
+                // docs/handoffs/2026-08-20-diagnostico-performance-facilitador.md.
+                tracing::info!(%address, nonce, "released unbroadcast nonce");
             } else {
                 tracing::debug!(
                     %address,
@@ -2601,18 +2681,16 @@ mod tests {
         }
     }
 
-    /// Mirrors the resync decision inside `get_next_nonce` so the branch can be
-    /// exercised without a live provider.
+    /// Exercises the resync decision without a live provider. Delegates to
+    /// [`resync_target`] rather than re-deriving the branch — see that
+    /// function's doc comment for why a second copy is a trap, not a
+    /// convenience.
     fn resync_nonce(
         pending: u64,
         high_water: Option<u64>,
         last_allocated: Option<std::time::Instant>,
     ) -> u64 {
-        match (high_water, last_allocated) {
-            (_, Some(last)) if last.elapsed() >= NONCE_TRUST_CHAIN_AFTER => pending,
-            (Some(high_water), _) if pending <= high_water => high_water.saturating_add(1),
-            _ => pending,
-        }
+        resync_target(pending, high_water, last_allocated)
     }
 
     #[tokio::test]
@@ -2854,6 +2932,36 @@ mod tests {
         assert!(!is_pre_broadcast_rejection("operation timed out"));
         assert!(!is_pre_broadcast_rejection("error sending request for url"));
         assert!(!is_pre_broadcast_rejection(""));
+
+        // txpool is full: the transaction never entered the mempool, so the
+        // nonce provably was not consumed. Real geth phrasing (2026-08-20
+        // incident): the code alone (-32003) is NOT enough to classify this,
+        // see `is_mempool_full`'s doc comment and the negative case below.
+        assert!(is_pre_broadcast_rejection(
+            r#"ErrorResp(ErrorPayload { code: -32003, message: "txpool is full" })"#
+        ));
+    }
+
+    /// `-32003` is overloaded: it also carries `eth_call`'s out-of-gas
+    /// rejection (see `handlers.rs`'s `OWNER_SCAN_BATCH` doc comment), which
+    /// IS a real answer from the chain, not evidence the tx never entered the
+    /// mempool. Matching on the code instead of the message would release a
+    /// nonce that may already be in flight.
+    #[test]
+    fn test_is_mempool_full_matches_message_not_code() {
+        assert!(is_mempool_full(
+            r#"ErrorResp(ErrorPayload { code: -32003, message: "txpool is full" })"#
+        ));
+        assert!(is_mempool_full(
+            "txpool is full: already have 4096 pending transactions in queue"
+        ));
+
+        assert!(!is_mempool_full(
+            "server returned an error response: error code -32003: out of gas: \
+             gas exhausted during memory expansion: 600000000"
+        ));
+        assert!(!is_mempool_full("execution reverted"));
+        assert!(!is_mempool_full(""));
     }
 
     #[tokio::test]

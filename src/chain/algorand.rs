@@ -362,8 +362,14 @@ impl AlgorandProvider {
             "Initialized Algorand provider"
         );
 
-        // Create HTTP client for simulation API calls
-        let http_client = reqwest::Client::new();
+        // Create HTTP client for simulation API calls. Explicit timeouts: reqwest
+        // defaults to none, so an RPC that accepts the TCP connection and never
+        // responds would otherwise hang until the ALB's 600s idle timeout.
+        let http_client = reqwest::Client::builder()
+            .timeout(crate::chain::rpc_http_timeout())
+            .connect_timeout(crate::chain::rpc_http_connect_timeout())
+            .build()
+            .expect("static reqwest client config is always valid");
 
         Ok(Self {
             account: Arc::new(account),

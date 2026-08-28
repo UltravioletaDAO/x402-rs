@@ -67,9 +67,23 @@ variable "desired_count" {
 }
 
 variable "min_capacity" {
-  description = "Minimum number of tasks for auto-scaling"
+  description = <<-EOT
+    Minimum number of tasks for auto-scaling.
+
+    Was 1 until 2026-08. That meant the service ran a single task with no
+    floor -- autoscaling only ever added capacity on top of one, never
+    protected against that one task being the entire service. 2 gives a
+    resilience floor independent of any scaling policy: Application Auto
+    Scaling enforces min_capacity as a hard bound and will scale OUT to reach
+    it even when no policy's metric calls for more capacity, so raising this
+    alone is what actually moves desired_count off of 1 (desired_count itself
+    has `ignore_changes` on aws_ecs_service.facilitator -- see main.tf).
+
+    terraform.tfvars is gitignored (CI runs on this default) -- keep the
+    local tfvars value in agreement or you reproduce the alb_idle_timeout bug.
+  EOT
   type        = number
-  default     = 1
+  default     = 2
 }
 
 variable "max_capacity" {
@@ -78,16 +92,34 @@ variable "max_capacity" {
   default     = 3
 }
 
-variable "cpu_target_value" {
-  description = "Target CPU utilization for auto-scaling"
-  type        = number
-  default     = 75
-}
-
 variable "memory_target_value" {
   description = "Target memory utilization for auto-scaling"
   type        = number
   default     = 80
+}
+
+variable "alb_request_count_target_value" {
+  description = <<-EOT
+    Target ALBRequestCountPerTarget for auto-scaling -- requests per minute,
+    per running task. This is the PRIMARY scaling signal, replacing CPU.
+
+    Why not CPU: measured across three degradation episodes (2026-08 diagnosis,
+    docs/handoffs/2026-08-20-diagnostico-performance-facilitador.md), CPU never
+    exceeded 25% while the service was visibly struggling -- the facilitator is
+    I/O-bound (waiting on RPC calls), so a CPU-target policy at 75% never fires
+    and is decorative for this workload. Request count actually tracks load.
+
+    Calibration (measured, 2026-08): baseline 900-1200 req/h, incidents
+    2600-3300 req/h. Those numbers were measured with ONE task running, so at
+    min_capacity=2 they roughly halve per target: baseline ~7.5-10 req/min/
+    target, incident onset ~22-27.5 req/min/target. 15 sits with headroom above
+    the baseline ceiling but well below where incidents start, so scale-out
+    fires proactively instead of after the fact. Re-measure and adjust once
+    real 2-task traffic data exists -- this number is a first calibration, not
+    a permanent constant.
+  EOT
+  type        = number
+  default     = 15
 }
 
 variable "alb_idle_timeout" {
@@ -140,9 +172,19 @@ variable "quicknode_secret_name" {
 }
 
 variable "log_retention_days" {
-  description = "CloudWatch log retention in days"
+  description = <<-EOT
+    CloudWatch log retention in days for /ecs/facilitator-<environment>.
+
+    Was 7. The 2026-08-10 degradation episode aged out of the log group before
+    anyone got to it, losing the only application-level record of that
+    incident. 30 keeps roughly a month of history without the unbounded-cost
+    risk of "forever" -- this is the app log group only, not an audit trail.
+
+    terraform.tfvars is gitignored (CI runs on this default) -- keep the
+    local tfvars value in agreement.
+  EOT
   type        = number
-  default     = 7
+  default     = 30
 }
 
 variable "enable_container_insights" {
@@ -269,4 +311,49 @@ variable "alerts_email" {
   EOT
   type        = string
   default     = "0xultravioleta@gmail.com"
+}
+
+variable "alb_access_logs_enabled" {
+  description = <<-EOT
+    Turn on ALB access logging to S3 (see alb-access-logs.tf).
+
+    DEFAULT IS FALSE ON PURPOSE, and flipping it is a TWO-STEP rollout, not a
+    flag flip:
+
+    1. Apply with this still false. That creates the bucket, its policy and
+       lifecycle rule WITHOUT touching aws_lb.main -- the bucket name is a
+       plain string local, not a resource reference, so aws_lb.main carries no
+       dependency edge to it and CI's routine targeted deploy
+       (-target=aws_ecs_task_definition.facilitator -target=aws_ecs_service.facilitator,
+       which pulls in aws_lb.main via the listener depends_on chain) stays
+       completely unaffected by this file.
+    2. ONLY once the bucket exists, flip this to true and apply again. That is
+       the change that touches aws_lb.main (adds the access_logs block) --
+       and BECAUSE aws_lb.main is already inside CI's targeted graph, that
+       diff ships on the very next routine deploy after you merge it. If the
+       bucket does not exist yet when that happens, the ALB update fails and
+       breaks that deploy for everyone -- exactly the failure mode
+       docs/handoffs/2026-08-22-continuar-desde-wsl-alertas-y-performance.md
+       hit with the balances Lambda. Do not merge step 2 before step 1 has
+       actually been applied and verified.
+
+    terraform.tfvars is gitignored (CI runs on this default) -- if you flip
+    this in tfvars for a local apply, flip it here too before merging, or the
+    next CI deploy reverts it.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "alb_access_logs_retention_days" {
+  description = <<-EOT
+    How long ALB access logs live in S3 before lifecycle expiration.
+
+    These exist to make HTTP-level failures (e.g. the 460s that were 201 of
+    417 real failures in the 2026-08 diagnosis) visible after the fact, not to
+    be a permanent record -- 90 days covers "we noticed weeks later" without
+    unbounded storage growth on a bucket that gets one object per request.
+  EOT
+  type        = number
+  default     = 90
 }

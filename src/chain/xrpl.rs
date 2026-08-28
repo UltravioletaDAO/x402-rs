@@ -256,6 +256,11 @@ pub struct XrplProvider {
     chain: XrplChain,
     /// Custom RPC URL (from environment) or None to use the public default.
     rpc_url: Option<String>,
+    /// HTTP client for direct JSON-RPC calls to rippled. Built once (with
+    /// timeouts) rather than per-request: `reqwest::Client` is cheap to clone
+    /// (internally `Arc`-backed) but expensive to construct, since a fresh one
+    /// discards the connection pool and pays a new TLS handshake every time.
+    http_client: ReqwestClient,
 }
 
 impl Debug for XrplProvider {
@@ -299,10 +304,20 @@ impl XrplProvider {
             "Initialized XRPL provider"
         );
 
+        // Explicit timeouts: reqwest defaults to none, so an RPC that accepts the
+        // TCP connection and never responds would otherwise hang until the ALB's
+        // 600s idle timeout.
+        let http_client = ReqwestClient::builder()
+            .timeout(crate::chain::rpc_http_timeout())
+            .connect_timeout(crate::chain::rpc_http_connect_timeout())
+            .build()
+            .expect("static reqwest client config is always valid");
+
         Ok(Self {
             facilitator_address,
             chain,
             rpc_url,
+            http_client,
         })
     }
 
@@ -320,14 +335,17 @@ impl XrplProvider {
             .unwrap_or_else(|| self.chain.default_rpc_url())
     }
 
-    /// Build a reqwest HTTP client for direct JSON-RPC calls to rippled.
+    /// Return the shared reqwest HTTP client for direct JSON-RPC calls to
+    /// rippled, plus the effective RPC URL.
     ///
     /// We bypass the xrpl-rust typed async client because its async-fn-in-trait
     /// implementation does not produce `Send` futures (Rust issue #100013).
     /// Using reqwest directly gives us `Send + 'static` futures and full control
-    /// over the request/response lifecycle.
+    /// over the request/response lifecycle. The client itself is built once in
+    /// [`Self::try_new`] and cloned here (cheap: `reqwest::Client` is
+    /// internally `Arc`-backed), not reconstructed per call.
     fn reqwest_client(&self) -> (ReqwestClient, String) {
-        let client = ReqwestClient::new();
+        let client = self.http_client.clone();
         let url = self.effective_rpc_url().to_string();
         (client, url)
     }

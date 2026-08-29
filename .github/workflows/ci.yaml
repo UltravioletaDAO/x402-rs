@@ -68,6 +68,206 @@ jobs:
             echo "::notice title=Deploy skipped::AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY are not set. Add them (see docs/CICD_SETUP.md) to enable auto-deploy."
           fi
 
+  # ---------------------------------------------------------------------------
+  # The drift gate: does main contain infrastructure the deploy will never apply?
+  # ---------------------------------------------------------------------------
+  #
+  # The deploy job applies Terraform with an explicit -target list, on purpose: a
+  # release must roll the image and nothing else. The cost of that is a hole with
+  # no floor. A change to any resource outside the list merges into main, CI goes
+  # green, and it never reaches AWS. Nothing reports it, because a resource that
+  # was never planned produces no diff to notice.
+  #
+  # Three incidents in one week came out of that hole:
+  #
+  #   2026-08-20  the balances Lambda      had been un-deployable since it existed
+  #   2026-08-28  the CI user's IAM policy invisible until a deploy crashed on it
+  #   2026-08-29  the autoscaling policies unapplied through a 3x traffic spike
+  #
+  # Each was fixed by adding another -target. This job is the general case: it
+  # plans the WHOLE configuration and fails when something in it lies outside
+  # what a deploy can reach.
+  #
+  # THIS JOB ONLY READS. It never applies, and `deploy` deliberately does NOT
+  # list it in `needs` -- pre-existing drift must not be able to block a release.
+  # Widening the -target lists to auto-apply the foundational block (VPC, ALB,
+  # security groups, IAM, DynamoDB) was the other option and was rejected: none
+  # of it has had a plan run against it in this pipeline's lifetime, so nobody
+  # knows what an apply there would do, and finding out under production traffic
+  # is worse than the hole it would close.
+  plan:
+    name: Terraform plan (drift gate)
+    needs: [preflight]
+    if: needs.preflight.outputs.deploy == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    # Separate from the deploy's concurrency group: a superseded plan is worthless,
+    # but it must never sit in the queue a release is waiting in.
+    concurrency:
+      group: tfplan-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          # Must match the deploy job. The state was written by 1.9.8 and a newer
+          # binary upgrades it on contact, which locks 1.9.8 out afterwards.
+          terraform_version: "1.9.8"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Plan
+        working-directory: terraform/environments/production
+        run: |
+          set -o pipefail
+          terraform init -input=false
+
+          # What a deploy CAN apply is not the literal -target list. A targeted apply
+          # also applies that target's dependencies, and that is not a footnote: it is how
+          # aws_lb.main ended up inside the image deploy's blast radius and had
+          # alb_idle_timeout reverted under it on 2026-08-14. Guessing that closure by
+          # hand would make this gate wrong in both directions -- crying about changes
+          # the deploy does apply, and staying quiet about ones it does not.
+          #
+          # So ask Terraform, with the same flags the deploy uses. The flags are read
+          # out of THIS file instead of copied here, so adding a -target to a deploy
+          # step narrows this gate in the same commit and the two cannot drift apart.
+          #
+          # The regex is spelled [-]target= deliberately: written literally it would
+          # match its own source line and this job would declare everything covered.
+          mapfile -t TARGETS < <(grep -oE '[-]target=[A-Za-z0-9_.]+' "$GITHUB_WORKSPACE/.github/workflows/ci.yaml" | sort -u)
+          if [ "${#TARGETS[@]}" -eq 0 ]; then
+            echo "::error title=Drift gate cannot run::No -target flags found in ci.yaml. Without them this job cannot tell covered from uncovered, and a gate that guesses is worse than no gate."
+            exit 1
+          fi
+          # A target flag written into PROSE in this file silently widens the covered
+          # set and quietly disarms the gate. Caught exactly once while writing this
+          # job, in its own comment. Every extraction must look like a resource address.
+          for t in "${TARGETS[@]}"; do
+            case "${t#-target=}" in
+              aws_*|module.*|data.*) ;;
+              *) echo "::error title=Drift gate cannot run::Extracted '${t}', which is not a resource address. Some prose in ci.yaml contains a literal target flag; rewrite it."; exit 1 ;;
+            esac
+          done
+          echo "A deploy covers ${#TARGETS[@]} targets, plus their dependencies."
+
+          # -lock=false: a plan only reads state. Taking the lock would let a PR check
+          #   stall a production deploy -- a worse failure than a slightly stale plan.
+          # no -var image_tag: image-pin.tf then resolves to the image ALREADY RUNNING,
+          #   so the task definition is a no-op here. Passing the built tag instead would
+          #   put a task-definition diff on every single PR and teach everyone to ignore
+          #   this job by the end of the first week.
+          # no -refresh=false: it invents drift.
+          #
+          # Targeted first, then full. A deploy landing between the two can only remove
+          # rows from the full plan, never add them, so the race resolves toward silence
+          # rather than toward a false accusation.
+          if ! terraform plan -input=false -lock=false -no-color -out=targeted.tfplan "${TARGETS[@]}" > targeted.log 2>&1; then
+            echo "::error title=Drift gate failed::The targeted plan errored; see the log below."
+            tail -60 targeted.log
+            exit 1
+          fi
+
+          terraform plan -input=false -lock=false -no-color -detailed-exitcode -out=full.tfplan > full.log 2>&1
+          code=$?
+          # -detailed-exitcode: 0 = empty, 2 = changes present, 1 = the plan itself broke.
+          if [ "$code" = "1" ]; then
+            echo "::error title=Drift gate failed::terraform plan errored; see the log below."
+            tail -80 full.log
+            exit 1
+          fi
+          echo "Full plan exit code: $code"
+
+      - name: Report changes the deploy will never apply
+        working-directory: terraform/environments/production
+        run: |
+          set -o pipefail
+          CHANGED='.resource_changes[]? | select(.change.actions != ["no-op"] and .change.actions != ["read"])'
+
+          terraform show -json full.tfplan     > full.json
+          terraform show -json targeted.tfplan > targeted.json
+
+          jq -r "$CHANGED | .address" full.json     | sort -u > full.addrs
+          # Covered = what the targeted plan would touch (dependencies included), plus
+          # the literal targets themselves. The second half matters when the targeted
+          # plan comes back empty but the full plan is a few seconds younger.
+          jq -r "$CHANGED | .address" targeted.json | sort -u > covered.addrs
+          grep -oE '[-]target=[A-Za-z0-9_.]+' "$GITHUB_WORKSPACE/.github/workflows/ci.yaml" \
+            | sed 's/^-target=//' >> covered.addrs
+          sort -u -o covered.addrs covered.addrs
+          comm -23 full.addrs covered.addrs > uncovered.addrs
+
+          # A row nobody can act on is a row that gets muted. Each one carries the
+          # action, the file that declares it, and which attributes actually differ.
+          row() {
+            addr="$1"
+            base="${addr%%[*}"; rtype="${base%%.*}"; rname="${base#*.}"
+            file=$(grep -lE "^resource[[:space:]]+\"$rtype\"[[:space:]]+\"$rname\"" ./*.tf 2>/dev/null | head -1 | sed 's|^\./||')
+            action=$(jq -r --arg a "$addr" '.resource_changes[] | select(.address==$a) | .change.actions | join("+")' full.json)
+            attrs=$(jq -r --arg a "$addr" '
+              .resource_changes[] | select(.address==$a) | .change
+              | (.before // {}) as $b | (.after // {}) as $x
+              | [ ($b|keys) + ($x|keys) | unique | .[] ]
+              | map(select($b[.] != $x[.]))
+              | if length > 6 then (.[0:6] + ["..."]) else . end
+              | join(", ")' full.json)
+            printf '| `%s` | `%s` | %s | %s |\n' "$action" "$addr" "${file:-?}" "${attrs:--}"
+          }
+
+          {
+            echo "## Terraform drift gate"
+            echo
+            pending=$(comm -12 full.addrs covered.addrs)
+            if [ -n "$pending" ]; then
+              echo "### Pending, but a deploy applies these - not a failure"
+              echo
+              echo "| Action | Resource | Declared in | Attributes |"
+              echo "|---|---|---|---|"
+              printf '%s\n' "$pending" | while read -r a; do [ -n "$a" ] && row "$a"; done
+              echo
+            fi
+            if [ ! -s uncovered.addrs ]; then
+              echo "**Clean.** Everything the configuration asks for is either already live or inside the deploy's reach."
+            else
+              echo "### Outside the deploy's reach - merging this does NOT ship it"
+              echo
+              echo "| Action | Resource | Declared in | Attributes |"
+              echo "|---|---|---|---|"
+              while read -r a; do [ -n "$a" ] && row "$a"; done < uncovered.addrs
+              echo
+              echo "Apply these by hand, from a machine running Terraform 1.9.8, with a human's"
+              echo "credentials and after reading the plan - or add the resource to a deploy"
+              echo "step's -target list if it genuinely belongs in every release."
+              echo
+              echo "<details><summary>Full plan output</summary>"
+              echo
+              echo '```'
+              cat full.log
+              echo '```'
+              echo
+              echo "</details>"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -s uncovered.addrs ]; then
+            while read -r a; do
+              [ -n "$a" ] && echo "::error title=Unapplied infrastructure::${a} differs from AWS and no deploy step targets it."
+            done < uncovered.addrs
+            echo
+            echo "Drift the pipeline will never apply:"
+            cat uncovered.addrs
+            exit 1
+          fi
+          echo "No unapplied infrastructure."
+
   deploy:
     name: Push to ECR & deploy to ECS (production)
     needs: [test, preflight]
@@ -149,9 +349,18 @@ jobs:
           # alb_idle_timeout, 600 -> 180, minutes after an operator set it. The defaults now
           # match tfvars; if you change one, change the other, or the next deploy undoes you.
           # Do NOT use -refresh=false (invents drift).
+          # Autoscaling resources ride along in this same -target set. They already sit
+          # downstream of aws_ecs_service.facilitator (resource_id references its name), so
+          # this adds no new dependency pull -- but leaving them out is exactly how the
+          # 2026-08-29 incident happened: the ALB-request-count policy sat in main.tf for a
+          # day, unapplied, while CPU/memory (which don't fire for an I/O-bound service) were
+          # the only live policies and the service never scaled during a 3x traffic spike.
           terraform apply -input=false -auto-approve \
             -target=aws_ecs_task_definition.facilitator \
             -target=aws_ecs_service.facilitator \
+            -target=aws_appautoscaling_target.ecs_target \
+            -target=aws_appautoscaling_policy.ecs_alb_request_count \
+            -target=aws_appautoscaling_policy.ecs_memory \
             -var="image_tag=${{ steps.tag.outputs.image_tag }}"
 
       - name: Deploy balances Lambda (only when its sources changed)

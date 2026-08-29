@@ -25,6 +25,24 @@ La línea actual dice literalmente: `task_cpu = 1024  # 1 vCPU (start here, can 
 ```hcl
 task_cpu = 512
 ```
+
+> **ALTO -- agregado 2026-08-29, drift audit.** Este cambio NO es puramente una decisión de
+> costo y podria salir caro. `docs/handoffs/2026-08-20-diagnostico-performance-facilitador.md`
+> (seccion "Lo que quedo sin verificar") dejo abierta esta pregunta: `#[tokio::main]` no fija
+> `worker_threads`, asi que tokio usa `available_parallelism()`, que en Linux lee
+> `sched_getaffinity()` (la mascara de afinidad de CPU) -- **no** la cuota de cgroup. Con 1024
+> CPU units (1 vCPU) no se sabe si eso resuelve a 1 worker o a N. Bajar a 512 (media vCPU)
+> empuja ese numero hacia 1, y con un solo worker cualquier tramo de codigo sin `.await`
+> congela el servidor entero -- no solo el request que lo causo. `task_memory` (item 3 abajo)
+> no tiene este problema y es defendible por si solo.
+>
+> **2026-08-29: se cerro la medicion, no la pregunta.** `src/main.rs` ahora loguea
+> `workers=N tokio worker threads` al arrancar (info!, junto al resto de la config
+> efectiva). El proximo deploy contesta esto con un `aws logs filter-log-events` -- sin
+> ECS Exec, sin investigacion aparte. Leer ese numero antes de agendar este cambio: 1
+> worker mantiene 1024, N workers con margen habilita 512 con evidencia en vez de por
+> precaucion.
+
 Riesgo honesto: los picos de ~92% (ráfagas de settlement de ~1 min) a 512 se throttlean → un settlement puntual puede tardar algo más (el p95 de mint ya es ~28s por diseño; el throttle agrega poco relativo, pero es del money path — decisión de ustedes). Revert = volver el valor + apply.
 
 ### 3. OPCIONAL: memoria 2048 → 1024 (~$7.3/mes) — también anticipado

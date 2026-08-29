@@ -12,6 +12,10 @@
 #   2026-08-28  sqs:CreateQueue                     -> the alerts backup queue
 #   2026-08-28  logs:PutRetentionPolicy             -> a log-retention change
 #               broke the ROUTINE deploy for the whole project
+#   2026-08-29  logs:PutRetentionPolicy (SCOPE, not grant) -> the Resource covered
+#               only /ecs/facilitator-production*, so the balances Lambda and API
+#               Gateway log groups drifted to 7d against the code's 30 and nothing
+#               -- not CI, not a routine deploy -- could ever fix them
 #
 # There is no drift detection for a resource that is not declared anywhere.
 #
@@ -179,6 +183,14 @@ resource "aws_iam_policy" "cicd_infra" {
         "Resource" : "arn:aws:sqs:us-east-2:518898403364:facilitator-production-alerts-backup"
       },
       {
+        # Scope widened 2026-08-29: only /ecs/facilitator-production* was covered here,
+        # so /aws/lambda/facilitator-production-balances and
+        # /aws/apigateway/facilitator-production-balances (both declared with
+        # retention_in_days = var.log_retention_days in lambda-balances.tf) drifted to 7
+        # days against the code's 30 and NOTHING could fix it -- not CI, not a routine
+        # deploy, because this is the only grant of logs:PutRetentionPolicy the deploy
+        # user has. Drift audit, 2026-08-29. NOT applied here -- IAM change, goes through
+        # Saul first.
         "Sid" : "FacilitatorLogRetention",
         "Effect" : "Allow",
         "Action" : [
@@ -186,7 +198,11 @@ resource "aws_iam_policy" "cicd_infra" {
           "logs:DeleteRetentionPolicy",
           "logs:DescribeLogGroups"
         ],
-        "Resource" : "arn:aws:logs:us-east-2:518898403364:log-group:/ecs/facilitator-production*"
+        "Resource" : [
+          "arn:aws:logs:us-east-2:518898403364:log-group:/ecs/facilitator-production*",
+          "arn:aws:logs:us-east-2:518898403364:log-group:/aws/lambda/facilitator-production-balances*",
+          "arn:aws:logs:us-east-2:518898403364:log-group:/aws/apigateway/facilitator-production-balances*"
+        ]
       }
     ]
   })

@@ -24,23 +24,26 @@ variable "availability_zones" {
   default     = ["us-east-2a", "us-east-2b"]
 }
 
-variable "use_fargate_spot" {
-  description = "Use Fargate Spot for cost savings (false for facilitator - needs stability)"
-  type        = bool
-  default     = false
-}
-
-variable "use_nat_instance" {
-  description = "Use NAT instance instead of NAT Gateway ($8/mo vs $32/mo)"
-  type        = bool
-  default     = true
-}
-
-variable "enable_vpc_endpoints" {
-  description = "Enable VPC endpoints (costs $35/mo but reduces NAT data transfer)"
-  type        = bool
-  default     = false
-}
+# use_fargate_spot, use_nat_instance and enable_vpc_endpoints used to live here.
+# Deleted 2026-08-29: none of the three was read by any resource (repo-wide grep, drift
+# audit) -- the facilitator always runs FARGATE (hardcoded, not var-driven), egress is
+# always an aws_nat_gateway regardless of use_nat_instance's value, and the DynamoDB/S3/
+# Secrets Manager VPC endpoints in main.tf are unconditional, not gated by
+# enable_vpc_endpoints. All three tfvars comments promised savings that were not real:
+# DynamoDB and S3 endpoints are Gateway-type and already free ($0, confirmed via the AWS
+# Price List API); only the Secrets Manager Interface endpoint has a real cost, and that is
+# ~$7.30/mo for the single AZ it runs in today ($0.01/hr, us-east-2, single_nat_gateway
+# mode pins it to one ENI) -- not the "$35/month" the dead enable_vpc_endpoints comment
+# claimed. Disabling it would also reopen exactly the egress surface the B10 hardening in
+# main.tf (VPC endpoints for AWS-service traffic instead of the public NAT edge) was built
+# to close, for a saving under $10/mo. Not worth wiring up.
+#
+# docs/COST_RIGHTSIZING_HANDOFF_2026-08-07.md already caught this same discrepancy (tfvars
+# claiming a NAT *instance* while a NAT *Gateway* was actually running) and explicitly
+# flagged it as something to reconcile before trusting any `terraform plan` here. This
+# deletion is that reconciliation. See that handoff for the NAT Gateway -> instance swap
+# itself (~$25/mo, deliberately out of scope -- a money-path network change needs its own
+# window, not a drive-by alongside a dead-variable cleanup).
 
 variable "single_nat_gateway" {
   description = "Use single NAT gateway (true) or one per AZ (false)"
@@ -49,9 +52,27 @@ variable "single_nat_gateway" {
 }
 
 variable "task_cpu" {
-  description = "Fargate task CPU units (1024 = 1 vCPU)"
-  type        = number
-  default     = 1024
+  description = <<-EOT
+    Fargate task CPU units (1024 = 1 vCPU).
+
+    docs/COST_RIGHTSIZING_HANDOFF_2026-08-07.md recommends 1024 -> 512 (~$14.8/mo) off
+    measured July usage (avg CPU 1.8%). DO NOT apply that on its own -- it is gated on an
+    open question from docs/handoffs/2026-08-20-diagnostico-performance-facilitador.md
+    ("Lo que quedo sin verificar"): `#[tokio::main]` does not pin worker_threads, so tokio
+    sizes the runtime from available_parallelism(), which on Linux reads
+    sched_getaffinity() (the CPU affinity mask) -- NOT the cgroup quota. Nobody has
+    confirmed whether 1024 units resolves to 1 worker or N. Halving to 512 pushes that
+    number toward 1, and a single-worker tokio runtime means any CPU-bound stretch without
+    an .await freezes the whole server, not just one request.
+
+    2026-08-29: closed the measurement gap, not the question. src/main.rs now logs
+    `workers=N tokio worker threads` at boot (info!, next to the other effective-config
+    lines). The next deploy answers this with `aws logs filter-log-events` -- no ECS Exec,
+    no dedicated investigation -- read that number before touching this value. 1 worker
+    keeps 1024; N workers with headroom makes 512 defensible.
+  EOT
+  type    = number
+  default = 1024
 }
 
 variable "task_memory" {
@@ -188,9 +209,26 @@ variable "log_retention_days" {
 }
 
 variable "enable_container_insights" {
-  description = "Enable ECS Container Insights"
-  type        = bool
-  default     = true
+  description = <<-EOT
+    Enable ECS Container Insights (per-container CPU/memory/network metrics beyond the
+    standard ECS service-level metrics, which are unaffected either way).
+
+    Stays true -- this IS what AWS is actually running. A 2026-08-29 drift-audit entry
+    briefly flipped this default to false on the belief that AWS had it disabled; that belief
+    was wrong. `aws ecs describe-clusters` omits the `settings` field entirely unless you
+    pass `--include SETTINGS` -- without that flag it silently returns `[]`, which reads
+    exactly like "disabled" if you do not know the flag exists. Two independent reads with
+    `--include SETTINGS` (plan-gate, and re-verified here) both show
+    `{"name": "containerInsights", "value": "enabled"}`. Left as a warning for the next
+    person auditing this cluster with the CLI: always pass --include SETTINGS, or you will
+    read the omission as the value.
+
+    docs/COST_RIGHTSIZING_HANDOFF_2026-08-07.md still recommends turning this off
+    deliberately (~$10-15/mo) -- that recommendation was never wrong, only the claim that it
+    had already happened.
+  EOT
+  type    = bool
+  default = true
 }
 
 variable "ecr_repository_name" {

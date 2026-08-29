@@ -107,6 +107,75 @@ where
         .route("/settle", post(post_settle::<A>))
 }
 
+/// Env overrides for the identity-read rate limit. Declared here, next to the
+/// routes they protect, so the numbers live in exactly one place and `main.rs`
+/// reads them rather than restating them.
+const ENV_IDENTITY_READ_PER_MS: &str = "IDENTITY_READ_RATE_PER_MS";
+const ENV_IDENTITY_READ_BURST: &str = "IDENTITY_READ_RATE_BURST";
+
+/// One token every 500ms = ~120 req/min sustained, burst 60.
+///
+/// Deliberately GENEROUS. `SmartIpKeyExtractor` buckets by client IP, and a
+/// single integrator sending every one of its requests from one host lands
+/// entirely in one bucket -- a tight limit throttles that whole integrator at
+/// once. The observed sweep that motivated this (2026-08-29) ran ~21 req/min
+/// aggregated across nine networks, so 120/min does not touch legitimate
+/// traffic and only cuts off a runaway loop. A limit sized against imagined
+/// abuse instead of measured traffic is how every 429 in the last bazaar
+/// incident turned out to be a legitimate paginating client (2026-07-24).
+const DEFAULT_IDENTITY_READ_PER_MS: u64 = 500;
+const DEFAULT_IDENTITY_READ_BURST: u32 = 60;
+
+/// Rate limit for [`identity_read_routes`], as `(per_millisecond, burst_size)`.
+///
+/// Note `tower_governor`'s GCRA replenishes ONE token every `per_millisecond`
+/// milliseconds -- it is a period, not a rate.
+pub fn identity_read_rate_limit() -> (u64, u32) {
+    let per_ms = std::env::var(ENV_IDENTITY_READ_PER_MS)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(DEFAULT_IDENTITY_READ_PER_MS);
+    let burst = std::env::var(ENV_IDENTITY_READ_BURST)
+        .ok()
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(DEFAULT_IDENTITY_READ_BURST);
+    (per_ms, burst)
+}
+
+/// ERC-8004 identity READ routes.
+///
+/// Split out of [`routes`] so `main.rs` can wrap these (and only these) in a
+/// `GovernorLayer`. `/identity/{network}/owner/{address}` cannot be answered
+/// from an index -- the registries expose no owner -> agentId mapping, are not
+/// `ERC721Enumerable`, and SKALE caps `eth_getLogs` at 2000 blocks -- so every
+/// cold lookup costs a `balanceOf`, a `totalSupply` and a Multicall3 scan.
+/// Cheap per call, but unbounded it amplifies one client into a multiple of
+/// that against the shared RPC budget, which is what starved `/settle` in
+/// INC-2026-07-06.
+pub fn identity_read_routes<A>() -> Router<A>
+where
+    A: Facilitator + HasProviderMap + Clone + Send + Sync + 'static,
+    A::Error: IntoResponse,
+    A::Map: ProviderMap<Value = NetworkProvider>,
+{
+    Router::new()
+        .route("/identity/{network}/{agent_id}", get(get_identity::<A>))
+        .route(
+            "/identity/{network}/{agent_id}/metadata/{key}",
+            get(get_identity_metadata::<A>),
+        )
+        .route(
+            "/identity/{network}/total-supply",
+            get(get_identity_total_supply::<A>),
+        )
+        .route(
+            "/identity/{network}/owner/{address}",
+            get(get_identity_by_owner::<A>),
+        )
+}
+
 pub fn routes<A>() -> Router<A>
 where
     A: Facilitator + HasProviderMap + Clone + Send + Sync + 'static,
@@ -130,20 +199,8 @@ where
         // ERC-8004 Reputation endpoints (GET info only)
         .route("/feedback", get(get_feedback_info))
         .route("/reputation/{network}/{agent_id}", get(get_reputation::<A>))
-        // ERC-8004 Identity endpoints
-        .route("/identity/{network}/{agent_id}", get(get_identity::<A>))
-        .route(
-            "/identity/{network}/{agent_id}/metadata/{key}",
-            get(get_identity_metadata::<A>),
-        )
-        .route(
-            "/identity/{network}/total-supply",
-            get(get_identity_total_supply::<A>),
-        )
-        .route(
-            "/identity/{network}/owner/{address}",
-            get(get_identity_by_owner::<A>),
-        )
+        // ERC-8004 Identity endpoints live in identity_read_routes() so they can
+        // carry their own rate limit -- see that function for why.
         .route("/health", get(get_health))
         .route("/version", get(get_version))
         .route("/supported", get(get_supported::<A>))
@@ -6946,45 +7003,51 @@ async fn agent_token_exists(
     }
 }
 
-/// Resolve the first (lowest) token ID owned by `target` in an ERC-721 contract.
+/// Upper bound of the agent-ID range to scan, read straight from the registry.
 ///
-/// Returns `Ok(Some(id))` on a match, `Ok(None)` when the registry was scanned
-/// cleanly and holds no token for `target`, and `Err` when the scan could not
-/// reach a verdict (RPC failure, registry too large). The three outcomes are
-/// deliberately distinct: callers must not treat an unreachable RPC as proof
-/// that an address owns nothing.
+/// `totalSupply()` answers in ONE call what [`probe_max_agent_id`] spends ~20
+/// SEQUENTIAL `eth_call`s to discover (11 doublings plus ~9 binary-search steps
+/// on a 630-agent registry). Those round trips, not the Multicall3 scan itself,
+/// were the entire cost of this endpoint: they put celo at 7.4s average and
+/// 12.0s peak while every other route answered in 33ms (measured 2026-08-29).
 ///
-/// Strategy:
-/// 1. Binary search (exponential probe) to find the max token ID
-/// 2. Scan `ownerOf(1..=max)` in bounded Multicall3 batches, stopping at the
-///    first match — one batch covers the whole registry on small chains
-/// 3. Cache the hit, since a cold scan is expensive and rarely changes
+/// ASSUMPTION, and it is NOT a new one: `totalSupply` counts tokens that exist,
+/// not the highest ID, so a registry with burned agents has
+/// `totalSupply < max_id`. The exponential probe plus binary search this
+/// replaces ALREADY assumed IDs run contiguously from 1 -- given a gap, the
+/// binary search converges on the gap rather than on the true maximum. Nothing
+/// here rests on an assumption the previous code did not already make, and
+/// [`resolve_first_token_by_owner`] keeps a fallback to the probe for exactly
+/// the case where the assumption does not hold.
 ///
-/// Uses `ownerOf` rather than `tokenOfOwnerByIndex` or event scans because it
-/// is the only approach that works on every supported chain: the ERC-8004
-/// registries are not `ERC721Enumerable` (verified on Base: `supportsInterface`
-/// returns false and `tokenOfOwnerByIndex` reverts) and SKALE limits
-/// `eth_getLogs` to 2000 blocks.
-async fn resolve_first_token_by_owner(
+/// `None` means the registry gave no usable answer (the call failed, or it
+/// reported zero), which sends the caller to the probe.
+async fn registry_total_supply(
     provider: &crate::chain::evm::InnerProvider,
-    network: crate::network::Network,
     registry: alloy::primitives::Address,
-    target: alloy::primitives::Address,
-) -> Result<Option<u64>, String> {
-    use alloy::providers::bindings::IMulticall3;
-    use alloy::providers::MULTICALL3_ADDRESS;
-    use alloy::sol_types::SolCall;
-
-    // Serve a fresh cached resolution before spending any RPC budget.
-    if let Some(entry) = OWNER_LOOKUP_CACHE.get(&(network, registry, target)) {
-        let (agent_id, cached_at) = *entry;
-        if cached_at.elapsed() < OWNER_LOOKUP_TTL {
-            debug!(agent_id, %target, "Owner lookup served from cache");
-            return Ok(Some(agent_id));
+) -> Option<u64> {
+    let identity = IIdentityRegistry::new(registry, provider.clone());
+    match identity.totalSupply().call().await {
+        Ok(supply) => {
+            let total: u64 = supply.try_into().unwrap_or(0);
+            (total > 0).then_some(total)
+        }
+        Err(e) => {
+            debug!(error = ?e, "totalSupply unavailable; falling back to the range probe");
+            None
         }
     }
+}
 
-    // Step 1: Find max token ID via exponential probe + binary search
+/// Highest existing agent ID, found by exponential probe plus binary search.
+///
+/// Costs ~20 sequential `eth_call`s on a 630-agent registry and grows by one
+/// more every time the registry doubles, which is why it is now only the
+/// FALLBACK for when `totalSupply()` is unavailable or undercounts.
+async fn probe_max_agent_id(
+    provider: &crate::chain::evm::InnerProvider,
+    registry: alloy::primitives::Address,
+) -> Result<u64, String> {
     let mut hi: u64 = 1;
     loop {
         if !agent_token_exists(provider, registry, hi).await? {
@@ -7004,27 +7067,46 @@ async fn resolve_first_token_by_owner(
             hi = mid;
         }
     }
-    let max_id = lo;
-    if max_id == 0 {
+    if lo == 0 {
         // Callers only scan when `balanceOf` is non-zero, so an apparently
         // empty registry contradicts the balance and is not a clean "owns
         // nothing" answer.
         return Err("registry probe found no tokens despite a non-zero balance".to_string());
     }
+    Ok(lo)
+}
 
-    let batches = max_id.div_ceil(OWNER_SCAN_BATCH);
+/// Scan `ownerOf(first..=last)` in bounded Multicall3 batches and return the
+/// lowest ID owned by `target`.
+///
+/// `Err` means the scan reached no verdict; it must never be read as a clean
+/// "owns nothing".
+async fn scan_range_for_owner(
+    provider: &crate::chain::evm::InnerProvider,
+    registry: alloy::primitives::Address,
+    target: alloy::primitives::Address,
+    first: u64,
+    last: u64,
+) -> Result<Option<u64>, String> {
+    use alloy::providers::bindings::IMulticall3;
+    use alloy::providers::MULTICALL3_ADDRESS;
+    use alloy::sol_types::SolCall;
+
+    if first > last {
+        return Ok(None);
+    }
+
+    let batches = (last - first + 1).div_ceil(OWNER_SCAN_BATCH);
     if batches > OWNER_SCAN_MAX_BATCHES {
         return Err(format!(
-            "registry too large to scan: {max_id} tokens need {batches} batches \
+            "registry too large to scan: {first}..={last} needs {batches} batches \
              (cap {OWNER_SCAN_MAX_BATCHES})"
         ));
     }
 
-    // Step 2: Scan in bounded Multicall3 batches, ascending, stopping at the
-    // first match so the lowest ID is returned and the common case stays cheap.
-    let mut start: u64 = 1;
-    while start <= max_id {
-        let end = (start + OWNER_SCAN_BATCH - 1).min(max_id);
+    let mut start: u64 = first;
+    while start <= last {
+        let end = (start + OWNER_SCAN_BATCH - 1).min(last);
 
         let calls: Vec<IMulticall3::Call3> = (start..=end)
             .map(|id| {
@@ -7063,7 +7145,86 @@ async fn resolve_first_token_by_owner(
             // ownerOf returns abi-encoded address (32 bytes, left-padded)
             let owner = alloy::primitives::Address::from_slice(&result.returnData[12..32]);
             if owner == target {
-                let agent_id = start + i as u64;
+                return Ok(Some(start + i as u64));
+            }
+        }
+
+        start = end + 1;
+    }
+
+    Ok(None)
+}
+
+/// Resolve the first (lowest) token ID owned by `target` in an ERC-721 contract.
+///
+/// Returns `Ok(Some(id))` on a match, `Ok(None)` when the registry was scanned
+/// cleanly and holds no token for `target`, and `Err` when the scan could not
+/// reach a verdict (RPC failure, registry too large). The three outcomes are
+/// deliberately distinct: callers must not treat an unreachable RPC as proof
+/// that an address owns nothing.
+///
+/// Strategy:
+/// 1. Ask the registry its size with `totalSupply()` -- one call
+/// 2. Scan `ownerOf(1..=max)` in bounded Multicall3 batches, stopping at the
+///    first match -- one batch covers the whole registry on small chains
+/// 3. If that finds nothing, re-derive the bound with the expensive probe and
+///    scan only what the first pass could not see
+/// 4. Cache the hit, since a cold scan is expensive and rarely changes
+///
+/// Uses `ownerOf` rather than `tokenOfOwnerByIndex` or event scans because it
+/// is the only approach that works on every supported chain: the ERC-8004
+/// registries are not `ERC721Enumerable` (verified on Base: `supportsInterface`
+/// returns false and `tokenOfOwnerByIndex` reverts) and SKALE limits
+/// `eth_getLogs` to 2000 blocks.
+async fn resolve_first_token_by_owner(
+    provider: &crate::chain::evm::InnerProvider,
+    network: crate::network::Network,
+    registry: alloy::primitives::Address,
+    target: alloy::primitives::Address,
+) -> Result<Option<u64>, String> {
+    // Serve a fresh cached resolution before spending any RPC budget.
+    if let Some(entry) = OWNER_LOOKUP_CACHE.get(&(network, registry, target)) {
+        let (agent_id, cached_at) = *entry;
+        if cached_at.elapsed() < OWNER_LOOKUP_TTL {
+            debug!(agent_id, %target, "Owner lookup served from cache");
+            return Ok(Some(agent_id));
+        }
+    }
+
+    // Step 1: upper bound of the range to scan. One call when the registry
+    // answers `totalSupply()`, ~20 sequential ones when it does not.
+    let supply_bound = registry_total_supply(provider, registry).await;
+    let max_id = match supply_bound {
+        Some(n) => n,
+        None => probe_max_agent_id(provider, registry).await?,
+    };
+
+    // Step 2: scan ascending, stopping at the first match so the lowest ID is
+    // returned and the common case stays cheap.
+    if let Some(agent_id) = scan_range_for_owner(provider, registry, target, 1, max_id).await? {
+        OWNER_LOOKUP_CACHE.insert(
+            (network, registry, target),
+            (agent_id, std::time::Instant::now()),
+        );
+        return Ok(Some(agent_id));
+    }
+
+    // Step 3, belt and braces. Callers only scan with `balanceOf > 0`, so an
+    // empty result means the RANGE was wrong, not that the owner holds nothing:
+    // `totalSupply` undercounts a registry that has burned agents. Re-derive the
+    // bound the expensive way and scan only what the first pass could not see.
+    // Skipping this would turn a high-numbered agent into a 404, and callers
+    // persist a 404 as "not registered" and stop asking (INC-2026-07-21).
+    if supply_bound.is_some() {
+        let probed = probe_max_agent_id(provider, registry).await?;
+        if probed > max_id {
+            debug!(
+                total_supply = max_id,
+                probed, "totalSupply undercounted the registry; scanning the tail"
+            );
+            if let Some(agent_id) =
+                scan_range_for_owner(provider, registry, target, max_id + 1, probed).await?
+            {
                 OWNER_LOOKUP_CACHE.insert(
                     (network, registry, target),
                     (agent_id, std::time::Instant::now()),
@@ -7071,8 +7232,6 @@ async fn resolve_first_token_by_owner(
                 return Ok(Some(agent_id));
             }
         }
-
-        start = end + 1;
     }
 
     Ok(None)
@@ -7199,7 +7358,7 @@ where
     // bounded batches so the request cost does not grow with registry size.
     // Multicall3 is at the canonical address
     // 0xcA11bde05977b3631167028862bE2a173976CA11 on every supported chain.
-    match resolve_first_token_by_owner(
+    let outcome = match resolve_first_token_by_owner(
         provider.inner(),
         network,
         contracts.identity_registry,
@@ -7214,46 +7373,69 @@ where
                 .await
                 .unwrap_or_default();
             info!(network = %network, agent_id = agent_id, owner = %owner_address, "Resolved agent by owner");
-            (
-                StatusCode::OK,
-                Json(json!({
-                    "agentId": agent_id,
-                    "owner": format!("{}", owner_address),
-                    "agentUri": uri,
-                    "network": network.to_string(),
-                    "balance": balance.to_string()
-                })),
-            )
-                .into_response()
+            Ok(Some((agent_id, uri)))
         }
-        // Scanned cleanly: the balance is held by tokens we could not attribute,
-        // which for a well-formed registry means there is nothing to return.
         Ok(None) => {
             info!(network = %network, owner = %owner_address, "Owner holds no agent in registry");
-            (
-                StatusCode::NOT_FOUND,
-                Json(json!({
-                    "error": format!("Address {} does not own any agent on {}", owner_address, network),
-                    "balance": balance.to_string()
-                })),
-            )
-                .into_response()
+            Ok(None)
         }
-        // The scan never reached a verdict. This must NOT be a 404: callers
-        // persist "not registered" from a 404 and stop asking, which is how a
-        // transient RPC failure turned into a permanent null agent ID
-        // (INC-2026-07-21). 503 tells the client to retry instead.
         Err(e) => {
             warn!(network = %network, owner = %owner_address, error = %e, "Owner lookup inconclusive");
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(json!({
-                    "error": format!("Could not determine agent ID for {} on {}: {}", owner_address, network, e),
-                    "retryable": true,
-                    "balance": balance.to_string()
-                })),
-            ).into_response()
+            Err(e)
         }
+    };
+
+    owner_lookup_response(network, owner_address, &balance.to_string(), outcome).into_response()
+}
+
+/// Map an owner-scan outcome onto its HTTP response.
+///
+/// Pure, and split out of [`get_identity_by_owner`] so the one distinction that
+/// must never collapse is testable without a chain behind it:
+///
+/// - `Ok(None)` is **404** -- "this address owns no agent".
+/// - `Err` is **503 + `retryable: true`** -- "the lookup reached no verdict".
+///
+/// Callers persist a 404 as "not registered" and stop asking, so answering 404
+/// to what was really a transient RPC failure turns our outage into a permanent
+/// wrong answer -- and on the registration path it mints a duplicate agent for
+/// someone who already has one (INC-2026-07-21).
+fn owner_lookup_response(
+    network: crate::network::Network,
+    owner: alloy::primitives::Address,
+    balance: &str,
+    outcome: Result<Option<(u64, String)>, String>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    match outcome {
+        Ok(Some((agent_id, uri))) => (
+            StatusCode::OK,
+            Json(json!({
+                "agentId": agent_id,
+                "owner": format!("{owner}"),
+                "agentUri": uri,
+                "network": network.to_string(),
+                "balance": balance
+            })),
+        ),
+        // Scanned cleanly: the balance is held by tokens we could not attribute,
+        // which for a well-formed registry means there is nothing to return.
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "error": format!("Address {owner} does not own any agent on {network}"),
+                "balance": balance
+            })),
+        ),
+        // The scan never reached a verdict. This must NOT be a 404: 503 tells
+        // the client to retry instead of recording a permanent absence.
+        Err(e) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "error": format!("Could not determine agent ID for {owner} on {network}: {e}"),
+                "retryable": true,
+                "balance": balance
+            })),
+        ),
     }
 }
 
@@ -9091,6 +9273,78 @@ mod owner_scan_tests {
         // still be reachable within the batch ceiling.
         let base_registry_size: u64 = 58_400;
         assert!(base_registry_size.div_ceil(OWNER_SCAN_BATCH) <= OWNER_SCAN_MAX_BATCHES);
+    }
+
+    /// A clean miss is 404 and carries NO `retryable` flag.
+    ///
+    /// Paired with the test below: these two outcomes must never collapse into
+    /// each other. Callers persist a 404 as "not registered" and stop asking.
+    #[test]
+    fn owner_without_agent_answers_404_without_retryable() {
+        let (status, Json(body)) = owner_lookup_response(
+            crate::network::Network::Base,
+            alloy::primitives::Address::ZERO,
+            "1",
+            Ok(None),
+        );
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(
+            body.get("retryable").is_none(),
+            "a clean miss must not be advertised as retryable: {body}"
+        );
+    }
+
+    /// An RPC failure is 503 + `retryable: true`, never 404.
+    ///
+    /// Answering 404 here turns a transient outage of OURS into a permanent
+    /// wrong answer on the caller's side, and on the registration path mints a
+    /// duplicate agent for someone who already has one (INC-2026-07-21).
+    #[test]
+    fn inconclusive_lookup_answers_503_and_retryable() {
+        let (status, Json(body)) = owner_lookup_response(
+            crate::network::Network::Base,
+            alloy::primitives::Address::ZERO,
+            "1",
+            Err("Multicall3 batch 1..=630 failed: error code -32007: rate limit exceeded".into()),
+        );
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            body.get("retryable").and_then(|v| v.as_bool()),
+            Some(true),
+            "an inconclusive lookup must tell the caller to retry: {body}"
+        );
+    }
+
+    /// The batch ceiling applies to the SPAN of a scan, not to its upper bound.
+    ///
+    /// The `totalSupply` fallback rescans only the tail the first pass could
+    /// not see, so a tail high in a large registry must cost the batches of the
+    /// tail rather than the batches of everything below it.
+    #[test]
+    fn range_batch_count_follows_the_span() {
+        // A 630-agent registry scanned from 1: one batch.
+        assert_eq!((630u64 - 1 + 1).div_ceil(OWNER_SCAN_BATCH), 1);
+        // The tail of a 58.4k registry whose totalSupply read 58k: still one
+        // batch, not the 30 that rescanning from 1 would have cost.
+        assert_eq!((58_400u64 - 58_001 + 1).div_ceil(OWNER_SCAN_BATCH), 1);
+    }
+
+    /// The identity-read limit has to stay well clear of the sweep that
+    /// motivated it (~21 req/min aggregated, measured 2026-08-29). A limit
+    /// sized against imagined abuse instead of measured traffic is how every
+    /// 429 in the last bazaar incident turned out to be a legitimate client.
+    #[test]
+    fn identity_read_limit_leaves_headroom_over_measured_traffic() {
+        let (per_ms, burst) = identity_read_rate_limit();
+        let sustained_per_min = 60_000 / per_ms;
+        assert!(
+            sustained_per_min >= 100,
+            "sustained {sustained_per_min}/min is too tight for a single-IP integrator"
+        );
+        assert!(
+            burst >= 30,
+            "burst {burst} is too small to absorb a fan-out"
+        );
     }
 }
 

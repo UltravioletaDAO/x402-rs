@@ -524,6 +524,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .expect("events governor config must be valid"),
     );
 
+    // /identity reads. Every cold `/identity/{network}/owner/{address}` costs a
+    // `balanceOf`, a `totalSupply` and a Multicall3 scan against the shared RPC
+    // budget, and until now this surface carried no limit at all: one client
+    // sweeping nine networks in parallel dragged the whole service's p99 from
+    // 0.4s to 11.6s (2026-08-29). Thresholds live in `handlers` so they are
+    // written once; see `identity_read_rate_limit` for why they are generous.
+    let (identity_read_per_ms, identity_read_burst) = handlers::identity_read_rate_limit();
+    tracing::info!(
+        per_millisecond = identity_read_per_ms,
+        burst = identity_read_burst,
+        "Identity read rate limit configured"
+    );
+    let identity_read_config = Arc::new(
+        GovernorConfigBuilder::default()
+            .per_millisecond(identity_read_per_ms)
+            .burst_size(identity_read_burst)
+            .key_extractor(SmartIpKeyExtractor)
+            .finish()
+            .expect("identity_read governor config must be valid"),
+    );
+
     let verify_settle = handlers::verify_settle_routes()
         .with_state(axum_state.clone())
         .layer(GovernorLayer::new(verify_settle_config));
@@ -549,6 +570,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut http_endpoints = Router::new()
         .merge(verify_settle)
+        .merge(
+            handlers::identity_read_routes()
+                .with_state(axum_state.clone())
+                .layer(GovernorLayer::new(identity_read_config)),
+        )
         .merge(handlers::routes().with_state(axum_state.clone()));
     if erc8004_writes_enabled {
         let erc8004_writes = handlers::erc8004_write_routes()

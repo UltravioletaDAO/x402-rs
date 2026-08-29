@@ -439,6 +439,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or(DEFAULT_MAX_REQUEST_BODY_BYTES);
     tracing::info!(max_body_bytes, "HTTP request body limit configured");
 
+    // Closes a 2-week-open question (docs/handoffs/2026-08-20-diagnostico-performance-facilitador.md,
+    // "Lo que quedo sin verificar"): `#[tokio::main]` does not pin worker_threads, so tokio sizes
+    // the runtime from available_parallelism(), which on Linux reads sched_getaffinity() (the CPU
+    // affinity mask) -- NOT the cgroup quota. Whether Fargate's 1024 CPU units resolve to 1 worker
+    // (head-of-line blocking risk) or N workers at a fraction of a core each (thrashing risk) was
+    // never measured. This makes it a `filter-log-events` away instead of a dedicated investigation.
+    tracing::info!(
+        workers = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(0),
+        "tokio worker threads"
+    );
+
     // Per-IP rate limits. tower_governor's GCRA replenishes one token every
     // `per_second` seconds and caps the bucket at `burst_size`, so:
     //   - 1 token every 2s, burst 30   ≈ 30 req/min sustained
@@ -545,6 +558,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .expect("identity_read governor config must be valid"),
     );
 
+    // /reputation, /blacklist and POST /escrow/state -- the rest of the surface
+    // that used to live in `handlers::routes()` with no governor at all. Each
+    // costs at least one RPC/contract read; none were implicated in the
+    // 2026-08-29 incident, so this is preventive rather than a response to
+    // observed abuse. Its own config on purpose, not a share of
+    // `discovery_read_config`: that one is sized against bazaar pagination, and
+    // folding these in would let a paginating bazaar client and a reputation
+    // caller from the same IP compete for the same budget. See
+    // `secondary_read_rate_limit` for the full reasoning.
+    let (secondary_read_per_ms, secondary_read_burst) = handlers::secondary_read_rate_limit();
+    tracing::info!(
+        per_millisecond = secondary_read_per_ms,
+        burst = secondary_read_burst,
+        "Secondary read rate limit configured"
+    );
+    let secondary_read_config = Arc::new(
+        GovernorConfigBuilder::default()
+            .per_millisecond(secondary_read_per_ms)
+            .burst_size(secondary_read_burst)
+            .key_extractor(SmartIpKeyExtractor)
+            .finish()
+            .expect("secondary_read governor config must be valid"),
+    );
+
     let verify_settle = handlers::verify_settle_routes()
         .with_state(axum_state.clone())
         .layer(GovernorLayer::new(verify_settle_config));
@@ -574,6 +611,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             handlers::identity_read_routes()
                 .with_state(axum_state.clone())
                 .layer(GovernorLayer::new(identity_read_config)),
+        )
+        .merge(
+            handlers::secondary_read_routes()
+                .with_state(axum_state.clone())
+                .layer(GovernorLayer::new(secondary_read_config)),
         )
         .merge(handlers::routes().with_state(axum_state.clone()));
     if erc8004_writes_enabled {

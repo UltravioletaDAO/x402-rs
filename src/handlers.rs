@@ -176,6 +176,72 @@ where
         )
 }
 
+/// Env overrides for the secondary-reads rate limit. Same reasoning as
+/// [`identity_read_rate_limit`]: declared once, here, so `main.rs` reads the
+/// numbers instead of restating them.
+const ENV_SECONDARY_READS_PER_MS: &str = "SECONDARY_READS_RATE_PER_MS";
+const ENV_SECONDARY_READS_BURST: &str = "SECONDARY_READS_RATE_BURST";
+
+/// One token every 300ms = ~200 req/min sustained, burst 100.
+///
+/// `/reputation/{network}/{agent_id}` and `POST /escrow/state` each cost at
+/// least one RPC/contract read against the shared provider budget; `/blacklist`
+/// is a local read today, but the whole point of this governor is to stop
+/// relying on "cheap today" -- that was exactly the assumption that failed for
+/// `/identity/owner` (2026-08-29, see [`identity_read_rate_limit`]). None of
+/// these three showed up in the facilitator's latency around that incident, so
+/// this is preventive, not a response to observed abuse -- which argues FOR
+/// staying generous, not tight: there is no measured attack shape to size
+/// against yet, only the same "one IP, many networks, in parallel" pattern
+/// that hit `/identity/owner`.
+///
+/// Deliberately its OWN config, not a share of `discovery_read_config`: that
+/// bucket (see its comment in `main.rs`) is sized against bazaar pagination --
+/// a 21k-item catalog at the 100/page cap is ~212 requests back to back.
+/// Folding these three routes into it would let a paginating bazaar client and
+/// a reputation caller from the same IP draw down the same budget, which is
+/// not a tradeoff either surface asked for.
+const DEFAULT_SECONDARY_READS_PER_MS: u64 = 300;
+const DEFAULT_SECONDARY_READS_BURST: u32 = 100;
+
+/// Rate limit for [`secondary_read_routes`], as `(per_millisecond, burst_size)`.
+///
+/// Same GCRA semantics as [`identity_read_rate_limit`]: `per_millisecond` is a
+/// replenish PERIOD, not a rate.
+pub fn secondary_read_rate_limit() -> (u64, u32) {
+    let per_ms = std::env::var(ENV_SECONDARY_READS_PER_MS)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(DEFAULT_SECONDARY_READS_PER_MS);
+    let burst = std::env::var(ENV_SECONDARY_READS_BURST)
+        .ok()
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(DEFAULT_SECONDARY_READS_BURST);
+    (per_ms, burst)
+}
+
+/// Reputation, blacklist and escrow-state routes that used to live in
+/// [`routes`] with no governor at all.
+///
+/// Split out for the same reason as [`identity_read_routes`]: so `main.rs` can
+/// wrap exactly these in their own `GovernorLayer`, sized by
+/// [`secondary_read_rate_limit`]. `POST /escrow/state` is a query, not a
+/// write -- it never spends gas -- but it reads on-chain escrow state, so it
+/// belongs here rather than with the free static routes in [`routes`].
+pub fn secondary_read_routes<A>() -> Router<A>
+where
+    A: Facilitator + HasProviderMap + Clone + Send + Sync + 'static,
+    A::Error: IntoResponse,
+    A::Map: ProviderMap<Value = NetworkProvider>,
+{
+    Router::new()
+        .route("/reputation/{network}/{agent_id}", get(get_reputation::<A>))
+        .route("/blacklist", get(get_blacklist::<A>))
+        .route("/escrow/state", post(post_escrow_state::<A>))
+}
+
 pub fn routes<A>() -> Router<A>
 where
     A: Facilitator + HasProviderMap + Clone + Send + Sync + 'static,
@@ -187,8 +253,8 @@ where
         .route("/bazaar", get(get_bazaar))
         .route("/events/live", get(get_events_viewer))
         .route("/stats", get(get_stats_page))
-        // Escrow state query endpoint
-        .route("/escrow/state", post(post_escrow_state::<A>))
+        // Escrow state query lives in secondary_read_routes() so it can carry
+        // its own rate limit -- see that function for why.
         // ERC-8004 Registration endpoints (GET info only; gas-spending POST writes are
         // carved into erc8004_write_routes() so they can carry a strict rate limit -- audit 02)
         .route("/register", get(get_register_info))
@@ -196,16 +262,18 @@ where
         // main router (not the strict write-governor) so frequent polling is
         // not rate-limited.
         .route("/register/status/{job_id}", get(get_register_status))
-        // ERC-8004 Reputation endpoints (GET info only)
+        // ERC-8004 Reputation endpoints (GET info only; the actual reputation
+        // lookup lives in secondary_read_routes() so it can carry its own rate
+        // limit -- see that function for why).
         .route("/feedback", get(get_feedback_info))
-        .route("/reputation/{network}/{agent_id}", get(get_reputation::<A>))
         // ERC-8004 Identity endpoints live in identity_read_routes() so they can
         // carry their own rate limit -- see that function for why.
         .route("/health", get(get_health))
         .route("/version", get(get_version))
         .route("/supported", get(get_supported::<A>))
         .route("/accepts", post(post_accepts::<A>))
-        .route("/blacklist", get(get_blacklist::<A>))
+        // /blacklist lives in secondary_read_routes() so it can carry its own
+        // rate limit -- see that function for why.
         .route("/logo.png", get(get_logo))
         .route("/favicon.ico", get(get_favicon))
         .route("/avalanche.png", get(get_avalanche_logo))

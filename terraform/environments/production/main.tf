@@ -843,7 +843,18 @@ resource "aws_ecs_task_definition" "facilitator" {
           # the nonce work is closed -- this is a debugging window, not a
           # permanent setting, and it costs CloudWatch volume against the 30-day
           # retention.
-          value = "info,x402_rs::chain::evm=debug"
+          # Back to plain `info` on 2026-08-29. The debug window did its job: the
+          # latency episode of that morning was diagnosed and the nonce allocator
+          # RULED OUT with evidence (0 `reset nonce cache` in 24h, no stuck queue
+          # on any chain, no /feedback reverts). The cause was elsewhere --
+          # `/identity/owner` scanning the whole agentId range via Multicall3.
+          #
+          # Known limitation of that window, worth fixing before the next one:
+          # all three `debug!` lines in chain/evm.rs sit on ERROR paths, so "zero
+          # lines" is consistent with "nothing failed" but is NOT positive proof
+          # the filter was emitting. There is no happy-path canary. Adding one
+          # would make the next debug window verifiable instead of merely quiet.
+          value = "info"
         },
         {
           name  = "SIGNER_TYPE"

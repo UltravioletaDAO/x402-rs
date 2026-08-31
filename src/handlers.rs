@@ -687,18 +687,39 @@ fn alt_request_fields(json_value: &serde_json::Value) -> AltRequestFields {
     }
 }
 
+/// The longest receipt wait any forwarded write can incur, in seconds.
+///
+/// The holder's wait is chosen PER NETWORK — Ethereum 900s, Base 90s, everything
+/// else 30s — in [`evm_receipt_timeout`] and its twin in `chain::evm`. The
+/// forwarding hop does not know which network it is carrying (the ERC-8004
+/// routes never parse a network at this layer), so it has to budget for the
+/// slowest one.
+const LONGEST_RECEIPT_WAIT_SECS: u64 = 900;
+
 /// How long a proxied write may take before this task gives up on the holder.
 ///
-/// A settle waits for a receipt, so this has to clear `TX_RECEIPT_TIMEOUT_SECS`
-/// with room to spare — timing out the hop while the holder is still mining
-/// would report a failure for a payment that then lands, which is the one
-/// outcome worse than refusing outright.
+/// A settle waits for a receipt, so this has to clear the holder's own wait with
+/// room to spare. Timing out the hop while the holder is still mining reports a
+/// failure for a payment that then lands — the one outcome worse than refusing
+/// outright, and the whole reason the forward exists.
+///
+/// This budgeted 60s + 30s until it was caught in review, which is a value that
+/// appears nowhere in the receipt path: on Ethereum the holder waits up to 900s,
+/// so the hop aborted at 90s with `forward_failed` while the transaction was
+/// still perfectly alive, and on Base (90s) the promised margin was actually
+/// negative once signing time is counted. Both carry real settle traffic.
+///
+/// `TX_RECEIPT_TIMEOUT_SECS` is read the same way the receipt path reads it: when
+/// it is set it REPLACES the per-network default everywhere, so the hop needs
+/// only that value plus the margin. When it is unset the per-network defaults
+/// apply and the hop must cover the worst of them.
 fn writer_forward_timeout() -> std::time::Duration {
+    const FORWARD_MARGIN_SECS: u64 = 30;
     let receipt = std::env::var("TX_RECEIPT_TIMEOUT_SECS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(60);
-    std::time::Duration::from_secs(receipt.saturating_add(30))
+        .unwrap_or(LONGEST_RECEIPT_WAIT_SECS);
+    std::time::Duration::from_secs(receipt.saturating_add(FORWARD_MARGIN_SECS))
 }
 
 /// The 503 a non-holder returns when it cannot hand the write to the holder.
@@ -9953,6 +9974,57 @@ mod writer_lease_gate_tests {
         crate::writer_lease::set_holder_endpoint_for_test(None);
 
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    /// The regression that review caught and this suite did not.
+    ///
+    /// The hop budgeted 60s + 30s — a number that appears nowhere in the receipt
+    /// path. The holder's wait is chosen PER NETWORK: Ethereum 900s, Base 90s,
+    /// everything else 30s. So a forwarded Ethereum settle aborted at 90s with
+    /// `forward_failed` while the transaction was still alive, and on Base the
+    /// margin was negative once signing time counted. Both carry real traffic.
+    ///
+    /// Asserting against the SAME numbers the receipt path uses is the point: if
+    /// somebody raises Ethereum's wait, this fails instead of silently
+    /// reintroducing a hop that gives up before the holder does.
+    #[test]
+    fn forward_timeout_outlasts_every_per_network_receipt_wait() {
+        // Mirrors `evm_receipt_timeout` and its twin in `chain::evm`.
+        const PER_NETWORK_WAITS: [(&str, u64); 3] =
+            [("ethereum", 900), ("base", 90), ("everything else", 30)];
+
+        std::env::remove_var("TX_RECEIPT_TIMEOUT_SECS");
+        let hop = writer_forward_timeout();
+
+        for (network, wait) in PER_NETWORK_WAITS {
+            assert!(
+                hop > std::time::Duration::from_secs(wait),
+                "the hop ({hop:?}) gives up before {network} finishes waiting {wait}s for a \
+                 receipt, so a payment that lands would be reported as a failure",
+            );
+        }
+
+        // The margin must be real, not a tie: a tie loses, because the holder
+        // also spends time signing before its receipt wait even starts.
+        assert!(hop >= std::time::Duration::from_secs(LONGEST_RECEIPT_WAIT_SECS + 30));
+    }
+
+    /// An explicit `TX_RECEIPT_TIMEOUT_SECS` replaces the per-network default
+    /// everywhere, so the hop needs only that value plus the margin — budgeting
+    /// the 900s worst case anyway would hold a connection open for a quarter of
+    /// an hour against a wait the operator deliberately shortened.
+    #[test]
+    fn an_explicit_receipt_timeout_governs_the_hop() {
+        std::env::set_var("TX_RECEIPT_TIMEOUT_SECS", "45");
+        let hop = writer_forward_timeout();
+        std::env::remove_var("TX_RECEIPT_TIMEOUT_SECS");
+        assert_eq!(hop, std::time::Duration::from_secs(75));
+
+        // Garbage must not silently shorten the hop back to a tie with Ethereum.
+        std::env::set_var("TX_RECEIPT_TIMEOUT_SECS", "not-a-number");
+        let hop = writer_forward_timeout();
+        std::env::remove_var("TX_RECEIPT_TIMEOUT_SECS");
+        assert!(hop > std::time::Duration::from_secs(900));
     }
 
     /// With the kill-switch off, a non-writer refuses even when it knows where

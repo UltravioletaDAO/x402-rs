@@ -1,5 +1,34 @@
 # Changelog
 
+## [2.0.1] - 2026-08-31
+
+### Fixed - el timeout del reenvio abortaba antes que el holder
+
+El arreglo de 2.0.0 presupuso una espera de recibo de 60s y le sumo 30s de margen.
+Ese numero no aparece en ninguna parte del camino real: la espera se elige POR RED
+(`evm_receipt_timeout` y su gemela en `chain::evm`) — Ethereum 900s, Base 90s, el
+resto 30s — y `TX_RECEIPT_TIMEOUT_SECS` no esta definida en la task definition, asi
+que rigen los defaults.
+
+Efecto en las dos tasks que reenvian: un settle o un `/register` sincrono en Ethereum
+abortaba el salto a los 90s con `forward_failed` mientras el holder seguia esperando
+hasta 900s y la transaccion aterrizaba igual. En Base el margen prometido era
+directamente negativo (90 contra 90, mas el tiempo de firma). Es el desenlace que el
+propio commit de 2.0.0 define como peor que rechazar: un fallo reportado sobre un pago
+que se ejecuta. Ethereum y Base llevan trafico real.
+
+El salto ahora presupone la espera mas larga que puede tocarle (900s + 30s) porque no
+sabe que red transporta — las rutas ERC-8004 nunca parsean una. Cuando
+`TX_RECEIPT_TIMEOUT_SECS` esta puesta, reemplaza el default de todas las redes, asi que
+el salto usa ese valor mas el margen y no el peor caso.
+
+Dos tests nuevos, y el primero falla contra el codigo de 2.0.0: fija el timeout del salto
+contra los MISMOS numeros por red que usa el camino de recibo, de modo que subir la espera
+de Ethereum rompe el test en vez de reintroducir en silencio un salto que se rinde primero.
+
+Encontrado en revision adversarial del propio 2.0.0, no por un reporte de usuario.
+
+
 ## [2.0.0] - 2026-08-31
 
 ### Fixed - P0: two out of every three EVM writes were being refused

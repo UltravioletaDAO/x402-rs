@@ -101,30 +101,35 @@ async fn one_capture(body_bytes: usize) {
     let _ = hook.capture(&body, Ok(payer_key), &ctx()).await;
 }
 
-#[tokio::test]
-async fn the_budget_factor_covers_what_a_capture_actually_allocates() {
-    const BODY_BYTES: usize = 4 * 1024 * 1024;
-
-    // Warm up first. One-time allocations -- lazy statics, the reqwest client's
-    // internals, k256 tables -- are real, but they are paid once per process,
-    // not once per capture, and billing them to the body would inflate the
-    // factor for every future reader.
-    one_capture(BODY_BYTES).await;
+/// Peak heap over baseline for one capture of `body_bytes`, as a multiple of
+/// the body.
+///
+/// Warms up first: one-time allocations -- lazy statics, the HTTP client's
+/// internals, k256 tables -- are real, but they are paid once per process, not
+/// once per capture, and billing them to the body would inflate the factor.
+async fn measure(body_bytes: usize) -> f64 {
+    one_capture(body_bytes).await;
 
     let baseline = LIVE.load(Ordering::Relaxed);
     PEAK.store(baseline, Ordering::Relaxed);
 
-    one_capture(BODY_BYTES).await;
+    one_capture(body_bytes).await;
 
     let peak = PEAK.load(Ordering::Relaxed);
     let over_baseline = peak.saturating_sub(baseline);
-    let measured = over_baseline as f64 / BODY_BYTES as f64;
-
+    let measured = over_baseline as f64 / body_bytes as f64;
     println!(
-        "measured peak amplification: {measured:.2}x body \
-         ({over_baseline} bytes over a {BODY_BYTES}-byte body); \
-         budget charges {MEMORY_AMPLIFICATION}x"
+        "  {:>5} KiB body -> peak {over_baseline:>12} bytes = {measured:.2}x",
+        body_bytes / 1024
     );
+    measured
+}
+
+#[tokio::test]
+async fn the_budget_factor_covers_what_a_capture_actually_allocates() {
+    const BODY_BYTES: usize = 4 * 1024 * 1024;
+
+    let measured = measure(BODY_BYTES).await;
 
     assert!(
         measured <= MEMORY_AMPLIFICATION as f64,
@@ -145,5 +150,35 @@ async fn the_budget_factor_covers_what_a_capture_actually_allocates() {
          {MEMORY_AMPLIFICATION}x; that over-reservation costs capacity, so \
          lower MEMORY_AMPLIFICATION toward {}",
         measured.ceil() as usize
+    );
+}
+
+#[tokio::test]
+async fn the_factor_still_holds_at_the_ceiling_it_is_applied_to() {
+    // The factor was first measured on a 4 MiB body and then applied to a
+    // 32 MiB one. That extrapolation is only sound if the ratio is flat with
+    // size, and nothing guarantees it is: fixed envelope overhead shrinks
+    // relative to a bigger body, while a reallocation that doubles a growing
+    // buffer does not. The number that has to be right is the one at the
+    // CEILING, because that is the capture the budget is sized for.
+    //
+    // Measured across the range rather than asserted from theory.
+    println!("amplification across the range:");
+    let mut worst: f64 = 0.0;
+    for body in [
+        1024 * 1024,
+        4 * 1024 * 1024,
+        16 * 1024 * 1024,
+        DurableConfig::default().max_body_bytes,
+    ] {
+        let m = measure(body).await;
+        worst = worst.max(m);
+    }
+
+    assert!(
+        worst <= MEMORY_AMPLIFICATION as f64,
+        "the worst amplification across the range was {worst:.2}x but the \
+         budget charges {MEMORY_AMPLIFICATION}x -- at the ceiling the budget \
+         admits a capture it cannot pay for"
     );
 }

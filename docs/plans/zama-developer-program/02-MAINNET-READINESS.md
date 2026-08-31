@@ -179,6 +179,9 @@ el timeout de la función (hasta 15 min). Cambia el punto de entrada, así que
 arrastra el dominio custom, CORS y los access logs. **Decisión de arquitectura,
 no se toca sin acuerdo.**
 
+> Guardado con sus cuatro opciones, el modo de falla concreto y el disparador
+> que lo vuelve bloqueante en **`docs/plans/backlog-fhe-gateway-timeout.md`**.
+
 **Verify:** medir cuánto tarda de verdad un `/verify` y un `/settle` FHE contra
 mainnet **antes** de anunciar la red. Si el p99 pasa de ~25s, este punto se
 vuelve bloqueante duro.

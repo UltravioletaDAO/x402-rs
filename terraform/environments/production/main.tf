@@ -924,6 +924,14 @@ resource "aws_ecs_task_definition" "facilitator" {
           value = "https://sepolia.optimism.io"
         },
         {
+          # The FHE (Zama) request timeout. Declared here so the value the
+          # container runs with is visible in the task definition instead of
+          # living only as a constant in src/fhe_proxy.rs. See the variable:
+          # it mirrors the zama-testnet workspace, which owns the Lambda side.
+          name  = "FHE_PROXY_TIMEOUT_SECS"
+          value = tostring(var.fhe_request_timeout_secs)
+        },
+        {
           name  = "NONCE_STORE_TABLE_NAME"
           value = aws_dynamodb_table.nonce_store.name
         },

@@ -395,3 +395,33 @@ variable "alb_access_logs_retention_days" {
   type        = number
   default     = 90
 }
+
+variable "fhe_request_timeout_secs" {
+  description = <<-EOT
+    How long the facilitator waits for the Zama FHE Lambda before giving up.
+
+    Reaches the container as FHE_PROXY_TIMEOUT_SECS and drives the reqwest
+    client in src/fhe_proxy.rs. The Rust default matches this number so an
+    unset environment behaves identically; nothing else in the code retypes it.
+
+    MIRROR: this must equal `fhe_request_timeout_secs` in
+    terraform/environments/zama-testnet/variables.tf, which is the canonical
+    definition for the Lambda side (function timeout, API Gateway integration,
+    duration alarm). They are two separate Terraform states, so a variable
+    cannot be shared -- change one, change the other. `terraform output
+    fhe_request_timeout` in the zama-testnet workspace prints the effective
+    value at every hop.
+
+    Note the ceiling that is not ours: the Lambda sits behind an API Gateway
+    HTTP API, whose 30s integration timeout AWS marks as not increasable. Until
+    that entry point changes, a caller is cut off at 30s no matter what this
+    says. 90 is the value the stack agrees on, not the wait a client gets.
+  EOT
+  type        = number
+  default     = 90
+
+  validation {
+    condition     = var.fhe_request_timeout_secs >= 3 && var.fhe_request_timeout_secs <= 900
+    error_message = "FHE request timeout must be between 3 and 900 seconds (matches src/fhe_proxy.rs)."
+  }
+}

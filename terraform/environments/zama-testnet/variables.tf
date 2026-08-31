@@ -39,14 +39,38 @@ variable "lambda_memory_size" {
   }
 }
 
-variable "lambda_timeout" {
-  description = "Lambda function timeout in seconds (30s for FHE decryption)"
+variable "fhe_request_timeout_secs" {
+  description = <<-EOT
+    SINGLE SOURCE OF TRUTH for how long one FHE request is allowed to take.
+
+    Everything that has an opinion about this duration derives from here:
+      - the Lambda function timeout                (main.tf, aws_lambda_function)
+      - the API Gateway integration timeout        (main.tf, aws_apigatewayv2_integration)
+      - the "approaching timeout" CloudWatch alarm (main.tf, at 80% of this)
+      - the Rust proxy in the main facilitator, via FHE_PROXY_TIMEOUT_SECS
+        (terraform/environments/production/variables.tf mirrors this value;
+        the two live in separate Terraform states, so they cannot share a
+        variable -- change one, change the other)
+
+    Do NOT retype this number anywhere else. It used to live as 30 here, 60 in
+    a comment in src/fhe_proxy.rs and 90 in that file's actual client build, so
+    the proxy sat waiting for a Lambda that AWS had already killed.
+
+    CEILING THAT IS NOT OURS: an API Gateway HTTP API caps integration timeout
+    at 30 seconds and AWS lists that quota as NOT increasable
+    (docs.aws.amazon.com/apigateway/latest/developerguide/http-api-quotas.html).
+    So while this variable is 90, the gateway still answers 504 at 30s and the
+    integration below clamps to that. Raising the real end-to-end ceiling means
+    replacing the HTTP API in front of the Lambda (a Function URL honours the
+    full Lambda timeout); until then 90 is the value the stack AGREES on, not
+    the latency a caller can actually wait.
+  EOT
   type        = number
-  default     = 30
+  default     = 90
 
   validation {
-    condition     = var.lambda_timeout >= 3 && var.lambda_timeout <= 900
-    error_message = "Lambda timeout must be between 3 and 900 seconds."
+    condition     = var.fhe_request_timeout_secs >= 3 && var.fhe_request_timeout_secs <= 900
+    error_message = "FHE request timeout must be between 3 and 900 seconds (AWS Lambda limits)."
   }
 }
 

@@ -335,6 +335,26 @@ curl -X POST https://facilitator.ultravioletadao.xyz/settle \
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `FHE_FACILITATOR_URL` | `https://zama-facilitator.ultravioletadao.xyz` | Zama Lambda endpoint |
+| `FHE_PROXY_TIMEOUT_SECS` | `90` | How long the proxy waits for the Lambda. Accepted range 3-900; anything else logs a warning and falls back to the default rather than failing startup. |
+
+**`FHE_PROXY_TIMEOUT_SECS` has one definition, not four.** The canonical value is
+`fhe_request_timeout_secs` in `terraform/environments/zama-testnet/variables.tf`,
+which drives the Lambda timeout, the API Gateway integration timeout and the
+duration alarm. `terraform/environments/production/variables.tf` mirrors it (the
+two are separate Terraform states and cannot share a variable) and passes it to
+the container. `DEFAULT_TIMEOUT_SECS` in `src/fhe_proxy.rs` matches, so an unset
+environment behaves the same. Do not retype the number anywhere else.
+
+> **The 90s is what the stack agrees on, not what a caller gets.** The Lambda
+> sits behind an API Gateway **HTTP** API, whose integration timeout maxes out at
+> **30 seconds** — AWS lists that quota as *"Can be increased: No"*
+> ([HTTP API quotas](https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-quotas.html)).
+> The Terraform clamps the integration to that ceiling on purpose, so it is
+> visible in code instead of only in a 504. A request slower than 30s returns 504
+> to the caller while the Lambda keeps running and billing. Honouring the full
+> 90s requires replacing the HTTP API with a Lambda Function URL, which inherits
+> the function timeout. Run `terraform output fhe_request_timeout` in the
+> `zama-testnet` workspace to see the effective value at every hop.
 
 ### Zama Lambda
 

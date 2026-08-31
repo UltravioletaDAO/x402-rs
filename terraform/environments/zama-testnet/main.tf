@@ -169,7 +169,7 @@ resource "aws_lambda_function" "zama_facilitator" {
   handler       = "handler.handler"
   runtime       = "nodejs20.x"
   memory_size   = var.lambda_memory_size
-  timeout       = var.lambda_timeout
+  timeout       = var.fhe_request_timeout_secs
 
   # Source code from S3 (uploaded via CI/CD or manual deployment)
   s3_bucket = aws_s3_bucket.lambda_artifacts.id
@@ -237,6 +237,17 @@ resource "aws_apigatewayv2_integration" "lambda" {
   integration_type       = "AWS_PROXY"
   integration_uri        = aws_lambda_function.zama_facilitator.invoke_arn
   payload_format_version = "2.0"
+
+  # Derived from the single source of truth, then CLAMPED: an HTTP API caps
+  # integration timeout at 30s and AWS marks that quota "Can be increased: No".
+  # Stated explicitly rather than left to the implicit default, so the ceiling
+  # is visible in the code instead of only in a 504.
+  #
+  # Consequence while fhe_request_timeout_secs > 30: the caller gets a 504 at
+  # 30s and the Lambda keeps running (and billing) until its own timeout. To
+  # actually honour 90s, put a Lambda Function URL in front instead of this
+  # HTTP API -- see docs/plans/zama-developer-program/02-MAINNET-READINESS.md.
+  timeout_milliseconds = min(var.fhe_request_timeout_secs * 1000, 30000)
 }
 
 resource "aws_apigatewayv2_route" "default" {
@@ -377,8 +388,8 @@ resource "aws_cloudwatch_metric_alarm" "lambda_duration" {
   namespace           = "AWS/Lambda"
   period              = "300"
   statistic           = "Average"
-  threshold           = var.lambda_timeout * 1000 * 0.8 # 80% of timeout (milliseconds)
-  alarm_description   = "Lambda duration approaching timeout (${var.lambda_timeout}s)"
+  threshold           = var.fhe_request_timeout_secs * 1000 * 0.8 # 80% of timeout (milliseconds)
+  alarm_description   = "Lambda duration approaching timeout (${var.fhe_request_timeout_secs}s)"
   treat_missing_data  = "notBreaching"
 
   dimensions = {

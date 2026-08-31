@@ -45,6 +45,23 @@ output "secret_arn_sepolia_rpc" {
   value       = aws_secretsmanager_secret.sepolia_rpc.arn
 }
 
+output "fhe_request_timeout" {
+  description = <<-EOT
+    The effective timeout at each hop, so drift is readable without opening
+    three files. `effective_end_to_end_secs` is what a caller can really wait
+    for -- the API Gateway HTTP API caps at 30s and that quota is not
+    increasable, so it is the binding constraint whenever it is below
+    `configured_secs`.
+  EOT
+  value = {
+    configured_secs           = var.fhe_request_timeout_secs
+    lambda_secs               = aws_lambda_function.zama_facilitator.timeout
+    api_gateway_secs          = aws_apigatewayv2_integration.lambda.timeout_milliseconds / 1000
+    effective_end_to_end_secs = min(var.fhe_request_timeout_secs, aws_apigatewayv2_integration.lambda.timeout_milliseconds / 1000)
+    rust_proxy_env_var        = "FHE_PROXY_TIMEOUT_SECS (set in terraform/environments/production)"
+  }
+}
+
 output "iam_role_lambda_exec" {
   description = "IAM role ARN for Lambda execution"
   value       = aws_iam_role.lambda_exec.arn

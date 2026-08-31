@@ -199,6 +199,25 @@ resource "aws_security_group" "ecs_tasks" {
     security_groups = [aws_security_group.alb.id]
   }
 
+  # Task-to-task, for the EVM writer lease ONLY.
+  #
+  # Exactly one task may sign EVM transactions, because the nonce for the shared
+  # signer is allocated in memory (see src/writer_lease.rs). A task that does not
+  # hold the lease forwards the write to the one that does instead of answering
+  # 503 -- which is what it used to do, and what made two out of every three EVM
+  # writes fail once min_capacity went to 2 and autoscaling took the service to 3.
+  #
+  # `self = true` scopes this to members of THIS security group, so it opens
+  # nothing to the VPC at large: the peer is another copy of the same task
+  # definition, reachable only on the port the ALB already reaches.
+  ingress {
+    description = "Writer-lease forwarding between facilitator tasks"
+    from_port   = 8080
+    to_port     = 8080
+    protocol    = "tcp"
+    self        = true
+  }
+
   # B10: SG egress is no longer 0.0.0.0/0 0-65535/-1. RPC CIDRs are unenumerable
   # (chain providers run on diverse hosts and rotate IP ranges), so we cannot
   # literally allow-list specific destinations — but we CAN bound the protocol
@@ -244,6 +263,18 @@ resource "aws_security_group" "ecs_tasks" {
     to_port     = 123
     protocol    = "udp"
     cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # The outbound half of the writer-lease forward. The ingress rule above is not
+  # enough on its own: egress here is deliberately not 0.0.0.0/0, so without
+  # this the forwarding connection is dropped on the way OUT and the caller sees
+  # the same 503 the forwarding exists to remove.
+  egress {
+    description = "Writer-lease forwarding between facilitator tasks"
+    from_port   = 8080
+    to_port     = 8080
+    protocol    = "tcp"
+    self        = true
   }
 
   tags = {

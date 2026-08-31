@@ -100,11 +100,18 @@ where
     A::Error: IntoResponse,
     A::Map: ProviderMap<Value = NetworkProvider>,
 {
+    // `POST /settle` is gated; `GET /settle` returns the schema and is a read,
+    // so it keeps serving from every task. They are separate routers because a
+    // `.layer()` applies to every route on the router it is called on.
+    let settle = Router::new()
+        .route("/settle", post(post_settle::<A>))
+        .layer(axum::middleware::from_fn(settle_writer_gate));
+
     Router::new()
         .route("/verify", get(get_verify_info))
         .route("/verify", post(post_verify::<A>))
         .route("/settle", get(get_settle_info))
-        .route("/settle", post(post_settle::<A>))
+        .merge(settle)
 }
 
 /// Env overrides for the identity-read rate limit. Declared here, next to the
@@ -680,42 +687,280 @@ fn alt_request_fields(json_value: &serde_json::Value) -> AltRequestFields {
     }
 }
 
-/// Reject writes from an instance that does not hold the EVM writer lease.
+/// How long a proxied write may take before this task gives up on the holder.
 ///
-/// The settle path has enforced this since the lease existed (`chain/evm.rs`),
-/// but the ERC-8004 write handlers reach the chain through their own
-/// `contract.call().send()` sites — around ten of them — and none passed
-/// through that gate. They spend gas from the SAME shared EOA, so during a
-/// rolling deploy an ERC-8004 write on the old task and a settle on the new one
-/// race for the same nonce: exactly the failure the lease was built to prevent,
-/// entering through a door nobody had closed.
+/// A settle waits for a receipt, so this has to clear `TX_RECEIPT_TIMEOUT_SECS`
+/// with room to spare — timing out the hop while the holder is still mining
+/// would report a failure for a payment that then lands, which is the one
+/// outcome worse than refusing outright.
+fn writer_forward_timeout() -> std::time::Duration {
+    let receipt = std::env::var("TX_RECEIPT_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(60);
+    std::time::Duration::from_secs(receipt.saturating_add(30))
+}
+
+/// The 503 a non-holder returns when it cannot hand the write to the holder.
+fn writer_lease_unavailable(reason: &'static str) -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        [(axum::http::header::RETRY_AFTER, "5")],
+        Json(json!({
+            "error": "this instance does not hold the EVM writer lease; retry",
+            "reason": reason,
+        })),
+    )
+        .into_response()
+}
+
+/// Route writes through the single instance that holds the EVM writer lease.
 ///
-/// Gating the ROUTER rather than the ten send sites is deliberate. A new
-/// ERC-8004 write route is covered the moment it is added here, and there is no
-/// per-call-site guard for a future author to forget.
+/// Every EVM write spends gas from the SAME shared EOA, and the nonce for it is
+/// allocated in memory, so exactly one process may sign at a time. The settle
+/// path has enforced that since the lease existed (`chain/evm.rs`); the
+/// ERC-8004 handlers reach the chain through their own `contract.call().send()`
+/// sites — around ten of them — and none passed through that gate. Gating the
+/// ROUTER rather than the ten send sites is deliberate: a new write route is
+/// covered the moment it is added here, with no per-call-site guard for a
+/// future author to forget.
 ///
-/// 503 rather than 500: not holding the lease is transient and expected — it
-/// lasts about a minute per deploy — so `Retry-After` tells the caller to come
-/// back rather than implying the request was malformed.
+/// # Why this forwards instead of refusing
+///
+/// Refusing was right while "more than one task" meant "for about a minute per
+/// deploy". On 2026-08-29 `min_capacity` went 1 -> 2 and the request-count
+/// alarm took the service straight to 3, and refusing became a permanent
+/// two-in-three failure rate on every EVM write — 582 settle-path rejections
+/// and 132 ERC-8004 ones in a single six-hour window, with the lease never once
+/// changing hands. Callers could not see the cause: they had a valid signature,
+/// a funded signer, a passing `eth_call` simulation, and a 502.
+///
+/// Forwarding keeps the invariant exactly as it was — one process still
+/// allocates every nonce — and removes the failure, because the task that
+/// cannot sign hands the request to the one that can instead of dropping it.
+///
+/// # Bounded to one hop
+///
+/// A proxied request carries [`FORWARDED_HEADER`]. A task that receives one
+/// while not holding the lease refuses rather than forwarding again, so a stale
+/// endpoint cannot bounce a request between tasks until it times out.
+///
+/// Anything that goes wrong — no known holder, unreachable holder, a body too
+/// large to buffer — falls back to the 503 this replaced, so the mechanism can
+/// never be worse than the behaviour it supersedes.
 async fn require_writer_lease(
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    if !crate::writer_lease::is_writer() {
-        warn!(
-            path = %request.uri().path(),
-            "rejecting ERC-8004 write: this instance does not hold the EVM writer lease"
-        );
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            [(axum::http::header::RETRY_AFTER, "5")],
-            Json(json!({
-                "error": "this instance does not hold the EVM writer lease; retry",
-            })),
-        )
-            .into_response();
+    if crate::writer_lease::is_writer() {
+        return next.run(request).await;
     }
-    next.run(request).await
+
+    let path = request.uri().path().to_string();
+
+    // Second hop: the holder we were sent to no longer holds the lease. Answer
+    // rather than pass it on, so a stale endpoint cannot build a loop.
+    if request
+        .headers()
+        .contains_key(crate::writer_lease::FORWARDED_HEADER)
+    {
+        warn!(
+            path = %path,
+            "refusing a forwarded EVM write: this instance is not the writer either"
+        );
+        return writer_lease_unavailable("forwarded_but_not_writer");
+    }
+
+    if !crate::writer_lease::forwarding_enabled() {
+        warn!(path = %path, "rejecting EVM write: forwarding disabled");
+        return writer_lease_unavailable("forwarding_disabled");
+    }
+
+    let Some(holder) = crate::writer_lease::holder_endpoint() else {
+        warn!(path = %path, "rejecting EVM write: writer lease holder address unknown");
+        return writer_lease_unavailable("holder_unknown");
+    };
+
+    match forward_to_writer(&holder, request).await {
+        Ok(response) => response,
+        Err(reason) => {
+            warn!(
+                path = %path,
+                holder = %holder,
+                reason = %reason,
+                "forwarding an EVM write to the lease holder failed"
+            );
+            writer_lease_unavailable("forward_failed")
+        }
+    }
+}
+
+/// Whether a settle body targets an EVM chain, and therefore the shared EOA
+/// whose nonce the writer lease serializes.
+///
+/// Biased toward `true`: only a network string that parses AND resolves to a
+/// non-EVM family earns a `false`. Anything unreadable is treated as EVM and
+/// forwarded, because the holder can serve every family while a non-holder
+/// cannot serve EVM — guessing "not EVM" on an unparseable body would
+/// resurrect the exact 503 this exists to remove.
+///
+/// Both protocol versions are covered: v1 spells the network `"base"`, v2
+/// spells it `"eip155:8453"`, and either can appear on the payload or on the
+/// requirements.
+fn settle_body_targets_evm(body: &[u8]) -> bool {
+    use std::str::FromStr;
+
+    let Ok(json) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return true;
+    };
+
+    let candidates = [
+        json.pointer("/paymentPayload/network"),
+        json.pointer("/paymentRequirements/network"),
+        json.get("network"),
+    ];
+
+    for raw in candidates
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+    {
+        let network = crate::network::Network::from_str(raw)
+            .ok()
+            .or_else(|| crate::network::Network::from_caip2(raw));
+        if let Some(network) = network {
+            return matches!(
+                crate::network::NetworkFamily::from(network),
+                crate::network::NetworkFamily::Evm
+            );
+        }
+    }
+
+    true
+}
+
+/// Route an EVM settle to the lease holder; serve every other family here.
+///
+/// `/settle` accounted for 582 of the 714 lease rejections measured in the six
+/// hours before this landed — far more than the ERC-8004 routes — because it is
+/// the busiest write on the service. It cannot simply reuse
+/// [`require_writer_lease`], though: `/settle` also carries Solana, Stellar,
+/// NEAR, Algorand, Sui and XRPL payments, which touch neither the EVM signer
+/// nor its nonce. Forwarding those would funnel six chain families through one
+/// task for no reason, trading a correctness bug for a capacity one.
+///
+/// So the decision is made on the body, and the body is put back afterwards:
+/// buffering it here is the only way to read the network before the handler
+/// does, and a handler that received an already-consumed body would fail in a
+/// far more confusing way than the 503 this replaces.
+async fn settle_writer_gate(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if crate::writer_lease::is_writer() {
+        return next.run(request).await;
+    }
+
+    const MAX_SETTLE_BODY: usize = 1024 * 1024;
+    let (parts, body) = request.into_parts();
+    let bytes = match axum::body::to_bytes(body, MAX_SETTLE_BODY).await {
+        Ok(bytes) => bytes,
+        // Let the handler produce the real error for an unreadable body rather
+        // than inventing a lease-shaped one for it here.
+        Err(e) => {
+            warn!(error = %e, "could not buffer settle body for writer routing");
+            return writer_lease_unavailable("body_unreadable");
+        }
+    };
+
+    if !settle_body_targets_evm(&bytes) {
+        // Non-EVM: this task is as good as any other. Reassemble and serve.
+        let request = axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes));
+        return next.run(request).await;
+    }
+
+    let request = axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes));
+    require_writer_lease(request, next).await
+}
+
+/// Proxy one request to `holder` and return its response verbatim.
+///
+/// Deliberately transparent: same method, same path and query, same body, and
+/// the upstream status and body handed straight back. A settle that the holder
+/// rejects must look to the caller exactly like a settle this task rejected —
+/// anything else would make the forwarding visible in the protocol.
+async fn forward_to_writer(
+    holder: &str,
+    request: axum::extract::Request,
+) -> Result<Response, String> {
+    use axum::body::Body;
+
+    let (parts, body) = request.into_parts();
+
+    let path_and_query = parts
+        .uri
+        .path_and_query()
+        .map(|pq| pq.as_str())
+        .unwrap_or("/");
+    let url = format!("{}{}", holder.trim_end_matches('/'), path_and_query);
+
+    // Writes on this service are small JSON documents. The cap is a guard
+    // against buffering something unbounded in the proxy, not a protocol limit.
+    const MAX_FORWARD_BODY: usize = 1024 * 1024;
+    let bytes = axum::body::to_bytes(body, MAX_FORWARD_BODY)
+        .await
+        .map_err(|e| format!("could not buffer request body: {e}"))?;
+
+    let client = reqwest::Client::builder()
+        .timeout(writer_forward_timeout())
+        .build()
+        .map_err(|e| format!("could not build forwarding client: {e}"))?;
+
+    let mut headers = parts.headers.clone();
+    // Hop-by-hop and length headers describe THIS connection, not the next one;
+    // reqwest sets its own. `host` would otherwise still name the ALB.
+    for name in [
+        axum::http::header::HOST,
+        axum::http::header::CONTENT_LENGTH,
+        axum::http::header::TRANSFER_ENCODING,
+        axum::http::header::CONNECTION,
+    ] {
+        headers.remove(name);
+    }
+    headers.insert(
+        axum::http::HeaderName::from_static(crate::writer_lease::FORWARDED_HEADER),
+        axum::http::HeaderValue::from_static("1"),
+    );
+
+    let upstream = client
+        .request(parts.method.clone(), &url)
+        .headers(headers)
+        .body(bytes)
+        .send()
+        .await
+        .map_err(|e| format!("{e}"))?;
+
+    let status = upstream.status();
+    let mut response_headers = upstream.headers().clone();
+    // Same reasoning in reverse: let axum frame the response it is about to
+    // write, rather than replaying the upstream's framing.
+    for name in [
+        axum::http::header::CONTENT_LENGTH,
+        axum::http::header::TRANSFER_ENCODING,
+        axum::http::header::CONNECTION,
+    ] {
+        response_headers.remove(name);
+    }
+
+    let payload = upstream
+        .bytes()
+        .await
+        .map_err(|e| format!("could not read holder response: {e}"))?;
+
+    let mut response = Response::new(Body::from(payload));
+    *response.status_mut() = status;
+    *response.headers_mut() = response_headers;
+    Ok(response)
 }
 
 /// Reject a `/feedback/revoke` call that does not carry the ERC-8004 admin
@@ -9654,18 +9899,155 @@ mod writer_lease_gate_tests {
         assert_eq!(status_of(gated_router()).await, StatusCode::OK);
     }
 
-    /// A non-writer is shed with 503, not 500: during a rolling deploy this is
-    /// the expected state for about a minute, and the caller should retry rather
-    /// than treat the request as malformed.
+    /// A non-writer that has nowhere to forward is shed with 503, not 500: the
+    /// caller should retry rather than treat the request as malformed.
+    ///
+    /// This is now the FALLBACK, not the normal path. It is reached only when
+    /// the holder's address is unknown — which is also the state on a
+    /// single-task service, where nothing is lost because that task is the
+    /// writer anyway.
     #[tokio::test]
-    async fn non_writer_is_shed_with_503() {
+    async fn non_writer_without_a_known_holder_is_shed_with_503() {
         let _guard = WRITER_FLAG.lock().unwrap_or_else(|e| e.into_inner());
         crate::writer_lease::set_writer_for_test(false);
+        crate::writer_lease::set_holder_endpoint_for_test(None);
         let status = status_of(gated_router()).await;
         // Restored before the assert so a failure cannot leave the process
         // wedged as a non-writer for every later test.
         crate::writer_lease::set_writer_for_test(true);
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    /// The loop guard, and the reason forwarding is safe to enable.
+    ///
+    /// A request that already carries [`FORWARDED_HEADER`] was sent here BY a
+    /// peer that believed this task held the lease. If it does not, the only
+    /// safe answer is 503. Forwarding it onward — to an address that may point
+    /// back at the sender — is how two tasks bounce one request between them
+    /// until it times out, turning a 503 into a hung connection.
+    ///
+    /// Note this asserts a 503 while a holder address IS set, so the test fails
+    /// if the guard is ever removed: without it this request would be proxied
+    /// instead of refused.
+    #[tokio::test]
+    async fn a_forwarded_request_is_never_forwarded_again() {
+        let _guard = WRITER_FLAG.lock().unwrap_or_else(|e| e.into_inner());
+        crate::writer_lease::set_writer_for_test(false);
+        // A reachable-looking peer: the guard must win over it.
+        crate::writer_lease::set_holder_endpoint_for_test(Some("http://10.0.0.9:8080"));
+
+        let response = gated_router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/write")
+                    .header(crate::writer_lease::FORWARDED_HEADER, "1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+
+        crate::writer_lease::set_writer_for_test(true);
+        crate::writer_lease::set_holder_endpoint_for_test(None);
+
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    /// With the kill-switch off, a non-writer refuses even when it knows where
+    /// the holder is — the documented way back to the old behaviour.
+    #[tokio::test]
+    async fn forwarding_kill_switch_restores_refusal() {
+        let _guard = WRITER_FLAG.lock().unwrap_or_else(|e| e.into_inner());
+        crate::writer_lease::set_writer_for_test(false);
+        crate::writer_lease::set_holder_endpoint_for_test(Some("http://10.0.0.9:8080"));
+        std::env::set_var("ENABLE_WRITER_FORWARD", "false");
+
+        let status = status_of(gated_router()).await;
+
+        std::env::remove_var("ENABLE_WRITER_FORWARD");
+        crate::writer_lease::set_writer_for_test(true);
+        crate::writer_lease::set_holder_endpoint_for_test(None);
+
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    /// A forward that cannot connect degrades to the 503 it replaced, rather
+    /// than surfacing a transport error or hanging. Port 1 on loopback is
+    /// closed, so this exercises the real failure path, not a mock of it.
+    #[tokio::test]
+    async fn an_unreachable_holder_degrades_to_503() {
+        let _guard = WRITER_FLAG.lock().unwrap_or_else(|e| e.into_inner());
+        crate::writer_lease::set_writer_for_test(false);
+        crate::writer_lease::set_holder_endpoint_for_test(Some("http://127.0.0.1:1"));
+
+        let status = status_of(gated_router()).await;
+
+        crate::writer_lease::set_writer_for_test(true);
+        crate::writer_lease::set_holder_endpoint_for_test(None);
+
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    /// EVM settles are the ones that need the single signer. Both protocol
+    /// spellings must resolve, on either half of the request.
+    #[test]
+    fn evm_settle_bodies_are_routed_to_the_writer() {
+        for body in [
+            br#"{"paymentPayload":{"network":"base"}}"#.as_slice(),
+            br#"{"paymentPayload":{"network":"eip155:8453"}}"#.as_slice(),
+            br#"{"paymentRequirements":{"network":"arbitrum"}}"#.as_slice(),
+            br#"{"network":"ethereum"}"#.as_slice(),
+        ] {
+            assert!(
+                settle_body_targets_evm(body),
+                "expected EVM routing for {}",
+                String::from_utf8_lossy(body)
+            );
+        }
+    }
+
+    /// The capacity half of the fix. Solana, Stellar, NEAR, Algorand, Sui and
+    /// XRPL settle from their own signers and never touch the EVM nonce, so
+    /// forwarding them would funnel six chain families through one task for no
+    /// reason — trading a correctness bug for a capacity one.
+    #[test]
+    fn non_evm_settle_bodies_are_served_locally() {
+        for body in [
+            br#"{"paymentPayload":{"network":"solana"}}"#.as_slice(),
+            br#"{"paymentPayload":{"network":"solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"}}"#
+                .as_slice(),
+            br#"{"paymentPayload":{"network":"stellar"}}"#.as_slice(),
+            br#"{"paymentRequirements":{"network":"near"}}"#.as_slice(),
+        ] {
+            assert!(
+                !settle_body_targets_evm(body),
+                "expected local handling for {}",
+                String::from_utf8_lossy(body)
+            );
+        }
+    }
+
+    /// The bias, stated as a test. An unreadable or unfamiliar body is treated
+    /// as EVM and forwarded, because the holder can serve every family while a
+    /// non-holder cannot serve EVM. Guessing "not EVM" here would resurrect the
+    /// 503 for exactly the requests we understand least.
+    #[test]
+    fn an_unreadable_settle_body_is_routed_to_the_writer() {
+        for body in [
+            b"not json at all".as_slice(),
+            br#"{}"#.as_slice(),
+            br#"{"paymentPayload":{"network":"chain-we-have-never-heard-of"}}"#.as_slice(),
+            br#"{"paymentPayload":{"network":12345}}"#.as_slice(),
+            b"".as_slice(),
+        ] {
+            assert!(
+                settle_body_targets_evm(body),
+                "expected EVM routing for {}",
+                String::from_utf8_lossy(body)
+            );
+        }
     }
 
     // NOTE on what is NOT covered here: that the gate is actually ATTACHED to

@@ -1,5 +1,73 @@
 # Changelog
 
+## [2.0.0] - 2026-08-31
+
+### Fixed - P0: two out of every three EVM writes were being refused
+
+Since 2026-08-29 14:28Z the facilitator refused most EVM writes, and the cause
+was a correct guard meeting a changed assumption.
+
+Exactly one process may sign EVM transactions, because the nonce for the shared
+signer is allocated in memory (`PendingNonceManager`). A DynamoDB lease elects
+that process, and non-holders answered `503`. That was right while "more than
+one task" meant "for about a minute per rolling deploy".
+
+On 2026-08-29 `min_capacity` went 1 -> 2 and the ALB request-count alarm took the
+service to 3 in the same minute. From then on the ALB spread writes evenly over
+three tasks of which exactly one could serve them: **two out of every three EVM
+writes were rejected, permanently**. Measured over the six hours before the fix:
+582 rejections on the settle path, 132 on the ERC-8004 write routes, and zero
+lease handovers -- the lease never moved, the other two tasks simply never wrote.
+
+Callers could not diagnose it from outside. They had a valid signature, a funded
+signer, a passing `eth_call` simulation, and a 502; a retry had a one-in-three
+chance, so it read as an intermittent facilitator fault. It surfaced as
+"facilitator lease time-out", `SETTLEMENT_FAILED` before approve, `lock_failed`
+on Arbitrum/Ethereum/Base, and `em_rate_agent` 503s.
+
+**A non-holder now forwards the write to the holder instead of refusing it.**
+The invariant is untouched -- one process still allocates every nonce -- but
+every task serves 100% of the traffic the ALB hands it, so adding tasks adds
+capacity instead of subtracting availability.
+
+- The lease record carries the holder's routable address. A lost election
+  returns it in the SAME response via
+  `ReturnValuesOnConditionCheckFailure::AllOld`: no extra read, no second
+  table, no service discovery.
+- Forwarding is capped at ONE hop (`x-facilitator-forwarded-for-writer`). A task
+  that receives a forwarded request while not holding the lease answers rather
+  than forwarding again, so a stale address cannot bounce a settle between tasks.
+- `/settle` uses a separate gate that forwards **only EVM** payments. Solana,
+  Stellar, NEAR, Algorand, Sui and XRPL touch neither the EVM signer nor its
+  nonce; forwarding them would funnel six chain families through one task and
+  trade a correctness bug for a capacity one. A body that cannot be parsed is
+  treated as EVM, because the holder can serve every family while a non-holder
+  cannot serve EVM.
+- The forward timeout clears `TX_RECEIPT_TIMEOUT_SECS` by 30s. Cutting the hop
+  while the holder is still mining would report failure for a payment that then
+  lands -- the one outcome worse than refusing.
+- Every failure path (address unknown, holder unreachable, body too large,
+  forwarding disabled) falls back to the previous `503` + `Retry-After`, so the
+  change can never be worse than what it replaces.
+- `GET /settle` and `/verify` are reads and stay unlayered on every task.
+
+### Infrastructure
+
+`aws_security_group.ecs_tasks` gains self-ingress **and self-egress** on 8080,
+scoped with `self = true` so it opens nothing to the wider VPC. Both halves are
+required: egress on this SG is deliberately not `0.0.0.0/0`, so without the
+egress rule the forwarding connection is dropped on the way out and the caller
+sees the same 503 the forwarding exists to remove.
+
+### Configuration
+
+| Variable | Default | Notes |
+|---|---|---|
+| `ENABLE_WRITER_FORWARD` | `true` | `false` keeps the lease but restores refusal |
+| `WRITER_LEASE_ENDPOINT` | *(unset)* | Pin this task's advertised address by hand; otherwise read from ECS task metadata |
+
+
+
 
 ## [1.92.0] - 2026-08-21
 

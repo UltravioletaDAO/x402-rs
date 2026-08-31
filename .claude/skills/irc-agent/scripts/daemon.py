@@ -39,6 +39,7 @@ class IRCDaemon:
         port_plain=6667,
         channel="#Agents",
         masters=None,
+        insecure_tls=False,
     ):
         self.nick = nick
         self.original_nick = nick
@@ -47,6 +48,8 @@ class IRCDaemon:
         self.port_plain = port_plain
         self.channel = channel
         self.masters = set(masters or [])
+        # Opt-in explicito. Ver _connect_ssl: por defecto se verifica.
+        self.insecure_tls = insecure_tls
         self.running = False
         self.connected = False
         self.sock = None
@@ -132,22 +135,40 @@ class IRCDaemon:
         self._send_raw(f"PRIVMSG {self.channel} :[connected] {self.nick} online")
 
     def _connect_ssl(self):
-        """Establish SSL connection.
+        """Establish SSL connection, verifying the server certificate.
 
-        Uses lenient certificate verification because many IRC servers
-        (including MeshRelay) use self-signed certificates.
+        Antes esto desactivaba la verificacion SIN CONDICION, con el argumento
+        de que "muchos servidores IRC, MeshRelay incluido, usan certificados
+        self-signed". Medido el 2026-08-31: irc.meshrelay.xyz:6697 presenta un
+        certificado de Let's Encrypt valido hasta el 29-nov-2026. El argumento
+        estaba vencido.
+
+        Cifrar sin autenticar al peer no protege de nada frente a un MITM: el
+        atacante presenta cualquier certificado y el cliente lo acepta. Por este
+        canal viajan los handoffs entre agentes del stack.
+
+        `insecure_tls` sigue existiendo para un servidor genuinamente self-signed,
+        pero ahora es una decision explicita y ruidosa, no el default silencioso.
         """
         self.log(f"Trying SSL connection to {self.server}:{self.port_ssl}...")
         raw_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         raw_sock.settimeout(30)
         raw_sock.connect((self.server, self.port_ssl))
 
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
+        if self.insecure_tls:
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            self.log("WARNING: insecure_tls=True -- el certificado del servidor "
+                     "NO se verifica. El canal es vulnerable a MITM.")
+        else:
+            # CERT_REQUIRED + check_hostname contra el trust store del sistema.
+            ctx = ssl.create_default_context()
+
         self.sock = ctx.wrap_socket(raw_sock, server_hostname=self.server)
         self.use_ssl = True
-        self.log(f"SSL connection established")
+        self.log("SSL connection established"
+                 + ("" if self.insecure_tls else " (certificado verificado)"))
 
     def _connect_plain(self):
         """Establish plain (non-SSL) connection."""

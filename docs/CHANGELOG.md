@@ -96,7 +96,86 @@ sees the same 503 the forwarding exists to remove.
 | `WRITER_LEASE_ENDPOINT` | *(unset)* | Pin this task's advertised address by hand; otherwise read from ECS task metadata |
 
 
+## [Unreleased]
 
+### Changed
+- **DX402 evidence body limit raised from 1 MiB to 32 MiB, and made configurable.**
+  At 1 MiB, `durable-evidence` was durable storage for small responses: an 18 MB
+  API response (the case that prompted this) got `{"skipped":"too_large"}` and no
+  evidence at all. The seller now sets it with `DX402_MAX_BODY_BYTES`, default
+  33554432.
+
+  **Why 32 MiB.** The 18 MB incident is the only measured case DX402 ever
+  refused, so anything under it fails the reason the limit was made configurable
+  — a couple of MB was considered and rejected on exactly that ground. Above it,
+  the deciding fact is that `DurableConfig::default()` ships in *other people's
+  processes*: it is what a seller gets for not thinking about it, on a host whose
+  memory we do not size. The smallest number that clears the known case with room
+  beats the largest one our own infrastructure could absorb. Raising it is one
+  variable; lowering it after integrators have built on a bigger promise is a
+  regression, and that asymmetry settles the direction of error.
+
+  It is **not** a storage ceiling and not our storage: in pointer mode — what the
+  `x402-axum` hook does — the object lands in the seller's own sink. The
+  facilitator's bucket only receives the inline `sealed` path, capped at ~47 KB
+  by the 64 KiB request limit. `GET /dx402/blob` cannot serve a large object
+  either: `key_from_pointer` rejects foreign pointers, so it only ever reads our
+  own bucket.
+
+  The limit was never a storage bound — S3 takes 5 GiB in a single `PUT`. It is a
+  **memory** bound: sealing holds the plaintext, then the ciphertext, then the
+  sink's copy, so one capture costs several times the body. Which is why raising
+  the number on its own would have been a downgrade, not a feature:
+
+- **`DX402_MAX_INFLIGHT_BYTES` (default 134217728) bounds the memory all
+  concurrent captures may hold.** Nothing bounded concurrency before, because at
+  1 MiB nothing needed to. With a raised body limit and no bound, a burst of
+  large responses in parallel is an OOM — and an OOM drops responses that were
+  already settled and paid for, which is precisely the outcome DX402 exists to
+  prevent. The budget turns that burst into an ordered skip.
+
+  **It is not memory the process takes, only memory it refuses to exceed.**
+  Reservations are sized per body, so a seller returning 4 KB of JSON never holds
+  more than a few KB however high the ceiling sits. That is why the budget is the
+  generous half of the pair and the body limit is the conservative one.
+
+  It is denominated in bytes of real memory and charges each capture roughly four
+  times the body. **That factor is an estimate, not a profile** — the handoff
+  asked for the measurement and it is still missing; the budget is the knob that
+  stays honest regardless, because it is expressed in the memory the process
+  actually has. A body that announces its length reserves that length; a
+  streaming body with no `size_hint` has to reserve the worst case. Reservations
+  are **refused, never queued**: buffering happens before the buyer's response
+  goes out, so waiting for memory would delay a delivery that has already been
+  settled. Delivery wins; evidence gives way.
+
+  A body already over the limit reserves **nothing** — it is skipped without
+  being buffered, and charging it would evict captures that could have succeeded.
+
+### Added
+- **`SkipReason::Busy`** — wire value `busy`. A full budget is not a store
+  failure and reporting it as `anchor_failed` would send the next investigation
+  at the store. Nothing is broken; the deployment simply declined to buffer one
+  more large body. Both SDKs already handle it: they parse `skipped` as an open
+  string (`String(payload.skipped)` / `str(payload["skipped"])`), not a closed
+  enum, so a new variant surfaces rather than failing the payload.
+- **`EvidenceStats` on the hook** (`hook.stats()`): counts anchored captures and
+  skips by reason. Skips were silent — a header nobody tallies — so there was no
+  way to tell "no response was too large" from "every response was too large".
+- **`DurableConfig::from_env()`** with a 16 KiB floor and a clamp of the body
+  limit to what the budget can afford. `DX402_MAX_BODY_BYTES=0` cannot silently
+  skip everything, an unparseable value falls back to the default and logs, and a
+  body limit the budget cannot cover reports an honest `too_large` instead of
+  `busy` forever.
+
+Unchanged and still load-bearing: **an oversized or unbudgeted body is delivered
+in full.** Settlement happens before the hook and the nonce is spent, so a
+dropped body is paid-for goods that can never be re-fetched.
+
+**Not** phase 1. Streaming — chunked encryption, incremental hashing, S3
+multipart, and the `tee` of the body — is still open, along with the decision it
+forces: the `contentHash` cannot ride in a header the streaming case has already
+sent. See `docs/plans/dx402/04-STREAMING-EVIDENCE-HANDOFF.md`.
 
 ## [1.92.0] - 2026-08-21
 

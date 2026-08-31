@@ -18,12 +18,14 @@
 //!
 //! # It cannot break a payment
 //!
-//! Every failure here -- oversized body, unreachable sink, unrecoverable payer
-//! key -- resolves to a [`SkipReason`] carried in the header. The buyer still
+//! Every failure here -- oversized body, exhausted memory budget, unreachable
+//! sink, unrecoverable payer key -- resolves to a [`SkipReason`] in the header,
+//! and every one of them is counted ([`EvidenceStats`]). The buyer still
 //! gets their bytes and the settlement still stands. That is not defensive
 //! coding, it is the design constraint: evidence is an addition to the payment
 //! path, never a gate in front of it.
 
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use base64::Engine as _;
@@ -36,6 +38,59 @@ use x402_rs::dx402::types::{
 use x402_rs::network::Network;
 use x402_rs::types::MixedAddress;
 
+/// Largest body DX402 will seal by default: 32 MiB.
+///
+/// Not a storage ceiling -- S3 accepts 5 GiB in a single `PUT`, and in pointer
+/// mode the object lands in the seller's own sink anyway. It is a *memory*
+/// ceiling: sealing buffers the plaintext, then the ciphertext, then whatever
+/// copy the sink makes to put it on the wire, so one capture costs several
+/// times the body.
+///
+/// Why this number and not a rounder one. The only real data point is the
+/// incident that prompted a configurable limit at all: an **18 MB** API
+/// response that got `too_large` and no evidence. A default under that fails
+/// the exact case it was raised for, so 2 or 4 MiB is not an option. Above it,
+/// the deciding fact is that this constant ships in *other people's processes*
+/// -- `DurableConfig::default()` is what a seller gets for not thinking about
+/// it, on a host whose memory we do not size. A library default belongs at the
+/// smallest number that clears the known case with room, not at the largest one
+/// our own infrastructure could absorb. 32 MiB leaves ~78% headroom over the 18
+/// MB case at half the footprint of 64.
+///
+/// Raising it is one environment variable. Lowering it after integrators have
+/// built against a bigger promise is a regression, which is the asymmetry that
+/// settles the direction of error.
+pub const DEFAULT_MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
+
+/// Memory all in-flight captures may reserve at once, by default: 128 MiB.
+///
+/// This is the field that turns raising the body limit from a hazard into a
+/// setting. With a body limit and nothing bounding concurrency, a burst of
+/// large responses in parallel is an OOM -- and an OOM drops responses that
+/// were already paid for. Bounded, the same burst is an ordered
+/// [`SkipReason::Busy`]: no evidence for the overflow, but every buyer still
+/// gets their bytes.
+///
+/// **This is not memory the process takes, it is memory it refuses to exceed.**
+/// Reservations are sized from each body, so a seller returning 4 KB of JSON
+/// never holds more than a few KB no matter how high this sits. It costs
+/// nothing until large bodies actually flow, which is why it is the generous
+/// half of the pair and `max_body_bytes` is the conservative one.
+pub const DEFAULT_MAX_INFLIGHT_BYTES: usize = 128 * 1024 * 1024;
+
+/// Floor for `max_body_bytes`. A mis-parsed or hostile value must not be able
+/// to leave the limit at zero, which would silently skip everything.
+pub const MIN_MAX_BODY_BYTES: usize = 16 * 1024;
+
+/// How many times the body size one capture really costs in memory.
+///
+/// Plaintext, ciphertext, the `to_bytes()` copy, and the sink's copy on the way
+/// out. **Estimated, not profiled** -- the handoff that asked for a bigger limit
+/// listed this measurement as missing, and it is still missing. Treat it as the
+/// conservative side of an unknown; the honest knob is `max_inflight_bytes`,
+/// which is denominated in bytes of actual memory rather than in a guess.
+const MEMORY_AMPLIFICATION: usize = 4;
+
 /// Per-route DX402 configuration.
 #[derive(Debug, Clone)]
 pub struct DurableConfig {
@@ -45,6 +100,9 @@ pub struct DurableConfig {
     /// Bodies above this are skipped. A large body is a reason to skip evidence,
     /// never a reason to fail a payment.
     pub max_body_bytes: usize,
+    /// Ceiling on the memory the evidence path may hold across all concurrent
+    /// captures. See [`DEFAULT_MAX_INFLIGHT_BYTES`].
+    pub max_inflight_bytes: usize,
 }
 
 impl Default for DurableConfig {
@@ -53,7 +111,236 @@ impl Default for DurableConfig {
             mode: EvidenceMode::Direct,
             backend: StorageBackend::S3,
             retention: Retention::Days90,
-            max_body_bytes: 1_048_576,
+            max_body_bytes: DEFAULT_MAX_BODY_BYTES,
+            max_inflight_bytes: DEFAULT_MAX_INFLIGHT_BYTES,
+        }
+    }
+}
+
+impl DurableConfig {
+    /// Read the two size limits from the environment, keeping every other
+    /// default.
+    ///
+    /// `DX402_MAX_BODY_BYTES` and `DX402_MAX_INFLIGHT_BYTES`, both in bytes. A
+    /// value that does not parse is ignored in favour of the default and
+    /// logged: a typo in a deployment variable must not get to decide how much
+    /// memory the process may use.
+    pub fn from_env() -> Self {
+        let config = Self {
+            max_body_bytes: env_bytes("DX402_MAX_BODY_BYTES").unwrap_or(DEFAULT_MAX_BODY_BYTES),
+            max_inflight_bytes: env_bytes("DX402_MAX_INFLIGHT_BYTES")
+                .unwrap_or(DEFAULT_MAX_INFLIGHT_BYTES),
+            ..Self::default()
+        }
+        .sanitized();
+        #[cfg(feature = "telemetry")]
+        tracing::info!(
+            max_body_bytes = config.max_body_bytes,
+            max_inflight_bytes = config.max_inflight_bytes,
+            "DX402 evidence size limits configured"
+        );
+        config
+    }
+
+    /// Apply the floor, then keep the body limit inside the memory budget.
+    ///
+    /// The floor is for values that came from outside the program -- an empty
+    /// or fat-fingered environment variable that would otherwise leave the
+    /// limit at zero and skip everything in silence. It is deliberately NOT
+    /// applied to a config a caller wrote by hand: a test or a route that means
+    /// 16 bytes gets 16 bytes.
+    pub fn sanitized(mut self) -> Self {
+        self.max_inflight_bytes = self
+            .max_inflight_bytes
+            .max(MIN_MAX_BODY_BYTES * MEMORY_AMPLIFICATION);
+        self.max_body_bytes = self.max_body_bytes.max(MIN_MAX_BODY_BYTES);
+        self.clamped_to_budget()
+    }
+
+    /// Keep the body limit inside what the memory budget can afford.
+    ///
+    /// A body limit the budget cannot cover is worse than a small one: every
+    /// large response reserves more memory than exists and skips as
+    /// [`SkipReason::Busy`] forever, which reads as a capacity problem rather
+    /// than as the misconfiguration it is. Clamping turns it back into an
+    /// honest `too_large`. This one applies to every config, hand-written
+    /// included, because it is the invariant the budget depends on.
+    fn clamped_to_budget(mut self) -> Self {
+        let affordable = self.max_inflight_bytes / MEMORY_AMPLIFICATION;
+        if self.max_body_bytes > affordable {
+            #[cfg(feature = "telemetry")]
+            tracing::warn!(
+                requested = self.max_body_bytes,
+                affordable,
+                max_inflight_bytes = self.max_inflight_bytes,
+                "DX402 body limit exceeds the memory budget; clamping"
+            );
+            self.max_body_bytes = affordable;
+        }
+        self
+    }
+}
+
+// Not `.ok()`: the `Err` arm exists to say out loud that the value was
+// unusable. A variable that silently means "default" is how a deployment ends
+// up running limits nobody chose.
+#[allow(clippy::manual_ok_err)]
+fn env_bytes(name: &str) -> Option<usize> {
+    let raw = std::env::var(name).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    match trimmed.parse::<usize>() {
+        Ok(n) => Some(n),
+        Err(_) => {
+            #[cfg(feature = "telemetry")]
+            tracing::warn!(var = name, value = trimmed, "unparseable; using the default");
+            None
+        }
+    }
+}
+
+/// A byte-denominated permit pool bounding the memory the evidence path may
+/// hold at any instant.
+///
+/// Deliberately non-blocking: [`EvidenceBudget::try_reserve`] refuses instead of
+/// queueing. The buffering it guards happens *before* the buyer's response goes
+/// out, so waiting for a permit would hold up a delivery that has already been
+/// settled and paid for. Delivery wins; evidence is what gives way.
+#[derive(Debug)]
+pub struct EvidenceBudget {
+    limit: usize,
+    reserved: AtomicUsize,
+}
+
+impl EvidenceBudget {
+    pub fn new(limit: usize) -> Arc<Self> {
+        Arc::new(Self {
+            limit: limit.max(1),
+            reserved: AtomicUsize::new(0),
+        })
+    }
+
+    /// Take `bytes` out of the budget, or refuse.
+    ///
+    /// A zero-byte reservation always succeeds: it stands for a capture that is
+    /// about to be skipped without buffering anything, and charging it would
+    /// evict captures that would actually have used the memory.
+    pub fn try_reserve(self: &Arc<Self>, bytes: usize) -> Option<EvidencePermit> {
+        let want = bytes;
+        let mut current = self.reserved.load(Ordering::Relaxed);
+        loop {
+            let next = current.checked_add(want)?;
+            if next > self.limit {
+                return None;
+            }
+            match self.reserved.compare_exchange_weak(
+                current,
+                next,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    return Some(EvidencePermit {
+                        budget: Arc::clone(self),
+                        bytes: want,
+                    })
+                }
+                Err(observed) => current = observed,
+            }
+        }
+    }
+
+    pub fn limit_bytes(&self) -> usize {
+        self.limit
+    }
+
+    pub fn reserved_bytes(&self) -> usize {
+        self.reserved.load(Ordering::Relaxed)
+    }
+}
+
+/// Holds a reservation for as long as the capture needs the memory.
+///
+/// Released on drop, which covers every early return in the capture path --
+/// including the ones that skip. A permit leaked by an error path would shrink
+/// the budget permanently and turn a healthy deployment into one that reports
+/// [`SkipReason::Busy`] for everything.
+#[derive(Debug)]
+pub struct EvidencePermit {
+    budget: Arc<EvidenceBudget>,
+    bytes: usize,
+}
+
+impl EvidencePermit {
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
+}
+
+impl Drop for EvidencePermit {
+    fn drop(&mut self) {
+        self.budget.reserved.fetch_sub(self.bytes, Ordering::AcqRel);
+    }
+}
+
+/// Counts what the evidence path did, so a skip is not a silence.
+///
+/// Every reason here is a normal outcome that leaves the payment intact, which
+/// is exactly why it needs counting: nothing upstream fails, nothing pages, and
+/// without a number nobody can tell "no responses were too large" from "every
+/// response was too large".
+#[derive(Debug, Default)]
+pub struct EvidenceStats {
+    anchored: AtomicU64,
+    too_large: AtomicU64,
+    busy: AtomicU64,
+    anchor_failed: AtomicU64,
+    no_payer_key: AtomicU64,
+    disabled: AtomicU64,
+}
+
+/// A point-in-time read of [`EvidenceStats`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EvidenceCounts {
+    pub anchored: u64,
+    pub too_large: u64,
+    pub busy: u64,
+    pub anchor_failed: u64,
+    pub no_payer_key: u64,
+    pub disabled: u64,
+}
+
+impl EvidenceStats {
+    pub fn record_skip(&self, reason: SkipReason) {
+        let counter = match reason {
+            SkipReason::TooLarge => &self.too_large,
+            SkipReason::Busy => &self.busy,
+            SkipReason::AnchorFailed => &self.anchor_failed,
+            SkipReason::NoPayerKey => &self.no_payer_key,
+            SkipReason::Disabled => &self.disabled,
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record(&self, evidence: &DurableEvidence) {
+        match evidence {
+            DurableEvidence::Anchored(_) => {
+                self.anchored.fetch_add(1, Ordering::Relaxed);
+            }
+            DurableEvidence::Skipped(skipped) => self.record_skip(skipped.skipped),
+        }
+    }
+
+    pub fn snapshot(&self) -> EvidenceCounts {
+        EvidenceCounts {
+            anchored: self.anchored.load(Ordering::Relaxed),
+            too_large: self.too_large.load(Ordering::Relaxed),
+            busy: self.busy.load(Ordering::Relaxed),
+            anchor_failed: self.anchor_failed.load(Ordering::Relaxed),
+            no_payer_key: self.no_payer_key.load(Ordering::Relaxed),
+            disabled: self.disabled.load(Ordering::Relaxed),
         }
     }
 }
@@ -191,6 +478,10 @@ pub struct DurableEvidenceHook {
     /// Separate from any payment wallet on purpose: it authorises evidence, not
     /// transfers, so a leak forges anchors but moves no money.
     anchor_signer: Option<Arc<alloy::signers::local::PrivateKeySigner>>,
+    /// Bounds the memory concurrent captures may hold. Shared by clone, so a
+    /// hook handed to several routes still adds up to one budget.
+    budget: Arc<EvidenceBudget>,
+    stats: Arc<EvidenceStats>,
 }
 
 impl DurableEvidenceHook {
@@ -199,12 +490,16 @@ impl DurableEvidenceHook {
         sink: Arc<dyn EvidenceSink>,
         facilitator_base: impl Into<String>,
     ) -> Self {
+        let config = config.clamped_to_budget();
+        let budget = EvidenceBudget::new(config.max_inflight_bytes);
         Self {
             config,
             sink,
             facilitator_base: facilitator_base.into().trim_end_matches('/').to_string(),
             client: evidence_http_client(),
             anchor_signer: None,
+            budget,
+            stats: Arc::new(EvidenceStats::default()),
         }
     }
 
@@ -222,6 +517,60 @@ impl DurableEvidenceHook {
         &self.config
     }
 
+    pub fn budget(&self) -> &Arc<EvidenceBudget> {
+        &self.budget
+    }
+
+    /// Counters for anchored and skipped captures. See [`EvidenceStats`].
+    pub fn stats(&self) -> EvidenceCounts {
+        self.stats.snapshot()
+    }
+
+    /// Record a skip decided outside [`Self::capture`] -- the oversized body
+    /// that `buffer_body` refuses, for instance.
+    pub fn record_skip(&self, reason: SkipReason) {
+        self.stats.record_skip(reason);
+    }
+
+    /// Reserve the memory one capture may need, before a single byte is
+    /// buffered.
+    ///
+    /// Sized from the body's own `size_hint` when it has one and from the
+    /// configured ceiling when it does not -- an unknown-length body has to be
+    /// assumed to be the largest thing this deployment would accept. A body
+    /// that already announces itself over the limit reserves nothing: it is
+    /// about to be skipped as `too_large` without ever being buffered, and
+    /// charging it against the budget would push out captures that could
+    /// actually have succeeded.
+    pub fn reserve_for(&self, body: &axum_core::body::Body) -> Result<EvidencePermit, SkipReason> {
+        use http_body::Body as _;
+
+        let limit = self.config.max_body_bytes as u64;
+        let announced = body.size_hint().upper().unwrap_or(limit);
+        let want = if announced > limit {
+            0
+        } else {
+            announced as usize
+        };
+        match self
+            .budget
+            .try_reserve(want.saturating_mul(MEMORY_AMPLIFICATION))
+        {
+            Some(permit) => Ok(permit),
+            None => {
+                #[cfg(feature = "telemetry")]
+                tracing::warn!(
+                    wanted = want,
+                    reserved = self.budget.reserved_bytes(),
+                    limit = self.budget.limit_bytes(),
+                    "DX402 evidence budget exhausted; delivering without evidence"
+                );
+                self.stats.record_skip(SkipReason::Busy);
+                Err(SkipReason::Busy)
+            }
+        }
+    }
+
     /// Seal a body, write it to the sink, and register it with the facilitator.
     ///
     /// Always returns a [`DurableEvidence`] -- anchored or skipped -- so the
@@ -233,7 +582,24 @@ impl DurableEvidenceHook {
         payer_key: Result<PayerPublicKey, SkipReason>,
         ctx: &SettledContext,
     ) -> DurableEvidence {
+        let evidence = self.capture_inner(body, payer_key, ctx).await;
+        self.stats.record(&evidence);
+        evidence
+    }
+
+    async fn capture_inner(
+        &self,
+        body: &[u8],
+        payer_key: Result<PayerPublicKey, SkipReason>,
+        ctx: &SettledContext,
+    ) -> DurableEvidence {
         if body.len() > self.config.max_body_bytes {
+            #[cfg(feature = "telemetry")]
+            tracing::warn!(
+                body_bytes = body.len(),
+                limit = self.config.max_body_bytes,
+                "DX402 body over the limit; delivering without evidence"
+            );
             return DurableEvidence::skipped(SkipReason::TooLarge);
         }
 
@@ -356,7 +722,13 @@ pub const HEADER_NAME: &str = EVIDENCE_HEADER;
 
 /// Buffer a response body into memory.
 ///
-/// Bounded by `limit`. Whatever happens, the caller gets back something it can
+/// Bounded by `limit` per body; the number of bodies that may be in here at once
+/// is bounded separately by [`EvidenceBudget`], claimed by the caller through
+/// [`DurableEvidenceHook::reserve_for`] before this runs. One without the other
+/// is not a bound: a generous `limit` and unbounded concurrency is an OOM, and
+/// an OOM drops responses that were already settled.
+///
+/// Whatever happens, the caller gets back something it can
 /// still deliver: skipping evidence must never change the bytes the buyer
 /// receives. `settle_after_execution` settles BEFORE this runs and the
 /// authorization nonce is spent, so a body dropped here is paid-for goods that
@@ -587,5 +959,182 @@ mod tests {
             BufferedBody::Ready(_) => panic!("must not seal"),
             BufferedBody::Skip { reason, .. } => assert_eq!(reason, SkipReason::TooLarge),
         }
+    }
+    #[test]
+    fn the_default_limit_fits_the_default_budget_exactly() {
+        // The two defaults are one decision, not two: 32 MiB of body at the
+        // assumed amplification is exactly the 128 MiB budget, so a single
+        // worst-case capture fits and a second one waits its turn as a skip
+        // rather than as an allocation.
+        let c = DurableConfig::default();
+        assert_eq!(c.max_body_bytes, 32 * 1024 * 1024);
+        assert_eq!(c.max_inflight_bytes, 128 * 1024 * 1024);
+        assert_eq!(
+            c.max_body_bytes * MEMORY_AMPLIFICATION,
+            c.max_inflight_bytes
+        );
+        assert_eq!(DurableConfig::default().sanitized().max_body_bytes, c.max_body_bytes);
+    }
+
+    #[test]
+    fn a_body_limit_the_budget_cannot_afford_is_clamped_not_honoured() {
+        // Left unclamped this configuration reports `busy` for every large
+        // response forever, which reads as a capacity problem instead of the
+        // misconfiguration it is.
+        let c = DurableConfig {
+            max_body_bytes: 512 * 1024 * 1024,
+            max_inflight_bytes: 64 * 1024 * 1024,
+            ..DurableConfig::default()
+        }
+        .sanitized();
+        assert_eq!(c.max_body_bytes, 16 * 1024 * 1024);
+    }
+
+    #[test]
+    fn the_default_clears_the_incident_that_prompted_it() {
+        // An 18 MB response is the only measured case DX402 ever refused. A
+        // default that does not cover it fails the reason the limit was made
+        // configurable in the first place.
+        const OBSERVED_INCIDENT_BYTES: usize = 18_000_000;
+        assert!(
+            DurableConfig::default().max_body_bytes > OBSERVED_INCIDENT_BYTES,
+            "the default must seal the body that motivated the limit"
+        );
+    }
+
+    #[test]
+    fn a_zero_limit_is_raised_to_the_floor() {
+        // `DX402_MAX_BODY_BYTES=0` would otherwise skip every response in
+        // silence.
+        let c = DurableConfig {
+            max_body_bytes: 0,
+            max_inflight_bytes: 0,
+            ..DurableConfig::default()
+        }
+        .sanitized();
+        assert_eq!(c.max_body_bytes, MIN_MAX_BODY_BYTES);
+        assert!(c.max_inflight_bytes >= MIN_MAX_BODY_BYTES * MEMORY_AMPLIFICATION);
+    }
+
+    #[test]
+    fn the_budget_refuses_instead_of_queueing() {
+        let budget = EvidenceBudget::new(100);
+        let first = budget.try_reserve(60).expect("fits");
+        assert!(budget.try_reserve(60).is_none(), "must not oversubscribe");
+        assert_eq!(budget.reserved_bytes(), 60);
+        drop(first);
+        assert_eq!(budget.reserved_bytes(), 0);
+        assert!(budget.try_reserve(60).is_some(), "released on drop");
+    }
+
+    #[tokio::test]
+    async fn a_second_large_response_skips_as_busy_rather_than_allocating() {
+        let hook = DurableEvidenceHook::new(
+            DurableConfig {
+                max_body_bytes: 1024,
+                max_inflight_bytes: 1024 * MEMORY_AMPLIFICATION,
+                ..DurableConfig::default()
+            },
+            Arc::new(MemorySink::new()),
+            "http://127.0.0.1:1",
+        );
+        let first = hook
+            .reserve_for(&axum_core::body::Body::from(vec![0u8; 1024]))
+            .expect("the first capture fits the budget");
+        let second = hook.reserve_for(&axum_core::body::Body::from(vec![0u8; 1024]));
+        assert_eq!(second.err(), Some(SkipReason::Busy));
+        assert_eq!(hook.stats().busy, 1, "a skip is not a silence");
+        drop(first);
+        assert!(
+            hook.reserve_for(&axum_core::body::Body::from(vec![0u8; 1024]))
+                .is_ok(),
+            "the budget frees up once the first capture is done"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_body_already_over_the_limit_does_not_spend_the_budget() {
+        // It is about to be skipped as `too_large` without being buffered.
+        // Charging it would push out captures that could have succeeded.
+        let hook = DurableEvidenceHook::new(
+            DurableConfig {
+                max_body_bytes: 1024,
+                max_inflight_bytes: 1024 * MEMORY_AMPLIFICATION,
+                ..DurableConfig::default()
+            },
+            Arc::new(MemorySink::new()),
+            "http://127.0.0.1:1",
+        );
+        let oversized = hook
+            .reserve_for(&axum_core::body::Body::from(vec![0u8; 4096]))
+            .expect("an oversized body is not a budget problem");
+        assert_eq!(oversized.bytes(), 0, "nothing will be buffered, so nothing is charged");
+        assert!(
+            hook.reserve_for(&axum_core::body::Body::from(vec![0u8; 1024]))
+                .is_ok(),
+            "a real capture still fits alongside it"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_body_of_unknown_length_reserves_the_worst_case() {
+        // No `size_hint` upper bound means it could be anything up to the
+        // limit, and the reservation has to assume it is.
+        let hook = DurableEvidenceHook::new(
+            DurableConfig {
+                max_body_bytes: 1024,
+                max_inflight_bytes: 1024 * MEMORY_AMPLIFICATION,
+                ..DurableConfig::default()
+            },
+            Arc::new(MemorySink::new()),
+            "http://127.0.0.1:1",
+        );
+        // A body that declines to say how long it is -- what a streaming
+        // handler produces.
+        struct UnknownLength(Option<Bytes>);
+        impl http_body::Body for UnknownLength {
+            type Data = Bytes;
+            type Error = std::convert::Infallible;
+            fn poll_frame(
+                mut self: std::pin::Pin<&mut Self>,
+                _: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<Option<Result<http_body::Frame<Bytes>, Self::Error>>> {
+                std::task::Poll::Ready(self.0.take().map(|b| Ok(http_body::Frame::data(b))))
+            }
+        }
+
+        let body =
+            axum_core::body::Body::new(UnknownLength(Some(Bytes::from_static(b"chunk"))));
+        {
+            use http_body::Body as _;
+            assert_eq!(body.size_hint().upper(), None, "precondition");
+        }
+        let permit = hook.reserve_for(&body).expect("fits on its own");
+        assert_eq!(permit.bytes(), 1024 * MEMORY_AMPLIFICATION);
+    }
+
+    #[tokio::test]
+    async fn skips_are_counted_by_reason() {
+        let hook = DurableEvidenceHook::new(
+            DurableConfig {
+                max_body_bytes: 16,
+                ..DurableConfig::default()
+            },
+            Arc::new(MemorySink::new()),
+            "http://127.0.0.1:1",
+        );
+        let sk = k256::SecretKey::random(&mut rand::rngs::OsRng);
+        hook.capture(
+            &[0u8; 64],
+            Ok(PayerPublicKey::Secp256k1(Box::new(sk.public_key()))),
+            &ctx(),
+        )
+        .await;
+        hook.capture(b"small", Err(SkipReason::NoPayerKey), &ctx())
+            .await;
+        let counts = hook.stats();
+        assert_eq!(counts.too_large, 1);
+        assert_eq!(counts.no_payer_key, 1);
+        assert_eq!(counts.anchored, 0);
     }
 }

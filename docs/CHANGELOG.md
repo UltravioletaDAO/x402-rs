@@ -127,12 +127,24 @@ sees the same 503 the forwarding exists to remove.
   sink's copy, so one capture costs several times the body. Which is why raising
   the number on its own would have been a downgrade, not a feature:
 
-- **`DX402_MAX_INFLIGHT_BYTES` (default 134217728) bounds the memory all
+- **`DX402_MAX_INFLIGHT_BYTES` (default 201326592) bounds the memory all
   concurrent captures may hold.** Nothing bounded concurrency before, because at
   1 MiB nothing needed to. With a raised body limit and no bound, a burst of
   large responses in parallel is an OOM — and an OOM drops responses that were
   already settled and paid for, which is precisely the outcome DX402 exists to
   prevent. The budget turns that burst into an ordered skip.
+
+- **The amplification factor is measured now, not assumed.** The budget charges
+  each capture a multiple of the body size, and that multiple started life as an
+  estimate of 4 -- plaintext, ciphertext, the serialised envelope, the sink's
+  copy. `crates/x402-axum/tests/memory_amplification.rs` runs a whole capture
+  under a counting allocator and measured **just over 5.0x**, so the budget was
+  under-charging by a quarter and would have admitted bursts it could not pay
+  for: the OOM it exists to prevent. The factor is now 6 (measured peak plus one
+  body of slack for the fixed envelope overhead) and the in-flight default moved
+  with it to 192 MiB, keeping the invariant that exactly one worst-case capture
+  fits. The test fails in both directions, so the number cannot quietly rot
+  again.
 
   **It is not memory the process takes, only memory it refuses to exceed.**
   Reservations are sized per body, so a seller returning 4 KB of JSON never holds

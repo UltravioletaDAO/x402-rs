@@ -62,7 +62,7 @@ use x402_rs::types::MixedAddress;
 /// settles the direction of error.
 pub const DEFAULT_MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
 
-/// Memory all in-flight captures may reserve at once, by default: 128 MiB.
+/// Memory all in-flight captures may reserve at once, by default: 192 MiB.
 ///
 /// This is the field that turns raising the body limit from a hazard into a
 /// setting. With a body limit and nothing bounding concurrency, a burst of
@@ -76,7 +76,14 @@ pub const DEFAULT_MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
 /// never holds more than a few KB no matter how high this sits. It costs
 /// nothing until large bodies actually flow, which is why it is the generous
 /// half of the pair and `max_body_bytes` is the conservative one.
-pub const DEFAULT_MAX_INFLIGHT_BYTES: usize = 128 * 1024 * 1024;
+///
+/// It is [`DEFAULT_MAX_BODY_BYTES`] times [`MEMORY_AMPLIFICATION`], so exactly
+/// one worst-case capture fits and the second skips in order. That is one
+/// decision, not two: the number moved from 128 MiB to 192 MiB when the
+/// amplification factor was measured rather than guessed. The alternative was
+/// to hold 128 MiB and let the clamp cut the body limit to ~21 MiB, which
+/// clears the 18 MB incident by too little to be worth the smaller ceiling.
+pub const DEFAULT_MAX_INFLIGHT_BYTES: usize = 192 * 1024 * 1024;
 
 /// Floor for `max_body_bytes`. A mis-parsed or hostile value must not be able
 /// to leave the limit at zero, which would silently skip everything.
@@ -84,12 +91,19 @@ pub const MIN_MAX_BODY_BYTES: usize = 16 * 1024;
 
 /// How many times the body size one capture really costs in memory.
 ///
-/// Plaintext, ciphertext, the `to_bytes()` copy, and the sink's copy on the way
-/// out. **Estimated, not profiled** -- the handoff that asked for a bigger limit
-/// listed this measurement as missing, and it is still missing. Treat it as the
-/// conservative side of an unknown; the honest knob is `max_inflight_bytes`,
-/// which is denominated in bytes of actual memory rather than in a guess.
-const MEMORY_AMPLIFICATION: usize = 4;
+/// **Measured, not estimated.** `tests/memory_amplification.rs` runs a whole
+/// capture under a counting allocator and asserts this number still covers the
+/// peak. It was first written as 4 -- plaintext, ciphertext, the `to_bytes()`
+/// copy, and the sink's copy -- and the measurement came back at just over
+/// **5.0x**: there is a fifth transient body in there, most likely the
+/// reallocation of the envelope buffer as it grows. Charging 4 meant the budget
+/// admitted bursts it could not pay for, which is the precise OOM it exists to
+/// prevent, so this is 6: the measured peak plus one body of slack for the
+/// fixed envelope overhead, which weighs more the smaller the body.
+///
+/// Public so the test can hold it to account. An OOM guard sized by an estimate
+/// nobody ever checks is the guard that lets the burst through.
+pub const MEMORY_AMPLIFICATION: usize = 6;
 
 /// Per-route DX402 configuration.
 #[derive(Debug, Clone)]
@@ -181,13 +195,19 @@ impl DurableConfig {
     }
 }
 
+fn env_bytes(name: &str) -> Option<usize> {
+    parse_bytes(name, std::env::var(name).ok().as_deref())
+}
+
+// Split out of `env_bytes` so it can be tested without setting a process-global
+// variable from a test that runs alongside others.
+//
 // Not `.ok()`: the `Err` arm exists to say out loud that the value was
 // unusable. A variable that silently means "default" is how a deployment ends
 // up running limits nobody chose.
 #[allow(clippy::manual_ok_err)]
-fn env_bytes(name: &str) -> Option<usize> {
-    let raw = std::env::var(name).ok()?;
-    let trimmed = raw.trim();
+fn parse_bytes(_name: &str, raw: Option<&str>) -> Option<usize> {
+    let trimmed = raw?.trim();
     if trimmed.is_empty() {
         return None;
     }
@@ -195,7 +215,11 @@ fn env_bytes(name: &str) -> Option<usize> {
         Ok(n) => Some(n),
         Err(_) => {
             #[cfg(feature = "telemetry")]
-            tracing::warn!(var = name, value = trimmed, "unparseable; using the default");
+            tracing::warn!(
+                var = _name,
+                value = trimmed,
+                "unparseable; using the default"
+            );
             None
         }
     }
@@ -963,17 +987,25 @@ mod tests {
     #[test]
     fn the_default_limit_fits_the_default_budget_exactly() {
         // The two defaults are one decision, not two: 32 MiB of body at the
-        // assumed amplification is exactly the 128 MiB budget, so a single
-        // worst-case capture fits and a second one waits its turn as a skip
-        // rather than as an allocation.
+        // MEASURED amplification is exactly the budget, so a single worst-case
+        // capture fits and a second one skips rather than allocating. The
+        // budget is written in terms of the factor on purpose -- when the
+        // measurement moved it from 4 to 6, holding the old 128 MiB would have
+        // silently clamped the body limit down to ~21 MiB instead.
         let c = DurableConfig::default();
         assert_eq!(c.max_body_bytes, 32 * 1024 * 1024);
-        assert_eq!(c.max_inflight_bytes, 128 * 1024 * 1024);
+        assert_eq!(
+            c.max_inflight_bytes,
+            c.max_body_bytes * MEMORY_AMPLIFICATION
+        );
         assert_eq!(
             c.max_body_bytes * MEMORY_AMPLIFICATION,
             c.max_inflight_bytes
         );
-        assert_eq!(DurableConfig::default().sanitized().max_body_bytes, c.max_body_bytes);
+        assert_eq!(
+            DurableConfig::default().sanitized().max_body_bytes,
+            c.max_body_bytes
+        );
     }
 
     #[test]
@@ -981,13 +1013,17 @@ mod tests {
         // Left unclamped this configuration reports `busy` for every large
         // response forever, which reads as a capacity problem instead of the
         // misconfiguration it is.
+        const BUDGET: usize = 64 * 1024 * 1024;
         let c = DurableConfig {
             max_body_bytes: 512 * 1024 * 1024,
-            max_inflight_bytes: 64 * 1024 * 1024,
+            max_inflight_bytes: BUDGET,
             ..DurableConfig::default()
         }
         .sanitized();
-        assert_eq!(c.max_body_bytes, 16 * 1024 * 1024);
+        // Whatever the budget can actually pay for at the measured factor --
+        // spelled out rather than hardcoded, so this stays true the next time
+        // the measurement moves.
+        assert_eq!(c.max_body_bytes, BUDGET / MEMORY_AMPLIFICATION);
     }
 
     #[test]
@@ -1068,7 +1104,11 @@ mod tests {
         let oversized = hook
             .reserve_for(&axum_core::body::Body::from(vec![0u8; 4096]))
             .expect("an oversized body is not a budget problem");
-        assert_eq!(oversized.bytes(), 0, "nothing will be buffered, so nothing is charged");
+        assert_eq!(
+            oversized.bytes(),
+            0,
+            "nothing will be buffered, so nothing is charged"
+        );
         assert!(
             hook.reserve_for(&axum_core::body::Body::from(vec![0u8; 1024]))
                 .is_ok(),
@@ -1103,8 +1143,7 @@ mod tests {
             }
         }
 
-        let body =
-            axum_core::body::Body::new(UnknownLength(Some(Bytes::from_static(b"chunk"))));
+        let body = axum_core::body::Body::new(UnknownLength(Some(Bytes::from_static(b"chunk"))));
         {
             use http_body::Body as _;
             assert_eq!(body.size_hint().upper(), None, "precondition");
@@ -1136,5 +1175,88 @@ mod tests {
         assert_eq!(counts.too_large, 1);
         assert_eq!(counts.no_payer_key, 1);
         assert_eq!(counts.anchored, 0);
+    }
+
+    #[test]
+    fn an_unusable_limit_falls_back_instead_of_being_obeyed() {
+        // A typo in a deployment variable must not become a limit. Every one of
+        // these means "I could not read a number", and the only safe reading of
+        // that is the default -- silently taking 0, or panicking at boot over a
+        // knob that is optional, are both worse than carrying on.
+        for junk in ["", "   ", "32MB", "32 MiB", "-1", "1e6", "0x20", "abc"] {
+            assert_eq!(
+                parse_bytes("DX402_MAX_BODY_BYTES", Some(junk)),
+                None,
+                "{junk:?} is not a byte count and must not be treated as one"
+            );
+        }
+        // An unset variable is the same answer by a different route.
+        assert_eq!(parse_bytes("DX402_MAX_BODY_BYTES", None), None);
+        // And a real number still gets through, surrounding whitespace included.
+        assert_eq!(
+            parse_bytes("DX402_MAX_BODY_BYTES", Some(" 16777216 ")),
+            Some(16_777_216)
+        );
+        assert_eq!(parse_bytes("DX402_MAX_BODY_BYTES", Some("0")), Some(0));
+    }
+
+    #[test]
+    fn a_burst_never_reserves_more_than_the_budget_allows() {
+        // The handoff's success criterion, restated for the design that shipped:
+        // 50 concurrent large captures must not be able to claim more memory
+        // than the budget holds. Note it does NOT say they queue -- waiting for
+        // a permit would delay a delivery that is already paid for, so the ones
+        // that do not fit are refused outright and skip as `busy`.
+        //
+        // Reservations only, no allocation: the point is the arithmetic that
+        // stands between a burst and an OOM, and 50 real 10 MiB bodies would
+        // measure the machine rather than the guard.
+        use std::thread;
+
+        const BODY: usize = 10 * 1024 * 1024;
+        const BURST: usize = 50;
+        let limit = DEFAULT_MAX_INFLIGHT_BYTES;
+        let budget = EvidenceBudget::new(limit);
+        let charge = BODY * MEMORY_AMPLIFICATION;
+
+        let held: Vec<_> = thread::scope(|scope| {
+            let handles: Vec<_> = (0..BURST)
+                .map(|_| {
+                    let budget = Arc::clone(&budget);
+                    scope.spawn(move || budget.try_reserve(charge))
+                })
+                .collect();
+            handles
+                .into_iter()
+                .filter_map(|h| h.join().unwrap())
+                .collect()
+        });
+
+        // Some got through -- a budget that refuses everyone is not a budget.
+        assert!(
+            !held.is_empty(),
+            "the burst should not have been shut out entirely"
+        );
+        // And never more than the budget can pay for.
+        assert!(
+            held.len() <= limit / charge,
+            "{} permits handed out but only {} fit in {limit} bytes",
+            held.len(),
+            limit / charge
+        );
+        assert!(
+            budget.reserved_bytes() <= limit,
+            "reserved {} over a {limit}-byte budget",
+            budget.reserved_bytes()
+        );
+
+        // The refused ones are the `busy` skips, and they cost nothing: once the
+        // winners finish, the budget is whole again rather than leaked away.
+        drop(held);
+        assert_eq!(
+            budget.reserved_bytes(),
+            0,
+            "permits must return what they took"
+        );
     }
 }

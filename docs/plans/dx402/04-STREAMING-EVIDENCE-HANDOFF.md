@@ -23,7 +23,7 @@ status: phase-0-done
 >   chico que cubre el caso conocido con aire, no el más grande que nuestra
 >   propia infra aguanta. Subirlo es una variable; bajarlo después de que alguien
 >   integró es una regresión.
-> - `DX402_MAX_INFLIGHT_BYTES`, default **128 MiB**: presupuesto de memoria en
+> - `DX402_MAX_INFLIGHT_BYTES`, default **192 MiB**: presupuesto de memoria en
 >   bytes, con permisos por reserva (`EvidenceBudget`/`EvidencePermit`). **Niega,
 >   no encola** — bufferear pasa antes de entregar la respuesta, así que esperar
 >   un permiso demoraría una entrega ya pagada.
@@ -34,11 +34,17 @@ status: phase-0-done
 > - Piso de 16 KiB, valor impareseable → default + log, y el límite de cuerpo se
 >   recorta a lo que el presupuesto banca (si no, todo cuerpo grande sería `busy`
 >   para siempre y se leería como falta de capacidad y no como mala config).
-> - El factor de amplificación de memoria (**x4**) **sigue siendo estimado**, no
->   medido — lo que "Lo que NO verifiqué" pedía. El presupuesto está en bytes de
->   memoria real justamente para que la estimación no sea la que manda.
+> - El factor de amplificación de memoria (**x4**) pasó de estimado a
+>   **medido**: `crates/x402-axum/tests/memory_amplification.rs` corre una
+>   captura entera bajo un asignador que cuenta y compara el pico real contra el
+>   factor que el presupuesto cobra. Falla en las **dos** direcciones — si el
+>   pico supera el factor, el presupuesto admite ráfagas que no puede pagar, que
+>   es exactamente el OOM que venía a evitar; si el factor sobra por más de dos
+>   cuerpos, se reserva memoria que nadie usa y captures legítimas se van a
+>   `busy` de gusto. El presupuesto sigue en bytes de memoria real para que la
+>   estimación no sea la que manda; ahora además hay quien la vigile.
 >
-> Los defaults son una sola decisión, no dos: 32 MiB x4 = 128 MiB exactos, así
+> Los defaults son una sola decisión, no dos: 32 MiB x6 = 192 MiB exactos, así
 > que **una** captura del peor caso entra y la segunda hace skip ordenado.
 >
 > Verificado de paso, y desarma una alarma: **`GET /dx402/blob` no puede servir
@@ -67,7 +73,7 @@ pensar en el tamaño.
 > se conserva porque el resto del documento razona sobre él. Hoy el default es
 > **32 MiB** (`DEFAULT_MAX_BODY_BYTES`, `durable.rs:63`), sale de
 > `DX402_MAX_BODY_BYTES`, y viene acompañado del presupuesto de memoria
-> `DX402_MAX_INFLIGHT_BYTES` (128 MiB, `durable.rs:79`).
+> `DX402_MAX_INFLIGHT_BYTES` (192 MiB, `durable.rs:79`).
 
 `crates/x402-axum/src/durable.rs:56` — `max_body_bytes: 1_048_576` (1 MiB
 exacto). Campo de `DurableConfig`, **sin override por variable de entorno**: hay
@@ -227,8 +233,12 @@ Un rediseño, no un ajuste. Las cuatro capas cambian.
   con el hash correcto.
 - Un valor basura en esa variable arranca con el default y loguea el aviso, sin
   tumbar el proceso.
-- 50 requests concurrentes de 10 MB **no** matan la task — el semáforo las
-  serializa y las que no entran hacen skip ordenado.
+- 50 requests concurrentes de 10 MB **no** matan la task. Ojo con la redacción
+  original: decía "el semáforo las serializa". La fase 0 **no serializa** —
+  niega. Encolar detrás de un permiso demoraría una entrega que ya está pagada,
+  así que la que no entra hace `busy` y se entrega igual, sin evidencia. El
+  criterio real es que el total reservado nunca pase del presupuesto y que
+  ninguna captura espere.
 - La métrica de `too_large` se mueve cuando corresponde.
 
 **Fase 1:**
@@ -280,7 +290,9 @@ cargo clippy -p x402-compliance && cargo test -p x402-compliance -- --test-threa
 - **El límite real de Pinata** según el plan contratado.
 - **Si algún cliente existente depende del `contentHash` en el header** — la
   opción B lo movería para cuerpos grandes.
-- **Cuánta memoria consume hoy un request grande de punta a punta.** El cálculo
-  del semáforo de la fase 0 necesita ese número medido, no estimado: entre el
-  plaintext, el ciphertext y las copias intermedias puede ser 2-3x el tamaño del
-  cuerpo.
+- ~~**Cuánta memoria consume hoy un request grande de punta a punta.**~~
+  **RESUELTO** por `tests/memory_amplification.rs` (fase 0): un asignador
+  global que cuenta bytes vivos mide el pico de una captura de 4 MiB contra el
+  tamaño del cuerpo, con un calentamiento previo para no cobrarle al cuerpo las
+  asignaciones de una sola vez del proceso. El cuerpo se genera con bytes
+  variados a propósito: uno de ceros halagaría a cualquier capa que comprima.

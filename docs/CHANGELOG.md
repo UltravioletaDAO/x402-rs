@@ -96,6 +96,46 @@ sees the same 503 the forwarding exists to remove.
 | `WRITER_LEASE_ENDPOINT` | *(unset)* | Pin this task's advertised address by hand; otherwise read from ECS task metadata |
 
 
+## [2.1.0] - 2026-08-31
+
+### Fixed
+
+- **SECURITY: the DX402 authority ladder had two rungs against the table, not
+  three.** `POST /dx402/anchor` ranks claims -- 2 = the chain confirms the
+  payee, 1 = the claimant committed to an identity, 0 = anonymous -- and each
+  rung may only take a slot from a lower one. That is the v1.82.0 anti-hijack
+  rule. Rung 1 was not enforced: DynamoDB hoisted `payment_id`, `record`,
+  `expires_at` and `verified` but never `signed`, while the rung-1 condition
+  asks `attribute_not_exists(signed)`. Against an attribute nobody writes that
+  is unconditionally true, so the clause was a tautology and any self-signed
+  claim could take the evidence slot from any other.
+
+  It costs nothing to mount: `paymentId` is `keccak256(caip2 || txHash)` over
+  public chain data, and a rung-1 claim only requires signing over an address
+  the claimant types into its own request. `put_object` then overwrites the
+  real seller's ciphertext -- unconditional, versioning disabled. Worst
+  affected are the sellers who can never reach rung 2: `proof_rpc_unavailable`,
+  and the whole Solana path via `proof_unverifiable_chain`.
+
+  The tests were green throughout because `the_ladder_only_climbs` exercises
+  `MemoryEvidenceRegistry`, which enforces the rule in Rust and always got it
+  right. Production is DynamoDB. The new tests evaluate the CONDITION the way
+  DynamoDB would -- including the asymmetry that caused this, where a
+  comparison against a missing attribute is false and existence is the only
+  thing you can ask about it -- across the full 3x3 rung matrix, plus flagless
+  legacy rows and empty slots. One more is structural and catches the next
+  occurrence: every flag a condition names must be a flag the writer hoists.
+
+- **The envelope reserved 64 bytes for a 115-byte header, and doubled.**
+  `SealedEnvelope::to_bytes` under-reserved by 51 bytes on the smallest
+  possible envelope, so every seal ever performed overflowed its reservation
+  and `RawVec` doubled the entire ciphertext to absorb it. Invisible because it
+  was correct, just needlessly large. Reserving the real header dropped a
+  capture's measured peak from **5.0x the body to 4.0x** -- 32 MiB saved per
+  capture at the ceiling -- which is what the four copies one can actually see
+  said all along. Measured in debug and release, flat from 1 MiB to the 32 MiB
+  ceiling.
+
 ## [Unreleased]
 
 ### Changed

@@ -127,7 +127,7 @@ sees the same 503 the forwarding exists to remove.
   sink's copy, so one capture costs several times the body. Which is why raising
   the number on its own would have been a downgrade, not a feature:
 
-- **`DX402_MAX_INFLIGHT_BYTES` (default 201326592) bounds the memory all
+- **`DX402_MAX_INFLIGHT_BYTES` (default 167772160) bounds the memory all
   concurrent captures may hold.** Nothing bounded concurrency before, because at
   1 MiB nothing needed to. With a raised body limit and no bound, a burst of
   large responses in parallel is an OOM — and an OOM drops responses that were
@@ -138,13 +138,25 @@ sees the same 503 the forwarding exists to remove.
   each capture a multiple of the body size, and that multiple started life as an
   estimate of 4 -- plaintext, ciphertext, the serialised envelope, the sink's
   copy. `crates/x402-axum/tests/memory_amplification.rs` runs a whole capture
-  under a counting allocator and measured **just over 5.0x**, so the budget was
+  under a counting allocator and measured **5.0x**, so the budget was
   under-charging by a quarter and would have admitted bursts it could not pay
-  for: the OOM it exists to prevent. The factor is now 6 (measured peak plus one
-  body of slack for the fixed envelope overhead) and the in-flight default moved
-  with it to 192 MiB, keeping the invariant that exactly one worst-case capture
-  fits. The test fails in both directions, so the number cannot quietly rot
-  again.
+  for: the OOM it exists to prevent.
+
+  Chasing the fifth body found a real defect one layer down.
+  `SealedEnvelope::to_bytes` reserved 64 bytes for a header that is **115**
+  (`src/dx402/envelope.rs`), so every seal ever performed overflowed its
+  reservation by 51 bytes and `RawVec` doubled the entire ciphertext to absorb
+  it. Invisible because it was correct -- just needlessly large. Reserving the
+  real header dropped the measurement to a flat **4.0x**, which is what the four
+  copies one can actually see said all along, and saves **32 MiB per capture**
+  at the ceiling.
+
+  So the factor settles at 5 (measured peak plus one body of slack) and the
+  in-flight default at 160 MiB, keeping the invariant that exactly one
+  worst-case capture fits. Measured in debug and release, from 1 MiB up to the
+  32 MiB ceiling itself, and flat across all of it -- the earlier extrapolation
+  from a 4 MiB sample was sound, but no longer has to be taken on faith. The
+  test fails in both directions, so the number cannot quietly rot again.
 
   **It is not memory the process takes, only memory it refuses to exceed.**
   Reservations are sized per body, so a seller returning 4 KB of JSON never holds

@@ -23,7 +23,7 @@ status: phase-0-done
 >   chico que cubre el caso conocido con aire, no el más grande que nuestra
 >   propia infra aguanta. Subirlo es una variable; bajarlo después de que alguien
 >   integró es una regresión.
-> - `DX402_MAX_INFLIGHT_BYTES`, default **192 MiB**: presupuesto de memoria en
+> - `DX402_MAX_INFLIGHT_BYTES`, default **160 MiB**: presupuesto de memoria en
 >   bytes, con permisos por reserva (`EvidenceBudget`/`EvidencePermit`). **Niega,
 >   no encola** — bufferear pasa antes de entregar la respuesta, así que esperar
 >   un permiso demoraría una entrega ya pagada.
@@ -44,7 +44,7 @@ status: phase-0-done
 >   `busy` de gusto. El presupuesto sigue en bytes de memoria real para que la
 >   estimación no sea la que manda; ahora además hay quien la vigile.
 >
-> Los defaults son una sola decisión, no dos: 32 MiB x6 = 192 MiB exactos, así
+> Los defaults son una sola decisión, no dos: 32 MiB x5 = 160 MiB exactos, así
 > que **una** captura del peor caso entra y la segunda hace skip ordenado.
 >
 > Verificado de paso, y desarma una alarma: **`GET /dx402/blob` no puede servir
@@ -73,7 +73,7 @@ pensar en el tamaño.
 > se conserva porque el resto del documento razona sobre él. Hoy el default es
 > **32 MiB** (`DEFAULT_MAX_BODY_BYTES`, `durable.rs:63`), sale de
 > `DX402_MAX_BODY_BYTES`, y viene acompañado del presupuesto de memoria
-> `DX402_MAX_INFLIGHT_BYTES` (192 MiB, `durable.rs:79`).
+> `DX402_MAX_INFLIGHT_BYTES` (160 MiB, `durable.rs:79`).
 
 `crates/x402-axum/src/durable.rs:56` — `max_body_bytes: 1_048_576` (1 MiB
 exacto). Campo de `DurableConfig`, **sin override por variable de entorno**: hay

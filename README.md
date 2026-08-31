@@ -341,7 +341,7 @@ Payer-key availability across all seven network families:
 use x402_axum::durable::{DurableConfig, DurableEvidenceHook, HttpPutSink};
 
 let hook = DurableEvidenceHook::new(
-    DurableConfig::from_env(),   // 32 MiB per body, 192 MiB across concurrent captures
+    DurableConfig::from_env(),   // 32 MiB per body, 160 MiB across concurrent captures
     Arc::new(HttpPutSink::new("https://evidence.example.com")),
     "https://facilitator.ultravioletadao.xyz",
 );
@@ -354,7 +354,7 @@ downgrade to a skip notice in the `X-Durable-Evidence` header; the response is
 delivered exactly as before.
 
 `DX402_MAX_BODY_BYTES` (default 32 MiB) is the largest body that gets evidence,
-and `DX402_MAX_INFLIGHT_BYTES` (default 192 MiB) bounds the memory all concurrent
+and `DX402_MAX_INFLIGHT_BYTES` (default 160 MiB) bounds the memory all concurrent
 captures may hold. They are one setting in two halves: sealing buffers the
 plaintext and the ciphertext together, so a generous body limit with unbounded
 concurrency is an OOM, and an OOM drops responses that were already paid for.

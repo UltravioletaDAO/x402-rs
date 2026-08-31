@@ -62,7 +62,7 @@ use x402_rs::types::MixedAddress;
 /// settles the direction of error.
 pub const DEFAULT_MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
 
-/// Memory all in-flight captures may reserve at once, by default: 192 MiB.
+/// Memory all in-flight captures may reserve at once, by default: 160 MiB.
 ///
 /// This is the field that turns raising the body limit from a hazard into a
 /// setting. With a body limit and nothing bounding concurrency, a burst of
@@ -79,11 +79,13 @@ pub const DEFAULT_MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
 ///
 /// It is [`DEFAULT_MAX_BODY_BYTES`] times [`MEMORY_AMPLIFICATION`], so exactly
 /// one worst-case capture fits and the second skips in order. That is one
-/// decision, not two: the number moved from 128 MiB to 192 MiB when the
-/// amplification factor was measured rather than guessed. The alternative was
-/// to hold 128 MiB and let the clamp cut the body limit to ~21 MiB, which
-/// clears the 18 MB incident by too little to be worth the smaller ceiling.
-pub const DEFAULT_MAX_INFLIGHT_BYTES: usize = 192 * 1024 * 1024;
+/// decision, not two, and it has moved twice with the measurement: 128 MiB when
+/// the factor was a guess of 4, up to 192 MiB when measuring said 5, and back
+/// down to 160 MiB once the envelope stopped reallocating and the real number
+/// turned out to be 4. Both times the body ceiling stayed at 32 MiB and the
+/// budget followed it, rather than the other way round -- the clamp would
+/// otherwise have cut the ceiling below the 18 MB incident that justified it.
+pub const DEFAULT_MAX_INFLIGHT_BYTES: usize = 160 * 1024 * 1024;
 
 /// Floor for `max_body_bytes`. A mis-parsed or hostile value must not be able
 /// to leave the limit at zero, which would silently skip everything.
@@ -93,17 +95,24 @@ pub const MIN_MAX_BODY_BYTES: usize = 16 * 1024;
 ///
 /// **Measured, not estimated.** `tests/memory_amplification.rs` runs a whole
 /// capture under a counting allocator and asserts this number still covers the
-/// peak. It was first written as 4 -- plaintext, ciphertext, the `to_bytes()`
-/// copy, and the sink's copy -- and the measurement came back at just over
-/// **5.0x**: there is a fifth transient body in there, most likely the
-/// reallocation of the envelope buffer as it grows. Charging 4 meant the budget
-/// admitted bursts it could not pay for, which is the precise OOM it exists to
-/// prevent, so this is 6: the measured peak plus one body of slack for the
-/// fixed envelope overhead, which weighs more the smaller the body.
+/// peak, in both debug and release, from 1 MiB up to the ceiling itself.
+///
+/// The history is worth keeping because it is what the measurement is for. It
+/// was first written as 4 by counting the copies one can see -- plaintext,
+/// ciphertext, the `to_bytes()` copy, the sink's copy -- and measured **5.0x**.
+/// The fifth body was `SealedEnvelope::to_bytes` reserving 64 bytes for a
+/// 115-byte header, so every seal overflowed its reservation by a hair and
+/// `RawVec` doubled the whole ciphertext to absorb it. Reserving the real
+/// header brought the measurement to a flat **4.0x**, which is what the four
+/// visible copies said all along.
+///
+/// So this is 5: the measured peak plus one body of slack. Not 4, because a
+/// guard that sits exactly on the measurement has no room for a copy someone
+/// adds later without re-running this.
 ///
 /// Public so the test can hold it to account. An OOM guard sized by an estimate
 /// nobody ever checks is the guard that lets the burst through.
-pub const MEMORY_AMPLIFICATION: usize = 6;
+pub const MEMORY_AMPLIFICATION: usize = 5;
 
 /// Per-route DX402 configuration.
 #[derive(Debug, Clone)]

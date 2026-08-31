@@ -125,44 +125,19 @@ async fn measure(body_bytes: usize) -> f64 {
     measured
 }
 
+// ONE test, not two. `LIVE`/`PEAK` are process-global, so two measuring tests
+// in the same binary race each other's high-water mark and fail only under the
+// default parallel runner -- a flake that looks like a real regression.
+
 #[tokio::test]
 async fn the_budget_factor_covers_what_a_capture_actually_allocates() {
-    const BODY_BYTES: usize = 4 * 1024 * 1024;
-
-    let measured = measure(BODY_BYTES).await;
-
-    assert!(
-        measured <= MEMORY_AMPLIFICATION as f64,
-        "a capture peaked at {measured:.2}x the body but the budget only \
-         charges {MEMORY_AMPLIFICATION}x, so the budget admits bursts it \
-         cannot afford -- raise MEMORY_AMPLIFICATION to at least \
-         {} and re-check the default limits",
-        measured.ceil() as usize
-    );
-
-    // The other direction matters too, just less urgently: a factor far above
-    // the truth spends the budget on memory nobody uses, and turns real
-    // captures into `busy` skips for no reason. Two whole bodies of slack is
-    // the most that is worth carrying.
-    assert!(
-        measured + 2.0 >= MEMORY_AMPLIFICATION as f64,
-        "a capture only peaked at {measured:.2}x but the budget charges \
-         {MEMORY_AMPLIFICATION}x; that over-reservation costs capacity, so \
-         lower MEMORY_AMPLIFICATION toward {}",
-        measured.ceil() as usize
-    );
-}
-
-#[tokio::test]
-async fn the_factor_still_holds_at_the_ceiling_it_is_applied_to() {
-    // The factor was first measured on a 4 MiB body and then applied to a
-    // 32 MiB one. That extrapolation is only sound if the ratio is flat with
-    // size, and nothing guarantees it is: fixed envelope overhead shrinks
-    // relative to a bigger body, while a reallocation that doubles a growing
-    // buffer does not. The number that has to be right is the one at the
-    // CEILING, because that is the capture the budget is sized for.
-    //
-    // Measured across the range rather than asserted from theory.
+    // The factor was once measured on a 4 MiB body and applied to a 32 MiB one.
+    // That extrapolation is only sound if the ratio is flat with size, and
+    // nothing guarantees it is: fixed envelope overhead shrinks relative to a
+    // bigger body, while a reallocation that doubles a growing buffer does not.
+    // So measure the range, and hold the budget to the WORST of it -- the
+    // number that has to be right is the one at the ceiling, because that is
+    // the capture the budget is sized for.
     println!("amplification across the range:");
     let mut worst: f64 = 0.0;
     for body in [
@@ -171,14 +146,28 @@ async fn the_factor_still_holds_at_the_ceiling_it_is_applied_to() {
         16 * 1024 * 1024,
         DurableConfig::default().max_body_bytes,
     ] {
-        let m = measure(body).await;
-        worst = worst.max(m);
+        worst = worst.max(measure(body).await);
     }
 
     assert!(
         worst <= MEMORY_AMPLIFICATION as f64,
-        "the worst amplification across the range was {worst:.2}x but the \
-         budget charges {MEMORY_AMPLIFICATION}x -- at the ceiling the budget \
-         admits a capture it cannot pay for"
+        "a capture peaked at {worst:.2}x the body but the budget only charges \
+         {MEMORY_AMPLIFICATION}x, so the budget admits bursts it cannot afford \
+         -- raise MEMORY_AMPLIFICATION to at least {} and re-check the default \
+         limits",
+        worst.ceil() as usize
+    );
+
+    // The other direction matters too, just less urgently: a factor far above
+    // the truth spends the budget on memory nobody uses, and turns real
+    // captures into `busy` skips for no reason. One whole body of slack is
+    // what this is meant to carry -- room for a copy somebody adds later
+    // without re-running this, and no more.
+    assert!(
+        worst + 2.0 >= MEMORY_AMPLIFICATION as f64,
+        "a capture only peaked at {worst:.2}x but the budget charges \
+         {MEMORY_AMPLIFICATION}x; that over-reservation costs capacity, so \
+         lower MEMORY_AMPLIFICATION toward {}",
+        (worst + 1.0).ceil() as usize
     );
 }

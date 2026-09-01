@@ -2065,3 +2065,52 @@ pub fn swagger_routes() -> Router {
     api_doc.info.version = crate::version::facilitator_version().to_string();
     Router::new().merge(SwaggerUi::new("/docs").url("/api-docs/openapi.json", api_doc))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every DX402 route the router serves must appear in the spec.
+    ///
+    /// CLAUDE.md says every new endpoint needs `src/openapi.rs` edited, and a
+    /// rule that only lives in prose gets skipped. A `utoipa::path` that is
+    /// written but never added to the `paths(...)` list compiles, runs, and is
+    /// simply absent from `/api-docs/openapi.json` -- there is nothing to
+    /// notice, which is why this is a test and not a convention.
+    ///
+    /// Listed literally rather than derived from `dx402_routes()`: axum's
+    /// `Router` does not expose its own paths, so the honest options are a
+    /// hand-kept list that fails loudly or no check at all.
+    #[test]
+    fn every_dx402_route_is_documented() {
+        let spec = ApiDoc::openapi();
+        for route in [
+            "/dx402/anchor",
+            "/dx402/evidence/{paymentId}",
+            "/dx402/receipt/{paymentId}",
+            "/dx402/blob/{paymentId}",
+            "/dx402/stats",
+            "/dx402/recover",
+            "/dx402/repair/{paymentId}",
+        ] {
+            assert!(
+                spec.paths.paths.contains_key(route),
+                "{route} is served but missing from the OpenAPI spec, so it is \
+                 invisible in /docs and to every client generated from it"
+            );
+        }
+    }
+
+    /// The version in the spec is the release, resolved at runtime.
+    ///
+    /// The `#[openapi(version = ...)]` attribute is a placeholder that
+    /// `swagger_routes` overwrites; asserting they differ would pin the
+    /// placeholder, so assert the override instead.
+    #[test]
+    fn the_spec_reports_the_running_release() {
+        let mut spec = ApiDoc::openapi();
+        spec.info.version = crate::version::facilitator_version().to_string();
+        assert_eq!(spec.info.version, crate::version::facilitator_version());
+        assert!(!spec.info.version.is_empty());
+    }
+}

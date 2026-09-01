@@ -1,5 +1,42 @@
 # Changelog
 
+## [2.6.0] - 2026-09-01
+
+### Added
+
+- **An alarm for the DX402 storage failure that is silent by design.** When
+  Pinata refuses a write, `FallbackEvidenceStore` writes to S3 and the payment
+  succeeds -- correct behaviour, since DX402 must never fail a payment, and
+  exactly why nobody would notice. The anchor returns 201, the buyer gets their
+  bytes, and the only trace is one `warn!` line.
+
+  Three problems arrive through that one door: the Pinata JWT expiring (the
+  current one ends **2026-12-19**, after which every anchor falls back
+  permanently), quota exhaustion, and any Pinata outage.
+  `facilitator-production-dx402-store-fallback` fires on one fallback in five
+  minutes -- whatever caused it is still true for the next anchor -- and
+  publishes to the facilitator's own SNS topic.
+
+  The metric filter matches a substring rather than log positions: the line is
+  emitted by `tracing` with structured fields whose order is not a contract, and
+  a positional filter that quietly stops matching is how an alarm becomes
+  decoration.
+
+### Fixed
+
+- **Documented what Pinata's dashboard counter does not count.** Measured
+  against the live account: the dashboard reads `Files 3/500` and `Storage
+  3.90 KB / 1 GB`, while DX402 had written **481 private files totalling
+  1.40 MiB**. The counter reports public IPFS pins; DX402 writes to the v3
+  *private* files API, and the two are separate quotas.
+
+  This document made the mistake in the other direction first, reading the
+  private count against the public 500-pin cap and raising a "19 files of
+  margin" alarm that was never real. Both halves were true on their own; the
+  comparison was not. No private-file quota is displayed anywhere and no
+  endpoint reachable with the scoped JWT reports one, so that ceiling is
+  **unknown rather than unlimited** -- said plainly instead of guessed.
+
 ## [2.3.0] - 2026-09-01
 
 ### Fixed

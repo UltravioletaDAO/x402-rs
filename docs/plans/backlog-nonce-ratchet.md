@@ -96,15 +96,40 @@ confía en la cadena, sin importar el reloj de 120 segundos.
 No toca `NONCE_TRUST_CHAIN_AFTER` ni la protección contra `replacement
 underpriced`, que sigue siendo correcta para el caso que la motivó.
 
-## El disparador, que es otro problema
+## El disparador sigue SIN identificar
 
-24 settles con `execution reverted: ERC20: transfer amount exceeds balance` en
-la misma hora. **Alguien manda pagos sin fondos.** El trinquete convierte esa
-racha en permanente, pero no la genera.
+Este backlog decía primero que los settles sin fondos arrancaban la racha.
+**Es falso**, y se comprobó midiendo por red en dos horas de logs:
 
-Arreglar el trinquete evita que un problema temporal se vuelva eterno; **no
-evita que empiece**. Vale averiguar quién los manda: si es un cliente nuestro,
-avisarle; si es tráfico externo probando, es otra conversación.
+| | red | consume nonce |
+|---|---|---|
+| 182 `nonce too high` | **arbitrum** | — |
+| 6 `transfer amount exceeds balance` | **base** | **no** |
+
+Distinta red, y las seis dicen textual `Gas estimation reverted; no nonce
+consumed`: revierten en la estimación de gas, **antes de transmitir**, así que
+no pueden mover el contador de nadie. Son dos problemas independientes que
+coincidieron en el tiempo, y la coincidencia fue suficiente para que los dos los
+leyéramos como causa y efecto.
+
+Se anota porque el error tiene forma de repetirse: dos síntomas en la misma
+ventana, los dos con "no hay fondos" en algún lugar de la historia, en dos redes
+distintas que nadie miró hasta buscarlas.
+
+**Qué arranca la racha de Arbitrum sigue abierto.** El arreglo del trinquete
+vale igual — evita que CUALQUIER racha se vuelva permanente, venga de donde
+venga — pero no cierra esta pregunta.
+
+## Los settles sin fondos, que sí son un problema propio
+
+`0xd5791860ca10a6f39749fb499931c79c7c35071a` tiene **0,0178 USDC en Base** e
+intenta settles por más de lo que tiene. 45 eventos en seis horas.
+
+Es un agente de **Execution Market**, no tráfico externo: está hardcodeado como
+`agent_id` en `mcp_server/tests/test_201_that_lies_cluster.py`, y es el mismo
+`0xD5791860` que aparece en `docs/handoffs/2026-09-01-p99-identity-owner-lookup.md`.
+
+Se arregla fondeando la wallet. No toca el trinquete.
 
 ## Lo que NO sirve
 

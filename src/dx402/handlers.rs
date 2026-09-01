@@ -35,6 +35,7 @@ pub fn dx402_routes() -> Router<Arc<Dx402Service>> {
         .route("/dx402/recover", post(post_recover))
         .route("/dx402/stats", get(get_stats))
         .route("/dx402/blob/{payment_id}", get(get_blob))
+        .route("/dx402/repair/{payment_id}", post(post_repair))
 }
 
 /// Render an error code as the response shape callers branch on.
@@ -197,6 +198,54 @@ pub async fn get_blob(
 /// Like every other number this facilitator publishes about itself, this is a
 /// **floor**, not a ledger. An anchor whose registry write failed is real
 /// evidence that is not counted here.
+/// Env var gating the repair route. Its own, not shared.
+///
+/// Deliberately NOT `BAZAAR_ADMIN_TOKEN` or `ERC8004_ADMIN_TOKEN`: this one
+/// rewrites a facilitator-signed attestation. Sharing a token would mean
+/// whoever can suppress a bazaar listing can also re-sign somebody's evidence
+/// receipt.
+const DX402_ADMIN_TOKEN_VAR: &str = "DX402_ADMIN_TOKEN";
+
+/// Whether to write, or only look.
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct RepairParams {
+    /// Defaults to FALSE. Auditing is the safe operation and rewriting a
+    /// facilitator-signed attestation is not, so the dangerous one has to be
+    /// asked for by name.
+    #[serde(default)]
+    write: bool,
+}
+
+/// Audit one anchor and correct a pointer that names nothing.
+///
+/// Lives on the facilitator rather than in the audit script because repairing a
+/// pointer means RE-SIGNING the receipt, and the signing key must not leave the
+/// service to do it.
+///
+/// 404 when no admin token is configured, so the route is indistinguishable
+/// from absent. Same discipline as `/feedback/revoke`, and for the same reason:
+/// an unconfigured guard that answers 401 tells an attacker the door exists.
+pub async fn post_repair(
+    State(svc): State<Arc<Dx402Service>>,
+    headers: axum::http::HeaderMap,
+    Path(payment_id): Path<String>,
+    axum::extract::Query(params): axum::extract::Query<RepairParams>,
+) -> axum::response::Response {
+    if let Some(rejection) =
+        crate::handlers::admin_reject(crate::handlers::admin_auth(&headers, DX402_ADMIN_TOKEN_VAR))
+    {
+        return rejection;
+    }
+    match svc.repair(&payment_id, now_secs(), params.write).await {
+        Ok(outcome) => (
+            StatusCode::OK,
+            Json(json!({ "paymentId": payment_id, "outcome": outcome })),
+        )
+            .into_response(),
+        Err(code) => error_response(code),
+    }
+}
+
 pub async fn get_stats(State(svc): State<Arc<Dx402Service>>) -> axum::response::Response {
     (
         StatusCode::OK,

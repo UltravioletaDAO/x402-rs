@@ -581,6 +581,15 @@ impl EvidenceStore for FallbackEvidenceStore {
         }
     }
 
+    async fn locate(&self, payment_id: &str) -> Option<StoredObject> {
+        // Ask both, primary first. This is the repair's only way to find bytes
+        // a fallback write left somewhere the record never named.
+        match self.primary.locate(payment_id).await {
+            Some(found) => Some(found),
+            None => self.fallback.locate(payment_id).await,
+        }
+    }
+
     fn pointer_for(&self, payment_id: &str, blob: &[u8]) -> DurablePointer {
         // Reserving names the PRIMARY, and a fallback write makes that name
         // wrong. The correction is the fenced second index write in

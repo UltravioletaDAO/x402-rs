@@ -66,6 +66,21 @@ pub trait EvidenceStore: Send + Sync + std::fmt::Debug {
     /// Retrieve the sealed blob a pointer refers to.
     async fn get(&self, pointer: &DurablePointer) -> Result<Vec<u8>, StoreError>;
 
+    /// Find bytes already stored for `payment_id`, wherever they landed.
+    ///
+    /// Only a store that addresses BY PAYMENT can answer, which is the point: a
+    /// record whose pointer resolves to nothing needs somebody to say where the
+    /// bytes actually are, and the pointer itself is the thing that is wrong.
+    /// Content-addressed backends return `None` -- a CID cannot be rederived
+    /// from a paymentId, so if the recorded one is wrong the object is
+    /// unfindable by construction.
+    ///
+    /// Default `None`: a store that cannot look itself up simply has nothing to
+    /// contribute to a repair.
+    async fn locate(&self, _payment_id: &str) -> Option<StoredObject> {
+        None
+    }
+
     /// The pointer this store WOULD issue, without writing anything.
     ///
     /// Lets the caller reserve the registry slot before uploading any bytes.
@@ -216,6 +231,18 @@ impl EvidenceStore for S3EvidenceStore {
         ))
     }
 
+    async fn locate(&self, payment_id: &str) -> Option<StoredObject> {
+        // The key is derived from the paymentId, so this store can always say
+        // whether it holds a payment's bytes -- which is what makes it the one
+        // that can answer for evidence a fallback write left here while the
+        // record went on naming somewhere else.
+        let pointer = self.pointer_for_payment_id(payment_id);
+        match self.get(&pointer).await {
+            Ok(_) => Some(StoredObject::new(pointer, StorageBackend::S3)),
+            Err(_) => None,
+        }
+    }
+
     async fn get(&self, pointer: &DurablePointer) -> Result<Vec<u8>, StoreError> {
         let key = self.key_from_pointer(pointer)?;
         let out = self
@@ -292,6 +319,15 @@ impl EvidenceStore for MemoryEvidenceStore {
             .expect("poisoned")
             .insert(pointer.clone(), blob.to_vec());
         Ok(StoredObject::new(DurablePointer(pointer), self.backend()))
+    }
+
+    async fn locate(&self, payment_id: &str) -> Option<StoredObject> {
+        let pointer = format!("mem://{payment_id}");
+        self.inner
+            .lock()
+            .expect("poisoned")
+            .contains_key(&pointer)
+            .then(|| StoredObject::new(DurablePointer(pointer), self.backend()))
     }
 
     async fn delete(&self, reference: &str) -> Result<(), StoreError> {

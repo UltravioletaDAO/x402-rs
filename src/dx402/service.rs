@@ -226,6 +226,25 @@ impl Dx402Config {
 /// above is unambiguous on its own.
 pub const MAX_SEALED_BLOB_BYTES: usize = 48_000;
 
+/// What auditing one anchor found, and what was done about it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RepairOutcome {
+    /// The pointer resolves. Nothing to do.
+    Healthy,
+    /// The pointer named nothing, the bytes were found elsewhere, and the
+    /// record now names where they actually are.
+    Repaired,
+    /// The pointer named nothing and the bytes were found -- but this was an
+    /// audit, so nothing was written. Kept distinct from `Repaired` so a report
+    /// cannot be mistaken for a repair that happened.
+    Repairable,
+    /// The pointer named nothing and no store holds the bytes. Reported, never
+    /// papered over: a record that points at a real absence is telling the
+    /// truth, and rewriting it would only hide that the evidence is gone.
+    Lost,
+}
+
 /// The facilitator-side DX402 service.
 #[derive(Clone)]
 pub struct Dx402Service {
@@ -847,6 +866,94 @@ impl Dx402Service {
     /// `direct` mode it is unreadable without the payer's private key, so the
     /// access control lives in the cryptography rather than in an ACL that could
     /// be misconfigured.
+    /// Audit one anchor and, if its pointer names nothing, correct it.
+    ///
+    /// Exists for the 464 anchors written while the pointer was a prediction
+    /// nobody reconciled. A fallback write put the bytes in one store while the
+    /// record -- and the receipt we SIGNED -- named another, and the read path
+    /// treats the resulting `NotFound` as a verdict, so the evidence is
+    /// unreachable with no error anywhere to say so.
+    ///
+    /// Admin-only, and narrow on purpose: it may only rewrite where the bytes
+    /// are, never who owns the slot. `verified` and `signed` are carried
+    /// structurally from the record read, so a repair cannot escalate authority
+    /// even by mistake.
+    /// `write` false audits without touching anything, so an operator can see
+    /// the damage before deciding to rewrite signed attestations. A dry run
+    /// that silently wrote would make the safe-looking invocation the dangerous
+    /// one.
+    pub async fn repair(
+        &self,
+        payment_id: &str,
+        now: u64,
+        write: bool,
+    ) -> Result<RepairOutcome, Dx402ErrorCode> {
+        let record = self.lookup(payment_id, now).await?;
+
+        if self.store.get(&record.pointer).await.is_ok() {
+            return Ok(RepairOutcome::Healthy);
+        }
+
+        let Some(found) = self.store.locate(payment_id).await else {
+            warn!(
+                payment_id,
+                pointer = %record.pointer,
+                "dx402_evidence_lost -- the pointer resolves to nothing and no store holds the bytes"
+            );
+            return Ok(RepairOutcome::Lost);
+        };
+
+        if !write {
+            warn!(
+                payment_id,
+                recorded = %record.pointer,
+                found = %found.pointer,
+                "dx402_pointer_repairable -- audit only, nothing written"
+            );
+            return Ok(RepairOutcome::Repairable);
+        }
+
+        let mut corrected = EvidenceRecord {
+            pointer: found.pointer.clone(),
+            backend: found.backend,
+            reference: found.reference.clone(),
+            ..record.clone()
+        };
+        // `pointer` is the third field of the EIP-712 struct, so the old
+        // signature does not cover the corrected one. Re-signing is what makes
+        // the repaired receipt verifiable rather than merely present.
+        corrected.receipt.pointer = found.pointer.clone();
+        corrected.signature = receipt::sign(
+            &corrected.receipt,
+            &self.signer,
+            chain_id_of(corrected.receipt.network),
+        )
+        .map_err(|e| {
+            warn!(error = %e, payment_id, "DX402 repair could not re-sign the receipt");
+            Dx402ErrorCode::Dx402StoreUnavailable
+        })?;
+
+        self.registry
+            .repair(&corrected, record.anchored_at)
+            .await
+            .map_err(|e| match e {
+                // The row moved between the audit and the write. Leave it.
+                RegistryError::AlreadyAnchored => Dx402ErrorCode::Dx402AlreadyAnchored,
+                other => {
+                    warn!(error = %other, payment_id, "DX402 repair write failed");
+                    Dx402ErrorCode::Dx402StoreUnavailable
+                }
+            })?;
+
+        warn!(
+            payment_id,
+            was = %record.pointer,
+            now = %found.pointer,
+            "dx402_pointer_repaired -- the record named a store the bytes were never in"
+        );
+        Ok(RepairOutcome::Repaired)
+    }
+
     pub async fn fetch_sealed(
         &self,
         payment_id: &str,
@@ -1044,6 +1151,151 @@ mod tests {
         )
         .await
         .expect("exactly at the limit must be accepted");
+    }
+
+    #[tokio::test]
+    async fn a_record_naming_a_store_the_bytes_are_not_in_is_repaired() {
+        // The 464 anchors this exists for: written while the pointer was a
+        // prediction nobody reconciled, so a fallback write left the bytes in
+        // one store while the record and the signed receipt named another.
+        let signer = PrivateKeySigner::random();
+        let expected = signer.address();
+        let registry = Arc::new(crate::dx402::registry::MemoryEvidenceRegistry::new());
+        let store = Arc::new(crate::dx402::store::MemoryEvidenceStore::new());
+        let svc = Dx402Service::new(
+            Dx402Config::default(),
+            registry.clone(),
+            store.clone(),
+            Arc::new(signer),
+        );
+
+        // Anchor normally, then break the record the way the old code did:
+        // point it somewhere the bytes never were.
+        let out = svc
+            .anchor(
+                AnchorRequest {
+                    sealed: Some(base64::engine::general_purpose::STANDARD.encode(b"paid bytes")),
+                    pointer: None,
+                    ..anchor_request(EvidenceMode::Direct)
+                },
+                8453,
+                1_000,
+            )
+            .await
+            .unwrap();
+        let good = registry.get(&out.payment_id).await.unwrap();
+        let broken = EvidenceRecord {
+            pointer: DurablePointer("ipfs+https://gw.test/x#bafkreinever".into()),
+            backend: StorageBackend::Ipfs,
+            ..good.clone()
+        };
+        registry.repair(&broken, good.anchored_at).await.unwrap();
+        assert!(
+            svc.fetch_sealed(&out.payment_id, 1_000).await.is_err(),
+            "the setup must actually be broken, or the test proves nothing"
+        );
+
+        assert_eq!(
+            svc.repair(&out.payment_id, 1_000, true).await.unwrap(),
+            RepairOutcome::Repaired
+        );
+
+        // The bytes are reachable again...
+        let bytes = svc.fetch_sealed(&out.payment_id, 1_000).await.unwrap();
+        assert_eq!(bytes, b"paid bytes");
+        // ...and the receipt over the corrected pointer still verifies, which
+        // is the half that a correction without re-signing would break.
+        let fixed = registry.get(&out.payment_id).await.unwrap();
+        assert_eq!(fixed.receipt.pointer, fixed.pointer);
+        assert!(receipt::verify(
+            &fixed.receipt,
+            &fixed.signature,
+            expected,
+            8453
+        ));
+        // Authority is carried structurally, never recomputed.
+        assert_eq!(fixed.verified, good.verified);
+        assert_eq!(fixed.signed, good.signed);
+    }
+
+    #[tokio::test]
+    async fn an_audit_reports_without_rewriting_anything() {
+        // Auditing is safe; rewriting a facilitator-signed attestation is not.
+        // If the read-only-looking invocation wrote, the safe call would be the
+        // dangerous one -- so the dangerous half has to be asked for by name.
+        let registry = Arc::new(crate::dx402::registry::MemoryEvidenceRegistry::new());
+        let store = Arc::new(crate::dx402::store::MemoryEvidenceStore::new());
+        let svc = Dx402Service::new(
+            Dx402Config::default(),
+            registry.clone(),
+            store.clone(),
+            Arc::new(PrivateKeySigner::random()),
+        );
+        let out = svc
+            .anchor(
+                AnchorRequest {
+                    sealed: Some(base64::engine::general_purpose::STANDARD.encode(b"paid")),
+                    pointer: None,
+                    ..anchor_request(EvidenceMode::Direct)
+                },
+                8453,
+                1_000,
+            )
+            .await
+            .unwrap();
+        let good = registry.get(&out.payment_id).await.unwrap();
+        let broken = EvidenceRecord {
+            pointer: DurablePointer("ipfs+https://gw.test/x#bafkreinever".into()),
+            ..good.clone()
+        };
+        registry.repair(&broken, good.anchored_at).await.unwrap();
+
+        assert_eq!(
+            svc.repair(&out.payment_id, 1_000, false).await.unwrap(),
+            RepairOutcome::Repairable,
+            "an audit must say it COULD fix this, not that it did"
+        );
+        assert_eq!(
+            registry.get(&out.payment_id).await.unwrap().pointer,
+            broken.pointer,
+            "an audit must leave the record exactly as it found it"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_healthy_anchor_is_left_alone_and_a_lost_one_is_not_invented() {
+        let svc = Dx402Service::in_memory(PrivateKeySigner::random());
+        let out = svc
+            .anchor(
+                AnchorRequest {
+                    sealed: Some(base64::engine::general_purpose::STANDARD.encode(b"ok")),
+                    pointer: None,
+                    ..anchor_request(EvidenceMode::Direct)
+                },
+                8453,
+                1_000,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            svc.repair(&out.payment_id, 1_000, true).await.unwrap(),
+            RepairOutcome::Healthy,
+            "a resolvable pointer must not be rewritten"
+        );
+
+        // A record whose bytes are genuinely gone is reported as lost, not
+        // repointed at something plausible. A record that names a real absence
+        // is telling the truth.
+        let svc2 = Dx402Service::in_memory(PrivateKeySigner::random());
+        svc2.anchor(anchor_request(EvidenceMode::Direct), 8453, 1_000)
+            .await
+            .unwrap();
+        assert_eq!(
+            svc2.repair(&format!("0x{}", "11".repeat(32)), 1_000, true)
+                .await
+                .unwrap(),
+            RepairOutcome::Lost
+        );
     }
 
     #[tokio::test]

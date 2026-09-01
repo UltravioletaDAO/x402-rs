@@ -170,6 +170,22 @@ pub trait EvidenceRegistry: Send + Sync + std::fmt::Debug {
         record: &EvidenceRecord,
         token: &ClaimToken,
     ) -> Result<(), RegistryError>;
+    /// Rewrite a row whose pointer names nothing, in place.
+    ///
+    /// Deliberately NOT a rung of the authority ladder: it climbs nothing and
+    /// takes nothing from anybody. It is a compare-and-swap on the exact row
+    /// that was audited -- `anchored_at` must still match what the repair read
+    /// -- so a record superseded between the read and the write is left alone,
+    /// and the caller finds out rather than clobbering the winner.
+    ///
+    /// Reachable only behind the admin token. This module's recent history is
+    /// ladder bypasses found one at a time, so a third write path earns its
+    /// keep by being narrower than both the others, not wider.
+    async fn repair(
+        &self,
+        record: &EvidenceRecord,
+        expected_anchored_at: u64,
+    ) -> Result<(), RegistryError>;
     async fn get(&self, payment_id: &str) -> Result<EvidenceRecord, RegistryError>;
     /// Number of anchors recorded, for `/api/stats` and the landing counter.
     async fn count(&self) -> Result<u64, RegistryError>;
@@ -217,6 +233,23 @@ impl EvidenceRegistry for MemoryEvidenceRegistry {
                 Ok(())
             }
             _ => Err(RegistryError::AlreadyAnchored),
+        }
+    }
+
+    async fn repair(
+        &self,
+        record: &EvidenceRecord,
+        expected_anchored_at: u64,
+    ) -> Result<(), RegistryError> {
+        let mut inner = self.inner.lock().expect("poisoned");
+        match inner.get(&record.payment_id) {
+            Some((token, existing)) if existing.anchored_at == expected_anchored_at => {
+                let token = token.clone();
+                inner.insert(record.payment_id.clone(), (token, record.clone()));
+                Ok(())
+            }
+            Some(_) => Err(RegistryError::AlreadyAnchored),
+            None => Err(RegistryError::NotFound),
         }
     }
 
@@ -401,6 +434,35 @@ impl EvidenceRegistry for DynamoEvidenceRegistry {
             }
             warn!(error = %service_error, "DX402 registry settle failed");
             RegistryError::Unavailable(format!("dynamodb settle: {service_error}"))
+        })?;
+        Ok(())
+    }
+
+    async fn repair(
+        &self,
+        record: &EvidenceRecord,
+        expected_anchored_at: u64,
+    ) -> Result<(), RegistryError> {
+        use aws_sdk_dynamodb::types::AttributeValue;
+
+        // Keep whatever claim token the row already carries out of the way: a
+        // repair is not a claim, so it must not hand a later `settle` a fence
+        // it did not mint. A fresh token can never match an in-flight anchor's,
+        // which is the conservative direction -- that anchor fails its settle
+        // and says so, instead of silently writing over a repair.
+        let req = self
+            .row(record, &ClaimToken::mint())?
+            .condition_expression("attribute_exists(payment_id) AND anchored_at = :t")
+            .expression_attribute_values(":t", AttributeValue::N(expected_anchored_at.to_string()));
+
+        req.send().await.map_err(|e| {
+            let service_error = e.into_service_error();
+            if service_error.is_conditional_check_failed_exception() {
+                // Somebody changed the row between the audit and the write.
+                return RegistryError::AlreadyAnchored;
+            }
+            warn!(error = %service_error, "DX402 registry repair failed");
+            RegistryError::Unavailable(format!("dynamodb repair: {service_error}"))
         })?;
         Ok(())
     }

@@ -1180,7 +1180,7 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 }
 
 /// Outcome of admin bearer authentication.
-enum AdminAuth {
+pub(crate) enum AdminAuth {
     Ok,
     /// No token configured in the env var this surface reads — the admin
     /// surface is disabled.
@@ -1206,7 +1206,7 @@ const ERC8004_ADMIN_TOKEN_VAR: &str = "ERC8004_ADMIN_TOKEN";
 /// The env var is a parameter rather than a constant because the admin surfaces
 /// guarded by this function are not interchangeable — see
 /// [`ERC8004_ADMIN_TOKEN_VAR`].
-fn admin_auth(headers: &axum::http::HeaderMap, env_var: &str) -> AdminAuth {
+pub(crate) fn admin_auth(headers: &axum::http::HeaderMap, env_var: &str) -> AdminAuth {
     let Ok(expected) = std::env::var(env_var) else {
         return AdminAuth::Disabled;
     };
@@ -1227,7 +1227,7 @@ fn admin_auth(headers: &axum::http::HeaderMap, env_var: &str) -> AdminAuth {
 
 /// Map a non-OK auth outcome to its response. 404 when disabled so the routes
 /// are indistinguishable from not existing.
-fn admin_reject(auth: AdminAuth) -> Option<Response<axum::body::Body>> {
+pub(crate) fn admin_reject(auth: AdminAuth) -> Option<Response<axum::body::Body>> {
     match auth {
         AdminAuth::Ok => None,
         AdminAuth::Disabled => {

@@ -186,3 +186,57 @@ Ascendente hoy sería mejor que descendente para Base. Pero es otro supuesto sob
 la distribución, correcto por casualidad: el día que EM registre agentes cerca del
 techo, esos pasan a ser los lentos y volvemos acá. El hint no elige un extremo.
 
+---
+
+## Adenda 2.5.0 — un hint no alcanza: el tráfico son dos grupos
+
+2.4.0 salió a las 15:59 UTC. El tráfico de Execution Market había parado a las
+15:35, así que **no hubo medición orgánica**: lo que sigue son requests propios
+contra las mismas direcciones que aparecían lentas en los logs de 2.3.0, y la
+comparación no es simétrica (la línea base sí es orgánica).
+
+Contra `base avg 2529ms / max 6990ms` de 2.3.0, doce direcciones de Base:
+
+- 10 de 12 entre 0,47s y 1,34s
+- 2 de 12 en 4,1s y 5,2s
+- promedio de la muestra ~1,49s
+
+Mejora de ~40%, no el 10x buscado. La causa, medida:
+
+| dirección | agentId | batch de 42 | tiempo |
+|---|---|---|---|
+| 0xD5791860 | 58.583 | 30 | 5,19s |
+| 0xEDc637d4 | 18.905 | 10 | 4,09s |
+| 0x3a42417C | 18.816 | 10 | 0,47s |
+| 0x7a729393 | 18.779 | 10 | 0,59s |
+| 0xFa1c6fF4 | 18.897 | 10 | 0,62s |
+
+**El tráfico de Base corre en dos grupos** —~18.8k y ~58-60k— y el hint era uno
+solo, así que hacía ping-pong. Cada alternancia pagaba la expansión completa:
+`0xEDc637d4` (batch 10) tardó 4,09s porque venía después de una que había movido
+el hint al batch 30.
+
+### El arreglo
+
+`SCAN_HINT_SLOTS = OWNER_SCAN_WAVE`: se recuerdan hasta cuatro batches calientes,
+uno por batch, el más reciente primero. Un wave son cuatro batches, así que
+**todos los grupos recordados entran en el primer wave** y la alternancia deja de
+costar. Recordar más no serviría: no se podrían sondear juntos igual.
+
+El resto de los batches se ordena por distancia al hint MÁS CERCANO, así que una
+consulta que cae entre dos grupos tampoco camina desde un extremo.
+
+La permutación ahora es estructural en vez de depender de que el bucle acierte:
+las semillas son índices distintos y la cola es su complemento.
+
+### Lo que esto enseña, y aplica al próximo que lo toque
+
+Tres veces seguidas el mismo error de forma: suponer la distribución en vez de
+medirla. Primero `totalSupply()` (supuesto sobre el contrato), después
+"los agentes nuevos tienen id alto" (supuesto sobre los ids), después "hay un
+cluster" (supuesto sobre la forma del tráfico). Las tres veces el supuesto era
+plausible y se veía bien en la muestra elegida.
+
+El hint no supone nada porque mide. Si mañana aparece un tercer grupo, entra
+solo. Si el tráfico se mueve, lo sigue.
+

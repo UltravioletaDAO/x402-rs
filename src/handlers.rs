@@ -7324,6 +7324,29 @@ impl ScanOrder {
 /// its hint warm and a quiet one simply pays a cold scan once.
 const SCAN_HINT_TTL: std::time::Duration = std::time::Duration::from_secs(3600);
 
+/// How many distinct hot batches to remember per registry.
+///
+/// One is not enough, and that is measured rather than supposed. Base's owner
+/// traffic runs in TWO clusters -- agents around 18,800 and around 58,600, which
+/// are batches 10 and 30 of 42 -- so a single hint ping-pongs between them and
+/// every alternation pays the full expansion. Observed in production
+/// 2026-09-01 under 2.4.0: ten of twelve Base lookups answered in 0.47-1.34s and
+/// two in 4.1-5.2s, and the slow ones were exactly the ones that followed a
+/// match from the other cluster.
+///
+/// Tied to [`OWNER_SCAN_WAVE`] on purpose: remembering as many batches as a wave
+/// can issue concurrently is what puts every hot cluster in the FIRST wave.
+/// Remembering more would not help -- they could not be probed together anyway.
+const SCAN_HINT_SLOTS: usize = OWNER_SCAN_WAVE;
+
+/// The batch an agent ID falls in, for a scan that starts at 1.
+///
+/// Only used to keep the remembered hints one-per-batch: two agents in the same
+/// batch are the same hint, because probing that batch finds both.
+fn hint_batch(agent_id: u64) -> u64 {
+    agent_id / OWNER_SCAN_BATCH
+}
+
 /// Where the last `AnyMatch` scan found a match, per `(network, registry)`.
 ///
 /// The point of this cache is to stop GUESSING where agents live.
@@ -7340,33 +7363,51 @@ const SCAN_HINT_TTL: std::time::Duration = std::time::Duration::from_secs(3600);
 /// The assumption was plausible, was never checked against the traffic, and
 /// looked right in the two addresses that happened to get sampled -- the same
 /// shape as the `totalSupply()` defect this module was fixing in the first
-/// place. So this does not assume: it remembers what the last lookup actually
-/// found and starts there.
+/// place. So this does not assume: it remembers what recent lookups actually
+/// found, and it remembers SEVERAL, because real traffic is not one cluster.
+///
+/// Most recent first, at most one entry per batch, capped at
+/// [`SCAN_HINT_SLOTS`].
 #[allow(clippy::type_complexity)]
 static SCAN_HINT_CACHE: Lazy<
     dashmap::DashMap<
         (crate::network::Network, alloy::primitives::Address),
-        (u64, std::time::Instant),
+        (Vec<u64>, std::time::Instant),
     >,
 > = Lazy::new(dashmap::DashMap::new);
 
-/// The agent ID the last successful `AnyMatch` scan of this registry found.
-fn scan_hint(
-    network: crate::network::Network,
-    registry: alloy::primitives::Address,
-) -> Option<u64> {
-    let entry = SCAN_HINT_CACHE.get(&(network, registry))?;
-    let (agent_id, seen_at) = *entry;
-    (seen_at.elapsed() < SCAN_HINT_TTL).then_some(agent_id)
+/// The agent IDs recent successful `AnyMatch` scans of this registry found,
+/// most recent first. Empty when nothing is remembered or the entry went stale.
+fn scan_hints(network: crate::network::Network, registry: alloy::primitives::Address) -> Vec<u64> {
+    match SCAN_HINT_CACHE.get(&(network, registry)) {
+        Some(entry) if entry.1.elapsed() < SCAN_HINT_TTL => entry.0.clone(),
+        _ => Vec::new(),
+    }
 }
 
-/// Record where a scan found its match, so the next one starts there.
+/// Record where a scan found its match, so the next ones start there.
+///
+/// Keeps the most recent hit per batch and drops the oldest beyond the cap, so
+/// a registry whose traffic moves follows it instead of accumulating history.
 fn store_scan_hint(
     network: crate::network::Network,
     registry: alloy::primitives::Address,
     agent_id: u64,
 ) {
-    SCAN_HINT_CACHE.insert((network, registry), (agent_id, std::time::Instant::now()));
+    let now = std::time::Instant::now();
+    SCAN_HINT_CACHE
+        .entry((network, registry))
+        .and_modify(|slot| {
+            if slot.1.elapsed() >= SCAN_HINT_TTL {
+                slot.0.clear();
+            }
+            slot.0
+                .retain(|held| hint_batch(*held) != hint_batch(agent_id));
+            slot.0.insert(0, agent_id);
+            slot.0.truncate(SCAN_HINT_SLOTS);
+            slot.1 = now;
+        })
+        .or_insert_with(|| (vec![agent_id], now));
 }
 
 /// The order to examine batches in for an `AnyMatch` scan.
@@ -7376,69 +7417,75 @@ fn store_scan_hint(
 /// a missing index silently skips a slice of the registry, and a skipped agent
 /// is answered as "not registered", which callers persist.
 ///
-/// With a `hint`, the batch holding it goes first and the rest fan out by
-/// distance from it. Without one, the batches alternate from the high end and
-/// the low end, so neither extreme is the pathological case: the worst a
-/// hintless scan can cost is half the registry rather than all of it.
-fn any_match_batch_order(ranges: &[(u64, u64)], hint: Option<u64>) -> Vec<usize> {
+/// The batches holding the `hints` go first, in the order given, so every
+/// remembered cluster is probed in the first wave. The rest follow by distance
+/// to the NEAREST hint, which keeps a lookup that lands between two clusters
+/// cheap instead of making it walk from one end.
+///
+/// With no hints at all the batches alternate from the high end and the low
+/// end, so neither extreme is the pathological case: the worst a hintless scan
+/// can cost is half the registry rather than all of it.
+fn any_match_batch_order(ranges: &[(u64, u64)], hints: &[u64]) -> Vec<usize> {
     let n = ranges.len();
     if n == 0 {
         return Vec::new();
     }
 
-    if let Some(hint) = hint {
-        // The batch holding the hint, or the nearest one when the hint fell
-        // outside the range being scanned (the registry grew, or this is the
-        // tail rescan).
-        let start = ranges
+    // The batch each hint falls in. A hint outside the range being scanned --
+    // the registry grew, or this is the tail rescan -- clamps to the near end
+    // rather than being dropped.
+    let mut seeds: Vec<usize> = Vec::new();
+    for hint in hints {
+        let index = ranges
             .iter()
-            .position(|(first, last)| hint >= *first && hint <= *last)
-            .unwrap_or_else(|| if hint < ranges[0].0 { 0 } else { n - 1 });
+            .position(|(first, last)| hint >= first && hint <= last)
+            .unwrap_or_else(|| if *hint < ranges[0].0 { 0 } else { n - 1 });
+        if !seeds.contains(&index) {
+            seeds.push(index);
+        }
+    }
 
+    if seeds.is_empty() {
+        // No hint: interleave the two ends, high first. High first because eight
+        // of the nine measured networks keep their live agents at the top of the
+        // registry -- but interleaved, so the ninth is not paying for that.
         let mut order = Vec::with_capacity(n);
-        order.push(start);
-        let mut step = 1usize;
-        while order.len() < n {
-            if let Some(up) = start.checked_add(step) {
-                if up < n {
-                    order.push(up);
-                }
-            }
+        let mut low = 0usize;
+        let mut high = n - 1;
+        loop {
+            order.push(high);
             if order.len() == n {
                 break;
             }
-            if let Some(down) = start.checked_sub(step) {
-                order.push(down);
+            order.push(low);
+            if order.len() == n {
+                break;
             }
-            step += 1;
+            low += 1;
+            high -= 1;
+            if low > high {
+                break;
+            }
         }
         return order;
     }
 
-    // No hint: interleave the two ends, high first. High first because eight of
-    // the nine measured networks keep their live agents at the top of the
-    // registry -- but interleaved, so the ninth is not paying for that.
-    let mut order = Vec::with_capacity(n);
-    let mut low = 0usize;
-    let mut high = n - 1;
-    loop {
-        order.push(high);
-        if order.len() == n {
-            break;
-        }
-        order.push(low);
-        if order.len() == n {
-            break;
-        }
-        low += 1;
-        high -= 1;
-        if low > high {
-            break;
-        }
-    }
+    // Seeds first, then the complement sorted by distance to the NEAREST seed.
+    // Building the tail as the complement is what makes the permutation
+    // property structural rather than something a loop has to get right.
+    let mut order = seeds.clone();
+    let mut rest: Vec<usize> = (0..n).filter(|i| !seeds.contains(i)).collect();
+    rest.sort_by_key(|i| {
+        let nearest = seeds
+            .iter()
+            .map(|seed| i.abs_diff(*seed))
+            .min()
+            .unwrap_or(usize::MAX);
+        (nearest, *i)
+    });
+    order.extend(rest);
     order
 }
-
 /// Batches issued CONCURRENTLY per wave by [`scan_range_for_owner`].
 ///
 /// The scan stops at the first match, so a wave can do work a strictly serial
@@ -7908,7 +7955,7 @@ async fn scan_range_for_owner(
     first: u64,
     last: u64,
     order: ScanOrder,
-    hint: Option<u64>,
+    hints: &[u64],
 ) -> Result<Option<u64>, String> {
     if first > last {
         return Ok(None);
@@ -7936,7 +7983,7 @@ async fn scan_range_for_owner(
     // actually found. See [`any_match_batch_order`] for why that is measured
     // rather than assumed.
     if order == ScanOrder::AnyMatch {
-        let sequence = any_match_batch_order(&ranges, hint);
+        let sequence = any_match_batch_order(&ranges, hints);
         debug_assert_eq!(
             sequence.len(),
             ranges.len(),
@@ -8046,9 +8093,9 @@ async fn resolve_first_token_by_owner(
     // Step 2: scan ascending, stopping at the first match so the lowest ID is
     // returned and the common case stays cheap.
     let order = ScanOrder::for_balance(known_balance);
-    let hint = scan_hint(network, registry);
+    let hints = scan_hints(network, registry);
     if let Some(agent_id) =
-        scan_range_for_owner(provider, registry, target, 1, max_id, order, hint).await?
+        scan_range_for_owner(provider, registry, target, 1, max_id, order, &hints).await?
     {
         OWNER_LOOKUP_CACHE.insert(
             (network, registry, target),
@@ -8073,7 +8120,7 @@ async fn resolve_first_token_by_owner(
                 "Cached registry bound was stale; scanning the tail"
             );
             if let Some(agent_id) =
-                scan_range_for_owner(provider, registry, target, max_id + 1, fresh, order, hint)
+                scan_range_for_owner(provider, registry, target, max_id + 1, fresh, order, &hints)
                     .await?
             {
                 OWNER_LOOKUP_CACHE.insert(
@@ -10671,80 +10718,78 @@ mod owner_scan_tests {
     ///
     /// A dropped index does not fail loudly -- it skips a slice of the registry,
     /// the scan reports no match, and the caller is told the address is not
-    /// registered. Checked exhaustively across sizes and hint positions,
-    /// including hints that fall outside the range entirely.
+    /// registered. Checked exhaustively across sizes, hint counts and hint
+    /// positions, including hints outside the range and several hints landing in
+    /// the same batch.
     #[test]
     fn the_batch_order_is_always_a_permutation() {
         for n in 1usize..=45 {
             let ranges = scan_batch_ranges(1, (n as u64) * OWNER_SCAN_BATCH);
             assert_eq!(ranges.len(), n);
 
-            let mut hints: Vec<Option<u64>> = vec![None];
-            // One hint inside every batch, plus two outside the range.
+            let mut hint_sets: Vec<Vec<u64>> = vec![Vec::new()];
             for (first, last) in &ranges {
-                hints.push(Some(*first));
-                hints.push(Some(*last));
+                hint_sets.push(vec![*first]);
+                hint_sets.push(vec![*last]);
+                // Two hints in the SAME batch must collapse to one seed.
+                hint_sets.push(vec![*first, *last]);
+                // A hot pair spanning the registry, which is the Base shape.
+                hint_sets.push(vec![*first, ranges[n - 1].1]);
             }
-            hints.push(Some(0));
-            hints.push(Some(u64::MAX));
+            // Out of range on both sides, and more hints than there are slots.
+            hint_sets.push(vec![0]);
+            hint_sets.push(vec![u64::MAX]);
+            hint_sets.push(vec![0, u64::MAX]);
+            hint_sets.push(vec![0, u64::MAX, 1, (n as u64) * OWNER_SCAN_BATCH + 1]);
 
-            for hint in hints {
-                let order = any_match_batch_order(&ranges, hint);
+            for hints in &hint_sets {
+                let order = any_match_batch_order(&ranges, hints);
                 let mut sorted = order.clone();
                 sorted.sort_unstable();
-                sorted.dedup();
                 assert_eq!(
-                    sorted.len(),
-                    n,
-                    "n={n} hint={hint:?} produced {order:?}, which is not a permutation"
+                    sorted,
+                    (0..n).collect::<Vec<_>>(),
+                    "n={n} hints={hints:?} produced {order:?}, which is not a permutation"
                 );
-                assert_eq!(sorted, (0..n).collect::<Vec<_>>(), "n={n} hint={hint:?}");
             }
         }
     }
 
-    /// The batch holding the hint is examined FIRST -- that is the whole point.
-    #[test]
-    fn the_hint_batch_is_examined_first() {
-        let ranges = scan_batch_ranges(1, 83_984);
-        // Base's measured median resolved agent, 2026-09-01.
-        let order = any_match_batch_order(&ranges, Some(18_897));
-        let (first, last) = ranges[order[0]];
-        assert!(
-            18_897 >= first && 18_897 <= last,
-            "the first batch examined ({first}..={last}) does not hold the hint"
-        );
-    }
-
-    /// The regression this exists for, in the numbers it actually happened in.
+    /// The regression this version exists for: Base's traffic runs in TWO
+    /// clusters, and both must land in the FIRST wave.
     ///
-    /// Base held 83,984 agents on 2026-09-01 and its median resolved agent was
-    /// 18,897: batch 10 of 42. Sweeping high-to-low reached it 33rd, which is
-    /// where `/identity/base/owner/...` spent 4-9.6s. With the hint learned it
-    /// must land in the FIRST wave.
+    /// Measured in production 2026-09-01 under 2.4.0: agents around 18,900
+    /// (batch 10 of 42) and around 58,600 (batch 30). With a single hint the
+    /// order ping-ponged -- ten of twelve lookups answered in 0.47-1.34s, and
+    /// the two that followed a match from the other cluster took 4.1s and 5.2s.
     #[test]
-    fn the_measured_base_traffic_lands_in_the_first_wave() {
+    fn both_measured_base_clusters_land_in_the_first_wave() {
         let ranges = scan_batch_ranges(1, 83_984);
         assert_eq!(ranges.len(), 42, "the Base registry should be 42 batches");
 
-        let order = any_match_batch_order(&ranges, Some(18_897));
-        let position = order
-            .iter()
-            .position(|i| {
-                let (first, last) = ranges[*i];
-                18_897 >= first && 18_897 <= last
-            })
-            .expect("the hint's batch must be in the order");
-        assert!(
-            position < OWNER_SCAN_WAVE,
-            "the measured Base median is examined at position {position}, outside the first wave"
-        );
+        let order = any_match_batch_order(&ranges, &[18_897, 58_583]);
+        for agent in [18_897u64, 58_583] {
+            let position = order
+                .iter()
+                .position(|i| {
+                    let (first, last) = ranges[*i];
+                    agent >= first && agent <= last
+                })
+                .expect("every hint's batch must appear in the order");
+            assert!(
+                position < OWNER_SCAN_WAVE,
+                "agent {agent} is examined at position {position}, outside the first wave"
+            );
+        }
+    }
 
-        // And what the previous version did, for the record: high-to-low
-        // reached that batch 33rd, more than eight waves in.
-        let mut descending: Vec<usize> = (0..ranges.len()).collect();
-        descending.reverse();
-        let old_position = descending
+    /// A single hint cannot cover both clusters -- which is exactly why the
+    /// cache holds several. Pins the defect so the cap cannot return to one.
+    #[test]
+    fn one_hint_alone_cannot_reach_the_other_cluster_in_time() {
+        let ranges = scan_batch_ranges(1, 83_984);
+        let order = any_match_batch_order(&ranges, &[58_583]);
+        let position = order
             .iter()
             .position(|i| {
                 let (first, last) = ranges[*i];
@@ -10752,20 +10797,40 @@ mod owner_scan_tests {
             })
             .unwrap();
         assert!(
-            old_position >= 8 * OWNER_SCAN_WAVE,
-            "this test is calibrated against the high-to-low sweep costing 8+ waves"
+            position >= OWNER_SCAN_WAVE,
+            "this test is calibrated against a single hint missing the other cluster"
+        );
+        assert!(
+            SCAN_HINT_SLOTS >= 2,
+            "one remembered batch cannot serve traffic that runs in two clusters"
         );
     }
 
-    /// Without a hint, both ends must be reached before the middle: neither
+    /// Batches with no hint are reached by distance to the NEAREST hint, so a
+    /// lookup landing between two clusters does not walk from an end.
+    #[test]
+    fn the_tail_fans_out_from_the_nearest_hint() {
+        let ranges = scan_batch_ranges(1, 83_984);
+        let order = any_match_batch_order(&ranges, &[18_897, 58_583]);
+        let position_of = |agent: u64| {
+            order
+                .iter()
+                .position(|i| {
+                    let (first, last) = ranges[*i];
+                    agent >= first && agent <= last
+                })
+                .unwrap()
+        };
+        assert!(position_of(20_500) < position_of(83_000));
+        assert!(position_of(56_500) < position_of(2_500));
+    }
+
+    /// Without any hint, both ends must be reached before the middle: neither
     /// extreme may be the pathological case.
-    ///
-    /// A single direction always has a bad end, and picking which end is a bet
-    /// on where agents live. That bet is what broke Base.
     #[test]
     fn without_a_hint_neither_end_is_pathological() {
         let ranges = scan_batch_ranges(1, 83_984);
-        let order = any_match_batch_order(&ranges, None);
+        let order = any_match_batch_order(&ranges, &[]);
         let last_index = ranges.len() - 1;
 
         let top = order.iter().position(|i| *i == last_index).unwrap();
@@ -10776,7 +10841,6 @@ mod owner_scan_tests {
             "the bottom batch waits {bottom} positions"
         );
 
-        // The middle is what pays instead, which is the intended trade.
         let middle = order.iter().position(|i| *i == last_index / 2).unwrap();
         assert!(middle > top && middle > bottom);
     }
@@ -10786,15 +10850,19 @@ mod owner_scan_tests {
     #[test]
     fn a_hint_outside_the_range_clamps() {
         let tail = scan_batch_ranges(80_001, 83_984);
-        for hint in [1u64, 18_897, u64::MAX] {
-            let order = any_match_batch_order(&tail, Some(hint));
+        for hints in [vec![1u64], vec![18_897], vec![u64::MAX], vec![1, u64::MAX]] {
+            let order = any_match_batch_order(&tail, &hints);
             let mut sorted = order.clone();
             sorted.sort_unstable();
-            assert_eq!(sorted, (0..tail.len()).collect::<Vec<_>>(), "hint={hint}");
+            assert_eq!(
+                sorted,
+                (0..tail.len()).collect::<Vec<_>>(),
+                "hints={hints:?}"
+            );
         }
     }
 
-    /// The hint is per (network, registry), like the bound: the ERC-8004
+    /// The hints are per (network, registry), like the bound: the ERC-8004
     /// registries share one address across chains, so a Base hint must never
     /// steer a Celo scan.
     #[test]
@@ -10805,22 +10873,24 @@ mod owner_scan_tests {
 
         store_scan_hint(crate::network::Network::Base, registry, 18_897);
         assert_eq!(
-            scan_hint(crate::network::Network::Base, registry),
-            Some(18_897)
+            scan_hints(crate::network::Network::Base, registry),
+            vec![18_897]
         );
-        assert_eq!(
-            scan_hint(crate::network::Network::Celo, registry),
-            None,
-            "Celo must not inherit Base's hint from the shared registry address"
+        assert!(
+            scan_hints(crate::network::Network::Celo, registry).is_empty(),
+            "Celo must not inherit Base's hints from the shared registry address"
         );
 
         SCAN_HINT_CACHE.remove(&(crate::network::Network::Base, registry));
     }
 
-    /// The hint moves with the traffic: the most recent match wins, unlike the
-    /// bound, which only ever grows.
+    /// The hints follow the traffic: most recent first, one per batch, capped.
+    ///
+    /// One per BATCH because two agents in the same batch are the same hint --
+    /// probing it finds both -- and a cache full of one cluster is how the other
+    /// one starves.
     #[test]
-    fn the_scan_hint_follows_the_latest_match() {
+    fn the_scan_hints_follow_the_traffic() {
         let registry = alloy::primitives::Address::repeat_byte(0xBA);
         let network = crate::network::Network::Optimism;
         SCAN_HINT_CACHE.remove(&(network, registry));
@@ -10828,9 +10898,31 @@ mod owner_scan_tests {
         store_scan_hint(network, registry, 60_720);
         store_scan_hint(network, registry, 18_897);
         assert_eq!(
-            scan_hint(network, registry),
-            Some(18_897),
-            "a later, lower match must replace the hint -- traffic moves, the bound does not"
+            scan_hints(network, registry)[0],
+            18_897,
+            "the latest match must lead -- traffic moves, the bound does not"
+        );
+        assert!(
+            scan_hints(network, registry).contains(&60_720),
+            "and the previous cluster must still be remembered, not replaced"
+        );
+
+        store_scan_hint(network, registry, 18_905);
+        assert_eq!(
+            scan_hints(network, registry),
+            vec![18_905, 60_720],
+            "two agents in one batch are one hint: probing it finds both"
+        );
+
+        for agent in [2_500u64, 6_500, 10_500, 14_500] {
+            store_scan_hint(network, registry, agent);
+        }
+        let held = scan_hints(network, registry);
+        assert_eq!(held.len(), SCAN_HINT_SLOTS);
+        assert_eq!(held[0], 14_500, "the newest hint must lead");
+        assert!(
+            !held.contains(&60_720),
+            "the oldest hint must fall off once the cap is reached"
         );
 
         SCAN_HINT_CACHE.remove(&(network, registry));

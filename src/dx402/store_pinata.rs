@@ -305,6 +305,7 @@ impl EvidenceStore for PinataEvidenceStore {
         };
         Ok(StoredObject {
             pointer,
+            backend: StorageBackend::Ipfs,
             // Pinata's own object id, persisted so retention can actually be
             // enforced later. A private pointer names the payment, not the
             // object, so without this there is nothing to hand `delete`.
@@ -581,8 +582,15 @@ impl EvidenceStore for FallbackEvidenceStore {
     }
 
     fn pointer_for(&self, payment_id: &str, blob: &[u8]) -> DurablePointer {
-        // Reserving names the PRIMARY. If the write then falls back, `put`
-        // returns the fallback's pointer and the caller records that one.
+        // Reserving names the PRIMARY, and a fallback write makes that name
+        // wrong. The correction is the fenced second index write in
+        // `Dx402Service::anchor`.
+        //
+        // For 464 anchors this comment described a contract the caller was not
+        // honouring: the prediction went into the record AND into the receipt
+        // we SIGNED, while the pointer `put` returned was discarded. One Pinata
+        // blip produced a signed pointer that `get` answers `NotFound` for --
+        // a verdict this store deliberately does not second-guess.
         self.primary.pointer_for(payment_id, blob)
     }
 }

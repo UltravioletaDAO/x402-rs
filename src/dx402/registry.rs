@@ -57,6 +57,37 @@ impl RegistryError {
     }
 }
 
+/// Proof that this process is the one that claimed a slot.
+///
+/// Minted per anchor attempt, written as its own top-level DynamoDB attribute,
+/// and never a field of [`EvidenceRecord`] -- a condition expression cannot
+/// read inside the serialized `record` blob, and keeping it out of that blob is
+/// also what stops it reaching `/dx402/evidence`.
+///
+/// It fences the correction write that follows an upload. That condition is
+/// strictly narrower than the authority ladder: it matches only the exact row
+/// this call wrote, so a caller superseded mid-upload is refused and physically
+/// cannot overwrite the winner.
+///
+/// Unlike `paymentId`, which is `keccak256(caip2 || txHash)` over entirely
+/// public data, there is nothing here for an observer of a settlement to
+/// derive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaimToken(String);
+
+impl ClaimToken {
+    fn mint() -> Self {
+        use rand::RngCore as _;
+        let mut bytes = [0u8; 16];
+        rand::rngs::OsRng.fill_bytes(&mut bytes);
+        Self(bytes.iter().map(|b| format!("{b:02x}")).collect())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// One recorded anchor.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -107,6 +138,11 @@ pub struct EvidenceRecord {
     /// and be recorded as FINAL. Found by an audit 2026-08-19.
     #[serde(default)]
     pub signed: bool,
+    /// Backend handle for deletion, as the store that took the bytes reported
+    /// it. Written by the correction that follows the upload, so it is absent
+    /// on every anchor written before that correction existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
 }
 
 impl EvidenceRecord {
@@ -118,7 +154,22 @@ impl EvidenceRecord {
 
 #[async_trait]
 pub trait EvidenceRegistry: Send + Sync + std::fmt::Debug {
-    async fn put(&self, record: &EvidenceRecord) -> Result<(), RegistryError>;
+    /// Claim the slot for this payment. The returned token fences [`settle`].
+    ///
+    /// [`settle`]: EvidenceRegistry::settle
+    async fn put(&self, record: &EvidenceRecord) -> Result<ClaimToken, RegistryError>;
+    /// Correct the row this call claimed, and only that row.
+    ///
+    /// Exists because the pointer is a PREDICTION until the upload returns: a
+    /// composed store names its primary and may write to its fallback. The
+    /// token is what keeps this from being a second bite at the ladder -- a
+    /// claim that was superseded mid-upload gets `AlreadyAnchored` here, which
+    /// is the correct answer, because the row is genuinely not ours any more.
+    async fn settle(
+        &self,
+        record: &EvidenceRecord,
+        token: &ClaimToken,
+    ) -> Result<(), RegistryError>;
     async fn get(&self, payment_id: &str) -> Result<EvidenceRecord, RegistryError>;
     /// Number of anchors recorded, for `/api/stats` and the landing counter.
     async fn count(&self) -> Result<u64, RegistryError>;
@@ -128,7 +179,7 @@ pub trait EvidenceRegistry: Send + Sync + std::fmt::Debug {
 /// configured.
 #[derive(Debug, Default)]
 pub struct MemoryEvidenceRegistry {
-    inner: std::sync::Mutex<std::collections::HashMap<String, EvidenceRecord>>,
+    inner: std::sync::Mutex<std::collections::HashMap<String, (ClaimToken, EvidenceRecord)>>,
 }
 
 impl MemoryEvidenceRegistry {
@@ -139,17 +190,34 @@ impl MemoryEvidenceRegistry {
 
 #[async_trait]
 impl EvidenceRegistry for MemoryEvidenceRegistry {
-    async fn put(&self, record: &EvidenceRecord) -> Result<(), RegistryError> {
+    async fn put(&self, record: &EvidenceRecord) -> Result<ClaimToken, RegistryError> {
         let mut inner = self.inner.lock().expect("poisoned");
         // A weaker claim never locks out one that proved more.
         // See `EvidenceRecord::authority`.
-        if let Some(existing) = inner.get(&record.payment_id) {
+        if let Some((_, existing)) = inner.get(&record.payment_id) {
             if record.authority() <= existing.authority() {
                 return Err(RegistryError::AlreadyAnchored);
             }
         }
-        inner.insert(record.payment_id.clone(), record.clone());
-        Ok(())
+        let token = ClaimToken::mint();
+        inner.insert(record.payment_id.clone(), (token.clone(), record.clone()));
+        Ok(token)
+    }
+
+    async fn settle(
+        &self,
+        record: &EvidenceRecord,
+        token: &ClaimToken,
+    ) -> Result<(), RegistryError> {
+        let mut inner = self.inner.lock().expect("poisoned");
+        match inner.get(&record.payment_id) {
+            // Same fence DynamoDB applies: only the row this call wrote.
+            Some((held, _)) if held == token => {
+                inner.insert(record.payment_id.clone(), (token.clone(), record.clone()));
+                Ok(())
+            }
+            _ => Err(RegistryError::AlreadyAnchored),
+        }
     }
 
     async fn get(&self, payment_id: &str) -> Result<EvidenceRecord, RegistryError> {
@@ -157,7 +225,7 @@ impl EvidenceRegistry for MemoryEvidenceRegistry {
             .lock()
             .expect("poisoned")
             .get(payment_id)
-            .cloned()
+            .map(|(_, record)| record.clone())
             .ok_or(RegistryError::NotFound)
     }
 
@@ -211,9 +279,24 @@ fn ladder_condition(authority: u8) -> String {
     }
 }
 
-#[async_trait]
-impl EvidenceRegistry for DynamoEvidenceRegistry {
-    async fn put(&self, record: &EvidenceRecord) -> Result<(), RegistryError> {
+/// Top-level attribute holding the claim token.
+///
+/// Top-level and not inside `record` because a condition expression cannot see
+/// inside the serialized blob -- the same reason the ladder flags are hoisted,
+/// and the same bug class as the rung that stopped existing.
+const CLAIM_ATTR: &str = "claim";
+
+impl DynamoEvidenceRegistry {
+    /// The row this record writes, minus the condition.
+    ///
+    /// Shared by the claim and the correction so the two can never write
+    /// different shapes for the same record.
+    fn row(
+        &self,
+        record: &EvidenceRecord,
+        token: &ClaimToken,
+    ) -> Result<aws_sdk_dynamodb::operation::put_item::builders::PutItemFluentBuilder, RegistryError>
+    {
         use aws_sdk_dynamodb::types::AttributeValue;
 
         let body = serde_json::to_string(record)
@@ -228,7 +311,8 @@ impl EvidenceRegistry for DynamoEvidenceRegistry {
             .item(
                 "anchored_at",
                 AttributeValue::N(record.anchored_at.to_string()),
-            );
+            )
+            .item(CLAIM_ATTR, AttributeValue::S(token.as_str().to_string()));
 
         // Let DynamoDB expire the row in step with the retention promise, so the
         // index cannot outlive the bytes it points at and start answering
@@ -246,13 +330,9 @@ impl EvidenceRegistry for DynamoEvidenceRegistry {
         // attribute nobody writes is not a guard, it is the constant `true`.
         //
         // That is exactly how rung 1 stopped existing. `verified` was hoisted
-        // here and `signed` was not, so `attribute_not_exists(signed)` was
-        // permanently true, the `unsigned` half of rung 1's condition was a
-        // tautology, and any identity-committed claim could take the slot from
-        // any other one. Free to mount -- `paymentId` is keccak256 over public
-        // chain data and a rung-1 claim costs a self-signature over an address
-        // the claimant types into its own request -- and permanently open for
-        // every seller that cannot reach rung 2, which is all of Solana.
+        // and `signed` was not, so the `unsigned` half of rung 1's condition
+        // was a tautology and any identity-committed claim could take the slot
+        // from any other one.
         //
         // The two lists are one list on purpose. See
         // `every_flag_the_ladder_reads_is_a_flag_the_writer_hoists`.
@@ -260,21 +340,18 @@ impl EvidenceRegistry for DynamoEvidenceRegistry {
             req = req.item(name, AttributeValue::Bool(value));
         }
 
-        // One payment anchors once -- but a claim nobody proved must never lock
-        // out the seller who can prove it.
-        //
-        // A verified anchor may supersede an unverified one; anything else is
-        // refused. Without that asymmetry the anti-replay became a weapon:
-        // whoever anchored first owned the evidence forever, and the legitimate
-        // seller got a permanent 409 while the attacker's artifact was the one
-        // that existed in a dispute.
-        //
-        // `attribute_not_exists` on each flag is load-bearing, not defensive:
-        // every item written before these flags existed LACKS them, and in
-        // DynamoDB a comparison against a missing attribute is false. Testing
-        // only `verified = :f` therefore refused to supersede exactly the
-        // legacy records that most needed it -- the rule would have read as
-        // working in the in-memory tests and done nothing against the table.
+        Ok(req)
+    }
+}
+
+#[async_trait]
+impl EvidenceRegistry for DynamoEvidenceRegistry {
+    async fn put(&self, record: &EvidenceRecord) -> Result<ClaimToken, RegistryError> {
+        use aws_sdk_dynamodb::types::AttributeValue;
+
+        let token = ClaimToken::mint();
+        let mut req = self.row(record, &token)?;
+
         req = req.condition_expression(ladder_condition(record.authority()));
         if record.authority() > 0 {
             req = req.expression_attribute_values(":f", AttributeValue::Bool(false));
@@ -292,6 +369,38 @@ impl EvidenceRegistry for DynamoEvidenceRegistry {
             }
             warn!(error = %service_error, "DX402 registry put_item failed");
             RegistryError::Unavailable(format!("dynamodb put_item: {service_error}"))
+        })?;
+        Ok(token)
+    }
+
+    /// Rewrite the row this call claimed -- and only that row.
+    ///
+    /// A full `PutItem`, not an update: the task role grants `PutItem`,
+    /// `GetItem`, `DescribeTable` and `Scan` and nothing else, so a design
+    /// built on `UpdateItem` would deploy green and answer `AccessDenied`
+    /// forever, silently. See `terraform/environments/production/dx402.tf`.
+    async fn settle(
+        &self,
+        record: &EvidenceRecord,
+        token: &ClaimToken,
+    ) -> Result<(), RegistryError> {
+        use aws_sdk_dynamodb::types::AttributeValue;
+
+        let req = self
+            .row(record, token)?
+            // Narrower than the ladder on purpose: this may only replace the
+            // row this very call wrote. A claim superseded mid-upload fails
+            // here, which is right -- the row is not ours any more.
+            .condition_expression(format!("{CLAIM_ATTR} = :claim"))
+            .expression_attribute_values(":claim", AttributeValue::S(token.as_str().to_string()));
+
+        req.send().await.map_err(|e| {
+            let service_error = e.into_service_error();
+            if service_error.is_conditional_check_failed_exception() {
+                return RegistryError::AlreadyAnchored;
+            }
+            warn!(error = %service_error, "DX402 registry settle failed");
+            RegistryError::Unavailable(format!("dynamodb settle: {service_error}"))
         })?;
         Ok(())
     }
@@ -372,6 +481,7 @@ mod tests {
             wrapped_cek: None,
             verified: false,
             signed: false,
+            reference: None,
         }
     }
 

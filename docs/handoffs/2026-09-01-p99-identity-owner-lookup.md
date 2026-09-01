@@ -119,3 +119,70 @@ Todo en `src/handlers.rs`.
   el p99, pero no hacía falta para cerrar esto.
 - Falta verificar en producción. Criterio: `/identity/celo/owner/<addr>` en frío
   por debajo de 1s, y las dos alarmas en OK 30 minutos seguidos.
+
+---
+
+## Adenda 2.4.0 — el arreglo estaba a medias, y por mi culpa
+
+2.2.0 salió a producción a las 14:10 UTC. Medido con 50 minutos de tráfico
+orgánico (14:20-15:05, sin binario viejo y sin mis propios requests):
+
+| | antes | 2.2.0 |
+|---|---|---|
+| p99 | 11,4s | **3,5-5,2s** |
+| p90 | 4,7s | **0,4-1,7s** |
+| p50 | 0,048s | 0,055s |
+
+Mejora real, ~2,5x. **Pero `p99-early` volvió a ALARM**, y la causa fue algo que
+introduje yo en el mismo commit.
+
+### El defecto
+
+`ScanOrder::AnyMatch` barría de ids altos a bajos, apoyado en "los agentes recién
+registrados tienen id alto". Medí dos direcciones de Base que dieron 58.585 y
+60.720 y generalicé.
+
+La distribución real, de 3h de logs de producción:
+
+| red | n | mediana | posición |
+|---|---|---|---|
+| celo | 569 | 9.732 de 9.802 | batch 5 de 5 — arriba |
+| monad | 457 | 10.183 | batch 6 de 6 — arriba |
+| ethereum | 361 | 46.997 | arriba |
+| polygon/optimism/avalanche/arbitrum/skale | ~2.400 | 529-1.790 | 1-2 batches |
+| **base** | **820** | **18.897 de 83.984** | **batch 10 de 42 — ABAJO** |
+
+Acertaba en 8 de 9. Fallaba en la única con 42 batches y la de más tráfico: la
+consulta típica de Base quedaba 33ª de 42, más de ocho waves. Por eso los lentos
+que quedaron eran todos `/identity/base/owner/...`, entre 4 y 9,6s.
+
+**Es la misma forma exacta del bug que este documento describe**: un supuesto
+plausible sobre la cadena, nunca contrastado contra ella, que se ve correcto en
+la muestra que uno mismo eligió. El original duró tres días; este, seis horas.
+
+### El arreglo
+
+`SCAN_HINT_CACHE`: el scan recuerda en qué agente encontró el último match de ese
+registry y arranca por ese batch, expandiéndose hacia los dos lados. **No supone
+nada: mide.** Si mañana EM registra agentes cerca de 84.000, el hint los sigue
+solo.
+
+Sin hint todavía aprendido, expansión bidireccional desde los dos extremos, para
+que ningún extremo sea patológico. El peor caso pasa de "todo el registry" a "la
+mitad".
+
+La corrección no se toca: con `balanceOf == 1` cualquier match sigue siendo el
+mínimo, así que el orden sólo cambia cuánto tarda la respuesta, nunca cuál es.
+
+La propiedad que no puede romperse es que el orden sea una **permutación** de los
+batches: un índice perdido no falla ruidosamente, se saltea una porción del
+registry y responde "no registrado", que es lo que los llamadores persisten. El
+test la verifica exhaustivamente para 1..45 batches contra cada posición de hint,
+incluidas las de fuera de rango.
+
+### Por qué no simplemente "ascendente"
+
+Ascendente hoy sería mejor que descendente para Base. Pero es otro supuesto sobre
+la distribución, correcto por casualidad: el día que EM registre agentes cerca del
+techo, esos pasan a ser los lentos y volvemos acá. El hint no elige un extremo.
+

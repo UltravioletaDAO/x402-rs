@@ -7317,6 +7317,128 @@ impl ScanOrder {
     }
 }
 
+/// How long a scan hint stays usable.
+///
+/// A wrong hint costs latency, never correctness, so this can be long. It is
+/// refreshed on every successful `AnyMatch` scan, so an active registry keeps
+/// its hint warm and a quiet one simply pays a cold scan once.
+const SCAN_HINT_TTL: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// Where the last `AnyMatch` scan found a match, per `(network, registry)`.
+///
+/// The point of this cache is to stop GUESSING where agents live.
+///
+/// The first version of the reordering assumed "recently registered agents have
+/// high IDs" and swept high-to-low. Measured against three hours of production
+/// logs that holds on eight of nine networks -- and fails on the one that
+/// matters. Base carries the most owner lookups (820 in 3h), is the only
+/// registry big enough for the order to matter (42 batches), and its median
+/// resolved agent sits at 18,897 of 83,984: batch 10 of 42, which high-to-low
+/// reaches almost last. That put `/identity/base/owner/...` at 4-9.6s while
+/// every other network answered in one wave.
+///
+/// The assumption was plausible, was never checked against the traffic, and
+/// looked right in the two addresses that happened to get sampled -- the same
+/// shape as the `totalSupply()` defect this module was fixing in the first
+/// place. So this does not assume: it remembers what the last lookup actually
+/// found and starts there.
+#[allow(clippy::type_complexity)]
+static SCAN_HINT_CACHE: Lazy<
+    dashmap::DashMap<
+        (crate::network::Network, alloy::primitives::Address),
+        (u64, std::time::Instant),
+    >,
+> = Lazy::new(dashmap::DashMap::new);
+
+/// The agent ID the last successful `AnyMatch` scan of this registry found.
+fn scan_hint(
+    network: crate::network::Network,
+    registry: alloy::primitives::Address,
+) -> Option<u64> {
+    let entry = SCAN_HINT_CACHE.get(&(network, registry))?;
+    let (agent_id, seen_at) = *entry;
+    (seen_at.elapsed() < SCAN_HINT_TTL).then_some(agent_id)
+}
+
+/// Record where a scan found its match, so the next one starts there.
+fn store_scan_hint(
+    network: crate::network::Network,
+    registry: alloy::primitives::Address,
+    agent_id: u64,
+) {
+    SCAN_HINT_CACHE.insert((network, registry), (agent_id, std::time::Instant::now()));
+}
+
+/// The order to examine batches in for an `AnyMatch` scan.
+///
+/// Returns indices into `ranges`, and it is ALWAYS a permutation of them: every
+/// batch appears exactly once. That property is the one that cannot break --
+/// a missing index silently skips a slice of the registry, and a skipped agent
+/// is answered as "not registered", which callers persist.
+///
+/// With a `hint`, the batch holding it goes first and the rest fan out by
+/// distance from it. Without one, the batches alternate from the high end and
+/// the low end, so neither extreme is the pathological case: the worst a
+/// hintless scan can cost is half the registry rather than all of it.
+fn any_match_batch_order(ranges: &[(u64, u64)], hint: Option<u64>) -> Vec<usize> {
+    let n = ranges.len();
+    if n == 0 {
+        return Vec::new();
+    }
+
+    if let Some(hint) = hint {
+        // The batch holding the hint, or the nearest one when the hint fell
+        // outside the range being scanned (the registry grew, or this is the
+        // tail rescan).
+        let start = ranges
+            .iter()
+            .position(|(first, last)| hint >= *first && hint <= *last)
+            .unwrap_or_else(|| if hint < ranges[0].0 { 0 } else { n - 1 });
+
+        let mut order = Vec::with_capacity(n);
+        order.push(start);
+        let mut step = 1usize;
+        while order.len() < n {
+            if let Some(up) = start.checked_add(step) {
+                if up < n {
+                    order.push(up);
+                }
+            }
+            if order.len() == n {
+                break;
+            }
+            if let Some(down) = start.checked_sub(step) {
+                order.push(down);
+            }
+            step += 1;
+        }
+        return order;
+    }
+
+    // No hint: interleave the two ends, high first. High first because eight of
+    // the nine measured networks keep their live agents at the top of the
+    // registry -- but interleaved, so the ninth is not paying for that.
+    let mut order = Vec::with_capacity(n);
+    let mut low = 0usize;
+    let mut high = n - 1;
+    loop {
+        order.push(high);
+        if order.len() == n {
+            break;
+        }
+        order.push(low);
+        if order.len() == n {
+            break;
+        }
+        low += 1;
+        high -= 1;
+        if low > high {
+            break;
+        }
+    }
+    order
+}
+
 /// Batches issued CONCURRENTLY per wave by [`scan_range_for_owner`].
 ///
 /// The scan stops at the first match, so a wave can do work a strictly serial
@@ -7786,6 +7908,7 @@ async fn scan_range_for_owner(
     first: u64,
     last: u64,
     order: ScanOrder,
+    hint: Option<u64>,
 ) -> Result<Option<u64>, String> {
     if first > last {
         return Ok(None);
@@ -7809,9 +7932,17 @@ async fn scan_range_for_owner(
     //
     // Under `AnyMatch` the owner holds exactly one token, so there is only one
     // match to find and the order cannot change the answer -- only how soon it
-    // arrives. Reversing puts the newest agents first.
+    // arrives. So the batches are reordered to start where the last match was
+    // actually found. See [`any_match_batch_order`] for why that is measured
+    // rather than assumed.
     if order == ScanOrder::AnyMatch {
-        ranges.reverse();
+        let sequence = any_match_batch_order(&ranges, hint);
+        debug_assert_eq!(
+            sequence.len(),
+            ranges.len(),
+            "the batch order must be a permutation: a missing batch silently skips agents"
+        );
+        ranges = sequence.into_iter().map(|i| ranges[i]).collect();
     }
 
     for wave in ranges.chunks(OWNER_SCAN_WAVE) {
@@ -7915,13 +8046,15 @@ async fn resolve_first_token_by_owner(
     // Step 2: scan ascending, stopping at the first match so the lowest ID is
     // returned and the common case stays cheap.
     let order = ScanOrder::for_balance(known_balance);
+    let hint = scan_hint(network, registry);
     if let Some(agent_id) =
-        scan_range_for_owner(provider, registry, target, 1, max_id, order).await?
+        scan_range_for_owner(provider, registry, target, 1, max_id, order, hint).await?
     {
         OWNER_LOOKUP_CACHE.insert(
             (network, registry, target),
             (agent_id, std::time::Instant::now()),
         );
+        store_scan_hint(network, registry, agent_id);
         return Ok(Some(agent_id));
     }
 
@@ -7940,12 +8073,14 @@ async fn resolve_first_token_by_owner(
                 "Cached registry bound was stale; scanning the tail"
             );
             if let Some(agent_id) =
-                scan_range_for_owner(provider, registry, target, max_id + 1, fresh, order).await?
+                scan_range_for_owner(provider, registry, target, max_id + 1, fresh, order, hint)
+                    .await?
             {
                 OWNER_LOOKUP_CACHE.insert(
                     (network, registry, target),
                     (agent_id, std::time::Instant::now()),
                 );
+                store_scan_hint(network, registry, agent_id);
                 return Ok(Some(agent_id));
             }
         }
@@ -10531,22 +10666,174 @@ mod owner_scan_tests {
         );
     }
 
-    /// Reversing the batches must still cover the span exactly -- the same
-    /// tiling, walked the other way.
+    /// THE property. The batch order must always be a permutation: every batch
+    /// exactly once, none invented, none dropped.
+    ///
+    /// A dropped index does not fail loudly -- it skips a slice of the registry,
+    /// the scan reports no match, and the caller is told the address is not
+    /// registered. Checked exhaustively across sizes and hint positions,
+    /// including hints that fall outside the range entirely.
     #[test]
-    fn reversing_the_batches_covers_the_same_span() {
-        let ascending = scan_batch_ranges(1, 83_984);
-        let mut descending = ascending.clone();
+    fn the_batch_order_is_always_a_permutation() {
+        for n in 1usize..=45 {
+            let ranges = scan_batch_ranges(1, (n as u64) * OWNER_SCAN_BATCH);
+            assert_eq!(ranges.len(), n);
+
+            let mut hints: Vec<Option<u64>> = vec![None];
+            // One hint inside every batch, plus two outside the range.
+            for (first, last) in &ranges {
+                hints.push(Some(*first));
+                hints.push(Some(*last));
+            }
+            hints.push(Some(0));
+            hints.push(Some(u64::MAX));
+
+            for hint in hints {
+                let order = any_match_batch_order(&ranges, hint);
+                let mut sorted = order.clone();
+                sorted.sort_unstable();
+                sorted.dedup();
+                assert_eq!(
+                    sorted.len(),
+                    n,
+                    "n={n} hint={hint:?} produced {order:?}, which is not a permutation"
+                );
+                assert_eq!(sorted, (0..n).collect::<Vec<_>>(), "n={n} hint={hint:?}");
+            }
+        }
+    }
+
+    /// The batch holding the hint is examined FIRST -- that is the whole point.
+    #[test]
+    fn the_hint_batch_is_examined_first() {
+        let ranges = scan_batch_ranges(1, 83_984);
+        // Base's measured median resolved agent, 2026-09-01.
+        let order = any_match_batch_order(&ranges, Some(18_897));
+        let (first, last) = ranges[order[0]];
+        assert!(
+            18_897 >= first && 18_897 <= last,
+            "the first batch examined ({first}..={last}) does not hold the hint"
+        );
+    }
+
+    /// The regression this exists for, in the numbers it actually happened in.
+    ///
+    /// Base held 83,984 agents on 2026-09-01 and its median resolved agent was
+    /// 18,897: batch 10 of 42. Sweeping high-to-low reached it 33rd, which is
+    /// where `/identity/base/owner/...` spent 4-9.6s. With the hint learned it
+    /// must land in the FIRST wave.
+    #[test]
+    fn the_measured_base_traffic_lands_in_the_first_wave() {
+        let ranges = scan_batch_ranges(1, 83_984);
+        assert_eq!(ranges.len(), 42, "the Base registry should be 42 batches");
+
+        let order = any_match_batch_order(&ranges, Some(18_897));
+        let position = order
+            .iter()
+            .position(|i| {
+                let (first, last) = ranges[*i];
+                18_897 >= first && 18_897 <= last
+            })
+            .expect("the hint's batch must be in the order");
+        assert!(
+            position < OWNER_SCAN_WAVE,
+            "the measured Base median is examined at position {position}, outside the first wave"
+        );
+
+        // And what the previous version did, for the record: high-to-low
+        // reached that batch 33rd, more than eight waves in.
+        let mut descending: Vec<usize> = (0..ranges.len()).collect();
         descending.reverse();
-        assert_eq!(descending.len(), ascending.len());
+        let old_position = descending
+            .iter()
+            .position(|i| {
+                let (first, last) = ranges[*i];
+                18_897 >= first && 18_897 <= last
+            })
+            .unwrap();
+        assert!(
+            old_position >= 8 * OWNER_SCAN_WAVE,
+            "this test is calibrated against the high-to-low sweep costing 8+ waves"
+        );
+    }
 
-        let mut sorted = descending.clone();
-        sorted.sort_unstable();
-        assert_eq!(sorted, ascending, "reversing lost or duplicated a batch");
+    /// Without a hint, both ends must be reached before the middle: neither
+    /// extreme may be the pathological case.
+    ///
+    /// A single direction always has a bad end, and picking which end is a bet
+    /// on where agents live. That bet is what broke Base.
+    #[test]
+    fn without_a_hint_neither_end_is_pathological() {
+        let ranges = scan_batch_ranges(1, 83_984);
+        let order = any_match_batch_order(&ranges, None);
+        let last_index = ranges.len() - 1;
 
-        // And the newest agents really are in the first batch examined: this is
-        // the entire point of the reversal.
-        assert_eq!(descending[0].1, 83_984);
+        let top = order.iter().position(|i| *i == last_index).unwrap();
+        let bottom = order.iter().position(|i| *i == 0).unwrap();
+        assert!(top < OWNER_SCAN_WAVE, "the top batch waits {top} positions");
+        assert!(
+            bottom < OWNER_SCAN_WAVE,
+            "the bottom batch waits {bottom} positions"
+        );
+
+        // The middle is what pays instead, which is the intended trade.
+        let middle = order.iter().position(|i| *i == last_index / 2).unwrap();
+        assert!(middle > top && middle > bottom);
+    }
+
+    /// A hint from before the registry grew, or from outside the tail being
+    /// rescanned, must clamp rather than panic or drop batches.
+    #[test]
+    fn a_hint_outside_the_range_clamps() {
+        let tail = scan_batch_ranges(80_001, 83_984);
+        for hint in [1u64, 18_897, u64::MAX] {
+            let order = any_match_batch_order(&tail, Some(hint));
+            let mut sorted = order.clone();
+            sorted.sort_unstable();
+            assert_eq!(sorted, (0..tail.len()).collect::<Vec<_>>(), "hint={hint}");
+        }
+    }
+
+    /// The hint is per (network, registry), like the bound: the ERC-8004
+    /// registries share one address across chains, so a Base hint must never
+    /// steer a Celo scan.
+    #[test]
+    fn the_scan_hint_does_not_leak_across_networks() {
+        let registry = alloy::primitives::Address::repeat_byte(0xEF);
+        SCAN_HINT_CACHE.remove(&(crate::network::Network::Base, registry));
+        SCAN_HINT_CACHE.remove(&(crate::network::Network::Celo, registry));
+
+        store_scan_hint(crate::network::Network::Base, registry, 18_897);
+        assert_eq!(
+            scan_hint(crate::network::Network::Base, registry),
+            Some(18_897)
+        );
+        assert_eq!(
+            scan_hint(crate::network::Network::Celo, registry),
+            None,
+            "Celo must not inherit Base's hint from the shared registry address"
+        );
+
+        SCAN_HINT_CACHE.remove(&(crate::network::Network::Base, registry));
+    }
+
+    /// The hint moves with the traffic: the most recent match wins, unlike the
+    /// bound, which only ever grows.
+    #[test]
+    fn the_scan_hint_follows_the_latest_match() {
+        let registry = alloy::primitives::Address::repeat_byte(0xBA);
+        let network = crate::network::Network::Optimism;
+        SCAN_HINT_CACHE.remove(&(network, registry));
+
+        store_scan_hint(network, registry, 60_720);
+        store_scan_hint(network, registry, 18_897);
+        assert_eq!(
+            scan_hint(network, registry),
+            Some(18_897),
+            "a later, lower match must replace the hint -- traffic moves, the bound does not"
+        );
+
+        SCAN_HINT_CACHE.remove(&(network, registry));
     }
 
     /// A zero balance with nothing found is a truthful "owns nothing".

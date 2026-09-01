@@ -1,5 +1,93 @@
 # Changelog
 
+## [2.3.0] - 2026-09-01
+
+### Fixed
+
+- **The signed receipt could name an object that never existed.** DX402
+  predicted the evidence pointer with `pointer_for()` *before* uploading, signed
+  an EIP-712 receipt over the prediction, recorded it, and then discarded the
+  pointer `put()` actually returned. `FallbackEvidenceStore::pointer_for` spells
+  the contract out -- *"if the write then falls back, `put` returns the
+  fallback's pointer and the caller records that one"* -- and its only caller
+  did not.
+
+  Production runs the `ipfs` backend, which is Pinata with S3 behind it, so one
+  Pinata hiccup -- a 10s timeout, an expired JWT, any 5xx -- left the bytes
+  safely in S3 while the record and the signed receipt both named an IPFS object
+  that never existed. Reading it fails silently by design: the fallback store
+  treats the primary's `NotFound` as a verdict and never retries, and even if it
+  did, the S3 pointer parser rejects an `ipfs+` pointer as foreign. The anchor
+  returned 201, the receipt carried our signature, and the evidence was
+  unreachable forever with nothing anywhere to say so.
+
+  The v1.82.0 anti-hijack ordering is untouched -- claim the slot, and only then
+  write bytes. The correction sits strictly below it, fenced by a claim token
+  whose condition is *narrower* than the authority ladder: it matches only the
+  row this call wrote, so a claim superseded mid-upload is refused rather than
+  overwriting the winner. The token is a top-level DynamoDB attribute, because a
+  condition expression cannot read inside the serialized `record` -- the same
+  reason the ladder flags are hoisted. The correction is a full `PutItem`, not
+  an update: the task role grants `PutItem`, `GetItem`, `DescribeTable` and
+  `Scan` and nothing else, so a design built on `UpdateItem` would have deployed
+  green and answered `AccessDenied` forever, silently.
+
+  Re-signing happens only when the pointer changes: `pointer` is the third field
+  of the EIP-712 struct, while `backend` is not in the type hash at all.
+
+  This also closes a latent one that needs no Pinata failure: `cid_v1_raw` is
+  valid only for content that fits one block, so a sealed body over 256 KiB
+  produced a predicted CID that disagreed with the real one. We no longer trust
+  the prediction.
+
+- **`backend` was free text nobody checked.** A request could ask for `arweave`
+  -- which has no implementation, is absent from `Cargo.lock`, and has never
+  held a byte -- and the record plus every later read of `/dx402/evidence` would
+  claim it. Not a signed lie, since `backend` is not in the type hash, but a
+  persisted one, which is worse for anybody reading the index to find their
+  evidence. Now refused with `dx402_backend_unavailable`, and the backend
+  recorded is the one that *took the bytes*, not the one declared.
+
+- **A chunked response had no ceiling at all.** `buffer_body` skipped only
+  bodies that *announce* their size; a chunked one announces nothing, sailed
+  past the guard, and `collect()` then bought however many bytes the handler
+  chose to send. For a streaming handler -- exactly the large-body case --
+  `max_body_bytes` was not a memory bound, and `EvidenceBudget`, which exists to
+  prevent that OOM, was charging a number the body had no obligation to honour.
+  Now read frame by frame and stopped at the limit, with everything already
+  buffered handed back *ahead of* the untouched remainder.
+  `http_body_util::Limited` looks made for this and is not: it reports the
+  overflow as a stream error, and the error arm has nothing left to deliver --
+  which would answer a paid request with an empty body, the one outcome this
+  path exists to prevent.
+
+### Added
+
+- **`POST /dx402/repair/{paymentId}`** -- admin-gated audit of one anchor, with
+  `?write=true` to correct a pointer that names nothing. Its own
+  `DX402_ADMIN_TOKEN`, deliberately not shared with the bazaar or ERC-8004
+  tokens: this one re-signs a facilitator attestation. **404 when no token is
+  configured**, so the route is indistinguishable from absent.
+
+  `write` defaults to false and reports `repairable`. Auditing is safe and
+  rewriting a signed attestation is not, so the dangerous half has to be asked
+  for by name -- otherwise the safe-looking call would be the dangerous one. And
+  `lost` is never papered over: a record pointing at a real absence is telling
+  the truth.
+
+- **`scripts/dx402-audit-anchors.py`** -- scans the registry and classifies
+  every anchor. Nobody currently knows how many of the existing ones carry a
+  pointer that resolves to nothing; that number is the deliverable. A transport
+  failure is its own verdict and is never folded into `lost`: "we could not
+  check" must not be recorded as "the evidence is gone", which is precisely the
+  mistake INC-2026-07-21 was, one subsystem over.
+
+- **`dx402_sealed_too_large`** names the real ceiling (48,000 bytes) instead of
+  leaving the body-limit middleware's bare `413`, which names no field and never
+  mentions DX402. It covers the band a seller lands in when merely over the
+  line; far above, the middleware still cuts first, because it is the outermost
+  layer on the router.
+
 ## [2.0.1] - 2026-08-31
 
 ### Fixed - el timeout del reenvio abortaba antes que el holder

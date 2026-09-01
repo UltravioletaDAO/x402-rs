@@ -749,6 +749,13 @@ impl EvmProvider {
                         (Some(nonce), true) => {
                             self.nonce_manager.release_nonce(from_address, nonce).await
                         }
+                        // `nonce too high` is the one failure that tells us the
+                        // chain is BEHIND our counter, so the high-water mark is
+                        // what is wrong and must go. Anything else keeps the
+                        // conservative reset that preserves it.
+                        _ if is_nonce_too_high(&error_str) => {
+                            self.nonce_manager.resync_to_chain(from_address).await
+                        }
                         _ => self.nonce_manager.reset_nonce(from_address).await,
                     }
 
@@ -882,6 +889,25 @@ fn is_pre_broadcast_rejection(error: &str) -> bool {
 /// separate string lists.
 pub(crate) fn is_mempool_full(error: &str) -> bool {
     error.to_lowercase().contains("txpool is full")
+}
+
+/// Whether the node rejected the transaction because OUR nonce is ahead of
+/// what the chain has: geth's `nonce too high: address 0x.., tx: N state: M`.
+///
+/// This is the one nonce error that is positive evidence about WHO is wrong.
+/// `nonce too low` and `replacement underpriced` mean the chain is at or past
+/// our nonce -- something of ours landed, and a high-water mark protecting an
+/// in-flight sibling is still meaningful. `nonce too high` means the opposite:
+/// the node has no record of the nonces between its state and ours, so the mark
+/// is pinned on transactions that will never be mined.
+///
+/// Separated from [`is_nonce_error`] because the recovery differs. Both retry;
+/// only this one may discard the high-water mark. See
+/// [`PendingNonceManager::resync_to_chain`] for why that distinction is what
+/// keeps a failure burst from wedging the signer permanently.
+pub(crate) fn is_nonce_too_high(error: &str) -> bool {
+    let lower = error.to_lowercase();
+    lower.contains("nonce") && lower.contains("too high")
 }
 
 /// Check if a transport error is a nonce-related error that can be retried.
@@ -2517,6 +2543,54 @@ impl PendingNonceManager {
         }
     }
 
+    /// Drops the cached nonce AND the high-water mark, so the next allocation
+    /// takes whatever the chain reports.
+    ///
+    /// Only for `nonce too high`, which is proof the chain is BEHIND our
+    /// counter -- see [`is_nonce_too_high`].
+    ///
+    /// [`reset_nonce`](Self::reset_nonce) deliberately preserves the mark so a
+    /// refetched chain nonce cannot rewind underneath an in-flight sibling, and
+    /// leans on [`NONCE_TRUST_CHAIN_AFTER`] to release it eventually. That
+    /// backstop cannot fire during a sustained failure burst: every failed
+    /// attempt allocates a nonce, every allocation refreshes `last_allocated`,
+    /// and so the 120-second idle window never elapses. Each failure then
+    /// resyncs to `high_water + 1`, which is one PAST the nonce that just
+    /// failed -- a ratchet that climbs and never returns.
+    ///
+    /// Measured in production 2026-09-01, immediately after a restart had
+    /// cleared the state: the first failure opened a gap of 1 (tx 1556 against
+    /// chain state 1555), one second later the gap was 31, and 65 seconds later
+    /// it was 48. Restarting cured it for about ten minutes each time. Two
+    /// restarts and two deploys that day all healed it temporarily and none
+    /// fixed it.
+    ///
+    /// The risk of trusting the chain here is a sibling that this node has not
+    /// seen yet, which would make both transactions claim one nonce and fail as
+    /// `replacement transaction underpriced` -- a RETRYABLE error, and one the
+    /// retry loop above already handles. The risk of not trusting it is a signer
+    /// wedged until someone notices and restarts the service. That trade is why
+    /// this exists.
+    pub async fn resync_to_chain(&self, address: Address) {
+        let state = self.nonces.get(&address).map(|r| Arc::clone(r.value()));
+        if let Some(state) = state {
+            let mut state = state.lock().await;
+            let discarded = state.high_water;
+            state.next = None;
+            state.high_water = None;
+            // `info!`, not `debug!`: production runs at `info`, and this is the
+            // only signal that the ratchet was broken rather than merely
+            // survived. The defect it fixes was invisible for hours because the
+            // line that would have shown it was `debug!` (same lesson as
+            // `release_nonce` and as the p99 incident the same day).
+            tracing::info!(
+                %address,
+                discarded_high_water = ?discarded,
+                "nonce is ahead of the chain; discarding the high-water mark and resyncing"
+            );
+        }
+    }
+
     pub async fn reset_nonce(&self, address: Address) {
         // Clone the `Arc` and drop the dashmap guard BEFORE the await point,
         // exactly as `get_next_nonce` does. A dashmap shard guard (here the read
@@ -2720,6 +2794,95 @@ mod tests {
 
         assert_eq!(read_next(&manager, test_address).await, None);
         assert_eq!(read_high_water(&manager, test_address).await, Some(52));
+    }
+
+    /// `nonce too high` is the one nonce error that says the CHAIN is behind
+    /// us, so it must be told apart from the ones that say the opposite.
+    #[test]
+    fn only_nonce_too_high_proves_the_chain_is_behind() {
+        // The exact phrasing observed in production on 2026-09-01.
+        assert!(is_nonce_too_high(
+            "nonce too high: address 0x1030..13C7, tx: 1603 state: 1555"
+        ));
+        assert!(is_nonce_too_high("Nonce Too High"));
+
+        // These mean the chain is at or PAST our nonce: something of ours
+        // landed, so the high-water mark still protects a real sibling.
+        assert!(!is_nonce_too_high(
+            "nonce too low: next nonce 4604, tx nonce 4603"
+        ));
+        assert!(!is_nonce_too_high("replacement transaction underpriced"));
+        assert!(!is_nonce_too_high("already known"));
+        assert!(!is_nonce_too_high("nonce has already been used"));
+
+        // And it must still be a retryable nonce error, or the retry loop
+        // would never reach the recovery.
+        assert!(is_nonce_error(
+            "nonce too high: address 0x1030..13C7, tx: 1603 state: 1555"
+        ));
+    }
+
+    /// THE regression. `resync_to_chain` must drop the high-water mark, or the
+    /// ratchet returns.
+    ///
+    /// Production, 2026-09-01, minutes after a restart had cleared the state:
+    /// the first failure opened a gap of 1 (tx 1556 against chain state 1555),
+    /// one second later it was 31, and 65 seconds later 48. `reset_nonce`
+    /// preserves the mark and leans on the 120-second idle window to release
+    /// it, but a sustained failure burst refreshes `last_allocated` on every
+    /// attempt, so that window never elapses.
+    #[tokio::test]
+    async fn resync_to_chain_discards_the_mark_that_pins_the_ratchet() {
+        let manager = PendingNonceManager::default();
+        let test_address = address!("0000000000000000000000000000000000000003");
+
+        // The measured state: the chain is at 1555, we have climbed to 1603.
+        seed_state(&manager, test_address, Some(1604), Some(1603), None).await;
+        manager.resync_to_chain(test_address).await;
+
+        assert_eq!(read_next(&manager, test_address).await, None);
+        assert_eq!(
+            read_high_water(&manager, test_address).await,
+            None,
+            "the high-water mark must be discarded, or the next resync returns \
+             high_water + 1 and the ratchet climbs again"
+        );
+
+        // With no mark, a resync takes the chain's own count -- which is the
+        // whole point.
+        assert_eq!(resync_target(1555, None, None), 1555);
+    }
+
+    /// `reset_nonce` must KEEP preserving the mark. The two recoveries answer
+    /// different evidence and collapsing them would undo the protection against
+    /// rewinding underneath an in-flight sibling.
+    #[tokio::test]
+    async fn reset_and_resync_stay_different_recoveries() {
+        let manager = PendingNonceManager::default();
+        let addr = address!("0000000000000000000000000000000000000004");
+
+        seed_state(&manager, addr, Some(53), Some(52), None).await;
+        manager.reset_nonce(addr).await;
+        assert_eq!(
+            read_high_water(&manager, addr).await,
+            Some(52),
+            "reset_nonce must still preserve the mark"
+        );
+
+        manager.resync_to_chain(addr).await;
+        assert_eq!(read_high_water(&manager, addr).await, None);
+    }
+
+    /// The ratchet itself, spelled out: while a mark survives, every resync
+    /// hands back one PAST it, so each failure climbs.
+    #[test]
+    fn a_surviving_mark_is_what_makes_the_ratchet_climb() {
+        // Chain stuck at 1555; the mark keeps climbing with each failed try.
+        assert_eq!(resync_target(1555, Some(1555), None), 1556);
+        assert_eq!(resync_target(1555, Some(1586), None), 1587);
+        assert_eq!(resync_target(1555, Some(1602), None), 1603);
+        // Drop the mark and it collapses back to the chain in one step.
+        assert_eq!(resync_target(1555, None, None), 1555);
     }
 
     /// A provider pointed at a closed port.

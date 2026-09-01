@@ -203,29 +203,6 @@ impl Dx402Config {
     }
 }
 
-/// The largest sealed blob an anchor request can carry.
-///
-/// Not a storage limit -- it is what survives the facilitator's own 64 KiB
-/// request-body cap once the ciphertext is base64'd (x4/3) and wrapped in the
-/// anchor JSON. Both SDKs already measure the SERIALIZED REQUEST against 65536
-/// rather than the plaintext, which is the right check; this is the server side
-/// of the same rule, so a caller that skips it gets an answer naming the limit
-/// instead of a bare 413 from a middleware that has never heard of DX402.
-///
-/// Deliberately below the arithmetic ceiling (~48.7 KB with minimal metadata,
-/// ~48.1 KB once `sellerSignature` and `proofOfPayment` are present): the band
-/// moves with the metadata, so the published number has to clear the widest
-/// request, not the narrowest.
-///
-/// **It does not cover every oversize request, and cannot.** The body limit is
-/// the OUTERMOST layer on the whole router (`main.rs`, and its comment says the
-/// position is deliberate), so a request above 64 KiB is cut before any handler
-/// runs and still gets the bare 413. What this covers is the band a seller
-/// actually lands in when they are merely over the line -- roughly 48 KB to
-/// 64 KiB -- which is where the confusing failures come from. Anything far
-/// above is unambiguous on its own.
-pub const MAX_SEALED_BLOB_BYTES: usize = 48_000;
-
 /// What auditing one anchor found, and what was done about it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -623,15 +600,6 @@ impl Dx402Service {
                         warn!(error = %e, payment_id = %req.payment_id, "DX402 sealed blob is not base64");
                         Dx402ErrorCode::Dx402StoreUnavailable
                     })?;
-                if blob.len() > MAX_SEALED_BLOB_BYTES {
-                    warn!(
-                        payment_id = %req.payment_id,
-                        sealed_bytes = blob.len(),
-                        limit = MAX_SEALED_BLOB_BYTES,
-                        "DX402 sealed blob is over what an anchor request can carry"
-                    );
-                    return Err(Dx402ErrorCode::Dx402SealedTooLarge);
-                }
                 Some(blob)
             }
             None => None,
@@ -1116,16 +1084,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_oversized_sealed_blob_is_named_not_just_cut() {
-        // Above the limit the body-limit middleware answers a bare 413 that
-        // names no field and never mentions DX402. Inside the band a seller
-        // actually lands in, say so ourselves with the real number.
+    async fn nothing_between_the_request_limit_and_the_blob_is_refused_twice() {
+        // A cap on the DECODED blob was added here in v2.3.0 and removed in
+        // v2.7.0, because it could not be right at any value.
+        //
+        // `RequestBodyLimitLayer` is the OUTERMOST layer on the router, so a
+        // request over 64 KiB never reaches this function. That leaves a blob
+        // cap with two options and no third: set below what the request limit
+        // allows and it refuses bodies that used to anchor -- 48,000 rejected
+        // everything from there up to 48,810, which the SDK's own test had been
+        // asserting worked -- or set above it and it is unreachable code the
+        // middleware always beats to the punch.
+        //
+        // The honest answer is that a bare 413 for an oversized anchor cannot
+        // be improved from inside the handler. This pins the range that must
+        // keep working.
         let svc = Dx402Service::in_memory(PrivateKeySigner::random());
-        let too_big = vec![0u8; MAX_SEALED_BLOB_BYTES + 1];
-        let err = svc
-            .anchor(
+        // A distinct paymentId per size: anchoring is once-only, so reusing one
+        // would fail as a duplicate and say nothing about the limit.
+        for (n, plaintext) in [47 * 1024, 48_000, 48_100].into_iter().enumerate() {
+            svc.anchor(
                 AnchorRequest {
-                    sealed: Some(base64::engine::general_purpose::STANDARD.encode(&too_big)),
+                    payment_id: format!("0x{}{}", "11".repeat(31), 20 + n),
+                    sealed: Some(
+                        base64::engine::general_purpose::STANDARD.encode(vec![0u8; plaintext]),
+                    ),
                     pointer: None,
                     ..anchor_request(EvidenceMode::Direct)
                 },
@@ -1133,24 +1116,8 @@ mod tests {
                 1_000,
             )
             .await
-            .expect_err("an oversized sealed blob must be refused by us");
-        assert!(matches!(err, Dx402ErrorCode::Dx402SealedTooLarge));
-
-        // One byte under still anchors -- the limit is a limit, not a moat.
-        svc.anchor(
-            AnchorRequest {
-                sealed: Some(
-                    base64::engine::general_purpose::STANDARD
-                        .encode(vec![0u8; MAX_SEALED_BLOB_BYTES]),
-                ),
-                pointer: None,
-                ..anchor_request(EvidenceMode::Direct)
-            },
-            8453,
-            1_000,
-        )
-        .await
-        .expect("exactly at the limit must be accepted");
+            .unwrap_or_else(|e| panic!("{plaintext} bytes used to anchor and must still: {e:?}"));
+        }
     }
 
     #[tokio::test]

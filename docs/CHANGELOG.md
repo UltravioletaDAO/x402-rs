@@ -1,5 +1,28 @@
 # Changelog
 
+## [2.7.0] - 2026-09-01
+
+### Fixed
+
+- **Removed a size cap that could not be right at any value, and was refusing
+  bodies that used to work.** v2.3.0 added `MAX_SEALED_BLOB_BYTES = 48_000` on
+  the decoded blob so an oversized anchor would get a DX402 error naming the
+  limit rather than the body-limit middleware's bare `413`.
+
+  It cannot work. `RequestBodyLimitLayer` is the outermost layer on the router,
+  so a request over 64 KiB never reaches the handler at all. That leaves the cap
+  two options and no third: below what the request limit allows, and it refuses
+  bodies that previously anchored — 48,000 rejected everything from there up to
+  48,810, which the Python SDK's own test had been asserting worked; or above
+  it, and it is unreachable code the middleware always beats.
+
+  The constant's own doc comment already said the middleware cuts first. The
+  check was added anyway. `dx402_sealed_too_large` is gone with it, and a test
+  now pins the range that must keep anchoring.
+
+  A bare `413` for an oversized anchor is not improvable from inside the
+  handler. Saying so is better than a cap that narrows what works.
+
 ## [2.6.0] - 2026-09-01
 
 ### Added

@@ -508,12 +508,6 @@ pub enum Dx402ErrorCode {
     /// one, which is worse for anybody reading the index to decide where their
     /// evidence lives.
     Dx402BackendUnavailable,
-    /// The sealed blob is larger than an anchor request can carry.
-    ///
-    /// Said by us, with the real limit in it, instead of the bare `413` the
-    /// body-limit middleware emits -- which names no field, mentions no
-    /// extension, and leaves a seller guessing whether the facilitator is down.
-    Dx402SealedTooLarge,
 }
 
 impl Dx402ErrorCode {
@@ -541,7 +535,6 @@ impl Dx402ErrorCode {
             Dx402ErrorCode::Dx402AlreadyAnchored => "dx402_already_anchored",
             Dx402ErrorCode::Dx402SignatureNotVerified => "dx402_signature_not_verified",
             Dx402ErrorCode::Dx402BackendUnavailable => "dx402_backend_unavailable",
-            Dx402ErrorCode::Dx402SealedTooLarge => "dx402_sealed_too_large",
         }
     }
 }

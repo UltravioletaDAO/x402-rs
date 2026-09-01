@@ -789,6 +789,27 @@ proposal without production usage gets discarded. Propose after real traffic.
 
 The supported-network set is `supported_networks()` in `src/erc8004/mod.rs` (currently **20**: 11 mainnets + 9 testnets, Solana included) — read it there, never from a hardcoded count. `src/openapi.rs` still claims "18 networks (10 mainnets + 8 testnets)" in four places and is stale; fix it whenever the set changes.
 
+**The owner lookup has no index behind it, and that shapes everything.** The
+registries expose no `owner -> agentId` mapping, are NOT `ERC721Enumerable`
+(`totalSupply()` **reverts on every deployed registry** -- verified on-chain
+2026-09-01 on celo and base), and SKALE caps `eth_getLogs` at 2000 blocks. So
+every cold lookup derives the registry's highest agent ID and scans `ownerOf`
+through Multicall3. Two rules follow:
+
+- **Never make a registry capability load-bearing without checking the chain.**
+  Run `python scripts/erc8004_registry_capabilities.py` first. A revision that
+  read the bound from `totalSupply()` shipped as a complete no-op -- the call
+  always reverted, so its "fallback" was the only path that ever ran -- and held
+  the facilitator's p99 at 11.4s for sixteen hours (`docs/handoffs/2026-09-01-p99-identity-owner-lookup.md`).
+- **A non-zero `balanceOf` with no token found is a CONTRADICTION, not a miss.**
+  It means the scan range was wrong. It answers 503, never 404, and `POST
+  /register` refuses to mint on it -- `Ok(None)` there used to be read as
+  permission to mint, handing a duplicate identity to someone who already had one.
+- Base held **83,984** agents on 2026-09-01 against the 192,000 the scan can
+  walk (`OWNER_SCAN_MAX_BATCHES`). Past that cap every owner lookup on that chain
+  answers 503; it warns from 75%. The fix at that point is an owner index, not a
+  bigger cap.
+
 **`/identity/:network/owner/:address` answers 404 and 503 for different things
 and callers must not collapse them.** 404 is "this address owns no agent"; 503 is
 "the lookup reached no verdict", and carries `"retryable": true`. Persisting

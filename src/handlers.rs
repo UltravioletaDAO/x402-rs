@@ -7262,7 +7262,76 @@ const OWNER_SCAN_BATCH: u64 = 2_000;
 
 /// Hard ceiling on batches per scan, so a single lookup can never turn into an
 /// unbounded RPC storm as the registry keeps growing (INC-2026-07-06).
-const OWNER_SCAN_MAX_BATCHES: u64 = 64;
+///
+/// This is a CLIFF, not a soft limit: a registry past it makes every owner
+/// lookup on that chain answer 503, permanently, on the day it is crossed.
+/// Measured 2026-09-01, the Base registry held **83,984** agents against the
+/// 128,000 the old cap of 64 could walk -- 65% consumed, on the chain
+/// Execution Market registers into. Raised to 96 (192,000 agents) so the
+/// headroom is 2.3x today rather than 1.5x, and [`discover_max_agent_id`] now
+/// warns from 75% so the cliff announces itself months out instead of arriving
+/// as an outage.
+///
+/// Raising it further is not the long-term answer -- an owner index is. The
+/// registries expose no owner -> agentId mapping, are not `ERC721Enumerable`,
+/// and SKALE caps `eth_getLogs` at 2000 blocks, which is why there is a scan
+/// here at all.
+const OWNER_SCAN_MAX_BATCHES: u64 = 96;
+
+/// Fraction of the scannable range past which a registry's size is reported as
+/// a problem rather than a fact.
+const OWNER_SCAN_HEADROOM_WARN_RATIO: u64 = 75;
+
+/// The order [`scan_range_for_owner`] must examine batches in.
+///
+/// This is a correctness knob, not a preference, and it is decided by the
+/// balance the caller already read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScanOrder {
+    /// Return the LOWEST matching ID. Batches run low-to-high and an earlier
+    /// batch outranks a later one, because the owner may hold several agents
+    /// and the contract of this lookup is the lowest.
+    LowestFirst,
+    /// The owner holds EXACTLY ONE token, so the only match there is is also
+    /// the lowest one, and the order is free.
+    ///
+    /// Spent on running high-to-low. Every agent in the traffic that motivated
+    /// this holds exactly one, and the ones being looked up are the ones
+    /// registered most recently -- which is the top of the ID range. On the
+    /// Base registry (83,984 agents on 2026-09-01) that is the difference
+    /// between walking 42 batches and hitting the answer in the first.
+    ///
+    /// Rests on `balanceOf` being truthful, which this lookup already rests on:
+    /// a zero balance is what decides not to scan at all.
+    AnyMatch,
+}
+
+impl ScanOrder {
+    /// The order implied by an owner's balance.
+    fn for_balance(balance: alloy::primitives::U256) -> Self {
+        if balance == alloy::primitives::U256::from(1) {
+            Self::AnyMatch
+        } else {
+            Self::LowestFirst
+        }
+    }
+}
+
+/// Batches issued CONCURRENTLY per wave by [`scan_range_for_owner`].
+///
+/// The scan stops at the first match, so a wave can do work a strictly serial
+/// walk would have skipped -- at most `this - 1` wasted batches. That is the
+/// whole trade, and it is worth taking: the Base registry held between 65,536
+/// and 262,144 agents on 2026-09-01, which is up to 50 batches, and fifty
+/// SERIAL Multicall3 round trips is the 3-9s Base spent inside this function
+/// while the rest of the facilitator answered in 33ms.
+///
+/// Deliberately small. Widening it multiplies the instantaneous load one
+/// request puts on the shared RPC budget, and exhausting that budget is what
+/// starved `/settle` in INC-2026-07-06. Four cuts the tail by ~4x while keeping
+/// the burst modest, and the bound cache means most lookups never scan cold at
+/// all.
+const OWNER_SCAN_WAVE: usize = 4;
 
 /// How long a successful owner -> agent ID resolution stays cached.
 ///
@@ -7310,104 +7379,399 @@ pub(crate) fn is_execution_revert(error: &str) -> bool {
         || lower.contains("invalid token")
 }
 
-/// Whether `agent_id` currently exists in the registry.
+/// Outcome of one `ownerOf` probe carried inside a Multicall3 batch.
 ///
-/// `Err` means the node returned no verdict; callers must not read that as
-/// "does not exist".
-async fn agent_token_exists(
-    provider: &crate::chain::evm::InnerProvider,
-    registry: alloy::primitives::Address,
-    agent_id: u64,
-) -> Result<bool, String> {
-    let identity = IIdentityRegistry::new(registry, provider.clone());
-    match identity
-        .ownerOf(alloy::primitives::U256::from(agent_id))
-        .call()
-        .await
-    {
-        Ok(_) => Ok(true),
-        Err(e) => {
-            let msg = format!("{e:?}");
-            if is_execution_revert(&msg) {
-                Ok(false)
-            } else {
-                Err(format!("ownerOf({agent_id}) probe was inconclusive: {msg}"))
-            }
-        }
-    }
+/// `aggregate3` with `allowFailure: true` reports a reverting sub-call as
+/// `success: false`, which for `ownerOf` means the token does not exist. A
+/// batch that never executed at all fails at the TOP level and surfaces as
+/// `Err` from [`multicall_owner_of`] -- so "absent" and "no verdict" stay
+/// distinct here exactly as they do in [`is_execution_revert`], and an
+/// unreachable RPC can never be read as proof that a token is missing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TokenProbe {
+    /// The call executed and returned this owner.
+    Owned(alloy::primitives::Address),
+    /// The call reverted: the token does not exist.
+    Absent,
 }
 
-/// Upper bound of the agent-ID range to scan, read straight from the registry.
+/// Batch `ownerOf` over an arbitrary set of agent IDs in ONE Multicall3 call.
 ///
-/// `totalSupply()` answers in ONE call what [`probe_max_agent_id`] spends ~20
-/// SEQUENTIAL `eth_call`s to discover (11 doublings plus ~9 binary-search steps
-/// on a 630-agent registry). Those round trips, not the Multicall3 scan itself,
-/// were the entire cost of this endpoint: they put celo at 7.4s average and
-/// 12.0s peak while every other route answered in 33ms (measured 2026-08-29).
+/// The single RPC primitive behind both jobs this module has -- finding the
+/// registry's highest ID ([`discover_max_agent_id`]) and finding an owner's
+/// token ([`scan_range_for_owner`]) -- so the batch limits, the decode
+/// discipline and the absent/no-verdict distinction are written once and
+/// cannot drift between them.
 ///
-/// ASSUMPTION, and it is NOT a new one: `totalSupply` counts tokens that exist,
-/// not the highest ID, so a registry with burned agents has
-/// `totalSupply < max_id`. The exponential probe plus binary search this
-/// replaces ALREADY assumed IDs run contiguously from 1 -- given a gap, the
-/// binary search converges on the gap rather than on the true maximum. Nothing
-/// here rests on an assumption the previous code did not already make, and
-/// [`resolve_first_token_by_owner`] keeps a fallback to the probe for exactly
-/// the case where the assumption does not hold.
-///
-/// `None` means the registry gave no usable answer (the call failed, or it
-/// reported zero), which sends the caller to the probe.
-async fn registry_total_supply(
+/// IDs need not be contiguous: the bound search probes a sparse ladder through
+/// the same path the dense scan uses.
+async fn multicall_owner_of(
     provider: &crate::chain::evm::InnerProvider,
+    registry: alloy::primitives::Address,
+    ids: &[u64],
+) -> Result<Vec<TokenProbe>, String> {
+    use alloy::providers::bindings::IMulticall3;
+    use alloy::providers::MULTICALL3_ADDRESS;
+    use alloy::sol_types::SolCall;
+
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    if ids.len() as u64 > OWNER_SCAN_BATCH {
+        return Err(format!(
+            "multicall of {} ownerOf calls exceeds the measured batch cap of {OWNER_SCAN_BATCH}",
+            ids.len()
+        ));
+    }
+
+    let calls: Vec<IMulticall3::Call3> = ids
+        .iter()
+        .map(|id| IMulticall3::Call3 {
+            target: registry,
+            allowFailure: true,
+            callData: IIdentityRegistry::ownerOfCall {
+                agentId: alloy::primitives::U256::from(*id),
+            }
+            .abi_encode()
+            .into(),
+        })
+        .collect();
+
+    let encoded = IMulticall3::aggregate3Call { calls }.abi_encode();
+    let tx = alloy::rpc::types::TransactionRequest::default()
+        .to(MULTICALL3_ADDRESS)
+        .input(alloy::rpc::types::TransactionInput::new(encoded.into()));
+
+    let first = ids[0];
+    let last = ids[ids.len() - 1];
+    let raw_result = provider.call(tx).await.map_err(|e| {
+        format!(
+            "Multicall3 ownerOf batch of {} ({first}..={last}) failed: {e}",
+            ids.len()
+        )
+    })?;
+
+    let results = IMulticall3::aggregate3Call::abi_decode_returns(&raw_result)
+        .map_err(|e| format!("Failed to decode multicall results: {e}"))?;
+
+    // A short return array would silently shift every ID-to-result mapping
+    // below it, which is how a scan reports the WRONG agent rather than none.
+    if results.len() != ids.len() {
+        return Err(format!(
+            "Multicall3 returned {} results for {} ownerOf calls ({first}..={last})",
+            results.len(),
+            ids.len()
+        ));
+    }
+
+    Ok(results
+        .iter()
+        .map(|r| {
+            if r.success && r.returnData.len() >= 32 {
+                // ownerOf returns an abi-encoded address: 32 bytes, left-padded.
+                TokenProbe::Owned(alloy::primitives::Address::from_slice(
+                    &r.returnData[12..32],
+                ))
+            } else {
+                TokenProbe::Absent
+            }
+        })
+        .collect())
+}
+
+/// `true` for every probe that came back with an owner.
+fn probes_present(probes: &[TokenProbe]) -> Vec<bool> {
+    probes
+        .iter()
+        .map(|p| matches!(p, TokenProbe::Owned(_)))
+        .collect()
+}
+
+/// Ceiling of the exponential ladder used to bracket the highest agent ID:
+/// `2^24`, about 16.7M agents.
+///
+/// The whole ladder is probed in ONE Multicall3 round trip, so a higher ceiling
+/// costs nothing per request -- it only widens the range the search can
+/// describe. Running off the end is an explicit `Err`, never a truncated bound:
+/// the sequential probe this replaced stopped doubling at 1,000,000 and then
+/// binary-searched inside the range it had already left, which answers with a
+/// maximum far below the real one and turns every agent above it into a 404.
+const BOUND_LADDER_MAX_EXP: u32 = 24;
+
+/// Probe points spent per refinement round.
+///
+/// Each round divides the remaining span by `this + 1`, so 1,000 points take
+/// the full `2^24` ladder span to ~16.7k, then to ~16, then to the exact
+/// answer: **at most four round trips for any registry the ladder describes**.
+///
+/// What it replaces: an exponential probe plus binary search over single
+/// `eth_call`s, ~28 of them STRICTLY IN SERIES on the celo registry. Measured
+/// 2026-09-01 at ~400ms per call against the production RPC, that was 11.2s per
+/// cold lookup and it held the p99 of the entire facilitator at 11.4s for
+/// sixteen hours.
+///
+/// Stays under [`OWNER_SCAN_BATCH`], the gas and response-size limit measured
+/// against the production RPCs.
+const BOUND_SEARCH_PROBES_PER_ROUND: u64 = 1_000;
+
+/// Hard cap on refinement rounds. Four suffice for the whole ladder; the cap
+/// exists so a registry that answers inconsistently cannot spin.
+const BOUND_SEARCH_MAX_ROUNDS: u32 = 8;
+
+/// How long a discovered registry bound stays cached, per `(network, registry)`.
+///
+/// The highest agent ID only ever GROWS, so a stale entry can only be too LOW,
+/// and too low is self-healing: the scan misses, [`resolve_first_token_by_owner`]
+/// re-derives the bound, scans the tail it could not see, and re-caches the
+/// fresh value. The TTL is therefore a backstop rather than the correctness
+/// mechanism, and it trades against one extra discovery -- never a wrong answer.
+const REGISTRY_BOUND_TTL: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Cache of `(network, registry)` -> highest known agent ID.
+///
+/// This is the entry that was missing. Every cold owner lookup used to
+/// re-derive the same registry-wide number from scratch, in series, per
+/// request -- a value that is identical for every caller and changes only when
+/// somebody registers a new agent.
+///
+/// Keyed by network as well as registry because the ERC-8004 registries are
+/// deployed at the same deterministic address on every chain, so `registry`
+/// alone would serve Base's bound for a Celo lookup.
+#[allow(clippy::type_complexity)]
+static REGISTRY_BOUND_CACHE: Lazy<
+    dashmap::DashMap<
+        (crate::network::Network, alloy::primitives::Address),
+        (u64, std::time::Instant),
+    >,
+> = Lazy::new(dashmap::DashMap::new);
+
+/// Fresh cached bound for a registry, if any.
+fn cached_registry_bound(
+    network: crate::network::Network,
     registry: alloy::primitives::Address,
 ) -> Option<u64> {
-    let identity = IIdentityRegistry::new(registry, provider.clone());
-    match identity.totalSupply().call().await {
-        Ok(supply) => {
-            let total: u64 = supply.try_into().unwrap_or(0);
-            (total > 0).then_some(total)
-        }
-        Err(e) => {
-            debug!(error = ?e, "totalSupply unavailable; falling back to the range probe");
-            None
-        }
+    let entry = REGISTRY_BOUND_CACHE.get(&(network, registry))?;
+    let (max_id, cached_at) = *entry;
+    (cached_at.elapsed() < REGISTRY_BOUND_TTL).then_some(max_id)
+}
+
+/// Record a freshly discovered bound, keeping the highest value seen.
+///
+/// Monotone on purpose: the maximum only grows, so a concurrent request that
+/// discovered a higher bound must not be walked back by one that started
+/// earlier and finished later.
+fn store_registry_bound(
+    network: crate::network::Network,
+    registry: alloy::primitives::Address,
+    max_id: u64,
+) {
+    REGISTRY_BOUND_CACHE
+        .entry((network, registry))
+        .and_modify(|slot| {
+            if max_id >= slot.0 {
+                *slot = (max_id, std::time::Instant::now());
+            }
+        })
+        .or_insert((max_id, std::time::Instant::now()));
+}
+
+/// The exponential ladder: `1, 2, 4, ... 2^BOUND_LADDER_MAX_EXP`.
+fn bound_ladder_points() -> Vec<u64> {
+    (0..=BOUND_LADDER_MAX_EXP).map(|e| 1u64 << e).collect()
+}
+
+/// Bracket the highest existing agent ID from one ladder probe.
+///
+/// Returns `(lo, hi)` with `lo` present and `hi` absent, so the true maximum
+/// lies in `[lo, hi)`.
+///
+/// - `Ok(None)`: not one ladder point exists -- an empty registry.
+/// - `Err`: every point up to the ceiling exists, so the registry is larger
+///   than this search can describe. Reported, never truncated.
+///
+/// Takes the HIGHEST present point and the LOWEST absent point above it rather
+/// than stopping at the first absent one, so a burned agent that happens to sit
+/// on a power of two cannot cut the bracket short. Free -- it is the same
+/// probe data, read more carefully.
+fn bracket_from_ladder(points: &[u64], present: &[bool]) -> Result<Option<(u64, u64)>, String> {
+    if points.len() != present.len() {
+        return Err(format!(
+            "ladder probe returned {} results for {} points",
+            present.len(),
+            points.len()
+        ));
+    }
+
+    let lo = points
+        .iter()
+        .zip(present)
+        .filter(|(_, ok)| **ok)
+        .map(|(p, _)| *p)
+        .max();
+    let Some(lo) = lo else {
+        return Ok(None);
+    };
+
+    let hi = points
+        .iter()
+        .zip(present)
+        .filter(|(p, ok)| !**ok && **p > lo)
+        .map(|(p, _)| *p)
+        .min();
+
+    match hi {
+        Some(hi) => Ok(Some((lo, hi))),
+        None => Err(format!(
+            "registry holds agent {lo}, at or beyond the 2^{BOUND_LADDER_MAX_EXP} ceiling this \
+             search can bracket; the bound is unknown rather than equal to the ceiling"
+        )),
     }
 }
 
-/// Highest existing agent ID, found by exponential probe plus binary search.
+/// Evenly spaced probe points strictly inside `(lo, hi)`.
 ///
-/// Costs ~20 sequential `eth_call`s on a 630-agent registry and grows by one
-/// more every time the registry doubles, which is why it is now only the
-/// FALLBACK for when `totalSupply()` is unavailable or undercounts.
-async fn probe_max_agent_id(
+/// When the gap holds no more than `k` candidates every one of them is
+/// returned, so the round that consumes them is exact.
+fn refine_points(lo: u64, hi: u64, k: u64) -> Vec<u64> {
+    if hi <= lo + 1 || k == 0 {
+        return Vec::new();
+    }
+    let candidates = hi - lo - 1;
+    if candidates <= k {
+        return (lo + 1..hi).collect();
+    }
+    let span = hi - lo;
+    let mut points: Vec<u64> = (1..=k)
+        .map(|i| lo + (span.saturating_mul(i)) / (k + 1))
+        .filter(|p| *p > lo && *p < hi)
+        .collect();
+    points.dedup();
+    points
+}
+
+/// Shrink `(lo, hi)` with one round of probe results.
+///
+/// Absent points are only allowed to lower `hi` when they sit ABOVE the new
+/// `lo`; without that guard a hole below a confirmed agent would invert the
+/// bracket.
+fn narrow_bracket(lo: u64, hi: u64, points: &[u64], present: &[bool]) -> (u64, u64) {
+    let new_lo = points
+        .iter()
+        .zip(present)
+        .filter(|(_, ok)| **ok)
+        .map(|(p, _)| *p)
+        .fold(lo, u64::max);
+    let new_hi = points
+        .iter()
+        .zip(present)
+        .filter(|(p, ok)| !**ok && **p > new_lo)
+        .map(|(p, _)| *p)
+        .fold(hi, u64::min);
+    (new_lo, new_hi)
+}
+
+/// Highest existing agent ID in the registry.
+///
+/// One Multicall3 round trip brackets the answer with an exponential ladder;
+/// each further round trip probes [`BOUND_SEARCH_PROBES_PER_ROUND`] points
+/// inside the bracket. Four round trips cover the entire ladder range.
+///
+/// `totalSupply()` is deliberately NOT consulted. It is in the ABI, but it
+/// **reverts on every ERC-8004 registry actually deployed** -- verified
+/// on-chain 2026-09-01 against celo and base, where `supportsInterface`
+/// for `ERC721Enumerable` also answers false. A previous revision put that call
+/// first and treated the sequential probe as the fallback; because the call
+/// always failed, the "fallback" was the only path that ever ran and the
+/// optimisation was a no-op in production for its entire life. Reintroducing it
+/// would buy at most one round trip off a cold lookup while restoring exactly
+/// that failure mode. Run `scripts/erc8004_registry_capabilities.py` before
+/// believing otherwise.
+///
+/// ASSUMPTION, and not a new one: agent IDs run contiguously from 1. Every
+/// bound search that has ever run here has assumed it. Where it does not hold,
+/// [`resolve_first_token_by_owner`] refuses to answer "not registered" rather
+/// than guessing.
+async fn discover_max_agent_id(
     provider: &crate::chain::evm::InnerProvider,
     registry: alloy::primitives::Address,
 ) -> Result<u64, String> {
-    let mut hi: u64 = 1;
-    loop {
-        if !agent_token_exists(provider, registry, hi).await? {
+    let ladder = bound_ladder_points();
+    let probes = multicall_owner_of(provider, registry, &ladder).await?;
+    let (mut lo, mut hi) = match bracket_from_ladder(&ladder, &probes_present(&probes))? {
+        Some(bracket) => bracket,
+        None => {
+            // Callers only reach a scan with a non-zero balance, so an
+            // apparently empty registry contradicts that balance and is not a
+            // clean "owns nothing" answer.
+            return Err("registry probe found no tokens despite a non-zero balance".to_string());
+        }
+    };
+
+    let mut rounds: u32 = 1;
+    while hi > lo + 1 {
+        if rounds >= BOUND_SEARCH_MAX_ROUNDS {
+            return Err(format!(
+                "registry bound search did not converge within {BOUND_SEARCH_MAX_ROUNDS} rounds \
+                 (bracket {lo}..{hi})"
+            ));
+        }
+        let points = refine_points(lo, hi, BOUND_SEARCH_PROBES_PER_ROUND);
+        if points.is_empty() {
             break;
         }
-        hi = hi.saturating_mul(2);
-        if hi > 1_000_000 {
-            break;
+        let probes = multicall_owner_of(provider, registry, &points).await?;
+        let (next_lo, next_hi) = narrow_bracket(lo, hi, &points, &probes_present(&probes));
+        rounds += 1;
+        if next_lo == lo && next_hi == hi {
+            return Err(format!(
+                "registry bound search stalled at {lo}..{hi} after {rounds} rounds"
+            ));
         }
+        lo = next_lo;
+        hi = next_hi;
     }
-    let mut lo: u64 = hi / 2;
-    while lo < hi.saturating_sub(1) {
-        let mid = lo + (hi - lo) / 2;
-        if agent_token_exists(provider, registry, mid).await? {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    if lo == 0 {
-        // Callers only scan when `balanceOf` is non-zero, so an apparently
-        // empty registry contradicts the balance and is not a clean "owns
-        // nothing" answer.
-        return Err("registry probe found no tokens despite a non-zero balance".to_string());
+
+    let scannable = OWNER_SCAN_MAX_BATCHES * OWNER_SCAN_BATCH;
+    if lo * 100 >= scannable * OWNER_SCAN_HEADROOM_WARN_RATIO {
+        // Deliberately WARN, and deliberately not silent. The last time this
+        // module took a quiet path nobody could see, it was a `debug!` in a
+        // service running at `info` -- so the one line that would have revealed
+        // an optimisation was a no-op never printed, and the p99 sat at 11.4s
+        // for sixteen hours.
+        warn!(
+            max_agent_id = lo,
+            scannable,
+            "Registry is approaching the size this scan can walk; past it every owner \
+             lookup on this chain answers 503. An owner index is the fix, not a \
+             bigger cap."
+        );
+    } else {
+        debug!(
+            max_agent_id = lo,
+            round_trips = rounds,
+            "Registry bound discovered"
+        );
     }
     Ok(lo)
+}
+
+/// Split `first..=last` into the batches one scan issues.
+///
+/// Pure, and split out because a gap or an overlap here does not fail loudly --
+/// it silently skips an agent, and a skipped agent is answered as "not
+/// registered". The tests assert the ranges tile the span exactly.
+fn scan_batch_ranges(first: u64, last: u64) -> Vec<(u64, u64)> {
+    let mut ranges = Vec::new();
+    if first > last {
+        return ranges;
+    }
+    let mut start = first;
+    while start <= last {
+        let end = (start + OWNER_SCAN_BATCH - 1).min(last);
+        ranges.push((start, end));
+        start = end + 1;
+    }
+    ranges
 }
 
 /// Scan `ownerOf(first..=last)` in bounded Multicall3 batches and return the
@@ -7421,69 +7785,71 @@ async fn scan_range_for_owner(
     target: alloy::primitives::Address,
     first: u64,
     last: u64,
+    order: ScanOrder,
 ) -> Result<Option<u64>, String> {
-    use alloy::providers::bindings::IMulticall3;
-    use alloy::providers::MULTICALL3_ADDRESS;
-    use alloy::sol_types::SolCall;
-
     if first > last {
         return Ok(None);
     }
 
-    let batches = (last - first + 1).div_ceil(OWNER_SCAN_BATCH);
-    if batches > OWNER_SCAN_MAX_BATCHES {
+    // One source of truth for how many batches this span costs: the same
+    // function that produces them.
+    let mut ranges = scan_batch_ranges(first, last);
+    if ranges.len() as u64 > OWNER_SCAN_MAX_BATCHES {
         return Err(format!(
-            "registry too large to scan: {first}..={last} needs {batches} batches \
-             (cap {OWNER_SCAN_MAX_BATCHES})"
+            "registry too large to scan: {first}..={last} needs {} batches \
+             (cap {OWNER_SCAN_MAX_BATCHES})",
+            ranges.len()
         ));
     }
 
-    let mut start: u64 = first;
-    while start <= last {
-        let end = (start + OWNER_SCAN_BATCH - 1).min(last);
+    // Under `LowestFirst` the waves preserve "lowest ID wins": every batch of an
+    // earlier wave is fully examined before a later wave runs, and within a wave
+    // the minimum matching ID is taken. Concurrency changes how long the answer
+    // takes, never which answer it is.
+    //
+    // Under `AnyMatch` the owner holds exactly one token, so there is only one
+    // match to find and the order cannot change the answer -- only how soon it
+    // arrives. Reversing puts the newest agents first.
+    if order == ScanOrder::AnyMatch {
+        ranges.reverse();
+    }
 
-        let calls: Vec<IMulticall3::Call3> = (start..=end)
-            .map(|id| {
-                let calldata = IIdentityRegistry::ownerOfCall {
-                    agentId: alloy::primitives::U256::from(id),
+    for wave in ranges.chunks(OWNER_SCAN_WAVE) {
+        let mut tasks = tokio::task::JoinSet::new();
+        for (batch_first, batch_last) in wave.iter().copied() {
+            let provider = provider.clone();
+            tasks.spawn(async move {
+                let ids: Vec<u64> = (batch_first..=batch_last).collect();
+                multicall_owner_of(&provider, registry, &ids)
+                    .await
+                    .map(|probes| (ids, probes))
+            });
+        }
+
+        let mut lowest_match: Option<u64> = None;
+        while let Some(joined) = tasks.join_next().await {
+            // A batch that reached no verdict poisons the WHOLE scan: a match
+            // could have been in it, so what is left is not a clean miss.
+            // Dropping the JoinSet here aborts the siblings still in flight.
+            let (ids, probes) =
+                joined.map_err(|e| format!("owner scan batch did not complete: {e}"))??;
+
+            for (i, probe) in probes.iter().enumerate() {
+                if let TokenProbe::Owned(owner) = probe {
+                    if *owner == target {
+                        // IDs ascend within a batch, so the first hit is that
+                        // batch's lowest.
+                        let id = ids[i];
+                        lowest_match = Some(lowest_match.map_or(id, |best| best.min(id)));
+                        break;
+                    }
                 }
-                .abi_encode();
-                IMulticall3::Call3 {
-                    target: registry,
-                    allowFailure: true,
-                    callData: calldata.into(),
-                }
-            })
-            .collect();
-
-        let aggregate_call = IMulticall3::aggregate3Call { calls };
-        let encoded = aggregate_call.abi_encode();
-        let tx = alloy::rpc::types::TransactionRequest::default()
-            .to(MULTICALL3_ADDRESS)
-            .input(alloy::rpc::types::TransactionInput::new(encoded.into()));
-
-        let raw_result = provider
-            .call(tx)
-            .await
-            .map_err(|e| format!("Multicall3 batch {start}..={end} failed: {e}"))?;
-
-        // Decode aggregate3 return: Result[] where Result = (bool success, bytes returnData)
-        let results = IMulticall3::aggregate3Call::abi_decode_returns(&raw_result)
-            .map_err(|e| format!("Failed to decode multicall results: {e}"))?;
-
-        // Find the first token in this batch whose owner matches target.
-        for (i, result) in results.iter().enumerate() {
-            if !result.success || result.returnData.len() < 32 {
-                continue;
-            }
-            // ownerOf returns abi-encoded address (32 bytes, left-padded)
-            let owner = alloy::primitives::Address::from_slice(&result.returnData[12..32]);
-            if owner == target {
-                return Ok(Some(start + i as u64));
             }
         }
 
-        start = end + 1;
+        if let Some(agent_id) = lowest_match {
+            return Ok(Some(agent_id));
+        }
     }
 
     Ok(None)
@@ -7491,30 +7857,33 @@ async fn scan_range_for_owner(
 
 /// Resolve the first (lowest) token ID owned by `target` in an ERC-721 contract.
 ///
-/// Returns `Ok(Some(id))` on a match, `Ok(None)` when the registry was scanned
-/// cleanly and holds no token for `target`, and `Err` when the scan could not
-/// reach a verdict (RPC failure, registry too large). The three outcomes are
-/// deliberately distinct: callers must not treat an unreachable RPC as proof
-/// that an address owns nothing.
+/// `known_balance` is the `balanceOf(target)` the caller has ALREADY read, and
+/// it is what makes the three outcomes separable:
 ///
-/// Strategy:
-/// 1. Ask the registry its size with `totalSupply()` -- one call
-/// 2. Scan `ownerOf(1..=max)` in bounded Multicall3 batches, stopping at the
-///    first match -- one batch covers the whole registry on small chains
-/// 3. If that finds nothing, re-derive the bound with the expensive probe and
-///    scan only what the first pass could not see
-/// 4. Cache the hit, since a cold scan is expensive and rarely changes
+/// - `Ok(Some(id))` -- found.
+/// - `Ok(None)` -- scanned cleanly and the address owns nothing. Only a
+///   truthful answer when `known_balance` is zero.
+/// - `Err` -- the scan reached no verdict. Callers must not treat this as
+///   proof that an address owns nothing.
 ///
-/// Uses `ownerOf` rather than `tokenOfOwnerByIndex` or event scans because it
-/// is the only approach that works on every supported chain: the ERC-8004
-/// registries are not `ERC721Enumerable` (verified on Base: `supportsInterface`
-/// returns false and `tokenOfOwnerByIndex` reverts) and SKALE limits
-/// `eth_getLogs` to 2000 blocks.
+/// **A non-zero balance with nothing found is a CONTRADICTION, not a miss.**
+/// The registry says the address holds tokens; the scan could not attribute
+/// one. That means the RANGE was wrong, and answering "owns nothing" is the
+/// most expensive wrong answer this codebase has: callers persist a 404 as
+/// "not registered" and stop asking (INC-2026-07-21), and `POST /register`
+/// reads it as permission to mint -- handing a duplicate identity to someone
+/// who already has one, and growing the registry that made the scan fail.
+/// So it is reported as no verdict, loudly, and the caller retries.
+///
+/// Cost of a cold lookup: one bound discovery (up to four Multicall3 round
+/// trips, or zero when the registry bound is cached) plus one scan batch per
+/// 2,000 agents.
 async fn resolve_first_token_by_owner(
     provider: &crate::chain::evm::InnerProvider,
     network: crate::network::Network,
     registry: alloy::primitives::Address,
     target: alloy::primitives::Address,
+    known_balance: alloy::primitives::U256,
 ) -> Result<Option<u64>, String> {
     // Serve a fresh cached resolution before spending any RPC budget.
     if let Some(entry) = OWNER_LOOKUP_CACHE.get(&(network, registry, target)) {
@@ -7525,17 +7894,30 @@ async fn resolve_first_token_by_owner(
         }
     }
 
-    // Step 1: upper bound of the range to scan. One call when the registry
-    // answers `totalSupply()`, ~20 sequential ones when it does not.
-    let supply_bound = registry_total_supply(provider, registry).await;
-    let max_id = match supply_bound {
-        Some(n) => n,
-        None => probe_max_agent_id(provider, registry).await?,
+    // Step 1: the upper bound of the range to scan. Registry-wide and identical
+    // for every caller, so it is cached across them.
+    let cached_bound = cached_registry_bound(network, registry);
+    let max_id = match cached_bound {
+        Some(cached) => cached,
+        None => {
+            let discovered = discover_max_agent_id(provider, registry).await?;
+            store_registry_bound(network, registry, discovered);
+            discovered
+        }
     };
+
+    // How far the scan actually reached. Step 3 can push this above `max_id`,
+    // and the answer in step 4 has to report the range that was really walked
+    // -- an error that names the wrong range sends the reader to the wrong
+    // place.
+    let mut scanned_to = max_id;
 
     // Step 2: scan ascending, stopping at the first match so the lowest ID is
     // returned and the common case stays cheap.
-    if let Some(agent_id) = scan_range_for_owner(provider, registry, target, 1, max_id).await? {
+    let order = ScanOrder::for_balance(known_balance);
+    if let Some(agent_id) =
+        scan_range_for_owner(provider, registry, target, 1, max_id, order).await?
+    {
         OWNER_LOOKUP_CACHE.insert(
             (network, registry, target),
             (agent_id, std::time::Instant::now()),
@@ -7543,21 +7925,22 @@ async fn resolve_first_token_by_owner(
         return Ok(Some(agent_id));
     }
 
-    // Step 3, belt and braces. Callers only scan with `balanceOf > 0`, so an
-    // empty result means the RANGE was wrong, not that the owner holds nothing:
-    // `totalSupply` undercounts a registry that has burned agents. Re-derive the
-    // bound the expensive way and scan only what the first pass could not see.
-    // Skipping this would turn a high-numbered agent into a 404, and callers
-    // persist a 404 as "not registered" and stop asking (INC-2026-07-21).
-    if supply_bound.is_some() {
-        let probed = probe_max_agent_id(provider, registry).await?;
-        if probed > max_id {
+    // Step 3: a cached bound can only be too LOW -- an agent registered since
+    // it was written sits above it. Re-derive and scan only the tail the first
+    // pass could not see. Skipped when the bound was just discovered, because
+    // repeating a deterministic search returns the same number.
+    if cached_bound.is_some() {
+        let fresh = discover_max_agent_id(provider, registry).await?;
+        store_registry_bound(network, registry, fresh);
+        if fresh > max_id {
+            scanned_to = fresh;
             debug!(
-                total_supply = max_id,
-                probed, "totalSupply undercounted the registry; scanning the tail"
+                stale_bound = max_id,
+                fresh_bound = fresh,
+                "Cached registry bound was stale; scanning the tail"
             );
             if let Some(agent_id) =
-                scan_range_for_owner(provider, registry, target, max_id + 1, probed).await?
+                scan_range_for_owner(provider, registry, target, max_id + 1, fresh, order).await?
             {
                 OWNER_LOOKUP_CACHE.insert(
                     (network, registry, target),
@@ -7568,6 +7951,43 @@ async fn resolve_first_token_by_owner(
         }
     }
 
+    // Step 4: the range is exhausted. Which answer that is depends entirely on
+    // the balance the caller already read.
+    if known_balance > alloy::primitives::U256::ZERO {
+        warn!(
+            network = %network,
+            owner = %target,
+            balance = %known_balance,
+            scanned_to,
+            "Registry balance contradicts the ownerOf scan: answering no-verdict rather than a \
+             false 'not registered'"
+        );
+    }
+    exhausted_scan_outcome(target, known_balance, scanned_to)
+}
+
+/// The answer when the scan ran to the end of the range and found nothing.
+///
+/// Pure, and split out for the same reason [`owner_lookup_response`] is: the
+/// distinction it encodes must be testable without a chain behind it.
+///
+/// - Zero balance -> `Ok(None)`, a truthful "owns nothing".
+/// - Non-zero balance -> `Err`. The registry says the address holds tokens and
+///   the scan could not attribute one, so the RANGE was wrong. Reporting that
+///   as "owns nothing" is how a transient scan defect becomes a permanent wrong
+///   answer on the caller's side (INC-2026-07-21) and, on `POST /register`,
+///   permission to mint a duplicate identity.
+fn exhausted_scan_outcome(
+    target: alloy::primitives::Address,
+    known_balance: alloy::primitives::U256,
+    scanned_to: u64,
+) -> Result<Option<u64>, String> {
+    if known_balance > alloy::primitives::U256::ZERO {
+        return Err(format!(
+            "balanceOf({target}) is {known_balance} but no agent in 1..={scanned_to} is owned by \
+             it; the scan range is wrong, so this is not proof that the address owns nothing"
+        ));
+    }
     Ok(None)
 }
 
@@ -7697,6 +8117,7 @@ where
         network,
         contracts.identity_registry,
         owner_address,
+        balance,
     )
     .await
     {
@@ -8407,6 +8828,7 @@ where
                     network,
                     contracts.identity_registry,
                     target_owner,
+                    balance,
                 )
                 .await
                 {
@@ -8432,15 +8854,38 @@ where
                             },
                         );
                     }
-                    // Clean scan, no token attributable to the recipient: the
-                    // balance comes from somewhere we cannot map, so minting a
-                    // fresh identity is the intended behaviour.
+                    // Unreachable on this path, and deliberately so. We only
+                    // get here with `balance > 0`, and `resolve_first_token_by_owner`
+                    // now reports a non-zero balance with nothing found as a
+                    // CONTRADICTION (`Err`) rather than a clean miss. This arm
+                    // used to be where a wrong scan range turned into a
+                    // duplicate mint for someone who already had an identity:
+                    // the balance said they owned an agent, the scan could not
+                    // find it, and we minted anyway.
                     Ok(None) => {
                         warn!(
                             network = %network,
                             owner = %target_owner,
                             balance = %balance,
-                            "Recipient has balance but no matching token, proceeding with mint"
+                            "Recipient has balance but no matching token; not minting a duplicate"
+                        );
+                        return (
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            RegisterAgentResponse {
+                                success: false,
+                                agent_id: None,
+                                transaction: None,
+                                transfer_transaction: None,
+                                owner: Some(MixedAddress::Evm(crate::types::EvmAddress(
+                                    target_owner,
+                                ))),
+                                error: Some(format!(
+                                    "Recipient {target_owner} holds {balance} agent(s) that the \
+                                     registry scan could not attribute \
+                                     (retryable, no mint attempted)"
+                                )),
+                                network,
+                            },
                         );
                     }
                     // Inconclusive scan: we do NOT know whether this recipient
@@ -9521,20 +9966,49 @@ where
             // Empty revert data ("0x") means the function selector doesn't exist
             // on the current proxy implementation (ERC721Enumerable may have been removed)
             if error_str.contains("execution reverted") {
+                // This is the answer on EVERY deployed ERC-8004 registry, not an
+                // edge case: verified on-chain 2026-09-01 across celo and base,
+                // where `supportsInterface(ERC721Enumerable)` is false too. This
+                // endpoint answering a dead 501 on all nine networks is what let
+                // "totalSupply is already in the ABI and this endpoint already
+                // uses it" pass review as a reason to make the owner lookup
+                // depend on it -- true about the ABI, false about the chain, and
+                // nobody called the endpoint to find out.
+                //
+                // So answer with the number the registry can actually produce,
+                // labelled for what it is. `highestAgentId` is the top of the ID
+                // range, which equals the supply only when nothing was burned;
+                // the two are reported under different names on purpose.
                 warn!(
                     network = %network,
                     error = %e,
-                    "totalSupply() not available on this contract version"
+                    "totalSupply() not available on this contract version; deriving the highest agent ID instead"
                 );
-                (
-                    StatusCode::NOT_IMPLEMENTED,
-                    Json(json!({
-                        "error": "totalSupply() is not available on the current contract implementation",
-                        "network": network,
-                        "hint": "The Identity Registry may have been upgraded without ERC721Enumerable support"
-                    })),
-                )
-                    .into_response()
+                match discover_max_agent_id(provider.inner(), contracts.identity_registry).await {
+                    Ok(highest) => {
+                        store_registry_bound(network, contracts.identity_registry, highest);
+                        (
+                            StatusCode::OK,
+                            Json(json!({
+                                "totalSupply": serde_json::Value::Null,
+                                "highestAgentId": highest,
+                                "source": "ownerOf-probe",
+                                "network": network,
+                                "hint": "This registry does not implement ERC721Enumerable, so totalSupply() is unavailable. highestAgentId is the top of the agent-ID range, derived by probing ownerOf; it equals the supply only if no agent was ever burned."
+                            })),
+                        )
+                            .into_response()
+                    }
+                    Err(probe_err) => (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        Json(json!({
+                            "error": format!("totalSupply() is unavailable and the ownerOf probe reached no verdict: {probe_err}"),
+                            "retryable": true,
+                            "network": network
+                        })),
+                    )
+                        .into_response(),
+                }
             } else {
                 error!(network = %network, error = %e, "Failed to query total supply");
                 (
@@ -9603,10 +10077,15 @@ mod owner_scan_tests {
     fn batch_size_stays_within_measured_rpc_limits() {
         const MEASURED_PUBLIC_NODE_CALL_CAP: u64 = 16_383;
         assert!(OWNER_SCAN_BATCH < MEASURED_PUBLIC_NODE_CALL_CAP);
-        // The Base registry held ~58.4k agents when the scan broke; it must
-        // still be reachable within the batch ceiling.
-        let base_registry_size: u64 = 58_400;
-        assert!(base_registry_size.div_ceil(OWNER_SCAN_BATCH) <= OWNER_SCAN_MAX_BATCHES);
+        // The Base registry held ~58.4k agents when the scan broke (2026-07-24)
+        // and 83,984 when it was measured again on 2026-09-01. Both must stay
+        // reachable within the batch ceiling.
+        for base_registry_size in [58_400u64, 83_984] {
+            assert!(
+                base_registry_size.div_ceil(OWNER_SCAN_BATCH) <= OWNER_SCAN_MAX_BATCHES,
+                "a Base registry of {base_registry_size} no longer fits the scan"
+            );
+        }
     }
 
     /// A clean miss is 404 and carries NO `retryable` flag.
@@ -9667,6 +10146,499 @@ mod owner_scan_tests {
     /// motivated it (~21 req/min aggregated, measured 2026-08-29). A limit
     /// sized against imagined abuse instead of measured traffic is how every
     /// 429 in the last bazaar incident turned out to be a legitimate client.
+
+    // ---------------------------------------------------------------------
+    // Registry bound search
+    //
+    // These tests exist because the code they cover replaced a version whose
+    // production path had NO coverage at all. The previous revision put
+    // `totalSupply()` first and the sequential probe second; `totalSupply()`
+    // reverts on every registry actually deployed, so the "fallback" was the
+    // only branch that ever ran, and 1,264 green tests never touched it. The
+    // search below is therefore driven end to end against an in-memory
+    // registry, so the path production takes is the path the suite exercises.
+    // ---------------------------------------------------------------------
+
+    /// Run the pure halves of [`discover_max_agent_id`] against a registry
+    /// whose agent IDs are exactly `1..=max_id`, and report both the answer and
+    /// the number of Multicall3 round trips it cost.
+    ///
+    /// This is the whole search minus the RPC: `multicall_owner_of` is the only
+    /// piece replaced, by the in-memory `id <= max_id`.
+    fn simulate_bound_search(max_id: u64) -> Result<(u64, u32), String> {
+        let ladder = bound_ladder_points();
+        let present: Vec<bool> = ladder.iter().map(|id| *id <= max_id).collect();
+        let (mut lo, mut hi) = match bracket_from_ladder(&ladder, &present)? {
+            Some(bracket) => bracket,
+            None => return Err("registry is empty".to_string()),
+        };
+
+        let mut round_trips: u32 = 1;
+        while hi > lo + 1 {
+            if round_trips >= BOUND_SEARCH_MAX_ROUNDS {
+                return Err(format!("did not converge (bracket {lo}..{hi})"));
+            }
+            let points = refine_points(lo, hi, BOUND_SEARCH_PROBES_PER_ROUND);
+            if points.is_empty() {
+                break;
+            }
+            let present: Vec<bool> = points.iter().map(|id| *id <= max_id).collect();
+            let (next_lo, next_hi) = narrow_bracket(lo, hi, &points, &present);
+            round_trips += 1;
+            if next_lo == lo && next_hi == hi {
+                return Err(format!("stalled at {lo}..{hi}"));
+            }
+            lo = next_lo;
+            hi = next_hi;
+        }
+        Ok((lo, round_trips))
+    }
+
+    /// The number of STRICTLY SEQUENTIAL `eth_call`s the exponential probe plus
+    /// binary search spent on the same question, for the record.
+    fn legacy_sequential_probe_cost(max_id: u64) -> u32 {
+        let mut hi: u64 = 1;
+        let mut calls: u32 = 0;
+        loop {
+            calls += 1;
+            if hi > max_id {
+                break;
+            }
+            hi = hi.saturating_mul(2);
+        }
+        let mut lo = hi / 2;
+        while lo < hi.saturating_sub(1) {
+            calls += 1;
+            let mid = lo + (hi - lo) / 2;
+            if mid <= max_id {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        calls
+    }
+
+    /// The search must land on the exact maximum for every registry size we
+    /// have seen or can plausibly reach, and never cost more than four round
+    /// trips doing it.
+    ///
+    /// Four is the number that matters: the sequential probe this replaced took
+    /// ~28 round trips on the celo registry, in series, on EVERY cold lookup.
+    #[test]
+    fn bound_search_is_exact_and_bounded_at_four_round_trips() {
+        // 630 = the Base registry when the batch cap was sized. 9,725 = the
+        // celo agent whose lookup was measured at 11.12s in production on
+        // 2026-09-01. 58,400 = Base when the scan broke. The rest are the
+        // boundaries: the smallest registry, a power of two, one below a power
+        // of two, and the ladder ceiling itself.
+        for max_id in [
+            1u64, 2, 3, 7, 8, 630, 1_024, 9_802, 16_383, 16_384, 58_400, 100_000, 1_000_000,
+            16_777_215,
+        ] {
+            let (found, round_trips) = simulate_bound_search(max_id)
+                .unwrap_or_else(|e| panic!("search failed for max_id={max_id}: {e}"));
+            assert_eq!(found, max_id, "wrong bound for a registry of {max_id}");
+            assert!(
+                round_trips <= 4,
+                "max_id={max_id} cost {round_trips} round trips; the search must stay within 4"
+            );
+        }
+    }
+
+    /// The measurement that motivated all of this, pinned so it cannot be
+    /// quietly undone: the celo lookup went from ~28 sequential round trips to
+    /// at most 4 parallel ones.
+    #[test]
+    fn the_celo_registry_stops_costing_twenty_eight_serial_round_trips() {
+        const CELO_MAX_AGENT_ID: u64 = 9_802;
+        let legacy = legacy_sequential_probe_cost(CELO_MAX_AGENT_ID);
+        let (_, now) = simulate_bound_search(CELO_MAX_AGENT_ID).expect("search must converge");
+        assert!(
+            legacy >= 25,
+            "the legacy probe cost {legacy} calls; this test is calibrated against ~28"
+        );
+        assert!(
+            (now as u32) * 6 < legacy,
+            "the new search costs {now} round trips against the legacy {legacy}; \
+             that is not the order-of-magnitude win this replaced it for"
+        );
+    }
+
+    /// A registry larger than the ladder can describe must be an ERROR.
+    ///
+    /// The sequential probe it replaces stopped doubling at 1,000,000 and then
+    /// binary-searched inside the range it had already left, silently answering
+    /// with a maximum far below the real one -- which turns every agent above
+    /// that point into a 404, and a 404 is what callers persist as "not
+    /// registered".
+    #[test]
+    fn a_registry_past_the_ladder_ceiling_errors_rather_than_truncating() {
+        let points = bound_ladder_points();
+        let all_present = vec![true; points.len()];
+        let outcome = bracket_from_ladder(&points, &all_present);
+        assert!(
+            outcome.is_err(),
+            "a registry beyond the ceiling must report no verdict, got {outcome:?}"
+        );
+
+        // The boundary, stated rather than implied: the highest ID the search
+        // can resolve is one BELOW the ceiling. A registry whose maximum is the
+        // ceiling itself is indistinguishable from one that runs past it, and
+        // both are reported as no verdict rather than guessed at.
+        let ceiling = 1u64 << BOUND_LADDER_MAX_EXP;
+        assert!(simulate_bound_search(ceiling - 1).is_ok());
+        assert!(simulate_bound_search(ceiling).is_err());
+
+        // And that boundary has to stay far above anything real. The Base
+        // registry is the largest we have, between 65,536 and 262,144 agents on
+        // 2026-09-01 -- but the SCAN caps out first, so that is the number to
+        // watch: OWNER_SCAN_MAX_BATCHES x OWNER_SCAN_BATCH agents.
+        let scannable = OWNER_SCAN_MAX_BATCHES * OWNER_SCAN_BATCH;
+        assert!(
+            ceiling > scannable,
+            "the bound search must be able to describe any registry the scan can walk"
+        );
+        // Measured on-chain 2026-09-01: the Base registry held 83,984 agents.
+        // If this assertion ever fails, the fix is an owner index, not a bigger
+        // cap -- see OWNER_SCAN_MAX_BATCHES.
+        const BASE_REGISTRY_SIZE_2026_09_01: u64 = 83_984;
+        assert!(
+            scannable >= BASE_REGISTRY_SIZE_2026_09_01 * 2,
+            "the scan reaches {scannable} agents against a Base registry already at              {BASE_REGISTRY_SIZE_2026_09_01}; that is less than 2x headroom"
+        );
+    }
+
+    /// Nothing exists at all: a clean empty registry, not an error.
+    #[test]
+    fn an_empty_registry_brackets_to_none() {
+        let points = bound_ladder_points();
+        let none_present = vec![false; points.len()];
+        assert_eq!(bracket_from_ladder(&points, &none_present), Ok(None));
+    }
+
+    /// A burned agent sitting exactly on a power of two must not cut the
+    /// bracket short. Taking the HIGHEST present point rather than stopping at
+    /// the first absent one is what makes that free.
+    #[test]
+    fn a_hole_on_a_power_of_two_does_not_shorten_the_bracket() {
+        // Registry holds 1..=1000 except that 8 was burned.
+        let points = bound_ladder_points();
+        let present: Vec<bool> = points.iter().map(|id| *id <= 1000 && *id != 8).collect();
+        let (lo, hi) = bracket_from_ladder(&points, &present)
+            .expect("must reach a verdict")
+            .expect("registry is not empty");
+        assert_eq!(lo, 512, "the highest present ladder point is 512, not 4");
+        assert_eq!(hi, 1024);
+    }
+
+    /// A mismatched result count is a decode failure, not a bracket.
+    #[test]
+    fn a_short_probe_response_is_an_error() {
+        assert!(bracket_from_ladder(&[1, 2, 4], &[true, true]).is_err());
+    }
+
+    /// Probe points must stay strictly inside the bracket, or a round can
+    /// "confirm" the endpoint it was given and make no progress.
+    #[test]
+    fn refine_points_stay_strictly_inside_the_bracket() {
+        for (lo, hi) in [(1u64, 2u64), (8, 16), (512, 1024), (1, 16_777_216)] {
+            for p in refine_points(lo, hi, BOUND_SEARCH_PROBES_PER_ROUND) {
+                assert!(
+                    p > lo && p < hi,
+                    "point {p} escaped the bracket ({lo},{hi})"
+                );
+            }
+        }
+    }
+
+    /// When the gap is small enough to probe exhaustively, do that: the round
+    /// after it is then exact rather than merely narrower.
+    #[test]
+    fn a_small_gap_is_probed_exhaustively() {
+        assert_eq!(refine_points(10, 15, 1_000), vec![11, 12, 13, 14]);
+        // Nothing to probe between adjacent IDs.
+        assert!(refine_points(10, 11, 1_000).is_empty());
+    }
+
+    /// An absent point BELOW the confirmed floor must not drag `hi` under `lo`
+    /// and invert the bracket.
+    #[test]
+    fn narrow_bracket_ignores_holes_below_the_confirmed_floor() {
+        // 200 exists; 50 is a hole well below it.
+        let (lo, hi) = narrow_bracket(1, 1024, &[50, 200], &[false, true]);
+        assert_eq!(lo, 200);
+        assert!(hi > lo, "bracket inverted: {lo}..{hi}");
+        assert_eq!(hi, 1024);
+    }
+
+    /// Every batch this module sends must fit the limits measured against the
+    /// production RPCs -- the bound search reuses the scan's transport, so it
+    /// inherits the same cap and must respect it.
+    #[test]
+    fn every_probe_batch_fits_the_measured_rpc_cap() {
+        assert!(
+            BOUND_SEARCH_PROBES_PER_ROUND <= OWNER_SCAN_BATCH,
+            "a refinement round would be rejected by the node"
+        );
+        assert!(
+            bound_ladder_points().len() as u64 <= OWNER_SCAN_BATCH,
+            "the ladder would be rejected by the node"
+        );
+        // The ladder must reach past every registry we have measured.
+        assert!(
+            *bound_ladder_points().last().unwrap() > 58_400,
+            "the ladder cannot describe the Base registry"
+        );
+    }
+
+    /// `totalSupply()` must not become load-bearing again.
+    ///
+    /// It is in the ABI and it reverts on every ERC-8004 registry actually
+    /// deployed (verified on-chain 2026-09-01 on celo and base, where
+    /// `supportsInterface(ERC721Enumerable)` is false as well). A revision that
+    /// made the owner lookup depend on it shipped as a complete no-op and held
+    /// the facilitator's p99 at 11.4s. Re-verify with
+    /// `scripts/erc8004_registry_capabilities.py` before changing this.
+    #[test]
+    fn the_bound_search_does_not_depend_on_total_supply() {
+        let src = include_str!("handlers.rs");
+        // The body only: from the signature to the closing brace at column 0.
+        let search = src
+            .split("async fn discover_max_agent_id")
+            .nth(1)
+            .expect("discover_max_agent_id must exist")
+            .split("\n}\n")
+            .next()
+            .expect("the function must have a body");
+        assert!(
+            !search.contains("totalSupply()."),
+            "discover_max_agent_id calls totalSupply(), which reverts on every deployed registry"
+        );
+    }
+
+    /// The scan batches must tile the requested span EXACTLY: no gap, no
+    /// overlap, nothing outside it.
+    ///
+    /// A gap here does not fail loudly. It skips an agent, the scan reports no
+    /// match, and the caller is told the address is not registered.
+    #[test]
+    fn scan_batches_tile_the_span_exactly() {
+        for (first, last) in [
+            (1u64, 1u64),
+            (1, 630),
+            (1, OWNER_SCAN_BATCH),
+            (1, OWNER_SCAN_BATCH + 1),
+            (1, 9_802),
+            (1, 100_000),
+            (58_001, 58_400),
+            (OWNER_SCAN_BATCH, OWNER_SCAN_BATCH * 3),
+        ] {
+            let ranges = scan_batch_ranges(first, last);
+            assert_eq!(
+                ranges[0].0, first,
+                "span {first}..={last} does not start at first"
+            );
+            assert_eq!(
+                ranges[ranges.len() - 1].1,
+                last,
+                "span {first}..={last} does not end at last"
+            );
+            for pair in ranges.windows(2) {
+                assert_eq!(
+                    pair[1].0,
+                    pair[0].1 + 1,
+                    "span {first}..={last} has a gap or overlap at {pair:?}"
+                );
+            }
+            for (s, e) in &ranges {
+                assert!(s <= e, "inverted batch {s}..={e}");
+                assert!(
+                    e - s + 1 <= OWNER_SCAN_BATCH,
+                    "batch {s}..={e} exceeds the measured RPC cap"
+                );
+            }
+            let covered: u64 = ranges.iter().map(|(s, e)| e - s + 1).sum();
+            assert_eq!(
+                covered,
+                last - first + 1,
+                "span {first}..={last} miscounted"
+            );
+        }
+    }
+
+    /// An empty span produces no batches rather than one bogus one.
+    #[test]
+    fn an_inverted_span_produces_no_batches() {
+        assert!(scan_batch_ranges(10, 9).is_empty());
+    }
+
+    /// Concurrency must change how long the scan takes, never what it answers.
+    ///
+    /// The wave size has to divide the work without ever letting a later batch
+    /// be examined before an earlier one has been: `chunks` guarantees that,
+    /// and this pins the property so a future rewrite to a single unbounded
+    /// fan-out (which would return whichever batch answered first, not the
+    /// lowest ID) fails here instead of in production.
+    #[test]
+    fn scan_waves_preserve_ascending_order() {
+        assert!(OWNER_SCAN_WAVE >= 1, "a wave must issue at least one batch");
+        let ranges = scan_batch_ranges(1, 100_000);
+        let mut previous_end = 0u64;
+        for wave in ranges.chunks(OWNER_SCAN_WAVE) {
+            assert!(
+                wave[0].0 > previous_end,
+                "wave starting at {} overlaps the previous wave ending at {previous_end}",
+                wave[0].0
+            );
+            previous_end = wave[wave.len() - 1].1;
+        }
+        assert_eq!(previous_end, 100_000);
+        // A wave is a burst against the shared RPC budget; INC-2026-07-06 was
+        // that budget running out.
+        assert!(
+            OWNER_SCAN_WAVE <= 8,
+            "a wave of {OWNER_SCAN_WAVE} batches is too large a burst for the shared RPC budget"
+        );
+    }
+
+    /// The scan order is decided by the balance, and only a balance of exactly
+    /// one may free the order.
+    ///
+    /// With two or more tokens the contract of this lookup is the LOWEST ID, so
+    /// batches must run low-to-high; returning whichever match turned up first
+    /// would answer a different question. With exactly one token there is only
+    /// one match in existence, so it is trivially the lowest whatever order
+    /// found it.
+    #[test]
+    fn only_a_single_token_balance_frees_the_scan_order() {
+        assert_eq!(
+            ScanOrder::for_balance(alloy::primitives::U256::from(1)),
+            ScanOrder::AnyMatch
+        );
+        for many in [2u64, 3, 17, 1_000] {
+            assert_eq!(
+                ScanOrder::for_balance(alloy::primitives::U256::from(many)),
+                ScanOrder::LowestFirst,
+                "a balance of {many} must still be scanned lowest-first"
+            );
+        }
+        // Zero never reaches a scan, but if it ever did it must not take the
+        // shortcut that assumes exactly one token exists.
+        assert_eq!(
+            ScanOrder::for_balance(alloy::primitives::U256::ZERO),
+            ScanOrder::LowestFirst
+        );
+    }
+
+    /// Reversing the batches must still cover the span exactly -- the same
+    /// tiling, walked the other way.
+    #[test]
+    fn reversing_the_batches_covers_the_same_span() {
+        let ascending = scan_batch_ranges(1, 83_984);
+        let mut descending = ascending.clone();
+        descending.reverse();
+        assert_eq!(descending.len(), ascending.len());
+
+        let mut sorted = descending.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, ascending, "reversing lost or duplicated a batch");
+
+        // And the newest agents really are in the first batch examined: this is
+        // the entire point of the reversal.
+        assert_eq!(descending[0].1, 83_984);
+    }
+
+    /// A zero balance with nothing found is a truthful "owns nothing".
+    #[test]
+    fn a_zero_balance_scan_that_finds_nothing_is_a_clean_miss() {
+        assert_eq!(
+            exhausted_scan_outcome(
+                alloy::primitives::Address::ZERO,
+                alloy::primitives::U256::ZERO,
+                630,
+            ),
+            Ok(None)
+        );
+    }
+
+    /// A NON-zero balance with nothing found is a contradiction, and must never
+    /// be reported as "owns nothing".
+    ///
+    /// This is the arm that mattered: the registry says the address holds a
+    /// token, the scan could not attribute one, so the RANGE was wrong.
+    /// Answering `Ok(None)` here is a 404 on `GET /identity/../owner/..` --
+    /// which callers persist as "not registered" and stop asking
+    /// (INC-2026-07-21) -- and on `POST /register` it is read as permission to
+    /// mint, handing a duplicate identity to somebody who already has one.
+    #[test]
+    fn a_balance_the_scan_cannot_explain_is_never_reported_as_owning_nothing() {
+        let outcome = exhausted_scan_outcome(
+            alloy::primitives::Address::ZERO,
+            alloy::primitives::U256::from(1),
+            630,
+        );
+        assert!(
+            outcome.is_err(),
+            "a non-zero balance with no match must reach no verdict, got {outcome:?}"
+        );
+
+        // And it must land on 503 + retryable, never 404.
+        let (status, Json(body)) = owner_lookup_response(
+            crate::network::Network::Base,
+            alloy::primitives::Address::ZERO,
+            "1",
+            outcome.map(|_| None),
+        );
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body.get("retryable").and_then(|v| v.as_bool()), Some(true));
+    }
+
+    /// The registry bound is cached per (network, registry), and a later,
+    /// LOWER reading must not walk back a higher one: the maximum only grows,
+    /// so a lower value is a slower request finishing late, not news.
+    #[test]
+    fn a_stale_lower_bound_never_overwrites_a_higher_one() {
+        let registry = alloy::primitives::Address::repeat_byte(0xAB);
+        let network = crate::network::Network::Avalanche;
+        REGISTRY_BOUND_CACHE.remove(&(network, registry));
+
+        store_registry_bound(network, registry, 9_725);
+        assert_eq!(cached_registry_bound(network, registry), Some(9_725));
+
+        store_registry_bound(network, registry, 42);
+        assert_eq!(
+            cached_registry_bound(network, registry),
+            Some(9_725),
+            "a late, lower reading must not lower the cached bound"
+        );
+
+        store_registry_bound(network, registry, 10_000);
+        assert_eq!(cached_registry_bound(network, registry), Some(10_000));
+
+        REGISTRY_BOUND_CACHE.remove(&(network, registry));
+    }
+
+    /// The bound cache must be keyed by network as well as registry: the
+    /// ERC-8004 registries share one deterministic address across every chain,
+    /// so keying on the address alone would serve Base's bound for a Celo
+    /// lookup -- the same trap [`OWNER_LOOKUP_CACHE`] documents.
+    #[test]
+    fn the_bound_cache_does_not_leak_across_networks() {
+        let registry = alloy::primitives::Address::repeat_byte(0xCD);
+        REGISTRY_BOUND_CACHE.remove(&(crate::network::Network::Base, registry));
+        REGISTRY_BOUND_CACHE.remove(&(crate::network::Network::Celo, registry));
+
+        store_registry_bound(crate::network::Network::Base, registry, 58_400);
+        assert_eq!(
+            cached_registry_bound(crate::network::Network::Celo, registry),
+            None,
+            "Celo must not inherit Base's bound from the shared registry address"
+        );
+
+        REGISTRY_BOUND_CACHE.remove(&(crate::network::Network::Base, registry));
+    }
+
     #[test]
     fn identity_read_limit_leaves_headroom_over_measured_traffic() {
         let (per_ms, burst) = identity_read_rate_limit();

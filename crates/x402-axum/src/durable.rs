@@ -794,25 +794,112 @@ pub async fn buffer_body(body: axum_core::body::Body, limit: usize) -> BufferedB
         };
     }
 
-    match body.collect().await {
-        Ok(collected) => {
-            let bytes = collected.to_bytes();
-            if bytes.len() > limit {
-                // A body that under-reported its size. The bytes are already in
-                // hand, so hand them back rather than lose them.
-                BufferedBody::Skip {
-                    body: axum_core::body::Body::from(bytes),
-                    reason: SkipReason::TooLarge,
+    // Bound the COLLECTION, not just the result. The check above only catches a
+    // body that ANNOUNCES its size, and a chunked one announces nothing:
+    // `upper()` is `None`, it sails past the guard, and an unbounded `collect()`
+    // buffers however many bytes arrive before anyone measures them. For a
+    // streaming handler -- exactly the large-body case -- `max_body_bytes` was
+    // therefore not a memory bound at all, and `EvidenceBudget`, which exists to
+    // stop that OOM, was charging a number the body had no obligation to honour.
+    //
+    // Read frame by frame and stop at the limit. What is already buffered is
+    // handed back AHEAD of the untouched remainder, so stopping early costs the
+    // evidence and never a byte of the response.
+    //
+    // `http_body_util::Limited` looks like it fits here and does not: it reports
+    // the overflow as a stream ERROR, and the error arm below has nothing left
+    // to deliver. That would answer a paid request with an empty body -- the one
+    // outcome this whole path exists to prevent, since settlement happened
+    // before the hook and the nonce is already spent.
+    let mut body = body;
+    let mut buffered: Vec<bytes::Bytes> = Vec::new();
+    let mut buffered_len = 0usize;
+    loop {
+        match body.frame().await {
+            Some(Ok(frame)) => {
+                let Ok(data) = frame.into_data() else {
+                    // Trailers carry no payload; nothing to measure or keep.
+                    continue;
+                };
+                buffered_len += data.len();
+                buffered.push(data);
+                if buffered_len > limit {
+                    return BufferedBody::Skip {
+                        body: prefixed_body(buffered, body),
+                        reason: SkipReason::TooLarge,
+                    };
                 }
-            } else {
-                BufferedBody::Ready(bytes)
+            }
+            Some(Err(_)) => {
+                return BufferedBody::Skip {
+                    body: prefixed_body(buffered, body),
+                    reason: SkipReason::AnchorFailed,
+                }
+            }
+            None => break,
+        }
+    }
+
+    BufferedBody::Ready(concat(buffered, buffered_len))
+}
+
+/// The frames already read, ahead of whatever is still coming.
+///
+/// Exists so a capture can give up mid-stream without the buyer paying for it.
+fn prefixed_body(
+    buffered: Vec<bytes::Bytes>,
+    rest: axum_core::body::Body,
+) -> axum_core::body::Body {
+    let len = buffered.iter().map(|b| b.len()).sum();
+    axum_core::body::Body::new(Prefixed {
+        prefix: Some(concat(buffered, len)),
+        rest,
+    })
+}
+
+fn concat(mut buffered: Vec<bytes::Bytes>, len: usize) -> bytes::Bytes {
+    // One chunk is the common case by far -- do not copy it.
+    if buffered.len() == 1 {
+        return buffered.pop().unwrap_or_default();
+    }
+    let mut out = Vec::with_capacity(len);
+    for chunk in buffered {
+        out.extend_from_slice(&chunk);
+    }
+    out.into()
+}
+
+/// A body that emits some already-read bytes, then delegates.
+///
+/// Hand-written rather than pulled from a combinator crate: `x402-axum` has no
+/// stream-adapter dependency, and adding one to concatenate two bodies is a
+/// large debt for a small job.
+struct Prefixed {
+    prefix: Option<bytes::Bytes>,
+    rest: axum_core::body::Body,
+}
+
+impl http_body::Body for Prefixed {
+    type Data = bytes::Bytes;
+    type Error = axum_core::Error;
+
+    fn poll_frame(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        let this = self.get_mut();
+        if let Some(prefix) = this.prefix.take() {
+            if !prefix.is_empty() {
+                return std::task::Poll::Ready(Some(Ok(http_body::Frame::data(prefix))));
             }
         }
-        // The stream itself failed: there is nothing to deliver either way.
-        Err(_) => BufferedBody::Skip {
-            body: axum_core::body::Body::empty(),
-            reason: SkipReason::AnchorFailed,
-        },
+        std::pin::Pin::new(&mut this.rest).poll_frame(cx)
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        // Deliberately not summed with the remainder's: the remainder is a
+        // stream of unknown length, which is how we got here.
+        http_body::SizeHint::default()
     }
 }
 
@@ -1123,6 +1210,85 @@ mod tests {
                 .is_ok(),
             "a real capture still fits alongside it"
         );
+    }
+
+    #[tokio::test]
+    async fn a_chunked_body_that_lies_about_its_size_is_still_bounded() {
+        // A chunked response announces nothing -- `upper()` is `None` -- so the
+        // announce-check waves it through. Before this, `collect()` then bought
+        // however many bytes the handler chose to send, which made
+        // `max_body_bytes` a suggestion for exactly the responses big enough to
+        // matter.
+        //
+        // Counting frames rather than bytes is deliberate: the OLD code also
+        // ended in `TooLarge` with the full body in hand, so only "how much did
+        // we read before deciding" tells the two apart.
+        const LIMIT: usize = 4 * 1024;
+        const CHUNKS: usize = 1024; // 1 MiB, 256x the limit
+        let polled = Arc::new(AtomicUsize::new(0));
+        let body = axum_core::body::Body::new(ChunkedUnknown {
+            remaining: CHUNKS,
+            polled: Arc::clone(&polled),
+        });
+
+        let (returned, reason) = match buffer_body(body, LIMIT).await {
+            BufferedBody::Skip { body, reason } => (body, reason),
+            BufferedBody::Ready(_) => panic!("1 MiB over a 4 KiB limit must not be captured"),
+        };
+        assert_eq!(reason, SkipReason::TooLarge);
+
+        let read = polled.load(Ordering::Relaxed);
+        assert!(
+            read <= LIMIT / 1024 + 1,
+            "stopped after {read} chunks; the limit is {} chunks' worth, so the \
+             buffer is not bounded by it",
+            LIMIT / 1024
+        );
+
+        // The half that must never regress: giving up on the evidence returns
+        // the WHOLE body, including the part already read. Settlement happened
+        // before this hook and the nonce is spent, so a byte lost here is paid
+        // goods that can never be re-fetched.
+        use http_body_util::BodyExt as _;
+        let delivered = returned.collect().await.unwrap().to_bytes();
+        assert_eq!(
+            delivered.len(),
+            CHUNKS * 1024,
+            "every byte must still be delivered"
+        );
+        assert!(
+            delivered.iter().all(|b| *b == b'x'),
+            "the bytes read before giving up must come back unchanged"
+        );
+    }
+
+    /// Chunks of a length the body never announces -- what an ordinary
+    /// streaming handler looks like from here. Counts how many were handed out,
+    /// which is the only way to see whether the buffer stopped early.
+    struct ChunkedUnknown {
+        remaining: usize,
+        polled: Arc<AtomicUsize>,
+    }
+
+    impl http_body::Body for ChunkedUnknown {
+        type Data = bytes::Bytes;
+        type Error = axum_core::Error;
+
+        fn poll_frame(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+            let this = self.get_mut();
+            if this.remaining == 0 {
+                return std::task::Poll::Ready(None);
+            }
+            this.remaining -= 1;
+            this.polled.fetch_add(1, Ordering::Relaxed);
+            std::task::Poll::Ready(Some(Ok(http_body::Frame::data(bytes::Bytes::from(
+                vec![b'x'; 1024],
+            )))))
+        }
+        // The default `size_hint` reports `upper() == None`, which is the point.
     }
 
     #[tokio::test]

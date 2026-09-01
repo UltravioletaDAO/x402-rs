@@ -166,6 +166,28 @@ impl Dx402Config {
     ///
     /// Both the construction path and the advertisement read THIS, so they
     /// cannot drift apart.
+    /// Whether this deployment can actually write to `backend`.
+    ///
+    /// Narrower than [`is_serviceable`], which asks whether the extension can
+    /// run at all. This asks whether one specific request can be honoured.
+    ///
+    /// [`is_serviceable`]: Dx402Config::is_serviceable
+    pub fn serves_backend(&self, backend: StorageBackend) -> bool {
+        match backend {
+            // Always writable when the extension is on: S3 config is required
+            // even on the ipfs backend, because it is the fallback.
+            StorageBackend::S3 => true,
+            StorageBackend::Ipfs => {
+                self.backend == StorageBackend::Ipfs
+                    && self.pinata_jwt.is_some()
+                    && self.pinata_gateway.is_some()
+            }
+            // No implementation. Accepting it would record a store that has
+            // never held a byte.
+            StorageBackend::Arweave => false,
+        }
+    }
+
     pub fn is_serviceable(&self) -> bool {
         if !self.enabled || self.bucket.is_none() || self.public_base.is_none() {
             // S3 config is required even for the ipfs backend: it is the
@@ -180,6 +202,29 @@ impl Dx402Config {
         }
     }
 }
+
+/// The largest sealed blob an anchor request can carry.
+///
+/// Not a storage limit -- it is what survives the facilitator's own 64 KiB
+/// request-body cap once the ciphertext is base64'd (x4/3) and wrapped in the
+/// anchor JSON. Both SDKs already measure the SERIALIZED REQUEST against 65536
+/// rather than the plaintext, which is the right check; this is the server side
+/// of the same rule, so a caller that skips it gets an answer naming the limit
+/// instead of a bare 413 from a middleware that has never heard of DX402.
+///
+/// Deliberately below the arithmetic ceiling (~48.7 KB with minimal metadata,
+/// ~48.1 KB once `sellerSignature` and `proofOfPayment` are present): the band
+/// moves with the metadata, so the published number has to clear the widest
+/// request, not the narrowest.
+///
+/// **It does not cover every oversize request, and cannot.** The body limit is
+/// the OUTERMOST layer on the whole router (`main.rs`, and its comment says the
+/// position is deliberate), so a request above 64 KiB is cut before any handler
+/// runs and still gets the bare 413. What this covers is the band a seller
+/// actually lands in when they are merely over the line -- roughly 48 KB to
+/// 64 KiB -- which is where the confusing failures come from. Anything far
+/// above is unambiguous on its own.
+pub const MAX_SEALED_BLOB_BYTES: usize = 48_000;
 
 /// The facilitator-side DX402 service.
 #[derive(Clone)]
@@ -514,6 +559,22 @@ impl Dx402Service {
             );
         }
 
+        // Believe the store, not the request. `backend` is free text the caller
+        // supplies; accepting one we cannot write to meant persisting -- and
+        // serving from `/dx402/evidence` -- a claim about where somebody's
+        // evidence lives that was never true. Arweave is the sharp case: it has
+        // no implementation at all, so a record could name a store that has
+        // never held a single byte.
+        if !self.config.serves_backend(req.backend) {
+            warn!(
+                payment_id = %req.payment_id,
+                requested = %req.backend,
+                serving = %self.config.backend,
+                "DX402 anchor asked for a backend this deployment does not write to"
+            );
+            return Err(Dx402ErrorCode::Dx402BackendUnavailable);
+        }
+
         let retention_until = req.retention.until(now);
 
         // Decode the blob but do NOT write it yet.
@@ -543,6 +604,15 @@ impl Dx402Service {
                         warn!(error = %e, payment_id = %req.payment_id, "DX402 sealed blob is not base64");
                         Dx402ErrorCode::Dx402StoreUnavailable
                     })?;
+                if blob.len() > MAX_SEALED_BLOB_BYTES {
+                    warn!(
+                        payment_id = %req.payment_id,
+                        sealed_bytes = blob.len(),
+                        limit = MAX_SEALED_BLOB_BYTES,
+                        "DX402 sealed blob is over what an anchor request can carry"
+                    );
+                    return Err(Dx402ErrorCode::Dx402SealedTooLarge);
+                }
                 Some(blob)
             }
             None => None,
@@ -886,8 +956,17 @@ mod tests {
             Arc::new(AlwaysFallsBack),
             Arc::new(crate::dx402::store::MemoryEvidenceStore::new()),
         ));
+        // The config has to say `ipfs` too, or the request is refused before it
+        // reaches the store -- which is production's shape, not a detail: the
+        // whole bug only exists on a deployment whose primary can fall back.
+        let config = Dx402Config {
+            backend: StorageBackend::Ipfs,
+            pinata_jwt: Some("test".into()),
+            pinata_gateway: Some("gw.test".into()),
+            ..Dx402Config::default()
+        };
         Dx402Service::new(
-            Dx402Config::default(),
+            config,
             Arc::new(crate::dx402::registry::MemoryEvidenceRegistry::new()),
             store,
             Arc::new(signer),
@@ -901,6 +980,70 @@ mod tests {
             backend: StorageBackend::Ipfs,
             ..anchor_request(EvidenceMode::Direct)
         }
+    }
+
+    #[tokio::test]
+    async fn a_backend_the_deployment_cannot_serve_is_refused() {
+        // `backend` was free text nothing checked, so a record -- and every
+        // later read of `/dx402/evidence` -- could claim the bytes were on
+        // Arweave, which has no implementation at all and has never held one.
+        let svc = Dx402Service::in_memory(PrivateKeySigner::random());
+        for unavailable in [StorageBackend::Arweave, StorageBackend::Ipfs] {
+            let err = svc
+                .anchor(
+                    AnchorRequest {
+                        backend: unavailable,
+                        ..anchor_request(EvidenceMode::Direct)
+                    },
+                    8453,
+                    1_000,
+                )
+                .await
+                .expect_err("an unservable backend must be refused, not recorded");
+            assert!(matches!(err, Dx402ErrorCode::Dx402BackendUnavailable));
+        }
+        // And the one it does serve still works.
+        svc.anchor(anchor_request(EvidenceMode::Direct), 8453, 1_000)
+            .await
+            .expect("s3 is always writable when the extension is on");
+    }
+
+    #[tokio::test]
+    async fn an_oversized_sealed_blob_is_named_not_just_cut() {
+        // Above the limit the body-limit middleware answers a bare 413 that
+        // names no field and never mentions DX402. Inside the band a seller
+        // actually lands in, say so ourselves with the real number.
+        let svc = Dx402Service::in_memory(PrivateKeySigner::random());
+        let too_big = vec![0u8; MAX_SEALED_BLOB_BYTES + 1];
+        let err = svc
+            .anchor(
+                AnchorRequest {
+                    sealed: Some(base64::engine::general_purpose::STANDARD.encode(&too_big)),
+                    pointer: None,
+                    ..anchor_request(EvidenceMode::Direct)
+                },
+                8453,
+                1_000,
+            )
+            .await
+            .expect_err("an oversized sealed blob must be refused by us");
+        assert!(matches!(err, Dx402ErrorCode::Dx402SealedTooLarge));
+
+        // One byte under still anchors -- the limit is a limit, not a moat.
+        svc.anchor(
+            AnchorRequest {
+                sealed: Some(
+                    base64::engine::general_purpose::STANDARD
+                        .encode(vec![0u8; MAX_SEALED_BLOB_BYTES]),
+                ),
+                pointer: None,
+                ..anchor_request(EvidenceMode::Direct)
+            },
+            8453,
+            1_000,
+        )
+        .await
+        .expect("exactly at the limit must be accepted");
     }
 
     #[tokio::test]

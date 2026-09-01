@@ -498,6 +498,22 @@ pub enum Dx402ErrorCode {
     /// Reported by KarmaKadabra, 2026-08-19, after isolating it with three
     /// anchors to one paymentId.
     Dx402SignatureNotVerified,
+    /// The request named a storage backend this deployment cannot write to.
+    ///
+    /// `backend` used to be free text the caller supplied and nothing checked:
+    /// a request could ask for `arweave`, which has no implementation at all,
+    /// and the record plus the API response would both claim it while the bytes
+    /// went wherever the configured store put them. `backend` is not part of
+    /// the EIP-712 receipt, so it is not even a signed lie -- just a persisted
+    /// one, which is worse for anybody reading the index to decide where their
+    /// evidence lives.
+    Dx402BackendUnavailable,
+    /// The sealed blob is larger than an anchor request can carry.
+    ///
+    /// Said by us, with the real limit in it, instead of the bare `413` the
+    /// body-limit middleware emits -- which names no field, mentions no
+    /// extension, and leaves a seller guessing whether the facilitator is down.
+    Dx402SealedTooLarge,
 }
 
 impl Dx402ErrorCode {
@@ -524,6 +540,8 @@ impl Dx402ErrorCode {
             Dx402ErrorCode::Dx402ProofRejected => "dx402_proof_rejected",
             Dx402ErrorCode::Dx402AlreadyAnchored => "dx402_already_anchored",
             Dx402ErrorCode::Dx402SignatureNotVerified => "dx402_signature_not_verified",
+            Dx402ErrorCode::Dx402BackendUnavailable => "dx402_backend_unavailable",
+            Dx402ErrorCode::Dx402SealedTooLarge => "dx402_sealed_too_large",
         }
     }
 }

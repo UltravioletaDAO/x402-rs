@@ -63,6 +63,10 @@ fn error_response(code: Dx402ErrorCode) -> axum::response::Response {
         // real; what failed is the proof of authorship. Distinct from 409 so
         // the caller looks at its signature rather than at its idempotency.
         Dx402ErrorCode::Dx402SignatureNotVerified => StatusCode::UNPROCESSABLE_ENTITY,
+        // Not 500: nothing is broken, the deployment simply does not offer
+        // what was asked for. `/dx402/stats` lists what it does offer.
+        Dx402ErrorCode::Dx402BackendUnavailable => StatusCode::UNPROCESSABLE_ENTITY,
+        Dx402ErrorCode::Dx402SealedTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
         Dx402ErrorCode::Dx402StoreUnavailable => StatusCode::SERVICE_UNAVAILABLE,
     };
     (

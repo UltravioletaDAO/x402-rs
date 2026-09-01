@@ -109,6 +109,31 @@ data "aws_secretsmanager_secret" "dx402_signing_key" {
   name  = "facilitator-dx402-signing-key"
 }
 
+# DX402 repair token.
+#
+# Gates POST /dx402/repair, which audits an anchor whose pointer resolves to
+# nothing and, with ?write=true, corrects it - RE-SIGNING the receipt, because
+# `pointer` is part of the EIP-712 type hash.
+#
+# Its own secret, deliberately not the ERC-8004 or bazaar token. Those have
+# different blast radii and this one rewrites a facilitator-signed attestation:
+# sharing a token would mean whoever can suppress a catalog listing can also
+# re-sign somebody's evidence receipt.
+#
+# Fails CLOSED: with no DX402_ADMIN_TOKEN in the environment the route answers
+# 404 and is indistinguishable from one that does not exist. That is also why
+# this is not optional infrastructure to skip - without it the repair route can
+# never be reached, and the audit of the anchors written before the pointer was
+# reconciled cannot run at all.
+#
+# Create it the same way as the signing key, with any high-entropy value:
+#   aws secretsmanager create-secret --name facilitator-dx402-admin-token \
+#     --secret-string "{\"token\":\"$(openssl rand -hex 32)\"}" --region us-east-2
+data "aws_secretsmanager_secret" "dx402_admin_token" {
+  count = var.enable_dx402 ? 1 : 0
+  name  = "facilitator-dx402-admin-token"
+}
+
 # Pinata credentials for the ipfs storage backend.
 #
 # Looked up only when dx402_storage_backend is "ipfs", so a deployment that never
@@ -359,6 +384,10 @@ locals {
     {
       name      = "DX402_SIGNING_KEY"
       valueFrom = "${data.aws_secretsmanager_secret.dx402_signing_key[0].arn}:private_key::"
+    },
+    {
+      name      = "DX402_ADMIN_TOKEN"
+      valueFrom = "${data.aws_secretsmanager_secret.dx402_admin_token[0].arn}:token::"
     },
     ] : [], var.enable_dx402 && var.dx402_storage_backend == "ipfs" ? [
     {

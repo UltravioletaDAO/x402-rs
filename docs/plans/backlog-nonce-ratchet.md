@@ -116,6 +116,19 @@ Se anota porque el error tiene forma de repetirse: dos síntomas en la misma
 ventana, los dos con "no hay fondos" en algún lugar de la historia, en dos redes
 distintas que nadie miró hasta buscarlas.
 
+**Ninguno de estos conteos es un total confiable, y conviene saberlo antes de
+citarlos.** El campo `network=` no aparece en todas las líneas -- una consulta
+devolvió 612 eventos sin un solo `network=` -- y el CLI de AWS pagina, así que
+un `grep | sort | uniq -c` cuenta las líneas que SÍ lo traen, de la primera
+página. Dos mediciones del mismo intervalo dieron 258 y 416 en arbitrum, y una
+de las dos vio 9 en ethereum que la otra no. **Ninguna está mal: miden cosas
+distintas y las dos parecen totales.**
+
+Lo que sí se sostiene es la proporción, que es lo que decide: arbitrum domina
+por dos órdenes de magnitud, y las de `transfer amount exceeds balance` están
+todas en base con `no nonce consumed`. Para un conteo real hay que paginar hasta
+el final y no asumir que el campo está siempre.
+
 **Qué arranca la racha de Arbitrum sigue abierto.** El arreglo del trinquete
 vale igual — evita que CUALQUIER racha se vuelva permanente, venga de donde
 venga — pero no cierra esta pregunta.

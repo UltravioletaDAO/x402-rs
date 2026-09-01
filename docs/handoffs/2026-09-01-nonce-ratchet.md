@@ -50,18 +50,38 @@ transcurre. Siempre cae en la segunda.
 El diseño asume que los fallos son lo bastante raros como para que haya pausas.
 Con fallos continuos no hay pausa.
 
-## El disparador
+## El disparador — SIN IDENTIFICAR
 
-Dos cosas ese día, ninguna de ellas el trinquete:
+**Esta sección decía otra cosa y estaba mal.** La versión original atribuía el
+trinquete a dos causas: la wallet de Ethereum sin gas, y unos settles con
+`ERC20: transfer amount exceeds balance`. La segunda es falsa y la primera no
+alcanza. Corregido tras una revisión de la sesión de al lado, verificado sobre
+dos horas de logs:
 
-1. **La wallet de Ethereum se quedó sin gas** (0,000042 ETH). Su alarma estuvo
-   en ALARM 42 horas sin que nadie actuara. Cada settle fallido alimentaba el
-   trinquete.
-2. `execution reverted: ERC20: transfer amount exceeds balance` — alguien
-   mandando settles sin fondos suficientes. Mismo efecto.
+| síntoma | n | red |
+|---|---|---|
+| `nonce too high` | **416** | **arbitrum** |
+| `transfer amount exceeds balance` | 24 | base |
+| `nonce too high` | 9 | ethereum |
 
-Fondear Ethereum resolvió (1) pero no el trinquete: para entonces ya estaba
-enganchado y se sostenía solo.
+**Redes distintas.** Y las 24 de `exceeds balance` llevan textual
+`Gas estimation reverted; no nonce consumed`: revierten en la estimación de gas,
+ANTES de transmitir, así que no mueven el contador de nadie. No pueden ser el
+disparador.
+
+Lo que sí son: el agente `0xd5791860ca10a6f39749fb499931c79c7c35071a` de
+Execution Market, con 0,0178 USDC en Base. Se arregla fondeándolo, es un problema
+propio y no tiene relación con esto.
+
+**El disparador del trinquete de Arbitrum sigue sin identificar.** Lo que está
+probado es el mecanismo (abajo) y que una vez enganchado se sostiene solo. Lo que
+NO está probado es qué abrió la primera brecha. Quien retome esto: no busque en
+Base, y no dé por hecho que fue la wallet de Ethereum — eso también fue una
+correlación temporal presentada como causa.
+
+La wallet de Ethereum sí estuvo vacía (0,000042 ETH) con su alarma en ALARM 42
+horas sin que nadie actuara, y fondearla resolvió los fallos de Ethereum. Pero
+no resolvió el trinquete de Arbitrum, y no hay evidencia de que lo haya causado.
 
 ## El arreglo
 

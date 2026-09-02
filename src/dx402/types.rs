@@ -442,6 +442,14 @@ pub struct AnchorRequest {
     /// real seller out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seller_signature: Option<String>,
+    /// The x402r escrow authorization, when the payment was released from escrow.
+    ///
+    /// Required only on that rail, and only to answer one question: who funded
+    /// the escrow. The ERC-20 `from` of a release is the operator's TokenStore,
+    /// so without this the gate cannot tell an honest escrow anchor from
+    /// evidence hung off a stranger's payment, and refuses both.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub escrow_release: Option<crate::dx402::gate::EscrowRelease>,
 }
 
 /// A single-use challenge for `escrowed` recovery.

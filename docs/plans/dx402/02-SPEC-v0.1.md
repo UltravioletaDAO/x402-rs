@@ -308,6 +308,34 @@ Design notes: **[04-BACKLOG-MONETIZACION.md](04-BACKLOG-MONETIZACION.md)** and
    must have signed the anchor, and one payment anchors once. Phase 1 by default
    (`DX402_REQUIRE_PROOF=false`: verify and report).
 
+### Done — the escrow rail (v2.10.0)
+
+The gate read the buyer off the ERC-20 `Transfer`. That is correct for plain
+x402 and **wrong for x402r escrow**, where a release moves tokens out of the
+operator's TokenStore and the buyer never appears as a `from`. Measured
+2026-09-02: 23 of 23 sampled live Execution Market releases, across Avalanche,
+Optimism and Monad, reported a payer that was not the buyer. Phase 2 would have
+rejected the entire escrow rail as fraudulent — 690 of the 699 anchors then in
+production.
+
+An anchor on that rail now carries `escrowRelease` (the authorization plus the
+funder). The facilitator asks the escrow to `getHash` it and requires the answer
+to be a `paymentInfoHash` **that same transaction** captured, which makes the
+buyer an on-chain fact: any edited field changes the hash. Verified against
+Optimism `0x5a2822cc…`, where `getHash` returns exactly the `0xb54c89bf…` the
+transaction emitted, and the `payer` inside is the buyer the seller had sealed
+to.
+
+Two honest limits, both refusals rather than guesses:
+
+- A transaction settling **more than one** escrow payment is refused
+  (`dx402_escrow_release_ambiguous`). `paymentId` is `keccak256(caip2 || txHash)`,
+  so batched payments collide on it and certifying either would be a coin flip.
+- The 900-second freshness window still applies, so a supersede must arrive
+  promptly. Certifying anchors already in production means widening
+  `DX402_ANCHOR_MAX_AGE_SECS` deliberately and temporarily — not changing the
+  default.
+
 ### Still open
 
 - **Buyer opt-in through the existing `accepts` array.** A seller offers the same

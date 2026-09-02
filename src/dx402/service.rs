@@ -461,6 +461,7 @@ impl Dx402Service {
             content_hash,
             pointer: req.pointer.as_ref().map(|p| p.as_str()).unwrap_or(""),
             seller_signature: req.seller_signature.as_deref(),
+            escrow_release: req.escrow_release.as_ref(),
             chain_id: chain_id_of(req.network),
         };
 
@@ -989,6 +990,7 @@ mod tests {
             proof_of_payment: None,
             seller_signature: None,
             wrapped_cek: Some("0xdeadbeef".into()),
+            escrow_release: None,
         }
     }
 

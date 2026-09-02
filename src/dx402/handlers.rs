@@ -318,6 +318,7 @@ mod tests {
             proof_of_payment: None,
             seller_signature: None,
             wrapped_cek: None,
+            escrow_release: None,
         }
     }
 

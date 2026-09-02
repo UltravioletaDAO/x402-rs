@@ -1,0 +1,56 @@
+{
+  "$schema": "https://modelcontextprotocol.io/schemas/server-card-v1.json",
+  "serverInfo": {
+    "name": "x402-facilitator",
+    "title": "x402 Payment Facilitator",
+    "description": "Verify and settle x402 gasless stablecoin payments across EVM, Solana, NEAR, Stellar, Algorand, Sui and XRPL. Charges no fee, authenticates no caller: the payer's signature is the only authority.",
+    "vendor": "Ultravioleta DAO",
+    "homepage": "https://facilitator.ultravioletadao.xyz",
+    "documentation": "https://facilitator.ultravioletadao.xyz/skill.md",
+    "repository": "https://github.com/UltravioletaDAO/x402-rs",
+    "license": "Apache-2.0"
+  },
+  "transport": {
+    "type": "streamable-http",
+    "endpoint": "https://facilitator.ultravioletadao.xyz/mcp"
+  },
+  "capabilities": {
+    "tools": true,
+    "resources": false,
+    "prompts": false,
+    "logging": false
+  },
+  "authentication": {
+    "schemes": [],
+    "documentation": "https://facilitator.ultravioletadao.xyz/auth.md",
+    "note": "None. There are no accounts, no API keys and no fees. Every call is authorised by the payer's own signature inside the payload."
+  },
+  "tools": [
+    {
+      "name": "x402_supported",
+      "title": "Supported networks and schemes",
+      "description": "List every payment scheme and network this facilitator settles on, in both x402 v1 and CAIP-2 spellings. Takes no arguments."
+    },
+    {
+      "name": "x402_accepts",
+      "title": "Negotiate payment requirements",
+      "description": "Narrow a resource server's 402 offer to what this facilitator can settle, enriched with feePayer, token list and escrow addresses."
+    },
+    {
+      "name": "x402_verify",
+      "title": "Verify a payment authorization",
+      "description": "Check a signed payment authorization without submitting anything on-chain. The dry run before x402_settle."
+    },
+    {
+      "name": "x402_settle",
+      "title": "Settle a payment on-chain (irreversible)",
+      "description": "Broadcast the payer's authorization as a blockchain transaction. Moves real funds and cannot be undone."
+    }
+  ],
+  "discovery": {
+    "agentCard": "https://facilitator.ultravioletadao.xyz/.well-known/agent-card.json",
+    "skillManifest": "https://facilitator.ultravioletadao.xyz/skill.md",
+    "apiCatalog": "https://facilitator.ultravioletadao.xyz/.well-known/api-catalog",
+    "openapi": "https://facilitator.ultravioletadao.xyz/openapi.json"
+  }
+}

@@ -57,48 +57,64 @@ resource "aws_lb_target_group" "writes" {
   }
 }
 
-# APPLY THIS RULE ONLY AFTER aws_lb_target_group.writes HAS HEALTHY TARGETS.
+# ORDERING: THE RULE COMES FIRST, AND AWS DOES NOT ALLOW IT ANY OTHER WAY.
 #
-# Terraform has no way to express "wait until ECS finished registering". If it
-# creates this rule in the same apply that adds the target group, the ALB starts
-# forwarding /settle to a target group with nothing healthy in it and answers
-# 503 on the money rail for as long as registration takes -- healthy_threshold 2
-# at interval 60 means up to ~2 minutes of failed settlements, on top of the
-# rolling ECS deployment the service change triggers.
+# The obvious order -- create the target group, register the service, then cut
+# traffic over -- is REJECTED by ECS:
 #
-# So apply in two steps:
+#   InvalidParameterException: The target group with targetGroupArn
+#   .../facilitator-production-writes/... does not have an associated load
+#   balancer.
 #
-#   1. terraform apply -target=aws_lb_target_group.writes \
-#                      -target=aws_ecs_service.facilitator
+# A target group no listener forwards to is not "associated", and ECS refuses to
+# register a service against it. So the rule must exist BEFORE the service can
+# join the group. Which collides head-on with the thing that must not happen: a
+# rule forwarding /settle to a group with no healthy targets is a 503 on the
+# money rail.
+#
+# A WEIGHTED forward resolves both. The rule below attaches `writes` to the load
+# balancer while sending it ZERO traffic -- every write path still goes to
+# `main`, byte for byte what happens today. That satisfies ECS, changes nothing
+# for callers, and leaves the cutover as a separate, reversible decision.
+#
+#   1. terraform apply -target=aws_lb_listener_rule.writes
+#      Attaches the group. No traffic moves: writes weight = 0.
+#   2. terraform apply -target=aws_ecs_service.facilitator
+#      ECS registers the tasks into `writes` and health checks start.
 #      aws elbv2 describe-target-health --region us-east-2 \
-#        --target-group-arn <writes tg arn>     # wait for all "healthy"
-#   2. terraform apply -target=aws_lb_listener_rule.writes \
-#                      -target=aws_cloudwatch_metric_alarm.latency_reads_p99 \
-#                      -target=aws_cloudwatch_metric_alarm.latency_writes_p99
+#        --target-group-arn <writes tg arn>       # wait for all "healthy"
+#   3. Flip the weights below (writes 100, main 0) and apply the rule again.
+#      THIS is the cutover, and it is instant because the targets are already
+#      healthy. Reverting is the same edit backwards.
 #
-# Step 1 is safe on its own: a registered-but-unrouted target group changes no
-# traffic. Step 2 is the cutover and is instant once targets are healthy.
+# Only step 3 changes what any caller experiences, and only then does the
+# per-rail TargetResponseTime metric start carrying the write traffic.
 #
-# Route the endpoints that submit a transaction and wait for its receipt.
-#
-# ALB allows at most 5 values in one path_pattern condition and these are
-# exactly 5. Anything added later needs a second rule, not a 6th value.
-#
-# Exact-match semantics matter here: "/register" does NOT capture
-# "/register/status/{jobId}", which is a fast poll and correctly stays on the
-# read rail. "/feedback/*" deliberately carries /feedback/evm/prepare too --
-# prepare is fast, but it belongs to the write family and keeping the family
-# whole beats shaving one fast route off it.
-#
-# NOT routed here on purpose: /verify (RPC read, measured 160ms avg),
-# /escrow/state (103ms), /discovery/register (a store write, not on-chain).
 resource "aws_lb_listener_rule" "writes" {
   listener_arn = aws_lb_listener.https.arn
   priority     = 20
 
+  # Weights are the cutover switch. Today: everything still goes to `main`.
+  # Step 3 above flips these to writes = 100, main = 0.
   action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.writes.arn
+    type = "forward"
+
+    forward {
+      target_group {
+        arn    = aws_lb_target_group.main.arn
+        weight = 100
+      }
+
+      target_group {
+        arn    = aws_lb_target_group.writes.arn
+        weight = 0
+      }
+
+      stickiness {
+        enabled  = false
+        duration = 1
+      }
+    }
   }
 
   condition {

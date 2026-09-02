@@ -1,0 +1,58 @@
+{
+  "linkset": [
+    {
+      "anchor": "https://facilitator.ultravioletadao.xyz",
+      "service-desc": [
+        {
+          "href": "https://facilitator.ultravioletadao.xyz/openapi.json",
+          "type": "application/json"
+        }
+      ],
+      "service-doc": [
+        {
+          "href": "https://facilitator.ultravioletadao.xyz/docs",
+          "type": "text/html"
+        }
+      ],
+      "service-meta": [
+        {
+          "href": "https://facilitator.ultravioletadao.xyz/skill.md",
+          "type": "text/markdown"
+        }
+      ],
+      "status": [
+        {
+          "href": "https://facilitator.ultravioletadao.xyz/health",
+          "type": "application/json"
+        }
+      ]
+    },
+    {
+      "anchor": "https://facilitator.ultravioletadao.xyz/.well-known/x402",
+      "service-desc": [
+        {
+          "href": "https://facilitator.ultravioletadao.xyz/.well-known/x402",
+          "type": "application/json"
+        }
+      ],
+      "service-doc": [
+        {
+          "href": "https://facilitator.ultravioletadao.xyz/auth.md",
+          "type": "text/markdown"
+        }
+      ],
+      "service-meta": [
+        {
+          "href": "https://facilitator.ultravioletadao.xyz/.well-known/agent-card.json",
+          "type": "application/json"
+        }
+      ],
+      "status": [
+        {
+          "href": "https://facilitator.ultravioletadao.xyz/supported",
+          "type": "application/json"
+        }
+      ]
+    }
+  ]
+}

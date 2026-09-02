@@ -1,0 +1,96 @@
+# x402 Payment Facilitator — Ultravioleta DAO
+
+> The settlement service behind the Ultravioleta DAO stack. It verifies x402 payment
+> authorizations and submits them on-chain, so a buyer signs a stablecoin payment and
+> never pays gas. It is the facilitator OTHER services point at — it does not charge
+> for its own routes.
+
+## What this service is
+
+x402 is HTTP 402 Payment Required, made real: a server answers `402` with a set of
+payment requirements, the client signs an authorization (EIP-3009 on EVM, the
+equivalent primitive on each other family), and a *facilitator* checks that signature
+and lands the transfer on-chain. This is that facilitator.
+
+Two calls are the whole contract:
+
+- `POST /verify` — is this authorization valid, right now, for these requirements?
+- `POST /settle` — submit it on-chain and return the transaction hash.
+
+Everything else on this host exists to make those two answerable without guessing:
+which networks and tokens are live, which schemes each network supports, what the
+facilitator just did, and what it costs (nothing — the seller keeps the payment).
+
+## Coverage
+
+- **21 mainnet payment networks** and 18 testnets — 39 network identifiers in all.
+  Mainnets: algorand, arbitrum, avalanche, base, bsc, celo, ethereum, fogo, hyperevm,
+  monad, near, optimism, polygon, robinhood, scroll, skale-base, solana, stellar, sui,
+  unichain, xrpl.
+- **7 chain families**: EVM, SVM (Solana and Fogo), NEAR, Stellar, Sui, Algorand, XRPL.
+- **6 stablecoins**: USDC, USDT, EURC, AUSD, PYUSD, USDG.
+- **5 payment schemes**: `exact`, `upto` (Permit2 metered), `escrow` and `commerce`
+  (x402r two-phase lock/release), `fhe-transfer` (experimental).
+- **Extensions advertised in `/supported`**: `bazaar`, `durable-evidence`.
+- Every number above is answerable live from `/supported`; do not cache it.
+
+## Machine-readable resources
+
+- **Agent-facing overview** (markdown): https://facilitator.ultravioletadao.xyz/index.md
+- **Agent manual** (how to call verify/settle): https://facilitator.ultravioletadao.xyz/skill.md
+- **Authentication guide for agents**: https://facilitator.ultravioletadao.xyz/auth.md
+- **A2A agent card**: https://facilitator.ultravioletadao.xyz/.well-known/agent-card.json
+- **A2A agent card (legacy path)**: https://facilitator.ultravioletadao.xyz/.well-known/agent.json
+- **x402 discovery**: https://facilitator.ultravioletadao.xyz/.well-known/x402
+- **API catalog (RFC 9727)**: https://facilitator.ultravioletadao.xyz/.well-known/api-catalog
+- **Agent skills index**: https://facilitator.ultravioletadao.xyz/.well-known/agent-skills/index.json
+- **Auth metadata (RFC 9728)**: https://facilitator.ultravioletadao.xyz/.well-known/oauth-protected-resource
+- **Workflow manifest**: https://facilitator.ultravioletadao.xyz/workflows.json
+- **OpenAPI 3.1**: https://facilitator.ultravioletadao.xyz/openapi.json
+- **Swagger UI**: https://facilitator.ultravioletadao.xyz/docs
+- **Everything above concatenated**: https://facilitator.ultravioletadao.xyz/llms-full.txt
+- **This file**: https://facilitator.ultravioletadao.xyz/llms.txt
+
+## Live endpoints
+
+Base URL: `https://facilitator.ultravioletadao.xyz/`
+
+- `GET  /health` — liveness. `{"status":"healthy"}`
+- `GET  /version` — the release this instance is running
+- `GET  /supported` — every (scheme, network) pair the facilitator will accept.
+  Each network is listed twice: once by its v1 name (`base`) and once by its CAIP-2
+  identifier (`eip155:8453`). They are the same network.
+- `POST /verify` — validate a payment authorization without settling
+- `POST /settle` — settle a verified authorization on-chain
+- `POST /accepts` — negotiate payment requirements (Faremeter-compatible)
+- `GET  /events` — server-sent stream, one message per verify/settle
+- `GET  /transactions` — recent recorded operations (JSON, `limit` capped at 200)
+- `GET  /api/stats` — aggregated totals per network and asset
+- `GET  /blacklist` — blocked payer addresses
+- `GET  /discovery/resources` — the Bazaar catalog of x402-priced resources
+- `GET  /identity/{network}/{agentId}` and `GET /reputation/{network}/{agentId}` —
+  ERC-8004 Trustless Agents, live on 12 mainnets and 21 networks in total
+
+`/events`, `/transactions` and `/api/stats` are an index, not a ledger. Rows are
+written after settlement resolves and are dropped rather than allowed to block a
+payment. The chain is the ledger.
+
+## Cost
+
+Calling this facilitator is free. It takes no fee and it is not an x402-priced API:
+`/verify` and `/settle` never answer 402. The gas for settlement is paid by the
+facilitator's own wallets, which is the point of the service. The money that moves is
+the buyer's stablecoin payment going to the seller.
+
+## Using it from code
+
+- `uvd-x402-sdk` — the house x402 SDK, on npm
+  (https://www.npmjs.com/package/uvd-x402-sdk) and on PyPI
+  (https://pypi.org/project/uvd-x402-sdk/). Point it at this facilitator URL.
+- `x402-axum` — Rust server middleware that prices a route and calls this facilitator.
+- `x402-reqwest` — Rust client that answers a 402 challenge automatically.
+
+## Operator
+
+Ultravioleta DAO — https://ultravioletadao.xyz
+Source: https://github.com/UltravioletaDAO/x402-rs (fork of https://github.com/x402-rs/x402-rs)

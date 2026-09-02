@@ -1,0 +1,474 @@
+{
+  "x402": {
+    "version": "1.0",
+    "role": "facilitator",
+    "description": "Ultravioleta DAO x402 payment facilitator. It verifies x402 payment authorizations and settles them on-chain on behalf of other services. It is not an x402-priced API: it charges no fee, none of its own routes answer HTTP 402, and the `paidRoutes` list below is empty on purpose.",
+    "provider": {
+      "name": "Ultravioleta DAO",
+      "url": "https://ultravioletadao.xyz",
+      "contact": "ultravioletadao@gmail.com"
+    },
+    "facilitator": "https://facilitator.ultravioletadao.xyz",
+    "capabilities": {
+      "payments": false,
+      "facilitation": true,
+      "settlement": true,
+      "verification": true,
+      "gasless": true,
+      "eip3009": true,
+      "multichain": true,
+      "escrow": true,
+      "metered": true,
+      "erc8004": true,
+      "bazaar": true
+    },
+    "endpoints": {
+      "verify": {
+        "method": "POST",
+        "url": "https://facilitator.ultravioletadao.xyz/verify",
+        "price": null
+      },
+      "settle": {
+        "method": "POST",
+        "url": "https://facilitator.ultravioletadao.xyz/settle",
+        "price": null
+      },
+      "supported": {
+        "method": "GET",
+        "url": "https://facilitator.ultravioletadao.xyz/supported",
+        "price": null
+      },
+      "accepts": {
+        "method": "POST",
+        "url": "https://facilitator.ultravioletadao.xyz/accepts",
+        "price": null
+      },
+      "escrowState": {
+        "method": "POST",
+        "url": "https://facilitator.ultravioletadao.xyz/escrow/state",
+        "price": null
+      },
+      "health": {
+        "method": "GET",
+        "url": "https://facilitator.ultravioletadao.xyz/health",
+        "price": null
+      },
+      "version": {
+        "method": "GET",
+        "url": "https://facilitator.ultravioletadao.xyz/version",
+        "price": null
+      },
+      "openapi": {
+        "method": "GET",
+        "url": "https://facilitator.ultravioletadao.xyz/openapi.json",
+        "price": null
+      }
+    },
+    "paidRoutes": [],
+    "schemes": [
+      {
+        "name": "exact",
+        "description": "One signed authorization for an exact amount (EIP-3009 transferWithAuthorization on EVM; the equivalent primitive on each other family).",
+        "networks": "all"
+      },
+      {
+        "name": "upto",
+        "description": "Permit2-signed authorization for a maximum; settled for the amount actually used. Advertised only where the Permit2 proxy is deployed.",
+        "networks": [
+          "arbitrum",
+          "base",
+          "bsc",
+          "ethereum",
+          "hyperevm",
+          "monad",
+          "optimism",
+          "polygon"
+        ]
+      },
+      {
+        "name": "escrow",
+        "description": "x402r two-phase lock/release. Actions: authorize, release, refundInEscrow.",
+        "networks": [
+          "arbitrum",
+          "avalanche",
+          "base",
+          "celo",
+          "ethereum",
+          "monad",
+          "optimism",
+          "polygon",
+          "skale-base"
+        ]
+      },
+      {
+        "name": "commerce",
+        "description": "Alias of `escrow`, introduced by x402r for marketplace integrations. Functionally identical.",
+        "networks": [
+          "arbitrum",
+          "avalanche",
+          "base",
+          "celo",
+          "ethereum",
+          "monad",
+          "optimism",
+          "polygon",
+          "skale-base"
+        ]
+      },
+      {
+        "name": "fhe-transfer",
+        "description": "Experimental FHE transfer scheme.",
+        "networks": [
+          "ethereum-sepolia"
+        ]
+      }
+    ],
+    "extensions": [
+      "bazaar",
+      "durable-evidence"
+    ],
+    "stablecoins": [
+      "USDC",
+      "USDT",
+      "EURC",
+      "AUSD",
+      "PYUSD",
+      "USDG"
+    ],
+    "networks": [
+      {
+        "name": "algorand",
+        "caip2": "algorand:mainnet",
+        "family": "algorand",
+        "network": "mainnet",
+        "tokens": [
+          "USDC"
+        ],
+        "escrow": false,
+        "upto": false
+      },
+      {
+        "name": "arbitrum",
+        "caip2": "eip155:42161",
+        "family": "evm",
+        "network": "mainnet",
+        "tokens": [
+          "USDC",
+          "USDT",
+          "AUSD"
+        ],
+        "escrow": true,
+        "upto": true
+      },
+      {
+        "name": "avalanche",
+        "caip2": "eip155:43114",
+        "family": "evm",
+        "network": "mainnet",
+        "tokens": [
+          "USDC",
+          "EURC",
+          "AUSD"
+        ],
+        "escrow": true,
+        "upto": false
+      },
+      {
+        "name": "base",
+        "caip2": "eip155:8453",
+        "family": "evm",
+        "network": "mainnet",
+        "tokens": [
+          "USDC",
+          "EURC"
+        ],
+        "escrow": true,
+        "upto": true
+      },
+      {
+        "name": "bsc",
+        "caip2": "eip155:56",
+        "family": "evm",
+        "network": "mainnet",
+        "tokens": [
+          "USDC",
+          "AUSD"
+        ],
+        "escrow": false,
+        "upto": true
+      },
+      {
+        "name": "celo",
+        "caip2": "eip155:42220",
+        "family": "evm",
+        "network": "mainnet",
+        "tokens": [
+          "USDC",
+          "USDT"
+        ],
+        "escrow": true,
+        "upto": false
+      },
+      {
+        "name": "ethereum",
+        "caip2": "eip155:1",
+        "family": "evm",
+        "network": "mainnet",
+        "tokens": [
+          "USDC",
+          "EURC",
+          "PYUSD",
+          "AUSD"
+        ],
+        "escrow": true,
+        "upto": true
+      },
+      {
+        "name": "fogo",
+        "caip2": "fogo:mainnet",
+        "family": "svm",
+        "network": "mainnet",
+        "tokens": [
+          "USDC"
+        ],
+        "escrow": false,
+        "upto": false
+      },
+      {
+        "name": "hyperevm",
+        "caip2": "eip155:999",
+        "family": "evm",
+        "network": "mainnet",
+        "tokens": [
+          "USDC"
+        ],
+        "escrow": false,
+        "upto": true
+      },
+      {
+        "name": "monad",
+        "caip2": "eip155:143",
+        "family": "evm",
+        "network": "mainnet",
+        "tokens": [
+          "USDC",
+          "USDT",
+          "AUSD"
+        ],
+        "escrow": true,
+        "upto": true
+      },
+      {
+        "name": "near",
+        "caip2": "near:mainnet",
+        "family": "near",
+        "network": "mainnet",
+        "tokens": [
+          "USDC"
+        ],
+        "escrow": false,
+        "upto": false
+      },
+      {
+        "name": "optimism",
+        "caip2": "eip155:10",
+        "family": "evm",
+        "network": "mainnet",
+        "tokens": [
+          "USDC",
+          "USDT"
+        ],
+        "escrow": true,
+        "upto": true
+      },
+      {
+        "name": "polygon",
+        "caip2": "eip155:137",
+        "family": "evm",
+        "network": "mainnet",
+        "tokens": [
+          "USDC",
+          "AUSD"
+        ],
+        "escrow": true,
+        "upto": true
+      },
+      {
+        "name": "robinhood",
+        "caip2": "eip155:4663",
+        "family": "evm",
+        "network": "mainnet",
+        "tokens": [
+          "USDG"
+        ],
+        "escrow": false,
+        "upto": false
+      },
+      {
+        "name": "scroll",
+        "caip2": "eip155:534352",
+        "family": "evm",
+        "network": "mainnet",
+        "tokens": [
+          "USDC"
+        ],
+        "escrow": false,
+        "upto": false
+      },
+      {
+        "name": "skale-base",
+        "caip2": "eip155:1187947933",
+        "family": "evm",
+        "network": "mainnet",
+        "tokens": [
+          "USDC"
+        ],
+        "escrow": true,
+        "upto": false
+      },
+      {
+        "name": "solana",
+        "caip2": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+        "family": "svm",
+        "network": "mainnet",
+        "tokens": [
+          "USDC",
+          "AUSD"
+        ],
+        "escrow": false,
+        "upto": false
+      },
+      {
+        "name": "stellar",
+        "caip2": "stellar:pubnet",
+        "family": "stellar",
+        "network": "mainnet",
+        "tokens": [
+          "USDC"
+        ],
+        "escrow": false,
+        "upto": false
+      },
+      {
+        "name": "sui",
+        "caip2": "sui:mainnet",
+        "family": "sui",
+        "network": "mainnet",
+        "tokens": [
+          "AUSD",
+          "USDC"
+        ],
+        "escrow": false,
+        "upto": false
+      },
+      {
+        "name": "unichain",
+        "caip2": "eip155:130",
+        "family": "evm",
+        "network": "mainnet",
+        "tokens": [
+          "USDC"
+        ],
+        "escrow": false,
+        "upto": false
+      },
+      {
+        "name": "xrpl",
+        "caip2": "xrpl:0",
+        "family": "xrpl",
+        "network": "mainnet",
+        "tokens": [
+          "USDC"
+        ],
+        "escrow": false,
+        "upto": false
+      }
+    ],
+    "testnets": [
+      {
+        "name": "algorand-testnet",
+        "caip2": "algorand:testnet"
+      },
+      {
+        "name": "arbitrum-sepolia",
+        "caip2": "eip155:421614"
+      },
+      {
+        "name": "avalanche-fuji",
+        "caip2": "eip155:43113"
+      },
+      {
+        "name": "base-sepolia",
+        "caip2": "eip155:84532"
+      },
+      {
+        "name": "celo-sepolia",
+        "caip2": "eip155:44787"
+      },
+      {
+        "name": "ethereum-sepolia",
+        "caip2": "eip155:11155111"
+      },
+      {
+        "name": "fogo-testnet",
+        "caip2": "fogo:testnet"
+      },
+      {
+        "name": "hyperevm-testnet",
+        "caip2": "eip155:333"
+      },
+      {
+        "name": "near-testnet",
+        "caip2": "near:testnet"
+      },
+      {
+        "name": "optimism-sepolia",
+        "caip2": "eip155:11155420"
+      },
+      {
+        "name": "polygon-amoy",
+        "caip2": "eip155:80002"
+      },
+      {
+        "name": "robinhood-testnet",
+        "caip2": "eip155:46630"
+      },
+      {
+        "name": "skale-base-sepolia",
+        "caip2": "eip155:324705682"
+      },
+      {
+        "name": "solana-devnet",
+        "caip2": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"
+      },
+      {
+        "name": "stellar-testnet",
+        "caip2": "stellar:testnet"
+      },
+      {
+        "name": "sui-testnet",
+        "caip2": "sui:testnet"
+      },
+      {
+        "name": "unichain-sepolia",
+        "caip2": "eip155:1301"
+      },
+      {
+        "name": "xrpl-testnet",
+        "caip2": "xrpl:1"
+      }
+    ],
+    "notes": [
+      "Token contract addresses are deliberately absent from this document so it cannot drift from the code. Read them live from POST /accepts (extra.tokens) or GET /supported.",
+      "GET /supported lists every network twice: once by its v1 name (`base`) and once by its CAIP-2 identifier (`eip155:8453`). They are the same network.",
+      "A facilitator's own routes are free. If this host ever answers HTTP 402, that is a bug."
+    ],
+    "documentation": {
+      "skill": "https://facilitator.ultravioletadao.xyz/skill.md",
+      "auth": "https://facilitator.ultravioletadao.xyz/auth.md",
+      "llms": "https://facilitator.ultravioletadao.xyz/llms.txt",
+      "openapi": "https://facilitator.ultravioletadao.xyz/openapi.json",
+      "spec": "https://x402.org/"
+    }
+  }
+}

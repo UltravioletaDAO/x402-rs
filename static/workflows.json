@@ -1,0 +1,288 @@
+{
+  "version": "1.0",
+  "service": "Ultravioleta DAO x402 Facilitator",
+  "url": "https://facilitator.ultravioletadao.xyz",
+  "documentation": "https://facilitator.ultravioletadao.xyz/skill.md",
+  "description": "The state machines this facilitator drives, written for an agent that wants to know which call is legal next without reading the source. Every transition names the operation that triggers it.",
+  "workflows": [
+    {
+      "id": "x402-payment",
+      "name": "One-shot x402 payment (scheme: exact / upto)",
+      "description": "The ordinary path. The seller issues the 402 challenge; the facilitator only sees the last two steps.",
+      "initialState": "challenged",
+      "terminalStates": [
+        "settled",
+        "rejected"
+      ],
+      "states": [
+        {
+          "id": "challenged",
+          "description": "The seller answered 402 with payment requirements. The facilitator is not involved yet."
+        },
+        {
+          "id": "authorized",
+          "description": "The payer signed the authorization (EIP-3009 on EVM; the equivalent primitive elsewhere). Nothing is on-chain."
+        },
+        {
+          "id": "verified",
+          "description": "The facilitator checked signature, EIP-712 domain, nonce, amount and validity window."
+        },
+        {
+          "id": "settled",
+          "description": "The transfer is on-chain. The response carries the transaction hash."
+        },
+        {
+          "id": "rejected",
+          "description": "Verification or settlement refused the payment. Terminal for this authorization."
+        }
+      ],
+      "transitions": [
+        {
+          "from": "challenged",
+          "to": "authorized",
+          "operation": "client-side signing",
+          "endpoint": null
+        },
+        {
+          "from": "authorized",
+          "to": "verified",
+          "operation": "verifyPayment",
+          "endpoint": "POST /verify",
+          "success": "HTTP 200 with isValid=true",
+          "failure": "HTTP 200 with isValid=false (a rejected payment is NOT an HTTP error)"
+        },
+        {
+          "from": "authorized",
+          "to": "rejected",
+          "operation": "verifyPayment",
+          "endpoint": "POST /verify",
+          "condition": "isValid=false"
+        },
+        {
+          "from": "verified",
+          "to": "settled",
+          "operation": "settlePayment",
+          "endpoint": "POST /settle",
+          "success": "HTTP 200 with success=true and a transaction hash"
+        },
+        {
+          "from": "verified",
+          "to": "rejected",
+          "operation": "settlePayment",
+          "endpoint": "POST /settle",
+          "condition": "success=false with an errorReason"
+        }
+      ],
+      "notes": [
+        "POST /settle may be called without a prior POST /verify: settle re-verifies.",
+        "A timeout on POST /settle is NOT a terminal failure. The transaction may still land. Check the chain, or GET /events / GET /transactions, before retrying."
+      ]
+    },
+    {
+      "id": "x402-escrow",
+      "name": "Two-phase escrow (scheme: escrow / commerce)",
+      "description": "x402r lock-then-decide. `commerce` is an alias of `escrow` and behaves identically. All three actions are POST /settle with a different `action` field.",
+      "initialState": "authorized",
+      "terminalStates": [
+        "released",
+        "refunded"
+      ],
+      "states": [
+        {
+          "id": "authorized",
+          "description": "Funds locked in the escrow contract by the payer's ERC-3009 signature."
+        },
+        {
+          "id": "released",
+          "description": "The escrowed funds went to the receiver."
+        },
+        {
+          "id": "refunded",
+          "description": "The escrowed funds went back to the payer."
+        }
+      ],
+      "transitions": [
+        {
+          "from": null,
+          "to": "authorized",
+          "operation": "escrowAuthorize",
+          "endpoint": "POST /settle",
+          "body": {
+            "scheme": "escrow",
+            "action": "authorize"
+          },
+          "signatureRequired": true
+        },
+        {
+          "from": "authorized",
+          "to": "released",
+          "operation": "escrowRelease",
+          "endpoint": "POST /settle",
+          "body": {
+            "scheme": "escrow",
+            "action": "release"
+          },
+          "signatureRequired": false
+        },
+        {
+          "from": "authorized",
+          "to": "refunded",
+          "operation": "escrowRefund",
+          "endpoint": "POST /settle",
+          "body": {
+            "scheme": "escrow",
+            "action": "refundInEscrow"
+          },
+          "signatureRequired": false
+        }
+      ],
+      "queries": [
+        {
+          "operation": "escrowState",
+          "endpoint": "POST /escrow/state",
+          "description": "Current escrow state for a payment."
+        }
+      ],
+      "networks": "See GET /supported for the networks with an active PaymentOperator deployment."
+    },
+    {
+      "id": "erc8004-async-registration",
+      "name": "Asynchronous agent registration (ERC-8004)",
+      "description": "POST /register with `Prefer: respond-async` returns 202 and a jobId instead of holding the connection open for the mint.",
+      "initialState": "pending",
+      "terminalStates": [
+        "done",
+        "failed"
+      ],
+      "states": [
+        {
+          "id": "pending",
+          "description": "The job exists; the mint has not been confirmed yet."
+        },
+        {
+          "id": "mint_confirmed",
+          "description": "The mint landed on-chain. Post-mint steps may still be running."
+        },
+        {
+          "id": "done",
+          "description": "Registration complete. Retained about 1 hour for polling, then aged out."
+        },
+        {
+          "id": "failed",
+          "description": "Registration failed. Retained about 1 hour for polling, then aged out."
+        }
+      ],
+      "transitions": [
+        {
+          "from": null,
+          "to": "pending",
+          "operation": "registerAgentAsync",
+          "endpoint": "POST /register",
+          "headers": {
+            "Prefer": "respond-async"
+          },
+          "success": "HTTP 202 with a jobId"
+        },
+        {
+          "from": "pending",
+          "to": "mint_confirmed",
+          "operation": "poll",
+          "endpoint": "GET /register/status/{jobId}"
+        },
+        {
+          "from": "mint_confirmed",
+          "to": "done",
+          "operation": "poll",
+          "endpoint": "GET /register/status/{jobId}"
+        },
+        {
+          "from": "mint_confirmed",
+          "to": "failed",
+          "operation": "poll",
+          "endpoint": "GET /register/status/{jobId}"
+        },
+        {
+          "from": "pending",
+          "to": "failed",
+          "operation": "poll",
+          "endpoint": "GET /register/status/{jobId}"
+        }
+      ],
+      "notes": [
+        "A timeout on POST /register is not a failure: the mint may still land. Re-registering blindly hands a duplicate identity to someone who already has one.",
+        "GET /identity/{network}/owner/{address} answers 404 for `owns no agent` and 503 with retryable=true for `no verdict reached`. Never persist a 503 as `not registered`."
+      ]
+    },
+    {
+      "id": "erc8004-feedback-authorship",
+      "name": "Reputation feedback with real authorship",
+      "description": "On the plain POST /feedback path the registry records the FACILITATOR as the author. The prepare/submit pairs exist so the rater is recorded instead.",
+      "initialState": "prepared",
+      "terminalStates": [
+        "submitted",
+        "abandoned"
+      ],
+      "states": [
+        {
+          "id": "prepared",
+          "description": "The facilitator built the digest (EVM) or the partially-signed transaction (Solana)."
+        },
+        {
+          "id": "signed",
+          "description": "The rater signed: an EIP-7702 authorisation on EVM, or as `client` on Solana."
+        },
+        {
+          "id": "submitted",
+          "description": "The facilitator relayed it. The registry records the rater as the author."
+        },
+        {
+          "id": "abandoned",
+          "description": "The relay authorisation expired (default 900s) without a submit."
+        }
+      ],
+      "transitions": [
+        {
+          "from": null,
+          "to": "prepared",
+          "operation": "prepareFeedbackEvm",
+          "endpoint": "POST /feedback/evm/prepare"
+        },
+        {
+          "from": null,
+          "to": "prepared",
+          "operation": "prepareFeedbackSolana",
+          "endpoint": "POST /feedback/solana/prepare"
+        },
+        {
+          "from": "prepared",
+          "to": "signed",
+          "operation": "client-side signing",
+          "endpoint": null
+        },
+        {
+          "from": "signed",
+          "to": "submitted",
+          "operation": "submitFeedbackEvm",
+          "endpoint": "POST /feedback/evm/submit"
+        },
+        {
+          "from": "signed",
+          "to": "submitted",
+          "operation": "submitFeedbackSolana",
+          "endpoint": "POST /feedback/solana/submit"
+        },
+        {
+          "from": "prepared",
+          "to": "abandoned",
+          "operation": "timeout",
+          "endpoint": null
+        }
+      ],
+      "notes": [
+        "The EVM pair is served only on networks where a FeedbackDelegate is deployed AND verified on-chain. Check before assuming a network is available.",
+        "POST /feedback/solana/submit refuses any transaction that is not byte-for-byte the one it built.",
+        "Feedback without a `score` is recorded but never scored, and it is not retroactive."
+      ]
+    }
+  ]
+}

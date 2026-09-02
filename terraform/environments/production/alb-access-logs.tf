@@ -39,7 +39,7 @@ resource "aws_s3_bucket" "alb_logs" {
   tags = {
     Name        = "facilitator-${var.environment}-alb-logs"
     Environment = var.environment
-    Purpose     = "ALB access logs -- makes ALB-side failures (460, etc.) visible"
+    Purpose     = "ALB access logs - makes ALB-side failures such as 460 visible"
   }
 }
 

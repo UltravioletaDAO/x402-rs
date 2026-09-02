@@ -52,7 +52,11 @@
 
 resource "aws_iam_policy" "cicd_infra" {
   name        = "facilitator-cicd-infra"
-  description = "Infra writes for the GitHub Actions deploy user. Declared in Terraform, applied by hand -- see the comment above."
+  # The description is a ForceNew attribute on aws_iam_policy: changing it REPLACES the policy,
+  # and this one is attached to the CI deploy identity. Keep it byte-identical to the live value
+  # (imported into state on 2026-09-02) so a plan never asks to replace it; the statements below
+  # are what the plan updates in place.
+  description = "DynamoDB table management + scoped IAM for the facilitator task role. Separate from the inline policy because that one is at its 2048-byte limit."
 
   policy = jsonencode({
     "Version" : "2012-10-17",

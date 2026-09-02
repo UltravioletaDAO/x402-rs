@@ -448,6 +448,38 @@ self-feedback.
 | `429` | per-IP rate limit (about 30 req/min on verify/settle) | back off; do not re-sign |
 | timeout on `/settle` | unknown — the tx may have landed | check the chain before retrying |
 
+Every refusal is JSON. A `4xx` or `5xx` carries `{"error": ..., "code": ...,
+"hint": ...}` with `content-type: application/json` — including the ones the
+framework used to answer with an empty body: a `405` for the wrong method (the
+`Allow` header lists what the path accepts), a `404` for a path nothing serves,
+and the `429` from the rate limiter itself. Branch on `code`, not on the prose
+in `error`.
+
+### Rate limits, and how to stay under them
+
+Limits are per client IP, and they are reported on every response rather than
+only on the refusal:
+
+| Header | On | Meaning |
+|---|---|---|
+| `x-ratelimit-limit` | every rate-limited response, `200` included | the burst size of the bucket this route draws on |
+| `x-ratelimit-remaining` | every rate-limited response, `200` included | tokens left in that bucket right now |
+| `retry-after` | `429` | seconds to wait before retrying |
+| `x-ratelimit-after` | `429` | the same number, under tower_governor's own name |
+
+Read `x-ratelimit-remaining` and slow down before it reaches zero; that is the
+whole reason it is on the `200`. The buckets are separate per surface, so
+draining `/discovery/resources` does not cost you `/settle`, with one
+deliberate exception: **`POST /mcp` shares the `/verify` and `/settle` bucket**,
+because an `x402_settle` tool call costs the chain exactly what `POST /settle`
+costs it.
+
+A note on the arithmetic, because it reads backwards: the bucket refills one
+token every N seconds, so "30 req/min on verify/settle" is a burst of 30 plus
+one token every 2 seconds — not 30 tokens handed out each minute. A few routes
+that spend no chain quota (`/health`, `/supported`, `/llms.txt` and the other
+discovery documents) carry no limit at all and therefore no headers.
+
 ---
 
 ## 10. MCP: the same four calls, as tools

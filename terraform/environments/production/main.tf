@@ -1341,6 +1341,15 @@ resource "aws_ecs_service" "facilitator" {
     container_port   = 8080
   }
 
+  # Same tasks, same container, same port -- registered a second time so the
+  # on-chain write endpoints get their own TargetResponseTime metric. See
+  # latency-split.tf for why. This is a measurement split, not a traffic split.
+  load_balancer {
+    target_group_arn = aws_lb_target_group.writes.arn
+    container_name   = "facilitator"
+    container_port   = 8080
+  }
+
   # Allow changes to task definition without destroying the service
   lifecycle {
     ignore_changes = [desired_count]

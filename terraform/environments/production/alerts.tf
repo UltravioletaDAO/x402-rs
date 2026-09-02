@@ -239,8 +239,28 @@ resource "aws_lambda_permission" "balances_schedule" {
 }
 
 # ============================================================================
-# Early-warning p99 latency -- the gap the imported >10s alarm leaves open
+# Whole-ALB p99 latency -- the coarse backstop under the per-rail alarms
 # ============================================================================
+#
+# RETUNED 2026-09-01, threshold 2s -> 12s. The 2026-08-28 calibration below is
+# preserved because its reasoning about PERIOD is still right and still load
+# bearing; only its threshold was wrong, and it was wrong for a reason worth
+# writing down.
+#
+# The four "healthy" days it was calibrated against (2026-08-25/28, p99 0.4s)
+# were quiet because there was no WRITE traffic in them, not because the
+# service was fast. Every /settle and /feedback waits for an on-chain receipt
+# and lands at 5-7s; the moment settlements resumed, p99 sat at ~7s
+# permanently and this alarm paged continuously through an entirely healthy
+# day. A 2s threshold on a mixed read+write population is not satisfiable.
+#
+# The 2s intent now lives in aws_cloudwatch_metric_alarm.latency_reads_p99
+# (latency-split.tf), measured against the read target group where it holds.
+# The write rail has its own alarm at 15s. What is left for THIS alarm is the
+# coarse whole-system net: 12s is above every healthy sample ever measured
+# (max 7.7s) and below the 13.2s the 2026-09-01 nonce incident produced, and
+# unlike aws_cloudwatch_metric_alarm.orphan_latency_p99 it reads at period=300
+# where p99 is a percentile rather than a near-max.
 #
 # aws_cloudwatch_metric_alarm.orphan_latency_p99 (alerts-imported.tf) requires
 # >10s for 3 of 5 ONE-MINUTE periods. At this traffic volume that period is
@@ -273,10 +293,10 @@ resource "aws_cloudwatch_metric_alarm" "latency_p99_early" {
   namespace           = "AWS/ApplicationELB"
   period              = 300
   extended_statistic  = "p99"
-  threshold           = 2
+  threshold           = 12
   treat_missing_data  = "notBreaching"
 
-  alarm_description = "Facilitator ALB p99 latency sustained >2s for at least 25 of the last 30 minutes -- early warning ahead of aws_cloudwatch_metric_alarm.orphan_latency_p99's >10s/3-of-5min threshold. Calibrated 2026-08-28 against 4 days of healthy p99 (isolated single-period spikes only, never sustained) and the 2026-08-19/24 degradation window (sustained 2-8s for hours)."
+  alarm_description = "Facilitator ALB p99 latency sustained >12s for at least 25 of the last 30 minutes, across ALL routes. Coarse whole-system backstop under latency-reads-p99 (2s, read target group) and latency-writes-p99 (15s, write target group), which are the alarms that say WHICH rail broke. Retuned from 2s to 12s on 2026-09-01: the original 2s was calibrated during a window with no write traffic, and paged continuously once settlements resumed, because a healthy /settle takes 5-7s waiting for an on-chain receipt."
 
   dimensions = {
     LoadBalancer = aws_lb.main.arn_suffix
@@ -287,6 +307,78 @@ resource "aws_cloudwatch_metric_alarm" "latency_p99_early" {
 
   tags = {
     Name        = "facilitator-${var.environment}-latency-p99-early"
+    Environment = var.environment
+  }
+}
+
+# ============================================================================
+# Nonce storms on the EVM write rail
+# ============================================================================
+# Added 2026-09-01. The 5xx alarm (aws_cloudwatch_metric_alarm.orphan_5xx_errors,
+# alerts-imported.tf) already catches the SYMPTOM and did fire correctly through
+# the 2026-09-01 22:16-23:13 UTC episode. What no alarm says is WHY, and the why
+# has been recurring unattended:
+#
+#   08-31 01:42 UTC +6h :    40
+#   08-31 07:42 UTC +6h :     0
+#   08-31 13:42 UTC +6h :     0
+#   08-31 19:41 UTC +6h : 8,480
+#   09-01 01:41 UTC +6h : 3,494
+#   09-01 07:41 UTC +6h :     0
+#   09-01 13:41 UTC +6h :     0
+#   09-01 19:41 UTC +6h :   642
+#
+# 12,656 occurrences in 48h, in overnight bursts, against a baseline of exactly
+# zero for 12h at a stretch. During a burst the in-memory nonce counter runs
+# ahead of chain state -- measured tx=1603 against state=1555 on arbitrum with
+# wallet 0x103040545AC5031A11E8C03dd11324C7333a13C7 -- and every escrow settle
+# in flight fails until it converges again.
+#
+# The service runs 3 ECS tasks with per-task in-memory nonce state, serialised
+# by writer_lease. The same windows log "EVM writer lease holder endpoint is
+# unknown; writes will 503" and repeated ConditionalCheckFailedException on
+# lease release, which is the mechanism the fix/writer-lease-forwarding branch
+# addresses. This alarm is not the fix; it is what makes the next burst visible
+# the night it happens instead of two days later.
+#
+# Filter-pattern note: this log group is ANSI-coloured and the colour codes
+# split key=value tokens in the raw bytes, so patterns like "status=500" match
+# nothing. "nonce too high" sits inside the quoted RPC message where no colour
+# code lands -- verified against the incident window, 256 matches in 90 min.
+resource "aws_cloudwatch_log_metric_filter" "evm_nonce_desync" {
+  name           = "facilitator-evm-nonce-desync"
+  log_group_name = aws_cloudwatch_log_group.facilitator.name
+  pattern        = "\"nonce too high\""
+
+  metric_transformation {
+    name      = "EvmNonceDesync"
+    namespace = "Facilitator/ChainRail"
+    value     = "1"
+    unit      = "Count"
+    # No default_value: absent data is treated as notBreaching below rather
+    # than published as zero, which keeps the metric free when nothing is wrong.
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "evm_nonce_desync" {
+  alarm_name          = "facilitator-${var.environment}-evm-nonce-desync"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 3
+  datapoints_to_alarm = 2
+  metric_name         = aws_cloudwatch_log_metric_filter.evm_nonce_desync.metric_transformation[0].name
+  namespace           = aws_cloudwatch_log_metric_filter.evm_nonce_desync.metric_transformation[0].namespace
+  period              = 300
+  statistic           = "Sum"
+  threshold           = 5
+  treat_missing_data  = "notBreaching"
+
+  alarm_description = "EVM nonce desync: the facilitator's in-memory nonce counter has run ahead of chain state and settlements are failing with 'nonce too high'. Healthy baseline is exactly 0 (measured over multiple 6h windows); bursts reach thousands. Threshold >5 per 5 min for 2 of 3 periods pages ~10 min into a storm and ignores a stray retry. Check the EVM writer lease first -- the same windows log 'writer lease holder endpoint is unknown; writes will 503'."
+
+  alarm_actions = [aws_sns_topic.alerts.arn]
+  ok_actions    = [aws_sns_topic.alerts.arn]
+
+  tags = {
+    Name        = "facilitator-${var.environment}-evm-nonce-desync"
     Environment = var.environment
   }
 }

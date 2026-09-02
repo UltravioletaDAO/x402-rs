@@ -602,7 +602,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let verify_settle = handlers::verify_settle_routes()
         .with_state(axum_state.clone())
-        .layer(GovernorLayer::new(Arc::clone(&verify_settle_config)).error_handler(handlers::rate_limit_error));
+        .layer(
+            GovernorLayer::new(Arc::clone(&verify_settle_config))
+                .error_handler(handlers::rate_limit_error),
+        );
 
     // The MCP server. `Arc::clone` of the SAME config, not a second one built
     // from the same numbers: `GovernorConfig` holds a `SharedRateLimiter`, so
@@ -615,11 +618,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::clone(&event_bus),
         Arc::clone(&transaction_store),
     )
-    .layer(GovernorLayer::new(Arc::clone(&verify_settle_config)).error_handler(handlers::rate_limit_error));
+    .layer(
+        GovernorLayer::new(Arc::clone(&verify_settle_config))
+            .error_handler(handlers::rate_limit_error),
+    );
 
     let discovery_register = handlers::discovery_register_routes()
         .with_state(Arc::clone(&discovery_registry))
-        .layer(GovernorLayer::new(Arc::clone(&discovery_register_config)).error_handler(handlers::rate_limit_error));
+        .layer(
+            GovernorLayer::new(Arc::clone(&discovery_register_config))
+                .error_handler(handlers::rate_limit_error),
+        );
 
     // ERC-8004 write kill-switch (audit 02): set ENABLE_ERC8004_WRITES=false to disable the
     // gasless reputation/identity write surface entirely (closes the forgery vector). Defaults
@@ -642,25 +651,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .merge(
             handlers::identity_read_routes()
                 .with_state(axum_state.clone())
-                .layer(GovernorLayer::new(identity_read_config).error_handler(handlers::rate_limit_error)),
+                .layer(
+                    GovernorLayer::new(identity_read_config)
+                        .error_handler(handlers::rate_limit_error),
+                ),
         )
         .merge(
             handlers::secondary_read_routes()
                 .with_state(axum_state.clone())
-                .layer(GovernorLayer::new(Arc::clone(&secondary_read_config)).error_handler(handlers::rate_limit_error)),
+                .layer(
+                    GovernorLayer::new(Arc::clone(&secondary_read_config))
+                        .error_handler(handlers::rate_limit_error),
+                ),
         )
         .merge(handlers::routes().with_state(axum_state.clone()));
     if erc8004_writes_enabled {
         let erc8004_writes = handlers::erc8004_write_routes()
             .with_state(axum_state)
-            .layer(GovernorLayer::new(Arc::clone(&discovery_register_config)).error_handler(handlers::rate_limit_error));
+            .layer(
+                GovernorLayer::new(Arc::clone(&discovery_register_config))
+                    .error_handler(handlers::rate_limit_error),
+            );
         http_endpoints = http_endpoints.merge(erc8004_writes);
     }
     // Admin curation routes share the strict register governor; they 404 unless
     // BAZAAR_ADMIN_TOKEN is configured.
     let discovery_admin = handlers::discovery_admin_routes()
         .with_state(Arc::clone(&discovery_registry))
-        .layer(GovernorLayer::new(Arc::clone(&discovery_register_config)).error_handler(handlers::rate_limit_error));
+        .layer(
+            GovernorLayer::new(Arc::clone(&discovery_register_config))
+                .error_handler(handlers::rate_limit_error),
+        );
 
     let http_endpoints = http_endpoints
         .merge(discovery_register)
@@ -668,12 +689,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .merge(
             handlers::discovery_routes()
                 .with_state(Arc::clone(&discovery_registry))
-                .layer(GovernorLayer::new(Arc::clone(&discovery_read_config)).error_handler(handlers::rate_limit_error)),
+                .layer(
+                    GovernorLayer::new(Arc::clone(&discovery_read_config))
+                        .error_handler(handlers::rate_limit_error),
+                ),
         )
         .merge(
             handlers::transaction_routes()
                 .with_state(Arc::clone(&transaction_store))
-                .layer(GovernorLayer::new(Arc::clone(&discovery_read_config)).error_handler(handlers::rate_limit_error)),
+                .layer(
+                    GovernorLayer::new(Arc::clone(&discovery_read_config))
+                        .error_handler(handlers::rate_limit_error),
+                ),
         )
         // The agentic-discovery surfaces (/llms.txt, /.well-known/*, ...).
         // Stateless and unmetered: they are static documents, and a crawler
@@ -691,9 +718,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // stayed off rather than falling back to something that only looks durable.
     let http_endpoints = match dx402_service.clone() {
         Some(svc) => http_endpoints.merge(
-            dx402::handlers::dx402_routes()
-                .with_state(svc)
-                .layer(GovernorLayer::new(Arc::clone(&discovery_read_config)).error_handler(handlers::rate_limit_error)),
+            dx402::handlers::dx402_routes().with_state(svc).layer(
+                GovernorLayer::new(Arc::clone(&discovery_read_config))
+                    .error_handler(handlers::rate_limit_error),
+            ),
         ),
         None => http_endpoints,
     };
@@ -725,12 +753,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         //     the 404 a body. Reordering the merges above can no longer change
         //     this silently.
         .merge(
-            Router::new()
-                .fallback(handlers::agent_not_found)
-                .layer(
-                    GovernorLayer::new(Arc::clone(&secondary_read_config))
-                        .error_handler(handlers::rate_limit_error),
-                ),
+            Router::new().fallback(handlers::agent_not_found).layer(
+                GovernorLayer::new(Arc::clone(&secondary_read_config))
+                    .error_handler(handlers::rate_limit_error),
+            ),
         )
         // The 405 for a path that exists under a different method. axum still
         // computes and attaches the `Allow` header itself.

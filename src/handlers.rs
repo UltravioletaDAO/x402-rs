@@ -295,8 +295,6 @@ pub fn agentic_routes() -> Router {
         .route("/.well-known/ard.json", get(get_ard))
 }
 
-
-
 /// The 405 every route answers when the path exists but the method does not.
 ///
 /// axum's default is `405` with a zero-byte body and no content type -- the
@@ -310,7 +308,10 @@ pub fn agentic_routes() -> Router {
 /// would be a second source of truth that drifts the first time a route gains
 /// a method.
 #[instrument(skip_all)]
-pub async fn method_not_allowed(method: axum::http::Method, uri: axum::http::Uri) -> impl IntoResponse {
+pub async fn method_not_allowed(
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+) -> impl IntoResponse {
     let path = uri.path().to_string();
     (
         StatusCode::METHOD_NOT_ALLOWED,
@@ -337,9 +338,7 @@ pub async fn method_not_allowed(method: axum::http::Method, uri: axum::http::Uri
 ///
 /// The status and every header the limiter set are preserved untouched:
 /// `retry-after` and `x-ratelimit-*` are the part an agent throttles on.
-pub fn rate_limit_error(
-    error: tower_governor::GovernorError,
-) -> Response<axum::body::Body> {
+pub fn rate_limit_error(error: tower_governor::GovernorError) -> Response<axum::body::Body> {
     let (mut parts, message) = error.into_response().into_parts();
     let (code, hint) = if parts.status == StatusCode::TOO_MANY_REQUESTS {
         (
@@ -447,15 +446,16 @@ pub async fn agent_not_found(headers: HeaderMap) -> impl IntoResponse {
         .get(header::ACCEPT)
         .and_then(|value| value.to_str().ok());
     // Markdown first: it is the default for a caller with no preference.
-    let (media, body) = match crate::negotiate::choose(accept, &["text/markdown", "application/json"]) {
-        crate::negotiate::Choice::Serve("application/json") => {
-            ("application/json", NOT_FOUND_JSON.as_str())
-        }
-        // A 404 never answers 406. The caller already asked for something that
-        // does not exist; refusing to say so in a format they dislike replaces
-        // one dead end with a worse one.
-        _ => ("text/markdown", NOT_FOUND_MARKDOWN),
-    };
+    let (media, body) =
+        match crate::negotiate::choose(accept, &["text/markdown", "application/json"]) {
+            crate::negotiate::Choice::Serve("application/json") => {
+                ("application/json", NOT_FOUND_JSON.as_str())
+            }
+            // A 404 never answers 406. The caller already asked for something that
+            // does not exist; refusing to say so in a format they dislike replaces
+            // one dead end with a worse one.
+            _ => ("text/markdown", NOT_FOUND_MARKDOWN),
+        };
     Response::builder()
         .status(StatusCode::NOT_FOUND)
         .header("content-type", format!("{media}; charset=utf-8"))
@@ -548,7 +548,6 @@ fn negotiated_response(
 }
 
 const TEXT_PLAIN_UTF8: &str = "text/plain; charset=utf-8";
-const TEXT_MARKDOWN_UTF8: &str = "text/markdown; charset=utf-8";
 const APPLICATION_JSON_UTF8: &str = "application/json; charset=utf-8";
 
 /// Serve a compiled-in text document with an explicit content type.
@@ -12958,7 +12957,6 @@ mod agentic_surface_tests {
         );
     }
 
-
     /// The ARD catalog against the rules of the spec it claims to follow.
     ///
     /// The document is hand-written and the failure mode is silent: a registry
@@ -13033,10 +13031,7 @@ mod agentic_surface_tests {
         }
 
         // The four documents the catalog exists to advertise.
-        let types: Vec<&str> = entries
-            .iter()
-            .filter_map(|e| e["type"].as_str())
-            .collect();
+        let types: Vec<&str> = entries.iter().filter_map(|e| e["type"].as_str()).collect();
         for wanted in [
             "application/mcp-server-card+json",
             "application/a2a-agent-card+json",
@@ -13045,11 +13040,12 @@ mod agentic_surface_tests {
             assert!(types.contains(&wanted), "the catalog must list a {wanted}");
         }
         assert!(
-            types.iter().any(|t| t.starts_with("application/vnd.oai.openapi+json")),
+            types
+                .iter()
+                .any(|t| t.starts_with("application/vnd.oai.openapi+json")),
             "the catalog must list the OpenAPI document"
         );
     }
-
 
     /// `llms.txt` tells an agent WHEN to reach for this service.
     ///
@@ -13111,7 +13107,6 @@ mod agentic_surface_tests {
             "the guidance needs an explicit negative half"
         );
     }
-
 
     /// Every url in the sitemap carries a parseable `<lastmod>`.
     ///
@@ -13183,11 +13178,20 @@ mod agentic_surface_tests {
             let (date, _) = lastmod.split_once('T').unwrap_or((lastmod, ""));
             let parts: Vec<&str> = date.split('-').collect();
             assert_eq!(parts.len(), 3, "{loc}: {lastmod} is not a W3C date");
-            let year: i32 = parts[0].parse().unwrap_or_else(|_| panic!("{loc}: {lastmod}"));
-            let month: u32 = parts[1].parse().unwrap_or_else(|_| panic!("{loc}: {lastmod}"));
-            let day: u32 = parts[2].parse().unwrap_or_else(|_| panic!("{loc}: {lastmod}"));
+            let year: i32 = parts[0]
+                .parse()
+                .unwrap_or_else(|_| panic!("{loc}: {lastmod}"));
+            let month: u32 = parts[1]
+                .parse()
+                .unwrap_or_else(|_| panic!("{loc}: {lastmod}"));
+            let day: u32 = parts[2]
+                .parse()
+                .unwrap_or_else(|_| panic!("{loc}: {lastmod}"));
             assert!(year >= 2025, "{loc}: {lastmod} predates this repository");
-            assert!((1..=12).contains(&month), "{loc}: month {month} in {lastmod}");
+            assert!(
+                (1..=12).contains(&month),
+                "{loc}: month {month} in {lastmod}"
+            );
             assert!((1..=31).contains(&day), "{loc}: day {day} in {lastmod}");
         }
     }
@@ -13255,7 +13259,11 @@ mod markdown_negotiation_tests {
     use tower::ServiceExt;
 
     /// `(status, content-type, every Vary value joined, body)`.
-    async fn fetch(router: Router, path: &str, accept: Option<&str>) -> (StatusCode, String, String, String) {
+    async fn fetch(
+        router: Router,
+        path: &str,
+        accept: Option<&str>,
+    ) -> (StatusCode, String, String, String) {
         let mut builder = Request::builder().uri(path);
         if let Some(accept) = accept {
             builder = builder.header("accept", accept);
@@ -13279,7 +13287,12 @@ mod markdown_negotiation_tests {
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
-        (status, ctype, vary, String::from_utf8_lossy(&bytes).into_owned())
+        (
+            status,
+            ctype,
+            vary,
+            String::from_utf8_lossy(&bytes).into_owned(),
+        )
     }
 
     fn root_router() -> Router {
@@ -13300,8 +13313,7 @@ mod markdown_negotiation_tests {
              one representation to both audiences; got {vary:?}"
         );
 
-        let (status, ctype, vary, body) =
-            fetch(root_router(), "/", Some("text/markdown")).await;
+        let (status, ctype, vary, body) = fetch(root_router(), "/", Some("text/markdown")).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(ctype, "text/markdown; charset=utf-8");
         assert!(vary.to_ascii_lowercase().contains("accept"));
@@ -13343,8 +13355,7 @@ mod markdown_negotiation_tests {
     async fn llms_txt_keeps_text_plain_by_default() {
         let (_, ctype, _, plain) = fetch(agentic_routes(), "/llms.txt", None).await;
         assert_eq!(ctype, "text/plain; charset=utf-8");
-        let (_, ctype, _, md) =
-            fetch(agentic_routes(), "/llms.txt", Some("text/markdown")).await;
+        let (_, ctype, _, md) = fetch(agentic_routes(), "/llms.txt", Some("text/markdown")).await;
         assert_eq!(ctype, "text/markdown; charset=utf-8");
         assert_eq!(plain, md, "the bytes must not depend on the label");
     }
@@ -13366,8 +13377,7 @@ mod markdown_negotiation_tests {
         let firefox = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
         let safari = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
         for header in [chrome, firefox, safari, "*/*", "text/*"] {
-            let (status, ctype, _, _) =
-                fetch(agentic_routes(), "/skill.md", Some(header)).await;
+            let (status, ctype, _, _) = fetch(agentic_routes(), "/skill.md", Some(header)).await;
             assert_eq!(status, StatusCode::OK, "Accept={header:?} was refused");
             assert_eq!(ctype, "text/markdown; charset=utf-8");
         }
@@ -13395,7 +13405,11 @@ mod agent_404_tests {
     use axum::http::Request;
     use tower::ServiceExt;
 
-    async fn fetch(router: Router, path: &str, accept: Option<&str>) -> (StatusCode, String, String) {
+    async fn fetch(
+        router: Router,
+        path: &str,
+        accept: Option<&str>,
+    ) -> (StatusCode, String, String) {
         let mut builder = Request::builder().uri(path);
         if let Some(accept) = accept {
             builder = builder.header("accept", accept);
@@ -13444,8 +13458,7 @@ mod agent_404_tests {
 
     #[tokio::test]
     async fn a_json_caller_gets_a_typed_json_404() {
-        let (status, ctype, body) =
-            fetch(router(), "/no-existe", Some("application/json")).await;
+        let (status, ctype, body) = fetch(router(), "/no-existe", Some("application/json")).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert!(ctype.starts_with("application/json"), "got {ctype}");
         let doc: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
@@ -13524,7 +13537,12 @@ mod json_error_tests {
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
-        (status, ctype, allow, String::from_utf8_lossy(&bytes).into_owned())
+        (
+            status,
+            ctype,
+            allow,
+            String::from_utf8_lossy(&bytes).into_owned(),
+        )
     }
 
     /// The gap `json-error-responses` actually scored: a 405 with zero bytes

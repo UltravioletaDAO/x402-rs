@@ -37,11 +37,11 @@ jobs:
           if [ -n "$hits" ]; then echo "::error::ARN with an AWS account ID -- write <AWS_ACCOUNT_ID>:"; echo "$hits"; fail=1; fi
 
           # 2) A bare 12-digit number: account IDs, ECR hostnames, S3 bucket suffixes.
-          #    \b keeps 12 digits inside a hex string (0x000000000022D473..., Permit2) out of it.
+          #    The lookarounds cut on a letter or a digit but NOT on _: 12 digits inside a hex
+          #    string (0x000000000022D473..., Permit2) stay out, tfstate_<account> is caught.
           #    Two 12-digit values in the docs are not account IDs and are allowed:
           #      017700000001  octal encoding of 127.0.0.1, a test vector shared with src/discovery.rs
           #      380517503805  a Superfluid flow-rate example
-          # Sin \b: una letra o un _ pegados no cortaban (tfstate_<cuenta> pasaba). Solo otro digito lo corta.
           hits=$(grep -nIP '(?<![0-9A-Za-z])[0-9]{12}(?![0-9A-Za-z])' "${files[@]}" | grep -vE '017700000001|380517503805' || true)
           if [ -n "$hits" ]; then echo "::error::12-digit number (an AWS account ID?) -- write <AWS_ACCOUNT_ID>, or allow-list it here if it is not one:"; echo "$hits"; fail=1; fi
 

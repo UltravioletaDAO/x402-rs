@@ -37,6 +37,7 @@ pub mod from_env;
 pub mod handlers;
 pub mod idempotency_store;
 pub mod json_depth;
+pub mod negotiate;
 pub mod network;
 pub mod nonce_store;
 pub mod payment_operator;

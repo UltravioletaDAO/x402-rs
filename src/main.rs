@@ -77,6 +77,7 @@ mod handlers;
 mod idempotency_store;
 mod json_depth;
 mod mcp;
+mod negotiate;
 mod network;
 mod nonce_store;
 mod openapi;

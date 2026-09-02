@@ -294,6 +294,79 @@ pub fn agentic_routes() -> Router {
         )
 }
 
+/// The documents a negotiated surface can answer with, most preferred first.
+///
+/// `(media type, body)`. The first entry is the default: it is what a caller
+/// with no `Accept`, or with `*/*`, gets, and it breaks ties between equally
+/// acceptable types. See [`crate::negotiate`] for the ranking rules.
+type Representations = &'static [(&'static str, &'static str)];
+
+/// Serve one document out of several representations of the same resource,
+/// chosen from the request's `Accept`.
+///
+/// WHY `Vary: Accept` IS NOT OPTIONAL
+///     Without it a cache in front of this service keys `/` on the URL alone,
+///     so whichever of the two representations lands in the cache first is
+///     handed to everyone after -- Markdown rendered as raw text in a browser,
+///     or a wall of HTML to the agent that asked for Markdown. It is listed
+///     alongside `Accept-Encoding` because a cache that varies on one and not
+///     the other has the same bug one axis over.
+///
+/// WHY THE 406 IS NARROW
+///     Only when every representation on offer was refused. A missing `Accept`
+///     or `*/*` means *no constraint*, not *nothing works*: answering 406 there
+///     is the documented common mistake
+///     (<https://acceptmarkdown.com/guides/returning-406>), and it would break
+///     every browser and every `curl` that does not set the header.
+fn negotiated_surface(headers: &HeaderMap, offers: Representations) -> Response<String> {
+    let accept = headers
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok());
+    let types: Vec<&str> = offers.iter().map(|(media, _)| *media).collect();
+    match crate::negotiate::choose(accept, &types) {
+        crate::negotiate::Choice::Serve(media) => {
+            let body = offers
+                .iter()
+                .find(|(candidate, _)| *candidate == media)
+                .map(|(_, body)| *body)
+                .unwrap_or_default();
+            Response::builder()
+                .status(StatusCode::OK)
+                .header("content-type", format!("{media}; charset=utf-8"))
+                .header(header::VARY, "Accept, Accept-Encoding")
+                .body(body.to_string())
+                .unwrap()
+        }
+        crate::negotiate::Choice::NotAcceptable => {
+            // RFC 9110 section 15.5.7 recommends naming the representations that
+            // do exist, so the caller can retry with an `Accept` that works
+            // instead of guessing.
+            let available = types.join(", ");
+            Response::builder()
+                .status(StatusCode::NOT_ACCEPTABLE)
+                .header("content-type", APPLICATION_JSON_UTF8)
+                .header(header::VARY, "Accept, Accept-Encoding")
+                // The Accept header is request-specific, so a shared cache must
+                // not reuse this answer for the next caller.
+                .header(header::CACHE_CONTROL, "no-store")
+                .body(
+                    json!({
+                        "error": "No representation matches the Accept header",
+                        "code": "not_acceptable",
+                        "available": types,
+                        "hint": format!(
+                            "This resource is available as: {available}. \
+                             Retry with an Accept header naming one of them, \
+                             or omit Accept entirely to get the default."
+                        ),
+                    })
+                    .to_string(),
+                )
+                .unwrap()
+        }
+    }
+}
+
 const TEXT_PLAIN_UTF8: &str = "text/plain; charset=utf-8";
 const TEXT_MARKDOWN_UTF8: &str = "text/markdown; charset=utf-8";
 const APPLICATION_JSON_UTF8: &str = "application/json; charset=utf-8";
@@ -307,10 +380,29 @@ fn text_surface(body: &'static str, content_type: &'static str) -> Response<Stri
         .unwrap()
 }
 
+/// The four documents that exist in more than one media type.
+///
+/// Declared once, here, because each is referenced by its handler AND by the
+/// negotiation tests -- two `include_str!` sites for the same file is how one
+/// of them ends up serving a stale copy.
+const LLMS_TXT: &str = include_str!("../static/llms.txt");
+const INDEX_MD: &str = include_str!("../static/index.md");
+const SKILL_MD: &str = include_str!("../static/skill.md");
+const AUTH_MD: &str = include_str!("../static/auth.md");
+const INDEX_HTML: &str = include_str!("../static/index.html");
+
 /// `GET /llms.txt`: the llmstxt.org map of this service.
+///
+/// Its bytes are Markdown and always were -- llmstxt.org specifies a Markdown
+/// document. It stays `text/plain` by default because that is what every
+/// existing consumer and the readiness checker expect from this path; an agent
+/// that says `Accept: text/markdown` gets the same bytes correctly labelled.
 #[instrument(skip_all)]
-pub async fn get_llms_txt() -> impl IntoResponse {
-    text_surface(include_str!("../static/llms.txt"), TEXT_PLAIN_UTF8)
+pub async fn get_llms_txt(headers: HeaderMap) -> impl IntoResponse {
+    negotiated_surface(
+        &headers,
+        &[("text/plain", LLMS_TXT), ("text/markdown", LLMS_TXT)],
+    )
 }
 
 /// `GET /llms-full.txt`: llms.txt, index.md, skill.md and auth.md in one file.
@@ -340,20 +432,20 @@ pub async fn get_sitemap_xml() -> impl IntoResponse {
 /// `GET /index.md`: the landing page in Markdown, for an agent that does not
 /// want to render a 240 KB HTML monolith to learn what this is.
 #[instrument(skip_all)]
-pub async fn get_index_md() -> impl IntoResponse {
-    text_surface(include_str!("../static/index.md"), TEXT_MARKDOWN_UTF8)
+pub async fn get_index_md(headers: HeaderMap) -> impl IntoResponse {
+    negotiated_surface(&headers, &[("text/markdown", INDEX_MD)])
 }
 
 /// `GET /skill.md`: the operating manual for an agent calling verify/settle.
 #[instrument(skip_all)]
-pub async fn get_skill_md() -> impl IntoResponse {
-    text_surface(include_str!("../static/skill.md"), TEXT_MARKDOWN_UTF8)
+pub async fn get_skill_md(headers: HeaderMap) -> impl IntoResponse {
+    negotiated_surface(&headers, &[("text/markdown", SKILL_MD)])
 }
 
 /// `GET /auth.md`: how to authenticate here, which is: you do not.
 #[instrument(skip_all)]
-pub async fn get_auth_md() -> impl IntoResponse {
-    text_surface(include_str!("../static/auth.md"), TEXT_MARKDOWN_UTF8)
+pub async fn get_auth_md(headers: HeaderMap) -> impl IntoResponse {
+    negotiated_surface(&headers, &[("text/markdown", AUTH_MD)])
 }
 
 /// `GET /workflows.json`: the state machines this facilitator drives.
@@ -1952,13 +2044,15 @@ fn discovery_error_response(error: DiscoveryError) -> Response {
 
 /// `GET /`: Returns the Ultravioleta DAO branded landing page.
 #[instrument(skip_all)]
-pub async fn get_root() -> impl IntoResponse {
-    let html = include_str!("../static/index.html");
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "text/html; charset=utf-8")
-        .body(html.to_string())
-        .unwrap()
+pub async fn get_root(headers: HeaderMap) -> impl IntoResponse {
+    // HTML first, so it stays the default: a browser, a `curl` with no Accept,
+    // and anything sending `*/*` all still get the landing page. Markdown is
+    // the same content an agent would otherwise have to render 240 KB of HTML
+    // to reach -- it is `/index.md`, byte for byte, so the two cannot drift.
+    negotiated_surface(
+        &headers,
+        &[("text/html", INDEX_HTML), ("text/markdown", INDEX_MD)],
+    )
 }
 
 /// `GET /events/live`: the live traffic viewer.
@@ -1993,8 +2087,8 @@ pub async fn get_stats_page() -> impl IntoResponse {
 }
 
 /// Alias for `get_root` to match main.rs routing.
-pub async fn get_index() -> impl IntoResponse {
-    get_root().await
+pub async fn get_index(headers: HeaderMap) -> impl IntoResponse {
+    get_root(headers).await
 }
 
 /// `GET /bazaar`: Returns the curated Bazaar resource explorer (WS-D).
@@ -12681,6 +12775,152 @@ mod agentic_surface_tests {
                     SURFACES.iter().any(|(p, _)| *p == link) || SERVED_ELSEWHERE.contains(&link);
                 assert!(known, "{path} links to {HOST}{link}, which no route serves");
             }
+        }
+    }
+}
+
+/// Item A of the 2026-09-02 agentic wave: `Accept` negotiation on the four
+/// surfaces that have a Markdown representation, and on `/`.
+///
+/// These run against the real routers rather than calling the handlers, because
+/// the failure that matters is a header -- and a handler tested in isolation
+/// still carries the right header while the route drops it.
+#[cfg(test)]
+mod markdown_negotiation_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    /// `(status, content-type, every Vary value joined, body)`.
+    async fn fetch(router: Router, path: &str, accept: Option<&str>) -> (StatusCode, String, String, String) {
+        let mut builder = Request::builder().uri(path);
+        if let Some(accept) = accept {
+            builder = builder.header("accept", accept);
+        }
+        let response = router
+            .oneshot(builder.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let header = |name: &str| {
+            response
+                .headers()
+                .get_all(name)
+                .iter()
+                .filter_map(|v| v.to_str().ok())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let ctype = header("content-type");
+        let vary = header("vary");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, ctype, vary, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    fn root_router() -> Router {
+        Router::new().route("/", get(get_root))
+    }
+
+    /// The default has to be unchanged: this route is the landing page, and a
+    /// browser that sends no `Accept` at all must not get Markdown.
+    #[tokio::test]
+    async fn the_root_serves_html_by_default_and_markdown_on_request() {
+        let (status, ctype, vary, body) = fetch(root_router(), "/", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(ctype.starts_with("text/html"), "default was {ctype}");
+        assert!(body.contains("<!DOCTYPE html>") || body.contains("<!doctype html>"));
+        assert!(
+            vary.to_ascii_lowercase().contains("accept"),
+            "Vary must list Accept even on the HTML branch, or a cache serves \
+             one representation to both audiences; got {vary:?}"
+        );
+
+        let (status, ctype, vary, body) =
+            fetch(root_router(), "/", Some("text/markdown")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(ctype, "text/markdown; charset=utf-8");
+        assert!(vary.to_ascii_lowercase().contains("accept"));
+        assert_eq!(body, INDEX_MD, "/ must serve /index.md byte for byte");
+    }
+
+    /// The header that would break a substring implementation.
+    #[tokio::test]
+    async fn a_browsers_accept_header_still_gets_html() {
+        let chrome = "text/html,application/xhtml+xml,application/xml;q=0.9,\
+                      image/avif,image/webp,image/apng,*/*;q=0.8";
+        let (_, ctype, _, _) = fetch(root_router(), "/", Some(chrome)).await;
+        assert!(ctype.starts_with("text/html"), "got {ctype}");
+        // curl's default, and a client that sends nothing meaningful.
+        let (_, ctype, _, _) = fetch(root_router(), "/", Some("*/*")).await;
+        assert!(ctype.starts_with("text/html"), "got {ctype}");
+    }
+
+    /// Every negotiated surface carries `Vary: Accept` -- the whole of the
+    /// `markdown-negotiation-vary` check.
+    #[tokio::test]
+    async fn every_negotiated_surface_varies_on_accept() {
+        for path in ["/llms.txt", "/index.md", "/skill.md", "/auth.md"] {
+            for accept in [None, Some("text/markdown")] {
+                let (status, _, vary, _) = fetch(agentic_routes(), path, accept).await;
+                assert_eq!(status, StatusCode::OK, "{path}");
+                assert!(
+                    vary.to_ascii_lowercase().contains("accept"),
+                    "{path} with Accept={accept:?} answered Vary={vary:?}"
+                );
+            }
+        }
+    }
+
+    /// `/llms.txt` keeps its `text/plain` default -- the readiness checker and
+    /// every existing consumer read that path expecting plain text -- and
+    /// relabels the same bytes for an agent that asks for Markdown.
+    #[tokio::test]
+    async fn llms_txt_keeps_text_plain_by_default() {
+        let (_, ctype, _, plain) = fetch(agentic_routes(), "/llms.txt", None).await;
+        assert_eq!(ctype, "text/plain; charset=utf-8");
+        let (_, ctype, _, md) =
+            fetch(agentic_routes(), "/llms.txt", Some("text/markdown")).await;
+        assert_eq!(ctype, "text/markdown; charset=utf-8");
+        assert_eq!(plain, md, "the bytes must not depend on the label");
+    }
+
+    /// The 406 branch, and the reason it does not break the humans who click
+    /// the `/skill.md` link out of `llms.txt`.
+    ///
+    /// A `.md` path has exactly one representation, so RFC 9110 section 15.5.7
+    /// says an `Accept` that cannot be satisfied earns a 406 -- and
+    /// acceptmarkdown.com grades that. The reason that is safe here rather than
+    /// hostile is measured below: every real browser ends its `Accept` with a
+    /// `*/*` entry, which matches Markdown, so only a client that names
+    /// `text/html` and nothing else -- a header no browser sends -- reaches the
+    /// refusal. If that ever stops being true, this test is where it shows.
+    #[tokio::test]
+    async fn a_browser_reaches_the_document_and_only_a_true_refusal_earns_406() {
+        let chrome = "text/html,application/xhtml+xml,application/xml;q=0.9,\
+                      image/avif,image/webp,image/apng,*/*;q=0.8";
+        let firefox = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
+        let safari = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
+        for header in [chrome, firefox, safari, "*/*", "text/*"] {
+            let (status, ctype, _, _) =
+                fetch(agentic_routes(), "/skill.md", Some(header)).await;
+            assert_eq!(status, StatusCode::OK, "Accept={header:?} was refused");
+            assert_eq!(ctype, "text/markdown; charset=utf-8");
+        }
+
+        // No wildcard anywhere and Markdown unnamed: nothing on offer matches.
+        for header in ["text/html", "application/pdf", "text/markdown;q=0"] {
+            let (status, ctype, vary, body) =
+                fetch(agentic_routes(), "/skill.md", Some(header)).await;
+            assert_eq!(status, StatusCode::NOT_ACCEPTABLE, "Accept={header:?}");
+            assert!(ctype.starts_with("application/json"), "got {ctype}");
+            assert!(vary.to_ascii_lowercase().contains("accept"));
+            assert!(
+                body.contains("text/markdown"),
+                "a 406 must name what it can serve; got {body}"
+            );
         }
     }
 }

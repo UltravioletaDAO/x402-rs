@@ -76,6 +76,7 @@ mod from_env;
 mod handlers;
 mod idempotency_store;
 mod json_depth;
+mod mcp;
 mod network;
 mod nonce_store;
 mod openapi;
@@ -584,7 +585,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let verify_settle = handlers::verify_settle_routes()
         .with_state(axum_state.clone())
-        .layer(GovernorLayer::new(verify_settle_config));
+        .layer(GovernorLayer::new(Arc::clone(&verify_settle_config)));
+
+    // The MCP server. `Arc::clone` of the SAME config, not a second one built
+    // from the same numbers: `GovernorConfig` holds a `SharedRateLimiter`, so
+    // cloning the Arc shares the token bucket. An MCP `x402_settle` and a
+    // `POST /settle` from one IP therefore draw on one budget -- which is the
+    // point, because they cost the chain the same thing.
+    let mcp = mcp::mcp_routes(
+        axum_state.clone(),
+        Arc::clone(&discovery_registry),
+        Arc::clone(&event_bus),
+        Arc::clone(&transaction_store),
+    )
+    .layer(GovernorLayer::new(Arc::clone(&verify_settle_config)));
 
     let discovery_register = handlers::discovery_register_routes()
         .with_state(Arc::clone(&discovery_registry))
@@ -607,6 +621,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut http_endpoints = Router::new()
         .merge(verify_settle)
+        .merge(mcp)
         .merge(
             handlers::identity_read_routes()
                 .with_state(axum_state.clone())

@@ -20,7 +20,8 @@
       "escrow": true,
       "metered": true,
       "erc8004": true,
-      "bazaar": true
+      "bazaar": true,
+      "mcp": true
     },
     "endpoints": {
       "verify": {
@@ -61,6 +62,11 @@
       "openapi": {
         "method": "GET",
         "url": "https://facilitator.ultravioletadao.xyz/openapi.json",
+        "price": null
+      },
+      "mcp": {
+        "method": "POST",
+        "url": "https://facilitator.ultravioletadao.xyz/mcp",
         "price": null
       }
     },
@@ -468,7 +474,8 @@
       "auth": "https://facilitator.ultravioletadao.xyz/auth.md",
       "llms": "https://facilitator.ultravioletadao.xyz/llms.txt",
       "openapi": "https://facilitator.ultravioletadao.xyz/openapi.json",
-      "spec": "https://x402.org/"
+      "spec": "https://x402.org/",
+      "mcpServerCard": "https://facilitator.ultravioletadao.xyz/.well-known/mcp/server-card.json"
     }
   }
 }

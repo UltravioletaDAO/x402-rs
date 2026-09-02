@@ -288,6 +288,10 @@ pub fn agentic_routes() -> Router {
             "/.well-known/agent-skills/index.json",
             get(get_agent_skills_index),
         )
+        .route(
+            "/.well-known/mcp/server-card.json",
+            get(get_mcp_server_card),
+        )
 }
 
 const TEXT_PLAIN_UTF8: &str = "text/plain; charset=utf-8";
@@ -422,6 +426,38 @@ pub async fn get_agent_skills_index() -> impl IntoResponse {
         include_str!("../static/.well-known/agent-skills/index.json"),
         APPLICATION_JSON_UTF8,
     )
+}
+
+/// `GET /.well-known/mcp/server-card.json`: where the MCP server lives, and
+/// what it can do.
+///
+/// The document on disk carries no `serverInfo.version`, on purpose. The
+/// release version is not a compile-time constant here -- `Cargo.toml` holds
+/// the frozen `0.0.0` placeholder and the real number arrives at runtime as
+/// `FACILITATOR_VERSION` (see `crate::version`). A number typed into the file
+/// would be stale the first release nobody remembered to bump it, and a stale
+/// version on a discovery card is worse than an absent one: a client that
+/// caches the card believes it.
+#[instrument(skip_all)]
+pub async fn get_mcp_server_card() -> impl IntoResponse {
+    text_surface(mcp_server_card(), APPLICATION_JSON_UTF8)
+}
+
+/// The served card: the static document with the running version stamped in.
+///
+/// Resolved once per process. Everything else about the card -- the endpoint,
+/// the tool list, the transport -- stays in `static/`, where a reviewer can
+/// read it without compiling anything.
+fn mcp_server_card() -> &'static str {
+    static CARD: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    CARD.get_or_init(|| {
+        let mut doc: serde_json::Value =
+            serde_json::from_str(include_str!("../static/.well-known/mcp/server-card.json"))
+                .expect("static/.well-known/mcp/server-card.json must be valid JSON");
+        doc["serverInfo"]["version"] = json!(crate::version::facilitator_version());
+        serde_json::to_string_pretty(&doc).expect("a document that parsed must serialise")
+    })
+    .as_str()
 }
 
 pub fn routes<A>() -> Router<A>
@@ -10759,7 +10795,13 @@ mod owner_scan_tests {
     /// `scripts/erc8004_registry_capabilities.py` before changing this.
     #[test]
     fn the_bound_search_does_not_depend_on_total_supply() {
-        let src = include_str!("handlers.rs");
+        // `include_str!` reads whatever line endings are on disk, and a Windows
+        // checkout stores CRLF. Without this the `"\n}\n"` split below matches
+        // nothing, `search` becomes the rest of the 113k-char file, and the
+        // assertion fails on a `totalSupply()` that lives somewhere else
+        // entirely -- a red test that says nothing about the function it names.
+        // Same reason `lf()` exists in `agentic_surface_tests`.
+        let src = include_str!("handlers.rs").replace("\r\n", "\n");
         // The body only: from the signature to the closing brace at column 0.
         let search = src
             .split("async fn discover_max_agent_id")
@@ -12377,6 +12419,7 @@ mod agentic_surface_tests {
         ("/.well-known/api-catalog", "application/linkset+json"),
         ("/.well-known/oauth-protected-resource", "application/json"),
         ("/.well-known/agent-skills/index.json", "application/json"),
+        ("/.well-known/mcp/server-card.json", "application/json"),
     ];
 
     async fn fetch(path: &str) -> (StatusCode, String, String) {
@@ -12620,6 +12663,7 @@ mod agentic_surface_tests {
             "/blacklist",
             "/escrow/state",
             "/register",
+            "/mcp",
         ];
 
         for (path, _) in SURFACES {

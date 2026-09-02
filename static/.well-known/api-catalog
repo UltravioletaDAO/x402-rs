@@ -53,6 +53,33 @@
           "type": "application/json"
         }
       ]
+    },
+    {
+      "anchor": "https://facilitator.ultravioletadao.xyz/mcp",
+      "service-desc": [
+        {
+          "href": "https://facilitator.ultravioletadao.xyz/.well-known/mcp/server-card.json",
+          "type": "application/json"
+        }
+      ],
+      "service-doc": [
+        {
+          "href": "https://facilitator.ultravioletadao.xyz/skill.md",
+          "type": "text/markdown"
+        }
+      ],
+      "service-meta": [
+        {
+          "href": "https://facilitator.ultravioletadao.xyz/.well-known/mcp/server-card.json",
+          "type": "application/json"
+        }
+      ],
+      "status": [
+        {
+          "href": "https://facilitator.ultravioletadao.xyz/health",
+          "type": "application/json"
+        }
+      ]
     }
   ]
 }

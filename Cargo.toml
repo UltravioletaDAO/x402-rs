@@ -116,9 +116,23 @@ tracing-opentelemetry = { version = "0.31.0" }
 opentelemetry-otlp = { version = "0.30.0", features = ["metrics", "grpc-tonic"] }
 opentelemetry-stdout = { version = "0.30.0", features = ["trace", "metrics"] }
 
-[dev-dependencies]
-# Only for exercising router composition in tests (ServiceExt::oneshot). Already
-# present transitively via tower-http / tower_governor.
+# MCP (Model Context Protocol) server behind `POST /mcp`.
+# `transport-streamable-http-server` is the transport; it is served through
+# `tower_service::Service`, NOT through axum -- rmcp declares no axum dependency
+# at all, so it mounts with `Router::route_service` and cannot pin our axum
+# version. Adds 14 crates to the lock (base64 0.23, rand 0.10, schemars_derive,
+# sse-stream, pastey, darling, syn 3, chacha20, cpufeatures, rmcp-macros) and
+# ~16s to a warm `cargo check`. Measured 2026-09-02, see
+# docs/handoffs/2026-09-02-mcp-medicion.md.
+rmcp = { version = "3.2.0", features = ["server", "transport-streamable-http-server"] }
+
+# `ServiceExt::oneshot`, used to drive one axum `Router` from inside another.
+# Was a dev-dependency (router composition in tests); `src/mcp.rs` now calls the
+# REST router the same way at runtime, so an MCP tool runs the SAME handler
+# stack -- middleware included -- instead of a second copy of the logic.
+# Already present transitively via tower-http / tower_governor, so declaring it
+# adds no crate. Tests see it from here; a `[dev-dependencies]` copy would only
+# be a second place to bump.
 tower = { version = "0.5", features = ["util"] }
 
 [features]

@@ -24,6 +24,9 @@ Two calls are the whole contract:
 - `POST /verify` — is this authorization valid, right now, for these requirements?
 - `POST /settle` — submit it on-chain and return the transaction hash.
 
+Both are also reachable as MCP tools at `POST /mcp` — the same handlers, not a
+second implementation.
+
 Everything else on this host exists to make those two answerable without guessing:
 which networks and tokens are live, which schemes each network supports, what the
 facilitator just did, and what it costs (nothing — the seller keeps the payment).
@@ -51,6 +54,7 @@ facilitator just did, and what it costs (nothing — the seller keeps the paymen
 - **x402 discovery**: https://facilitator.ultravioletadao.xyz/.well-known/x402
 - **API catalog (RFC 9727)**: https://facilitator.ultravioletadao.xyz/.well-known/api-catalog
 - **Agent skills index**: https://facilitator.ultravioletadao.xyz/.well-known/agent-skills/index.json
+- **MCP server card**: https://facilitator.ultravioletadao.xyz/.well-known/mcp/server-card.json
 - **Auth metadata (RFC 9728)**: https://facilitator.ultravioletadao.xyz/.well-known/oauth-protected-resource
 - **Workflow manifest**: https://facilitator.ultravioletadao.xyz/workflows.json
 - **OpenAPI 3.1**: https://facilitator.ultravioletadao.xyz/openapi.json
@@ -70,6 +74,12 @@ Base URL: `https://facilitator.ultravioletadao.xyz/`
 - `POST /verify` — validate a payment authorization without settling
 - `POST /settle` — settle a verified authorization on-chain
 - `POST /accepts` — negotiate payment requirements (Faremeter-compatible)
+- `POST /mcp` — MCP server (Streamable HTTP, stateless). Four tools:
+  `x402_supported`, `x402_accepts`, `x402_verify`, `x402_settle`. Each one is
+  dispatched through the REST handler it names, so an MCP call and the HTTP call
+  it stands for cannot answer differently. `GET /mcp` is a JSON 405: there is no
+  SSE stream to open. `POST /mcp` shares the per-IP budget of `/verify` and
+  `/settle` — one bucket, not two.
 - `GET  /events` — server-sent stream, one message per verify/settle
 - `GET  /transactions` — recent recorded operations (JSON, `limit` capped at 200)
 - `GET  /api/stats` — aggregated totals per network and asset
@@ -126,6 +136,8 @@ Base URL: `https://facilitator.ultravioletadao.xyz/`
 - `POST /settle` — settle a verified authorization on-chain, returns the tx hash
 - `GET /supported` — every (scheme, network) pair accepted, in v1 and CAIP-2 form
 - `POST /accepts` — negotiate payment requirements (Faremeter-compatible)
+- `POST /mcp` — MCP server (Streamable HTTP, stateless): `x402_supported`,
+  `x402_accepts`, `x402_verify`, `x402_settle`, over the same handlers
 - `GET /health` — `{"status":"healthy"}`
 - `GET /version` — the running release
 - `GET /events` — SSE, one message per verify/settle
@@ -142,6 +154,7 @@ Full contract: `/openapi.json` (Swagger UI at `/docs`).
 - x402 discovery: `/.well-known/x402`
 - API catalog (RFC 9727): `/.well-known/api-catalog`
 - Agent skills index: `/.well-known/agent-skills/index.json`
+- MCP server card: `/.well-known/mcp/server-card.json` (endpoint: `/mcp`)
 - Auth metadata (RFC 9728): `/.well-known/oauth-protected-resource`
 - Workflow manifest: `/workflows.json`
 - LLM context: `/llms.txt`, `/llms-full.txt`
@@ -437,7 +450,114 @@ self-feedback.
 
 ---
 
-## 10. Libraries
+## 10. MCP: the same four calls, as tools
+
+This facilitator is also an MCP server. Same host, same rate limit, same
+handlers -- an MCP tool call is dispatched through the very same code path as
+the HTTP request it names, so nothing here is a second implementation that
+could answer a different truth.
+
+- **Endpoint:** `https://facilitator.ultravioletadao.xyz/mcp`
+- **Transport:** Streamable HTTP, stateless. `POST` only; `GET /mcp` answers
+  `405` with a JSON body, because there is no server-initiated SSE stream to
+  open and no session id to keep.
+- **Server card:**
+  `https://facilitator.ultravioletadao.xyz/.well-known/mcp/server-card.json`
+- **Authentication:** none, exactly as in `/auth.md`. The MCP door grants no
+  privilege the HTTP door does not: the payer's signature is still the only
+  authority.
+
+| Tool | Is | Moves money |
+|---|---|---|
+| `x402_supported` | `GET /supported` | no |
+| `x402_accepts` | `POST /accepts` | no |
+| `x402_verify` | `POST /verify` | no |
+| `x402_settle` | `POST /settle` | **yes, irreversibly** |
+
+The arguments of each tool are the JSON body of the request it stands for, and
+the result is that request's response body verbatim, in a single text content
+block.
+
+**The body is the only channel — a tool call cannot set headers.** The parity
+with HTTP is one of *privilege*, not of capability: nothing here can move funds
+an HTTP client could not, but a few HTTP-only inputs have no MCP equivalent. The
+one that mattered has an argument instead: `x402_settle` takes an optional
+`idempotencyKey`, lifted out of the body and sent as the `Idempotency-Key`
+header, so a retry after an ambiguous error settles once and not twice. Send it
+on every retry. The v2 `PAYMENT-SIGNATURE` header transport has no equivalent;
+put the payload in the body. A non-2xx answer comes back as a tool error (`isError: true`) carrying
+the facilitator's own message -- not as a JSON-RPC error, which most clients
+render as an opaque "internal error" and would hide `invalid signature` behind.
+
+### Handshake
+
+Both `Accept` types are required — the Streamable HTTP transport answers `406`
+without them, even though this server is stateless and always replies with JSON.
+
+```bash
+curl -sS https://facilitator.ultravioletadao.xyz/mcp \
+  -H 'content-type: application/json' \
+  -H 'accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+        "protocolVersion":"2025-06-18","capabilities":{},
+        "clientInfo":{"name":"my-agent","version":"1.0"}}}'
+```
+
+```json
+{"jsonrpc":"2.0","id":1,"result":{
+  "protocolVersion":"2025-06-18",
+  "capabilities":{"tools":{}},
+  "serverInfo":{"name":"x402-facilitator","version":"<the running release>"}}}
+```
+
+The negotiated `protocolVersion` is the highest both sides know; this server
+supports `2024-11-05` through `2026-07-28`.
+
+### Calling a tool
+
+```bash
+curl -sS https://facilitator.ultravioletadao.xyz/mcp \
+  -H 'content-type: application/json' \
+  -H 'accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{
+        "name":"x402_supported","arguments":{}}}'
+```
+
+The `result.content[0].text` is the exact JSON body of `GET /supported`.
+
+`x402_verify` and `x402_settle` take the same envelope the REST routes take:
+
+```json
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{
+  "name":"x402_verify",
+  "arguments":{
+    "x402Version":1,
+    "paymentPayload":{ "...": "as in section 3" },
+    "paymentRequirements":{ "...": "as in section 3" }}}}
+```
+
+Read sections 3 and 4 before calling either: everything they say about
+`isValid`, `errorReason`, the EIP-712 domain-name trap and which failures are
+retryable is true over MCP too, because it is the same handler answering.
+
+Retrying a settle:
+
+```json
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{
+  "name":"x402_settle",
+  "arguments":{
+    "x402Version":1,
+    "paymentPayload":{ "...": "as in section 3" },
+    "paymentRequirements":{ "...": "as in section 3" },
+    "idempotencyKey":"a-key-you-keep-for-this-payment"}}}
+```
+
+Same key and same payment returns the first result instead of settling again;
+same key with a different payment is refused with `409`.
+
+---
+
+## 11. Libraries
 
 - `uvd-x402-sdk` — the house SDK, on npm
   (https://www.npmjs.com/package/uvd-x402-sdk) and PyPI
@@ -473,6 +593,26 @@ identity as the caller changes the answer.
 
 So there is nothing to send. No `Authorization` header, no `X-API-Key`, no cookie.
 
+### The MCP endpoint is the same door
+
+`POST /mcp` authenticates nobody either. It carries no OAuth flow, no session
+token and no client registration — the `/.well-known/oauth-protected-resource`
+document above describes it as well as it describes the HTTP routes. Its four
+tools are dispatched through the very same handlers as `/verify`, `/settle`,
+`/supported` and `/accepts`, so an MCP client holds exactly the privilege an HTTP
+client holds and no more. In particular `x402_settle` settles a payment the payer
+signed; it does not let a caller spend anything of their own or of ours.
+
+That parity is of *privilege*, not of capability. A tool call cannot set headers,
+so a few HTTP-only inputs have no MCP equivalent — the v2 `PAYMENT-SIGNATURE`
+transport among them. The one that mattered is exposed as an argument instead:
+`x402_settle` takes an optional `idempotencyKey`, lifted out of the body and sent
+as `Idempotency-Key`, so an MCP client can ask for exactly-once on a retry.
+
+The transport has one requirement worth knowing before you write a client by
+hand: `Accept` must name **both** `application/json` and `text/event-stream`, or
+the request is refused with `406`.
+
 ## This service does not charge
 
 `/verify` and `/settle` never answer `402 Payment Required`. The facilitator takes no
@@ -494,7 +634,7 @@ Exceeding it returns **429**, never 401 or 403.
 
 | Route group | Sustained | Burst |
 |---|---|---|
-| `POST /verify`, `POST /settle` | 1 token every 2s (about 30 req/min) | 30 |
+| `POST /verify`, `POST /settle`, `POST /mcp` | 1 token every 2s (about 30 req/min) | 30 |
 | `POST /discovery/register` | 1 token every 12s | 250 |
 | Bazaar reads (`/discovery/resources`, `/discovery/stats`) | 1 token every 200ms | 120 |
 

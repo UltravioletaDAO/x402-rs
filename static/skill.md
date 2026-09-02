@@ -281,7 +281,114 @@ self-feedback.
 
 ---
 
-## 10. Libraries
+## 10. MCP: the same four calls, as tools
+
+This facilitator is also an MCP server. Same host, same rate limit, same
+handlers -- an MCP tool call is dispatched through the very same code path as
+the HTTP request it names, so nothing here is a second implementation that
+could answer a different truth.
+
+- **Endpoint:** `https://facilitator.ultravioletadao.xyz/mcp`
+- **Transport:** Streamable HTTP, stateless. `POST` only; `GET /mcp` answers
+  `405` with a JSON body, because there is no server-initiated SSE stream to
+  open and no session id to keep.
+- **Server card:**
+  `https://facilitator.ultravioletadao.xyz/.well-known/mcp/server-card.json`
+- **Authentication:** none, exactly as in `/auth.md`. The MCP door grants no
+  privilege the HTTP door does not: the payer's signature is still the only
+  authority.
+
+| Tool | Is | Moves money |
+|---|---|---|
+| `x402_supported` | `GET /supported` | no |
+| `x402_accepts` | `POST /accepts` | no |
+| `x402_verify` | `POST /verify` | no |
+| `x402_settle` | `POST /settle` | **yes, irreversibly** |
+
+The arguments of each tool are the JSON body of the request it stands for, and
+the result is that request's response body verbatim, in a single text content
+block.
+
+**The body is the only channel — a tool call cannot set headers.** The parity
+with HTTP is one of *privilege*, not of capability: nothing here can move funds
+an HTTP client could not, but a few HTTP-only inputs have no MCP equivalent. The
+one that mattered has an argument instead: `x402_settle` takes an optional
+`idempotencyKey`, lifted out of the body and sent as the `Idempotency-Key`
+header, so a retry after an ambiguous error settles once and not twice. Send it
+on every retry. The v2 `PAYMENT-SIGNATURE` header transport has no equivalent;
+put the payload in the body. A non-2xx answer comes back as a tool error (`isError: true`) carrying
+the facilitator's own message -- not as a JSON-RPC error, which most clients
+render as an opaque "internal error" and would hide `invalid signature` behind.
+
+### Handshake
+
+Both `Accept` types are required — the Streamable HTTP transport answers `406`
+without them, even though this server is stateless and always replies with JSON.
+
+```bash
+curl -sS https://facilitator.ultravioletadao.xyz/mcp \
+  -H 'content-type: application/json' \
+  -H 'accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+        "protocolVersion":"2025-06-18","capabilities":{},
+        "clientInfo":{"name":"my-agent","version":"1.0"}}}'
+```
+
+```json
+{"jsonrpc":"2.0","id":1,"result":{
+  "protocolVersion":"2025-06-18",
+  "capabilities":{"tools":{}},
+  "serverInfo":{"name":"x402-facilitator","version":"<the running release>"}}}
+```
+
+The negotiated `protocolVersion` is the highest both sides know; this server
+supports `2024-11-05` through `2026-07-28`.
+
+### Calling a tool
+
+```bash
+curl -sS https://facilitator.ultravioletadao.xyz/mcp \
+  -H 'content-type: application/json' \
+  -H 'accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{
+        "name":"x402_supported","arguments":{}}}'
+```
+
+The `result.content[0].text` is the exact JSON body of `GET /supported`.
+
+`x402_verify` and `x402_settle` take the same envelope the REST routes take:
+
+```json
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{
+  "name":"x402_verify",
+  "arguments":{
+    "x402Version":1,
+    "paymentPayload":{ "...": "as in section 3" },
+    "paymentRequirements":{ "...": "as in section 3" }}}}
+```
+
+Read sections 3 and 4 before calling either: everything they say about
+`isValid`, `errorReason`, the EIP-712 domain-name trap and which failures are
+retryable is true over MCP too, because it is the same handler answering.
+
+Retrying a settle:
+
+```json
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{
+  "name":"x402_settle",
+  "arguments":{
+    "x402Version":1,
+    "paymentPayload":{ "...": "as in section 3" },
+    "paymentRequirements":{ "...": "as in section 3" },
+    "idempotencyKey":"a-key-you-keep-for-this-payment"}}}
+```
+
+Same key and same payment returns the first result instead of settling again;
+same key with a different payment is refused with `409`.
+
+---
+
+## 11. Libraries
 
 - `uvd-x402-sdk` — the house SDK, on npm
   (https://www.npmjs.com/package/uvd-x402-sdk) and PyPI

@@ -20,6 +20,8 @@ Base URL: `https://facilitator.ultravioletadao.xyz/`
 - `POST /settle` — settle a verified authorization on-chain, returns the tx hash
 - `GET /supported` — every (scheme, network) pair accepted, in v1 and CAIP-2 form
 - `POST /accepts` — negotiate payment requirements (Faremeter-compatible)
+- `POST /mcp` — MCP server (Streamable HTTP, stateless): `x402_supported`,
+  `x402_accepts`, `x402_verify`, `x402_settle`, over the same handlers
 - `GET /health` — `{"status":"healthy"}`
 - `GET /version` — the running release
 - `GET /events` — SSE, one message per verify/settle
@@ -36,6 +38,7 @@ Full contract: `/openapi.json` (Swagger UI at `/docs`).
 - x402 discovery: `/.well-known/x402`
 - API catalog (RFC 9727): `/.well-known/api-catalog`
 - Agent skills index: `/.well-known/agent-skills/index.json`
+- MCP server card: `/.well-known/mcp/server-card.json` (endpoint: `/mcp`)
 - Auth metadata (RFC 9728): `/.well-known/oauth-protected-resource`
 - Workflow manifest: `/workflows.json`
 - LLM context: `/llms.txt`, `/llms-full.txt`

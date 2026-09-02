@@ -705,6 +705,12 @@ impl DurableEvidenceHook {
             mode: self.config.mode,
             retention: self.config.retention,
             wrapped_cek: None,
+            // This hook sits in the seller's own response path, where the buyer
+            // paid it directly and the ERC-20 `from` IS the buyer. The escrow
+            // authorization only exists on the x402r rail, where a marketplace
+            // releases funds on the seller's behalf and this hook is not the one
+            // anchoring -- see `escrowRelease` in docs/DX402.md.
+            escrow_release: None,
         };
 
         match self

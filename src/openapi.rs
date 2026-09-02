@@ -240,6 +240,7 @@ constraint rather than as grounds for a `406`.
         path_auth_md,
         path_workflows_json,
         path_openapi_json,
+        path_ard_json,
         path_agent_card,
         path_agent_json_legacy,
         path_x402_discovery,
@@ -2248,6 +2249,18 @@ async fn path_workflows_json() {}
     )
 )]
 async fn path_openapi_json() {}
+
+#[utoipa::path(
+    get,
+    path = "/.well-known/ard.json",
+    tag = "Agentic",
+    summary = "Agentic Resource Discovery catalog",
+    description = "The ARD v0.91 catalog (<https://agenticresourcediscovery.org/spec>): one document naming every agentic resource this host offers -- the MCP server card, the A2A card, the skill, the OpenAPI and the llms.txt index. Each entry carries a domain-anchored `urn:air:` identifier, a media type, a `url`, and the representative queries a registry indexes on. The predecessor path `/.well-known/ai-catalog.json` is not served: the spec makes consulting it optional for consumers and tells publishers to move here.",
+    responses(
+        (status = 200, description = "ARD manifest: an object with an `entries` array", body = Object)
+    )
+)]
+async fn path_ard_json() {}
 
 #[utoipa::path(
     get,

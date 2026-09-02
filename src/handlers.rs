@@ -292,6 +292,7 @@ pub fn agentic_routes() -> Router {
             "/.well-known/mcp/server-card.json",
             get(get_mcp_server_card),
         )
+        .route("/.well-known/ard.json", get(get_ard))
 }
 
 
@@ -625,6 +626,37 @@ pub async fn get_skill_md(headers: HeaderMap) -> impl IntoResponse {
 #[instrument(skip_all)]
 pub async fn get_auth_md(headers: HeaderMap) -> impl IntoResponse {
     negotiated_surface(&headers, &[("text/markdown", AUTH_MD)])
+}
+
+/// `GET /.well-known/ard.json`: the Agentic Resource Discovery catalog.
+///
+/// ARD v0.91 (<https://agenticresourcediscovery.org/spec>) is the one document
+/// that names everything this host offers an agent -- the MCP server, the A2A
+/// card, the skill, the OpenAPI and the llms.txt index -- so a consumer reads
+/// one file instead of probing five paths. Section 5.1 fixes the path and makes
+/// fetching it normative for a conforming consumer; the predecessor
+/// `/.well-known/ai-catalog.json` is explicitly optional to consult, which is
+/// why only this path is served.
+///
+/// Every entry carries the four terms section 4.2 requires -- `identifier`,
+/// `displayName`, `type` and exactly one of `url`/`data` -- plus the
+/// `representativeQueries` that section says separate an ARD entry from a bare
+/// catalog listing. `the_ard_catalog_meets_the_spec` below re-checks all of
+/// that, because the document is hand-written and the failure mode is silent:
+/// a malformed entry is dropped by a registry without anyone being told.
+///
+/// NO `trustManifest`, DELIBERATELY. Section 4.5.1 binds `trustManifest.identity`
+/// to the publisher domain in the URN and expects a registry to verify an
+/// attestation issued by that domain. This host publishes no DID document and
+/// no attestation, so a `did:web:` claim here would be an assertion nothing can
+/// check. The term is optional and the scanner scores it as a bonus that never
+/// costs points; an unverifiable claim would cost more than the bonus is worth.
+#[instrument(skip_all)]
+pub async fn get_ard() -> impl IntoResponse {
+    text_surface(
+        include_str!("../static/.well-known/ard.json"),
+        APPLICATION_JSON_UTF8,
+    )
 }
 
 /// `GET /workflows.json`: the state machines this facilitator drives.
@@ -12709,6 +12741,7 @@ mod agentic_surface_tests {
         ("/.well-known/oauth-protected-resource", "application/json"),
         ("/.well-known/agent-skills/index.json", "application/json"),
         ("/.well-known/mcp/server-card.json", "application/json"),
+        ("/.well-known/ard.json", "application/json"),
     ];
 
     async fn fetch(path: &str) -> (StatusCode, String, String) {
@@ -12922,6 +12955,98 @@ mod agentic_surface_tests {
             published, actual,
             "the digest in .well-known/agent-skills/index.json is stale -- \
              skill.md changed and the index did not"
+        );
+    }
+
+
+    /// The ARD catalog against the rules of the spec it claims to follow.
+    ///
+    /// The document is hand-written and the failure mode is silent: a registry
+    /// that cannot parse an entry drops it and tells nobody. These are ARD
+    /// v0.91 section 4.2 (the four required terms), 4.3 (url XOR data),
+    /// Appendix C (the URN grammar and the publisher-domain anchor) and D.2
+    /// (representativeQueries, 2-5 of them).
+    #[test]
+    fn the_ard_catalog_meets_the_spec() {
+        const HOST: &str = "facilitator.ultravioletadao.xyz";
+        let doc: serde_json::Value =
+            serde_json::from_str(include_str!("../static/.well-known/ard.json"))
+                .expect("ard.json must be JSON");
+
+        let entries = doc["entries"]
+            .as_array()
+            .expect("an ARD manifest is an object with an `entries` array");
+        assert!(!entries.is_empty(), "an empty catalog is worse than none");
+
+        for entry in entries {
+            let id = entry["identifier"]
+                .as_str()
+                .expect("4.2: `identifier` is required");
+
+            // Appendix C: urn:air:<publisher>:<namespace>:<agent-name>, and the
+            // publisher segment is the authority anchor -- claiming a domain
+            // this host does not serve is what the grammar exists to prevent.
+            let segments: Vec<&str> = id.split(':').collect();
+            assert!(
+                segments.len() >= 5 && segments[0] == "urn" && segments[1] == "air",
+                "{id} is not urn:air:<publisher>:<namespace>:<name>"
+            );
+            assert_eq!(segments[2], HOST, "{id} claims a publisher we are not");
+            assert!(
+                segments[3..].iter().all(|s| !s.is_empty()),
+                "{id} has an empty segment"
+            );
+
+            assert!(
+                entry["displayName"].as_str().is_some_and(|v| !v.is_empty()),
+                "4.2: {id} needs a displayName"
+            );
+            // 3.3: the type is an IANA media type, not a made-up token.
+            assert!(
+                entry["type"].as_str().is_some_and(|v| v.contains('/')),
+                "4.2: {id} needs a media type"
+            );
+
+            // 4.3: exactly one of url / data. Both is invalid, neither is worse.
+            let (has_url, has_data) = (!entry["url"].is_null(), !entry["data"].is_null());
+            assert!(
+                has_url ^ has_data,
+                "4.3: {id} must carry exactly one of url/data"
+            );
+            if let Some(url) = entry["url"].as_str() {
+                assert!(
+                    url.starts_with(&format!("https://{HOST}/")),
+                    "{id} points at {url}, which is not on this host"
+                );
+            }
+
+            // D.2: without these an entry is a catalog listing, not a
+            // discoverable one -- it simply never comes back from a search.
+            let queries = entry["representativeQueries"]
+                .as_array()
+                .unwrap_or_else(|| panic!("D.2: {id} needs representativeQueries"));
+            assert!(
+                (2..=5).contains(&queries.len()),
+                "D.2: {id} has {} representative queries, wanted 2-5",
+                queries.len()
+            );
+        }
+
+        // The four documents the catalog exists to advertise.
+        let types: Vec<&str> = entries
+            .iter()
+            .filter_map(|e| e["type"].as_str())
+            .collect();
+        for wanted in [
+            "application/mcp-server-card+json",
+            "application/a2a-agent-card+json",
+            "application/ai-skill+md",
+        ] {
+            assert!(types.contains(&wanted), "the catalog must list a {wanted}");
+        }
+        assert!(
+            types.iter().any(|t| t.starts_with("application/vnd.oai.openapi+json")),
+            "the catalog must list the OpenAPI document"
         );
     }
 

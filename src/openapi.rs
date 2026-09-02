@@ -2309,11 +2309,22 @@ that request's response body verbatim in one text content block. A non-2xx answe
 comes back as `isError: true` carrying the facilitator's own message, not as a
 JSON-RPC error.
 
+The body is the only channel: a tool call cannot set headers. The one exception is
+`x402_settle`, which takes an optional `idempotencyKey` argument that is lifted out
+of the body and sent as the `Idempotency-Key` header, so an MCP client can ask for
+exactly-once the same way an HTTP client does. The v2 `PAYMENT-SIGNATURE` header
+transport has no equivalent here; send the payload in the body.
+
+**`Accept` must name BOTH `application/json` and `text/event-stream`.** The MCP
+Streamable HTTP transport requires it and answers `406` otherwise, even though this
+server is stateless and always replies with JSON. Use
+`accept: application/json, text/event-stream`.
+
 **Authentication:** none, same as every other route (`/auth.md`).
 **Rate limit:** shared with `POST /verify` and `POST /settle` -- one per-IP bucket,
 not two.
 
-Handshake:
+Handshake (note the two Accept types):
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"initialize","params":{
@@ -2343,6 +2354,14 @@ Tool call:
         ),
         (status = 400, description = "Not a JSON-RPC document", body = Object),
         (status = 403, description = "Host header not on the MCP allowlist (MCP_ALLOWED_HOSTS)", body = Object),
+        (status = 406, description = "Accept did not name both application/json and text/event-stream", body = Object,
+            example = json!({
+                "error": "Not Acceptable",
+                "status": 406,
+                "hint": "Accept must name BOTH application/json and text/event-stream, e.g. `accept: application/json, text/event-stream`."
+            })
+        ),
+        (status = 415, description = "Content-Type is not application/json", body = Object),
         (status = 429, description = "Per-IP rate limit, shared with /verify and /settle", body = Object)
     )
 )]

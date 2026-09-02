@@ -45,7 +45,7 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::extract::Extension;
 use axum::http::{header, HeaderMap, Method, Request, StatusCode};
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, post_service};
 use axum::{Json, Router};
 use rmcp::model::{
@@ -535,6 +535,51 @@ pub async fn get_mcp_no_stream() -> impl IntoResponse {
     )
 }
 
+/// Give rmcp's own error responses a `content-type`.
+///
+/// rmcp builds its transport-level refusals -- 406 for an `Accept` that does not
+/// name BOTH `application/json` and `text/event-stream`, 415 for the wrong
+/// request content type, 403 for a `Host` outside the allowlist, 405 for a
+/// method it does not serve -- with a bare `Response::builder()` and a plain
+/// string body, so they go out with no `content-type` at all. A surface is
+/// graded on its content type as much as on its status, and an integrator
+/// writing a client by hand hits the 406 first.
+///
+/// This wraps only those: a response that already declares a type is passed
+/// through untouched and its body is never buffered, so the 200 JSON and the
+/// SSE fallback are not affected. rmcp's own message is kept as `detail` --
+/// it is the part that says what to fix.
+async fn json_content_type_on_errors(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let response = next.run(request).await;
+    if response.headers().contains_key(header::CONTENT_TYPE) {
+        return response;
+    }
+    let (parts, body) = response.into_parts();
+    // These bodies are short constant strings. The cap is a guard, not a limit.
+    const MAX_ERROR_BODY: usize = 8 * 1024;
+    let detail = match axum::body::to_bytes(body, MAX_ERROR_BODY).await {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        Err(_) => String::new(),
+    };
+    let mut doc = json!({
+        "error": parts.status.canonical_reason().unwrap_or("error"),
+        "status": parts.status.as_u16(),
+    });
+    if !detail.trim().is_empty() {
+        doc["detail"] = json!(detail.trim());
+    }
+    if parts.status == StatusCode::NOT_ACCEPTABLE {
+        doc["hint"] = json!(
+            "Accept must name BOTH application/json and text/event-stream, \
+             e.g. `accept: application/json, text/event-stream`."
+        );
+    }
+    (parts.status, parts.headers, Json(doc)).into_response()
+}
+
 /// The `/mcp` route.
 ///
 /// `mount` it under the same `GovernorLayer` as `/verify` and `/settle`: an MCP
@@ -590,7 +635,9 @@ where
         config,
     );
 
-    Router::new().route("/mcp", post_service(service).get(get_mcp_no_stream))
+    Router::new()
+        .route("/mcp", post_service(service).get(get_mcp_no_stream))
+        .layer(axum::middleware::from_fn(json_content_type_on_errors))
 }
 
 #[cfg(test)]
@@ -1330,6 +1377,93 @@ mod tests {
                 tool.name
             );
         }
+    }
+
+    /// An `Accept` that names only JSON is rmcp's 406, but with a content-type.
+    ///
+    /// rmcp builds that refusal with a bare `Response::builder()` and a plain
+    /// string, so it goes out typeless. A scanner grades the type as much as
+    /// the status, and this is the first wall an integrator writing a client by
+    /// hand walks into.
+    #[tokio::test]
+    async fn a_bad_accept_header_is_a_typed_json_406() {
+        let (mcp, _) = routers().await;
+        let response = mcp
+            .clone()
+            .oneshot(
+                HttpRequest::builder()
+                    .method(Method::POST)
+                    .uri("/mcp")
+                    .header(header::HOST, "127.0.0.1")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::ACCEPT, "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&json!({
+                            "jsonrpc": "2.0", "id": 12, "method": "tools/list"
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE);
+        let ctype = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            ctype.starts_with("application/json"),
+            "the 406 answered content-type {ctype:?}"
+        );
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let doc: Value = serde_json::from_slice(&bytes).expect("the 406 must be JSON");
+        assert_eq!(doc["status"], 406);
+        assert!(
+            doc["hint"]
+                .as_str()
+                .is_some_and(|h| h.contains("text/event-stream")),
+            "the 406 does not say what Accept it wants: {doc}"
+        );
+    }
+
+    /// A `Host` off the allowlist is rmcp's 403, also typed now.
+    #[tokio::test]
+    async fn a_disallowed_host_is_a_typed_json_403() {
+        let (mcp, _) = routers().await;
+        let response = mcp
+            .clone()
+            .oneshot(
+                HttpRequest::builder()
+                    .method(Method::POST)
+                    .uri("/mcp")
+                    .header(header::HOST, "evil.example")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::ACCEPT, "application/json, text/event-stream")
+                    .body(Body::from(
+                        serde_json::to_vec(&json!({
+                            "jsonrpc": "2.0", "id": 13, "method": "tools/list"
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let ctype = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        assert!(ctype.starts_with("application/json"), "403 typed {ctype:?}");
     }
 
     /// The published server-card describes the server that actually answers.

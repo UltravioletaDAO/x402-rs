@@ -81,7 +81,7 @@ convention:
       "mode": "direct",            // "direct" | "escrowed"
       "backend": "s3",             // "s3" | "ipfs" | "arweave"
       "retention": "90d",          // "90d" | "1y" | "permanent"
-      "maxBodyBytes": 1048576,     // above this, skip (never fail the payment)
+      "maxBodyBytes": 33554432,    // above this, skip (never fail the payment)
       "paidBy": "seller"           // "seller" | "buyer"
     }
   }
@@ -89,7 +89,12 @@ convention:
 ```
 
 All fields optional. Defaults: `mode=direct`, `backend=s3`, `retention=90d`,
-`maxBodyBytes=1048576`, `paidBy=seller`.
+`maxBodyBytes=33554432` (32 MiB), `paidBy=seller`.
+
+`maxBodyBytes` is a **memory** bound on the seller, not a storage bound: sealing
+holds the plaintext and the ciphertext at once. An implementation that raises it
+has to bound concurrency alongside it, or the same setting that promises bigger
+evidence delivers an OOM. See `skipped: "busy"` below.
 
 ## 5. Encryption
 
@@ -156,7 +161,7 @@ When evidence is not produced, the header carries a reason instead and the
 payment proceeds normally:
 
 ```jsonc
-{ "v": 1, "skipped": "too_large" }   // too_large | anchor_failed | no_payer_key | disabled
+{ "v": 1, "skipped": "too_large" }   // too_large | busy | anchor_failed | no_payer_key | disabled
 ```
 
 **A failure to anchor MUST NOT fail the payment.**

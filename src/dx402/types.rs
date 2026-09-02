@@ -187,6 +187,12 @@ pub struct DurableEvidenceConfig {
     pub retention: Retention,
     /// Bodies larger than this are skipped rather than anchored. A large body is
     /// a reason to skip evidence, never a reason to fail a payment.
+    ///
+    /// A *memory* ceiling, not a storage one: sealing holds the plaintext and
+    /// the ciphertext at once. The seller-side hook pairs it with a byte budget
+    /// that bounds how many captures may hold that memory concurrently
+    /// (`DurableConfig::max_inflight_bytes` in `x402-axum`), which is what makes
+    /// a large value here safe.
     pub max_body_bytes: usize,
     /// Who bears the persistence cost. Informational at this layer; billing is
     /// the resource server's business.
@@ -199,7 +205,7 @@ impl Default for DurableEvidenceConfig {
             mode: EvidenceMode::default(),
             backend: StorageBackend::default(),
             retention: Retention::default(),
-            max_body_bytes: 1_048_576,
+            max_body_bytes: 33_554_432,
             paid_by: PaidBy::default(),
         }
     }
@@ -240,6 +246,13 @@ pub enum SkipReason {
     TooLarge,
     /// The store was unreachable or rejected the write.
     AnchorFailed,
+    /// The evidence path was already holding as much memory as it is allowed to.
+    ///
+    /// Distinct from [`SkipReason::AnchorFailed`] on purpose: nothing was
+    /// broken and nothing was rejected, the deployment simply refused to buffer
+    /// one more large body. Reporting it as a store failure would send the next
+    /// investigation at the store.
+    Busy,
     /// The payer's public key could not be recovered for this network family,
     /// so there is nobody to encrypt to.
     NoPayerKey,
@@ -485,6 +498,16 @@ pub enum Dx402ErrorCode {
     /// Reported by KarmaKadabra, 2026-08-19, after isolating it with three
     /// anchors to one paymentId.
     Dx402SignatureNotVerified,
+    /// The request named a storage backend this deployment cannot write to.
+    ///
+    /// `backend` used to be free text the caller supplied and nothing checked:
+    /// a request could ask for `arweave`, which has no implementation at all,
+    /// and the record plus the API response would both claim it while the bytes
+    /// went wherever the configured store put them. `backend` is not part of
+    /// the EIP-712 receipt, so it is not even a signed lie -- just a persisted
+    /// one, which is worse for anybody reading the index to decide where their
+    /// evidence lives.
+    Dx402BackendUnavailable,
 }
 
 impl Dx402ErrorCode {
@@ -511,6 +534,7 @@ impl Dx402ErrorCode {
             Dx402ErrorCode::Dx402ProofRejected => "dx402_proof_rejected",
             Dx402ErrorCode::Dx402AlreadyAnchored => "dx402_already_anchored",
             Dx402ErrorCode::Dx402SignatureNotVerified => "dx402_signature_not_verified",
+            Dx402ErrorCode::Dx402BackendUnavailable => "dx402_backend_unavailable",
         }
     }
 }
@@ -567,19 +591,35 @@ mod tests {
     }
 
     #[test]
+    fn every_skip_reason_has_a_stable_wire_name() {
+        // A reader that does not know a variant fails the whole payload, so
+        // these names are a compatibility surface, not a formatting choice.
+        for (reason, wire) in [
+            (SkipReason::TooLarge, "too_large"),
+            (SkipReason::Busy, "busy"),
+            (SkipReason::AnchorFailed, "anchor_failed"),
+            (SkipReason::NoPayerKey, "no_payer_key"),
+            (SkipReason::Disabled, "disabled"),
+        ] {
+            let json = serde_json::to_value(DurableEvidence::skipped(reason)).unwrap();
+            assert_eq!(json["skipped"], wire);
+        }
+    }
+
+    #[test]
     fn config_defaults_match_the_spec() {
         let c = DurableEvidenceConfig::default();
         assert_eq!(c.mode, EvidenceMode::Direct);
         assert_eq!(c.backend, StorageBackend::S3);
         assert_eq!(c.retention, Retention::Days90);
-        assert_eq!(c.max_body_bytes, 1_048_576);
+        assert_eq!(c.max_body_bytes, 33_554_432);
         assert_eq!(c.paid_by, PaidBy::Seller);
     }
 
     #[test]
     fn config_parses_spec_example() {
         let c: DurableEvidenceConfig = serde_json::from_str(
-            r#"{"mode":"direct","backend":"s3","retention":"90d","maxBodyBytes":1048576,"paidBy":"seller"}"#,
+            r#"{"mode":"direct","backend":"s3","retention":"90d","maxBodyBytes":33554432,"paidBy":"seller"}"#,
         )
         .unwrap();
         assert_eq!(c, DurableEvidenceConfig::default());

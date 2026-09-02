@@ -935,6 +935,20 @@ where
         let (parts, body) = response.into_parts();
         let limit = hook.config().max_body_bytes;
 
+        // Claim the memory this capture may need BEFORE buffering a byte of it.
+        // Refused rather than queued: the buffering happens ahead of the buyer's
+        // response, so waiting here would delay a delivery that is already paid
+        // for. Held until the seal and the upload are done, which is the whole
+        // window where the plaintext and the ciphertext coexist.
+        let permit = match hook.reserve_for(&body) {
+            Ok(permit) => permit,
+            Err(reason) => {
+                let evidence = DurableEvidence::skipped(reason);
+                let header = encode_header(&evidence).and_then(|v| HeaderValue::from_str(&v).ok());
+                return (Response::from_parts(parts, body), header);
+            }
+        };
+
         // Skipping evidence must never change the bytes the buyer receives. The
         // settlement already happened (`settle_after_execution`), so returning an
         // empty body here would charge for goods and then deliver nothing --
@@ -942,6 +956,7 @@ where
         let bytes = match buffer_body(body, limit).await {
             BufferedBody::Ready(bytes) => bytes,
             BufferedBody::Skip { body, reason } => {
+                hook.record_skip(reason);
                 let evidence = DurableEvidence::skipped(reason);
                 let header = encode_header(&evidence).and_then(|v| HeaderValue::from_str(&v).ok());
                 return (Response::from_parts(parts, body), header);
@@ -965,6 +980,7 @@ where
         };
 
         let evidence = hook.capture(&bytes, payer_key, &ctx).await;
+        drop(permit);
 
         let header = encode_header(&evidence).and_then(|v| HeaderValue::from_str(&v).ok());
         (Response::from_parts(parts, Body::from(bytes)), header)

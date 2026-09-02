@@ -392,3 +392,83 @@ resource "aws_cloudwatch_metric_alarm" "evm_nonce_desync" {
     Environment = var.environment
   }
 }
+
+# ============================================================================
+# DX402 evidence storage: the failure that is silent by design
+# ============================================================================
+#
+# When Pinata refuses a write, `FallbackEvidenceStore` writes to S3 instead and
+# the payment succeeds. That is the correct behaviour -- DX402 must never fail a
+# payment -- and it is exactly why nobody would notice. The anchor returns 201,
+# the buyer gets their bytes, and the only trace is one `warn!` line.
+#
+# Three different problems arrive through this one door:
+#
+#   - The Pinata JWT expires. It carries an `exp` and the current one runs out
+#     on 2026-12-19. From that moment every anchor falls back, permanently, and
+#     nothing else says so.
+#   - Quota. The free tier caps files and storage; the dashboard's counter does
+#     NOT include private files, so the number an operator reads there is not
+#     the number that will run out.
+#   - Any Pinata outage or 5xx.
+#
+# Until v2.3.0 this was worse than invisible: the pointer was predicted from the
+# PRIMARY before the upload and the real one discarded, so a fallback write left
+# a facilitator-SIGNED receipt naming an IPFS object that never existed, and the
+# read path treats the resulting NotFound as a verdict. That is fixed -- the
+# pointer is reconciled now -- so a fallback is an orderly degradation. This
+# alarm exists so it is also a VISIBLE one.
+resource "aws_cloudwatch_log_metric_filter" "dx402_store_fallback" {
+  name           = "facilitator-dx402-store-fallback"
+  log_group_name = aws_cloudwatch_log_group.facilitator.name
+
+  # Substring match, not a positional pattern: the log line is emitted by
+  # `tracing` with structured fields whose order is not a contract, and a
+  # positional filter that silently stops matching is how an alarm becomes
+  # decoration.
+  pattern = "dx402_primary_store_unavailable"
+
+  metric_transformation {
+    name          = "DX402StoreFallback"
+    namespace     = "Facilitator/DX402"
+    value         = "1"
+    unit          = "Count"
+    default_value = "0"
+  }
+}
+
+# One fallback is worth knowing about; it is not a blip that resolves itself.
+# Whatever caused it -- expiry, quota, an outage -- is still true for the next
+# anchor, so `evaluation_periods = 1` is deliberate.
+resource "aws_cloudwatch_metric_alarm" "dx402_store_fallback" {
+  alarm_name  = "facilitator-${var.environment}-dx402-store-fallback"
+  namespace   = "Facilitator/DX402"
+  metric_name = "DX402StoreFallback"
+  statistic   = "Sum"
+
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+
+  # Absence of data is the normal state: no anchors in five minutes means no
+  # fallbacks, not an unknown. Treating it as breaching would page all night.
+  treat_missing_data = "notBreaching"
+
+  alarm_description = join(" ", [
+    "DX402 evidence is being written to S3 because Pinata refused.",
+    "Payments are unaffected and evidence is still durable -- the pointer is",
+    "reconciled since v2.3.0 -- but the primary store is down, out of quota, or",
+    "the JWT expired. Check the JWT's `exp` (the current one ends 2026-12-19),",
+    "then the Pinata dashboard. Note its file counter excludes PRIVATE files,",
+    "which is what DX402 writes.",
+  ])
+
+  alarm_actions = [aws_sns_topic.alerts.arn]
+  ok_actions    = [aws_sns_topic.alerts.arn]
+
+  tags = {
+    Name        = "facilitator-${var.environment}-dx402-store-fallback"
+    Environment = var.environment
+  }
+}

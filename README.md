@@ -341,16 +341,30 @@ Payer-key availability across all seven network families:
 use x402_axum::durable::{DurableConfig, DurableEvidenceHook, HttpPutSink};
 
 let hook = DurableEvidenceHook::new(
-    DurableConfig::default(),
+    DurableConfig::from_env(),   // 32 MiB per body, 160 MiB across concurrent captures
     Arc::new(HttpPutSink::new("https://evidence.example.com")),
     "https://facilitator.ultravioletadao.xyz",
 );
 let layer = x402.with_price_tag(usdc.amount(0.01)?).with_durable_evidence(hook);
 ```
 
-**DX402 can never fail a payment.** An oversized body, an unreachable sink, or a
-smart-contract wallet with no recoverable key all downgrade to a skip notice in
-the `X-Durable-Evidence` header; the response is delivered exactly as before.
+**DX402 can never fail a payment.** An oversized body, a full memory budget, an
+unreachable sink, or a smart-contract wallet with no recoverable key all
+downgrade to a skip notice in the `X-Durable-Evidence` header; the response is
+delivered exactly as before.
+
+`DX402_MAX_BODY_BYTES` (default 32 MiB) is the largest body that gets evidence,
+and `DX402_MAX_INFLIGHT_BYTES` (default 160 MiB) bounds the memory all concurrent
+captures may hold. They are one setting in two halves: sealing buffers the
+plaintext and the ciphertext together, so a generous body limit with unbounded
+concurrency is an OOM, and an OOM drops responses that were already paid for.
+The budget is not memory taken, only memory refused — a 4 KB response reserves a
+few KB whatever the ceiling.
+
+Neither is a storage ceiling, and in pointer mode neither touches the
+facilitator's storage: the object goes to the seller's own sink. For objects
+genuinely too large to hold in memory the answer is streaming, which is not
+implemented yet (`docs/plans/dx402/04-STREAMING-EVIDENCE-HANDOFF.md`).
 
 ### Endpoints
 

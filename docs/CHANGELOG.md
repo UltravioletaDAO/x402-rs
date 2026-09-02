@@ -1,5 +1,153 @@
 # Changelog
 
+## [2.7.0] - 2026-09-01
+
+### Fixed
+
+- **Removed a size cap that could not be right at any value, and was refusing
+  bodies that used to work.** v2.3.0 added `MAX_SEALED_BLOB_BYTES = 48_000` on
+  the decoded blob so an oversized anchor would get a DX402 error naming the
+  limit rather than the body-limit middleware's bare `413`.
+
+  It cannot work. `RequestBodyLimitLayer` is the outermost layer on the router,
+  so a request over 64 KiB never reaches the handler at all. That leaves the cap
+  two options and no third: below what the request limit allows, and it refuses
+  bodies that previously anchored — 48,000 rejected everything from there up to
+  48,810, which the Python SDK's own test had been asserting worked; or above
+  it, and it is unreachable code the middleware always beats.
+
+  The constant's own doc comment already said the middleware cuts first. The
+  check was added anyway. `dx402_sealed_too_large` is gone with it, and a test
+  now pins the range that must keep anchoring.
+
+  A bare `413` for an oversized anchor is not improvable from inside the
+  handler. Saying so is better than a cap that narrows what works.
+
+## [2.6.0] - 2026-09-01
+
+### Added
+
+- **An alarm for the DX402 storage failure that is silent by design.** When
+  Pinata refuses a write, `FallbackEvidenceStore` writes to S3 and the payment
+  succeeds -- correct behaviour, since DX402 must never fail a payment, and
+  exactly why nobody would notice. The anchor returns 201, the buyer gets their
+  bytes, and the only trace is one `warn!` line.
+
+  Three problems arrive through that one door: the Pinata JWT expiring (the
+  current one ends **2026-12-19**, after which every anchor falls back
+  permanently), quota exhaustion, and any Pinata outage.
+  `facilitator-production-dx402-store-fallback` fires on one fallback in five
+  minutes -- whatever caused it is still true for the next anchor -- and
+  publishes to the facilitator's own SNS topic.
+
+  The metric filter matches a substring rather than log positions: the line is
+  emitted by `tracing` with structured fields whose order is not a contract, and
+  a positional filter that quietly stops matching is how an alarm becomes
+  decoration.
+
+### Fixed
+
+- **Documented what Pinata's dashboard counter does not count.** Measured
+  against the live account: the dashboard reads `Files 3/500` and `Storage
+  3.90 KB / 1 GB`, while DX402 had written **481 private files totalling
+  1.40 MiB**. The counter reports public IPFS pins; DX402 writes to the v3
+  *private* files API, and the two are separate quotas.
+
+  This document made the mistake in the other direction first, reading the
+  private count against the public 500-pin cap and raising a "19 files of
+  margin" alarm that was never real. Both halves were true on their own; the
+  comparison was not. No private-file quota is displayed anywhere and no
+  endpoint reachable with the scoped JWT reports one, so that ceiling is
+  **unknown rather than unlimited** -- said plainly instead of guessed.
+
+## [2.3.0] - 2026-09-01
+
+### Fixed
+
+- **The signed receipt could name an object that never existed.** DX402
+  predicted the evidence pointer with `pointer_for()` *before* uploading, signed
+  an EIP-712 receipt over the prediction, recorded it, and then discarded the
+  pointer `put()` actually returned. `FallbackEvidenceStore::pointer_for` spells
+  the contract out -- *"if the write then falls back, `put` returns the
+  fallback's pointer and the caller records that one"* -- and its only caller
+  did not.
+
+  Production runs the `ipfs` backend, which is Pinata with S3 behind it, so one
+  Pinata hiccup -- a 10s timeout, an expired JWT, any 5xx -- left the bytes
+  safely in S3 while the record and the signed receipt both named an IPFS object
+  that never existed. Reading it fails silently by design: the fallback store
+  treats the primary's `NotFound` as a verdict and never retries, and even if it
+  did, the S3 pointer parser rejects an `ipfs+` pointer as foreign. The anchor
+  returned 201, the receipt carried our signature, and the evidence was
+  unreachable forever with nothing anywhere to say so.
+
+  The v1.82.0 anti-hijack ordering is untouched -- claim the slot, and only then
+  write bytes. The correction sits strictly below it, fenced by a claim token
+  whose condition is *narrower* than the authority ladder: it matches only the
+  row this call wrote, so a claim superseded mid-upload is refused rather than
+  overwriting the winner. The token is a top-level DynamoDB attribute, because a
+  condition expression cannot read inside the serialized `record` -- the same
+  reason the ladder flags are hoisted. The correction is a full `PutItem`, not
+  an update: the task role grants `PutItem`, `GetItem`, `DescribeTable` and
+  `Scan` and nothing else, so a design built on `UpdateItem` would have deployed
+  green and answered `AccessDenied` forever, silently.
+
+  Re-signing happens only when the pointer changes: `pointer` is the third field
+  of the EIP-712 struct, while `backend` is not in the type hash at all.
+
+  This also closes a latent one that needs no Pinata failure: `cid_v1_raw` is
+  valid only for content that fits one block, so a sealed body over 256 KiB
+  produced a predicted CID that disagreed with the real one. We no longer trust
+  the prediction.
+
+- **`backend` was free text nobody checked.** A request could ask for `arweave`
+  -- which has no implementation, is absent from `Cargo.lock`, and has never
+  held a byte -- and the record plus every later read of `/dx402/evidence` would
+  claim it. Not a signed lie, since `backend` is not in the type hash, but a
+  persisted one, which is worse for anybody reading the index to find their
+  evidence. Now refused with `dx402_backend_unavailable`, and the backend
+  recorded is the one that *took the bytes*, not the one declared.
+
+- **A chunked response had no ceiling at all.** `buffer_body` skipped only
+  bodies that *announce* their size; a chunked one announces nothing, sailed
+  past the guard, and `collect()` then bought however many bytes the handler
+  chose to send. For a streaming handler -- exactly the large-body case --
+  `max_body_bytes` was not a memory bound, and `EvidenceBudget`, which exists to
+  prevent that OOM, was charging a number the body had no obligation to honour.
+  Now read frame by frame and stopped at the limit, with everything already
+  buffered handed back *ahead of* the untouched remainder.
+  `http_body_util::Limited` looks made for this and is not: it reports the
+  overflow as a stream error, and the error arm has nothing left to deliver --
+  which would answer a paid request with an empty body, the one outcome this
+  path exists to prevent.
+
+### Added
+
+- **`POST /dx402/repair/{paymentId}`** -- admin-gated audit of one anchor, with
+  `?write=true` to correct a pointer that names nothing. Its own
+  `DX402_ADMIN_TOKEN`, deliberately not shared with the bazaar or ERC-8004
+  tokens: this one re-signs a facilitator attestation. **404 when no token is
+  configured**, so the route is indistinguishable from absent.
+
+  `write` defaults to false and reports `repairable`. Auditing is safe and
+  rewriting a signed attestation is not, so the dangerous half has to be asked
+  for by name -- otherwise the safe-looking call would be the dangerous one. And
+  `lost` is never papered over: a record pointing at a real absence is telling
+  the truth.
+
+- **`scripts/dx402-audit-anchors.py`** -- scans the registry and classifies
+  every anchor. Nobody currently knows how many of the existing ones carry a
+  pointer that resolves to nothing; that number is the deliverable. A transport
+  failure is its own verdict and is never folded into `lost`: "we could not
+  check" must not be recorded as "the evidence is gone", which is precisely the
+  mistake INC-2026-07-21 was, one subsystem over.
+
+- **`dx402_sealed_too_large`** names the real ceiling (48,000 bytes) instead of
+  leaving the body-limit middleware's bare `413`, which names no field and never
+  mentions DX402. It covers the band a seller lands in when merely over the
+  line; far above, the middleware still cuts first, because it is the outermost
+  layer on the router.
+
 ## [2.0.1] - 2026-08-31
 
 ### Fixed - el timeout del reenvio abortaba antes que el holder
@@ -96,7 +244,150 @@ sees the same 503 the forwarding exists to remove.
 | `WRITER_LEASE_ENDPOINT` | *(unset)* | Pin this task's advertised address by hand; otherwise read from ECS task metadata |
 
 
+## [2.1.0] - 2026-08-31
 
+### Fixed
+
+- **SECURITY: the DX402 authority ladder had two rungs against the table, not
+  three.** `POST /dx402/anchor` ranks claims -- 2 = the chain confirms the
+  payee, 1 = the claimant committed to an identity, 0 = anonymous -- and each
+  rung may only take a slot from a lower one. That is the v1.82.0 anti-hijack
+  rule. Rung 1 was not enforced: DynamoDB hoisted `payment_id`, `record`,
+  `expires_at` and `verified` but never `signed`, while the rung-1 condition
+  asks `attribute_not_exists(signed)`. Against an attribute nobody writes that
+  is unconditionally true, so the clause was a tautology and any self-signed
+  claim could take the evidence slot from any other.
+
+  It costs nothing to mount: `paymentId` is `keccak256(caip2 || txHash)` over
+  public chain data, and a rung-1 claim only requires signing over an address
+  the claimant types into its own request. `put_object` then overwrites the
+  real seller's ciphertext -- unconditional, versioning disabled. Worst
+  affected are the sellers who can never reach rung 2: `proof_rpc_unavailable`,
+  and the whole Solana path via `proof_unverifiable_chain`.
+
+  The tests were green throughout because `the_ladder_only_climbs` exercises
+  `MemoryEvidenceRegistry`, which enforces the rule in Rust and always got it
+  right. Production is DynamoDB. The new tests evaluate the CONDITION the way
+  DynamoDB would -- including the asymmetry that caused this, where a
+  comparison against a missing attribute is false and existence is the only
+  thing you can ask about it -- across the full 3x3 rung matrix, plus flagless
+  legacy rows and empty slots. One more is structural and catches the next
+  occurrence: every flag a condition names must be a flag the writer hoists.
+
+- **The envelope reserved 64 bytes for a 115-byte header, and doubled.**
+  `SealedEnvelope::to_bytes` under-reserved by 51 bytes on the smallest
+  possible envelope, so every seal ever performed overflowed its reservation
+  and `RawVec` doubled the entire ciphertext to absorb it. Invisible because it
+  was correct, just needlessly large. Reserving the real header dropped a
+  capture's measured peak from **5.0x the body to 4.0x** -- 32 MiB saved per
+  capture at the ceiling -- which is what the four copies one can actually see
+  said all along. Measured in debug and release, flat from 1 MiB to the 32 MiB
+  ceiling.
+
+## [Unreleased]
+
+### Changed
+- **DX402 evidence body limit raised from 1 MiB to 32 MiB, and made configurable.**
+  At 1 MiB, `durable-evidence` was durable storage for small responses: an 18 MB
+  API response (the case that prompted this) got `{"skipped":"too_large"}` and no
+  evidence at all. The seller now sets it with `DX402_MAX_BODY_BYTES`, default
+  33554432.
+
+  **Why 32 MiB.** The 18 MB incident is the only measured case DX402 ever
+  refused, so anything under it fails the reason the limit was made configurable
+  — a couple of MB was considered and rejected on exactly that ground. Above it,
+  the deciding fact is that `DurableConfig::default()` ships in *other people's
+  processes*: it is what a seller gets for not thinking about it, on a host whose
+  memory we do not size. The smallest number that clears the known case with room
+  beats the largest one our own infrastructure could absorb. Raising it is one
+  variable; lowering it after integrators have built on a bigger promise is a
+  regression, and that asymmetry settles the direction of error.
+
+  It is **not** a storage ceiling and not our storage: in pointer mode — what the
+  `x402-axum` hook does — the object lands in the seller's own sink. The
+  facilitator's bucket only receives the inline `sealed` path, capped at ~47 KB
+  by the 64 KiB request limit. `GET /dx402/blob` cannot serve a large object
+  either: `key_from_pointer` rejects foreign pointers, so it only ever reads our
+  own bucket.
+
+  The limit was never a storage bound — S3 takes 5 GiB in a single `PUT`. It is a
+  **memory** bound: sealing holds the plaintext, then the ciphertext, then the
+  sink's copy, so one capture costs several times the body. Which is why raising
+  the number on its own would have been a downgrade, not a feature:
+
+- **`DX402_MAX_INFLIGHT_BYTES` (default 167772160) bounds the memory all
+  concurrent captures may hold.** Nothing bounded concurrency before, because at
+  1 MiB nothing needed to. With a raised body limit and no bound, a burst of
+  large responses in parallel is an OOM — and an OOM drops responses that were
+  already settled and paid for, which is precisely the outcome DX402 exists to
+  prevent. The budget turns that burst into an ordered skip.
+
+- **The amplification factor is measured now, not assumed.** The budget charges
+  each capture a multiple of the body size, and that multiple started life as an
+  estimate of 4 -- plaintext, ciphertext, the serialised envelope, the sink's
+  copy. `crates/x402-axum/tests/memory_amplification.rs` runs a whole capture
+  under a counting allocator and measured **5.0x**, so the budget was
+  under-charging by a quarter and would have admitted bursts it could not pay
+  for: the OOM it exists to prevent.
+
+  Chasing the fifth body found a real defect one layer down.
+  `SealedEnvelope::to_bytes` reserved 64 bytes for a header that is **115**
+  (`src/dx402/envelope.rs`), so every seal ever performed overflowed its
+  reservation by 51 bytes and `RawVec` doubled the entire ciphertext to absorb
+  it. Invisible because it was correct -- just needlessly large. Reserving the
+  real header dropped the measurement to a flat **4.0x**, which is what the four
+  copies one can actually see said all along, and saves **32 MiB per capture**
+  at the ceiling.
+
+  So the factor settles at 5 (measured peak plus one body of slack) and the
+  in-flight default at 160 MiB, keeping the invariant that exactly one
+  worst-case capture fits. Measured in debug and release, from 1 MiB up to the
+  32 MiB ceiling itself, and flat across all of it -- the earlier extrapolation
+  from a 4 MiB sample was sound, but no longer has to be taken on faith. The
+  test fails in both directions, so the number cannot quietly rot again.
+
+  **It is not memory the process takes, only memory it refuses to exceed.**
+  Reservations are sized per body, so a seller returning 4 KB of JSON never holds
+  more than a few KB however high the ceiling sits. That is why the budget is the
+  generous half of the pair and the body limit is the conservative one.
+
+  It is denominated in bytes of real memory and charges each capture roughly four
+  times the body. **That factor is an estimate, not a profile** — the handoff
+  asked for the measurement and it is still missing; the budget is the knob that
+  stays honest regardless, because it is expressed in the memory the process
+  actually has. A body that announces its length reserves that length; a
+  streaming body with no `size_hint` has to reserve the worst case. Reservations
+  are **refused, never queued**: buffering happens before the buyer's response
+  goes out, so waiting for memory would delay a delivery that has already been
+  settled. Delivery wins; evidence gives way.
+
+  A body already over the limit reserves **nothing** — it is skipped without
+  being buffered, and charging it would evict captures that could have succeeded.
+
+### Added
+- **`SkipReason::Busy`** — wire value `busy`. A full budget is not a store
+  failure and reporting it as `anchor_failed` would send the next investigation
+  at the store. Nothing is broken; the deployment simply declined to buffer one
+  more large body. Both SDKs already handle it: they parse `skipped` as an open
+  string (`String(payload.skipped)` / `str(payload["skipped"])`), not a closed
+  enum, so a new variant surfaces rather than failing the payload.
+- **`EvidenceStats` on the hook** (`hook.stats()`): counts anchored captures and
+  skips by reason. Skips were silent — a header nobody tallies — so there was no
+  way to tell "no response was too large" from "every response was too large".
+- **`DurableConfig::from_env()`** with a 16 KiB floor and a clamp of the body
+  limit to what the budget can afford. `DX402_MAX_BODY_BYTES=0` cannot silently
+  skip everything, an unparseable value falls back to the default and logs, and a
+  body limit the budget cannot cover reports an honest `too_large` instead of
+  `busy` forever.
+
+Unchanged and still load-bearing: **an oversized or unbudgeted body is delivered
+in full.** Settlement happens before the hook and the nonce is spent, so a
+dropped body is paid-for goods that can never be re-fetched.
+
+**Not** phase 1. Streaming — chunked encryption, incremental hashing, S3
+multipart, and the `tee` of the body — is still open, along with the decision it
+forces: the `contentHash` cannot ride in a header the streaming case has already
+sent. See `docs/plans/dx402/04-STREAMING-EVIDENCE-HANDOFF.md`.
 
 ## [1.92.0] - 2026-08-21
 

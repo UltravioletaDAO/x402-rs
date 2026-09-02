@@ -169,7 +169,16 @@ impl SealedEnvelope {
     /// becomes a positive signal that somebody besides the payer can open it,
     /// rather than a version bump nobody can interpret.
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(64 + self.ciphertext.len());
+        // Reserve the header for real. A v1 header is 115 bytes -- MAGIC 5,
+        // version 1, alg 1, eph_len 1, eph 33, cek_nonce 12, wrapped_len 2,
+        // wrapped 48, body_nonce 12 -- and each extra v2 recipient adds ~98
+        // more. The old 64 was under by 51 on the SMALLEST possible envelope,
+        // so every seal overflowed the reservation by a hair and RawVec doubled
+        // to ~2x the ciphertext to absorb it. That doubling was the whole
+        // difference between a capture costing 4x the body and 5x: the copy was
+        // invisible because it was correct, just needlessly large.
+        let header = 128 + self.recipients.len().saturating_sub(1) * 128;
+        let mut out = Vec::with_capacity(header + self.ciphertext.len());
         out.extend_from_slice(MAGIC);
 
         let single_payer =

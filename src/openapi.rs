@@ -170,6 +170,7 @@ a liveness `health` status from periodic probing, and a curated `tier`
         path_dx402_stats,
         path_dx402_blob,
         path_dx402_recover,
+        path_dx402_repair,
         // Compliance
         path_blacklist,
         // Health
@@ -756,6 +757,25 @@ async fn path_dx402_blob() {}
     responses((status = 501, description = "Escrowed mode is not implemented in v0.1"))
 )]
 async fn path_dx402_recover() {}
+
+#[utoipa::path(
+    post,
+    path = "/dx402/repair/{paymentId}",
+    tag = "DX402",
+    summary = "Audit one anchor, and optionally correct a pointer that names nothing",
+    description = "**Admin only.** `Authorization: Bearer <DX402_ADMIN_TOKEN>`, and **404 when no token is configured** — fail-closed, so the route is indistinguishable from absent. Its own token, deliberately not shared with the bazaar or ERC-8004 admin surfaces: this one re-signs a facilitator attestation.\n\nExists for the anchors written while the evidence pointer was a *prediction* nobody reconciled. On the `ipfs` backend a Pinata failure put the bytes in the S3 fallback while the record — and the signed receipt — went on naming an IPFS object that never existed. Reading it fails silently: the fallback store treats the primary's `NotFound` as a verdict and never retries, so the anchor returned 201, the receipt carries our signature, and the evidence is unreachable with no error anywhere.\n\n`write` defaults to **false**. An audit reports `repairable` and changes nothing; only `?write=true` rewrites. Auditing is safe and rewriting a signed attestation is not, so the dangerous half has to be asked for by name — otherwise the safe-looking call would be the dangerous one.\n\nA repair re-signs, because `pointer` is part of the EIP-712 type hash and a corrected pointer under the old signature is a receipt that does not verify. That is why this lives here rather than in a script: the signing key must not leave the service. It can only ever change *where the bytes are* — `verified` and `signed` are carried structurally from the record it read, so a repair cannot escalate authority.\n\n`lost` is never papered over. A record pointing at a real absence is telling the truth, and rewriting it would only hide that the evidence is gone.",
+    params(
+        ("paymentId" = String, Path, description = "keccak256(caip2Network || txHash)"),
+        ("write" = Option<bool>, Query, description = "false (default) audits; true rewrites the record and re-signs")
+    ),
+    responses(
+        (status = 200, description = "Verdict: healthy | repairable | repaired | lost"),
+        (status = 401, description = "Missing or invalid admin credentials"),
+        (status = 404, description = "No admin token configured, or the payment has no evidence"),
+        (status = 409, description = "The row changed between the audit and the write; nothing was touched")
+    )
+)]
+async fn path_dx402_repair() {}
 
 // ============================================================================
 // ERC-8004 Endpoints
@@ -2044,4 +2064,53 @@ pub fn swagger_routes() -> Router {
     let mut api_doc = ApiDoc::openapi();
     api_doc.info.version = crate::version::facilitator_version().to_string();
     Router::new().merge(SwaggerUi::new("/docs").url("/api-docs/openapi.json", api_doc))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every DX402 route the router serves must appear in the spec.
+    ///
+    /// CLAUDE.md says every new endpoint needs `src/openapi.rs` edited, and a
+    /// rule that only lives in prose gets skipped. A `utoipa::path` that is
+    /// written but never added to the `paths(...)` list compiles, runs, and is
+    /// simply absent from `/api-docs/openapi.json` -- there is nothing to
+    /// notice, which is why this is a test and not a convention.
+    ///
+    /// Listed literally rather than derived from `dx402_routes()`: axum's
+    /// `Router` does not expose its own paths, so the honest options are a
+    /// hand-kept list that fails loudly or no check at all.
+    #[test]
+    fn every_dx402_route_is_documented() {
+        let spec = ApiDoc::openapi();
+        for route in [
+            "/dx402/anchor",
+            "/dx402/evidence/{paymentId}",
+            "/dx402/receipt/{paymentId}",
+            "/dx402/blob/{paymentId}",
+            "/dx402/stats",
+            "/dx402/recover",
+            "/dx402/repair/{paymentId}",
+        ] {
+            assert!(
+                spec.paths.paths.contains_key(route),
+                "{route} is served but missing from the OpenAPI spec, so it is \
+                 invisible in /docs and to every client generated from it"
+            );
+        }
+    }
+
+    /// The version in the spec is the release, resolved at runtime.
+    ///
+    /// The `#[openapi(version = ...)]` attribute is a placeholder that
+    /// `swagger_routes` overwrites; asserting they differ would pin the
+    /// placeholder, so assert the override instead.
+    #[test]
+    fn the_spec_reports_the_running_release() {
+        let mut spec = ApiDoc::openapi();
+        spec.info.version = crate::version::facilitator_version().to_string();
+        assert_eq!(spec.info.version, crate::version::facilitator_version());
+        assert!(!spec.info.version.is_empty());
+    }
 }

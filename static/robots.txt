@@ -1,0 +1,56 @@
+# robots.txt for facilitator.ultravioletadao.xyz
+# x402 Payment Facilitator by Ultravioleta DAO
+# https://facilitator.ultravioletadao.xyz
+
+User-agent: *
+Allow: /
+
+# AI content usage preferences (Content Signals - https://contentsignals.org/)
+# This service is public payment infrastructure. Being found in search, being read
+# into an agent's context, and being trained on are all desirable: an agent that
+# knows how to call /verify and /settle is the point.
+Content-Signal: search=yes, ai-input=yes, ai-train=yes
+
+# LLM-readable context (llmstxt.org standard)
+Llms-txt: /llms.txt
+
+# ---------------------------------------------------------------------------
+# Explicit AI crawler rules (RFC 9309) - this service wants to be agent-discoverable
+# ---------------------------------------------------------------------------
+User-agent: GPTBot
+Allow: /
+
+User-agent: OAI-SearchBot
+Allow: /
+
+User-agent: ChatGPT-User
+Allow: /
+
+User-agent: Claude-Web
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: anthropic-ai
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+User-agent: Amazonbot
+Allow: /
+
+User-agent: Applebot-Extended
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: CCBot
+Allow: /
+
+User-agent: Bytespider
+Allow: /
+
+Sitemap: https://facilitator.ultravioletadao.xyz/sitemap.xml

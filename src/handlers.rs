@@ -295,6 +295,85 @@ pub fn agentic_routes() -> Router {
 }
 
 
+
+/// The 405 every route answers when the path exists but the method does not.
+///
+/// axum's default is `405` with a zero-byte body and no content type -- the
+/// same shape the 404 had, and the reason `json-error-responses` scored as
+/// failed on 2026-09-02 despite `/verify` and `/settle` already rejecting bad
+/// bodies in JSON.
+///
+/// The `Allow` header is NOT set here on purpose: axum still computes and
+/// attaches it from the methods actually registered for the path (its own
+/// `allow_header_with_fallback` test pins that), and a hand-written one here
+/// would be a second source of truth that drifts the first time a route gains
+/// a method.
+#[instrument(skip_all)]
+pub async fn method_not_allowed(method: axum::http::Method, uri: axum::http::Uri) -> impl IntoResponse {
+    let path = uri.path().to_string();
+    (
+        StatusCode::METHOD_NOT_ALLOWED,
+        [(header::CONTENT_TYPE, APPLICATION_JSON_UTF8)],
+        Json(json!({
+            "error": format!("{method} is not supported on {path}"),
+            "code": "method_not_allowed",
+            "hint": "The `Allow` response header lists the methods this path \
+                     accepts. Every endpoint and its methods are described at \
+                     https://facilitator.ultravioletadao.xyz/openapi.json",
+        })),
+    )
+}
+
+/// A rate limiter's refusal, as JSON instead of a bare string.
+///
+/// `tower_governor` builds both of its refusals with `Response::new(String)`
+/// and no content type (`tower_governor-0.8.0/src/errors.rs`), so until now the
+/// single most likely error an agent meets on this service -- a 429 -- came
+/// back untyped. This runs INSIDE the limiter rather than as a layer around it,
+/// which is what makes it reach them: a middleware wrapping the router is
+/// mounted under the `GovernorLayer`, so the limiter's own responses never pass
+/// through it.
+///
+/// The status and every header the limiter set are preserved untouched:
+/// `retry-after` and `x-ratelimit-*` are the part an agent throttles on.
+pub fn rate_limit_error(
+    error: tower_governor::GovernorError,
+) -> Response<axum::body::Body> {
+    let (mut parts, message) = error.into_response().into_parts();
+    let (code, hint) = if parts.status == StatusCode::TOO_MANY_REQUESTS {
+        (
+            "rate_limited",
+            "Wait for the number of seconds in the `retry-after` header, then \
+             retry. `x-ratelimit-limit` and `x-ratelimit-remaining` report the \
+             budget on every successful response, so a client can pace itself \
+             instead of discovering the limit by hitting it. Limits are per \
+             client IP and documented at \
+             https://facilitator.ultravioletadao.xyz/skill.md",
+        )
+    } else {
+        (
+            "rate_limit_key_unavailable",
+            "The rate limiter could not identify the caller: no \
+             X-Forwarded-For, X-Real-IP or Forwarded header reached it. Behind \
+             the production load balancer one is always present; a direct \
+             connection to the service has to set it.",
+        )
+    };
+    let body = json!({
+        "error": message.trim(),
+        "code": code,
+        "hint": hint,
+    })
+    .to_string();
+    parts.headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static(APPLICATION_JSON_UTF8),
+    );
+    // `Response::new(String)` carries no content-length, and the JSON body is a
+    // different length than the string it replaces -- so nothing stale to clear.
+    Response::from_parts(parts, axum::body::Body::from(body))
+}
+
 /// The body a nonexistent path answers with.
 ///
 /// Markdown, opening on a heading, because that is what the readers of a 404
@@ -3055,7 +3134,14 @@ where
                     return (
                         StatusCode::BAD_REQUEST,
                         Json(json!({
-                            "error": format!("Failed to deserialize VerifyRequest: {}", e)
+                            "error": format!("Failed to deserialize VerifyRequest: {}", e),
+                            "code": "invalid_request_body",
+                            "hint": "The body must be a JSON object with \
+                                     `paymentPayload` and `paymentRequirements`. \
+                                     Both the x402 v1 shape (\"network\": \"base\") \
+                                     and the v2 CAIP-2 shape (\"network\": \
+                                     \"eip155:8453\") are accepted. Worked examples: \
+                                     https://facilitator.ultravioletadao.xyz/skill.md",
                         })),
                     )
                         .into_response();
@@ -3792,7 +3878,16 @@ where
                         StatusCode::BAD_REQUEST,
                         Json(json!({
                             "error": format!("Failed to deserialize SettleRequest: {}", deser_err),
-                            "details": "Check server logs for detailed field-by-field analysis"
+                            "code": "invalid_request_body",
+                            "details": "Check server logs for detailed field-by-field analysis",
+                            "hint": "The body must be a JSON object with \
+                                     `paymentPayload` and `paymentRequirements`, \
+                                     the same shape POST /verify accepts. Both the \
+                                     x402 v1 spelling (\"network\": \"base\") and \
+                                     the v2 CAIP-2 spelling (\"network\": \
+                                     \"eip155:8453\") work. Verify the payload with \
+                                     POST /verify first; worked examples: \
+                                     https://facilitator.ultravioletadao.xyz/skill.md",
                         })),
                     )
                         .into_response();
@@ -13119,5 +13214,122 @@ mod agent_404_tests {
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(ctype, "text/markdown; charset=utf-8");
         assert!(body.contains("/llms.txt"));
+    }
+}
+
+/// Items C and D: every refusal is typed JSON, and the budget is legible.
+#[cfg(test)]
+mod json_error_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    /// A router shaped like `main.rs`: real routes, then the 405 fallback last.
+    fn router() -> Router {
+        Router::new()
+            .route("/thing", get(|| async { "ok" }))
+            .route("/writable", post(|| async { "ok" }))
+            .method_not_allowed_fallback(method_not_allowed)
+    }
+
+    async fn call(method: &str, path: &str) -> (StatusCode, String, String, String) {
+        let response = router()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let get = |name: &str| {
+            response
+                .headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default()
+                .to_string()
+        };
+        let (ctype, allow) = (get("content-type"), get("allow"));
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, ctype, allow, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// The gap `json-error-responses` actually scored: a 405 with zero bytes
+    /// and no content type.
+    #[tokio::test]
+    async fn a_wrong_method_is_a_typed_json_405() {
+        let (status, ctype, _, body) = call("DELETE", "/thing").await;
+        assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+        assert!(ctype.starts_with("application/json"), "got {ctype}");
+        let doc: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(doc["code"], "method_not_allowed");
+        assert!(doc["error"].as_str().unwrap().contains("DELETE"));
+        assert!(doc["error"].as_str().unwrap().contains("/thing"));
+        assert!(doc["hint"].as_str().unwrap().contains("openapi.json"));
+    }
+
+    /// The custom fallback must not cost the `Allow` header: it is the only
+    /// part of a 405 a client can act on without reading prose.
+    #[tokio::test]
+    async fn the_405_still_carries_allow() {
+        let (_, _, allow, _) = call("DELETE", "/thing").await;
+        assert_eq!(allow, "GET,HEAD");
+        let (_, _, allow, _) = call("GET", "/writable").await;
+        assert_eq!(allow, "POST");
+    }
+
+    /// tower_governor builds both refusals with `Response::new(String)` and no
+    /// content type. The status and every header it set have to survive being
+    /// retyped -- `retry-after` is the whole point of a 429.
+    #[test]
+    fn a_rate_limit_refusal_becomes_json_without_losing_its_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert("retry-after", HeaderValue::from_static("7"));
+        headers.insert("x-ratelimit-limit", HeaderValue::from_static("30"));
+        let response = rate_limit_error(tower_governor::GovernorError::TooManyRequests {
+            wait_time: 7,
+            headers: Some(headers),
+        });
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers()["retry-after"], "7");
+        assert_eq!(response.headers()["x-ratelimit-limit"], "30");
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            APPLICATION_JSON_UTF8
+        );
+    }
+
+    #[tokio::test]
+    async fn the_rate_limit_body_is_json_with_a_code_and_a_hint() {
+        let response = rate_limit_error(tower_governor::GovernorError::TooManyRequests {
+            wait_time: 7,
+            headers: None,
+        });
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let doc: serde_json::Value = serde_json::from_slice(&bytes).expect("valid JSON");
+        assert_eq!(doc["code"], "rate_limited");
+        assert!(doc["hint"].as_str().unwrap().contains("retry-after"));
+
+        // The 500 branch: it only fires on a direct connection, but an untyped
+        // 500 is the worst of the three to hand an agent.
+        let response = rate_limit_error(tower_governor::GovernorError::UnableToExtractKey);
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            APPLICATION_JSON_UTF8
+        );
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let doc: serde_json::Value = serde_json::from_slice(&bytes).expect("valid JSON");
+        assert_eq!(doc["code"], "rate_limit_key_unavailable");
     }
 }

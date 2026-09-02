@@ -294,6 +294,96 @@ pub fn agentic_routes() -> Router {
         )
 }
 
+
+/// The body a nonexistent path answers with.
+///
+/// Markdown, opening on a heading, because that is what the readers of a 404
+/// here actually are: an agent that guessed a url and now has to find the real
+/// one. The four links are the documents that answer "what does this service
+/// serve" -- an index, a page list, a typed API description, and the catalog
+/// that ties them together.
+const NOT_FOUND_MARKDOWN: &str = "\
+# 404 Not Found
+
+No route on the x402 payment facilitator serves this path.
+
+## Where the real routes are described
+
+- <https://facilitator.ultravioletadao.xyz/llms.txt> - what this service is, \
+and every document it publishes
+- <https://facilitator.ultravioletadao.xyz/sitemap.xml> - the pages a reader \
+can land on
+- <https://facilitator.ultravioletadao.xyz/openapi.json> - every endpoint, typed
+- <https://facilitator.ultravioletadao.xyz/.well-known/api-catalog> - the RFC \
+9727 catalog of the above
+- <https://facilitator.ultravioletadao.xyz/skill.md> - how to call /verify and \
+/settle
+
+The two calls that are the whole contract are `POST /verify` and \
+`POST /settle`. They are also MCP tools at `POST /mcp`.
+";
+
+/// The same 404, for a caller that asked for JSON.
+static NOT_FOUND_JSON: Lazy<String> = Lazy::new(|| {
+    json!({
+        "error": "No route serves this path",
+        "code": "not_found",
+        "hint": "Read https://facilitator.ultravioletadao.xyz/llms.txt for what \
+                 this service publishes, or https://facilitator.ultravioletadao.xyz/openapi.json \
+                 for every endpoint. The two calls that matter are POST /verify \
+                 and POST /settle.",
+        "documentation": {
+            "llms": "https://facilitator.ultravioletadao.xyz/llms.txt",
+            "sitemap": "https://facilitator.ultravioletadao.xyz/sitemap.xml",
+            "openapi": "https://facilitator.ultravioletadao.xyz/openapi.json",
+            "apiCatalog": "https://facilitator.ultravioletadao.xyz/.well-known/api-catalog",
+            "skill": "https://facilitator.ultravioletadao.xyz/skill.md",
+        },
+    })
+    .to_string()
+});
+
+/// The fallback for every path no route claims.
+///
+/// WHY THIS EXISTS AT ALL
+///     The status was already a real 404 -- axum's default -- but the body was
+///     zero bytes with no content type, which is what both 2026-09-02 scans
+///     scored as only partial credit. An agent that guesses a url and gets
+///     nothing back has learned nothing; the same 404 carrying five links is a
+///     recovery path.
+///
+/// WHY MARKDOWN IS THE DEFAULT AND NOT JSON
+///     A 404 is read by whoever guessed wrong, which is far more often a crawler
+///     or a person than an API client mid-call. A real API client asks for JSON,
+///     and gets it.
+///
+/// WHERE IT SITS IN THE STACK
+///     `main.rs` mounts it INSIDE a `GovernorLayer`, deliberately: an unmetered
+///     404 is a free amplification surface, and a path-scanning loop is exactly
+///     the traffic that finds it.
+#[instrument(skip_all)]
+pub async fn agent_not_found(headers: HeaderMap) -> impl IntoResponse {
+    let accept = headers
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok());
+    // Markdown first: it is the default for a caller with no preference.
+    let (media, body) = match crate::negotiate::choose(accept, &["text/markdown", "application/json"]) {
+        crate::negotiate::Choice::Serve("application/json") => {
+            ("application/json", NOT_FOUND_JSON.as_str())
+        }
+        // A 404 never answers 406. The caller already asked for something that
+        // does not exist; refusing to say so in a format they dislike replaces
+        // one dead end with a worse one.
+        _ => ("text/markdown", NOT_FOUND_MARKDOWN),
+    };
+    Response::builder()
+        .status(StatusCode::NOT_FOUND)
+        .header("content-type", format!("{media}; charset=utf-8"))
+        .header(header::VARY, "Accept, Accept-Encoding")
+        .body(body.to_string())
+        .unwrap()
+}
+
 /// The documents a negotiated surface can answer with, most preferred first.
 ///
 /// `(media type, body)`. The first entry is the default: it is what a caller
@@ -319,6 +409,16 @@ type Representations = &'static [(&'static str, &'static str)];
 ///     (<https://acceptmarkdown.com/guides/returning-406>), and it would break
 ///     every browser and every `curl` that does not set the header.
 fn negotiated_surface(headers: &HeaderMap, offers: Representations) -> Response<String> {
+    negotiated_response(StatusCode::OK, headers, offers)
+}
+
+/// [`negotiated_surface`] for a response that is not a `200` -- the 404 body,
+/// which is the same negotiation over a different status.
+fn negotiated_response(
+    status: StatusCode,
+    headers: &HeaderMap,
+    offers: Representations,
+) -> Response<String> {
     let accept = headers
         .get(header::ACCEPT)
         .and_then(|value| value.to_str().ok());
@@ -331,7 +431,7 @@ fn negotiated_surface(headers: &HeaderMap, offers: Representations) -> Response<
                 .map(|(_, body)| *body)
                 .unwrap_or_default();
             Response::builder()
-                .status(StatusCode::OK)
+                .status(status)
                 .header("content-type", format!("{media}; charset=utf-8"))
                 .header(header::VARY, "Accept, Accept-Encoding")
                 .body(body.to_string())
@@ -12922,5 +13022,102 @@ mod markdown_negotiation_tests {
                 "a 406 must name what it can serve; got {body}"
             );
         }
+    }
+}
+
+/// Item B: the 404 an agent can recover from.
+#[cfg(test)]
+mod agent_404_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    async fn fetch(router: Router, path: &str, accept: Option<&str>) -> (StatusCode, String, String) {
+        let mut builder = Request::builder().uri(path);
+        if let Some(accept) = accept {
+            builder = builder.header("accept", accept);
+        }
+        let response = router
+            .oneshot(builder.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let ctype = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, ctype, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    fn router() -> Router {
+        Router::new().fallback(agent_not_found)
+    }
+
+    #[tokio::test]
+    async fn an_unknown_path_answers_404_markdown_that_names_where_to_look() {
+        let (status, ctype, body) = fetch(router(), "/no-existe", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(ctype, "text/markdown; charset=utf-8");
+        assert!(
+            body.starts_with("# "),
+            "a markdown body has to open on a heading; got {:?}",
+            &body[..body.len().min(40)]
+        );
+        // The recovery path is the whole reason this body exists.
+        for link in [
+            "/llms.txt",
+            "/sitemap.xml",
+            "/openapi.json",
+            "/.well-known/api-catalog",
+        ] {
+            assert!(body.contains(link), "the 404 must point at {link}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_json_caller_gets_a_typed_json_404() {
+        let (status, ctype, body) =
+            fetch(router(), "/no-existe", Some("application/json")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(ctype.starts_with("application/json"), "got {ctype}");
+        let doc: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(doc["code"], "not_found");
+        assert!(doc["error"].is_string());
+        assert!(doc["hint"].as_str().unwrap().contains("llms.txt"));
+    }
+
+    /// A 404 never becomes a 406: the caller already asked for something that
+    /// does not exist, and refusing to say so is a worse dead end.
+    #[tokio::test]
+    async fn an_impossible_accept_still_gets_the_404() {
+        for accept in ["application/pdf", "text/markdown;q=0, application/json;q=0"] {
+            let (status, ctype, _) = fetch(router(), "/no-existe", Some(accept)).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "Accept={accept:?}");
+            assert!(ctype.starts_with("text/markdown"), "got {ctype}");
+        }
+    }
+
+    /// The regression this is really guarding: axum keeps the fallback of the
+    /// router merged LAST, and `.layer()` wraps a router's default fallback
+    /// along with its routes. Before this change the 404 belonged to whichever
+    /// governed router happened to be merged last -- an accident that a
+    /// reordering could change silently. Merging a router with a real route
+    /// AFTER the fallback router must not take the fallback back.
+    #[tokio::test]
+    async fn the_fallback_survives_being_merged_with_other_routers() {
+        let assembled = Router::new()
+            .merge(agentic_routes())
+            .merge(Router::new().fallback(agent_not_found))
+            .merge(Router::new().route("/health-probe", get(|| async { "ok" })));
+        let (status, ctype, body) = fetch(assembled, "/definitely-not-a-route", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(ctype, "text/markdown; charset=utf-8");
+        assert!(body.contains("/llms.txt"));
     }
 }

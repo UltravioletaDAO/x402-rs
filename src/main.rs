@@ -631,7 +631,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .merge(
             handlers::secondary_read_routes()
                 .with_state(axum_state.clone())
-                .layer(GovernorLayer::new(secondary_read_config)),
+                .layer(GovernorLayer::new(Arc::clone(&secondary_read_config))),
         )
         .merge(handlers::routes().with_state(axum_state.clone()));
     if erc8004_writes_enabled {
@@ -668,6 +668,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             handlers::events_routes()
                 .with_state(Arc::clone(&event_bus))
                 .layer(GovernorLayer::new(events_config)),
+        )
+        // The 404 for every path no route claims. Explicit, and merged last so
+        // its custom fallback is the one that survives the merges above.
+        //
+        // WHY IT IS UNDER A GOVERNOR
+        //     It already was, and it has to stay that way: an unmetered 404 is
+        //     a free amplification surface, and path scanning is the traffic
+        //     that finds one. What was NOT deliberate is WHICH budget it drew
+        //     on. axum's `merge` keeps the fallback of the router merged last
+        //     (`(true, true) => use the one from other`), and `.layer()` wraps a
+        //     router's default fallback along with its routes -- so until now
+        //     every unknown path was silently metered by whichever governed
+        //     router happened to be merged last. Measured 2026-09-02: it was
+        //     `/events`, so 11 unknown paths from one IP earned a 429.
+        //
+        //     That is the wrong shape. The events budget exists to bound how
+        //     fast long-lived SSE connections can be opened; a 404 is a constant
+        //     string. It joins the secondary-read budget instead -- the one
+        //     already sized for cheap reads -- so a crawler mapping the surface
+        //     gets 404s rather than 429s, which is the entire point of giving
+        //     the 404 a body. Reordering the merges above can no longer change
+        //     this silently.
+        .merge(
+            Router::new()
+                .fallback(handlers::agent_not_found)
+                .layer(GovernorLayer::new(Arc::clone(&secondary_read_config))),
         );
 
     // DX402 durable-evidence. Absent unless ENABLE_DX402=true and the store and

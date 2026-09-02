@@ -32,11 +32,12 @@
 //! validation of the payer's signed payload, same everything. An MCP client
 //! cannot move funds that an HTTP client could not.
 
+
 use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::Extension;
-use axum::http::{header, Method, Request, StatusCode};
+use axum::http::{header, HeaderMap, Method, Request, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post, post_service};
 use axum::{Json, Router};
@@ -299,11 +300,41 @@ impl FacilitatorMcp {
         method: Method,
         path: &'static str,
         arguments: JsonObject,
+        outer: Option<&HeaderMap>,
     ) -> Result<(StatusCode, String), McpError> {
         let has_body = method != Method::GET;
         let mut builder = Request::builder().method(method).uri(path);
         if has_body {
             builder = builder.header(header::CONTENT_TYPE, "application/json");
+        }
+        // Carry the caller's IP forward. Not cosmetic, and not for THIS hop:
+        // the inner router has no `GovernorLayer`, so nothing here reads these.
+        // They matter one hop further on. `settle_writer_gate` forwards an EVM
+        // settle to the task holding the writer lease over a direct
+        // task-to-task TCP connection (`forward_to_writer`), which never
+        // touches the ALB that would add these headers. On the other side
+        // `/settle` sits behind `SmartIpKeyExtractor`, whose chain is
+        // X-Forwarded-For -> X-Real-IP -> Forwarded -> ConnectInfo -> peer
+        // addr; the last two read extensions nobody inserts, because the binary
+        // serves with plain `axum::serve` and not
+        // `into_make_service_with_connect_info`. A synthetic request built with
+        // only a content-type therefore reaches the holder with no key at all
+        // and comes back 500 "Unable To Extract Key!", which the tool would
+        // hand to a model as an isError it cannot act on. With more than one
+        // ECS task that is most EVM settles over MCP, on legitimate traffic.
+        //
+        // Copying the header verbatim is also the faithful choice: the holder
+        // then charges the token to the same IP a forwarded `POST /settle`
+        // would. Whether that IP can be spoofed is a property this service
+        // already has on every route -- parity is the goal, not a new policy.
+        for name in [
+            header::HeaderName::from_static("x-forwarded-for"),
+            header::HeaderName::from_static("x-real-ip"),
+            header::HeaderName::from_static("forwarded"),
+        ] {
+            if let Some(value) = outer.and_then(|h| h.get(&name)) {
+                builder = builder.header(name, value.clone());
+            }
         }
         let body = if has_body {
             let bytes = serde_json::to_vec(&Value::Object(arguments)).map_err(|e| {
@@ -377,7 +408,7 @@ impl ServerHandler for FacilitatorMcp {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
         let name = request.name.clone();
         let Some((method, path)) = rest_target(name.as_ref()) else {
@@ -390,7 +421,18 @@ impl ServerHandler for FacilitatorMcp {
             ));
         };
         let arguments = request.arguments.unwrap_or_default();
-        let (status, body) = self.call_rest(method, path, arguments).await?;
+
+        // rmcp leaves the outer request's `http::request::Parts` here. `None`
+        // only in a non-HTTP transport, which this server does not mount.
+        let outer = context.extensions.get::<axum::http::request::Parts>();
+        let (status, body) = self
+            .call_rest(
+                method,
+                path,
+                arguments,
+                outer.map(|p| &p.headers),
+            )
+            .await?;
 
         // The REST status decides. A 4xx/5xx becomes a tool-level error the
         // caller can read, carrying the facilitator's own message verbatim --
@@ -611,12 +653,25 @@ mod tests {
     /// else and answers 403 without one (`parse_host_header`). A test that
     /// forgot it would fail in a way that looks nothing like its cause.
     async fn rpc(mcp: &Router, body: Value) -> (StatusCode, String, Value) {
-        let request = HttpRequest::builder()
+        rpc_from(mcp, body, None).await
+    }
+
+    /// Same, but with a client IP on the OUTER request -- what the ALB adds.
+    async fn rpc_from(
+        mcp: &Router,
+        body: Value,
+        client_ip: Option<&str>,
+    ) -> (StatusCode, String, Value) {
+        let mut builder = HttpRequest::builder()
             .method(Method::POST)
             .uri("/mcp")
             .header(header::HOST, "127.0.0.1")
             .header(header::CONTENT_TYPE, "application/json")
-            .header(header::ACCEPT, "application/json, text/event-stream")
+            .header(header::ACCEPT, "application/json, text/event-stream");
+        if let Some(ip) = client_ip {
+            builder = builder.header("x-forwarded-for", ip);
+        }
+        let request = builder
             .body(Body::from(serde_json::to_vec(&body).unwrap()))
             .unwrap();
         let response = mcp.clone().oneshot(request).await.unwrap();
@@ -1017,6 +1072,90 @@ mod tests {
             !served.contains("does not hold the EVM writer lease"),
             "the writer answered the lease 503 to itself: {served}"
         );
+    }
+
+    /// The forwarded settle reaches the lease holder carrying the client's IP.
+    ///
+    /// This is the hop nothing covered before, and the one that was broken.
+    /// `settle_writer_gate` hands an EVM settle to the task holding the writer
+    /// lease over a direct TCP connection that never touches the ALB, and on
+    /// the far side `/settle` sits behind `SmartIpKeyExtractor`. A synthetic
+    /// request built with only a content-type arrives there with no key at all,
+    /// and `tower_governor` answers 500 "Unable To Extract Key!" -- which the
+    /// tool would return to a model as an isError it can do nothing about. With
+    /// two ECS tasks and one holder that is most EVM settles over MCP, on
+    /// ordinary traffic and with no attacker.
+    ///
+    /// So this stands up a real listener, points the lease holder at it, and
+    /// asserts on what actually arrived. The previous gate test stopped at
+    /// `holder_unknown` and never reached `forward_to_writer` at all.
+    #[tokio::test]
+    async fn a_forwarded_settle_carries_the_client_ip_to_the_lease_holder() {
+        use std::sync::Mutex;
+
+        // A stand-in for the task that holds the lease: records what it got.
+        let seen: Arc<Mutex<Option<(String, HeaderMap)>>> = Arc::new(Mutex::new(None));
+        let recorder = Arc::clone(&seen);
+        let holder =
+            Router::new().fallback(axum::routing::any(move |req: axum::extract::Request| {
+                let recorder = Arc::clone(&recorder);
+                async move {
+                    let path = req.uri().path().to_string();
+                    *recorder.lock().unwrap() = Some((path, req.headers().clone()));
+                    axum::Json(json!({ "success": true, "transaction": "0xdeadbeef" }))
+                }
+            }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, holder).await;
+        });
+
+        let (mcp, _) = routers().await;
+        crate::writer_lease::set_writer_for_test(false);
+        crate::writer_lease::set_holder_endpoint_for_test(Some(&format!("http://{addr}")));
+
+        let (_, _, answer) = rpc_from(
+            &mcp,
+            json!({
+                "jsonrpc": "2.0", "id": 9, "method": "tools/call",
+                "params": { "name": "x402_settle", "arguments": {
+                    "x402Version": 1,
+                    "paymentPayload": { "network": "base" },
+                    "paymentRequirements": { "network": "base" }
+                }}
+            }),
+            Some("203.0.113.42"),
+        )
+        .await;
+
+        crate::writer_lease::set_writer_for_test(true);
+        crate::writer_lease::set_holder_endpoint_for_test(None);
+        server.abort();
+
+        let (path, headers) = seen
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("the settle never reached the holder -- forward_to_writer was not entered");
+        assert_eq!(path, "/settle", "the wrong route was forwarded");
+        let forwarded = headers
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        assert_eq!(
+            forwarded, "203.0.113.42",
+            "the forwarded settle carries no client IP; the holder's rate limiter \
+             answers 500 \"Unable To Extract Key!\" to this"
+        );
+        // And the holder's answer came back to the tool, not a lease 503.
+        let text = tool_text(&answer);
+        assert!(
+            text.contains("0xdeadbeef"),
+            "the holder's response did not reach the caller: {text}"
+        );
+        assert_ne!(answer["result"]["isError"], true);
     }
 
     /// The published server-card describes the server that actually answers.

@@ -1,0 +1,129 @@
+{
+  "name": "Ultravioleta DAO x402 Facilitator",
+  "version": "1.0.0",
+  "description": "x402 payment facilitator operated by Ultravioleta DAO. Verifies x402 payment authorizations (EIP-3009 and the equivalent primitive on each non-EVM family) and settles them on-chain, so payers spend no gas. Serves 21 mainnet payment networks and 18 testnets across seven chain families, six stablecoins and five payment schemes. It charges no fee and never answers HTTP 402: it is the settlement layer other x402 services point at. Also serves ERC-8004 Trustless Agents identity and reputation, and the Bazaar catalog of x402-priced resources.",
+  "url": "https://facilitator.ultravioletadao.xyz/",
+  "preferredTransport": "HTTP+JSON",
+  "additionalInterfaces": [
+    {
+      "url": "https://facilitator.ultravioletadao.xyz/",
+      "transport": "HTTP+JSON"
+    }
+  ],
+  "supportedInterfaces": [
+    {
+      "url": "https://facilitator.ultravioletadao.xyz/",
+      "transport": "HTTP+JSON"
+    }
+  ],
+  "documentationUrl": "https://facilitator.ultravioletadao.xyz/skill.md",
+  "capabilities": [
+    {
+      "id": "x402-verification",
+      "name": "Verify x402 payment authorizations",
+      "description": "Validate a signed payment authorization against its payment requirements without touching the chain: signature, EIP-712 domain, nonce, amount and validity window."
+    },
+    {
+      "id": "x402-settlement",
+      "name": "Settle x402 payments on-chain",
+      "description": "Submit a verified authorization on-chain and return the transaction hash. The facilitator pays the gas."
+    },
+    {
+      "id": "erc8004-identity-reputation",
+      "name": "ERC-8004 Trustless Agents",
+      "description": "Read and write on-chain agent identity and reputation on 12 mainnets (21 networks including testnets)."
+    }
+  ],
+  "skills": [
+    {
+      "id": "verify-payment",
+      "name": "Verify a payment authorization",
+      "description": "POST /verify. Answers HTTP 200 with {\"isValid\": true|false}; a rejected payment is still a 200, so branch on the body, not the status code.",
+      "tags": [
+        "x402",
+        "verify",
+        "eip-3009",
+        "payments"
+      ],
+      "examples": [
+        "Is this signed USDC authorization on Base valid for these payment requirements?"
+      ],
+      "inputModes": [
+        "application/json"
+      ],
+      "outputModes": [
+        "application/json"
+      ]
+    },
+    {
+      "id": "settle-payment",
+      "name": "Settle a payment on-chain",
+      "description": "POST /settle. Re-verifies, then submits transferWithAuthorization (or the scheme's equivalent) and returns {\"success\": true, \"transaction\": \"0x...\"}. Supports the exact, upto, escrow, commerce and fhe-transfer schemes.",
+      "tags": [
+        "x402",
+        "settle",
+        "on-chain",
+        "gasless"
+      ],
+      "examples": [
+        "Settle this authorization on Base and give me the transaction hash."
+      ],
+      "inputModes": [
+        "application/json"
+      ],
+      "outputModes": [
+        "application/json"
+      ]
+    },
+    {
+      "id": "list-supported",
+      "name": "List supported networks and schemes",
+      "description": "GET /supported. Every (scheme, network) pair accepted, each network listed twice: once by its v1 name and once by its CAIP-2 identifier.",
+      "tags": [
+        "x402",
+        "discovery",
+        "networks",
+        "caip-2"
+      ],
+      "examples": [
+        "Which chains and stablecoins can this facilitator settle on right now?"
+      ],
+      "inputModes": [
+        "application/json"
+      ],
+      "outputModes": [
+        "application/json"
+      ]
+    },
+    {
+      "id": "negotiate-accepts",
+      "name": "Negotiate payment requirements",
+      "description": "POST /accepts. Enriches a seller's draft payment requirements with the facilitator's fee payer, token list and escrow data. Faremeter-middleware compatible.",
+      "tags": [
+        "x402",
+        "402-challenge",
+        "faremeter"
+      ],
+      "examples": [
+        "Fill in the token list and fee payer for this 402 challenge on Base."
+      ],
+      "inputModes": [
+        "application/json"
+      ],
+      "outputModes": [
+        "application/json"
+      ]
+    }
+  ],
+  "defaultInputModes": [
+    "application/json"
+  ],
+  "defaultOutputModes": [
+    "application/json"
+  ],
+  "provider": {
+    "organization": "Ultravioleta DAO",
+    "url": "https://ultravioletadao.xyz",
+    "contactEmail": "ultravioletadao@gmail.com"
+  }
+}

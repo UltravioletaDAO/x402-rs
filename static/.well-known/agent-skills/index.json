@@ -1,0 +1,11 @@
+{
+  "skills": [
+    {
+      "name": "x402-facilitator-settlement",
+      "type": "skill-md",
+      "description": "Verify and settle x402 payments through the Ultravioleta DAO facilitator: the verify/settle contract, how to read /supported, the exact/upto/escrow/commerce schemes, the per-chain EIP-712 domain-name trap, and which failures mean retry.",
+      "url": "https://facilitator.ultravioletadao.xyz/skill.md",
+      "digest": "sha256:a8081f6daa78eaacf4f8494adbe971a2d213649f040430a67005eaea74abf610"
+    }
+  ]
+}

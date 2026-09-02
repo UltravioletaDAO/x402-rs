@@ -1,0 +1,51 @@
+{
+  "resource": "https://facilitator.ultravioletadao.xyz",
+  "authorization_servers": [],
+  "scopes_supported": [],
+  "bearer_methods_supported": [],
+  "resource_name": "Ultravioleta DAO x402 Facilitator",
+  "resource_documentation": "https://facilitator.ultravioletadao.xyz/auth.md",
+  "x-authentication-schemes": [
+    {
+      "type": "none",
+      "description": "Public. POST /verify, POST /settle and every read endpoint are open: no account, no API key, no registration. The thing being authorized is the payment, and the payment carries its own authorization in the payer's signature.",
+      "documentation": "https://facilitator.ultravioletadao.xyz/auth.md"
+    },
+    {
+      "type": "operator-bearer-token",
+      "description": "A small set of destructive routes (POST /feedback/revoke, the Bazaar admin routes) is gated by a static bearer token held by the operator. Fail-closed: with no token configured the route answers 404. There is no self-service path that issues one; agents should treat those routes as absent.",
+      "header": "Authorization",
+      "documentation": "https://facilitator.ultravioletadao.xyz/auth.md"
+    }
+  ],
+  "x-rate-limits": {
+    "unit": "per client IP (X-Forwarded-For / X-Real-IP / Forwarded, then peer)",
+    "on_exceeded": 429,
+    "buckets": [
+      {
+        "routes": [
+          "POST /verify",
+          "POST /settle"
+        ],
+        "sustained": "1 token / 2s (about 30 req/min)",
+        "burst": 30
+      },
+      {
+        "routes": [
+          "POST /discovery/register"
+        ],
+        "sustained": "1 token / 12s",
+        "burst": 250
+      },
+      {
+        "routes": [
+          "GET /discovery/resources",
+          "GET /discovery/stats"
+        ],
+        "sustained": "1 token / 200ms",
+        "burst": 120
+      }
+    ]
+  },
+  "x-note": "This facilitator does not use OAuth 2.0 or OpenID Connect, and it does not authenticate callers at all. The document conforms to RFC 9728 so that an OAuth-capable agent can discover that fact in one GET instead of trying and failing; `authorization_servers` is empty on purpose to signal that there is no authorization server to talk to."
+}

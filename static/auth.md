@@ -27,9 +27,19 @@ So there is nothing to send. No `Authorization` header, no `X-API-Key`, no cooki
 token and no client registration — the `/.well-known/oauth-protected-resource`
 document above describes it as well as it describes the HTTP routes. Its four
 tools are dispatched through the very same handlers as `/verify`, `/settle`,
-`/supported` and `/accepts`, so an MCP client can do exactly what an HTTP client
-can and nothing more. In particular `x402_settle` settles a payment the payer
+`/supported` and `/accepts`, so an MCP client holds exactly the privilege an HTTP
+client holds and no more. In particular `x402_settle` settles a payment the payer
 signed; it does not let a caller spend anything of their own or of ours.
+
+That parity is of *privilege*, not of capability. A tool call cannot set headers,
+so a few HTTP-only inputs have no MCP equivalent — the v2 `PAYMENT-SIGNATURE`
+transport among them. The one that mattered is exposed as an argument instead:
+`x402_settle` takes an optional `idempotencyKey`, lifted out of the body and sent
+as `Idempotency-Key`, so an MCP client can ask for exactly-once on a retry.
+
+The transport has one requirement worth knowing before you write a client by
+hand: `Accept` must name **both** `application/json` and `text/event-stream`, or
+the request is refused with `406`.
 
 ## This service does not charge
 

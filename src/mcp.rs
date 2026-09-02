@@ -31,7 +31,14 @@
 //! `x402_settle` over MCP is `POST /settle` over HTTP: same handler, same
 //! validation of the payer's signed payload, same everything. An MCP client
 //! cannot move funds that an HTTP client could not.
-
+//!
+//! The parity is of *privilege*, not of capability, and the difference is worth
+//! stating because the two read alike. A tool call carries a body and no
+//! headers, so the HTTP-only inputs -- the v2 `PAYMENT-SIGNATURE` transport
+//! among them -- have no MCP equivalent. The one that mattered is
+//! [`IDEMPOTENCY_KEY_ARG`], declared as an argument of `x402_settle` and lifted
+//! back out into the `Idempotency-Key` header, because the caller here is a
+//! model and a model is exactly what retries an ambiguous error.
 
 use std::sync::Arc;
 
@@ -92,6 +99,14 @@ const DEFAULT_MCP_ALLOWED_HOSTS: &[&str] = &[
 
 /// Value of [`ENV_MCP_ALLOWED_HOSTS`] that turns `Host` validation off.
 const ALLOW_ANY_HOST: &str = "*";
+
+/// The one argument of `x402_settle` that is NOT part of the REST body.
+///
+/// `post_settle` reads exactly-once semantics off the `Idempotency-Key` header,
+/// and a tool call has no way to set a header. Declaring it as an argument and
+/// lifting it out before the body is serialised is what gives an MCP client the
+/// same retry protection an HTTP client has.
+const IDEMPOTENCY_KEY_ARG: &str = "idempotencyKey";
 
 /// Cap on the REST response body an MCP tool will read back.
 ///
@@ -193,6 +208,20 @@ fn payment_envelope_schema(operation: &str) -> Value {
     })
 }
 
+/// `x402_settle`'s input: the `/settle` envelope plus the one header a tool can
+/// set, [`IDEMPOTENCY_KEY_ARG`].
+fn settle_input_schema() -> Value {
+    let mut doc = payment_envelope_schema("/settle");
+    doc["properties"][IDEMPOTENCY_KEY_ARG] = json!({
+        "type": "string",
+        "description": "Optional. Sent as the Idempotency-Key header, NOT as part of the \
+                        payment body. The same key with the same payment returns the \
+                        first result instead of settling twice; the same key with a \
+                        different payment is refused with 409. Use it on any retry."
+    });
+    doc
+}
+
 /// The four tool definitions.
 pub fn tools() -> Vec<Tool> {
     vec![
@@ -268,7 +297,7 @@ pub fn tools() -> Vec<Tool> {
              nothing in this facilitator or any chain can undo a confirmed transfer. \
              Call x402_verify first, and only call this when the payment is meant to \
              execute now. Equivalent to POST /settle.",
-            schema(payment_envelope_schema("/settle")),
+            schema(settle_input_schema()),
         )
         .annotate(
             ToolAnnotations::with_title("Settle a payment on-chain (irreversible)")
@@ -301,6 +330,7 @@ impl FacilitatorMcp {
         path: &'static str,
         arguments: JsonObject,
         outer: Option<&HeaderMap>,
+        idempotency_key: Option<&str>,
     ) -> Result<(StatusCode, String), McpError> {
         let has_body = method != Method::GET;
         let mut builder = Request::builder().method(method).uri(path);
@@ -335,6 +365,19 @@ impl FacilitatorMcp {
             if let Some(value) = outer.and_then(|h| h.get(&name)) {
                 builder = builder.header(name, value.clone());
             }
+        }
+        // The one header a tool may set, and only because `post_settle` reads
+        // it: without it an MCP client has no way to ask for exactly-once, and
+        // an MCP client is a model -- precisely the caller that retries an
+        // ambiguous error.
+        if let Some(key) = idempotency_key {
+            let value = header::HeaderValue::from_str(key).map_err(|_| {
+                McpError::invalid_params(
+                    "idempotencyKey must be printable ASCII with no newlines".to_string(),
+                    None,
+                )
+            })?;
+            builder = builder.header(header::HeaderName::from_static("idempotency-key"), value);
         }
         let body = if has_body {
             let bytes = serde_json::to_vec(&Value::Object(arguments)).map_err(|e| {
@@ -386,8 +429,10 @@ impl ServerHandler for FacilitatorMcp {
              offer, x402_verify to check a signed authorization, and x402_settle to \
              broadcast it. x402_settle moves real funds and cannot be undone. This \
              facilitator charges no fee and authenticates no caller: the payer's \
-             signature is the only authority, so an MCP client can do exactly what an \
-             HTTP client can, and nothing more."
+             signature is the only authority, so an MCP client holds exactly the \
+             privilege an HTTP client holds and no more. If a settle fails in a way \
+             you cannot interpret, retry it with the SAME idempotencyKey: that is how \
+             you get exactly-once instead of paying twice."
                 .to_string(),
         );
         info
@@ -420,7 +465,27 @@ impl ServerHandler for FacilitatorMcp {
                 Some(json!({ "tools": TOOL_NAMES })),
             ));
         };
-        let arguments = request.arguments.unwrap_or_default();
+        let mut arguments = request.arguments.unwrap_or_default();
+
+        // `idempotencyKey` travels as a HEADER and must not stay in the body:
+        // `post_settle` hashes the body to tell "same key, same request" from
+        // "same key, different request", so an extra field in it would make two
+        // identical payments hash differently and defeat the deduplication the
+        // key was asked for.
+        let idempotency_key = if name.as_ref() == "x402_settle" {
+            match arguments.remove(IDEMPOTENCY_KEY_ARG) {
+                Some(Value::String(key)) if !key.trim().is_empty() => Some(key),
+                Some(Value::Null) | None => None,
+                Some(_) => {
+                    return Err(McpError::invalid_params(
+                        format!("{IDEMPOTENCY_KEY_ARG} must be a non-empty string"),
+                        None,
+                    ));
+                }
+            }
+        } else {
+            None
+        };
 
         // rmcp leaves the outer request's `http::request::Parts` here. `None`
         // only in a non-HTTP transport, which this server does not mount.
@@ -431,6 +496,7 @@ impl ServerHandler for FacilitatorMcp {
                 path,
                 arguments,
                 outer.map(|p| &p.headers),
+                idempotency_key.as_deref(),
             )
             .await?;
 
@@ -1156,6 +1222,114 @@ mod tests {
             "the holder's response did not reach the caller: {text}"
         );
         assert_ne!(answer["result"]["isError"], true);
+    }
+
+    /// `idempotencyKey` travels as a header and leaves the body alone.
+    ///
+    /// Both halves matter. `post_settle` hashes the body to tell "same key,
+    /// same request" from "same key, different request", so a key left inside
+    /// the body would make two identical payments hash differently and defeat
+    /// the very deduplication it was sent to get.
+    #[tokio::test]
+    async fn the_idempotency_key_becomes_a_header_and_leaves_the_body_untouched() {
+        use std::sync::Mutex;
+
+        let seen: Arc<Mutex<Option<(HeaderMap, Value)>>> = Arc::new(Mutex::new(None));
+        let recorder = Arc::clone(&seen);
+        let holder =
+            Router::new().fallback(axum::routing::any(move |req: axum::extract::Request| {
+                let recorder = Arc::clone(&recorder);
+                async move {
+                    let headers = req.headers().clone();
+                    let bytes = axum::body::to_bytes(req.into_body(), usize::MAX)
+                        .await
+                        .unwrap();
+                    let body: Value = serde_json::from_slice(&bytes).unwrap();
+                    *recorder.lock().unwrap() = Some((headers, body));
+                    axum::Json(json!({ "success": true }))
+                }
+            }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, holder).await;
+        });
+
+        let (mcp, _) = routers().await;
+        crate::writer_lease::set_writer_for_test(false);
+        crate::writer_lease::set_holder_endpoint_for_test(Some(&format!("http://{addr}")));
+
+        let _ = rpc_from(
+            &mcp,
+            json!({
+                "jsonrpc": "2.0", "id": 10, "method": "tools/call",
+                "params": { "name": "x402_settle", "arguments": {
+                    "x402Version": 1,
+                    "paymentPayload": { "network": "base" },
+                    "paymentRequirements": { "network": "base" },
+                    "idempotencyKey": "abc-123"
+                }}
+            }),
+            Some("203.0.113.43"),
+        )
+        .await;
+
+        crate::writer_lease::set_writer_for_test(true);
+        crate::writer_lease::set_holder_endpoint_for_test(None);
+        server.abort();
+
+        let (headers, body) = seen.lock().unwrap().clone().expect("nothing arrived");
+        assert_eq!(
+            headers
+                .get("idempotency-key")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default(),
+            "abc-123"
+        );
+        assert!(
+            body.get(IDEMPOTENCY_KEY_ARG).is_none(),
+            "the key stayed in the body and would change its hash: {body}"
+        );
+        assert_eq!(body["x402Version"], 1, "the payment body was altered");
+    }
+
+    /// A non-string `idempotencyKey` is refused before anything is dispatched.
+    #[tokio::test]
+    async fn a_malformed_idempotency_key_is_rejected() {
+        let (mcp, _) = routers().await;
+        let (_, _, doc) = rpc(
+            &mcp,
+            json!({
+                "jsonrpc": "2.0", "id": 11, "method": "tools/call",
+                "params": { "name": "x402_settle", "arguments": {
+                    "x402Version": 1,
+                    "paymentPayload": {},
+                    "paymentRequirements": {},
+                    "idempotencyKey": 7
+                }}
+            }),
+        )
+        .await;
+        assert_eq!(
+            doc["error"]["code"], -32602,
+            "expected INVALID_PARAMS: {doc}"
+        );
+    }
+
+    /// `x402_settle` advertises the key; the read-only tools do not.
+    #[test]
+    fn only_the_settle_tool_declares_an_idempotency_key() {
+        for tool in tools() {
+            let declared = tool.input_schema["properties"]
+                .get(IDEMPOTENCY_KEY_ARG)
+                .is_some();
+            assert_eq!(
+                declared,
+                tool.name == "x402_settle",
+                "{} declares idempotencyKey = {declared}",
+                tool.name
+            );
+        }
     }
 
     /// The published server-card describes the server that actually answers.

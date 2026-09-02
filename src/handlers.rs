@@ -13112,6 +13112,86 @@ mod agentic_surface_tests {
         );
     }
 
+
+    /// Every url in the sitemap carries a parseable `<lastmod>`.
+    ///
+    /// ora.ai reported "none of the 10 sampled urls has a lastmod": without one
+    /// a crawler cannot tell a document that moved this morning from one
+    /// untouched since July, so it either re-reads everything or nothing.
+    ///
+    /// TO RECOMPUTE A DATE, use the commit date of the file that BACKS the url,
+    /// not the date you edited the sitemap:
+    ///
+    /// ```text
+    /// git log -1 --format=%cI -- static/skill.md
+    /// ```
+    ///
+    /// The mapping is not derivable from the url, which is why it is written
+    /// out here:
+    ///
+    /// | url | file |
+    /// |---|---|
+    /// | `/` | `static/index.html` |
+    /// | `/docs` | `src/openapi.rs` |
+    /// | `/bazaar` | `static/bazaar.html` |
+    /// | `/stats` | `static/stats.html` |
+    /// | `/events/live` | `static/events-viewer.html` |
+    /// | `/llms.txt` | `static/llms.txt` |
+    /// | `/llms-full.txt` | `static/llms-full.txt` |
+    /// | `/index.md` | `static/index.md` |
+    /// | `/skill.md` | `static/skill.md` |
+    /// | `/auth.md` | `static/auth.md` |
+    ///
+    /// Deliberately NOT a freshness check. Asserting that the newest date is
+    /// recent would turn every quiet week into a red build, and the thing that
+    /// actually breaks is a url added without a date -- which this catches.
+    #[test]
+    fn the_sitemap_stamps_every_url() {
+        let sitemap = include_str!("../static/sitemap.xml");
+        // Everything after the leading comment, so the prose above cannot be
+        // mistaken for markup.
+        let body = sitemap
+            .split_once("<urlset")
+            .expect("the sitemap needs a <urlset>")
+            .1;
+
+        let blocks: Vec<&str> = body.split("<url>").skip(1).collect();
+        assert!(!blocks.is_empty(), "the sitemap lists no urls");
+
+        for block in &blocks {
+            let loc = block
+                .split_once("<loc>")
+                .and_then(|(_, rest)| rest.split_once("</loc>"))
+                .map(|(value, _)| value.trim())
+                .expect("every <url> needs a <loc>");
+
+            let lastmod = block
+                .split_once("<lastmod>")
+                .and_then(|(_, rest)| rest.split_once("</lastmod>"))
+                .map(|(value, _)| value.trim())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{loc} has no <lastmod>. Add one: the commit date of the \
+                         file that backs it, `git log -1 --format=%cI -- <file>`. \
+                         The mapping is in this test's doc comment."
+                    )
+                });
+
+            // W3C datetime: a date, optionally with a time and offset. Checked
+            // by shape rather than parsed -- a typo'd month is the realistic
+            // failure, and `2026-13-01` is not a date.
+            let (date, _) = lastmod.split_once('T').unwrap_or((lastmod, ""));
+            let parts: Vec<&str> = date.split('-').collect();
+            assert_eq!(parts.len(), 3, "{loc}: {lastmod} is not a W3C date");
+            let year: i32 = parts[0].parse().unwrap_or_else(|_| panic!("{loc}: {lastmod}"));
+            let month: u32 = parts[1].parse().unwrap_or_else(|_| panic!("{loc}: {lastmod}"));
+            let day: u32 = parts[2].parse().unwrap_or_else(|_| panic!("{loc}: {lastmod}"));
+            assert!(year >= 2025, "{loc}: {lastmod} predates this repository");
+            assert!((1..=12).contains(&month), "{loc}: month {month} in {lastmod}");
+            assert!((1..=31).contains(&day), "{loc}: day {day} in {lastmod}");
+        }
+    }
+
     /// Everything that links to another surface links to one that exists.
     ///
     /// A catalog pointing at a 404 is the failure mode this whole set of files

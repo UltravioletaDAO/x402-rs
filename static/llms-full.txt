@@ -12,6 +12,49 @@
 > never pays gas. It is the facilitator OTHER services point at — it does not charge
 > for its own routes.
 
+## When to use this, and when not to
+
+Reach for this facilitator when the job is **checking or landing someone
+else's x402 payment**:
+
+- A client answered your `402` with a signed payment authorization and you have
+  to decide whether it is good — `POST /verify`.
+- You decided it is good and the transfer has to land on-chain without the
+  payer holding native gas — `POST /settle`.
+- You are building a `402` challenge and need to know which networks, tokens
+  and schemes can actually be settled today — `GET /supported`, then
+  `POST /accepts` to narrow a resource server's offer to what is settleable.
+- You are an MCP client and want the same four calls as tools — `POST /mcp`.
+- You want to read or write an agent's ERC-8004 identity and reputation without
+  paying gas — `/identity/...`, `/reputation/...`, `POST /feedback`.
+- You want to discover x402-priced resources other people published —
+  `GET /discovery/resources`.
+
+Do **not** reach for it when:
+
+- **You need a wallet.** It holds no funds for you and signs nothing on your
+  behalf. The payer signs; this service only checks that signature and submits
+  it. If you are trying to *make* a payment, you need a wallet and the
+  `uvd-x402-sdk`, with this host as the facilitator you point them at.
+- **You are looking for something to buy.** This is not a marketplace. The
+  Bazaar at `/discovery/resources` is a catalog of x402-priced endpoints other
+  people registered; it takes no part in the transaction.
+- **You expect to be charged, or to charge here.** `/verify` and `/settle`
+  never answer `402`. There is no fee, no account and no API key. The money
+  that moves is the buyer's stablecoin going to the seller; the gas is paid by
+  this service's own wallets.
+- **You want custody, refund arbitration or dispute resolution.** The escrow
+  scheme is a two-phase lock/release the counterparties drive themselves. No
+  human here adjudicates anything.
+- **You need a ledger.** `/events`, `/transactions` and `/api/stats` are an
+  index written after settlement resolves, and rows are dropped rather than
+  allowed to block a payment. The chain is the ledger.
+
+How to call it: no authentication, JSON in and JSON out, per-IP rate limits
+reported on every response in `x-ratelimit-remaining`. Every error is
+`{"error", "code", "hint"}` — branch on `code`. Start at
+https://facilitator.ultravioletadao.xyz/skill.md, which is the full manual.
+
 ## What this service is
 
 x402 is HTTP 402 Payment Required, made real: a server answers `402` with a set of
@@ -54,6 +97,7 @@ facilitator just did, and what it costs (nothing — the seller keeps the paymen
 - **x402 discovery**: https://facilitator.ultravioletadao.xyz/.well-known/x402
 - **API catalog (RFC 9727)**: https://facilitator.ultravioletadao.xyz/.well-known/api-catalog
 - **Agent skills index**: https://facilitator.ultravioletadao.xyz/.well-known/agent-skills/index.json
+- **Agentic Resource Discovery catalog (ARD v0.91)**: https://facilitator.ultravioletadao.xyz/.well-known/ard.json
 - **MCP server card**: https://facilitator.ultravioletadao.xyz/.well-known/mcp/server-card.json
 - **Auth metadata (RFC 9728)**: https://facilitator.ultravioletadao.xyz/.well-known/oauth-protected-resource
 - **Workflow manifest**: https://facilitator.ultravioletadao.xyz/workflows.json

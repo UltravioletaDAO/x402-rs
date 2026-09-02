@@ -13050,6 +13050,68 @@ mod agentic_surface_tests {
         );
     }
 
+
+    /// `llms.txt` tells an agent WHEN to reach for this service.
+    ///
+    /// `agent-instruction` is a required check on both scanners and it failed
+    /// on 2026-09-02: the file described what the service is at length and
+    /// never said what jobs it is the right answer to. An agent choosing among
+    /// ten tools picks the one that says what it is for -- and, just as
+    /// usefully, the one that rules itself out.
+    ///
+    /// This asserts the section exists and still names the three things this
+    /// service is most often mistaken for. It is a shape check, not a prose
+    /// check: it fails when the section is deleted or gutted, which is the
+    /// regression that matters.
+    #[test]
+    fn llms_txt_says_when_to_use_this_service_and_when_not_to() {
+        let llms = include_str!("../static/llms.txt");
+        let heading = llms
+            .lines()
+            .position(|line| {
+                let l = line.to_ascii_lowercase();
+                l.starts_with("##") && l.contains("when to use")
+            })
+            .expect("llms.txt needs a `when to use this` section");
+
+        // Early enough to be read before the reference material.
+        assert!(
+            heading < 40,
+            "the guidance sits {heading} lines in; an agent skimming the top \
+             of the file will not reach it"
+        );
+
+        let section: String = llms
+            .lines()
+            .skip(heading)
+            .take_while(|line| {
+                !(line.starts_with("## ") && !line.to_ascii_lowercase().contains("when to use"))
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            .to_ascii_lowercase();
+
+        // The best-fit jobs, named as calls an agent can make.
+        for call in ["/verify", "/settle", "/supported", "/mcp"] {
+            assert!(
+                section.contains(call),
+                "the guidance must name {call} as a job this service does"
+            );
+        }
+        // The three things it is most often mistaken for. Ruling yourself out
+        // is the half that stops an agent wasting a call.
+        for not in ["wallet", "marketplace", "ledger"] {
+            assert!(
+                section.contains(not),
+                "the guidance must say this is not a {not}"
+            );
+        }
+        assert!(
+            section.contains("do **not**") || section.contains("not to"),
+            "the guidance needs an explicit negative half"
+        );
+    }
+
     /// Everything that links to another surface links to one that exists.
     ///
     /// A catalog pointing at a 404 is the failure mode this whole set of files

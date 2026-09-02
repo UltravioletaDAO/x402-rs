@@ -42,7 +42,7 @@ jobs:
           #      017700000001  octal encoding of 127.0.0.1, a test vector shared with src/discovery.rs
           #      380517503805  a Superfluid flow-rate example
           # Sin \b: una letra o un _ pegados no cortaban (tfstate_<cuenta> pasaba). Solo otro digito lo corta.
-          hits=$(grep -nIP '(?<![0-9])[0-9]{12}(?![0-9])' "${files[@]}" | grep -vE '017700000001|380517503805' || true)
+          hits=$(grep -nIP '(?<![0-9A-Za-z])[0-9]{12}(?![0-9A-Za-z])' "${files[@]}" | grep -vE '017700000001|380517503805' || true)
           if [ -n "$hits" ]; then echo "::error::12-digit number (an AWS account ID?) -- write <AWS_ACCOUNT_ID>, or allow-list it here if it is not one:"; echo "$hits"; fail=1; fi
 
           # 3) A Secrets Manager name with its random suffix (6 chars, at least one digit or

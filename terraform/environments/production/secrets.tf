@@ -189,6 +189,7 @@ locals {
   admin_secret_arns = concat(
     [data.aws_secretsmanager_secret.erc8004_admin_token.arn],
     var.enable_dx402 ? [data.aws_secretsmanager_secret.dx402_signing_key[0].arn] : [],
+    var.enable_dx402 ? [data.aws_secretsmanager_secret.dx402_admin_token[0].arn] : [],
     var.enable_dx402 && var.dx402_storage_backend == "ipfs" ? [data.aws_secretsmanager_secret.dx402_pinata[0].arn] : []
   )
 

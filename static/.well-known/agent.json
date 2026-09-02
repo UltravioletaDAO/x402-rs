@@ -8,12 +8,20 @@
     {
       "url": "https://facilitator.ultravioletadao.xyz/",
       "transport": "HTTP+JSON"
+    },
+    {
+      "url": "https://facilitator.ultravioletadao.xyz/mcp",
+      "transport": "MCP+STREAMABLE-HTTP"
     }
   ],
   "supportedInterfaces": [
     {
       "url": "https://facilitator.ultravioletadao.xyz/",
       "transport": "HTTP+JSON"
+    },
+    {
+      "url": "https://facilitator.ultravioletadao.xyz/mcp",
+      "transport": "MCP+STREAMABLE-HTTP"
     }
   ],
   "documentationUrl": "https://facilitator.ultravioletadao.xyz/skill.md",
@@ -32,6 +40,11 @@
       "id": "erc8004-identity-reputation",
       "name": "ERC-8004 Trustless Agents",
       "description": "Read and write on-chain agent identity and reputation on 12 mainnets (21 networks including testnets)."
+    },
+    {
+      "id": "mcp-tools",
+      "name": "MCP server (Streamable HTTP)",
+      "description": "The same verify / settle / supported / accepts calls exposed as MCP tools at POST /mcp: x402_supported, x402_accepts, x402_verify, x402_settle. Stateless transport, no authentication, and every tool dispatched through the REST handler it names. Server card: /.well-known/mcp/server-card.json."
     }
   ],
   "skills": [

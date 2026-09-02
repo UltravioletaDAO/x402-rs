@@ -125,7 +125,8 @@ a liveness `health` status from periodic probing, and a curated `tier`
         (name = "Bazaar", description = "Decentralized resource discovery registry"),
         (name = "Compliance", description = "OFAC compliance and sanctions screening"),
         (name = "Health", description = "Service health and status"),
-        (name = "Agentic", description = "Machine-readable discovery surfaces (llms.txt, A2A card, x402 discovery, RFC 9727 catalog, skills index)")
+        (name = "Agentic", description = "Machine-readable discovery surfaces (llms.txt, A2A card, x402 discovery, RFC 9727 catalog, skills index, MCP server card)"),
+        (name = "MCP", description = "Model Context Protocol server (Streamable HTTP, stateless) exposing verify/settle/supported/accepts as tools")
     ),
     paths(
         // Core endpoints
@@ -196,6 +197,10 @@ a liveness `health` status from periodic probing, and a curated `tier`
         path_api_catalog,
         path_oauth_protected_resource,
         path_agent_skills_index,
+        path_mcp_server_card,
+        // MCP
+        path_mcp_post,
+        path_mcp_get,
     )
 )]
 pub struct ApiDoc;
@@ -2266,6 +2271,100 @@ async fn path_oauth_protected_resource() {}
     )
 )]
 async fn path_agent_skills_index() {}
+
+#[utoipa::path(
+    get,
+    path = "/.well-known/mcp/server-card.json",
+    tag = "Agentic",
+    summary = "MCP server card",
+    description = "Where the MCP server lives and what it can do: `transport.endpoint` is `POST /mcp`, and the `tools` array is the same four names `tools/list` returns. `serverInfo.version` is stamped at runtime from the running release, so it cannot go stale.",
+    responses(
+        (status = 200, description = "MCP server card", body = Object)
+    )
+)]
+async fn path_mcp_server_card() {}
+
+#[utoipa::path(
+    post,
+    path = "/mcp",
+    tag = "MCP",
+    summary = "MCP endpoint (JSON-RPC 2.0 over Streamable HTTP)",
+    description = r#"
+The facilitator as an MCP server. Stateless Streamable HTTP: every request is a
+JSON-RPC 2.0 document, there is no session id, and `GET /mcp` answers 405 because
+there is no server-initiated stream to open.
+
+**Tools** (each one is dispatched through the REST handler it names, so an MCP call
+and the HTTP call it stands for cannot answer differently):
+
+| Tool | Is | Moves money |
+|---|---|---|
+| `x402_supported` | `GET /supported` | no |
+| `x402_accepts` | `POST /accepts` | no |
+| `x402_verify` | `POST /verify` | no |
+| `x402_settle` | `POST /settle` | yes, irreversibly |
+
+A tool's `arguments` are the JSON body of the request it stands for; its result is
+that request's response body verbatim in one text content block. A non-2xx answer
+comes back as `isError: true` carrying the facilitator's own message, not as a
+JSON-RPC error.
+
+**Authentication:** none, same as every other route (`/auth.md`).
+**Rate limit:** shared with `POST /verify` and `POST /settle` -- one per-IP bucket,
+not two.
+
+Handshake:
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+  "protocolVersion":"2025-06-18","capabilities":{},
+  "clientInfo":{"name":"my-agent","version":"1.0"}}}
+```
+
+Tool call:
+
+```json
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{
+  "name":"x402_supported","arguments":{}}}
+```
+"#,
+    request_body(content = Object, description = "A JSON-RPC 2.0 request: initialize, tools/list, tools/call, ping"),
+    responses(
+        (status = 200, description = "JSON-RPC 2.0 response", body = Object,
+            example = json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": { "tools": {} },
+                    "serverInfo": { "name": "x402-facilitator", "version": "0.0.0" }
+                }
+            })
+        ),
+        (status = 400, description = "Not a JSON-RPC document", body = Object),
+        (status = 403, description = "Host header not on the MCP allowlist (MCP_ALLOWED_HOSTS)", body = Object),
+        (status = 429, description = "Per-IP rate limit, shared with /verify and /settle", body = Object)
+    )
+)]
+async fn path_mcp_post() {}
+
+#[utoipa::path(
+    get,
+    path = "/mcp",
+    tag = "MCP",
+    summary = "No SSE stream here",
+    description = "Always 405 with `Allow: POST`. This MCP server is stateless, so there is no server-initiated event stream to subscribe to. The body is JSON, not text, so a scanner grading content types does not read it as a broken surface.",
+    responses(
+        (status = 405, description = "Use POST", body = Object,
+            example = json!({
+                "error": "GET is not supported on /mcp",
+                "transport": "streamable-http",
+                "method": "POST"
+            })
+        )
+    )
+)]
+async fn path_mcp_get() {}
 
 /// Create the Swagger UI router.
 ///

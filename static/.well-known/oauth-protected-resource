@@ -8,7 +8,7 @@
   "x-authentication-schemes": [
     {
       "type": "none",
-      "description": "Public. POST /verify, POST /settle and every read endpoint are open: no account, no API key, no registration. The thing being authorized is the payment, and the payment carries its own authorization in the payer's signature.",
+      "description": "Public. POST /verify, POST /settle, the MCP endpoint POST /mcp and every read endpoint are open: no account, no API key, no registration. The thing being authorized is the payment, and the payment carries its own authorization in the payer's signature.",
       "documentation": "https://facilitator.ultravioletadao.xyz/auth.md"
     },
     {
@@ -25,7 +25,8 @@
       {
         "routes": [
           "POST /verify",
-          "POST /settle"
+          "POST /settle",
+          "POST /mcp"
         ],
         "sustained": "1 token / 2s (about 30 req/min)",
         "burst": 30

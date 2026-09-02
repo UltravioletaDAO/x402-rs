@@ -21,6 +21,16 @@ identity as the caller changes the answer.
 
 So there is nothing to send. No `Authorization` header, no `X-API-Key`, no cookie.
 
+### The MCP endpoint is the same door
+
+`POST /mcp` authenticates nobody either. It carries no OAuth flow, no session
+token and no client registration — the `/.well-known/oauth-protected-resource`
+document above describes it as well as it describes the HTTP routes. Its four
+tools are dispatched through the very same handlers as `/verify`, `/settle`,
+`/supported` and `/accepts`, so an MCP client can do exactly what an HTTP client
+can and nothing more. In particular `x402_settle` settles a payment the payer
+signed; it does not let a caller spend anything of their own or of ours.
+
 ## This service does not charge
 
 `/verify` and `/settle` never answer `402 Payment Required`. The facilitator takes no
@@ -42,7 +52,7 @@ Exceeding it returns **429**, never 401 or 403.
 
 | Route group | Sustained | Burst |
 |---|---|---|
-| `POST /verify`, `POST /settle` | 1 token every 2s (about 30 req/min) | 30 |
+| `POST /verify`, `POST /settle`, `POST /mcp` | 1 token every 2s (about 30 req/min) | 30 |
 | `POST /discovery/register` | 1 token every 12s | 250 |
 | Bazaar reads (`/discovery/resources`, `/discovery/stats`) | 1 token every 200ms | 120 |
 

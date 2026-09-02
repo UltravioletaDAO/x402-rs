@@ -29,7 +29,7 @@ Before deploying infrastructure, you must create and fund NEAR wallets:
 Ensure you have AWS CLI configured with appropriate permissions:
 ```bash
 aws sts get-caller-identity
-# Should return: Account 518898403364, Region us-east-2
+# Should return: Account <AWS_ACCOUNT_ID>, Region us-east-2
 ```
 
 ### 3. Required Permissions
@@ -77,7 +77,7 @@ aws secretsmanager create-secret \
 **Expected Output**:
 ```json
 {
-    "ARN": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-near-mainnet-keypair-XXXXXX",
+    "ARN": "arn:aws:secretsmanager:us-east-2:<AWS_ACCOUNT_ID>:secret:facilitator-near-mainnet-keypair-<SUFIJO>",
     "Name": "facilitator-near-mainnet-keypair",
     "VersionId": "..."
 }
@@ -654,7 +654,7 @@ aws sns create-topic \
 
 # Subscribe your email
 aws sns subscribe \
-  --topic-arn arn:aws:sns:us-east-2:518898403364:facilitator-near-alerts \
+  --topic-arn arn:aws:sns:us-east-2:<AWS_ACCOUNT_ID>:facilitator-near-alerts \
   --protocol email \
   --notification-endpoint your-email@domain.com \
   --region us-east-2

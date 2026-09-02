@@ -903,7 +903,7 @@ k6 run --vus 100 --duration 5m k6_load_test.js
 **Process**:
 1. Build Rust binary: `cargo build --release`
 2. Create Docker image (multi-stage build)
-3. Push to ECR: `518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator`
+3. Push to ECR: `<AWS_ACCOUNT_ID>.dkr.ecr.us-east-2.amazonaws.com/facilitator`
 4. Tag with version (e.g., `v1.7.7`)
 
 **Base image**: `debian:bookworm-slim` (glibc compatibility)

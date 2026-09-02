@@ -260,7 +260,7 @@ curl -s https://facilitator.ultravioletadao.xyz/version
 
 ```bash
 aws ecs describe-task-definition --task-definition facilitator-production --region us-east-2 --query 'taskDefinition' | \
-  jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .placementConstraints, .compatibilities, .registeredAt, .registeredBy) | .containerDefinitions[0].image = "518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator:v1.40.0"' > /tmp/task-def-v1.40.0.json && \
+  jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .placementConstraints, .compatibilities, .registeredAt, .registeredBy) | .containerDefinitions[0].image = "<AWS_ACCOUNT_ID>.dkr.ecr.us-east-2.amazonaws.com/facilitator:v1.40.0"' > /tmp/task-def-v1.40.0.json && \
   aws ecs register-task-definition --cli-input-json file:///tmp/task-def-v1.40.0.json --region us-east-2 && \
   aws ecs update-service --cluster facilitator-production --service facilitator-production --force-new-deployment --region us-east-2
 ```

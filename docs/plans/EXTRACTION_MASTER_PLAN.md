@@ -1478,17 +1478,17 @@ cd facilitator
 # Login to ECR
 aws ecr get-login-password --region us-east-1 | \
   docker login --username AWS --password-stdin \
-  518898403364.dkr.ecr.us-east-1.amazonaws.com
+  <AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com
 
 # Build image
 docker build -t facilitator:staging-v1.0.0 .
 
 # Tag for ECR
 docker tag facilitator:staging-v1.0.0 \
-  518898403364.dkr.ecr.us-east-1.amazonaws.com/facilitator:staging-v1.0.0
+  <AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/facilitator:staging-v1.0.0
 
 # Push
-docker push 518898403364.dkr.ecr.us-east-1.amazonaws.com/facilitator:staging-v1.0.0
+docker push <AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/facilitator:staging-v1.0.0
 
 # Update ECS service (force new deployment)
 aws ecs update-service \
@@ -1612,14 +1612,14 @@ docker build -t facilitator:v1.0.0 .
 
 # Tag for ECR
 docker tag facilitator:v1.0.0 \
-  518898403364.dkr.ecr.us-east-1.amazonaws.com/facilitator:v1.0.0
+  <AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/facilitator:v1.0.0
 
 docker tag facilitator:v1.0.0 \
-  518898403364.dkr.ecr.us-east-1.amazonaws.com/facilitator:latest
+  <AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/facilitator:latest
 
 # Push both tags
-docker push 518898403364.dkr.ecr.us-east-1.amazonaws.com/facilitator:v1.0.0
-docker push 518898403364.dkr.ecr.us-east-1.amazonaws.com/facilitator:latest
+docker push <AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/facilitator:v1.0.0
+docker push <AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/facilitator:latest
 
 # Update production service
 aws ecs update-service \

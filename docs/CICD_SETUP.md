@@ -101,7 +101,7 @@ can never exfiltrate production secrets:
       "Sid": "TerraformLockRW",
       "Effect": "Allow",
       "Action": ["dynamodb:PutItem", "dynamodb:DeleteItem"],
-      "Resource": "arn:aws:dynamodb:us-east-2:518898403364:table/facilitator-terraform-locks"
+      "Resource": "arn:aws:dynamodb:us-east-2:<AWS_ACCOUNT_ID>:table/facilitator-terraform-locks"
     },
     {
       "Sid": "DenySecretValueReads",
@@ -148,7 +148,7 @@ That's it. The next push to `main` will build → push to ECR → `terraform app
 | Push → `main` (secrets set) | ✅ | ✅ build → ECR → terraform apply → verify |
 
 - **Image tag:** `<Cargo.toml version>-<short-sha>` (e.g. `1.47.0-6999058`) plus `:latest`, pushed to
-  `518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator`.
+  `<AWS_ACCOUNT_ID>.dkr.ecr.us-east-2.amazonaws.com/facilitator`.
 - **Deploy:** a **targeted** `terraform apply -target=aws_ecs_task_definition.facilitator
   -target=aws_ecs_service.facilitator -target=aws_appautoscaling_target.ecs_target
   -target=aws_appautoscaling_policy.ecs_alb_request_count -target=aws_appautoscaling_policy.ecs_memory

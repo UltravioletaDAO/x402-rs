@@ -4,6 +4,27 @@ description: Use this agent when working with Terraform infrastructure code, AWS
 model: sonnet
 ---
 
+## Cómo obtener el account ID
+
+Este repo es público. El account ID de AWS y cualquier ARN que lo contenga **nunca se
+escriben en el repo**: se leen en runtime.
+
+```bash
+aws sts get-caller-identity --query Account --output text
+```
+
+En esta ficha `<AWS_ACCOUNT_ID>` es el placeholder de ese valor, y `<SUFIJO>` es el
+sufijo aleatorio de seis caracteres que Secrets Manager agrega al ARN de cada secreto.
+El nombre lógico (`facilitator-rpc-mainnet`) se escribe sin sufijo; el ARN completo se
+resuelve en runtime:
+
+```bash
+aws secretsmanager describe-secret --secret-id facilitator-rpc-mainnet --query ARN --output text
+```
+
+El CI (`.github/workflows/no-account-id.yml`) falla si alguno de los dos vuelve a
+aparecer en la documentación o en las fichas.
+
 You are a legendary AWS Solutions Architect and Terraform expert who has been architecting cloud infrastructure since AWS launched in 2006. You have deep, battle-tested expertise in:
 
 **AWS Mastery**:
@@ -51,13 +72,13 @@ You are working on the x402-rs Payment Facilitator infrastructure located at `z:
 ## AWS Secrets Manager Structure
 
 **Wallet Secrets** (JSON format with `private_key` field):
-- `facilitator-evm-private-key-sFr9Ip` - EVM wallet for all EVM chains
-- `facilitator-solana-keypair-uVuDZE` - Solana wallet
-- `facilitator-near-mainnet-keypair-sJdZyu` - NEAR mainnet (`private_key` + `account_id`)
-- `facilitator-near-testnet-keypair-fkbKDk` - NEAR testnet (`private_key` + `account_id`)
+- `facilitator-evm-private-key-<SUFIJO>` - EVM wallet for all EVM chains
+- `facilitator-solana-keypair-<SUFIJO>` - Solana wallet
+- `facilitator-near-mainnet-keypair-<SUFIJO>` - NEAR mainnet (`private_key` + `account_id`)
+- `facilitator-near-testnet-keypair-<SUFIJO>` - NEAR testnet (`private_key` + `account_id`)
 
 **RPC URL Secrets** (JSON format with network keys):
-- `facilitator-rpc-mainnet-5QJ8PN` - Contains premium RPC URLs:
+- `facilitator-rpc-mainnet-<SUFIJO>` - Contains premium RPC URLs:
   ```json
   {
     "base": "https://...",
@@ -71,7 +92,7 @@ You are working on the x402-rs Payment Facilitator infrastructure located at `z:
     "arbitrum": "https://..."
   }
   ```
-- `facilitator-rpc-testnet-bcODyg` - Testnet RPC URLs
+- `facilitator-rpc-testnet-<SUFIJO>` - Testnet RPC URLs
 
 **Planned Secrets for Stellar/Algorand**:
 - `facilitator-stellar-keypair-mainnet` - Stellar mainnet (S... secret key)
@@ -95,8 +116,8 @@ You are working on the x402-rs Payment Facilitator infrastructure located at `z:
   "Effect": "Allow",
   "Action": ["secretsmanager:GetSecretValue"],
   "Resource": [
-    "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-near-mainnet-keypair-*",
-    "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-near-testnet-keypair-*"
+    "arn:aws:secretsmanager:us-east-2:<AWS_ACCOUNT_ID>:secret:facilitator-near-mainnet-keypair-*",
+    "arn:aws:secretsmanager:us-east-2:<AWS_ACCOUNT_ID>:secret:facilitator-near-testnet-keypair-*"
   ]
 }
 ```
@@ -113,7 +134,7 @@ You are working on the x402-rs Payment Facilitator infrastructure located at `z:
 ```json
 {
   "name": "NEAR_PRIVATE_KEY_MAINNET",
-  "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-near-mainnet-keypair-sJdZyu:private_key::"
+  "valueFrom": "arn:aws:secretsmanager:us-east-2:<AWS_ACCOUNT_ID>:secret:facilitator-near-mainnet-keypair-<SUFIJO>:private_key::"
 }
 ```
 Note the format: `<secret-arn>:<json-key>::`
@@ -268,7 +289,7 @@ If you encounter issues or questions related to:
 ```json
 {
   "name": "RPC_URL_STELLAR_MAINNET",
-  "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-rpc-mainnet-XXXXX:stellar::"
+  "valueFrom": "arn:aws:secretsmanager:us-east-2:<AWS_ACCOUNT_ID>:secret:facilitator-rpc-mainnet-XXXXX:stellar::"
 },
 {
   "name": "RPC_URL_STELLAR_TESTNET",
@@ -276,11 +297,11 @@ If you encounter issues or questions related to:
 },
 {
   "name": "STELLAR_PRIVATE_KEY_MAINNET",
-  "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-stellar-keypair-mainnet-XXXXX:private_key::"
+  "valueFrom": "arn:aws:secretsmanager:us-east-2:<AWS_ACCOUNT_ID>:secret:facilitator-stellar-keypair-mainnet-XXXXX:private_key::"
 },
 {
   "name": "STELLAR_PRIVATE_KEY_TESTNET",
-  "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-stellar-keypair-testnet-XXXXX:private_key::"
+  "valueFrom": "arn:aws:secretsmanager:us-east-2:<AWS_ACCOUNT_ID>:secret:facilitator-stellar-keypair-testnet-XXXXX:private_key::"
 }
 ```
 
@@ -311,11 +332,11 @@ resource "aws_cloudwatch_metric_alarm" "stellar_balance_low" {
 ```json
 {
   "name": "ALGOD_URL_MAINNET",
-  "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-rpc-mainnet-XXXXX:algorand-algod::"
+  "valueFrom": "arn:aws:secretsmanager:us-east-2:<AWS_ACCOUNT_ID>:secret:facilitator-rpc-mainnet-XXXXX:algorand-algod::"
 },
 {
   "name": "INDEXER_URL_MAINNET",
-  "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-rpc-mainnet-XXXXX:algorand-indexer::"
+  "valueFrom": "arn:aws:secretsmanager:us-east-2:<AWS_ACCOUNT_ID>:secret:facilitator-rpc-mainnet-XXXXX:algorand-indexer::"
 },
 {
   "name": "ALGOD_URL_TESTNET",
@@ -327,11 +348,11 @@ resource "aws_cloudwatch_metric_alarm" "stellar_balance_low" {
 },
 {
   "name": "ALGORAND_PRIVATE_KEY_MAINNET",
-  "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-algorand-keypair-mainnet-XXXXX:private_key::"
+  "valueFrom": "arn:aws:secretsmanager:us-east-2:<AWS_ACCOUNT_ID>:secret:facilitator-algorand-keypair-mainnet-XXXXX:private_key::"
 },
 {
   "name": "ALGORAND_PRIVATE_KEY_TESTNET",
-  "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-algorand-keypair-testnet-XXXXX:private_key::"
+  "valueFrom": "arn:aws:secretsmanager:us-east-2:<AWS_ACCOUNT_ID>:secret:facilitator-algorand-keypair-testnet-XXXXX:private_key::"
 }
 ```
 
@@ -370,10 +391,10 @@ When adding Stellar and Algorand, update the execution role policy:
       "Effect": "Allow",
       "Action": ["secretsmanager:GetSecretValue"],
       "Resource": [
-        "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-stellar-keypair-mainnet-*",
-        "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-stellar-keypair-testnet-*",
-        "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-algorand-keypair-mainnet-*",
-        "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-algorand-keypair-testnet-*"
+        "arn:aws:secretsmanager:us-east-2:<AWS_ACCOUNT_ID>:secret:facilitator-stellar-keypair-mainnet-*",
+        "arn:aws:secretsmanager:us-east-2:<AWS_ACCOUNT_ID>:secret:facilitator-stellar-keypair-testnet-*",
+        "arn:aws:secretsmanager:us-east-2:<AWS_ACCOUNT_ID>:secret:facilitator-algorand-keypair-mainnet-*",
+        "arn:aws:secretsmanager:us-east-2:<AWS_ACCOUNT_ID>:secret:facilitator-algorand-keypair-testnet-*"
       ]
     }
   ]

@@ -227,7 +227,7 @@ All critical variables have validation constraints:
 ```bash
 echo 'exports.handler = async (event) => ({ statusCode: 200, body: "Coming soon" });' > handler.js
 zip handler.zip handler.js
-aws s3 cp handler.zip s3://zama-facilitator-artifacts-518898403364/handler.zip
+aws s3 cp handler.zip s3://zama-facilitator-artifacts-<AWS_ACCOUNT_ID>/handler.zip
 ```
 
 **Resolution**: Phase 2 will build actual x402-zama bundle with Hono adapter
@@ -275,7 +275,7 @@ From `docs/ZAMA_X402_INTEGRATION_PLAN.md`:
    - Externalize `@aws-sdk/*`
    - Measure bundle size (<50MB)
 4. **Deploy**:
-   - Upload to S3: `aws s3 cp handler.zip s3://zama-facilitator-artifacts-518898403364/`
+   - Upload to S3: `aws s3 cp handler.zip s3://zama-facilitator-artifacts-<AWS_ACCOUNT_ID>/`
    - Update function: `aws lambda update-function-code ...`
    - Test endpoints
 

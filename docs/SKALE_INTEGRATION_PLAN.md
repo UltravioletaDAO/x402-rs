@@ -292,11 +292,11 @@ docker build --platform linux/amd64 \
   -t facilitator:v1.20.0 .
 
 docker tag facilitator:v1.20.0 \
-  518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator:v1.20.0
+  <AWS_ACCOUNT_ID>.dkr.ecr.us-east-2.amazonaws.com/facilitator:v1.20.0
 
-aws ecr get-login-password --region us-east-2 | docker login --username AWS --password-stdin 518898403364.dkr.ecr.us-east-2.amazonaws.com
+aws ecr get-login-password --region us-east-2 | docker login --username AWS --password-stdin <AWS_ACCOUNT_ID>.dkr.ecr.us-east-2.amazonaws.com
 
-docker push 518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator:v1.20.0
+docker push <AWS_ACCOUNT_ID>.dkr.ecr.us-east-2.amazonaws.com/facilitator:v1.20.0
 ```
 
 #### Step 2.G: Deploy to ECS

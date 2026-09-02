@@ -9,7 +9,7 @@
 ```bash
 # 1. Verify AWS credentials
 aws sts get-caller-identity
-# Expected: Account 518898403364, Region us-east-2
+# Expected: Account <AWS_ACCOUNT_ID>, Region us-east-2
 
 # 2. Verify current Terraform state
 cd Z:\ultravioleta\dao\x402-rs\terraform\environments\production
@@ -128,8 +128,8 @@ Terraform will perform the following actions:
               ~ Statement = [
                   ~ {
                       ~ Resource = [
-                          + "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-near-mainnet-keypair-*",
-                          + "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-near-testnet-keypair-*",
+                          + "arn:aws:secretsmanager:us-east-2:<AWS_ACCOUNT_ID>:secret:facilitator-near-mainnet-keypair-*",
+                          + "arn:aws:secretsmanager:us-east-2:<AWS_ACCOUNT_ID>:secret:facilitator-near-testnet-keypair-*",
                         ]
                     }
                 ]
@@ -155,11 +155,11 @@ Terraform will perform the following actions:
                   ~ secrets     = [
                       + {
                           + name      = "NEAR_PRIVATE_KEY_MAINNET"
-                          + valueFrom = "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-near-mainnet-keypair:private_key::"
+                          + valueFrom = "arn:aws:secretsmanager:us-east-2:<AWS_ACCOUNT_ID>:secret:facilitator-near-mainnet-keypair:private_key::"
                         },
                       + {
                           + name      = "NEAR_PRIVATE_KEY_TESTNET"
-                          + valueFrom = "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-near-testnet-keypair:private_key::"
+                          + valueFrom = "arn:aws:secretsmanager:us-east-2:<AWS_ACCOUNT_ID>:secret:facilitator-near-testnet-keypair:private_key::"
                         },
                     ]
                 }

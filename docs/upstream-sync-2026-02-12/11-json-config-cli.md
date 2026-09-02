@@ -202,11 +202,11 @@ En ECS, los secretos NO van en el archivo `.env`. Van como `valueFrom` en la Tas
 ```json
 {
   "name": "EVM_PRIVATE_KEY_MAINNET",
-  "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-evm-private-key-mainnet-xxxxx"
+  "valueFrom": "arn:aws:secretsmanager:us-east-2:<AWS_ACCOUNT_ID>:secret:facilitator-evm-private-key-mainnet-xxxxx"
 },
 {
   "name": "RPC_URL_ARBITRUM",
-  "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-rpc-mainnet-5QJ8PN:arbitrum::"
+  "valueFrom": "arn:aws:secretsmanager:us-east-2:<AWS_ACCOUNT_ID>:secret:facilitator-rpc-mainnet-<SUFIJO>:arbitrum::"
 }
 ```
 

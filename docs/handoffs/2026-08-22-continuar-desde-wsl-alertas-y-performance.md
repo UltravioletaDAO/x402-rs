@@ -126,10 +126,10 @@ Acotados por prefijo `facilitator-*`:
 
 | Sid | Recurso |
 |---|---|
-| `ObservabilitySns` | `arn:aws:sns:us-east-2:518898403364:facilitator-*` |
-| `ObservabilityAlarms` | `arn:aws:cloudwatch:us-east-2:518898403364:alarm:facilitator-*` |
-| `ObservabilitySchedule` | `arn:aws:events:us-east-2:518898403364:rule/facilitator-*` |
-| `BalancesLambdaInvokePermission` | `arn:aws:lambda:us-east-2:518898403364:function:facilitator-production-balances` |
+| `ObservabilitySns` | `arn:aws:sns:us-east-2:<AWS_ACCOUNT_ID>:facilitator-*` |
+| `ObservabilityAlarms` | `arn:aws:cloudwatch:us-east-2:<AWS_ACCOUNT_ID>:alarm:facilitator-*` |
+| `ObservabilitySchedule` | `arn:aws:events:us-east-2:<AWS_ACCOUNT_ID>:rule/facilitator-*` |
+| `BalancesLambdaInvokePermission` | `arn:aws:lambda:us-east-2:<AWS_ACCOUNT_ID>:function:facilitator-production-balances` |
 
 ### 3.2 La parte que necesita decisión humana
 
@@ -140,7 +140,7 @@ La policy tiene una barrera anti-escalada deliberada:
   "Sid": "DenyPrivilegeEscalation",
   "Effect": "Deny",
   "Action": ["iam:PutRolePolicy", "iam:AttachRolePolicy", "iam:PutUserPolicy", "..."],
-  "NotResource": ["arn:aws:iam::518898403364:role/facilitator-production-ecs-task"]
+  "NotResource": ["arn:aws:iam::<AWS_ACCOUNT_ID>:role/facilitator-production-ecs-task"]
 }
 ```
 
@@ -149,7 +149,7 @@ CI solo puede escribir policies en **un** rol. Pero la Lambda de balances necesi
 nuevas. **Sin ese permiso las alarmas se crean y nunca reciben un dato.**
 
 **Opción A — ampliar el allowlist (recomendada).** Agregar
-`arn:aws:iam::518898403364:role/facilitator-production-balances-lambda` al
+`arn:aws:iam::<AWS_ACCOUNT_ID>:role/facilitator-production-balances-lambda` al
 `Resource` del Allow y al `NotResource` del Deny. Todo queda en Terraform.
 Riesgo acotado: ese rol solo lee secretos de RPC, no puede asumir otros roles, y
 el `PutMetricData` va limitado por condición de namespace.
@@ -167,7 +167,7 @@ Genera la versión nueva de la policy y la deja lista para revisar. **No la apli
 
 ```bash
 cd /tmp
-ACC=518898403364; REG=us-east-2
+ACC=$(aws sts get-caller-identity --query Account --output text); REG=us-east-2
 LAMBDA_ROLE="arn:aws:iam::$ACC:role/facilitator-production-balances-lambda"
 
 V=$(aws iam get-policy --policy-arn arn:aws:iam::$ACC:policy/facilitator-cicd-infra \
@@ -177,7 +177,7 @@ aws iam get-policy-version --policy-arn arn:aws:iam::$ACC:policy/facilitator-cic
 
 python3 - <<'PY'
 import json
-ACC="518898403364"; REG="us-east-2"
+ACC=$(aws sts get-caller-identity --query Account --output text); REG="us-east-2"
 LAMBDA_ROLE=f"arn:aws:iam::{ACC}:role/facilitator-production-balances-lambda"
 doc=json.load(open('infra-cur.json'))
 nuevos=[
@@ -307,7 +307,7 @@ aws cloudwatch describe-alarms --alarm-name-prefix facilitator --region us-east-
 
 # d) La suscripcion de correo esta CONFIRMADA (no PendingConfirmation)
 aws sns list-subscriptions-by-topic --region us-east-2 \
-  --topic-arn arn:aws:sns:us-east-2:518898403364:facilitator-production-alerts \
+  --topic-arn arn:aws:sns:us-east-2:<AWS_ACCOUNT_ID>:facilitator-production-alerts \
   --query 'Subscriptions[].[Endpoint,SubscriptionArn]' --output text
 ```
 

@@ -10795,7 +10795,13 @@ mod owner_scan_tests {
     /// `scripts/erc8004_registry_capabilities.py` before changing this.
     #[test]
     fn the_bound_search_does_not_depend_on_total_supply() {
-        let src = include_str!("handlers.rs");
+        // `include_str!` reads whatever line endings are on disk, and a Windows
+        // checkout stores CRLF. Without this the `"\n}\n"` split below matches
+        // nothing, `search` becomes the rest of the 113k-char file, and the
+        // assertion fails on a `totalSupply()` that lives somewhere else
+        // entirely -- a red test that says nothing about the function it names.
+        // Same reason `lf()` exists in `agentic_surface_tests`.
+        let src = include_str!("handlers.rs").replace("\r\n", "\n");
         // The body only: from the signature to the closing brace at column 0.
         let search = src
             .split("async fn discover_max_agent_id")

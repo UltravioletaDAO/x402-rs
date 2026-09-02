@@ -41,9 +41,9 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post, post_service};
 use axum::{Json, Router};
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
-    InitializeResult, JsonObject, ListToolsResult, PaginatedRequestParams, ProtocolVersion,
-    ErrorCode, ServerCapabilities, ServerInfo, Tool, ToolAnnotations,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorCode,
+    Implementation, InitializeResult, JsonObject, ListToolsResult, PaginatedRequestParams,
+    ProtocolVersion, ServerCapabilities, ServerInfo, Tool, ToolAnnotations,
 };
 use rmcp::service::RequestContext;
 use rmcp::transport::streamable_http_server::session::never::NeverSessionManager;
@@ -127,9 +127,7 @@ pub fn allowed_hosts() -> Vec<String> {
         .map(str::to_string)
         .collect();
     if hosts.is_empty() {
-        tracing::warn!(
-            "{ENV_MCP_ALLOWED_HOSTS} held no usable host; falling back to the defaults"
-        );
+        tracing::warn!("{ENV_MCP_ALLOWED_HOSTS} held no usable host; falling back to the defaults");
         return DEFAULT_MCP_ALLOWED_HOSTS
             .iter()
             .map(|h| (*h).to_string())
@@ -320,12 +318,10 @@ impl FacilitatorMcp {
         })?;
 
         // `Infallible`, so the `?` is a formality the type system asks for.
-        let response = self
-            .rest
-            .clone()
-            .oneshot(request)
-            .await
-            .map_err(|e| McpError::internal_error(format!("internal routing failed: {e}"), None))?;
+        let response =
+            self.rest.clone().oneshot(request).await.map_err(|e| {
+                McpError::internal_error(format!("internal routing failed: {e}"), None)
+            })?;
 
         let status = response.status();
         let bytes = axum::body::to_bytes(response.into_body(), MAX_REST_RESPONSE_BYTES)
@@ -345,16 +341,14 @@ impl ServerHandler for FacilitatorMcp {
         // which is the frozen `0.0.0` placeholder in Cargo.toml. The release
         // version lives in the VERSION file and reaches the binary as
         // FACILITATOR_VERSION -- same source as /version and the OpenAPI doc.
-        info.server_info = Implementation::new(
-            "x402-facilitator",
-            crate::version::facilitator_version(),
-        )
-        .with_title("x402 Payment Facilitator")
-        .with_description(
-            "Verify and settle x402 gasless stablecoin payments across EVM, Solana, NEAR, \
+        info.server_info =
+            Implementation::new("x402-facilitator", crate::version::facilitator_version())
+                .with_title("x402 Payment Facilitator")
+                .with_description(
+                    "Verify and settle x402 gasless stablecoin payments across EVM, Solana, NEAR, \
              Stellar, Algorand, Sui and XRPL.",
-        )
-        .with_website_url("https://facilitator.ultravioletadao.xyz");
+                )
+                .with_website_url("https://facilitator.ultravioletadao.xyz");
         info.instructions = Some(
             "Call x402_supported first to learn which network and scheme pairs this \
              facilitator settles. Then x402_accepts to narrow a resource server's 402 \
@@ -496,11 +490,11 @@ mod tests {
     use super::*;
     use crate::chain::FacilitatorLocalError;
     use crate::network::Network;
+    use crate::types::{Scheme, X402Version};
     use crate::types::{
         SettleRequest, SettleResponse, SupportedPaymentKind, SupportedPaymentKindsResponse,
         VerifyRequest, VerifyResponse,
     };
-    use crate::types::{Scheme, X402Version};
     use axum::http::Request as HttpRequest;
     use std::borrow::Borrow;
 
@@ -595,7 +589,10 @@ mod tests {
         let rest = crate::handlers::verify_settle_routes::<StubFacilitator>()
             .merge(
                 Router::new()
-                    .route("/supported", get(crate::handlers::get_supported::<StubFacilitator>))
+                    .route(
+                        "/supported",
+                        get(crate::handlers::get_supported::<StubFacilitator>),
+                    )
                     .route(
                         "/accepts",
                         post(crate::handlers::post_accepts::<StubFacilitator>),
@@ -676,7 +673,7 @@ mod tests {
             result["serverInfo"]["version"],
             crate::version::facilitator_version()
         );
-        assert_eq!(result["capabilities"]["tools"].is_null(), false);
+        assert!(!result["capabilities"]["tools"].is_null());
     }
 
     /// The tool list is exactly the four, in order, and nothing else.
@@ -851,7 +848,10 @@ mod tests {
             }),
         )
         .await;
-        assert_eq!(doc["error"]["code"], -32601, "expected METHOD_NOT_FOUND: {doc}");
+        assert_eq!(
+            doc["error"]["code"], -32601,
+            "expected METHOD_NOT_FOUND: {doc}"
+        );
     }
 
     /// `GET /mcp` is a JSON 405, never HTML and never rmcp's bare text.
@@ -887,7 +887,10 @@ mod tests {
             .await
             .unwrap();
         let body = String::from_utf8(bytes.to_vec()).unwrap();
-        assert!(!body.trim_start().starts_with('<'), "answered markup: {body}");
+        assert!(
+            !body.trim_start().starts_with('<'),
+            "answered markup: {body}"
+        );
         let doc: Value = serde_json::from_str(&body).unwrap();
         assert_eq!(doc["method"], "POST");
     }
@@ -969,6 +972,53 @@ mod tests {
         );
     }
 
+    /// A settle over MCP passes through `settle_writer_gate`.
+    ///
+    /// This is the invariant the whole dispatch design exists for. With the
+    /// writer flag down and no known holder, the gate answers its 503; a tool
+    /// that called `post_settle::<A>()` directly would sail past it and let a
+    /// second ECS task allocate a nonce for the shared EVM signer.
+    ///
+    /// The flag is a process-global `AtomicBool`, so this flips it back before
+    /// asserting. CI runs `--test-threads=1`, which is what makes that safe --
+    /// the same constraint the writer-lease tests in `handlers.rs` rely on.
+    #[tokio::test]
+    async fn a_settle_over_mcp_still_passes_through_the_writer_gate() {
+        let (mcp, _) = routers().await;
+        // `network: "base"` on purpose: the gate only forwards EVM settles, and
+        // an unreadable body is treated as EVM. Saying it makes the test about
+        // the gate rather than about the fallback.
+        let body = json!({
+            "jsonrpc": "2.0", "id": 8, "method": "tools/call",
+            "params": { "name": "x402_settle", "arguments": {
+                "x402Version": 1,
+                "paymentPayload": { "network": "base" },
+                "paymentRequirements": { "network": "base" }
+            }}
+        });
+
+        crate::writer_lease::set_writer_for_test(false);
+        let (_, _, not_the_writer) = rpc(&mcp, body.clone()).await;
+        crate::writer_lease::set_writer_for_test(true);
+        let (_, _, the_writer) = rpc(&mcp, body).await;
+
+        let refused = tool_text(&not_the_writer);
+        assert_eq!(not_the_writer["result"]["isError"], true);
+        assert!(
+            refused.contains("does not hold the EVM writer lease"),
+            "the writer gate did not run on the MCP path: {refused}"
+        );
+
+        // Discriminating half: holding the lease, the same call fails for some
+        // other reason. Without this the assertion above would also pass on a
+        // route that always answered 503.
+        let served = tool_text(&the_writer);
+        assert!(
+            !served.contains("does not hold the EVM writer lease"),
+            "the writer answered the lease 503 to itself: {served}"
+        );
+    }
+
     /// The published server-card describes the server that actually answers.
     ///
     /// Three ways this document can be true-looking and wrong, all covered
@@ -1001,8 +1051,9 @@ mod tests {
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
-        let card: Value = serde_json::from_str(&String::from_utf8(bytes.to_vec()).unwrap())
-            .expect("the card must be JSON");
+        let card: Value =
+            serde_json::from_str(std::str::from_utf8(&bytes).expect("the card must be UTF-8"))
+                .expect("the card must be JSON");
 
         // The field the scanner reads.
         assert_eq!(card["serverInfo"]["name"], "x402-facilitator");

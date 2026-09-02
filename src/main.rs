@@ -643,6 +643,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .with_state(Arc::clone(&transaction_store))
                 .layer(GovernorLayer::new(Arc::clone(&discovery_read_config))),
         )
+        // The agentic-discovery surfaces (/llms.txt, /.well-known/*, ...).
+        // Stateless and unmetered: they are static documents, and a crawler
+        // that gets 429 on /llms.txt reports the service as unreachable.
+        .merge(handlers::agentic_routes())
         .merge(openapi::swagger_routes())
         .merge(
             handlers::events_routes()

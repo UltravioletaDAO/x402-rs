@@ -334,12 +334,22 @@ resource "aws_cloudwatch_metric_alarm" "latency_p99_early" {
 # wallet 0x103040545AC5031A11E8C03dd11324C7333a13C7 -- and every escrow settle
 # in flight fails until it converges again.
 #
-# The service runs 3 ECS tasks with per-task in-memory nonce state, serialised
-# by writer_lease. The same windows log "EVM writer lease holder endpoint is
-# unknown; writes will 503" and repeated ConditionalCheckFailedException on
-# lease release, which is the mechanism the fix/writer-lease-forwarding branch
-# addresses. This alarm is not the fix; it is what makes the next burst visible
-# the night it happens instead of two days later.
+# ROOT CAUSE FOUND AND FIXED -- see b4170d76 on main, deployed 2026-09-02 00:29
+# UTC as 2.8.0-53b2e68. resync_target ratcheted to high_water + 1, one PAST the
+# nonce that had just failed, and its healing branch only trusts the chain after
+# 120s with no allocations -- a window a continuous burst never leaves. Zero
+# occurrences since that deploy.
+#
+# This alarm is therefore NOT tracking an open incident. It exists because the
+# storm ran for at least 48h before anyone looked, and nothing would have said
+# so: the 5xx alarm fires on the symptom and clears between bursts, and the
+# nonce counter is invisible from outside. If the ratchet ever comes back, or a
+# different path reintroduces one, this says so the same night.
+#
+# Do not read a firing here as "the writer lease broke". The lease warnings that
+# accompanied the 2026-09-01 storm ("EVM writer lease holder endpoint is
+# unknown; writes will 503") were CONCURRENT, not causal -- see b0f9bafe, which
+# retracts exactly that attribution.
 #
 # Filter-pattern note: this log group is ANSI-coloured and the colour codes
 # split key=value tokens in the raw bytes, so patterns like "status=500" match
@@ -372,7 +382,7 @@ resource "aws_cloudwatch_metric_alarm" "evm_nonce_desync" {
   threshold           = 5
   treat_missing_data  = "notBreaching"
 
-  alarm_description = "EVM nonce desync: the facilitator's in-memory nonce counter has run ahead of chain state and settlements are failing with 'nonce too high'. Healthy baseline is exactly 0 (measured over multiple 6h windows); bursts reach thousands. Threshold >5 per 5 min for 2 of 3 periods pages ~10 min into a storm and ignores a stray retry. Check the EVM writer lease first -- the same windows log 'writer lease holder endpoint is unknown; writes will 503'."
+  alarm_description = "EVM nonce desync: the facilitator's in-memory nonce counter has run ahead of chain state and settlements are failing with 'nonce too high'. Healthy baseline is exactly 0 (measured over multiple 6h windows); bursts reach thousands. Threshold >5 per 5 min for 2 of 3 periods pages ~10 min into a storm and ignores a stray retry. Root cause of the 2026-09-01 storm was the resync ratchet, fixed in b4170d76 and deployed 2026-09-02 00:29 UTC; zero occurrences since. A firing means a ratchet is back, not that the writer lease broke -- b0f9bafe retracts that attribution."
 
   alarm_actions = [aws_sns_topic.alerts.arn]
   ok_actions    = [aws_sns_topic.alerts.arn]

@@ -28,6 +28,74 @@ use crate::types::{
 use x402_compliance::SolanaExtractor;
 use x402_compliance::{ComplianceChecker, EvmExtractor, ScreeningDecision, TransactionContext};
 
+/// The same payment kind, named the other way round, or `None` when the chain
+/// resolves to neither form.
+///
+/// The x402 version tracks the naming form, exactly as it always has for
+/// `exact`: a v1 chain name goes out as x402 v1, a CAIP-2 id as x402 v2.
+fn network_form_counterpart(kind: &SupportedPaymentKind) -> Option<SupportedPaymentKind> {
+    let (x402_version, network) = match Network::from_str(&kind.network) {
+        Ok(network) => (X402Version::V2, network.to_caip2()),
+        Err(_) => (
+            X402Version::V1,
+            Network::from_caip2(&kind.network)?.to_string(),
+        ),
+    };
+    Some(SupportedPaymentKind {
+        x402_version,
+        scheme: kind.scheme,
+        network,
+        extra: kind.extra.clone(),
+    })
+}
+
+/// Everything a client can tell apart about one advertised kind.
+///
+/// `extra` is part of the identity on purpose: the `escrow` scheme publishes
+/// one entry per deployed PaymentOperator on the same network, and those
+/// entries differ in nothing else. Keying without it would collapse them.
+fn kind_identity(kind: &SupportedPaymentKind) -> String {
+    format!(
+        "{}|{}|{}|{}",
+        kind.x402_version.as_u8(),
+        kind.scheme,
+        kind.network,
+        serde_json::to_string(&kind.extra).unwrap_or_default(),
+    )
+}
+
+/// Advertise every kind under BOTH ways of naming its chain.
+///
+/// `/supported` publishes each chain twice: by its v1 name (`base`) and by its
+/// CAIP-2 id (`eip155:8453`). Until 2026-09-03 only `exact` got both, because
+/// the mirroring ran as its own pass BEFORE `escrow`, `commerce` and `upto`
+/// were pushed. Measured against production on 2026-09-02: `exact` 38 and 38,
+/// and zero v1 entries across the other three schemes. A client that
+/// discovers schemes by reading the v1 entries -- which is every integration
+/// written before CAIP-2 existed -- concluded this facilitator has no escrow
+/// at all. The advertisement was not incomplete, it was wrong.
+///
+/// So the mirroring is ONE pass over the finished list and every scheme goes
+/// through it by construction. A scheme added later is advertised under both
+/// forms without its author having to know that both forms exist.
+///
+/// A kind whose network resolves to neither form is left exactly as it is:
+/// inventing an identifier would be worse than publishing only one.
+fn advertise_under_both_network_forms(
+    mut kinds: Vec<SupportedPaymentKind>,
+) -> Vec<SupportedPaymentKind> {
+    let mut seen: std::collections::HashSet<String> = kinds.iter().map(kind_identity).collect();
+
+    let mirrored: Vec<SupportedPaymentKind> = kinds
+        .iter()
+        .filter_map(network_form_counterpart)
+        .filter(|counterpart| seen.insert(kind_identity(counterpart)))
+        .collect();
+
+    kinds.extend(mirrored);
+    kinds
+}
+
 /// A concrete [`Facilitator`] implementation that verifies and settles x402 payments
 /// using a network-aware provider cache.
 ///
@@ -198,39 +266,24 @@ where
             kinds.append(&mut supported_kinds);
         }
 
-        // Add v2 entries with CAIP-2 network identifiers for each v1 entry
-        let v2_kinds: Vec<SupportedPaymentKind> = kinds
-            .iter()
-            .filter_map(|v1_kind| {
-                // Parse the v1 network string to get the Network enum
-                Network::from_str(&v1_kind.network)
-                    .ok()
-                    .map(|network| SupportedPaymentKind {
-                        x402_version: X402Version::V2,
-                        scheme: v1_kind.scheme.clone(),
-                        network: network.to_caip2(),
-                        extra: v1_kind.extra.clone(),
-                    })
-            })
-            .collect();
-
-        kinds.extend(v2_kinds);
+        // NOTE: the pass that names every chain BOTH ways runs once, at the
+        // very END of this function. It used to run here, which is precisely
+        // why only `exact` ever got both forms -- everything pushed below was
+        // pushed after the mirror had already been taken. Push one entry per
+        // scheme here and let `advertise_under_both_network_forms` finish it.
 
         // Add FHE transfer scheme support (proxied to Zama Lambda)
         // Zama FHEVM on Ethereum Sepolia testnet
         // Note: extra is None because FHE requests are proxied to the Zama Lambda facilitator
         // which handles its own fee_payer and token configuration (ERC7984 standard)
+        // Only the v1 form is pushed: the mirroring pass derives
+        // `eip155:11155111` from the Network enum, so the CAIP-2 id is never
+        // typed out here to drift away from `Network::to_caip2`.
         kinds.push(SupportedPaymentKind {
             x402_version: X402Version::V1,
             scheme: Scheme::FheTransfer,
             network: "ethereum-sepolia".to_string(),
             extra: None, // FHE proxy handles fee_payer internally
-        });
-        kinds.push(SupportedPaymentKind {
-            x402_version: X402Version::V2,
-            scheme: Scheme::FheTransfer,
-            network: "eip155:11155111".to_string(), // CAIP-2 for Sepolia
-            extra: None,                            // FHE proxy handles fee_payer internally
         });
 
         // Add x402r escrow/commerce scheme support (PaymentOperator-based escrow)
@@ -296,23 +349,25 @@ where
         // offering it: the client only finds out after signing a Permit2
         // authorization, and a signed authorization does not un-sign itself.
         if crate::upto::is_enabled() {
-            // Collect EVM networks from existing exact scheme entries (v2 CAIP-2 format)
-            let evm_networks: Vec<String> = kinds
+            // Collect the EVM networks carrying `exact`, resolved through the
+            // Network enum rather than by matching an `eip155:` prefix. The
+            // prefix test only ever saw the mirrored CAIP-2 entries, so this
+            // list was silently coupled to the mirror running FIRST; now that
+            // it runs last, reading the v1 entries is the only thing that
+            // works -- and it is the thing that was always meant.
+            let mut evm_networks: Vec<String> = kinds
                 .iter()
-                .filter(|k| {
-                    k.x402_version == X402Version::V2
-                        && k.scheme == Scheme::Exact
-                        && k.network.starts_with("eip155:")
+                .filter(|k| k.scheme == Scheme::Exact)
+                .filter_map(|k| {
+                    Network::from_str(&k.network)
+                        .ok()
+                        .or_else(|| Network::from_caip2(&k.network))
                 })
-                .filter(|k| {
-                    // Resolved through the Network enum rather than matched as a
-                    // string, so a renamed CAIP-2 id fails to compile instead of
-                    // silently dropping a chain from the advertisement.
-                    Network::from_caip2(&k.network)
-                        .is_some_and(crate::upto::types::is_proxy_deployed_on)
-                })
-                .map(|k| k.network.clone())
+                .filter(|network| crate::upto::types::is_proxy_deployed_on(*network))
+                .map(|network| network.to_caip2())
                 .collect();
+            evm_networks.sort();
+            evm_networks.dedup();
 
             for network_caip2 in evm_networks {
                 kinds.push(SupportedPaymentKind {
@@ -323,6 +378,11 @@ where
                 });
             }
         }
+
+        // Every scheme, under both ways of naming its chain. Once, here, over
+        // the finished list -- see the function's own doc comment for what
+        // made that placement load-bearing.
+        let kinds = advertise_under_both_network_forms(kinds);
 
         Ok(SupportedPaymentKindsResponse { kinds })
     }
@@ -560,5 +620,187 @@ where
                 Ok(())
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod supported_advertisement_tests {
+    use super::*;
+    use std::collections::{HashMap, HashSet};
+
+    fn kind(x402_version: X402Version, scheme: Scheme, network: &str) -> SupportedPaymentKind {
+        SupportedPaymentKind {
+            x402_version,
+            scheme,
+            network: network.to_string(),
+            extra: None,
+        }
+    }
+
+    fn escrow_kind(network: &str, operator_byte: u8) -> SupportedPaymentKind {
+        SupportedPaymentKind {
+            x402_version: X402Version::V2,
+            scheme: Scheme::Escrow,
+            network: network.to_string(),
+            extra: Some(SupportedPaymentKindExtra {
+                fee_payer: None,
+                tokens: None,
+                escrow: Some(EscrowSupportedInfo {
+                    escrow_address: EvmAddress(alloy::primitives::Address::repeat_byte(1)),
+                    operator_address: EvmAddress(alloy::primitives::Address::repeat_byte(
+                        operator_byte,
+                    )),
+                    token_collector: EvmAddress(alloy::primitives::Address::repeat_byte(3)),
+                }),
+            }),
+        }
+    }
+
+    /// The shape `/supported` actually published on 2026-09-02: `exact` under
+    /// both ways of naming the chain, `escrow` / `commerce` / `upto` under the
+    /// CAIP-2 form alone.
+    fn shape_measured_before_the_fix() -> Vec<SupportedPaymentKind> {
+        vec![
+            kind(X402Version::V1, Scheme::Exact, "base"),
+            kind(X402Version::V2, Scheme::Exact, "eip155:8453"),
+            kind(X402Version::V1, Scheme::Exact, "polygon"),
+            kind(X402Version::V2, Scheme::Exact, "eip155:137"),
+            escrow_kind("eip155:8453", 2),
+            kind(X402Version::V2, Scheme::Commerce, "eip155:8453"),
+            kind(X402Version::V2, Scheme::Upto, "eip155:8453"),
+        ]
+    }
+
+    /// Which ways of naming a chain each (scheme, chain) pair is published
+    /// under: `(v1 name seen, CAIP-2 id seen)`.
+    fn forms_seen(kinds: &[SupportedPaymentKind]) -> HashMap<(String, Network), (bool, bool)> {
+        let mut seen: HashMap<(String, Network), (bool, bool)> = HashMap::new();
+        for k in kinds {
+            let (network, is_caip2) = match Network::from_str(&k.network) {
+                Ok(network) => (network, false),
+                Err(_) => match Network::from_caip2(&k.network) {
+                    Some(network) => (network, true),
+                    None => continue,
+                },
+            };
+            let entry = seen.entry((k.scheme.to_string(), network)).or_default();
+            if is_caip2 {
+                entry.1 = true;
+            } else {
+                entry.0 = true;
+            }
+        }
+        seen
+    }
+
+    /// The defect, stated as an invariant: a scheme published under only one
+    /// of the two ways of naming a chain, while another scheme on that same
+    /// chain gets both, is an advertisement that lies by omission. Measured
+    /// before the fix: `exact` 38 v1 entries, `escrow` / `commerce` / `upto`
+    /// zero between them, so a v1 client read "this facilitator has no
+    /// escrow".
+    #[test]
+    fn no_scheme_is_advertised_under_fewer_forms_than_another() {
+        let published = advertise_under_both_network_forms(shape_measured_before_the_fix());
+        let seen = forms_seen(&published);
+
+        assert!(!seen.is_empty(), "the fixture published nothing");
+        for ((scheme, network), (v1_name, caip2)) in &seen {
+            assert!(
+                *v1_name && *caip2,
+                "{scheme} on {network} is advertised under one form only \
+                 (v1 name: {v1_name}, CAIP-2: {caip2})"
+            );
+        }
+    }
+
+    /// The v1 half is the half that was missing, so name it outright rather
+    /// than leaving it implied by the invariant above.
+    #[test]
+    fn escrow_commerce_and_upto_gain_their_v1_names() {
+        let published = advertise_under_both_network_forms(shape_measured_before_the_fix());
+
+        for scheme in [Scheme::Escrow, Scheme::Commerce, Scheme::Upto] {
+            let v1_entries: Vec<&SupportedPaymentKind> = published
+                .iter()
+                .filter(|k| k.scheme == scheme && k.network == "base")
+                .collect();
+            assert_eq!(
+                v1_entries.len(),
+                1,
+                "{scheme} must be discoverable as `base`, not only as `eip155:8453`"
+            );
+            assert_eq!(v1_entries[0].x402_version, X402Version::V1);
+        }
+    }
+
+    /// `escrow` publishes one entry per deployed PaymentOperator on the same
+    /// chain, differing in nothing but `extra`. A dedup key that ignored
+    /// `extra` would silently drop every operator but the first.
+    #[test]
+    fn operators_that_differ_only_in_extra_all_survive() {
+        let published = advertise_under_both_network_forms(vec![
+            escrow_kind("eip155:8453", 2),
+            escrow_kind("eip155:8453", 9),
+        ]);
+
+        let v1_escrows: Vec<&SupportedPaymentKind> = published
+            .iter()
+            .filter(|k| k.scheme == Scheme::Escrow && k.network == "base")
+            .collect();
+        assert_eq!(v1_escrows.len(), 2, "one v1 entry per deployed operator");
+
+        let operators: HashSet<String> = v1_escrows
+            .iter()
+            .map(|k| {
+                k.extra
+                    .as_ref()
+                    .and_then(|e| e.escrow.as_ref())
+                    .map(|e| e.operator_address.0.to_string())
+                    .unwrap_or_default()
+            })
+            .collect();
+        assert_eq!(operators.len(), 2, "the two operators must stay distinct");
+    }
+
+    /// A scheme that already pushed both forms by hand must not gain a third
+    /// copy. This is what lets the pass be applied to the whole list without
+    /// auditing who pushed what.
+    #[test]
+    fn a_kind_already_published_under_both_forms_is_not_duplicated() {
+        let published = advertise_under_both_network_forms(vec![
+            kind(X402Version::V1, Scheme::FheTransfer, "ethereum-sepolia"),
+            kind(X402Version::V2, Scheme::FheTransfer, "eip155:11155111"),
+        ]);
+        assert_eq!(published.len(), 2);
+    }
+
+    /// A network the enum does not know is left exactly as it was. Inventing
+    /// an identifier for it would be worse than publishing only one form.
+    #[test]
+    fn an_unresolvable_network_is_left_alone() {
+        let published = advertise_under_both_network_forms(vec![kind(
+            X402Version::V1,
+            Scheme::Exact,
+            "not-a-network",
+        )]);
+        assert_eq!(published.len(), 1);
+        assert_eq!(published[0].network, "not-a-network");
+    }
+
+    /// The mirror derives the CAIP-2 id from the enum, never from a string
+    /// typed at the push site, so the two can never drift apart.
+    #[test]
+    fn the_caip2_twin_comes_from_the_network_enum() {
+        let published = advertise_under_both_network_forms(vec![kind(
+            X402Version::V1,
+            Scheme::FheTransfer,
+            "ethereum-sepolia",
+        )]);
+        let twin = published
+            .iter()
+            .find(|k| k.x402_version == X402Version::V2)
+            .expect("the CAIP-2 twin must be generated");
+        assert_eq!(twin.network, Network::EthereumSepolia.to_caip2());
     }
 }

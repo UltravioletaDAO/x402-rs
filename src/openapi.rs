@@ -606,11 +606,13 @@ async fn path_escrow_state() {}
     description = r#"
 Returns all supported payment kinds (network + scheme + version combinations).
 
-**Schemes:**
-- `exact` - Direct EIP-3009 payment settlement (v1 and v2 formats)
-- `upto` - Permit2-based variable amount settlement (v2 only, CAIP-2 networks). Client authorizes a max amount; server settles actual usage (<= max). Ideal for usage-based pricing (LLM tokens, bandwidth, metered APIs).
-- `escrow` - x402r PaymentOperator escrow (v2 only, CAIP-2 networks)
-- `fhe_transfer` - FHE encrypted transfer via Zama (v1 and v2)
+**Schemes:** every one of them is advertised under BOTH ways of naming a chain (v1 and v2 formats).
+- `exact` - Direct EIP-3009 payment settlement
+- `upto` - Permit2-based variable amount settlement. Client authorizes a max amount; server settles actual usage (<= max). Ideal for usage-based pricing (LLM tokens, bandwidth, metered APIs).
+- `escrow` / `commerce` - x402r PaymentOperator escrow
+- `fhe_transfer` - FHE encrypted transfer via Zama
+
+Until 2026-09-03 `escrow`, `commerce` and `upto` appeared **only** under CAIP-2 network ids, so a client that discovered schemes by reading the v1 entries concluded this facilitator had no escrow at all. They now appear under both.
 
 **Upto networks (11):** Base, Optimism, Arbitrum, Polygon, BSC, Ethereum, HyperEVM, Monad, Base Sepolia, Avalanche Fuji, Arbitrum Sepolia — via the x402UptoPermit2Proxy contract (Permit2-based, canonical CREATE2 address `0x4020A4f3b7b90ccA423B9fabCc0CE57C6C240002`).
 
@@ -636,6 +638,11 @@ Only networks with a deployed PaymentOperator appear in the response.
                         "x402Version": 2,
                         "scheme": "exact",
                         "network": "eip155:8453"
+                    },
+                    {
+                        "x402Version": 1,
+                        "scheme": "upto",
+                        "network": "base"
                     },
                     {
                         "x402Version": 2,

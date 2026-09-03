@@ -13,7 +13,7 @@
     </script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Ultravioleta DAO x402 Facilitator — Gasless Payments for the Agentic Economy</title>
+    <title data-i18n="page.title">Ultravioleta DAO x402 Facilitator — Gasless Payments for the Agentic Economy</title>
     <link rel="icon" href="/favicon.ico" type="image/x-icon">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -98,37 +98,6 @@
             background: linear-gradient(180deg, var(--bg-dark) 0%, transparent 100%);
         }
 
-        .header-content {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 1rem 0;
-        }
-
-        /* Responsive: Stack logo and languages vertically on mobile */
-        @media (max-width: 768px) {
-            .header-content {
-                flex-direction: column;
-                align-items: center;
-                gap: 1rem;
-            }
-        }
-
-        .logo-section {
-            display: flex;
-            align-items: center;
-            gap: 1rem;
-        }
-
-        .logo-image {
-            width: 100%;
-            max-width: 368px;
-            height: auto;
-            object-fit: contain;
-            filter: drop-shadow(0 0 20px var(--glow));
-            animation: pulse 3s ease-in-out infinite;
-        }
-
         @keyframes pulse {
 
             0%,
@@ -158,40 +127,6 @@
             font-size: 0.75rem;
             font-weight: 400;
             margin-top: 0.25rem;
-        }
-
-        .lang-switcher {
-            display: flex;
-            gap: 0.5rem;
-            background: var(--bg-card);
-            padding: 0.5rem;
-            border-radius: 12px;
-            border: 1px solid var(--border);
-        }
-
-        .lang-btn {
-            padding: 0.5rem 1.25rem;
-            border: none;
-            background: transparent;
-            color: var(--text-muted);
-            cursor: pointer;
-            border-radius: 8px;
-            font-weight: 600;
-            font-size: 0.875rem;
-            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-            font-family: 'JetBrains Mono', monospace;
-        }
-
-        .lang-btn.active {
-            background: linear-gradient(135deg, var(--accent), var(--base-blue));
-            color: var(--bg-dark);
-            box-shadow: 0 4px 12px var(--glow);
-        }
-
-        .lang-btn:hover:not(.active) {
-            background: var(--bg-card-hover);
-            color: var(--text);
-            transform: translateY(-2px);
         }
 
         /* Hero */
@@ -860,46 +795,6 @@
             text-align: center;
         }
 
-        .footer-content {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 2rem;
-        }
-
-        .footer-links {
-            display: flex;
-            gap: 2rem;
-            font-weight: 600;
-        }
-
-        .footer-links a {
-            color: var(--text-muted);
-            text-decoration: none;
-            transition: all 0.3s ease;
-            position: relative;
-        }
-
-        .footer-links a::after {
-            content: '';
-            position: absolute;
-            bottom: -4px;
-            left: 0;
-            width: 0;
-            height: 2px;
-            background: linear-gradient(90deg, var(--accent), var(--base-blue));
-            transition: width 0.3s ease;
-        }
-
-        .footer-links a:hover {
-            color: var(--accent);
-        }
-
-        .footer-links a:hover::after {
-            width: 100%;
-        }
-
         /* Section divider */
         .section {
             margin: 6rem 0;
@@ -949,10 +844,6 @@
                 font-size: 1.05rem;
             }
 
-            .logo-image {
-                max-width: 260px;
-            }
-
             .section-title {
                 font-size: 1.5rem;
             }
@@ -971,20 +862,12 @@
                 gap: 0.75rem;
             }
 
-            .footer-content {
-                flex-direction: column;
-                text-align: center;
-            }
         }
 
         /* Small phones (iPhone SE / 320-480px) */
         @media (max-width: 480px) {
             .container {
                 padding: 0.75rem;
-            }
-
-            .logo-image {
-                max-width: 220px;
             }
 
             .hero-title {
@@ -1135,6 +1018,177 @@
         .stablecoin-icon:hover {
             transform: scale(1.2);
         }
+
+        /* ---------------------------------------------------------------
+           EL MENU Y EL PIE INJERTADOS (2026-09-03)
+
+           Son el markup literal de las otras nueve paginas -- byte por byte,
+           para que un diff entre cabeceras siga saliendo vacio. Lo que NO se
+           trajo es /uv.css: esa hoja declara su propia :root, su tipografia y
+           sus reglas de tabla y de titulo, y cargarla aca volveria a pintar
+           la portada con el sistema que el dueno rechazo dos veces. El menu
+           y el pie se visten con los tokens de ESTA pagina y con nada mas.
+           --------------------------------------------------------------- */
+        .nav {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 1rem;
+        }
+
+        .nav .brand {
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            color: var(--text);
+            text-decoration: none;
+            font-weight: 700;
+            font-size: 0.95rem;
+            letter-spacing: -0.01em;
+        }
+
+        .nav .brand img {
+            height: 20px;
+            width: auto;
+            filter: drop-shadow(0 0 12px var(--glow));
+        }
+
+        .nav-links ul {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 1.25rem;
+            list-style: none;
+            margin: 0;
+            padding: 0;
+        }
+
+        .nav-links a {
+            color: var(--text-muted);
+            text-decoration: none;
+            font-size: 0.85rem;
+            font-weight: 600;
+            transition: color 0.2s ease;
+        }
+
+        .nav-links a:hover {
+            color: var(--text);
+        }
+
+        .nav-links a[aria-current="page"] {
+            color: var(--accent);
+        }
+
+        .lang {
+            display: flex;
+            gap: 0.5rem;
+            background: var(--bg-card);
+            padding: 0.35rem;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+        }
+
+        .lang button {
+            padding: 0.35rem 0.9rem;
+            border: none;
+            background: transparent;
+            color: var(--text-muted);
+            cursor: pointer;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 0.8rem;
+            font-family: 'JetBrains Mono', monospace;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .lang button[aria-pressed="true"] {
+            background: linear-gradient(135deg, var(--accent), var(--base-blue));
+            color: var(--bg-dark);
+            box-shadow: 0 4px 12px var(--glow);
+        }
+
+        .lang button[aria-pressed="false"]:hover {
+            background: var(--bg-card-hover);
+            color: var(--text);
+        }
+
+        .footer .next {
+            margin-bottom: 2rem;
+        }
+
+        .footer .eyebrow {
+            font-size: 0.7rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--text-muted);
+            margin-bottom: 1rem;
+        }
+
+        .footer .next ul {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 1.5rem;
+            list-style: none;
+        }
+
+        .footer .next li {
+            display: flex;
+            flex-direction: column;
+            gap: 0.2rem;
+            max-width: 260px;
+        }
+
+        .footer .next a {
+            color: var(--accent);
+            text-decoration: none;
+            font-weight: 700;
+            font-size: 0.95rem;
+        }
+
+        .footer .next span {
+            color: var(--text-muted);
+            font-size: 0.8rem;
+        }
+
+        .footer .meta p {
+            color: var(--text-muted);
+            font-size: 0.85rem;
+            margin-bottom: 0.9rem;
+        }
+
+        .footer .meta-links {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 1rem;
+            list-style: none;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.78rem;
+        }
+
+        .footer .meta-links a {
+            color: var(--text-muted);
+            text-decoration: none;
+            transition: color 0.2s ease;
+        }
+
+        .footer .meta-links a:hover {
+            color: var(--accent);
+        }
+
+        @media (max-width: 768px) {
+            .nav {
+                justify-content: center;
+            }
+
+            .nav-links ul {
+                justify-content: center;
+                gap: 0.9rem;
+            }
+        }
     </style>
 </head>
 
@@ -1142,47 +1196,30 @@
     <div class="bg-grid"></div>
 
     <div class="container">
-        <header class="fade-in">
-            <div class="header-content">
-                <div class="logo-section">
-                    <img src="/logo.png" alt="Logo" class="logo-image" id="logo" style="display: none;">
-                </div>
-                <div style="display: flex; align-items: center; gap: 1rem;">
-                    <a href="/bazaar" class="lang-btn" style="text-decoration: none; display: flex; align-items: center; gap: 0.4rem;">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-                        </svg>
-                        <span data-i18n="nav.bazaar">Bazaar</span>
-                    </a>
-                    <a href="/stats" class="lang-btn" style="text-decoration: none; display: flex; align-items: center; gap: 0.4rem;">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>
-                        </svg>
-                        <span data-i18n="nav.stats">Stats</span>
-                    </a>
-                    <a href="/events/live" class="lang-btn" style="text-decoration: none; display: flex; align-items: center; gap: 0.4rem;">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <circle cx="12" cy="12" r="3"/><path d="M12 5a7 7 0 0 0-7 7"/><path d="M12 19a7 7 0 0 0 7-7"/>
-                        </svg>
-                        <span data-i18n="nav.live">En vivo</span>
-                    </a>
-                    <a href="/docs" class="lang-btn" style="text-decoration: none; display: flex; align-items: center; gap: 0.4rem;">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                            <polyline points="14,2 14,8 20,8"/>
-                            <line x1="16" y1="13" x2="8" y2="13"/>
-                            <line x1="16" y1="17" x2="8" y2="17"/>
-                            <polyline points="10,9 9,9 8,9"/>
-                        </svg>
-                        <span data-i18n="nav.apidocs">API Docs</span>
-                    </a>
-                    <div class="lang-switcher">
-                        <button class="lang-btn active" data-lang="en">EN</button>
-                        <button class="lang-btn" data-lang="es">ES</button>
-                    </div>
-                </div>
-            </div>
-        </header>
+<header class="nav">
+  <a class="brand" href="/">
+    <img src="/logo.png" alt="" width="69" height="20" decoding="async">
+    <span>x402 facilitator</span>
+  </a>
+
+  <nav class="nav-links" aria-label="Site">
+    <ul>
+      <li><a href="/" aria-current="page" data-nav="/" data-i18n="nav.home">Overview</a></li>
+      <li><a href="/integrar" data-nav="/integrar" data-i18n="nav.integrate">Integrate</a></li>
+      <li><a href="/x402" data-nav="/x402" data-i18n="nav.x402">x402</a></li>
+      <li><a href="/mcp" data-nav="/mcp" data-i18n="nav.mcp">MCP</a></li>
+      <li><a href="/networks" data-nav="/networks" data-i18n="nav.networks">Networks</a></li>
+      <li><a href="/erc8004" data-nav="/erc8004" data-i18n="nav.erc8004">ERC-8004</a></li>
+      <li><a href="/dx402" data-nav="/dx402" data-i18n="nav.dx402">DX402</a></li>
+      <li><a href="/bazaar" data-nav="/bazaar" data-i18n="nav.bazaar">Bazaar</a></li>
+    </ul>
+  </nav>
+
+  <div class="lang" role="group" aria-label="Language">
+    <button type="button" data-lang="en" aria-pressed="true">EN</button>
+    <button type="button" data-lang="es" aria-pressed="false">ES</button>
+  </div>
+</header>
 
         <main>
             <section class="hero fade-in">
@@ -2855,30 +2892,65 @@ result = <span class="code-function">verify_payment</span>(
             </section>
         </main>
 
-        <footer class="fade-in">
-            <div class="footer-content">
-                <div>
-                    <span data-i18n="footer.powered">Powered by</span>
-                    <a href="https://ultravioletadao.xyz" target="_blank" style="margin-left: 0.5rem;">Ultravioleta
-                        DAO</a>
-                </div>
-                <div class="footer-links">
-                    <a href="/stats" data-i18n="nav.stats">Stats</a>
-                    <a href="/events/live" data-i18n="nav.live">En vivo</a>
-                    <a href="/docs" target="_blank" data-i18n="nav.apidocs">API Docs</a>
-                    <a href="https://x402.org" target="_blank" data-i18n="footer.protocol">Protocol</a>
-                    <a href="https://github.com/x402-rs/x402-rs" target="_blank">GitHub</a>
-                    <a href="/health" target="_blank" data-i18n="footer.status">Status</a>
-                    <a href="/supported" target="_blank" data-i18n="footer.networks">Networks</a>
-                    <a href="/discovery/resources" target="_blank" data-i18n="nav.bazaar">Bazaar</a>
-                </div>
-            </div>
-        </footer>
+<footer class="footer">
+  <nav class="next" aria-label="Where to go next">
+    <p class="eyebrow" data-i18n="next.h">And after this</p>
+    <ul>
+      <li>
+        <a href="/integrar" data-i18n="next.integrar">Integrate</a>
+        <span data-i18n="next.integrar.why">the config line and the first command</span>
+      </li>
+      <li>
+        <a href="/x402" data-i18n="next.x402">x402</a>
+        <span data-i18n="next.x402.why">what verify and settle really do</span>
+      </li>
+      <li>
+        <a href="/networks" data-i18n="next.networks">Networks</a>
+        <span data-i18n="next.networks.why">whether your chain and your token are here</span>
+      </li>
+    </ul>
+  </nav>
+
+  <div class="meta">
+    <p data-i18n="footer.by">Ultravioleta DAO · x402 payment facilitator · 0% fee</p>
+    <ul class="meta-links">
+      <li><a href="/health">/health</a></li>
+      <li><a href="/version">/version</a></li>
+      <li><a href="/stats">/stats</a></li>
+      <li><a href="/events/live">/events/live</a></li>
+      <li><a href="/supported">/supported</a></li>
+      <li><a href="/docs">/docs</a></li>
+      <li><a href="/openapi.json">/openapi.json</a></li>
+      <li><a href="/llms.txt">/llms.txt</a></li>
+      <li><a href="/skill.md">/skill.md</a></li>
+      <li><a href="https://github.com/UltravioletaDAO/x402-rs" rel="noopener">GitHub</a></li>
+    </ul>
+  </div>
+</footer>
     </div>
 
     <script>
         const translations = {
             en: {
+                // --- El menu y el pie compartidos con las otras nueve
+                // paginas, y el <title>, que es parte del documento.
+                "page.title": "Ultravioleta DAO x402 Facilitator — Gasless Payments for the Agentic Economy",
+                "nav.home": "Overview",
+                "nav.integrate": "Integrate",
+                "nav.x402": "x402",
+                "nav.mcp": "MCP",
+                "nav.networks": "Networks",
+                "nav.erc8004": "ERC-8004",
+                "nav.dx402": "DX402",
+                "next.h": "And after this",
+                "next.integrar": "Integrate",
+                "next.integrar.why": "the config line and the first command",
+                "next.x402": "x402",
+                "next.x402.why": "what verify and settle really do",
+                "next.networks": "Networks",
+                "next.networks.why": "whether your chain and your token are here",
+                "footer.by": "Ultravioleta DAO · x402 payment facilitator · 0% fee",
+
                 // --- DX402 durable-evidence
                 "dx402.badge": "DX402 \u00b7 durable-evidence",
                 "dx402.title": "Responses That Outlive the Session",
@@ -2894,12 +2966,6 @@ result = <span class="code-function">verify_payment</span>(
                 "dx402.link.spec": "Specification",
                 // --- nav / footer / ERC-8004: anadidas tras auditar el i18n
                 "nav.bazaar": "Bazaar",
-                "nav.stats": "Stats",
-                "nav.live": "Live",
-                "nav.apidocs": "API Docs",
-                "footer.protocol": "Protocol",
-                "footer.status": "Status",
-                "footer.networks": "Networks",
                 "endpoints.group.erc8004reg": "ERC-8004 Agent Registration",
                 "endpoints.group.erc8004identity": "ERC-8004 Agent Identity",
                 "endpoints.registerInfo": "Registration endpoint schema, supported networks, and request format",
@@ -3017,9 +3083,27 @@ result = <span class="code-function">verify_payment</span>(
                 "apidocs.swagger": "Swagger UI",
                 "apidocs.json": "OpenAPI JSON",
                 "balances.xrpBalance": "XRP Balance",
-                "footer.powered": "Powered by"
             },
             es: {
+                // --- El menu y el pie compartidos con las otras nueve
+                // paginas, y el <title>, que es parte del documento.
+                "page.title": "Facilitador x402 de Ultravioleta DAO — pagos sin gas para la economía de agentes",
+                "nav.home": "Resumen",
+                "nav.integrate": "Integrar",
+                "nav.x402": "x402",
+                "nav.mcp": "MCP",
+                "nav.networks": "Redes",
+                "nav.erc8004": "ERC-8004",
+                "nav.dx402": "DX402",
+                "next.h": "Y después de esto",
+                "next.integrar": "Integrar",
+                "next.integrar.why": "la línea de config y el primer comando",
+                "next.x402": "x402",
+                "next.x402.why": "qué hacen verify y settle de verdad",
+                "next.networks": "Redes",
+                "next.networks.why": "si tu cadena y tu token están",
+                "footer.by": "Ultravioleta DAO · facilitador de pagos x402 · 0% de comisión",
+
                 // --- DX402 durable-evidence
                 "dx402.badge": "DX402 \u00b7 durable-evidence",
                 "dx402.title": "Respuestas que sobreviven a la sesi\u00f3n",
@@ -3035,12 +3119,6 @@ result = <span class="code-function">verify_payment</span>(
                 "dx402.link.spec": "Especificaci\u00f3n",
                 // --- nav / footer / ERC-8004: anadidas tras auditar el i18n
                 "nav.bazaar": "Bazaar",
-                "nav.stats": "Métricas",
-                "nav.live": "En vivo",
-                "nav.apidocs": "Docs API",
-                "footer.protocol": "Protocolo",
-                "footer.status": "Estado",
-                "footer.networks": "Redes",
                 "endpoints.group.erc8004reg": "Registro de agentes ERC-8004",
                 "endpoints.group.erc8004identity": "Identidad de agentes ERC-8004",
                 "endpoints.registerInfo": "Esquema del endpoint de registro, redes soportadas y formato de la petición",
@@ -3158,7 +3236,6 @@ result = <span class="code-function">verify_payment</span>(
                 "apidocs.swagger": "Swagger UI",
                 "apidocs.json": "OpenAPI JSON",
                 "balances.xrpBalance": "Saldo de XRP",
-                "footer.powered": "Desarrollado por"
             }
         };
 
@@ -3195,8 +3272,12 @@ result = <span class="code-function">verify_payment</span>(
                 }
             });
 
-            document.querySelectorAll('.lang-btn').forEach(btn => {
-                btn.classList.toggle('active', btn.getAttribute('data-lang') === lang);
+            // aria-pressed is the state, not a class: the shared switcher is a
+            // role="group" of two buttons and a screen reader reads the
+            // attribute. The stylesheet above selects on it for the same reason.
+            document.querySelectorAll('.lang button[data-lang]').forEach(btn => {
+                btn.setAttribute('aria-pressed',
+                    String(btn.getAttribute('data-lang') === lang));
             });
 
             // Re-apply the live /supported count after every (re)render so it
@@ -3274,12 +3355,10 @@ result = <span class="code-function">verify_payment</span>(
             }).catch(() => { /* leave the dashes */ });
         })();
 
-        // Only the real EN/ES buttons carry data-lang. The nav links reuse the
-        // .lang-btn class for styling, so without this guard clicking "Stats"
-        // called updateTranslations(null) on the way out — harmless while the
-        // page was already navigating, but it would spray the new missing-key
-        // warnings across the console for every key on the page.
-        document.querySelectorAll('.lang-btn[data-lang]').forEach(btn => {
+        // The shared switcher is the only thing on the page carrying
+        // data-lang, so no guard is needed any more: the eight nav links are
+        // plain anchors.
+        document.querySelectorAll('[data-lang]').forEach(btn => {
             btn.addEventListener('click', () => {
                 const lang = btn.getAttribute('data-lang');
                 updateTranslations(lang);
@@ -3290,27 +3369,15 @@ result = <span class="code-function">verify_payment</span>(
             });
         });
 
-        // Logo handling
-        const logo = document.getElementById('logo');
-        const img = new Image();
-        img.onload = () => {
-            logo.style.display = 'block';
-        };
-        img.onerror = () => {
-            logo.style.display = 'none';
-        };
-        img.src = '/logo.png';
-
-        // An explicit choice outranks the browser's guess; the browser language
-        // is only the opening bid for someone who has never picked.
+        // One URL, one document, and English until somebody presses ES.
+        // The browser's setting does not choose: a page that serves a
+        // different language to different readers at the same address gives
+        // nobody a link to point at, and the owner ruled it out on 2026-09-02.
+        // The stored choice is the ONLY thing that outranks the default.
         let storedLang = null;
         try { storedLang = localStorage.getItem('x402.lang'); } catch (e) { /* private mode */ }
-        const initialLang = translations[storedLang]
-            ? storedLang
-            : navigator.language.split('-')[0];
-        if (translations[initialLang]) {
-            updateTranslations(initialLang);
-        }
+        const initialLang = translations[storedLang] ? storedLang : 'en';
+        updateTranslations(initialLang);
 
         // Fade-in animation on scroll
         const observerOptions = {

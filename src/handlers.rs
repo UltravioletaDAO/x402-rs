@@ -598,6 +598,11 @@ const MCP_MD: &str = include_str!("../static/mcp.md");
 /// ships and nobody remembers the document, and it stays wrong quietly.
 const NETWORKS_HTML: &str = include_str!("../static/networks.html");
 
+/// The x402 page: the two calls, with escrow and upto as sections rather than
+/// as pages of their own -- they are extensions of `POST /settle`, not separate
+/// endpoints, and giving each a page would say otherwise.
+const X402_HTML: &str = include_str!("../static/x402.html");
+
 /// `Content-Language` for every human page.
 ///
 /// `en`, not `en, es`, and the difference is not pedantry. These pages carry
@@ -824,6 +829,7 @@ where
         .route("/", get(get_root))
         .route("/bazaar", get(get_bazaar))
         .route("/networks", get(get_networks_page))
+        .route("/x402", get(get_x402_page))
         .route("/events/live", get(get_events_viewer))
         .route("/stats", get(get_stats_page))
         // Escrow state query lives in secondary_read_routes() so it can carry
@@ -2417,6 +2423,17 @@ pub async fn get_mcp_page(headers: HeaderMap) -> Response<String> {
 #[instrument(skip_all)]
 pub async fn get_networks_page() -> impl IntoResponse {
     html_page(NETWORKS_HTML)
+}
+
+/// `GET /x402`: what this facilitator does, for a person deciding whether to
+/// use it -- including the counter of settlements that FAILED.
+///
+/// Publishing only the successes would be advertising, not reporting, and the
+/// endpoint that produces both numbers ships its own caveat with them; the page
+/// prints that caveat verbatim rather than paraphrasing it.
+#[instrument(skip_all)]
+pub async fn get_x402_page() -> impl IntoResponse {
+    html_page(X402_HTML)
 }
 
 /// `GET /bazaar`: Returns the curated Bazaar resource explorer (WS-D).
@@ -13243,6 +13260,7 @@ mod agentic_surface_tests {
     /// | `/docs` | `src/openapi.rs` |
     /// | `/mcp` | `static/mcp.html` (Markdown: `static/mcp.md`) |
     /// | `/networks` | `static/networks.html` |
+    /// | `/x402` | `static/x402.html` |
     /// | `/bazaar` | `static/bazaar.html` |
     /// | `/stats` | `static/stats.html` |
     /// | `/events/live` | `static/events-viewer.html` |
@@ -13340,6 +13358,7 @@ mod agentic_surface_tests {
             "/register",
             "/mcp",
             "/networks",
+            "/x402",
         ];
 
         for (path, _) in SURFACES {
@@ -13754,7 +13773,9 @@ mod json_error_tests {
 /// dictionary must turn one of them red. See the 2026-09-02 handoff for the run.
 #[cfg(test)]
 mod i18n_tests {
-    use super::{BAZAAR_HTML, EVENTS_VIEWER_HTML, INDEX_HTML, MCP_HTML, NETWORKS_HTML, STATS_HTML};
+    use super::{
+        BAZAAR_HTML, EVENTS_VIEWER_HTML, INDEX_HTML, MCP_HTML, NETWORKS_HTML, STATS_HTML, X402_HTML,
+    };
     use std::collections::BTreeSet;
 
     /// The pages and the `const` name of the JS object holding their dictionary.
@@ -13769,6 +13790,7 @@ mod i18n_tests {
         ("static/events-viewer.html", EVENTS_VIEWER_HTML),
         ("static/mcp.html", MCP_HTML),
         ("static/networks.html", NETWORKS_HTML),
+        ("static/x402.html", X402_HTML),
     ];
 
     /// The three attributes that make the runtime look a key up.

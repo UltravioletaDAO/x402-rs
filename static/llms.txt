@@ -94,6 +94,9 @@ facilitator just did, and what it costs (nothing — the seller keeps the paymen
 - **MCP server card**: https://facilitator.ultravioletadao.xyz/.well-known/mcp/server-card.json
 - **MCP guide** (Markdown): https://facilitator.ultravioletadao.xyz/mcp
 - **Network table** (HTML, built from `/supported` in the browser): https://facilitator.ultravioletadao.xyz/networks
+- **x402 guide** (HTML): https://facilitator.ultravioletadao.xyz/x402 — the two
+  calls, escrow and upto as sections, and BOTH settlement counters with the
+  caveat `/api/stats` ships alongside them
 - **Auth metadata (RFC 9728)**: https://facilitator.ultravioletadao.xyz/.well-known/oauth-protected-resource
 - **Workflow manifest**: https://facilitator.ultravioletadao.xyz/workflows.json
 - **OpenAPI 3.1**: https://facilitator.ultravioletadao.xyz/openapi.json

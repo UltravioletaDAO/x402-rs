@@ -101,6 +101,9 @@ facilitator just did, and what it costs (nothing — the seller keeps the paymen
 - **MCP server card**: https://facilitator.ultravioletadao.xyz/.well-known/mcp/server-card.json
 - **MCP guide** (Markdown): https://facilitator.ultravioletadao.xyz/mcp
 - **Network table** (HTML, built from `/supported` in the browser): https://facilitator.ultravioletadao.xyz/networks
+- **x402 guide** (HTML): https://facilitator.ultravioletadao.xyz/x402 — the two
+  calls, escrow and upto as sections, and BOTH settlement counters with the
+  caveat `/api/stats` ships alongside them
 - **Auth metadata (RFC 9728)**: https://facilitator.ultravioletadao.xyz/.well-known/oauth-protected-resource
 - **Workflow manifest**: https://facilitator.ultravioletadao.xyz/workflows.json
 - **OpenAPI 3.1**: https://facilitator.ultravioletadao.xyz/openapi.json
@@ -209,6 +212,7 @@ Full contract: `/openapi.json` (Swagger UI at `/docs`).
 - MCP server card: `/.well-known/mcp/server-card.json` (endpoint: `POST /mcp`)
 - MCP guide: `/mcp`
 - Network table, built from `/supported`: `/networks`
+- x402 guide (verify, settle, escrow, upto, and both counters): `/x402`
 - Auth metadata (RFC 9728): `/.well-known/oauth-protected-resource`
 - Workflow manifest: `/workflows.json`
 - LLM context: `/llms.txt`, `/llms-full.txt`

@@ -1,9 +1,15 @@
 <!DOCTYPE html>
-<html lang="es">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>x402 · /events en vivo</title>
+<title data-i18n="title">x402 · /events live</title>
+<meta name="description" content="The live x402 traffic stream: one message per verify and settle, straight off the wire.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://facilitator.ultravioletadao.xyz/events/live">
+<meta property="og:title" content="x402 · /events live">
+<meta property="og:description" content="The live x402 traffic stream: one message per verify and settle, straight off the wire.">
+<meta property="og:image" content="https://facilitator.ultravioletadao.xyz/logo.png">
 <style>
   :root{
     --bg:#12101a; --panel:#1a1726; --line:#2c2740; --txt:#e8e4f5;
@@ -151,7 +157,6 @@ const I18N = {
 };
 let LANG = 'en';
 try { const s = localStorage.getItem('x402.lang'); if (I18N[s]) LANG = s; } catch (e) {}
-if (!I18N[LANG]) LANG = I18N[navigator.language.split('-')[0]] ? navigator.language.split('-')[0] : 'en';
 const t = k => (I18N[LANG] && I18N[LANG][k]) || (I18N.en[k] ?? k);
 
 function applyLang(lang){

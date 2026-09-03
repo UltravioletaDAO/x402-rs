@@ -13,7 +13,14 @@
     </script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Ultravioleta DAO x402 Facilitator — Gasless Payments for the Agentic Economy</title>
+    <title data-i18n="page.title">Ultravioleta DAO x402 Facilitator — Gasless Payments for the Agentic Economy</title>
+    <meta name="description" content="Gasless x402 stablecoin settlement across 7 chain families. Verify and settle EIP-3009 payment authorizations over HTTP or MCP. 0% facilitator fee, no account, no API key.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://facilitator.ultravioletadao.xyz/">
+    <meta property="og:title" content="Ultravioleta DAO x402 Facilitator">
+    <meta property="og:description" content="Gasless x402 stablecoin settlement across 7 chain families, over HTTP or MCP. 0% facilitator fee, no account, no API key.">
+    <meta property="og:image" content="https://facilitator.ultravioletadao.xyz/logo.png">
+    <meta name="twitter:card" content="summary">
     <link rel="icon" href="/favicon.ico" type="image/x-icon">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -2999,6 +3006,7 @@ result = <span class="code-function">verify_payment</span>(
     <script>
         const translations = {
             en: {
+                "page.title": "Ultravioleta DAO x402 Facilitator — Gasless Payments for the Agentic Economy",
                 "mcp.badge": "MCP · Model Context Protocol",
                 "mcp.title": "Call This Facilitator as a Tool",
                 "mcp.description": "The same four calls, exposed as MCP tools over Streamable HTTP. A tool call is dispatched through the very same handlers as the HTTP request it names, so nothing here is a second implementation that could answer a different truth. Nothing to install, no account, no API key.",
@@ -3164,6 +3172,7 @@ result = <span class="code-function">verify_payment</span>(
                 "footer.powered": "Powered by"
             },
             es: {
+                "page.title": "Facilitador x402 de Ultravioleta DAO — Pagos sin gas para la economía de agentes",
                 "mcp.badge": "MCP · Model Context Protocol",
                 "mcp.title": "Llamá a este facilitador como una herramienta",
                 "mcp.description": "Las mismas cuatro llamadas, expuestas como herramientas MCP sobre Streamable HTTP. Una llamada a una herramienta se despacha por los mismos handlers que la petición HTTP que nombra, así que nada de esto es una segunda implementación que pueda contestar otra verdad. Nada para instalar, sin cuenta y sin API key.",
@@ -3473,9 +3482,10 @@ result = <span class="code-function">verify_payment</span>(
         // is only the opening bid for someone who has never picked.
         let storedLang = null;
         try { storedLang = localStorage.getItem('x402.lang'); } catch (e) { /* private mode */ }
-        const initialLang = translations[storedLang]
-            ? storedLang
-            : navigator.language.split('-')[0];
+        // English by default, always. The browser's Accept-Language does NOT
+        // decide: one URL per page means the language has to be a choice a
+        // reader can see and undo, not a guess made before the page renders.
+        const initialLang = translations[storedLang] ? storedLang : 'en';
         if (translations[initialLang]) {
             updateTranslations(initialLang);
         }

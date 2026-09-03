@@ -3,114 +3,133 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title data-i18n="title">x402 · facilitator metrics</title>
+<title data-i18n="title">x402 facilitator - metrics</title>
 <meta name="description" content="Everything this facilitator has verified and settled, by network and token. Not a ledger: the chain is.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://facilitator.ultravioletadao.xyz/stats">
 <meta property="og:title" content="x402 · facilitator metrics">
 <meta property="og:description" content="Everything this facilitator has verified and settled, by network and token. Not a ledger: the chain is.">
 <meta property="og:image" content="https://facilitator.ultravioletadao.xyz/logo.png">
-<style>
-  :root{
-    --bg:#12101a; --panel:#1a1726; --line:#2c2740; --txt:#e8e4f5;
-    --dim:#8a83a6; --ok:#5ee6a8; --bad:#ff6b6b; --amber:#e0a53f; --uv:#b496ff;
-  }
-  *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--txt);
-       font:14px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-  header{padding:18px 22px;background:var(--panel);border-bottom:1px solid var(--line);
-         display:flex;gap:16px;align-items:baseline;flex-wrap:wrap}
-  h1{font-size:16px;margin:0;color:var(--uv);font-weight:600}
-  h2{font-size:13px;margin:26px 0 10px;color:var(--dim);font-weight:500;
-     text-transform:uppercase;letter-spacing:.06em}
-  a{color:var(--amber)}
-  main{padding:0 22px 40px;max-width:1100px}
-  .cards{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));
-         margin-top:18px}
-  .card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px 16px}
-  .card .v{font-size:26px;font-weight:600;color:var(--ok);line-height:1.2}
-  .card .k{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
-  .card .src{color:var(--dim);font-size:10px;margin-top:6px;opacity:.75}
-  table{width:100%;border-collapse:collapse;margin-top:8px}
-  th{text-align:left;color:var(--dim);font-weight:500;padding:7px 9px;font-size:11px;
-     border-bottom:1px solid var(--line);text-transform:uppercase;letter-spacing:.04em}
-  td{padding:7px 9px;border-bottom:1px solid #221e33}
-  td.num{text-align:right;font-variant-numeric:tabular-nums}
-  .warn{background:rgba(224,165,63,.08);border:1px solid rgba(224,165,63,.3);
-        border-radius:8px;padding:14px 16px;margin-top:22px;color:var(--dim);
-        line-height:1.7;max-width:80ch}
-  .warn b{color:var(--amber)}
-  #err{color:var(--bad);padding:16px 0}
-  .muted{color:var(--dim)}
-  .langsw{margin-left:auto;display:flex;gap:4px}
-  .langsw button{background:#241f36;color:var(--txt);border:1px solid var(--line);
-                 border-radius:5px;padding:3px 8px;font:inherit;font-size:11px;
-                 cursor:pointer;opacity:.55}
-  .langsw button.active{opacity:1;border-color:var(--uv);color:var(--uv)}
-</style>
+<link rel="stylesheet" href="/uv.css">
 </head>
-<body>
+<body data-page="stats">
 
-<header>
-  <h1 data-i18n="h1">x402 · métricas del facilitador</h1>
-  <span class="muted"><span data-i18n="updated">actualizado</span> <b id="upd">—</b></span>
-  <a href="/events/live" data-i18n="seeLive">ver en vivo →</a>
-  <span class="langsw"><button data-lang="en">EN</button><button data-lang="es">ES</button></span>
+<header class="nav">
+  <a class="brand" href="/">
+    <img src="/logo.png" alt="" width="69" height="20" decoding="async">
+    <span>x402 facilitator</span>
+  </a>
+
+  <nav class="nav-links" aria-label="Site">
+    <ul>
+      <li><a href="/" data-nav="/" data-i18n="nav.home">Overview</a></li>
+      <li><a href="/integrar" data-nav="/integrar" data-i18n="nav.integrate">Integrate</a></li>
+      <li><a href="/x402" data-nav="/x402" data-i18n="nav.x402">x402</a></li>
+      <li><a href="/mcp" data-nav="/mcp" data-i18n="nav.mcp">MCP</a></li>
+      <li><a href="/networks" data-nav="/networks" data-i18n="nav.networks">Networks</a></li>
+      <li><a href="/erc8004" data-nav="/erc8004" data-i18n="nav.erc8004">ERC-8004</a></li>
+      <li><a href="/dx402" data-nav="/dx402" data-i18n="nav.dx402">DX402</a></li>
+      <li><a href="/bazaar" data-nav="/bazaar" data-i18n="nav.bazaar">Bazaar</a></li>
+    </ul>
+  </nav>
+
+  <div class="lang" role="group" aria-label="Language">
+    <button type="button" data-lang="en" aria-pressed="true">EN</button>
+    <button type="button" data-lang="es" aria-pressed="false">ES</button>
+  </div>
 </header>
 
-<main>
-  <div id="err" hidden></div>
+<main class="wrap">
+  <section class="answer">
+    <h1 data-i18n="h1">See every settlement this facilitator recorded, including the ones that failed</h1>
+    <p class="deck" data-i18n="lead">Two panels that deliberately do not add up: what the chain says, reconstructed back to the first settlement, and what this facilitator itself managed to write down since recording was switched on.</p>
+    <p class="meta"><span data-i18n="updated">updated</span> <b id="upd">-</b> &middot; <a href="/events/live" data-i18n="seeLive">watch live →</a></p>
+  </section>
+
+  <p class="note bad" id="err" hidden></p>
 
   <!-- HISTORY FIRST. This ordering is the fix for a real misreading: with the
        live panel on top, its "342" read as the facilitator's lifetime total and
        the real figure — 16,879 operations since October — sat below a wall of
        explanatory text where nobody reached it. The question a visitor arrives
        with is "how much has this thing done", and that is answered here. -->
-  <h2 data-i18n="histTitle">Todo lo procesado desde el lanzamiento</h2>
+  <h2 data-i18n="histTitle">Everything processed since launch</h2>
   <div class="cards" id="histCards"></div>
 
   <table>
     <thead><tr>
-      <th data-i18n="th.network">red</th><th data-i18n="th.token">token</th>
-      <th data-i18n="hth.scheme">esquema</th>
+      <th data-i18n="th.network">network</th><th data-i18n="th.token">token</th>
+      <th data-i18n="hth.scheme">scheme</th>
       <th class="num" data-i18n="hth.settles">settles</th>
-      <th class="num" data-i18n="th.volume">volumen</th>
-      <th data-i18n="hth.range">rango</th>
+      <th class="num" data-i18n="th.volume">volume (atomic units)</th>
+      <th data-i18n="hth.range">range</th>
     </tr></thead>
-    <tbody id="histRows"><tr><td colspan="6" class="muted" data-i18n="loading">cargando…</td></tr></tbody>
+    <tbody id="histRows"><tr><td colspan="6" class="muted" data-i18n="loading">loading…</td></tr></tbody>
   </table>
 
-  <h2 data-i18n="opsTitle">Operaciones por tipo</h2>
+  <h2 data-i18n="opsTitle">Operations processed (historical)</h2>
   <table>
     <thead><tr>
-      <th data-i18n="oth.kind">tipo de operación</th>
-      <th class="num" data-i18n="oth.count">cantidad</th>
+      <th data-i18n="oth.kind">operation type</th>
+      <th class="num" data-i18n="oth.count">count</th>
     </tr></thead>
-    <tbody id="opsRows"><tr><td colspan="2" class="muted" data-i18n="loading">cargando…</td></tr></tbody>
+    <tbody id="opsRows"><tr><td colspan="2" class="muted" data-i18n="loading">loading…</td></tr></tbody>
   </table>
 
-  <p class="muted" style="max-width:80ch;line-height:1.7" data-i18n-html="histNote"></p>
+  <p class="muted" data-i18n-html="histNote"></p>
 
-  <h2 data-i18n="liveTitle">Registro en vivo (ventana reciente)</h2>
-  <p class="muted" style="max-width:80ch;line-height:1.7" data-i18n-html="liveNote"></p>
+  <h2 data-i18n="liveTitle">Live record (recent window)</h2>
+  <p class="muted" data-i18n-html="liveNote"></p>
 
   <div class="cards" id="cards"></div>
 
-  <h2 data-i18n="byNetwork">Por red y token</h2>
+  <h2 data-i18n="byNetwork">By network and token</h2>
   <table>
     <thead><tr>
-      <th data-i18n="th.network">red</th><th data-i18n="th.token">token</th>
+      <th data-i18n="th.network">network</th><th data-i18n="th.token">token</th>
       <th class="num" data-i18n="th.ok">settles ok</th>
-      <th class="num" data-i18n="th.failed">settles fallidos</th>
+      <th class="num" data-i18n="th.failed">settles failed</th>
       <th class="num" data-i18n="th.verifies">verifies</th>
-      <th class="num" data-i18n="th.volume">volumen (unidades atómicas)</th>
-      <th data-i18n="th.last">último</th>
+      <th class="num" data-i18n="th.volume">volume (atomic units)</th>
+      <th data-i18n="th.last">last</th>
     </tr></thead>
-    <tbody id="rows"><tr><td colspan="7" class="muted" data-i18n="loading">cargando…</td></tr></tbody>
+    <tbody id="rows"><tr><td colspan="7" class="muted" data-i18n="loading">loading…</td></tr></tbody>
   </table>
 
-  <div class="warn" data-i18n-html="warn"></div>
+  <div class="note warn" data-i18n-html="warn"></div>
 </main>
+
+<footer class="footer">
+  <nav class="next" aria-label="Where to go next">
+    <p class="eyebrow" data-i18n="next.h">And after this</p>
+    <ul>
+      <li>
+        <a href="/x402" data-i18n="next.x402">x402</a>
+        <span data-i18n="next.x402.why">what a settle is, and why the failures are published too</span>
+      </li>
+      <li>
+        <a href="/networks" data-i18n="next.networks">Networks</a>
+        <span data-i18n="next.networks.why">the chains these rows come from</span>
+      </li>
+    </ul>
+  </nav>
+
+  <div class="meta">
+    <p data-i18n="footer.by">Ultravioleta DAO · x402 payment facilitator · 0% fee</p>
+    <ul class="meta-links">
+      <li><a href="/health">/health</a></li>
+      <li><a href="/version">/version</a></li>
+      <li><a href="/stats">/stats</a></li>
+      <li><a href="/events/live">/events/live</a></li>
+      <li><a href="/supported">/supported</a></li>
+      <li><a href="/docs">/docs</a></li>
+      <li><a href="/openapi.json">/openapi.json</a></li>
+      <li><a href="/llms.txt">/llms.txt</a></li>
+      <li><a href="/skill.md">/skill.md</a></li>
+      <li><a href="https://github.com/UltravioletaDAO/x402-rs" rel="noopener">GitHub</a></li>
+    </ul>
+  </div>
+</footer>
 
 <script>
 // ---------------------------------------------------------------------------
@@ -120,7 +139,23 @@
 // ---------------------------------------------------------------------------
 const I18N = {
   en: {
-    title:"x402 · facilitator metrics", h1:"x402 · facilitator metrics",
+    "footer.by":"Ultravioleta DAO · x402 payment facilitator · 0% fee",
+    "h1":"See every settlement this facilitator recorded, including the ones that failed",
+    "lead":"Two panels that deliberately do not add up: what the chain says, reconstructed back to the first settlement, and what this facilitator itself managed to write down since recording was switched on.",
+    "nav.bazaar":"Bazaar",
+    "nav.dx402":"DX402",
+    "nav.erc8004":"ERC-8004",
+    "nav.home":"Overview",
+    "nav.integrate":"Integrate",
+    "nav.mcp":"MCP",
+    "nav.networks":"Networks",
+    "nav.x402":"x402",
+    "next.h":"And after this",
+    "next.networks":"Networks",
+    "next.networks.why":"the chains these rows come from",
+    "next.x402":"x402",
+    "next.x402.why":"what a settle is, and why the failures are published too",
+    "title":"x402 facilitator - metrics",
     histTitle:"Everything processed since launch",
     liveTitle:"Live record (recent window)",
     liveNote:"<b>These are NOT the totals.</b> They count only what the facilitator recorded "+
@@ -167,7 +202,23 @@ const I18N = {
       "source of truth; this is an index.",
   },
   es: {
-    title:"x402 · métricas del facilitador", h1:"x402 · métricas del facilitador",
+    "footer.by":"Ultravioleta DAO · facilitador de pagos x402 · 0% de comisión",
+    "h1":"Mirá cada liquidación que este facilitador registró, incluidas las que fallaron",
+    "lead":"Dos paneles que a propósito no suman: lo que dice la cadena, reconstruido hasta la primera liquidación, y lo que este facilitador alcanzó a anotar desde que se encendió el registro.",
+    "nav.bazaar":"Bazar",
+    "nav.dx402":"DX402",
+    "nav.erc8004":"ERC-8004",
+    "nav.home":"Resumen",
+    "nav.integrate":"Integrar",
+    "nav.mcp":"MCP",
+    "nav.networks":"Redes",
+    "nav.x402":"x402",
+    "next.h":"Y después de esto",
+    "next.networks":"Redes",
+    "next.networks.why":"las cadenas de las que salen estas filas",
+    "next.x402":"x402",
+    "next.x402.why":"qué es un settle, y por qué los fallos también se publican",
+    "title":"x402 facilitator - métricas",
     histTitle:"Todo lo procesado desde el lanzamiento",
     liveTitle:"Registro en vivo (ventana reciente)",
     liveNote:"<b>Estos NO son los totales.</b> Cuentan solo lo que el facilitador registró por su "+
@@ -228,8 +279,8 @@ function applyLang(lang){
   document.querySelectorAll('[data-i18n-html]').forEach(el => {
     el.innerHTML = t(el.getAttribute('data-i18n-html'));
   });
-  document.querySelectorAll('.langsw button').forEach(b => {
-    b.classList.toggle('active', b.getAttribute('data-lang') === LANG);
+  document.querySelectorAll('.lang button').forEach(b => {
+    b.setAttribute('aria-pressed', String(b.getAttribute('data-lang') === LANG));
   });
   // Both panels are built in JS, so both must re-render on a language switch.
   load();
@@ -264,6 +315,9 @@ function card(k, v, src){
           <div class="v">${esc(v)}</div>
           <div class="src">${esc(src)}</div></div>`;
 }
+// .cards / .card / .k / .v / .src viven en uv.css: los usan cinco paginas y
+// una copia por pagina es lo que la regla de configuracion centralizada
+// prohibe.
 
 async function load(){
   let data;
@@ -344,7 +398,7 @@ async function loadHistory(){
     : `<tr><td colspan="2" class="muted">${esc(t('noRows'))}</td></tr>`;
 }
 
-document.querySelectorAll('.langsw button').forEach(b=>{
+document.querySelectorAll('.lang button').forEach(b=>{
   b.onclick=()=>{
     const lang=b.getAttribute('data-lang');
     applyLang(lang);

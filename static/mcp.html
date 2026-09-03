@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title data-i18n="title">x402 facilitator · MCP server</title>
+<title data-i18n="title">x402 facilitator - MCP server</title>
 <meta name="description" content="The x402 facilitator as an MCP server: one stateless Streamable HTTP endpoint, four tools, no install and no API key. Transports, the tool contract, the errors and the measured traps.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://facilitator.ultravioletadao.xyz/mcp">
@@ -11,82 +11,59 @@
 <meta property="og:description" content="Four tools over one stateless Streamable HTTP endpoint. Same handlers as the REST routes, so a tool and a curl cannot disagree.">
 <meta property="og:image" content="https://facilitator.ultravioletadao.xyz/logo.png">
 <link rel="icon" href="/favicon.ico">
-<style>
-  :root{
-    --bg:#12101a; --panel:#1a1726; --line:#2c2740; --txt:#e8e4f5;
-    --dim:#8a83a6; --ok:#5ee6a8; --bad:#ff6b6b; --amber:#e0a53f; --uv:#b496ff;
-    --cyan:#5ad7e6;
-  }
-  *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--txt);
-       font:14px/1.7 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-  header{padding:18px 22px;background:var(--panel);border-bottom:1px solid var(--line);
-         display:flex;gap:16px;align-items:baseline;flex-wrap:wrap;position:sticky;top:0;z-index:5}
-  h1{font-size:16px;margin:0;color:var(--uv);font-weight:600}
-  h2{font-size:13px;margin:34px 0 10px;color:var(--dim);font-weight:500;
-     text-transform:uppercase;letter-spacing:.06em;border-top:1px solid var(--line);padding-top:18px}
-  h3{font-size:13px;margin:22px 0 6px;color:var(--cyan);font-weight:600}
-  a{color:var(--amber)}
-  main{padding:0 22px 60px;max-width:96ch}
-  p{max-width:88ch}
-  code{color:var(--cyan);background:#1e1a2e;padding:1px 4px;border-radius:3px}
-  pre{background:#0e0c17;border:1px solid var(--line);border-radius:8px;padding:14px 16px;
-      overflow-x:auto;line-height:1.55}
-  pre code{background:none;padding:0;color:var(--txt)}
-  table{width:100%;border-collapse:collapse;margin-top:10px}
-  th{text-align:left;color:var(--dim);font-weight:500;padding:7px 9px;font-size:11px;
-     border-bottom:1px solid var(--line);text-transform:uppercase;letter-spacing:.04em}
-  td{padding:7px 9px;border-bottom:1px solid #221e33;vertical-align:top}
-  .scroll{overflow-x:auto}
-  .lead{color:var(--txt);font-size:15px;line-height:1.75;max-width:88ch}
-  .facts{display:flex;gap:12px;flex-wrap:wrap;margin:18px 0}
-  .fact{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 14px}
-  .fact .k{color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.06em}
-  .fact .v{color:var(--cyan)}
-  .warn{background:rgba(224,165,63,.08);border:1px solid rgba(224,165,63,.32);
-        border-radius:8px;padding:14px 16px;margin:22px 0;line-height:1.7;max-width:88ch}
-  .warn b{color:var(--amber)}
-  .no{background:rgba(255,107,107,.06);border:1px solid rgba(255,107,107,.25);
-      border-radius:8px;padding:14px 16px;margin:18px 0;max-width:88ch}
-  .no b{color:var(--bad)}
-  ul{max-width:88ch;padding-left:20px}
-  li{margin:8px 0}
-  .muted{color:var(--dim)}
-  .langsw{margin-left:auto;display:flex;gap:4px}
-  .langsw button{background:#241f36;color:var(--txt);border:1px solid var(--line);
-                 border-radius:5px;padding:3px 8px;font:inherit;font-size:11px;
-                 cursor:pointer;opacity:.55}
-  .langsw button.active{opacity:1;border-color:var(--uv);color:var(--uv)}
-  footer{border-top:1px solid var(--line);padding:18px 22px;color:var(--dim);font-size:12px}
-</style>
+<link rel="stylesheet" href="/uv.css">
 </head>
-<body>
+<body data-page="mcp">
 
-<header>
-  <h1>x402 facilitator · MCP</h1>
-  <a href="/">/</a>
-  <a href="/skill.md">/skill.md</a>
-  <a href="/docs">/docs</a>
-  <a href="/.well-known/mcp/server-card.json" data-i18n="nav.card">server card</a>
-  <span class="langsw"><button data-lang="en">EN</button><button data-lang="es">ES</button></span>
+<header class="nav">
+  <a class="brand" href="/">
+    <img src="/logo.png" alt="" width="69" height="20" decoding="async">
+    <span>x402 facilitator</span>
+  </a>
+
+  <nav class="nav-links" aria-label="Site">
+    <ul>
+      <li><a href="/" data-nav="/" data-i18n="nav.home">Overview</a></li>
+      <li><a href="/integrar" data-nav="/integrar" data-i18n="nav.integrate">Integrate</a></li>
+      <li><a href="/x402" data-nav="/x402" data-i18n="nav.x402">x402</a></li>
+      <li><a href="/mcp" aria-current="page" data-nav="/mcp" data-i18n="nav.mcp">MCP</a></li>
+      <li><a href="/networks" data-nav="/networks" data-i18n="nav.networks">Networks</a></li>
+      <li><a href="/erc8004" data-nav="/erc8004" data-i18n="nav.erc8004">ERC-8004</a></li>
+      <li><a href="/dx402" data-nav="/dx402" data-i18n="nav.dx402">DX402</a></li>
+      <li><a href="/bazaar" data-nav="/bazaar" data-i18n="nav.bazaar">Bazaar</a></li>
+    </ul>
+  </nav>
+
+  <div class="lang" role="group" aria-label="Language">
+    <button type="button" data-lang="en" aria-pressed="true">EN</button>
+    <button type="button" data-lang="es" aria-pressed="false">ES</button>
+  </div>
 </header>
 
-<main>
+<main class="wrap">
 
-<p class="lead" data-i18n="lead">This facilitator answers MCP on the same URL it answers HTTP. Four tools, one stateless endpoint, nothing to install and no API key. A tool call is dispatched through the very same REST router as the request it names, so a tool and a curl cannot disagree about anything.</p>
+<section class="answer">
+  <h1 data-i18n="h1">Give your agent four tools that pay for things</h1>
+  <p class="deck" data-i18n="lead">One stateless HTTP endpoint, nothing to install, no API key and no charge — and of the four tools exactly one moves real money.</p>
+</section>
 
-<div class="facts">
-  <div class="fact"><div class="k" data-i18n="fact.endpoint">Endpoint</div><div class="v">https://facilitator.ultravioletadao.xyz/mcp</div></div>
-  <div class="fact"><div class="k" data-i18n="fact.transport">Transport</div><div class="v">Streamable HTTP · stateless · POST</div></div>
-  <div class="fact"><div class="k" data-i18n="fact.auth">Authentication</div><div class="v" data-i18n="fact.authValue">none — the payer's signature is the only authority</div></div>
-  <div class="fact"><div class="k" data-i18n="fact.price">Price</div><div class="v" data-i18n="fact.priceValue">0% — this endpoint never answers 402</div></div>
-</div>
+
+<dl class="kv">
+  <dt data-i18n="fact.endpoint">Endpoint</dt>
+  <dd>https://facilitator.ultravioletadao.xyz/mcp</dd>
+  <dt data-i18n="fact.transport">Transport</dt>
+  <dd>Streamable HTTP · stateless · POST</dd>
+  <dt data-i18n="fact.auth">Authentication</dt>
+  <dd data-i18n="fact.authValue">none — the payer's signature is the only authority</dd>
+  <dt data-i18n="fact.price">Price</dt>
+  <dd data-i18n="fact.priceValue">0% — this endpoint never answers 402</dd>
+</dl>
 
 <h2 data-i18n="h.what">What you get here, and what you do not</h2>
 
 <p data-i18n="what.p1">What is being offered is settlement, not information. This service verifies an x402 payment authorization against the chain it names and then broadcasts it, paying the gas out of its own wallet, on seven chain families. The buyer signs; the buyer never holds native tokens for gas. That is the whole product, and the four tools are the whole surface of it.</p>
 
-<div class="no">
+<div class="note bad">
   <p style="margin-top:0"><b data-i18n="what.notTitle">Four things this server is not.</b></p>
   <ul>
     <li data-i18n="what.not1"><b>Not a wallet.</b> It holds no key of yours, signs nothing on your behalf and cannot move a coin you did not authorize. The signature inside the payload is the only authority there is, which is also why there is nothing to log in to.</li>
@@ -132,7 +109,7 @@
     "websiteUrl":"https://facilitator.ultravioletadao.xyz"},
   "instructions":"Call x402_supported first ..."}}</code></pre>
 
-<div class="warn">
+<div class="note warn">
   <p style="margin:0"><b data-i18n="transport.acceptTitle">Both Accept types, or 406.</b> <span data-i18n="transport.acceptText">The Streamable HTTP transport rejects a request whose <code>Accept</code> does not name <em>both</em> <code>application/json</code> and <code>text/event-stream</code> — even though this server never opens a stream and always answers JSON. It is the first wall an integrator writing a client by hand runs into, and the refusal is a 406 with no other explanation.</span></p>
 </div>
 
@@ -216,7 +193,7 @@ x402_settle(payload, reqs)  <span class="muted">← broadcast. real funds. irrev
 <p data-i18n="tools.supportedText"><code>result.content[0].text</code> is the exact body of <code>GET /supported</code>: every <code>(scheme, network)</code> pair this facilitator settles, each network spelled twice — the x402 v1 name (<code>"base"</code>) and the CAIP-2 form (<code>"eip155:8453"</code>) — with the token list for each. Both spellings are accepted everywhere a network is named. Never hard-code the count of networks from this page or any other: this call is the only answer that is true today.</p>
 
 <h3 data-i18n="tools.h.settle">x402_settle — the one that spends</h3>
-<div class="warn">
+<div class="note warn">
   <p style="margin:0"><b data-i18n="tools.settleWarnTitle">This moves real funds and cannot be undone.</b> <span data-i18n="tools.settleWarnText">It broadcasts the payer's authorization as a blockchain transaction. Nothing in this facilitator and nothing on any chain reverses a confirmed transfer. Call <code>x402_verify</code> first — it checks the same signature, the same nonce, the same amount and the same network, and submits nothing.</span></p>
 </div>
 <p data-i18n="tools.settleText"><b>A tool call cannot set headers</b>, and that is the one real gap between this door and the HTTP one. It is a gap in <em>capability</em>, never in privilege: nothing here can move funds an HTTP client could not. The input that mattered got an argument instead — <code>idempotencyKey</code> is lifted out of the body and sent as the <code>Idempotency-Key</code> header, so a retry after an ambiguous failure settles once and not twice. Send a fresh unguessable value per payment (a UUIDv4 is the right shape) and reuse it on every retry <em>of that payment</em>. Keys share one namespace across all callers: a predictable one like <code>retry-1</code> can be claimed by somebody else's settle first, and yours is then refused with 409. The v2 <code>PAYMENT-SIGNATURE</code> header transport has no MCP equivalent; put the payload in the body.</p>
@@ -273,9 +250,40 @@ x-ratelimit-remaining: 25</code></pre>
 
 </main>
 
-<footer>
-  <span data-i18n="footer">Ultravioleta DAO · x402 Payment Facilitator.</span>
-  <a href="/">/</a> · <a href="/stats">/stats</a> · <a href="/events/live">/events/live</a> · <a href="/bazaar">/bazaar</a>
+<footer class="footer">
+  <nav class="next" aria-label="Where to go next">
+    <p class="eyebrow" data-i18n="next.h">And after this</p>
+    <ul>
+      <li>
+        <a href="/integrar" data-i18n="next.integrar">Integrate</a>
+        <span data-i18n="next.integrar.why">the HTTP version, if you are not going through MCP</span>
+      </li>
+      <li>
+        <a href="/x402" data-i18n="next.x402">x402</a>
+        <span data-i18n="next.x402.why">what each tool does underneath</span>
+      </li>
+      <li>
+        <a href="/bazaar" data-i18n="next.bazaar">Bazaar</a>
+        <span data-i18n="next.bazaar.why">which endpoints to pay against</span>
+      </li>
+    </ul>
+  </nav>
+
+  <div class="meta">
+    <p data-i18n="footer.by">Ultravioleta DAO · x402 payment facilitator · 0% fee</p>
+    <ul class="meta-links">
+      <li><a href="/health">/health</a></li>
+      <li><a href="/version">/version</a></li>
+      <li><a href="/stats">/stats</a></li>
+      <li><a href="/events/live">/events/live</a></li>
+      <li><a href="/supported">/supported</a></li>
+      <li><a href="/docs">/docs</a></li>
+      <li><a href="/openapi.json">/openapi.json</a></li>
+      <li><a href="/llms.txt">/llms.txt</a></li>
+      <li><a href="/skill.md">/skill.md</a></li>
+      <li><a href="https://github.com/UltravioletaDAO/x402-rs" rel="noopener">GitHub</a></li>
+    </ul>
+  </div>
 </footer>
 
 <script>
@@ -286,9 +294,26 @@ x-ratelimit-remaining: 25</code></pre>
 // ---------------------------------------------------------------------------
 const I18N = {
   en: {
-    title:"x402 facilitator · MCP server",
+    "footer.by":"Ultravioleta DAO · x402 payment facilitator · 0% fee",
+    "h1":"Give your agent four tools that pay for things",
+    "nav.bazaar":"Bazaar",
+    "nav.dx402":"DX402",
+    "nav.erc8004":"ERC-8004",
+    "nav.home":"Overview",
+    "nav.integrate":"Integrate",
+    "nav.mcp":"MCP",
+    "nav.networks":"Networks",
+    "nav.x402":"x402",
+    "next.bazaar":"Bazaar",
+    "next.bazaar.why":"which endpoints to pay against",
+    "next.h":"And after this",
+    "next.integrar":"Integrate",
+    "next.integrar.why":"the HTTP version, if you are not going through MCP",
+    "next.x402":"x402",
+    "next.x402.why":"what each tool does underneath",
+    "title":"x402 facilitator - MCP server",
     "nav.card":"server card",
-    lead:"This facilitator answers MCP on the same URL it answers HTTP. Four tools, one stateless endpoint, nothing to install and no API key. A tool call is dispatched through the very same REST router as the request it names, so a tool and a curl cannot disagree about anything.",
+    "lead":"One stateless HTTP endpoint, nothing to install, no API key and no charge — and of the four tools exactly one moves real money.",
     "fact.endpoint":"Endpoint", "fact.transport":"Transport",
     "fact.auth":"Authentication", "fact.authValue":"none — the payer's signature is the only authority",
     "fact.price":"Price", "fact.priceValue":"0% — this endpoint never answers 402",
@@ -349,9 +374,26 @@ const I18N = {
     footer:"Ultravioleta DAO · x402 Payment Facilitator.",
   },
   es: {
-    title:"facilitador x402 · servidor MCP",
+    "footer.by":"Ultravioleta DAO · facilitador de pagos x402 · 0% de comisión",
+    "h1":"Dale a tu agente cuatro herramientas que pagan cosas",
+    "nav.bazaar":"Bazar",
+    "nav.dx402":"DX402",
+    "nav.erc8004":"ERC-8004",
+    "nav.home":"Resumen",
+    "nav.integrate":"Integrar",
+    "nav.mcp":"MCP",
+    "nav.networks":"Redes",
+    "nav.x402":"x402",
+    "next.bazaar":"Bazar",
+    "next.bazaar.why":"contra qué endpoints pagar",
+    "next.h":"Y después de esto",
+    "next.integrar":"Integrar",
+    "next.integrar.why":"la versión HTTP, si no vas por MCP",
+    "next.x402":"x402",
+    "next.x402.why":"qué hace cada tool por debajo",
+    "title":"Facilitador x402 - servidor MCP",
     "nav.card":"server card",
-    lead:"Este facilitador contesta MCP en la misma URL en la que contesta HTTP. Cuatro herramientas, un endpoint sin estado, nada para instalar y sin API key. Una llamada a una herramienta se despacha por el mismo router REST que la petición que nombra, así que una herramienta y un curl no pueden contradecirse en nada.",
+    "lead":"Un endpoint HTTP sin estado, nada para instalar, sin API key y sin cobro — y de las cuatro herramientas exactamente una mueve dinero de verdad.",
     "fact.endpoint":"Endpoint", "fact.transport":"Transporte",
     "fact.auth":"Autenticación", "fact.authValue":"ninguna — la firma del pagador es la única autoridad",
     "fact.price":"Precio", "fact.priceValue":"0% — este endpoint nunca contesta 402",
@@ -426,12 +468,12 @@ function applyLang(lang){
     // that textContent would flatten away.
     el.innerHTML = t(el.getAttribute('data-i18n'));
   });
-  document.querySelectorAll('.langsw button').forEach(b => {
-    b.classList.toggle('active', b.getAttribute('data-lang') === LANG);
+  document.querySelectorAll('.lang button').forEach(b => {
+    b.setAttribute('aria-pressed', String(b.getAttribute('data-lang') === LANG));
   });
 }
 
-document.querySelectorAll('.langsw button').forEach(b => {
+document.querySelectorAll('.lang button').forEach(b => {
   b.addEventListener('click', () => {
     const lang = b.getAttribute('data-lang');
     try { localStorage.setItem('x402.lang', lang); } catch (e) { /* private mode */ }

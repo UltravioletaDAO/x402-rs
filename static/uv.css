@@ -456,6 +456,37 @@ pre .c { color: var(--ink-dim); }   /* comentario dentro del bloque */
   .pared dt { padding-top: var(--sp-2); }
 }
 
+/* --- .cards: la rejilla de fichas de dato vivo que ya usan /stats, /x402,
+   /dx402, /networks y /mcp. SIN borde: el fondo agrupa igual que en pre, y el
+   borde de cuatro lados sigue siendo uno solo en todo el sistema (.group).
+   El valor va en --ink y no en --ok: es un dato, no un estado. El estado vive
+   en .tag y en ningun otro lado. --- */
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+         gap: var(--sp-3); max-width: var(--measure-wide); margin-top: var(--sp-4); }
+.card { background: var(--panel); border-radius: var(--r-md); padding: var(--sp-4); }
+.card .k { font-size: var(--fs-100); color: var(--ink-dim);
+           text-transform: uppercase; letter-spacing: .05em; }
+.card .v { font-size: var(--fs-500); font-weight: 600; color: var(--ink);
+           line-height: var(--lh-tight); font-family: var(--font-mono);
+           font-feature-settings: "zero" 1; word-break: break-word; }
+.card .src { font-size: var(--fs-100); color: var(--ink-dim); margin-top: var(--sp-1); }
+
+/* --- .controls: la fila de controles de una pagina viva (/events/live los
+   botones y el selector de vista, /networks y /bazaar los filtros). Un solo
+   estilo de control para las tres, con el radio chico del sistema. --- */
+.controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-3);
+            max-width: none; margin-top: var(--sp-4); }
+.controls button, .controls select, .controls input {
+  background: var(--panel-2); color: var(--ink); border: 1px solid var(--line);
+  border-radius: var(--r-sm); padding: var(--sp-1) var(--sp-3);
+  font-family: inherit; font-size: var(--fs-200); cursor: pointer;
+}
+.controls input { cursor: text; }
+.controls button[aria-pressed="true"] { color: var(--brand); border-color: var(--brand); }
+
+/* --- .mono: un dato que se lee caracter por caracter (hash, direccion, id) --- */
+.mono { font-family: var(--font-mono); font-feature-settings: "zero" 1; }
+
 /* --- primera pantalla: las dos puertas de rol y la salida impresa --- */
 .roles { font-size: var(--fs-400); }
 .roles a { font-weight: 600; }
@@ -502,3 +533,97 @@ h2 { font-family: var(--font-mono); letter-spacing: -.01em; }
   .kv { grid-template-columns: 1fr; gap: var(--sp-1) 0; }
   .kv dd { margin-bottom: var(--sp-3); }
 }
+
+/* ------------------------------------------------------------------ *
+ * 10. LO PROPIO DE UNA PAGINA
+ * ------------------------------------------------------------------ *
+ * Aca aterriza lo que era el <style> de una pagina y no tiene componente
+ * porque no se repite en ninguna otra. Va con selector [data-page] para que
+ * no se escape: la hoja es una sola y el alcance lo pone el atributo, no un
+ * archivo aparte.
+ */
+
+/* --- /events/live: la tabla del cable --- */
+[data-page="events-viewer"] td { white-space: nowrap; }
+[data-page="events-viewer"] tr.settle td { background: var(--panel); }
+[data-page="events-viewer"] .kind { font-weight: 600; }
+[data-page="events-viewer"] .kind.settle { color: var(--ok); }
+[data-page="events-viewer"] .kind.verify { color: var(--brand); }
+/* el endpoint es el dato de esta columna, pero una URL entera empuja las otras
+   ocho fuera de la pantalla */
+[data-page="events-viewer"] .res { max-width: 34ch; overflow: hidden;
+                                   text-overflow: ellipsis; color: var(--brand); }
+[data-page="events-viewer"] #raw { white-space: pre-wrap; word-break: break-all;
+                                   max-height: 70vh; }
+
+/* --- /networks: la celda de la primera columna. El tamano lo pone el
+   componente (.chip-red--tabla); la celda solo alinea. --- */
+[data-page="networks"] td.net { display: flex; align-items: center; gap: var(--sp-2); }
+
+/* --- /bazaar: el catalogo. Lo que aca sigue vivo es lo que no tiene
+   componente porque no se repite en ninguna otra pagina: la ficha de un
+   endpoint, la tarjeta de un socio, el buscador y el dialogo de detalle.
+   Todo lo demas (la rejilla de cifras, las tablas, los rotulos de estado,
+   los controles) usa los componentes del sistema. --- */
+[data-page="bazaar"] .cards { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
+[data-page="bazaar"] #grid .card { cursor: pointer; display: flex; flex-direction: column;
+                                   gap: var(--sp-2); }
+[data-page="bazaar"] #grid .card:hover { background: var(--panel-2); }
+[data-page="bazaar"] .card-top { display: flex; justify-content: space-between;
+                                 align-items: flex-start; gap: var(--sp-2); }
+[data-page="bazaar"] .card-host { font-weight: 600; word-break: break-word; }
+[data-page="bazaar"] .card-path { color: var(--ink-dim); font-size: var(--fs-200);
+                                  font-family: var(--font-mono); word-break: break-all; }
+[data-page="bazaar"] .card-desc { color: var(--ink-dim); font-size: var(--fs-200); }
+[data-page="bazaar"] .badges { display: flex; flex-wrap: wrap; gap: var(--sp-1);
+                               margin-top: auto; }
+[data-page="bazaar"] .tag.price { color: var(--ok); }
+[data-page="bazaar"] .tag.alive, [data-page="bazaar"] .tag.first_party { color: var(--ok); }
+[data-page="bazaar"] .tag.quarantined { color: var(--bad); }
+[data-page="bazaar"] .tag.vip, [data-page="bazaar"] .tag.verified { color: var(--brand); }
+
+[data-page="bazaar"] .vip-grid { display: grid; gap: var(--sp-4); max-width: var(--measure-wide);
+                                 grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+[data-page="bazaar"] .vip-card { background: var(--panel); border-radius: var(--r-md);
+                                 padding: var(--sp-4); text-decoration: none; color: inherit;
+                                 display: block; }
+[data-page="bazaar"] .vip-card:hover { background: var(--panel-2); }
+[data-page="bazaar"] .vip-name { font-weight: 600; display: flex; align-items: center;
+                                 gap: var(--sp-2); }
+[data-page="bazaar"] .vip-blurb { color: var(--ink-dim); font-size: var(--fs-200);
+                                  margin-top: var(--sp-1); }
+
+[data-page="bazaar"] .search { flex: 1; min-width: 240px; position: relative;
+                               display: flex; align-items: center; }
+[data-page="bazaar"] .search input { width: 100%; padding-left: var(--sp-8); }
+[data-page="bazaar"] .search svg { position: absolute; left: var(--sp-3);
+                                   color: var(--ink-dim); }
+
+[data-page="bazaar"] .pinfo { color: var(--ink-dim); font-family: var(--font-mono);
+                              font-size: var(--fs-200); }
+[data-page="bazaar"] .controls button:disabled { opacity: .4; cursor: not-allowed; }
+[data-page="bazaar"] .empty { color: var(--ink-dim); padding: var(--sp-7) 0; }
+/* el esqueleto de carga no anima si el lector pidio menos movimiento: la regla
+   de prefers-reduced-motion de la seccion 8 ya lo cubre */
+[data-page="bazaar"] .skeleton { height: 130px; border-radius: var(--r-md);
+                                 background: var(--panel); animation: latido 1.4s infinite; }
+@keyframes latido { 50% { background: var(--panel-2); } }
+
+[data-page="bazaar"] dialog { background: var(--panel); color: var(--ink);
+                              border: 1px solid var(--line); border-radius: var(--r-md);
+                              padding: 0; max-width: 620px; width: 92%; }
+[data-page="bazaar"] dialog::backdrop { background: rgba(0, 0, 0, .45); }
+[data-page="bazaar"] .modal-head { padding: var(--sp-4) var(--sp-5);
+                                   border-bottom: 1px solid var(--line);
+                                   display: flex; justify-content: space-between; gap: var(--sp-4); }
+[data-page="bazaar"] .modal-body { padding: var(--sp-4) var(--sp-5); }
+[data-page="bazaar"] .modal-body h3 { font-size: var(--fs-100); text-transform: uppercase;
+                                      letter-spacing: .05em; color: var(--ink-dim);
+                                      margin: var(--sp-4) 0 var(--sp-1); }
+[data-page="bazaar"] .accept-row { border-radius: var(--r-sm); background: var(--panel-2);
+                                   padding: var(--sp-2) var(--sp-3); margin-bottom: var(--sp-2); }
+[data-page="bazaar"] .close-x { background: none; border: 0; color: var(--ink-dim);
+                                font-size: var(--fs-400); cursor: pointer; }
+[data-page="bazaar"] .share { color: var(--ink-dim); text-align: right; white-space: nowrap; }
+[data-page="bazaar"] td.n { text-align: right; font-family: var(--font-mono);
+                            font-feature-settings: "zero" 1; white-space: nowrap; }

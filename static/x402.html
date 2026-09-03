@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title data-i18n="title">x402 facilitator · verify and settle</title>
+<title data-i18n="title">x402 facilitator - verify and settle</title>
 <meta name="description" content="How this facilitator verifies and settles an x402 payment: the two calls, the escrow and upto extensions, and the two counters it publishes with the warning that comes with them.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://facilitator.ultravioletadao.xyz/x402">
@@ -11,71 +11,42 @@
 <meta property="og:description" content="Two calls, gasless for the buyer, 0% fee. Escrow and upto included, and both counters published with their caveat.">
 <meta property="og:image" content="https://facilitator.ultravioletadao.xyz/logo.png">
 <link rel="icon" href="/favicon.ico">
-<style>
-  :root{
-    --bg:#12101a; --panel:#1a1726; --line:#2c2740; --txt:#e8e4f5;
-    --dim:#8a83a6; --ok:#5ee6a8; --bad:#ff6b6b; --amber:#e0a53f; --uv:#b496ff;
-    --cyan:#5ad7e6;
-  }
-  *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--txt);
-       font:14px/1.7 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-  header{padding:18px 22px;background:var(--panel);border-bottom:1px solid var(--line);
-         display:flex;gap:16px;align-items:baseline;flex-wrap:wrap;position:sticky;top:0;z-index:5}
-  h1{font-size:16px;margin:0;color:var(--uv);font-weight:600}
-  h2{font-size:13px;margin:34px 0 10px;color:var(--dim);font-weight:500;
-     text-transform:uppercase;letter-spacing:.06em;border-top:1px solid var(--line);padding-top:18px}
-  h3{font-size:13px;margin:22px 0 6px;color:var(--cyan);font-weight:600}
-  a{color:var(--amber)}
-  main{padding:0 22px 60px;max-width:96ch}
-  p{max-width:88ch}
-  code{color:var(--cyan);background:#1e1a2e;padding:1px 4px;border-radius:3px}
-  pre{background:#0e0c17;border:1px solid var(--line);border-radius:8px;padding:14px 16px;
-      overflow-x:auto;line-height:1.55}
-  pre code{background:none;padding:0;color:var(--txt)}
-  .lead{font-size:15px;line-height:1.75;max-width:88ch}
-  .cards{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));margin:18px 0}
-  .card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px 16px}
-  .card .v{font-size:26px;font-weight:600;color:var(--ok);line-height:1.2}
-  .card .v.bad{color:var(--bad)}
-  .card .k{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
-  .card .src{color:var(--dim);font-size:10px;margin-top:6px;opacity:.75}
-  .scroll{overflow-x:auto}
-  table{width:100%;border-collapse:collapse;margin-top:10px}
-  th{text-align:left;color:var(--dim);font-weight:500;padding:7px 9px;font-size:11px;
-     border-bottom:1px solid var(--line);text-transform:uppercase;letter-spacing:.04em}
-  td{padding:7px 9px;border-bottom:1px solid #221e33;vertical-align:top}
-  .tag{display:inline-block;background:#241f36;border:1px solid var(--line);border-radius:4px;
-       padding:0 6px;margin:1px 3px 1px 0;font-size:11px;color:var(--cyan);white-space:nowrap}
-  .warn{background:rgba(224,165,63,.08);border:1px solid rgba(224,165,63,.32);
-        border-radius:8px;padding:14px 16px;margin:22px 0;line-height:1.7;max-width:88ch}
-  .warn b{color:var(--amber)}
-  ul{max-width:88ch;padding-left:20px}
-  li{margin:8px 0}
-  .muted{color:var(--dim)}
-  .langsw{margin-left:auto;display:flex;gap:4px}
-  .langsw button{background:#241f36;color:var(--txt);border:1px solid var(--line);
-                 border-radius:5px;padding:3px 8px;font:inherit;font-size:11px;
-                 cursor:pointer;opacity:.55}
-  .langsw button.active{opacity:1;border-color:var(--uv);color:var(--uv)}
-  footer{border-top:1px solid var(--line);padding:18px 22px;color:var(--dim);font-size:12px}
-</style>
+<link rel="stylesheet" href="/uv.css">
 </head>
-<body>
+<body data-page="x402">
 
-<header>
-  <h1>x402 · <span data-i18n="h1">verify and settle</span></h1>
-  <a href="/">/</a>
-  <a href="/networks" data-i18n="nav.networks">networks</a>
-  <a href="/mcp">/mcp</a>
-  <a href="/skill.md">/skill.md</a>
-  <a href="/docs">/docs</a>
-  <span class="langsw"><button data-lang="en">EN</button><button data-lang="es">ES</button></span>
+<header class="nav">
+  <a class="brand" href="/">
+    <img src="/logo.png" alt="" width="69" height="20" decoding="async">
+    <span>x402 facilitator</span>
+  </a>
+
+  <nav class="nav-links" aria-label="Site">
+    <ul>
+      <li><a href="/" data-nav="/" data-i18n="nav.home">Overview</a></li>
+      <li><a href="/integrar" data-nav="/integrar" data-i18n="nav.integrate">Integrate</a></li>
+      <li><a href="/x402" aria-current="page" data-nav="/x402" data-i18n="nav.x402">x402</a></li>
+      <li><a href="/mcp" data-nav="/mcp" data-i18n="nav.mcp">MCP</a></li>
+      <li><a href="/networks" data-nav="/networks" data-i18n="nav.networks">Networks</a></li>
+      <li><a href="/erc8004" data-nav="/erc8004" data-i18n="nav.erc8004">ERC-8004</a></li>
+      <li><a href="/dx402" data-nav="/dx402" data-i18n="nav.dx402">DX402</a></li>
+      <li><a href="/bazaar" data-nav="/bazaar" data-i18n="nav.bazaar">Bazaar</a></li>
+    </ul>
+  </nav>
+
+  <div class="lang" role="group" aria-label="Language">
+    <button type="button" data-lang="en" aria-pressed="true">EN</button>
+    <button type="button" data-lang="es" aria-pressed="false">ES</button>
+  </div>
 </header>
 
-<main>
+<main class="wrap">
 
-<p class="lead" data-i18n="lead">x402 turns HTTP 402 into a real status code. A seller answers a request with <code>402</code> and the terms it will accept; the buyer signs an authorization for one of them; a facilitator checks the signature and puts the transfer on chain. This facilitator is that third party, and it does exactly two things — <code>verify</code> and <code>settle</code> — for no fee, paying the gas itself.</p>
+<section class="answer">
+  <h1 data-i18n="h1">Check a payment before you take it, then put it on chain</h1>
+  <p class="deck" data-i18n="lead">Two POST calls with the same body: verify checks six things and submits nothing, settle broadcasts and cannot be undone — both free, both with the gas on us.</p>
+</section>
+
 
 <div class="cards">
   <div class="card"><div class="v" id="t-ok">—</div><div class="k" data-i18n="t.ok">settles recorded OK</div><div class="src" data-i18n="t.src">GET /api/stats</div></div>
@@ -84,7 +55,7 @@
   <div class="card"><div class="v" id="t-networks">—</div><div class="k" data-i18n="t.networks">networks with activity</div><div class="src" data-i18n="t.src">GET /api/stats</div></div>
 </div>
 
-<div class="warn">
+<div class="note warn">
   <p style="margin:0 0 8px 0"><b data-i18n="counters.title">Both counters, and what they are not.</b>
   <span data-i18n="counters.text">The failed count is published next to the successful one on purpose: a page that shows only successes is not reporting, it is advertising. Neither number is a ledger — <b>the chain is</b>. The record is written after settlement resolves, fire-and-forget, so a store that is unreachable loses rows and never blocks a payment.</span></p>
   <p style="margin:0" class="muted"><span data-i18n="counters.verbatimLabel">And the endpoint's own two warnings, verbatim:</span></p>
@@ -104,7 +75,7 @@
 
 <p data-i18n="two.p2">Full field-by-field shapes, the retryable and non-retryable failures, and the EIP-712 domain-name trap that catches most first integrations, are in <a href="/skill.md">/skill.md</a>. The same two calls are MCP tools at <a href="/mcp">/mcp</a>, dispatched through these very handlers.</p>
 
-<div class="warn">
+<div class="note warn">
   <p style="margin:0"><b data-i18n="two.warnTitle">A settle that timed out is not a settle that failed.</b> <span data-i18n="two.warnText">The transaction may already be on its way. Retry with the same <code>Idempotency-Key</code> header: the same key with the same payment returns the first result instead of settling twice, and the same key with a <em>different</em> payment is refused with 409. Generate a fresh unguessable value per payment — keys share one namespace across all callers, so a predictable one can be claimed by somebody else's settle first.</span></p>
 </div>
 
@@ -140,9 +111,40 @@
 
 </main>
 
-<footer>
-  <span data-i18n="footer">Ultravioleta DAO · x402 Payment Facilitator.</span>
-  <a href="/">/</a> · <a href="/networks">/networks</a> · <a href="/mcp">/mcp</a> · <a href="/stats">/stats</a> · <a href="/events/live">/events/live</a>
+<footer class="footer">
+  <nav class="next" aria-label="Where to go next">
+    <p class="eyebrow" data-i18n="next.h">And after this</p>
+    <ul>
+      <li>
+        <a href="/integrar" data-i18n="next.integrar">Integrate</a>
+        <span data-i18n="next.integrar.why">going from understanding it to wiring it</span>
+      </li>
+      <li>
+        <a href="/networks" data-i18n="next.networks">Networks</a>
+        <span data-i18n="next.networks.why">where each scheme is flagged</span>
+      </li>
+      <li>
+        <a href="/mcp" data-i18n="next.mcp">MCP</a>
+        <span data-i18n="next.mcp.why">the same two calls, as tools</span>
+      </li>
+    </ul>
+  </nav>
+
+  <div class="meta">
+    <p data-i18n="footer.by">Ultravioleta DAO · x402 payment facilitator · 0% fee</p>
+    <ul class="meta-links">
+      <li><a href="/health">/health</a></li>
+      <li><a href="/version">/version</a></li>
+      <li><a href="/stats">/stats</a></li>
+      <li><a href="/events/live">/events/live</a></li>
+      <li><a href="/supported">/supported</a></li>
+      <li><a href="/docs">/docs</a></li>
+      <li><a href="/openapi.json">/openapi.json</a></li>
+      <li><a href="/llms.txt">/llms.txt</a></li>
+      <li><a href="/skill.md">/skill.md</a></li>
+      <li><a href="https://github.com/UltravioletaDAO/x402-rs" rel="noopener">GitHub</a></li>
+    </ul>
+  </div>
 </footer>
 
 <script>
@@ -152,9 +154,25 @@
 // ---------------------------------------------------------------------------
 const I18N = {
   en: {
-    title:"x402 facilitator · verify and settle", h1:"verify and settle",
-    "nav.networks":"networks",
-    lead:"x402 turns HTTP 402 into a real status code. A seller answers a request with <code>402</code> and the terms it will accept; the buyer signs an authorization for one of them; a facilitator checks the signature and puts the transfer on chain. This facilitator is that third party, and it does exactly two things — <code>verify</code> and <code>settle</code> — for no fee, paying the gas itself.",
+    "footer.by":"Ultravioleta DAO · x402 payment facilitator · 0% fee",
+    "h1":"Check a payment before you take it, then put it on chain",
+    "nav.bazaar":"Bazaar",
+    "nav.dx402":"DX402",
+    "nav.erc8004":"ERC-8004",
+    "nav.home":"Overview",
+    "nav.integrate":"Integrate",
+    "nav.mcp":"MCP",
+    "nav.x402":"x402",
+    "next.h":"And after this",
+    "next.integrar":"Integrate",
+    "next.integrar.why":"going from understanding it to wiring it",
+    "next.mcp":"MCP",
+    "next.mcp.why":"the same two calls, as tools",
+    "next.networks":"Networks",
+    "next.networks.why":"where each scheme is flagged",
+    "title":"x402 facilitator - verify and settle",
+    "nav.networks":"Networks",
+    "lead":"Two POST calls with the same body: verify checks six things and submits nothing, settle broadcasts and cannot be undone — both free, both with the gas on us.",
     "t.ok":"settles recorded OK", "t.failed":"settles recorded failed",
     "t.verifies":"verifies recorded", "t.networks":"networks with activity",
     "t.src":"GET /api/stats",
@@ -189,9 +207,25 @@ const I18N = {
     nets:"networks", noNets:"not advertised on any network right now",
   },
   es: {
-    title:"facilitador x402 · verificar y liquidar", h1:"verificar y liquidar",
-    "nav.networks":"redes",
-    lead:"x402 convierte el HTTP 402 en un código de estado de verdad. Un vendedor contesta una petición con <code>402</code> y los términos que acepta; el comprador firma una autorización para uno de ellos; un facilitador chequea la firma y pone la transferencia en la cadena. Este facilitador es ese tercero, y hace exactamente dos cosas — <code>verify</code> y <code>settle</code> — sin cobrar comisión y pagando el gas él mismo.",
+    "footer.by":"Ultravioleta DAO · facilitador de pagos x402 · 0% de comisión",
+    "h1":"Chequeá un pago antes de aceptarlo, y después ponelo en la cadena",
+    "nav.bazaar":"Bazar",
+    "nav.dx402":"DX402",
+    "nav.erc8004":"ERC-8004",
+    "nav.home":"Resumen",
+    "nav.integrate":"Integrar",
+    "nav.mcp":"MCP",
+    "nav.x402":"x402",
+    "next.h":"Y después de esto",
+    "next.integrar":"Integrar",
+    "next.integrar.why":"pasar de entender a cablear",
+    "next.mcp":"MCP",
+    "next.mcp.why":"las mismas dos llamadas como herramientas",
+    "next.networks":"Redes",
+    "next.networks.why":"dónde está advertido cada esquema",
+    "title":"Facilitador x402 - verify y settle",
+    "nav.networks":"Redes",
+    "lead":"Dos POST con el mismo cuerpo: verify chequea seis cosas y no envía nada, settle emite y no se puede deshacer — los dos gratis, y el gas lo ponemos nosotros.",
     "t.ok":"settles registrados OK", "t.failed":"settles registrados fallidos",
     "t.verifies":"verifies registrados", "t.networks":"redes con actividad",
     "t.src":"GET /api/stats",
@@ -240,13 +274,13 @@ function applyLang(lang){
     // textContent would flatten.
     el.innerHTML = t(el.getAttribute('data-i18n'));
   });
-  document.querySelectorAll('.langsw button').forEach(b => {
-    b.classList.toggle('active', b.getAttribute('data-lang') === LANG);
+  document.querySelectorAll('.lang button').forEach(b => {
+    b.setAttribute('aria-pressed', String(b.getAttribute('data-lang') === LANG));
   });
   renderSchemes();
 }
 
-document.querySelectorAll('.langsw button').forEach(b => {
+document.querySelectorAll('.lang button').forEach(b => {
   b.addEventListener('click', () => {
     const lang = b.getAttribute('data-lang');
     try { localStorage.setItem('x402.lang', lang); } catch (e) { /* private mode */ }

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title data-i18n="title">x402 facilitator · networks</title>
+<title data-i18n="title">x402 facilitator - networks</title>
 <meta name="description" content="Every network and scheme this x402 facilitator settles, read live from GET /supported: the payment schemes, the stablecoins on each chain, and the facilitator's own gas balance.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://facilitator.ultravioletadao.xyz/networks">
@@ -11,73 +11,42 @@
 <meta property="og:description" content="Every network and scheme this facilitator settles, read live from GET /supported. No number on this page is typed by hand.">
 <meta property="og:image" content="https://facilitator.ultravioletadao.xyz/logo.png">
 <link rel="icon" href="/favicon.ico">
-<style>
-  :root{
-    --bg:#12101a; --panel:#1a1726; --line:#2c2740; --txt:#e8e4f5;
-    --dim:#8a83a6; --ok:#5ee6a8; --bad:#ff6b6b; --amber:#e0a53f; --uv:#b496ff;
-    --cyan:#5ad7e6;
-  }
-  *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--txt);
-       font:14px/1.7 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-  header{padding:18px 22px;background:var(--panel);border-bottom:1px solid var(--line);
-         display:flex;gap:16px;align-items:baseline;flex-wrap:wrap;position:sticky;top:0;z-index:5}
-  h1{font-size:16px;margin:0;color:var(--uv);font-weight:600}
-  h2{font-size:13px;margin:34px 0 10px;color:var(--dim);font-weight:500;
-     text-transform:uppercase;letter-spacing:.06em;border-top:1px solid var(--line);padding-top:18px}
-  a{color:var(--amber)}
-  main{padding:0 22px 60px;max-width:1200px}
-  p{max-width:88ch}
-  code{color:var(--cyan);background:#1e1a2e;padding:1px 4px;border-radius:3px}
-  .lead{font-size:15px;line-height:1.75;max-width:88ch}
-  .cards{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));margin:18px 0}
-  .card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px 16px}
-  .card .v{font-size:26px;font-weight:600;color:var(--ok);line-height:1.2}
-  .card .k{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
-  .card .src{color:var(--dim);font-size:10px;margin-top:6px;opacity:.75}
-  .scroll{overflow-x:auto}
-  table{width:100%;border-collapse:collapse;margin-top:8px}
-  th{text-align:left;color:var(--dim);font-weight:500;padding:7px 9px;font-size:11px;
-     border-bottom:1px solid var(--line);text-transform:uppercase;letter-spacing:.04em;
-     white-space:nowrap}
-  td{padding:7px 9px;border-bottom:1px solid #221e33;vertical-align:top}
-  td.net{white-space:nowrap}
-  td.net img{width:18px;height:18px;object-fit:contain;vertical-align:-4px;margin-right:7px}
-  .tag{display:inline-block;background:#241f36;border:1px solid var(--line);border-radius:4px;
-       padding:0 6px;margin:1px 3px 1px 0;font-size:11px;color:var(--cyan);white-space:nowrap}
-  .tag.test{color:var(--amber)}
-  .bal{font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--ok)}
-  .muted{color:var(--dim)}
-  .warn{background:rgba(224,165,63,.08);border:1px solid rgba(224,165,63,.32);
-        border-radius:8px;padding:14px 16px;margin:22px 0;line-height:1.7;max-width:88ch}
-  .warn b{color:var(--amber)}
-  #err{color:var(--bad);padding:16px 0}
-  .filters{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:18px}
-  .filters button{background:#241f36;color:var(--txt);border:1px solid var(--line);
-                  border-radius:5px;padding:4px 10px;font:inherit;font-size:12px;cursor:pointer;opacity:.6}
-  .filters button.active{opacity:1;border-color:var(--uv);color:var(--uv)}
-  .langsw{margin-left:auto;display:flex;gap:4px}
-  .langsw button{background:#241f36;color:var(--txt);border:1px solid var(--line);
-                 border-radius:5px;padding:3px 8px;font:inherit;font-size:11px;
-                 cursor:pointer;opacity:.55}
-  .langsw button.active{opacity:1;border-color:var(--uv);color:var(--uv)}
-  footer{border-top:1px solid var(--line);padding:18px 22px;color:var(--dim);font-size:12px}
-</style>
+<link rel="stylesheet" href="/uv.css">
 </head>
-<body>
+<body data-page="networks">
 
-<header>
-  <h1>x402 facilitator · <span data-i18n="h1">networks</span></h1>
-  <a href="/">/</a>
-  <a href="/supported">/supported</a>
-  <a href="/mcp">/mcp</a>
-  <a href="/stats">/stats</a>
-  <span class="langsw"><button data-lang="en">EN</button><button data-lang="es">ES</button></span>
+<header class="nav">
+  <a class="brand" href="/">
+    <img src="/logo.png" alt="" width="69" height="20" decoding="async">
+    <span>x402 facilitator</span>
+  </a>
+
+  <nav class="nav-links" aria-label="Site">
+    <ul>
+      <li><a href="/" data-nav="/" data-i18n="nav.home">Overview</a></li>
+      <li><a href="/integrar" data-nav="/integrar" data-i18n="nav.integrate">Integrate</a></li>
+      <li><a href="/x402" data-nav="/x402" data-i18n="nav.x402">x402</a></li>
+      <li><a href="/mcp" data-nav="/mcp" data-i18n="nav.mcp">MCP</a></li>
+      <li><a href="/networks" aria-current="page" data-nav="/networks" data-i18n="nav.networks">Networks</a></li>
+      <li><a href="/erc8004" data-nav="/erc8004" data-i18n="nav.erc8004">ERC-8004</a></li>
+      <li><a href="/dx402" data-nav="/dx402" data-i18n="nav.dx402">DX402</a></li>
+      <li><a href="/bazaar" data-nav="/bazaar" data-i18n="nav.bazaar">Bazaar</a></li>
+    </ul>
+  </nav>
+
+  <div class="lang" role="group" aria-label="Language">
+    <button type="button" data-lang="en" aria-pressed="true">EN</button>
+    <button type="button" data-lang="es" aria-pressed="false">ES</button>
+  </div>
 </header>
 
-<main>
+<main class="wrap">
 
-<p class="lead" data-i18n="lead">Every row on this page is read from <code>GET /supported</code> when the page loads. Nothing here is typed by hand, which is the point: a network list written into a document is wrong the first time somebody ships a chain and forgets the document, and it stays wrong quietly. If this table and the endpoint ever disagree, the endpoint is right.</p>
+<section class="answer">
+  <h1 data-i18n="h1">Ask where this facilitator can settle, and see what it pays to do it</h1>
+  <p class="deck" data-i18n="lead">21 payment mainnets and 18 testnets across 7 chain families, every chain under two names, every row read live from /supported — with the gas balance we spend on your behalf in the last column.</p>
+</section>
+
 
 <div class="cards">
   <div class="card">
@@ -102,10 +71,10 @@
   </div>
 </div>
 
-<div class="filters">
-  <button data-filter="mainnet" class="active" data-i18n="f.mainnets">mainnets</button>
-  <button data-filter="testnet" data-i18n="f.testnets">testnets</button>
-  <button data-filter="all" data-i18n="f.all">all</button>
+<div class="controls">
+  <button type="button" data-filter="mainnet" aria-pressed="true" data-i18n="f.mainnets">mainnets</button>
+  <button type="button" data-filter="testnet" aria-pressed="false" data-i18n="f.testnets">testnets</button>
+  <button type="button" data-filter="all" aria-pressed="false" data-i18n="f.all">all</button>
   <span class="muted" id="rowcount"></span>
 </div>
 
@@ -121,9 +90,9 @@
 </table>
 </div>
 
-<div id="err" hidden></div>
+<p class="note bad" id="err" hidden></p>
 
-<div class="warn">
+<div class="note warn">
   <p style="margin:0"><b data-i18n="warn.title">Two things this table does not claim.</b>
   <span data-i18n="warn.text">The <b>tokens</b> column is what the facilitator will settle on that chain, not what your seller accepts — the seller's 402 decides that, and <code>x402_accepts</code> narrows it. The <b>balance</b> column is the facilitator's own native-token balance, the gas it spends on your behalf; it is not your money and it is not the payment. A dash means the balance was not reported for that network, never that it is zero.</span></p>
 </div>
@@ -137,9 +106,40 @@
 
 </main>
 
-<footer>
-  <span data-i18n="footer">Ultravioleta DAO · x402 Payment Facilitator.</span>
-  <a href="/">/</a> · <a href="/mcp">/mcp</a> · <a href="/stats">/stats</a> · <a href="/bazaar">/bazaar</a> · <a href="/supported">/supported</a>
+<footer class="footer">
+  <nav class="next" aria-label="Where to go next">
+    <p class="eyebrow" data-i18n="next.h">And after this</p>
+    <ul>
+      <li>
+        <a href="/x402" data-i18n="next.x402">x402</a>
+        <span data-i18n="next.x402.why">what each scheme in that column means</span>
+      </li>
+      <li>
+        <a href="/integrar" data-i18n="next.integrar">Integrate</a>
+        <span data-i18n="next.integrar.why">do not hard-code this list</span>
+      </li>
+      <li>
+        <a href="/bazaar" data-i18n="next.bazaar">Bazaar</a>
+        <span data-i18n="next.bazaar.why">who is charging on those chains</span>
+      </li>
+    </ul>
+  </nav>
+
+  <div class="meta">
+    <p data-i18n="footer.by">Ultravioleta DAO · x402 payment facilitator · 0% fee</p>
+    <ul class="meta-links">
+      <li><a href="/health">/health</a></li>
+      <li><a href="/version">/version</a></li>
+      <li><a href="/stats">/stats</a></li>
+      <li><a href="/events/live">/events/live</a></li>
+      <li><a href="/supported">/supported</a></li>
+      <li><a href="/docs">/docs</a></li>
+      <li><a href="/openapi.json">/openapi.json</a></li>
+      <li><a href="/llms.txt">/llms.txt</a></li>
+      <li><a href="/skill.md">/skill.md</a></li>
+      <li><a href="https://github.com/UltravioletaDAO/x402-rs" rel="noopener">GitHub</a></li>
+    </ul>
+  </div>
 </footer>
 
 <script>
@@ -150,8 +150,25 @@
 // ---------------------------------------------------------------------------
 const I18N = {
   en: {
-    title:"x402 facilitator · networks", h1:"networks",
-    lead:"Every row on this page is read from <code>GET /supported</code> when the page loads. Nothing here is typed by hand, which is the point: a network list written into a document is wrong the first time somebody ships a chain and forgets the document, and it stays wrong quietly. If this table and the endpoint ever disagree, the endpoint is right.",
+    "footer.by":"Ultravioleta DAO · x402 payment facilitator · 0% fee",
+    "h1":"Ask where this facilitator can settle, and see what it pays to do it",
+    "nav.bazaar":"Bazaar",
+    "nav.dx402":"DX402",
+    "nav.erc8004":"ERC-8004",
+    "nav.home":"Overview",
+    "nav.integrate":"Integrate",
+    "nav.mcp":"MCP",
+    "nav.networks":"Networks",
+    "nav.x402":"x402",
+    "next.bazaar":"Bazaar",
+    "next.bazaar.why":"who is charging on those chains",
+    "next.h":"And after this",
+    "next.integrar":"Integrate",
+    "next.integrar.why":"do not hard-code this list",
+    "next.x402":"x402",
+    "next.x402.why":"what each scheme in that column means",
+    "title":"x402 facilitator - networks",
+    "lead":"21 payment mainnets and 18 testnets across 7 chain families, every chain under two names, every row read live from /supported — with the gas balance we spend on your behalf in the last column.",
     "c.mainnets":"payment mainnets", "c.mainnetsSrc":"distinct v1 names, testnets excluded",
     "c.testnets":"testnets", "c.testnetsSrc":"sepolia · fuji · amoy · devnet · …",
     "c.ids":"network identifiers", "c.idsSrc":"each chain answers to two: v1 name and CAIP-2",
@@ -171,8 +188,25 @@ const I18N = {
     rows:"networks shown",
   },
   es: {
-    title:"facilitador x402 · redes", h1:"redes",
-    lead:"Cada fila de esta página se lee de <code>GET /supported</code> al cargar. Nada acá está tipeado a mano, y ese es el punto: una lista de redes escrita en un documento queda mal la primera vez que alguien lanza una cadena y se olvida del documento, y se queda mal en silencio. Si esta tabla y el endpoint alguna vez se contradicen, el endpoint tiene razón.",
+    "footer.by":"Ultravioleta DAO · facilitador de pagos x402 · 0% de comisión",
+    "h1":"Preguntá dónde puede liquidar este facilitador, y mirá lo que le cuesta hacerlo",
+    "nav.bazaar":"Bazar",
+    "nav.dx402":"DX402",
+    "nav.erc8004":"ERC-8004",
+    "nav.home":"Resumen",
+    "nav.integrate":"Integrar",
+    "nav.mcp":"MCP",
+    "nav.networks":"Redes",
+    "nav.x402":"x402",
+    "next.bazaar":"Bazar",
+    "next.bazaar.why":"quién está cobrando en esas cadenas",
+    "next.h":"Y después de esto",
+    "next.integrar":"Integrar",
+    "next.integrar.why":"no hardcodear esta lista",
+    "next.x402":"x402",
+    "next.x402.why":"qué significa cada esquema de la columna",
+    "title":"Facilitador x402 - redes",
+    "lead":"21 mainnets de pago y 18 testnets en 7 familias de cadenas, cada cadena bajo dos nombres, cada fila leída en vivo de /supported — con el saldo de gas que gastamos por vos en la última columna.",
     "c.mainnets":"mainnets de pago", "c.mainnetsSrc":"nombres v1 distintos, sin testnets",
     "c.testnets":"testnets", "c.testnetsSrc":"sepolia · fuji · amoy · devnet · …",
     "c.ids":"identificadores de red", "c.idsSrc":"cada cadena contesta a dos: nombre v1 y CAIP-2",
@@ -205,8 +239,8 @@ function applyLang(lang){
     // and never fetched; several carry <code> and <b> that textContent flattens.
     el.innerHTML = t(el.getAttribute('data-i18n'));
   });
-  document.querySelectorAll('.langsw button').forEach(b => {
-    b.classList.toggle('active', b.getAttribute('data-lang') === LANG);
+  document.querySelectorAll('.lang button').forEach(b => {
+    b.setAttribute('aria-pressed', String(b.getAttribute('data-lang') === LANG));
   });
   render();
   // render() rebuilds every row, which throws away the balances already in
@@ -214,7 +248,7 @@ function applyLang(lang){
   if (NETWORKS.length) fetchWalletBalances();
 }
 
-document.querySelectorAll('.langsw button').forEach(b => {
+document.querySelectorAll('.lang button').forEach(b => {
   b.addEventListener('click', () => {
     const lang = b.getAttribute('data-lang');
     try { localStorage.setItem('x402.lang', lang); } catch (e) { /* private mode */ }
@@ -297,10 +331,10 @@ function render(){
       || '<span class="muted">—</span>';
     const key = balanceKey(r);
     return `<tr>
-      <td class="net"><img src="/${esc(r.name.split('-')[0])}.png" alt="" onerror="this.remove()">${esc(r.name)}${r.testnet ? ' <span class="tag test">testnet</span>' : ''}</td>
+      <td class="net"><img src="/${esc(r.name.split('-')[0])}.png" alt="" onerror="this.remove()">${esc(r.name)}${r.testnet ? ' <span class="tag">testnet</span>' : ''}</td>
       <td>${schemes}</td>
       <td>${tokens}</td>
-      <td class="bal" data-balance="${esc(key)}">—</td>
+      <td class="num" data-balance="${esc(key)}">—</td>
     </tr>`;
   }).join('');
 }
@@ -309,7 +343,7 @@ document.querySelectorAll('.filters button[data-filter]').forEach(b => {
   b.addEventListener('click', () => {
     FILTER = b.getAttribute('data-filter');
     document.querySelectorAll('.filters button[data-filter]').forEach(x =>
-      x.classList.toggle('active', x === b));
+      x.setAttribute('aria-pressed', String(x === b)));
     render();
     fetchWalletBalances();
   });

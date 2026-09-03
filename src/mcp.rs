@@ -48,6 +48,7 @@ use axum::http::{header, HeaderMap, Method, Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, post_service};
 use axum::{Json, Router};
+use once_cell::sync::Lazy;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorCode,
     Implementation, InitializeResult, JsonObject, ListToolsResult, PaginatedRequestParams,
@@ -57,7 +58,6 @@ use rmcp::service::RequestContext;
 use rmcp::transport::streamable_http_server::session::never::NeverSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler};
-use once_cell::sync::Lazy;
 use serde_json::{json, Value};
 use tower::ServiceExt as _;
 
@@ -1413,8 +1413,7 @@ mod tests {
         let verify = payment_envelope_schema("/verify");
         let settle = settle_input_schema();
         assert_eq!(
-            settle["properties"]["paymentPayload"],
-            verify["properties"]["paymentPayload"],
+            settle["properties"]["paymentPayload"], verify["properties"]["paymentPayload"],
             "settle must publish the same payload shape as verify"
         );
         assert!(settle["properties"][IDEMPOTENCY_KEY_ARG].is_object());

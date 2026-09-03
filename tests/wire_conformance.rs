@@ -53,10 +53,7 @@ fn json_block_after(markdown: &str, heading: &str) -> String {
 
 /// The body `/skill.md` tells an agent to send.
 fn published_example() -> String {
-    json_block_after(
-        include_str!("../static/skill.md"),
-        "## 3. `POST /verify`",
-    )
+    json_block_after(include_str!("../static/skill.md"), "## 3. `POST /verify`")
 }
 
 /// The same v1 envelope with both `network` fields rewritten.
@@ -119,7 +116,10 @@ fn both_spellings_resolve_to_the_same_network() {
         v1_req.payment_requirements.network,
         caip2_req.payment_requirements.network
     );
-    assert_eq!(v1_req.payment_payload.network, caip2_req.payment_payload.network);
+    assert_eq!(
+        v1_req.payment_payload.network,
+        caip2_req.payment_payload.network
+    );
 }
 
 // --- fixture 5 -----------------------------------------------------------
@@ -167,8 +167,7 @@ fn settle_accepts_exactly_what_verify_accepts() {
 #[test]
 fn an_unknown_network_is_still_rejected() {
     for unknown in ["cosmos:hub-4", "eip155:99999999", "not-a-network", ""] {
-        let parsed: Result<VerifyRequestEnvelope, _> =
-            serde_json::from_str(&example_on(unknown));
+        let parsed: Result<VerifyRequestEnvelope, _> = serde_json::from_str(&example_on(unknown));
         assert!(
             parsed.is_err(),
             "`{unknown}` is not a network this facilitator serves and must be refused"

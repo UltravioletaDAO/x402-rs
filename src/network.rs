@@ -2760,8 +2760,7 @@ mod network_name_aliasing_tests {
             #[serde(deserialize_with = "deserialize_v1_or_caip2")]
             network: Network,
         }
-        serde_json::from_value::<Wrapper>(serde_json::json!({ "network": name }))
-            .map(|w| w.network)
+        serde_json::from_value::<Wrapper>(serde_json::json!({ "network": name })).map(|w| w.network)
     }
 
     /// The failure this helper exists for: a v1-shaped body naming its chain

@@ -14855,7 +14855,6 @@ mod sistema_visual_tests {
     }
 }
 
-
 #[cfg(test)]
 mod accepts_negotiation_tests {
     use super::*;
@@ -14896,9 +14895,11 @@ mod accepts_negotiation_tests {
     }
 
     fn reason_for(scheme: &str, network: &str) -> String {
-        let (enriched, rejected) =
-            negotiate_accepts(&[requirement(scheme, network)], &served());
-        assert!(enriched.is_empty(), "`{scheme}`/`{network}` should not match");
+        let (enriched, rejected) = negotiate_accepts(&[requirement(scheme, network)], &served());
+        assert!(
+            enriched.is_empty(),
+            "`{scheme}`/`{network}` should not match"
+        );
         assert_eq!(rejected.len(), 1);
         rejected[0]["reason"].as_str().unwrap().to_string()
     }
@@ -14919,7 +14920,10 @@ mod accepts_negotiation_tests {
     fn an_unservable_requirement_is_no_longer_indistinguishable_from_success() {
         let (matched, rejected) = negotiate_accepts(&[requirement("exact", "base")], &served());
         assert_eq!(matched.len(), 1, "`exact` on `base` is served");
-        assert!(rejected.is_empty(), "nothing was dropped, so nothing to report");
+        assert!(
+            rejected.is_empty(),
+            "nothing was dropped, so nothing to report"
+        );
 
         let (matched, rejected) =
             negotiate_accepts(&[requirement("exact", "cosmos:hub-4")], &served());

@@ -94,6 +94,12 @@ facilitator just did, and what it costs (nothing — the seller keeps the paymen
 - **MCP server card**: https://facilitator.ultravioletadao.xyz/.well-known/mcp/server-card.json
 - **MCP guide** (Markdown): https://facilitator.ultravioletadao.xyz/mcp
 - **Network table** (HTML, built from `/supported` in the browser): https://facilitator.ultravioletadao.xyz/networks
+- **DX402 guide** (HTML): https://facilitator.ultravioletadao.xyz/dx402 — durable
+  evidence: the response sealed to the payer's own public key, and the rule that
+  it can never fail a payment
+- **ERC-8004 guide** (HTML): https://facilitator.ultravioletadao.xyz/erc8004 — our
+  implementation, the authorship problem on `POST /feedback`, the proof-of-payment
+  gate, and why an owner lookup answers 503 and 404 for different things
 - **x402 guide** (HTML): https://facilitator.ultravioletadao.xyz/x402 — the two
   calls, escrow and upto as sections, and BOTH settlement counters with the
   caveat `/api/stats` ships alongside them

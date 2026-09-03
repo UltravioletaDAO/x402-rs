@@ -44,6 +44,8 @@ Full contract: `/openapi.json` (Swagger UI at `/docs`).
 - MCP guide: `/mcp`
 - Network table, built from `/supported`: `/networks`
 - x402 guide (verify, settle, escrow, upto, and both counters): `/x402`
+- DX402 durable evidence: `/dx402`
+- ERC-8004 identity and reputation, and the describe.net boundary: `/erc8004`
 - Auth metadata (RFC 9728): `/.well-known/oauth-protected-resource`
 - Workflow manifest: `/workflows.json`
 - LLM context: `/llms.txt`, `/llms-full.txt`

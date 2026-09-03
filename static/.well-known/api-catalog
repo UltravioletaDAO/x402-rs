@@ -55,6 +55,60 @@
       ]
     },
     {
+      "anchor": "https://facilitator.ultravioletadao.xyz/dx402",
+      "service-desc": [
+        {
+          "href": "https://facilitator.ultravioletadao.xyz/dx402/stats",
+          "type": "application/json"
+        }
+      ],
+      "service-doc": [
+        {
+          "href": "https://facilitator.ultravioletadao.xyz/dx402",
+          "type": "text/html"
+        }
+      ],
+      "service-meta": [
+        {
+          "href": "https://facilitator.ultravioletadao.xyz/dx402/stats",
+          "type": "application/json"
+        }
+      ],
+      "status": [
+        {
+          "href": "https://facilitator.ultravioletadao.xyz/health",
+          "type": "application/json"
+        }
+      ]
+    },
+    {
+      "anchor": "https://facilitator.ultravioletadao.xyz/erc8004",
+      "service-desc": [
+        {
+          "href": "https://facilitator.ultravioletadao.xyz/register",
+          "type": "application/json"
+        }
+      ],
+      "service-doc": [
+        {
+          "href": "https://facilitator.ultravioletadao.xyz/erc8004",
+          "type": "text/html"
+        }
+      ],
+      "service-meta": [
+        {
+          "href": "https://facilitator.ultravioletadao.xyz/.well-known/agent-card.json",
+          "type": "application/json"
+        }
+      ],
+      "status": [
+        {
+          "href": "https://facilitator.ultravioletadao.xyz/health",
+          "type": "application/json"
+        }
+      ]
+    },
+    {
       "anchor": "https://facilitator.ultravioletadao.xyz/x402",
       "service-desc": [
         {

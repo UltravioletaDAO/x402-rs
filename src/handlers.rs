@@ -603,6 +603,13 @@ const NETWORKS_HTML: &str = include_str!("../static/networks.html");
 /// endpoints, and giving each a page would say otherwise.
 const X402_HTML: &str = include_str!("../static/x402.html");
 
+/// DX402 and ERC-8004, each on its own page because each is a different promise
+/// with a different failure mode -- and because both have things to say that a
+/// product page would rather not: who the author of a rating really is, and
+/// that anchoring is publishing.
+const DX402_HTML: &str = include_str!("../static/dx402.html");
+const ERC8004_HTML: &str = include_str!("../static/erc8004.html");
+
 /// `Content-Language` for every human page.
 ///
 /// `en`, not `en, es`, and the difference is not pedantry. These pages carry
@@ -830,6 +837,8 @@ where
         .route("/bazaar", get(get_bazaar))
         .route("/networks", get(get_networks_page))
         .route("/x402", get(get_x402_page))
+        .route("/dx402", get(get_dx402_page))
+        .route("/erc8004", get(get_erc8004_page))
         .route("/events/live", get(get_events_viewer))
         .route("/stats", get(get_stats_page))
         // Escrow state query lives in secondary_read_routes() so it can carry
@@ -2434,6 +2443,20 @@ pub async fn get_networks_page() -> impl IntoResponse {
 #[instrument(skip_all)]
 pub async fn get_x402_page() -> impl IntoResponse {
     html_page(X402_HTML)
+}
+
+/// `GET /dx402`: durable evidence, for a reader.
+#[instrument(skip_all)]
+pub async fn get_dx402_page() -> impl IntoResponse {
+    html_page(DX402_HTML)
+}
+
+/// `GET /erc8004`: OUR ERC-8004 implementation, including the part where the
+/// plain feedback path makes this facilitator the author of somebody else's
+/// rating, and the boundary with describe.net.
+#[instrument(skip_all)]
+pub async fn get_erc8004_page() -> impl IntoResponse {
+    html_page(ERC8004_HTML)
 }
 
 /// `GET /bazaar`: Returns the curated Bazaar resource explorer (WS-D).
@@ -13261,6 +13284,8 @@ mod agentic_surface_tests {
     /// | `/mcp` | `static/mcp.html` (Markdown: `static/mcp.md`) |
     /// | `/networks` | `static/networks.html` |
     /// | `/x402` | `static/x402.html` |
+    /// | `/dx402` | `static/dx402.html` |
+    /// | `/erc8004` | `static/erc8004.html` |
     /// | `/bazaar` | `static/bazaar.html` |
     /// | `/stats` | `static/stats.html` |
     /// | `/events/live` | `static/events-viewer.html` |
@@ -13359,6 +13384,13 @@ mod agentic_surface_tests {
             "/mcp",
             "/networks",
             "/x402",
+            "/dx402",
+            "/erc8004",
+            // Registered under ENABLE_DX402, which production has on (699
+            // anchors as of 2026-09-02). Listed here because the catalog and
+            // the /dx402 page both point at it; if the flag is ever turned off
+            // this entry is the reminder that two documents go stale with it.
+            "/dx402/stats",
         ];
 
         for (path, _) in SURFACES {
@@ -13774,7 +13806,8 @@ mod json_error_tests {
 #[cfg(test)]
 mod i18n_tests {
     use super::{
-        BAZAAR_HTML, EVENTS_VIEWER_HTML, INDEX_HTML, MCP_HTML, NETWORKS_HTML, STATS_HTML, X402_HTML,
+        BAZAAR_HTML, DX402_HTML, ERC8004_HTML, EVENTS_VIEWER_HTML, INDEX_HTML, MCP_HTML,
+        NETWORKS_HTML, STATS_HTML, X402_HTML,
     };
     use std::collections::BTreeSet;
 
@@ -13791,6 +13824,8 @@ mod i18n_tests {
         ("static/mcp.html", MCP_HTML),
         ("static/networks.html", NETWORKS_HTML),
         ("static/x402.html", X402_HTML),
+        ("static/dx402.html", DX402_HTML),
+        ("static/erc8004.html", ERC8004_HTML),
     ];
 
     /// The three attributes that make the runtime look a key up.

@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title data-i18n="title">ERC-8004 · agent identity and reputation</title>
+<meta name="description" content="This facilitator's ERC-8004 implementation: gasless registration, real rater authorship, the proof-of-payment gate, and why an owner lookup answers 503 and 404 for different things.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://facilitator.ultravioletadao.xyz/erc8004">
+<meta property="og:title" content="ERC-8004 · agent identity and reputation">
+<meta property="og:description" content="Gasless registration and feedback across EVM and Solana, with the authorship problem and the payment gate written down.">
+<meta property="og:image" content="https://facilitator.ultravioletadao.xyz/logo.png">
+<link rel="icon" href="/favicon.ico">
+<style>
+  :root{
+    --bg:#12101a; --panel:#1a1726; --line:#2c2740; --txt:#e8e4f5;
+    --dim:#8a83a6; --ok:#5ee6a8; --bad:#ff6b6b; --amber:#e0a53f; --uv:#b496ff;
+    --cyan:#5ad7e6;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+       font:14px/1.7 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  header{padding:18px 22px;background:var(--panel);border-bottom:1px solid var(--line);
+         display:flex;gap:16px;align-items:baseline;flex-wrap:wrap;position:sticky;top:0;z-index:5}
+  h1{font-size:16px;margin:0;color:var(--uv);font-weight:600}
+  h2{font-size:13px;margin:34px 0 10px;color:var(--dim);font-weight:500;
+     text-transform:uppercase;letter-spacing:.06em;border-top:1px solid var(--line);padding-top:18px}
+  h3{font-size:13px;margin:22px 0 6px;color:var(--cyan);font-weight:600}
+  a{color:var(--amber)}
+  main{padding:0 22px 60px;max-width:96ch}
+  p{max-width:88ch}
+  code{color:var(--cyan);background:#1e1a2e;padding:1px 4px;border-radius:3px}
+  pre{background:#0e0c17;border:1px solid var(--line);border-radius:8px;padding:14px 16px;
+      overflow-x:auto;line-height:1.55}
+  pre code{background:none;padding:0;color:var(--txt)}
+  .lead{font-size:15px;line-height:1.75;max-width:88ch}
+  .scroll{overflow-x:auto}
+  table{width:100%;border-collapse:collapse;margin-top:10px}
+  th{text-align:left;color:var(--dim);font-weight:500;padding:7px 9px;font-size:11px;
+     border-bottom:1px solid var(--line);text-transform:uppercase;letter-spacing:.04em}
+  td{padding:7px 9px;border-bottom:1px solid #221e33;vertical-align:top}
+  .tag{display:inline-block;background:#241f36;border:1px solid var(--line);border-radius:4px;
+       padding:0 6px;margin:1px 3px 1px 0;font-size:11px;color:var(--cyan);white-space:nowrap}
+  .tag.test{color:var(--amber)}
+  .warn{background:rgba(224,165,63,.08);border:1px solid rgba(224,165,63,.32);
+        border-radius:8px;padding:14px 16px;margin:22px 0;line-height:1.7;max-width:88ch}
+  .warn b{color:var(--amber)}
+  .no{background:rgba(255,107,107,.06);border:1px solid rgba(255,107,107,.25);
+      border-radius:8px;padding:14px 16px;margin:18px 0;max-width:88ch}
+  .no b{color:var(--bad)}
+  ul{max-width:88ch;padding-left:20px}
+  li{margin:8px 0}
+  .muted{color:var(--dim)}
+  .langsw{margin-left:auto;display:flex;gap:4px}
+  .langsw button{background:#241f36;color:var(--txt);border:1px solid var(--line);
+                 border-radius:5px;padding:3px 8px;font:inherit;font-size:11px;
+                 cursor:pointer;opacity:.55}
+  .langsw button.active{opacity:1;border-color:var(--uv);color:var(--uv)}
+  footer{border-top:1px solid var(--line);padding:18px 22px;color:var(--dim);font-size:12px}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>ERC-8004 · <span data-i18n="h1">identity and reputation</span></h1>
+  <a href="/">/</a>
+  <a href="/x402">/x402</a>
+  <a href="/networks" data-i18n="nav.networks">networks</a>
+  <a href="/docs">/docs</a>
+  <span class="langsw"><button data-lang="en">EN</button><button data-lang="es">ES</button></span>
+</header>
+
+<main>
+
+<p class="lead" data-i18n="lead">ERC-8004 gives an agent an on-chain identity and a reputation attached to it: a registry mints an NFT that <em>is</em> the agent, and third parties write rated feedback against it. This facilitator is the gasless door to that — it registers agents and relays feedback, paying every gas fee, across EVM chains and Solana. What follows is <b>our implementation</b>, including the parts of it that are uncomfortable.</p>
+
+<h2 data-i18n="h.nets">Where it runs</h2>
+<p data-i18n="nets.p1">Read from <code>GET /register</code> when this page loads, never typed here:</p>
+<div id="nets"><span class="muted" data-i18n="loading">loading…</span></div>
+
+<h2 data-i18n="h.author">The authorship problem, said out loud</h2>
+
+<div class="no">
+  <p style="margin:0"><b data-i18n="author.warnTitle">On the plain path, the facilitator is the author of your rating.</b>
+  <span data-i18n="author.warnText">A registry records <code>msg.sender</code> as the rater, and on <code>POST /feedback</code> that is us. Whatever name you put in the body, the chain says the facilitator said it. Reputation written that way is worth exactly as much as trusting the facilitator, which is not what any of this is for.</span></p>
+</div>
+
+<p data-i18n="author.p1">So there are two paths where the rater signs for themselves, and the facilitator only pays:</p>
+
+<div class="scroll">
+<table>
+  <thead><tr><th data-i18n="au.th.path">path</th><th data-i18n="au.th.how">how the rater stays the author</th><th data-i18n="au.th.where">where</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><code>POST /feedback/evm/prepare</code><br><code>POST /feedback/evm/submit</code></td>
+      <td data-i18n="au.evm">EIP-7702: the rater delegates their EOA to a feedback delegate and signs a digest; we send a type-4 transaction <em>to the rater's own address</em>, so the registry sees the rater as <code>msg.sender</code></td>
+      <td data-i18n="au.evmWhere">only where a delegate is deployed <b>and verified on chain</b> — today <code>base-sepolia</code> alone. Mainnet waits on that deploy, and the table lives in the code rather than in this sentence</td>
+    </tr>
+    <tr>
+      <td><code>POST /feedback/solana/prepare</code><br><code>POST /feedback/solana/submit</code></td>
+      <td data-i18n="au.svm">a partially-signed transaction: the rater signs as <code>client</code>, the facilitator stays fee payer only</td>
+      <td data-i18n="au.svmWhere"><code>submit</code> refuses any transaction that is not byte-for-byte the one it built</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<h2 data-i18n="h.proof">Feedback has to have been paid for</h2>
+
+<p data-i18n="proof.p1">A rating that anyone can write is a rating anyone will write. Every feedback carries a proof of payment, and the server checks all of it: the transaction exists on that network and succeeded, sits in the block the proof claims, contains a transfer of exactly that amount of that token from payer to payee, the payer is the rater, the payee is an address the identity registry ties to the agent, the block timestamp is inside the freshness window, the hash recomputes, and that (payment, agent) pair has not been spent before.</p>
+
+<div class="warn">
+  <p style="margin:0"><b data-i18n="proof.twoTitle">Two verdicts never block a write, in either phase.</b> <span data-i18n="proof.twoText">If the RPC could not be reached there is <em>no verdict</em> — our outage must not erase somebody's reputation. And the Solana path has no EVM receipt to read, so enforcing a check that never ran would quietly switch Solana reputation off. A gate that fails closed on its own blind spots is a gate that deletes data.</span></p>
+</div>
+
+<p data-i18n="proof.p2">Two things that trip real integrations. Most agents have no wallet set on the registry — measured on Base, six agent ids in a row all read <code>0x0</code> — so ownership is read from <code>ownerOf</code> as well, and both are accepted. And a marketplace payment usually carries <em>two</em> transfers, a fee and the net to the agent: the proof must declare the net the payee actually receives, or the gate cannot find it.</p>
+
+<h2 data-i18n="h.lookup">Why an owner lookup can answer 503</h2>
+
+<p data-i18n="lookup.p1">There is no index behind it, and that shapes everything. The registries expose no owner-to-agent mapping, they are not enumerable — <code>totalSupply()</code> reverts on every deployed registry, verified on chain — and at least one chain caps log queries at 2000 blocks. So a cold lookup derives the highest agent id and scans ownership through Multicall3.</p>
+
+<ul>
+  <li data-i18n="lookup.li1"><b><code>404</code> and <code>503</code> are different answers and must not be collapsed.</b> 404 is "this address owns no agent". 503 is "the lookup reached no verdict", and it says <code>retryable</code>. Persisting a 503 as "not registered" is how a transient RPC failure becomes a permanent wrong answer — and on a registration path it mints a second identity for somebody who already had one.</li>
+  <li data-i18n="lookup.li2"><b>A non-zero balance with no token found is a contradiction, not a miss.</b> It means the scan range was wrong. It answers 503, and <code>POST /register</code> refuses to mint on it.</li>
+  <li data-i18n="lookup.li3"><b>The scan has a ceiling and it is visible.</b> Base held 83,984 agents against the 192,000 the scan can walk, measured 2026-09-01; the service warns from 75% of the cap and answers 503 past it. The fix at that point is an owner index, not a bigger number.</li>
+  <li data-i18n="lookup.li4"><b>A registration that timed out is not a registration that failed.</b> The mint may still land. Read it back before retrying.</li>
+</ul>
+
+<h2 data-i18n="h.solana">Solana is not a port of the EVM path</h2>
+<p data-i18n="solana.p1">It is a different program with its own account layouts, and three things bite. The config address is two hops, not one — a root config holds the collection and the collection seeds the registry config; the legacy single-seed derivation points at an address that was never initialised. Feedback submitted <em>without</em> a score is recorded and never scored: reputation stays at zero however much accumulates, and it is not retroactive. And the program forbids self-feedback, so an agent minted without a recipient stays with the facilitator, which then cannot rate it — which is why registering with a recipient mints, initialises the stats and transfers, in that order.</p>
+
+<h2 data-i18n="h.reading">Reading it back</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th data-i18n="r.th.route">route</th><th data-i18n="r.th.what">what it answers</th></tr></thead>
+  <tbody>
+    <tr><td><code>GET /identity/{network}/{agentId}</code></td><td data-i18n="r.identity">the agent's identity as the registry has it</td></tr>
+    <tr><td><code>GET /identity/{network}/owner/{address}</code></td><td data-i18n="r.owner">which agent an address owns — the lookup with no index behind it</td></tr>
+    <tr><td><code>GET /identity/{network}/total-supply</code></td><td data-i18n="r.supply">how many agents are registered</td></tr>
+    <tr><td><code>GET /reputation/{network}/{agentId}</code></td><td data-i18n="r.rep">the reputation summary, plus ATOM stats on Solana</td></tr>
+    <tr><td><code>POST /register</code></td><td data-i18n="r.register">mint an identity, gas paid by us. <code>Prefer: respond-async</code> returns a job id instead of holding the request open</td></tr>
+    <tr><td><code>POST /feedback/revoke</code></td><td data-i18n="r.revoke">admin only, and <b>404 when no admin token is configured</b> — fail-closed, so the route is indistinguishable from absent. It erases third-party reputation irreversibly, which is why it does not share a token with anything else</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2 data-i18n="h.describe">This is not describe.net, and the difference matters</h2>
+
+<p data-i18n="describe.p1"><a href="https://describe.net" target="_blank">describe.net</a> is a different product that also reads ERC-8004. It is a cross-chain <b>index</b>: it scans every chain's registry events, resolves who owns each agent <em>now</em> rather than who minted it, applies one versioned aggregation policy, and answers a reputation question with a score and its composition. It charges for that work.</p>
+
+<p data-i18n="describe.p2">This facilitator is the other half. It is a <b>gateway</b>: it writes to one registry at a time and reads one registry at a time, live, for free, and <b>it computes no score</b>. There is no aggregation policy here, no cross-chain view and no ranking — <code>/reputation/{network}/{agentId}</code> hands back what that one registry says and stops.</p>
+
+<div class="warn">
+  <p style="margin:0"><b data-i18n="describe.warnTitle">So the two can disagree, and neither is the other's authority.</b> <span data-i18n="describe.warnText">They answer different questions. Do not treat a number from here as an index-wide score, and do not treat an index score as what a specific registry will say on the next block. And one warning worth borrowing from their measurements rather than restating as ours: an <code>agentId</code> alone identifies nobody. The same id exists on every chain with more agents than that number, and it belongs to different people on each — of 26,736 ids present on two or more chains, they measured zero with the same owner across all of them. The strong key is the wallet.</span></p>
+</div>
+
+</main>
+
+<footer>
+  <span data-i18n="footer">Ultravioleta DAO · x402 Payment Facilitator.</span>
+  <a href="/">/</a> · <a href="/x402">/x402</a> · <a href="/networks">/networks</a> · <a href="/mcp">/mcp</a>
+</footer>
+
+<script>
+const I18N = {
+  en: {
+    title:"ERC-8004 · agent identity and reputation", h1:"identity and reputation",
+    "nav.networks":"networks",
+    lead:"ERC-8004 gives an agent an on-chain identity and a reputation attached to it: a registry mints an NFT that <em>is</em> the agent, and third parties write rated feedback against it. This facilitator is the gasless door to that — it registers agents and relays feedback, paying every gas fee, across EVM chains and Solana. What follows is <b>our implementation</b>, including the parts of it that are uncomfortable.",
+    "h.nets":"Where it runs",
+    "nets.p1":"Read from <code>GET /register</code> when this page loads, never typed here:",
+    "h.author":"The authorship problem, said out loud",
+    "author.warnTitle":"On the plain path, the facilitator is the author of your rating.",
+    "author.warnText":"A registry records <code>msg.sender</code> as the rater, and on <code>POST /feedback</code> that is us. Whatever name you put in the body, the chain says the facilitator said it. Reputation written that way is worth exactly as much as trusting the facilitator, which is not what any of this is for.",
+    "author.p1":"So there are two paths where the rater signs for themselves, and the facilitator only pays:",
+    "au.th.path":"path", "au.th.how":"how the rater stays the author", "au.th.where":"where",
+    "au.evm":"EIP-7702: the rater delegates their EOA to a feedback delegate and signs a digest; we send a type-4 transaction <em>to the rater's own address</em>, so the registry sees the rater as <code>msg.sender</code>",
+    "au.evmWhere":"only where a delegate is deployed <b>and verified on chain</b> — today <code>base-sepolia</code> alone. Mainnet waits on that deploy, and the table lives in the code rather than in this sentence",
+    "au.svm":"a partially-signed transaction: the rater signs as <code>client</code>, the facilitator stays fee payer only",
+    "au.svmWhere":"<code>submit</code> refuses any transaction that is not byte-for-byte the one it built",
+    "h.proof":"Feedback has to have been paid for",
+    "proof.p1":"A rating that anyone can write is a rating anyone will write. Every feedback carries a proof of payment, and the server checks all of it: the transaction exists on that network and succeeded, sits in the block the proof claims, contains a transfer of exactly that amount of that token from payer to payee, the payer is the rater, the payee is an address the identity registry ties to the agent, the block timestamp is inside the freshness window, the hash recomputes, and that (payment, agent) pair has not been spent before.",
+    "proof.twoTitle":"Two verdicts never block a write, in either phase.",
+    "proof.twoText":"If the RPC could not be reached there is <em>no verdict</em> — our outage must not erase somebody's reputation. And the Solana path has no EVM receipt to read, so enforcing a check that never ran would quietly switch Solana reputation off. A gate that fails closed on its own blind spots is a gate that deletes data.",
+    "proof.p2":"Two things that trip real integrations. Most agents have no wallet set on the registry — measured on Base, six agent ids in a row all read <code>0x0</code> — so ownership is read from <code>ownerOf</code> as well, and both are accepted. And a marketplace payment usually carries <em>two</em> transfers, a fee and the net to the agent: the proof must declare the net the payee actually receives, or the gate cannot find it.",
+    "h.lookup":"Why an owner lookup can answer 503",
+    "lookup.p1":"There is no index behind it, and that shapes everything. The registries expose no owner-to-agent mapping, they are not enumerable — <code>totalSupply()</code> reverts on every deployed registry, verified on chain — and at least one chain caps log queries at 2000 blocks. So a cold lookup derives the highest agent id and scans ownership through Multicall3.",
+    "lookup.li1":"<b><code>404</code> and <code>503</code> are different answers and must not be collapsed.</b> 404 is \"this address owns no agent\". 503 is \"the lookup reached no verdict\", and it says <code>retryable</code>. Persisting a 503 as \"not registered\" is how a transient RPC failure becomes a permanent wrong answer — and on a registration path it mints a second identity for somebody who already had one.",
+    "lookup.li2":"<b>A non-zero balance with no token found is a contradiction, not a miss.</b> It means the scan range was wrong. It answers 503, and <code>POST /register</code> refuses to mint on it.",
+    "lookup.li3":"<b>The scan has a ceiling and it is visible.</b> Base held 83,984 agents against the 192,000 the scan can walk, measured 2026-09-01; the service warns from 75% of the cap and answers 503 past it. The fix at that point is an owner index, not a bigger number.",
+    "lookup.li4":"<b>A registration that timed out is not a registration that failed.</b> The mint may still land. Read it back before retrying.",
+    "h.solana":"Solana is not a port of the EVM path",
+    "solana.p1":"It is a different program with its own account layouts, and three things bite. The config address is two hops, not one — a root config holds the collection and the collection seeds the registry config; the legacy single-seed derivation points at an address that was never initialised. Feedback submitted <em>without</em> a score is recorded and never scored: reputation stays at zero however much accumulates, and it is not retroactive. And the program forbids self-feedback, so an agent minted without a recipient stays with the facilitator, which then cannot rate it — which is why registering with a recipient mints, initialises the stats and transfers, in that order.",
+    "h.reading":"Reading it back",
+    "r.th.route":"route", "r.th.what":"what it answers",
+    "r.identity":"the agent's identity as the registry has it",
+    "r.owner":"which agent an address owns — the lookup with no index behind it",
+    "r.supply":"how many agents are registered",
+    "r.rep":"the reputation summary, plus ATOM stats on Solana",
+    "r.register":"mint an identity, gas paid by us. <code>Prefer: respond-async</code> returns a job id instead of holding the request open",
+    "r.revoke":"admin only, and <b>404 when no admin token is configured</b> — fail-closed, so the route is indistinguishable from absent. It erases third-party reputation irreversibly, which is why it does not share a token with anything else",
+    "h.describe":"This is not describe.net, and the difference matters",
+    "describe.p1":"<a href=\"https://describe.net\" target=\"_blank\">describe.net</a> is a different product that also reads ERC-8004. It is a cross-chain <b>index</b>: it scans every chain's registry events, resolves who owns each agent <em>now</em> rather than who minted it, applies one versioned aggregation policy, and answers a reputation question with a score and its composition. It charges for that work.",
+    "describe.p2":"This facilitator is the other half. It is a <b>gateway</b>: it writes to one registry at a time and reads one registry at a time, live, for free, and <b>it computes no score</b>. There is no aggregation policy here, no cross-chain view and no ranking — <code>/reputation/{network}/{agentId}</code> hands back what that one registry says and stops.",
+    "describe.warnTitle":"So the two can disagree, and neither is the other's authority.",
+    "describe.warnText":"They answer different questions. Do not treat a number from here as an index-wide score, and do not treat an index score as what a specific registry will say on the next block. And one warning worth borrowing from their measurements rather than restating as ours: an <code>agentId</code> alone identifies nobody. The same id exists on every chain with more agents than that number, and it belongs to different people on each — of 26,736 ids present on two or more chains, they measured zero with the same owner across all of them. The strong key is the wallet.",
+    footer:"Ultravioleta DAO · x402 Payment Facilitator.",
+    loading:"loading…",
+  },
+  es: {
+    title:"ERC-8004 · identidad y reputación de agentes", h1:"identidad y reputación",
+    "nav.networks":"redes",
+    lead:"ERC-8004 le da a un agente una identidad on-chain y una reputación pegada a ella: un registro acuña un NFT que <em>es</em> el agente, y terceros escriben calificaciones contra él. Este facilitador es la puerta sin gas a eso — registra agentes y relaya calificaciones pagando todo el gas, en cadenas EVM y en Solana. Lo que sigue es <b>nuestra implementación</b>, incluidas las partes incómodas.",
+    "h.nets":"Dónde corre",
+    "nets.p1":"Leído de <code>GET /register</code> al cargar la página, nunca tipeado acá:",
+    "h.author":"El problema de la autoría, dicho en voz alta",
+    "author.warnTitle":"En el camino común, el autor de tu calificación es el facilitador.",
+    "author.warnText":"Un registro anota <code>msg.sender</code> como el calificador, y en <code>POST /feedback</code> ese somos nosotros. Pongas el nombre que pongas en el cuerpo, la cadena dice que lo dijo el facilitador. Una reputación escrita así vale exactamente lo mismo que confiar en el facilitador, que no es para lo que sirve nada de esto.",
+    "author.p1":"Por eso hay dos caminos donde el calificador firma por sí mismo y el facilitador solo paga:",
+    "au.th.path":"camino", "au.th.how":"cómo el calificador sigue siendo el autor", "au.th.where":"dónde",
+    "au.evm":"EIP-7702: el calificador delega su EOA a un delegado de feedback y firma un digest; nosotros mandamos una transacción tipo 4 <em>a la dirección del propio calificador</em>, así el registro lo ve a él como <code>msg.sender</code>",
+    "au.evmWhere":"solo donde hay un delegado desplegado <b>y verificado on-chain</b> — hoy únicamente <code>base-sepolia</code>. Mainnet espera ese deploy, y la tabla vive en el código y no en esta frase",
+    "au.svm":"una transacción parcialmente firmada: el calificador firma como <code>client</code> y el facilitador queda solo como pagador de la comisión",
+    "au.svmWhere":"<code>submit</code> rechaza cualquier transacción que no sea byte a byte la que él mismo armó",
+    "h.proof":"La calificación tiene que haber sido pagada",
+    "proof.p1":"Una calificación que puede escribir cualquiera es una calificación que va a escribir cualquiera. Cada feedback lleva una prueba de pago, y el servidor la chequea entera: la transacción existe en esa red y salió bien, está en el bloque que la prueba declara, contiene una transferencia de exactamente ese monto de ese token del pagador al cobrador, el pagador es el calificador, el cobrador es una dirección que el registro de identidad ata al agente, el timestamp del bloque está dentro de la ventana de frescura, el hash recalcula, y ese par (pago, agente) no se usó antes.",
+    "proof.twoTitle":"Dos veredictos no frenan una escritura nunca, en ninguna de las dos fases.",
+    "proof.twoText":"Si no se pudo llegar al RPC, <em>no hay veredicto</em> — una caída nuestra no puede borrar la reputación de alguien. Y el camino de Solana no tiene un recibo EVM que leer, así que exigir un chequeo que nunca corrió apagaría en silencio la reputación de Solana. Una puerta que falla cerrada sobre sus propios puntos ciegos es una puerta que borra datos.",
+    "proof.p2":"Dos cosas que se llevan puestas a integraciones reales. Casi ningún agente tiene wallet fijada en el registro — medido en Base, seis agent ids seguidos leían todos <code>0x0</code> — así que la propiedad se lee también de <code>ownerOf</code>, y se aceptan las dos. Y un pago de marketplace suele llevar <em>dos</em> transferencias, una comisión y el neto al agente: la prueba tiene que declarar el neto que el cobrador realmente recibe, o la puerta no lo encuentra.",
+    "h.lookup":"Por qué una búsqueda por dueño puede contestar 503",
+    "lookup.p1":"No hay ningún índice detrás, y eso condiciona todo. Los registros no exponen un mapeo de dueño a agente, no son enumerables — <code>totalSupply()</code> revierte en todos los registros desplegados, verificado on-chain — y al menos una cadena limita las consultas de logs a 2000 bloques. Así que una búsqueda en frío deriva el agent id más alto y escanea la propiedad por Multicall3.",
+    "lookup.li1":"<b><code>404</code> y <code>503</code> son respuestas distintas y no se pueden colapsar.</b> 404 es \"esta dirección no tiene ningún agente\". 503 es \"la búsqueda no llegó a un veredicto\", y lo dice con <code>retryable</code>. Persistir un 503 como \"no registrado\" es cómo una falla transitoria de RPC se vuelve una respuesta equivocada permanente — y en un camino de registro acuña una segunda identidad para alguien que ya tenía una.",
+    "lookup.li2":"<b>Un balance distinto de cero sin token encontrado es una contradicción, no una ausencia.</b> Significa que el rango del escaneo estaba mal. Contesta 503, y <code>POST /register</code> se niega a acuñar sobre eso.",
+    "lookup.li3":"<b>El escaneo tiene un techo y está a la vista.</b> Base tenía 83.984 agentes contra los 192.000 que el escaneo puede recorrer, medido el 2026-09-01; el servicio avisa desde el 75% del tope y contesta 503 pasándolo. El arreglo llegado ese punto es un índice por dueño, no un número más grande.",
+    "lookup.li4":"<b>Un registro que dio timeout no es un registro que falló.</b> El mint puede llegar igual. Leelo de vuelta antes de reintentar.",
+    "h.solana":"Solana no es un port del camino EVM",
+    "solana.p1":"Es otro programa con sus propios layouts de cuenta, y tres cosas muerden. La dirección de configuración son dos saltos y no uno — una config raíz tiene la colección y la colección siembra la config del registro; la derivación vieja de una sola semilla apunta a una dirección que nunca se inicializó. Un feedback enviado <em>sin</em> score se registra y no se puntúa nunca: la reputación queda en cero por más que se acumule, y no es retroactivo. Y el programa prohíbe el auto-feedback, así que un agente acuñado sin recipient se queda con el facilitador, que después no puede calificarlo — que es por qué registrar con recipient acuña, inicializa las estadísticas y transfiere, en ese orden.",
+    "h.reading":"Cómo se lee de vuelta",
+    "r.th.route":"ruta", "r.th.what":"qué contesta",
+    "r.identity":"la identidad del agente tal como la tiene el registro",
+    "r.owner":"qué agente tiene una dirección — la búsqueda sin índice detrás",
+    "r.supply":"cuántos agentes hay registrados",
+    "r.rep":"el resumen de reputación, más las estadísticas ATOM en Solana",
+    "r.register":"acuñar una identidad, con el gas pagado por nosotros. <code>Prefer: respond-async</code> devuelve un job id en vez de dejar la petición abierta",
+    "r.revoke":"solo admin, y <b>404 cuando no hay token de admin configurado</b> — falla cerrado, así la ruta es indistinguible de ausente. Borra reputación de terceros de forma irreversible, que es por qué no comparte token con nada más",
+    "h.describe":"Esto no es describe.net, y la diferencia importa",
+    "describe.p1":"<a href=\"https://describe.net\" target=\"_blank\">describe.net</a> es otro producto que también lee ERC-8004. Es un <b>índice</b> cross-chain: escanea los eventos del registro de cada cadena, resuelve quién posee cada agente <em>ahora</em> y no quién lo acuñó, aplica una única política de agregación versionada, y contesta una pregunta de reputación con un score y su composición. Cobra por ese trabajo.",
+    "describe.p2":"Este facilitador es la otra mitad. Es una <b>puerta</b>: escribe en un registro por vez y lee un registro por vez, en vivo, gratis, y <b>no calcula ningún score</b>. Acá no hay política de agregación, ni vista cross-chain, ni ranking — <code>/reputation/{network}/{agentId}</code> devuelve lo que dice ese registro y se detiene.",
+    "describe.warnTitle":"Así que los dos pueden discrepar, y ninguno es la autoridad del otro.",
+    "describe.warnText":"Contestan preguntas distintas. No trates un número de acá como un score de todo el índice, ni un score del índice como lo que un registro específico va a decir en el próximo bloque. Y una advertencia que vale prestada de sus mediciones en vez de repetida como nuestra: un <code>agentId</code> solo no identifica a nadie. El mismo id existe en toda cadena que tenga más agentes que ese número, y en cada una pertenece a personas distintas — de 26.736 ids presentes en dos o más cadenas, midieron cero con el mismo dueño en todas. La llave fuerte es la wallet.",
+    footer:"Ultravioleta DAO · Facilitador de pagos x402.",
+    loading:"cargando…",
+  },
+};
+
+let LANG = 'en';
+try { const s = localStorage.getItem('x402.lang'); if (I18N[s]) LANG = s; } catch (e) { /* private mode */ }
+const t = k => (I18N[LANG] && I18N[LANG][k]) ?? I18N.en[k] ?? k;
+const esc = s => { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; };
+const TESTNET_RE = /(testnet|sepolia|devnet|fuji|amoy|alfajores|holesky|baklava)/i;
+let NETS = null;
+
+function applyLang(lang){
+  if (I18N[lang]) LANG = lang;
+  document.documentElement.lang = LANG;
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    el.innerHTML = t(el.getAttribute('data-i18n'));
+  });
+  document.querySelectorAll('.langsw button').forEach(b => {
+    b.classList.toggle('active', b.getAttribute('data-lang') === LANG);
+  });
+  renderNets();
+}
+
+document.querySelectorAll('.langsw button').forEach(b => {
+  b.addEventListener('click', () => {
+    const lang = b.getAttribute('data-lang');
+    try { localStorage.setItem('x402.lang', lang); } catch (e) { /* private mode */ }
+    applyLang(lang);
+  });
+});
+
+function renderNets(){
+  const box = document.getElementById('nets');
+  if (!box || !NETS) return;
+  // Mainnets first, then testnets, each marked. A count is not printed here on
+  // purpose: the list IS the count, and a number next to a list is a second
+  // place for the same fact to go stale.
+  const order = [...NETS].sort((a, b) => (TESTNET_RE.test(a) - TESTNET_RE.test(b)) || a.localeCompare(b));
+  box.innerHTML = order.map(n =>
+    `<span class="tag${TESTNET_RE.test(n) ? ' test' : ''}">${esc(n)}</span>`).join('');
+}
+
+fetch('/register').then(r => r.json()).then(d => {
+  if (!Array.isArray(d.supportedNetworks)) return;
+  NETS = d.supportedNetworks;
+  renderNets();
+}).catch(() => { /* the placeholder stays: an empty list would claim none */ });
+
+applyLang(LANG);
+</script>
+</body>
+</html>

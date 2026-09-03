@@ -927,6 +927,7 @@ where
         .route("/ausd.png", get(get_ausd_logo))
         .route("/pyusd.png", get(get_pyusd_logo))
         .route("/usdg.png", get(get_usdg_logo))
+        .route("/rlusd.png", get(get_rlusd_logo))
 }
 
 /// ERC-8004 gas-spending write routes, carved out so a strict rate limit can be
@@ -2890,6 +2891,21 @@ pub async fn get_pyusd_logo() -> impl IntoResponse {
 /// `GET /usdg.png`: Returns USDG (Global Dollar) stablecoin logo.
 pub async fn get_usdg_logo() -> impl IntoResponse {
     let bytes = include_bytes!("../static/usdg.png");
+    (
+        StatusCode::OK,
+        [("content-type", "image/png")],
+        bytes.as_slice(),
+    )
+}
+
+/// `GET /rlusd.png`: Returns RLUSD (Ripple USD) stablecoin logo.
+///
+/// RLUSD is the seventh stablecoin this facilitator settles and the only one
+/// that is not an EVM/SVM token contract: it is an XRPL issued currency
+/// (`RLUSD_XRPL` in `network.rs`), which is why `scripts/stablecoin_matrix.py`
+/// -- which parses the EVM deployment table -- reports six and not seven.
+pub async fn get_rlusd_logo() -> impl IntoResponse {
+    let bytes = include_bytes!("../static/rlusd.png");
     (
         StatusCode::OK,
         [("content-type", "image/png")],

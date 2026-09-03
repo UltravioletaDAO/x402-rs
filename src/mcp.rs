@@ -1067,7 +1067,17 @@ mod tests {
         let (status, ctype, body) = get_mcp(Some("text/markdown")).await;
         assert_eq!(status, StatusCode::OK);
         assert!(ctype.starts_with("text/markdown"), "content-type {ctype:?}");
-        assert!(body.starts_with("# The x402 facilitator"), "body: {body:.80}");
+        // The shape, not the sentence. Pinning the literal title made this test
+        // fail the day the page's `h1` was rewritten -- and the rewrite was the
+        // point: `/mcp`, `mcp.md` and the landing all have to open with the
+        // same headline, or the same URL answers three different things
+        // depending on who asks. What matters here is that Markdown came back
+        // and that it is this guide.
+        assert!(body.starts_with("# "), "body: {body:.80}");
+        assert!(
+            body.contains("x402_settle"),
+            "text/markdown did not answer the MCP guide: {body:.80}"
+        );
     }
 
     /// A transport client that used the wrong method still gets the machine

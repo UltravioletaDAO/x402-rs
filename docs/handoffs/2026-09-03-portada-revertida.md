@@ -1,13 +1,13 @@
 # La portada vuelve al diseno original, con el menu y el pie injertados
 
-**2026-09-03 · rama `0xultravioleta/x4-revertir` · seis commits, sin push**
+**2026-09-03 · rama `0xultravioleta/x4-revertir` · nueve commits, sin push**
 
 El dueno rechazo dos redisenos seguidos de la portada y pidio, textual: *"por
 ahora quiero que lo reviertas al formato que estaba antes... la pagina principal
 tiene que ser tal cual como la teniamos antes, con ese formato"*.
 
 Esto no fue un tercer diseno. Fue una cirugia: se trajo el archivo entero de
-`1c4c33d9`, se le injertaron cuatro cosas y se le sacaron dos. **Ninguna
+`1c4c33d9`, se le injertaron tres cosas y se le saco una. **Ninguna
 decision visual propia entro a la portada.**
 
 ---
@@ -21,7 +21,7 @@ puedan comparar entre si.
 |---|---:|---:|---:|---:|---:|
 | **Antes** — `origin/main`, el rediseno rechazado | 54.539 | 28 | 3 | 4 | 2 |
 | **La base** — `1c4c33d9`, el original que se pidio | 243.550 | 73 | 4 | 0 | 12 |
-| **Despues** — esta rama | 235.421 | **74** | **0** | **0** | 11 |
+| **Despues** — esta rama | 235.525 | **74** | **0** | **0** | 11 |
 
 Los 73 `<img>` son los iconos de las redes que el dueno extranaba; el 74 es
 RLUSD. Los cuatro `<pre>` del original salieron todos.
@@ -71,7 +71,7 @@ escala y sus reglas de tabla y de titulo. Cargarla en la portada **volveria a
 pintarla entera con el sistema que el dueno rechazo dos veces** -- exactamente
 lo que este encargo existe para deshacer.
 
-Asi que el menu y el pie se visten con ~150 lineas *scoped* a `.nav` y
+Asi que el menu y el pie se visten con 160 lineas *scoped* a `.nav` y
 `.footer`, escritas en los tokens de la portada (`--bg-card`, `--accent`,
 `--text-muted`, `--border`, `'JetBrains Mono'`). El borde, el fondo y el ritmo
 vertical los sigue poniendo la regla `header {}` que ya existia en el archivo:
@@ -120,7 +120,8 @@ cinco colores `.code-*`, la funcion `switchSdkTab` y las claves `code.title` y
 
 La portada quedo en **cero** bloques de codigo -- no en uno. Sin la seccion la
 pagina se entiende: el grid de redes, las tarjetas de features, "What is x402?",
-las cuatro secciones de producto y la tabla de endpoints siguen todas ahi.
+las cuatro secciones de producto y la lista de endpoints siguen todas ahi (la
+lista NO es una `<table>`: son divs, por eso la portada marca cero tablas).
 
 ---
 
@@ -170,10 +171,12 @@ por un factor de un millon es de lo primero que muerde.
 `858cad3c` agrego `sistema_visual_tests`: un solo eje, sin centrado, la regla
 del borde, una hoja compartida, un `h1` y nada entre el header y ese `h1`.
 
-**La portada original no lo cumple y no tiene que cumplirlo.** Trae su propio
-`<style>`, su propia `:root`, sus dos familias de Google, ningun `<h1>` y
-muchos mas de nueve `<h2>`. Cada una de esas cosas es el diseno que se pidio
-conservar, no deriva.
+**La portada original no lo cumple y no tiene que cumplirlo**, en tres clausulas
+concretas (medidas, no supuestas): trae su propio `<style>`, su propia `:root` y
+sus dos familias de Google; **no tiene ningun `<h1>`**, asi que el chequeo de
+"nada entre el header y el h1" no tiene que medir; y lleva **24 `<h4>`**, un
+nivel que el gate prohibe de plano. (Los `<h2>` no son el problema: tiene dos.)
+Cada una de esas cosas es el diseno que se pidio conservar, no deriva.
 
 `static/index.html` salio de `PAGINAS` y entro en `EXCLUIDAS`, **una lista de
 una sola entrada con el porque escrito al lado**. El test no se borro: las otras
@@ -185,6 +188,12 @@ Para que la exclusion no sea una puerta abierta, la portada sigue atada por:
   cabecera contra la de `/integrar` normalizando blancos y `aria-current` -- la
   portada se sirve con LF y las otras nueve estan en CRLF --, exige los ocho
   `data-nav`, y exige los nueve enlaces del pie.
+
+  **Probado en sus dos mitades en rojo**, una compilacion cada una: sacandole el
+  `data-nav` a un enlace del menu falla con *"the landing's menu has drifted
+  from the one the other nine carry"*, y sacandole `/skill.md` al pie falla con
+  *"the landing's footer lost /skill.md"*. `static/index.html` quedo
+  byte-identico despues (`cmp`).
 - Los cinco **`i18n_tests`**, que nunca la dejaron.
 
 ### `scripts/verify_landing_canonical.py`
@@ -231,7 +240,52 @@ Probado en verde y en **cuatro rojos distintos**, cada uno con su mensaje:
 
 ---
 
-## 7. Los seis commits
+## 7. El binario local, mirado
+
+Levantado en `127.0.0.1:8402` con `ENABLE_WRITER_LEASE=false` y credenciales
+AWS falsas -- un binario local con credenciales reales intenta tomar el writer
+lease de **produccion**, medido el 2026-09-02.
+
+**La portada** (`GET /` -> 200, 235.421 B -- la corrida es sobre el binario de
+`4498b9cb`; el commit siguiente le suma 104 B al **texto de un aviso de consola**
+y no cambia nada de lo que se ve, asi que el archivo final mide 235.525 B):
+
+| | |
+|---|---|
+| `<header class="nav">` | 1, con los **8** `data-nav` |
+| `<footer class="footer">` | 1, con sus 10 enlaces |
+| `<pre>` | **0** |
+| `<table>` | **0** |
+| `<img>` | **74** |
+| tarjetas del grid de redes | **39**, cada una con icono, saldo y sus pills |
+| RLUSD | presente, y el rotulo dice **7 Stablecoins** |
+
+Leida como texto, la pagina abre asi: el menu de ocho, EN/ES, *"Gasless
+Micropayments for the Agentic Economy"*, la barra de siete stablecoins, y el
+grid de redes con Avalanche, Base, Celo, HyperEVM, Polygon... Cierra con el pie
+nuevo. Es la portada de antes con el menu y el pie de ahora.
+
+**Los ocho destinos del menu**: los ocho dan 200.
+**Los enlaces del pie**: los nueve internos dan 200 (`/docs` da 303 al `/docs/`
+de Swagger, que da 200).
+**Los 29 iconos que la portada referencia**: 29 de 29 dan 200, RLUSD incluido.
+**Las quince superficies agenticas**: 15 de 15 dan 200. Ninguna se movio.
+
+Dos cosas del entorno local que NO son defectos, y son las mismas que documento
+el handoff del 2026-09-02: sin `X-Forwarded-For` el `SmartIpKeyExtractor` de
+`tower_governor` contesta 500 `Unable To Extract Key!` en las rutas que lleva
+gobernadas (`/mcp` entre ellas). Con el header -- que detras del ALB siempre
+esta -- da 200. Y `/version` dice `0.0.0` en local porque `FACILITATOR_VERSION`
+lo pasa el build de CI.
+
+Ademas: las nueve variables CSS que usa el injerto estan declaradas en el
+`:root` de la propia portada (ninguna falta, que es como se apagan reglas
+enteras en silencio), y los dos bloques de JavaScript del documento pasan
+`node --check`.
+
+---
+
+## 8. Los nueve commits
 
 | hash | que |
 |---|---|
@@ -241,5 +295,19 @@ Probado en verde y en **cuatro rojos distintos**, cada uno con su mensaje:
 | `7a70ceb6` | `feat(portada)`: fuera los bloques de codigo; queda en cero |
 | `858a6dfe` | `feat(integrar)`: el ejemplo pasa a mostrar como se cobra UNA ruta |
 | `4498b9cb` | `test(gate)`: el sistema visual gobierna nueve paginas, no diez |
+| `4910eea7` | `fix(portada)`: el aviso de consola ya no manda a buscar un 21 que no existe |
+| `d2b04ad6` | `docs(gate)`: el comentario decia h2 donde la portada tiene h4 |
+| *(HEAD)* | `docs(handoff)`: este documento. Sin hash a proposito: un commit no puede citar el suyo propio sin cambiarlo. |
 
-`cargo check` en verde en cada uno. **Cero push, cero deploy, cero terraform.**
+`cargo check` en verde en cada uno, y al final la suite completa:
+
+```
+cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl -- --test-threads=1
+  lib   739 passed; 0 failed
+  main  771 passed; 0 failed
+  + dx402_anchor_sig_cross 3, dx402_cross_seal 6, dx402_vector_gen 1,
+    escrow_integration 9, escrow 1 (11 ignored)
+  exit 0
+```
+
+**Cero push, cero deploy, cero terraform, cero escritura fuera del worktree.**

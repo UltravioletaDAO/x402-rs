@@ -582,6 +582,16 @@ const BAZAAR_HTML: &str = include_str!("../static/bazaar.html");
 const STATS_HTML: &str = include_str!("../static/stats.html");
 const EVENTS_VIEWER_HTML: &str = include_str!("../static/events-viewer.html");
 
+/// The MCP guide, in its two representations.
+///
+/// Both are read by their handler and by the tests, and the Markdown one is a
+/// SEPARATE document rather than a rendering of the HTML: they are written for
+/// different readers and only the HTML is bilingual. `/skill.md` section 10 is
+/// the short version of the same material for an agent already calling
+/// verify/settle.
+const MCP_HTML: &str = include_str!("../static/mcp.html");
+const MCP_MD: &str = include_str!("../static/mcp.md");
+
 /// `Content-Language` for every human page.
 ///
 /// `en`, not `en, es`, and the difference is not pedantry. These pages carry
@@ -2325,6 +2335,70 @@ pub async fn get_stats_page() -> impl IntoResponse {
 /// Alias for `get_root` to match main.rs routing.
 pub async fn get_index(headers: HeaderMap) -> impl IntoResponse {
     get_root(headers).await
+}
+
+/// The 405 `GET /mcp` answers a caller that is an MCP client, not a reader.
+///
+/// rmcp answers 405 for GET when sessions are off, but with a `text/plain`
+/// body and no `content-type` at all. A scanner grades a surface on its
+/// content type as much as its status, so this route is served by us: same
+/// 405, same `Allow: POST`, but a body a machine can read.
+///
+/// It lives here rather than in `mcp.rs` because `mod mcp` is declared only in
+/// `main.rs`: the library compiles `handlers.rs` and would not find it.
+pub fn mcp_get_not_allowed() -> Response<String> {
+    let body = json!({
+        "error": "GET is not supported on /mcp",
+        "reason": "This MCP server runs stateless: there is no server-initiated SSE \
+                   stream to open. Send JSON-RPC over POST instead.",
+        "transport": "streamable-http",
+        "method": "POST",
+        "humanGuide": "https://facilitator.ultravioletadao.xyz/mcp",
+        "serverCard": "https://facilitator.ultravioletadao.xyz/.well-known/mcp/server-card.json"
+    });
+    Response::builder()
+        .status(StatusCode::METHOD_NOT_ALLOWED)
+        .header(header::ALLOW, "POST")
+        .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
+        .body(body.to_string())
+        .expect("a constant response builds")
+}
+
+/// `GET /mcp`: the MCP guide for a person, without taking the path from the
+/// MCP server that lives on the same URL under `POST`.
+///
+/// **The `Accept` decides who is asking, and the two answers are different on
+/// purpose.** The Streamable HTTP transport sends
+/// `application/json, text/event-stream` on every request it makes, so a caller
+/// arriving here with that header is an MCP client that used the wrong method,
+/// and what it needs is [`mcp_get_not_allowed`] -- the 405 naming
+/// POST -- not two hundred lines of HTML it cannot parse. Everyone else gets
+/// the page, and `Accept: text/markdown` gets the same guide as Markdown.
+///
+/// Serving a page here also replaces the old behaviour, where the ONLY thing at
+/// `/mcp` for a person who clicked the link in a config file was a 405.
+#[instrument(skip_all)]
+pub async fn get_mcp_page(headers: HeaderMap) -> Response<String> {
+    let accept = headers
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    let asks_for_html = accept.contains("text/html");
+    if accept.contains("text/event-stream") || (accept.contains("application/json") && !asks_for_html)
+    {
+        return mcp_get_not_allowed();
+    }
+    // HTML first, so it stays the default for a browser, for `curl` with no
+    // Accept, and for anything sending `*/*`.
+    let mut response =
+        negotiated_surface(&headers, &[("text/html", MCP_HTML), ("text/markdown", MCP_MD)]);
+    // The Markdown is English-only; the HTML is English by default. Both are
+    // `en` -- see CONTENT_LANGUAGE_EN.
+    response.headers_mut().insert(
+        header::CONTENT_LANGUAGE,
+        header::HeaderValue::from_static(CONTENT_LANGUAGE_EN),
+    );
+    response
 }
 
 /// `GET /bazaar`: Returns the curated Bazaar resource explorer (WS-D).
@@ -13149,6 +13223,7 @@ mod agentic_surface_tests {
     /// |---|---|
     /// | `/` | `static/index.html` |
     /// | `/docs` | `src/openapi.rs` |
+    /// | `/mcp` | `static/mcp.html` (Markdown: `static/mcp.md`) |
     /// | `/bazaar` | `static/bazaar.html` |
     /// | `/stats` | `static/stats.html` |
     /// | `/events/live` | `static/events-viewer.html` |
@@ -13659,7 +13734,7 @@ mod json_error_tests {
 /// dictionary must turn one of them red. See the 2026-09-02 handoff for the run.
 #[cfg(test)]
 mod i18n_tests {
-    use super::{BAZAAR_HTML, EVENTS_VIEWER_HTML, INDEX_HTML, STATS_HTML};
+    use super::{BAZAAR_HTML, EVENTS_VIEWER_HTML, INDEX_HTML, MCP_HTML, STATS_HTML};
     use std::collections::BTreeSet;
 
     /// The pages and the `const` name of the JS object holding their dictionary.
@@ -13672,6 +13747,7 @@ mod i18n_tests {
         ("static/bazaar.html", BAZAAR_HTML),
         ("static/stats.html", STATS_HTML),
         ("static/events-viewer.html", EVENTS_VIEWER_HTML),
+        ("static/mcp.html", MCP_HTML),
     ];
 
     /// The three attributes that make the runtime look a key up.
@@ -13961,8 +14037,16 @@ mod i18n_tests {
     #[test]
     fn no_page_picks_a_language_from_the_browser() {
         for (page, html) in PAGES {
+            // Whole-line `//` comments are dropped first, so a page is free to
+            // explain in prose the very API it must not call -- and `mcp.html`
+            // does, which is how this line got written. The check is about code.
+            let code: String = html
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n");
             assert!(
-                !html.contains("navigator.language"),
+                !code.contains("navigator.language"),
                 "{page} still reads navigator.language to pick a language"
             );
         }

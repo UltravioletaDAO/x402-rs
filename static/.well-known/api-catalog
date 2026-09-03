@@ -64,6 +64,14 @@
       ],
       "service-doc": [
         {
+          "href": "https://facilitator.ultravioletadao.xyz/mcp",
+          "type": "text/markdown"
+        },
+        {
+          "href": "https://facilitator.ultravioletadao.xyz/mcp",
+          "type": "text/html"
+        },
+        {
           "href": "https://facilitator.ultravioletadao.xyz/skill.md",
           "type": "text/markdown"
         }

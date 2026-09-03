@@ -92,6 +92,7 @@ facilitator just did, and what it costs (nothing — the seller keeps the paymen
 - **Agent skills index**: https://facilitator.ultravioletadao.xyz/.well-known/agent-skills/index.json
 - **Agentic Resource Discovery catalog (ARD v0.91)**: https://facilitator.ultravioletadao.xyz/.well-known/ard.json
 - **MCP server card**: https://facilitator.ultravioletadao.xyz/.well-known/mcp/server-card.json
+- **MCP guide** (Markdown): https://facilitator.ultravioletadao.xyz/mcp
 - **Auth metadata (RFC 9728)**: https://facilitator.ultravioletadao.xyz/.well-known/oauth-protected-resource
 - **Workflow manifest**: https://facilitator.ultravioletadao.xyz/workflows.json
 - **OpenAPI 3.1**: https://facilitator.ultravioletadao.xyz/openapi.json
@@ -114,9 +115,13 @@ Base URL: `https://facilitator.ultravioletadao.xyz/`
 - `POST /mcp` — MCP server (Streamable HTTP, stateless). Four tools:
   `x402_supported`, `x402_accepts`, `x402_verify`, `x402_settle`. Each one is
   dispatched through the REST handler it names, so an MCP call and the HTTP call
-  it stands for cannot answer differently. `GET /mcp` is a JSON 405: there is no
-  SSE stream to open. `POST /mcp` shares the per-IP budget of `/verify` and
-  `/settle` — one bucket, not two.
+  it stands for cannot answer differently. `POST /mcp` shares the per-IP budget
+  of `/verify` and `/settle` — one bucket, not two.
+- `GET  /mcp` — the MCP guide, for a reader: transports, the tool contract, the
+  errors and the measured traps. HTML, or this same guide as Markdown with
+  `Accept: text/markdown`. A caller whose `Accept` names `application/json` or
+  `text/event-stream` still gets the JSON 405 naming POST, because there is no
+  SSE stream to open on a stateless server.
 - `GET  /events` — server-sent stream, one message per verify/settle
 - `GET  /transactions` — recent recorded operations (JSON, `limit` capped at 200)
 - `GET  /api/stats` — aggregated totals per network and asset

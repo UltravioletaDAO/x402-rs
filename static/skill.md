@@ -321,9 +321,12 @@ the HTTP request it names, so nothing here is a second implementation that
 could answer a different truth.
 
 - **Endpoint:** `https://facilitator.ultravioletadao.xyz/mcp`
-- **Transport:** Streamable HTTP, stateless. `POST` only; `GET /mcp` answers
-  `405` with a JSON body, because there is no server-initiated SSE stream to
-  open and no session id to keep.
+- **Transport:** Streamable HTTP, stateless. `POST` only. A `GET` on the same
+  path is the human guide (HTML, or this same material as Markdown with
+  `Accept: text/markdown`); a caller whose `Accept` names `application/json` or
+  `text/event-stream` still gets the `405` naming POST, because there is no
+  server-initiated SSE stream to open and no session id to keep.
+- **Guide:** `https://facilitator.ultravioletadao.xyz/mcp`
 - **Server card:**
   `https://facilitator.ultravioletadao.xyz/.well-known/mcp/server-card.json`
 - **Authentication:** none, exactly as in `/auth.md`. The MCP door grants no

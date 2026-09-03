@@ -520,27 +520,6 @@ impl ServerHandler for FacilitatorMcp {
     }
 }
 
-/// `GET /mcp`: there is no stream here, and this says so in JSON.
-///
-/// rmcp answers 405 for GET when sessions are off, but with a `text/plain`
-/// body and no `content-type` at all. A scanner grades a surface on its
-/// content type as much as its status, so this route is served by us: same
-/// 405, same `Allow: POST`, but a body a machine can read.
-pub async fn get_mcp_no_stream() -> impl IntoResponse {
-    (
-        StatusCode::METHOD_NOT_ALLOWED,
-        [(header::ALLOW, "POST")],
-        Json(json!({
-            "error": "GET is not supported on /mcp",
-            "reason": "This MCP server runs stateless: there is no server-initiated SSE \
-                       stream to open. Send JSON-RPC over POST instead.",
-            "transport": "streamable-http",
-            "method": "POST",
-            "serverCard": "https://facilitator.ultravioletadao.xyz/.well-known/mcp/server-card.json"
-        })),
-    )
-}
-
 /// Give rmcp's own error responses a `content-type`.
 ///
 /// rmcp builds its transport-level refusals -- 406 for an `Accept` that does not
@@ -642,7 +621,13 @@ where
     );
 
     Router::new()
-        .route("/mcp", post_service(service).get(get_mcp_no_stream))
+        // `GET` is the human guide, `POST` is this server. A caller whose
+        // `Accept` says it is a transport client still gets the 405 naming
+        // POST -- see `crate::handlers::get_mcp_page`.
+        .route(
+            "/mcp",
+            post_service(service).get(crate::handlers::get_mcp_page),
+        )
         .layer(axum::middleware::from_fn(json_content_type_on_errors))
 }
 
@@ -1028,45 +1013,92 @@ mod tests {
         );
     }
 
-    /// `GET /mcp` is a JSON 405, never HTML and never rmcp's bare text.
-    #[tokio::test]
-    async fn get_mcp_answers_a_json_405() {
+    /// `(status, content-type, body)` of a `GET /mcp` with the given `Accept`.
+    async fn get_mcp(accept: Option<&str>) -> (StatusCode, String, String) {
         let (mcp, _) = routers().await;
+        let mut builder = HttpRequest::builder()
+            .method(Method::GET)
+            .uri("/mcp")
+            .header(header::HOST, "127.0.0.1");
+        if let Some(accept) = accept {
+            builder = builder.header(header::ACCEPT, accept);
+        }
         let response = mcp
             .clone()
-            .oneshot(
-                HttpRequest::builder()
-                    .method(Method::GET)
-                    .uri("/mcp")
-                    .header(header::HOST, "127.0.0.1")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(builder.body(Body::empty()).unwrap())
             .await
             .unwrap();
-
-        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+        let status = response.status();
         let ctype = response
             .headers()
             .get(header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .unwrap_or_default()
             .to_string();
-        assert!(
-            ctype.starts_with("application/json"),
-            "GET /mcp answered content-type {ctype:?}"
-        );
-        assert_eq!(response.headers().get(header::ALLOW).unwrap(), "POST");
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
-        let body = String::from_utf8(bytes.to_vec()).unwrap();
-        assert!(
-            !body.trim_start().starts_with('<'),
-            "answered markup: {body}"
-        );
-        let doc: Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(doc["method"], "POST");
+        (status, ctype, String::from_utf8(bytes.to_vec()).unwrap())
+    }
+
+    /// `GET /mcp` is the guide a person reads. It used to be a 405 and nothing
+    /// else, which meant the only thing behind the URL an integrator pastes
+    /// into a config file was a refusal.
+    #[tokio::test]
+    async fn get_mcp_serves_the_human_guide() {
+        for accept in [None, Some("*/*"), Some("text/html,application/xhtml+xml")] {
+            let (status, ctype, body) = get_mcp(accept).await;
+            assert_eq!(status, StatusCode::OK, "Accept: {accept:?}");
+            assert!(
+                ctype.starts_with("text/html"),
+                "Accept: {accept:?} answered content-type {ctype:?}"
+            );
+            assert!(
+                body.contains("x402_settle"),
+                "Accept: {accept:?} did not answer the MCP guide"
+            );
+        }
+    }
+
+    /// The same guide as Markdown, for an agent that does not want to render
+    /// HTML to read it.
+    #[tokio::test]
+    async fn get_mcp_negotiates_markdown() {
+        let (status, ctype, body) = get_mcp(Some("text/markdown")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(ctype.starts_with("text/markdown"), "content-type {ctype:?}");
+        assert!(body.starts_with("# The x402 facilitator"), "body: {body:.80}");
+    }
+
+    /// A transport client that used the wrong method still gets the machine
+    /// answer, not the page.
+    ///
+    /// This is the whole reason the `Accept` is read at all: the Streamable
+    /// HTTP transport sends `application/json, text/event-stream` on every
+    /// request, so a caller arriving here with that header is an MCP client
+    /// that sent `GET`, and handing it 200 with an HTML page would turn a clear
+    /// "use POST" into a parse error with no explanation.
+    #[tokio::test]
+    async fn get_mcp_still_answers_405_to_a_transport_client() {
+        for accept in [
+            "application/json, text/event-stream",
+            "application/json",
+            "text/event-stream",
+        ] {
+            let (status, ctype, body) = get_mcp(Some(accept)).await;
+            assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED, "Accept: {accept}");
+            assert!(
+                ctype.starts_with("application/json"),
+                "Accept: {accept} answered content-type {ctype:?}"
+            );
+            assert!(
+                !body.trim_start().starts_with('<'),
+                "Accept: {accept} answered markup: {body}"
+            );
+            let doc: Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(doc["method"], "POST");
+            assert_eq!(doc["humanGuide"], "https://facilitator.ultravioletadao.xyz/mcp");
+        }
     }
 
     /// The default `Host` allowlist covers production, not just loopback.

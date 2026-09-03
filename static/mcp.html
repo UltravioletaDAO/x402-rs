@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title data-i18n="title">x402 facilitator · MCP server</title>
+<meta name="description" content="The x402 facilitator as an MCP server: one stateless Streamable HTTP endpoint, four tools, no install and no API key. Transports, the tool contract, the errors and the measured traps.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://facilitator.ultravioletadao.xyz/mcp">
+<meta property="og:title" content="x402 facilitator · MCP server">
+<meta property="og:description" content="Four tools over one stateless Streamable HTTP endpoint. Same handlers as the REST routes, so a tool and a curl cannot disagree.">
+<meta property="og:image" content="https://facilitator.ultravioletadao.xyz/logo.png">
+<link rel="icon" href="/favicon.ico">
+<style>
+  :root{
+    --bg:#12101a; --panel:#1a1726; --line:#2c2740; --txt:#e8e4f5;
+    --dim:#8a83a6; --ok:#5ee6a8; --bad:#ff6b6b; --amber:#e0a53f; --uv:#b496ff;
+    --cyan:#5ad7e6;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+       font:14px/1.7 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  header{padding:18px 22px;background:var(--panel);border-bottom:1px solid var(--line);
+         display:flex;gap:16px;align-items:baseline;flex-wrap:wrap;position:sticky;top:0;z-index:5}
+  h1{font-size:16px;margin:0;color:var(--uv);font-weight:600}
+  h2{font-size:13px;margin:34px 0 10px;color:var(--dim);font-weight:500;
+     text-transform:uppercase;letter-spacing:.06em;border-top:1px solid var(--line);padding-top:18px}
+  h3{font-size:13px;margin:22px 0 6px;color:var(--cyan);font-weight:600}
+  a{color:var(--amber)}
+  main{padding:0 22px 60px;max-width:96ch}
+  p{max-width:88ch}
+  code{color:var(--cyan);background:#1e1a2e;padding:1px 4px;border-radius:3px}
+  pre{background:#0e0c17;border:1px solid var(--line);border-radius:8px;padding:14px 16px;
+      overflow-x:auto;line-height:1.55}
+  pre code{background:none;padding:0;color:var(--txt)}
+  table{width:100%;border-collapse:collapse;margin-top:10px}
+  th{text-align:left;color:var(--dim);font-weight:500;padding:7px 9px;font-size:11px;
+     border-bottom:1px solid var(--line);text-transform:uppercase;letter-spacing:.04em}
+  td{padding:7px 9px;border-bottom:1px solid #221e33;vertical-align:top}
+  .scroll{overflow-x:auto}
+  .lead{color:var(--txt);font-size:15px;line-height:1.75;max-width:88ch}
+  .facts{display:flex;gap:12px;flex-wrap:wrap;margin:18px 0}
+  .fact{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 14px}
+  .fact .k{color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.06em}
+  .fact .v{color:var(--cyan)}
+  .warn{background:rgba(224,165,63,.08);border:1px solid rgba(224,165,63,.32);
+        border-radius:8px;padding:14px 16px;margin:22px 0;line-height:1.7;max-width:88ch}
+  .warn b{color:var(--amber)}
+  .no{background:rgba(255,107,107,.06);border:1px solid rgba(255,107,107,.25);
+      border-radius:8px;padding:14px 16px;margin:18px 0;max-width:88ch}
+  .no b{color:var(--bad)}
+  ul{max-width:88ch;padding-left:20px}
+  li{margin:8px 0}
+  .muted{color:var(--dim)}
+  .langsw{margin-left:auto;display:flex;gap:4px}
+  .langsw button{background:#241f36;color:var(--txt);border:1px solid var(--line);
+                 border-radius:5px;padding:3px 8px;font:inherit;font-size:11px;
+                 cursor:pointer;opacity:.55}
+  .langsw button.active{opacity:1;border-color:var(--uv);color:var(--uv)}
+  footer{border-top:1px solid var(--line);padding:18px 22px;color:var(--dim);font-size:12px}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>x402 facilitator · MCP</h1>
+  <a href="/">/</a>
+  <a href="/skill.md">/skill.md</a>
+  <a href="/docs">/docs</a>
+  <a href="/.well-known/mcp/server-card.json" data-i18n="nav.card">server card</a>
+  <span class="langsw"><button data-lang="en">EN</button><button data-lang="es">ES</button></span>
+</header>
+
+<main>
+
+<p class="lead" data-i18n="lead">This facilitator answers MCP on the same URL it answers HTTP. Four tools, one stateless endpoint, nothing to install and no API key. A tool call is dispatched through the very same REST router as the request it names, so a tool and a curl cannot disagree about anything.</p>
+
+<div class="facts">
+  <div class="fact"><div class="k" data-i18n="fact.endpoint">Endpoint</div><div class="v">https://facilitator.ultravioletadao.xyz/mcp</div></div>
+  <div class="fact"><div class="k" data-i18n="fact.transport">Transport</div><div class="v">Streamable HTTP · stateless · POST</div></div>
+  <div class="fact"><div class="k" data-i18n="fact.auth">Authentication</div><div class="v" data-i18n="fact.authValue">none — the payer's signature is the only authority</div></div>
+  <div class="fact"><div class="k" data-i18n="fact.price">Price</div><div class="v" data-i18n="fact.priceValue">0% — this endpoint never answers 402</div></div>
+</div>
+
+<h2 data-i18n="h.what">What you get here, and what you do not</h2>
+
+<p data-i18n="what.p1">What is being offered is settlement, not information. This service verifies an x402 payment authorization against the chain it names and then broadcasts it, paying the gas out of its own wallet, on seven chain families. The buyer signs; the buyer never holds native tokens for gas. That is the whole product, and the four tools are the whole surface of it.</p>
+
+<div class="no">
+  <p style="margin-top:0"><b data-i18n="what.notTitle">Four things this server is not.</b></p>
+  <ul>
+    <li data-i18n="what.not1"><b>Not a wallet.</b> It holds no key of yours, signs nothing on your behalf and cannot move a coin you did not authorize. The signature inside the payload is the only authority there is, which is also why there is nothing to log in to.</li>
+    <li data-i18n="what.not2"><b>Not a paid API.</b> The MCP endpoint charges nothing and never answers 402. The only money that moves is the buyer's payment going to the seller.</li>
+    <li data-i18n="what.not3"><b>Not a second implementation.</b> Each tool runs the request through the facilitator's own REST router — the same handler, the same rate limiter, the same writer lease. There is no code path here that could answer a different truth from the HTTP door.</li>
+    <li data-i18n="what.not4"><b>Not an admin console.</b> Revoking feedback, suppressing a bazaar resource, minting an identity and the DX402 writes are all deliberately absent from the tool list. An MCP client is a language model holding a menu, and a tool that erases somebody else's reputation does not belong on one.</li>
+  </ul>
+</div>
+
+<h2 data-i18n="h.transport">One transport, one server</h2>
+
+<p data-i18n="transport.p1">Streamable HTTP, and only that. The server is stateless: every JSON-RPC message is an independent POST, no <code>mcp-session-id</code> is issued, and <code>tools/call</code> works without a previous <code>initialize</code>. Nothing lives in memory between two calls, because the next one may land on a different task.</p>
+
+<h3 data-i18n="transport.claudeCode">Claude Code</h3>
+<pre><code>claude mcp add --transport http x402-facilitator \
+  https://facilitator.ultravioletadao.xyz/mcp</code></pre>
+
+<h3 data-i18n="transport.configFile">Claude Desktop, and any client with a config file</h3>
+<pre><code>{
+  "mcpServers": {
+    "x402-facilitator": {
+      "type": "streamable-http",
+      "url": "https://facilitator.ultravioletadao.xyz/mcp"
+    }
+  }
+}</code></pre>
+
+<h3 data-i18n="transport.byHand">By hand</h3>
+<p data-i18n="transport.p2">The handshake is optional on a stateless server, but it is the shortest call that proves the endpoint is reachable and tells you which release is answering:</p>
+<pre><code>curl -sS https://facilitator.ultravioletadao.xyz/mcp \
+  -H 'content-type: application/json' \
+  -H 'accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+        "protocolVersion":"2025-06-18","capabilities":{},
+        "clientInfo":{"name":"my-agent","version":"1.0"}}}'</code></pre>
+<pre><code>{"jsonrpc":"2.0","id":1,"result":{
+  "protocolVersion":"2025-06-18",
+  "capabilities":{"tools":{}},
+  "serverInfo":{
+    "name":"x402-facilitator",
+    "title":"x402 Payment Facilitator",
+    "version":"&lt;the running release&gt;",
+    "websiteUrl":"https://facilitator.ultravioletadao.xyz"},
+  "instructions":"Call x402_supported first ..."}}</code></pre>
+
+<div class="warn">
+  <p style="margin:0"><b data-i18n="transport.acceptTitle">Both Accept types, or 406.</b> <span data-i18n="transport.acceptText">The Streamable HTTP transport rejects a request whose <code>Accept</code> does not name <em>both</em> <code>application/json</code> and <code>text/event-stream</code> — even though this server never opens a stream and always answers JSON. It is the first wall an integrator writing a client by hand runs into, and the refusal is a 406 with no other explanation.</span></p>
+</div>
+
+<p data-i18n="transport.hostText">A <code>Host</code> header outside the allowlist gets a <b>403</b> before anything else runs. That check is DNS-rebinding protection aimed at MCP servers on a developer's laptop; the production host is built into the default rather than left to configuration, because the library's own default is loopback only, which behind a load balancer rejects every real request while local testing looks perfect.</p>
+
+<p data-i18n="transport.getText">A <code>GET</code> on this path is this page. A client that asks for <code>application/json</code> or <code>text/event-stream</code> still gets the <b>405</b> that tells it to POST, because a client that lands here with that <code>Accept</code> is an MCP client that used the wrong method and needs the machine answer, not a page written for a person. <code>Accept: text/markdown</code> returns the same guide as Markdown.</p>
+
+<h2 data-i18n="h.loop">The decision loop</h2>
+
+<p data-i18n="loop.p1">It is not "call an endpoint and read a number". Each step answers a question the next one assumes:</p>
+
+<pre><code>x402_supported()            <span class="muted">← can you settle THIS scheme on THIS network?
+                              the only authoritative answer. takes no arguments.
+                              read it before building a payment, not after.</span>
+      │
+x402_accepts(accepts)       <span class="muted">← the seller offered N ways to pay in its 402.
+                              which of them can this facilitator actually
+                              settle? comes back enriched with what it knows:
+                              feePayer, token list, escrow addresses.
+                              moves nothing, signs nothing.</span>
+      │
+      │  <span class="muted">the buyer signs an EIP-3009 authorization for one of them</span>
+      │
+x402_verify(payload, reqs)  <span class="muted">← would this settle? signature, nonce, amount,
+                              timestamps, token and network support.
+                              SUBMITS NOTHING. this is the dry run.</span>
+      │
+      ├─ <span class="muted">isValid false → read errorReason. some are permanent
+      │                   (bad signature), some are not (RPC down).</span>
+      │
+x402_settle(payload, reqs)  <span class="muted">← broadcast. real funds. irreversible.
+                              send idempotencyKey on every retry.</span></code></pre>
+
+<h2 data-i18n="h.tools">The four tools, and only four</h2>
+
+<div class="scroll">
+<table>
+  <thead><tr>
+    <th data-i18n="tools.th.tool">Tool</th>
+    <th data-i18n="tools.th.is">Is</th>
+    <th data-i18n="tools.th.args">Arguments</th>
+    <th data-i18n="tools.th.money">Moves money</th>
+  </tr></thead>
+  <tbody>
+    <tr>
+      <td><code>x402_supported</code></td>
+      <td><code>GET /supported</code></td>
+      <td data-i18n="tools.args.none">none</td>
+      <td class="muted" data-i18n="tools.no">no</td>
+    </tr>
+    <tr>
+      <td><code>x402_accepts</code></td>
+      <td><code>POST /accepts</code></td>
+      <td><code>accepts</code>, <code>x402Version</code>, <code>error</code></td>
+      <td class="muted" data-i18n="tools.no">no</td>
+    </tr>
+    <tr>
+      <td><code>x402_verify</code></td>
+      <td><code>POST /verify</code></td>
+      <td><code>x402Version</code>, <code>paymentPayload</code>, <code>paymentRequirements</code></td>
+      <td class="muted" data-i18n="tools.no">no</td>
+    </tr>
+    <tr>
+      <td><code style="color:var(--amber)">x402_settle</code></td>
+      <td><code>POST /settle</code></td>
+      <td data-i18n="tools.args.settle">the same three, plus the optional <code>idempotencyKey</code></td>
+      <td style="color:var(--amber)" data-i18n="tools.yes">yes, irreversibly</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p data-i18n="tools.p1">The arguments of each tool <em>are</em> the JSON body of the request it stands for, and the result is that request's response body verbatim, in a single text content block. Nothing is reshaped on the way through, so everything written about <code>/verify</code> and <code>/settle</code> in the agent manual is true over MCP too.</p>
+
+<h3 data-i18n="tools.h.supported">x402_supported — start here</h3>
+<pre><code>curl -sS https://facilitator.ultravioletadao.xyz/mcp \
+  -H 'content-type: application/json' \
+  -H 'accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{
+        "name":"x402_supported","arguments":{}}}'</code></pre>
+<p data-i18n="tools.supportedText"><code>result.content[0].text</code> is the exact body of <code>GET /supported</code>: every <code>(scheme, network)</code> pair this facilitator settles, each network spelled twice — the x402 v1 name (<code>"base"</code>) and the CAIP-2 form (<code>"eip155:8453"</code>) — with the token list for each. Both spellings are accepted everywhere a network is named. Never hard-code the count of networks from this page or any other: this call is the only answer that is true today.</p>
+
+<h3 data-i18n="tools.h.settle">x402_settle — the one that spends</h3>
+<div class="warn">
+  <p style="margin:0"><b data-i18n="tools.settleWarnTitle">This moves real funds and cannot be undone.</b> <span data-i18n="tools.settleWarnText">It broadcasts the payer's authorization as a blockchain transaction. Nothing in this facilitator and nothing on any chain reverses a confirmed transfer. Call <code>x402_verify</code> first — it checks the same signature, the same nonce, the same amount and the same network, and submits nothing.</span></p>
+</div>
+<p data-i18n="tools.settleText"><b>A tool call cannot set headers</b>, and that is the one real gap between this door and the HTTP one. It is a gap in <em>capability</em>, never in privilege: nothing here can move funds an HTTP client could not. The input that mattered got an argument instead — <code>idempotencyKey</code> is lifted out of the body and sent as the <code>Idempotency-Key</code> header, so a retry after an ambiguous failure settles once and not twice. Send a fresh unguessable value per payment (a UUIDv4 is the right shape) and reuse it on every retry <em>of that payment</em>. Keys share one namespace across all callers: a predictable one like <code>retry-1</code> can be claimed by somebody else's settle first, and yours is then refused with 409. The v2 <code>PAYMENT-SIGNATURE</code> header transport has no MCP equivalent; put the payload in the body.</p>
+
+<h2 data-i18n="h.errors">A failed call is a result, not a protocol error</h2>
+
+<p data-i18n="errors.p1">When the underlying REST call answers 4xx or 5xx, the tool returns a normal result with <code>isError: true</code> carrying the facilitator's own body verbatim. It is deliberately not a JSON-RPC error, which most clients render as an opaque "internal error" and would hide <code>invalid signature</code> behind:</p>
+<pre><code>{"result":{"isError":true,"content":[{"type":"text","text":
+  "{\"error\":\"Failed to deserialize VerifyRequest: data did not match any
+     variant of untagged enum VerifyRequestEnvelope\",
+    \"code\":\"invalid_request_body\",\"hint\":\"...\"}"}]}}</code></pre>
+
+<p data-i18n="errors.p2">A JSON-RPC error is reserved for what never reached a tool at all — an unroutable call:</p>
+<pre><code>{"jsonrpc":"2.0","id":8,"error":{"code":-32601,
+  "message":"unknown tool: nope",
+  "data":{"tools":["x402_supported","x402_accepts","x402_verify","x402_settle"]}}}</code></pre>
+
+<h2 data-i18n="h.limit">The rate limit is shared with /verify and /settle</h2>
+
+<p data-i18n="limit.p1">This endpoint does not have a budget of its own. It draws on the <em>same</em> per-IP bucket as <code>POST /verify</code> and <code>POST /settle</code>, because it is the same handlers being called. Mixing the two doors does not buy more room; it spends the same allowance twice as fast.</p>
+<pre><code>HTTP/1.1 200 OK
+x-ratelimit-limit: 30
+x-ratelimit-remaining: 25</code></pre>
+<p data-i18n="limit.p2">Every response carries those headers, and a refusal is a <b>429</b> with <code>retry-after</code> and a JSON body. Throttle on the headers rather than on the failure: by the time a 429 arrives, the call already cost a round trip.</p>
+
+<h2 data-i18n="h.traps">Measured traps</h2>
+
+<ul>
+  <li data-i18n="trap.accept"><b>Both Accept types or nothing.</b> <code>accept: application/json, text/event-stream</code>, always. One of the two alone is a 406 with no hint, on a server that never streams.</li>
+  <li data-i18n="trap.headers"><b>A tool call carries no headers.</b> Anything the HTTP door reads from a header has either an argument here or no equivalent at all. <code>idempotencyKey</code> is the argument; the v2 <code>PAYMENT-SIGNATURE</code> transport is the no-equivalent.</li>
+  <li data-i18n="trap.idem"><b>An ambiguous settle is not a failed settle.</b> A timeout means the transaction may already be on its way. Retry with the same <code>idempotencyKey</code> — that is what turns "I do not know" into exactly-once instead of into a double payment.</li>
+  <li data-i18n="trap.verify"><b><code>x402_verify</code> answering <code>isValid: false</code> is not always permanent.</b> A bad signature is; an RPC that could not be reached is not. Read <code>errorReason</code> before deciding whether to give up or retry.</li>
+  <li data-i18n="trap.counts"><b>Do not hard-code a network count.</b> Not from this page, not from the landing page, not from the server card. <code>x402_supported</code> is the only answer that is true today, and it lists every network twice on purpose.</li>
+  <li data-i18n="trap.get"><b><code>GET /mcp</code> is not the server.</b> It is this page. A client that GETs with a JSON or event-stream <code>Accept</code> gets a 405 pointing at POST; if your client "connected" but no tool ever appears, check that it is POSTing.</li>
+  <li data-i18n="trap.version"><b>The version in the handshake is stamped at runtime.</b> <code>serverInfo.version</code> is not written in any file — a number typed into a discovery document is stale the first release nobody remembers to bump, and a client that caches the card believes it.</li>
+</ul>
+
+<h2 data-i18n="h.links">Everything next to this server</h2>
+
+<div class="scroll">
+<table>
+  <thead><tr><th data-i18n="links.th.what">What</th><th data-i18n="links.th.where">Where</th></tr></thead>
+  <tbody>
+    <tr><td data-i18n="links.card">MCP server card</td><td><a href="/.well-known/mcp/server-card.json">/.well-known/mcp/server-card.json</a></td></tr>
+    <tr><td data-i18n="links.skill">The agent manual — the same four calls over HTTP</td><td><a href="/skill.md">/skill.md</a></td></tr>
+    <tr><td data-i18n="links.auth">How paying works, in detail</td><td><a href="/auth.md">/auth.md</a></td></tr>
+    <tr><td data-i18n="links.openapi">OpenAPI, the live schema</td><td><a href="/openapi.json">/openapi.json</a> · <a href="/docs">/docs</a></td></tr>
+    <tr><td data-i18n="links.supported">Networks and schemes, right now</td><td><a href="/supported">/supported</a></td></tr>
+    <tr><td data-i18n="links.llms">llms.txt of this host</td><td><a href="/llms.txt">/llms.txt</a> · <a href="/llms-full.txt">/llms-full.txt</a></td></tr>
+    <tr><td data-i18n="links.source">Source</td><td><a href="https://github.com/UltravioletaDAO/x402-rs">github.com/UltravioletaDAO/x402-rs</a></td></tr>
+  </tbody>
+</table>
+</div>
+
+</main>
+
+<footer>
+  <span data-i18n="footer">Ultravioleta DAO · x402 Payment Facilitator.</span>
+  <a href="/">/</a> · <a href="/stats">/stats</a> · <a href="/events/live">/events/live</a> · <a href="/bazaar">/bazaar</a>
+</footer>
+
+<script>
+// ---------------------------------------------------------------------------
+// i18n. One document, one URL, both languages: English by default and never
+// from navigator.language, with the choice remembered under the same
+// `x402.lang` key the landing, /stats, /events/live and /bazaar all use.
+// ---------------------------------------------------------------------------
+const I18N = {
+  en: {
+    title:"x402 facilitator · MCP server",
+    "nav.card":"server card",
+    lead:"This facilitator answers MCP on the same URL it answers HTTP. Four tools, one stateless endpoint, nothing to install and no API key. A tool call is dispatched through the very same REST router as the request it names, so a tool and a curl cannot disagree about anything.",
+    "fact.endpoint":"Endpoint", "fact.transport":"Transport",
+    "fact.auth":"Authentication", "fact.authValue":"none — the payer's signature is the only authority",
+    "fact.price":"Price", "fact.priceValue":"0% — this endpoint never answers 402",
+    "h.what":"What you get here, and what you do not",
+    "what.p1":"What is being offered is settlement, not information. This service verifies an x402 payment authorization against the chain it names and then broadcasts it, paying the gas out of its own wallet, on seven chain families. The buyer signs; the buyer never holds native tokens for gas. That is the whole product, and the four tools are the whole surface of it.",
+    "what.notTitle":"Four things this server is not.",
+    "what.not1":"<b>Not a wallet.</b> It holds no key of yours, signs nothing on your behalf and cannot move a coin you did not authorize. The signature inside the payload is the only authority there is, which is also why there is nothing to log in to.",
+    "what.not2":"<b>Not a paid API.</b> The MCP endpoint charges nothing and never answers 402. The only money that moves is the buyer's payment going to the seller.",
+    "what.not3":"<b>Not a second implementation.</b> Each tool runs the request through the facilitator's own REST router — the same handler, the same rate limiter, the same writer lease. There is no code path here that could answer a different truth from the HTTP door.",
+    "what.not4":"<b>Not an admin console.</b> Revoking feedback, suppressing a bazaar resource, minting an identity and the DX402 writes are all deliberately absent from the tool list. An MCP client is a language model holding a menu, and a tool that erases somebody else's reputation does not belong on one.",
+    "h.transport":"One transport, one server",
+    "transport.p1":"Streamable HTTP, and only that. The server is stateless: every JSON-RPC message is an independent POST, no <code>mcp-session-id</code> is issued, and <code>tools/call</code> works without a previous <code>initialize</code>. Nothing lives in memory between two calls, because the next one may land on a different task.",
+    "transport.claudeCode":"Claude Code",
+    "transport.configFile":"Claude Desktop, and any client with a config file",
+    "transport.byHand":"By hand",
+    "transport.p2":"The handshake is optional on a stateless server, but it is the shortest call that proves the endpoint is reachable and tells you which release is answering:",
+    "transport.acceptTitle":"Both Accept types, or 406.",
+    "transport.acceptText":"The Streamable HTTP transport rejects a request whose <code>Accept</code> does not name <em>both</em> <code>application/json</code> and <code>text/event-stream</code> — even though this server never opens a stream and always answers JSON. It is the first wall an integrator writing a client by hand runs into, and the refusal is a 406 with no other explanation.",
+    "transport.hostText":"A <code>Host</code> header outside the allowlist gets a <b>403</b> before anything else runs. That check is DNS-rebinding protection aimed at MCP servers on a developer's laptop; the production host is built into the default rather than left to configuration, because the library's own default is loopback only, which behind a load balancer rejects every real request while local testing looks perfect.",
+    "transport.getText":"A <code>GET</code> on this path is this page. A client that asks for <code>application/json</code> or <code>text/event-stream</code> still gets the <b>405</b> that tells it to POST, because a client that lands here with that <code>Accept</code> is an MCP client that used the wrong method and needs the machine answer, not a page written for a person. <code>Accept: text/markdown</code> returns the same guide as Markdown.",
+    "h.loop":"The decision loop",
+    "loop.p1":"It is not \"call an endpoint and read a number\". Each step answers a question the next one assumes:",
+    "h.tools":"The four tools, and only four",
+    "tools.th.tool":"Tool", "tools.th.is":"Is", "tools.th.args":"Arguments", "tools.th.money":"Moves money",
+    "tools.args.none":"none",
+    "tools.args.settle":"the same three, plus the optional <code>idempotencyKey</code>",
+    "tools.no":"no", "tools.yes":"yes, irreversibly",
+    "tools.p1":"The arguments of each tool <em>are</em> the JSON body of the request it stands for, and the result is that request's response body verbatim, in a single text content block. Nothing is reshaped on the way through, so everything written about <code>/verify</code> and <code>/settle</code> in the agent manual is true over MCP too.",
+    "tools.h.supported":"x402_supported — start here",
+    "tools.supportedText":"<code>result.content[0].text</code> is the exact body of <code>GET /supported</code>: every <code>(scheme, network)</code> pair this facilitator settles, each network spelled twice — the x402 v1 name (<code>\"base\"</code>) and the CAIP-2 form (<code>\"eip155:8453\"</code>) — with the token list for each. Both spellings are accepted everywhere a network is named. Never hard-code the count of networks from this page or any other: this call is the only answer that is true today.",
+    "tools.h.settle":"x402_settle — the one that spends",
+    "tools.settleWarnTitle":"This moves real funds and cannot be undone.",
+    "tools.settleWarnText":"It broadcasts the payer's authorization as a blockchain transaction. Nothing in this facilitator and nothing on any chain reverses a confirmed transfer. Call <code>x402_verify</code> first — it checks the same signature, the same nonce, the same amount and the same network, and submits nothing.",
+    "tools.settleText":"<b>A tool call cannot set headers</b>, and that is the one real gap between this door and the HTTP one. It is a gap in <em>capability</em>, never in privilege: nothing here can move funds an HTTP client could not. The input that mattered got an argument instead — <code>idempotencyKey</code> is lifted out of the body and sent as the <code>Idempotency-Key</code> header, so a retry after an ambiguous failure settles once and not twice. Send a fresh unguessable value per payment (a UUIDv4 is the right shape) and reuse it on every retry <em>of that payment</em>. Keys share one namespace across all callers: a predictable one like <code>retry-1</code> can be claimed by somebody else's settle first, and yours is then refused with 409. The v2 <code>PAYMENT-SIGNATURE</code> header transport has no MCP equivalent; put the payload in the body.",
+    "h.errors":"A failed call is a result, not a protocol error",
+    "errors.p1":"When the underlying REST call answers 4xx or 5xx, the tool returns a normal result with <code>isError: true</code> carrying the facilitator's own body verbatim. It is deliberately not a JSON-RPC error, which most clients render as an opaque \"internal error\" and would hide <code>invalid signature</code> behind:",
+    "errors.p2":"A JSON-RPC error is reserved for what never reached a tool at all — an unroutable call:",
+    "h.limit":"The rate limit is shared with /verify and /settle",
+    "limit.p1":"This endpoint does not have a budget of its own. It draws on the <em>same</em> per-IP bucket as <code>POST /verify</code> and <code>POST /settle</code>, because it is the same handlers being called. Mixing the two doors does not buy more room; it spends the same allowance twice as fast.",
+    "limit.p2":"Every response carries those headers, and a refusal is a <b>429</b> with <code>retry-after</code> and a JSON body. Throttle on the headers rather than on the failure: by the time a 429 arrives, the call already cost a round trip.",
+    "h.traps":"Measured traps",
+    "trap.accept":"<b>Both Accept types or nothing.</b> <code>accept: application/json, text/event-stream</code>, always. One of the two alone is a 406 with no hint, on a server that never streams.",
+    "trap.headers":"<b>A tool call carries no headers.</b> Anything the HTTP door reads from a header has either an argument here or no equivalent at all. <code>idempotencyKey</code> is the argument; the v2 <code>PAYMENT-SIGNATURE</code> transport is the no-equivalent.",
+    "trap.idem":"<b>An ambiguous settle is not a failed settle.</b> A timeout means the transaction may already be on its way. Retry with the same <code>idempotencyKey</code> — that is what turns \"I do not know\" into exactly-once instead of into a double payment.",
+    "trap.verify":"<b><code>x402_verify</code> answering <code>isValid: false</code> is not always permanent.</b> A bad signature is; an RPC that could not be reached is not. Read <code>errorReason</code> before deciding whether to give up or retry.",
+    "trap.counts":"<b>Do not hard-code a network count.</b> Not from this page, not from the landing page, not from the server card. <code>x402_supported</code> is the only answer that is true today, and it lists every network twice on purpose.",
+    "trap.get":"<b><code>GET /mcp</code> is not the server.</b> It is this page. A client that GETs with a JSON or event-stream <code>Accept</code> gets a 405 pointing at POST; if your client \"connected\" but no tool ever appears, check that it is POSTing.",
+    "trap.version":"<b>The version in the handshake is stamped at runtime.</b> <code>serverInfo.version</code> is not written in any file — a number typed into a discovery document is stale the first release nobody remembers to bump, and a client that caches the card believes it.",
+    "h.links":"Everything next to this server",
+    "links.th.what":"What", "links.th.where":"Where",
+    "links.card":"MCP server card",
+    "links.skill":"The agent manual — the same four calls over HTTP",
+    "links.auth":"How paying works, in detail",
+    "links.openapi":"OpenAPI, the live schema",
+    "links.supported":"Networks and schemes, right now",
+    "links.llms":"llms.txt of this host",
+    "links.source":"Source",
+    footer:"Ultravioleta DAO · x402 Payment Facilitator.",
+  },
+  es: {
+    title:"facilitador x402 · servidor MCP",
+    "nav.card":"server card",
+    lead:"Este facilitador contesta MCP en la misma URL en la que contesta HTTP. Cuatro herramientas, un endpoint sin estado, nada para instalar y sin API key. Una llamada a una herramienta se despacha por el mismo router REST que la petición que nombra, así que una herramienta y un curl no pueden contradecirse en nada.",
+    "fact.endpoint":"Endpoint", "fact.transport":"Transporte",
+    "fact.auth":"Autenticación", "fact.authValue":"ninguna — la firma del pagador es la única autoridad",
+    "fact.price":"Precio", "fact.priceValue":"0% — este endpoint nunca contesta 402",
+    "h.what":"Lo que se consigue acá, y lo que no",
+    "what.p1":"Lo que se ofrece es liquidación, no información. Este servicio verifica una autorización de pago x402 contra la cadena que la autorización nombra y después la emite, pagando el gas de su propia wallet, en siete familias de cadenas. El comprador firma; el comprador nunca necesita tener el token nativo para el gas. Ese es el producto entero, y las cuatro herramientas son toda su superficie.",
+    "what.notTitle":"Cuatro cosas que este servidor no es.",
+    "what.not1":"<b>No es una wallet.</b> No guarda ninguna clave tuya, no firma nada en tu nombre y no puede mover una moneda que no hayas autorizado. La firma que va adentro del payload es la única autoridad que existe, que es también por qué no hay nada a lo que iniciar sesión.",
+    "what.not2":"<b>No es una API paga.</b> El endpoint MCP no cobra nada y nunca contesta 402. El único dinero que se mueve es el pago del comprador yendo al vendedor.",
+    "what.not3":"<b>No es una segunda implementación.</b> Cada herramienta corre la petición por el propio router REST del facilitador — el mismo handler, el mismo rate limiter, el mismo writer lease. No hay acá un camino de código que pueda contestar una verdad distinta de la puerta HTTP.",
+    "what.not4":"<b>No es una consola de administración.</b> Revocar reputación, suprimir un recurso del bazar, acuñar una identidad y las escrituras de DX402 están todas deliberadamente afuera de la lista de herramientas. Un cliente MCP es un modelo de lenguaje con un menú en la mano, y una herramienta que borra la reputación de un tercero no va en un menú.",
+    "h.transport":"Un transporte, un servidor",
+    "transport.p1":"Streamable HTTP, y solo eso. El servidor no tiene estado: cada mensaje JSON-RPC es un POST independiente, no se emite ningún <code>mcp-session-id</code>, y <code>tools/call</code> funciona sin un <code>initialize</code> previo. Nada vive en memoria entre dos llamadas, porque la siguiente puede caer en otra tarea.",
+    "transport.claudeCode":"Claude Code",
+    "transport.configFile":"Claude Desktop, y cualquier cliente con archivo de configuración",
+    "transport.byHand":"A mano",
+    "transport.p2":"El handshake es opcional en un servidor sin estado, pero es la llamada más corta que prueba que el endpoint responde y dice qué versión está contestando:",
+    "transport.acceptTitle":"Los dos tipos de Accept, o 406.",
+    "transport.acceptText":"El transporte Streamable HTTP rechaza una petición cuyo <code>Accept</code> no nombre <em>los dos</em>, <code>application/json</code> y <code>text/event-stream</code> — aunque este servidor nunca abre un stream y siempre contesta JSON. Es la primera pared con la que choca quien escribe un cliente a mano, y el rechazo es un 406 sin ninguna otra explicación.",
+    "transport.hostText":"Un header <code>Host</code> fuera de la allowlist recibe un <b>403</b> antes de que corra cualquier otra cosa. Ese chequeo es protección contra DNS rebinding, pensada para servidores MCP corriendo en la laptop de alguien; el host de producción está adentro del default en vez de quedar librado a la configuración, porque el default de la propia librería es solo loopback, que detrás de un balanceador rechaza todas las peticiones reales mientras la prueba local se ve perfecta.",
+    "transport.getText":"Un <code>GET</code> en esta ruta es esta página. Un cliente que pide <code>application/json</code> o <code>text/event-stream</code> sigue recibiendo el <b>405</b> que le dice que use POST, porque un cliente que llega acá con ese <code>Accept</code> es un cliente MCP que se equivocó de método y lo que necesita es la respuesta para máquinas, no una página escrita para una persona. <code>Accept: text/markdown</code> devuelve esta misma guía en Markdown.",
+    "h.loop":"El bucle de decisión",
+    "loop.p1":"No es \"llamar a un endpoint y leer un número\". Cada paso contesta una pregunta que el siguiente da por hecha:",
+    "h.tools":"Las cuatro herramientas, y solo cuatro",
+    "tools.th.tool":"Herramienta", "tools.th.is":"Es", "tools.th.args":"Argumentos", "tools.th.money":"Mueve dinero",
+    "tools.args.none":"ninguno",
+    "tools.args.settle":"los mismos tres, más el opcional <code>idempotencyKey</code>",
+    "tools.no":"no", "tools.yes":"sí, y es irreversible",
+    "tools.p1":"Los argumentos de cada herramienta <em>son</em> el cuerpo JSON de la petición que representa, y el resultado es el cuerpo de respuesta de esa petición tal cual, en un solo bloque de texto. Nada se reescribe en el camino, así que todo lo que dice el manual del agente sobre <code>/verify</code> y <code>/settle</code> vale también por MCP.",
+    "tools.h.supported":"x402_supported — se empieza acá",
+    "tools.supportedText":"<code>result.content[0].text</code> es el cuerpo exacto de <code>GET /supported</code>: cada par <code>(esquema, red)</code> que este facilitador liquida, con cada red escrita dos veces — el nombre x402 v1 (<code>\"base\"</code>) y la forma CAIP-2 (<code>\"eip155:8453\"</code>) — y la lista de tokens de cada una. Las dos formas se aceptan en todos lados donde se nombre una red. Nunca fijes el número de redes desde esta página ni desde ninguna otra: esta llamada es la única respuesta que es verdad hoy.",
+    "tools.h.settle":"x402_settle — la que gasta",
+    "tools.settleWarnTitle":"Esto mueve fondos reales y no se puede deshacer.",
+    "tools.settleWarnText":"Emite la autorización del pagador como una transacción de blockchain. Nada en este facilitador y nada en ninguna cadena revierte una transferencia confirmada. Llamá primero a <code>x402_verify</code> — chequea la misma firma, el mismo nonce, el mismo monto y la misma red, y no envía nada.",
+    "tools.settleText":"<b>Una llamada a una herramienta no puede poner headers</b>, y esa es la única diferencia real entre esta puerta y la HTTP. Es una diferencia de <em>capacidad</em>, nunca de privilegio: nada acá puede mover fondos que un cliente HTTP no pudiera mover. La entrada que importaba recibió un argumento en su lugar — <code>idempotencyKey</code> se saca del cuerpo y viaja como header <code>Idempotency-Key</code>, para que un reintento después de una falla ambigua liquide una vez y no dos. Mandá un valor nuevo e impredecible por pago (un UUIDv4 es la forma correcta) y reusalo en cada reintento <em>de ese pago</em>. Las claves comparten un solo espacio de nombres entre todos los que llaman: una predecible como <code>retry-1</code> se la puede quedar el settle de otro primero, y el tuyo queda rechazado con 409. El transporte por header <code>PAYMENT-SIGNATURE</code> de v2 no tiene equivalente en MCP; poné el payload en el cuerpo.",
+    "h.errors":"Una llamada que falla es un resultado, no un error de protocolo",
+    "errors.p1":"Cuando la llamada REST de abajo contesta 4xx o 5xx, la herramienta devuelve un resultado normal con <code>isError: true</code> que lleva el cuerpo del propio facilitador tal cual. Deliberadamente no es un error JSON-RPC, que la mayoría de los clientes renderiza como un \"internal error\" opaco y que taparía un <code>invalid signature</code> detrás:",
+    "errors.p2":"El error JSON-RPC queda reservado para lo que nunca llegó a una herramienta — una llamada que no se puede rutear:",
+    "h.limit":"El rate limit es compartido con /verify y /settle",
+    "limit.p1":"Este endpoint no tiene un presupuesto propio. Consume del <em>mismo</em> balde por IP que <code>POST /verify</code> y <code>POST /settle</code>, porque son los mismos handlers los que se llaman. Mezclar las dos puertas no da más lugar; gasta el mismo cupo al doble de velocidad.",
+    "limit.p2":"Toda respuesta trae esos headers, y un rechazo es un <b>429</b> con <code>retry-after</code> y un cuerpo JSON. Frená mirando los headers y no la falla: cuando llega un 429 la llamada ya costó un viaje de ida y vuelta.",
+    "h.traps":"Trampas medidas",
+    "trap.accept":"<b>Los dos tipos de Accept o nada.</b> <code>accept: application/json, text/event-stream</code>, siempre. Uno solo de los dos es un 406 sin ninguna pista, en un servidor que jamás abre un stream.",
+    "trap.headers":"<b>Una llamada a una herramienta no lleva headers.</b> Todo lo que la puerta HTTP lee de un header tiene acá o un argumento o ningún equivalente. <code>idempotencyKey</code> es el argumento; el transporte <code>PAYMENT-SIGNATURE</code> de v2 es el sin-equivalente.",
+    "trap.idem":"<b>Un settle ambiguo no es un settle fallido.</b> Un timeout significa que la transacción puede estar ya en camino. Reintentá con el mismo <code>idempotencyKey</code> — eso es lo que convierte un \"no sé\" en exactamente-una-vez en lugar de en un pago doble.",
+    "trap.verify":"<b>Que <code>x402_verify</code> conteste <code>isValid: false</code> no siempre es permanente.</b> Una firma mala lo es; un RPC al que no se pudo llegar no. Leé <code>errorReason</code> antes de decidir si abandonás o reintentás.",
+    "trap.counts":"<b>No fijes un número de redes en el código.</b> Ni desde esta página, ni desde la landing, ni desde la server card. <code>x402_supported</code> es la única respuesta que es verdad hoy, y lista cada red dos veces a propósito.",
+    "trap.get":"<b><code>GET /mcp</code> no es el servidor.</b> Es esta página. Un cliente que hace GET con un <code>Accept</code> de JSON o de event-stream recibe un 405 que apunta a POST; si tu cliente \"conectó\" pero nunca aparece ninguna herramienta, revisá que esté haciendo POST.",
+    "trap.version":"<b>La versión del handshake se estampa en tiempo de ejecución.</b> <code>serverInfo.version</code> no está escrita en ningún archivo — un número tipeado en un documento de discovery queda viejo la primera vez que alguien no lo bumpea, y el cliente que cachea la card le cree.",
+    "h.links":"Todo lo que está al lado de este servidor",
+    "links.th.what":"Qué", "links.th.where":"Dónde",
+    "links.card":"Server card MCP",
+    "links.skill":"El manual del agente — las mismas cuatro llamadas por HTTP",
+    "links.auth":"Cómo se paga, en detalle",
+    "links.openapi":"OpenAPI, el esquema vivo",
+    "links.supported":"Redes y esquemas, ahora mismo",
+    "links.llms":"llms.txt de este host",
+    "links.source":"Código fuente",
+    footer:"Ultravioleta DAO · Facilitador de pagos x402.",
+  },
+};
+
+let LANG = 'en';
+try { const s = localStorage.getItem('x402.lang'); if (I18N[s]) LANG = s; } catch (e) { /* private mode */ }
+const t = k => (I18N[LANG] && I18N[LANG][k]) ?? I18N.en[k] ?? k;
+
+function applyLang(lang){
+  if (I18N[lang]) LANG = lang;
+  document.documentElement.lang = LANG;
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    // Every value in this dictionary is an author-written literal in this file
+    // -- never user input, never fetched -- and several carry <code> and <b>
+    // that textContent would flatten away.
+    el.innerHTML = t(el.getAttribute('data-i18n'));
+  });
+  document.querySelectorAll('.langsw button').forEach(b => {
+    b.classList.toggle('active', b.getAttribute('data-lang') === LANG);
+  });
+}
+
+document.querySelectorAll('.langsw button').forEach(b => {
+  b.addEventListener('click', () => {
+    const lang = b.getAttribute('data-lang');
+    try { localStorage.setItem('x402.lang', lang); } catch (e) { /* private mode */ }
+    applyLang(lang);
+  });
+});
+
+applyLang(LANG);
+</script>
+</body>
+</html>

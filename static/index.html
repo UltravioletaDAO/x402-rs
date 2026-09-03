@@ -572,68 +572,8 @@
             position: relative;
         }
 
-        /* Code section */
-        .code-section {
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: 16px;
-            padding: 2rem;
-            margin: 4rem 0;
-            position: relative;
-            overflow: hidden;
-        }
-
-        .code-section::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            right: 0;
-            width: 300px;
-            height: 300px;
-            background: radial-gradient(circle, var(--glow), transparent);
-            pointer-events: none;
-        }
-
-        .code-section h3 {
-            font-size: 1.75rem;
-            font-weight: 700;
-            margin-bottom: 1.5rem;
-        }
-
-        pre {
-            background: var(--bg-dark);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            padding: 1.5rem;
-            overflow-x: auto;
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 0.875rem;
-            line-height: 1.7;
-            position: relative;
-        }
-
         code {
             font-family: 'JetBrains Mono', monospace;
-        }
-
-        .code-comment {
-            color: #6b7280;
-        }
-
-        .code-keyword {
-            color: #c084fc;
-        }
-
-        .code-string {
-            color: #34d399;
-        }
-
-        .code-function {
-            color: #60a5fa;
-        }
-
-        .code-number {
-            color: #f59e0b;
         }
 
         /* Endpoints */
@@ -2139,99 +2079,6 @@
                 </div>
             </section>
 
-            <section class="code-section fade-in">
-                <h3 data-i18n="code.title">Integrate in Minutes</h3>
-                <p style="color: var(--text-muted); margin-bottom: 1.5rem; text-align: center; max-width: 700px; margin-left: auto; margin-right: auto;">
-                    Our SDKs handle payload construction, signature verification, and multichain settlement automatically.
-                    By default, all requests use our facilitator - no configuration needed.
-                </p>
-
-                <!-- SDK Tabs -->
-                <div class="tab-buttons" style="margin-bottom: 1rem;">
-                    <button class="tab-button active" onclick="switchSdkTab('typescript')">TypeScript</button>
-                    <button class="tab-button" onclick="switchSdkTab('python')">Python</button>
-                </div>
-
-                <!-- TypeScript Tab -->
-                <div id="typescript-tab" class="sdk-tab-content" style="display: block;">
-                    <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem;">
-                        <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1rem;">
-                            <span style="font-size: 1.5rem;">📦</span>
-                            <span style="font-weight: 600; color: var(--text);">Installation</span>
-                        </div>
-                        <pre style="margin: 0; background: #1a1a24; padding: 1rem; border-radius: 8px;"><code style="color: #14f195;">npm install uvd-x402-sdk</code></pre>
-                    </div>
-                    <pre><code><span class="code-comment">// Client: Create payment with any stablecoin</span>
-<span class="code-keyword">import</span> { createPayment } <span class="code-keyword">from</span> <span class="code-string">"uvd-x402-sdk"</span>;
-
-<span class="code-keyword">const</span> payment = <span class="code-keyword">await</span> <span class="code-function">createPayment</span>(wallet, {
-  recipient: <span class="code-string">"0xYourWallet"</span>,
-  amount: <span class="code-string">"10.00"</span>,
-  tokenType: <span class="code-string">"eurc"</span>  <span class="code-comment">// usdc | eurc | ausd | pyusd</span>
-});
-
-<span class="code-comment">// Server: Verify payment</span>
-<span class="code-keyword">import</span> { verifyPayment } <span class="code-keyword">from</span> <span class="code-string">"uvd-x402-sdk"</span>;
-
-<span class="code-keyword">const</span> result = <span class="code-keyword">await</span> <span class="code-function">verifyPayment</span>(
-  request.headers[<span class="code-string">"X-PAYMENT"</span>],
-  { maxPrice: <span class="code-string">"10.00"</span>, recipient: <span class="code-string">"0xYourWallet"</span> }
-);</code></pre>
-                    <div style="display: flex; gap: 0.75rem; margin-top: 1rem; justify-content: center;">
-                        <a href="https://www.npmjs.com/package/uvd-x402-sdk" target="_blank" style="font-size: 0.8rem; color: var(--accent); text-decoration: none; padding: 0.5rem 1rem; border: 1px solid var(--accent); border-radius: 6px;">npm</a>
-                        <a href="https://github.com/UltravioletaDAO/uvd-x402-sdk-typescript" target="_blank" style="font-size: 0.8rem; color: var(--accent); text-decoration: none; padding: 0.5rem 1rem; border: 1px solid var(--accent); border-radius: 6px;">GitHub</a>
-                    </div>
-                </div>
-
-                <!-- Python Tab -->
-                <div id="python-tab" class="sdk-tab-content" style="display: none;">
-                    <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem;">
-                        <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1rem;">
-                            <span style="font-size: 1.5rem;">📦</span>
-                            <span style="font-weight: 600; color: var(--text);">Installation</span>
-                        </div>
-                        <pre style="margin: 0; background: #1a1a24; padding: 1rem; border-radius: 8px;"><code style="color: #14f195;">pip install uvd-x402-sdk</code></pre>
-                    </div>
-                    <pre><code><span class="code-comment"># Query multi-stablecoin support</span>
-<span class="code-keyword">from</span> uvd_x402_sdk <span class="code-keyword">import</span> get_supported_tokens, get_token_config
-
-tokens = <span class="code-function">get_supported_tokens</span>(<span class="code-string">"ethereum"</span>)
-<span class="code-comment"># ['usdc', 'eurc', 'ausd', 'pyusd']</span>
-
-eurc = <span class="code-function">get_token_config</span>(<span class="code-string">"base"</span>, <span class="code-string">"eurc"</span>)
-<span class="code-comment"># TokenConfig(address="0x60a3...", decimals=6)</span>
-
-<span class="code-comment"># Server: Verify payment</span>
-<span class="code-keyword">from</span> uvd_x402_sdk <span class="code-keyword">import</span> verify_payment
-
-result = <span class="code-function">verify_payment</span>(
-    request.headers[<span class="code-string">"X-PAYMENT"</span>],
-    recipient=<span class="code-string">"0xYourWallet"</span>,
-    max_price=<span class="code-string">"10.00"</span>
-)</code></pre>
-                    <div style="display: flex; gap: 0.75rem; margin-top: 1rem; justify-content: center;">
-                        <a href="https://pypi.org/project/uvd-x402-sdk/" target="_blank" style="font-size: 0.8rem; color: var(--accent); text-decoration: none; padding: 0.5rem 1rem; border: 1px solid var(--accent); border-radius: 6px;">PyPI</a>
-                        <a href="https://github.com/UltravioletaDAO/uvd-x402-sdk-python" target="_blank" style="font-size: 0.8rem; color: var(--accent); text-decoration: none; padding: 0.5rem 1rem; border: 1px solid var(--accent); border-radius: 6px;">GitHub</a>
-                    </div>
-                </div>
-
-                <!-- SDK Features -->
-                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-top: 2rem;">
-                    <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; text-align: center;">
-                        <span style="font-size: 1.25rem;">🔧</span>
-                        <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.5rem;">No payload construction needed</p>
-                    </div>
-                    <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; text-align: center;">
-                        <span style="font-size: 1.25rem;">🌐</span>
-                        <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.5rem;" data-i18n="sdk.networks" data-live-count="payment-mainnets">21 mainnets supported</p>
-                    </div>
-                    <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; text-align: center;">
-                        <span style="font-size: 1.25rem;">⚡</span>
-                        <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.5rem;">Default facilitator configured</p>
-                    </div>
-                </div>
-            </section>
-
             <section class="section fade-in">
                 <h3 class="section-title" data-i18n="what.title">What is x402?</h3>
                 <p class="section-description" data-i18n="what.description">
@@ -2999,7 +2846,6 @@ result = <span class="code-function">verify_payment</span>(
                 "features.instant.description": "Complete payment verification and on-chain settlement in ~2-3 seconds end-to-end.",
                 "features.reputation.title": "On-Chain Reputation",
                 "features.reputation.description": "ERC-8004 Trustless Agents with identity, reputation, and validation registries across 21 networks (EVM + Solana).",
-                "sdk.networks": "21 mainnets supported",
                 "erc8004.badge": "ERC-8004 Standard",
                 "erc8004.title": "Trustless Agent Reputation",
                 "erc8004.description": "On-chain identity, reputation, and validation for AI agents. Rate service quality, verify agent identities, and build trust across the agentic economy \u2014 all verifiable on-chain through ERC-8004 registries.",
@@ -3042,7 +2888,6 @@ result = <span class="code-function">verify_payment</span>(
                 "x402r.networksTitle": "Escrow Deployed on 9 Networks",
                 "x402r.stablecoinsLabel": "Supported Stablecoins",
                 "x402r.create2Note": "+ 2 testnets (Base Sepolia, Ethereum Sepolia). Each network has its own deployed contract set.",
-                "code.title": "Integrate in Minutes",
                 "what.title": "What is x402?",
                 "what.description": "x402 is a protocol for stateless, per-request payments over HTTP. Clients attach a signed payment payload to each request. The facilitator verifies it, executes the on-chain transfer, and grants access to protected resources—all without accounts, wallets, or user registration.",
                 "endpoints.title": "API Endpoints",
@@ -3152,7 +2997,6 @@ result = <span class="code-function">verify_payment</span>(
                 "features.instant.description": "Verificaci\u00f3n y liquidaci\u00f3n completa de pagos en ~2-3 segundos de extremo a extremo.",
                 "features.reputation.title": "Reputaci\u00f3n On-Chain",
                 "features.reputation.description": "Agentes sin confianza ERC-8004 con registros de identidad, reputaci\u00f3n y validaci\u00f3n en 21 redes (EVM + Solana).",
-                "sdk.networks": "21 mainnets soportadas",
                 "erc8004.badge": "Est\u00e1ndar ERC-8004",
                 "erc8004.title": "Reputaci\u00f3n de Agentes Sin Confianza",
                 "erc8004.description": "Identidad, reputaci\u00f3n y validaci\u00f3n on-chain para agentes IA. Califica la calidad del servicio, verifica identidades de agentes y construye confianza en la econom\u00eda ag\u00e9ntica \u2014 todo verificable on-chain a trav\u00e9s de los registros ERC-8004.",
@@ -3195,7 +3039,6 @@ result = <span class="code-function">verify_payment</span>(
                 "x402r.networksTitle": "Escrow Desplegado en 9 Redes",
                 "x402r.stablecoinsLabel": "Stablecoins Soportadas",
                 "x402r.create2Note": "+ 2 testnets (Base Sepolia, Ethereum Sepolia). Cada red tiene su propio conjunto de contratos desplegados.",
-                "code.title": "Integra en Minutos",
                 "what.title": "¿Qué es x402?",
                 "what.description": "x402 es un protocolo para pagos sin estado por solicitud sobre HTTP. Los clientes adjuntan una carga de pago firmada a cada solicitud. El facilitador la verifica, ejecuta la transferencia en cadena y otorga acceso a recursos protegidos—todo sin cuentas, billeteras o registro de usuarios.",
                 "endpoints.title": "Endpoints de la API",
@@ -3721,22 +3564,6 @@ result = <span class="code-function">verify_payment</span>(
                 content.classList.remove('active');
             });
             document.getElementById(tab + '-tab').classList.add('active');
-        };
-
-        // SDK Tab switching function
-        window.switchSdkTab = function (sdk) {
-            // Update button states in the SDK section only
-            const sdkSection = document.querySelector('.code-section');
-            sdkSection.querySelectorAll('.tab-button').forEach(btn => {
-                btn.classList.remove('active');
-            });
-            event.target.classList.add('active');
-
-            // Update SDK content visibility
-            document.querySelectorAll('.sdk-tab-content').forEach(content => {
-                content.style.display = 'none';
-            });
-            document.getElementById(sdk + '-tab').style.display = 'block';
         };
 
         // Fetch balances once on page load (no timer - balances cached by backend)

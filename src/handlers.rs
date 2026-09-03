@@ -14313,7 +14313,9 @@ mod i18n_tests {
     }
 }
 
-/// The visual system, as a gate.
+/// The visual system, as a gate -- for the nine pages it governs.
+///
+/// `static/index.html` is NOT one of them, and [`EXCLUIDAS`] says why.
 ///
 /// Every clause here is one of the six in the design principle, turned into
 /// something that fails a build. It lands in the LAST commit of the series on
@@ -14333,14 +14335,13 @@ mod sistema_visual_tests {
     };
     use std::collections::BTreeSet;
 
-    /// The ten documents, with the `data-page` slug each one must declare.
+    /// The pages this gate governs, with the `data-page` slug each must declare.
     ///
-    /// Ten and not eight. `/stats` and `/events/live` are not destinations on
+    /// Nine and not eight. `/stats` and `/events/live` are not destinations on
     /// the eight-page map the owner settled on, and they carry no
     /// `aria-current` -- but they are served by this binary and they are the
     /// door divergence would come back through, so they are in the gate.
     const PAGINAS: &[(&str, &str, &str)] = &[
-        ("static/index.html", "index", INDEX_HTML),
         ("static/integrar.html", "integrar", INTEGRAR_HTML),
         ("static/x402.html", "x402", X402_HTML),
         ("static/mcp.html", "mcp", MCP_HTML),
@@ -14351,6 +14352,25 @@ mod sistema_visual_tests {
         ("static/stats.html", "stats", STATS_HTML),
         ("static/events-viewer.html", "events-viewer", EVENTS_VIEWER_HTML),
     ];
+
+    /// The one document deliberately outside every clause above.
+    ///
+    /// The landing is the ORIGINAL design the owner asked to keep. He rejected
+    /// two redesigns of it in a row and said, on 2026-09-03, that the home
+    /// "tiene que ser tal cual como la teniamos antes, con ese formato" -- so
+    /// on 2026-09-03 it was restored byte for byte from 1c4c33d9 and only the
+    /// shared header, the shared footer and the RLUSD logo were grafted on.
+    ///
+    /// It fails this gate by construction and is MEANT to: it ships its own
+    /// `<style>` and its own `:root`, it asks Google for two families, it has
+    /// no `<h1>`, and it carries far more than nine `<h2>`. Every one of those
+    /// is the design that was asked for, not drift.
+    ///
+    /// What still holds it: [`la_portada_lleva_la_cabecera_y_el_pie_compartidos`]
+    /// below, and the five `i18n_tests`, which never left it. Widening this
+    /// list is how the gate stops meaning anything -- a second entry needs the
+    /// owner's word, not a green build.
+    const EXCLUIDAS: &[&str] = &["static/index.html"];
 
     /// The document with every `<script>` body removed.
     ///
@@ -14503,13 +14523,17 @@ mod sistema_visual_tests {
         }
     }
 
-    /// The ten headers are the SAME header.
+    /// The nine headers are the SAME header.
     ///
     /// This is the one check that keeps the six different navigations from
     /// growing back. `aria-current` is normalised away because it is the one
     /// attribute that is meant to differ.
+    ///
+    /// The landing is checked against the SAME shape a few lines below,
+    /// separately, because it is the only page whose header is a graft onto a
+    /// document with its own stylesheet.
     #[test]
-    fn las_diez_cabeceras_son_la_misma() {
+    fn las_nueve_cabeceras_son_la_misma() {
         let mut vistas: BTreeSet<String> = BTreeSet::new();
         for (nombre, _, html) in PAGINAS {
             let cabecera = html
@@ -14531,9 +14555,56 @@ mod sistema_visual_tests {
         assert_eq!(
             vistas.len(),
             1,
-            "the ten headers are not identical: {} distinct shapes",
+            "the nine headers are not identical: {} distinct shapes",
             vistas.len()
         );
+    }
+
+    /// The excluded page still carries the shared menu and the shared footer.
+    ///
+    /// Excluding the landing from the clauses above buys back its original
+    /// design; it does not buy back a navigation of its own. The graft is the
+    /// whole reason the exclusion is safe, so it is the one thing about the
+    /// landing that a build still fails over.
+    ///
+    /// Whitespace is normalised away and `aria-current` with it: the landing
+    /// is served with LF while the other nine are checked out with CRLF, and
+    /// the landing is the one page whose nav item is the current one.
+    #[test]
+    fn la_portada_lleva_la_cabecera_y_el_pie_compartidos() {
+        assert_eq!(EXCLUIDAS, &["static/index.html"]);
+
+        let recorte = |html: &str, abre: &str, cierra: &str| -> String {
+            let dentro = html
+                .split_once(abre)
+                .and_then(|(_, resto)| resto.split_once(cierra))
+                .map(|(dentro, _)| dentro.replace(" aria-current=\"page\"", ""))
+                .unwrap_or_else(|| panic!("no {abre} ... {cierra}"));
+            sin_blancos(&dentro)
+        };
+
+        let portada = recorte(INDEX_HTML, "<header class=\"nav\">", "</header>");
+        let compartida = recorte(INTEGRAR_HTML, "<header class=\"nav\">", "</header>");
+        assert_eq!(
+            portada, compartida,
+            "the landing's menu has drifted from the one the other nine carry"
+        );
+        assert_eq!(
+            INDEX_HTML.matches("data-nav=\"/").count(),
+            8,
+            "the landing does not carry the eight destinations of the map"
+        );
+
+        let pie = recorte(INDEX_HTML, "<footer class=\"footer\">", "</footer>");
+        for enlace in [
+            "/health", "/version", "/stats", "/events/live", "/supported", "/docs",
+            "/openapi.json", "/llms.txt", "/skill.md",
+        ] {
+            assert!(
+                pie.contains(&format!("href=\"{enlace}\"")),
+                "the landing's footer lost {enlace}"
+            );
+        }
     }
 
     /// The sheet asks for the fonts on the path the binary actually serves.

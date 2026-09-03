@@ -152,17 +152,19 @@ def erc8004_networks() -> tuple[set[str], set[str]]:
 # DERIVED from /supported in the browser rather than typed. A count that is
 # computed does not need a drift check; a count that is typed does. What remains
 # here is what is still typed.
-# 2026-09-03, rediseno: `sdk.networks` y las dos de ERC-8004 salieron de la
-# portada. Las del SDK porque el bloque de tarjetas se corto y el h2 "Start in
-# one line" no vuelve a tipear un conteo; las de ERC-8004 porque su pagina
-# propia las deriva de GET /register y la portada ya no las afirma.
+# 2026-09-03, revert: la portada volvio al diseno de 1c4c33d9 y las dos claves
+# que este archivo miraba (`networks.summary`, `feat.reach.n`) no existen en ese
+# documento -- son del rediseno que el dueno rechazo. Las que SI tipean un
+# conteo ahi son las dos de mas abajo.
 #
-# Lo que queda aca es lo que sigue TIPEADO en la portada, que es la regla que
-# este archivo ya se habia puesto el 2026-09-02: un conteo que se computa no
-# necesita chequeo de deriva; uno que se tipea, si.
+# El conteo de mainnets de pago dejo de estar tipeado del todo: la portada
+# original no lo afirma en ninguna frase, muestra el grid de redes con sus
+# tarjetas. Un conteo que no se escribe no puede derivar, asi que el productor
+# `payment` se queda sin consumidor en la portada y eso esta bien -- la regla de
+# este archivo desde el 2026-09-02 es que se chequea lo que se tipea.
 COUNT_KEYS = {
-    "networks.summary": ("payment",  r"(\d+)\s+(?:payment mainnets|mainnets de pago)"),
-    "feat.reach.n":     ("payment",  r"(\d+)\s+mainnets"),
+    "erc8004.networksTitle": ("erc8004", r"(\d+)\s+(?:Networks|Redes)"),
+    "x402r.networksTitle":   ("escrow",  r"(\d+)\s+(?:Networks|Redes)"),
 }
 
 
@@ -226,14 +228,14 @@ def landing_numbers() -> dict:
         m = re.search(pattern, html)
         return int(m.group(1)) if m else None
 
-    # La celda "El numero" de la fila `Settle where it says it can` de la
-    # tabla de features. Es el unico lugar del markup de la portada donde el
-    # conteo de mainnets sigue escrito a mano (lleva data-live-count, asi que
-    # en el navegador se pisa con /supported; el respaldo es lo que se chequea).
-    out["sdk_mainnets"] = first_int(r'data-i18n="feat\.reach\.n"[^>]*>(\d+)\s+mainnets')
-    # El stat card de ERC-8004 vive ahora en /erc8004 y se deriva de
-    # GET /register: en la portada no hay nada que chequear.
-    out["erc8004_stat"] = None
+    # La portada original no tipea el conteo de mainnets de pago en ninguna
+    # frase: muestra las tarjetas. `None` desactiva esa comparacion, y es una
+    # decision, no un olvido -- si alguien vuelve a escribir "N mainnets" en el
+    # markup, la clave de diccionario que lo acompane entra a COUNT_KEYS.
+    out["sdk_mainnets"] = None
+    # El stat card de ERC-8004 de la portada, que SI esta escrito a mano. El id
+    # es el ancla: el texto de la tarjeta no dice de que es el numero.
+    out["erc8004_stat"] = first_int(r'id="ovr-erc8004-networks"[^>]*>(\d+)<')
     out["hedera_refs"] = len(re.findall(r"hedera", html, re.I))
 
     # The same counts as written in each dictionary. `None` means the key is
@@ -307,7 +309,8 @@ def main() -> int:
     print(f"  erc-8004 total    (mainnet + testnet)     : {len(erc_all)}")
     print("-" * 70)
     print("LANDING PAGE  (static/index.html)")
-    print(f"  features 'N mainnets' (feat.reach.n)      : {land['sdk_mainnets']}")
+    print(f"  typed 'N mainnets'                        : "
+          f"{'not typed on this page' if land['sdk_mainnets'] is None else land['sdk_mainnets']}")
     print(f"  erc-8004 stat card                        : {land['erc8004_stat']}")
     print(f"  hedera references                         : {land['hedera_refs']}")
     print("-" * 70)
@@ -322,8 +325,9 @@ def main() -> int:
     if pay_count is not None and pay_count != args.expect_mainnets:
         notes.append(f"/supported has {pay_count} mainnets, expected {args.expect_mainnets} "
                      f"(update --expect-mainnets if you intentionally changed the network set)")
-    if pay_count is not None and land["sdk_mainnets"] != pay_count:
-        errors.append(f"landing's feat.reach.n says '{land['sdk_mainnets']} mainnets' "
+    if land["sdk_mainnets"] is not None and pay_count is not None \
+            and land["sdk_mainnets"] != pay_count:
+        errors.append(f"landing types '{land['sdk_mainnets']} mainnets' "
                       f"but /supported has {pay_count}")
     if land["erc8004_stat"] is not None and land["erc8004_stat"] not in (len(erc_all), len(erc_main)):
         errors.append(f"landing ERC-8004 stat card = {land['erc8004_stat']} "

@@ -693,6 +693,13 @@ pub enum ExactPaymentPayload {
 pub struct PaymentPayload {
     pub x402_version: X402Version,
     pub scheme: Scheme,
+    /// Written either way: `"base"` or `"eip155:8453"`. One of the two entry
+    /// points where a network name arrives from the wire -- see
+    /// [`crate::network::deserialize_v1_or_caip2`] for why both are accepted
+    /// and why that is an alias rather than a normalisation. The other is
+    /// [`PaymentRequirements::network`]; serialisation is unchanged and always
+    /// emits the v1 name.
+    #[serde(deserialize_with = "crate::network::deserialize_v1_or_caip2")]
     pub network: Network,
     pub payload: ExactPaymentPayload,
 }
@@ -1420,6 +1427,11 @@ impl Display for TransactionHash {
 #[serde(rename_all = "camelCase")]
 pub struct PaymentRequirements {
     pub scheme: Scheme,
+    /// Written either way: `"base"` or `"eip155:8453"`. See
+    /// [`crate::network::deserialize_v1_or_caip2`]. This is the field a
+    /// merchant's 402 body and our own Bazaar catalog fill in, and the catalog
+    /// is 100% CAIP-2.
+    #[serde(deserialize_with = "crate::network::deserialize_v1_or_caip2")]
     pub network: Network,
     pub max_amount_required: TokenAmount,
     pub resource: Url,

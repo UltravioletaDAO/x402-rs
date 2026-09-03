@@ -50,8 +50,13 @@ Three things to know before you parse it:
   you roughly double the real number; deduplicate on the network before you count.
 - The v1 name is the exact serde name from the source. Use `avalanche-fuji`, not
   `fuji`, and not `avalanche-fuji:43113`.
-- `exact` is listed under v1 names; `escrow`, `commerce` and `upto` are listed under
-  CAIP-2 identifiers. Match on the identifier form you find, not on the one you expect.
+- Every scheme -- `exact`, `escrow`, `commerce`, `upto` -- is published under both
+  forms, and each row also carries `networkAliases` listing every spelling of its own
+  chain. Match on whichever form you find; you never have to translate one into the
+  other yourself. (`escrow`, `commerce` and `upto` used to be CAIP-2 only. If the
+  deployment you are talking to still shows them that way, its `/supported` predates
+  this change -- read `networkAliases`, and if that key is absent too, fall back to
+  matching on the CAIP-2 identifier.)
 
 As of this writing the facilitator serves **21 mainnets and 18 testnets** across seven
 chain families (EVM, SVM, NEAR, Stellar, Sui, Algorand, XRPL), six stablecoins (USDC,
@@ -74,28 +79,62 @@ Content-Type: application/json
 {
   "x402Version": 1,
   "paymentPayload": {
-    "signature": "0x...",
+    "x402Version": 1,
+    "scheme": "exact",
+    "network": "base",
     "payload": {
-      "scheme": "exact",
-      "network": "base",
-      "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-      "from": "0x...",
-      "to": "0x...",
-      "amount": "1000000",
-      "validAfter": 1700000000,
-      "validBefore": 1700100000,
-      "nonce": "0x..."
+      "signature": "0x111111111111111111111111111111111111111111111111111111111111111122222222222222222222222222222222222222222222222222222222222222221b",
+      "authorization": {
+        "from": "0x0000000000000000000000000000000000000001",
+        "to": "0x0000000000000000000000000000000000000002",
+        "value": "1000000",
+        "validAfter": "1700000000",
+        "validBefore": "1700100000",
+        "nonce": "0x0000000000000000000000000000000000000000000000000000000000000001"
+      }
     }
   },
   "paymentRequirements": {
     "scheme": "exact",
     "network": "base",
     "maxAmountRequired": "1000000",
-    "payTo": "0x...",
+    "resource": "https://example.com/protected",
+    "description": "One API call",
+    "mimeType": "application/json",
+    "payTo": "0x0000000000000000000000000000000000000002",
+    "maxTimeoutSeconds": 60,
     "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
   }
 }
 ```
+
+**That body is runnable, not a sketch.** The signature and the nonce are well-formed
+placeholders -- `r` all `0x11`, `s` all `0x22`, a one-valued nonce -- not a real
+authorization, so copied verbatim it answers HTTP 200 with `"isValid": false`. Swap in
+your signed values and it answers on the merits. Curl it before you write any code:
+
+```bash
+curl -sS -X POST https://facilitator.ultravioletadao.xyz/verify \
+  -H 'Content-Type: application/json' -d @body.json
+```
+
+Five things in that shape are load-bearing, and each one has produced a `400`:
+
+- `paymentPayload` carries its OWN `x402Version`, `scheme` and `network` at its root.
+  They are not inherited from the envelope.
+- The signed data sits under `payload.authorization`, not directly under `payload`.
+- The amount field inside the authorization is `value`. `amount` is the name in the
+  *requirements* (`maxAmountRequired`), not in the authorization.
+- `validAfter` and `validBefore` are **strings**, not numbers. `1700000000` is
+  rejected; `"1700000000"` is accepted. So are `value` and `maxAmountRequired`.
+- `paymentRequirements` needs `resource`, `description`, `mimeType` and
+  `maxTimeoutSeconds`. They have no defaults; omit one and the whole body fails to
+  parse.
+
+`network` may be written either way, in both objects: `"base"` or `"eip155:8453"`.
+That is what lets an offer taken straight out of `/discovery/resources` -- which is
+CAIP-2 -- be paid without rewriting it. Mixing the two spellings inside one body is
+also accepted, though matching the offer is the sane thing to do.
 
 What the facilitator checks: payload structure, the EIP-712 signature, nonce validity,
 the amount against `maxAmountRequired`, the `validAfter`/`validBefore` window, and that

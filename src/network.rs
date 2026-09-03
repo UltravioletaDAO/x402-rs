@@ -706,6 +706,57 @@ impl Network {
     }
 }
 
+/// Deserialize a [`Network`] written EITHER way: the x402 v1 serde name
+/// (`"base"`) or the CAIP-2 identifier (`"eip155:8453"`).
+///
+/// # Why this exists
+///
+/// `/supported` publishes every network under both spellings and our own
+/// Bazaar catalog (`/discovery/resources`) announces `x402Version: 2`, so the
+/// offers an agent discovers here are CAIP-2. But the v1 request shape --
+/// `{paymentPayload, paymentRequirements}`, which is the shape `/verify` and
+/// `/settle` document -- deserialised `network` through the derived impl, which
+/// only knows the v1 names. A body that mixed the two, v1 shape with a CAIP-2
+/// name, matched no variant of `VerifyRequestEnvelope` and came back `400`,
+/// while the `hint` on that very `400` promised both spellings were accepted.
+/// Discovery and settlement did not speak the same language inside one house.
+///
+/// # Why this is an alias and not a normalisation
+///
+/// `"base"` and `"eip155:8453"` denote the same chain or the request is
+/// rejected; nothing economic is rewritten. The chain id that is actually
+/// *signed* lives in the EIP-712 domain, not in this field, so widening what
+/// this field accepts cannot change what a signature authorises. There is
+/// precedent in this file's neighbour: `transaction` is already accepted under
+/// three spellings via serde `alias` (`types.rs`).
+///
+/// The v1 name is tried FIRST, through the derived impl, so the set of v1
+/// spellings accepted here is exactly the set accepted before -- this can only
+/// add, never move, a name.
+pub fn deserialize_v1_or_caip2<'de, D>(deserializer: D) -> Result<Network, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::value::StrDeserializer;
+    use serde::de::{Error as DeError, IntoDeserializer};
+
+    let raw = String::deserialize(deserializer)?;
+
+    let as_v1: StrDeserializer<'_, serde::de::value::Error> = raw.as_str().into_deserializer();
+    if let Ok(network) = Network::deserialize(as_v1) {
+        return Ok(network);
+    }
+    if let Some(network) = Network::from_caip2(&raw) {
+        return Ok(network);
+    }
+
+    Err(DeError::custom(format!(
+        "unknown network \"{raw}\": expected an x402 v1 name (\"base\") or a \
+         CAIP-2 identifier (\"eip155:8453\"). GET /supported lists both \
+         spellings for every network this facilitator serves"
+    )))
+}
+
 /// Lazily initialized known USDC deployment on Base Sepolia as [`USDCDeployment`].
 static USDC_BASE_SEPOLIA: Lazy<USDCDeployment> = Lazy::new(|| {
     USDCDeployment(TokenDeployment {
@@ -2676,5 +2727,72 @@ mod decimals_resolution_tests {
             decimals_for_asset(Network::Base, "0x00000000000000000000000000000000deadbeef"),
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod network_name_aliasing_tests {
+    use super::*;
+
+    /// Deserialise a bare JSON string through the lenient helper.
+    fn parse(name: &str) -> Result<Network, serde_json::Error> {
+        #[derive(Deserialize)]
+        struct Wrapper {
+            #[serde(deserialize_with = "deserialize_v1_or_caip2")]
+            network: Network,
+        }
+        serde_json::from_value::<Wrapper>(serde_json::json!({ "network": name }))
+            .map(|w| w.network)
+    }
+
+    /// The failure this helper exists for: a v1-shaped body naming its chain
+    /// the CAIP-2 way. Measured against production on 2026-09-03 as
+    /// `400 data did not match any variant of untagged enum
+    /// VerifyRequestEnvelope`, on a request whose own error `hint` promised
+    /// that spelling was accepted.
+    #[test]
+    fn a_caip2_identifier_resolves_to_its_chain() {
+        assert_eq!(parse("eip155:8453").unwrap(), Network::Base);
+        assert_eq!(parse("eip155:84532").unwrap(), Network::BaseSepolia);
+        assert_eq!(
+            parse("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp").unwrap(),
+            Network::Solana
+        );
+    }
+
+    /// The v1 name is tried first, through the derived impl, so this can only
+    /// ever be additive. Checked over EVERY variant rather than a sample: a
+    /// helper that silently stopped resolving one chain would be invisible.
+    #[test]
+    fn every_v1_name_that_parsed_before_still_parses() {
+        for network in Network::variants() {
+            let v1_name = network.to_string();
+            assert_eq!(
+                parse(&v1_name).unwrap_or_else(|e| panic!("`{v1_name}` regressed: {e}")),
+                *network,
+                "`{v1_name}` must keep resolving to {network:?}"
+            );
+            let caip2 = network.to_caip2();
+            assert_eq!(
+                parse(&caip2).unwrap_or_else(|e| panic!("`{caip2}` must parse: {e}")),
+                *network,
+                "`{caip2}` and `{v1_name}` must denote the same chain"
+            );
+        }
+    }
+
+    /// Widening the field must not empty it. A chain we do not serve stays a
+    /// hard error, and the message names both spellings so the caller is not
+    /// left guessing which half it got wrong.
+    #[test]
+    fn an_unknown_name_is_still_an_error() {
+        for unknown in ["cosmos:hub-4", "eip155:99999999", "not-a-network", ""] {
+            let error = parse(unknown).expect_err(&format!("`{unknown}` must be refused"));
+            let message = error.to_string();
+            assert!(
+                message.contains("CAIP-2") && message.contains("/supported"),
+                "the error must point at both spellings and at /supported, got: {message}"
+            );
+        }
     }
 }

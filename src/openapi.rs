@@ -292,28 +292,51 @@ Verifies an x402 payment authorization without settling it on-chain.
 {
   "x402Version": 1,
   "paymentPayload": {
-    "signature": "0x...",
+    "x402Version": 1,
+    "scheme": "exact",
+    "network": "base",
     "payload": {
-      "scheme": "exact",
-      "network": "base",
-      "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-      "from": "0x...",
-      "to": "0x...",
-      "amount": "1000000",
-      "validAfter": 1700000000,
-      "validBefore": 1700100000,
-      "nonce": "0x..."
+      "signature": "0x111111111111111111111111111111111111111111111111111111111111111122222222222222222222222222222222222222222222222222222222222222221b",
+      "authorization": {
+        "from": "0x0000000000000000000000000000000000000001",
+        "to": "0x0000000000000000000000000000000000000002",
+        "value": "1000000",
+        "validAfter": "1700000000",
+        "validBefore": "1700100000",
+        "nonce": "0x0000000000000000000000000000000000000000000000000000000000000001"
+      }
     }
   },
   "paymentRequirements": {
     "scheme": "exact",
     "network": "base",
     "maxAmountRequired": "1000000",
-    "payTo": "0x...",
+    "resource": "https://example.com/protected",
+    "description": "One API call",
+    "mimeType": "application/json",
+    "payTo": "0x0000000000000000000000000000000000000002",
+    "maxTimeoutSeconds": 60,
     "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
   }
 }
 ```
+
+That body is runnable as printed. The signature and nonce are well-formed
+placeholders, not a real authorization, so copied verbatim it answers `200` with
+`"isValid": false`.
+
+**Five things in that shape are load-bearing:**
+- `paymentPayload` carries its own `x402Version`, `scheme` and `network` at its root.
+- The signed data sits under `payload.authorization`, not directly under `payload`.
+- The authorization's amount field is `value` (`maxAmountRequired` is the
+  requirements' name for its own limit).
+- `validAfter` and `validBefore` are **strings**: `"1700000000"`, not `1700000000`.
+- `resource`, `description`, `mimeType` and `maxTimeoutSeconds` are required in
+  `paymentRequirements` and have no defaults.
+
+`network` is accepted in either spelling, in both objects: the x402 v1 name
+(`"base"`) or the CAIP-2 identifier (`"eip155:8453"`). This is what lets an offer
+taken straight from `/discovery/resources`, which is CAIP-2, be paid unmodified.
 "#,
     request_body(content = Object, description = "x402 verify request"),
     responses(
@@ -2517,9 +2540,100 @@ pub fn swagger_routes() -> Router {
         .merge(SwaggerUi::new("/docs").url("/api-docs/openapi.json", api_doc))
 }
 
+/// Pull the first fenced ```json block that follows `heading` out of a Markdown
+/// document.
+///
+/// Used by the tests below to parse the examples we PUBLISH rather than a copy
+/// of them kept next to the assertion. A test written against its own copy is
+/// the failure this whole change is about: the published example was wrong for
+/// months while everything around it was green.
+#[cfg(test)]
+pub(crate) fn json_block_after(markdown: &str, heading: &str) -> String {
+    let after = markdown
+        .split_once(heading)
+        .unwrap_or_else(|| panic!("no heading `{heading}` in the document"))
+        .1;
+    let body = after
+        .split_once("```json")
+        .unwrap_or_else(|| panic!("no json block after `{heading}`"))
+        .1;
+    body.split_once("```")
+        .expect("unterminated json block")
+        .0
+        .trim()
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The `POST /verify` example in `/docs` is a body `/verify` accepts.
+    ///
+    /// It was not. The published example put `scheme`/`network`/`asset` inside
+    /// `payload`, wrote `amount` for `value`, omitted the `authorization`
+    /// wrapper and four required `paymentRequirements` fields, and passed the
+    /// timestamps as numbers where `UnixTimestamp` only deserialises strings.
+    /// Every one of those alone produces `400 data did not match any variant of
+    /// untagged enum VerifyRequestEnvelope` -- the error whose `hint` sends the
+    /// integrator back to this same document.
+    ///
+    /// Parsed out of `ApiDoc::openapi()` and not out of the source literal, so
+    /// what is asserted is the artifact a client actually reads.
+    #[test]
+    fn the_documented_verify_example_is_a_body_verify_accepts() {
+        let spec = ApiDoc::openapi();
+        let description = spec.paths.paths["/verify"]
+            .post
+            .as_ref()
+            .expect("POST /verify must be documented")
+            .description
+            .as_deref()
+            .expect("POST /verify must carry a description");
+
+        let example = json_block_after(description, "**Request body:**");
+        let parsed: Result<crate::types_v2::VerifyRequestEnvelope, _> =
+            serde_json::from_str(&example);
+        assert!(
+            parsed.is_ok(),
+            "the /verify example published in /docs does not deserialise: {}",
+            parsed.unwrap_err()
+        );
+    }
+
+    /// `/docs` and `/skill.md` publish the SAME body, byte for byte after JSON
+    /// normalisation.
+    ///
+    /// Two hand-maintained copies of one contract drift, and the cheaper half
+    /// of that drift is the half nobody notices: an agent reads one, an
+    /// integrator reads the other, and only one of them works.
+    #[test]
+    fn the_two_published_verify_examples_are_the_same_body() {
+        let spec = ApiDoc::openapi();
+        let from_docs: serde_json::Value = serde_json::from_str(&json_block_after(
+            spec.paths.paths["/verify"]
+                .post
+                .as_ref()
+                .unwrap()
+                .description
+                .as_deref()
+                .unwrap(),
+            "**Request body:**",
+        ))
+        .expect("the /docs example must be JSON");
+
+        let from_skill: serde_json::Value = serde_json::from_str(&json_block_after(
+            include_str!("../static/skill.md"),
+            "## 3. `POST /verify`",
+        ))
+        .expect("the skill.md example must be JSON");
+
+        assert_eq!(
+            from_docs, from_skill,
+            "the /verify example in src/openapi.rs and the one in \
+             static/skill.md have drifted apart"
+        );
+    }
 
     /// Every DX402 route the router serves must appear in the spec.
     ///

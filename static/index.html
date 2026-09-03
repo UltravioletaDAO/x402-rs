@@ -1195,6 +1195,11 @@
                     meta-transactions.
                 </p>
 
+                <div style="display: flex; align-items: center; justify-content: center; gap: 1rem; flex-wrap: wrap; margin-bottom: 2rem;">
+                    <a href="https://facilitator.ultravioletadao.xyz" style="font-family: 'JetBrains Mono', monospace; font-size: 0.95rem; color: var(--accent); text-decoration: none; padding: 0.5rem 1rem; background: var(--bg-card); border: 1px solid var(--accent); border-radius: 8px;">https://facilitator.ultravioletadao.xyz</a>
+                    <span style="font-size: 0.85rem; color: var(--text-muted);" data-i18n="hero.zeroFee">0% facilitator fee. No account, no API key, no rate card &mdash; the only money that moves is the buyer's payment going to the seller.</span>
+                </div>
+
                 <!-- Supported Stablecoins Bar -->
                 <div style="display: flex; align-items: center; justify-content: center; gap: 1.5rem; margin-bottom: 2rem; padding: 1rem 2rem; background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px;">
                     <span style="font-size: 0.7rem; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em;" data-i18n="hero.stablecoins">6 Stablecoins Supported</span>
@@ -2513,7 +2518,7 @@ result = <span class="code-function">verify_payment</span>(
                            onmouseout="this.style.background='transparent'; this.style.color='#3b82f6';">
                             x402 Protocol
                         </a>
-                        <a href="https://github.com/x402-rs/x402-rs" target="_blank"
+                        <a href="https://github.com/UltravioletaDAO/x402-rs" target="_blank"
                            style="font-size: 0.7rem; color: #3b82f6; text-decoration: none; padding: 0.25rem 0.6rem; border: 1px solid #3b82f6; border-radius: 4px; transition: all 0.2s;"
                            onmouseover="this.style.background='#3b82f6'; this.style.color='#fff';"
                            onmouseout="this.style.background='transparent'; this.style.color='#3b82f6';">
@@ -2568,6 +2573,111 @@ result = <span class="code-function">verify_payment</span>(
                 </div>
             </section>
 
+            <section class="section fade-in" id="mcp" style="margin-top: 3rem;">
+                <div style="text-align: center; margin-bottom: 2rem;">
+                    <div style="display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.4rem 1rem; border-radius: 20px; background: rgba(6, 182, 212, 0.1); border: 1px solid rgba(6, 182, 212, 0.3); margin-bottom: 1rem;">
+                        <span style="font-size: 0.75rem; color: #06b6d4; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;" data-i18n="mcp.badge">MCP &middot; Model Context Protocol</span>
+                    </div>
+                    <h3 class="section-title" style="background: linear-gradient(135deg, #06b6d4, #8b5cf6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;" data-i18n="mcp.title">Call This Facilitator as a Tool</h3>
+                    <p class="section-description" data-i18n="mcp.description">
+                        The same four calls, exposed as MCP tools over Streamable HTTP. A tool call is dispatched through the very same handlers as the HTTP request it names, so nothing here is a second implementation that could answer a different truth. Nothing to install, no account, no API key.
+                    </p>
+                </div>
+
+                <div style="display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; margin-bottom: 2rem;">
+                    <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 0.75rem 1.25rem;">
+                        <div style="font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em;" data-i18n="mcp.endpoint.label">Endpoint</div>
+                        <code style="font-size: 0.85rem; color: #06b6d4;">https://facilitator.ultravioletadao.xyz/mcp</code>
+                    </div>
+                    <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 0.75rem 1.25rem;">
+                        <div style="font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em;" data-i18n="mcp.transport.label">Transport</div>
+                        <span style="font-size: 0.85rem; color: var(--text);" data-i18n="mcp.transport.value">Streamable HTTP, stateless &mdash; POST only</span>
+                    </div>
+                </div>
+
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1rem; margin-bottom: 2rem;">
+                    <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 1.25rem;">
+                        <div style="font-weight: 600; color: var(--text); margin-bottom: 0.75rem;" data-i18n="mcp.client.claudeCode">Claude Code</div>
+                        <pre style="margin: 0; background: #1a1a24; padding: 1rem; border-radius: 8px; overflow-x: auto;"><code style="color: #14f195;">claude mcp add --transport http x402-facilitator \
+  https://facilitator.ultravioletadao.xyz/mcp</code></pre>
+                    </div>
+                    <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 1.25rem;">
+                        <div style="font-weight: 600; color: var(--text); margin-bottom: 0.75rem;" data-i18n="mcp.client.configFile">Claude Desktop and any client with a config file</div>
+                        <pre style="margin: 0; background: #1a1a24; padding: 1rem; border-radius: 8px; overflow-x: auto;"><code>{
+  "mcpServers": {
+    "x402-facilitator": {
+      "type": "streamable-http",
+      "url": "https://facilitator.ultravioletadao.xyz/mcp"
+    }
+  }
+}</code></pre>
+                    </div>
+                    <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 1.25rem;">
+                        <div style="font-weight: 600; color: var(--text); margin-bottom: 0.75rem;" data-i18n="mcp.client.raw">Any Streamable HTTP client, by hand</div>
+                        <pre style="margin: 0; background: #1a1a24; padding: 1rem; border-radius: 8px; overflow-x: auto;"><code>curl -sS https://facilitator.ultravioletadao.xyz/mcp \
+  -H 'content-type: application/json' \
+  -H 'accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'</code></pre>
+                        <p style="font-size: 0.78rem; color: var(--text-muted); margin-top: 0.75rem;" data-i18n="mcp.client.rawNote">Both Accept types are required: the transport answers 406 without them, even though this server is stateless and always replies with JSON.</p>
+                    </div>
+                </div>
+
+                <h4 style="font-size: 0.9rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 1rem; text-align: center;" data-i18n="mcp.tools.title">The four tools, and only four</h4>
+                <div style="overflow-x: auto; margin-bottom: 1.5rem;">
+                    <table style="width: 100%; border-collapse: collapse; font-size: 0.85rem;">
+                        <thead>
+                            <tr style="border-bottom: 1px solid var(--border);">
+                                <th style="text-align: left; padding: 0.6rem 0.75rem; color: var(--text-muted); font-weight: 600;" data-i18n="mcp.tools.th.tool">Tool</th>
+                                <th style="text-align: left; padding: 0.6rem 0.75rem; color: var(--text-muted); font-weight: 600;" data-i18n="mcp.tools.th.same">Is</th>
+                                <th style="text-align: left; padding: 0.6rem 0.75rem; color: var(--text-muted); font-weight: 600;" data-i18n="mcp.tools.th.money">Moves money</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr style="border-bottom: 1px solid var(--border);">
+                                <td style="padding: 0.6rem 0.75rem;"><code style="color: #06b6d4;">x402_supported</code></td>
+                                <td style="padding: 0.6rem 0.75rem;"><code>GET /supported</code></td>
+                                <td style="padding: 0.6rem 0.75rem; color: var(--text-muted);" data-i18n="mcp.tools.no">no</td>
+                            </tr>
+                            <tr style="border-bottom: 1px solid var(--border);">
+                                <td style="padding: 0.6rem 0.75rem;"><code style="color: #06b6d4;">x402_accepts</code></td>
+                                <td style="padding: 0.6rem 0.75rem;"><code>POST /accepts</code></td>
+                                <td style="padding: 0.6rem 0.75rem; color: var(--text-muted);" data-i18n="mcp.tools.no">no</td>
+                            </tr>
+                            <tr style="border-bottom: 1px solid var(--border);">
+                                <td style="padding: 0.6rem 0.75rem;"><code style="color: #06b6d4;">x402_verify</code></td>
+                                <td style="padding: 0.6rem 0.75rem;"><code>POST /verify</code></td>
+                                <td style="padding: 0.6rem 0.75rem; color: var(--text-muted);" data-i18n="mcp.tools.no">no</td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 0.6rem 0.75rem;"><code style="color: #f59e0b;">x402_settle</code></td>
+                                <td style="padding: 0.6rem 0.75rem;"><code>POST /settle</code></td>
+                                <td style="padding: 0.6rem 0.75rem; color: #f59e0b; font-weight: 600;" data-i18n="mcp.tools.yes">yes, irreversibly</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div style="background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.35); border-radius: 12px; padding: 1.25rem; margin-bottom: 1.5rem;">
+                    <div style="font-weight: 700; color: #f59e0b; margin-bottom: 0.5rem;" data-i18n="mcp.warning.title">x402_settle moves real funds and cannot be undone</div>
+                    <p style="font-size: 0.85rem; color: var(--text-muted); margin: 0;" data-i18n="mcp.warning.text">It broadcasts the payer's authorization as a blockchain transaction, and nothing in this facilitator or on any chain can reverse a confirmed transfer. Call x402_verify first: it checks the same signature, nonce, amount and network and submits nothing. On a retry after an ambiguous error, send the optional idempotencyKey argument, which travels as the Idempotency-Key header so the same payment settles once and not twice.</p>
+                </div>
+
+                <div style="display: flex; gap: 0.75rem; justify-content: center; flex-wrap: wrap;">
+                    <a href="/mcp" style="font-size: 0.7rem; color: #06b6d4; text-decoration: none; padding: 0.25rem 0.6rem; border: 1px solid #06b6d4; border-radius: 4px; transition: all 0.2s;"
+                       onmouseover="this.style.background='#06b6d4'; this.style.color='#fff';"
+                       onmouseout="this.style.background='transparent'; this.style.color='#06b6d4';"
+                       data-i18n="mcp.link.page">MCP guide</a>
+                    <a href="/.well-known/mcp/server-card.json" target="_blank" style="font-size: 0.7rem; color: #06b6d4; text-decoration: none; padding: 0.25rem 0.6rem; border: 1px solid #06b6d4; border-radius: 4px; transition: all 0.2s;"
+                       onmouseover="this.style.background='#06b6d4'; this.style.color='#fff';"
+                       onmouseout="this.style.background='transparent'; this.style.color='#06b6d4';"
+                       data-i18n="mcp.link.card">Server card</a>
+                    <a href="/skill.md" target="_blank" style="font-size: 0.7rem; color: #06b6d4; text-decoration: none; padding: 0.25rem 0.6rem; border: 1px solid #06b6d4; border-radius: 4px; transition: all 0.2s;"
+                       onmouseover="this.style.background='#06b6d4'; this.style.color='#fff';"
+                       onmouseout="this.style.background='transparent'; this.style.color='#06b6d4';"
+                       data-i18n="mcp.link.skill">Agent manual</a>
+                </div>
+            </section>
+
             <section class="endpoints fade-in">
                 <h3 data-i18n="endpoints.title">API Endpoints</h3>
 
@@ -2613,6 +2723,16 @@ result = <span class="code-function">verify_payment</span>(
                         <span class="method post">POST</span>
                         <span class="endpoint-path">/settle</span>
                         <span class="endpoint-desc" data-i18n="endpoints.settle">Execute payment on-chain via EIP-3009</span>
+                    </div>
+                    <div class="endpoint">
+                        <span class="method post">POST</span>
+                        <span class="endpoint-path">/mcp</span>
+                        <span class="endpoint-desc" data-i18n="endpoints.mcpPost">MCP server (Streamable HTTP, stateless): the same four calls as tools</span>
+                    </div>
+                    <div class="endpoint">
+                        <span class="method get">GET</span>
+                        <span class="endpoint-path">/mcp</span>
+                        <span class="endpoint-desc" data-i18n="endpoints.mcpGet">The MCP guide for humans: transports, the four tools, and the traps</span>
                     </div>
                     <div class="endpoint">
                         <span class="method post">POST</span>
@@ -2867,7 +2987,7 @@ result = <span class="code-function">verify_payment</span>(
                     <a href="/events/live" data-i18n="nav.live">En vivo</a>
                     <a href="/docs" target="_blank" data-i18n="nav.apidocs">API Docs</a>
                     <a href="https://x402.org" target="_blank" data-i18n="footer.protocol">Protocol</a>
-                    <a href="https://github.com/x402-rs/x402-rs" target="_blank">GitHub</a>
+                    <a href="https://github.com/UltravioletaDAO/x402-rs" target="_blank">GitHub</a>
                     <a href="/health" target="_blank" data-i18n="footer.status">Status</a>
                     <a href="/supported" target="_blank" data-i18n="footer.networks">Networks</a>
                     <a href="/discovery/resources" target="_blank" data-i18n="nav.bazaar">Bazaar</a>
@@ -2879,6 +2999,30 @@ result = <span class="code-function">verify_payment</span>(
     <script>
         const translations = {
             en: {
+                "mcp.badge": "MCP · Model Context Protocol",
+                "mcp.title": "Call This Facilitator as a Tool",
+                "mcp.description": "The same four calls, exposed as MCP tools over Streamable HTTP. A tool call is dispatched through the very same handlers as the HTTP request it names, so nothing here is a second implementation that could answer a different truth. Nothing to install, no account, no API key.",
+                "mcp.endpoint.label": "Endpoint",
+                "mcp.transport.label": "Transport",
+                "mcp.transport.value": "Streamable HTTP, stateless — POST only",
+                "mcp.client.claudeCode": "Claude Code",
+                "mcp.client.configFile": "Claude Desktop and any client with a config file",
+                "mcp.client.raw": "Any Streamable HTTP client, by hand",
+                "mcp.client.rawNote": "Both Accept types are required: the transport answers 406 without them, even though this server is stateless and always replies with JSON.",
+                "mcp.tools.title": "The four tools, and only four",
+                "mcp.tools.th.tool": "Tool",
+                "mcp.tools.th.same": "Is",
+                "mcp.tools.th.money": "Moves money",
+                "mcp.tools.no": "no",
+                "mcp.tools.yes": "yes, irreversibly",
+                "mcp.warning.title": "x402_settle moves real funds and cannot be undone",
+                "mcp.warning.text": "It broadcasts the payer's authorization as a blockchain transaction, and nothing in this facilitator or on any chain can reverse a confirmed transfer. Call x402_verify first: it checks the same signature, nonce, amount and network and submits nothing. On a retry after an ambiguous error, send the optional idempotencyKey argument, which travels as the Idempotency-Key header so the same payment settles once and not twice.",
+                "mcp.link.page": "MCP guide",
+                "mcp.link.card": "Server card",
+                "mcp.link.skill": "Agent manual",
+                "endpoints.mcpPost": "MCP server (Streamable HTTP, stateless): the same four calls as tools",
+                "endpoints.mcpGet": "The MCP guide for humans: transports, the four tools, and the traps",
+                "hero.zeroFee": "0% facilitator fee. No account, no API key, no rate card — the only money that moves is the buyer's payment going to the seller.",
                 // --- DX402 durable-evidence
                 "dx402.badge": "DX402 \u00b7 durable-evidence",
                 "dx402.title": "Responses That Outlive the Session",
@@ -3020,6 +3164,30 @@ result = <span class="code-function">verify_payment</span>(
                 "footer.powered": "Powered by"
             },
             es: {
+                "mcp.badge": "MCP · Model Context Protocol",
+                "mcp.title": "Llamá a este facilitador como una herramienta",
+                "mcp.description": "Las mismas cuatro llamadas, expuestas como herramientas MCP sobre Streamable HTTP. Una llamada a una herramienta se despacha por los mismos handlers que la petición HTTP que nombra, así que nada de esto es una segunda implementación que pueda contestar otra verdad. Nada para instalar, sin cuenta y sin API key.",
+                "mcp.endpoint.label": "Endpoint",
+                "mcp.transport.label": "Transporte",
+                "mcp.transport.value": "Streamable HTTP, sin estado — solo POST",
+                "mcp.client.claudeCode": "Claude Code",
+                "mcp.client.configFile": "Claude Desktop y cualquier cliente con archivo de configuración",
+                "mcp.client.raw": "Cualquier cliente Streamable HTTP, a mano",
+                "mcp.client.rawNote": "Los dos tipos de Accept son obligatorios: sin ellos el transporte contesta 406, aunque este servidor no tenga estado y siempre responda JSON.",
+                "mcp.tools.title": "Las cuatro herramientas, y solo cuatro",
+                "mcp.tools.th.tool": "Herramienta",
+                "mcp.tools.th.same": "Es",
+                "mcp.tools.th.money": "Mueve dinero",
+                "mcp.tools.no": "no",
+                "mcp.tools.yes": "sí, y es irreversible",
+                "mcp.warning.title": "x402_settle mueve fondos reales y no se puede deshacer",
+                "mcp.warning.text": "Emite la autorización del pagador como una transacción de blockchain, y nada en este facilitador ni en ninguna cadena revierte una transferencia confirmada. Llamá primero a x402_verify: chequea la misma firma, el mismo nonce, el mismo monto y la misma red, y no envía nada. Si reintentás después de un error ambiguo, mandá el argumento opcional idempotencyKey, que viaja como header Idempotency-Key para que el mismo pago se liquide una vez y no dos.",
+                "mcp.link.page": "Guía MCP",
+                "mcp.link.card": "Server card",
+                "mcp.link.skill": "Manual del agente",
+                "endpoints.mcpPost": "Servidor MCP (Streamable HTTP, sin estado): las mismas cuatro llamadas como herramientas",
+                "endpoints.mcpGet": "La guía MCP para humanos: transportes, las cuatro herramientas y las trampas",
+                "hero.zeroFee": "0% de comisión del facilitador. Sin cuenta, sin API key y sin lista de precios — el único dinero que se mueve es el pago del comprador yendo al vendedor.",
                 // --- DX402 durable-evidence
                 "dx402.badge": "DX402 \u00b7 durable-evidence",
                 "dx402.title": "Respuestas que sobreviven a la sesi\u00f3n",

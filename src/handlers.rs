@@ -614,6 +614,28 @@ const ERC8004_HTML: &str = include_str!("../static/erc8004.html");
 /// document itself opens in English like every other page here.
 const INTEGRAR_HTML: &str = include_str!("../static/integrar.html");
 
+/// `static/uv.css`: the one visual system behind every page here.
+///
+/// Declared next to the ten embedded documents for the same reason they are:
+/// its handler reads it AND the sheet's own tests read it, and two
+/// `include_str!` of one file is how one of the two ends up serving a stale
+/// copy.
+///
+/// Before this, every page carried its own `<style>`: 60,617 bytes of CSS
+/// spread over ten blocks and ten different `:root` declarations (measured
+/// 2026-09-03).
+const UV_CSS: &str = include_str!("../static/uv.css");
+
+/// `static/x402.js`: the network-name -> icon map, declared ONCE for the three
+/// surfaces that consume it (the wall on `/`, the first column of `/networks`,
+/// and inline use inside prose). A copy per page is exactly what the
+/// centralised-configuration rule forbids.
+const X402_JS: &str = include_str!("../static/x402.js");
+
+/// The licence of the two fonts. OFL 1.1 clause 2 requires it to travel with
+/// every redistributed font file, and this binary redistributes two.
+const OFL_TXT: &str = include_str!("../static/fonts/OFL.txt");
+
 /// `Content-Language` for every human page.
 ///
 /// `en`, not `en, es`, and the difference is not pedantry. These pages carry
@@ -869,6 +891,15 @@ where
         // rate limit -- see that function for why.
         .route("/logo.png", get(get_logo))
         .route("/favicon.ico", get(get_favicon))
+        // The visual system and its two fonts. These live here and NOT in
+        // `agentic_routes()`: `the_table_covers_every_route` parses that
+        // function and would demand five rows in `SURFACES` for them --
+        // `/uv.css` is not an agentic surface.
+        .route("/uv.css", get(get_uv_css))
+        .route("/x402.js", get(get_x402_js))
+        .route("/fonts/v1/uv-sans.woff2", get(get_font_sans))
+        .route("/fonts/v1/uv-mono.woff2", get(get_font_mono))
+        .route("/fonts/v1/OFL.txt", get(get_font_license))
         .route("/avalanche.png", get(get_avalanche_logo))
         .route("/base.png", get(get_base_logo))
         .route("/celo.png", get(get_celo_logo))
@@ -2477,6 +2508,93 @@ pub async fn get_integrar_page() -> impl IntoResponse {
 #[instrument(skip_all)]
 pub async fn get_bazaar() -> impl IntoResponse {
     html_page(BAZAAR_HTML)
+}
+
+/// `GET /uv.css`: the only visual system of this site.
+///
+/// CACHING: one hour, and NOT `immutable`. The HTML that uses it is embedded in
+/// this same binary and changes with every deploy; a sheet cached for a year
+/// against new HTML breaks the site for anyone who already visited. The fonts
+/// DO go `immutable`, because their URL carries a version: there a change of
+/// content is a change of route.
+#[instrument(skip_all)]
+pub async fn get_uv_css() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [
+            ("content-type", "text/css; charset=utf-8"),
+            ("cache-control", "public, max-age=3600"),
+        ],
+        UV_CSS,
+    )
+}
+
+/// `GET /x402.js`: the icon map and the chip constructor.
+///
+/// Blocking, not decorative: without it `chipRed is not defined` and the
+/// 39-row table of `/networks` never draws.
+#[instrument(skip_all)]
+pub async fn get_x402_js() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [
+            ("content-type", "application/javascript; charset=utf-8"),
+            ("cache-control", "public, max-age=3600"),
+        ],
+        X402_JS,
+    )
+}
+
+/// `GET /fonts/v1/uv-sans.woff2`: the text variable font, embedded in the binary.
+///
+/// Embedded rather than fetched from Google Fonts because that put a third
+/// party in the critical render path of the landing page, and the other eight
+/// pages loaded no font at all and rendered in the system one -- which is
+/// exactly what the owner saw and called generic.
+///
+/// The `/v1/` segment is deliberate. These go out `immutable` for a year;
+/// over a stable name that is a trap, because a re-subset could never reach a
+/// reader who already visited. With a version in the path, new bytes are a new
+/// URL.
+#[instrument(skip_all)]
+pub async fn get_font_sans() -> impl IntoResponse {
+    let bytes = include_bytes!("../static/fonts/uv-sans.woff2");
+    (
+        StatusCode::OK,
+        [
+            ("content-type", "font/woff2"),
+            ("cache-control", "public, max-age=31536000, immutable"),
+        ],
+        bytes.as_slice(),
+    )
+}
+
+/// `GET /fonts/v1/uv-mono.woff2`: the variable font for code, addresses and figures.
+#[instrument(skip_all)]
+pub async fn get_font_mono() -> impl IntoResponse {
+    let bytes = include_bytes!("../static/fonts/uv-mono.woff2");
+    (
+        StatusCode::OK,
+        [
+            ("content-type", "font/woff2"),
+            ("cache-control", "public, max-age=31536000, immutable"),
+        ],
+        bytes.as_slice(),
+    )
+}
+
+/// `GET /fonts/v1/OFL.txt`: the licence OFL 1.1 clause 2 requires to travel
+/// with a redistributed font.
+#[instrument(skip_all)]
+pub async fn get_font_license() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [
+            ("content-type", "text/plain; charset=utf-8"),
+            ("cache-control", "public, max-age=31536000, immutable"),
+        ],
+        OFL_TXT,
+    )
 }
 
 /// `GET /logo.png`: Returns Ultravioleta DAO logo.

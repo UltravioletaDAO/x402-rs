@@ -29,11 +29,8 @@ use x402_compliance::SolanaExtractor;
 use x402_compliance::{ComplianceChecker, EvmExtractor, ScreeningDecision, TransactionContext};
 
 /// The chain behind an advertised identifier, whichever way it is written.
-fn resolve_network(identifier: &str) -> Option<Network> {
-    Network::from_str(identifier)
-        .ok()
-        .or_else(|| Network::from_caip2(identifier))
-}
+/// Defined in `network.rs` since `POST /accepts` needs the same answer.
+use crate::network::resolve_network;
 
 /// Every identifier that names this chain, in a stable order: the v1 name
 /// first, the CAIP-2 id second.

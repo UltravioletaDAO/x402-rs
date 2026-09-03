@@ -255,7 +255,14 @@ pub fn tools() -> Vec<Tool> {
             "Negotiate payment requirements: send the `accepts` array from a 402 \
              response and get back only the entries this facilitator can actually \
              settle, enriched with what it knows (feePayer, token list, escrow \
-             addresses). Moves no money and signs nothing. Equivalent to POST /accepts.",
+             addresses). Whatever it could NOT serve comes back in `rejected`, one \
+             entry per dropped requirement, each with a `reason` from a closed set \
+             (`malformed`, `network_unknown`, `scheme_unknown`, \
+             `network_unsupported`, `scheme_unsupported_on_network`) -- read it \
+             instead of guessing why a requirement vanished. `rejected` is always \
+             present and empty when everything matched, and an empty `accepts` is \
+             still a success, not an error. Moves no money and signs nothing. \
+             Equivalent to POST /accepts.",
             schema(json!({
                 "type": "object",
                 "properties": {

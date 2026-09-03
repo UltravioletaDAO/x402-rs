@@ -226,9 +226,47 @@ Response (live, trimmed):
       { "token": "eurc", "address": "0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42", "decimals": 6 }
     ] }
   }],
+  "rejected": [],
   "error": ""
 }
 ```
+
+### What it could not serve, and why
+
+`rejected` is always there -- empty when everything matched. It used to not
+exist, and a requirement the facilitator could not serve was dropped in silence:
+an unknown chain, a scheme we do not run there, and a body we could not read all
+came back as the same `{"accepts": [], "error": ""}` with `HTTP 200`. There was
+nothing to branch on.
+
+```json
+{
+  "x402Version": 1,
+  "accepts": [],
+  "rejected": [{
+    "index": 0,
+    "scheme": "exact",
+    "network": "cosmos:hub-4",
+    "reason": "network_unknown",
+    "detail": "`cosmos:hub-4` names no chain this facilitator knows..."
+  }],
+  "error": ""
+}
+```
+
+`reason` is a closed set -- switch on it. `detail` is prose and may change.
+
+| `reason` | What it means | Your move |
+|---|---|---|
+| `malformed` | `scheme` or `network` missing or not a string | Fix the requirement |
+| `network_unknown` | That string names no chain, in either spelling | Read `/supported` |
+| `scheme_unknown` | Not a scheme this facilitator implements | Read `/supported` |
+| `network_unsupported` | A chain it knows but this deployment does not serve | Offer another chain |
+| `scheme_unsupported_on_network` | Both known, but not that pair | `detail` names what IS served there |
+
+**A negotiation where nothing matched is still `HTTP 200`** -- the request was
+well formed, the answer is just empty. Branch on `accepts.length` and on
+`rejected`, never on the status code.
 
 Omitting the `accepts` array is a `400` with
 `{"error": "Missing or invalid 'accepts' array"}`.

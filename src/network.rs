@@ -706,6 +706,25 @@ impl Network {
     }
 }
 
+/// Resolve a network identifier written either way -- the x402 v1 name
+/// (`"base"`) or the CAIP-2 identifier (`"eip155:8453"`) -- to its chain.
+///
+/// The one place that answers "does this string name a chain we know". It
+/// lived twice (once private in `facilitator_local`, once about to be copied
+/// into `handlers`) and two copies of a question this central drift apart
+/// silently: the copy that falls behind does not error, it just stops
+/// recognising a chain.
+///
+/// Note this is the [`FromStr`] half, not the derived serde impl, so it also
+/// takes the informal aliases `FromStr` carries (`bnb`, `xrpl-mainnet`). That
+/// is right for a lookup and wrong for a wire format, which is why
+/// [`deserialize_v1_or_caip2`] does NOT go through here.
+pub fn resolve_network(identifier: &str) -> Option<Network> {
+    Network::from_str(identifier)
+        .ok()
+        .or_else(|| Network::from_caip2(identifier))
+}
+
 /// Deserialize a [`Network`] written EITHER way: the x402 v1 serde name
 /// (`"base"`) or the CAIP-2 identifier (`"eip155:8453"`).
 ///

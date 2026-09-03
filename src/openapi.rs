@@ -514,7 +514,26 @@ data (feePayer, tokens, escrow contracts, etc.).
 }
 ```
 
-**Note:** Requirements for unsupported scheme+network combinations are silently dropped from the response.
+**Requirements this facilitator cannot serve are reported, not dropped.**
+
+Every requirement that does not survive the match comes back in `rejected`, an
+array that is ALWAYS present -- empty when everything matched. Each entry carries
+the offending `index`, the `scheme` and `network` as you sent them, a `reason`
+from a bounded vocabulary, and an advisory `detail`.
+
+| `reason` | What it means | What to do |
+|---|---|---|
+| `malformed` | `scheme` or `network` missing, or not a string | Fix the requirement |
+| `network_unknown` | That string names no chain, in either spelling | Read `GET /supported` |
+| `scheme_unknown` | Not an x402 scheme this facilitator implements | Read `GET /supported` |
+| `network_unsupported` | A known chain this deployment does not serve | Offer another chain |
+| `scheme_unsupported_on_network` | Both known, but not that pair | `detail` names what IS served there |
+
+`reason` is a closed set -- switch on it. `detail` is prose and may change.
+
+Note the status code does not move: a negotiation in which nothing matched is
+still `HTTP 200`, because the request was well formed. Branch on
+`accepts.length` and `rejected`, not on the status.
 "#,
     request_body(content = Object, description = "Merchant payment requirements to negotiate"),
     responses(
@@ -533,6 +552,15 @@ data (feePayer, tokens, escrow contracts, etc.).
                                 { "token": "usdc", "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", "decimals": 6 }
                             ]
                         }
+                    }
+                ],
+                "rejected": [
+                    {
+                        "index": 1,
+                        "scheme": "exact",
+                        "network": "cosmos:hub-4",
+                        "reason": "network_unknown",
+                        "detail": "`cosmos:hub-4` names no chain this facilitator knows, under either the x402 v1 name (\"base\") or the CAIP-2 identifier (\"eip155:8453\"). GET /supported lists every network served, in both spellings"
                     }
                 ],
                 "error": ""

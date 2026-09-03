@@ -1468,6 +1468,7 @@ where
             network: network.to_string(),
             x402_version: X402Version::V1,
             scheme: Scheme::Exact,
+            network_aliases: None,
             extra,
         }];
         Ok(SupportedPaymentKindsResponse { kinds })

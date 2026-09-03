@@ -723,6 +723,7 @@ mod tests {
                     x402_version: X402Version::V1,
                     scheme: Scheme::Exact,
                     network: Network::BaseSepolia.to_string(),
+                    network_aliases: None,
                     extra: None,
                 }],
             })

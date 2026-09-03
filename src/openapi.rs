@@ -624,6 +624,8 @@ Only networks with a deployed PaymentOperator appear in the response.
 **Response includes both v1 and v2 formats:**
 - v1: `"network": "base"` (string enum)
 - v2: `"network": "eip155:8453"` (CAIP-2 format)
+
+The two entries for one chain are separate objects. `networkAliases` is what ties them together: it lists every identifier naming that same chain, the entry's own included, so a reader never has to pair them by guesswork. The field is optional and additive - it is absent for a network the facilitator cannot resolve, and no other field changed shape or name.
 "#,
     responses(
         (status = 200, description = "Supported payment kinds", body = Object,
@@ -632,27 +634,32 @@ Only networks with a deployed PaymentOperator appear in the response.
                     {
                         "x402Version": 1,
                         "scheme": "exact",
-                        "network": "base"
+                        "network": "base",
+                        "networkAliases": ["base", "eip155:8453"]
                     },
                     {
                         "x402Version": 2,
                         "scheme": "exact",
-                        "network": "eip155:8453"
+                        "network": "eip155:8453",
+                        "networkAliases": ["base", "eip155:8453"]
                     },
                     {
                         "x402Version": 1,
                         "scheme": "upto",
-                        "network": "base"
+                        "network": "base",
+                        "networkAliases": ["base", "eip155:8453"]
                     },
                     {
                         "x402Version": 2,
                         "scheme": "upto",
-                        "network": "eip155:8453"
+                        "network": "eip155:8453",
+                        "networkAliases": ["base", "eip155:8453"]
                     },
                     {
                         "x402Version": 2,
                         "scheme": "escrow",
                         "network": "eip155:8453",
+                        "networkAliases": ["base", "eip155:8453"],
                         "extra": {
                             "escrowAddress": "0xb9488351E48b23D798f24e8174514F28B741Eb4f",
                             "operatorAddress": "0x...",

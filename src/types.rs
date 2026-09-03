@@ -2062,6 +2062,21 @@ pub struct SupportedPaymentKind {
     pub x402_version: X402Version,
     pub scheme: Scheme,
     pub network: String,
+    /// Every identifier that names the SAME chain as `network`, this one
+    /// included: `["base", "eip155:8453"]`.
+    ///
+    /// `/supported` publishes a chain twice, once under its v1 name and once
+    /// under its CAIP-2 id, and nothing used to say the two entries were the
+    /// same chain. A first attempt at the `/networks` page tried to pair them
+    /// by their token-and-scheme signature and got 24 of 39 right, which means
+    /// it could print the wrong chain id next to the right network -- worse
+    /// than printing none.
+    ///
+    /// Strictly additive: absent from the JSON when unknown, and no existing
+    /// field changes shape or name. A client that ignores it reads exactly
+    /// what it read before.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network_aliases: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extra: Option<SupportedPaymentKindExtra>,
 }

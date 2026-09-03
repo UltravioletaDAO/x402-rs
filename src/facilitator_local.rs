@@ -28,6 +28,25 @@ use crate::types::{
 use x402_compliance::SolanaExtractor;
 use x402_compliance::{ComplianceChecker, EvmExtractor, ScreeningDecision, TransactionContext};
 
+/// The chain behind an advertised identifier, whichever way it is written.
+fn resolve_network(identifier: &str) -> Option<Network> {
+    Network::from_str(identifier)
+        .ok()
+        .or_else(|| Network::from_caip2(identifier))
+}
+
+/// Every identifier that names this chain, in a stable order: the v1 name
+/// first, the CAIP-2 id second.
+///
+/// Published on each entry as `networkAliases` so that a reader never has to
+/// infer that `base` and `eip155:8453` are the same network. Inferring it is
+/// not hypothetical: a first attempt at the `/networks` page paired the two
+/// forms by their token-and-scheme signature and got 24 of 39 right, which
+/// means it could print the wrong chain id beside the right network.
+fn network_aliases_of(network: Network) -> Vec<String> {
+    vec![network.to_string(), network.to_caip2()]
+}
+
 /// The same payment kind, named the other way round, or `None` when the chain
 /// resolves to neither form.
 ///
@@ -45,6 +64,7 @@ fn network_form_counterpart(kind: &SupportedPaymentKind) -> Option<SupportedPaym
         x402_version,
         scheme: kind.scheme,
         network,
+        network_aliases: None,
         extra: kind.extra.clone(),
     })
 }
@@ -93,6 +113,17 @@ fn advertise_under_both_network_forms(
         .collect();
 
     kinds.extend(mirrored);
+
+    // Strictly additive, and set here because this is the one place that has
+    // already resolved every entry's chain. An entry whose network resolves to
+    // no known chain keeps `network_aliases` absent: saying nothing beats
+    // inventing an identifier.
+    for kind in &mut kinds {
+        if let Some(network) = resolve_network(&kind.network) {
+            kind.network_aliases = Some(network_aliases_of(network));
+        }
+    }
+
     kinds
 }
 
@@ -283,6 +314,7 @@ where
             x402_version: X402Version::V1,
             scheme: Scheme::FheTransfer,
             network: "ethereum-sepolia".to_string(),
+            network_aliases: None,
             extra: None, // FHE proxy handles fee_payer internally
         });
 
@@ -313,6 +345,7 @@ where
                             x402_version: X402Version::V2,
                             scheme: Scheme::Escrow,
                             network: network.to_caip2(),
+                            network_aliases: None,
                             extra: Some(escrow_extra),
                         });
                     }
@@ -332,6 +365,7 @@ where
                         x402_version: X402Version::V2,
                         scheme: Scheme::Commerce,
                         network: network.to_caip2(),
+                        network_aliases: None,
                         extra: Some(commerce_extra),
                     });
                 }
@@ -358,11 +392,7 @@ where
             let mut evm_networks: Vec<String> = kinds
                 .iter()
                 .filter(|k| k.scheme == Scheme::Exact)
-                .filter_map(|k| {
-                    Network::from_str(&k.network)
-                        .ok()
-                        .or_else(|| Network::from_caip2(&k.network))
-                })
+                .filter_map(|k| resolve_network(&k.network))
                 .filter(|network| crate::upto::types::is_proxy_deployed_on(*network))
                 .map(|network| network.to_caip2())
                 .collect();
@@ -374,6 +404,7 @@ where
                     x402_version: X402Version::V2,
                     scheme: Scheme::Upto,
                     network: network_caip2,
+                    network_aliases: None,
                     extra: None, // Upto doesn't need extra (Permit2 domain is always "Permit2")
                 });
             }
@@ -633,6 +664,7 @@ mod supported_advertisement_tests {
             x402_version,
             scheme,
             network: network.to_string(),
+            network_aliases: None,
             extra: None,
         }
     }
@@ -642,6 +674,7 @@ mod supported_advertisement_tests {
             x402_version: X402Version::V2,
             scheme: Scheme::Escrow,
             network: network.to_string(),
+            network_aliases: None,
             extra: Some(SupportedPaymentKindExtra {
                 fee_payer: None,
                 tokens: None,
@@ -802,5 +835,168 @@ mod supported_advertisement_tests {
             .find(|k| k.x402_version == X402Version::V2)
             .expect("the CAIP-2 twin must be generated");
         assert_eq!(twin.network, Network::EthereumSepolia.to_caip2());
+    }
+}
+
+#[cfg(test)]
+mod network_alias_tests {
+    use super::*;
+
+    /// Every chain this facilitator can advertise must be able to say its own
+    /// name both ways. If one cannot, the test names it rather than skipping
+    /// it: a chain with no mapping is information, not an exception to hide.
+    #[test]
+    fn every_supported_network_resolves_from_both_of_its_names() {
+        let mut broken: Vec<String> = Vec::new();
+
+        for &network in Network::variants() {
+            let v1_name = network.to_string();
+            let caip2 = network.to_caip2();
+
+            if Network::from_str(&v1_name).ok() != Some(network) {
+                broken.push(format!(
+                    "{network:?}: v1 name `{v1_name}` does not parse back"
+                ));
+            }
+            if Network::from_caip2(&caip2) != Some(network) {
+                broken.push(format!(
+                    "{network:?}: CAIP-2 id `{caip2}` does not parse back"
+                ));
+            }
+            if resolve_network(&v1_name) != resolve_network(&caip2) {
+                broken.push(format!(
+                    "{network:?}: `{v1_name}` and `{caip2}` resolve to different chains"
+                ));
+            }
+        }
+
+        assert!(
+            broken.is_empty(),
+            "networks whose two identifiers do not map to each other:\n  {}",
+            broken.join("\n  ")
+        );
+    }
+
+    /// The alias list is what ties the two entries of one chain together, so
+    /// it has to hold BOTH identifiers on BOTH entries -- an entry that listed
+    /// only the other form would still leave a reader guessing which entry it
+    /// belongs to.
+    #[test]
+    fn both_entries_of_a_chain_carry_the_same_pair_of_aliases() {
+        let published = advertise_under_both_network_forms(vec![SupportedPaymentKind {
+            x402_version: X402Version::V1,
+            scheme: Scheme::Exact,
+            network: "base".to_string(),
+            network_aliases: None,
+            extra: None,
+        }]);
+
+        assert_eq!(
+            published.len(),
+            2,
+            "the chain is published under both names"
+        );
+        for kind in &published {
+            let aliases = kind
+                .network_aliases
+                .as_ref()
+                .unwrap_or_else(|| panic!("{} carries no aliases", kind.network));
+            assert_eq!(aliases, &["base".to_string(), "eip155:8453".to_string()]);
+            assert!(
+                aliases.contains(&kind.network),
+                "an entry must appear in its own alias list"
+            );
+        }
+    }
+
+    /// Each alias has to name an entry that is actually published, or the
+    /// field points at nothing.
+    #[test]
+    fn every_alias_names_an_entry_that_exists() {
+        let published = advertise_under_both_network_forms(vec![
+            SupportedPaymentKind {
+                x402_version: X402Version::V2,
+                scheme: Scheme::Escrow,
+                network: "eip155:8453".to_string(),
+                network_aliases: None,
+                extra: None,
+            },
+            SupportedPaymentKind {
+                x402_version: X402Version::V1,
+                scheme: Scheme::Exact,
+                network: "polygon".to_string(),
+                network_aliases: None,
+                extra: None,
+            },
+        ]);
+
+        for kind in &published {
+            for alias in kind.network_aliases.iter().flatten() {
+                assert!(
+                    published
+                        .iter()
+                        .any(|k| k.scheme == kind.scheme && &k.network == alias),
+                    "{} lists alias `{alias}`, which no published entry uses",
+                    kind.network
+                );
+            }
+        }
+    }
+
+    /// The field has to survive the conversion `/supported` actually performs.
+    /// `get_supported` does not serialise the v1 struct: it converts through
+    /// `SupportedPaymentKindsResponseV1ToV2::to_v2` first, and the first cut of
+    /// this change computed `networkAliases` correctly and then dropped it
+    /// there. The unit tests above all passed; only curling the running binary
+    /// showed 0 of 68 entries carrying the field.
+    #[test]
+    fn the_alias_survives_the_conversion_that_reaches_the_wire() {
+        use crate::types_v2::SupportedPaymentKindsResponseV1ToV2;
+
+        let kinds = advertise_under_both_network_forms(vec![SupportedPaymentKind {
+            x402_version: X402Version::V1,
+            scheme: Scheme::Exact,
+            network: "base".to_string(),
+            network_aliases: None,
+            extra: None,
+        }]);
+        let response = SupportedPaymentKindsResponse { kinds }.to_v2(vec![], Default::default());
+
+        let json = serde_json::to_string(&response).expect("serializes");
+        for kind in &response.kinds {
+            assert_eq!(
+                kind.network_aliases.as_deref(),
+                Some(["base".to_string(), "eip155:8453".to_string()].as_slice()),
+                "the wire type dropped the alias for {}",
+                kind.network
+            );
+        }
+        assert_eq!(
+            json.matches("networkAliases").count(),
+            2,
+            "both published entries must carry it on the wire: {json}"
+        );
+    }
+
+    /// The field is additive: an entry on a chain the enum does not know keeps
+    /// it absent, so nothing existing changes shape and no identifier is
+    /// invented.
+    #[test]
+    fn an_unknown_chain_gets_no_invented_alias() {
+        let published = advertise_under_both_network_forms(vec![SupportedPaymentKind {
+            x402_version: X402Version::V1,
+            scheme: Scheme::Exact,
+            network: "not-a-network".to_string(),
+            network_aliases: None,
+            extra: None,
+        }]);
+
+        assert_eq!(published.len(), 1);
+        assert!(published[0].network_aliases.is_none());
+
+        // ...and `networkAliases` disappears from the JSON entirely, rather
+        // than showing up as null for a client to trip over.
+        let json = serde_json::to_string(&published[0]).expect("serializes");
+        assert!(!json.contains("networkAliases"), "got: {json}");
     }
 }

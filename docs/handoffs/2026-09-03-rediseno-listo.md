@@ -332,7 +332,24 @@ corrigiéndose a sí misma o un detalle que el papel no podía ver.
   `-c core.autocrlf=true`: el árbol está en CRLF y sin esa bandera cada commit
   habría reescrito 176.834 líneas.
 
-## 10. Ping de recall (10 s)
+## 10. Un aviso para quien pushee
+
+El diff de esta rama tiene **dos coincidencias** con el patrón que el hook de
+pre-commit usa para bloquear private keys (`0x` + 64 hex). Son las **dos
+direcciones públicas de Sui** de la Tabla C, y están verbatim en
+`lambda/balances/handler.py` y en el `CLAUDE.md` del repo:
+
+```
+0xe7bbf2b13f7d72714760aa16e024fa1b35a978793f9893d0568a4fbf356a764a   mainnet
+0xabbd16a2fab2a502c9cfe835195a6fc7d70bfc27cffb40b8b286b52a97006e67   testnet
+```
+
+Una dirección de Sui tiene exactamente la misma forma que una private key de
+32 bytes, así que el grep no puede distinguirlas. **No hay ningún secreto en
+este diff** (verificado también contra `PRIVATE_KEY=` y `mnemonic=`: cero
+coincidencias). Si el hook las marca, es este falso positivo y no otra cosa.
+
+## 11. Ping de recall (10 s)
 
 > La hoja tenía las dos fuentes bien subseteadas, bien renombradas y pesando
 > 31.780 B entre las dos, y **el sitio no las iba a cargar**. Sin mirar arriba:

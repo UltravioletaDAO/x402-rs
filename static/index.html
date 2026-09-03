@@ -3177,7 +3177,7 @@
                     window.__paymentMainnets = n;
                     applyCanonicalCounts();
                     if (n !== 21) {
-                        console.warn('[canonical] /supported reports ' + n + ' mainnet payment networks but the landing fallback is 21. Update the landing and run scripts/verify_landing_canonical.py.');
+                        console.warn('[canonical] /supported reports ' + n + ' mainnet payment networks, not 21. This page no longer types that number anywhere -- it shows the grid -- so nothing here is wrong yet; the pages that DO type it are the ones to check. Run scripts/verify_landing_canonical.py.');
                     }
                 }
             }).catch(() => { /* keep the hardcoded fallback on network error */ });

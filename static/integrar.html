@@ -45,10 +45,11 @@
 <section class="answer">
   <h1 data-i18n="h1">Charge for an HTTP endpoint. Or pay for one.</h1>
   <p class="deck" data-i18n="lead">You want to charge for an HTTP endpoint, or to pay for one, without either side holding an account with anybody. That is what this service is for, and using it is one configuration line: point your x402 middleware at this URL. There is no signup, no API key, no fee and no rate card.</p>
+  <p data-i18n="zero.try">Before you decide anything, paste this. It answers now, and it does not ask who you are:</p>
+  <pre><code>curl -sS https://facilitator.ultravioletadao.xyz/version</code></pre>
+  <p class="out"><code id="out-version">{"version":"2.10.0"}</code></p>
+  <p data-i18n-html="zero.after">That is the whole base URL: <code>https://facilitator.ultravioletadao.xyz</code>. There is no key to request and no account to open before the next command works.</p>
 </section>
-
-
-<pre><code>https://facilitator.ultravioletadao.xyz</code></pre>
 
 <section id="selling">
   <h3 data-i18n="seller.h">You are selling</h3>
@@ -107,6 +108,50 @@
 </table>
 </div>
 
+<h3 data-i18n="rutas.status">The routes that answer without a payment</h3>
+<div class="scroll">
+  <table>
+    <thead><tr><th data-i18n="rutas.th.method">Method</th><th data-i18n="rutas.th.route">Route</th><th data-i18n="rutas.th.what">What it answers</th><th data-i18n="rutas.th.money">Moves money</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>GET</code></td>
+        <td><code>/health</code></td>
+        <td data-i18n="endpoints.health">Health check status</td>
+        <td data-i18n="money.read">no</td>
+      </tr>
+      <tr>
+        <td><code>GET</code></td>
+        <td><code>/version</code></td>
+        <td data-i18n="endpoints.version">Facilitator version info</td>
+        <td data-i18n="money.read">no</td>
+      </tr>
+      <tr>
+        <td><code>GET</code></td>
+        <td><code>/supported</code></td>
+        <td data-i18n="endpoints.supported">Supported networks and payment schemes</td>
+        <td data-i18n="money.read">no</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+
+<h3 data-i18n="rutas.compliance">The compliance route</h3>
+<div class="scroll">
+  <table>
+    <thead><tr><th data-i18n="rutas.th.method">Method</th><th data-i18n="rutas.th.route">Route</th><th data-i18n="rutas.th.what">What it answers</th><th data-i18n="rutas.th.money">Moves money</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>GET</code></td>
+        <td><code>/blacklist</code></td>
+        <td data-i18n="endpoints.blacklist">OFAC sanctioned and blocked addresses</td>
+        <td data-i18n="money.read">no</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+
 <div class="note warn">
   <p style="margin:0"><b data-i18n="w.testTitle">Try it on a testnet first, and mean it.</b> <span data-i18n="w.testText">A settlement is irreversible on every chain here, and the failure modes above are all cheaper to meet on <code>base-sepolia</code> than on Base. The testnet wallets are funded and listed alongside the mainnet ones.</span></p>
 </div>
@@ -152,6 +197,19 @@
 <script>
 const I18N = {
   en: {
+    "zero.after":"That is the whole base URL: <code>https://facilitator.ultravioletadao.xyz</code>. There is no key to request and no account to open before the next command works.",
+    "zero.try":"Before you decide anything, paste this. It answers now, and it does not ask who you are:",
+    "endpoints.blacklist":"OFAC sanctioned and blocked addresses",
+    "endpoints.health":"Check facilitator health status",
+    "endpoints.supported":"List supported payment schemes and networks",
+    "endpoints.version":"Facilitator version and build info",
+    "money.read":"no",
+    "rutas.compliance":"The compliance route",
+    "rutas.status":"The routes that answer without a payment",
+    "rutas.th.method":"Method",
+    "rutas.th.money":"Moves money",
+    "rutas.th.route":"Route",
+    "rutas.th.what":"What it answers",
     "footer.by":"Ultravioleta DAO · x402 payment facilitator · 0% fee",
     "h1":"Charge for an HTTP endpoint. Or pay for one.",
     "nav.bazaar":"Bazaar",
@@ -205,6 +263,19 @@ const I18N = {
     footer:"Ultravioleta DAO · x402 Payment Facilitator.",
   },
   es: {
+    "zero.after":"Esa es la base URL entera: <code>https://facilitator.ultravioletadao.xyz</code>. No hay key que pedir ni cuenta que abrir antes de que el siguiente comando funcione.",
+    "zero.try":"Antes de decidir nada, pegá esto. Contesta ahora, y no te pregunta quién sos:",
+    "endpoints.blacklist":"Direcciones sancionadas por OFAC y bloqueadas",
+    "endpoints.health":"Verificar estado de salud del facilitador",
+    "endpoints.supported":"Listar esquemas de pago y redes soportadas",
+    "endpoints.version":"Versión e info de compilación del facilitador",
+    "money.read":"no",
+    "rutas.compliance":"La ruta de compliance",
+    "rutas.status":"Las rutas que contestan sin un pago",
+    "rutas.th.method":"Metodo",
+    "rutas.th.money":"Mueve dinero",
+    "rutas.th.route":"Ruta",
+    "rutas.th.what":"Que contesta",
     "footer.by":"Ultravioleta DAO · facilitador de pagos x402 · 0% de comisión",
     "h1":"Cobrá por un endpoint HTTP. O pagá por uno.",
     "nav.bazaar":"Bazar",
@@ -281,6 +352,13 @@ document.querySelectorAll('.lang button').forEach(b => {
     applyLang(lang);
   });
 });
+
+// La salida impresa al lado del comando es la que contesta el servicio ahora,
+// no una captura: si el facilitador dice otra cosa, eso es lo que se lee.
+fetch('/version').then(r => r.text()).then(v => {
+  const el = document.getElementById('out-version');
+  if (el && v && v.length < 120) el.textContent = v.trim();
+}).catch(() => {});
 
 applyLang(LANG);
 </script>

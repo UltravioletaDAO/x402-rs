@@ -79,6 +79,69 @@
   <p style="margin:0"><b data-i18n="two.warnTitle">A settle that timed out is not a settle that failed.</b> <span data-i18n="two.warnText">The transaction may already be on its way. Retry with the same <code>Idempotency-Key</code> header: the same key with the same payment returns the first result instead of settling twice, and the same key with a <em>different</em> payment is refused with 409. Generate a fresh unguessable value per payment — keys share one namespace across all callers, so a predictable one can be claimed by somebody else's settle first.</span></p>
 </div>
 
+<dl class="defs">
+  <dt>x402</dt>
+  <dd data-i18n-html="def.x402">The protocol. An HTTP endpoint answers <code>402 Payment Required</code> with the terms it accepts; the caller signs one of them off-chain and retries with the signature in a header.</dd>
+  <dt>facilitator</dt>
+  <dd data-i18n-html="def.facilitator">The service that checks a signed payment and puts it on chain, paying the network fee. This one. It never holds your money and never holds your key.</dd>
+  <dt>verify</dt>
+  <dd data-i18n-html="def.verify">The free call. It answers whether an authorization <em>would</em> settle and submits nothing, so it is safe to repeat.</dd>
+  <dt>settle</dt>
+  <dd data-i18n-html="def.settle">The call that spends. It broadcasts the transfer and cannot be undone on any chain here.</dd>
+</dl>
+
+<h3 data-i18n="rutas.core">Every route of the core</h3>
+<div class="scroll">
+  <table>
+    <thead><tr><th data-i18n="rutas.th.method">Method</th><th data-i18n="rutas.th.route">Route</th><th data-i18n="rutas.th.what">What it answers</th><th data-i18n="rutas.th.money">Moves money</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>GET</code></td>
+        <td><code>/verify</code></td>
+        <td data-i18n="endpoints.verifySchema">Verification request schema</td>
+        <td data-i18n="money.read">no</td>
+      </tr>
+      <tr>
+        <td><code>POST</code></td>
+        <td><code>/verify</code></td>
+        <td data-i18n="endpoints.verify">Verify payment signature and requirements</td>
+        <td data-i18n="money.no">no</td>
+      </tr>
+      <tr>
+        <td><code>GET</code></td>
+        <td><code>/settle</code></td>
+        <td data-i18n="endpoints.settleSchema">Settlement request schema</td>
+        <td data-i18n="money.read">no</td>
+      </tr>
+      <tr>
+        <td><code>POST</code></td>
+        <td><code>/settle</code></td>
+        <td data-i18n="endpoints.settle">Execute payment on-chain via EIP-3009</td>
+        <td data-i18n="money.settle">yes, irreversibly</td>
+      </tr>
+      <tr>
+        <td><code>POST</code></td>
+        <td><code>/mcp</code></td>
+        <td data-i18n="endpoints.mcpPost">MCP server (Streamable HTTP, stateless): the same four calls as tools</td>
+        <td data-i18n="money.mcp">only through settle</td>
+      </tr>
+      <tr>
+        <td><code>GET</code></td>
+        <td><code>/mcp</code></td>
+        <td data-i18n="endpoints.mcpGet">The MCP guide for humans: transports, the four tools, and the traps</td>
+        <td data-i18n="money.read">no</td>
+      </tr>
+      <tr>
+        <td><code>POST</code></td>
+        <td><code>/accepts</code></td>
+        <td data-i18n="endpoints.accepts">Negotiate and enrich payment requirements (Faremeter middleware)</td>
+        <td data-i18n="money.no">no</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+
 <h2 data-i18n="h.escrow">Escrow — the x402r extension</h2>
 
 <p data-i18n="escrow.p1">Plain x402 is final on arrival: the buyer signs, the transfer lands, and there is no step in between where a refund could live. Escrow adds one. Funds are authorized into a contract and released, captured or refunded when a condition is met, so a payment can be undone by the terms both sides already agreed to rather than by trusting the seller afterwards.</p>
@@ -88,6 +151,29 @@
 <p class="muted" data-i18n="escrow.netsLabel">Where <code>escrow</code> is advertised right now, straight from <code>/supported</code>:</p>
 <div id="escrow-nets"><span class="muted" data-i18n="loading">loading…</span></div>
 
+<h3 data-i18n="rutas.escrow">The escrow routes</h3>
+<div class="scroll">
+  <table>
+    <thead><tr><th data-i18n="rutas.th.method">Method</th><th data-i18n="rutas.th.route">Route</th><th data-i18n="rutas.th.what">What it answers</th><th data-i18n="rutas.th.money">Moves money</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>POST</code></td>
+        <td><code>/settle</code></td>
+        <td data-i18n="endpoints.escrowSettle">Settle to escrow proxy when "refund" extension is present</td>
+        <td data-i18n="money.settle">yes, irreversibly</td>
+      </tr>
+      <tr>
+        <td><code>POST</code></td>
+        <td><code>/settle</code></td>
+        <td data-i18n="endpoints.paymentOperatorSettle">Settle via AuthCaptureEscrow when scheme="escrow"</td>
+        <td data-i18n="money.settle">yes, irreversibly</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+<p class="note" data-i18n="endpoints.escrowNote">Add {"refund": {"window": 86400}} to extensions for trustless refund support via DepositRelay proxies.</p>
+<p class="note" data-i18n="endpoints.paymentOperatorNote">Advanced escrow with authorize/charge/release/refund flows. Funds held in TokenStore until capture.</p>
+
 <h2 data-i18n="h.upto">Upto — pay for what you used</h2>
 
 <p data-i18n="upto.p1">A metered call cannot know its price before it runs. <code>exact</code> forces the seller to pick a number up front and be wrong in one direction or the other; <code>upto</code> lets the buyer authorize a <em>ceiling</em> and be charged what was actually consumed, in one signature, still gasless. It is built on Uniswap's Permit2, which is what makes a variable amount possible without a second round trip.</p>
@@ -96,6 +182,28 @@
 
 <p class="muted" data-i18n="upto.netsLabel">Where <code>upto</code> is advertised right now, straight from <code>/supported</code>:</p>
 <div id="upto-nets"><span class="muted" data-i18n="loading">loading…</span></div>
+
+<h3 data-i18n="rutas.upto">The upto routes</h3>
+<div class="scroll">
+  <table>
+    <thead><tr><th data-i18n="rutas.th.method">Method</th><th data-i18n="rutas.th.route">Route</th><th data-i18n="rutas.th.what">What it answers</th><th data-i18n="rutas.th.money">Moves money</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>POST</code></td>
+        <td><code>/verify</code></td>
+        <td data-i18n="endpoints.uptoVerify">Verify Permit2 authorization when scheme="upto"</td>
+        <td data-i18n="money.no">no</td>
+      </tr>
+      <tr>
+        <td><code>POST</code></td>
+        <td><code>/settle</code></td>
+        <td data-i18n="endpoints.uptoSettle">Settle for actual usage amount via x402UptoPermit2Proxy</td>
+        <td data-i18n="money.settle">yes, irreversibly</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+<p class="note" data-i18n="endpoints.uptoNote">Client authorizes max amount via Permit2 signature. Server settles for actual usage (<= max). If usage is $0, no on-chain transaction is submitted.</p>
 
 <h2 data-i18n="h.schemes">Every scheme this facilitator settles</h2>
 <div class="scroll">
@@ -154,6 +262,35 @@
 // ---------------------------------------------------------------------------
 const I18N = {
   en: {
+    "def.facilitator":"The service that checks a signed payment and puts it on chain, paying the network fee. This one. It never holds your money and never holds your key.",
+    "def.settle":"The call that spends. It broadcasts the transfer and cannot be undone on any chain here.",
+    "def.verify":"The free call. It answers whether an authorization <em>would</em> settle and submits nothing, so it is safe to repeat.",
+    "def.x402":"The protocol. An HTTP endpoint answers <code>402 Payment Required</code> with the terms it accepts; the caller signs one of them off-chain and retries with the signature in a header.",
+    "endpoints.accepts":"Negotiate and enrich payment requirements (Faremeter middleware)",
+    "endpoints.escrowNote":"Add {\"refund\": {\"window\": 86400}} to extensions for trustless refund support via DepositRelay proxies.",
+    "endpoints.escrowSettle":"Settle to escrow proxy when 'refund' extension is present",
+    "endpoints.mcpGet":"The MCP guide for humans: transports, the four tools, and the traps",
+    "endpoints.mcpPost":"MCP server (Streamable HTTP, stateless): the same four calls as tools",
+    "endpoints.paymentOperatorNote":"Advanced escrow with authorize/charge/release/refund flows. Funds held in TokenStore until capture.",
+    "endpoints.paymentOperatorSettle":"Settle via AuthCaptureEscrow when scheme=\"escrow\"",
+    "endpoints.settle":"Execute payment on-chain via EIP-3009",
+    "endpoints.settleSchema":"Get settlement request schema",
+    "endpoints.uptoNote":"Client authorizes max amount via Permit2 signature. Server settles for actual usage (<= max). If usage is $0, no on-chain transaction is submitted.",
+    "endpoints.uptoSettle":"Settle for actual usage amount via x402UptoPermit2Proxy",
+    "endpoints.uptoVerify":"Verify Permit2 authorization when scheme=\"upto\"",
+    "endpoints.verify":"Verify payment signature and requirements",
+    "endpoints.verifySchema":"Get verification request schema",
+    "money.mcp":"only through settle",
+    "money.no":"no",
+    "money.read":"no",
+    "money.settle":"yes, irreversibly",
+    "rutas.core":"Every route of the core",
+    "rutas.escrow":"The escrow routes",
+    "rutas.th.method":"Method",
+    "rutas.th.money":"Moves money",
+    "rutas.th.route":"Route",
+    "rutas.th.what":"What it answers",
+    "rutas.upto":"The upto routes",
     "footer.by":"Ultravioleta DAO · x402 payment facilitator · 0% fee",
     "h1":"Check a payment before you take it, then put it on chain",
     "nav.bazaar":"Bazaar",
@@ -207,6 +344,35 @@ const I18N = {
     nets:"networks", noNets:"not advertised on any network right now",
   },
   es: {
+    "def.facilitator":"El servicio que revisa un pago firmado y lo pone en la cadena, pagando la comisión de red. Este. Nunca tiene tu plata y nunca tiene tu clave.",
+    "def.settle":"La llamada que gasta. Emite la transferencia y no se puede deshacer en ninguna cadena de acá.",
+    "def.verify":"La llamada gratis. Contesta si una autorización <em>liquidaría</em> y no envía nada, así que se puede repetir sin riesgo.",
+    "def.x402":"El protocolo. Un endpoint HTTP contesta <code>402 Payment Required</code> con los términos que acepta; quien llama firma uno de ellos fuera de la cadena y reintenta con la firma en un header.",
+    "endpoints.accepts":"Negociar y enriquecer requisitos de pago (middleware Faremeter)",
+    "endpoints.escrowNote":"Agrega {\"refund\": {\"window\": 86400}} a extensions para soporte de reembolsos sin confianza via proxies DepositRelay.",
+    "endpoints.escrowSettle":"Liquidar a proxy escrow cuando la extension 'refund' esta presente",
+    "endpoints.mcpGet":"La guía MCP para humanos: transportes, las cuatro herramientas y las trampas",
+    "endpoints.mcpPost":"Servidor MCP (Streamable HTTP, sin estado): las mismas cuatro llamadas como herramientas",
+    "endpoints.paymentOperatorNote":"Escrow avanzado con flujos authorize/charge/release/refund. Fondos retenidos en TokenStore hasta captura.",
+    "endpoints.paymentOperatorSettle":"Liquidar via AuthCaptureEscrow cuando scheme=\"escrow\"",
+    "endpoints.settle":"Ejecutar pago en cadena vía EIP-3009",
+    "endpoints.settleSchema":"Obtener esquema de solicitud de liquidación",
+    "endpoints.uptoNote":"El cliente autoriza monto maximo via firma Permit2. El servidor liquida por uso real (<= max). Si el uso es $0, no se envia transaccion on-chain.",
+    "endpoints.uptoSettle":"Liquidar por monto de uso real via x402UptoPermit2Proxy",
+    "endpoints.uptoVerify":"Verificar autorizacion Permit2 cuando scheme=\"upto\"",
+    "endpoints.verify":"Verificar firma de pago y requisitos",
+    "endpoints.verifySchema":"Obtener esquema de solicitud de verificación",
+    "money.mcp":"solo a traves de settle",
+    "money.no":"no",
+    "money.read":"no",
+    "money.settle":"si, y no se deshace",
+    "rutas.core":"Todas las rutas del nucleo",
+    "rutas.escrow":"Las rutas de escrow",
+    "rutas.th.method":"Metodo",
+    "rutas.th.money":"Mueve dinero",
+    "rutas.th.route":"Ruta",
+    "rutas.th.what":"Que contesta",
+    "rutas.upto":"Las rutas de upto",
     "footer.by":"Ultravioleta DAO · facilitador de pagos x402 · 0% de comisión",
     "h1":"Chequeá un pago antes de aceptarlo, y después ponelo en la cadena",
     "nav.bazaar":"Bazar",

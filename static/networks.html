@@ -12,6 +12,7 @@
 <meta property="og:image" content="https://facilitator.ultravioletadao.xyz/logo.png">
 <link rel="icon" href="/favicon.ico">
 <link rel="stylesheet" href="/uv.css">
+<script src="/x402.js" defer></script>
 </head>
 <body data-page="networks">
 
@@ -71,6 +72,79 @@
   </div>
 </div>
 
+<h2 data-i18n="h.familias">Where this settles, by chain family</h2>
+<p class="muted" data-i18n="familias.p">A summary of the live table below, as it stood on 2026-09-03. If the two ever disagree, the live table is right: it is read from <code>/supported</code> and this one is not.</p>
+<div class="scroll">
+  <table>
+    <thead><tr>
+      <th data-i18n="fa.th.family">Chain family</th>
+      <th class="num" data-i18n="fa.th.main">Mainnets</th>
+      <th class="num" data-i18n="fa.th.test">Testnets</th>
+      <th data-i18n="fa.th.tokens">Stablecoins settled</th>
+      <th data-i18n="fa.th.schemes">Schemes</th>
+    </tr></thead>
+    <tbody>
+      <tr>
+        <td><span class="chip-row"><span class="chip-red chip-red--tabla"><b>ET</b><img src="/ethereum.png" alt="" width="96" height="96"></span>EVM</span></td>
+        <td class="num">14</td>
+        <td class="num">12</td>
+        <td>USDC, USDT, EURC, AUSD, PYUSD, USDG</td>
+        <td>exact, upto, escrow, commerce, fhe-transfer</td>
+      </tr>
+      <tr>
+        <td><span class="chip-row"><span class="chip-red chip-red--tabla"><b>SO</b><img src="/solana.png" alt="" width="96" height="96"></span>Solana / SVM</span></td>
+        <td class="num">2</td>
+        <td class="num">2</td>
+        <td>— (feePayer)</td>
+        <td>exact</td>
+      </tr>
+      <tr>
+        <td><span class="chip-row"><span class="chip-red chip-red--tabla"><b>XR</b><img src="/xrpl.png" alt="" width="96" height="96"></span>XRPL</span></td>
+        <td class="num">1</td>
+        <td class="num">1</td>
+        <td>USDC, RLUSD, XRP</td>
+        <td>exact</td>
+      </tr>
+      <tr>
+        <td><span class="chip-row"><span class="chip-red chip-red--tabla"><b>ST</b><img src="/stellar.png" alt="" width="96" height="96"></span>Stellar</span></td>
+        <td class="num">1</td>
+        <td class="num">1</td>
+        <td>— (feePayer)</td>
+        <td>exact</td>
+      </tr>
+      <tr>
+        <td><span class="chip-row"><span class="chip-red chip-red--tabla"><b>NE</b><img src="/near.png" alt="" width="96" height="96"></span>NEAR</span></td>
+        <td class="num">1</td>
+        <td class="num">1</td>
+        <td>— (feePayer)</td>
+        <td>exact</td>
+      </tr>
+      <tr>
+        <td><span class="chip-row"><span class="chip-red chip-red--tabla"><b>SU</b><img src="/sui.png" alt="" width="96" height="96"></span>Sui</span></td>
+        <td class="num">1</td>
+        <td class="num">1</td>
+        <td>— (feePayer)</td>
+        <td>exact</td>
+      </tr>
+      <tr>
+        <td><span class="chip-row"><span class="chip-red chip-red--tabla"><b>AL</b><img src="/algorand.png" alt="" width="96" height="96"></span>Algorand</span></td>
+        <td class="num">1</td>
+        <td class="num">1</td>
+        <td>— (feePayer)</td>
+        <td>exact</td>
+      </tr>
+      <tr>
+        <td><b data-i18n="fa.total">total</b></td>
+        <td class="num" data-live-count="payment-mainnets"><b>21</b></td>
+        <td class="num" data-live-count="payment-testnets"><b>18</b></td>
+        <td><b data-i18n="fa.tokens7">7 stablecoins + native XRP</b></td>
+        <td><b>5</b></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 data-i18n="h.live">Every network, read live</h2>
 <div class="controls">
   <button type="button" data-filter="mainnet" aria-pressed="true" data-i18n="f.mainnets">mainnets</button>
   <button type="button" data-filter="testnet" aria-pressed="false" data-i18n="f.testnets">testnets</button>
@@ -104,6 +178,99 @@
 <h2 data-i18n="h.reading">Reading a row</h2>
 <p data-i18n="reading.p2">The <b>schemes</b> column matters more than it looks. <code>exact</code> is the ordinary x402 payment. <code>upto</code> authorises a ceiling and charges what was used, and is advertised only where the Permit2 proxy is actually deployed. <code>escrow</code> and <code>commerce</code> hold funds until a condition is met. <code>fhe-transfer</code> is confidential and experimental. A network with only <code>exact</code> cannot do the others — that is not an omission, it is the answer.</p>
 
+<h2 data-i18n="h.wallets">The wallets that pay the gas</h2>
+<p data-i18n="wallets.p">These are the addresses this facilitator broadcasts from, one pair per chain family. They are public, they are linked to their explorer, and the gas balance of each is the last column of the live table above. An address on one page and its balance on another is how a reader ends up trusting neither.</p>
+<div class="scroll">
+  <table>
+    <thead><tr>
+      <th data-i18n="wa.th.family">Chain family</th>
+      <th data-i18n="wa.th.env">Environment</th>
+      <th data-i18n="wa.th.addr">Address</th>
+    </tr></thead>
+    <tbody>
+      <tr>
+        <td><span class="chip-row"><span class="chip-red chip-red--tabla"><b>ET</b><img src="/ethereum.png" alt="" width="96" height="96"></span>EVM</span></td>
+        <td>Mainnet</td>
+        <td class="addr"><a href="https://debank.com/profile/0x103040545AC5031A11E8C03dd11324C7333a13C7" rel="noopener">0x103040545AC5031A11E8C03dd11324C7333a13C7</a></td>
+      </tr>
+      <tr>
+        <td><span class="chip-row"><span class="chip-red chip-red--tabla"><b>ET</b><img src="/ethereum.png" alt="" width="96" height="96"></span>EVM</span></td>
+        <td>Testnet</td>
+        <td class="addr"><a href="https://debank.com/profile/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8" rel="noopener">0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8</a></td>
+      </tr>
+      <tr>
+        <td><span class="chip-row"><span class="chip-red chip-red--tabla"><b>SO</b><img src="/solana.png" alt="" width="96" height="96"></span>Solana</span></td>
+        <td>Mainnet</td>
+        <td class="addr"><a href="https://solscan.io/account/F742C4VfFLQ9zRQyithoj5229ZgtX2WqKCSFKgH2EThq" rel="noopener">F742C4VfFLQ9zRQyithoj5229ZgtX2WqKCSFKgH2EThq</a></td>
+      </tr>
+      <tr>
+        <td><span class="chip-row"><span class="chip-red chip-red--tabla"><b>SO</b><img src="/solana.png" alt="" width="96" height="96"></span>Solana</span></td>
+        <td>Devnet</td>
+        <td class="addr"><a href="https://solscan.io/account/6xNPewUdKRbEZDReQdpyfNUdgNg8QRc8Mt263T5GZSRv?cluster=devnet" rel="noopener">6xNPewUdKRbEZDReQdpyfNUdgNg8QRc8Mt263T5GZSRv</a></td>
+      </tr>
+      <tr>
+        <td><span class="chip-row"><span class="chip-red chip-red--tabla"><b>FO</b><img src="/fogo.png" alt="" width="96" height="96"></span>Fogo</span></td>
+        <td>Mainnet</td>
+        <td class="addr"><a href="https://fogoscan.com/account/F742C4VfFLQ9zRQyithoj5229ZgtX2WqKCSFKgH2EThq" rel="noopener">F742C4VfFLQ9zRQyithoj5229ZgtX2WqKCSFKgH2EThq</a></td>
+      </tr>
+      <tr>
+        <td><span class="chip-row"><span class="chip-red chip-red--tabla"><b>FO</b><img src="/fogo.png" alt="" width="96" height="96"></span>Fogo</span></td>
+        <td>Testnet</td>
+        <td class="addr"><a href="https://fogoscan.com/account/6xNPewUdKRbEZDReQdpyfNUdgNg8QRc8Mt263T5GZSRv?cluster=testnet" rel="noopener">6xNPewUdKRbEZDReQdpyfNUdgNg8QRc8Mt263T5GZSRv</a></td>
+      </tr>
+      <tr>
+        <td><span class="chip-row"><span class="chip-red chip-red--tabla"><b>NE</b><img src="/near.png" alt="" width="96" height="96"></span>NEAR</span></td>
+        <td>Mainnet</td>
+        <td class="addr"><a href="https://nearblocks.io/address/uvd-facilitator.near" rel="noopener">uvd-facilitator.near</a></td>
+      </tr>
+      <tr>
+        <td><span class="chip-row"><span class="chip-red chip-red--tabla"><b>NE</b><img src="/near.png" alt="" width="96" height="96"></span>NEAR</span></td>
+        <td>Testnet</td>
+        <td class="addr"><a href="https://testnet.nearblocks.io/address/uvd-facilitator.testnet" rel="noopener">uvd-facilitator.testnet</a></td>
+      </tr>
+      <tr>
+        <td><span class="chip-row"><span class="chip-red chip-red--tabla"><b>ST</b><img src="/stellar.png" alt="" width="96" height="96"></span>Stellar</span></td>
+        <td>Mainnet</td>
+        <td class="addr"><a href="https://stellar.expert/explorer/public/account/GCHPGXJT2WFFRFCA5TV4G4E3PMMXLNIDUH27PKDYA4QJ2XGYZWGFZNHB" rel="noopener">GCHPGXJT2WFFRFCA5TV4G4E3PMMXLNIDUH27PKDYA4QJ2XGYZWGFZNHB</a></td>
+      </tr>
+      <tr>
+        <td><span class="chip-row"><span class="chip-red chip-red--tabla"><b>ST</b><img src="/stellar.png" alt="" width="96" height="96"></span>Stellar</span></td>
+        <td>Testnet</td>
+        <td class="addr"><a href="https://stellar.expert/explorer/testnet/account/GBBFZMLUJEZVI32EN4XA2KPP445XIBTMTRBLYWFIL556RDTHS2OWFQ2Z" rel="noopener">GBBFZMLUJEZVI32EN4XA2KPP445XIBTMTRBLYWFIL556RDTHS2OWFQ2Z</a></td>
+      </tr>
+      <tr>
+        <td><span class="chip-row"><span class="chip-red chip-red--tabla"><b>XR</b><img src="/xrpl.png" alt="" width="96" height="96"></span>XRPL</span></td>
+        <td>Mainnet</td>
+        <td class="addr"><a href="https://livenet.xrpl.org/accounts/rfADKkVXBNqK3z72tVSS3LVzAR3psYkonp" rel="noopener">rfADKkVXBNqK3z72tVSS3LVzAR3psYkonp</a></td>
+      </tr>
+      <tr>
+        <td><span class="chip-row"><span class="chip-red chip-red--tabla"><b>XR</b><img src="/xrpl.png" alt="" width="96" height="96"></span>XRPL</span></td>
+        <td>Testnet</td>
+        <td class="addr"><a href="https://testnet.xrpl.org/accounts/rGhTioKAFHe75KgVnQtacRiKFuPv28Wbwk" rel="noopener">rGhTioKAFHe75KgVnQtacRiKFuPv28Wbwk</a></td>
+      </tr>
+      <tr>
+        <td><span class="chip-row"><span class="chip-red chip-red--tabla"><b>AL</b><img src="/algorand.png" alt="" width="96" height="96"></span>Algorand</span></td>
+        <td>Mainnet</td>
+        <td class="addr"><a href="https://allo.info/account/KIMS5H6QLCUDL65L5UBTOXDPWLMTS7N3AAC3I6B2NCONEI5QIVK7LH2C2I" rel="noopener">KIMS5H6QLCUDL65L5UBTOXDPWLMTS7N3AAC3I6B2NCONEI5QIVK7LH2C2I</a></td>
+      </tr>
+      <tr>
+        <td><span class="chip-row"><span class="chip-red chip-red--tabla"><b>AL</b><img src="/algorand.png" alt="" width="96" height="96"></span>Algorand</span></td>
+        <td>Testnet</td>
+        <td class="addr"><a href="https://testnet.explorer.perawallet.app/address/5DPPDQNYUPCTXRZWRYSF3WPYU6RKAUR25F3YG4EKXQRHV5AUAI62H5GXL4/" rel="noopener">5DPPDQNYUPCTXRZWRYSF3WPYU6RKAUR25F3YG4EKXQRHV5AUAI62H5GXL4</a></td>
+      </tr>
+      <tr>
+        <td><span class="chip-row"><span class="chip-red chip-red--tabla"><b>SU</b><img src="/sui.png" alt="" width="96" height="96"></span>Sui</span></td>
+        <td>Mainnet</td>
+        <td class="addr"><a href="https://suiscan.xyz/mainnet/account/0xe7bbf2b13f7d72714760aa16e024fa1b35a978793f9893d0568a4fbf356a764a" rel="noopener">0xe7bbf2b13f7d72714760aa16e024fa1b35a978793f9893d0568a4fbf356a764a</a></td>
+      </tr>
+      <tr>
+        <td><span class="chip-row"><span class="chip-red chip-red--tabla"><b>SU</b><img src="/sui.png" alt="" width="96" height="96"></span>Sui</span></td>
+        <td>Testnet</td>
+        <td class="addr"><a href="https://suiscan.xyz/testnet/account/0xabbd16a2fab2a502c9cfe835195a6fc7d70bfc27cffb40b8b286b52a97006e67" rel="noopener">0xabbd16a2fab2a502c9cfe835195a6fc7d70bfc27cffb40b8b286b52a97006e67</a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
 </main>
 
 <footer class="footer">
@@ -150,6 +317,21 @@
 // ---------------------------------------------------------------------------
 const I18N = {
   en: {
+    "fa.th.family":"Chain family",
+    "fa.th.main":"Mainnets",
+    "fa.th.schemes":"Schemes",
+    "fa.th.test":"Testnets",
+    "fa.th.tokens":"Stablecoins settled",
+    "fa.tokens7":"7 stablecoins + native XRP",
+    "fa.total":"total",
+    "familias.p":"A summary of the live table below, as it stood on 2026-09-03. If the two ever disagree, the live table is right: it is read from <code>/supported</code> and this one is not.",
+    "h.familias":"Where this settles, by chain family",
+    "h.live":"Every network, read live",
+    "h.wallets":"The wallets that pay the gas",
+    "wa.th.addr":"Address",
+    "wa.th.env":"Environment",
+    "wa.th.family":"Chain family",
+    "wallets.p":"These are the addresses this facilitator broadcasts from, one pair per chain family. They are public, they are linked to their explorer, and the gas balance of each is the last column of the live table above. An address on one page and its balance on another is how a reader ends up trusting neither.",
     "footer.by":"Ultravioleta DAO · x402 payment facilitator · 0% fee",
     "h1":"Ask where this facilitator can settle, and see what it pays to do it",
     "nav.bazaar":"Bazaar",
@@ -188,6 +370,21 @@ const I18N = {
     rows:"networks shown",
   },
   es: {
+    "fa.th.family":"Familia de cadenas",
+    "fa.th.main":"Mainnets",
+    "fa.th.schemes":"Esquemas",
+    "fa.th.test":"Testnets",
+    "fa.th.tokens":"Stablecoins que liquida",
+    "fa.tokens7":"7 stablecoins + XRP nativo",
+    "fa.total":"total",
+    "familias.p":"Un resumen de la tabla viva de abajo, tal como estaba el 2026-09-03. Si alguna vez discrepan, la tabla viva tiene razón: esa se lee de <code>/supported</code> y ésta no.",
+    "h.familias":"Dónde liquida, por familia de cadenas",
+    "h.live":"Todas las redes, leídas en vivo",
+    "h.wallets":"Las wallets que pagan el gas",
+    "wa.th.addr":"Dirección",
+    "wa.th.env":"Entorno",
+    "wa.th.family":"Familia de cadenas",
+    "wallets.p":"Estas son las direcciones desde las que emite este facilitador, un par por familia de cadenas. Son públicas, están enlazadas a su explorador, y el saldo de gas de cada una es la última columna de la tabla viva de arriba. Una dirección en una página y su saldo en otra es cómo un lector termina sin confiar en ninguna de las dos.",
     "footer.by":"Ultravioleta DAO · facilitador de pagos x402 · 0% de comisión",
     "h1":"Preguntá dónde puede liquidar este facilitador, y mirá lo que le cuesta hacerlo",
     "nav.bazaar":"Bazar",
@@ -300,6 +497,10 @@ function ingest(data){
   const schemes = new Set(kinds.map(k => k && k.scheme).filter(Boolean)).size;
   document.getElementById('c-mainnets').textContent = mainnets;
   document.getElementById('c-testnets').textContent = testnets;
+  // El total de la Tabla A sale de la misma cuenta que las fichas: es un
+  // resumen, y un resumen que se tipea deja de resumir a los tres despliegues.
+  pisarVivo('payment-mainnets', mainnets);
+  pisarVivo('payment-testnets', testnets);
   document.getElementById('c-ids').textContent = ids;
   document.getElementById('c-schemes').textContent = schemes;
 }
@@ -331,7 +532,7 @@ function render(){
       || '<span class="muted">—</span>';
     const key = balanceKey(r);
     return `<tr>
-      <td class="net"><img src="/${esc(r.name.split('-')[0])}.png" alt="" onerror="this.remove()">${esc(r.name)}${r.testnet ? ' <span class="tag">testnet</span>' : ''}</td>
+      <td class="net">${chipRed(r.name, 'chip-red--tabla')}${esc(r.name)}${r.testnet ? ' <span class="tag">testnet</span>' : ''}</td>
       <td>${schemes}</td>
       <td>${tokens}</td>
       <td class="num" data-balance="${esc(key)}">—</td>
@@ -681,6 +882,16 @@ async function fetchWalletBalances() {
     }
 }
 
+
+// Las dos cifras de la Tabla A se pisan con /supported, igual que en la
+// portada: un total tipeado en una pagina que se jacta de no tipear nada seria
+// el peor lugar para dejar uno.
+function pisarVivo(clave, valor){
+  if (typeof valor !== 'number' || !(valor > 0)) return;
+  document.querySelectorAll('[data-live-count="' + clave + '"]').forEach(el => {
+    el.innerHTML = el.innerHTML.replace(/\d[\d,.]*/, valor.toLocaleString(LANG === 'es' ? 'es' : 'en'));
+  });
+}
 
 applyLang(LANG);
 </script>

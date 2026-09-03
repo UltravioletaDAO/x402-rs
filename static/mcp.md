@@ -1,4 +1,4 @@
-# The x402 facilitator, as an MCP server
+# Give your agent four tools that pay for things
 
 *This document is English only, on purpose: it is an agent surface. The same
 guide for a human reader, in English or Spanish, is the HTML at

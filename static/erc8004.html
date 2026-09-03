@@ -104,19 +104,88 @@
 <p data-i18n="solana.p1">It is a different program with its own account layouts, and three things bite. The config address is two hops, not one — a root config holds the collection and the collection seeds the registry config; the legacy single-seed derivation points at an address that was never initialised. Feedback submitted <em>without</em> a score is recorded and never scored: reputation stays at zero however much accumulates, and it is not retroactive. And the program forbids self-feedback, so an agent minted without a recipient stays with the facilitator, which then cannot rate it — which is why registering with a recipient mints, initialises the stats and transfers, in that order.</p>
 
 <h2 data-i18n="h.reading">Reading it back</h2>
+<h3 data-i18n="rutas.8004">The routes</h3>
 <div class="scroll">
-<table>
-  <thead><tr><th data-i18n="r.th.route">route</th><th data-i18n="r.th.what">what it answers</th></tr></thead>
-  <tbody>
-    <tr><td><code>GET /identity/{network}/{agentId}</code></td><td data-i18n="r.identity">the agent's identity as the registry has it</td></tr>
-    <tr><td><code>GET /identity/{network}/owner/{address}</code></td><td data-i18n="r.owner">which agent an address owns — the lookup with no index behind it</td></tr>
-    <tr><td><code>GET /identity/{network}/total-supply</code></td><td data-i18n="r.supply">how many agents are registered</td></tr>
-    <tr><td><code>GET /reputation/{network}/{agentId}</code></td><td data-i18n="r.rep">the reputation summary, plus ATOM stats on Solana</td></tr>
-    <tr><td><code>POST /register</code></td><td data-i18n="r.register">mint an identity, gas paid by us. <code>Prefer: respond-async</code> returns a job id instead of holding the request open</td></tr>
-    <tr><td><code>POST /feedback/revoke</code></td><td data-i18n="r.revoke">admin only, and <b>404 when no admin token is configured</b> — fail-closed, so the route is indistinguishable from absent. It erases third-party reputation irreversibly, which is why it does not share a token with anything else</td></tr>
-  </tbody>
-</table>
+  <table>
+    <thead><tr><th data-i18n="rutas.th.method">Method</th><th data-i18n="rutas.th.route">Route</th><th data-i18n="rutas.th.what">What it answers</th><th data-i18n="rutas.th.money">Moves money</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>GET</code></td>
+        <td><code>/register</code></td>
+        <td data-i18n="endpoints.registerInfo">Registration endpoint schema, supported networks, and request format</td>
+        <td data-i18n="money.read">no</td>
+      </tr>
+      <tr>
+        <td><code>POST</code></td>
+        <td><code>/register</code></td>
+        <td data-i18n-html="endpoints.registerAgent">Register a new ERC-8004 agent on-chain. Facilitator pays gas. Supports optional <code style="color: var(--accent); background: rgba(0,212,255,0.1); padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.8rem;">recipient</code> field to mint the NFT and transfer it to a user address</td>
+        <td data-i18n="money.gas">no, but we pay gas</td>
+      </tr>
+      <tr>
+        <td><code>GET</code></td>
+        <td><code>/identity/:network/:agentId</code></td>
+        <td data-i18n="endpoints.identity">Get agent identity: owner address, registration URI, and payment wallet</td>
+        <td data-i18n="money.read">no</td>
+      </tr>
+      <tr>
+        <td><code>GET</code></td>
+        <td><code>/identity/:network/:agentId/metadata/:key</code></td>
+        <td data-i18n="endpoints.identityMetadata">Read a specific metadata key from the agent's on-chain profile (returns hex + UTF-8)</td>
+        <td data-i18n="money.read">no</td>
+      </tr>
+      <tr>
+        <td><code>GET</code></td>
+        <td><code>/identity/:network/total-supply</code></td>
+        <td data-i18n="endpoints.identityTotalSupply">Get total number of registered agents on a network</td>
+        <td data-i18n="money.read">no</td>
+      </tr>
+      <tr>
+        <td><code>GET</code></td>
+        <td><code>/feedback</code></td>
+        <td data-i18n="endpoints.feedbackSchema">Feedback submission schema and supported networks</td>
+        <td data-i18n="money.read">no</td>
+      </tr>
+      <tr>
+        <td><code>POST</code></td>
+        <td><code>/feedback</code></td>
+        <td data-i18n="endpoints.feedback">Submit on-chain reputation feedback (giveFeedback)</td>
+        <td data-i18n="money.gas">no, but we pay gas</td>
+      </tr>
+      <tr>
+        <td><code>POST</code></td>
+        <td><code>/feedback/revoke</code></td>
+        <td data-i18n="endpoints.feedbackRevoke">Revoke previously submitted feedback</td>
+        <td data-i18n="money.gas">no, but we pay gas</td>
+      </tr>
+      <tr>
+        <td><code>POST</code></td>
+        <td><code>/feedback/response</code></td>
+        <td data-i18n="endpoints.feedbackResponse">Append agent response to feedback</td>
+        <td data-i18n="money.gas">no, but we pay gas</td>
+      </tr>
+      <tr>
+        <td><code>GET</code></td>
+        <td><code>/reputation/:network/:agentId</code></td>
+        <td data-i18n="endpoints.reputation">Query aggregated reputation summary with optional tag filtering</td>
+        <td data-i18n="money.read">no</td>
+      </tr>
+      <tr>
+        <td><code>GET</code></td>
+        <td><code>/identity/{network}/owner/{address}</code></td>
+        <td data-i18n-html="r.owner">which agent an address owns — the lookup with no index behind it. 404 is "owns none"; 503 is "the lookup reached no verdict" and carries <code>retryable: true</code>. Persisting a 503 as "not registered" is how a transient RPC failure becomes a permanent wrong answer</td>
+        <td data-i18n="money.read">no</td>
+      </tr>
+      <tr>
+        <td><code>GET</code></td>
+        <td><code>/register/status/{jobId}</code></td>
+        <td data-i18n-html="r.status">poll an async registration: <code>pending</code> then <code>mint_confirmed</code> then <code>done</code> or <code>failed</code>. Terminal jobs age out after an hour</td>
+        <td data-i18n="money.read">no</td>
+      </tr>
+    </tbody>
+  </table>
 </div>
+<p class="note" data-i18n-html="endpoints.registerNote"><strong style='color: #8b5cf6;'>Gasless registration:</strong> The facilitator wallet pays all gas fees. Without <code style='color: var(--accent); font-size: 0.75rem;'>recipient</code>, the NFT stays with the facilitator. With <code style='color: var(--accent); font-size: 0.75rem;'>recipient</code>, the NFT is minted then transferred via ERC-721 <code style='color: var(--accent); font-size: 0.75rem;'>safeTransferFrom</code> (2 transactions, both paid by facilitator). Note: <code style='color: var(--accent); font-size: 0.75rem;'>agentWallet</code> is cleared on transfer and must be re-set by the new owner.</p>
+<p class="note" data-i18n="endpoints.erc8004Note">21 networks: ethereum, base, polygon, arbitrum, optimism, celo, bsc, monad, avalanche, scroll, skale, solana + testnets. CREATE2 (EVM) + Agent Registry program (Solana).</p>
 
 <h2 data-i18n="h.describe">This is not describe.net, and the difference matters</h2>
 
@@ -169,6 +238,27 @@
 <script>
 const I18N = {
   en: {
+    "endpoints.erc8004Note":"21 networks: ethereum, base, polygon, arbitrum, optimism, celo, bsc, monad, avalanche, scroll, skale, solana + testnets. CREATE2 (EVM) + Agent Registry program (Solana).",
+    "endpoints.feedback":"Submit on-chain reputation feedback (giveFeedback)",
+    "endpoints.feedbackResponse":"Append agent response to feedback",
+    "endpoints.feedbackRevoke":"Revoke previously submitted feedback",
+    "endpoints.feedbackSchema":"Feedback submission schema and supported networks",
+    "endpoints.identity":"Get agent identity from Identity Registry",
+    "endpoints.identityMetadata":"Read a specific metadata key from the agent's on-chain profile (returns hex + UTF-8)",
+    "endpoints.identityTotalSupply":"Get total number of registered agents on a network",
+    "endpoints.registerAgent":"Register a new ERC-8004 agent on-chain. Facilitator pays gas. Supports optional <code style='color: var(--accent); background: rgba(0,212,255,0.1); padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.8rem;'>recipient</code> field to mint the NFT and transfer it to a user address",
+    "endpoints.registerInfo":"Registration endpoint schema, supported networks, and request format",
+    "endpoints.registerNote":"<strong style='color: #8b5cf6;'>Gasless registration:</strong> The facilitator wallet pays all gas fees. Without <code style='color: var(--accent); font-size: 0.75rem;'>recipient</code>, the NFT stays with the facilitator. With <code style='color: var(--accent); font-size: 0.75rem;'>recipient</code>, the NFT is minted then transferred via ERC-721 <code style='color: var(--accent); font-size: 0.75rem;'>safeTransferFrom</code> (2 transactions, both paid by facilitator). Note: <code style='color: var(--accent); font-size: 0.75rem;'>agentWallet</code> is cleared on transfer and must be re-set by the new owner.",
+    "endpoints.reputation":"Query reputation summary for an agent",
+    "money.gas":"no, but we pay gas",
+    "money.read":"no",
+    "r.owner":"which agent an address owns — the lookup with no index behind it. 404 is \"owns none\"; 503 is \"the lookup reached no verdict\" and carries <code>retryable: true</code>. Persisting a 503 as \"not registered\" is how a transient RPC failure becomes a permanent wrong answer",
+    "r.status":"poll an async registration: <code>pending</code> then <code>mint_confirmed</code> then <code>done</code> or <code>failed</code>. Terminal jobs age out after an hour",
+    "rutas.8004":"The routes",
+    "rutas.th.method":"Method",
+    "rutas.th.money":"Moves money",
+    "rutas.th.route":"Route",
+    "rutas.th.what":"What it answers",
     "footer.by":"Ultravioleta DAO · x402 payment facilitator · 0% fee",
     "h1":"Register an agent, and rate one, without paying gas",
     "nav.bazaar":"Bazaar",
@@ -229,6 +319,27 @@ const I18N = {
     loading:"loading…",
   },
   es: {
+    "endpoints.erc8004Note":"21 redes: ethereum, base, polygon, arbitrum, optimism, celo, bsc, monad, avalanche, scroll, skale, solana + testnets. CREATE2 (EVM) + programa Agent Registry (Solana).",
+    "endpoints.feedback":"Enviar feedback de reputacion on-chain (giveFeedback)",
+    "endpoints.feedbackResponse":"Agregar respuesta del agente al feedback",
+    "endpoints.feedbackRevoke":"Revocar feedback enviado previamente",
+    "endpoints.feedbackSchema":"Esquema de envio de feedback y redes soportadas",
+    "endpoints.identity":"Obtener identidad del agente del Identity Registry",
+    "endpoints.identityMetadata":"Lee una clave de metadatos del perfil on-chain del agente (devuelve hex + UTF-8)",
+    "endpoints.identityTotalSupply":"Total de agentes registrados en una red",
+    "endpoints.registerAgent":"Registra un nuevo agente ERC-8004 on-chain. El facilitador paga el gas. Admite el campo opcional <code style='color: var(--accent); background: rgba(0,212,255,0.1); padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.8rem;'>recipient</code> para acuñar el NFT y transferirlo a la dirección de un usuario",
+    "endpoints.registerInfo":"Esquema del endpoint de registro, redes soportadas y formato de la petición",
+    "endpoints.registerNote":"<strong style='color: #8b5cf6;'>Registro sin gas:</strong> La wallet del facilitador paga todo el gas. Sin <code style='color: var(--accent); font-size: 0.75rem;'>recipient</code>, el NFT se queda con el facilitador. Con <code style='color: var(--accent); font-size: 0.75rem;'>recipient</code>, el NFT se acuña y luego se transfiere vía ERC-721 <code style='color: var(--accent); font-size: 0.75rem;'>safeTransferFrom</code> (2 transacciones, ambas pagadas por el facilitador). Nota: <code style='color: var(--accent); font-size: 0.75rem;'>agentWallet</code> se borra al transferir y el nuevo dueño debe volver a fijarlo.",
+    "endpoints.reputation":"Consultar resumen de reputacion de un agente",
+    "money.gas":"no, pero pagamos gas",
+    "money.read":"no",
+    "r.owner":"qué agente posee una dirección — la búsqueda que no tiene índice detrás. 404 es «no posee ninguno»; 503 es «la búsqueda no llegó a un veredicto» y viene con <code>retryable: true</code>. Guardar un 503 como «no registrado» es cómo un fallo pasajero de RPC se vuelve una respuesta equivocada para siempre",
+    "r.status":"consultar una registración asíncrona: <code>pending</code>, después <code>mint_confirmed</code>, después <code>done</code> o <code>failed</code>. Los trabajos terminales caducan a la hora",
+    "rutas.8004":"Las rutas",
+    "rutas.th.method":"Metodo",
+    "rutas.th.money":"Mueve dinero",
+    "rutas.th.route":"Ruta",
+    "rutas.th.what":"Que contesta",
     "footer.by":"Ultravioleta DAO · facilitador de pagos x402 · 0% de comisión",
     "h1":"Registrá un agente, y calificá a otro, sin pagar gas",
     "nav.bazaar":"Bazar",

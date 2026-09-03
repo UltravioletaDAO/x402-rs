@@ -199,6 +199,70 @@ pub struct DurableEvidenceConfig {
     pub paid_by: PaidBy,
 }
 
+/// Where a `PaymentRequirements` entry declares the extension.
+///
+/// v1 requirements carry free-form `extra`; v2 requirements carry a top-level
+/// `extensions` map. Declaring under `extra.extensions["durable-evidence"]` on
+/// v1 mirrors the v2 shape exactly, so the v1 -> v2 conversion is a rename and
+/// not a redesign. It also leaves the EIP-712 `name`/`version` keys that
+/// already live in `extra` untouched.
+pub const REQUIREMENTS_EXTENSIONS_KEY: &str = "extensions";
+
+impl DurableEvidenceConfig {
+    /// The declaration on one payment requirement, if it carries one.
+    ///
+    /// This is how the buyer opts in: the seller lists the same resource twice
+    /// in `accepts` -- plain, and with this declared at a higher price -- and
+    /// whichever the buyer pays for is the one the resource server honours. No
+    /// change to the x402 core: the multi-offer `accepts` array already exists,
+    /// and a client that does not know the extension picks the plain offer and
+    /// everything degrades cleanly.
+    ///
+    /// Malformed declarations read as "not declared" rather than an error. A
+    /// typo in one seller's config must not make its route unpayable.
+    pub fn from_requirements(req: &crate::types::PaymentRequirements) -> Option<Self> {
+        let raw = req
+            .extra
+            .as_ref()?
+            .get(REQUIREMENTS_EXTENSIONS_KEY)?
+            .get(EXTENSION_KEY)?;
+        serde_json::from_value(raw.clone()).ok()
+    }
+
+    /// Declare this configuration on a payment requirement, in place.
+    ///
+    /// Merges rather than replaces: `extra` already carries the token's EIP-712
+    /// domain on most routes, and dropping it would make the offer unpayable.
+    pub fn declare_on(&self, req: &mut crate::types::PaymentRequirements) {
+        let mut extra = match req.extra.take() {
+            Some(serde_json::Value::Object(map)) => map,
+            _ => serde_json::Map::new(),
+        };
+        let extensions = extra
+            .entry(REQUIREMENTS_EXTENSIONS_KEY)
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+        if !extensions.is_object() {
+            *extensions = serde_json::Value::Object(serde_json::Map::new());
+        }
+        extensions
+            .as_object_mut()
+            .expect("just made it an object")
+            .insert(
+                EXTENSION_KEY.to_string(),
+                serde_json::to_value(self).expect("config serializes"),
+            );
+        req.extra = Some(serde_json::Value::Object(extra));
+    }
+
+    /// Whether any offer in an `accepts` array declares the extension.
+    ///
+    /// The switch the seller-side hook keys on: once a route offers evidence as
+    /// a choice, paying for the offer WITHOUT it means the buyer declined.
+    pub fn offered_in(accepts: &[crate::types::PaymentRequirements]) -> bool {
+        accepts.iter().any(|r| Self::from_requirements(r).is_some())
+    }
+}
+
 impl Default for DurableEvidenceConfig {
     fn default() -> Self {
         Self {
@@ -258,6 +322,12 @@ pub enum SkipReason {
     NoPayerKey,
     /// The extension is switched off on this deployment.
     Disabled,
+    /// The route offered evidence and the buyer paid for the offer without it.
+    ///
+    /// Not a failure of anything: the buyer chose. Reported so a client that
+    /// expected evidence can tell "I picked the plain offer" from "the seller
+    /// could not anchor", which otherwise look identical -- no header at all.
+    NotSelected,
 }
 
 /// The `durable-evidence` payload: what rides in the `X-Durable-Evidence` header
@@ -550,6 +620,77 @@ impl Dx402ErrorCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn requirements(extra: Option<serde_json::Value>) -> crate::types::PaymentRequirements {
+        let mut v = serde_json::json!({
+            "scheme": "exact", "network": "base", "maxAmountRequired": "10000",
+            "resource": "https://kk.example/data/42", "description": "d",
+            "mimeType": "application/json",
+            "payTo": "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8",
+            "maxTimeoutSeconds": 300,
+            "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+        });
+        if let Some(extra) = extra {
+            v["extra"] = extra;
+        }
+        serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn the_buyer_opts_in_by_paying_for_the_offer_that_declares_it() {
+        // The whole opt-in in one round trip. Nothing new on the wire: the
+        // seller lists the resource twice and the declaration rides in the
+        // slot v1 already has for it.
+        let cfg = DurableEvidenceConfig {
+            retention: Retention::Year1,
+            ..Default::default()
+        };
+        let mut durable = requirements(None);
+        cfg.declare_on(&mut durable);
+        let plain = requirements(None);
+
+        assert_eq!(
+            DurableEvidenceConfig::from_requirements(&durable),
+            Some(cfg)
+        );
+        assert_eq!(DurableEvidenceConfig::from_requirements(&plain), None);
+        assert!(DurableEvidenceConfig::offered_in(&[
+            plain.clone(),
+            durable.clone()
+        ]));
+        assert!(!DurableEvidenceConfig::offered_in(&[plain]));
+
+        // The path mirrors v2's top-level `extensions` map, so the v1 -> v2
+        // conversion is a rename and not a redesign.
+        assert!(durable.extra.unwrap()["extensions"]["durable-evidence"].is_object());
+    }
+
+    #[test]
+    fn declaring_keeps_the_eip712_domain_the_route_already_carries() {
+        // `extra` is where the token's `name`/`version` live on most routes.
+        // Replacing it instead of merging would make the durable offer
+        // unpayable -- a signature over the wrong domain -- with no error.
+        let mut req = requirements(Some(
+            serde_json::json!({"name": "USD Coin", "version": "2"}),
+        ));
+        DurableEvidenceConfig::default().declare_on(&mut req);
+        let extra = req.extra.unwrap();
+        assert_eq!(extra["name"], "USD Coin");
+        assert_eq!(extra["version"], "2");
+        assert!(extra["extensions"]["durable-evidence"].is_object());
+    }
+
+    #[test]
+    fn a_malformed_declaration_reads_as_not_declared() {
+        // One seller's typo must not make its route unpayable. It reads as the
+        // plain offer, which is what a buyer would get anyway.
+        let req = requirements(Some(serde_json::json!({
+            "extensions": {"durable-evidence": {"retention": "forever-and-ever"}}
+        })));
+        assert_eq!(DurableEvidenceConfig::from_requirements(&req), None);
+        let req = requirements(Some(serde_json::json!({"extensions": "not-a-map"})));
+        assert_eq!(DurableEvidenceConfig::from_requirements(&req), None);
+    }
 
     #[test]
     fn extension_key_matches_registry_convention() {

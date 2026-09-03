@@ -64,7 +64,7 @@
 use axum_core::body::Body;
 
 use crate::durable::{
-    buffer_body, encode_header, BufferedBody, DurableEvidenceHook, SettledContext,
+    buffer_body, encode_header, BufferedBody, DurableEvidenceHook, OfferDecision, SettledContext,
 };
 use axum_core::{
     extract::Request,
@@ -85,6 +85,7 @@ use std::{
 use tower::util::BoxCloneSyncService;
 use tower::{Layer, Service};
 use url::Url;
+use x402_rs::dx402::DurableEvidenceConfig;
 use x402_rs::facilitator::Facilitator;
 use x402_rs::network::Network;
 use x402_rs::types::{
@@ -118,6 +119,12 @@ pub struct X402Middleware<F> {
     base_url: Option<Url>,
     /// List of price tags accepted for this endpoint.
     price_tag: Vec<PriceTag>,
+    /// Offers that carry `durable-evidence`, listed after the plain ones.
+    ///
+    /// The buyer's opt-in: the same resource, priced separately, with the
+    /// declaration on the requirement. Whichever offer gets paid decides
+    /// whether the post-hook runs -- see [`crate::durable::OfferDecision`].
+    durable_offers: Vec<(PriceTag, DurableEvidenceConfig)>,
     /// Timeout in seconds for payment settlement.
     max_timeout_seconds: u64,
     /// Optional input schema describing the API endpoint's input specification.
@@ -169,6 +176,7 @@ impl<F> X402Middleware<F> {
             base_url: None,
             max_timeout_seconds: 300,
             price_tag: Vec::new(),
+            durable_offers: Vec::new(),
             input_schema: None,
             output_schema: None,
             settle_before_execution: false,
@@ -270,6 +278,35 @@ where
     pub fn with_price_tag<T: Into<Vec<PriceTag>>>(&self, price_tag: T) -> Self {
         let mut this = self.clone();
         this.price_tag = price_tag.into();
+        this.recompute_offers()
+    }
+
+    /// Offer the same resource WITH durable evidence, at its own price.
+    ///
+    /// Adds a second entry to `accepts` that declares `durable-evidence` and
+    /// lets the buyer choose. Pair it with [`Self::with_durable_evidence`] for
+    /// the hook that does the anchoring; once any offer on the route declares
+    /// the extension, paying for a plain offer means the buyer declined and
+    /// nothing is anchored for that request.
+    ///
+    /// The price is the seller's decision, which is the point: evidence has a
+    /// cost, and this puts it where the buyer can see it and weigh it.
+    ///
+    /// ```rust,ignore
+    /// let x402 = X402Middleware::try_from("https://facilitator.ultravioletadao.xyz").unwrap()
+    ///     .with_price_tag(usdc.amount(0.010).pay_to(seller))          // plain
+    ///     .with_durable_offer(usdc.amount(0.012).pay_to(seller),      // +evidence
+    ///         DurableEvidenceConfig { retention: Retention::Year1, ..Default::default() })
+    ///     .with_durable_evidence(hook);
+    /// ```
+    #[allow(dead_code)] // Public for consumption by downstream crates.
+    pub fn with_durable_offer<T: Into<PriceTag>>(
+        &self,
+        price_tag: T,
+        config: DurableEvidenceConfig,
+    ) -> Self {
+        let mut this = self.clone();
+        this.durable_offers.push((price_tag.into(), config));
         this.recompute_offers()
     }
 
@@ -494,17 +531,9 @@ where
 
         let payment_offers = if let Some(resource) = self.resource.clone() {
             let payment_requirements = self
-                .price_tag
-                .iter()
-                .map(|price_tag| {
-                    let extra = if let Some(eip712) = price_tag.token.eip712.clone() {
-                        Some(json!({
-                            "name": eip712.name,
-                            "version": eip712.version
-                        }))
-                    } else {
-                        None
-                    };
+                .all_offers()
+                .map(|(price_tag, durable)| {
+                    let extra = extra_for(price_tag, durable);
                     PaymentRequirements {
                         scheme: Scheme::Exact,
                         network: price_tag.token.network(),
@@ -523,17 +552,9 @@ where
             PaymentOffers::Ready(Arc::new(payment_requirements))
         } else {
             let no_resource = self
-                .price_tag
-                .iter()
-                .map(|price_tag| {
-                    let extra = if let Some(eip712) = price_tag.token.eip712.clone() {
-                        Some(json!({
-                            "name": eip712.name,
-                            "version": eip712.version
-                        }))
-                    } else {
-                        None
-                    };
+                .all_offers()
+                .map(|(price_tag, durable)| {
+                    let extra = extra_for(price_tag, durable);
                     PaymentRequirementsNoResource {
                         scheme: Scheme::Exact,
                         network: price_tag.token.network(),
@@ -919,11 +940,25 @@ where
     /// notice, and a response is always returned.
     async fn attach_durable_evidence(
         hook: &Arc<DurableEvidenceHook>,
+        accepts: &[PaymentRequirements],
         verify_request: &VerifyRequest,
         settlement: &SettleResponse,
         response: Response,
     ) -> (Response, Option<HeaderValue>) {
-        use x402_rs::dx402::types::DurableEvidence;
+        use x402_rs::dx402::types::{DurableEvidence, SkipReason};
+
+        // The buyer's choice comes first. If the route offered evidence and the
+        // buyer paid for the offer without it, deliver and say so; nothing
+        // below runs, so the plain offer costs the seller no sealing at all.
+        let offer = match OfferDecision::decide(accepts, &verify_request.payment_requirements) {
+            OfferDecision::NotSelected => {
+                let evidence = DurableEvidence::skipped(SkipReason::NotSelected);
+                let header = encode_header(&evidence).and_then(|v| HeaderValue::from_str(&v).ok());
+                return (response, header);
+            }
+            OfferDecision::Declared(cfg) => Some(cfg),
+            OfferDecision::Legacy => None,
+        };
 
         let Some(tx_hash) = settlement.transaction.as_ref().map(|t| t.to_string()) else {
             // Settled without a transaction hash: nothing stable to bind the
@@ -971,6 +1006,7 @@ where
         );
 
         let ctx = SettledContext {
+            offer,
             payment_id,
             network: settlement.network,
             tx_hash,
@@ -1094,6 +1130,7 @@ where
                 Some(hook) => {
                     Self::attach_durable_evidence(
                         hook,
+                        &self.payment_requirements,
                         &verify_request,
                         &settlement,
                         response.into_response(),
@@ -1153,6 +1190,53 @@ impl PaymentRequirementsNoResource {
             output_schema: self.output_schema.clone(),
         }
     }
+}
+
+impl<F> X402Middleware<F> {
+    /// Every offer on the route: the plain price tags first, then the ones
+    /// that carry `durable-evidence`. Plain first on purpose -- a client that
+    /// knows nothing of the extension takes the first acceptable entry, and
+    /// that has to be the one without it.
+    fn all_offers(&self) -> impl Iterator<Item = (&PriceTag, Option<&DurableEvidenceConfig>)> {
+        self.price_tag
+            .iter()
+            .map(|t| (t, None))
+            .chain(self.durable_offers.iter().map(|(t, c)| (t, Some(c))))
+    }
+}
+
+/// The `extra` for one offer: the token's EIP-712 domain, plus the
+/// `durable-evidence` declaration when this offer carries one.
+fn extra_for(
+    price_tag: &PriceTag,
+    durable: Option<&DurableEvidenceConfig>,
+) -> Option<serde_json::Value> {
+    let mut extra = price_tag.token.eip712.clone().map(|eip712| {
+        json!({
+            "name": eip712.name,
+            "version": eip712.version
+        })
+    });
+    if let Some(cfg) = durable {
+        // Declared through the same helper the hook reads with, so the two
+        // sides cannot drift on where the declaration lives.
+        let mut carrier = PaymentRequirements {
+            scheme: Scheme::Exact,
+            network: price_tag.token.network(),
+            max_amount_required: price_tag.amount,
+            resource: Url::parse("https://declare.invalid/").expect("static url"),
+            description: String::new(),
+            mime_type: String::new(),
+            pay_to: price_tag.pay_to.clone(),
+            max_timeout_seconds: 0,
+            asset: price_tag.token.address(),
+            extra: extra.take(),
+            output_schema: None,
+        };
+        cfg.declare_on(&mut carrier);
+        extra = carrier.extra;
+    }
+    extra
 }
 
 /// Enum capturing either fully constructed [`PaymentRequirements`] (with `resource`)

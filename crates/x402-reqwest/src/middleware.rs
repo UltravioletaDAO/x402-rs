@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::SystemTimeError;
 use tracing::instrument;
+use x402_rs::dx402::DurableEvidenceConfig;
 use x402_rs::network::{Network, USDCDeployment};
 use x402_rs::types::{
     Base64Bytes, MixedAddressError, MoneyAmount, MoneyAmountParseError, PaymentPayload,
@@ -141,6 +142,13 @@ pub struct X402Payments {
     wallets: Vec<Arc<dyn SenderWallet>>,
     max_token_amount: HashMap<TokenAsset, TokenAmount>,
     prefer: Vec<TokenAsset>,
+    /// When a seller offers the same resource with and without
+    /// `durable-evidence`, take the one with it.
+    ///
+    /// Off by default on purpose: the offer with evidence usually costs more,
+    /// and a client that never asked for durability must not start paying for
+    /// it because a seller began offering it.
+    prefer_durable_evidence: bool,
 }
 
 impl X402Payments {
@@ -149,6 +157,7 @@ impl X402Payments {
             wallets: vec![wallet.into_sender_wallet()],
             max_token_amount: HashMap::new(),
             prefer: vec![],
+            prefer_durable_evidence: false,
         }
     }
 
@@ -159,6 +168,7 @@ impl X402Payments {
             wallets,
             max_token_amount: self.max_token_amount,
             prefer: self.prefer,
+            prefer_durable_evidence: self.prefer_durable_evidence,
         }
     }
 
@@ -173,6 +183,18 @@ impl X402Payments {
     pub fn prefer<T: Into<Vec<TokenAsset>>>(&self, prefer: T) -> Self {
         let mut this = self.clone();
         this.prefer.append(&mut prefer.into());
+        this
+    }
+
+    /// Prefer the offer that carries `durable-evidence` when a seller offers both.
+    ///
+    /// This is the buyer's opt-in to DX402. It rides on the multi-offer
+    /// `accepts` array x402 already has, so nothing in the protocol changes:
+    /// the seller lists the resource twice, this picks the one with evidence,
+    /// and the seller sees which one was paid.
+    pub fn prefer_durable_evidence(&self) -> Self {
+        let mut this = self.clone();
+        this.prefer_durable_evidence = true;
         this
     }
 
@@ -192,7 +214,17 @@ impl X402Payments {
                 .position(|a| a == &req.token_asset())
                 .unwrap_or(usize::MAX);
             let base_priority = if req.network == Network::Base { 0 } else { 1 };
-            (pref_index, base_priority)
+            // Among otherwise-equal offers, the one with evidence goes LAST
+            // unless the client asked for it. Deterministic regardless of the
+            // order the seller listed them in, so a seller cannot make an
+            // indifferent client pay for evidence by listing it first.
+            let durable = DurableEvidenceConfig::from_requirements(req).is_some();
+            let durable_rank = if self.prefer_durable_evidence {
+                u8::from(!durable)
+            } else {
+                u8::from(durable)
+            };
+            (pref_index, base_priority, durable_rank)
         });
 
         #[cfg(feature = "telemetry")]
@@ -442,5 +474,91 @@ mod challenge_transport_tests {
     async fn neither_transport_is_still_an_error() {
         // No challenge anywhere is a genuine failure, and must stay loud.
         assert!(challenge_from(response(None, PREVIEW_BODY)).await.is_err());
+    }
+}
+
+#[cfg(test)]
+mod durable_offer_tests {
+    use super::*;
+    use x402_rs::dx402::Retention;
+
+    fn offer(amount: &str) -> PaymentRequirements {
+        serde_json::from_value(serde_json::json!({
+            "scheme": "exact", "network": "base", "maxAmountRequired": amount,
+            "resource": "https://kk.example/data/42", "description": "d",
+            "mimeType": "application/json",
+            "payTo": "0xb059eAC9330DC5f23F5346a81348Af1E99f379bd",
+            "maxTimeoutSeconds": 300,
+            "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+        }))
+        .unwrap()
+    }
+
+    fn pair() -> Vec<PaymentRequirements> {
+        let plain = offer("10000");
+        let mut durable = offer("12000");
+        DurableEvidenceConfig {
+            retention: Retention::Year1,
+            ..Default::default()
+        }
+        .declare_on(&mut durable);
+        vec![plain, durable]
+    }
+
+    fn client() -> X402Payments {
+        // No wallet needed to rank offers; a wallet is only used to sign.
+        X402Payments {
+            wallets: vec![],
+            max_token_amount: HashMap::new(),
+            prefer: vec![],
+            prefer_durable_evidence: false,
+        }
+    }
+
+    #[test]
+    fn an_indifferent_client_pays_for_the_plain_offer() {
+        // Degradation is the property that makes this proposable: a client
+        // that never heard of the extension keeps paying what it paid.
+        let chosen = client().select_payment_requirements(&pair()).unwrap();
+        assert_eq!(chosen.max_amount_required.to_string(), "10000");
+        assert!(DurableEvidenceConfig::from_requirements(&chosen).is_none());
+    }
+
+    #[test]
+    fn the_order_the_seller_lists_them_in_does_not_matter() {
+        // Listing the dearer offer first must not make an indifferent client
+        // pay for evidence. The tie-break is explicit, not positional.
+        let mut reversed = pair();
+        reversed.reverse();
+        let chosen = client().select_payment_requirements(&reversed).unwrap();
+        assert_eq!(chosen.max_amount_required.to_string(), "10000");
+    }
+
+    #[test]
+    fn a_client_that_wants_evidence_pays_for_the_offer_that_carries_it() {
+        let chosen = client()
+            .prefer_durable_evidence()
+            .select_payment_requirements(&pair())
+            .unwrap();
+        assert_eq!(chosen.max_amount_required.to_string(), "12000");
+        assert_eq!(
+            DurableEvidenceConfig::from_requirements(&chosen)
+                .unwrap()
+                .retention,
+            Retention::Year1,
+            "and gets the terms it paid for"
+        );
+    }
+
+    #[test]
+    fn preferring_evidence_never_invents_an_offer() {
+        // If the seller only offers the plain resource, wanting evidence
+        // changes nothing. The client still pays; it just gets no receipt.
+        let only_plain = vec![offer("10000")];
+        let chosen = client()
+            .prefer_durable_evidence()
+            .select_payment_requirements(&only_plain)
+            .unwrap();
+        assert_eq!(chosen.max_amount_required.to_string(), "10000");
     }
 }

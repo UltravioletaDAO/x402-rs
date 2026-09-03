@@ -32,8 +32,8 @@ use base64::Engine as _;
 use bytes::Bytes;
 use x402_rs::dx402::envelope::{seal, PayerPublicKey};
 use x402_rs::dx402::types::{
-    AnchorRequest, DurableEvidence, DurablePointer, EvidenceMode, Retention, SkipReason,
-    StorageBackend, EVIDENCE_HEADER,
+    AnchorRequest, DurableEvidence, DurableEvidenceConfig, DurablePointer, EvidenceMode, Retention,
+    SkipReason, StorageBackend, EVIDENCE_HEADER,
 };
 use x402_rs::network::Network;
 use x402_rs::types::MixedAddress;
@@ -332,6 +332,10 @@ pub struct EvidenceStats {
     anchor_failed: AtomicU64,
     no_payer_key: AtomicU64,
     disabled: AtomicU64,
+    /// The buyer paid for the plain offer. Counted apart from every failure
+    /// because it is not one: a route where this dominates is a route whose
+    /// buyers are choosing, not a hook that is broken.
+    not_selected: AtomicU64,
 }
 
 /// A point-in-time read of [`EvidenceStats`].
@@ -343,6 +347,7 @@ pub struct EvidenceCounts {
     pub anchor_failed: u64,
     pub no_payer_key: u64,
     pub disabled: u64,
+    pub not_selected: u64,
 }
 
 impl EvidenceStats {
@@ -353,6 +358,7 @@ impl EvidenceStats {
             SkipReason::AnchorFailed => &self.anchor_failed,
             SkipReason::NoPayerKey => &self.no_payer_key,
             SkipReason::Disabled => &self.disabled,
+            SkipReason::NotSelected => &self.not_selected,
         };
         counter.fetch_add(1, Ordering::Relaxed);
     }
@@ -374,6 +380,7 @@ impl EvidenceStats {
             anchor_failed: self.anchor_failed.load(Ordering::Relaxed),
             no_payer_key: self.no_payer_key.load(Ordering::Relaxed),
             disabled: self.disabled.load(Ordering::Relaxed),
+            not_selected: self.not_selected.load(Ordering::Relaxed),
         }
     }
 }
@@ -496,6 +503,47 @@ pub struct SettledContext {
     /// payment it is about to sign a receipt for. Absent on chains that do not
     /// produce one; the anchor gate reports that and never enforces it.
     pub proof: Option<x402_rs::erc8004::ProofOfPayment>,
+    /// The declaration on the offer the buyer actually paid for, when the
+    /// route offered evidence as a choice.
+    ///
+    /// `retention` and `mode` come from HERE when present, not from the route's
+    /// fixed config: the buyer paid for a specific promise, and the anchor has
+    /// to keep that one.
+    pub offer: Option<DurableEvidenceConfig>,
+}
+
+/// What the hook should do for one paid request, decided from the offers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OfferDecision {
+    /// The route offered evidence and the buyer paid for the offer without it.
+    /// Deliver, and say so -- silence would look like a seller that failed.
+    NotSelected,
+    /// The buyer paid for the offer that declares it. Anchor on ITS terms.
+    Declared(DurableEvidenceConfig),
+    /// No offer on this route declares anything: the hook was attached to the
+    /// whole route, the way it worked before offers existed. Anchor on the
+    /// route's terms, so nobody who integrated earlier changes behaviour.
+    Legacy,
+}
+
+impl OfferDecision {
+    /// Decide from the full `accepts` array and the requirement that was paid.
+    ///
+    /// Pure, so the rule is testable without a request in flight. Both inputs
+    /// are needed: the paid requirement alone cannot distinguish "declined" from
+    /// "was never offered", and those must not produce the same outcome -- one
+    /// is a buyer's choice, the other is a seller who never opted in and whose
+    /// existing anchors must keep flowing.
+    pub fn decide(
+        accepts: &[x402_rs::types::PaymentRequirements],
+        paid: &x402_rs::types::PaymentRequirements,
+    ) -> Self {
+        match DurableEvidenceConfig::from_requirements(paid) {
+            Some(cfg) => OfferDecision::Declared(cfg),
+            None if DurableEvidenceConfig::offered_in(accepts) => OfferDecision::NotSelected,
+            None => OfferDecision::Legacy,
+        }
+    }
 }
 
 /// The DX402 post-hook.
@@ -548,6 +596,18 @@ impl DurableEvidenceHook {
 
     pub fn config(&self) -> &DurableConfig {
         &self.config
+    }
+
+    /// The `(mode, retention)` this capture anchors under.
+    ///
+    /// From the paid offer when the buyer chose one, else from the route. A
+    /// buyer who paid extra for `permanent` and got `90d` has a receipt that
+    /// contradicts what they bought.
+    pub fn effective_terms(&self, ctx: &SettledContext) -> (EvidenceMode, Retention) {
+        match &ctx.offer {
+            Some(offer) => (offer.mode, offer.retention),
+            None => (self.config.mode, self.config.retention),
+        }
     }
 
     pub fn budget(&self) -> &Arc<EvidenceBudget> {
@@ -626,6 +686,8 @@ impl DurableEvidenceHook {
         payer_key: Result<PayerPublicKey, SkipReason>,
         ctx: &SettledContext,
     ) -> DurableEvidence {
+        // The buyer paid for a specific offer; its terms win over the route's.
+        let (offer_mode, offer_retention) = self.effective_terms(ctx);
         if body.len() > self.config.max_body_bytes {
             #[cfg(feature = "telemetry")]
             tracing::warn!(
@@ -702,8 +764,8 @@ impl DurableEvidenceHook {
             backend: self.config.backend,
             content_hash,
             key_alg,
-            mode: self.config.mode,
-            retention: self.config.retention,
+            mode: offer_mode,
+            retention: offer_retention,
             wrapped_cek: None,
             // This hook sits in the seller's own response path, where the buyer
             // paid it directly and the ERC-20 `from` IS the buyer. The escrow
@@ -926,7 +988,87 @@ mod tests {
             payer: addr("0x103040545AC5031A11E8C03dd11324C7333a13C7"),
             payee: addr("0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8"),
             proof: None,
+            offer: None,
         }
+    }
+
+    fn offer(extra: Option<serde_json::Value>) -> x402_rs::types::PaymentRequirements {
+        let mut v = serde_json::json!({
+            "scheme": "exact", "network": "base", "maxAmountRequired": "10000",
+            "resource": "https://kk.example/data/42", "description": "d",
+            "mimeType": "application/json",
+            "payTo": "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8",
+            "maxTimeoutSeconds": 300,
+            "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+        });
+        if let Some(extra) = extra {
+            v["extra"] = extra;
+        }
+        serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn paying_for_the_plain_offer_declines_evidence() {
+        // The buyer's side of the opt-in. The route offers both; the buyer pays
+        // for the cheaper one; no evidence is produced AND the buyer is told
+        // why. Same bytes delivered either way.
+        let plain = offer(None);
+        let mut durable = offer(None);
+        DurableEvidenceConfig::default().declare_on(&mut durable);
+        let accepts = vec![plain.clone(), durable.clone()];
+
+        assert_eq!(
+            OfferDecision::decide(&accepts, &plain),
+            OfferDecision::NotSelected
+        );
+        assert_eq!(
+            OfferDecision::decide(&accepts, &durable),
+            OfferDecision::Declared(DurableEvidenceConfig::default())
+        );
+    }
+
+    #[test]
+    fn a_route_that_never_offered_a_choice_keeps_anchoring() {
+        // Everyone who attached the hook before offers existed anchors every
+        // paid response. That must not silently become "never", which is what
+        // treating an undeclared requirement as "declined" would do.
+        let plain = offer(None);
+        assert_eq!(
+            OfferDecision::decide(std::slice::from_ref(&plain), &plain),
+            OfferDecision::Legacy
+        );
+    }
+
+    #[test]
+    fn the_paid_offer_sets_the_terms_not_the_route() {
+        // A buyer who paid for a year and was anchored for 90 days holds a
+        // receipt that contradicts what they bought.
+        let hook = DurableEvidenceHook::new(
+            DurableConfig {
+                retention: Retention::Days90,
+                ..DurableConfig::default()
+            },
+            Arc::new(MemorySink::new()),
+            "http://127.0.0.1:1",
+        );
+        let chosen = DurableEvidenceConfig {
+            retention: Retention::Year1,
+            mode: EvidenceMode::Direct,
+            ..Default::default()
+        };
+        let with_offer = SettledContext {
+            offer: Some(chosen),
+            ..ctx()
+        };
+        assert_eq!(
+            hook.effective_terms(&with_offer),
+            (EvidenceMode::Direct, Retention::Year1)
+        );
+        assert_eq!(
+            hook.effective_terms(&ctx()),
+            (EvidenceMode::Direct, Retention::Days90),
+            "no offer: the route's terms, as before"
+        );
     }
 
     #[tokio::test]

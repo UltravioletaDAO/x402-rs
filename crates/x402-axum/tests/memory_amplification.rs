@@ -83,6 +83,7 @@ fn ctx() -> SettledContext {
         payer: addr("0x103040545AC5031A11E8C03dd11324C7333a13C7"),
         payee: addr("0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8"),
         proof: None,
+        offer: None,
     }
 }
 

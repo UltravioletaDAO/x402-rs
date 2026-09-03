@@ -336,12 +336,18 @@ Two honest limits, both refusals rather than guesses:
   `DX402_ANCHOR_MAX_AGE_SECS` deliberately and temporarily — not changing the
   default.
 
+> **Superseded by [08-SPEC-v0.2.md](08-SPEC-v0.2.md)** (2026-09-03), which
+> describes only what is shipped. Kept for history.
+
+### Done — buyer opt-in through `accepts` (2.11.0)
+
+A seller offers the same resource twice — plain, and with `durable-evidence` at
+its own price — and the buyer picks. The hook honours the paid offer's terms and
+answers `skipped: not_selected` when the plain one was paid. No change to the
+x402 core. `X402Middleware::with_durable_offer`, `X402Payments::prefer_durable_evidence`.
+
 ### Still open
 
-- **Buyer opt-in through the existing `accepts` array.** A seller offers the same
-  resource twice — plain, and with `durable-evidence` at a higher price — and the
-  buyer picks. Needs no change to the x402 core, which is worth stating
-  explicitly in the proposal.
 - **The anchor gate on non-EVM chains.** `verify_payment_facts` reads an EVM
   receipt; Solana, NEAR, Stellar and Algorand report `unverifiable_chain`, which
   is never enforced. Closing it means writing a per-family verification, not

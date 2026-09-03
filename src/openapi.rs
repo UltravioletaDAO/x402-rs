@@ -97,6 +97,55 @@ a liveness `health` status from periodic probing, and a curated `tier`
 - `POST /discovery/admin/suppress` - Hide a resource from listings without deleting it
 - `POST /discovery/admin/release` - Un-suppress a resource
 
+## Errors
+
+Every refusal is JSON with `content-type: application/json`, including the ones
+a framework normally answers with an empty body: a `405` for the wrong method,
+a `404` for a path nothing serves, and the `429` from the rate limiter. The
+shape is:
+
+```json
+{
+  "error": "human-readable, may change",
+  "code": "machine_readable_stable",
+  "hint": "what to do about it"
+}
+```
+
+Branch on `code`, never on the prose in `error`. Codes in use include
+`invalid_request_body`, `method_not_allowed`, `not_found`, `not_acceptable`,
+`rate_limited` and `rate_limit_key_unavailable`; endpoint-specific codes are
+documented on the operations that return them.
+
+## Rate limits
+
+Limits are per client IP and are reported on every rate-limited response, not
+just on the refusal:
+
+| Header | Present on | Meaning |
+|---|---|---|
+| `x-ratelimit-limit` | `200` and `429` | burst size of the bucket this route draws on |
+| `x-ratelimit-remaining` | `200` and `429` | tokens left in that bucket |
+| `retry-after` | `429` | seconds to wait before retrying |
+| `x-ratelimit-after` | `429` | the same value under tower_governor's own name |
+
+Read `x-ratelimit-remaining` and slow down before it reaches zero. The buckets
+refill one token every N seconds rather than granting N per minute, so the
+sustained rate and the burst are different numbers. Surfaces have separate
+buckets, with one deliberate exception: `POST /mcp` shares the `/verify` and
+`/settle` bucket, because an `x402_settle` tool call costs the chain exactly
+what `POST /settle` does. Free static routes (`/health`, `/supported`, the
+discovery documents) carry no limit and therefore no headers.
+
+## Content negotiation
+
+`GET /` answers `text/html` by default and `text/markdown` -- the bytes of
+`/index.md` -- to a request whose `Accept` prefers it. `/llms.txt` relabels its
+own bytes the same way. Those responses carry `Vary: Accept, Accept-Encoding`.
+Negotiation follows RFC 9110 12.5.1: ranked by `q`, ties broken by specificity,
+`q=0` honoured as a refusal, and a missing `Accept` or `*/*` treated as no
+constraint rather than as grounds for a `406`.
+
 ## Protocol Documentation
 
 - [x402 Protocol](https://x402.org)
@@ -191,6 +240,7 @@ a liveness `health` status from periodic probing, and a curated `tier`
         path_auth_md,
         path_workflows_json,
         path_openapi_json,
+        path_ard_json,
         path_agent_card,
         path_agent_json_legacy,
         path_x402_discovery,
@@ -2199,6 +2249,18 @@ async fn path_workflows_json() {}
     )
 )]
 async fn path_openapi_json() {}
+
+#[utoipa::path(
+    get,
+    path = "/.well-known/ard.json",
+    tag = "Agentic",
+    summary = "Agentic Resource Discovery catalog",
+    description = "The ARD v0.91 catalog (<https://agenticresourcediscovery.org/spec>): one document naming every agentic resource this host offers -- the MCP server card, the A2A card, the skill, the OpenAPI and the llms.txt index. Each entry carries a domain-anchored `urn:air:` identifier, a media type, a `url`, and the representative queries a registry indexes on. The predecessor path `/.well-known/ai-catalog.json` is not served: the spec makes consulting it optional for consumers and tells publishers to move here.",
+    responses(
+        (status = 200, description = "ARD manifest: an object with an `entries` array", body = Object)
+    )
+)]
+async fn path_ard_json() {}
 
 #[utoipa::path(
     get,

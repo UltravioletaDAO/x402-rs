@@ -1,0 +1,71 @@
+{
+  "@context": "https://agenticresourcediscovery.org/context/v1",
+  "specVersion": "0.91",
+  "entries": [
+    {
+      "identifier": "urn:air:facilitator.ultravioletadao.xyz:mcp:x402-facilitator",
+      "displayName": "x402 Payment Facilitator MCP server",
+      "type": "application/mcp-server-card+json",
+      "url": "https://facilitator.ultravioletadao.xyz/.well-known/mcp/server-card.json",
+      "description": "Verify and settle x402 gasless stablecoin payments across EVM, Solana, NEAR, Stellar, Algorand, Sui and XRPL. Streamable HTTP, stateless, no authentication and no fee: the payer's signature inside the payload is the only authority.",
+      "tags": ["x402", "payments", "stablecoin", "settlement", "gasless", "mcp"],
+      "capabilities": ["x402_supported", "x402_accepts", "x402_verify", "x402_settle"],
+      "representativeQueries": [
+        "settle an x402 payment on Base",
+        "which networks and stablecoins can this facilitator settle",
+        "verify an EIP-3009 payment authorization before charging",
+        "pay for an API that answered 402 Payment Required"
+      ]
+    },
+    {
+      "identifier": "urn:air:facilitator.ultravioletadao.xyz:agent:x402-facilitator",
+      "displayName": "x402 Payment Facilitator (A2A)",
+      "type": "application/a2a-agent-card+json",
+      "url": "https://facilitator.ultravioletadao.xyz/.well-known/agent-card.json",
+      "description": "The same facilitator described as an A2A agent card: who it is, what it settles, and where to reach it.",
+      "tags": ["x402", "payments", "a2a"],
+      "representativeQueries": [
+        "find an agent that can settle a stablecoin payment on-chain",
+        "who settles x402 payments without charging a fee"
+      ]
+    },
+    {
+      "identifier": "urn:air:facilitator.ultravioletadao.xyz:skill:x402-facilitator-settlement",
+      "displayName": "x402 facilitator settlement skill",
+      "type": "application/ai-skill+md",
+      "url": "https://facilitator.ultravioletadao.xyz/skill.md",
+      "description": "The operating manual for calling verify and settle: request and response shapes, the exact/upto/escrow/commerce schemes, the per-chain EIP-712 domain-name trap, the rate-limit headers, and which failures mean retry rather than stop.",
+      "tags": ["x402", "payments", "skill", "eip-3009", "eip-712"],
+      "representativeQueries": [
+        "how do I call POST /verify and POST /settle",
+        "why is my EIP-712 signature rejected on Celo but not on Base",
+        "which x402 settlement errors are worth retrying"
+      ]
+    },
+    {
+      "identifier": "urn:air:facilitator.ultravioletadao.xyz:api:x402-facilitator",
+      "displayName": "x402 Payment Facilitator REST API",
+      "type": "application/vnd.oai.openapi+json;version=3.1",
+      "url": "https://facilitator.ultravioletadao.xyz/openapi.json",
+      "description": "Every HTTP endpoint this facilitator serves, typed: verify, settle, accepts, supported, the Bazaar discovery registry, the ERC-8004 identity and reputation routes, and the live traffic stream.",
+      "tags": ["x402", "payments", "api", "rest", "openapi", "erc-8004"],
+      "representativeQueries": [
+        "what endpoints does the x402 facilitator expose",
+        "read an agent's ERC-8004 reputation on Base",
+        "list the x402-priced resources in the bazaar"
+      ]
+    },
+    {
+      "identifier": "urn:air:facilitator.ultravioletadao.xyz:doc:llms-txt",
+      "displayName": "x402 Payment Facilitator llms.txt",
+      "type": "text/plain",
+      "url": "https://facilitator.ultravioletadao.xyz/llms.txt",
+      "description": "The llmstxt.org index for this host: what the service is, when to reach for it and when not to, its live coverage, and a link to every other document it publishes.",
+      "tags": ["x402", "llms-txt", "documentation"],
+      "representativeQueries": [
+        "what is the Ultravioleta DAO x402 facilitator",
+        "when should an agent use a payment facilitator"
+      ]
+    }
+  ]
+}

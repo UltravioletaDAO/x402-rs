@@ -217,7 +217,13 @@ fn settle_input_schema() -> Value {
         "description": "Optional. Sent as the Idempotency-Key header, NOT as part of the \
                         payment body. The same key with the same payment returns the \
                         first result instead of settling twice; the same key with a \
-                        different payment is refused with 409. Use it on any retry."
+                        different payment is refused with 409. Use it on any retry. \
+                        GENERATE A FRESH, UNGUESSABLE VALUE PER PAYMENT -- a UUIDv4 \
+                        is the right shape. Do not reuse a key across different \
+                        payments and do not use a predictable one like \"retry-1\": \
+                        keys share one namespace across all callers, so a guessable \
+                        key can be claimed by someone else's settle first and yours \
+                        is then refused with 409."
     });
     doc
 }
@@ -1377,6 +1383,43 @@ mod tests {
                 tool.name
             );
         }
+    }
+
+    /// The description has to ASK for a unique, unguessable key.
+    ///
+    /// The idempotency store is one namespace shared by every caller: it keys
+    /// on the raw string with no per-caller prefix (`idempotency_store.rs`).
+    /// That is the same property the REST header has always had, but the
+    /// caller here is a model, and a model writes `"retry-1"`. Two consequences,
+    /// both real: two unrelated agents collide and the second gets a 409, and a
+    /// guessable key can be claimed in advance by someone else's settle so the
+    /// legitimate one is refused. The description is the only place a model
+    /// reads, so the requirement lives there -- and this pins it, because a
+    /// later edit trimming the text for brevity would delete the warning
+    /// without deleting anything that fails.
+    #[test]
+    fn the_idempotency_key_description_demands_a_unique_unguessable_value() {
+        let settle = tools()
+            .into_iter()
+            .find(|t| t.name == "x402_settle")
+            .expect("x402_settle must exist");
+        let description = settle.input_schema["properties"][IDEMPOTENCY_KEY_ARG]["description"]
+            .as_str()
+            .expect("idempotencyKey must be described")
+            .to_ascii_lowercase();
+
+        assert!(
+            description.contains("unguessable") || description.contains("unpredictable"),
+            "the description must say the key has to be unguessable"
+        );
+        assert!(
+            description.contains("uuid"),
+            "the description must name a concrete shape a model can produce"
+        );
+        assert!(
+            description.contains("per payment") || description.contains("do not reuse"),
+            "the description must say one key per payment"
+        );
     }
 
     /// An `Accept` that names only JSON is rmcp's 406, but with a content-type.

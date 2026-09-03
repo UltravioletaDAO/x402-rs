@@ -77,6 +77,7 @@ mod handlers;
 mod idempotency_store;
 mod json_depth;
 mod mcp;
+mod negotiate;
 mod network;
 mod nonce_store;
 mod openapi;
@@ -460,6 +461,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Each /verify or /settle call burns RPC quota against the configured chain
     // providers, which is why that one stays tight.
     //
+    // `use_headers()` on every config swaps tower_governor's NoOpMiddleware for
+    // its StateInformationMiddleware, which is what makes the budget legible to
+    // a caller instead of something they discover by hitting it: a 200 carries
+    // `x-ratelimit-limit` and `x-ratelimit-remaining`, and a 429 adds those to
+    // the `retry-after` and `x-ratelimit-after` it already sent. Both 2026-09-02
+    // scans reported no rate-limit headers at all, and they were right: without
+    // it the library emits them on the 429 only, which is one request too late
+    // to be useful. The numbers themselves do not change -- this is the same
+    // GCRA state, reported rather than hidden.
+    //
     // SmartIpKeyExtractor reads X-Forwarded-For / X-Real-IP / Forwarded
     // headers before falling back to the peer IP — required behind the ALB,
     // where the peer IP is the ALB itself (so the default PeerIpKeyExtractor
@@ -471,6 +482,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .per_second(2)
             .burst_size(30)
             .key_extractor(SmartIpKeyExtractor)
+            .use_headers()
             .finish()
             .expect("verify/settle governor config must be valid"),
     );
@@ -504,6 +516,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .per_second(12)
             .burst_size(250)
             .key_extractor(SmartIpKeyExtractor)
+            .use_headers()
             .finish()
             .expect("discovery_register governor config must be valid"),
     );
@@ -520,6 +533,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .per_millisecond(200)
             .burst_size(120)
             .key_extractor(SmartIpKeyExtractor)
+            .use_headers()
             .finish()
             .expect("discovery_read governor config must be valid"),
     );
@@ -534,6 +548,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .per_second(2)
             .burst_size(10)
             .key_extractor(SmartIpKeyExtractor)
+            .use_headers()
             .finish()
             .expect("events governor config must be valid"),
     );
@@ -555,6 +570,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .per_millisecond(identity_read_per_ms)
             .burst_size(identity_read_burst)
             .key_extractor(SmartIpKeyExtractor)
+            .use_headers()
             .finish()
             .expect("identity_read governor config must be valid"),
     );
@@ -579,13 +595,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .per_millisecond(secondary_read_per_ms)
             .burst_size(secondary_read_burst)
             .key_extractor(SmartIpKeyExtractor)
+            .use_headers()
             .finish()
             .expect("secondary_read governor config must be valid"),
     );
 
     let verify_settle = handlers::verify_settle_routes()
         .with_state(axum_state.clone())
-        .layer(GovernorLayer::new(Arc::clone(&verify_settle_config)));
+        .layer(
+            GovernorLayer::new(Arc::clone(&verify_settle_config))
+                .error_handler(handlers::rate_limit_error),
+        );
 
     // The MCP server. `Arc::clone` of the SAME config, not a second one built
     // from the same numbers: `GovernorConfig` holds a `SharedRateLimiter`, so
@@ -598,11 +618,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::clone(&event_bus),
         Arc::clone(&transaction_store),
     )
-    .layer(GovernorLayer::new(Arc::clone(&verify_settle_config)));
+    .layer(
+        GovernorLayer::new(Arc::clone(&verify_settle_config))
+            .error_handler(handlers::rate_limit_error),
+    );
 
     let discovery_register = handlers::discovery_register_routes()
         .with_state(Arc::clone(&discovery_registry))
-        .layer(GovernorLayer::new(Arc::clone(&discovery_register_config)));
+        .layer(
+            GovernorLayer::new(Arc::clone(&discovery_register_config))
+                .error_handler(handlers::rate_limit_error),
+        );
 
     // ERC-8004 write kill-switch (audit 02): set ENABLE_ERC8004_WRITES=false to disable the
     // gasless reputation/identity write surface entirely (closes the forgery vector). Defaults
@@ -625,25 +651,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .merge(
             handlers::identity_read_routes()
                 .with_state(axum_state.clone())
-                .layer(GovernorLayer::new(identity_read_config)),
+                .layer(
+                    GovernorLayer::new(identity_read_config)
+                        .error_handler(handlers::rate_limit_error),
+                ),
         )
         .merge(
             handlers::secondary_read_routes()
                 .with_state(axum_state.clone())
-                .layer(GovernorLayer::new(secondary_read_config)),
+                .layer(
+                    GovernorLayer::new(Arc::clone(&secondary_read_config))
+                        .error_handler(handlers::rate_limit_error),
+                ),
         )
         .merge(handlers::routes().with_state(axum_state.clone()));
     if erc8004_writes_enabled {
         let erc8004_writes = handlers::erc8004_write_routes()
             .with_state(axum_state)
-            .layer(GovernorLayer::new(Arc::clone(&discovery_register_config)));
+            .layer(
+                GovernorLayer::new(Arc::clone(&discovery_register_config))
+                    .error_handler(handlers::rate_limit_error),
+            );
         http_endpoints = http_endpoints.merge(erc8004_writes);
     }
     // Admin curation routes share the strict register governor; they 404 unless
     // BAZAAR_ADMIN_TOKEN is configured.
     let discovery_admin = handlers::discovery_admin_routes()
         .with_state(Arc::clone(&discovery_registry))
-        .layer(GovernorLayer::new(Arc::clone(&discovery_register_config)));
+        .layer(
+            GovernorLayer::new(Arc::clone(&discovery_register_config))
+                .error_handler(handlers::rate_limit_error),
+        );
 
     let http_endpoints = http_endpoints
         .merge(discovery_register)
@@ -651,12 +689,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .merge(
             handlers::discovery_routes()
                 .with_state(Arc::clone(&discovery_registry))
-                .layer(GovernorLayer::new(Arc::clone(&discovery_read_config))),
+                .layer(
+                    GovernorLayer::new(Arc::clone(&discovery_read_config))
+                        .error_handler(handlers::rate_limit_error),
+                ),
         )
         .merge(
             handlers::transaction_routes()
                 .with_state(Arc::clone(&transaction_store))
-                .layer(GovernorLayer::new(Arc::clone(&discovery_read_config))),
+                .layer(
+                    GovernorLayer::new(Arc::clone(&discovery_read_config))
+                        .error_handler(handlers::rate_limit_error),
+                ),
         )
         // The agentic-discovery surfaces (/llms.txt, /.well-known/*, ...).
         // Stateless and unmetered: they are static documents, and a crawler
@@ -666,7 +710,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .merge(
             handlers::events_routes()
                 .with_state(Arc::clone(&event_bus))
-                .layer(GovernorLayer::new(events_config)),
+                .layer(GovernorLayer::new(events_config).error_handler(handlers::rate_limit_error)),
         );
 
     // DX402 durable-evidence. Absent unless ENABLE_DX402=true and the store and
@@ -674,14 +718,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // stayed off rather than falling back to something that only looks durable.
     let http_endpoints = match dx402_service.clone() {
         Some(svc) => http_endpoints.merge(
-            dx402::handlers::dx402_routes()
-                .with_state(svc)
-                .layer(GovernorLayer::new(Arc::clone(&discovery_read_config))),
+            dx402::handlers::dx402_routes().with_state(svc).layer(
+                GovernorLayer::new(Arc::clone(&discovery_read_config))
+                    .error_handler(handlers::rate_limit_error),
+            ),
         ),
         None => http_endpoints,
     };
 
     let http_endpoints = http_endpoints
+        // The 404 for every path no route claims. Both fallbacks are applied
+        // HERE, after the last `.merge()` in the file -- including the
+        // conditional DX402 one -- because both are order-sensitive: axum keeps
+        // the fallback of the router merged last, and
+        // `method_not_allowed_fallback` only reaches the `MethodRouter`s
+        // registered at the moment it runs.
+        //
+        // WHY IT IS UNDER A GOVERNOR
+        //     It already was, and it has to stay that way: an unmetered 404 is
+        //     a free amplification surface, and path scanning is the traffic
+        //     that finds one. What was NOT deliberate is WHICH budget it drew
+        //     on. axum's `merge` keeps the fallback of the router merged last
+        //     (`(true, true) => use the one from other`), and `.layer()` wraps a
+        //     router's default fallback along with its routes -- so until now
+        //     every unknown path was silently metered by whichever governed
+        //     router happened to be merged last. Measured 2026-09-02: it was
+        //     `/events`, so 11 unknown paths from one IP earned a 429.
+        //
+        //     That is the wrong shape. The events budget exists to bound how
+        //     fast long-lived SSE connections can be opened; a 404 is a constant
+        //     string. It joins the secondary-read budget instead -- the one
+        //     already sized for cheap reads -- so a crawler mapping the surface
+        //     gets 404s rather than 429s, which is the entire point of giving
+        //     the 404 a body. Reordering the merges above can no longer change
+        //     this silently.
+        .merge(
+            Router::new().fallback(handlers::agent_not_found).layer(
+                GovernorLayer::new(Arc::clone(&secondary_read_config))
+                    .error_handler(handlers::rate_limit_error),
+            ),
+        )
+        // The 405 for a path that exists under a different method. axum still
+        // computes and attaches the `Allow` header itself.
+        .method_not_allowed_fallback(handlers::method_not_allowed)
         // Share discovery registry with all handlers via Extension for settlement tracking
         .layer(Extension(discovery_registry))
         // ...and the event bus, so post_settle can publish after a settle resolves

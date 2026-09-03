@@ -292,10 +292,262 @@ pub fn agentic_routes() -> Router {
             "/.well-known/mcp/server-card.json",
             get(get_mcp_server_card),
         )
+        .route("/.well-known/ard.json", get(get_ard))
+}
+
+/// The 405 every route answers when the path exists but the method does not.
+///
+/// axum's default is `405` with a zero-byte body and no content type -- the
+/// same shape the 404 had, and the reason `json-error-responses` scored as
+/// failed on 2026-09-02 despite `/verify` and `/settle` already rejecting bad
+/// bodies in JSON.
+///
+/// The `Allow` header is NOT set here on purpose: axum still computes and
+/// attaches it from the methods actually registered for the path (its own
+/// `allow_header_with_fallback` test pins that), and a hand-written one here
+/// would be a second source of truth that drifts the first time a route gains
+/// a method.
+#[instrument(skip_all)]
+pub async fn method_not_allowed(
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+) -> impl IntoResponse {
+    let path = uri.path().to_string();
+    (
+        StatusCode::METHOD_NOT_ALLOWED,
+        [(header::CONTENT_TYPE, APPLICATION_JSON_UTF8)],
+        Json(json!({
+            "error": format!("{method} is not supported on {path}"),
+            "code": "method_not_allowed",
+            "hint": "The `Allow` response header lists the methods this path \
+                     accepts. Every endpoint and its methods are described at \
+                     https://facilitator.ultravioletadao.xyz/openapi.json",
+        })),
+    )
+}
+
+/// A rate limiter's refusal, as JSON instead of a bare string.
+///
+/// `tower_governor` builds both of its refusals with `Response::new(String)`
+/// and no content type (`tower_governor-0.8.0/src/errors.rs`), so until now the
+/// single most likely error an agent meets on this service -- a 429 -- came
+/// back untyped. This runs INSIDE the limiter rather than as a layer around it,
+/// which is what makes it reach them: a middleware wrapping the router is
+/// mounted under the `GovernorLayer`, so the limiter's own responses never pass
+/// through it.
+///
+/// The status and every header the limiter set are preserved untouched:
+/// `retry-after` and `x-ratelimit-*` are the part an agent throttles on.
+pub fn rate_limit_error(error: tower_governor::GovernorError) -> Response<axum::body::Body> {
+    let (mut parts, message) = error.into_response().into_parts();
+    let (code, hint) = if parts.status == StatusCode::TOO_MANY_REQUESTS {
+        (
+            "rate_limited",
+            "Wait for the number of seconds in the `retry-after` header, then \
+             retry. `x-ratelimit-limit` and `x-ratelimit-remaining` report the \
+             budget on every successful response, so a client can pace itself \
+             instead of discovering the limit by hitting it. Limits are per \
+             client IP and documented at \
+             https://facilitator.ultravioletadao.xyz/skill.md",
+        )
+    } else {
+        (
+            "rate_limit_key_unavailable",
+            "The rate limiter could not identify the caller: no \
+             X-Forwarded-For, X-Real-IP or Forwarded header reached it. Behind \
+             the production load balancer one is always present; a direct \
+             connection to the service has to set it.",
+        )
+    };
+    let body = json!({
+        "error": message.trim(),
+        "code": code,
+        "hint": hint,
+    })
+    .to_string();
+    parts.headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static(APPLICATION_JSON_UTF8),
+    );
+    // `Response::new(String)` carries no content-length, and the JSON body is a
+    // different length than the string it replaces -- so nothing stale to clear.
+    Response::from_parts(parts, axum::body::Body::from(body))
+}
+
+/// The body a nonexistent path answers with.
+///
+/// Markdown, opening on a heading, because that is what the readers of a 404
+/// here actually are: an agent that guessed a url and now has to find the real
+/// one. The four links are the documents that answer "what does this service
+/// serve" -- an index, a page list, a typed API description, and the catalog
+/// that ties them together.
+const NOT_FOUND_MARKDOWN: &str = "\
+# 404 Not Found
+
+No route on the x402 payment facilitator serves this path.
+
+## Where the real routes are described
+
+- <https://facilitator.ultravioletadao.xyz/llms.txt> - what this service is, \
+and every document it publishes
+- <https://facilitator.ultravioletadao.xyz/sitemap.xml> - the pages a reader \
+can land on
+- <https://facilitator.ultravioletadao.xyz/openapi.json> - every endpoint, typed
+- <https://facilitator.ultravioletadao.xyz/.well-known/api-catalog> - the RFC \
+9727 catalog of the above
+- <https://facilitator.ultravioletadao.xyz/skill.md> - how to call /verify and \
+/settle
+
+The two calls that are the whole contract are `POST /verify` and \
+`POST /settle`. They are also MCP tools at `POST /mcp`.
+";
+
+/// The same 404, for a caller that asked for JSON.
+static NOT_FOUND_JSON: Lazy<String> = Lazy::new(|| {
+    json!({
+        "error": "No route serves this path",
+        "code": "not_found",
+        "hint": "Read https://facilitator.ultravioletadao.xyz/llms.txt for what \
+                 this service publishes, or https://facilitator.ultravioletadao.xyz/openapi.json \
+                 for every endpoint. The two calls that matter are POST /verify \
+                 and POST /settle.",
+        "documentation": {
+            "llms": "https://facilitator.ultravioletadao.xyz/llms.txt",
+            "sitemap": "https://facilitator.ultravioletadao.xyz/sitemap.xml",
+            "openapi": "https://facilitator.ultravioletadao.xyz/openapi.json",
+            "apiCatalog": "https://facilitator.ultravioletadao.xyz/.well-known/api-catalog",
+            "skill": "https://facilitator.ultravioletadao.xyz/skill.md",
+        },
+    })
+    .to_string()
+});
+
+/// The fallback for every path no route claims.
+///
+/// WHY THIS EXISTS AT ALL
+///     The status was already a real 404 -- axum's default -- but the body was
+///     zero bytes with no content type, which is what both 2026-09-02 scans
+///     scored as only partial credit. An agent that guesses a url and gets
+///     nothing back has learned nothing; the same 404 carrying five links is a
+///     recovery path.
+///
+/// WHY MARKDOWN IS THE DEFAULT AND NOT JSON
+///     A 404 is read by whoever guessed wrong, which is far more often a crawler
+///     or a person than an API client mid-call. A real API client asks for JSON,
+///     and gets it.
+///
+/// WHERE IT SITS IN THE STACK
+///     `main.rs` mounts it INSIDE a `GovernorLayer`, deliberately: an unmetered
+///     404 is a free amplification surface, and a path-scanning loop is exactly
+///     the traffic that finds it.
+#[instrument(skip_all)]
+pub async fn agent_not_found(headers: HeaderMap) -> impl IntoResponse {
+    let accept = headers
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok());
+    // Markdown first: it is the default for a caller with no preference.
+    let (media, body) =
+        match crate::negotiate::choose(accept, &["text/markdown", "application/json"]) {
+            crate::negotiate::Choice::Serve("application/json") => {
+                ("application/json", NOT_FOUND_JSON.as_str())
+            }
+            // A 404 never answers 406. The caller already asked for something that
+            // does not exist; refusing to say so in a format they dislike replaces
+            // one dead end with a worse one.
+            _ => ("text/markdown", NOT_FOUND_MARKDOWN),
+        };
+    Response::builder()
+        .status(StatusCode::NOT_FOUND)
+        .header("content-type", format!("{media}; charset=utf-8"))
+        .header(header::VARY, "Accept, Accept-Encoding")
+        .body(body.to_string())
+        .unwrap()
+}
+
+/// The documents a negotiated surface can answer with, most preferred first.
+///
+/// `(media type, body)`. The first entry is the default: it is what a caller
+/// with no `Accept`, or with `*/*`, gets, and it breaks ties between equally
+/// acceptable types. See [`crate::negotiate`] for the ranking rules.
+type Representations = &'static [(&'static str, &'static str)];
+
+/// Serve one document out of several representations of the same resource,
+/// chosen from the request's `Accept`.
+///
+/// WHY `Vary: Accept` IS NOT OPTIONAL
+///     Without it a cache in front of this service keys `/` on the URL alone,
+///     so whichever of the two representations lands in the cache first is
+///     handed to everyone after -- Markdown rendered as raw text in a browser,
+///     or a wall of HTML to the agent that asked for Markdown. It is listed
+///     alongside `Accept-Encoding` because a cache that varies on one and not
+///     the other has the same bug one axis over.
+///
+/// WHY THE 406 IS NARROW
+///     Only when every representation on offer was refused. A missing `Accept`
+///     or `*/*` means *no constraint*, not *nothing works*: answering 406 there
+///     is the documented common mistake
+///     (<https://acceptmarkdown.com/guides/returning-406>), and it would break
+///     every browser and every `curl` that does not set the header.
+fn negotiated_surface(headers: &HeaderMap, offers: Representations) -> Response<String> {
+    negotiated_response(StatusCode::OK, headers, offers)
+}
+
+/// [`negotiated_surface`] for a response that is not a `200` -- the 404 body,
+/// which is the same negotiation over a different status.
+fn negotiated_response(
+    status: StatusCode,
+    headers: &HeaderMap,
+    offers: Representations,
+) -> Response<String> {
+    let accept = headers
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok());
+    let types: Vec<&str> = offers.iter().map(|(media, _)| *media).collect();
+    match crate::negotiate::choose(accept, &types) {
+        crate::negotiate::Choice::Serve(media) => {
+            let body = offers
+                .iter()
+                .find(|(candidate, _)| *candidate == media)
+                .map(|(_, body)| *body)
+                .unwrap_or_default();
+            Response::builder()
+                .status(status)
+                .header("content-type", format!("{media}; charset=utf-8"))
+                .header(header::VARY, "Accept, Accept-Encoding")
+                .body(body.to_string())
+                .unwrap()
+        }
+        crate::negotiate::Choice::NotAcceptable => {
+            // RFC 9110 section 15.5.7 recommends naming the representations that
+            // do exist, so the caller can retry with an `Accept` that works
+            // instead of guessing.
+            let available = types.join(", ");
+            Response::builder()
+                .status(StatusCode::NOT_ACCEPTABLE)
+                .header("content-type", APPLICATION_JSON_UTF8)
+                .header(header::VARY, "Accept, Accept-Encoding")
+                // The Accept header is request-specific, so a shared cache must
+                // not reuse this answer for the next caller.
+                .header(header::CACHE_CONTROL, "no-store")
+                .body(
+                    json!({
+                        "error": "No representation matches the Accept header",
+                        "code": "not_acceptable",
+                        "available": types,
+                        "hint": format!(
+                            "This resource is available as: {available}. \
+                             Retry with an Accept header naming one of them, \
+                             or omit Accept entirely to get the default."
+                        ),
+                    })
+                    .to_string(),
+                )
+                .unwrap()
+        }
+    }
 }
 
 const TEXT_PLAIN_UTF8: &str = "text/plain; charset=utf-8";
-const TEXT_MARKDOWN_UTF8: &str = "text/markdown; charset=utf-8";
 const APPLICATION_JSON_UTF8: &str = "application/json; charset=utf-8";
 
 /// Serve a compiled-in text document with an explicit content type.
@@ -307,10 +559,29 @@ fn text_surface(body: &'static str, content_type: &'static str) -> Response<Stri
         .unwrap()
 }
 
+/// The four documents that exist in more than one media type.
+///
+/// Declared once, here, because each is referenced by its handler AND by the
+/// negotiation tests -- two `include_str!` sites for the same file is how one
+/// of them ends up serving a stale copy.
+const LLMS_TXT: &str = include_str!("../static/llms.txt");
+const INDEX_MD: &str = include_str!("../static/index.md");
+const SKILL_MD: &str = include_str!("../static/skill.md");
+const AUTH_MD: &str = include_str!("../static/auth.md");
+const INDEX_HTML: &str = include_str!("../static/index.html");
+
 /// `GET /llms.txt`: the llmstxt.org map of this service.
+///
+/// Its bytes are Markdown and always were -- llmstxt.org specifies a Markdown
+/// document. It stays `text/plain` by default because that is what every
+/// existing consumer and the readiness checker expect from this path; an agent
+/// that says `Accept: text/markdown` gets the same bytes correctly labelled.
 #[instrument(skip_all)]
-pub async fn get_llms_txt() -> impl IntoResponse {
-    text_surface(include_str!("../static/llms.txt"), TEXT_PLAIN_UTF8)
+pub async fn get_llms_txt(headers: HeaderMap) -> impl IntoResponse {
+    negotiated_surface(
+        &headers,
+        &[("text/plain", LLMS_TXT), ("text/markdown", LLMS_TXT)],
+    )
 }
 
 /// `GET /llms-full.txt`: llms.txt, index.md, skill.md and auth.md in one file.
@@ -340,20 +611,51 @@ pub async fn get_sitemap_xml() -> impl IntoResponse {
 /// `GET /index.md`: the landing page in Markdown, for an agent that does not
 /// want to render a 240 KB HTML monolith to learn what this is.
 #[instrument(skip_all)]
-pub async fn get_index_md() -> impl IntoResponse {
-    text_surface(include_str!("../static/index.md"), TEXT_MARKDOWN_UTF8)
+pub async fn get_index_md(headers: HeaderMap) -> impl IntoResponse {
+    negotiated_surface(&headers, &[("text/markdown", INDEX_MD)])
 }
 
 /// `GET /skill.md`: the operating manual for an agent calling verify/settle.
 #[instrument(skip_all)]
-pub async fn get_skill_md() -> impl IntoResponse {
-    text_surface(include_str!("../static/skill.md"), TEXT_MARKDOWN_UTF8)
+pub async fn get_skill_md(headers: HeaderMap) -> impl IntoResponse {
+    negotiated_surface(&headers, &[("text/markdown", SKILL_MD)])
 }
 
 /// `GET /auth.md`: how to authenticate here, which is: you do not.
 #[instrument(skip_all)]
-pub async fn get_auth_md() -> impl IntoResponse {
-    text_surface(include_str!("../static/auth.md"), TEXT_MARKDOWN_UTF8)
+pub async fn get_auth_md(headers: HeaderMap) -> impl IntoResponse {
+    negotiated_surface(&headers, &[("text/markdown", AUTH_MD)])
+}
+
+/// `GET /.well-known/ard.json`: the Agentic Resource Discovery catalog.
+///
+/// ARD v0.91 (<https://agenticresourcediscovery.org/spec>) is the one document
+/// that names everything this host offers an agent -- the MCP server, the A2A
+/// card, the skill, the OpenAPI and the llms.txt index -- so a consumer reads
+/// one file instead of probing five paths. Section 5.1 fixes the path and makes
+/// fetching it normative for a conforming consumer; the predecessor
+/// `/.well-known/ai-catalog.json` is explicitly optional to consult, which is
+/// why only this path is served.
+///
+/// Every entry carries the four terms section 4.2 requires -- `identifier`,
+/// `displayName`, `type` and exactly one of `url`/`data` -- plus the
+/// `representativeQueries` that section says separate an ARD entry from a bare
+/// catalog listing. `the_ard_catalog_meets_the_spec` below re-checks all of
+/// that, because the document is hand-written and the failure mode is silent:
+/// a malformed entry is dropped by a registry without anyone being told.
+///
+/// NO `trustManifest`, DELIBERATELY. Section 4.5.1 binds `trustManifest.identity`
+/// to the publisher domain in the URN and expects a registry to verify an
+/// attestation issued by that domain. This host publishes no DID document and
+/// no attestation, so a `did:web:` claim here would be an assertion nothing can
+/// check. The term is optional and the scanner scores it as a bonus that never
+/// costs points; an unverifiable claim would cost more than the bonus is worth.
+#[instrument(skip_all)]
+pub async fn get_ard() -> impl IntoResponse {
+    text_surface(
+        include_str!("../static/.well-known/ard.json"),
+        APPLICATION_JSON_UTF8,
+    )
 }
 
 /// `GET /workflows.json`: the state machines this facilitator drives.
@@ -1952,13 +2254,15 @@ fn discovery_error_response(error: DiscoveryError) -> Response {
 
 /// `GET /`: Returns the Ultravioleta DAO branded landing page.
 #[instrument(skip_all)]
-pub async fn get_root() -> impl IntoResponse {
-    let html = include_str!("../static/index.html");
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "text/html; charset=utf-8")
-        .body(html.to_string())
-        .unwrap()
+pub async fn get_root(headers: HeaderMap) -> impl IntoResponse {
+    // HTML first, so it stays the default: a browser, a `curl` with no Accept,
+    // and anything sending `*/*` all still get the landing page. Markdown is
+    // the same content an agent would otherwise have to render 240 KB of HTML
+    // to reach -- it is `/index.md`, byte for byte, so the two cannot drift.
+    negotiated_surface(
+        &headers,
+        &[("text/html", INDEX_HTML), ("text/markdown", INDEX_MD)],
+    )
 }
 
 /// `GET /events/live`: the live traffic viewer.
@@ -1993,8 +2297,8 @@ pub async fn get_stats_page() -> impl IntoResponse {
 }
 
 /// Alias for `get_root` to match main.rs routing.
-pub async fn get_index() -> impl IntoResponse {
-    get_root().await
+pub async fn get_index(headers: HeaderMap) -> impl IntoResponse {
+    get_root(headers).await
 }
 
 /// `GET /bazaar`: Returns the curated Bazaar resource explorer (WS-D).
@@ -2861,7 +3165,14 @@ where
                     return (
                         StatusCode::BAD_REQUEST,
                         Json(json!({
-                            "error": format!("Failed to deserialize VerifyRequest: {}", e)
+                            "error": format!("Failed to deserialize VerifyRequest: {}", e),
+                            "code": "invalid_request_body",
+                            "hint": "The body must be a JSON object with \
+                                     `paymentPayload` and `paymentRequirements`. \
+                                     Both the x402 v1 shape (\"network\": \"base\") \
+                                     and the v2 CAIP-2 shape (\"network\": \
+                                     \"eip155:8453\") are accepted. Worked examples: \
+                                     https://facilitator.ultravioletadao.xyz/skill.md",
                         })),
                     )
                         .into_response();
@@ -3598,7 +3909,16 @@ where
                         StatusCode::BAD_REQUEST,
                         Json(json!({
                             "error": format!("Failed to deserialize SettleRequest: {}", deser_err),
-                            "details": "Check server logs for detailed field-by-field analysis"
+                            "code": "invalid_request_body",
+                            "details": "Check server logs for detailed field-by-field analysis",
+                            "hint": "The body must be a JSON object with \
+                                     `paymentPayload` and `paymentRequirements`, \
+                                     the same shape POST /verify accepts. Both the \
+                                     x402 v1 spelling (\"network\": \"base\") and \
+                                     the v2 CAIP-2 spelling (\"network\": \
+                                     \"eip155:8453\") work. Verify the payload with \
+                                     POST /verify first; worked examples: \
+                                     https://facilitator.ultravioletadao.xyz/skill.md",
                         })),
                     )
                         .into_response();
@@ -12420,6 +12740,7 @@ mod agentic_surface_tests {
         ("/.well-known/oauth-protected-resource", "application/json"),
         ("/.well-known/agent-skills/index.json", "application/json"),
         ("/.well-known/mcp/server-card.json", "application/json"),
+        ("/.well-known/ard.json", "application/json"),
     ];
 
     async fn fetch(path: &str) -> (StatusCode, String, String) {
@@ -12636,6 +12957,245 @@ mod agentic_surface_tests {
         );
     }
 
+    /// The ARD catalog against the rules of the spec it claims to follow.
+    ///
+    /// The document is hand-written and the failure mode is silent: a registry
+    /// that cannot parse an entry drops it and tells nobody. These are ARD
+    /// v0.91 section 4.2 (the four required terms), 4.3 (url XOR data),
+    /// Appendix C (the URN grammar and the publisher-domain anchor) and D.2
+    /// (representativeQueries, 2-5 of them).
+    #[test]
+    fn the_ard_catalog_meets_the_spec() {
+        const HOST: &str = "facilitator.ultravioletadao.xyz";
+        let doc: serde_json::Value =
+            serde_json::from_str(include_str!("../static/.well-known/ard.json"))
+                .expect("ard.json must be JSON");
+
+        let entries = doc["entries"]
+            .as_array()
+            .expect("an ARD manifest is an object with an `entries` array");
+        assert!(!entries.is_empty(), "an empty catalog is worse than none");
+
+        for entry in entries {
+            let id = entry["identifier"]
+                .as_str()
+                .expect("4.2: `identifier` is required");
+
+            // Appendix C: urn:air:<publisher>:<namespace>:<agent-name>, and the
+            // publisher segment is the authority anchor -- claiming a domain
+            // this host does not serve is what the grammar exists to prevent.
+            let segments: Vec<&str> = id.split(':').collect();
+            assert!(
+                segments.len() >= 5 && segments[0] == "urn" && segments[1] == "air",
+                "{id} is not urn:air:<publisher>:<namespace>:<name>"
+            );
+            assert_eq!(segments[2], HOST, "{id} claims a publisher we are not");
+            assert!(
+                segments[3..].iter().all(|s| !s.is_empty()),
+                "{id} has an empty segment"
+            );
+
+            assert!(
+                entry["displayName"].as_str().is_some_and(|v| !v.is_empty()),
+                "4.2: {id} needs a displayName"
+            );
+            // 3.3: the type is an IANA media type, not a made-up token.
+            assert!(
+                entry["type"].as_str().is_some_and(|v| v.contains('/')),
+                "4.2: {id} needs a media type"
+            );
+
+            // 4.3: exactly one of url / data. Both is invalid, neither is worse.
+            let (has_url, has_data) = (!entry["url"].is_null(), !entry["data"].is_null());
+            assert!(
+                has_url ^ has_data,
+                "4.3: {id} must carry exactly one of url/data"
+            );
+            if let Some(url) = entry["url"].as_str() {
+                assert!(
+                    url.starts_with(&format!("https://{HOST}/")),
+                    "{id} points at {url}, which is not on this host"
+                );
+            }
+
+            // D.2: without these an entry is a catalog listing, not a
+            // discoverable one -- it simply never comes back from a search.
+            let queries = entry["representativeQueries"]
+                .as_array()
+                .unwrap_or_else(|| panic!("D.2: {id} needs representativeQueries"));
+            assert!(
+                (2..=5).contains(&queries.len()),
+                "D.2: {id} has {} representative queries, wanted 2-5",
+                queries.len()
+            );
+        }
+
+        // The four documents the catalog exists to advertise.
+        let types: Vec<&str> = entries.iter().filter_map(|e| e["type"].as_str()).collect();
+        for wanted in [
+            "application/mcp-server-card+json",
+            "application/a2a-agent-card+json",
+            "application/ai-skill+md",
+        ] {
+            assert!(types.contains(&wanted), "the catalog must list a {wanted}");
+        }
+        assert!(
+            types
+                .iter()
+                .any(|t| t.starts_with("application/vnd.oai.openapi+json")),
+            "the catalog must list the OpenAPI document"
+        );
+    }
+
+    /// `llms.txt` tells an agent WHEN to reach for this service.
+    ///
+    /// `agent-instruction` is a required check on both scanners and it failed
+    /// on 2026-09-02: the file described what the service is at length and
+    /// never said what jobs it is the right answer to. An agent choosing among
+    /// ten tools picks the one that says what it is for -- and, just as
+    /// usefully, the one that rules itself out.
+    ///
+    /// This asserts the section exists and still names the three things this
+    /// service is most often mistaken for. It is a shape check, not a prose
+    /// check: it fails when the section is deleted or gutted, which is the
+    /// regression that matters.
+    #[test]
+    fn llms_txt_says_when_to_use_this_service_and_when_not_to() {
+        let llms = include_str!("../static/llms.txt");
+        let heading = llms
+            .lines()
+            .position(|line| {
+                let l = line.to_ascii_lowercase();
+                l.starts_with("##") && l.contains("when to use")
+            })
+            .expect("llms.txt needs a `when to use this` section");
+
+        // Early enough to be read before the reference material.
+        assert!(
+            heading < 40,
+            "the guidance sits {heading} lines in; an agent skimming the top \
+             of the file will not reach it"
+        );
+
+        let section: String = llms
+            .lines()
+            .skip(heading)
+            .take_while(|line| {
+                !(line.starts_with("## ") && !line.to_ascii_lowercase().contains("when to use"))
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            .to_ascii_lowercase();
+
+        // The best-fit jobs, named as calls an agent can make.
+        for call in ["/verify", "/settle", "/supported", "/mcp"] {
+            assert!(
+                section.contains(call),
+                "the guidance must name {call} as a job this service does"
+            );
+        }
+        // The three things it is most often mistaken for. Ruling yourself out
+        // is the half that stops an agent wasting a call.
+        for not in ["wallet", "marketplace", "ledger"] {
+            assert!(
+                section.contains(not),
+                "the guidance must say this is not a {not}"
+            );
+        }
+        assert!(
+            section.contains("do **not**") || section.contains("not to"),
+            "the guidance needs an explicit negative half"
+        );
+    }
+
+    /// Every url in the sitemap carries a parseable `<lastmod>`.
+    ///
+    /// ora.ai reported "none of the 10 sampled urls has a lastmod": without one
+    /// a crawler cannot tell a document that moved this morning from one
+    /// untouched since July, so it either re-reads everything or nothing.
+    ///
+    /// TO RECOMPUTE A DATE, use the commit date of the file that BACKS the url,
+    /// not the date you edited the sitemap:
+    ///
+    /// ```text
+    /// git log -1 --format=%cI -- static/skill.md
+    /// ```
+    ///
+    /// The mapping is not derivable from the url, which is why it is written
+    /// out here:
+    ///
+    /// | url | file |
+    /// |---|---|
+    /// | `/` | `static/index.html` |
+    /// | `/docs` | `src/openapi.rs` |
+    /// | `/bazaar` | `static/bazaar.html` |
+    /// | `/stats` | `static/stats.html` |
+    /// | `/events/live` | `static/events-viewer.html` |
+    /// | `/llms.txt` | `static/llms.txt` |
+    /// | `/llms-full.txt` | `static/llms-full.txt` |
+    /// | `/index.md` | `static/index.md` |
+    /// | `/skill.md` | `static/skill.md` |
+    /// | `/auth.md` | `static/auth.md` |
+    ///
+    /// Deliberately NOT a freshness check. Asserting that the newest date is
+    /// recent would turn every quiet week into a red build, and the thing that
+    /// actually breaks is a url added without a date -- which this catches.
+    #[test]
+    fn the_sitemap_stamps_every_url() {
+        let sitemap = include_str!("../static/sitemap.xml");
+        // Everything after the leading comment, so the prose above cannot be
+        // mistaken for markup.
+        let body = sitemap
+            .split_once("<urlset")
+            .expect("the sitemap needs a <urlset>")
+            .1;
+
+        let blocks: Vec<&str> = body.split("<url>").skip(1).collect();
+        assert!(!blocks.is_empty(), "the sitemap lists no urls");
+
+        for block in &blocks {
+            let loc = block
+                .split_once("<loc>")
+                .and_then(|(_, rest)| rest.split_once("</loc>"))
+                .map(|(value, _)| value.trim())
+                .expect("every <url> needs a <loc>");
+
+            let lastmod = block
+                .split_once("<lastmod>")
+                .and_then(|(_, rest)| rest.split_once("</lastmod>"))
+                .map(|(value, _)| value.trim())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{loc} has no <lastmod>. Add one: the commit date of the \
+                         file that backs it, `git log -1 --format=%cI -- <file>`. \
+                         The mapping is in this test's doc comment."
+                    )
+                });
+
+            // W3C datetime: a date, optionally with a time and offset. Checked
+            // by shape rather than parsed -- a typo'd month is the realistic
+            // failure, and `2026-13-01` is not a date.
+            let (date, _) = lastmod.split_once('T').unwrap_or((lastmod, ""));
+            let parts: Vec<&str> = date.split('-').collect();
+            assert_eq!(parts.len(), 3, "{loc}: {lastmod} is not a W3C date");
+            let year: i32 = parts[0]
+                .parse()
+                .unwrap_or_else(|_| panic!("{loc}: {lastmod}"));
+            let month: u32 = parts[1]
+                .parse()
+                .unwrap_or_else(|_| panic!("{loc}: {lastmod}"));
+            let day: u32 = parts[2]
+                .parse()
+                .unwrap_or_else(|_| panic!("{loc}: {lastmod}"));
+            assert!(year >= 2025, "{loc}: {lastmod} predates this repository");
+            assert!(
+                (1..=12).contains(&month),
+                "{loc}: month {month} in {lastmod}"
+            );
+            assert!((1..=31).contains(&day), "{loc}: day {day} in {lastmod}");
+        }
+    }
+
     /// Everything that links to another surface links to one that exists.
     ///
     /// A catalog pointing at a 404 is the failure mode this whole set of files
@@ -12682,5 +13242,379 @@ mod agentic_surface_tests {
                 assert!(known, "{path} links to {HOST}{link}, which no route serves");
             }
         }
+    }
+}
+
+/// Item A of the 2026-09-02 agentic wave: `Accept` negotiation on the four
+/// surfaces that have a Markdown representation, and on `/`.
+///
+/// These run against the real routers rather than calling the handlers, because
+/// the failure that matters is a header -- and a handler tested in isolation
+/// still carries the right header while the route drops it.
+#[cfg(test)]
+mod markdown_negotiation_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    /// `(status, content-type, every Vary value joined, body)`.
+    async fn fetch(
+        router: Router,
+        path: &str,
+        accept: Option<&str>,
+    ) -> (StatusCode, String, String, String) {
+        let mut builder = Request::builder().uri(path);
+        if let Some(accept) = accept {
+            builder = builder.header("accept", accept);
+        }
+        let response = router
+            .oneshot(builder.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let header = |name: &str| {
+            response
+                .headers()
+                .get_all(name)
+                .iter()
+                .filter_map(|v| v.to_str().ok())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let ctype = header("content-type");
+        let vary = header("vary");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (
+            status,
+            ctype,
+            vary,
+            String::from_utf8_lossy(&bytes).into_owned(),
+        )
+    }
+
+    fn root_router() -> Router {
+        Router::new().route("/", get(get_root))
+    }
+
+    /// The default has to be unchanged: this route is the landing page, and a
+    /// browser that sends no `Accept` at all must not get Markdown.
+    #[tokio::test]
+    async fn the_root_serves_html_by_default_and_markdown_on_request() {
+        let (status, ctype, vary, body) = fetch(root_router(), "/", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(ctype.starts_with("text/html"), "default was {ctype}");
+        assert!(body.contains("<!DOCTYPE html>") || body.contains("<!doctype html>"));
+        assert!(
+            vary.to_ascii_lowercase().contains("accept"),
+            "Vary must list Accept even on the HTML branch, or a cache serves \
+             one representation to both audiences; got {vary:?}"
+        );
+
+        let (status, ctype, vary, body) = fetch(root_router(), "/", Some("text/markdown")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(ctype, "text/markdown; charset=utf-8");
+        assert!(vary.to_ascii_lowercase().contains("accept"));
+        assert_eq!(body, INDEX_MD, "/ must serve /index.md byte for byte");
+    }
+
+    /// The header that would break a substring implementation.
+    #[tokio::test]
+    async fn a_browsers_accept_header_still_gets_html() {
+        let chrome = "text/html,application/xhtml+xml,application/xml;q=0.9,\
+                      image/avif,image/webp,image/apng,*/*;q=0.8";
+        let (_, ctype, _, _) = fetch(root_router(), "/", Some(chrome)).await;
+        assert!(ctype.starts_with("text/html"), "got {ctype}");
+        // curl's default, and a client that sends nothing meaningful.
+        let (_, ctype, _, _) = fetch(root_router(), "/", Some("*/*")).await;
+        assert!(ctype.starts_with("text/html"), "got {ctype}");
+    }
+
+    /// Every negotiated surface carries `Vary: Accept` -- the whole of the
+    /// `markdown-negotiation-vary` check.
+    #[tokio::test]
+    async fn every_negotiated_surface_varies_on_accept() {
+        for path in ["/llms.txt", "/index.md", "/skill.md", "/auth.md"] {
+            for accept in [None, Some("text/markdown")] {
+                let (status, _, vary, _) = fetch(agentic_routes(), path, accept).await;
+                assert_eq!(status, StatusCode::OK, "{path}");
+                assert!(
+                    vary.to_ascii_lowercase().contains("accept"),
+                    "{path} with Accept={accept:?} answered Vary={vary:?}"
+                );
+            }
+        }
+    }
+
+    /// `/llms.txt` keeps its `text/plain` default -- the readiness checker and
+    /// every existing consumer read that path expecting plain text -- and
+    /// relabels the same bytes for an agent that asks for Markdown.
+    #[tokio::test]
+    async fn llms_txt_keeps_text_plain_by_default() {
+        let (_, ctype, _, plain) = fetch(agentic_routes(), "/llms.txt", None).await;
+        assert_eq!(ctype, "text/plain; charset=utf-8");
+        let (_, ctype, _, md) = fetch(agentic_routes(), "/llms.txt", Some("text/markdown")).await;
+        assert_eq!(ctype, "text/markdown; charset=utf-8");
+        assert_eq!(plain, md, "the bytes must not depend on the label");
+    }
+
+    /// The 406 branch, and the reason it does not break the humans who click
+    /// the `/skill.md` link out of `llms.txt`.
+    ///
+    /// A `.md` path has exactly one representation, so RFC 9110 section 15.5.7
+    /// says an `Accept` that cannot be satisfied earns a 406 -- and
+    /// acceptmarkdown.com grades that. The reason that is safe here rather than
+    /// hostile is measured below: every real browser ends its `Accept` with a
+    /// `*/*` entry, which matches Markdown, so only a client that names
+    /// `text/html` and nothing else -- a header no browser sends -- reaches the
+    /// refusal. If that ever stops being true, this test is where it shows.
+    #[tokio::test]
+    async fn a_browser_reaches_the_document_and_only_a_true_refusal_earns_406() {
+        let chrome = "text/html,application/xhtml+xml,application/xml;q=0.9,\
+                      image/avif,image/webp,image/apng,*/*;q=0.8";
+        let firefox = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
+        let safari = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
+        for header in [chrome, firefox, safari, "*/*", "text/*"] {
+            let (status, ctype, _, _) = fetch(agentic_routes(), "/skill.md", Some(header)).await;
+            assert_eq!(status, StatusCode::OK, "Accept={header:?} was refused");
+            assert_eq!(ctype, "text/markdown; charset=utf-8");
+        }
+
+        // No wildcard anywhere and Markdown unnamed: nothing on offer matches.
+        for header in ["text/html", "application/pdf", "text/markdown;q=0"] {
+            let (status, ctype, vary, body) =
+                fetch(agentic_routes(), "/skill.md", Some(header)).await;
+            assert_eq!(status, StatusCode::NOT_ACCEPTABLE, "Accept={header:?}");
+            assert!(ctype.starts_with("application/json"), "got {ctype}");
+            assert!(vary.to_ascii_lowercase().contains("accept"));
+            assert!(
+                body.contains("text/markdown"),
+                "a 406 must name what it can serve; got {body}"
+            );
+        }
+    }
+}
+
+/// Item B: the 404 an agent can recover from.
+#[cfg(test)]
+mod agent_404_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    async fn fetch(
+        router: Router,
+        path: &str,
+        accept: Option<&str>,
+    ) -> (StatusCode, String, String) {
+        let mut builder = Request::builder().uri(path);
+        if let Some(accept) = accept {
+            builder = builder.header("accept", accept);
+        }
+        let response = router
+            .oneshot(builder.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let ctype = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, ctype, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    fn router() -> Router {
+        Router::new().fallback(agent_not_found)
+    }
+
+    #[tokio::test]
+    async fn an_unknown_path_answers_404_markdown_that_names_where_to_look() {
+        let (status, ctype, body) = fetch(router(), "/no-existe", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(ctype, "text/markdown; charset=utf-8");
+        assert!(
+            body.starts_with("# "),
+            "a markdown body has to open on a heading; got {:?}",
+            &body[..body.len().min(40)]
+        );
+        // The recovery path is the whole reason this body exists.
+        for link in [
+            "/llms.txt",
+            "/sitemap.xml",
+            "/openapi.json",
+            "/.well-known/api-catalog",
+        ] {
+            assert!(body.contains(link), "the 404 must point at {link}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_json_caller_gets_a_typed_json_404() {
+        let (status, ctype, body) = fetch(router(), "/no-existe", Some("application/json")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(ctype.starts_with("application/json"), "got {ctype}");
+        let doc: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(doc["code"], "not_found");
+        assert!(doc["error"].is_string());
+        assert!(doc["hint"].as_str().unwrap().contains("llms.txt"));
+    }
+
+    /// A 404 never becomes a 406: the caller already asked for something that
+    /// does not exist, and refusing to say so is a worse dead end.
+    #[tokio::test]
+    async fn an_impossible_accept_still_gets_the_404() {
+        for accept in ["application/pdf", "text/markdown;q=0, application/json;q=0"] {
+            let (status, ctype, _) = fetch(router(), "/no-existe", Some(accept)).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "Accept={accept:?}");
+            assert!(ctype.starts_with("text/markdown"), "got {ctype}");
+        }
+    }
+
+    /// The regression this is really guarding: axum keeps the fallback of the
+    /// router merged LAST, and `.layer()` wraps a router's default fallback
+    /// along with its routes. Before this change the 404 belonged to whichever
+    /// governed router happened to be merged last -- an accident that a
+    /// reordering could change silently. Merging a router with a real route
+    /// AFTER the fallback router must not take the fallback back.
+    #[tokio::test]
+    async fn the_fallback_survives_being_merged_with_other_routers() {
+        let assembled = Router::new()
+            .merge(agentic_routes())
+            .merge(Router::new().fallback(agent_not_found))
+            .merge(Router::new().route("/health-probe", get(|| async { "ok" })));
+        let (status, ctype, body) = fetch(assembled, "/definitely-not-a-route", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(ctype, "text/markdown; charset=utf-8");
+        assert!(body.contains("/llms.txt"));
+    }
+}
+
+/// Items C and D: every refusal is typed JSON, and the budget is legible.
+#[cfg(test)]
+mod json_error_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    /// A router shaped like `main.rs`: real routes, then the 405 fallback last.
+    fn router() -> Router {
+        Router::new()
+            .route("/thing", get(|| async { "ok" }))
+            .route("/writable", post(|| async { "ok" }))
+            .method_not_allowed_fallback(method_not_allowed)
+    }
+
+    async fn call(method: &str, path: &str) -> (StatusCode, String, String, String) {
+        let response = router()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let get = |name: &str| {
+            response
+                .headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default()
+                .to_string()
+        };
+        let (ctype, allow) = (get("content-type"), get("allow"));
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (
+            status,
+            ctype,
+            allow,
+            String::from_utf8_lossy(&bytes).into_owned(),
+        )
+    }
+
+    /// The gap `json-error-responses` actually scored: a 405 with zero bytes
+    /// and no content type.
+    #[tokio::test]
+    async fn a_wrong_method_is_a_typed_json_405() {
+        let (status, ctype, _, body) = call("DELETE", "/thing").await;
+        assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+        assert!(ctype.starts_with("application/json"), "got {ctype}");
+        let doc: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(doc["code"], "method_not_allowed");
+        assert!(doc["error"].as_str().unwrap().contains("DELETE"));
+        assert!(doc["error"].as_str().unwrap().contains("/thing"));
+        assert!(doc["hint"].as_str().unwrap().contains("openapi.json"));
+    }
+
+    /// The custom fallback must not cost the `Allow` header: it is the only
+    /// part of a 405 a client can act on without reading prose.
+    #[tokio::test]
+    async fn the_405_still_carries_allow() {
+        let (_, _, allow, _) = call("DELETE", "/thing").await;
+        assert_eq!(allow, "GET,HEAD");
+        let (_, _, allow, _) = call("GET", "/writable").await;
+        assert_eq!(allow, "POST");
+    }
+
+    /// tower_governor builds both refusals with `Response::new(String)` and no
+    /// content type. The status and every header it set have to survive being
+    /// retyped -- `retry-after` is the whole point of a 429.
+    #[test]
+    fn a_rate_limit_refusal_becomes_json_without_losing_its_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert("retry-after", HeaderValue::from_static("7"));
+        headers.insert("x-ratelimit-limit", HeaderValue::from_static("30"));
+        let response = rate_limit_error(tower_governor::GovernorError::TooManyRequests {
+            wait_time: 7,
+            headers: Some(headers),
+        });
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers()["retry-after"], "7");
+        assert_eq!(response.headers()["x-ratelimit-limit"], "30");
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            APPLICATION_JSON_UTF8
+        );
+    }
+
+    #[tokio::test]
+    async fn the_rate_limit_body_is_json_with_a_code_and_a_hint() {
+        let response = rate_limit_error(tower_governor::GovernorError::TooManyRequests {
+            wait_time: 7,
+            headers: None,
+        });
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let doc: serde_json::Value = serde_json::from_slice(&bytes).expect("valid JSON");
+        assert_eq!(doc["code"], "rate_limited");
+        assert!(doc["hint"].as_str().unwrap().contains("retry-after"));
+
+        // The 500 branch: it only fires on a direct connection, but an untyped
+        // 500 is the worst of the three to hand an agent.
+        let response = rate_limit_error(tower_governor::GovernorError::UnableToExtractKey);
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            APPLICATION_JSON_UTF8
+        );
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let doc: serde_json::Value = serde_json::from_slice(&bytes).expect("valid JSON");
+        assert_eq!(doc["code"], "rate_limit_key_unavailable");
     }
 }

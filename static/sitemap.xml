@@ -20,7 +20,7 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
     <loc>https://facilitator.ultravioletadao.xyz/</loc>
-    <lastmod>2026-08-21T00:30:38-04:00</lastmod>
+    <lastmod>2026-09-03T04:10:00-04:00</lastmod>
     <changefreq>weekly</changefreq>
     <priority>1.0</priority>
   </url>
@@ -32,55 +32,55 @@
   </url>
   <url>
     <loc>https://facilitator.ultravioletadao.xyz/mcp</loc>
-    <lastmod>2026-09-02T21:40:00-04:00</lastmod>
+    <lastmod>2026-09-03T04:10:00-04:00</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.9</priority>
   </url>
   <url>
     <loc>https://facilitator.ultravioletadao.xyz/x402</loc>
-    <lastmod>2026-09-02T22:50:00-04:00</lastmod>
+    <lastmod>2026-09-03T04:10:00-04:00</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.9</priority>
   </url>
   <url>
     <loc>https://facilitator.ultravioletadao.xyz/integrar</loc>
-    <lastmod>2026-09-02T23:55:00-04:00</lastmod>
+    <lastmod>2026-09-03T04:10:00-04:00</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.9</priority>
   </url>
   <url>
     <loc>https://facilitator.ultravioletadao.xyz/erc8004</loc>
-    <lastmod>2026-09-02T23:20:00-04:00</lastmod>
+    <lastmod>2026-09-03T04:10:00-04:00</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
     <loc>https://facilitator.ultravioletadao.xyz/dx402</loc>
-    <lastmod>2026-09-02T23:20:00-04:00</lastmod>
+    <lastmod>2026-09-03T04:10:00-04:00</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
     <loc>https://facilitator.ultravioletadao.xyz/networks</loc>
-    <lastmod>2026-09-02T22:20:00-04:00</lastmod>
+    <lastmod>2026-09-03T04:10:00-04:00</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
     <loc>https://facilitator.ultravioletadao.xyz/bazaar</loc>
-    <lastmod>2026-07-24T18:45:49-04:00</lastmod>
+    <lastmod>2026-09-03T04:10:00-04:00</lastmod>
     <changefreq>daily</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
     <loc>https://facilitator.ultravioletadao.xyz/stats</loc>
-    <lastmod>2026-08-03T16:26:02-04:00</lastmod>
+    <lastmod>2026-09-03T04:10:00-04:00</lastmod>
     <changefreq>daily</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
     <loc>https://facilitator.ultravioletadao.xyz/events/live</loc>
-    <lastmod>2026-07-31T01:41:28-04:00</lastmod>
+    <lastmod>2026-09-03T04:10:00-04:00</lastmod>
     <changefreq>daily</changefreq>
     <priority>0.6</priority>
   </url>
@@ -92,13 +92,13 @@
   </url>
   <url>
     <loc>https://facilitator.ultravioletadao.xyz/llms-full.txt</loc>
-    <lastmod>2026-09-02T15:49:10-04:00</lastmod>
+    <lastmod>2026-09-03T04:10:00-04:00</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
     <loc>https://facilitator.ultravioletadao.xyz/index.md</loc>
-    <lastmod>2026-09-02T10:57:34-04:00</lastmod>
+    <lastmod>2026-09-03T04:10:00-04:00</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.8</priority>
   </url>

@@ -15149,10 +15149,12 @@ mod sistema_visual_tests {
     /// on 2026-09-03 it was restored byte for byte from 1c4c33d9 and only the
     /// shared header, the shared footer and the RLUSD logo were grafted on.
     ///
-    /// It fails this gate by construction and is MEANT to: it ships its own
-    /// `<style>` and its own `:root`, it asks Google for two families, it has
-    /// no `<h1>`, and it carries far more than nine `<h2>`. Every one of those
-    /// is the design that was asked for, not drift.
+    /// It fails this gate by construction and is MEANT to, on three clauses:
+    /// it ships its own `<style>` and its own `:root` and asks Google for two
+    /// families; it has no `<h1>` at all, so there is nothing for the "nothing
+    /// between the header and the h1" check to measure; and it carries 24
+    /// `<h4>`, a level this gate bans outright. Every one of those is the
+    /// design that was asked for, not drift.
     ///
     /// What still holds it: [`la_portada_lleva_la_cabecera_y_el_pie_compartidos`]
     /// below, and the five `i18n_tests`, which never left it. Widening this

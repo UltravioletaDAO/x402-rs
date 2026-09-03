@@ -94,20 +94,29 @@ resource "aws_lb_listener_rule" "writes" {
   listener_arn = aws_lb_listener.https.arn
   priority     = 20
 
-  # Weights are the cutover switch. Today: everything still goes to `main`.
-  # Step 3 above flips these to writes = 100, main = 0.
+  # CUT OVER 2026-09-03. Write paths now go to `writes`; `main` carries reads
+  # only, which is what makes aws_cloudwatch_metric_alarm.latency_reads_p99's
+  # 2s threshold true rather than aspirational.
+  #
+  # Leaving this at the attach-only weights was NOT a safe resting state: that
+  # alarm measures the `main` group, and while `main` still received 100% of
+  # the writes it was a 2s threshold over a population containing 7s settles --
+  # the original bug, re-armed under a new name. It read as fine only because
+  # the cutover happened in a window with zero write traffic.
+  #
+  # Reverting is this edit backwards: main 100, writes 0.
   action {
     type = "forward"
 
     forward {
       target_group {
         arn    = aws_lb_target_group.main.arn
-        weight = 100
+        weight = 0
       }
 
       target_group {
         arn    = aws_lb_target_group.writes.arn
-        weight = 0
+        weight = 100
       }
 
       stickiness {

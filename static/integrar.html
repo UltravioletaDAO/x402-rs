@@ -54,9 +54,41 @@
 <section id="selling">
   <h3 data-i18n="seller.h">You are selling</h3>
   <p data-i18n="seller.p">Your endpoint answers <code>402</code> with the terms you accept. The buyer signs one of them and retries with the signature in a header. Your middleware hands that to this facilitator: <code>verify</code> to check it, <code>settle</code> to put it on chain. You never touch a private key, never pay gas, and never wait for a block before answering.</p>
-  <pre><code>npm install uvd-x402-sdk
-# or, for an axum server, the crate:
-# x402-axum</code></pre>
+  <p data-i18n="seller.world">Charging one route is this much code. The route and its price sit in the same file, three lines apart — here, five cents for <code>/world</code>:</p>
+  <pre><code>// npm install hono @hono/node-server uvd-x402-sdk
+import { Hono } from 'hono';
+import { serve } from '@hono/node-server';
+import { createHonoMiddleware } from 'uvd-x402-sdk';
+
+const app = new Hono();
+
+const paywall = createHonoMiddleware({
+  accepts: [{
+    network: 'base',
+    asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+    amount: '50000',
+    payTo: '0xYourWallet',
+  }],
+});
+
+app.get('/world', paywall, (c) =&gt; c.json({ hello: 'world' }));
+
+serve({ fetch: app.fetch, port: 3000 });</code></pre>
+  <p data-i18n="seller.world.py">The same route in Python, where the price is a decorator on the view:</p>
+  <pre><code># pip install flask uvd-x402-sdk
+from decimal import Decimal
+from flask import Flask, jsonify
+from uvd_x402_sdk.integrations import FlaskX402
+
+app = Flask(__name__)
+x402 = FlaskX402(app, recipient_address="0xYourWallet")
+
+@app.route("/world")
+@x402.require_payment(amount_usd=Decimal("0.05"))
+def world():
+    return jsonify({"hello": "world"})</code></pre>
+  <p class="muted" data-i18n="seller.amount">The two say the price differently and both are right: the TypeScript middleware takes the on-chain integer, so five cents of a six-decimal USDC is <code>50000</code>, while the Python decorator takes dollars and converts. Getting that wrong by a factor of a million is the second most common first-integration failure, after the domain name below.</p>
+  <p class="muted" data-i18n="seller.rust">For an axum server the same two calls are the <code>x402-axum</code> crate in this repository, with the middleware applied per route the same way.</p>
   <p class="muted" data-i18n="seller.note">The default facilitator in both SDKs is already this one. Nothing to configure until you want a different one.</p>
 </section>
 
@@ -231,6 +263,10 @@ const I18N = {
     lead:"You want to charge for an HTTP endpoint, or to pay for one, without either side holding an account with anybody. That is what this service is for, and using it is one configuration line: point your x402 middleware at this URL. There is no signup, no API key, no fee and no rate card.",
     "seller.h":"You are selling",
     "seller.p":"Your endpoint answers <code>402</code> with the terms you accept. The buyer signs one of them and retries with the signature in a header. Your middleware hands that to this facilitator: <code>verify</code> to check it, <code>settle</code> to put it on chain. You never touch a private key, never pay gas, and never wait for a block before answering.",
+    "seller.world":"Charging one route is this much code. The route and its price sit in the same file, three lines apart — here, five cents for <code>/world</code>:",
+    "seller.world.py":"The same route in Python, where the price is a decorator on the view:",
+    "seller.amount":"The two say the price differently and both are right: the TypeScript middleware takes the on-chain integer, so five cents of a six-decimal USDC is <code>50000</code>, while the Python decorator takes dollars and converts. Getting that wrong by a factor of a million is the second most common first-integration failure, after the domain name below.",
+    "seller.rust":"For an axum server the same two calls are the <code>x402-axum</code> crate in this repository, with the middleware applied per route the same way.",
     "seller.note":"The default facilitator in both SDKs is already this one. Nothing to configure until you want a different one.",
     "buyer.h":"You are buying",
     "buyer.p":"Read the <code>402</code>, sign an EIP-3009 authorization for one of the offered terms, retry with it. You spend the stablecoin and nothing else — the gas is the facilitator's problem. Ask before you pay: <code>/supported</code> says whether this facilitator can settle that scheme on that network at all.",
@@ -297,6 +333,10 @@ const I18N = {
     lead:"Querés cobrar por un endpoint HTTP, o pagar por uno, sin que ninguna de las dos partes tenga cuenta con nadie. Para eso está este servicio, y usarlo es una línea de configuración: apuntá tu middleware x402 a esta URL. No hay registro, ni API key, ni comisión, ni lista de precios.",
     "seller.h":"Estás vendiendo",
     "seller.p":"Tu endpoint contesta <code>402</code> con los términos que aceptás. El comprador firma uno de ellos y reintenta con la firma en un header. Tu middleware se la pasa a este facilitador: <code>verify</code> para chequearla, <code>settle</code> para ponerla en la cadena. Nunca tocás una clave privada, nunca pagás gas, y nunca esperás un bloque antes de contestar.",
+    "seller.world":"Cobrar una ruta es este tanto de código. La ruta y su precio viven en el mismo archivo, a tres líneas uno del otro — acá, cinco centavos por <code>/world</code>:",
+    "seller.world.py":"La misma ruta en Python, donde el precio es un decorador sobre la vista:",
+    "seller.amount":"Los dos dicen el precio distinto y los dos están bien: el middleware de TypeScript toma el entero on-chain, así que cinco centavos de un USDC de seis decimales son <code>50000</code>, mientras que el decorador de Python toma dólares y convierte. Equivocarse ahí por un factor de un millón es la segunda causa más común de que falle una primera integración, después del nombre de dominio de más abajo.",
+    "seller.rust":"Para un servidor axum las mismas dos llamadas son el crate <code>x402-axum</code> de este repositorio, con el middleware aplicado por ruta de la misma forma.",
     "seller.note":"El facilitador por defecto de los dos SDK ya es este. No hay nada que configurar hasta que quieras otro.",
     "buyer.h":"Estás comprando",
     "buyer.p":"Leé el <code>402</code>, firmá una autorización EIP-3009 para uno de los términos ofrecidos, reintentá con ella. Gastás la stablecoin y nada más — el gas es problema del facilitador. Preguntá antes de pagar: <code>/supported</code> dice si este facilitador puede liquidar ese esquema en esa red, para empezar.",

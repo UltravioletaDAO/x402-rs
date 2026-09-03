@@ -2086,6 +2086,7 @@ impl Facilitator for SolanaProvider {
             network: self.network().to_string(),
             scheme: Scheme::Exact,
             x402_version: X402Version::V1,
+            network_aliases: None,
             extra: Some(SupportedPaymentKindExtra {
                 fee_payer: Some(self.signer_address()),
                 tokens: None, // TODO: Add Solana token support

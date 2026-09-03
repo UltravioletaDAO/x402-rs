@@ -49,6 +49,22 @@
 //! answers 503 rather than forwarding again, so a stale endpoint can never
 //! build a loop between tasks.
 //!
+//! ## A process only stands in the election with an address peers can reach
+//!
+//! Because the winner's address is where every other task sends its EVM
+//! writes, standing in the election with a loopback address is not a degraded
+//! advertisement, it is a black hole. Measured on 2026-09-02: the binary run
+//! on a developer laptop, with the ambient AWS credentials, stood in this
+//! election against the real `facilitator-nonces` table. It lost on the
+//! conditional check, but had it won, production settles would have been
+//! forwarded to `127.0.0.1` on a machine nothing else can route to.
+//!
+//! So the guard is structural rather than a kill-switch somebody has to
+//! remember to set: if this process cannot determine an address, or the only
+//! one it has answers to itself alone, it never issues the conditional
+//! `PutItem` at all. It keeps serving every route and keeps writing its own
+//! transactions, exactly as it does with the lease disabled.
+//!
 //! # Failure posture
 //!
 //! Fail-OPEN. If DynamoDB cannot be reached we assume the writer role and log
@@ -209,6 +225,81 @@ async fn discover_own_endpoint() -> Option<String> {
     Some(format!("http://{ip}:{port}"))
 }
 
+/// Host of an endpoint, with scheme, credentials, port and path stripped.
+///
+/// Deliberately not a URL parser: the value can also come straight from an
+/// operator's `WRITER_LEASE_ENDPOINT`, which is not guaranteed to be a URL at
+/// all, and a parse failure must not be read as "reachable".
+fn endpoint_host(endpoint: &str) -> &str {
+    let rest = endpoint.trim();
+    let rest = rest.split_once("://").map_or(rest, |(_, r)| r);
+    let rest = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    let rest = rest.rsplit_once('@').map_or(rest, |(_, r)| r);
+
+    if let Some(after) = rest.strip_prefix('[') {
+        // `[::1]:8080`
+        return after.split_once(']').map_or(after, |(host, _)| host);
+    }
+    if rest.matches(':').count() > 1 {
+        // A bracket-less IPv6 literal. It cannot carry a port -- that is what
+        // the brackets are for -- so the whole string is the host, and
+        // splitting on the last colon would turn `::1` into `:`.
+        return rest;
+    }
+    match rest.rsplit_once(':') {
+        Some((host, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => host,
+        _ => rest,
+    }
+}
+
+/// Whether a peer running in another task could open a connection to this
+/// address.
+///
+/// Loopback and the unspecified address answer only inside the machine that
+/// published them. A hostname that is not an IP literal is taken at face
+/// value: an operator who points `WRITER_LEASE_ENDPOINT` at an internal DNS
+/// name means it, and this process is in no position to second-guess the
+/// VPC's resolver.
+fn is_peer_reachable(endpoint: &str) -> bool {
+    let host = endpoint_host(endpoint);
+    if host.is_empty() {
+        return false;
+    }
+    let host = host.to_ascii_lowercase();
+    // RFC 6761 reserves `localhost` and everything under it for the loopback.
+    if host == "localhost" || host.ends_with(".localhost") {
+        return false;
+    }
+    match host.parse::<std::net::IpAddr>() {
+        // `::ffff:127.0.0.1` is loopback wearing an IPv6 coat, and
+        // `Ipv6Addr::is_loopback` answers false for it.
+        Ok(std::net::IpAddr::V6(v6)) => match v6.to_ipv4_mapped() {
+            Some(v4) => !(v4.is_loopback() || v4.is_unspecified()),
+            None => !(v6.is_loopback() || v6.is_unspecified()),
+        },
+        Ok(ip) => !(ip.is_loopback() || ip.is_unspecified()),
+        Err(_) => true,
+    }
+}
+
+/// Why this process must not stand in the writer election, or `None` if it
+/// may.
+///
+/// Winning publishes an address that every other task then forwards its EVM
+/// writes to, so an address only this machine can reach routes production
+/// settlement into a hole. Deciding it here, from the address itself, is what
+/// makes the safe configuration structural instead of something an operator
+/// has to remember.
+fn lease_refusal(own_endpoint: Option<&str>) -> Option<String> {
+    match own_endpoint {
+        None => Some("this task could not determine an address other tasks can reach".to_string()),
+        Some(endpoint) if !is_peer_reachable(endpoint) => Some(format!(
+            "the only address this task can advertise, {endpoint}, answers on this machine alone"
+        )),
+        Some(_) => None,
+    }
+}
+
 /// Force the writer flag. Tests only.
 ///
 /// This is process-global, so a test that flips it must flip it back. CI runs
@@ -237,7 +328,12 @@ impl WriterLease {
     /// table as the replay-protection records: same key schema, same TTL
     /// attribute, same IAM statement (`dynamodb:PutItem` already covers a
     /// conditional put), so this needs no terraform change at all.
-    pub async fn from_env() -> Self {
+    /// `own_endpoint` is the address [`spawn`] already resolved and cleared
+    /// for the election. It is passed in rather than discovered here so that
+    /// the decision to stand at all happens before an AWS client exists: a
+    /// process that must not touch the lease table must not reach it for any
+    /// reason, credential resolution included.
+    pub async fn from_env(own_endpoint: Option<String>) -> Self {
         let table_name = std::env::var("NONCE_STORE_TABLE_NAME")
             .unwrap_or_else(|_| "facilitator-nonces".to_string());
         let config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
@@ -245,15 +341,10 @@ impl WriterLease {
         let owner = uuid::Uuid::new_v4().to_string();
 
         let endpoint = if forwarding_enabled() {
-            let discovered = discover_own_endpoint().await;
-            match discovered.as_deref() {
-                Some(e) => info!(endpoint = %e, "Writer lease will advertise this address"),
-                None => warn!(
-                    "Could not determine this task's address; peers cannot forward writes here \
-                     and will answer 503 while another task holds the lease"
-                ),
+            if let Some(e) = own_endpoint.as_deref() {
+                info!(endpoint = %e, "Writer lease will advertise this address");
             }
-            discovered
+            own_endpoint
         } else {
             info!("EVM writer forwarding disabled; non-holders will refuse writes");
             None
@@ -364,7 +455,24 @@ pub async fn spawn() -> Option<Arc<WriterLease>> {
         return None;
     }
 
-    let lease = Arc::new(WriterLease::from_env().await);
+    // Resolved BEFORE any AWS client exists. Winning the election publishes
+    // this address as the place every other task must forward its EVM writes
+    // to, so a process that has nothing routable to publish never issues the
+    // conditional PutItem at all -- not even to lose it.
+    let own_endpoint = discover_own_endpoint().await;
+    if let Some(reason) = lease_refusal(own_endpoint.as_deref()) {
+        warn!(
+            reason = %reason,
+            "Not standing in the EVM writer lease election. Winning it would route every other \
+             task's EVM settles to an address they cannot reach, so this process abstains by \
+             construction rather than by kill-switch. It keeps serving every route and keeps \
+             writing its own EVM transactions. Set WRITER_LEASE_ENDPOINT to an address peers \
+             can reach in order to take part."
+        );
+        return None;
+    }
+
+    let lease = Arc::new(WriterLease::from_env(own_endpoint).await);
     let loop_lease = Arc::clone(&lease);
 
     tokio::spawn(async move {
@@ -525,5 +633,111 @@ mod tests {
         std::env::remove_var("ECS_CONTAINER_METADATA_URI_V4");
         std::env::remove_var("ECS_CONTAINER_METADATA_URI");
         assert!(discover_own_endpoint().await.is_none());
+    }
+
+    /// The host has to survive every shape an endpoint can arrive in, because
+    /// a host this function gets wrong is a reachability verdict that is
+    /// wrong. `::1` is the trap: splitting on the last colon turns it into
+    /// `:`, which parses as no IP at all and would be waved through.
+    #[test]
+    fn endpoint_host_survives_every_shape() {
+        assert_eq!(endpoint_host("http://10.0.1.7:8080"), "10.0.1.7");
+        assert_eq!(endpoint_host("http://10.0.1.7"), "10.0.1.7");
+        assert_eq!(
+            endpoint_host("https://host.internal:8443/write"),
+            "host.internal"
+        );
+        assert_eq!(endpoint_host("10.0.1.7:8080"), "10.0.1.7");
+        assert_eq!(endpoint_host("http://[::1]:8080"), "::1");
+        assert_eq!(endpoint_host("http://[2600:1f18::1]:8080"), "2600:1f18::1");
+        assert_eq!(endpoint_host("::1"), "::1");
+        assert_eq!(endpoint_host("http://user:pw@10.0.1.7:8080"), "10.0.1.7");
+    }
+
+    /// (a) A loopback address is not an address another task can use, so this
+    /// process must not stand in the election at all -- winning it would send
+    /// production settles to a socket only this machine has.
+    #[test]
+    fn loopback_addresses_refuse_the_election() {
+        for endpoint in [
+            "http://127.0.0.1:8080",
+            "http://127.0.0.53:8080",
+            "http://localhost:8080",
+            "http://LocalHost:8080",
+            "http://box.localhost:8080",
+            "http://[::1]:8080",
+            "http://[::ffff:127.0.0.1]:8080",
+            "http://0.0.0.0:8080",
+            "http://[::]:8080",
+            "",
+        ] {
+            assert!(
+                lease_refusal(Some(endpoint)).is_some(),
+                "{endpoint:?} must not stand in the writer election"
+            );
+        }
+    }
+
+    /// (b) A routable address elects exactly as it did before the guard. This
+    /// is the half that fails if the guard is ever widened into "abstain
+    /// always", which would silently switch the lease off in production.
+    #[test]
+    fn routable_addresses_still_stand_in_the_election() {
+        for endpoint in [
+            "http://10.0.1.7:8080",
+            "http://172.31.4.9:8080",
+            "https://facilitator-writer.internal:8443",
+            "http://[2600:1f18::1]:8080",
+        ] {
+            assert!(
+                lease_refusal(Some(endpoint)).is_none(),
+                "{endpoint} is reachable by peers and must still elect"
+            );
+        }
+    }
+
+    /// The case that actually happened on 2026-09-02: a laptop with no ECS
+    /// metadata endpoint stood in the election against the production table.
+    /// No address means no election, without anyone having to remember a flag.
+    #[tokio::test]
+    async fn a_box_without_ecs_metadata_abstains_without_a_kill_switch() {
+        std::env::remove_var("WRITER_LEASE_ENDPOINT");
+        std::env::remove_var("ECS_CONTAINER_METADATA_URI_V4");
+        std::env::remove_var("ECS_CONTAINER_METADATA_URI");
+
+        assert!(is_enabled(), "the kill-switch is still ON by default");
+        assert!(lease_refusal(discover_own_endpoint().await.as_deref()).is_some());
+    }
+
+    /// (c) `WRITER_LEASE_ENDPOINT` is a way to declare an address, not a way
+    /// around the check. A hand-set loopback is still loopback -- otherwise
+    /// the obvious "make it work locally" fix would reopen the hole.
+    #[tokio::test]
+    async fn explicit_loopback_override_cannot_skip_the_check() {
+        std::env::set_var("WRITER_LEASE_ENDPOINT", "http://127.0.0.1:9999/");
+
+        let own = discover_own_endpoint().await;
+        assert_eq!(own.as_deref(), Some("http://127.0.0.1:9999"));
+        assert!(
+            lease_refusal(own.as_deref()).is_some(),
+            "WRITER_LEASE_ENDPOINT must not be a way around the reachability check"
+        );
+
+        std::env::remove_var("WRITER_LEASE_ENDPOINT");
+    }
+
+    /// An explicit `ENABLE_WRITER_LEASE=false` keeps meaning exactly what it
+    /// meant. The guard is a second, independent gate: it decides whether a
+    /// process may stand, never whether the mechanism exists.
+    #[test]
+    fn explicit_kill_switch_is_unchanged_by_the_reachability_guard() {
+        std::env::set_var("ENABLE_WRITER_LEASE", "false");
+        assert!(!is_enabled());
+        // ...and an address that would have been perfectly electable does not
+        // switch it back on.
+        assert!(lease_refusal(Some("http://10.0.1.7:8080")).is_none());
+
+        std::env::remove_var("ENABLE_WRITER_LEASE");
+        assert!(is_enabled());
     }
 }

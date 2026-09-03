@@ -737,6 +737,17 @@ pub struct SupportedPaymentKindV2 {
     /// Network in CAIP-2 format for v2, v1 string for v1
     pub network: String,
 
+    /// Every identifier naming the same chain as `network`, this one included.
+    ///
+    /// This is the type that actually reaches the wire: `/supported` converts
+    /// the v1 response through [`SupportedPaymentKindsResponseV1ToV2::to_v2`]
+    /// before serialising. A field added to the v1 struct alone is computed,
+    /// carried, and then silently dropped here -- which is exactly what
+    /// happened when `networkAliases` was first written, and it was only
+    /// visible by curling the running binary.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network_aliases: Option<Vec<String>>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extra: Option<SupportedPaymentKindExtra>,
 }
@@ -778,6 +789,7 @@ impl SupportedPaymentKindsResponseV2 {
                 x402_version: 1,
                 scheme: Scheme::Exact,
                 network: network.to_string(),
+                network_aliases: Some(vec![network.to_string(), network.to_caip2()]),
                 extra: None,
             });
         }
@@ -788,6 +800,7 @@ impl SupportedPaymentKindsResponseV2 {
                 x402_version: 2,
                 scheme: Scheme::Exact,
                 network: network.to_caip2().to_string(),
+                network_aliases: Some(vec![network.to_string(), network.to_caip2()]),
                 extra: None,
             });
         }
@@ -833,6 +846,7 @@ impl SupportedPaymentKindsResponseV1ToV2 for SupportedPaymentKindsResponse {
                 },
                 scheme: kind.scheme,
                 network: kind.network.clone(),
+                network_aliases: kind.network_aliases.clone(),
                 extra: kind.extra.clone(),
             })
             .collect();

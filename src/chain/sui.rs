@@ -910,6 +910,7 @@ impl Facilitator for SuiProvider {
             x402_version: X402Version::V1,
             scheme: Scheme::Exact,
             network: network_string.to_string(),
+            network_aliases: None,
             extra: Some(SupportedPaymentKindExtra {
                 fee_payer: Some(self.signer_address()),
                 tokens: None, // TODO: Add supported tokens list

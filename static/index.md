@@ -1,14 +1,15 @@
-# x402 Payment Facilitator — Ultravioleta DAO
+# Take payment for a single HTTP request — no account, no API key, no gas
 
-The settlement service behind the Ultravioleta DAO stack. It verifies x402 payment
-authorizations and submits them on-chain, so a buyer signs a stablecoin payment and
-never pays gas.
+This is the x402 payment facilitator Ultravioleta DAO runs: your endpoint answers 402,
+the caller signs a stablecoin authorization, and we put it on chain and pay the network
+fee — 0% facilitator fee, on 21 mainnets across 7 chain families.
 
 This host is a **facilitator**, not a paid API. It charges nothing for its own routes;
 the money that moves is the buyer's payment going to the seller.
 
 - **Networks:** 21 mainnets + 18 testnets (39 identifiers) across 7 chain families
-- **Stablecoins:** USDC, USDT, EURC, AUSD, PYUSD, USDG
+- **Stablecoins:** USDC, USDT, EURC, AUSD, PYUSD, USDG, RLUSD — plus native XRP on XRPL.
+  `GET /supported` is the only list that is true today; this one is a snapshot.
 - **Schemes:** `exact`, `upto`, `escrow`, `commerce`, `fhe-transfer`
 - **Release:** `GET /version`
 

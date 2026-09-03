@@ -614,6 +614,28 @@ const ERC8004_HTML: &str = include_str!("../static/erc8004.html");
 /// document itself opens in English like every other page here.
 const INTEGRAR_HTML: &str = include_str!("../static/integrar.html");
 
+/// `static/uv.css`: the one visual system behind every page here.
+///
+/// Declared next to the ten embedded documents for the same reason they are:
+/// its handler reads it AND the sheet's own tests read it, and two
+/// `include_str!` of one file is how one of the two ends up serving a stale
+/// copy.
+///
+/// Before this, every page carried its own `<style>`: 60,617 bytes of CSS
+/// spread over ten blocks and ten different `:root` declarations (measured
+/// 2026-09-03).
+const UV_CSS: &str = include_str!("../static/uv.css");
+
+/// `static/x402.js`: the network-name -> icon map, declared ONCE for the three
+/// surfaces that consume it (the wall on `/`, the first column of `/networks`,
+/// and inline use inside prose). A copy per page is exactly what the
+/// centralised-configuration rule forbids.
+const X402_JS: &str = include_str!("../static/x402.js");
+
+/// The licence of the two fonts. OFL 1.1 clause 2 requires it to travel with
+/// every redistributed font file, and this binary redistributes two.
+const OFL_TXT: &str = include_str!("../static/fonts/OFL.txt");
+
 /// `Content-Language` for every human page.
 ///
 /// `en`, not `en, es`, and the difference is not pedantry. These pages carry
@@ -869,6 +891,15 @@ where
         // rate limit -- see that function for why.
         .route("/logo.png", get(get_logo))
         .route("/favicon.ico", get(get_favicon))
+        // The visual system and its two fonts. These live here and NOT in
+        // `agentic_routes()`: `the_table_covers_every_route` parses that
+        // function and would demand five rows in `SURFACES` for them --
+        // `/uv.css` is not an agentic surface.
+        .route("/uv.css", get(get_uv_css))
+        .route("/x402.js", get(get_x402_js))
+        .route("/fonts/v1/uv-sans.woff2", get(get_font_sans))
+        .route("/fonts/v1/uv-mono.woff2", get(get_font_mono))
+        .route("/fonts/v1/OFL.txt", get(get_font_license))
         .route("/avalanche.png", get(get_avalanche_logo))
         .route("/base.png", get(get_base_logo))
         .route("/celo.png", get(get_celo_logo))
@@ -2477,6 +2508,93 @@ pub async fn get_integrar_page() -> impl IntoResponse {
 #[instrument(skip_all)]
 pub async fn get_bazaar() -> impl IntoResponse {
     html_page(BAZAAR_HTML)
+}
+
+/// `GET /uv.css`: the only visual system of this site.
+///
+/// CACHING: one hour, and NOT `immutable`. The HTML that uses it is embedded in
+/// this same binary and changes with every deploy; a sheet cached for a year
+/// against new HTML breaks the site for anyone who already visited. The fonts
+/// DO go `immutable`, because their URL carries a version: there a change of
+/// content is a change of route.
+#[instrument(skip_all)]
+pub async fn get_uv_css() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [
+            ("content-type", "text/css; charset=utf-8"),
+            ("cache-control", "public, max-age=3600"),
+        ],
+        UV_CSS,
+    )
+}
+
+/// `GET /x402.js`: the icon map and the chip constructor.
+///
+/// Blocking, not decorative: without it `chipRed is not defined` and the
+/// 39-row table of `/networks` never draws.
+#[instrument(skip_all)]
+pub async fn get_x402_js() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [
+            ("content-type", "application/javascript; charset=utf-8"),
+            ("cache-control", "public, max-age=3600"),
+        ],
+        X402_JS,
+    )
+}
+
+/// `GET /fonts/v1/uv-sans.woff2`: the text variable font, embedded in the binary.
+///
+/// Embedded rather than fetched from Google Fonts because that put a third
+/// party in the critical render path of the landing page, and the other eight
+/// pages loaded no font at all and rendered in the system one -- which is
+/// exactly what the owner saw and called generic.
+///
+/// The `/v1/` segment is deliberate. These go out `immutable` for a year;
+/// over a stable name that is a trap, because a re-subset could never reach a
+/// reader who already visited. With a version in the path, new bytes are a new
+/// URL.
+#[instrument(skip_all)]
+pub async fn get_font_sans() -> impl IntoResponse {
+    let bytes = include_bytes!("../static/fonts/uv-sans.woff2");
+    (
+        StatusCode::OK,
+        [
+            ("content-type", "font/woff2"),
+            ("cache-control", "public, max-age=31536000, immutable"),
+        ],
+        bytes.as_slice(),
+    )
+}
+
+/// `GET /fonts/v1/uv-mono.woff2`: the variable font for code, addresses and figures.
+#[instrument(skip_all)]
+pub async fn get_font_mono() -> impl IntoResponse {
+    let bytes = include_bytes!("../static/fonts/uv-mono.woff2");
+    (
+        StatusCode::OK,
+        [
+            ("content-type", "font/woff2"),
+            ("cache-control", "public, max-age=31536000, immutable"),
+        ],
+        bytes.as_slice(),
+    )
+}
+
+/// `GET /fonts/v1/OFL.txt`: the licence OFL 1.1 clause 2 requires to travel
+/// with a redistributed font.
+#[instrument(skip_all)]
+pub async fn get_font_license() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [
+            ("content-type", "text/plain; charset=utf-8"),
+            ("cache-control", "public, max-age=31536000, immutable"),
+        ],
+        OFL_TXT,
+    )
 }
 
 /// `GET /logo.png`: Returns Ultravioleta DAO logo.
@@ -14176,5 +14294,358 @@ mod i18n_tests {
                 );
             }
         }
+    }
+}
+
+/// The visual system, as a gate.
+///
+/// Every clause here is one of the six in the design principle, turned into
+/// something that fails a build. It lands in the LAST commit of the series on
+/// purpose: against the ten pages as they were on 2026-09-02 it started at 55
+/// violations and stayed red until all ten were migrated, and a `cargo test`
+/// that is red for everyone -- the owner included -- for the length of a
+/// refactor is not a gate, it is a broken build with a good excuse.
+///
+/// What it does NOT check is as deliberate as what it does: nothing here reads
+/// a colour, a pixel value or a piece of copy. Those are judgement, and a test
+/// that pins them turns every future edit into a test edit.
+#[cfg(test)]
+mod sistema_visual_tests {
+    use super::{
+        BAZAAR_HTML, DX402_HTML, ERC8004_HTML, EVENTS_VIEWER_HTML, INDEX_HTML, INTEGRAR_HTML,
+        MCP_HTML, NETWORKS_HTML, STATS_HTML, UV_CSS, X402_HTML,
+    };
+    use std::collections::BTreeSet;
+
+    /// The ten documents, with the `data-page` slug each one must declare.
+    ///
+    /// Ten and not eight. `/stats` and `/events/live` are not destinations on
+    /// the eight-page map the owner settled on, and they carry no
+    /// `aria-current` -- but they are served by this binary and they are the
+    /// door divergence would come back through, so they are in the gate.
+    const PAGINAS: &[(&str, &str, &str)] = &[
+        ("static/index.html", "index", INDEX_HTML),
+        ("static/integrar.html", "integrar", INTEGRAR_HTML),
+        ("static/x402.html", "x402", X402_HTML),
+        ("static/mcp.html", "mcp", MCP_HTML),
+        ("static/networks.html", "networks", NETWORKS_HTML),
+        ("static/erc8004.html", "erc8004", ERC8004_HTML),
+        ("static/dx402.html", "dx402", DX402_HTML),
+        ("static/bazaar.html", "bazaar", BAZAAR_HTML),
+        ("static/stats.html", "stats", STATS_HTML),
+        ("static/events-viewer.html", "events-viewer", EVENTS_VIEWER_HTML),
+    ];
+
+    /// The document with every `<script>` body removed.
+    ///
+    /// Every check below is about the document a reader and a crawler get. A
+    /// page is free to build markup in JavaScript and to talk about `<style>`
+    /// in a comment; what it may not do is ship either in the HTML.
+    fn sin_scripts(html: &str) -> String {
+        let mut fuera = String::with_capacity(html.len());
+        let mut resto = html;
+        while let Some(i) = resto.find("<script") {
+            fuera.push_str(&resto[..i]);
+            match resto[i..].find("</script>") {
+                Some(j) => resto = &resto[i + j + "</script>".len()..],
+                None => {
+                    resto = "";
+                    break;
+                }
+            }
+        }
+        fuera.push_str(resto);
+        fuera
+    }
+
+    fn sin_blancos(s: &str) -> String {
+        s.chars().filter(|c| !c.is_whitespace()).collect()
+    }
+
+    /// The sheet with its `/* ... */` comments removed.
+    ///
+    /// Both checks below scan for shapes that also appear in prose: the sheet
+    /// explains, in a comment, the four invented tokens it exists to prevent.
+    /// Counting those would fail the file for documenting its own reason.
+    fn sin_comentarios(css: &str) -> String {
+        let mut fuera = String::with_capacity(css.len());
+        let mut resto = css;
+        while let Some(i) = resto.find("/*") {
+            fuera.push_str(&resto[..i]);
+            match resto[i..].find("*/") {
+                Some(j) => resto = &resto[i + j + 2..],
+                None => {
+                    resto = "";
+                    break;
+                }
+            }
+        }
+        fuera.push_str(resto);
+        fuera
+    }
+
+    /// The value of a scale token, in rem.
+    ///
+    /// The sheet declares them in rem on purpose: in px the browser's text zoom
+    /// stops working, and that is real accessibility rather than a preference.
+    /// An earlier revision of this test parsed `px` and would have panicked on
+    /// the sheet it was written to guard.
+    fn rem(css: &str, token: &str) -> f64 {
+        let plano = sin_blancos(css);
+        let aguja = format!("{token}:");
+        let i = plano
+            .find(&aguja)
+            .unwrap_or_else(|| panic!("uv.css no declara {token}"))
+            + aguja.len();
+        let resto = &plano[i..];
+        let fin = resto.find("rem").expect("el token tiene que estar en rem");
+        resto[..fin].parse().expect("valor no numerico")
+    }
+
+    /// Clause 2: one scale and one palette, served from a single file.
+    #[test]
+    fn ninguna_pagina_declara_tokens_ni_una_familia_tipografica() {
+        for (nombre, _, html) in PAGINAS {
+            let doc = sin_scripts(html);
+            for prohibido in ["<style", ":root", "font-family", "fonts.googleapis.com"] {
+                assert!(
+                    !doc.contains(prohibido),
+                    "{nombre} still ships `{prohibido}`. The sheet is the only place \
+                     that declares one; a second `:root` is how ten pages ended up \
+                     with ten palettes."
+                );
+            }
+            assert_eq!(
+                doc.matches("<link rel=\"stylesheet\" href=\"/uv.css\">").count(),
+                1,
+                "{nombre} does not link /uv.css exactly once, written literally"
+            );
+            assert!(
+                doc.contains(&format!("<body data-page=\"{}\">", _slug(nombre))),
+                "{nombre} has no <body data-page> -- the sheet scopes page rules on it"
+            );
+        }
+    }
+
+    fn _slug(nombre: &str) -> &'static str {
+        PAGINAS
+            .iter()
+            .find(|(n, _, _)| n == &nombre)
+            .map(|(_, s, _)| *s)
+            .expect("pagina desconocida")
+    }
+
+    /// Clauses 3 and 4: exactly one `h1`, and nothing between the header and it.
+    #[test]
+    fn cada_pagina_abre_con_su_h1_y_nada_se_interpone() {
+        for (nombre, _, html) in PAGINAS {
+            let doc = sin_scripts(html);
+            assert_eq!(
+                doc.matches("<h1").count(),
+                1,
+                "{nombre} does not have exactly one <h1>"
+            );
+            let entre = doc
+                .split_once("</header>")
+                .and_then(|(_, resto)| resto.split_once("<h1"))
+                .map(|(medio, _)| medio.to_string())
+                .unwrap_or_else(|| panic!("{nombre}: no <h1> after </header>"));
+            for etiqueta in ["<div", "<img", "<p ", "<nav", "<ul", "<table", "<pre"] {
+                assert!(
+                    !entre.contains(etiqueta),
+                    "{nombre} puts `{etiqueta}` between </header> and <h1>. The first \
+                     block of a page answers what it does and what to type; the landing \
+                     had four such elements because the <h1> did not exist at all."
+                );
+            }
+        }
+    }
+
+    /// Clause 3 again, on the sheet: the `h1` never measures under twice the body.
+    #[test]
+    fn el_h1_mide_por_lo_menos_el_doble_del_cuerpo() {
+        let razon = rem(UV_CSS, "--fs-600") / rem(UV_CSS, "--fs-300");
+        assert!(
+            razon >= 2.0,
+            "--fs-600 / --fs-300 = {razon}, under 2. A subpage title that does not \
+             read as a title is how six of these pages opened with a 16px h1."
+        );
+    }
+
+    /// At most nine `h2` in a document, and no `h4` anywhere.
+    ///
+    /// Nine is not a style rule: past it a page has stopped being a document
+    /// and become a directory, and the reader is scrolling a list of names.
+    /// `h4` is banned outright -- a level nobody reaches from a level-2 skim.
+    #[test]
+    fn el_arbol_del_documento_no_pasa_de_nueve_h2_y_no_tiene_h4() {
+        for (nombre, _, html) in PAGINAS {
+            let doc = sin_scripts(html);
+            let h2 = doc.matches("<h2").count();
+            assert!(h2 <= 9, "{nombre} has {h2} <h2>, over the cap of nine");
+            assert_eq!(doc.matches("<h4").count(), 0, "{nombre} still has an <h4>");
+        }
+    }
+
+    /// The ten headers are the SAME header.
+    ///
+    /// This is the one check that keeps the six different navigations from
+    /// growing back. `aria-current` is normalised away because it is the one
+    /// attribute that is meant to differ.
+    #[test]
+    fn las_diez_cabeceras_son_la_misma() {
+        let mut vistas: BTreeSet<String> = BTreeSet::new();
+        for (nombre, _, html) in PAGINAS {
+            let cabecera = html
+                .split_once("<header class=\"nav\">")
+                .and_then(|(_, resto)| resto.split_once("</header>"))
+                .map(|(dentro, _)| dentro.replace(" aria-current=\"page\"", ""))
+                .unwrap_or_else(|| panic!("{nombre} has no shared <header class=\"nav\">"));
+            assert_eq!(
+                cabecera.matches("data-nav=\"/").count(),
+                8,
+                "{nombre} does not carry the eight destinations of the map"
+            );
+            assert!(
+                html.matches("aria-current=\"page\"").count() <= 1,
+                "{nombre} marks more than one nav item as the current page"
+            );
+            vistas.insert(sin_blancos(&cabecera));
+        }
+        assert_eq!(
+            vistas.len(),
+            1,
+            "the ten headers are not identical: {} distinct shapes",
+            vistas.len()
+        );
+    }
+
+    /// The sheet asks for the fonts on the path the binary actually serves.
+    ///
+    /// This is the defect that sank the whole thing once: the delivered sheet
+    /// pointed at `/fonts/`, both faces answered 404, and the site fell back to
+    /// `system-ui` -- which is, word for word, what the owner complained about.
+    #[test]
+    fn la_hoja_pide_las_fuentes_donde_el_binario_las_sirve() {
+        for cara in ["/fonts/v1/uv-sans.woff2", "/fonts/v1/uv-mono.woff2"] {
+            assert!(
+                UV_CSS.contains(cara),
+                "uv.css does not ask for {cara}; the face would 404 and the page \
+                 would render in the system font"
+            );
+        }
+        assert!(
+            !UV_CSS.contains("url(\"/fonts/uv-"),
+            "uv.css still has an unversioned font URL. The faces go out immutable \
+             for a year: over a stable name that is unfixable from the server."
+        );
+    }
+
+    /// The icon does not double its own padding.
+    ///
+    /// The margin lives INSIDE the PNG (glyph 72 on a 96 canvas). An extra
+    /// `inset` on a 32px chip leaves the glyph at 18px -- the size the owner
+    /// described as tucked away out of sight.
+    #[test]
+    fn el_chip_no_duplica_el_aire_del_png() {
+        let bloque = UV_CSS
+            .split_once(".chip-red > img")
+            .map(|(_, resto)| resto.split_once('}').map(|(d, _)| d).unwrap_or(""))
+            .unwrap_or("");
+        assert!(
+            sin_blancos(bloque).contains("inset:0"),
+            "the chip image is not at `inset: 0`; the glyph comes out at 18px"
+        );
+    }
+
+    /// Clauses 1 and 6, measured on the sheet.
+    #[test]
+    fn la_hoja_tiene_un_solo_eje_una_paleta_y_un_solo_borde() {
+        let limpio = sin_comentarios(UV_CSS);
+        assert_eq!(
+            limpio.matches("text-align: center").count(),
+            0,
+            "uv.css centres something. Everything lines up on one left edge; the \
+             only exception is a numeric cell, which goes right."
+        );
+        // A four-sided border on its OWN line at the top level of a rule is a
+        // content box, and there is exactly one: `.group`. A border written
+        // inline among other declarations belongs to a form control or to the
+        // one dialog that genuinely floats -- a control without an edge stops
+        // reading as a control, and neither of those encloses page content.
+        let bordes = limpio
+            .lines()
+            .filter(|l| l.starts_with("  border: 1px"))
+            .count();
+        assert_eq!(
+            bordes, 1,
+            "uv.css declares {bordes} content boxes with a four-sided border; \
+             exactly one is allowed (.group), and it is only valid with two or \
+             more children"
+        );
+        let mut hexes: BTreeSet<&str> = BTreeSet::new();
+        let bytes = limpio.as_bytes();
+        for (i, c) in bytes.iter().enumerate() {
+            if *c == b'#' && i + 7 <= bytes.len() {
+                let posible = &limpio[i + 1..i + 7];
+                if posible.chars().all(|c| c.is_ascii_hexdigit()) {
+                    hexes.insert(posible);
+                }
+            }
+        }
+        assert!(
+            hexes.len() <= 10,
+            "uv.css uses {} distinct hex colours, over the palette of 10: {:?}",
+            hexes.len(),
+            hexes
+        );
+    }
+
+    /// Every `var()` in the sheet points at a token the sheet declares.
+    ///
+    /// This one is not pedantry: `gap: var(--esp-2)` with `--esp-2` undefined
+    /// invalidates the whole declaration and leaves the gap at zero, silently.
+    /// Four such tokens shipped in the delivered markup.
+    #[test]
+    fn ningun_var_apunta_a_un_token_que_no_existe() {
+        let limpio = sin_comentarios(UV_CSS);
+        let mut declarados: BTreeSet<&str> = BTreeSet::new();
+        for trozo in limpio.split("--").skip(1) {
+            if let Some((nombre, _)) = trozo.split_once(':') {
+                if !nombre.is_empty() && nombre.chars().all(|c| c.is_alphanumeric() || c == '-') {
+                    declarados.insert(nombre);
+                }
+            }
+        }
+        let mut faltan: BTreeSet<&str> = BTreeSet::new();
+        for trozo in limpio.split("var(--").skip(1) {
+            let nombre = trozo
+                .split(|c: char| c == ')' || c == ',' || c.is_whitespace())
+                .next()
+                .unwrap_or("");
+            if !nombre.is_empty() && !declarados.contains(nombre) {
+                faltan.insert(nombre);
+            }
+        }
+        assert!(
+            faltan.is_empty(),
+            "uv.css uses tokens it never declares: {faltan:?}. The declaration they \
+             sit in is dropped whole, with no warning anywhere."
+        );
+    }
+
+    /// The sheet stays a sheet.
+    ///
+    /// The budget is 40 KB and not the 16 KB the original brief asked for: the
+    /// system alone measured 18,641 B before a byte of page CSS moved into it,
+    /// so 16 was unreachable by construction. This number is here to be raised
+    /// deliberately rather than drifted past.
+    #[test]
+    fn la_hoja_no_se_vuelve_un_bundle() {
+        assert!(
+            UV_CSS.len() <= 40_960,
+            "uv.css is {} B, over the 40 KB budget",
+            UV_CSS.len()
+        );
     }
 }

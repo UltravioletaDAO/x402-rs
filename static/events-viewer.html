@@ -3,108 +3,109 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title data-i18n="title">x402 · /events live</title>
+<title data-i18n="title">x402 facilitator - live events</title>
 <meta name="description" content="The live x402 traffic stream: one message per verify and settle, straight off the wire.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://facilitator.ultravioletadao.xyz/events/live">
 <meta property="og:title" content="x402 · /events live">
 <meta property="og:description" content="The live x402 traffic stream: one message per verify and settle, straight off the wire.">
 <meta property="og:image" content="https://facilitator.ultravioletadao.xyz/logo.png">
-<style>
-  :root{
-    --bg:#12101a; --panel:#1a1726; --line:#2c2740; --txt:#e8e4f5;
-    --dim:#8a83a6; --ok:#5ee6a8; --bad:#ff6b6b; --amber:#e0a53f; --uv:#b496ff;
-  }
-  *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--txt);
-       font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-  header{display:flex;gap:14px;align-items:center;flex-wrap:wrap;
-         padding:10px 14px;background:var(--panel);border-bottom:1px solid var(--line);
-         position:sticky;top:0;z-index:2}
-  h1{font-size:14px;margin:0;font-weight:600;color:var(--uv)}
-  .dot{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:6px}
-  .live .dot{background:var(--ok);box-shadow:0 0 8px var(--ok)}
-  .down .dot{background:var(--bad)}
-  .wait .dot{background:var(--amber)}
-  #status{font-weight:600}
-  .stat{color:var(--dim)}
-  .stat b{color:var(--txt);font-weight:600}
-  button,select{background:#241f36;color:var(--txt);border:1px solid var(--line);
-                border-radius:5px;padding:4px 9px;font:inherit;cursor:pointer}
-  main{padding:10px 14px}
-  table{width:100%;border-collapse:collapse}
-  th{text-align:left;color:var(--dim);font-weight:500;padding:5px 8px;
-     border-bottom:1px solid var(--line);font-size:11px;text-transform:uppercase;
-     letter-spacing:.04em}
-  td{padding:5px 8px;border-bottom:1px solid #221e33;vertical-align:top;
-     white-space:nowrap}
-  tr.settle td{background:rgba(94,230,168,.05)}
-  .kind{font-weight:600}
-  .kind.settle{color:var(--ok)} .kind.verify{color:var(--uv)}
-  .no{color:var(--bad);font-weight:600}
-  a{color:var(--amber)}
-  .mono{color:var(--dim)}
-  .res{color:var(--uv);max-width:34ch;overflow:hidden;text-overflow:ellipsis}
-  pre{margin:0;padding:10px 14px;background:#0d0b14;border:1px solid var(--line);
-      border-radius:6px;overflow-x:auto;white-space:pre-wrap;word-break:break-all;
-      color:#c9c2e6;font-size:12px}
-  .hint{color:var(--dim);padding:10px 14px;line-height:1.7;max-width:78ch}
-  .hint b{color:var(--amber)}
-  #empty{color:var(--dim);padding:26px 14px;text-align:center}
-  .langsw{margin-left:auto;display:flex;gap:4px}
-  .langsw button{padding:3px 8px;font-size:11px;opacity:.55}
-  .langsw button.active{opacity:1;border-color:var(--uv);color:var(--uv)}
-</style>
+<link rel="stylesheet" href="/uv.css">
 </head>
-<body>
+<body data-page="events-viewer">
 
-<header id="bar" class="wait">
-  <h1>x402 · /events</h1>
-  <span id="status"><span class="dot"></span></span>
-  <span class="stat"><span data-i18n="events">eventos</span> <b id="n">0</b></span>
-  <span class="stat">settles <b id="ns">0</b></span>
-  <span class="stat"><span data-i18n="last">último</span> <b id="last">—</b></span>
-  <select id="view">
-    <option value="table" data-i18n="viewTable">tabla</option>
-    <option value="raw" data-i18n="viewRaw">raw (tal cual el cable)</option>
-  </select>
-  <button id="clear" data-i18n="clear">limpiar</button>
-  <button id="pause" data-i18n="pause">pausar</button>
-  <span class="langsw">
-    <button data-lang="en">EN</button><button data-lang="es">ES</button>
-  </span>
+<header class="nav">
+  <a class="brand" href="/">
+    <img src="/logo.png" alt="" width="69" height="20" decoding="async">
+    <span>x402 facilitator</span>
+  </a>
+
+  <nav class="nav-links" aria-label="Site">
+    <ul>
+      <li><a href="/" data-nav="/" data-i18n="nav.home">Overview</a></li>
+      <li><a href="/integrar" data-nav="/integrar" data-i18n="nav.integrate">Integrate</a></li>
+      <li><a href="/x402" data-nav="/x402" data-i18n="nav.x402">x402</a></li>
+      <li><a href="/mcp" data-nav="/mcp" data-i18n="nav.mcp">MCP</a></li>
+      <li><a href="/networks" data-nav="/networks" data-i18n="nav.networks">Networks</a></li>
+      <li><a href="/erc8004" data-nav="/erc8004" data-i18n="nav.erc8004">ERC-8004</a></li>
+      <li><a href="/dx402" data-nav="/dx402" data-i18n="nav.dx402">DX402</a></li>
+      <li><a href="/bazaar" data-nav="/bazaar" data-i18n="nav.bazaar">Bazaar</a></li>
+    </ul>
+  </nav>
+
+  <div class="lang" role="group" aria-label="Language">
+    <button type="button" data-lang="en" aria-pressed="true">EN</button>
+    <button type="button" data-lang="es" aria-pressed="false">ES</button>
+  </div>
 </header>
 
-<main>
-  <div id="empty" data-i18n-html="empty">
-    Conectado y esperando. <b>Silencio no es falla</b> — el riel mide ~1,3 settles/min
-    y tiene tramos de media hora en cero.
-  </div>
+<main class="wrap">
+  <section class="answer">
+    <h1 data-i18n="h1">Watch payments arrive as they happen</h1>
+    <p class="deck" data-i18n="lead">One SSE message per verify and per settle, straight off the wire. It is a live hint and not a ledger: nothing is replayed, and operations that fail are not published.</p>
+    <p class="meta" id="bar">
+      <span class="dot" id="dot"></span><b id="status"></b>
+      &middot; <span data-i18n="events">events</span> <b id="n">0</b>
+      &middot; settles <b id="ns">0</b>
+      &middot; <span data-i18n="last">last</span> <b id="last">-</b>
+    </p>
+    <div class="controls">
+      <select id="view">
+        <option value="table" data-i18n="viewTable">table</option>
+        <option value="raw" data-i18n="viewRaw">raw (straight off the wire)</option>
+      </select>
+      <button type="button" id="clear" data-i18n="clear">clear</button>
+      <button type="button" id="pause" data-i18n="pause">pause</button>
+    </div>
+  </section>
+
+  <p class="muted" id="empty" data-i18n-html="empty">Connected and waiting. <b>Silence is not a failure</b> — the rail measures ~1.3 settles/min and goes half an hour at zero.</p>
   <table id="tbl" hidden>
     <thead><tr>
-      <th data-i18n="th.time">hora</th><th data-i18n="th.kind">tipo</th>
-      <th data-i18n="th.network">red</th><th data-i18n="th.ok">ok</th>
-      <th data-i18n="th.endpoint">endpoint</th><th data-i18n="th.seller">vendedor</th>
-      <th data-i18n="th.payer">payer</th><th data-i18n="th.amount">monto</th>
+      <th data-i18n="th.time">time</th><th data-i18n="th.kind">kind</th>
+      <th data-i18n="th.network">network</th><th data-i18n="th.ok">ok</th>
+      <th data-i18n="th.endpoint">endpoint</th><th data-i18n="th.seller">seller</th>
+      <th data-i18n="th.payer">payer</th><th data-i18n="th.amount">amount</th>
       <th data-i18n="th.tx">tx</th>
     </tr></thead>
     <tbody id="rows"></tbody>
   </table>
   <pre id="raw" hidden></pre>
+
+  <p class="note warn" data-i18n-html="hint"><b>What this page CANNOT show you:</b> the keepalives. The facilitator sends an SSE comment every 15s to hold the connection open, but <code>EventSource</code> never exposes those to JavaScript. That is why the indicator above is the only thing separating «nothing is happening» from «the connection dropped» — watch it, not the empty list.<br><br><b>The stream is lossy on purpose:</b> it will never slow down or fail a payment so an observer can keep up. An event that happened while you were disconnected exists nowhere. Treat it as a live hint, <b>not as a ledger</b> — the chain is the source of truth. And operations that <em>fail</em> are not published, so a rail that looks healthy here has not been shown to be healthy.</p>
 </main>
 
-<p class="hint" data-i18n-html="hint">
-  <b>Lo que esta página NO puede mostrarte:</b> los keepalive. El facilitador manda un
-  comentario SSE cada 15 s para sostener la conexión, pero <code>EventSource</code> no
-  los expone a JavaScript. Por eso el indicador de arriba es lo único que distingue
-  «no está pasando nada» de «se cayó la conexión» — míralo a él, no a la lista vacía.
-  <br><br>
-  <b>El stream es lossy a propósito:</b> nunca frena ni hace fallar un pago para que un
-  observador se ponga al día. Un evento que ocurrió mientras no estabas conectado no
-  existe en ningún lado. Sirve como pista en vivo, <b>no como libro contable</b> —
-  la cadena es la fuente de verdad. Y las operaciones que <em>fallan</em> no se publican,
-  así que un riel que se ve sano aquí no está probado sano.
-</p>
+<footer class="footer">
+  <nav class="next" aria-label="Where to go next">
+    <p class="eyebrow" data-i18n="next.h">And after this</p>
+    <ul>
+      <li>
+        <a href="/x402" data-i18n="next.x402">x402</a>
+        <span data-i18n="next.x402.why">what each message on the wire is</span>
+      </li>
+      <li>
+        <a href="/integrar" data-i18n="next.integrar">Integrate</a>
+        <span data-i18n="next.integrar.why">making your own endpoint produce these</span>
+      </li>
+    </ul>
+  </nav>
+
+  <div class="meta">
+    <p data-i18n="footer.by">Ultravioleta DAO · x402 payment facilitator · 0% fee</p>
+    <ul class="meta-links">
+      <li><a href="/health">/health</a></li>
+      <li><a href="/version">/version</a></li>
+      <li><a href="/stats">/stats</a></li>
+      <li><a href="/events/live">/events/live</a></li>
+      <li><a href="/supported">/supported</a></li>
+      <li><a href="/docs">/docs</a></li>
+      <li><a href="/openapi.json">/openapi.json</a></li>
+      <li><a href="/llms.txt">/llms.txt</a></li>
+      <li><a href="/skill.md">/skill.md</a></li>
+      <li><a href="https://github.com/UltravioletaDAO/x402-rs" rel="noopener">GitHub</a></li>
+    </ul>
+  </div>
+</footer>
 
 <script>
 // ---------------------------------------------------------------------------
@@ -115,7 +116,24 @@
 // ---------------------------------------------------------------------------
 const I18N = {
   en: {
-    title:"x402 · /events live", events:"events", last:"last",
+    "footer.by":"Ultravioleta DAO · x402 payment facilitator · 0% fee",
+    "h1":"Watch payments arrive as they happen",
+    "lead":"One SSE message per verify and per settle, straight off the wire. It is a live hint and not a ledger: nothing is replayed, and operations that fail are not published.",
+    "nav.bazaar":"Bazaar",
+    "nav.dx402":"DX402",
+    "nav.erc8004":"ERC-8004",
+    "nav.home":"Overview",
+    "nav.integrate":"Integrate",
+    "nav.mcp":"MCP",
+    "nav.networks":"Networks",
+    "nav.x402":"x402",
+    "next.h":"And after this",
+    "next.integrar":"Integrate",
+    "next.integrar.why":"making your own endpoint produce these",
+    "next.x402":"x402",
+    "next.x402.why":"what each message on the wire is",
+    "title":"x402 facilitator - live events",
+    events:"events", last:"last",
     viewTable:"table", viewRaw:"raw (straight off the wire)",
     clear:"clear", pause:"pause", resume:"resume",
     connecting:"connecting…", live:"live", down:"no connection · retrying…",
@@ -135,7 +153,24 @@ const I18N = {
          "are not published, so a rail that looks healthy here has not been shown to be healthy.",
   },
   es: {
-    title:"x402 · /events en vivo", events:"eventos", last:"último",
+    "footer.by":"Ultravioleta DAO · facilitador de pagos x402 · 0% de comisión",
+    "h1":"Mirá los pagos llegar mientras pasan",
+    "lead":"Un mensaje SSE por cada verify y cada settle, tal cual sale del cable. Es una pista en vivo y no un libro contable: nada se reenvía, y las operaciones que fallan no se publican.",
+    "nav.bazaar":"Bazar",
+    "nav.dx402":"DX402",
+    "nav.erc8004":"ERC-8004",
+    "nav.home":"Resumen",
+    "nav.integrate":"Integrar",
+    "nav.mcp":"MCP",
+    "nav.networks":"Redes",
+    "nav.x402":"x402",
+    "next.h":"Y después de esto",
+    "next.integrar":"Integrar",
+    "next.integrar.why":"hacer que tu endpoint produzca estos",
+    "next.x402":"x402",
+    "next.x402.why":"qué es cada mensaje del cable",
+    "title":"x402 facilitator - eventos en vivo",
+    events:"eventos", last:"último",
     viewTable:"tabla", viewRaw:"raw (tal cual el cable)",
     clear:"limpiar", pause:"pausar", resume:"reanudar",
     connecting:"conectando…", live:"en vivo", down:"sin conexión · reintentando…",
@@ -169,13 +204,13 @@ function applyLang(lang){
   document.querySelectorAll('[data-i18n-html]').forEach(el => {
     el.innerHTML = t(el.getAttribute('data-i18n-html'));
   });
-  document.querySelectorAll('.langsw button').forEach(b => {
-    b.classList.toggle('active', b.getAttribute('data-lang') === LANG);
+  document.querySelectorAll('.lang button').forEach(b => {
+    b.setAttribute('aria-pressed', String(b.getAttribute('data-lang') === LANG));
   });
   // Re-render the pieces JS owns: the connection state and the pause button
   // both hold text that no data-i18n attribute can reach.
-  setState(bar.className, t(bar.className === 'live' ? 'live'
-                          : bar.className === 'down' ? 'down' : 'connecting'));
+  setState(conexion, t(conexion === 'live' ? 'live'
+                     : conexion === 'down' ? 'down' : 'connecting'));
   document.getElementById('pause').textContent = paused ? t('resume') : t('pause');
 }
 
@@ -187,6 +222,7 @@ const URL_EVENTS = (location.protocol === 'file:')
   : new URL("/events", location.origin).toString();
 
 const bar=document.getElementById('bar'), status=document.getElementById('status');
+const dot=document.getElementById('dot');
 const rows=document.getElementById('rows'), tbl=document.getElementById('tbl');
 const raw=document.getElementById('raw'), empty=document.getElementById('empty');
 const nEl=document.getElementById('n'), nsEl=document.getElementById('ns');
@@ -216,7 +252,16 @@ const shortUrl=u=>{
   catch{return u.length>38?u.slice(0,36)+'…':u;}
 };
 
-function setState(cls,text){bar.className=cls;status.innerHTML='<span class="dot"></span>'+text;}
+// El punto usa .dot.ok / .dot.warn / .dot.bad de uv.css. U+25CF no existe en
+// ninguna de las dos fuentes: por eso es un cuadrado redondeado por CSS y no
+// un glifo.
+const ESTADO = { live:'ok', down:'bad', wait:'warn' };
+let conexion = 'wait';
+function setState(cls,text){
+  conexion = cls;
+  dot.className = 'dot ' + (ESTADO[cls] || 'warn');
+  status.textContent = text;
+}
 
 function render(kind,data,rawLine){
   if(paused) return;
@@ -242,7 +287,7 @@ function render(kind,data,rawLine){
     `<td class="mono">${t.toLocaleTimeString()}</td>`+
     `<td class="kind ${esc(kind)}">${esc(kind)}</td>`+
     `<td>${esc(data.network||'—')}</td>`+
-    `<td>${data.ok===false?'<span class="no">NO</span>':'ok'}</td>`+
+    `<td>${data.ok===false?'<span class="tag bad">NO</span>':'ok'}</td>`+
     `<td class="res">${res}</td>`+
     `<td class="mono">${esc(short(data.payTo))}</td>`+
     `<td class="mono">${esc(short(data.payer))}</td>`+
@@ -277,7 +322,7 @@ document.getElementById('clear').onclick=()=>{
 document.getElementById('pause').onclick=e=>{
   paused=!paused;e.target.textContent=paused?t('resume'):t('pause');
 };
-document.querySelectorAll('.langsw button').forEach(b=>{
+document.querySelectorAll('.lang button').forEach(b=>{
   b.onclick=()=>{
     const lang=b.getAttribute('data-lang');
     applyLang(lang);

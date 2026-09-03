@@ -1,0 +1,629 @@
+/* uv.css - sistema visual unico del facilitador x402 de Ultravioleta DAO.
+ * Rol 1 (sistema-visual-tipografia), 2026-09-03.
+ *
+ * ESTE ES EL UNICO ARCHIVO QUE DECLARA :root, @font-face Y font-family.
+ * Las ocho paginas (/, /mcp, /x402, /dx402, /erc8004, /bazaar, /networks,
+ * /integrar) lo enlazan con <link rel="stylesheet" href="/uv.css"> y no
+ * vuelven a declarar ni un token ni una familia. Un test de cargo lo exige.
+ *
+ * Censo que este archivo reemplaza (medido el 2026-09-03 sobre
+ * x4-paginas/static/index.html): 43 hexes + 79 rgba, 23 tamanos de letra,
+ * 13 radios, 37 paddings, 64 border:1px, 37 text-align:center.
+ * Aca hay: 11 colores, 7 tamanos, 2 radios, 9 pasos de espaciado,
+ * 1 sombra, 1 regla con borde de cuatro lados, 0 text-align:center.
+ *
+ * Verificaciones (desde el directorio que contiene uv.css):
+ *   grep -v "^ \*" uv.css | grep -c "text-align: cent" ..... -> 0
+ *   grep -cE "^  border: 1px" uv.css .................... -> 1  (.group)
+ *   grep -oE "#[0-9a-f]{6}" uv.css | sort -u | wc -l ..... -> 10
+ *        (11 tokens, 10 valores: --on-brand es --ground a proposito)
+ *   grep -oE "rgba\([^)]*\)" uv.css | sort -u | wc -l ... -> 1  (--shadow)
+ */
+
+/* ------------------------------------------------------------------ *
+ * 0. FUENTES  -  servidas desde el binario, cero dependencia externa
+ * ------------------------------------------------------------------ *
+ * Subconjuntos de IBM Plex Sans e IBM Plex Mono Var (SIL OFL 1.1).
+ * IBM Plex reserva el nombre "Plex" (Reserved Font Name), y un subconjunto
+ * es una Modified Version segun la clausula 3 de la OFL: por eso la familia
+ * se llama "UV Sans" / "UV Mono" y el name table interno tambien.
+ * static/fonts/OFL.txt viaja con los dos archivos (clausula 2) y se sirve
+ * en /fonts/v1/OFL.txt.
+ *
+ * El segmento /v1/ es deliberado: las fuentes van con
+ * cache-control: immutable y un ano de vida. Sobre un nombre estable eso
+ * es una trampa -- quien ya visito se queda un ano con la fuente vieja y
+ * desde el servidor no hay arreglo. Con version en la ruta, un
+ * re-subseteo es un cambio de URL: se bumpea a /fonts/v2/ y se cambian
+ * estas dos lineas.
+ * Medido con ls -l: uv-sans.woff2 = 19.072 B, uv-mono.woff2 = 12.728 B.
+ */
+@font-face {
+  font-family: "UV Sans";
+  src: url("/fonts/v1/uv-sans.woff2") format("woff2");
+  font-weight: 400 700;      /* variable: eje wght 400-700 */
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "UV Mono";
+  src: url("/fonts/v1/uv-mono.woff2") format("woff2");
+  font-weight: 400 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* ------------------------------------------------------------------ *
+ * 1. TOKENS  -  la unica fuente de verdad
+ * ------------------------------------------------------------------ */
+:root {
+  /* --- familias (2). Sans y mono comparten altura de x (516/1000) y
+     altura de mayuscula (698/1000), medido sobre los woff2 subseteados:
+     no hace falta compensar el tamano al pasar de prosa a codigo. --- */
+  --font-sans: "UV Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "UV Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* --- escala tipografica (7 pasos). Base 16 px = --fs-300.
+     Dos ratios a proposito: 1,14-1,17 por debajo del cuerpo (tamanos
+     informativos: meta, th, celdas) y 1,25-1,33 por encima (display).
+     No es una rampa 1,25 pura y no pretende serlo.
+     REGLA DURA: --fs-600 / --fs-300 = 2,0625 >= 2. Hoy el sitio esta en
+     1,14 (mcp.html:25 contra mcp.html:22). --- */
+  --fs-100: 0.75rem;    /* 12 px - meta, th, .tag, pie */
+  --fs-200: 0.875rem;   /* 14 px - celdas de tabla, notas, nav */
+  --fs-300: 1rem;       /* 16 px - CUERPO */
+  --fs-400: 1.25rem;    /* 20 px - .deck (bajada), h3 */
+  --fs-500: 1.5625rem;  /* 25 px - h2 */
+  --fs-600: 2.0625rem;  /* 33 px - h1 de subpagina */
+  --fs-700: 2.75rem;    /* 44 px - h1 de la portada */
+
+  /* --- interlineados (3) --- */
+  --lh-tight: 1.2;      /* titulos */
+  --lh-body: 1.65;      /* prosa */
+  --lh-code: 1.55;      /* pre, tablas */
+
+  /* --- paleta (11). Heredada de las subpaginas (mcp.html:15-20), que son
+     el sistema disciplinado de los dos que hay hoy. El amarillo NO existe:
+     el de Zama (index.html:531-535, border-color + box-shadow) no vuelve,
+     ni en borde ni en sombra: lo experimental es .tag.warn de 12 px.
+     Contraste WCAG 2.1 medido, texto sobre --ground / --panel / --panel-2:
+       --ink      15,11 / 14,10 / 13,04   AAA
+       --ink-dim   6,49 /  6,06 /  5,61   AA en los tres (subido desde
+                                          el valor del encargo, que daba
+                                          4,55 sobre --panel-2: pasaba
+                                          por 0,05. Ver el reporte)
+       --brand     7,85 /  7,32 /  6,77   AAA salvo sobre --panel-2 (AA)
+       --ok       11,98 / 11,18 / 10,34   AAA
+       --warn      8,63 /  8,06 /  7,45   AAA
+       --bad       6,79 /  6,34 /  5,86   AA
+       --on-brand sobre --brand: 7,85     AAA (boton lleno)
+     --line NO es color de texto (1,32 sobre --ground): es separacion.
+     El foco visible usa --brand, que si pasa el 3:1 de componente. --- */
+  --ground: #12101a;    /* fondo de la pagina */
+  --panel: #1a1726;     /* nav, footer, .group */
+  --panel-2: #221d33;   /* pre, .chip-red, code en linea */
+  --line: #2c2740;      /* separaciones y el unico borde */
+  --ink: #e8e4f5;       /* texto */
+  --ink-dim: #9a93b8;   /* texto secundario, meta, th, dt */
+  --brand: #b496ff;     /* enlaces, h1, foco, boton */
+  --on-brand: #12101a;  /* texto sobre --brand */
+  --ok: #5ee6a8;
+  --warn: #e0a53f;
+  --bad: #ff6b6b;
+
+  /* --- espaciado: una sola rampa de 8 (9 pasos). Ningun margen ni padding
+     de este archivo cae fuera de la rampa. --- */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+  --sp-7: 48px;
+  --sp-8: 64px;
+  --sp-9: 96px;
+
+  /* --- radios de esquina: exactamente 2 (habia 13). La unica forma
+     redonda que no sale de aca es el .dot de estado, que es un circulo
+     (border-radius: 50%), no una esquina. --- */
+  --r-sm: 6px;          /* controles, .tag, code en linea, .chip-red */
+  --r-md: 10px;         /* paneles: .group, pre */
+
+  /* --- sombra: exactamente 1, sin color, y solo para lo que flota --- */
+  --shadow: 0 8px 24px rgba(0, 0, 0, .45);
+
+  /* --- la columna. 84ch de --font-sans = 50,4em = 806 px a 16 px
+     (la "0" de UV Sans avanza 600/1000 em, medido). La prosa se estrecha
+     a 68ch para no pasar de ~80 caracteres por linea; las tablas y los
+     pre usan la columna entera. --- */
+  --measure: 84ch;         /* ~806 px  - prosa y paneles */
+  --measure-wide: 108ch;   /* ~1037 px - tablas, pre y rejillas: son datos,
+                              no lectura, y 84ch los aprieta */
+  --measure-prose: 68ch;   /* ~653 px  */
+}
+
+/* ------------------------------------------------------------------ *
+ * 2. RESET minimo
+ * ------------------------------------------------------------------ */
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body, h1, h2, h3, h4, p, ul, ol, dl, dd, figure, pre, table { margin: 0; }
+ul, ol { padding-left: var(--sp-5); }
+img { max-width: 100%; display: block; }
+[hidden] { display: none !important; }
+
+/* ------------------------------------------------------------------ *
+ * 3. ELEMENTOS
+ * ------------------------------------------------------------------ */
+body {
+  font-family: var(--font-sans);
+  font-size: var(--fs-300);
+  line-height: var(--lh-body);
+  font-weight: 400;
+  color: var(--ink);
+  background: var(--ground);
+  text-rendering: optimizeLegibility;
+}
+
+/* UN SOLO EJE: todo arranca en el mismo borde izquierdo. Este archivo no
+   contiene ni un centrado. Lo unico que se alinea distinto son
+   las celdas numericas, que van a la derecha (.num). */
+
+h1, h2, h3 {
+  line-height: var(--lh-tight);
+  letter-spacing: -0.015em;
+  font-weight: 600;
+  text-wrap: balance;
+}
+h1 { font-size: var(--fs-600); color: var(--brand); margin: 0 0 var(--sp-3); }
+[data-page="index"] h1 { font-size: var(--fs-700); }   /* solo la portada */
+h2 {
+  font-size: var(--fs-500);
+  margin: var(--sp-8) 0 var(--sp-4);
+  padding-top: var(--sp-5);
+  border-top: 1px solid var(--line);      /* regla, no caja */
+}
+h3 { font-size: var(--fs-400); margin: var(--sp-6) 0 var(--sp-2); }
+
+p, ul, ol, dl { max-width: var(--measure-prose); }
+p + p, p + ul, p + ol, ul + p, ol + p, p + dl { margin-top: var(--sp-4); }
+li + li { margin-top: var(--sp-2); }
+
+a { color: var(--brand); text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1px; }
+a:hover { text-decoration-thickness: 2px; }
+
+strong, b { font-weight: 600; }
+small, .meta { font-size: var(--fs-100); color: var(--ink-dim); }
+.muted { color: var(--ink-dim); }
+hr { border: 0; border-top: 1px solid var(--line); margin: var(--sp-7) 0; }
+
+/* codigo en linea */
+code {
+  font-family: var(--font-mono);
+  font-size: 0.9375em;               /* 15/16: comparten altura de x */
+  font-feature-settings: "zero" 1;   /* cero cortado: 0 y O no se confunden */
+  background: var(--panel-2);
+  color: var(--ink);
+  padding: 1px var(--sp-1);
+  border-radius: var(--r-sm);
+}
+
+/* ------------------------------------------------------------------ *
+ * 4. LAYOUT  -  una sola columna, un solo eje
+ * ------------------------------------------------------------------ */
+.wrap { max-width: var(--measure); margin: 0; padding: 0 var(--sp-5); }
+@media (min-width: 1100px) { .wrap { padding-left: var(--sp-8); } }
+
+main.wrap { padding-bottom: var(--sp-9); }
+
+/* nav: la MISMA en las ocho paginas (hoy hay seis distintas y cuatro
+   paginas huerfanas). El orden de los enlaces lo fija el rol 2. */
+.nav {
+  position: sticky; top: 0; z-index: 10;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  padding: var(--sp-3) var(--sp-5);
+  display: flex; align-items: center; gap: var(--sp-4); flex-wrap: wrap;
+}
+@media (min-width: 1100px) { .nav { padding-left: var(--sp-8); } }
+.nav .brand { display: flex; align-items: center; gap: var(--sp-2); text-decoration: none; color: var(--ink); font-weight: 600; }
+.nav .brand img { width: auto; height: 20px; }   /* logo.png = 736x212, relacion 3,47:1 */
+.nav a { color: var(--ink-dim); text-decoration: none; font-size: var(--fs-200); }
+.nav a:hover { color: var(--ink); }
+.nav a[aria-current="page"] { color: var(--brand); text-decoration: underline; text-underline-offset: 6px; }
+.nav .lang { margin-left: auto; display: flex; gap: var(--sp-3); }
+.nav .lang button {
+  background: none; border: 0; padding: 0; cursor: pointer;
+  font-family: inherit; font-size: var(--fs-100);
+  color: var(--ink-dim); text-transform: uppercase; letter-spacing: .06em;
+}
+.nav .lang button[aria-pressed="true"] { color: var(--brand); text-decoration: underline; text-underline-offset: 4px; }
+
+.footer {
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+  padding: var(--sp-6) var(--sp-5);
+  font-size: var(--fs-100);
+  color: var(--ink-dim);
+}
+@media (min-width: 1100px) { .footer { padding-left: var(--sp-8); } }
+.footer a { color: var(--ink-dim); }
+.footer ul { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: var(--sp-4); max-width: none; }
+.footer li + li { margin-top: 0; }
+
+/* ------------------------------------------------------------------ *
+ * 5. COMPONENTES  (diez)
+ * ------------------------------------------------------------------ */
+
+/* 5.1 .answer  -  el primer bloque de CADA pagina: h1 + bajada + accion.
+   Es la clausula 4 del principio hecha CSS: nada se interpone antes. */
+.answer { padding: var(--sp-7) 0 var(--sp-6); }
+.answer > * + * { margin-top: var(--sp-4); }
+
+/* 5.2 .deck  -  la bajada de una frase bajo el h1 */
+.deck {
+  font-size: var(--fs-400);
+  line-height: 1.5;
+  color: var(--ink);
+  max-width: var(--measure-prose);
+  font-weight: 400;
+}
+
+/* accion del .answer: o un pre con el comando, o un enlace-boton */
+.actions { display: flex; flex-wrap: wrap; gap: var(--sp-3); max-width: none; }
+.btn {
+  display: inline-block;
+  background: var(--brand); color: var(--on-brand);
+  font-weight: 600; font-size: var(--fs-200);
+  padding: var(--sp-2) var(--sp-4);
+  border-radius: var(--r-sm);
+  text-decoration: none;
+}
+.btn:hover { filter: brightness(1.1); text-decoration: none; }
+
+/* 5.3 table  -  la forma mas densa que sigue siendo legible: primera
+   opcion para todo dato repetido. th en 12 px mayusculas; celdas
+   numericas en mono a la derecha. Las lineas son reglas, no cajas. */
+table { width: 100%; border-collapse: collapse; font-size: var(--fs-200); line-height: var(--lh-code); max-width: var(--measure-wide); }
+caption { text-align: left; font-size: var(--fs-100); color: var(--ink-dim); padding-bottom: var(--sp-2); }
+th {
+  text-align: left; font-size: var(--fs-100); font-weight: 600;
+  text-transform: uppercase; letter-spacing: .06em; color: var(--ink-dim);
+  padding: var(--sp-2) var(--sp-3); border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+td { padding: var(--sp-2) var(--sp-3); border-bottom: 1px solid var(--line); vertical-align: top; }
+tbody tr:hover td { background: var(--panel); }
+/* .num: LO UNICO que no se alinea a la izquierda en todo el sistema.
+   Los digitos de UV Sans y UV Mono ya avanzan 600/1000 em (tabulares por
+   construccion, medido): no hace falta font-variant-numeric. */
+.num { text-align: right; font-family: var(--font-mono); font-feature-settings: "zero" 1; white-space: nowrap; }
+th.num { text-align: right; }
+td.addr { font-family: var(--font-mono); font-feature-settings: "zero" 1; word-break: break-all; }
+.scroll { overflow-x: auto; }   /* envolver toda tabla ancha */
+
+/* 5.4 .kv  -  lista de definiciones: segunda opcion cuando los datos no
+   forman filas homogeneas. Reemplaza a la tarjeta con un solo dato. */
+.kv { display: grid; grid-template-columns: minmax(10rem, max-content) 1fr; gap: var(--sp-2) var(--sp-5); max-width: var(--measure); }
+.kv dt { font-size: var(--fs-200); color: var(--ink-dim); }
+.kv dd { margin: 0; font-size: var(--fs-200); }
+.kv dd.num { text-align: left; }   /* en .kv el eje manda sobre la regla */
+
+/* 5.5 .group  -  EL UNICO ELEMENTO CON BORDE DE CUATRO LADOS DE TODO EL
+   SISTEMA, y solo es valido con DOS O MAS hijos bajo un titulo.
+   Una caja con un solo hijo (index.html:1248-1285, la tarjeta de Zama)
+   deja de ser caja y pasa a ser texto. */
+.group {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel);
+  padding: var(--sp-5);
+  max-width: var(--measure);
+}
+.group > * + * { margin-top: var(--sp-4); }
+.group > h2, .group > h3 { margin-top: 0; border-top: 0; padding-top: 0; font-size: var(--fs-400); }
+.group + .group { margin-top: var(--sp-4); }
+/* rejilla de grupos: minimo dos por fila o no es rejilla */
+.groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: var(--sp-4); max-width: var(--measure-wide); }
+/* LINT VIVO: <html data-lint> pinta en rojo toda .group con un solo hijo. */
+[data-lint] .group:not(:has(> * + *)) { outline: 2px dashed var(--bad); outline-offset: 4px; }
+
+/* 5.6 .tag  -  12 px. Es el UNICO lugar donde vive el estado (ok/warn/bad).
+   "experimental" es .tag.warn, nunca un borde amarillo ni una sombra. */
+.tag {
+  display: inline-block;
+  font-family: var(--font-mono); font-size: var(--fs-100); line-height: 1.6;
+  padding: 0 var(--sp-2); border-radius: var(--r-sm);
+  background: var(--panel-2); color: var(--ink-dim);
+  white-space: nowrap; vertical-align: baseline;
+}
+.tag.ok   { color: var(--ok); }
+.tag.warn { color: var(--warn); }
+.tag.bad  { color: var(--bad); }
+/* punto de estado: se dibuja con CSS porque UV Sans y UV Mono NO traen los
+   glifos circulares (U+25CF, U+25CB: medido, ausentes en las dos). */
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--ink-dim); vertical-align: baseline; }
+.dot.ok { background: var(--ok); }
+.dot.warn { background: var(--warn); }
+.dot.bad { background: var(--bad); }
+
+/* 5.7 .chip-red  -  la caja de 32x32 del icono de una cadena. El rol 3
+   entrega las imagenes; esta es la caja y su degradacion.
+   Corrige lo medido en networks.html:300, donde onerror="this.remove()"
+   BORRA la imagen en silencio y no queda nada: aca el monograma esta
+   SIEMPRE debajo, y si el PNG no existe el monograma queda a la vista. */
+.chip-red {
+  position: relative; display: inline-flex; --chip: 32px;
+  flex: 0 0 var(--chip); width: var(--chip); height: var(--chip);
+  border-radius: var(--r-sm);
+  background: var(--panel-2); overflow: hidden;
+  align-items: center; justify-content: center;
+}
+.chip-red > b {
+  font-family: var(--font-mono); font-size: var(--fs-100); font-weight: 600;
+  color: var(--ink-dim); letter-spacing: -0.02em;
+}
+/* inset: 0 y NO var(--sp-1). El aire va adentro del PNG: glifo 72 sobre
+   lienzo 96, bbox (12,12,84,84) medido con Pillow. Un inset de 4 px sobre un
+   chip de 32 px deja el contenido en 24 px y el glifo en 18,0 px -- que es
+   exactamente el width:18px que el dueno describio como "quedo por alla
+   guardado". Con inset: 0 el glifo sale a 32 x 0,75 = 24,0 px. */
+.chip-red > img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+/* En tabla el chip baja a 24 px -> glifo 18 px, el de hoy, nunca menos.
+   A 20 px saldria a 15 px, mas chico que hoy. */
+.chip-red--tabla { --chip: 24px; }
+/* En linea, dentro de la prosa: sin caja, a la altura de la letra. */
+.chip-red--linea { --chip: 1em; background: none; border-radius: 0;
+                   vertical-align: -.18em; margin-right: .25em; }
+.chip-row { display: flex; align-items: center; gap: var(--sp-3); }
+
+/* 5.8 pre > code  -  bloque de comando. SIN borde: el fondo ya agrupa.
+   Asi el censo de cajas del sistema queda en una sola: .group. */
+pre {
+  background: var(--panel-2);
+  border-radius: var(--r-md);
+  padding: var(--sp-4);
+  overflow-x: auto;
+  max-width: var(--measure-wide);
+  line-height: var(--lh-code);
+}
+pre > code {
+  background: none; padding: 0; border-radius: 0;
+  font-size: var(--fs-200);
+  color: var(--ink);
+  display: block;
+  white-space: pre;
+}
+pre .c { color: var(--ink-dim); }   /* comentario dentro del bloque */
+
+/* 5.9 .note  -  aviso en linea. Es una regla a la izquierda, no una caja:
+   agrupa sin encerrar. Reemplaza a .warn/.no de mcp.html:44-49, que hoy
+   son cajas con fondo tenido y borde de color. */
+.note { border-left: 3px solid var(--line); padding-left: var(--sp-4); max-width: var(--measure-prose); }
+.note.warn { border-left-color: var(--warn); }
+.note.bad  { border-left-color: var(--bad); }
+.note.ok   { border-left-color: var(--ok); }
+.note > * + * { margin-top: var(--sp-2); }
+
+/* 5.10 .float  -  lo unico con derecho a --shadow: lo que de verdad flota
+   sobre el resto (menu desplegable, dialogo). Ninguna tarjeta flota. */
+.float { background: var(--panel); border-radius: var(--r-md); box-shadow: var(--shadow); padding: var(--sp-4); }
+
+/* ------------------------------------------------------------------ *
+ * 6. LO QUE PIDE EL MARKUP COMPARTIDO
+ * ------------------------------------------------------------------ *
+ * De las 32 clases que emiten los markups compartidos, 21 no tenian regla
+ * en esta hoja -- que es la unica que el gate permite. Peor: cuatro
+ * apuntaban a tokens inventados (--esp-2, --txt, --dim, --r-1), y un
+ * gap: var(--esp-2) con --esp-2 indefinido INVALIDA la declaracion entera
+ * y deja el gap en 0 sin avisar a nadie.
+ */
+
+/* --- cabecera: la lista de la nav --- */
+.nav .nav-links ul { list-style: none; margin: 0; padding: 0; max-width: none;
+                     display: flex; flex-wrap: wrap; gap: var(--sp-4); }
+.nav .nav-links li + li { margin-top: 0; }
+
+/* --- pie --- */
+.footer .next { max-width: var(--measure); margin-bottom: var(--sp-5); }
+.footer .eyebrow { font-size: var(--fs-100); color: var(--ink-dim);
+                   text-transform: uppercase; letter-spacing: .08em;
+                   margin-bottom: var(--sp-2); }
+/* dos o tres destinos con su porque, uno por linea: no es una fila de chips */
+.footer .next ul { display: block; }
+.footer .next li { margin: 0 0 var(--sp-2); }
+.footer .next a  { color: var(--brand); text-decoration: underline; text-underline-offset: 3px; }
+.footer .next span { color: var(--ink-dim); }
+.footer .meta-links { display: flex; flex-wrap: wrap; gap: var(--sp-4); }
+
+/* --- listas de definiciones de prosa (dt corto, dd de parrafo) --- */
+.defs { max-width: var(--measure-prose); }
+.defs dt { font-weight: 600; color: var(--ink); margin-top: var(--sp-4); }
+.defs dt:first-of-type { margin-top: 0; }
+.defs dd { margin: var(--sp-1) 0 0; color: var(--ink-dim); }
+
+/* --- la pared de redes de la portada. El dato que transmite es la
+   AGRUPACION: de un golpe se ve que 14 de 21 son EVM. --- */
+.pared { display: grid; grid-template-columns: max-content 1fr;
+         gap: var(--sp-2) var(--sp-4); margin: var(--sp-4) 0 0; max-width: none; }
+.pared dt { font-size: var(--fs-200); color: var(--ink-dim);
+            text-transform: uppercase; letter-spacing: .06em; padding-top: 6px; }
+.pared dd { margin: 0; display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.red { display: inline-flex; align-items: center; gap: var(--sp-2);
+       font: 400 var(--fs-200)/1 var(--font-mono); color: var(--ink); white-space: nowrap; }
+@media (max-width: 520px) {
+  .pared { grid-template-columns: 1fr; gap: var(--sp-1) 0; }
+  .pared dt { padding-top: var(--sp-2); }
+}
+
+/* --- .cards: la rejilla de fichas de dato vivo que ya usan /stats, /x402,
+   /dx402, /networks y /mcp. SIN borde: el fondo agrupa igual que en pre, y el
+   borde de cuatro lados sigue siendo uno solo en todo el sistema (.group).
+   El valor va en --ink y no en --ok: es un dato, no un estado. El estado vive
+   en .tag y en ningun otro lado. --- */
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+         gap: var(--sp-3); max-width: var(--measure-wide); margin-top: var(--sp-4); }
+.card { background: var(--panel); border-radius: var(--r-md); padding: var(--sp-4); }
+.card .k { font-size: var(--fs-100); color: var(--ink-dim);
+           text-transform: uppercase; letter-spacing: .05em; }
+.card .v { font-size: var(--fs-500); font-weight: 600; color: var(--ink);
+           line-height: var(--lh-tight); font-family: var(--font-mono);
+           font-feature-settings: "zero" 1; word-break: break-word; }
+.card .src { font-size: var(--fs-100); color: var(--ink-dim); margin-top: var(--sp-1); }
+
+/* --- .controls: la fila de controles de una pagina viva (/events/live los
+   botones y el selector de vista, /networks y /bazaar los filtros). Un solo
+   estilo de control para las tres, con el radio chico del sistema. --- */
+.controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-3);
+            max-width: none; margin-top: var(--sp-4); }
+.controls button, .controls select, .controls input {
+  background: var(--panel-2); color: var(--ink); border: 1px solid var(--line);
+  border-radius: var(--r-sm); padding: var(--sp-1) var(--sp-3);
+  font-family: inherit; font-size: var(--fs-200); cursor: pointer;
+}
+.controls input { cursor: text; }
+.controls button[aria-pressed="true"] { color: var(--brand); border-color: var(--brand); }
+
+/* --- .mono: un dato que se lee caracter por caracter (hash, direccion, id) --- */
+.mono { font-family: var(--font-mono); font-feature-settings: "zero" 1; }
+
+/* --- primera pantalla: las dos puertas de rol y la salida impresa --- */
+.roles { font-size: var(--fs-400); }
+.roles a { font-weight: 600; }
+.out { color: var(--ok); font-family: var(--font-mono); font-size: var(--fs-200);
+       margin-top: var(--sp-2); }
+
+/* ------------------------------------------------------------------ *
+ * 7. LA SENA DE MARCA
+ * ------------------------------------------------------------------ *
+ * Tres palancas dentro del sistema, cero bytes nuevos, reversibles de a
+ * una. La queja "parece generica" cierra tecnicamente con la fuente
+ * propia; esto es contra el riesgo residual de que una pagina oscura de
+ * docs con un violeta siga leyendose como plantilla.
+ */
+/* (a) el h1 deja de ser del color de los enlaces -- hoy h1 y a comparten
+   --brand y el titulo se lee como un link -- y el violeta pasa a una regla. */
+h1 { color: var(--ink); font-weight: 700;
+     border-bottom: 3px solid var(--brand); padding-bottom: var(--sp-3);
+     display: inline-block; }
+/* (b) los h2 en la familia del curl: un sitio mitad prosa y mitad comando
+   tiene derecho a eso, y la mono ya viaja en el binario. */
+h2 { font-family: var(--font-mono); letter-spacing: -.01em; }
+/* (c) el peso 700 existe en el subconjunto (fvar wght 400-700) y no se usaba. */
+
+/* ------------------------------------------------------------------ *
+ * 8. ESTADOS
+ * ------------------------------------------------------------------ */
+:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; border-radius: var(--r-sm); }
+::selection { background: var(--brand); color: var(--on-brand); }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * 9. RESPONSIVE  -  un solo punto de quiebre
+ * ------------------------------------------------------------------ */
+@media (max-width: 640px) {
+  :root { --fs-700: 2.0625rem; --fs-600: 1.5625rem; --fs-500: 1.25rem; }
+  .wrap, .nav, .footer { padding-left: var(--sp-4); padding-right: var(--sp-4); }
+  .kv { grid-template-columns: 1fr; gap: var(--sp-1) 0; }
+  .kv dd { margin-bottom: var(--sp-3); }
+}
+
+/* ------------------------------------------------------------------ *
+ * 10. LO PROPIO DE UNA PAGINA
+ * ------------------------------------------------------------------ *
+ * Aca aterriza lo que era el <style> de una pagina y no tiene componente
+ * porque no se repite en ninguna otra. Va con selector [data-page] para que
+ * no se escape: la hoja es una sola y el alcance lo pone el atributo, no un
+ * archivo aparte.
+ */
+
+/* --- /events/live: la tabla del cable --- */
+[data-page="events-viewer"] td { white-space: nowrap; }
+[data-page="events-viewer"] tr.settle td { background: var(--panel); }
+[data-page="events-viewer"] .kind { font-weight: 600; }
+[data-page="events-viewer"] .kind.settle { color: var(--ok); }
+[data-page="events-viewer"] .kind.verify { color: var(--brand); }
+/* el endpoint es el dato de esta columna, pero una URL entera empuja las otras
+   ocho fuera de la pantalla */
+[data-page="events-viewer"] .res { max-width: 34ch; overflow: hidden;
+                                   text-overflow: ellipsis; color: var(--brand); }
+[data-page="events-viewer"] #raw { white-space: pre-wrap; word-break: break-all;
+                                   max-height: 70vh; }
+
+/* --- /networks: la celda de la primera columna. El tamano lo pone el
+   componente (.chip-red--tabla); la celda solo alinea. --- */
+[data-page="networks"] td.net { display: flex; align-items: center; gap: var(--sp-2); }
+
+/* --- /bazaar: el catalogo. Lo que aca sigue vivo es lo que no tiene
+   componente porque no se repite en ninguna otra pagina: la ficha de un
+   endpoint, la tarjeta de un socio, el buscador y el dialogo de detalle.
+   Todo lo demas (la rejilla de cifras, las tablas, los rotulos de estado,
+   los controles) usa los componentes del sistema. --- */
+[data-page="bazaar"] .cards { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
+[data-page="bazaar"] #grid .card { cursor: pointer; display: flex; flex-direction: column;
+                                   gap: var(--sp-2); }
+[data-page="bazaar"] #grid .card:hover { background: var(--panel-2); }
+[data-page="bazaar"] .card-top { display: flex; justify-content: space-between;
+                                 align-items: flex-start; gap: var(--sp-2); }
+[data-page="bazaar"] .card-host { font-weight: 600; word-break: break-word; }
+[data-page="bazaar"] .card-path { color: var(--ink-dim); font-size: var(--fs-200);
+                                  font-family: var(--font-mono); word-break: break-all; }
+[data-page="bazaar"] .card-desc { color: var(--ink-dim); font-size: var(--fs-200); }
+[data-page="bazaar"] .badges { display: flex; flex-wrap: wrap; gap: var(--sp-1);
+                               margin-top: auto; }
+[data-page="bazaar"] .tag.price { color: var(--ok); }
+[data-page="bazaar"] .tag.alive, [data-page="bazaar"] .tag.first_party { color: var(--ok); }
+[data-page="bazaar"] .tag.quarantined { color: var(--bad); }
+[data-page="bazaar"] .tag.vip, [data-page="bazaar"] .tag.verified { color: var(--brand); }
+
+[data-page="bazaar"] .vip-grid { display: grid; gap: var(--sp-4); max-width: var(--measure-wide);
+                                 grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+[data-page="bazaar"] .vip-card { background: var(--panel); border-radius: var(--r-md);
+                                 padding: var(--sp-4); text-decoration: none; color: inherit;
+                                 display: block; }
+[data-page="bazaar"] .vip-card:hover { background: var(--panel-2); }
+[data-page="bazaar"] .vip-name { font-weight: 600; display: flex; align-items: center;
+                                 gap: var(--sp-2); }
+[data-page="bazaar"] .vip-blurb { color: var(--ink-dim); font-size: var(--fs-200);
+                                  margin-top: var(--sp-1); }
+
+[data-page="bazaar"] .search { flex: 1; min-width: 240px; position: relative;
+                               display: flex; align-items: center; }
+[data-page="bazaar"] .search input { width: 100%; padding-left: var(--sp-8); }
+[data-page="bazaar"] .search svg { position: absolute; left: var(--sp-3);
+                                   color: var(--ink-dim); }
+
+[data-page="bazaar"] .pinfo { color: var(--ink-dim); font-family: var(--font-mono);
+                              font-size: var(--fs-200); }
+[data-page="bazaar"] .controls button:disabled { opacity: .4; cursor: not-allowed; }
+[data-page="bazaar"] .empty { color: var(--ink-dim); padding: var(--sp-7) 0; }
+/* el esqueleto de carga no anima si el lector pidio menos movimiento: la regla
+   de prefers-reduced-motion de la seccion 8 ya lo cubre */
+[data-page="bazaar"] .skeleton { height: 130px; border-radius: var(--r-md);
+                                 background: var(--panel); animation: latido 1.4s infinite; }
+@keyframes latido { 50% { background: var(--panel-2); } }
+
+[data-page="bazaar"] dialog { background: var(--panel); color: var(--ink);
+                              border: 1px solid var(--line); border-radius: var(--r-md);
+                              padding: 0; max-width: 620px; width: 92%; }
+[data-page="bazaar"] dialog::backdrop { background: rgba(0, 0, 0, .45); }
+[data-page="bazaar"] .modal-head { padding: var(--sp-4) var(--sp-5);
+                                   border-bottom: 1px solid var(--line);
+                                   display: flex; justify-content: space-between; gap: var(--sp-4); }
+[data-page="bazaar"] .modal-body { padding: var(--sp-4) var(--sp-5); }
+[data-page="bazaar"] .modal-body h3 { font-size: var(--fs-100); text-transform: uppercase;
+                                      letter-spacing: .05em; color: var(--ink-dim);
+                                      margin: var(--sp-4) 0 var(--sp-1); }
+[data-page="bazaar"] .accept-row { border-radius: var(--r-sm); background: var(--panel-2);
+                                   padding: var(--sp-2) var(--sp-3); margin-bottom: var(--sp-2); }
+[data-page="bazaar"] .close-x { background: none; border: 0; color: var(--ink-dim);
+                                font-size: var(--fs-400); cursor: pointer; }
+[data-page="bazaar"] .share { color: var(--ink-dim); text-align: right; white-space: nowrap; }
+[data-page="bazaar"] td.n { text-align: right; font-family: var(--font-mono);
+                            font-feature-settings: "zero" 1; white-space: nowrap; }

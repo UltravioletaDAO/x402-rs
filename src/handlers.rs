@@ -20,7 +20,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tracing::{debug, error, info, instrument, warn};
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::chain::evm::MetaEvmProvider;
@@ -40,8 +40,8 @@ use crate::fhe_proxy::FheProxy;
 use crate::idempotency_store::{hash_request_body, IdempotencyRecord, IDEMPOTENCY_TTL_SECONDS};
 use crate::provider_cache::{HasProviderMap, ProviderMap};
 use crate::types::{
-    ErrorResponse, FacilitatorErrorReason, MixedAddress, SettleRequest, SettleResponse,
-    VerifyRequest, VerifyResponse,
+    ErrorResponse, FacilitatorErrorReason, MixedAddress, Scheme, SettleRequest, SettleResponse,
+    SupportedPaymentKind, VerifyRequest, VerifyResponse,
 };
 use crate::types_v2::{
     DiscoveryFilters, DiscoveryResource, RegisterResourceRequest, SettleRequestEnvelope,
@@ -3014,59 +3014,12 @@ where
         Err(e) => return e.into_response(),
     };
 
-    // Build lookup: (scheme_str, network_str) -> extra
-    // Includes both v1 network names ("base") and v2 CAIP-2 ("eip155:8453")
-    let mut extra_lookup: HashMap<(String, String), Option<serde_json::Value>> = HashMap::new();
-    for kind in &supported.kinds {
-        let scheme_str = match serde_json::to_value(&kind.scheme) {
-            Ok(serde_json::Value::String(s)) => s,
-            _ => continue,
-        };
-        let extra_json = kind
-            .extra
-            .as_ref()
-            .and_then(|e| serde_json::to_value(e).ok());
-        extra_lookup.insert((scheme_str, kind.network.clone()), extra_json);
-    }
-
-    // Match and enrich each merchant requirement
-    let mut enriched = Vec::new();
-    for req in accepts {
-        let scheme = req.get("scheme").and_then(|s| s.as_str()).unwrap_or("");
-        let network = req.get("network").and_then(|n| n.as_str()).unwrap_or("");
-        let key = (scheme.to_string(), network.to_string());
-
-        if let Some(facilitator_extra) = extra_lookup.get(&key) {
-            let mut enriched_req = req.clone();
-
-            // Merge facilitator's extra into the requirement's extra
-            if let Some(fac_extra) = facilitator_extra {
-                let req_extra = enriched_req.get("extra").cloned().unwrap_or(json!({}));
-                let mut merged = match req_extra {
-                    serde_json::Value::Object(obj) => obj,
-                    _ => serde_json::Map::new(),
-                };
-
-                // Add facilitator fields without overwriting merchant-provided ones
-                if let serde_json::Value::Object(fac_obj) = fac_extra {
-                    for (k, v) in fac_obj {
-                        if !merged.contains_key(k) {
-                            merged.insert(k.clone(), v.clone());
-                        }
-                    }
-                }
-
-                enriched_req["extra"] = serde_json::Value::Object(merged);
-            }
-
-            enriched.push(enriched_req);
-        }
-        // Requirements that don't match any supported kind are silently dropped
-    }
+    let (enriched, rejected) = negotiate_accepts(accepts, &supported.kinds);
 
     info!(
         requested = accepts.len(),
         matched = enriched.len(),
+        rejected = rejected.len(),
         "POST /accepts: matched {}/{} requirements",
         enriched.len(),
         accepts.len()
@@ -3077,10 +3030,175 @@ where
         Json(json!({
             "x402Version": x402_version,
             "accepts": enriched,
+            // Always present, even empty: a caller can branch on it without
+            // having to know whether this deployment reports rejections at all.
+            "rejected": rejected,
             "error": ""
         })),
     )
         .into_response()
+}
+
+/// Match the merchant's requirements against what this facilitator serves, and
+/// return BOTH halves: the enriched matches and the reasoned rejections.
+///
+/// Lifted out of [`post_accepts`] so the decision can be tested against a
+/// literal set of kinds. Inside the handler it was reachable only through a
+/// live `Facilitator`, so the behaviour that mattered -- which requirement is
+/// dropped, and what it is told -- had no test at all.
+fn negotiate_accepts(
+    accepts: &[serde_json::Value],
+    kinds: &[SupportedPaymentKind],
+) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
+    // Lookup: (scheme_str, network_str) -> extra
+    // Includes both v1 network names ("base") and v2 CAIP-2 ("eip155:8453")
+    let mut extra_lookup: HashMap<(String, String), Option<serde_json::Value>> = HashMap::new();
+    // The two projections of that lookup a rejection needs, so a dropped
+    // requirement can say WHICH half of the pair we do not serve.
+    let mut served_networks: HashSet<&str> = HashSet::new();
+    let mut schemes_by_network: HashMap<&str, Vec<String>> = HashMap::new();
+    for kind in kinds {
+        let scheme_str = match serde_json::to_value(&kind.scheme) {
+            Ok(serde_json::Value::String(s)) => s,
+            _ => continue,
+        };
+        let extra_json = kind
+            .extra
+            .as_ref()
+            .and_then(|e| serde_json::to_value(e).ok());
+        served_networks.insert(kind.network.as_str());
+        let on_network = schemes_by_network.entry(kind.network.as_str()).or_default();
+        if !on_network.contains(&scheme_str) {
+            on_network.push(scheme_str.clone());
+        }
+        extra_lookup.insert((scheme_str, kind.network.clone()), extra_json);
+    }
+
+    let mut enriched = Vec::new();
+    let mut rejected = Vec::new();
+    for (index, req) in accepts.iter().enumerate() {
+        let scheme = req.get("scheme").and_then(|s| s.as_str()).unwrap_or("");
+        let network = req.get("network").and_then(|n| n.as_str()).unwrap_or("");
+        let key = (scheme.to_string(), network.to_string());
+
+        let Some(facilitator_extra) = extra_lookup.get(&key) else {
+            rejected.push(reject_reason(
+                index,
+                scheme,
+                network,
+                &served_networks,
+                &schemes_by_network,
+            ));
+            continue;
+        };
+
+        let mut enriched_req = req.clone();
+
+        // Merge facilitator's extra into the requirement's extra
+        if let Some(fac_extra) = facilitator_extra {
+            let req_extra = enriched_req.get("extra").cloned().unwrap_or(json!({}));
+            let mut merged = match req_extra {
+                serde_json::Value::Object(obj) => obj,
+                _ => serde_json::Map::new(),
+            };
+
+            // Add facilitator fields without overwriting merchant-provided ones
+            if let serde_json::Value::Object(fac_obj) = fac_extra {
+                for (k, v) in fac_obj {
+                    if !merged.contains_key(k) {
+                        merged.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+
+            enriched_req["extra"] = serde_json::Value::Object(merged);
+        }
+
+        enriched.push(enriched_req);
+    }
+
+    (enriched, rejected)
+}
+
+/// Why one requirement did not survive `POST /accepts`.
+///
+/// # Why this exists
+///
+/// `/accepts` used to drop what it could not serve and return `HTTP 200` with
+/// `{"accepts": [], "error": ""}` -- the same body for "we do not know that
+/// chain", "we do not run that scheme there", and "you sent nothing we could
+/// read". Measured against production 2.10.0 on 2026-09-03: a requirement on
+/// `cosmos:hub-4` and one for `escrow` on `base` were indistinguishable from
+/// each other and from success. The agent's next move differs completely
+/// between those cases, and it had nothing to branch on.
+///
+/// # The vocabulary is bounded on purpose
+///
+/// Five codes, never free text in `reason`, so a caller can switch on it. The
+/// prose lives in `detail`, which is advisory and may change. Same discipline
+/// as the bounded error categories on `/events`.
+///
+/// The first failing dimension wins, checked in the order a caller would fix
+/// them: unreadable, then the chain, then the scheme, then the pair.
+fn reject_reason(
+    index: usize,
+    scheme: &str,
+    network: &str,
+    served_networks: &HashSet<&str>,
+    schemes_by_network: &HashMap<&str, Vec<String>>,
+) -> serde_json::Value {
+    let (reason, detail) = if scheme.is_empty() || network.is_empty() {
+        (
+            "malformed",
+            "a requirement needs both `scheme` and `network` as strings".to_string(),
+        )
+    } else if crate::network::resolve_network(network).is_none() {
+        (
+            "network_unknown",
+            format!(
+                "`{network}` names no chain this facilitator knows, under either the \
+                 x402 v1 name (\"base\") or the CAIP-2 identifier (\"eip155:8453\"). \
+                 GET /supported lists every network served, in both spellings"
+            ),
+        )
+    } else if serde_json::from_value::<Scheme>(serde_json::Value::String(scheme.to_string()))
+        .is_err()
+    {
+        (
+            "scheme_unknown",
+            format!(
+                "`{scheme}` is not an x402 scheme this facilitator implements. \
+                 GET /supported lists the schemes it serves"
+            ),
+        )
+    } else if !served_networks.contains(network) {
+        (
+            "network_unsupported",
+            format!(
+                "`{network}` is a chain this build knows but this deployment does not \
+                 serve -- it is absent from GET /supported"
+            ),
+        )
+    } else {
+        (
+            "scheme_unsupported_on_network",
+            match schemes_by_network.get(network) {
+                Some(schemes) => format!(
+                    "`{scheme}` is not served on `{network}`. Served there: {}",
+                    schemes.join(", ")
+                ),
+                None => format!("`{scheme}` is not served on `{network}`"),
+            },
+        )
+    };
+
+    json!({
+        "index": index,
+        "scheme": scheme,
+        "network": network,
+        "reason": reason,
+        "detail": detail,
+    })
 }
 
 /// `GET /health`: Health check endpoint for load balancers and monitoring.
@@ -14734,5 +14852,151 @@ mod sistema_visual_tests {
             "uv.css is {} B, over the 40 KB budget",
             UV_CSS.len()
         );
+    }
+}
+
+#[cfg(test)]
+mod accepts_negotiation_tests {
+    use super::*;
+    use crate::types::X402Version;
+
+    /// One advertised kind. `extra` stays `None`: what is under test is which
+    /// requirement survives and what a dropped one is told, not the merge.
+    fn kind(scheme: Scheme, network: &str) -> SupportedPaymentKind {
+        SupportedPaymentKind {
+            x402_version: X402Version::V1,
+            scheme,
+            network: network.to_string(),
+            network_aliases: None,
+            extra: None,
+        }
+    }
+
+    /// What this deployment serves, in the shape `/supported` publishes it:
+    /// every chain twice, once per spelling.
+    fn served() -> Vec<SupportedPaymentKind> {
+        vec![
+            kind(Scheme::Exact, "base"),
+            kind(Scheme::Exact, "eip155:8453"),
+            kind(Scheme::Escrow, "base"),
+            kind(Scheme::Escrow, "eip155:8453"),
+            kind(Scheme::Exact, "solana"),
+        ]
+    }
+
+    fn requirement(scheme: &str, network: &str) -> serde_json::Value {
+        json!({
+            "scheme": scheme,
+            "network": network,
+            "maxAmountRequired": "1",
+            "payTo": "0x0000000000000000000000000000000000000002",
+            "asset": "0x0"
+        })
+    }
+
+    fn reason_for(scheme: &str, network: &str) -> String {
+        let (enriched, rejected) = negotiate_accepts(&[requirement(scheme, network)], &served());
+        assert!(
+            enriched.is_empty(),
+            "`{scheme}`/`{network}` should not match"
+        );
+        assert_eq!(rejected.len(), 1);
+        rejected[0]["reason"].as_str().unwrap().to_string()
+    }
+
+    /// The failure this whole field exists for.
+    ///
+    /// Measured against production 2.10.0 on 2026-09-03: a requirement on
+    /// `cosmos:hub-4` and a requirement this facilitator CAN serve both
+    /// answered `HTTP 200`, and the unserved one came back as
+    /// `{"accepts": [], "error": ""}` -- a success-shaped body. Nothing in the
+    /// response distinguished "we do not know that chain" from "here is your
+    /// offer, unchanged".
+    ///
+    /// Neutralise the report -- return an empty `rejected` -- and this test
+    /// goes red on its second assertion, which is the point: the two cases
+    /// become the same body again.
+    #[test]
+    fn an_unservable_requirement_is_no_longer_indistinguishable_from_success() {
+        let (matched, rejected) = negotiate_accepts(&[requirement("exact", "base")], &served());
+        assert_eq!(matched.len(), 1, "`exact` on `base` is served");
+        assert!(
+            rejected.is_empty(),
+            "nothing was dropped, so nothing to report"
+        );
+
+        let (matched, rejected) =
+            negotiate_accepts(&[requirement("exact", "cosmos:hub-4")], &served());
+        assert!(matched.is_empty());
+        assert_eq!(
+            rejected.len(),
+            1,
+            "a dropped requirement must be reported, not swallowed"
+        );
+        assert_eq!(rejected[0]["reason"], "network_unknown");
+        assert_eq!(rejected[0]["index"], 0);
+        assert_eq!(rejected[0]["network"], "cosmos:hub-4");
+    }
+
+    /// Five reasons, five different situations. A single "unsupported" would
+    /// have been cheaper to write and would tell the caller nothing about what
+    /// to change.
+    #[test]
+    fn each_way_of_failing_gets_its_own_reason() {
+        assert_eq!(reason_for("exact", "cosmos:hub-4"), "network_unknown");
+        assert_eq!(reason_for("teleport", "base"), "scheme_unknown");
+        // `sei` is a Network variant this deployment does not serve.
+        assert_eq!(reason_for("exact", "sei"), "network_unsupported");
+        assert_eq!(
+            reason_for("escrow", "solana"),
+            "scheme_unsupported_on_network"
+        );
+        assert_eq!(reason_for("", "base"), "malformed");
+        assert_eq!(reason_for("exact", ""), "malformed");
+    }
+
+    /// When both halves are known but the pair is not served, the caller is
+    /// told what IS served there. That is the one case where the answer is
+    /// actionable without a second round trip to `/supported`.
+    #[test]
+    fn an_unserved_pair_names_the_schemes_that_are_served_there() {
+        let (_, rejected) = negotiate_accepts(&[requirement("escrow", "solana")], &served());
+        let detail = rejected[0]["detail"].as_str().unwrap();
+        assert!(
+            detail.contains("exact"),
+            "the detail must name what is served on solana, got: {detail}"
+        );
+    }
+
+    /// Both spellings of a chain reach the same verdict. `/supported`
+    /// publishes each chain twice and a merchant may quote either; a
+    /// negotiation that accepted only one of them would drop half the offers
+    /// our own Bazaar produces.
+    #[test]
+    fn both_spellings_of_a_chain_negotiate_the_same() {
+        for network in ["base", "eip155:8453"] {
+            let (matched, rejected) =
+                negotiate_accepts(&[requirement("exact", network)], &served());
+            assert_eq!(matched.len(), 1, "`{network}` must match");
+            assert!(rejected.is_empty());
+        }
+    }
+
+    /// Rejections carry the index of the requirement they came from, so a
+    /// caller with several offers knows WHICH one died.
+    #[test]
+    fn rejections_point_back_at_the_requirement_they_came_from() {
+        let (matched, rejected) = negotiate_accepts(
+            &[
+                requirement("exact", "cosmos:hub-4"),
+                requirement("exact", "base"),
+                requirement("teleport", "base"),
+            ],
+            &served(),
+        );
+        assert_eq!(matched.len(), 1);
+        assert_eq!(rejected.len(), 2);
+        assert_eq!(rejected[0]["index"], 0);
+        assert_eq!(rejected[1]["index"], 2);
     }
 }

@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title data-i18n="title">Integrate with this x402 facilitator</title>
+<meta name="description" content="How to charge for an HTTP endpoint, or pay for one, using this x402 facilitator: the two paths, the SDKs, the traps that bite first, and what is not promised.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://facilitator.ultravioletadao.xyz/integrar">
+<meta property="og:title" content="Integrate with this x402 facilitator">
+<meta property="og:description" content="0% fee, no account, no API key. Point your middleware at one URL. And an honest list of what is not promised.">
+<meta property="og:image" content="https://facilitator.ultravioletadao.xyz/logo.png">
+<link rel="icon" href="/favicon.ico">
+<style>
+  :root{
+    --bg:#12101a; --panel:#1a1726; --line:#2c2740; --txt:#e8e4f5;
+    --dim:#8a83a6; --ok:#5ee6a8; --bad:#ff6b6b; --amber:#e0a53f; --uv:#b496ff;
+    --cyan:#5ad7e6;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+       font:14px/1.7 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  header{padding:18px 22px;background:var(--panel);border-bottom:1px solid var(--line);
+         display:flex;gap:16px;align-items:baseline;flex-wrap:wrap;position:sticky;top:0;z-index:5}
+  h1{font-size:16px;margin:0;color:var(--uv);font-weight:600}
+  h2{font-size:13px;margin:34px 0 10px;color:var(--dim);font-weight:500;
+     text-transform:uppercase;letter-spacing:.06em;border-top:1px solid var(--line);padding-top:18px}
+  h3{font-size:13px;margin:22px 0 6px;color:var(--cyan);font-weight:600}
+  a{color:var(--amber)}
+  main{padding:0 22px 60px;max-width:96ch}
+  p{max-width:88ch}
+  code{color:var(--cyan);background:#1e1a2e;padding:1px 4px;border-radius:3px}
+  pre{background:#0e0c17;border:1px solid var(--line);border-radius:8px;padding:14px 16px;
+      overflow-x:auto;line-height:1.55}
+  pre code{background:none;padding:0;color:var(--txt)}
+  .lead{font-size:15px;line-height:1.75;max-width:88ch}
+  .url{display:inline-block;background:var(--panel);border:1px solid var(--uv);border-radius:8px;
+       padding:10px 16px;color:var(--cyan);margin:14px 0}
+  .two{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(min(360px,100%),1fr));margin:18px 0}
+  .path{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px}
+  .path h3{margin-top:0}
+  .scroll{overflow-x:auto}
+  table{width:100%;border-collapse:collapse;margin-top:10px}
+  th{text-align:left;color:var(--dim);font-weight:500;padding:7px 9px;font-size:11px;
+     border-bottom:1px solid var(--line);text-transform:uppercase;letter-spacing:.04em}
+  td{padding:7px 9px;border-bottom:1px solid #221e33;vertical-align:top}
+  .warn{background:rgba(224,165,63,.08);border:1px solid rgba(224,165,63,.32);
+        border-radius:8px;padding:14px 16px;margin:22px 0;line-height:1.7;max-width:88ch}
+  .warn b{color:var(--amber)}
+  .no{background:rgba(255,107,107,.06);border:1px solid rgba(255,107,107,.25);
+      border-radius:8px;padding:14px 16px;margin:18px 0;max-width:88ch}
+  .no b{color:var(--bad)}
+  ul{max-width:88ch;padding-left:20px}
+  li{margin:8px 0}
+  .muted{color:var(--dim)}
+  .langsw{margin-left:auto;display:flex;gap:4px}
+  .langsw button{background:#241f36;color:var(--txt);border:1px solid var(--line);
+                 border-radius:5px;padding:3px 8px;font:inherit;font-size:11px;
+                 cursor:pointer;opacity:.55}
+  .langsw button.active{opacity:1;border-color:var(--uv);color:var(--uv)}
+  footer{border-top:1px solid var(--line);padding:18px 22px;color:var(--dim);font-size:12px}
+</style>
+</head>
+<body>
+
+<header>
+  <h1 data-i18n="h1">Integrate</h1>
+  <a href="/">/</a>
+  <a href="/x402">/x402</a>
+  <a href="/mcp">/mcp</a>
+  <a href="/networks" data-i18n="nav.networks">networks</a>
+  <a href="/skill.md">/skill.md</a>
+  <span class="langsw"><button data-lang="en">EN</button><button data-lang="es">ES</button></span>
+</header>
+
+<main>
+
+<p class="lead" data-i18n="lead">You want to charge for an HTTP endpoint, or to pay for one, without either side holding an account with anybody. That is what this service is for, and using it is one configuration line: point your x402 middleware at this URL. There is no signup, no API key, no fee and no rate card.</p>
+
+<div class="url">https://facilitator.ultravioletadao.xyz</div>
+
+<div class="two">
+  <div class="path">
+    <h3 data-i18n="seller.h">You are selling</h3>
+    <p data-i18n="seller.p">Your endpoint answers <code>402</code> with the terms you accept. The buyer signs one of them and retries with the signature in a header. Your middleware hands that to this facilitator: <code>verify</code> to check it, <code>settle</code> to put it on chain. You never touch a private key, never pay gas, and never wait for a block before answering.</p>
+    <pre><code>npm install uvd-x402-sdk
+# or, for an axum server, the crate:
+# x402-axum</code></pre>
+    <p class="muted" data-i18n="seller.note">The default facilitator in both SDKs is already this one. Nothing to configure until you want a different one.</p>
+  </div>
+  <div class="path">
+    <h3 data-i18n="buyer.h">You are buying</h3>
+    <p data-i18n="buyer.p">Read the <code>402</code>, sign an EIP-3009 authorization for one of the offered terms, retry with it. You spend the stablecoin and nothing else — the gas is the facilitator's problem. Ask before you pay: <code>/supported</code> says whether this facilitator can settle that scheme on that network at all.</p>
+    <pre><code>pip install uvd-x402-sdk
+# or, for a reqwest client, the crate:
+# x402-reqwest</code></pre>
+    <p class="muted" data-i18n="buyer.note">If your client is an agent rather than a program, the same four calls are MCP tools at <a href="/mcp">/mcp</a>.</p>
+  </div>
+</div>
+
+<h2 data-i18n="h.first">The first call, before anything else</h2>
+<p data-i18n="first.p">Not the payment. This one — it is free, it takes no arguments, and it is the only authoritative answer to "can you settle X on Y":</p>
+<pre><code>curl -sS https://facilitator.ultravioletadao.xyz/supported</code></pre>
+<p data-i18n="first.p2">Every network appears twice, under the x402 v1 name (<code>base</code>) and the CAIP-2 form (<code>eip155:8453</code>), and both spellings are accepted everywhere. The readable version of the same answer is <a href="/networks">/networks</a>. Do not hard-code a network list from either.</p>
+
+<h2 data-i18n="h.traps">The four that bite first</h2>
+<ul>
+  <li data-i18n="trap.domain"><b>EIP-712 domain names are not uniform.</b> The same stablecoin is <code>"USD Coin"</code> on one chain and <code>"USDC"</code> on another, and the name can flip between a chain's mainnet and its testnet. This is the single most common cause of a first integration failing with "invalid signature". The facilitator already knows the right name for every token it lists, so the fix is to let it resolve rather than to send your own.</li>
+  <li data-i18n="trap.time"><b>Timestamps are Unix seconds, not milliseconds.</b> A JavaScript <code>Date.now()</code> passed straight through is a thousand times too large and the authorization is not yet valid for about fifty thousand years.</li>
+  <li data-i18n="trap.idem"><b>A settle that timed out is not a settle that failed.</b> Retry with the same <code>Idempotency-Key</code>. A fresh unguessable value per payment, reused on every retry of <em>that</em> payment.</li>
+  <li data-i18n="trap.retry"><b>Not every failure is permanent.</b> A bad signature is; an unreachable RPC is not. Read <code>errorReason</code> before deciding.</li>
+</ul>
+<p data-i18n="traps.more">All of them, with the field-by-field shapes and worked examples, are in <a href="/skill.md">/skill.md</a> — it is written for an agent and reads fine as a manual.</p>
+
+<h2 data-i18n="h.nopromise">What is not promised</h2>
+
+<div class="no">
+  <p style="margin:0 0 8px 0"><b data-i18n="np.title">No SLA, and no support commitment.</b> <span data-i18n="np.text">This is infrastructure a DAO runs and publishes, not a product with a contract behind it. There is no uptime guarantee, no response time, no ticket queue and nobody on call for you. It is free in both senses, and the second one is the part to plan around.</span></p>
+  <p style="margin:0" class="muted" data-i18n="np.text2">What there is instead: the health endpoint, the live event stream, both settlement counters including the failed one, and every balance the service spends gas from. Judge it on those rather than on a promise.</p>
+</div>
+
+<p data-i18n="np.p3"><b>What happens if it stops.</b> Your settled payments are on chain and do not depend on this service continuing to exist — the chain is the ledger, not us. Unsettled authorizations are just signatures, and their nonces are consumed only on settlement, so nothing is stranded. And the facilitator is not a lock-in: x402 is an open protocol, this implementation is a fork of a public one, and pointing your middleware at a different facilitator is the same one configuration line.</p>
+
+<h2 data-i18n="h.watch">Watching it</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th data-i18n="w.th.what">what</th><th data-i18n="w.th.where">where</th></tr></thead>
+  <tbody>
+    <tr><td data-i18n="w.health">Is it up</td><td><a href="/health">/health</a></td></tr>
+    <tr><td data-i18n="w.version">Which release is answering</td><td><a href="/version">/version</a></td></tr>
+    <tr><td data-i18n="w.live">Every verify and settle, as it happens</td><td><a href="/events/live">/events/live</a></td></tr>
+    <tr><td data-i18n="w.stats">Totals, including the failures</td><td><a href="/stats">/stats</a> · <a href="/x402">/x402</a></td></tr>
+    <tr><td data-i18n="w.gas">The gas it is spending, per network</td><td><a href="/networks">/networks</a></td></tr>
+    <tr><td data-i18n="w.api">The full contract</td><td><a href="/docs">/docs</a> · <a href="/openapi.json">/openapi.json</a></td></tr>
+    <tr><td data-i18n="w.src">The code, and where to open an issue</td><td><a href="https://github.com/UltravioletaDAO/x402-rs" target="_blank">github.com/UltravioletaDAO/x402-rs</a></td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="warn">
+  <p style="margin:0"><b data-i18n="w.testTitle">Try it on a testnet first, and mean it.</b> <span data-i18n="w.testText">A settlement is irreversible on every chain here, and the failure modes above are all cheaper to meet on <code>base-sepolia</code> than on Base. The testnet wallets are funded and listed alongside the mainnet ones.</span></p>
+</div>
+
+</main>
+
+<footer>
+  <span data-i18n="footer">Ultravioleta DAO · x402 Payment Facilitator.</span>
+  <a href="/">/</a> · <a href="/x402">/x402</a> · <a href="/mcp">/mcp</a> · <a href="/networks">/networks</a> · <a href="/skill.md">/skill.md</a>
+</footer>
+
+<script>
+const I18N = {
+  en: {
+    title:"Integrate with this x402 facilitator", h1:"Integrate",
+    "nav.networks":"networks",
+    lead:"You want to charge for an HTTP endpoint, or to pay for one, without either side holding an account with anybody. That is what this service is for, and using it is one configuration line: point your x402 middleware at this URL. There is no signup, no API key, no fee and no rate card.",
+    "seller.h":"You are selling",
+    "seller.p":"Your endpoint answers <code>402</code> with the terms you accept. The buyer signs one of them and retries with the signature in a header. Your middleware hands that to this facilitator: <code>verify</code> to check it, <code>settle</code> to put it on chain. You never touch a private key, never pay gas, and never wait for a block before answering.",
+    "seller.note":"The default facilitator in both SDKs is already this one. Nothing to configure until you want a different one.",
+    "buyer.h":"You are buying",
+    "buyer.p":"Read the <code>402</code>, sign an EIP-3009 authorization for one of the offered terms, retry with it. You spend the stablecoin and nothing else — the gas is the facilitator's problem. Ask before you pay: <code>/supported</code> says whether this facilitator can settle that scheme on that network at all.",
+    "buyer.note":"If your client is an agent rather than a program, the same four calls are MCP tools at <a href=\"/mcp\">/mcp</a>.",
+    "h.first":"The first call, before anything else",
+    "first.p":"Not the payment. This one — it is free, it takes no arguments, and it is the only authoritative answer to \"can you settle X on Y\":",
+    "first.p2":"Every network appears twice, under the x402 v1 name (<code>base</code>) and the CAIP-2 form (<code>eip155:8453</code>), and both spellings are accepted everywhere. The readable version of the same answer is <a href=\"/networks\">/networks</a>. Do not hard-code a network list from either.",
+    "h.traps":"The four that bite first",
+    "trap.domain":"<b>EIP-712 domain names are not uniform.</b> The same stablecoin is <code>\"USD Coin\"</code> on one chain and <code>\"USDC\"</code> on another, and the name can flip between a chain's mainnet and its testnet. This is the single most common cause of a first integration failing with \"invalid signature\". The facilitator already knows the right name for every token it lists, so the fix is to let it resolve rather than to send your own.",
+    "trap.time":"<b>Timestamps are Unix seconds, not milliseconds.</b> A JavaScript <code>Date.now()</code> passed straight through is a thousand times too large and the authorization is not yet valid for about fifty thousand years.",
+    "trap.idem":"<b>A settle that timed out is not a settle that failed.</b> Retry with the same <code>Idempotency-Key</code>. A fresh unguessable value per payment, reused on every retry of <em>that</em> payment.",
+    "trap.retry":"<b>Not every failure is permanent.</b> A bad signature is; an unreachable RPC is not. Read <code>errorReason</code> before deciding.",
+    "traps.more":"All of them, with the field-by-field shapes and worked examples, are in <a href=\"/skill.md\">/skill.md</a> — it is written for an agent and reads fine as a manual.",
+    "h.nopromise":"What is not promised",
+    "np.title":"No SLA, and no support commitment.",
+    "np.text":"This is infrastructure a DAO runs and publishes, not a product with a contract behind it. There is no uptime guarantee, no response time, no ticket queue and nobody on call for you. It is free in both senses, and the second one is the part to plan around.",
+    "np.text2":"What there is instead: the health endpoint, the live event stream, both settlement counters including the failed one, and every balance the service spends gas from. Judge it on those rather than on a promise.",
+    "np.p3":"<b>What happens if it stops.</b> Your settled payments are on chain and do not depend on this service continuing to exist — the chain is the ledger, not us. Unsettled authorizations are just signatures, and their nonces are consumed only on settlement, so nothing is stranded. And the facilitator is not a lock-in: x402 is an open protocol, this implementation is a fork of a public one, and pointing your middleware at a different facilitator is the same one configuration line.",
+    "h.watch":"Watching it",
+    "w.th.what":"what", "w.th.where":"where",
+    "w.health":"Is it up",
+    "w.version":"Which release is answering",
+    "w.live":"Every verify and settle, as it happens",
+    "w.stats":"Totals, including the failures",
+    "w.gas":"The gas it is spending, per network",
+    "w.api":"The full contract",
+    "w.src":"The code, and where to open an issue",
+    "w.testTitle":"Try it on a testnet first, and mean it.",
+    "w.testText":"A settlement is irreversible on every chain here, and the failure modes above are all cheaper to meet on <code>base-sepolia</code> than on Base. The testnet wallets are funded and listed alongside the mainnet ones.",
+    footer:"Ultravioleta DAO · x402 Payment Facilitator.",
+  },
+  es: {
+    title:"Integrarse con este facilitador x402", h1:"Integrarse",
+    "nav.networks":"redes",
+    lead:"Querés cobrar por un endpoint HTTP, o pagar por uno, sin que ninguna de las dos partes tenga cuenta con nadie. Para eso está este servicio, y usarlo es una línea de configuración: apuntá tu middleware x402 a esta URL. No hay registro, ni API key, ni comisión, ni lista de precios.",
+    "seller.h":"Estás vendiendo",
+    "seller.p":"Tu endpoint contesta <code>402</code> con los términos que aceptás. El comprador firma uno de ellos y reintenta con la firma en un header. Tu middleware se la pasa a este facilitador: <code>verify</code> para chequearla, <code>settle</code> para ponerla en la cadena. Nunca tocás una clave privada, nunca pagás gas, y nunca esperás un bloque antes de contestar.",
+    "seller.note":"El facilitador por defecto de los dos SDK ya es este. No hay nada que configurar hasta que quieras otro.",
+    "buyer.h":"Estás comprando",
+    "buyer.p":"Leé el <code>402</code>, firmá una autorización EIP-3009 para uno de los términos ofrecidos, reintentá con ella. Gastás la stablecoin y nada más — el gas es problema del facilitador. Preguntá antes de pagar: <code>/supported</code> dice si este facilitador puede liquidar ese esquema en esa red, para empezar.",
+    "buyer.note":"Si tu cliente es un agente y no un programa, las mismas cuatro llamadas son herramientas MCP en <a href=\"/mcp\">/mcp</a>.",
+    "h.first":"La primera llamada, antes que ninguna otra",
+    "first.p":"No el pago. Esta — es gratis, no lleva argumentos, y es la única respuesta autoritativa a \"¿podés liquidar X en Y?\":",
+    "first.p2":"Cada red aparece dos veces, bajo el nombre x402 v1 (<code>base</code>) y bajo la forma CAIP-2 (<code>eip155:8453</code>), y las dos formas se aceptan en todos lados. La versión legible de esa misma respuesta es <a href=\"/networks\">/networks</a>. No fijes una lista de redes en el código a partir de ninguna de las dos.",
+    "h.traps":"Las cuatro que muerden primero",
+    "trap.domain":"<b>Los nombres de dominio EIP-712 no son uniformes.</b> La misma stablecoin es <code>\"USD Coin\"</code> en una cadena y <code>\"USDC\"</code> en otra, y el nombre puede darse vuelta entre la mainnet y la testnet de la misma cadena. Esta es la causa más común de que una primera integración falle con \"invalid signature\". El facilitador ya sabe el nombre correcto de cada token que lista, así que el arreglo es dejarlo resolver en vez de mandar el tuyo.",
+    "trap.time":"<b>Los timestamps son segundos Unix, no milisegundos.</b> Un <code>Date.now()</code> de JavaScript pasado tal cual es mil veces más grande y la autorización no es válida todavía por unos cincuenta mil años.",
+    "trap.idem":"<b>Un settle que dio timeout no es un settle que falló.</b> Reintentá con el mismo <code>Idempotency-Key</code>. Un valor nuevo e impredecible por pago, reusado en cada reintento de <em>ese</em> pago.",
+    "trap.retry":"<b>No toda falla es permanente.</b> Una firma mala lo es; un RPC inalcanzable no. Leé <code>errorReason</code> antes de decidir.",
+    "traps.more":"Todas, con las formas campo por campo y ejemplos resueltos, están en <a href=\"/skill.md\">/skill.md</a> — está escrito para un agente y se lee bien como manual.",
+    "h.nopromise":"Lo que no se promete",
+    "np.title":"Sin SLA, y sin compromiso de soporte.",
+    "np.text":"Esto es infraestructura que una DAO opera y publica, no un producto con un contrato atrás. No hay garantía de uptime, ni tiempo de respuesta, ni cola de tickets, ni nadie de guardia para vos. Es gratis en los dos sentidos, y el segundo es el que hay que tener en cuenta al planear.",
+    "np.text2":"Lo que sí hay: el endpoint de salud, el stream de eventos en vivo, los dos contadores de liquidación incluido el de fallidos, y cada saldo del que el servicio gasta gas. Juzgalo por eso y no por una promesa.",
+    "np.p3":"<b>Qué pasa si se cae.</b> Tus pagos liquidados están en la cadena y no dependen de que este servicio siga existiendo — el libro contable es la cadena, no nosotros. Las autorizaciones sin liquidar son solo firmas, y sus nonces se consumen recién al liquidar, así que no queda nada varado. Y el facilitador no es un encierro: x402 es un protocolo abierto, esta implementación es un fork de una pública, y apuntar tu middleware a otro facilitador es la misma única línea de configuración.",
+    "h.watch":"Cómo mirarlo",
+    "w.th.what":"qué", "w.th.where":"dónde",
+    "w.health":"Si está arriba",
+    "w.version":"Qué versión está contestando",
+    "w.live":"Cada verify y cada settle, en el momento",
+    "w.stats":"Los totales, incluidas las fallas",
+    "w.gas":"El gas que está gastando, por red",
+    "w.api":"El contrato completo",
+    "w.src":"El código, y dónde abrir un issue",
+    "w.testTitle":"Probalo primero en una testnet, y en serio.",
+    "w.testText":"Una liquidación es irreversible en todas las cadenas de acá, y las fallas de arriba salen todas más baratas en <code>base-sepolia</code> que en Base. Las wallets de testnet están fondeadas y listadas al lado de las de mainnet.",
+    footer:"Ultravioleta DAO · Facilitador de pagos x402.",
+  },
+};
+
+let LANG = 'en';
+try { const s = localStorage.getItem('x402.lang'); if (I18N[s]) LANG = s; } catch (e) { /* private mode */ }
+const t = k => (I18N[LANG] && I18N[LANG][k]) ?? I18N.en[k] ?? k;
+
+function applyLang(lang){
+  if (I18N[lang]) LANG = lang;
+  document.documentElement.lang = LANG;
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    el.innerHTML = t(el.getAttribute('data-i18n'));
+  });
+  document.querySelectorAll('.langsw button').forEach(b => {
+    b.classList.toggle('active', b.getAttribute('data-lang') === LANG);
+  });
+}
+
+document.querySelectorAll('.langsw button').forEach(b => {
+  b.addEventListener('click', () => {
+    const lang = b.getAttribute('data-lang');
+    try { localStorage.setItem('x402.lang', lang); } catch (e) { /* private mode */ }
+    applyLang(lang);
+  });
+});
+
+applyLang(LANG);
+</script>
+</body>
+</html>

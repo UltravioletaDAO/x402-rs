@@ -41,6 +41,17 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends pkg-config libssl-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # The landing page states network counts in three places -- the English
+      # markup, the `en` dictionary and the `es` dictionary -- and until
+      # 2026-09-02 only the first was ever checked, by a script whose own
+      # docstring asked to be wired here and never was (`grep -rn
+      # verify_landing_canonical .github/` returned nothing). --offline skips
+      # the one producer that needs the network, GET /supported: a CI check that
+      # calls production turns a production outage into a red build, which is
+      # the worst possible moment to block a deploy. Everything else -- escrow,
+      # ERC-8004 and the whole EN/ES cross-check -- runs from the repository.
+      - name: Landing page matches its canonical sources (offline)
+        run: python3 scripts/verify_landing_canonical.py --offline
       - name: Build (all production features)
         run: cargo build --locked --features ${{ env.CARGO_FEATURES }}
       # --test-threads=1: tests are fast (compile dominates), and running them

@@ -3,8 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Bazaar — Ultravioleta DAO x402 Facilitator</title>
+  <title data-i18n="pageTitle">Bazaar — Ultravioleta DAO x402 Facilitator</title>
   <meta name="description" content="Curated x402 Bazaar: browse live, payable agent endpoints across the ecosystem." />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://facilitator.ultravioletadao.xyz/bazaar" />
+  <meta property="og:title" content="The Curated x402 Bazaar" />
+  <meta property="og:description" content="Live, payable agent endpoints across the x402 ecosystem, filtered for junk and swept for dead links." />
+  <meta property="og:image" content="https://facilitator.ultravioletadao.xyz/logo.png" />
   <link rel="icon" href="/favicon.ico" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -144,8 +149,28 @@
       <div class="stat-card"><div class="stat-value" id="s-total">—</div><div class="stat-label" data-i18n="s_total">Listed endpoints</div></div>
       <div class="stat-card"><div class="stat-value green" id="s-alive">—</div><div class="stat-label" data-i18n="s_alive">Verified alive (402)</div></div>
       <div class="stat-card"><div class="stat-value" id="s-firstparty">—</div><div class="stat-label" data-i18n="s_fp">First-party + VIP</div></div>
-      <div class="stat-card"><div class="stat-value" id="s-sources">12</div><div class="stat-label" data-i18n="s_src">Aggregated facilitators</div></div>
+      <div class="stat-card"><div class="stat-value" id="s-sources">—</div><div class="stat-label" data-i18n="s_src">Aggregated facilitators</div></div>
     </div>
+
+
+    <div class="section-title" data-i18n="x.h">What these numbers mean</div>
+    <p class="section-sub" data-i18n="x.p1">The catalog holds far more endpoints than it shows, and the gap is the product rather than a defect. Everything ever aggregated is counted in the first number below; what survives the sweep is what the browser above lists by default. The rest failed a health probe, and a directory that keeps serving dead links is worth less than one that admits how many it found.</p>
+
+    <div class="stats" id="x-health"></div>
+
+    <div class="section-title" data-i18n="x.srcH">Where the catalog comes from</div>
+    <p class="section-sub" data-i18n="x.p2">Aggregation is not neutral, and this table is the reason to say so out loud: the totals are dominated by whichever upstream feed publishes the most, not by whichever ecosystem is the busiest. Read a share of 90 percent as one aggregator having an opinion, not as a measurement of the market.</p>
+    <div class="tbl-wrap"><table class="tbl" id="x-sources"><tbody></tbody></table></div>
+
+    <div class="section-title" data-i18n="x.netH">Where those endpoints live</div>
+    <p class="section-sub" data-i18n="x.p3">Same caution, one layer down. A chain that carries almost the whole catalog carries almost the whole of one aggregator's crawl of it.</p>
+    <div class="tbl-wrap"><table class="tbl" id="x-networks"><tbody></tbody></table></div>
+
+    <div class="section-title" data-i18n="x.tierH">The four tiers, and the five health states</div>
+    <p class="section-sub" data-i18n="x.p4">First-party is ours. VIP is a partner we curated by hand. Verified answered a payment challenge correctly. Listed is everything else that was aggregated and has not been checked beyond existing. On the health side: alive answered 402, auth-gated wanted credentials before it would say, degraded answered something else, quarantined stopped answering at all, and unprobeable could not be reached in a way that proves anything either way. Quarantined is not a judgement about the seller: it is a statement about a URL on the day it was probed.</p>
+    <div class="tbl-wrap"><table class="tbl" id="x-tiers"><tbody></tbody></table></div>
+
+    <p class="section-sub" data-i18n="x.note">Every number on this page is read from GET /discovery/stats when the page loads. None of them is typed here.</p>
 
     <div class="section-title" data-i18n="fp_title">★ First-class citizens</div>
     <div class="section-sub" data-i18n="fp_sub">Our products and curated partners, always first.</div>
@@ -157,10 +182,10 @@
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
         <input id="q" placeholder="Search url / description…" data-i18n-ph="search" />
       </div>
-      <select id="f-tier"><option value="">All tiers</option><option value="first_party">First-party</option><option value="vip">VIP</option><option value="verified">Verified</option><option value="listed">Listed</option></select>
-      <select id="f-health"><option value="">Alive + unknown</option><option value="alive">Alive (402)</option><option value="auth_gated">Auth-gated</option><option value="degraded">Degraded</option><option value="any">All (incl. quarantined)</option></select>
-      <select id="f-network"><option value="">All networks</option><option value="eip155:8453">Base</option><option value="eip155:1">Ethereum</option><option value="eip155:42161">Arbitrum</option><option value="eip155:137">Polygon</option><option value="eip155:10">Optimism</option><option value="eip155:43114">Avalanche</option><option value="eip155:42220">Celo</option><option value="eip155:1187947933">SKALE</option></select>
-      <select id="f-source"><option value="">All sources</option><option value="self_registered">Ultravioleta natives</option><option value="aggregated">Aggregated</option></select>
+      <select id="f-tier"><option value="" data-i18n="f.tier.all">All tiers</option><option value="first_party" data-i18n="f.tier.firstParty">First-party</option><option value="vip" data-i18n="f.tier.vip">VIP</option><option value="verified" data-i18n="f.tier.verified">Verified</option><option value="listed" data-i18n="f.tier.listed">Listed</option></select>
+      <select id="f-health"><option value="" data-i18n="f.health.default">Alive + unknown</option><option value="alive" data-i18n="f.health.alive">Alive (402)</option><option value="auth_gated" data-i18n="f.health.authGated">Auth-gated</option><option value="degraded" data-i18n="f.health.degraded">Degraded</option><option value="any" data-i18n="f.health.any">All (incl. quarantined)</option></select>
+      <select id="f-network"><option value="" data-i18n="f.network.all">All networks</option><option value="eip155:8453">Base</option><option value="eip155:1">Ethereum</option><option value="eip155:42161">Arbitrum</option><option value="eip155:137">Polygon</option><option value="eip155:10">Optimism</option><option value="eip155:43114">Avalanche</option><option value="eip155:42220">Celo</option><option value="eip155:1187947933">SKALE</option></select>
+      <select id="f-source"><option value="" data-i18n="f.source.all">All sources</option><option value="self_registered" data-i18n="f.source.native">Ultravioleta natives</option><option value="aggregated" data-i18n="f.source.aggregated">Aggregated</option></select>
     </div>
 
     <div class="grid" id="grid"></div>
@@ -170,6 +195,14 @@
   <dialog id="detail"></dialog>
   <footer><span data-i18n="footer">Ultravioleta DAO — x402 Facilitator Bazaar.</span> <a class="link" href="/discovery/resources">/discovery/resources</a></footer>
 
+  <style>
+    .tbl-wrap{overflow-x:auto;margin:10px 0 26px}
+    .tbl{width:100%;border-collapse:collapse;font-size:.85rem}
+    .tbl td{padding:6px 10px;border-bottom:1px solid rgba(255,255,255,.07)}
+    .tbl td:first-child{color:#cfc6ff}
+    .tbl td.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+    .tbl td.share{color:#8a83a6;text-align:right;white-space:nowrap}
+  </style>
   <script>
     const PAGE = 24;
     const USDC_DECIMALS = 6; // known 6-dec stablecoins (USDC/USDT/EURC/AUSD/PYUSD/USDG)
@@ -184,9 +217,27 @@
       { name:'402Milly', tier:'first_party', url:'https://402milly.xyz', match:'402milly', blurb:{en:'Pixel advertising marketplace, x402-native.',es:'Marketplace de pixeles publicitarios, nativo x402.'} },
       { name:'Tenjin', tier:'vip', url:'https://tenjin.blog', match:'tenjin.blog', blurb:{en:'Pay-per-read blogs and research for AI agents.',es:'Blogs e investigación de pago por lectura para agentes IA.'} },
     ];
+    // One key for the whole site. This page used to write `uvd-lang` while the
+    // landing, /stats and /events/live all wrote `x402.lang`, so choosing Spanish
+    // on one side and navigating to the other silently reset the choice. The old
+    // value is migrated once so an existing visitor keeps theirs.
+    const LANG_KEY = 'x402.lang', LEGACY_LANG_KEY = 'uvd-lang';
+    function storedLang(){
+      try {
+        let v = localStorage.getItem(LANG_KEY);
+        if (!v) {
+          const old = localStorage.getItem(LEGACY_LANG_KEY);
+          if (old) { localStorage.setItem(LANG_KEY, old); localStorage.removeItem(LEGACY_LANG_KEY); v = old; }
+        }
+        // English unless the reader chose otherwise. Never the browser's language:
+        // one URL per page, so the language has to be a visible, undoable choice.
+        return I18N[v] ? v : 'en';
+      } catch(err) { return 'en'; }
+    }
+
     const I18N = {
-      en:{ title:'The Curated x402 Bazaar', subtitle:'Live, payable agent endpoints across the x402 ecosystem — filtered for junk, swept for dead links, and ranked with our products first.', s_total:'Listed endpoints', s_alive:'Verified alive (402)', s_fp:'First-party + VIP', s_src:'Aggregated facilitators', fp_title:'★ First-class citizens', fp_sub:'Our products and curated partners, always first.', browse_title:'Browse the bazaar', search:'Search url / description…', footer:'Ultravioleta DAO — x402 Facilitator Bazaar.' },
-      es:{ title:'El Bazar x402 Curado', subtitle:'Endpoints de agentes vivos y pagables del ecosistema x402 — filtrados de basura, barridos de enlaces muertos y con nuestros productos de primeros.', s_total:'Endpoints listados', s_alive:'Verificados vivos (402)', s_fp:'First-party + VIP', s_src:'Facilitadores agregados', fp_title:'★ Ciudadanos de primera clase', fp_sub:'Nuestros productos y socios curados, siempre de primeros.', browse_title:'Explora el bazar', search:'Buscar url / descripción…', footer:'Ultravioleta DAO — Bazar del Facilitador x402.' },
+      en:{ "x.h":"What these numbers mean", "x.p1":"The catalog holds far more endpoints than it shows, and the gap is the product rather than a defect. Everything ever aggregated is counted in the first number below; what survives the sweep is what the browser above lists by default. The rest failed a health probe, and a directory that keeps serving dead links is worth less than one that admits how many it found.", "x.srcH":"Where the catalog comes from", "x.p2":"Aggregation is not neutral, and this table is the reason to say so out loud: the totals are dominated by whichever upstream feed publishes the most, not by whichever ecosystem is the busiest. Read a share of 90 percent as one aggregator having an opinion, not as a measurement of the market.", "x.netH":"Where those endpoints live", "x.p3":"Same caution, one layer down. A chain that carries almost the whole catalog carries almost the whole of one aggregator's crawl of it.", "x.tierH":"The four tiers, and the five health states", "x.p4":"First-party is ours. VIP is a partner we curated by hand. Verified answered a payment challenge correctly. Listed is everything else that was aggregated and has not been checked beyond existing. On the health side: alive answered 402, auth-gated wanted credentials before it would say, degraded answered something else, quarantined stopped answering at all, and unprobeable could not be reached in a way that proves anything either way. Quarantined is not a judgement about the seller: it is a statement about a URL on the day it was probed.", "x.note":"Every number on this page is read from GET /discovery/stats when the page loads. None of them is typed here.", "x.k.total":"Aggregated, ever", "x.k.visible":"Shown by default", "x.k.quarantined":"Quarantined (stopped answering)", "x.k.sources":"Upstream facilitators", pageTitle:'Bazaar — Ultravioleta DAO x402 Facilitator', 'f.tier.all':'All tiers', 'f.tier.firstParty':'First-party', 'f.tier.vip':'VIP', 'f.tier.verified':'Verified', 'f.tier.listed':'Listed', 'f.health.default':'Alive + unknown', 'f.health.alive':'Alive (402)', 'f.health.authGated':'Auth-gated', 'f.health.degraded':'Degraded', 'f.health.any':'All (incl. quarantined)', 'f.network.all':'All networks', 'f.source.all':'All sources', 'f.source.native':'Ultravioleta natives', 'f.source.aggregated':'Aggregated', title:'The Curated x402 Bazaar', subtitle:'Live, payable agent endpoints across the x402 ecosystem — filtered for junk, swept for dead links, and ranked with our products first.', s_total:'Listed endpoints', s_alive:'Verified alive (402)', s_fp:'First-party + VIP', s_src:'Aggregated facilitators', fp_title:'★ First-class citizens', fp_sub:'Our products and curated partners, always first.', browse_title:'Browse the bazaar', search:'Search url / description…', footer:'Ultravioleta DAO — x402 Facilitator Bazaar.' },
+      es:{ "x.h":"Qué significan estos números", "x.p1":"El catálogo tiene muchos más endpoints de los que muestra, y esa diferencia es el producto y no un defecto. Todo lo que alguna vez se agregó está en el primer número de abajo; lo que sobrevive al barrido es lo que el explorador de arriba lista por defecto. El resto falló una sonda de salud, y un directorio que sigue sirviendo enlaces muertos vale menos que uno que admite cuántos encontró.", "x.srcH":"De dónde sale el catálogo", "x.p2":"Agregar no es neutral, y esta tabla es la razón para decirlo en voz alta: los totales los domina el feed de arriba que más publica, no el ecosistema que más se mueve. Leé un 90 por ciento de participación como un agregador teniendo una opinión, no como una medición del mercado.", "x.netH":"Dónde viven esos endpoints", "x.p3":"La misma advertencia, una capa más abajo. Una cadena que carga casi todo el catálogo carga casi todo el crawl que un solo agregador hizo de él.", "x.tierH":"Los cuatro niveles, y los cinco estados de salud", "x.p4":"First-party es nuestro. VIP es un socio que curamos a mano. Verified contestó bien un desafío de pago. Listed es todo lo demás que se agregó y no se chequeó más allá de que existe. Del lado de la salud: alive contestó 402, auth-gated pidió credenciales antes de contestar, degraded contestó otra cosa, quarantined dejó de contestar del todo, y unprobeable no se pudo alcanzar de una forma que pruebe nada en ninguna dirección. Quarantined no es un juicio sobre el vendedor: es una afirmación sobre una URL el día que se la sondeó.", "x.note":"Cada número de esta página se lee de GET /discovery/stats al cargar. Ninguno está tipeado acá.", "x.k.total":"Agregados, en total", "x.k.visible":"Mostrados por defecto", "x.k.quarantined":"En cuarentena (dejaron de contestar)", "x.k.sources":"Facilitadores de origen", pageTitle:'Bazar — Facilitador x402 de Ultravioleta DAO', 'f.tier.all':'Todos los niveles', 'f.tier.firstParty':'First-party', 'f.tier.vip':'VIP', 'f.tier.verified':'Verificados', 'f.tier.listed':'Listados', 'f.health.default':'Vivos + desconocidos', 'f.health.alive':'Vivos (402)', 'f.health.authGated':'Con auth', 'f.health.degraded':'Degradados', 'f.health.any':'Todos (incl. en cuarentena)', 'f.network.all':'Todas las redes', 'f.source.all':'Todas las fuentes', 'f.source.native':'Nativos de Ultravioleta', 'f.source.aggregated':'Agregados', title:'El Bazar x402 Curado', subtitle:'Endpoints de agentes vivos y pagables del ecosistema x402 — filtrados de basura, barridos de enlaces muertos y con nuestros productos de primeros.', s_total:'Endpoints listados', s_alive:'Verificados vivos (402)', s_fp:'First-party + VIP', s_src:'Facilitadores agregados', fp_title:'★ Ciudadanos de primera clase', fp_sub:'Nuestros productos y socios curados, siempre de primeros.', browse_title:'Explora el bazar', search:'Buscar url / descripción…', footer:'Ultravioleta DAO — Bazar del Facilitador x402.' },
     };
 
     let state = { page: 0, q: '', tier: '', health: '', network: '', source: '' };
@@ -212,6 +263,37 @@
     }
 
     async function fetchJSON(url){ const r = await fetch(url, inflight ? {signal: inflight.signal} : {}); if(!r.ok) throw new Error(r.status); return r.json(); }
+
+    // The explanation tables. Same endpoint as the cards above, read once more
+    // rather than threaded through loadStats(), so a failure here leaves the
+    // browser working and simply shows nothing to explain.
+    async function explainStats(){
+      let s;
+      try { s = await (await fetch('/discovery/stats')).json(); } catch(e) { return; }
+      const T = () => (I18N[document.documentElement.lang] || I18N.en);
+      const n = v => (v || 0).toLocaleString();
+      const pct = (v, tot) => tot ? (v * 100 / tot).toFixed(1) + '%' : '';
+      const rows = (el, pairs, tot) => {
+        const b = document.querySelector('#' + el + ' tbody');
+        if (!b) return;
+        b.innerHTML = pairs.map(([k, v]) =>
+          `<tr><td>${esc(k)}</td><td class="n">${n(v)}</td><td class="share">${pct(v, tot)}</td></tr>`).join('');
+      };
+      const total = s.total || 0;
+      const health = s.byHealth || {}, tier = s.byTier || {}, src = s.bySourceFacilitator || {};
+
+      const hv = document.getElementById('x-health');
+      if (hv) hv.innerHTML =
+        `<div class="stat-card"><div class="stat-value">${n(total)}</div><div class="stat-label">${esc(T()['x.k.total'])}</div></div>` +
+        `<div class="stat-card"><div class="stat-value green">${n(s.visible ?? 0)}</div><div class="stat-label">${esc(T()['x.k.visible'])}</div></div>` +
+        `<div class="stat-card"><div class="stat-value">${n(health.quarantined || 0)}</div><div class="stat-label">${esc(T()['x.k.quarantined'])}</div></div>` +
+        `<div class="stat-card"><div class="stat-value">${n(Object.keys(src).length)}</div><div class="stat-label">${esc(T()['x.k.sources'])}</div></div>`;
+
+      rows('x-sources', Object.entries(src).sort((a, b) => b[1] - a[1]), total);
+      rows('x-networks', Object.entries(s.byNetwork || {}).sort((a, b) => b[1] - a[1]).slice(0, 10), total);
+      rows('x-tiers', Object.entries(tier).sort((a, b) => b[1] - a[1])
+        .concat(Object.entries(health).sort((a, b) => b[1] - a[1])), total);
+    }
 
     async function loadStats(){
       // One call to the server-side aggregate (60s cached) instead of four
@@ -338,15 +420,19 @@
       const t = I18N[l]||I18N.en;
       document.querySelectorAll('[data-i18n]').forEach(e=>{ const k=e.getAttribute('data-i18n'); if(t[k]) e.textContent=t[k]; });
       document.querySelectorAll('[data-i18n-ph]').forEach(e=>{ const k=e.getAttribute('data-i18n-ph'); if(t[k]) e.setAttribute('placeholder',t[k]); });
-      document.documentElement.lang=l; document.getElementById('lang').value=l; renderVip();
+      document.documentElement.lang=l; document.getElementById('lang').value=l; renderVip(); explainStats();
     }
-    document.getElementById('lang').addEventListener('change', e=>{ localStorage.setItem('uvd-lang', e.target.value); applyLang(e.target.value); });
+    document.getElementById('lang').addEventListener('change', e=>{
+      try { localStorage.setItem(LANG_KEY, e.target.value); } catch(err) { /* private mode */ }
+      applyLang(e.target.value);
+    });
 
     // ---- boot ----
     readUrl();
-    applyLang((localStorage.getItem('uvd-lang') || ((navigator.language||'en').slice(0,2)==='es'?'es':'en')));
+    applyLang(storedLang());
     renderVip();
     loadStats();
+    explainStats();
     load();
   </script>
 </body>

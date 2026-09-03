@@ -514,6 +514,11 @@ fn negotiated_response(
                 .status(status)
                 .header("content-type", format!("{media}; charset=utf-8"))
                 .header(header::VARY, "Accept, Accept-Encoding")
+                // Every document that reaches this function is English prose:
+                // the landing page (bilingual, English by default -- see
+                // CONTENT_LANGUAGE_EN) and the four agent surfaces, which are
+                // English on purpose and are not translated.
+                .header(header::CONTENT_LANGUAGE, CONTENT_LANGUAGE_EN)
                 .body(body.to_string())
                 .unwrap()
         }
@@ -569,6 +574,69 @@ const INDEX_MD: &str = include_str!("../static/index.md");
 const SKILL_MD: &str = include_str!("../static/skill.md");
 const AUTH_MD: &str = include_str!("../static/auth.md");
 const INDEX_HTML: &str = include_str!("../static/index.html");
+
+/// The other three HTML pages, declared here for the same reason as the four
+/// above: their handler and the i18n tests both read them, and two
+/// `include_str!` sites for one file is how one of them ends up stale.
+const BAZAAR_HTML: &str = include_str!("../static/bazaar.html");
+const STATS_HTML: &str = include_str!("../static/stats.html");
+const EVENTS_VIEWER_HTML: &str = include_str!("../static/events-viewer.html");
+
+/// The MCP guide, in its two representations.
+///
+/// Both are read by their handler and by the tests, and the Markdown one is a
+/// SEPARATE document rather than a rendering of the HTML: they are written for
+/// different readers and only the HTML is bilingual. `/skill.md` section 10 is
+/// the short version of the same material for an agent already calling
+/// verify/settle.
+const MCP_HTML: &str = include_str!("../static/mcp.html");
+const MCP_MD: &str = include_str!("../static/mcp.md");
+
+/// The network table. Its rows are NOT in this file: the page fetches
+/// `/supported` in the browser and builds them, which is the whole reason it
+/// exists. A network list typed into a document is wrong the first time a chain
+/// ships and nobody remembers the document, and it stays wrong quietly.
+const NETWORKS_HTML: &str = include_str!("../static/networks.html");
+
+/// The x402 page: the two calls, with escrow and upto as sections rather than
+/// as pages of their own -- they are extensions of `POST /settle`, not separate
+/// endpoints, and giving each a page would say otherwise.
+const X402_HTML: &str = include_str!("../static/x402.html");
+
+/// DX402 and ERC-8004, each on its own page because each is a different promise
+/// with a different failure mode -- and because both have things to say that a
+/// product page would rather not: who the author of a rating really is, and
+/// that anchoring is publishing.
+const DX402_HTML: &str = include_str!("../static/dx402.html");
+const ERC8004_HTML: &str = include_str!("../static/erc8004.html");
+
+/// The integrator's door. Named in Spanish because the owner named it that; the
+/// document itself opens in English like every other page here.
+const INTEGRAR_HTML: &str = include_str!("../static/integrar.html");
+
+/// `Content-Language` for every human page.
+///
+/// `en`, not `en, es`, and the difference is not pedantry. These pages carry
+/// both languages in one document at one URL -- there is no `/es/` and no
+/// `hreflang` -- but the bytes that render before the reader touches anything
+/// are English, and this header describes the representation that was sent, not
+/// the ones a click can reach. A cache or a crawler that keys on it must get
+/// what it will actually read.
+const CONTENT_LANGUAGE_EN: &str = "en";
+
+/// One HTML page, with its content type and its declared language.
+///
+/// Every human page goes through here. Built as a helper rather than repeated
+/// per handler because the failure is silent: a page added with a hand-written
+/// `content-type` line and no `content-language` looks perfect in a browser.
+fn html_page(body: &'static str) -> Response<String> {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "text/html; charset=utf-8")
+        .header(header::CONTENT_LANGUAGE, CONTENT_LANGUAGE_EN)
+        .body(body.to_string())
+        .unwrap()
+}
 
 /// `GET /llms.txt`: the llmstxt.org map of this service.
 ///
@@ -771,6 +839,11 @@ where
     Router::new()
         .route("/", get(get_root))
         .route("/bazaar", get(get_bazaar))
+        .route("/networks", get(get_networks_page))
+        .route("/x402", get(get_x402_page))
+        .route("/dx402", get(get_dx402_page))
+        .route("/erc8004", get(get_erc8004_page))
+        .route("/integrar", get(get_integrar_page))
         .route("/events/live", get(get_events_viewer))
         .route("/stats", get(get_stats_page))
         // Escrow state query lives in secondary_read_routes() so it can carry
@@ -2273,12 +2346,7 @@ pub async fn get_root(headers: HeaderMap) -> impl IntoResponse {
 /// connect to the stream.
 #[instrument(skip_all)]
 pub async fn get_events_viewer() -> impl IntoResponse {
-    let html = include_str!("../static/events-viewer.html");
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "text/html; charset=utf-8")
-        .body(html.to_string())
-        .unwrap()
+    html_page(EVENTS_VIEWER_HTML)
 }
 
 /// `GET /stats`: aggregated metrics, human-readable.
@@ -2288,12 +2356,7 @@ pub async fn get_events_viewer() -> impl IntoResponse {
 /// different question than someone evaluating the service.
 #[instrument(skip_all)]
 pub async fn get_stats_page() -> impl IntoResponse {
-    let html = include_str!("../static/stats.html");
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "text/html; charset=utf-8")
-        .body(html.to_string())
-        .unwrap()
+    html_page(STATS_HTML)
 }
 
 /// Alias for `get_root` to match main.rs routing.
@@ -2301,15 +2364,119 @@ pub async fn get_index(headers: HeaderMap) -> impl IntoResponse {
     get_root(headers).await
 }
 
+/// The 405 `GET /mcp` answers a caller that is an MCP client, not a reader.
+///
+/// rmcp answers 405 for GET when sessions are off, but with a `text/plain`
+/// body and no `content-type` at all. A scanner grades a surface on its
+/// content type as much as its status, so this route is served by us: same
+/// 405, same `Allow: POST`, but a body a machine can read.
+///
+/// It lives here rather than in `mcp.rs` because `mod mcp` is declared only in
+/// `main.rs`: the library compiles `handlers.rs` and would not find it.
+pub fn mcp_get_not_allowed() -> Response<String> {
+    let body = json!({
+        "error": "GET is not supported on /mcp",
+        "reason": "This MCP server runs stateless: there is no server-initiated SSE \
+                   stream to open. Send JSON-RPC over POST instead.",
+        "transport": "streamable-http",
+        "method": "POST",
+        "humanGuide": "https://facilitator.ultravioletadao.xyz/mcp",
+        "serverCard": "https://facilitator.ultravioletadao.xyz/.well-known/mcp/server-card.json"
+    });
+    Response::builder()
+        .status(StatusCode::METHOD_NOT_ALLOWED)
+        .header(header::ALLOW, "POST")
+        .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
+        .body(body.to_string())
+        .expect("a constant response builds")
+}
+
+/// `GET /mcp`: the MCP guide for a person, without taking the path from the
+/// MCP server that lives on the same URL under `POST`.
+///
+/// **The `Accept` decides who is asking, and the two answers are different on
+/// purpose.** The Streamable HTTP transport sends
+/// `application/json, text/event-stream` on every request it makes, so a caller
+/// arriving here with that header is an MCP client that used the wrong method,
+/// and what it needs is [`mcp_get_not_allowed`] -- the 405 naming
+/// POST -- not two hundred lines of HTML it cannot parse. Everyone else gets
+/// the page, and `Accept: text/markdown` gets the same guide as Markdown.
+///
+/// Serving a page here also replaces the old behaviour, where the ONLY thing at
+/// `/mcp` for a person who clicked the link in a config file was a 405.
+#[instrument(skip_all)]
+pub async fn get_mcp_page(headers: HeaderMap) -> Response<String> {
+    let accept = headers
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    let asks_for_html = accept.contains("text/html");
+    if accept.contains("text/event-stream") || (accept.contains("application/json") && !asks_for_html)
+    {
+        return mcp_get_not_allowed();
+    }
+    // HTML first, so it stays the default for a browser, for `curl` with no
+    // Accept, and for anything sending `*/*`.
+    let mut response =
+        negotiated_surface(&headers, &[("text/html", MCP_HTML), ("text/markdown", MCP_MD)]);
+    // The Markdown is English-only; the HTML is English by default. Both are
+    // `en` -- see CONTENT_LANGUAGE_EN.
+    response.headers_mut().insert(
+        header::CONTENT_LANGUAGE,
+        header::HeaderValue::from_static(CONTENT_LANGUAGE_EN),
+    );
+    response
+}
+
+/// `GET /networks`: every network and scheme, read live from `/supported`.
+///
+/// Its own page because the landing page used to carry the whole wall -- two
+/// tabs, forty cards, every balance -- which made the first screen of the site
+/// a list of chains instead of an answer to what the service does. The wall was
+/// also hand-written, so it drifted from `/supported` by construction.
+#[instrument(skip_all)]
+pub async fn get_networks_page() -> impl IntoResponse {
+    html_page(NETWORKS_HTML)
+}
+
+/// `GET /x402`: what this facilitator does, for a person deciding whether to
+/// use it -- including the counter of settlements that FAILED.
+///
+/// Publishing only the successes would be advertising, not reporting, and the
+/// endpoint that produces both numbers ships its own caveat with them; the page
+/// prints that caveat verbatim rather than paraphrasing it.
+#[instrument(skip_all)]
+pub async fn get_x402_page() -> impl IntoResponse {
+    html_page(X402_HTML)
+}
+
+/// `GET /dx402`: durable evidence, for a reader.
+#[instrument(skip_all)]
+pub async fn get_dx402_page() -> impl IntoResponse {
+    html_page(DX402_HTML)
+}
+
+/// `GET /erc8004`: OUR ERC-8004 implementation, including the part where the
+/// plain feedback path makes this facilitator the author of somebody else's
+/// rating, and the boundary with describe.net.
+#[instrument(skip_all)]
+pub async fn get_erc8004_page() -> impl IntoResponse {
+    html_page(ERC8004_HTML)
+}
+
+/// `GET /integrar`: what somebody outside the DAO needs to start, and --- the
+/// part a landing page usually omits --- what is NOT promised. No SLA, no
+/// support commitment, no uptime guarantee. Saying so is worth more than a
+/// badge that implies otherwise.
+#[instrument(skip_all)]
+pub async fn get_integrar_page() -> impl IntoResponse {
+    html_page(INTEGRAR_HTML)
+}
+
 /// `GET /bazaar`: Returns the curated Bazaar resource explorer (WS-D).
 #[instrument(skip_all)]
 pub async fn get_bazaar() -> impl IntoResponse {
-    let html = include_str!("../static/bazaar.html");
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "text/html; charset=utf-8")
-        .body(html.to_string())
-        .unwrap()
+    html_page(BAZAAR_HTML)
 }
 
 /// `GET /logo.png`: Returns Ultravioleta DAO logo.
@@ -13128,6 +13295,12 @@ mod agentic_surface_tests {
     /// |---|---|
     /// | `/` | `static/index.html` |
     /// | `/docs` | `src/openapi.rs` |
+    /// | `/mcp` | `static/mcp.html` (Markdown: `static/mcp.md`) |
+    /// | `/networks` | `static/networks.html` |
+    /// | `/x402` | `static/x402.html` |
+    /// | `/dx402` | `static/dx402.html` |
+    /// | `/erc8004` | `static/erc8004.html` |
+    /// | `/integrar` | `static/integrar.html` |
     /// | `/bazaar` | `static/bazaar.html` |
     /// | `/stats` | `static/stats.html` |
     /// | `/events/live` | `static/events-viewer.html` |
@@ -13224,6 +13397,16 @@ mod agentic_surface_tests {
             "/escrow/state",
             "/register",
             "/mcp",
+            "/networks",
+            "/x402",
+            "/dx402",
+            "/erc8004",
+            "/integrar",
+            // Registered under ENABLE_DX402, which production has on (699
+            // anchors as of 2026-09-02). Listed here because the catalog and
+            // the /dx402 page both point at it; if the flag is ever turned off
+            // this entry is the reminder that two documents go stale with it.
+            "/dx402/stats",
         ];
 
         for (path, _) in SURFACES {
@@ -13616,5 +13799,382 @@ mod json_error_tests {
             .unwrap();
         let doc: serde_json::Value = serde_json::from_slice(&bytes).expect("valid JSON");
         assert_eq!(doc["code"], "rate_limit_key_unavailable");
+    }
+}
+
+/// The bilingual pages, checked as a contract instead of by eye.
+///
+/// Every human page here carries BOTH languages in one document at one URL:
+/// there is no `/es/`, no `hreflang` and no per-language sitemap. That choice
+/// buys a single canonical URL and pays for it with a failure mode that is
+/// completely invisible: `updateTranslations` leaves the hardcoded English
+/// markup in place when a key is missing, so a page with a hole in its Spanish
+/// dictionary renders perfectly and simply stops switching language. Seven keys
+/// went unnoticed that way before anyone looked.
+///
+/// Two invariants close it:
+///
+///   * **N1, parity** -- every key exists in `en` AND in `es`.
+///   * **N2, coverage** -- every key the markup asks for is defined in both.
+///
+/// Both are verified by mutation, not by colour: deleting a single key from one
+/// dictionary must turn one of them red. See the 2026-09-02 handoff for the run.
+#[cfg(test)]
+mod i18n_tests {
+    use super::{
+        BAZAAR_HTML, DX402_HTML, ERC8004_HTML, EVENTS_VIEWER_HTML, INDEX_HTML, INTEGRAR_HTML,
+        MCP_HTML, NETWORKS_HTML, STATS_HTML, X402_HTML,
+    };
+    use std::collections::BTreeSet;
+
+    /// The pages and the `const` name of the JS object holding their dictionary.
+    ///
+    /// The landing calls it `translations` and the three smaller pages call it
+    /// `I18N`; both spellings are listed rather than unified because renaming a
+    /// live page's variable to please a test is the wrong direction.
+    const PAGES: &[(&str, &str)] = &[
+        ("static/index.html", INDEX_HTML),
+        ("static/bazaar.html", BAZAAR_HTML),
+        ("static/stats.html", STATS_HTML),
+        ("static/events-viewer.html", EVENTS_VIEWER_HTML),
+        ("static/mcp.html", MCP_HTML),
+        ("static/networks.html", NETWORKS_HTML),
+        ("static/x402.html", X402_HTML),
+        ("static/dx402.html", DX402_HTML),
+        ("static/erc8004.html", ERC8004_HTML),
+        ("static/integrar.html", INTEGRAR_HTML),
+    ];
+
+    /// The three attributes that make the runtime look a key up.
+    ///
+    /// `data-i18n-ph` is the one that is easy to forget: only `bazaar.html` uses
+    /// it, for a `placeholder`, and a checker that scanned the other two would
+    /// pass while that string stayed monolingual.
+    const ATTRIBUTES: &[&str] = &["data-i18n=\"", "data-i18n-html=\"", "data-i18n-ph=\""];
+
+    /// The inside of the first `{...}` at or after `from`, brace-matched with
+    /// string and comment awareness.
+    ///
+    /// A plain `find('}')` would stop at the first `}` inside a translated
+    /// string -- and several values here carry inline HTML with braces in their
+    /// `style` attributes.
+    fn brace_block(src: &str, from: usize) -> Option<&str> {
+        let bytes: Vec<char> = src.chars().collect();
+        let mut idx: Vec<usize> = Vec::with_capacity(bytes.len() + 1);
+        let mut acc = 0usize;
+        for c in &bytes {
+            idx.push(acc);
+            acc += c.len_utf8();
+        }
+        idx.push(acc);
+
+        let mut i = src[..from].chars().count();
+        while i < bytes.len() && bytes[i] != '{' {
+            i += 1;
+        }
+        if i >= bytes.len() {
+            return None;
+        }
+        let start = i + 1;
+        let mut depth = 0i32;
+        let mut quote: Option<char> = None;
+        let mut escaped = false;
+        while i < bytes.len() {
+            let c = bytes[i];
+            if let Some(q) = quote {
+                if escaped {
+                    escaped = false;
+                } else if c == '\\' {
+                    escaped = true;
+                } else if c == q {
+                    quote = None;
+                }
+                i += 1;
+                continue;
+            }
+            match c {
+                '"' | '\'' | '`' => quote = Some(c),
+                '/' if bytes.get(i + 1) == Some(&'/') => {
+                    while i < bytes.len() && bytes[i] != '\n' {
+                        i += 1;
+                    }
+                    continue;
+                }
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(&src[idx[start]..idx[i]]);
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        None
+    }
+
+    /// The keys declared at the top level of one language object.
+    ///
+    /// Written as a scanner rather than a regex because a regex over `"([^"]+)":`
+    /// also matches inside a translated value -- and this file has values that
+    /// carry inline `style="..."` attributes with colons in them, which is
+    /// exactly how a checker ends up inventing keys nobody wrote.
+    fn dict_keys(block: &str) -> BTreeSet<String> {
+        let chars: Vec<char> = block.chars().collect();
+        let mut keys = BTreeSet::new();
+        let mut i = 0usize;
+        let mut depth = 0i32;
+        let mut expect_key = true;
+
+        let is_ident = |c: char| c.is_alphanumeric() || c == '_' || c == '$' || c == '.';
+
+        while i < chars.len() {
+            let c = chars[i];
+            if c == '/' && chars.get(i + 1) == Some(&'/') {
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            if c.is_whitespace() {
+                i += 1;
+                continue;
+            }
+            if c == '"' || c == '\'' || c == '`' {
+                let quote = c;
+                let start = i + 1;
+                let mut j = start;
+                let mut escaped = false;
+                while j < chars.len() {
+                    if escaped {
+                        escaped = false;
+                    } else if chars[j] == '\\' {
+                        escaped = true;
+                    } else if chars[j] == quote {
+                        break;
+                    }
+                    j += 1;
+                }
+                let text: String = chars[start..j.min(chars.len())].iter().collect();
+                i = j + 1;
+                if depth == 0 && expect_key {
+                    let mut k = i;
+                    while k < chars.len() && chars[k].is_whitespace() {
+                        k += 1;
+                    }
+                    if chars.get(k) == Some(&':') {
+                        keys.insert(text);
+                        i = k + 1;
+                        expect_key = false;
+                    }
+                }
+                continue;
+            }
+            match c {
+                '{' | '[' => {
+                    depth += 1;
+                    i += 1;
+                }
+                '}' | ']' => {
+                    depth -= 1;
+                    i += 1;
+                }
+                ',' => {
+                    if depth == 0 {
+                        expect_key = true;
+                    }
+                    i += 1;
+                }
+                _ if depth == 0 && expect_key && is_ident(c) => {
+                    let start = i;
+                    while i < chars.len() && is_ident(chars[i]) {
+                        i += 1;
+                    }
+                    let mut k = i;
+                    while k < chars.len() && chars[k].is_whitespace() {
+                        k += 1;
+                    }
+                    if chars.get(k) == Some(&':') {
+                        keys.insert(chars[start..i].iter().collect());
+                        i = k + 1;
+                        expect_key = false;
+                    }
+                }
+                _ => i += 1,
+            }
+        }
+        keys
+    }
+
+    /// `(english keys, spanish keys)` for one page.
+    fn dictionaries(page: &str, html: &str) -> (BTreeSet<String>, BTreeSet<String>) {
+        let open = html
+            .find("const translations = {")
+            .or_else(|| html.find("const I18N = {"))
+            .unwrap_or_else(|| panic!("{page} has no `const translations` / `const I18N` object"));
+        let dict = brace_block(html, open)
+            .unwrap_or_else(|| panic!("{page}: the dictionary object is not brace-balanced"));
+
+        let lang = |name: &str| -> BTreeSet<String> {
+            // The first `<lang>:` that is followed by an object is the language
+            // block; a translated value containing the same two characters is
+            // not followed by a `{`.
+            let mut from = 0usize;
+            loop {
+                let at = dict[from..]
+                    .find(&format!("{name}:"))
+                    .unwrap_or_else(|| panic!("{page} has no `{name}:` dictionary"))
+                    + from;
+                let after = at + name.len() + 1;
+                if dict[after..].trim_start().starts_with('{') {
+                    let block = brace_block(dict, after).unwrap_or_else(|| {
+                        panic!("{page}: the `{name}` dictionary is not brace-balanced")
+                    });
+                    return dict_keys(block);
+                }
+                from = after;
+            }
+        };
+        (lang("en"), lang("es"))
+    }
+
+    /// Every key the markup asks for, across the three lookup attributes.
+    fn keys_used(html: &str) -> BTreeSet<String> {
+        let mut used = BTreeSet::new();
+        for attribute in ATTRIBUTES {
+            for chunk in html.split(attribute).skip(1) {
+                if let Some((key, _)) = chunk.split_once('"') {
+                    used.insert(key.to_string());
+                }
+            }
+        }
+        used
+    }
+
+    /// N1. A key in one language and not the other is a page that renders fine
+    /// and silently refuses to translate that one string.
+    #[test]
+    fn every_key_exists_in_both_languages() {
+        for (page, html) in PAGES {
+            let (en, es) = dictionaries(page, html);
+            assert!(!en.is_empty(), "{page}: the `en` dictionary parsed as empty");
+            assert!(!es.is_empty(), "{page}: the `es` dictionary parsed as empty");
+
+            let only_en: Vec<&String> = en.difference(&es).collect();
+            let only_es: Vec<&String> = es.difference(&en).collect();
+            assert!(
+                only_en.is_empty(),
+                "{page}: {only_en:?} exist in `en` and not in `es`. A new string \
+                 goes into BOTH dictionaries in the same commit -- in Spanish the \
+                 page would keep showing the English markup and never say why."
+            );
+            assert!(
+                only_es.is_empty(),
+                "{page}: {only_es:?} exist in `es` and not in `en`. The English \
+                 side is the one search engines index; a key missing there is a \
+                 string with no canonical form."
+            );
+        }
+    }
+
+    /// N2. A `data-i18n` pointing at a key nobody defined is the failure that
+    /// leaves the hardcoded markup on screen in every language.
+    #[test]
+    fn every_key_used_by_the_markup_is_defined_in_both_languages() {
+        for (page, html) in PAGES {
+            let (en, es) = dictionaries(page, html);
+            let used = keys_used(html);
+            assert!(!used.is_empty(), "{page}: no data-i18n attributes found");
+
+            let missing_en: Vec<&String> = used.difference(&en).collect();
+            let missing_es: Vec<&String> = used.difference(&es).collect();
+            assert!(
+                missing_en.is_empty(),
+                "{page}: the markup asks for {missing_en:?}, undefined in `en`"
+            );
+            assert!(
+                missing_es.is_empty(),
+                "{page}: the markup asks for {missing_es:?}, undefined in `es`"
+            );
+        }
+    }
+
+    /// One storage key for the whole site.
+    ///
+    /// `bazaar.html` used to write `uvd-lang` while the other three wrote
+    /// `x402.lang`, so choosing Spanish on one side and navigating to the other
+    /// silently reset the choice. The legacy name may only survive as the
+    /// migration constant that moves an existing visitor's value across.
+    #[test]
+    fn the_language_choice_lives_under_one_key() {
+        for (page, html) in PAGES {
+            assert!(
+                html.contains("x402.lang"),
+                "{page} does not use the shared `x402.lang` storage key"
+            );
+        }
+        let legacy = BAZAAR_HTML.matches("uvd-lang").count();
+        assert_eq!(
+            legacy, 2,
+            "static/bazaar.html mentions `uvd-lang` {legacy} times; expected exactly \
+             two -- the comment explaining the migration and the LEGACY_LANG_KEY \
+             constant that performs it. A third is a write that resurrects the split."
+        );
+    }
+
+    /// The browser's language does not choose. An explicit click does.
+    ///
+    /// One URL per page means the language has to be something a reader can see
+    /// and undo. Deciding it from `navigator.language` serves a different
+    /// document to different readers at the same address with nothing to point
+    /// at -- and it is the exact behaviour the owner ruled out on 2026-09-02.
+    #[test]
+    fn no_page_picks_a_language_from_the_browser() {
+        for (page, html) in PAGES {
+            // Whole-line `//` comments are dropped first, so a page is free to
+            // explain in prose the very API it must not call -- and `mcp.html`
+            // does, which is how this line got written. The check is about code.
+            let code: String = html
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                !code.contains("navigator.language"),
+                "{page} still reads navigator.language to pick a language"
+            );
+        }
+    }
+
+    /// The canonical `<title>` in the markup is English, and it is translatable.
+    ///
+    /// Both halves matter and they pull in opposite directions: a crawler reads
+    /// the literal in the file, so it has to be English, while a reader who
+    /// picked Spanish should see a Spanish tab. `data-i18n` on the tag is what
+    /// buys the second without giving up the first.
+    #[test]
+    fn every_page_title_is_english_and_translatable() {
+        for (page, html) in PAGES {
+            let title = html
+                .split_once("<title")
+                .and_then(|(_, rest)| rest.split_once("</title>"))
+                .map(|(open, _)| open)
+                .unwrap_or_else(|| panic!("{page} has no <title>"));
+            assert!(
+                title.contains("data-i18n=\""),
+                "{page}: <title> carries no data-i18n, so the tab stays English \
+                 for a reader who chose Spanish"
+            );
+            let text = title.split_once('>').map(|(_, t)| t).unwrap_or("");
+            for spanish_only in ["métricas", "en vivo", "Bazar "] {
+                assert!(
+                    !text.contains(spanish_only),
+                    "{page}: <title> markup reads {text:?}, which is Spanish. The \
+                     literal in the file is what a crawler indexes and it is \
+                     canonical English; the Spanish lives in the `es` dictionary."
+                );
+            }
+        }
     }
 }

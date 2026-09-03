@@ -99,6 +99,20 @@ facilitator just did, and what it costs (nothing — the seller keeps the paymen
 - **Agent skills index**: https://facilitator.ultravioletadao.xyz/.well-known/agent-skills/index.json
 - **Agentic Resource Discovery catalog (ARD v0.91)**: https://facilitator.ultravioletadao.xyz/.well-known/ard.json
 - **MCP server card**: https://facilitator.ultravioletadao.xyz/.well-known/mcp/server-card.json
+- **MCP guide** (Markdown): https://facilitator.ultravioletadao.xyz/mcp
+- **Network table** (HTML, built from `/supported` in the browser): https://facilitator.ultravioletadao.xyz/networks
+- **Integration guide** (HTML): https://facilitator.ultravioletadao.xyz/integrar —
+  the two paths (selling, buying), the four traps that bite first, and an
+  explicit statement that there is NO SLA and no support commitment
+- **DX402 guide** (HTML): https://facilitator.ultravioletadao.xyz/dx402 — durable
+  evidence: the response sealed to the payer's own public key, and the rule that
+  it can never fail a payment
+- **ERC-8004 guide** (HTML): https://facilitator.ultravioletadao.xyz/erc8004 — our
+  implementation, the authorship problem on `POST /feedback`, the proof-of-payment
+  gate, and why an owner lookup answers 503 and 404 for different things
+- **x402 guide** (HTML): https://facilitator.ultravioletadao.xyz/x402 — the two
+  calls, escrow and upto as sections, and BOTH settlement counters with the
+  caveat `/api/stats` ships alongside them
 - **Auth metadata (RFC 9728)**: https://facilitator.ultravioletadao.xyz/.well-known/oauth-protected-resource
 - **Workflow manifest**: https://facilitator.ultravioletadao.xyz/workflows.json
 - **OpenAPI 3.1**: https://facilitator.ultravioletadao.xyz/openapi.json
@@ -121,9 +135,13 @@ Base URL: `https://facilitator.ultravioletadao.xyz/`
 - `POST /mcp` — MCP server (Streamable HTTP, stateless). Four tools:
   `x402_supported`, `x402_accepts`, `x402_verify`, `x402_settle`. Each one is
   dispatched through the REST handler it names, so an MCP call and the HTTP call
-  it stands for cannot answer differently. `GET /mcp` is a JSON 405: there is no
-  SSE stream to open. `POST /mcp` shares the per-IP budget of `/verify` and
-  `/settle` — one bucket, not two.
+  it stands for cannot answer differently. `POST /mcp` shares the per-IP budget
+  of `/verify` and `/settle` — one bucket, not two.
+- `GET  /mcp` — the MCP guide, for a reader: transports, the tool contract, the
+  errors and the measured traps. HTML, or this same guide as Markdown with
+  `Accept: text/markdown`. A caller whose `Accept` names `application/json` or
+  `text/event-stream` still gets the JSON 405 naming POST, because there is no
+  SSE stream to open on a stateless server.
 - `GET  /events` — server-sent stream, one message per verify/settle
 - `GET  /transactions` — recent recorded operations (JSON, `limit` capped at 200)
 - `GET  /api/stats` — aggregated totals per network and asset
@@ -182,6 +200,8 @@ Base URL: `https://facilitator.ultravioletadao.xyz/`
 - `POST /accepts` — negotiate payment requirements (Faremeter-compatible)
 - `POST /mcp` — MCP server (Streamable HTTP, stateless): `x402_supported`,
   `x402_accepts`, `x402_verify`, `x402_settle`, over the same handlers
+- `GET /mcp` — the MCP guide for a reader (HTML, or Markdown with
+  `Accept: text/markdown`)
 - `GET /health` — `{"status":"healthy"}`
 - `GET /version` — the running release
 - `GET /events` — SSE, one message per verify/settle
@@ -198,7 +218,13 @@ Full contract: `/openapi.json` (Swagger UI at `/docs`).
 - x402 discovery: `/.well-known/x402`
 - API catalog (RFC 9727): `/.well-known/api-catalog`
 - Agent skills index: `/.well-known/agent-skills/index.json`
-- MCP server card: `/.well-known/mcp/server-card.json` (endpoint: `/mcp`)
+- MCP server card: `/.well-known/mcp/server-card.json` (endpoint: `POST /mcp`)
+- MCP guide: `/mcp`
+- Network table, built from `/supported`: `/networks`
+- x402 guide (verify, settle, escrow, upto, and both counters): `/x402`
+- Integration guide, including what is not promised: `/integrar`
+- DX402 durable evidence: `/dx402`
+- ERC-8004 identity and reputation, and the describe.net boundary: `/erc8004`
 - Auth metadata (RFC 9728): `/.well-known/oauth-protected-resource`
 - Workflow manifest: `/workflows.json`
 - LLM context: `/llms.txt`, `/llms-full.txt`
@@ -534,9 +560,12 @@ the HTTP request it names, so nothing here is a second implementation that
 could answer a different truth.
 
 - **Endpoint:** `https://facilitator.ultravioletadao.xyz/mcp`
-- **Transport:** Streamable HTTP, stateless. `POST` only; `GET /mcp` answers
-  `405` with a JSON body, because there is no server-initiated SSE stream to
-  open and no session id to keep.
+- **Transport:** Streamable HTTP, stateless. `POST` only. A `GET` on the same
+  path is the human guide (HTML, or this same material as Markdown with
+  `Accept: text/markdown`); a caller whose `Accept` names `application/json` or
+  `text/event-stream` still gets the `405` naming POST, because there is no
+  server-initiated SSE stream to open and no session id to keep.
+- **Guide:** `https://facilitator.ultravioletadao.xyz/mcp`
 - **Server card:**
   `https://facilitator.ultravioletadao.xyz/.well-known/mcp/server-card.json`
 - **Authentication:** none, exactly as in `/auth.md`. The MCP door grants no

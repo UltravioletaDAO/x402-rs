@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title data-i18n="title">x402 facilitator · verify and settle</title>
+<meta name="description" content="How this facilitator verifies and settles an x402 payment: the two calls, the escrow and upto extensions, and the two counters it publishes with the warning that comes with them.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://facilitator.ultravioletadao.xyz/x402">
+<meta property="og:title" content="x402 facilitator · verify and settle">
+<meta property="og:description" content="Two calls, gasless for the buyer, 0% fee. Escrow and upto included, and both counters published with their caveat.">
+<meta property="og:image" content="https://facilitator.ultravioletadao.xyz/logo.png">
+<link rel="icon" href="/favicon.ico">
+<style>
+  :root{
+    --bg:#12101a; --panel:#1a1726; --line:#2c2740; --txt:#e8e4f5;
+    --dim:#8a83a6; --ok:#5ee6a8; --bad:#ff6b6b; --amber:#e0a53f; --uv:#b496ff;
+    --cyan:#5ad7e6;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+       font:14px/1.7 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  header{padding:18px 22px;background:var(--panel);border-bottom:1px solid var(--line);
+         display:flex;gap:16px;align-items:baseline;flex-wrap:wrap;position:sticky;top:0;z-index:5}
+  h1{font-size:16px;margin:0;color:var(--uv);font-weight:600}
+  h2{font-size:13px;margin:34px 0 10px;color:var(--dim);font-weight:500;
+     text-transform:uppercase;letter-spacing:.06em;border-top:1px solid var(--line);padding-top:18px}
+  h3{font-size:13px;margin:22px 0 6px;color:var(--cyan);font-weight:600}
+  a{color:var(--amber)}
+  main{padding:0 22px 60px;max-width:96ch}
+  p{max-width:88ch}
+  code{color:var(--cyan);background:#1e1a2e;padding:1px 4px;border-radius:3px}
+  pre{background:#0e0c17;border:1px solid var(--line);border-radius:8px;padding:14px 16px;
+      overflow-x:auto;line-height:1.55}
+  pre code{background:none;padding:0;color:var(--txt)}
+  .lead{font-size:15px;line-height:1.75;max-width:88ch}
+  .cards{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));margin:18px 0}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px 16px}
+  .card .v{font-size:26px;font-weight:600;color:var(--ok);line-height:1.2}
+  .card .v.bad{color:var(--bad)}
+  .card .k{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+  .card .src{color:var(--dim);font-size:10px;margin-top:6px;opacity:.75}
+  .scroll{overflow-x:auto}
+  table{width:100%;border-collapse:collapse;margin-top:10px}
+  th{text-align:left;color:var(--dim);font-weight:500;padding:7px 9px;font-size:11px;
+     border-bottom:1px solid var(--line);text-transform:uppercase;letter-spacing:.04em}
+  td{padding:7px 9px;border-bottom:1px solid #221e33;vertical-align:top}
+  .tag{display:inline-block;background:#241f36;border:1px solid var(--line);border-radius:4px;
+       padding:0 6px;margin:1px 3px 1px 0;font-size:11px;color:var(--cyan);white-space:nowrap}
+  .warn{background:rgba(224,165,63,.08);border:1px solid rgba(224,165,63,.32);
+        border-radius:8px;padding:14px 16px;margin:22px 0;line-height:1.7;max-width:88ch}
+  .warn b{color:var(--amber)}
+  ul{max-width:88ch;padding-left:20px}
+  li{margin:8px 0}
+  .muted{color:var(--dim)}
+  .langsw{margin-left:auto;display:flex;gap:4px}
+  .langsw button{background:#241f36;color:var(--txt);border:1px solid var(--line);
+                 border-radius:5px;padding:3px 8px;font:inherit;font-size:11px;
+                 cursor:pointer;opacity:.55}
+  .langsw button.active{opacity:1;border-color:var(--uv);color:var(--uv)}
+  footer{border-top:1px solid var(--line);padding:18px 22px;color:var(--dim);font-size:12px}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>x402 · <span data-i18n="h1">verify and settle</span></h1>
+  <a href="/">/</a>
+  <a href="/networks" data-i18n="nav.networks">networks</a>
+  <a href="/mcp">/mcp</a>
+  <a href="/skill.md">/skill.md</a>
+  <a href="/docs">/docs</a>
+  <span class="langsw"><button data-lang="en">EN</button><button data-lang="es">ES</button></span>
+</header>
+
+<main>
+
+<p class="lead" data-i18n="lead">x402 turns HTTP 402 into a real status code. A seller answers a request with <code>402</code> and the terms it will accept; the buyer signs an authorization for one of them; a facilitator checks the signature and puts the transfer on chain. This facilitator is that third party, and it does exactly two things — <code>verify</code> and <code>settle</code> — for no fee, paying the gas itself.</p>
+
+<div class="cards">
+  <div class="card"><div class="v" id="t-ok">—</div><div class="k" data-i18n="t.ok">settles recorded OK</div><div class="src" data-i18n="t.src">GET /api/stats</div></div>
+  <div class="card"><div class="v bad" id="t-failed">—</div><div class="k" data-i18n="t.failed">settles recorded failed</div><div class="src" data-i18n="t.src">GET /api/stats</div></div>
+  <div class="card"><div class="v" id="t-verifies">—</div><div class="k" data-i18n="t.verifies">verifies recorded</div><div class="src" data-i18n="t.src">GET /api/stats</div></div>
+  <div class="card"><div class="v" id="t-networks">—</div><div class="k" data-i18n="t.networks">networks with activity</div><div class="src" data-i18n="t.src">GET /api/stats</div></div>
+</div>
+
+<div class="warn">
+  <p style="margin:0 0 8px 0"><b data-i18n="counters.title">Both counters, and what they are not.</b>
+  <span data-i18n="counters.text">The failed count is published next to the successful one on purpose: a page that shows only successes is not reporting, it is advertising. Neither number is a ledger — <b>the chain is</b>. The record is written after settlement resolves, fire-and-forget, so a store that is unreachable loses rows and never blocks a payment.</span></p>
+  <p style="margin:0" class="muted"><span data-i18n="counters.verbatimLabel">And the endpoint's own two warnings, verbatim:</span></p>
+  <p style="margin:6px 0 0 0" class="muted">“<span id="caveat">—</span>”</p>
+  <p style="margin:6px 0 0 0" class="muted">“<span id="since">—</span>”</p>
+</div>
+
+<h2 data-i18n="h.two">The two calls</h2>
+
+<p data-i18n="two.p1"><code>POST /verify</code> answers whether a signed authorization <em>would</em> settle — signature, nonce, amount, timestamps, token and network — and submits nothing. <code>POST /settle</code> broadcasts it. Verify is free to call, safe to repeat and answers in milliseconds; settle costs the facilitator gas and cannot be undone. The two take the same body.</p>
+
+<pre><code>curl -sS https://facilitator.ultravioletadao.xyz/verify \
+  -H 'content-type: application/json' \
+  -d '{"x402Version":1,
+       "paymentPayload":{ ... the buyer signature ... },
+       "paymentRequirements":{ ... the seller terms ... }}'</code></pre>
+
+<p data-i18n="two.p2">Full field-by-field shapes, the retryable and non-retryable failures, and the EIP-712 domain-name trap that catches most first integrations, are in <a href="/skill.md">/skill.md</a>. The same two calls are MCP tools at <a href="/mcp">/mcp</a>, dispatched through these very handlers.</p>
+
+<div class="warn">
+  <p style="margin:0"><b data-i18n="two.warnTitle">A settle that timed out is not a settle that failed.</b> <span data-i18n="two.warnText">The transaction may already be on its way. Retry with the same <code>Idempotency-Key</code> header: the same key with the same payment returns the first result instead of settling twice, and the same key with a <em>different</em> payment is refused with 409. Generate a fresh unguessable value per payment — keys share one namespace across all callers, so a predictable one can be claimed by somebody else's settle first.</span></p>
+</div>
+
+<h2 data-i18n="h.escrow">Escrow — the x402r extension</h2>
+
+<p data-i18n="escrow.p1">Plain x402 is final on arrival: the buyer signs, the transfer lands, and there is no step in between where a refund could live. Escrow adds one. Funds are authorized into a contract and released, captured or refunded when a condition is met, so a payment can be undone by the terms both sides already agreed to rather than by trusting the seller afterwards.</p>
+
+<p data-i18n="escrow.p2">It is the same <code>POST /settle</code> — there is no separate endpoint. The escrow path is taken when <code>paymentPayload.extensions.refund</code> is present; a plain settle never touches it. Where it can run is not a matter of configuration: the contracts have to be deployed on that chain, and <code>/supported</code> is what says where they are.</p>
+
+<p class="muted" data-i18n="escrow.netsLabel">Where <code>escrow</code> is advertised right now, straight from <code>/supported</code>:</p>
+<div id="escrow-nets"><span class="muted" data-i18n="loading">loading…</span></div>
+
+<h2 data-i18n="h.upto">Upto — pay for what you used</h2>
+
+<p data-i18n="upto.p1">A metered call cannot know its price before it runs. <code>exact</code> forces the seller to pick a number up front and be wrong in one direction or the other; <code>upto</code> lets the buyer authorize a <em>ceiling</em> and be charged what was actually consumed, in one signature, still gasless. It is built on Uniswap's Permit2, which is what makes a variable amount possible without a second round trip.</p>
+
+<p data-i18n="upto.p2">The scheme is advertised only where the Permit2 proxy is genuinely deployed. That list is not a config file somebody edits optimistically — it is checked against the chain with <code>eth_getCode</code> on two independent RPCs before an entry is added, because advertising a scheme that cannot settle is worse than not offering it.</p>
+
+<p class="muted" data-i18n="upto.netsLabel">Where <code>upto</code> is advertised right now, straight from <code>/supported</code>:</p>
+<div id="upto-nets"><span class="muted" data-i18n="loading">loading…</span></div>
+
+<h2 data-i18n="h.schemes">Every scheme this facilitator settles</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th data-i18n="s.th.scheme">scheme</th><th data-i18n="s.th.what">what it is</th><th data-i18n="s.th.v1">v1 names</th><th data-i18n="s.th.caip2">CAIP-2 ids</th></tr></thead>
+  <tbody id="schemes"><tr><td colspan="4" class="muted" data-i18n="loading">loading…</td></tr></tbody>
+</table>
+</div>
+<p data-i18n="schemes.note">Counted from <code>/supported</code> when this page loads, not typed. The two columns are not a formatting choice: <b>a chain is published under two spellings and a scheme does not have to appear under both.</b> Measured on 2026-09-02, <code>escrow</code>, <code>commerce</code> and <code>upto</code> are advertised under the CAIP-2 spelling only — zero v1 names between them — while <code>exact</code> appears under both. A client that discovers schemes by reading only the v1 entries will conclude this facilitator has no escrow.</p>
+
+<h2 data-i18n="h.cost">What it costs</h2>
+<p data-i18n="cost.p1">Nothing, to either side. This facilitator takes no fee, has no accounts and issues no API keys; its own routes never answer <code>402</code>. It pays the gas for every settlement out of its own wallets, whose balances are on <a href="/networks">/networks</a> — that is the real cost of running it, and it is visible rather than described.</p>
+
+</main>
+
+<footer>
+  <span data-i18n="footer">Ultravioleta DAO · x402 Payment Facilitator.</span>
+  <a href="/">/</a> · <a href="/networks">/networks</a> · <a href="/mcp">/mcp</a> · <a href="/stats">/stats</a> · <a href="/events/live">/events/live</a>
+</footer>
+
+<script>
+// ---------------------------------------------------------------------------
+// i18n: one URL, both languages in the document, English by default, choice
+// remembered under the site-wide `x402.lang` key.
+// ---------------------------------------------------------------------------
+const I18N = {
+  en: {
+    title:"x402 facilitator · verify and settle", h1:"verify and settle",
+    "nav.networks":"networks",
+    lead:"x402 turns HTTP 402 into a real status code. A seller answers a request with <code>402</code> and the terms it will accept; the buyer signs an authorization for one of them; a facilitator checks the signature and puts the transfer on chain. This facilitator is that third party, and it does exactly two things — <code>verify</code> and <code>settle</code> — for no fee, paying the gas itself.",
+    "t.ok":"settles recorded OK", "t.failed":"settles recorded failed",
+    "t.verifies":"verifies recorded", "t.networks":"networks with activity",
+    "t.src":"GET /api/stats",
+    "counters.title":"Both counters, and what they are not.",
+    "counters.text":"The failed count is published next to the successful one on purpose: a page that shows only successes is not reporting, it is advertising. Neither number is a ledger — <b>the chain is</b>. The record is written after settlement resolves, fire-and-forget, so a store that is unreachable loses rows and never blocks a payment.",
+    "counters.verbatimLabel":"And the endpoint's own two warnings, verbatim:",
+    "h.two":"The two calls",
+    "two.p1":"<code>POST /verify</code> answers whether a signed authorization <em>would</em> settle — signature, nonce, amount, timestamps, token and network — and submits nothing. <code>POST /settle</code> broadcasts it. Verify is free to call, safe to repeat and answers in milliseconds; settle costs the facilitator gas and cannot be undone. The two take the same body.",
+    "two.p2":"Full field-by-field shapes, the retryable and non-retryable failures, and the EIP-712 domain-name trap that catches most first integrations, are in <a href=\"/skill.md\">/skill.md</a>. The same two calls are MCP tools at <a href=\"/mcp\">/mcp</a>, dispatched through these very handlers.",
+    "two.warnTitle":"A settle that timed out is not a settle that failed.",
+    "two.warnText":"The transaction may already be on its way. Retry with the same <code>Idempotency-Key</code> header: the same key with the same payment returns the first result instead of settling twice, and the same key with a <em>different</em> payment is refused with 409. Generate a fresh unguessable value per payment — keys share one namespace across all callers, so a predictable one can be claimed by somebody else's settle first.",
+    "h.escrow":"Escrow — the x402r extension",
+    "escrow.p1":"Plain x402 is final on arrival: the buyer signs, the transfer lands, and there is no step in between where a refund could live. Escrow adds one. Funds are authorized into a contract and released, captured or refunded when a condition is met, so a payment can be undone by the terms both sides already agreed to rather than by trusting the seller afterwards.",
+    "escrow.p2":"It is the same <code>POST /settle</code> — there is no separate endpoint. The escrow path is taken when <code>paymentPayload.extensions.refund</code> is present; a plain settle never touches it. Where it can run is not a matter of configuration: the contracts have to be deployed on that chain, and <code>/supported</code> is what says where they are.",
+    "h.upto":"Upto — pay for what you used",
+    "upto.p1":"A metered call cannot know its price before it runs. <code>exact</code> forces the seller to pick a number up front and be wrong in one direction or the other; <code>upto</code> lets the buyer authorize a <em>ceiling</em> and be charged what was actually consumed, in one signature, still gasless. It is built on Uniswap's Permit2, which is what makes a variable amount possible without a second round trip.",
+    "upto.p2":"The scheme is advertised only where the Permit2 proxy is genuinely deployed. That list is not a config file somebody edits optimistically — it is checked against the chain with <code>eth_getCode</code> on two independent RPCs before an entry is added, because advertising a scheme that cannot settle is worse than not offering it.",
+    "h.schemes":"Every scheme this facilitator settles",
+    "s.th.scheme":"scheme", "s.th.what":"what it is", "s.th.v1":"v1 names", "s.th.caip2":"CAIP-2 ids",
+    "schemes.note":"Counted from <code>/supported</code> when this page loads, not typed. The two columns are not a formatting choice: <b>a chain is published under two spellings and a scheme does not have to appear under both.</b> Measured on 2026-09-02, <code>escrow</code>, <code>commerce</code> and <code>upto</code> are advertised under the CAIP-2 spelling only — zero v1 names between them — while <code>exact</code> appears under both. A client that discovers schemes by reading only the v1 entries will conclude this facilitator has no escrow.",
+    "escrow.netsLabel":"Where <code>escrow</code> is advertised right now, straight from <code>/supported</code>:",
+    "upto.netsLabel":"Where <code>upto</code> is advertised right now, straight from <code>/supported</code>:",
+    "h.cost":"What it costs",
+    "cost.p1":"Nothing, to either side. This facilitator takes no fee, has no accounts and issues no API keys; its own routes never answer <code>402</code>. It pays the gas for every settlement out of its own wallets, whose balances are on <a href=\"/networks\">/networks</a> — that is the real cost of running it, and it is visible rather than described.",
+    footer:"Ultravioleta DAO · x402 Payment Facilitator.",
+    loading:"loading…",
+    "scheme.exact":"the ordinary x402 payment: one signature, one fixed amount",
+    "scheme.upto":"a ceiling authorized up front, charged for what was used",
+    "scheme.escrow":"funds held in a contract until a condition releases or refunds them",
+    "scheme.commerce":"the commerce flow: authorize, capture, refund",
+    "scheme.fhe-transfer":"confidential amounts on fhEVM — experimental",
+    nets:"networks", noNets:"not advertised on any network right now",
+  },
+  es: {
+    title:"facilitador x402 · verificar y liquidar", h1:"verificar y liquidar",
+    "nav.networks":"redes",
+    lead:"x402 convierte el HTTP 402 en un código de estado de verdad. Un vendedor contesta una petición con <code>402</code> y los términos que acepta; el comprador firma una autorización para uno de ellos; un facilitador chequea la firma y pone la transferencia en la cadena. Este facilitador es ese tercero, y hace exactamente dos cosas — <code>verify</code> y <code>settle</code> — sin cobrar comisión y pagando el gas él mismo.",
+    "t.ok":"settles registrados OK", "t.failed":"settles registrados fallidos",
+    "t.verifies":"verifies registrados", "t.networks":"redes con actividad",
+    "t.src":"GET /api/stats",
+    "counters.title":"Los dos contadores, y lo que no son.",
+    "counters.text":"El conteo de fallidos se publica al lado del de exitosos a propósito: una página que solo muestra éxitos no está informando, está publicitando. Ninguno de los dos números es un libro contable — <b>la cadena lo es</b>. El registro se escribe después de que la liquidación resuelve, sin esperar respuesta, así que un almacén inalcanzable pierde filas y nunca frena un pago.",
+    "counters.verbatimLabel":"Y las dos advertencias del propio endpoint, tal cual:",
+    "h.two":"Las dos llamadas",
+    "two.p1":"<code>POST /verify</code> contesta si una autorización firmada <em>liquidaría</em> — firma, nonce, monto, timestamps, token y red — y no envía nada. <code>POST /settle</code> la emite. Verify es gratis de llamar, seguro de repetir y contesta en milisegundos; settle le cuesta gas al facilitador y no se puede deshacer. Las dos toman el mismo cuerpo.",
+    "two.p2":"Las formas campo por campo, qué fallas se reintentan y cuáles no, y la trampa del nombre de dominio EIP-712 que se lleva puesta a casi toda primera integración, están en <a href=\"/skill.md\">/skill.md</a>. Las mismas dos llamadas son herramientas MCP en <a href=\"/mcp\">/mcp</a>, despachadas por estos mismos handlers.",
+    "two.warnTitle":"Un settle que dio timeout no es un settle que falló.",
+    "two.warnText":"La transacción puede estar ya en camino. Reintentá con el mismo header <code>Idempotency-Key</code>: la misma clave con el mismo pago devuelve el primer resultado en vez de liquidar dos veces, y la misma clave con un pago <em>distinto</em> se rechaza con 409. Generá un valor nuevo e impredecible por pago — las claves comparten un solo espacio de nombres entre todos los que llaman, así que una predecible se la puede quedar el settle de otro primero.",
+    "h.escrow":"Escrow — la extensión x402r",
+    "escrow.p1":"El x402 pelado es definitivo apenas llega: el comprador firma, la transferencia entra y no hay ningún paso intermedio donde pueda vivir un reembolso. El escrow agrega uno. Los fondos se autorizan hacia un contrato y se liberan, capturan o reembolsan cuando se cumple una condición, así un pago se puede deshacer por los términos que las dos partes ya acordaron y no confiando en el vendedor después.",
+    "escrow.p2":"Es el mismo <code>POST /settle</code> — no hay un endpoint aparte. El camino de escrow se toma cuando está presente <code>paymentPayload.extensions.refund</code>; un settle común nunca lo toca. Dónde puede correr no es cuestión de configuración: los contratos tienen que estar desplegados en esa cadena, y <code>/supported</code> es lo que dice dónde están.",
+    "h.upto":"Upto — pagar lo que se usó",
+    "upto.p1":"Una llamada medida no puede saber su precio antes de correr. <code>exact</code> obliga al vendedor a elegir un número por adelantado y a equivocarse para un lado o para el otro; <code>upto</code> deja que el comprador autorice un <em>techo</em> y que se le cobre lo que realmente consumió, en una sola firma y sin gas. Está construido sobre Permit2 de Uniswap, que es lo que hace posible un monto variable sin un segundo viaje de ida y vuelta.",
+    "upto.p2":"El esquema se anuncia solo donde el proxy de Permit2 está realmente desplegado. Esa lista no es un archivo de configuración que alguien edita con optimismo — se chequea contra la cadena con <code>eth_getCode</code> en dos RPC independientes antes de agregar una entrada, porque anunciar un esquema que no puede liquidar es peor que no ofrecerlo.",
+    "h.schemes":"Todos los esquemas que este facilitador liquida",
+    "s.th.scheme":"esquema", "s.th.what":"qué es", "s.th.v1":"nombres v1", "s.th.caip2":"ids CAIP-2",
+    "schemes.note":"Contado desde <code>/supported</code> al cargar la página, no tipeado. Las dos columnas no son una decisión de formato: <b>una cadena se publica bajo dos formas y un esquema no tiene por qué aparecer bajo las dos.</b> Medido el 2026-09-02, <code>escrow</code>, <code>commerce</code> y <code>upto</code> se anuncian solo bajo la forma CAIP-2 — cero nombres v1 entre los tres — mientras que <code>exact</code> aparece bajo las dos. Un cliente que descubra esquemas leyendo solo las entradas v1 va a concluir que este facilitador no tiene escrow.",
+    "escrow.netsLabel":"Dónde se anuncia <code>escrow</code> ahora mismo, directo de <code>/supported</code>:",
+    "upto.netsLabel":"Dónde se anuncia <code>upto</code> ahora mismo, directo de <code>/supported</code>:",
+    "h.cost":"Cuánto cuesta",
+    "cost.p1":"Nada, para ninguna de las dos partes. Este facilitador no cobra comisión, no tiene cuentas y no emite API keys; sus propias rutas nunca contestan <code>402</code>. Paga el gas de cada liquidación con sus propias wallets, cuyos saldos están en <a href=\"/networks\">/networks</a> — ese es el costo real de operarlo, y está a la vista en vez de descrito.",
+    footer:"Ultravioleta DAO · Facilitador de pagos x402.",
+    loading:"cargando…",
+    "scheme.exact":"el pago x402 común: una firma, un monto fijo",
+    "scheme.upto":"un techo autorizado por adelantado, se cobra lo usado",
+    "scheme.escrow":"fondos retenidos en un contrato hasta que una condición los libere o los reembolse",
+    "scheme.commerce":"el flujo de comercio: autorizar, capturar, reembolsar",
+    "scheme.fhe-transfer":"montos confidenciales sobre fhEVM — experimental",
+    nets:"redes", noNets:"hoy no se anuncia en ninguna red",
+  },
+};
+
+let LANG = 'en';
+try { const s = localStorage.getItem('x402.lang'); if (I18N[s]) LANG = s; } catch (e) { /* private mode */ }
+const t = k => (I18N[LANG] && I18N[LANG][k]) ?? I18N.en[k] ?? k;
+const esc = s => { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; };
+
+function applyLang(lang){
+  if (I18N[lang]) LANG = lang;
+  document.documentElement.lang = LANG;
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    // Author-written literals only; several carry <code>, <b> and links that
+    // textContent would flatten.
+    el.innerHTML = t(el.getAttribute('data-i18n'));
+  });
+  document.querySelectorAll('.langsw button').forEach(b => {
+    b.classList.toggle('active', b.getAttribute('data-lang') === LANG);
+  });
+  renderSchemes();
+}
+
+document.querySelectorAll('.langsw button').forEach(b => {
+  b.addEventListener('click', () => {
+    const lang = b.getAttribute('data-lang');
+    try { localStorage.setItem('x402.lang', lang); } catch (e) { /* private mode */ }
+    applyLang(lang);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The counters. Both of them, and the endpoint's own caveats verbatim -- the
+// warning travels with the number instead of being paraphrased next to it.
+// ---------------------------------------------------------------------------
+fetch('/api/stats').then(r => r.json()).then(d => {
+  const tot = d.totals || {};
+  const set = (id, v) => {
+    const el = document.getElementById(id);
+    if (el && Number.isFinite(v)) el.textContent = v.toLocaleString();
+  };
+  set('t-ok', tot.settlesOk);
+  set('t-failed', tot.settlesFailed);
+  set('t-verifies', tot.verifies);
+  set('t-networks', tot.networks);
+  if (d.caveat) document.getElementById('caveat').textContent = d.caveat;
+  if (d.since) document.getElementById('since').textContent = d.since;
+}).catch(() => { /* the dashes stay: a missing number is not a zero */ });
+
+// ---------------------------------------------------------------------------
+// Which networks carry which scheme. Counted from /supported, never typed: an
+// advertised scheme that cannot settle is the failure this page exists to avoid
+// repeating in prose.
+// ---------------------------------------------------------------------------
+let BY_SCHEME = null;   // scheme -> { v1: Set, caip2: Set }
+
+function renderList(id, scheme){
+  const box = document.getElementById(id);
+  if (!box || !BY_SCHEME) return;
+  const entry = BY_SCHEME[scheme] || { v1:new Set(), caip2:new Set() };
+  // Both spellings, in the order a reader can act on: the v1 name first where
+  // there is one, then the chain ids. Not merged -- see the note under the
+  // scheme table for why a scheme can exist under one spelling and not the other.
+  const ids = [...entry.v1].sort().concat([...entry.caip2].sort());
+  box.innerHTML = ids.length
+    ? ids.map(n => `<span class="tag">${esc(n)}</span>`).join('')
+    : `<span class="muted">${esc(t('noNets'))}</span>`;
+}
+
+function renderSchemes(){
+  if (!BY_SCHEME) return;
+  document.getElementById('schemes').innerHTML = Object.keys(BY_SCHEME).sort().map(s => {
+    const e = BY_SCHEME[s];
+    const what = t('scheme.' + s);
+    return `<tr><td><code>${esc(s)}</code></td>
+      <td>${esc(what === 'scheme.' + s ? '' : what)}</td>
+      <td>${e.v1.size}</td>
+      <td>${e.caip2.size}</td></tr>`;
+  }).join('');
+  renderList('escrow-nets', 'escrow');
+  renderList('upto-nets', 'upto');
+}
+
+fetch('/supported').then(r => r.json()).then(d => {
+  const by = {};
+  for (const k of (d.kinds || [])) {
+    const n = k && k.network, s = k && k.scheme;
+    if (typeof n !== 'string' || !s) continue;
+    const e = by[s] || (by[s] = { v1:new Set(), caip2:new Set() });
+    if (n.indexOf(':') >= 0) e.caip2.add(n);
+    else e.v1.add(n.replace(/-mainnet$/, ''));
+  }
+  BY_SCHEME = by;
+  renderSchemes();
+}).catch(() => {
+  BY_SCHEME = null;
+});
+
+applyLang(LANG);
+</script>
+</body>
+</html>

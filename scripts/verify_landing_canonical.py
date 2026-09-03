@@ -15,15 +15,28 @@ Canonical sources
 The landing page is the CONSUMER; these three are the PRODUCERS. If they ever
 disagree, this script tells you exactly where.
 
+The landing page is bilingual in ONE document, so a count is written in three
+places -- the English markup, the `en` dictionary and the `es` dictionary -- and
+until 2026-09-02 only the first was checked. The Spanish side carried the same
+numbers by hand and nothing would have said a word when it stopped.
+
 Usage
 -----
   python scripts/verify_landing_canonical.py
   python scripts/verify_landing_canonical.py --url https://facilitator.ultravioletadao.xyz
-  python scripts/verify_landing_canonical.py --supported-file /tmp/supported.json   # offline / CI
+  python scripts/verify_landing_canonical.py --supported-file /tmp/supported.json
+  python scripts/verify_landing_canonical.py --offline    # CI: no network at all
 
 Wire this into:
-  * every deploy (pre-flight), and
+  * CI (the `Build & test` job runs it with --offline), and
+  * every deploy (pre-flight, live), and
   * the /add-network skill (after adding a network, before shipping).
+
+`--offline` skips the ONE producer that needs the network (`GET /supported`) and
+keeps everything else, including the whole EN/ES cross-check. It exists because
+a CI check that calls production goes red when production is down, which is the
+worst possible moment to block a deploy -- and because the drift that actually
+happened is visible without leaving the repository.
 
 Exit codes: 0 = landing matches reality, 1 = drift detected, 2 = could not read a source.
 """
@@ -128,8 +141,77 @@ def erc8004_networks() -> tuple[set[str], set[str]]:
 
 
 # ---------------------------------------------------------------------------
-# Consumer: numbers shown on the landing page
+# Consumer: numbers shown on the landing page -- markup AND both dictionaries
 # ---------------------------------------------------------------------------
+# Every landing string that states a network count, and which producer owns it.
+# The pattern is per key because a bare \d+ finds the 8004 in "ERC-8004" long
+# before it finds the count, and a checker that reads the wrong number is worse
+# than no checker.
+# Shrunk on 2026-09-02, and the reason is the point: the escrow and ERC-8004
+# sections left the landing for /x402 and /erc8004, where their numbers are
+# DERIVED from /supported in the browser rather than typed. A count that is
+# computed does not need a drift check; a count that is typed does. What remains
+# here is what is still typed.
+COUNT_KEYS = {
+    "sdk.networks":                    ("payment",  r"(\d+)\s+mainnets"),
+    "networks.summary":                ("payment",  r"(\d+)\s+(?:payment mainnets|mainnets de pago)"),
+    "features.reputation.description": ("erc8004",  r"(?:across|en)\s+(\d+)\s+(?:networks|redes)"),
+    "endpoints.erc8004Note":           ("erc8004",  r"^(\d+)\s+(?:networks|redes)"),
+}
+
+
+def _brace_block(text: str, start: int) -> str:
+    """The inside of the first {...} at or after `start`, string-aware.
+
+    A plain `.index("}")` stops at the first brace inside a translated value,
+    and several of them carry inline HTML with `style="..."` attributes.
+    """
+    i = text.index("{", start)
+    depth = 0
+    quote = None
+    escaped = False
+    for j in range(i, len(text)):
+        c = text[j]
+        if quote:
+            if escaped:
+                escaped = False
+            elif c == "\\":
+                escaped = True
+            elif c == quote:
+                quote = None
+            continue
+        if c in "\"'`":
+            quote = c
+            continue
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return text[i + 1: j]
+    raise ValueError("the translations object is not brace-balanced")
+
+
+def landing_dictionaries(html: str) -> dict:
+    """{'en': <block>, 'es': <block>} from `const translations = {...}`."""
+    block = _brace_block(html, html.index("const translations = {"))
+    out = {}
+    for lang in ("en", "es"):
+        pos = 0
+        while True:
+            at = block.index(f"{lang}:", pos)
+            after = at + len(lang) + 1
+            if block[after:].lstrip().startswith("{"):
+                out[lang] = _brace_block(block, after)
+                break
+            pos = after
+    return out
+
+
+def dict_value(block: str, key: str):
+    m = re.search(r'"%s"\s*:\s*"((?:[^"\\]|\\.)*)"' % re.escape(key), block)
+    return m.group(1) if m else None
+
 def landing_numbers() -> dict:
     html = (REPO / "static" / "index.html").read_text()
     out: dict = {"raw": html}
@@ -139,12 +221,24 @@ def landing_numbers() -> dict:
         return int(m.group(1)) if m else None
 
     out["sdk_mainnets"] = first_int(r'data-i18n="sdk\.networks"[^>]*>(\d+)\s+mainnets')
-    out["erc8004_title"] = first_int(r'data-i18n="erc8004\.networksTitle">Deployed on (\d+) Networks')
     out["erc8004_stat"] = first_int(r'id="ovr-erc8004-networks"[^>]*>(\d+)<')
-    out["escrow_title"] = first_int(r'data-i18n="x402r\.networksTitle">Escrow Deployed on (\d+) Networks')
-    # logo cards inside each showcase grid (small 20px icons)
     out["hedera_refs"] = len(re.findall(r"hedera", html, re.I))
-    out["scroll_present"] = bool(re.search(r'src="/scroll\.png"', html))
+
+    # The same counts as written in each dictionary. `None` means the key is
+    # missing; `"?"` means the sentence no longer matches its pattern, which is
+    # a real failure -- a count that moved into prose nobody checks is exactly
+    # how the Spanish side drifted in the first place.
+    dicts = landing_dictionaries(html)
+    counts: dict = {}
+    for key, (_producer, pattern) in COUNT_KEYS.items():
+        for lang in ("en", "es"):
+            value = dict_value(dicts[lang], key)
+            if value is None:
+                counts[(lang, key)] = None
+                continue
+            m = re.search(pattern, value)
+            counts[(lang, key)] = int(m.group(1)) if m else "?"
+    out["dict_counts"] = counts
     return out
 
 
@@ -155,19 +249,28 @@ def main() -> int:
     ap.add_argument("--supported-file", help="read /supported JSON from a file instead of HTTP")
     ap.add_argument("--expect-mainnets", type=int, default=21,
                     help="expected canonical mainnet payment-network count (default 21)")
+    ap.add_argument("--offline", action="store_true",
+                    help="skip GET /supported (the only producer that needs the network) "
+                         "and check everything else, including the EN/ES cross-check")
     args = ap.parse_args()
 
     errors: list[str] = []
     notes: list[str] = []
 
     # ----- payment networks -----
-    try:
-        data = load_supported(args.url, args.supported_file)
-        chains = supported_mainnet_chains(data)
-        pay_count = len(chains)
-    except Exception as e:  # noqa: BLE001
-        print(f"[FAIL] could not read /supported: {e}", file=sys.stderr)
-        return 2
+    if args.offline and not args.supported_file:
+        chains = set()
+        pay_count = None
+        notes.append("--offline: GET /supported was not read, so the payment-network "
+                     "count is unchecked. The EN/ES cross-check still ran.")
+    else:
+        try:
+            data = load_supported(args.url, args.supported_file)
+            chains = supported_mainnet_chains(data)
+            pay_count = len(chains)
+        except Exception as e:  # noqa: BLE001
+            print(f"[FAIL] could not read /supported: {e}", file=sys.stderr)
+            return 2
 
     # ----- escrow / erc8004 from source -----
     try:
@@ -182,8 +285,10 @@ def main() -> int:
     print("=" * 70)
     print("CANONICAL MAP  (source of truth)")
     print("=" * 70)
-    print(f"  payment mainnets  (/supported)            : {pay_count}")
-    print(f"    -> {', '.join(sorted(chains))}")
+    print(f"  payment mainnets  (/supported)            : "
+          f"{'not read (--offline)' if pay_count is None else pay_count}")
+    if chains:
+        print(f"    -> {', '.join(sorted(chains))}")
     print(f"  escrow mainnets   (payment_operator)      : {len(escrow)}")
     print(f"    -> {', '.join(sorted(escrow))}")
     print(f"  erc-8004 mainnets (erc8004/mod.rs)        : {len(erc_main)}")
@@ -191,31 +296,52 @@ def main() -> int:
     print("-" * 70)
     print("LANDING PAGE  (static/index.html)")
     print(f"  sdk 'N mainnets supported'                : {land['sdk_mainnets']}")
-    print(f"  erc-8004 'Deployed on N Networks'         : {land['erc8004_title']}")
     print(f"  erc-8004 stat card                        : {land['erc8004_stat']}")
-    print(f"  escrow 'Escrow Deployed on N Networks'    : {land['escrow_title']}")
     print(f"  hedera references                         : {land['hedera_refs']}")
-    print(f"  scroll logo present                       : {land['scroll_present']}")
+    print("-" * 70)
+    print("LANDING DICTIONARIES  (en / es, same document, one URL)")
+    for key, (producer, _pattern) in COUNT_KEYS.items():
+        en = land["dict_counts"][("en", key)]
+        es = land["dict_counts"][("es", key)]
+        print(f"  {key:34}: en={en}  es={es}   [{producer}]")
     print("=" * 70)
 
     # ----- assertions -----
-    if pay_count != args.expect_mainnets:
+    if pay_count is not None and pay_count != args.expect_mainnets:
         notes.append(f"/supported has {pay_count} mainnets, expected {args.expect_mainnets} "
                      f"(update --expect-mainnets if you intentionally changed the network set)")
-    if land["sdk_mainnets"] != pay_count:
+    if pay_count is not None and land["sdk_mainnets"] != pay_count:
         errors.append(f"landing says '{land['sdk_mainnets']} mainnets supported' "
                       f"but /supported has {pay_count}")
-    if land["escrow_title"] != len(escrow):
-        errors.append(f"landing escrow shows {land['escrow_title']} networks "
-                      f"but payment_operator has {len(escrow)} mainnet deployments")
-    if land["erc8004_title"] != len(erc_all):
-        errors.append(f"landing ERC-8004 shows 'Deployed on {land['erc8004_title']} Networks' "
-                      f"but erc8004/mod.rs has {len(erc_all)} deployments")
     if land["erc8004_stat"] not in (len(erc_all), len(erc_main)):
         errors.append(f"landing ERC-8004 stat card = {land['erc8004_stat']} "
                       f"but source has {len(erc_all)} total / {len(erc_main)} mainnet")
     if land["hedera_refs"] != 0:
         errors.append(f"landing still has {land['hedera_refs']} 'hedera' reference(s)")
+
+    # ----- the dictionaries, both languages -----
+    producers = {"payment": pay_count, "escrow": len(escrow), "erc8004": len(erc_all)}
+    for key, (producer, _pattern) in COUNT_KEYS.items():
+        en = land["dict_counts"][("en", key)]
+        es = land["dict_counts"][("es", key)]
+        for lang, got in (("en", en), ("es", es)):
+            if got is None:
+                errors.append(f"'{key}' is missing from the `{lang}` dictionary")
+            elif got == "?":
+                errors.append(f"'{key}' in `{lang}` no longer states its count in a "
+                              f"shape this script can read; the sentence was rewritten "
+                              f"and the number is now unchecked")
+        if isinstance(en, int) and isinstance(es, int) and en != es:
+            errors.append(f"'{key}' says {en} in English and {es} in Spanish. Same "
+                          f"document, one URL: a reader gets a different number "
+                          f"depending on which button they pressed")
+        expected = producers[producer]
+        if expected is None:
+            continue  # --offline: the payment producer was not read
+        for lang, got in (("en", en), ("es", es)):
+            if isinstance(got, int) and got != expected:
+                errors.append(f"'{key}' says {got} in `{lang}` but {producer} has "
+                              f"{expected}")
 
     for n in notes:
         print(f"[NOTE] {n}")

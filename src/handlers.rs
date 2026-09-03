@@ -592,6 +592,12 @@ const EVENTS_VIEWER_HTML: &str = include_str!("../static/events-viewer.html");
 const MCP_HTML: &str = include_str!("../static/mcp.html");
 const MCP_MD: &str = include_str!("../static/mcp.md");
 
+/// The network table. Its rows are NOT in this file: the page fetches
+/// `/supported` in the browser and builds them, which is the whole reason it
+/// exists. A network list typed into a document is wrong the first time a chain
+/// ships and nobody remembers the document, and it stays wrong quietly.
+const NETWORKS_HTML: &str = include_str!("../static/networks.html");
+
 /// `Content-Language` for every human page.
 ///
 /// `en`, not `en, es`, and the difference is not pedantry. These pages carry
@@ -817,6 +823,7 @@ where
     Router::new()
         .route("/", get(get_root))
         .route("/bazaar", get(get_bazaar))
+        .route("/networks", get(get_networks_page))
         .route("/events/live", get(get_events_viewer))
         .route("/stats", get(get_stats_page))
         // Escrow state query lives in secondary_read_routes() so it can carry
@@ -2399,6 +2406,17 @@ pub async fn get_mcp_page(headers: HeaderMap) -> Response<String> {
         header::HeaderValue::from_static(CONTENT_LANGUAGE_EN),
     );
     response
+}
+
+/// `GET /networks`: every network and scheme, read live from `/supported`.
+///
+/// Its own page because the landing page used to carry the whole wall -- two
+/// tabs, forty cards, every balance -- which made the first screen of the site
+/// a list of chains instead of an answer to what the service does. The wall was
+/// also hand-written, so it drifted from `/supported` by construction.
+#[instrument(skip_all)]
+pub async fn get_networks_page() -> impl IntoResponse {
+    html_page(NETWORKS_HTML)
 }
 
 /// `GET /bazaar`: Returns the curated Bazaar resource explorer (WS-D).
@@ -13224,6 +13242,7 @@ mod agentic_surface_tests {
     /// | `/` | `static/index.html` |
     /// | `/docs` | `src/openapi.rs` |
     /// | `/mcp` | `static/mcp.html` (Markdown: `static/mcp.md`) |
+    /// | `/networks` | `static/networks.html` |
     /// | `/bazaar` | `static/bazaar.html` |
     /// | `/stats` | `static/stats.html` |
     /// | `/events/live` | `static/events-viewer.html` |
@@ -13320,6 +13339,7 @@ mod agentic_surface_tests {
             "/escrow/state",
             "/register",
             "/mcp",
+            "/networks",
         ];
 
         for (path, _) in SURFACES {
@@ -13734,7 +13754,7 @@ mod json_error_tests {
 /// dictionary must turn one of them red. See the 2026-09-02 handoff for the run.
 #[cfg(test)]
 mod i18n_tests {
-    use super::{BAZAAR_HTML, EVENTS_VIEWER_HTML, INDEX_HTML, MCP_HTML, STATS_HTML};
+    use super::{BAZAAR_HTML, EVENTS_VIEWER_HTML, INDEX_HTML, MCP_HTML, NETWORKS_HTML, STATS_HTML};
     use std::collections::BTreeSet;
 
     /// The pages and the `const` name of the JS object holding their dictionary.
@@ -13748,6 +13768,7 @@ mod i18n_tests {
         ("static/stats.html", STATS_HTML),
         ("static/events-viewer.html", EVENTS_VIEWER_HTML),
         ("static/mcp.html", MCP_HTML),
+        ("static/networks.html", NETWORKS_HTML),
     ];
 
     /// The three attributes that make the runtime look a key up.

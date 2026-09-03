@@ -149,6 +149,7 @@ def erc8004_networks() -> tuple[set[str], set[str]]:
 # than no checker.
 COUNT_KEYS = {
     "sdk.networks":                    ("payment",  r"(\d+)\s+mainnets"),
+    "networks.summary":                ("payment",  r"(\d+)\s+(?:payment mainnets|mainnets de pago)"),
     "erc8004.networksTitle":           ("erc8004",  r"(\d+)\s+(?:Networks|Redes)"),
     "x402r.networksTitle":             ("escrow",   r"(\d+)\s+(?:Networks|Redes)"),
     "features.reputation.description": ("erc8004",  r"(?:across|en)\s+(\d+)\s+(?:networks|redes)"),

@@ -42,6 +42,7 @@ Full contract: `/openapi.json` (Swagger UI at `/docs`).
 - Agent skills index: `/.well-known/agent-skills/index.json`
 - MCP server card: `/.well-known/mcp/server-card.json` (endpoint: `POST /mcp`)
 - MCP guide: `/mcp`
+- Network table, built from `/supported`: `/networks`
 - Auth metadata (RFC 9728): `/.well-known/oauth-protected-resource`
 - Workflow manifest: `/workflows.json`
 - LLM context: `/llms.txt`, `/llms-full.txt`

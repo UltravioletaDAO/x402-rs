@@ -1,0 +1,654 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title data-i18n="title">x402 facilitator · networks</title>
+<meta name="description" content="Every network and scheme this x402 facilitator settles, read live from GET /supported: the payment schemes, the stablecoins on each chain, and the facilitator's own gas balance.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://facilitator.ultravioletadao.xyz/networks">
+<meta property="og:title" content="x402 facilitator · networks">
+<meta property="og:description" content="Every network and scheme this facilitator settles, read live from GET /supported. No number on this page is typed by hand.">
+<meta property="og:image" content="https://facilitator.ultravioletadao.xyz/logo.png">
+<link rel="icon" href="/favicon.ico">
+<style>
+  :root{
+    --bg:#12101a; --panel:#1a1726; --line:#2c2740; --txt:#e8e4f5;
+    --dim:#8a83a6; --ok:#5ee6a8; --bad:#ff6b6b; --amber:#e0a53f; --uv:#b496ff;
+    --cyan:#5ad7e6;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+       font:14px/1.7 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  header{padding:18px 22px;background:var(--panel);border-bottom:1px solid var(--line);
+         display:flex;gap:16px;align-items:baseline;flex-wrap:wrap;position:sticky;top:0;z-index:5}
+  h1{font-size:16px;margin:0;color:var(--uv);font-weight:600}
+  h2{font-size:13px;margin:34px 0 10px;color:var(--dim);font-weight:500;
+     text-transform:uppercase;letter-spacing:.06em;border-top:1px solid var(--line);padding-top:18px}
+  a{color:var(--amber)}
+  main{padding:0 22px 60px;max-width:1200px}
+  p{max-width:88ch}
+  code{color:var(--cyan);background:#1e1a2e;padding:1px 4px;border-radius:3px}
+  .lead{font-size:15px;line-height:1.75;max-width:88ch}
+  .cards{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));margin:18px 0}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px 16px}
+  .card .v{font-size:26px;font-weight:600;color:var(--ok);line-height:1.2}
+  .card .k{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+  .card .src{color:var(--dim);font-size:10px;margin-top:6px;opacity:.75}
+  .scroll{overflow-x:auto}
+  table{width:100%;border-collapse:collapse;margin-top:8px}
+  th{text-align:left;color:var(--dim);font-weight:500;padding:7px 9px;font-size:11px;
+     border-bottom:1px solid var(--line);text-transform:uppercase;letter-spacing:.04em;
+     white-space:nowrap}
+  td{padding:7px 9px;border-bottom:1px solid #221e33;vertical-align:top}
+  td.net{white-space:nowrap}
+  td.net img{width:18px;height:18px;object-fit:contain;vertical-align:-4px;margin-right:7px}
+  .tag{display:inline-block;background:#241f36;border:1px solid var(--line);border-radius:4px;
+       padding:0 6px;margin:1px 3px 1px 0;font-size:11px;color:var(--cyan);white-space:nowrap}
+  .tag.test{color:var(--amber)}
+  .bal{font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--ok)}
+  .muted{color:var(--dim)}
+  .warn{background:rgba(224,165,63,.08);border:1px solid rgba(224,165,63,.32);
+        border-radius:8px;padding:14px 16px;margin:22px 0;line-height:1.7;max-width:88ch}
+  .warn b{color:var(--amber)}
+  #err{color:var(--bad);padding:16px 0}
+  .filters{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:18px}
+  .filters button{background:#241f36;color:var(--txt);border:1px solid var(--line);
+                  border-radius:5px;padding:4px 10px;font:inherit;font-size:12px;cursor:pointer;opacity:.6}
+  .filters button.active{opacity:1;border-color:var(--uv);color:var(--uv)}
+  .langsw{margin-left:auto;display:flex;gap:4px}
+  .langsw button{background:#241f36;color:var(--txt);border:1px solid var(--line);
+                 border-radius:5px;padding:3px 8px;font:inherit;font-size:11px;
+                 cursor:pointer;opacity:.55}
+  .langsw button.active{opacity:1;border-color:var(--uv);color:var(--uv)}
+  footer{border-top:1px solid var(--line);padding:18px 22px;color:var(--dim);font-size:12px}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>x402 facilitator · <span data-i18n="h1">networks</span></h1>
+  <a href="/">/</a>
+  <a href="/supported">/supported</a>
+  <a href="/mcp">/mcp</a>
+  <a href="/stats">/stats</a>
+  <span class="langsw"><button data-lang="en">EN</button><button data-lang="es">ES</button></span>
+</header>
+
+<main>
+
+<p class="lead" data-i18n="lead">Every row on this page is read from <code>GET /supported</code> when the page loads. Nothing here is typed by hand, which is the point: a network list written into a document is wrong the first time somebody ships a chain and forgets the document, and it stays wrong quietly. If this table and the endpoint ever disagree, the endpoint is right.</p>
+
+<div class="cards">
+  <div class="card">
+    <div class="v" id="c-mainnets">—</div>
+    <div class="k" data-i18n="c.mainnets">payment mainnets</div>
+    <div class="src" data-i18n="c.mainnetsSrc">distinct v1 names, testnets excluded</div>
+  </div>
+  <div class="card">
+    <div class="v" id="c-testnets">—</div>
+    <div class="k" data-i18n="c.testnets">testnets</div>
+    <div class="src" data-i18n="c.testnetsSrc">sepolia · fuji · amoy · devnet · …</div>
+  </div>
+  <div class="card">
+    <div class="v" id="c-ids">—</div>
+    <div class="k" data-i18n="c.ids">network identifiers</div>
+    <div class="src" data-i18n="c.idsSrc">each chain answers to two: v1 name and CAIP-2</div>
+  </div>
+  <div class="card">
+    <div class="v" id="c-schemes">—</div>
+    <div class="k" data-i18n="c.schemes">payment schemes</div>
+    <div class="src" data-i18n="c.schemesSrc">not every scheme is on every chain</div>
+  </div>
+</div>
+
+<div class="filters">
+  <button data-filter="mainnet" class="active" data-i18n="f.mainnets">mainnets</button>
+  <button data-filter="testnet" data-i18n="f.testnets">testnets</button>
+  <button data-filter="all" data-i18n="f.all">all</button>
+  <span class="muted" id="rowcount"></span>
+</div>
+
+<div class="scroll">
+<table>
+  <thead><tr>
+    <th data-i18n="th.network">network</th>
+    <th data-i18n="th.schemes">schemes</th>
+    <th data-i18n="th.tokens">tokens</th>
+    <th data-i18n="th.balance">facilitator gas balance</th>
+  </tr></thead>
+  <tbody id="rows"><tr><td colspan="4" class="muted" data-i18n="loading">loading…</td></tr></tbody>
+</table>
+</div>
+
+<div id="err" hidden></div>
+
+<div class="warn">
+  <p style="margin:0"><b data-i18n="warn.title">Two things this table does not claim.</b>
+  <span data-i18n="warn.text">The <b>tokens</b> column is what the facilitator will settle on that chain, not what your seller accepts — the seller's 402 decides that, and <code>x402_accepts</code> narrows it. The <b>balance</b> column is the facilitator's own native-token balance, the gas it spends on your behalf; it is not your money and it is not the payment. A dash means the balance was not reported for that network, never that it is zero.</span></p>
+</div>
+
+<h2 data-i18n="h.caip2">The same chains, in CAIP-2</h2>
+<p data-i18n="caip2.p1">Every network here also answers to a CAIP-2 identifier, and both spellings work everywhere a network is named. They are <em>not</em> shown next to each other, and that is a deliberate refusal rather than an omission: <code>/supported</code> publishes the two spellings as separate entries with no field linking them, and for most chains it publishes no token list under the CAIP-2 form either — measured on 2026-09-02, 49 of the CAIP-2 entries carry no <code>tokens</code>. Pairing them from the page would mean guessing, and a wrong chain id printed next to the right network is worse than no chain id at all. The list below is verbatim from the endpoint.</p>
+<div id="caip2" class="scroll"><span class="muted" data-i18n="loading">loading…</span></div>
+
+<h2 data-i18n="h.reading">Reading a row</h2>
+<p data-i18n="reading.p2">The <b>schemes</b> column matters more than it looks. <code>exact</code> is the ordinary x402 payment. <code>upto</code> authorises a ceiling and charges what was used, and is advertised only where the Permit2 proxy is actually deployed. <code>escrow</code> and <code>commerce</code> hold funds until a condition is met. <code>fhe-transfer</code> is confidential and experimental. A network with only <code>exact</code> cannot do the others — that is not an omission, it is the answer.</p>
+
+</main>
+
+<footer>
+  <span data-i18n="footer">Ultravioleta DAO · x402 Payment Facilitator.</span>
+  <a href="/">/</a> · <a href="/mcp">/mcp</a> · <a href="/stats">/stats</a> · <a href="/bazaar">/bazaar</a> · <a href="/supported">/supported</a>
+</footer>
+
+<script>
+// ---------------------------------------------------------------------------
+// i18n. Same contract as the rest of the site: one URL, both languages inside
+// the document, English by default and never from the browser's language, with
+// the choice remembered under the shared `x402.lang` key.
+// ---------------------------------------------------------------------------
+const I18N = {
+  en: {
+    title:"x402 facilitator · networks", h1:"networks",
+    lead:"Every row on this page is read from <code>GET /supported</code> when the page loads. Nothing here is typed by hand, which is the point: a network list written into a document is wrong the first time somebody ships a chain and forgets the document, and it stays wrong quietly. If this table and the endpoint ever disagree, the endpoint is right.",
+    "c.mainnets":"payment mainnets", "c.mainnetsSrc":"distinct v1 names, testnets excluded",
+    "c.testnets":"testnets", "c.testnetsSrc":"sepolia · fuji · amoy · devnet · …",
+    "c.ids":"network identifiers", "c.idsSrc":"each chain answers to two: v1 name and CAIP-2",
+    "c.schemes":"payment schemes", "c.schemesSrc":"not every scheme is on every chain",
+    "f.mainnets":"mainnets", "f.testnets":"testnets", "f.all":"all",
+    "th.network":"network", "th.schemes":"schemes",
+    "h.caip2":"The same chains, in CAIP-2",
+    "caip2.p1":"Every network here also answers to a CAIP-2 identifier, and both spellings work everywhere a network is named. They are <em>not</em> shown next to each other, and that is a deliberate refusal rather than an omission: <code>/supported</code> publishes the two spellings as separate entries with no field linking them, and for most chains it publishes no token list under the CAIP-2 form either — measured on 2026-09-02, 49 of the CAIP-2 entries carry no <code>tokens</code>. Pairing them from the page would mean guessing, and a wrong chain id printed next to the right network is worse than no chain id at all. The list below is verbatim from the endpoint.",
+    "th.tokens":"tokens", "th.balance":"facilitator gas balance",
+    loading:"loading…",
+    "warn.title":"Two things this table does not claim.",
+    "warn.text":"The <b>tokens</b> column is what the facilitator will settle on that chain, not what your seller accepts — the seller's 402 decides that, and <code>x402_accepts</code> narrows it. The <b>balance</b> column is the facilitator's own native-token balance, the gas it spends on your behalf; it is not your money and it is not the payment. A dash means the balance was not reported for that network, never that it is zero.",
+    "h.reading":"Reading a row",
+    "reading.p2":"The <b>schemes</b> column matters more than it looks. <code>exact</code> is the ordinary x402 payment. <code>upto</code> authorises a ceiling and charges what was used, and is advertised only where the Permit2 proxy is actually deployed. <code>escrow</code> and <code>commerce</code> hold funds until a condition is met. <code>fhe-transfer</code> is confidential and experimental. A network with only <code>exact</code> cannot do the others — that is not an omission, it is the answer.",
+    footer:"Ultravioleta DAO · x402 Payment Facilitator.",
+    err:"Could not read /supported. This page has nothing to show that would be true, so it shows nothing.",
+    rows:"networks shown",
+  },
+  es: {
+    title:"facilitador x402 · redes", h1:"redes",
+    lead:"Cada fila de esta página se lee de <code>GET /supported</code> al cargar. Nada acá está tipeado a mano, y ese es el punto: una lista de redes escrita en un documento queda mal la primera vez que alguien lanza una cadena y se olvida del documento, y se queda mal en silencio. Si esta tabla y el endpoint alguna vez se contradicen, el endpoint tiene razón.",
+    "c.mainnets":"mainnets de pago", "c.mainnetsSrc":"nombres v1 distintos, sin testnets",
+    "c.testnets":"testnets", "c.testnetsSrc":"sepolia · fuji · amoy · devnet · …",
+    "c.ids":"identificadores de red", "c.idsSrc":"cada cadena contesta a dos: nombre v1 y CAIP-2",
+    "c.schemes":"esquemas de pago", "c.schemesSrc":"no todos los esquemas están en todas las cadenas",
+    "f.mainnets":"mainnets", "f.testnets":"testnets", "f.all":"todas",
+    "th.network":"red", "th.schemes":"esquemas",
+    "h.caip2":"Las mismas cadenas, en CAIP-2",
+    "caip2.p1":"Toda red de acá contesta también a un identificador CAIP-2, y las dos formas funcionan en todos lados donde se nombre una red. <em>No</em> se muestran una al lado de la otra, y eso es una negativa deliberada y no una omisión: <code>/supported</code> publica las dos formas como entradas separadas sin ningún campo que las vincule, y para casi todas las cadenas tampoco publica la lista de tokens bajo la forma CAIP-2 — medido el 2026-09-02, 49 de las entradas CAIP-2 no traen <code>tokens</code>. Emparejarlas desde la página sería adivinar, y un chain id equivocado al lado de la red correcta es peor que ningún chain id. La lista de abajo sale del endpoint tal cual.",
+    "th.tokens":"tokens", "th.balance":"saldo de gas del facilitador",
+    loading:"cargando…",
+    "warn.title":"Dos cosas que esta tabla no afirma.",
+    "warn.text":"La columna <b>tokens</b> es lo que el facilitador liquida en esa cadena, no lo que acepta tu vendedor — eso lo decide el 402 del vendedor, y <code>x402_accepts</code> lo acota. La columna <b>saldo</b> es el saldo de token nativo del propio facilitador, el gas que gasta por vos; no es tu dinero y no es el pago. Un guion significa que el saldo no fue reportado para esa red, nunca que sea cero.",
+    "h.reading":"Cómo se lee una fila",
+    "reading.p2":"La columna <b>esquemas</b> importa más de lo que parece. <code>exact</code> es el pago x402 común. <code>upto</code> autoriza un techo y cobra lo usado, y solo se anuncia donde el proxy de Permit2 está realmente desplegado. <code>escrow</code> y <code>commerce</code> retienen fondos hasta que se cumpla una condición. <code>fhe-transfer</code> es confidencial y experimental. Una red que solo tiene <code>exact</code> no puede hacer las otras — eso no es una omisión, es la respuesta.",
+    footer:"Ultravioleta DAO · Facilitador de pagos x402.",
+    err:"No se pudo leer /supported. Esta página no tiene nada que mostrar que sea verdad, así que no muestra nada.",
+    rows:"redes mostradas",
+  },
+};
+
+let LANG = 'en';
+try { const s = localStorage.getItem('x402.lang'); if (I18N[s]) LANG = s; } catch (e) { /* private mode */ }
+const t = k => (I18N[LANG] && I18N[LANG][k]) ?? I18N.en[k] ?? k;
+
+function applyLang(lang){
+  if (I18N[lang]) LANG = lang;
+  document.documentElement.lang = LANG;
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    // Every value is an author-written literal in this file, never user input
+    // and never fetched; several carry <code> and <b> that textContent flattens.
+    el.innerHTML = t(el.getAttribute('data-i18n'));
+  });
+  document.querySelectorAll('.langsw button').forEach(b => {
+    b.classList.toggle('active', b.getAttribute('data-lang') === LANG);
+  });
+  render();
+  // render() rebuilds every row, which throws away the balances already in
+  // them. Refill only once there is something to refill.
+  if (NETWORKS.length) fetchWalletBalances();
+}
+
+document.querySelectorAll('.langsw button').forEach(b => {
+  b.addEventListener('click', () => {
+    const lang = b.getAttribute('data-lang');
+    try { localStorage.setItem('x402.lang', lang); } catch (e) { /* private mode */ }
+    applyLang(lang);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The table. GET /supported is the ONLY source of network truth on this page.
+// ---------------------------------------------------------------------------
+const TESTNET_RE = /(testnet|sepolia|devnet|fuji|amoy|alfajores|holesky|baklava)/i;
+const esc = s => { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; };
+
+let NETWORKS = [];   // [{name, caip2, schemes:Set, tokens:Set, testnet}]
+let FILTER = 'mainnet';
+
+function ingest(data){
+  const by = new Map();
+  const kinds = (data && data.kinds) || [];
+
+  // Pass 1: the plain v1 names are the rows. CAIP-2 aliases are collected
+  // separately -- they are the same network under another spelling, and a row
+  // per spelling would double every count on the page.
+  for (const k of kinds) {
+    const n = k && k.network;
+    if (typeof n !== 'string' || n.indexOf(':') >= 0) continue;
+    const name = n.replace(/-mainnet$/, '');
+    if (!by.has(name)) by.set(name, { name, schemes:new Set(), tokens:new Set(), testnet:TESTNET_RE.test(name) });
+    const row = by.get(name);
+    if (k.scheme) row.schemes.add(k.scheme);
+    for (const tk of ((k.extra && k.extra.tokens) || [])) if (tk && tk.token) row.tokens.add(tk.token);
+  }
+
+  // Pass 2: the CAIP-2 identifiers, listed and NOT paired. /supported gives no
+  // field tying an alias to its v1 name, and 49 of the alias entries carry no
+  // token list to match on either (measured 2026-09-02), so any pairing done
+  // here would be a guess dressed as data.
+  const aliases = [...new Set(kinds.map(k => k && k.network)
+    .filter(n => typeof n === 'string' && n.indexOf(':') >= 0))].sort();
+  document.getElementById('caip2').innerHTML =
+    aliases.map(a => `<span class="tag">${esc(a)}</span>`).join('');
+
+  NETWORKS = [...by.values()].sort((a, b) =>
+    (a.testnet - b.testnet) || a.name.localeCompare(b.name));
+
+  const mainnets = NETWORKS.filter(r => !r.testnet).length;
+  const testnets = NETWORKS.length - mainnets;
+  const ids = new Set(kinds.map(k => k && k.network).filter(n => typeof n === 'string')).size;
+  const schemes = new Set(kinds.map(k => k && k.scheme).filter(Boolean)).size;
+  document.getElementById('c-mainnets').textContent = mainnets;
+  document.getElementById('c-testnets').textContent = testnets;
+  document.getElementById('c-ids').textContent = ids;
+  document.getElementById('c-schemes').textContent = schemes;
+}
+
+// The balances API spells a network `<stem>-mainnet` / `<stem>-testnet`, which
+// is NOT the /supported spelling: `base-sepolia` is `base-testnet` there, and
+// `skale-base` is `skale-mainnet`. Rather than hand-write that mapping -- the
+// exact kind of table this page exists to avoid -- the candidates are generated
+// and the one the API actually published is used. A network whose balance is
+// not published keeps its first candidate, so the loader's own "absent from the
+// response" path runs and the cell ends as a dash. A wrong balance next to the
+// right network would be worse than no balance at all.
+let BALANCE_KEYS = new Set();
+function balanceKey(row){
+  const stem = row.name.replace(/-(sepolia|testnet|devnet|fuji|amoy|alfajores|holesky|baklava)$/i, '');
+  const suffix = row.testnet ? 'testnet' : 'mainnet';
+  const candidates = [`${stem}-${suffix}`, row.name, `${stem.split('-')[0]}-${suffix}`];
+  return candidates.find(k => BALANCE_KEYS.has(k)) || candidates[0];
+}
+
+function render(){
+  const tbody = document.getElementById('rows');
+  if (!NETWORKS.length) return;
+  const rows = NETWORKS.filter(r => FILTER === 'all' || (FILTER === 'testnet' ? r.testnet : !r.testnet));
+  document.getElementById('rowcount').textContent = `${rows.length} ${t('rows')}`;
+  tbody.innerHTML = rows.map(r => {
+    const schemes = [...r.schemes].sort().map(s => `<span class="tag">${esc(s)}</span>`).join('');
+    const tokens = [...r.tokens].sort().map(s => `<span class="tag">${esc(s.toUpperCase())}</span>`).join('')
+      || '<span class="muted">—</span>';
+    const key = balanceKey(r);
+    return `<tr>
+      <td class="net"><img src="/${esc(r.name.split('-')[0])}.png" alt="" onerror="this.remove()">${esc(r.name)}${r.testnet ? ' <span class="tag test">testnet</span>' : ''}</td>
+      <td>${schemes}</td>
+      <td>${tokens}</td>
+      <td class="bal" data-balance="${esc(key)}">—</td>
+    </tr>`;
+  }).join('');
+}
+
+document.querySelectorAll('.filters button[data-filter]').forEach(b => {
+  b.addEventListener('click', () => {
+    FILTER = b.getAttribute('data-filter');
+    document.querySelectorAll('.filters button[data-filter]').forEach(x =>
+      x.classList.toggle('active', x === b));
+    render();
+    fetchWalletBalances();
+  });
+});
+
+// /supported decides the rows; /api/balances only decides which key each row
+// carries. A failure of the second must not empty the table, so it is caught
+// on its own and degrades to "no balances published".
+Promise.all([
+  fetch('/supported').then(r => r.json()),
+  fetch('/api/balances').then(r => r.ok ? r.json() : null).catch(() => null),
+])
+  .then(([supported, balances]) => {
+    BALANCE_KEYS = new Set(Object.keys((balances && balances.balances) || {}));
+    ingest(supported);
+    render();
+    // Balances only after the rows exist: the ported loader below finds its
+    // targets with querySelectorAll('[data-balance]').
+    fetchWalletBalances();
+  })
+  .catch(() => {
+    document.getElementById('rows').innerHTML = '';
+    const err = document.getElementById('err');
+    err.textContent = t('err');
+    err.hidden = false;
+  });
+
+// ---------------------------------------------------------------------------
+// Facilitator gas balances. Moved here verbatim from the landing page when the
+// network wall left it: this is the page that lists networks now, so this is
+// where the balance belongs. `/api/balances` is the Lambda that holds the
+// premium RPC keys; the public-RPC fallbacks below are what keep a network from
+// hanging on "Loading..." when the Lambda has not been redeployed for it yet.
+// ---------------------------------------------------------------------------
+// Fetch wallet balances from backend API (Lambda + API Gateway)
+// This centralizes RPC calls and hides private API keys from the frontend
+// Falls back to direct public RPC calls if API fails or returns null
+
+
+// Wallet addresses for fallback
+const WALLET_MAINNET = '0x103040545AC5031A11E8C03dd11324C7333a13C7';
+const WALLET_TESTNET = '0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8';
+const SOLANA_MAINNET = 'F742C4VfFLQ9zRQyithoj5229ZgtX2WqKCSFKgH2EThq';
+const SOLANA_TESTNET = '6xNPewUdKRbEZDReQdpyfNUdgNg8QRc8Mt263T5GZSRv';
+const SUI_MAINNET = '0xe7bbf2b13f7d72714760aa16e024fa1b35a978793f9893d0568a4fbf356a764a';
+const SUI_TESTNET = '0xabbd16a2fab2a502c9cfe835195a6fc7d70bfc27cffb40b8b286b52a97006e67';
+const NEAR_MAINNET = 'uvd-facilitator.near';
+const NEAR_TESTNET = 'uvd-facilitator.testnet';
+const STELLAR_MAINNET = 'GCHPGXJT2WFFRFCA5TV4G4E3PMMXLNIDUH27PKDYA4QJ2XGYZWGFZNHB';
+const STELLAR_TESTNET = 'GBBFZMLUJEZVI32EN4XA2KPP445XIBTMTRBLYWFIL556RDTHS2OWFQ2Z';
+const ALGORAND_MAINNET = 'KIMS5H6QLCUDL65L5UBTOXDPWLMTS7N3AAC3I6B2NCONEI5QIVK7LH2C2I';
+const ALGORAND_TESTNET = '5DPPDQNYUPCTXRZWRYSF3WPYU6RKAUR25F3YG4EKXQRHV5AUAI62H5GXL4';
+
+// Public RPCs for fallback (no API keys)
+const PUBLIC_RPCS = {
+    'base-mainnet': { rpc: 'https://mainnet.base.org', addr: WALLET_MAINNET, type: 'evm' },
+    'base-testnet': { rpc: 'https://sepolia.base.org', addr: WALLET_TESTNET, type: 'evm' },
+    'avalanche-mainnet': { rpc: 'https://avalanche-c-chain-rpc.publicnode.com', addr: WALLET_MAINNET, type: 'evm' },
+    'avalanche-testnet': { rpc: 'https://avalanche-fuji-c-chain-rpc.publicnode.com', addr: WALLET_TESTNET, type: 'evm' },
+    'polygon-mainnet': { rpc: 'https://polygon.drpc.org', addr: WALLET_MAINNET, type: 'evm' },
+    'polygon-testnet': { rpc: 'https://rpc-amoy.polygon.technology', addr: WALLET_TESTNET, type: 'evm' },
+    'optimism-mainnet': { rpc: 'https://mainnet.optimism.io', addr: WALLET_MAINNET, type: 'evm' },
+    'optimism-testnet': { rpc: 'https://sepolia.optimism.io', addr: WALLET_TESTNET, type: 'evm' },
+    'celo-mainnet': { rpc: 'https://celo-rpc.quickapi.com', addr: WALLET_MAINNET, type: 'evm' },
+    'celo-testnet': { rpc: 'https://rpc.ankr.com/celo_sepolia', addr: WALLET_TESTNET, type: 'evm' },
+    'hyperevm-mainnet': { rpc: 'https://rpc.hyperliquid.xyz/evm', addr: WALLET_MAINNET, type: 'evm' },
+    'hyperevm-testnet': { rpc: 'https://rpc.hyperliquid-testnet.xyz/evm', addr: WALLET_TESTNET, type: 'evm' },
+    'ethereum-mainnet': { rpc: 'https://ethereum-rpc.publicnode.com', addr: WALLET_MAINNET, type: 'evm' },
+    'ethereum-testnet': { rpc: 'https://ethereum-sepolia-rpc.publicnode.com', addr: WALLET_TESTNET, type: 'evm' },
+    'arbitrum-mainnet': { rpc: 'https://arb1.arbitrum.io/rpc', addr: WALLET_MAINNET, type: 'evm' },
+    'arbitrum-testnet': { rpc: 'https://arbitrum-sepolia-rpc.publicnode.com', addr: WALLET_TESTNET, type: 'evm' },
+    'unichain-mainnet': { rpc: 'https://unichain-rpc.publicnode.com', addr: WALLET_MAINNET, type: 'evm' },
+    'unichain-testnet': { rpc: 'https://unichain-sepolia.drpc.org', addr: WALLET_TESTNET, type: 'evm' },
+    'monad-mainnet': { rpc: 'https://rpc.monad.xyz', addr: WALLET_MAINNET, type: 'evm' },
+    'bsc-mainnet': { rpc: 'https://bsc-dataseed.binance.org/', addr: WALLET_MAINNET, type: 'evm' },
+    'solana-mainnet': { rpc: 'https://api.mainnet-beta.solana.com', addr: SOLANA_MAINNET, type: 'solana' },
+    'solana-devnet': { rpc: 'https://api.devnet.solana.com', addr: SOLANA_TESTNET, type: 'solana' },
+    'fogo-mainnet': { rpc: 'https://rpc.fogo.nightly.app/', addr: SOLANA_MAINNET, type: 'solana' },
+    'fogo-testnet': { rpc: 'https://testnet.fogo.io/', addr: SOLANA_TESTNET, type: 'solana' },
+    'sui-mainnet': { rpc: 'https://fullnode.mainnet.sui.io:443', addr: SUI_MAINNET, type: 'sui' },
+    'sui-testnet': { rpc: 'https://fullnode.testnet.sui.io:443', addr: SUI_TESTNET, type: 'sui' },
+    'skale-mainnet': { rpc: 'https://skale-base.skalenodes.com/v1/base', addr: WALLET_MAINNET, type: 'evm' },
+    'skale-testnet': { rpc: 'https://base-sepolia-testnet.skalenodes.com/v1/jubilant-horrible-ancha', addr: WALLET_TESTNET, type: 'evm' },
+    'scroll-mainnet': { rpcs: ['https://scroll.drpc.org', 'https://1rpc.io/scroll', 'https://rpc.scroll.io'], addr: WALLET_MAINNET, type: 'evm' },
+    'robinhood-mainnet': { rpc: 'https://rpc.mainnet.chain.robinhood.com', addr: WALLET_MAINNET, type: 'evm' },
+    'robinhood-testnet': { rpc: 'https://rpc.testnet.chain.robinhood.com', addr: WALLET_TESTNET, type: 'evm' },
+    'near-mainnet': { rpcs: ['https://free.rpc.fastnear.com', 'https://near.lava.build'], addr: NEAR_MAINNET, type: 'near' },
+    'near-testnet': { rpcs: ['https://test.rpc.fastnear.com', 'https://near-testnet.drpc.org'], addr: NEAR_TESTNET, type: 'near' },
+    'stellar-mainnet': { api: 'https://horizon.stellar.org/accounts/' + STELLAR_MAINNET, addr: STELLAR_MAINNET, type: 'stellar' },
+    'stellar-testnet': { api: 'https://horizon-testnet.stellar.org/accounts/' + STELLAR_TESTNET, addr: STELLAR_TESTNET, type: 'stellar' },
+    'algorand-mainnet': { api: 'https://mainnet-api.algonode.cloud/v2/accounts/' + ALGORAND_MAINNET, addr: ALGORAND_MAINNET, type: 'algorand' },
+    'algorand-testnet': { api: 'https://testnet-api.algonode.cloud/v2/accounts/' + ALGORAND_TESTNET, addr: ALGORAND_TESTNET, type: 'algorand' },
+    // XRPL native (XRP Ledger). xrplcluster.com allows browser CORS; s1.ripple.com is the fallback.
+    'xrpl-mainnet': { rpcs: ['https://xrplcluster.com/', 'https://s1.ripple.com:51234/'], addr: 'rfADKkVXBNqK3z72tVSS3LVzAR3psYkonp', type: 'xrpl' },
+};
+
+// Fallback: fetch EVM balance with multi-RPC retry support
+async function fetchEvmBalanceFallback(network, config) {
+    // Support both single rpc and array of rpcs
+    const rpcs = config.rpcs || [config.rpc];
+    for (const rpc of rpcs) {
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 5000);
+            const response = await fetch(rpc, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    jsonrpc: '2.0', method: 'eth_getBalance',
+                    params: [config.addr, 'latest'], id: 1
+                }),
+                signal: controller.signal
+            });
+            clearTimeout(timeoutId);
+            const data = await response.json();
+            if (data.result) {
+                const balanceWei = BigInt(data.result);
+                const balanceEth = Number(balanceWei) / 1e18;
+                return balanceEth.toFixed(4);
+            }
+        } catch (e) { console.warn(`${network} RPC ${rpc} failed:`, e.message); }
+    }
+    console.error(`All RPCs failed for ${network}`);
+    return null;
+}
+
+// Fallback: fetch single Solana balance
+async function fetchSolanaBalanceFallback(network, config) {
+    try {
+        const response = await fetch(config.rpc, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                jsonrpc: '2.0', method: 'getBalance',
+                params: [config.addr], id: 1
+            })
+        });
+        const data = await response.json();
+        if (data.result && data.result.value !== undefined) {
+            const balanceSol = data.result.value / 1e9;
+            return balanceSol.toFixed(4);
+        }
+    } catch (e) { console.error(`Fallback ${network}:`, e); }
+    return null;
+}
+
+// Fallback: fetch single Sui balance
+async function fetchSuiBalanceFallback(network, config) {
+    try {
+        const response = await fetch(config.rpc, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                jsonrpc: '2.0', id: 1, method: 'suix_getAllBalances',
+                params: [config.addr]
+            })
+        });
+        const data = await response.json();
+        if (data.result && Array.isArray(data.result)) {
+            const suiBalance = data.result.find(b => b.coinType === '0x2::sui::SUI');
+            if (suiBalance) {
+                const balanceSui = parseInt(suiBalance.totalBalance) / 1e9;
+                return balanceSui.toFixed(4);
+            }
+        }
+    } catch (e) { console.error(`Fallback ${network}:`, e); }
+    return null;
+}
+
+// Fallback: fetch single NEAR balance
+async function fetchNearBalanceFallback(network, config) {
+    for (const rpc of config.rpcs) {
+        try {
+            const response = await fetch(rpc, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    jsonrpc: '2.0', id: 'balance', method: 'query',
+                    params: { request_type: 'view_account', finality: 'final', account_id: config.addr }
+                })
+            });
+            const data = await response.json();
+            if (data.result && data.result.amount) {
+                const balanceNear = parseInt(data.result.amount) / 1e24;
+                return balanceNear.toFixed(4);
+            }
+        } catch (e) { continue; }
+    }
+    return null;
+}
+
+// Fallback: fetch single Stellar balance
+async function fetchStellarBalanceFallback(network, config) {
+    try {
+        const response = await fetch(config.api);
+        const data = await response.json();
+        const native = data.balances?.find(b => b.asset_type === 'native');
+        if (native) return parseFloat(native.balance).toFixed(4);
+    } catch (e) { console.error(`Fallback ${network}:`, e); }
+    return null;
+}
+
+// Fallback: fetch single Algorand balance
+async function fetchAlgorandBalanceFallback(network, config) {
+    try {
+        const response = await fetch(config.api);
+        const data = await response.json();
+        if (data.amount !== undefined) {
+            const balanceAlgo = data.amount / 1e6;
+            return balanceAlgo.toFixed(4);
+        }
+    } catch (e) { console.error(`Fallback ${network}:`, e); }
+    return null;
+}
+
+// Fallback: fetch single XRPL native balance (account_info JSON-RPC; drops, 1 XRP = 1e6 drops)
+async function fetchXrplBalanceFallback(network, config) {
+    const rpcs = config.rpcs || [config.rpc];
+    for (const rpc of rpcs) {
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 5000);
+            const response = await fetch(rpc, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    method: 'account_info',
+                    params: [{ account: config.addr, ledger_index: 'validated' }]
+                }),
+                signal: controller.signal
+            });
+            clearTimeout(timeoutId);
+            const data = await response.json();
+            const result = data.result || {};
+            const drops = result.account_data && result.account_data.Balance;
+            if (drops !== undefined && drops !== null) {
+                return (Number(drops) / 1e6).toFixed(4);
+            }
+            // Unfunded account (actNotFound) -> genuinely zero, stop retrying
+            if (result.error === 'actNotFound') return '0.0000';
+        } catch (e) { console.warn(`${network} RPC ${rpc} failed:`, e.message); }
+    }
+    console.error(`All RPCs failed for ${network}`);
+    return null;
+}
+
+// Fallback: fetch balance for a single network using public RPC
+async function fetchBalanceFallback(network) {
+    const config = PUBLIC_RPCS[network];
+    if (!config) return null;
+
+    switch (config.type) {
+        case 'evm': return fetchEvmBalanceFallback(network, config);
+        case 'solana': return fetchSolanaBalanceFallback(network, config);
+        case 'sui': return fetchSuiBalanceFallback(network, config);
+        case 'near': return fetchNearBalanceFallback(network, config);
+        case 'stellar': return fetchStellarBalanceFallback(network, config);
+        case 'algorand': return fetchAlgorandBalanceFallback(network, config);
+        case 'xrpl': return fetchXrplBalanceFallback(network, config);
+        default: return null;
+    }
+}
+
+async function fetchWalletBalances() {
+    const BALANCES_API_URL = window.BALANCES_API_URL || '/api/balances';
+    let failedNetworks = [];
+
+    try {
+        const response = await fetch(BALANCES_API_URL, {
+            method: 'GET',
+            headers: { 'Accept': 'application/json' }
+        });
+
+        if (!response.ok) {
+            throw new Error(`API returned ${response.status}`);
+        }
+
+        const data = await response.json();
+        const balances = data.balances || {};
+
+        // Update all balance elements, track failed ones
+        const handled = new Set();
+        for (const [network, balance] of Object.entries(balances)) {
+            const balanceEl = document.querySelector(`[data-balance="${network}"]`);
+            if (balanceEl) {
+                handled.add(network);
+                if (balance && balance !== 'null') {
+                    balanceEl.textContent = balance;
+                } else {
+                    failedNetworks.push(network);
+                    balanceEl.textContent = '...'; // Loading indicator for retry
+                }
+            }
+        }
+
+        // Networks rendered in the DOM but absent from the API response
+        // (e.g. a new network like XRPL added before the balances lambda
+        // was redeployed) would otherwise hang on "Loading..." forever.
+        // Queue them for the public-RPC fallback, or mark N/A if unsupported.
+        document.querySelectorAll('[data-balance]').forEach(el => {
+            const network = el.getAttribute('data-balance');
+            if (!network || handled.has(network)) return;
+            if (PUBLIC_RPCS[network]) {
+                failedNetworks.push(network);
+                el.textContent = '...';
+            } else {
+                el.textContent = 'N/A';
+            }
+        });
+    } catch (error) {
+        console.error('Error fetching balances from API:', error);
+        // API failed entirely - try fallback for all networks
+        document.querySelectorAll('[data-balance]').forEach(el => {
+            const network = el.getAttribute('data-balance');
+            if (network && PUBLIC_RPCS[network]) {
+                failedNetworks.push(network);
+                el.textContent = '...';
+            } else if (el.textContent === '...') {
+                el.textContent = 'N/A';
+            }
+        });
+    }
+
+    // Fallback: retry failed networks with direct public RPC calls
+    if (failedNetworks.length > 0) {
+        console.log(`Retrying ${failedNetworks.length} networks with fallback RPCs...`);
+        const fallbackPromises = failedNetworks.map(async (network) => {
+            const balance = await fetchBalanceFallback(network);
+            const balanceEl = document.querySelector(`[data-balance="${network}"]`);
+            if (balanceEl) {
+                balanceEl.textContent = balance || 'N/A';
+            }
+        });
+        await Promise.all(fallbackPromises);
+    }
+}
+
+
+applyLang(LANG);
+</script>
+</body>
+</html>

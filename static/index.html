@@ -1220,621 +1220,55 @@
                     </div>
                 </div>
 
-                <!-- Network Tabs -->
-                <div class="tabs-container">
-                    <button class="tab-button active" onclick="switchTab('mainnet')">Mainnets</button>
-                    <button class="tab-button" onclick="switchTab('testnet')">Testnets</button>
-                </div>
-
-                <!-- Mainnets Tab -->
-                <div id="mainnet-tab" class="tab-content active">
-                    <div style="margin-bottom: 1rem; text-align: center;">
-                        <span
-                            style="color: var(--text-muted); font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 1px;">Mainnets</span>
-                    </div>
-                    <div class="networks"
-                        style="gap: 2rem; margin-bottom: 2.5rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); justify-items: center;">
-                        <div class="network-badge avalanche"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://snowtrace.io/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/avalanche.png" alt="Avalanche"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Avalanche C-Chain</span>
-                            </div>
-                            <div class="balance-amount" data-balance="avalanche-mainnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">AVAX Balance</div>
-                            <div data-tokens="avalanche-mainnet"></div>
-                        </div>
-                        <div class="network-badge base"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://basescan.org/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/base.png" alt="Base" style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Base</span>
-                            </div>
-                            <div class="balance-amount" data-balance="base-mainnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">ETH Balance</div>
-                            <div data-tokens="base-mainnet"></div>
-                        </div>
-                        <div class="network-badge celo"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://celoscan.io/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/celo.png" alt="Celo" style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Celo</span>
-                            </div>
-                            <div class="balance-amount" data-balance="celo-mainnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">CELO Balance</div>
-                            <div data-tokens="celo-mainnet"></div>
-                        </div>
-                        <div class="network-badge hyperevm"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://hyperevmscan.io/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/hyperevm.png" alt="HyperEVM"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">HyperEVM</span>
-                            </div>
-                            <div class="balance-amount" data-balance="hyperevm-mainnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">HYPE Balance</div>
-                            <div data-tokens="hyperevm-mainnet"></div>
-                        </div>
-                        <div class="network-badge polygon"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://polygonscan.com/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/polygon.png" alt="Polygon"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Polygon</span>
-                            </div>
-                            <div class="balance-amount" data-balance="polygon-mainnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">POL Balance</div>
-                            <div data-tokens="polygon-mainnet"></div>
-                        </div>
-                        <div class="network-badge solana"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://solscan.io/account/F742C4VfFLQ9zRQyithoj5229ZgtX2WqKCSFKgH2EThq', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/solana.png" alt="Solana"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Solana</span>
-                            </div>
-                            <div class="balance-amount" data-balance="solana-mainnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">SOL Balance</div>
-                            <div data-tokens="solana-mainnet"></div>
-                        </div>
-                        <div class="network-badge optimism"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://optimistic.etherscan.io/address/0x103040545ac5031a11e8c03dd11324c7333a13c7', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/optimism.png" alt="Optimism"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Optimism</span>
-                            </div>
-                            <div class="balance-amount" data-balance="optimism-mainnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">ETH Balance</div>
-                            <div data-tokens="optimism-mainnet"></div>
-                        </div>
-                        <div class="network-badge ethereum"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://etherscan.io/address/0x103040545ac5031a11e8c03dd11324c7333a13c7', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/ethereum.png" alt="Ethereum"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Ethereum</span>
-                            </div>
-                            <div class="balance-amount" data-balance="ethereum-mainnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">ETH Balance</div>
-                            <div data-tokens="ethereum-mainnet"></div>
-                        </div>
-                        <div class="network-badge arbitrum"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://arbiscan.io/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/arbitrum.png" alt="Arbitrum"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Arbitrum</span>
-                            </div>
-                            <div class="balance-amount" data-balance="arbitrum-mainnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">ETH Balance</div>
-                            <div data-tokens="arbitrum-mainnet"></div>
-                        </div>
-                        <div class="network-badge unichain"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://uniscan.xyz/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/unichain.png" alt="Unichain"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Unichain</span>
-                            </div>
-                            <div class="balance-amount" data-balance="unichain-mainnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">ETH Balance</div>
-                            <div data-tokens="unichain-mainnet"></div>
-                        </div>
-                        <div class="network-badge monad"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://monadscan.com/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/monad.png" alt="Monad"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Monad</span>
-                            </div>
-                            <div class="balance-amount" data-balance="monad-mainnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">MON Balance</div>
-                            <div data-tokens="monad-mainnet"></div>
-                        </div>
-                        <div class="network-badge near"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://nearblocks.io/address/uvd-facilitator.near', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/near.png" alt="NEAR" style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">NEAR</span>
-                            </div>
-                            <div class="balance-amount" data-balance="near-mainnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">NEAR Balance</div>
-                            <div data-tokens="near-mainnet"></div>
-                        </div>
-                        <div class="network-badge stellar"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://stellar.expert/explorer/public/account/GCHPGXJT2WFFRFCA5TV4G4E3PMMXLNIDUH27PKDYA4QJ2XGYZWGFZNHB', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/stellar.png" alt="Stellar"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Stellar</span>
-                            </div>
-                            <div class="balance-amount" data-balance="stellar-mainnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">XLM Balance</div>
-                            <div data-tokens="stellar-mainnet"></div>
-                        </div>
-                        <div class="network-badge xrpl"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://livenet.xrpl.org/accounts/rfADKkVXBNqK3z72tVSS3LVzAR3psYkonp', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/xrpl.png" alt="XRPL"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">XRPL</span>
-                            </div>
-                            <div class="balance-amount" data-balance="xrpl-mainnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);" data-i18n="balances.xrpBalance">XRP Balance</div>
-                            <div data-tokens="xrpl-mainnet"></div>
-                        </div>
-                        <div class="network-badge fogo"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://fogoscan.com/account/F742C4VfFLQ9zRQyithoj5229ZgtX2WqKCSFKgH2EThq', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/fogo.png" alt="Fogo" style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Fogo</span>
-                            </div>
-                            <div class="balance-amount" data-balance="fogo-mainnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">FOGO Balance</div>
-                            <div data-tokens="fogo-mainnet"></div>
-                        </div>
-
-                        <div class="network-badge algorand"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://allo.info/account/KIMS5H6QLCUDL65L5UBTOXDPWLMTS7N3AAC3I6B2NCONEI5QIVK7LH2C2I', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/algorand.png" alt="Algorand" style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Algorand</span>
-                            </div>
-                            <div class="balance-amount" data-balance="algorand-mainnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">ALGO Balance</div>
-                            <div data-tokens="algorand-mainnet"></div>
-                        </div>
-
-                        <div class="network-badge bsc"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://bscscan.com/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/bsc.png" alt="BSC" style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">BNB Chain</span>
-                            </div>
-                            <div class="balance-amount" data-balance="bsc-mainnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">BNB Balance</div>
-                            <div data-tokens="bsc-mainnet"></div>
-                        </div>
-                        <div class="network-badge sui"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://suiscan.xyz/mainnet', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/sui.png" alt="Sui" style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Sui</span>
-                            </div>
-                            <div class="balance-amount" data-balance="sui-mainnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">SUI Balance</div>
-                            <div data-tokens="sui-mainnet"></div>
-                        </div>
-                        <div class="network-badge skale"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://skale-base-explorer.skalenodes.com/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/skale.png" alt="SKALE" style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">SKALE Base</span>
-                            </div>
-                            <div class="balance-amount" data-balance="skale-mainnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">CREDIT Balance</div>
-                            <div data-tokens="skale-mainnet"></div>
-                        </div>
-                        <div class="network-badge scroll"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://scrollscan.com/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/scroll.png" alt="Scroll" style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Scroll</span>
-                            </div>
-                            <div class="balance-amount" data-balance="scroll-mainnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">ETH Balance</div>
-                            <div data-tokens="scroll-mainnet"></div>
-                        </div>
-                        <div class="network-badge robinhood"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://robinhoodchain.blockscout.com/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/robinhood.png" alt="Robinhood Chain" style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Robinhood Chain</span>
-                            </div>
-                            <div class="balance-amount" data-balance="robinhood-mainnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">ETH Balance</div>
-                            <div data-tokens="robinhood-mainnet"></div>
-                        </div>
-
+                <!-- Networks: the wall moved to /networks, which reads it from
+                     /supported instead of being retyped every time a chain ships. -->
+                <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem 2rem; margin-bottom: 2rem; text-align: center;">
+                    <p style="margin: 0 0 1rem 0; color: var(--text-muted);" data-i18n="networks.summary" data-live-count="payment-mainnets">21 payment mainnets and their testnets, across 7 chain families. Every chain answers to two names — <code>base</code> and <code>eip155:8453</code> — and both work everywhere.</p>
+                    <div style="display: flex; gap: 0.75rem; justify-content: center; flex-wrap: wrap;">
+                        <a href="/networks" style="font-size: 0.8rem; color: var(--accent); text-decoration: none; padding: 0.5rem 1.25rem; border: 1px solid var(--accent); border-radius: 6px;" data-i18n="networks.link">See every network, scheme and token</a>
+                        <a href="/supported" target="_blank" style="font-size: 0.8rem; color: var(--text-muted); text-decoration: none; padding: 0.5rem 1.25rem; border: 1px solid var(--border); border-radius: 6px;" data-i18n="networks.raw">The raw endpoint</a>
                     </div>
                 </div>
 
-                <!-- Testnets Tab -->
-                <div id="testnet-tab" class="tab-content">
-                    <div style="margin-bottom: 1rem; text-align: center;">
-                        <span
-                            style="color: var(--text-muted); font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 1px;">Testnets</span>
-                    </div>
-                    <div class="networks"
-                        style="gap: 2rem; margin-bottom: 2rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); justify-items: center;">
-                        <div class="network-badge avalanche"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://testnet.snowtrace.io/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/avalanche.png" alt="Avalanche"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Avalanche Fuji</span>
-                            </div>
-                            <div class="balance-amount" data-balance="avalanche-testnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">AVAX</div>
-                            <div data-tokens="avalanche-testnet"></div>
+                <!-- Zama FHE: experimental, and labelled so on the card itself. -->
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); justify-items: center; margin-bottom: 2rem;">
+                    <div class="network-badge zama"
+                        style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
+                        onclick="window.open('https://zama-facilitator.ultravioletadao.xyz', '_blank')">
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
+                            <svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <circle cx="16" cy="16" r="14" stroke="#ffcc00" stroke-width="2" fill="none"/>
+                                <path d="M10 16L14 20L22 12" stroke="#ffcc00" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+                                <circle cx="16" cy="16" r="6" stroke="#ffcc00" stroke-width="1.5" fill="none" opacity="0.5"/>
+                            </svg>
+                            <span style="font-weight: 700;">Zama FHE</span>
+                            <span style="font-size: 0.6rem; background: linear-gradient(135deg, #ffcc00, #ff9900); color: #000; padding: 0.2rem 0.5rem; border-radius: 4px; font-weight: 700;">ENCRYPTED</span>
+                                <span style="font-size: 0.6rem; border: 1px solid #ff9900; color: #ff9900; padding: 0.2rem 0.5rem; border-radius: 4px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;" data-i18n="fhe.experimental">experimental</span>
                         </div>
-                        <div class="network-badge base"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://sepolia.basescan.org/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/base.png" alt="Base" style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Base Sepolia</span>
-                            </div>
-                            <div class="balance-amount" data-balance="base-testnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">ETH</div>
-                            <div data-tokens="base-testnet"></div>
+                        <div style="font-size: 0.85rem; color: rgba(255,255,255,0.8); text-align: center;">
+                            Confidential Payments on Ethereum Sepolia
                         </div>
-                        <div class="network-badge celo"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://alfajores.celoscan.io/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/celo.png" alt="Celo" style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Celo Sepolia</span>
-                            </div>
-                            <div class="balance-amount" data-balance="celo-testnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">CELO</div>
-                            <div data-tokens="celo-testnet"></div>
-                        </div>
-                        <div class="network-badge polygon"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://amoy.polygonscan.com/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/polygon.png" alt="Polygon"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Polygon Amoy</span>
-                            </div>
-                            <div class="balance-amount" data-balance="polygon-testnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">POL</div>
-                            <div data-tokens="polygon-testnet"></div>
-                        </div>
-                        <div class="network-badge optimism"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://sepolia-optimism.etherscan.io/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/optimism.png" alt="Optimism"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Optimism Sepolia</span>
-                            </div>
-                            <div class="balance-amount" data-balance="optimism-testnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">ETH</div>
-                            <div data-tokens="optimism-testnet"></div>
-                        </div>
-                        <div class="network-badge ethereum"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://sepolia.etherscan.io/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/ethereum.png" alt="Ethereum"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Ethereum Sepolia</span>
-                            </div>
-                            <div class="balance-amount" data-balance="ethereum-testnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">ETH</div>
-                            <div data-tokens="ethereum-testnet"></div>
-                        </div>
-                        <div class="network-badge arbitrum"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://sepolia.arbiscan.io/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/arbitrum.png" alt="Arbitrum"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Arbitrum Sepolia</span>
-                            </div>
-                            <div class="balance-amount" data-balance="arbitrum-testnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">ETH</div>
-                            <div data-tokens="arbitrum-testnet"></div>
-                        </div>
-                        <div class="network-badge unichain"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://sepolia.uniscan.xyz/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/unichain.png" alt="Unichain"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Unichain Sepolia</span>
-                            </div>
-                            <div class="balance-amount" data-balance="unichain-testnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">ETH</div>
-                            <div data-tokens="unichain-testnet"></div>
-                        </div>
-                        <div class="network-badge hyperevm"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://testnet.purrsec.com/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/hyperevm.png" alt="HyperEVM"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">HyperEVM Testnet</span>
-                            </div>
-                            <div class="balance-amount" data-balance="hyperevm-testnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">HYPE</div>
-                            <div data-tokens="hyperevm-testnet"></div>
-                        </div>
-                        <div class="network-badge near"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://testnet.nearblocks.io/address/uvd-facilitator.testnet', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/near.png" alt="NEAR" style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">NEAR Testnet</span>
-                            </div>
-                            <div class="balance-amount" data-balance="near-testnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">NEAR</div>
-                            <div data-tokens="near-testnet"></div>
-                        </div>
-                        <div class="network-badge stellar"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://stellar.expert/explorer/testnet/account/GBBFZMLUJEZVI32EN4XA2KPP445XIBTMTRBLYWFIL556RDTHS2OWFQ2Z', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/stellar.png" alt="Stellar"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Stellar Testnet</span>
-                            </div>
-                            <div class="balance-amount" data-balance="stellar-testnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">XLM</div>
-                            <div data-tokens="stellar-testnet"></div>
-                        </div>
-                        <div class="network-badge fogo"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://fogoscan.com/account/6xNPewUdKRbEZDReQdpyfNUdgNg8QRc8Mt263T5GZSRv?cluster=testnet', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/fogo.png" alt="Fogo" style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Fogo Testnet</span>
-                            </div>
-                            <div class="balance-amount" data-balance="fogo-testnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">FOGO</div>
-                            <div data-tokens="fogo-testnet"></div>
-                        </div>
-                        <div class="network-badge algorand"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://testnet.explorer.perawallet.app/address/5DPPDQNYUPCTXRZWRYSF3WPYU6RKAUR25F3YG4EKXQRHV5AUAI62H5GXL4/', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/algorand.png" alt="Algorand" style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Algorand Testnet</span>
-                            </div>
-                            <div class="balance-amount" data-balance="algorand-testnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">ALGO</div>
-                            <div data-tokens="algorand-testnet"></div>
-                        </div>
-                        <div class="network-badge solana"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://solscan.io/account/6xNPewUdKRbEZDReQdpyfNUdgNg8QRc8Mt263T5GZSRv?cluster=devnet', '_blank'">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/solana.png" alt="Solana" style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Solana Devnet</span>
-                            </div>
-                            <div class="balance-amount" data-balance="solana-devnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">SOL</div>
-                            <div data-tokens="solana-devnet"></div>
-                        </div>
-                        <div class="network-badge sui"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://suiscan.xyz/testnet', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/sui.png" alt="Sui" style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Sui Testnet</span>
-                            </div>
-                            <div class="balance-amount" data-balance="sui-testnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">SUI</div>
-                            <div data-tokens="sui-testnet"></div>
-                        </div>
-                        <div class="network-badge skale"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://base-sepolia-testnet-explorer.skalenodes.com/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/skale.png" alt="SKALE" style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">SKALE Base Sepolia</span>
-                            </div>
-                            <div class="balance-amount" data-balance="skale-testnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">CREDIT Balance</div>
-                            <div data-tokens="skale-testnet"></div>
-                        </div>
-                        <div class="network-badge robinhood"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://explorer.testnet.chain.robinhood.com/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/robinhood.png" alt="Robinhood Chain Testnet" style="width: 32px; height: 32px; object-fit: contain;">
-                                <span style="font-weight: 700;">Robinhood Testnet</span>
-                            </div>
-                            <div class="balance-amount" data-balance="robinhood-testnet"
-                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
-                                Loading...
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">ETH Balance</div>
-                            <div data-tokens="robinhood-testnet"></div>
-                        </div>
-                        <!-- Zama FHE Special Card -->
-                        <div class="network-badge zama"
-                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
-                            onclick="window.open('https://zama-facilitator.ultravioletadao.xyz', '_blank')">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                    <circle cx="16" cy="16" r="14" stroke="#ffcc00" stroke-width="2" fill="none"/>
-                                    <path d="M10 16L14 20L22 12" stroke="#ffcc00" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
-                                    <circle cx="16" cy="16" r="6" stroke="#ffcc00" stroke-width="1.5" fill="none" opacity="0.5"/>
-                                </svg>
-                                <span style="font-weight: 700;">Zama FHE</span>
-                                <span style="font-size: 0.6rem; background: linear-gradient(135deg, #ffcc00, #ff9900); color: #000; padding: 0.2rem 0.5rem; border-radius: 4px; font-weight: 700;">ENCRYPTED</span>
-                            </div>
-                            <div style="font-size: 0.85rem; color: rgba(255,255,255,0.8); text-align: center;">
-                                Confidential Payments on Ethereum Sepolia
-                            </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">fhEVM + ERC7984</div>
-                            <div style="display: flex; gap: 0.5rem; margin-top: 0.25rem;">
-                                <a href="https://x402-fhe-docs.vercel.app/" target="_blank"
-                                   onclick="event.stopPropagation();"
-                                   style="font-size: 0.65rem; color: #ffcc00; text-decoration: none; padding: 0.25rem 0.5rem; border: 1px solid #ffcc00; border-radius: 4px; transition: all 0.2s;"
-                                   onmouseover="this.style.background='#ffcc00'; this.style.color='#000';"
-                                   onmouseout="this.style.background='transparent'; this.style.color='#ffcc00';">
-                                    Docs
-                                </a>
-                                <a href="https://github.com/tomi204/x402-zama" target="_blank"
-                                   onclick="event.stopPropagation();"
-                                   style="font-size: 0.65rem; color: #ffcc00; text-decoration: none; padding: 0.25rem 0.5rem; border: 1px solid #ffcc00; border-radius: 4px; transition: all 0.2s;"
-                                   onmouseover="this.style.background='#ffcc00'; this.style.color='#000';"
-                                   onmouseout="this.style.background='transparent'; this.style.color='#ffcc00';">
-                                    GitHub
-                                </a>
-                            </div>
+                        <div style="font-size: 0.7rem; color: var(--text-muted);">fhEVM + ERC7984</div>
+                        <div style="display: flex; gap: 0.5rem; margin-top: 0.25rem;">
+                            <a href="https://x402-fhe-docs.vercel.app/" target="_blank"
+                               onclick="event.stopPropagation();"
+                               style="font-size: 0.65rem; color: #ffcc00; text-decoration: none; padding: 0.25rem 0.5rem; border: 1px solid #ffcc00; border-radius: 4px; transition: all 0.2s;"
+                               onmouseover="this.style.background='#ffcc00'; this.style.color='#000';"
+                               onmouseout="this.style.background='transparent'; this.style.color='#ffcc00';">
+                                Docs
+                            </a>
+                            <a href="https://github.com/tomi204/x402-zama" target="_blank"
+                               onclick="event.stopPropagation();"
+                               style="font-size: 0.65rem; color: #ffcc00; text-decoration: none; padding: 0.25rem 0.5rem; border: 1px solid #ffcc00; border-radius: 4px; transition: all 0.2s;"
+                               onmouseover="this.style.background='#ffcc00'; this.style.color='#000';"
+                               onmouseout="this.style.background='transparent'; this.style.color='#ffcc00';">
+                                GitHub
+                            </a>
                         </div>
                     </div>
                 </div>
+                </div>
+
 
                 <!-- Wallet Addresses -->
                 <div class="wallet-addresses"
@@ -2997,7 +2431,7 @@ result = <span class="code-function">verify_payment</span>(
                     <a href="https://x402.org" target="_blank" data-i18n="footer.protocol">Protocol</a>
                     <a href="https://github.com/UltravioletaDAO/x402-rs" target="_blank">GitHub</a>
                     <a href="/health" target="_blank" data-i18n="footer.status">Health (JSON)</a>
-                    <a href="/supported" target="_blank" data-i18n="footer.networks">Networks</a>
+                    <a href="/networks" data-i18n="nav.networks">Networks</a>
                     <a href="/discovery/resources" target="_blank" data-i18n="nav.bazaar">Bazaar</a>
                 </div>
             </div>
@@ -3007,6 +2441,11 @@ result = <span class="code-function">verify_payment</span>(
     <script>
         const translations = {
             en: {
+                "fhe.experimental": "experimental",
+                "networks.summary": "21 payment mainnets and their testnets, across 7 chain families. Every chain answers to two names — base and eip155:8453 — and both work everywhere.",
+                "networks.link": "See every network, scheme and token",
+                "networks.raw": "The raw endpoint",
+                "nav.networks": "Networks",
                 "nav.mcp": "MCP",
                 "page.title": "Ultravioleta DAO x402 Facilitator — Gasless Payments for the Agentic Economy",
                 "mcp.badge": "MCP · Model Context Protocol",
@@ -3053,8 +2492,7 @@ result = <span class="code-function">verify_payment</span>(
                 "nav.apidocs": "API Docs",
                 "footer.protocol": "Protocol",
                 "footer.status": "Health (JSON)",
-                "footer.networks": "Networks",
-                "endpoints.group.erc8004reg": "ERC-8004 Agent Registration",
+                                "endpoints.group.erc8004reg": "ERC-8004 Agent Registration",
                 "endpoints.group.erc8004identity": "ERC-8004 Agent Identity",
                 "endpoints.registerInfo": "Registration endpoint schema, supported networks, and request format",
                 "endpoints.identityMetadata": "Read a specific metadata key from the agent's on-chain profile (returns hex + UTF-8)",
@@ -3174,6 +2612,11 @@ result = <span class="code-function">verify_payment</span>(
                 "footer.powered": "Powered by"
             },
             es: {
+                "fhe.experimental": "experimental",
+                "networks.summary": "21 mainnets de pago y sus testnets, en 7 familias de cadenas. Cada cadena contesta a dos nombres — base y eip155:8453 — y los dos funcionan en todos lados.",
+                "networks.link": "Ver todas las redes, esquemas y tokens",
+                "networks.raw": "El endpoint crudo",
+                "nav.networks": "Redes",
                 "nav.mcp": "MCP",
                 "page.title": "Facilitador x402 de Ultravioleta DAO — Pagos sin gas para la economía de agentes",
                 "mcp.badge": "MCP · Model Context Protocol",
@@ -3220,8 +2663,7 @@ result = <span class="code-function">verify_payment</span>(
                 "nav.apidocs": "Docs API",
                 "footer.protocol": "Protocolo",
                 "footer.status": "Salud (JSON)",
-                "footer.networks": "Redes",
-                "endpoints.group.erc8004reg": "Registro de agentes ERC-8004",
+                                "endpoints.group.erc8004reg": "Registro de agentes ERC-8004",
                 "endpoints.group.erc8004identity": "Identidad de agentes ERC-8004",
                 "endpoints.registerInfo": "Esquema del endpoint de registro, redes soportadas y formato de la petición",
                 "endpoints.identityMetadata": "Lee una clave de metadatos del perfil on-chain del agente (devuelve hex + UTF-8)",
@@ -3515,327 +2957,10 @@ result = <span class="code-function">verify_payment</span>(
             observer.observe(el);
         });
 
-        // Fetch wallet balances from backend API (Lambda + API Gateway)
-        // This centralizes RPC calls and hides private API keys from the frontend
-        // Falls back to direct public RPC calls if API fails or returns null
-
-        // Configuration - set RANDOM_NETWORKS=true in URL params to randomize
-        const urlParams = new URLSearchParams(window.location.search);
-        const RANDOM_NETWORKS = urlParams.get('random') === 'true' || urlParams.get('random') === '1';
-
-        // Wallet addresses for fallback
-        const WALLET_MAINNET = '0x103040545AC5031A11E8C03dd11324C7333a13C7';
-        const WALLET_TESTNET = '0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8';
-        const SOLANA_MAINNET = 'F742C4VfFLQ9zRQyithoj5229ZgtX2WqKCSFKgH2EThq';
-        const SOLANA_TESTNET = '6xNPewUdKRbEZDReQdpyfNUdgNg8QRc8Mt263T5GZSRv';
-        const SUI_MAINNET = '0xe7bbf2b13f7d72714760aa16e024fa1b35a978793f9893d0568a4fbf356a764a';
-        const SUI_TESTNET = '0xabbd16a2fab2a502c9cfe835195a6fc7d70bfc27cffb40b8b286b52a97006e67';
-        const NEAR_MAINNET = 'uvd-facilitator.near';
-        const NEAR_TESTNET = 'uvd-facilitator.testnet';
-        const STELLAR_MAINNET = 'GCHPGXJT2WFFRFCA5TV4G4E3PMMXLNIDUH27PKDYA4QJ2XGYZWGFZNHB';
-        const STELLAR_TESTNET = 'GBBFZMLUJEZVI32EN4XA2KPP445XIBTMTRBLYWFIL556RDTHS2OWFQ2Z';
-        const ALGORAND_MAINNET = 'KIMS5H6QLCUDL65L5UBTOXDPWLMTS7N3AAC3I6B2NCONEI5QIVK7LH2C2I';
-        const ALGORAND_TESTNET = '5DPPDQNYUPCTXRZWRYSF3WPYU6RKAUR25F3YG4EKXQRHV5AUAI62H5GXL4';
-
-        // Public RPCs for fallback (no API keys)
-        const PUBLIC_RPCS = {
-            'base-mainnet': { rpc: 'https://mainnet.base.org', addr: WALLET_MAINNET, type: 'evm' },
-            'base-testnet': { rpc: 'https://sepolia.base.org', addr: WALLET_TESTNET, type: 'evm' },
-            'avalanche-mainnet': { rpc: 'https://avalanche-c-chain-rpc.publicnode.com', addr: WALLET_MAINNET, type: 'evm' },
-            'avalanche-testnet': { rpc: 'https://avalanche-fuji-c-chain-rpc.publicnode.com', addr: WALLET_TESTNET, type: 'evm' },
-            'polygon-mainnet': { rpc: 'https://polygon.drpc.org', addr: WALLET_MAINNET, type: 'evm' },
-            'polygon-testnet': { rpc: 'https://rpc-amoy.polygon.technology', addr: WALLET_TESTNET, type: 'evm' },
-            'optimism-mainnet': { rpc: 'https://mainnet.optimism.io', addr: WALLET_MAINNET, type: 'evm' },
-            'optimism-testnet': { rpc: 'https://sepolia.optimism.io', addr: WALLET_TESTNET, type: 'evm' },
-            'celo-mainnet': { rpc: 'https://celo-rpc.quickapi.com', addr: WALLET_MAINNET, type: 'evm' },
-            'celo-testnet': { rpc: 'https://rpc.ankr.com/celo_sepolia', addr: WALLET_TESTNET, type: 'evm' },
-            'hyperevm-mainnet': { rpc: 'https://rpc.hyperliquid.xyz/evm', addr: WALLET_MAINNET, type: 'evm' },
-            'hyperevm-testnet': { rpc: 'https://rpc.hyperliquid-testnet.xyz/evm', addr: WALLET_TESTNET, type: 'evm' },
-            'ethereum-mainnet': { rpc: 'https://ethereum-rpc.publicnode.com', addr: WALLET_MAINNET, type: 'evm' },
-            'ethereum-testnet': { rpc: 'https://ethereum-sepolia-rpc.publicnode.com', addr: WALLET_TESTNET, type: 'evm' },
-            'arbitrum-mainnet': { rpc: 'https://arb1.arbitrum.io/rpc', addr: WALLET_MAINNET, type: 'evm' },
-            'arbitrum-testnet': { rpc: 'https://arbitrum-sepolia-rpc.publicnode.com', addr: WALLET_TESTNET, type: 'evm' },
-            'unichain-mainnet': { rpc: 'https://unichain-rpc.publicnode.com', addr: WALLET_MAINNET, type: 'evm' },
-            'unichain-testnet': { rpc: 'https://unichain-sepolia.drpc.org', addr: WALLET_TESTNET, type: 'evm' },
-            'monad-mainnet': { rpc: 'https://rpc.monad.xyz', addr: WALLET_MAINNET, type: 'evm' },
-            'bsc-mainnet': { rpc: 'https://bsc-dataseed.binance.org/', addr: WALLET_MAINNET, type: 'evm' },
-            'solana-mainnet': { rpc: 'https://api.mainnet-beta.solana.com', addr: SOLANA_MAINNET, type: 'solana' },
-            'solana-devnet': { rpc: 'https://api.devnet.solana.com', addr: SOLANA_TESTNET, type: 'solana' },
-            'fogo-mainnet': { rpc: 'https://rpc.fogo.nightly.app/', addr: SOLANA_MAINNET, type: 'solana' },
-            'fogo-testnet': { rpc: 'https://testnet.fogo.io/', addr: SOLANA_TESTNET, type: 'solana' },
-            'sui-mainnet': { rpc: 'https://fullnode.mainnet.sui.io:443', addr: SUI_MAINNET, type: 'sui' },
-            'sui-testnet': { rpc: 'https://fullnode.testnet.sui.io:443', addr: SUI_TESTNET, type: 'sui' },
-            'skale-mainnet': { rpc: 'https://skale-base.skalenodes.com/v1/base', addr: WALLET_MAINNET, type: 'evm' },
-            'skale-testnet': { rpc: 'https://base-sepolia-testnet.skalenodes.com/v1/jubilant-horrible-ancha', addr: WALLET_TESTNET, type: 'evm' },
-            'scroll-mainnet': { rpcs: ['https://scroll.drpc.org', 'https://1rpc.io/scroll', 'https://rpc.scroll.io'], addr: WALLET_MAINNET, type: 'evm' },
-            'robinhood-mainnet': { rpc: 'https://rpc.mainnet.chain.robinhood.com', addr: WALLET_MAINNET, type: 'evm' },
-            'robinhood-testnet': { rpc: 'https://rpc.testnet.chain.robinhood.com', addr: WALLET_TESTNET, type: 'evm' },
-            'near-mainnet': { rpcs: ['https://free.rpc.fastnear.com', 'https://near.lava.build'], addr: NEAR_MAINNET, type: 'near' },
-            'near-testnet': { rpcs: ['https://test.rpc.fastnear.com', 'https://near-testnet.drpc.org'], addr: NEAR_TESTNET, type: 'near' },
-            'stellar-mainnet': { api: 'https://horizon.stellar.org/accounts/' + STELLAR_MAINNET, addr: STELLAR_MAINNET, type: 'stellar' },
-            'stellar-testnet': { api: 'https://horizon-testnet.stellar.org/accounts/' + STELLAR_TESTNET, addr: STELLAR_TESTNET, type: 'stellar' },
-            'algorand-mainnet': { api: 'https://mainnet-api.algonode.cloud/v2/accounts/' + ALGORAND_MAINNET, addr: ALGORAND_MAINNET, type: 'algorand' },
-            'algorand-testnet': { api: 'https://testnet-api.algonode.cloud/v2/accounts/' + ALGORAND_TESTNET, addr: ALGORAND_TESTNET, type: 'algorand' },
-            // XRPL native (XRP Ledger). xrplcluster.com allows browser CORS; s1.ripple.com is the fallback.
-            'xrpl-mainnet': { rpcs: ['https://xrplcluster.com/', 'https://s1.ripple.com:51234/'], addr: 'rfADKkVXBNqK3z72tVSS3LVzAR3psYkonp', type: 'xrpl' },
-        };
-
-        // Fallback: fetch EVM balance with multi-RPC retry support
-        async function fetchEvmBalanceFallback(network, config) {
-            // Support both single rpc and array of rpcs
-            const rpcs = config.rpcs || [config.rpc];
-            for (const rpc of rpcs) {
-                try {
-                    const controller = new AbortController();
-                    const timeoutId = setTimeout(() => controller.abort(), 5000);
-                    const response = await fetch(rpc, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            jsonrpc: '2.0', method: 'eth_getBalance',
-                            params: [config.addr, 'latest'], id: 1
-                        }),
-                        signal: controller.signal
-                    });
-                    clearTimeout(timeoutId);
-                    const data = await response.json();
-                    if (data.result) {
-                        const balanceWei = BigInt(data.result);
-                        const balanceEth = Number(balanceWei) / 1e18;
-                        return balanceEth.toFixed(4);
-                    }
-                } catch (e) { console.warn(`${network} RPC ${rpc} failed:`, e.message); }
-            }
-            console.error(`All RPCs failed for ${network}`);
-            return null;
-        }
-
-        // Fallback: fetch single Solana balance
-        async function fetchSolanaBalanceFallback(network, config) {
-            try {
-                const response = await fetch(config.rpc, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        jsonrpc: '2.0', method: 'getBalance',
-                        params: [config.addr], id: 1
-                    })
-                });
-                const data = await response.json();
-                if (data.result && data.result.value !== undefined) {
-                    const balanceSol = data.result.value / 1e9;
-                    return balanceSol.toFixed(4);
-                }
-            } catch (e) { console.error(`Fallback ${network}:`, e); }
-            return null;
-        }
-
-        // Fallback: fetch single Sui balance
-        async function fetchSuiBalanceFallback(network, config) {
-            try {
-                const response = await fetch(config.rpc, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        jsonrpc: '2.0', id: 1, method: 'suix_getAllBalances',
-                        params: [config.addr]
-                    })
-                });
-                const data = await response.json();
-                if (data.result && Array.isArray(data.result)) {
-                    const suiBalance = data.result.find(b => b.coinType === '0x2::sui::SUI');
-                    if (suiBalance) {
-                        const balanceSui = parseInt(suiBalance.totalBalance) / 1e9;
-                        return balanceSui.toFixed(4);
-                    }
-                }
-            } catch (e) { console.error(`Fallback ${network}:`, e); }
-            return null;
-        }
-
-        // Fallback: fetch single NEAR balance
-        async function fetchNearBalanceFallback(network, config) {
-            for (const rpc of config.rpcs) {
-                try {
-                    const response = await fetch(rpc, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            jsonrpc: '2.0', id: 'balance', method: 'query',
-                            params: { request_type: 'view_account', finality: 'final', account_id: config.addr }
-                        })
-                    });
-                    const data = await response.json();
-                    if (data.result && data.result.amount) {
-                        const balanceNear = parseInt(data.result.amount) / 1e24;
-                        return balanceNear.toFixed(4);
-                    }
-                } catch (e) { continue; }
-            }
-            return null;
-        }
-
-        // Fallback: fetch single Stellar balance
-        async function fetchStellarBalanceFallback(network, config) {
-            try {
-                const response = await fetch(config.api);
-                const data = await response.json();
-                const native = data.balances?.find(b => b.asset_type === 'native');
-                if (native) return parseFloat(native.balance).toFixed(4);
-            } catch (e) { console.error(`Fallback ${network}:`, e); }
-            return null;
-        }
-
-        // Fallback: fetch single Algorand balance
-        async function fetchAlgorandBalanceFallback(network, config) {
-            try {
-                const response = await fetch(config.api);
-                const data = await response.json();
-                if (data.amount !== undefined) {
-                    const balanceAlgo = data.amount / 1e6;
-                    return balanceAlgo.toFixed(4);
-                }
-            } catch (e) { console.error(`Fallback ${network}:`, e); }
-            return null;
-        }
-
-        // Fallback: fetch single XRPL native balance (account_info JSON-RPC; drops, 1 XRP = 1e6 drops)
-        async function fetchXrplBalanceFallback(network, config) {
-            const rpcs = config.rpcs || [config.rpc];
-            for (const rpc of rpcs) {
-                try {
-                    const controller = new AbortController();
-                    const timeoutId = setTimeout(() => controller.abort(), 5000);
-                    const response = await fetch(rpc, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            method: 'account_info',
-                            params: [{ account: config.addr, ledger_index: 'validated' }]
-                        }),
-                        signal: controller.signal
-                    });
-                    clearTimeout(timeoutId);
-                    const data = await response.json();
-                    const result = data.result || {};
-                    const drops = result.account_data && result.account_data.Balance;
-                    if (drops !== undefined && drops !== null) {
-                        return (Number(drops) / 1e6).toFixed(4);
-                    }
-                    // Unfunded account (actNotFound) -> genuinely zero, stop retrying
-                    if (result.error === 'actNotFound') return '0.0000';
-                } catch (e) { console.warn(`${network} RPC ${rpc} failed:`, e.message); }
-            }
-            console.error(`All RPCs failed for ${network}`);
-            return null;
-        }
-
-        // Fallback: fetch balance for a single network using public RPC
-        async function fetchBalanceFallback(network) {
-            const config = PUBLIC_RPCS[network];
-            if (!config) return null;
-
-            switch (config.type) {
-                case 'evm': return fetchEvmBalanceFallback(network, config);
-                case 'solana': return fetchSolanaBalanceFallback(network, config);
-                case 'sui': return fetchSuiBalanceFallback(network, config);
-                case 'near': return fetchNearBalanceFallback(network, config);
-                case 'stellar': return fetchStellarBalanceFallback(network, config);
-                case 'algorand': return fetchAlgorandBalanceFallback(network, config);
-                case 'xrpl': return fetchXrplBalanceFallback(network, config);
-                default: return null;
-            }
-        }
-
-        async function fetchWalletBalances() {
-            const BALANCES_API_URL = window.BALANCES_API_URL || '/api/balances';
-            let failedNetworks = [];
-
-            try {
-                const response = await fetch(BALANCES_API_URL, {
-                    method: 'GET',
-                    headers: { 'Accept': 'application/json' }
-                });
-
-                if (!response.ok) {
-                    throw new Error(`API returned ${response.status}`);
-                }
-
-                const data = await response.json();
-                const balances = data.balances || {};
-
-                // Update all balance elements, track failed ones
-                const handled = new Set();
-                for (const [network, balance] of Object.entries(balances)) {
-                    const balanceEl = document.querySelector(`[data-balance="${network}"]`);
-                    if (balanceEl) {
-                        handled.add(network);
-                        if (balance && balance !== 'null') {
-                            balanceEl.textContent = balance;
-                        } else {
-                            failedNetworks.push(network);
-                            balanceEl.textContent = '...'; // Loading indicator for retry
-                        }
-                    }
-                }
-
-                // Networks rendered in the DOM but absent from the API response
-                // (e.g. a new network like XRPL added before the balances lambda
-                // was redeployed) would otherwise hang on "Loading..." forever.
-                // Queue them for the public-RPC fallback, or mark N/A if unsupported.
-                document.querySelectorAll('[data-balance]').forEach(el => {
-                    const network = el.getAttribute('data-balance');
-                    if (!network || handled.has(network)) return;
-                    if (PUBLIC_RPCS[network]) {
-                        failedNetworks.push(network);
-                        el.textContent = '...';
-                    } else {
-                        el.textContent = 'N/A';
-                    }
-                });
-            } catch (error) {
-                console.error('Error fetching balances from API:', error);
-                // API failed entirely - try fallback for all networks
-                document.querySelectorAll('[data-balance]').forEach(el => {
-                    const network = el.getAttribute('data-balance');
-                    if (network && PUBLIC_RPCS[network]) {
-                        failedNetworks.push(network);
-                        el.textContent = '...';
-                    } else if (el.textContent === '...') {
-                        el.textContent = 'N/A';
-                    }
-                });
-            }
-
-            // Fallback: retry failed networks with direct public RPC calls
-            if (failedNetworks.length > 0) {
-                console.log(`Retrying ${failedNetworks.length} networks with fallback RPCs...`);
-                const fallbackPromises = failedNetworks.map(async (network) => {
-                    const balance = await fetchBalanceFallback(network);
-                    const balanceEl = document.querySelector(`[data-balance="${network}"]`);
-                    if (balanceEl) {
-                        balanceEl.textContent = balance || 'N/A';
-                    }
-                });
-                await Promise.all(fallbackPromises);
-            }
-        }
-
-        // Tab switching function (global scope for onclick attributes)
-        window.switchTab = function (tab) {
-            // Update button states
-            document.querySelectorAll('.tab-button').forEach(btn => {
-                btn.classList.remove('active');
-            });
-            event.target.classList.add('active');
-
-            // Update content visibility
-            document.querySelectorAll('.tab-content').forEach(content => {
-                content.classList.remove('active');
-            });
-            document.getElementById(tab + '-tab').classList.add('active');
-        };
-
+        // The balance loader, the network-card token table and the mainnet/testnet
+        // tab switcher all lived here and all belonged to the network wall. They
+        // moved to static/networks.html with it -- verbatim, so the public-RPC
+        // fallbacks that keep a chain from hanging on "Loading..." came along.
         // SDK Tab switching function
         window.switchSdkTab = function (sdk) {
             // Update button states in the SDK section only
@@ -3852,116 +2977,6 @@ result = <span class="code-function">verify_payment</span>(
             document.getElementById(sdk + '-tab').style.display = 'block';
         };
 
-        // Fetch balances once on page load (no timer - balances cached by backend)
-        fetchWalletBalances();
-
-        // Token support configuration per network (based on EIP-3009 verification)
-        // See docs/STABLECOIN_EXPANSION_PLAN.md for verification details
-        const TOKEN_SUPPORT = {
-            // Mainnets
-            'ethereum-mainnet': ['usdc', 'eurc', 'ausd', 'pyusd'],
-            'base-mainnet': ['usdc', 'eurc'],
-            'avalanche-mainnet': ['usdc', 'eurc', 'ausd'],
-            'polygon-mainnet': ['usdc', 'ausd'],
-            'arbitrum-mainnet': ['usdc', 'ausd', 'usdt'],
-            'optimism-mainnet': ['usdc', 'usdt'],
-            'celo-mainnet': ['usdc', 'usdt'],
-            'hyperevm-mainnet': ['usdc'],
-            'unichain-mainnet': ['usdc'],
-            'monad-mainnet': ['usdc', 'ausd', 'usdt'],
-            'bsc-mainnet': ['ausd'],
-            // Testnets (USDC only for now)
-            'ethereum-testnet': ['usdc'],
-            'base-testnet': ['usdc'],
-            'avalanche-testnet': ['usdc'],
-            'polygon-testnet': ['usdc'],
-            'arbitrum-testnet': ['usdc'],
-            'optimism-testnet': ['usdc'],
-            'celo-testnet': ['usdc'],
-            'unichain-testnet': ['usdc'],
-            'hyperevm-testnet': ['usdc'],
-            // Non-EVM (Solana/Fogo/NEAR/Stellar use different standards)
-            'solana-mainnet': ['usdc', 'ausd'],
-            'solana-devnet': ['usdc'],
-            'fogo-mainnet': ['usdc'],
-            'fogo-testnet': ['usdc'],
-            'near-mainnet': ['usdc'],
-            'near-testnet': ['usdc'],
-            'stellar-mainnet': ['usdc'],
-            'stellar-testnet': ['usdc'],
-            'algorand-mainnet': ['usdc'],
-            'algorand-testnet': ['usdc'],
-            'sui-mainnet': ['usdc', 'ausd'],
-            'sui-testnet': ['usdc'],
-            'skale-mainnet': ['usdc'],
-            'skale-testnet': ['usdc'],
-            'scroll-mainnet': ['usdc'],
-            'robinhood-mainnet': ['usdg'],
-            'robinhood-testnet': ['usdg'],
-        };
-
-        const TOKEN_INFO = {
-            'usdc': { name: 'USDC', decimals: 6, logo: '/usdc.png' },
-            'eurc': { name: 'EURC', decimals: 6, logo: '/eurc.png' },
-            'ausd': { name: 'AUSD', decimals: 6, logo: '/ausd.png' },
-            'pyusd': { name: 'PYUSD', decimals: 6, logo: '/pyusd.png' },
-            'usdt': { name: 'USDT', decimals: 6, logo: '/usdt.png' },
-            'usdg': { name: 'USDG', decimals: 6, logo: '/usdg.png' },
-        };
-
-        // Display supported tokens for each network card
-        function displayTokenSupport() {
-            // Find all elements with data-tokens attribute
-            document.querySelectorAll('[data-tokens]').forEach(container => {
-                const network = container.getAttribute('data-tokens');
-                const tokens = TOKEN_SUPPORT[network] || [];
-
-                if (tokens.length > 0) {
-                    const badgesHtml = tokens.map(token => {
-                        const info = TOKEN_INFO[token];
-                        return `<span class="token-pill ${token}" title="${info.name}"><img src="${info.logo}" alt="${info.name}"></span>`;
-                    }).join('');
-
-                    container.innerHTML = `
-                        <div class="tokens-label">Supported Stablecoins</div>
-                        <div class="token-badges">${badgesHtml}</div>
-                    `;
-                }
-            });
-        }
-
-        // Shuffle network cards if random mode is enabled
-        function shuffleNetworkCards() {
-            if (!RANDOM_NETWORKS) return;
-
-            // Find mainnet and testnet containers
-            const mainnetTab = document.getElementById('mainnet-tab');
-            const testnetTab = document.getElementById('testnet-tab');
-
-            [mainnetTab, testnetTab].forEach(tab => {
-                if (!tab) return;
-                // Find the grid container (first child with display flex and flex-wrap)
-                const grids = tab.querySelectorAll('div[style*="flex-wrap"]');
-                grids.forEach(grid => {
-                    const cards = Array.from(grid.querySelectorAll('.network-badge'));
-                    if (cards.length < 2) return;
-
-                    // Fisher-Yates shuffle
-                    for (let i = cards.length - 1; i > 0; i--) {
-                        const j = Math.floor(Math.random() * (i + 1));
-                        [cards[i], cards[j]] = [cards[j], cards[i]];
-                    }
-
-                    // Re-append in shuffled order
-                    cards.forEach(card => grid.appendChild(card));
-                });
-            });
-            console.log('Network cards shuffled (random mode ON)');
-        }
-
-        // Initialize on page load
-        shuffleNetworkCards();
-        displayTokenSupport();
     </script>
 </body>
 

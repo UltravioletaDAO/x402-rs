@@ -55,6 +55,33 @@
       ]
     },
     {
+      "anchor": "https://facilitator.ultravioletadao.xyz/networks",
+      "service-desc": [
+        {
+          "href": "https://facilitator.ultravioletadao.xyz/supported",
+          "type": "application/json"
+        }
+      ],
+      "service-doc": [
+        {
+          "href": "https://facilitator.ultravioletadao.xyz/networks",
+          "type": "text/html"
+        }
+      ],
+      "service-meta": [
+        {
+          "href": "https://facilitator.ultravioletadao.xyz/.well-known/x402",
+          "type": "application/json"
+        }
+      ],
+      "status": [
+        {
+          "href": "https://facilitator.ultravioletadao.xyz/health",
+          "type": "application/json"
+        }
+      ]
+    },
+    {
       "anchor": "https://facilitator.ultravioletadao.xyz/mcp",
       "service-desc": [
         {

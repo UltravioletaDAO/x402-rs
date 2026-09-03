@@ -57,6 +57,7 @@ use rmcp::service::RequestContext;
 use rmcp::transport::streamable_http_server::session::never::NeverSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler};
+use once_cell::sync::Lazy;
 use serde_json::{json, Value};
 use tower::ServiceExt as _;
 
@@ -171,39 +172,156 @@ fn schema(value: Value) -> Arc<JsonObject> {
     }
 }
 
+/// The worked example, taken out of the document that publishes it.
+///
+/// NOT a fourth copy of the body. `static/skill.md` is the one place the
+/// example is written; `src/openapi.rs` repeats it for `/docs` and a test
+/// binds the two. Parsing it out of the shipped Markdown means an MCP client
+/// and a human reader cannot be shown different bodies, which is the failure
+/// this schema is fixing in the first place.
+static VERIFY_EXAMPLE: Lazy<Value> = Lazy::new(|| {
+    const SKILL_MD: &str = include_str!("../static/skill.md");
+    let after = SKILL_MD
+        .split_once("## 3. `POST /verify`")
+        .expect("skill.md must document POST /verify")
+        .1;
+    let block = after
+        .split_once("```json")
+        .expect("the /verify section must carry a json example")
+        .1
+        .split_once("```")
+        .expect("unterminated json block in skill.md")
+        .0;
+    serde_json::from_str(block.trim()).expect("the published /verify example must be valid JSON")
+});
+
 /// The request envelope `POST /verify` and `POST /settle` parse.
 ///
-/// The three top-level names are the serde fields of
-/// [`crate::types::VerifyRequest`] and [`crate::types::SettleRequest`] -- not a
-/// guess, and not a schema utoipa produced: neither type derives `ToSchema`,
-/// and `src/openapi.rs` documents both bodies as a bare `Object`. The nested
-/// objects stay open (`additionalProperties: true`) because the handler
-/// auto-detects x402 v1 and v2 and carries extensions (`refund`, `upto`,
-/// escrow actions) inside them.
+/// # Why this is spelled out and not a bare `Object`
+///
+/// It used to declare `paymentPayload` and `paymentRequirements` as
+/// `{"type": "object", "additionalProperties": true}` -- which says nothing --
+/// and point at `/skill.md` for the real shape. `/skill.md` then published an
+/// example the facilitator rejected with `400`. So an agent reaching this
+/// facilitator over MCP had NO correct source for the body: the schema was
+/// empty on one side and the document it deferred to was wrong on the other.
+///
+/// The fields below are the serde fields of [`crate::types::VerifyRequest`],
+/// [`crate::types::PaymentPayload`], [`crate::types::ExactEvmPayload`] and
+/// [`crate::types::PaymentRequirements`]. Not a guess and not utoipa output:
+/// none of those types derives `ToSchema`.
+///
+/// `additionalProperties` stays `true` on the nested objects -- the handler
+/// auto-detects x402 v1, v2, x402r and x402r-nested, and carries extensions
+/// (`refund`, `upto`, escrow `action`) inside them. Describing the common case
+/// exactly while leaving the envelope open is the honest shape.
 fn payment_envelope_schema(operation: &str) -> Value {
     json!({
         "type": "object",
         "properties": {
             "x402Version": {
                 "type": "integer",
-                "description": "x402 protocol version. 1 for the v1 wire format, 2 for CAIP-2 networks."
+                "enum": [1, 2],
+                "description": "x402 protocol version of the envelope. 1 unless you are sending the v2 shape."
             },
             "paymentPayload": {
                 "type": "object",
-                "additionalProperties": true,
-                "description": "The payer-signed authorization, exactly as POSTed to /verify and /settle."
+                "description": "The payer-signed authorization. Carries its OWN x402Version, scheme and network at its root -- they are not inherited from the envelope.",
+                "properties": {
+                    "x402Version": { "type": "integer", "enum": [1, 2] },
+                    "scheme": {
+                        "type": "string",
+                        "description": "exact | upto | escrow | commerce | fhe-transfer. GET /supported lists what this facilitator serves."
+                    },
+                    "network": {
+                        "type": "string",
+                        "description": "The chain, in EITHER spelling: the x402 v1 name (\"base\") or the CAIP-2 identifier (\"eip155:8453\"). Both are accepted, and GET /supported publishes every network under both."
+                    },
+                    "payload": {
+                        "type": "object",
+                        "description": "The signed material. EVM chains use signature + authorization (below); Solana sends { \"transaction\": \"<base64>\" } instead.",
+                        "properties": {
+                            "signature": {
+                                "type": "string",
+                                "description": "EVM: the ERC-3009 EIP-712 signature, 0x + 130 hex characters (r || s || v)."
+                            },
+                            "authorization": {
+                                "type": "object",
+                                "description": "EVM: the ERC-3009 struct that was signed. Every field is a STRING, including the amount and the timestamps.",
+                                "properties": {
+                                    "from": { "type": "string", "description": "Payer address, 0x + 40 hex." },
+                                    "to": { "type": "string", "description": "Recipient address, 0x + 40 hex. Matches paymentRequirements.payTo." },
+                                    "value": {
+                                        "type": "string",
+                                        "description": "Amount in token base units, as a decimal STRING. Named `value` here; the requirements call their own limit `maxAmountRequired`."
+                                    },
+                                    "validAfter": {
+                                        "type": "string",
+                                        "description": "Unix SECONDS as a string. \"1700000000\", not 1700000000: a JSON number is rejected."
+                                    },
+                                    "validBefore": {
+                                        "type": "string",
+                                        "description": "Unix SECONDS as a string, same rule as validAfter."
+                                    },
+                                    "nonce": {
+                                        "type": "string",
+                                        "description": "32-byte nonce, 0x + 64 hex. Fresh per authorization."
+                                    }
+                                },
+                                "required": ["from", "to", "value", "validAfter", "validBefore", "nonce"],
+                                "additionalProperties": true
+                            },
+                            "transaction": {
+                                "type": "string",
+                                "description": "Solana: the base64 bincode-serialised transaction. Use INSTEAD of signature + authorization."
+                            }
+                        },
+                        "additionalProperties": true
+                    }
+                },
+                "required": ["x402Version", "scheme", "network", "payload"],
+                "additionalProperties": true
             },
             "paymentRequirements": {
                 "type": "object",
-                "additionalProperties": true,
-                "description": "What the resource server demands: scheme, network, asset, payTo, maxAmountRequired."
+                "description": "What the resource server demands. The four descriptive fields have no defaults: omit one and the whole body fails to parse.",
+                "properties": {
+                    "scheme": { "type": "string", "description": "Must match paymentPayload.scheme." },
+                    "network": {
+                        "type": "string",
+                        "description": "The chain, in EITHER spelling: the x402 v1 name (\"base\") or the CAIP-2 identifier (\"eip155:8453\"), same as paymentPayload.network. An offer taken straight out of GET /discovery/resources is CAIP-2 and can be used unmodified."
+                    },
+                    "maxAmountRequired": {
+                        "type": "string",
+                        "description": "Ceiling in token base units, as a decimal STRING. The authorization's `value` must not exceed it."
+                    },
+                    "resource": { "type": "string", "description": "Absolute URL of the thing being paid for. Required." },
+                    "description": { "type": "string", "description": "Human-readable label. Required; may be empty." },
+                    "mimeType": { "type": "string", "description": "Media type of the resource, e.g. application/json. Required." },
+                    "payTo": { "type": "string", "description": "Recipient address. Required." },
+                    "maxTimeoutSeconds": { "type": "integer", "description": "How long the offer stands. Required." },
+                    "asset": { "type": "string", "description": "Token contract (EVM) or mint (SVM). Required." },
+                    "extra": {
+                        "type": "object",
+                        "description": "Optional. EIP-712 domain (name, version) for tokens not in the static table, escrow addresses, and scheme extensions.",
+                        "additionalProperties": true
+                    }
+                },
+                "required": [
+                    "scheme", "network", "maxAmountRequired", "resource",
+                    "description", "mimeType", "payTo", "maxTimeoutSeconds", "asset"
+                ],
+                "additionalProperties": true
             }
         },
         "required": ["x402Version", "paymentPayload", "paymentRequirements"],
         "additionalProperties": true,
+        "examples": [VERIFY_EXAMPLE.clone()],
         "description": format!(
-            "Identical to the JSON body of POST {operation}. Full shape and worked \
-             examples: https://facilitator.ultravioletadao.xyz/skill.md"
+            "Identical to the JSON body of POST {operation}. The example below is \
+             runnable as printed -- its signature and nonce are well-formed \
+             placeholders, so it answers 200 with isValid:false. More at \
+             https://facilitator.ultravioletadao.xyz/skill.md"
         )
     })
 }
@@ -1194,6 +1312,112 @@ mod tests {
             "serde does not name {}: {missing_second}",
             required[1]
         );
+    }
+
+    /// The schema publishes the SIGNED fields, not an opaque object.
+    ///
+    /// `paymentPayload` and `paymentRequirements` used to be
+    /// `{"type": "object", "additionalProperties": true}` -- a declaration that
+    /// says nothing -- with the description pointing at `/skill.md` for the
+    /// real shape. `/skill.md` then published an example the facilitator
+    /// answered `400` to. An agent arriving over MCP therefore had no correct
+    /// source for the body anywhere: empty on this side, wrong on the other.
+    ///
+    /// The six authorization fields are the ones an agent gets wrong (`amount`
+    /// for `value`, no `authorization` wrapper, numeric timestamps), so they
+    /// are what the walk asserts.
+    #[test]
+    fn the_schema_publishes_the_authorization_fields() {
+        let schema = payment_envelope_schema("/verify");
+        let authorization = &schema["properties"]["paymentPayload"]["properties"]["payload"]
+            ["properties"]["authorization"]["properties"];
+        for field in ["from", "to", "value", "validAfter", "validBefore", "nonce"] {
+            assert!(
+                authorization[field].is_object(),
+                "the schema does not declare authorization.{field}"
+            );
+        }
+        assert!(
+            authorization["amount"].is_null(),
+            "the authorization field is `value`, not `amount` -- declaring both \
+             would teach the mistake the field exists to prevent"
+        );
+
+        // The four `paymentRequirements` fields with no serde default. Omitting
+        // one is a parse failure, so a schema that leaves them optional is
+        // wrong in the direction that costs a round trip.
+        let required: Vec<&str> = schema["properties"]["paymentRequirements"]["required"]
+            .as_array()
+            .expect("paymentRequirements must declare its required fields")
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        for field in ["resource", "description", "mimeType", "maxTimeoutSeconds"] {
+            assert!(
+                required.contains(&field),
+                "`{field}` has no default in PaymentRequirements and must be required"
+            );
+        }
+    }
+
+    /// The example carried in the schema is a body `/verify` accepts.
+    ///
+    /// It is not a copy: it is parsed out of `static/skill.md`, the one place
+    /// the example is written. That is what makes it impossible for an MCP
+    /// client and a human reader to be shown different bodies.
+    #[test]
+    fn the_example_embedded_in_the_schema_deserialises() {
+        for operation in ["/verify", "/settle"] {
+            let schema = payment_envelope_schema(operation);
+            let example = schema["examples"][0].clone();
+            assert!(
+                example.is_object(),
+                "{operation} must carry a worked example"
+            );
+            let parsed: Result<crate::types_v2::VerifyRequestEnvelope, _> =
+                serde_json::from_value(example);
+            assert!(
+                parsed.is_ok(),
+                "the example the {operation} schema publishes does not deserialise: {}",
+                parsed.unwrap_err()
+            );
+        }
+    }
+
+    /// Both spellings of a network are announced, because the schema is where
+    /// an agent looks before it builds a body -- and our own Bazaar hands it
+    /// CAIP-2.
+    #[test]
+    fn the_schema_says_both_network_spellings_are_accepted() {
+        let schema = payment_envelope_schema("/verify");
+        for path in [
+            &schema["properties"]["paymentPayload"]["properties"]["network"]["description"],
+            &schema["properties"]["paymentRequirements"]["properties"]["network"]["description"],
+        ] {
+            let text = path.as_str().expect("network needs a description");
+            assert!(
+                text.contains("base") && text.contains("eip155:8453"),
+                "the description must show both spellings, got: {text}"
+            );
+        }
+    }
+
+    /// `x402_settle` keeps the whole envelope and adds exactly one field.
+    ///
+    /// The idempotency key is lifted out of the body into a header, so it is
+    /// the one argument that is NOT part of the payment. A settle schema that
+    /// lost the envelope detail while gaining it would be a regression nobody
+    /// would notice from the tool list.
+    #[test]
+    fn the_settle_schema_is_the_verify_schema_plus_the_idempotency_key() {
+        let verify = payment_envelope_schema("/verify");
+        let settle = settle_input_schema();
+        assert_eq!(
+            settle["properties"]["paymentPayload"],
+            verify["properties"]["paymentPayload"],
+            "settle must publish the same payload shape as verify"
+        );
+        assert!(settle["properties"][IDEMPOTENCY_KEY_ARG].is_object());
     }
 
     /// A settle over MCP passes through `settle_writer_gate`.

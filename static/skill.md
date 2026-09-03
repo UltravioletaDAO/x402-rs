@@ -468,7 +468,11 @@ curl -sS https://facilitator.ultravioletadao.xyz/mcp \
 
 The `result.content[0].text` is the exact JSON body of `GET /supported`.
 
-`x402_verify` and `x402_settle` take the same envelope the REST routes take:
+`x402_verify` and `x402_settle` take the same envelope the REST routes take.
+Their `inputSchema` in `tools/list` spells that envelope out in full -- down to
+`paymentPayload.payload.authorization.value` and the string-typed timestamps --
+and carries the section 3 example verbatim under `examples`, so a client that
+reads only the tool list has the whole contract:
 
 ```json
 {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{

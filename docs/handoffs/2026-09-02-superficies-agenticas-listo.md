@@ -48,16 +48,31 @@ codigo: codigo HTTP + content-type + cuerpo distinto de la raiz), apuntado a
 
 ### Como reproducirla
 
+> **Esta receta, tal como se escribio el 2026-09-02, no apagaba nada — y eso
+> tenia consecuencias.** `writer_lease::from_env()` leia
+> `NONCE_STORE_TABLE_NAME` con default `facilitator-nonces`, que es la tabla
+> **real**, y `aws_config::load_defaults()` toma las credenciales del entorno
+> sin preguntar. El proceso local se metio en la eleccion del writer lease de
+> **produccion**. La perdio (el `ConditionalCheckFailed` dice que el lease no
+> era suyo), pero **pudo haberla ganado**: el ganador publica su direccion y
+> todas las demas tareas le reenvian sus settles EVM. Un settle reenviado a
+> `127.0.0.1` de una laptop es un pago que nunca llega a la cadena.
+>
+> Desde el 2026-09-03 hay dos capas. `src/writer_lease.rs` se abstiene de la
+> eleccion cuando la direccion que anunciaria es loopback o no se puede
+> determinar — o sea, siempre en local, sin que nadie tenga que acordarse de
+> nada. Y `scripts/run-local.sh` deja la corrida entera incapaz de tocar AWS de
+> produccion. **Usa el script**; el bloque de abajo queda como referencia de que
+> variables pone y por que.
+
 ```bash
-# 1) binario local. La clave es efimera, de un solo uso, sin fondos y nunca se
-#    escribe a disco: solo hace falta para que ProviderCache::from_env() no aborte.
+# 1) binario local, con la receta segura. El script pone credenciales AWS
+#    falsas, apaga el writer lease y desetea TODOS los nombres de tabla de
+#    produccion antes de arrancar. La clave de firma es efimera, de un solo
+#    uso, sin fondos y nunca se escribe a disco: solo hace falta para que
+#    ProviderCache::from_env() no aborte.
 cd /mnt/c/Users/lxhxr/orca/workspaces/x402-rs/x4-agentic
-cp config/blacklist.json.example config/blacklist.json
-rustup run stable cargo build --features solana,near,stellar,algorand,sui,xrpl
-HOST=127.0.0.1 PORT=8402 RUST_LOG=warn SIGNER_TYPE=private-key \
-  EVM_PRIVATE_KEY_TESTNET="0x$(python3 -c 'import secrets;print(secrets.token_hex(32))')" \
-  RPC_URL_BASE_SEPOLIA=https://sepolia.base.org \
-  ./target/debug/x402-rs &
+PORT=8402 ./scripts/run-local.sh &
 
 # 2) el checker de c0der contra el local (no tiene flag --url; se le inyecta el nodo)
 cd /mnt/z/ultravioleta/dao/c0der

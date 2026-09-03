@@ -709,6 +709,20 @@
         }
 
         /* Endpoints */
+        .pill {
+            font-size: 0.6rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            padding: 0.15rem 0.5rem;
+            border-radius: 999px;
+            vertical-align: middle;
+            margin-left: 0.4rem;
+        }
+        .pill.live { color: #14f195; border: 1px solid rgba(20, 241, 149, 0.45); }
+        .pill.beta { color: #a855f7; border: 1px solid rgba(168, 85, 247, 0.45); }
+        .pill.exp  { color: #ff9900; border: 1px solid rgba(255, 153, 0, 0.5); }
+
         .endpoints {
             background: var(--bg-card);
             border: 1px solid var(--border);
@@ -1650,369 +1664,74 @@ result = <span class="code-function">verify_payment</span>(
             </section>
 
             <!-- ERC-8004 Showcase Section -->
-            <section class="section fade-in" style="margin-top: 3rem;">
-                <div style="text-align: center; margin-bottom: 2rem;">
-                    <div style="display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.4rem 1rem; border-radius: 20px; background: rgba(139, 92, 246, 0.1); border: 1px solid rgba(139, 92, 246, 0.3); margin-bottom: 1rem;">
-                        <span style="font-size: 0.75rem; color: #8b5cf6; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;" data-i18n="erc8004.badge">ERC-8004 Standard</span>
+            <!-- The hub. One card per product, each with the state it is
+                 actually in, each linking to the page that owns it. The long
+                 sections these replaced moved to /x402, /erc8004 and /dx402,
+                 where their numbers are derived instead of typed. -->
+            <section class="section fade-in" id="products" style="margin-top: 3rem;">
+                <h3 class="section-title" data-i18n="hub.title">What this facilitator runs</h3>
+                <p class="section-description" data-i18n="hub.description">One service, several products. Each card says what state it is in, because "deployed" and "ready for your money" are different claims and only one of them is worth making.</p>
+
+                <div class="features" style="grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); margin-top: 2rem;">
+                    <div class="feature-card">
+                        <h4><a href="/x402" style="color: inherit; text-decoration: none;">x402 &mdash; verify and settle</a> <span class="pill live" data-i18n="hub.live">live</span></h4>
+                        <p data-i18n="hub.x402">The core: two calls, gasless for the buyer, 0% fee. Escrow and upto included as extensions of the same settle.</p>
                     </div>
-                    <h3 class="section-title" style="background: linear-gradient(135deg, #8b5cf6, #06b6d4); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;" data-i18n="erc8004.title">Trustless Agent Reputation</h3>
-                    <p class="section-description" data-i18n="erc8004.description">
-                        On-chain identity, reputation, and validation for AI agents. Rate service quality, verify agent identities, and build trust across the agentic economy — all verifiable on-chain through ERC-8004 registries.
-                    </p>
+                    <div class="feature-card">
+                        <h4><a href="/mcp" style="color: inherit; text-decoration: none;">MCP server</a> <span class="pill live" data-i18n="hub.live">live</span></h4>
+                        <p data-i18n="hub.mcp">The same four calls as agent tools, over one stateless endpoint. Nothing to install.</p>
+                    </div>
+                    <div class="feature-card">
+                        <h4><a href="/erc8004" style="color: inherit; text-decoration: none;">ERC-8004</a> <span class="pill live" data-i18n="hub.live">live</span></h4>
+                        <p data-i18n="hub.erc8004">Agent identity and reputation, gas paid by us &mdash; including who the chain records as the author of a rating, which is not always who wrote it.</p>
+                    </div>
+                    <div class="feature-card">
+                        <h4><a href="/bazaar" style="color: inherit; text-decoration: none;">Bazaar</a> <span class="pill live" data-i18n="hub.live">live</span></h4>
+                        <p data-i18n="hub.bazaar">A swept catalog of payable endpoints, with the share each upstream feed contributes stated next to the totals.</p>
+                    </div>
+                    <div class="feature-card">
+                        <h4><a href="/dx402" style="color: inherit; text-decoration: none;">DX402 &mdash; durable evidence</a> <span class="pill beta" data-i18n="hub.beta">beta</span></h4>
+                        <p data-i18n="hub.dx402">The response you paid for, sealed to your own public key and anchored. Recovered later with the same wallet.</p>
+                    </div>
+                    <div class="feature-card">
+                        <h4><a href="https://zama-facilitator.ultravioletadao.xyz" target="_blank" style="color: inherit; text-decoration: none;">Zama FHE</a> <span class="pill exp" data-i18n="hub.experimental">experimental</span></h4>
+                        <p data-i18n="hub.fhe">Confidential amounts on fhEVM, on Ethereum Sepolia only. Encrypted end to end and not ready for anybody's mainnet money.</p>
+                    </div>
                 </div>
 
-                <!-- Three Pillars -->
-                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1.5rem; margin-bottom: 2.5rem;">
-                    <div style="background: var(--bg-card); border: 1px solid rgba(139, 92, 246, 0.2); border-radius: 12px; padding: 1.5rem; transition: all 0.3s;" onmouseover="this.style.borderColor='rgba(139, 92, 246, 0.5)'; this.style.transform='translateY(-2px)'" onmouseout="this.style.borderColor='rgba(139, 92, 246, 0.2)'; this.style.transform='translateY(0)'">
-                        <div style="width: 40px; height: 40px; border-radius: 10px; background: rgba(139, 92, 246, 0.15); display: flex; align-items: center; justify-content: center; margin-bottom: 1rem;">
-                            <span style="font-size: 1.2rem;">🪪</span>
-                        </div>
-                        <h4 style="font-size: 1rem; font-weight: 700; margin-bottom: 0.5rem;" data-i18n="erc8004.identity.title">Identity Registry</h4>
-                        <p style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.5;" data-i18n="erc8004.identity.desc">Register agents as on-chain NFTs via <code style="color: #8b5cf6; font-size: 0.8rem;">POST /register</code>. The facilitator pays gas — optionally mint to a user address. Read identity, metadata, and total supply via the API.</p>
-                    </div>
-                    <div style="background: var(--bg-card); border: 1px solid rgba(6, 182, 212, 0.2); border-radius: 12px; padding: 1.5rem; transition: all 0.3s;" onmouseover="this.style.borderColor='rgba(6, 182, 212, 0.5)'; this.style.transform='translateY(-2px)'" onmouseout="this.style.borderColor='rgba(6, 182, 212, 0.2)'; this.style.transform='translateY(0)'">
-                        <div style="width: 40px; height: 40px; border-radius: 10px; background: rgba(6, 182, 212, 0.15); display: flex; align-items: center; justify-content: center; margin-bottom: 1rem;">
-                            <span style="font-size: 1.2rem;">⭐</span>
-                        </div>
-                        <h4 style="font-size: 1rem; font-weight: 700; margin-bottom: 0.5rem;" data-i18n="erc8004.reputation.title">Reputation Registry</h4>
-                        <p style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.5;" data-i18n="erc8004.reputation.desc">Submit, revoke, and query reputation feedback with proof-of-payment. Tags enable categorized ratings like uptime, quality, and response time.</p>
-                    </div>
-                    <div style="background: var(--bg-card); border: 1px solid rgba(16, 185, 129, 0.2); border-radius: 12px; padding: 1.5rem; transition: all 0.3s;" onmouseover="this.style.borderColor='rgba(16, 185, 129, 0.5)'; this.style.transform='translateY(-2px)'" onmouseout="this.style.borderColor='rgba(16, 185, 129, 0.2)'; this.style.transform='translateY(0)'">
-                        <div style="width: 40px; height: 40px; border-radius: 10px; background: rgba(16, 185, 129, 0.15); display: flex; align-items: center; justify-content: center; margin-bottom: 1rem;">
-                            <span style="font-size: 1.2rem;">✅</span>
-                        </div>
-                        <h4 style="font-size: 1rem; font-weight: 700; margin-bottom: 0.5rem;" data-i18n="erc8004.validation.title">Validation Registry</h4>
-                        <p style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.5;" data-i18n="erc8004.validation.desc">Third-party validators can attest to agent capabilities. Validation results are stored on-chain for transparent trust verification.</p>
-                    </div>
-                </div>
-
-                <!-- Supported Networks Grid -->
-                <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 2rem;">
-                    <h4 style="font-size: 0.9rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 1.25rem; text-align: center;" data-i18n="erc8004.networksTitle">Deployed on 21 Networks</h4>
-                    <div style="display: flex; flex-wrap: wrap; gap: 0.75rem; justify-content: center;">
-                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(139, 92, 246, 0.08); border: 1px solid rgba(139, 92, 246, 0.2); border-radius: 8px;">
-                            <img src="/ethereum.png" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
-                            <span style="font-size: 0.85rem; font-weight: 500;">Ethereum</span>
-                        </div>
-                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(0, 82, 255, 0.08); border: 1px solid rgba(0, 82, 255, 0.2); border-radius: 8px;">
-                            <img src="/base.png" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
-                            <span style="font-size: 0.85rem; font-weight: 500;">Base</span>
-                        </div>
-                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(130, 71, 229, 0.08); border: 1px solid rgba(130, 71, 229, 0.2); border-radius: 8px;">
-                            <img src="/polygon.png" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
-                            <span style="font-size: 0.85rem; font-weight: 500;">Polygon</span>
-                        </div>
-                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(40, 160, 240, 0.08); border: 1px solid rgba(40, 160, 240, 0.2); border-radius: 8px;">
-                            <img src="/arbitrum.png" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
-                            <span style="font-size: 0.85rem; font-weight: 500;">Arbitrum</span>
-                        </div>
-                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(255, 4, 32, 0.08); border: 1px solid rgba(255, 4, 32, 0.2); border-radius: 8px;">
-                            <img src="/optimism.png" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
-                            <span style="font-size: 0.85rem; font-weight: 500;">Optimism</span>
-                        </div>
-                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(252, 255, 82, 0.08); border: 1px solid rgba(252, 255, 82, 0.2); border-radius: 8px;">
-                            <img src="/celo.png" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
-                            <span style="font-size: 0.85rem; font-weight: 500;">Celo</span>
-                        </div>
-                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(243, 186, 47, 0.08); border: 1px solid rgba(243, 186, 47, 0.2); border-radius: 8px;">
-                            <img src="/bsc.png" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
-                            <span style="font-size: 0.85rem; font-weight: 500;">BNB Chain</span>
-                        </div>
-                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(130, 71, 229, 0.08); border: 1px solid rgba(130, 71, 229, 0.2); border-radius: 8px;">
-                            <img src="/monad.png" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
-                            <span style="font-size: 0.85rem; font-weight: 500;">Monad</span>
-                        </div>
-                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(232, 65, 66, 0.08); border: 1px solid rgba(232, 65, 66, 0.2); border-radius: 8px;">
-                            <img src="/avalanche.png" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
-                            <span style="font-size: 0.85rem; font-weight: 500;">Avalanche</span>
-                        </div>
-                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(255, 238, 218, 0.08); border: 1px solid rgba(255, 238, 218, 0.25); border-radius: 8px;">
-                            <img src="/scroll.png" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
-                            <span style="font-size: 0.85rem; font-weight: 500;">Scroll</span>
-                        </div>
-                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(0, 0, 0, 0.08); border: 1px solid rgba(0, 0, 0, 0.2); border-radius: 8px;">
-                            <img src="/skale.png" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
-                            <span style="font-size: 0.85rem; font-weight: 500;">SKALE</span>
-                        </div>
-                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(153, 69, 255, 0.08); border: 1px solid rgba(153, 69, 255, 0.2); border-radius: 8px;">
-                            <img src="/solana.png" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
-                            <span style="font-size: 0.85rem; font-weight: 500;">Solana</span>
-                            <a href="https://solana.com/agent-registry" target="_blank" style="font-size: 0.6rem; font-weight: 600; color: #9945FF; background: rgba(153, 69, 255, 0.12); border: 1px solid rgba(153, 69, 255, 0.3); border-radius: 10px; padding: 0.1rem 0.45rem; text-decoration: none; white-space: nowrap; line-height: 1.4; transition: all 0.2s;" onmouseover="this.style.background='rgba(153, 69, 255, 0.25)'" onmouseout="this.style.background='rgba(153, 69, 255, 0.12)'">Agent Registry</a>
-                        </div>
-                    </div>
-                    <p style="text-align: center; color: var(--text-muted); font-size: 0.75rem; margin-top: 1rem;" data-i18n="erc8004.create2Note">+ 9 testnets. Every EVM chain uses the same canonical registries from the erc-8004 reference deployment (CREATE2, identical addresses everywhere). Solana uses the QuantuLabs Agent Registry program.</p>
-                    <!-- Canonical ERC-8004 registry addresses (erc-8004/erc-8004-contracts) -->
-                    <div style="max-width: 720px; margin: 1.25rem auto 0; padding: 1rem 1.25rem; background: rgba(139, 92, 246, 0.05); border: 1px solid rgba(139, 92, 246, 0.2); border-radius: 10px;">
-                        <div style="font-size: 0.7rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.85rem; text-align: center;" data-i18n="erc8004.addressesTitle">Canonical registry addresses</div>
-                        <div style="display: grid; gap: 0.4rem;">
-                            <div style="display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: baseline;"><span style="min-width: 170px; font-size: 0.72rem; font-weight: 600; color: #8b5cf6;" data-i18n="erc8004.addr.identityMainnet">Identity (mainnet)</span><code style="font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; color: var(--text); word-break: break-all;">0x8004A169FB4a3325136EB29fA0ceB6D2e539a432</code></div>
-                            <div style="display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: baseline;"><span style="min-width: 170px; font-size: 0.72rem; font-weight: 600; color: #8b5cf6;" data-i18n="erc8004.addr.reputationMainnet">Reputation (mainnet)</span><code style="font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; color: var(--text); word-break: break-all;">0x8004BAa17C55a88189AE136b182e5fdA19dE9b63</code></div>
-                            <div style="display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: baseline;"><span style="min-width: 170px; font-size: 0.72rem; font-weight: 600; color: #8b5cf6;" data-i18n="erc8004.addr.validationMainnet">Validation (mainnet)</span><code style="font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; color: var(--text); word-break: break-all;">0x8004Cc8439f36fd5F9F049D9fF86523Df6dAAB58</code></div>
-                            <div style="display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: baseline;"><span style="min-width: 170px; font-size: 0.72rem; font-weight: 600; color: #8b5cf6;" data-i18n="erc8004.addr.identityTestnet">Identity (testnet)</span><code style="font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; color: var(--text); word-break: break-all;">0x8004A818BFB912233c491871b3d84c89A494BD9e</code></div>
-                            <div style="display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: baseline;"><span style="min-width: 170px; font-size: 0.72rem; font-weight: 600; color: #8b5cf6;" data-i18n="erc8004.addr.reputationTestnet">Reputation (testnet)</span><code style="font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; color: var(--text); word-break: break-all;">0x8004B663056A597Dffe9eCcC1965A193B7388713</code></div>
-                            <div style="display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: baseline;"><span style="min-width: 170px; font-size: 0.72rem; font-weight: 600; color: #8b5cf6;" data-i18n="erc8004.addr.validationTestnet">Validation (testnet)</span><code style="font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; color: var(--text); word-break: break-all;">0x8004Cb1BF31DAf7788923b405b754f57acEB4272</code></div>
-                        </div>
-                        <p style="font-size: 0.68rem; color: var(--text-muted); margin: 0.85rem 0 0 0; line-height: 1.5;" data-i18n="erc8004.addressesNote">Same addresses on Ethereum, Base, Polygon, Arbitrum, Optimism, Celo, BNB Chain, Monad, Avalanche and Scroll. SKALE Base carries Identity and Reputation only. Source: the erc-8004 reference deployment, not a chain-specific fork.</p>
-                    </div>
-                    <div style="display: flex; flex-wrap: wrap; gap: 0.75rem; justify-content: center; margin-top: 1.25rem;">
-                        <a href="https://eips.ethereum.org/EIPS/eip-8004" target="_blank"
-                           style="font-size: 0.8rem; color: #8b5cf6; text-decoration: none; padding: 0.4rem 1rem; border: 1px solid rgba(139, 92, 246, 0.3); border-radius: 6px; transition: all 0.2s; font-weight: 500;"
-                           onmouseover="this.style.background='rgba(139, 92, 246, 0.1)'"
-                           onmouseout="this.style.background='transparent'">
-                            Read EIP-8004
-                        </a>
-                        <a href="https://github.com/erc-8004/erc-8004-contracts" target="_blank"
-                           style="font-size: 0.8rem; color: #06b6d4; text-decoration: none; padding: 0.4rem 1rem; border: 1px solid rgba(6, 182, 212, 0.3); border-radius: 6px; transition: all 0.2s; font-weight: 500;"
-                           onmouseover="this.style.background='rgba(6, 182, 212, 0.1)'"
-                           onmouseout="this.style.background='transparent'">
-                            View Contracts
-                        </a>
-                        <a href="/register" target="_blank"
-                           style="font-size: 0.8rem; color: #10b981; text-decoration: none; padding: 0.4rem 1rem; border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 6px; transition: all 0.2s; font-weight: 500;"
-                           onmouseover="this.style.background='rgba(16, 185, 129, 0.1)'"
-                           onmouseout="this.style.background='transparent'">
-                            Register API
-                        </a>
-                        <a href="/feedback" target="_blank"
-                           style="font-size: 0.8rem; color: #06b6d4; text-decoration: none; padding: 0.4rem 1rem; border: 1px solid rgba(6, 182, 212, 0.3); border-radius: 6px; transition: all 0.2s; font-weight: 500;"
-                           onmouseover="this.style.background='rgba(6, 182, 212, 0.1)'"
-                           onmouseout="this.style.background='transparent'">
-                            Feedback API
-                        </a>
-                        <a href="https://github.com/erc-8004/erc-8004-contracts#contract-addresses" target="_blank"
-                           style="font-size: 0.8rem; color: #8b5cf6; text-decoration: none; padding: 0.4rem 1rem; border: 1px solid rgba(139, 92, 246, 0.3); border-radius: 6px; transition: all 0.2s; font-weight: 500;"
-                           onmouseover="this.style.background='rgba(139, 92, 246, 0.1)'"
-                           onmouseout="this.style.background='transparent'"
-                           data-i18n="erc8004.deploymentsLink">All Deployments</a>
-                        <a href="https://8004.qnt.sh" target="_blank"
-                           style="font-size: 0.8rem; color: #9945FF; text-decoration: none; padding: 0.4rem 1rem; border: 1px solid rgba(153, 69, 255, 0.3); border-radius: 6px; transition: all 0.2s; font-weight: 500;"
-                           onmouseover="this.style.background='rgba(153, 69, 255, 0.1)'"
-                           onmouseout="this.style.background='transparent'">
-                            Solana Agent Registry
-                        </a>
-                    </div>
+                <div style="display: flex; gap: 0.75rem; justify-content: center; flex-wrap: wrap; margin-top: 2rem;">
+                    <a href="/integrar" style="font-size: 0.85rem; color: var(--accent); text-decoration: none; padding: 0.6rem 1.5rem; border: 1px solid var(--accent); border-radius: 8px;" data-i18n="hub.integrate">Integrate with it</a>
+                    <a href="/networks" style="font-size: 0.85rem; color: var(--text-muted); text-decoration: none; padding: 0.6rem 1.5rem; border: 1px solid var(--border); border-radius: 8px;" data-i18n="hub.networks">Networks and tokens</a>
                 </div>
             </section>
+
+            <!-- The agent surfaces, named for a person. They were reachable and
+                 unmentioned: a reader had no way to learn this host publishes
+                 them without reading llms.txt first, which is circular. -->
+            <section class="section fade-in" style="margin-top: 3rem;">
+                <h3 class="section-title" data-i18n="surfaces.title">Machine-readable surfaces</h3>
+                <p class="section-description" data-i18n="surfaces.description">Everything an agent needs to use this service without a person in the loop is published at a fixed path. They are English on purpose and they are not translated: they are read by software, and a translated contract is two contracts.</p>
+                <div style="display: flex; gap: 0.5rem; justify-content: center; flex-wrap: wrap; margin-top: 1.5rem;">
+                    <a href="/llms.txt" style="font-size: 0.75rem; color: var(--accent); text-decoration: none; padding: 0.35rem 0.8rem; border: 1px solid var(--border); border-radius: 6px;">/llms.txt</a>
+                    <a href="/llms-full.txt" style="font-size: 0.75rem; color: var(--accent); text-decoration: none; padding: 0.35rem 0.8rem; border: 1px solid var(--border); border-radius: 6px;">/llms-full.txt</a>
+                    <a href="/skill.md" style="font-size: 0.75rem; color: var(--accent); text-decoration: none; padding: 0.35rem 0.8rem; border: 1px solid var(--border); border-radius: 6px;">/skill.md</a>
+                    <a href="/auth.md" style="font-size: 0.75rem; color: var(--accent); text-decoration: none; padding: 0.35rem 0.8rem; border: 1px solid var(--border); border-radius: 6px;">/auth.md</a>
+                    <a href="/index.md" style="font-size: 0.75rem; color: var(--accent); text-decoration: none; padding: 0.35rem 0.8rem; border: 1px solid var(--border); border-radius: 6px;">/index.md</a>
+                    <a href="/openapi.json" style="font-size: 0.75rem; color: var(--accent); text-decoration: none; padding: 0.35rem 0.8rem; border: 1px solid var(--border); border-radius: 6px;">/openapi.json</a>
+                    <a href="/.well-known/agent-card.json" style="font-size: 0.75rem; color: var(--accent); text-decoration: none; padding: 0.35rem 0.8rem; border: 1px solid var(--border); border-radius: 6px;">/.well-known/agent-card.json</a>
+                    <a href="/.well-known/mcp/server-card.json" style="font-size: 0.75rem; color: var(--accent); text-decoration: none; padding: 0.35rem 0.8rem; border: 1px solid var(--border); border-radius: 6px;">/.well-known/mcp/server-card.json</a>
+                    <a href="/.well-known/x402" style="font-size: 0.75rem; color: var(--accent); text-decoration: none; padding: 0.35rem 0.8rem; border: 1px solid var(--border); border-radius: 6px;">/.well-known/x402</a>
+                    <a href="/.well-known/api-catalog" style="font-size: 0.75rem; color: var(--accent); text-decoration: none; padding: 0.35rem 0.8rem; border: 1px solid var(--border); border-radius: 6px;">/.well-known/api-catalog</a>
+                    <a href="/workflows.json" style="font-size: 0.75rem; color: var(--accent); text-decoration: none; padding: 0.35rem 0.8rem; border: 1px solid var(--border); border-radius: 6px;">/workflows.json</a>
+                </div>
+            </section>
+
 
             <!-- x402r Escrow Showcase Section -->
-            <section class="section fade-in" style="margin-top: 3rem;">
-                <div style="text-align: center; margin-bottom: 2rem;">
-                    <div style="display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.4rem 1rem; border-radius: 20px; background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3); margin-bottom: 1rem;">
-                        <span style="font-size: 0.75rem; color: #f59e0b; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;" data-i18n="x402r.badge">x402r Protocol</span>
-                    </div>
-                    <h3 class="section-title" style="background: linear-gradient(135deg, #f59e0b, #ef4444); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;" data-i18n="x402r.title">Trustless Escrow & Refunds</h3>
-                    <p class="section-description" data-i18n="x402r.description">
-                        On-chain escrow with authorize/capture/release/refund flows. Funds are held in smart contracts until conditions are met, enabling trustless refunds for HTTP 402 payments across 9 networks.
-                    </p>
-                </div>
-
-                <!-- Three Pillars -->
-                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1.5rem; margin-bottom: 2.5rem;">
-                    <div style="background: var(--bg-card); border: 1px solid rgba(245, 158, 11, 0.2); border-radius: 12px; padding: 1.5rem; transition: all 0.3s;" onmouseover="this.style.borderColor='rgba(245, 158, 11, 0.5)'; this.style.transform='translateY(-2px)'" onmouseout="this.style.borderColor='rgba(245, 158, 11, 0.2)'; this.style.transform='translateY(0)'">
-                        <div style="width: 40px; height: 40px; border-radius: 10px; background: rgba(245, 158, 11, 0.15); display: flex; align-items: center; justify-content: center; margin-bottom: 1rem;">
-                            <span style="font-size: 1.2rem;">🔒</span>
-                        </div>
-                        <h4 style="font-size: 1rem; font-weight: 700; margin-bottom: 0.5rem;" data-i18n="x402r.escrow.title">Escrow Settlement</h4>
-                        <p style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.5;" data-i18n="x402r.escrow.desc">Payments are authorized and held in on-chain escrow contracts. Funds remain locked until the seller captures or the buyer requests a refund.</p>
-                    </div>
-                    <div style="background: var(--bg-card); border: 1px solid rgba(239, 68, 68, 0.2); border-radius: 12px; padding: 1.5rem; transition: all 0.3s;" onmouseover="this.style.borderColor='rgba(239, 68, 68, 0.5)'; this.style.transform='translateY(-2px)'" onmouseout="this.style.borderColor='rgba(239, 68, 68, 0.2)'; this.style.transform='translateY(0)'">
-                        <div style="width: 40px; height: 40px; border-radius: 10px; background: rgba(239, 68, 68, 0.15); display: flex; align-items: center; justify-content: center; margin-bottom: 1rem;">
-                            <span style="font-size: 1.2rem;">↩️</span>
-                        </div>
-                        <h4 style="font-size: 1rem; font-weight: 700; margin-bottom: 0.5rem;" data-i18n="x402r.refund.title">Trustless Refunds</h4>
-                        <p style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.5;" data-i18n="x402r.refund.desc">Buyers can request refunds within a configurable time window. No intermediary needed — the smart contract enforces the refund policy on-chain.</p>
-                    </div>
-                    <div style="background: var(--bg-card); border: 1px solid rgba(16, 185, 129, 0.2); border-radius: 12px; padding: 1.5rem; transition: all 0.3s;" onmouseover="this.style.borderColor='rgba(16, 185, 129, 0.5)'; this.style.transform='translateY(-2px)'" onmouseout="this.style.borderColor='rgba(16, 185, 129, 0.2)'; this.style.transform='translateY(0)'">
-                        <div style="width: 40px; height: 40px; border-radius: 10px; background: rgba(16, 185, 129, 0.15); display: flex; align-items: center; justify-content: center; margin-bottom: 1rem;">
-                            <span style="font-size: 1.2rem;">⚡</span>
-                        </div>
-                        <h4 style="font-size: 1rem; font-weight: 700; margin-bottom: 0.5rem;" data-i18n="x402r.capture.title">Authorize & Capture</h4>
-                        <p style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.5;" data-i18n="x402r.capture.desc">Two-phase settlement: authorize first, capture later. Sellers can charge partial or full amounts, and release remaining funds back to the buyer.</p>
-                    </div>
-                </div>
-
-                <!-- Supported Networks Grid -->
-                <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 2rem;">
-                    <h4 style="font-size: 0.9rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 1.25rem; text-align: center;" data-i18n="x402r.networksTitle">Escrow Deployed on 9 Networks</h4>
-                    <div style="display: flex; flex-wrap: wrap; gap: 0.75rem; justify-content: center;">
-                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(139, 92, 246, 0.08); border: 1px solid rgba(139, 92, 246, 0.2); border-radius: 8px;">
-                            <img src="/ethereum.png" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
-                            <span style="font-size: 0.85rem; font-weight: 500;">Ethereum</span>
-                        </div>
-                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(0, 82, 255, 0.08); border: 1px solid rgba(0, 82, 255, 0.2); border-radius: 8px;">
-                            <img src="/base.png" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
-                            <span style="font-size: 0.85rem; font-weight: 500;">Base</span>
-                        </div>
-                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(130, 71, 229, 0.08); border: 1px solid rgba(130, 71, 229, 0.2); border-radius: 8px;">
-                            <img src="/polygon.png" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
-                            <span style="font-size: 0.85rem; font-weight: 500;">Polygon</span>
-                        </div>
-                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(40, 160, 240, 0.08); border: 1px solid rgba(40, 160, 240, 0.2); border-radius: 8px;">
-                            <img src="/arbitrum.png" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
-                            <span style="font-size: 0.85rem; font-weight: 500;">Arbitrum</span>
-                        </div>
-                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(252, 255, 82, 0.08); border: 1px solid rgba(252, 255, 82, 0.2); border-radius: 8px;">
-                            <img src="/celo.png" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
-                            <span style="font-size: 0.85rem; font-weight: 500;">Celo</span>
-                        </div>
-                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(130, 71, 229, 0.08); border: 1px solid rgba(130, 71, 229, 0.2); border-radius: 8px;">
-                            <img src="/monad.png" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
-                            <span style="font-size: 0.85rem; font-weight: 500;">Monad</span>
-                        </div>
-                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(232, 65, 66, 0.08); border: 1px solid rgba(232, 65, 66, 0.2); border-radius: 8px;">
-                            <img src="/avalanche.png" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
-                            <span style="font-size: 0.85rem; font-weight: 500;">Avalanche</span>
-                        </div>
-                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(255, 4, 32, 0.08); border: 1px solid rgba(255, 4, 32, 0.2); border-radius: 8px;">
-                            <img src="/optimism.png" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
-                            <span style="font-size: 0.85rem; font-weight: 500;">Optimism</span>
-                        </div>
-                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(0, 0, 0, 0.08); border: 1px solid rgba(0, 0, 0, 0.2); border-radius: 8px;">
-                            <img src="/skale.png" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
-                            <span style="font-size: 0.85rem; font-weight: 500;">SKALE</span>
-                        </div>
-                    </div>
-                    <div style="display: flex; align-items: center; justify-content: center; gap: 1rem; margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid var(--border);">
-                        <span style="font-size: 0.75rem; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;" data-i18n="x402r.stablecoinsLabel">Supported Stablecoins</span>
-                        <div style="display: flex; gap: 0.5rem; align-items: center;">
-                            <img src="/usdc.png" alt="USDC" title="USDC" class="stablecoin-icon">
-                            <img src="/usdt.png" alt="USDT" title="USDT" class="stablecoin-icon">
-                            <img src="/eurc.png" alt="EURC" title="EURC" class="stablecoin-icon">
-                            <img src="/ausd.png" alt="AUSD" title="AUSD" class="stablecoin-icon">
-                            <img src="/pyusd.png" alt="PYUSD" title="PYUSD" class="stablecoin-icon">
-                            <img src="/usdg.png" alt="USDG" title="USDG" class="stablecoin-icon">
-                        </div>
-                    </div>
-                    <p style="text-align: center; color: var(--text-muted); font-size: 0.75rem; margin-top: 1rem;" data-i18n="x402r.create2Note">+ 2 testnets (Base Sepolia, Ethereum Sepolia). Each network has its own deployed contract set.</p>
-                    <div style="display: flex; gap: 0.75rem; justify-content: center; margin-top: 1.25rem;">
-                        <a href="https://github.com/BackTrackCo/x402r-contracts" target="_blank"
-                           style="font-size: 0.8rem; color: #f59e0b; text-decoration: none; padding: 0.4rem 1rem; border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 6px; transition: all 0.2s; font-weight: 500;"
-                           onmouseover="this.style.background='rgba(245, 158, 11, 0.1)'"
-                           onmouseout="this.style.background='transparent'">
-                            View Contracts
-                        </a>
-                        <a href="https://github.com/BackTrackCo/x402r-sdk" target="_blank"
-                           style="font-size: 0.8rem; color: #ef4444; text-decoration: none; padding: 0.4rem 1rem; border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 6px; transition: all 0.2s; font-weight: 500;"
-                           onmouseover="this.style.background='rgba(239, 68, 68, 0.1)'"
-                           onmouseout="this.style.background='transparent'">
-                            x402r SDK
-                        </a>
-                        <a href="https://github.com/coinbase/x402/issues/864" target="_blank"
-                           style="font-size: 0.8rem; color: #10b981; text-decoration: none; padding: 0.4rem 1rem; border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 6px; transition: all 0.2s; font-weight: 500;"
-                           onmouseover="this.style.background='rgba(16, 185, 129, 0.1)'"
-                           onmouseout="this.style.background='transparent'">
-                            x402r Proposal
-                        </a>
-                    </div>
-                </div>
-            </section>
 
             <!-- Upto Scheme Showcase Section -->
-            <section class="section fade-in" style="margin-top: 3rem;">
-                <div style="text-align: center; margin-bottom: 2rem;">
-                    <div style="display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.4rem 1rem; border-radius: 20px; background: rgba(59, 130, 246, 0.1); border: 1px solid rgba(59, 130, 246, 0.3); margin-bottom: 1rem;">
-                        <span style="font-size: 0.75rem; color: #3b82f6; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;" data-i18n="upto.badge">Upto Scheme (Permit2)</span>
-                    </div>
-                    <h3 class="section-title" style="background: linear-gradient(135deg, #3b82f6, #06b6d4); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;" data-i18n="upto.title">Usage-Based Payments</h3>
-                    <p class="section-description" data-i18n="upto.description">
-                        Authorize a maximum payment upfront, pay only for what you use. Built on Uniswap Permit2 for gasless variable-amount settlements across all EVM networks.
-                    </p>
-                </div>
-
-                <!-- Three Pillars -->
-                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1.5rem; margin-bottom: 2.5rem;">
-                    <div style="background: var(--bg-card); border: 1px solid rgba(59, 130, 246, 0.2); border-radius: 12px; padding: 1.5rem; transition: all 0.3s;" onmouseover="this.style.borderColor='rgba(59, 130, 246, 0.5)'; this.style.transform='translateY(-2px)'" onmouseout="this.style.borderColor='rgba(59, 130, 246, 0.2)'; this.style.transform='translateY(0)'">
-                        <div style="width: 40px; height: 40px; border-radius: 10px; background: rgba(59, 130, 246, 0.15); display: flex; align-items: center; justify-content: center; margin-bottom: 1rem;">
-                            <span style="font-size: 1.2rem; color: #3b82f6; font-weight: bold;">$</span>
-                        </div>
-                        <h4 style="font-size: 1rem; font-weight: 700; margin-bottom: 0.5rem;" data-i18n="upto.payAsYouGo.title">Pay As You Go</h4>
-                        <p style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.5;" data-i18n="upto.payAsYouGo.desc">Client signs a max amount via Permit2. Server charges only the actual usage. Zero-cost if nothing is consumed.</p>
-                    </div>
-
-                    <div style="background: var(--bg-card); border: 1px solid rgba(59, 130, 246, 0.2); border-radius: 12px; padding: 1.5rem; transition: all 0.3s;" onmouseover="this.style.borderColor='rgba(59, 130, 246, 0.5)'; this.style.transform='translateY(-2px)'" onmouseout="this.style.borderColor='rgba(59, 130, 246, 0.2)'; this.style.transform='translateY(0)'">
-                        <div style="width: 40px; height: 40px; border-radius: 10px; background: rgba(59, 130, 246, 0.15); display: flex; align-items: center; justify-content: center; margin-bottom: 1rem;">
-                            <span style="font-size: 1.2rem; color: #3b82f6; font-weight: bold;">P2</span>
-                        </div>
-                        <h4 style="font-size: 1rem; font-weight: 700; margin-bottom: 0.5rem;" data-i18n="upto.permit2.title">Permit2 Powered</h4>
-                        <p style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.5;" data-i18n="upto.permit2.desc">Uses Uniswap's Permit2 contract for gasless ERC-20 approvals. One signature authorizes the max; settlement can be any amount up to that limit.</p>
-                    </div>
-
-                    <div style="background: var(--bg-card); border: 1px solid rgba(59, 130, 246, 0.2); border-radius: 12px; padding: 1.5rem; transition: all 0.3s;" onmouseover="this.style.borderColor='rgba(59, 130, 246, 0.5)'; this.style.transform='translateY(-2px)'" onmouseout="this.style.borderColor='rgba(59, 130, 246, 0.2)'; this.style.transform='translateY(0)'">
-                        <div style="width: 40px; height: 40px; border-radius: 10px; background: rgba(59, 130, 246, 0.15); display: flex; align-items: center; justify-content: center; margin-bottom: 1rem;">
-                            <span style="font-size: 1.2rem; color: #3b82f6; font-weight: bold;">AI</span>
-                        </div>
-                        <h4 style="font-size: 1rem; font-weight: 700; margin-bottom: 0.5rem;" data-i18n="upto.useCases.title">Built for AI Agents</h4>
-                        <p style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.5;" data-i18n="upto.useCases.desc">Ideal for LLM token billing, bandwidth metering, and any usage-based API. Agents pre-authorize, consume resources, and pay the exact cost.</p>
-                    </div>
-                </div>
-
-                <div style="background: rgba(59, 130, 246, 0.05); border: 1px solid rgba(59, 130, 246, 0.15); border-radius: 12px; padding: 1.5rem; text-align: center;">
-                    <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.5rem;" data-i18n="upto.contractsLabel">Smart Contract (CREATE2, same on all EVM chains)</div>
-                    <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;">
-                        <span style="color: #3b82f6;">x402UptoPermit2Proxy:</span>
-                        <a href="https://basescan.org/address/0x4020A4f3b7b90ccA423B9fabCc0CE57C6C240002" target="_blank" style="color: var(--text); text-decoration: none;">0x4020...0002</a>
-                    </div>
-                    <div style="display: flex; gap: 0.5rem; justify-content: center; margin-top: 1rem;">
-                        <a href="https://x402.org" target="_blank"
-                           style="font-size: 0.7rem; color: #3b82f6; text-decoration: none; padding: 0.25rem 0.6rem; border: 1px solid #3b82f6; border-radius: 4px; transition: all 0.2s;"
-                           onmouseover="this.style.background='#3b82f6'; this.style.color='#fff';"
-                           onmouseout="this.style.background='transparent'; this.style.color='#3b82f6';">
-                            x402 Protocol
-                        </a>
-                        <a href="https://github.com/UltravioletaDAO/x402-rs" target="_blank"
-                           style="font-size: 0.7rem; color: #3b82f6; text-decoration: none; padding: 0.25rem 0.6rem; border: 1px solid #3b82f6; border-radius: 4px; transition: all 0.2s;"
-                           onmouseover="this.style.background='#3b82f6'; this.style.color='#fff';"
-                           onmouseout="this.style.background='transparent'; this.style.color='#3b82f6';">
-                            Source Code
-                        </a>
-                    </div>
-                </div>
-            </section>
 
             <!-- DX402 durable-evidence -->
-            <section class="section fade-in" style="margin-top: 3rem;">
-                <div style="text-align: center; margin-bottom: 2rem;">
-                    <div style="display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.4rem 1rem; border-radius: 20px; background: rgba(168, 85, 247, 0.1); border: 1px solid rgba(168, 85, 247, 0.3); margin-bottom: 1rem;">
-                        <span style="font-size: 0.75rem; color: #a855f7; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;" data-i18n="dx402.badge">DX402 &middot; durable-evidence</span>
-                    </div>
-                    <h3 class="section-title" style="background: linear-gradient(135deg, #a855f7, #ec4899); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;" data-i18n="dx402.title">Responses That Outlive the Session</h3>
-                    <p class="section-description" data-i18n="dx402.description">
-                        x402 settles payment on-chain forever, but delivers the resource exactly once and keeps nothing. DX402 seals a copy of the response to the payer's own public key &mdash; recovered from the payment signature itself &mdash; and anchors it. Durable, private, and coupled to the payment with no registration and no extra round trip.
-                    </p>
-                </div>
-
-                <div class="features" style="grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); margin-bottom: 2rem;">
-                    <div class="feature-card">
-                        <h4 data-i18n="dx402.durable.title">Durable</h4>
-                        <p data-i18n="dx402.durable.text">The delivered body survives the session. Come back months later with a transaction hash and get the bytes you paid for.</p>
-                    </div>
-                    <div class="feature-card">
-                        <h4 data-i18n="dx402.private.title">Private</h4>
-                        <p data-i18n="dx402.private.text">Encrypted to the payer. Not the facilitator, not the storage backend, not us &mdash; retrieval is arithmetic, not an access-control decision anyone can misconfigure.</p>
-                    </div>
-                    <div class="feature-card">
-                        <h4 data-i18n="dx402.coupled.title">Coupled</h4>
-                        <p data-i18n="dx402.coupled.text">A payment authorization is a signature, and a signature yields a public key. Paying <em>is</em> publishing your encryption key.</p>
-                    </div>
-                </div>
-
-                <div style="text-align: center; margin-bottom: 1.5rem;">
-                    <span style="font-size: 2rem; font-weight: 700; color: #a855f7;" data-live-count="dx402-anchors">&mdash;</span>
-                    <span style="display: block; font-size: 0.8rem; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em;" data-i18n="dx402.counter">Evidence anchored</span>
-                </div>
-
-                <div style="display: flex; gap: 0.75rem; justify-content: center; flex-wrap: wrap;">
-                    <a href="/docs" style="font-size: 0.7rem; color: #a855f7; text-decoration: none; padding: 0.25rem 0.6rem; border: 1px solid #a855f7; border-radius: 4px; transition: all 0.2s;"
-                       onmouseover="this.style.background='#a855f7'; this.style.color='#fff';"
-                       onmouseout="this.style.background='transparent'; this.style.color='#a855f7';"
-                       data-i18n="dx402.link.docs">API Docs</a>
-                    <a href="https://github.com/UltravioletaDAO/x402-rs/blob/main/docs/plans/dx402/02-SPEC-v0.1.md" target="_blank"
-                       style="font-size: 0.7rem; color: #a855f7; text-decoration: none; padding: 0.25rem 0.6rem; border: 1px solid #a855f7; border-radius: 4px; transition: all 0.2s;"
-                       onmouseover="this.style.background='#a855f7'; this.style.color='#fff';"
-                       onmouseout="this.style.background='transparent'; this.style.color='#a855f7';"
-                       data-i18n="dx402.link.spec">Specification</a>
-                </div>
-            </section>
 
             <section class="section fade-in" id="mcp" style="margin-top: 3rem;">
                 <div style="text-align: center; margin-bottom: 2rem;">
@@ -2441,6 +2160,21 @@ result = <span class="code-function">verify_payment</span>(
     <script>
         const translations = {
             en: {
+                "hub.title": "What this facilitator runs",
+                "hub.description": "One service, several products. Each card says what state it is in, because \"deployed\" and \"ready for your money\" are different claims and only one of them is worth making.",
+                "hub.live": "live",
+                "hub.beta": "beta",
+                "hub.experimental": "experimental",
+                "hub.x402": "The core: two calls, gasless for the buyer, 0% fee. Escrow and upto included as extensions of the same settle.",
+                "hub.mcp": "The same four calls as agent tools, over one stateless endpoint. Nothing to install.",
+                "hub.erc8004": "Agent identity and reputation, gas paid by us — including who the chain records as the author of a rating, which is not always who wrote it.",
+                "hub.bazaar": "A swept catalog of payable endpoints, with the share each upstream feed contributes stated next to the totals.",
+                "hub.dx402": "The response you paid for, sealed to your own public key and anchored. Recovered later with the same wallet.",
+                "hub.fhe": "Confidential amounts on fhEVM, on Ethereum Sepolia only. Encrypted end to end and not ready for anybody's mainnet money.",
+                "hub.integrate": "Integrate with it",
+                "hub.networks": "Networks and tokens",
+                "surfaces.title": "Machine-readable surfaces",
+                "surfaces.description": "Everything an agent needs to use this service without a person in the loop is published at a fixed path. They are English on purpose and they are not translated: they are read by software, and a translated contract is two contracts.",
                 "fhe.experimental": "experimental",
                 "networks.summary": "21 payment mainnets and their testnets, across 7 chain families. Every chain answers to two names — base and eip155:8453 — and both work everywhere.",
                 "networks.link": "See every network, scheme and token",
@@ -2473,18 +2207,6 @@ result = <span class="code-function">verify_payment</span>(
                 "endpoints.mcpGet": "The MCP guide for humans: transports, the four tools, and the traps",
                 "hero.zeroFee": "0% facilitator fee. No account, no API key, no rate card — the only money that moves is the buyer's payment going to the seller.",
                 // --- DX402 durable-evidence
-                "dx402.badge": "DX402 \u00b7 durable-evidence",
-                "dx402.title": "Responses That Outlive the Session",
-                "dx402.description": "x402 settles payment on-chain forever, but delivers the resource exactly once and keeps nothing. DX402 seals a copy of the response to the payer's own public key \u2014 recovered from the payment signature itself \u2014 and anchors it. Durable, private, and coupled to the payment with no registration and no extra round trip.",
-                "dx402.durable.title": "Durable",
-                "dx402.durable.text": "The delivered body survives the session. Come back months later with a transaction hash and get the bytes you paid for.",
-                "dx402.private.title": "Private",
-                "dx402.private.text": "Encrypted to the payer. Not the facilitator, not the storage backend, not us \u2014 retrieval is arithmetic, not an access-control decision anyone can misconfigure.",
-                "dx402.coupled.title": "Coupled",
-                "dx402.coupled.text": "A payment authorization is a signature, and a signature yields a public key. Paying is publishing your encryption key.",
-                "dx402.counter": "Evidence anchored",
-                "dx402.link.docs": "API Docs",
-                "dx402.link.spec": "Specification",
                 // --- nav / footer / ERC-8004: anadidas tras auditar el i18n
                 "nav.bazaar": "Bazaar",
                 "nav.stats": "Stats",
@@ -2525,48 +2247,6 @@ result = <span class="code-function">verify_payment</span>(
                 "features.reputation.title": "On-Chain Reputation",
                 "features.reputation.description": "ERC-8004 Trustless Agents with identity, reputation, and validation registries across 21 networks (EVM + Solana).",
                 "sdk.networks": "21 mainnets supported",
-                "erc8004.badge": "ERC-8004 Standard",
-                "erc8004.title": "Trustless Agent Reputation",
-                "erc8004.description": "On-chain identity, reputation, and validation for AI agents. Rate service quality, verify agent identities, and build trust across the agentic economy \u2014 all verifiable on-chain through ERC-8004 registries.",
-                "erc8004.identity.title": "Identity Registry",
-                "erc8004.identity.desc": "Register agents as on-chain NFTs with verifiable metadata. Each agent gets a unique tokenId tied to their wallet address.",
-                "erc8004.reputation.title": "Reputation Registry",
-                "erc8004.reputation.desc": "Submit, revoke, and query reputation feedback with proof-of-payment. Tags enable categorized ratings like uptime, quality, and response time.",
-                "erc8004.validation.title": "Validation Registry",
-                "erc8004.validation.desc": "Third-party validators can attest to agent capabilities. Validation results are stored on-chain for transparent trust verification.",
-                "erc8004.networksTitle": "Deployed on 21 Networks",
-                "erc8004.create2Note": "+ 9 testnets. Every EVM chain uses the same canonical registries from the erc-8004 reference deployment (CREATE2, identical addresses everywhere). Solana uses the QuantuLabs Agent Registry program.",
-                "erc8004.deploymentsLink": "All Deployments",
-                "erc8004.addressesTitle": "Canonical registry addresses",
-                "erc8004.addr.identityMainnet": "Identity (mainnet)",
-                "erc8004.addr.reputationMainnet": "Reputation (mainnet)",
-                "erc8004.addr.validationMainnet": "Validation (mainnet)",
-                "erc8004.addr.identityTestnet": "Identity (testnet)",
-                "erc8004.addr.reputationTestnet": "Reputation (testnet)",
-                "erc8004.addr.validationTestnet": "Validation (testnet)",
-                "erc8004.addressesNote": "Same addresses on Ethereum, Base, Polygon, Arbitrum, Optimism, Celo, BNB Chain, Monad, Avalanche and Scroll. SKALE Base carries Identity and Reputation only. Source: the erc-8004 reference deployment, not a chain-specific fork.",
-                "upto.badge": "Upto Scheme (Permit2)",
-                "upto.title": "Usage-Based Payments",
-                "upto.description": "Authorize a maximum payment upfront, pay only for what you use. Built on Uniswap Permit2 for gasless variable-amount settlements across all EVM networks.",
-                "upto.payAsYouGo.title": "Pay As You Go",
-                "upto.payAsYouGo.desc": "Client signs a max amount via Permit2. Server charges only the actual usage. Zero-cost if nothing is consumed.",
-                "upto.permit2.title": "Permit2 Powered",
-                "upto.permit2.desc": "Uses Uniswap's Permit2 contract for gasless ERC-20 approvals. One signature authorizes the max; settlement can be any amount up to that limit.",
-                "upto.useCases.title": "Built for AI Agents",
-                "upto.useCases.desc": "Ideal for LLM token billing, bandwidth metering, and any usage-based API. Agents pre-authorize, consume resources, and pay the exact cost.",
-                "upto.contractsLabel": "Smart Contract (CREATE2, same on all EVM chains)",
-                "x402r.badge": "x402r Protocol",
-                "x402r.title": "Trustless Escrow & Refunds",
-                "x402r.description": "On-chain escrow with authorize/capture/release/refund flows. Funds are held in smart contracts until conditions are met, enabling trustless refunds for HTTP 402 payments across 9 networks.",
-                "x402r.escrow.title": "Escrow Settlement",
-                "x402r.escrow.desc": "Payments are authorized and held in on-chain escrow contracts. Funds remain locked until the seller captures or the buyer requests a refund.",
-                "x402r.refund.title": "Trustless Refunds",
-                "x402r.refund.desc": "Buyers can request refunds within a configurable time window. No intermediary needed — the smart contract enforces the refund policy on-chain.",
-                "x402r.capture.title": "Authorize & Capture",
-                "x402r.capture.desc": "Two-phase settlement: authorize first, capture later. Sellers can charge partial or full amounts, and release remaining funds back to the buyer.",
-                "x402r.networksTitle": "Escrow Deployed on 9 Networks",
-                "x402r.stablecoinsLabel": "Supported Stablecoins",
-                "x402r.create2Note": "+ 2 testnets (Base Sepolia, Ethereum Sepolia). Each network has its own deployed contract set.",
                 "code.title": "Integrate in Minutes",
                 "what.title": "What is x402?",
                 "what.description": "x402 is a protocol for stateless, per-request payments over HTTP. Clients attach a signed payment payload to each request. The facilitator verifies it, executes the on-chain transfer, and grants access to protected resources—all without accounts, wallets, or user registration.",
@@ -2608,10 +2288,24 @@ result = <span class="code-function">verify_payment</span>(
                 "apidocs.description": "Explore all endpoints interactively with Swagger UI. Try requests directly from your browser, view schemas, and download the OpenAPI spec.",
                 "apidocs.swagger": "Swagger UI",
                 "apidocs.json": "OpenAPI JSON",
-                "balances.xrpBalance": "XRP Balance",
                 "footer.powered": "Powered by"
             },
             es: {
+                "hub.title": "Qué corre este facilitador",
+                "hub.description": "Un solo servicio, varios productos. Cada tarjeta dice en qué estado está, porque \"desplegado\" y \"listo para tu plata\" son afirmaciones distintas y solo una vale la pena hacerla.",
+                "hub.live": "live",
+                "hub.beta": "beta",
+                "hub.experimental": "experimental",
+                "hub.x402": "El núcleo: dos llamadas, sin gas para el comprador, 0% de comisión. Escrow y upto incluidos, como extensiones del mismo settle.",
+                "hub.mcp": "Las mismas cuatro llamadas como herramientas de agente, sobre un endpoint sin estado. Nada para instalar.",
+                "hub.erc8004": "Identidad y reputación de agentes, con el gas pagado por nosotros — incluido quién queda anotado en la cadena como autor de una calificación, que no siempre es quien la escribió.",
+                "hub.bazaar": "Un catálogo barrido de endpoints pagables, con la participación de cada feed de origen escrita al lado de los totales.",
+                "hub.dx402": "La respuesta que pagaste, sellada contra tu propia clave pública y anclada. Se recupera después con la misma wallet.",
+                "hub.fhe": "Montos confidenciales sobre fhEVM, solo en Ethereum Sepolia. Cifrado de punta a punta y no listo para la plata de nadie en mainnet.",
+                "hub.integrate": "Integrarse",
+                "hub.networks": "Redes y tokens",
+                "surfaces.title": "Superficies legibles por máquina",
+                "surfaces.description": "Todo lo que un agente necesita para usar este servicio sin una persona en el medio está publicado en una ruta fija. Están en inglés a propósito y no se traducen: las lee software, y un contrato traducido son dos contratos.",
                 "fhe.experimental": "experimental",
                 "networks.summary": "21 mainnets de pago y sus testnets, en 7 familias de cadenas. Cada cadena contesta a dos nombres — base y eip155:8453 — y los dos funcionan en todos lados.",
                 "networks.link": "Ver todas las redes, esquemas y tokens",
@@ -2644,18 +2338,6 @@ result = <span class="code-function">verify_payment</span>(
                 "endpoints.mcpGet": "La guía MCP para humanos: transportes, las cuatro herramientas y las trampas",
                 "hero.zeroFee": "0% de comisión del facilitador. Sin cuenta, sin API key y sin lista de precios — el único dinero que se mueve es el pago del comprador yendo al vendedor.",
                 // --- DX402 durable-evidence
-                "dx402.badge": "DX402 \u00b7 durable-evidence",
-                "dx402.title": "Respuestas que sobreviven a la sesi\u00f3n",
-                "dx402.description": "x402 liquida el pago on-chain para siempre, pero entrega el recurso una sola vez y no guarda nada. DX402 cifra una copia de la respuesta hacia la clave p\u00fablica del que pag\u00f3 \u2014 recuperada de la firma del pago \u2014 y la ancla. Durable, privada y acoplada al pago, sin registro previo ni round-trip extra.",
-                "dx402.durable.title": "Durable",
-                "dx402.durable.text": "El cuerpo entregado sobrevive a la sesi\u00f3n. Volv\u00e9s meses despu\u00e9s con un hash de transacci\u00f3n y recuper\u00e1s los bytes que pagaste.",
-                "dx402.private.title": "Privada",
-                "dx402.private.text": "Cifrada hacia el pagador. Ni el facilitador, ni el storage, ni nosotros \u2014 recuperarla es aritm\u00e9tica, no una decisi\u00f3n de permisos que alguien pueda configurar mal.",
-                "dx402.coupled.title": "Acoplada",
-                "dx402.coupled.text": "Una autorizaci\u00f3n de pago es una firma, y de una firma sale una clave p\u00fablica. Pagar es publicar tu clave de cifrado.",
-                "dx402.counter": "Evidencias ancladas",
-                "dx402.link.docs": "Docs API",
-                "dx402.link.spec": "Especificaci\u00f3n",
                 // --- nav / footer / ERC-8004: anadidas tras auditar el i18n
                 "nav.bazaar": "Bazaar",
                 "nav.stats": "Métricas",
@@ -2696,48 +2378,6 @@ result = <span class="code-function">verify_payment</span>(
                 "features.reputation.title": "Reputaci\u00f3n On-Chain",
                 "features.reputation.description": "Agentes sin confianza ERC-8004 con registros de identidad, reputaci\u00f3n y validaci\u00f3n en 21 redes (EVM + Solana).",
                 "sdk.networks": "21 mainnets soportadas",
-                "erc8004.badge": "Est\u00e1ndar ERC-8004",
-                "erc8004.title": "Reputaci\u00f3n de Agentes Sin Confianza",
-                "erc8004.description": "Identidad, reputaci\u00f3n y validaci\u00f3n on-chain para agentes IA. Califica la calidad del servicio, verifica identidades de agentes y construye confianza en la econom\u00eda ag\u00e9ntica \u2014 todo verificable on-chain a trav\u00e9s de los registros ERC-8004.",
-                "erc8004.identity.title": "Registro de Identidad",
-                "erc8004.identity.desc": "Registra agentes como NFTs on-chain con metadatos verificables. Cada agente obtiene un tokenId \u00fanico vinculado a su direcci\u00f3n de wallet.",
-                "erc8004.reputation.title": "Registro de Reputaci\u00f3n",
-                "erc8004.reputation.desc": "Env\u00eda, revoca y consulta feedback de reputaci\u00f3n con prueba de pago. Tags permiten calificaciones categorizadas como uptime, calidad y tiempo de respuesta.",
-                "erc8004.validation.title": "Registro de Validaci\u00f3n",
-                "erc8004.validation.desc": "Validadores externos pueden atestiguar las capacidades de un agente. Los resultados se almacenan on-chain para verificaci\u00f3n transparente de confianza.",
-                "erc8004.networksTitle": "Desplegado en 21 Redes",
-                "erc8004.create2Note": "+ 9 testnets. Todas las cadenas EVM usan los mismos registros can\u00f3nicos del despliegue de referencia erc-8004 (CREATE2, direcciones id\u00e9nticas en todas). Solana usa el programa Agent Registry de QuantuLabs.",
-                "erc8004.deploymentsLink": "Todos los despliegues",
-                "erc8004.addressesTitle": "Direcciones can\u00f3nicas de los registros",
-                "erc8004.addr.identityMainnet": "Identidad (mainnet)",
-                "erc8004.addr.reputationMainnet": "Reputaci\u00f3n (mainnet)",
-                "erc8004.addr.validationMainnet": "Validaci\u00f3n (mainnet)",
-                "erc8004.addr.identityTestnet": "Identidad (testnet)",
-                "erc8004.addr.reputationTestnet": "Reputaci\u00f3n (testnet)",
-                "erc8004.addr.validationTestnet": "Validaci\u00f3n (testnet)",
-                "erc8004.addressesNote": "Las mismas direcciones en Ethereum, Base, Polygon, Arbitrum, Optimism, Celo, BNB Chain, Monad, Avalanche y Scroll. SKALE Base solo tiene Identidad y Reputaci\u00f3n. Fuente: el despliegue de referencia erc-8004, no un fork espec\u00edfico de una cadena.",
-                "upto.badge": "Esquema Upto (Permit2)",
-                "upto.title": "Pagos Basados en Uso",
-                "upto.description": "Autoriza un monto maximo por adelantado, paga solo lo que uses. Construido sobre Uniswap Permit2 para liquidaciones gasless de monto variable en todas las redes EVM.",
-                "upto.payAsYouGo.title": "Paga por Uso",
-                "upto.payAsYouGo.desc": "El cliente firma un monto maximo via Permit2. El servidor cobra solo el uso real. Costo cero si no se consume nada.",
-                "upto.permit2.title": "Impulsado por Permit2",
-                "upto.permit2.desc": "Usa el contrato Permit2 de Uniswap para aprobaciones ERC-20 sin gas. Una firma autoriza el maximo; la liquidacion puede ser cualquier monto hasta ese limite.",
-                "upto.useCases.title": "Creado para Agentes IA",
-                "upto.useCases.desc": "Ideal para facturacion de tokens LLM, medicion de ancho de banda y cualquier API basada en uso. Los agentes pre-autorizan, consumen recursos y pagan el costo exacto.",
-                "upto.contractsLabel": "Contrato Inteligente (CREATE2, mismo en todas las cadenas EVM)",
-                "x402r.badge": "Protocolo x402r",
-                "x402r.title": "Escrow y Reembolsos Sin Confianza",
-                "x402r.description": "Escrow on-chain con flujos de autorizar/capturar/liberar/reembolsar. Los fondos se mantienen en contratos inteligentes hasta que se cumplan las condiciones, habilitando reembolsos sin confianza para pagos HTTP 402 en 9 redes.",
-                "x402r.escrow.title": "Liquidaci\u00f3n en Escrow",
-                "x402r.escrow.desc": "Los pagos se autorizan y retienen en contratos escrow on-chain. Los fondos permanecen bloqueados hasta que el vendedor capture o el comprador solicite un reembolso.",
-                "x402r.refund.title": "Reembolsos Sin Confianza",
-                "x402r.refund.desc": "Los compradores pueden solicitar reembolsos dentro de una ventana de tiempo configurable. Sin intermediarios \u2014 el contrato inteligente aplica la pol\u00edtica de reembolso on-chain.",
-                "x402r.capture.title": "Autorizar y Capturar",
-                "x402r.capture.desc": "Liquidaci\u00f3n en dos fases: autorizar primero, capturar despu\u00e9s. Los vendedores pueden cobrar montos parciales o totales, y liberar los fondos restantes al comprador.",
-                "x402r.networksTitle": "Escrow Desplegado en 9 Redes",
-                "x402r.stablecoinsLabel": "Stablecoins Soportadas",
-                "x402r.create2Note": "+ 2 testnets (Base Sepolia, Ethereum Sepolia). Cada red tiene su propio conjunto de contratos desplegados.",
                 "code.title": "Integra en Minutos",
                 "what.title": "¿Qué es x402?",
                 "what.description": "x402 es un protocolo para pagos sin estado por solicitud sobre HTTP. Los clientes adjuntan una carga de pago firmada a cada solicitud. El facilitador la verifica, ejecuta la transferencia en cadena y otorga acceso a recursos protegidos—todo sin cuentas, billeteras o registro de usuarios.",
@@ -2779,7 +2419,6 @@ result = <span class="code-function">verify_payment</span>(
                 "apidocs.description": "Explora todos los endpoints de forma interactiva con Swagger UI. Prueba solicitudes directamente desde tu navegador, consulta esquemas y descarga la especificacion OpenAPI.",
                 "apidocs.swagger": "Swagger UI",
                 "apidocs.json": "OpenAPI JSON",
-                "balances.xrpBalance": "Saldo de XRP",
                 "footer.powered": "Desarrollado por"
             }
         };

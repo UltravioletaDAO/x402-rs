@@ -147,14 +147,16 @@ def erc8004_networks() -> tuple[set[str], set[str]]:
 # The pattern is per key because a bare \d+ finds the 8004 in "ERC-8004" long
 # before it finds the count, and a checker that reads the wrong number is worse
 # than no checker.
+# Shrunk on 2026-09-02, and the reason is the point: the escrow and ERC-8004
+# sections left the landing for /x402 and /erc8004, where their numbers are
+# DERIVED from /supported in the browser rather than typed. A count that is
+# computed does not need a drift check; a count that is typed does. What remains
+# here is what is still typed.
 COUNT_KEYS = {
     "sdk.networks":                    ("payment",  r"(\d+)\s+mainnets"),
     "networks.summary":                ("payment",  r"(\d+)\s+(?:payment mainnets|mainnets de pago)"),
-    "erc8004.networksTitle":           ("erc8004",  r"(\d+)\s+(?:Networks|Redes)"),
-    "x402r.networksTitle":             ("escrow",   r"(\d+)\s+(?:Networks|Redes)"),
     "features.reputation.description": ("erc8004",  r"(?:across|en)\s+(\d+)\s+(?:networks|redes)"),
     "endpoints.erc8004Note":           ("erc8004",  r"^(\d+)\s+(?:networks|redes)"),
-    "x402r.description":               ("escrow",   r"(?:across|en)\s+(\d+)\s+(?:networks|redes)"),
 }
 
 
@@ -219,12 +221,8 @@ def landing_numbers() -> dict:
         return int(m.group(1)) if m else None
 
     out["sdk_mainnets"] = first_int(r'data-i18n="sdk\.networks"[^>]*>(\d+)\s+mainnets')
-    out["erc8004_title"] = first_int(r'data-i18n="erc8004\.networksTitle">Deployed on (\d+) Networks')
     out["erc8004_stat"] = first_int(r'id="ovr-erc8004-networks"[^>]*>(\d+)<')
-    out["escrow_title"] = first_int(r'data-i18n="x402r\.networksTitle">Escrow Deployed on (\d+) Networks')
-    # logo cards inside each showcase grid (small 20px icons)
     out["hedera_refs"] = len(re.findall(r"hedera", html, re.I))
-    out["scroll_present"] = bool(re.search(r'src="/scroll\.png"', html))
 
     # The same counts as written in each dictionary. `None` means the key is
     # missing; `"?"` means the sentence no longer matches its pattern, which is
@@ -298,11 +296,8 @@ def main() -> int:
     print("-" * 70)
     print("LANDING PAGE  (static/index.html)")
     print(f"  sdk 'N mainnets supported'                : {land['sdk_mainnets']}")
-    print(f"  erc-8004 'Deployed on N Networks'         : {land['erc8004_title']}")
     print(f"  erc-8004 stat card                        : {land['erc8004_stat']}")
-    print(f"  escrow 'Escrow Deployed on N Networks'    : {land['escrow_title']}")
     print(f"  hedera references                         : {land['hedera_refs']}")
-    print(f"  scroll logo present                       : {land['scroll_present']}")
     print("-" * 70)
     print("LANDING DICTIONARIES  (en / es, same document, one URL)")
     for key, (producer, _pattern) in COUNT_KEYS.items():
@@ -318,12 +313,6 @@ def main() -> int:
     if pay_count is not None and land["sdk_mainnets"] != pay_count:
         errors.append(f"landing says '{land['sdk_mainnets']} mainnets supported' "
                       f"but /supported has {pay_count}")
-    if land["escrow_title"] != len(escrow):
-        errors.append(f"landing escrow shows {land['escrow_title']} networks "
-                      f"but payment_operator has {len(escrow)} mainnet deployments")
-    if land["erc8004_title"] != len(erc_all):
-        errors.append(f"landing ERC-8004 shows 'Deployed on {land['erc8004_title']} Networks' "
-                      f"but erc8004/mod.rs has {len(erc_all)} deployments")
     if land["erc8004_stat"] not in (len(erc_all), len(erc_main)):
         errors.append(f"landing ERC-8004 stat card = {land['erc8004_stat']} "
                       f"but source has {len(erc_all)} total / {len(erc_main)} mainnet")

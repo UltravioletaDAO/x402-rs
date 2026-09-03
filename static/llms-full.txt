@@ -101,6 +101,9 @@ facilitator just did, and what it costs (nothing — the seller keeps the paymen
 - **MCP server card**: https://facilitator.ultravioletadao.xyz/.well-known/mcp/server-card.json
 - **MCP guide** (Markdown): https://facilitator.ultravioletadao.xyz/mcp
 - **Network table** (HTML, built from `/supported` in the browser): https://facilitator.ultravioletadao.xyz/networks
+- **Integration guide** (HTML): https://facilitator.ultravioletadao.xyz/integrar —
+  the two paths (selling, buying), the four traps that bite first, and an
+  explicit statement that there is NO SLA and no support commitment
 - **DX402 guide** (HTML): https://facilitator.ultravioletadao.xyz/dx402 — durable
   evidence: the response sealed to the payer's own public key, and the rule that
   it can never fail a payment
@@ -219,6 +222,7 @@ Full contract: `/openapi.json` (Swagger UI at `/docs`).
 - MCP guide: `/mcp`
 - Network table, built from `/supported`: `/networks`
 - x402 guide (verify, settle, escrow, upto, and both counters): `/x402`
+- Integration guide, including what is not promised: `/integrar`
 - DX402 durable evidence: `/dx402`
 - ERC-8004 identity and reputation, and the describe.net boundary: `/erc8004`
 - Auth metadata (RFC 9728): `/.well-known/oauth-protected-resource`

@@ -55,6 +55,37 @@
       ]
     },
     {
+      "anchor": "https://facilitator.ultravioletadao.xyz/integrar",
+      "service-desc": [
+        {
+          "href": "https://facilitator.ultravioletadao.xyz/openapi.json",
+          "type": "application/json"
+        }
+      ],
+      "service-doc": [
+        {
+          "href": "https://facilitator.ultravioletadao.xyz/integrar",
+          "type": "text/html"
+        },
+        {
+          "href": "https://facilitator.ultravioletadao.xyz/skill.md",
+          "type": "text/markdown"
+        }
+      ],
+      "service-meta": [
+        {
+          "href": "https://facilitator.ultravioletadao.xyz/.well-known/x402",
+          "type": "application/json"
+        }
+      ],
+      "status": [
+        {
+          "href": "https://facilitator.ultravioletadao.xyz/health",
+          "type": "application/json"
+        }
+      ]
+    },
+    {
       "anchor": "https://facilitator.ultravioletadao.xyz/dx402",
       "service-desc": [
         {

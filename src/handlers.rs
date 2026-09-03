@@ -610,6 +610,10 @@ const X402_HTML: &str = include_str!("../static/x402.html");
 const DX402_HTML: &str = include_str!("../static/dx402.html");
 const ERC8004_HTML: &str = include_str!("../static/erc8004.html");
 
+/// The integrator's door. Named in Spanish because the owner named it that; the
+/// document itself opens in English like every other page here.
+const INTEGRAR_HTML: &str = include_str!("../static/integrar.html");
+
 /// `Content-Language` for every human page.
 ///
 /// `en`, not `en, es`, and the difference is not pedantry. These pages carry
@@ -839,6 +843,7 @@ where
         .route("/x402", get(get_x402_page))
         .route("/dx402", get(get_dx402_page))
         .route("/erc8004", get(get_erc8004_page))
+        .route("/integrar", get(get_integrar_page))
         .route("/events/live", get(get_events_viewer))
         .route("/stats", get(get_stats_page))
         // Escrow state query lives in secondary_read_routes() so it can carry
@@ -2457,6 +2462,15 @@ pub async fn get_dx402_page() -> impl IntoResponse {
 #[instrument(skip_all)]
 pub async fn get_erc8004_page() -> impl IntoResponse {
     html_page(ERC8004_HTML)
+}
+
+/// `GET /integrar`: what somebody outside the DAO needs to start, and --- the
+/// part a landing page usually omits --- what is NOT promised. No SLA, no
+/// support commitment, no uptime guarantee. Saying so is worth more than a
+/// badge that implies otherwise.
+#[instrument(skip_all)]
+pub async fn get_integrar_page() -> impl IntoResponse {
+    html_page(INTEGRAR_HTML)
 }
 
 /// `GET /bazaar`: Returns the curated Bazaar resource explorer (WS-D).
@@ -13286,6 +13300,7 @@ mod agentic_surface_tests {
     /// | `/x402` | `static/x402.html` |
     /// | `/dx402` | `static/dx402.html` |
     /// | `/erc8004` | `static/erc8004.html` |
+    /// | `/integrar` | `static/integrar.html` |
     /// | `/bazaar` | `static/bazaar.html` |
     /// | `/stats` | `static/stats.html` |
     /// | `/events/live` | `static/events-viewer.html` |
@@ -13386,6 +13401,7 @@ mod agentic_surface_tests {
             "/x402",
             "/dx402",
             "/erc8004",
+            "/integrar",
             // Registered under ENABLE_DX402, which production has on (699
             // anchors as of 2026-09-02). Listed here because the catalog and
             // the /dx402 page both point at it; if the flag is ever turned off
@@ -13806,8 +13822,8 @@ mod json_error_tests {
 #[cfg(test)]
 mod i18n_tests {
     use super::{
-        BAZAAR_HTML, DX402_HTML, ERC8004_HTML, EVENTS_VIEWER_HTML, INDEX_HTML, MCP_HTML,
-        NETWORKS_HTML, STATS_HTML, X402_HTML,
+        BAZAAR_HTML, DX402_HTML, ERC8004_HTML, EVENTS_VIEWER_HTML, INDEX_HTML, INTEGRAR_HTML,
+        MCP_HTML, NETWORKS_HTML, STATS_HTML, X402_HTML,
     };
     use std::collections::BTreeSet;
 
@@ -13826,6 +13842,7 @@ mod i18n_tests {
         ("static/x402.html", X402_HTML),
         ("static/dx402.html", DX402_HTML),
         ("static/erc8004.html", ERC8004_HTML),
+        ("static/integrar.html", INTEGRAR_HTML),
     ];
 
     /// The three attributes that make the runtime look a key up.

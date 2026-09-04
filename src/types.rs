@@ -1657,6 +1657,25 @@ impl Serialize for SettleResponse {
             map.serialize_entry("transaction", tx)?;
             map.serialize_entry("transactionHash", tx)?;
             map.serialize_entry("transaction_hash", tx)?;
+            // The canonical id for this payment, derived rather than stored so
+            // it cannot disagree with the hash printed beside it.
+            //
+            // It already existed and was already load-bearing -- DX402 keys
+            // evidence by it and binds an anchor to it
+            // (`dx402::gate::verify_anchor`) -- but only a caller who knew the
+            // recipe could compute it, so a settle response and the evidence
+            // it can be looked up by shared no identifier. Emitting it is what
+            // lets a payer go from `/settle` straight to
+            // `/dx402/evidence/{paymentId}` without reimplementing a keccak.
+            //
+            // Derivation is `dx402::payment_id` called with `tx.to_string()`,
+            // the same expression `verify_anchor` binds against. A second,
+            // subtly different derivation here is exactly how a pointer stops
+            // opening -- so there is not one.
+            map.serialize_entry(
+                "paymentId",
+                &crate::dx402::payment_id(self.network, &tx.to_string()),
+            )?;
         }
         map.serialize_entry("network", &self.network)?;
         if let Some(proof) = &self.proof_of_payment {
@@ -2576,5 +2595,75 @@ mod facilitator_error_reason_tests {
             serde_json::json!("insufficient_funds"),
             "a settle failure must say why: {v}"
         );
+    }
+}
+
+#[cfg(test)]
+mod settle_response_payment_id_tests {
+    use super::*;
+
+    fn tx() -> TransactionHash {
+        TransactionHash::Evm([0x11u8; 32])
+    }
+
+    fn response(transaction: Option<TransactionHash>) -> SettleResponse {
+        SettleResponse {
+            success: transaction.is_some(),
+            error_reason: None,
+            payer: "0x0000000000000000000000000000000000000001"
+                .parse::<EvmAddress>()
+                .unwrap()
+                .into(),
+            transaction,
+            network: crate::network::Network::Base,
+            proof_of_payment: None,
+            extensions: None,
+        }
+    }
+
+    /// Pinned against an INDEPENDENT keccak256 (pycryptodome), not against our
+    /// own function -- comparing an implementation only to itself is how three
+    /// fabricated SEAL v1 hashes passed CI for months.
+    ///
+    ///   preimage = "eip155:8453" ++ "11" * 32   (the tx hash, `0x` trimmed)
+    #[test]
+    fn the_payment_id_matches_an_independent_keccak() {
+        let v = serde_json::to_value(response(Some(tx()))).unwrap();
+        assert_eq!(
+            v["paymentId"],
+            serde_json::json!(
+                "0x411fe7c2e9a1b4fbecf94b48cc628d9c69c0752b90bfd313965a3607d322d466"
+            ),
+            "settle emitted a paymentId nothing else can reproduce: {v}"
+        );
+    }
+
+    /// The property that actually matters: the id we hand the payer is the one
+    /// the anchor gate binds against. Derived differently, a pointer would
+    /// simply never resolve -- and nothing would say why.
+    #[test]
+    fn the_payment_id_is_the_one_the_anchor_gate_binds_against() {
+        let v = serde_json::to_value(response(Some(tx()))).unwrap();
+        let bound = crate::dx402::payment_id(crate::network::Network::Base, &tx().to_string());
+        assert_eq!(v["paymentId"].as_str().unwrap(), bound);
+    }
+
+    /// No transaction, no payment: an id derived from a hash that does not
+    /// exist would name a payment that never happened.
+    #[test]
+    fn a_settle_without_a_transaction_has_no_payment_id() {
+        let v = serde_json::to_value(response(None)).unwrap();
+        assert!(
+            v.get("paymentId").is_none(),
+            "`paymentId` must be absent when nothing settled: {v}"
+        );
+    }
+
+    /// The same transaction on a different chain is a different payment.
+    #[test]
+    fn the_network_is_part_of_the_identity() {
+        let base = crate::dx402::payment_id(crate::network::Network::Base, &tx().to_string());
+        let avax = crate::dx402::payment_id(crate::network::Network::Avalanche, &tx().to_string());
+        assert_ne!(base, avax);
     }
 }

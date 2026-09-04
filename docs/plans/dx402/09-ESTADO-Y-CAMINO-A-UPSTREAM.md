@@ -82,13 +82,38 @@ porque el enjambre lleva >24h apagado (último release: 2026-09-02 04:04 UTC).
 
 Con el enjambre encendido y el cron del barrido, el corpus se llena solo.
 
-## 5. Decisión pendiente
+## 5. Lo que queda, y de quién es (2026-09-04, tras los siete agentes)
 
-El corpus cerró en un día en vez de dos semanas. Lo que queda antes de abrir:
+**Decisiones de Saul** (cambian código o producción; no las tomo solo):
 
-1. **Verificar el proceso de la Foundation** (dónde viven los specs, formato, plantilla) — nadie lo ha mirado; todo lo anterior salió de notas propias.
-2. **Desplegar 2.11.0** (opt-in `accepts`) para que el spec v0.2 describa lo que está en producción, no en `main`.
-3. Los SDK py/ts con el opt-in — deseable, no bloqueante: la implementación de referencia es Rust.
+1. **Restructurar el wire al formato de la Foundation** antes del PR. Verificado
+   contra `x402-foundation/x402` (sin plantilla, pero convención uniforme):
+   `extensions` **top-level** en el 402 (offer-receipt lo hace así incluso en v1,
+   con `acceptIndex`) en vez de `extra.extensions` por oferta; envelope
+   `{info, schema}` + regla de eco en el payload; la evidencia bajo
+   `SettlementResponse.extensions["durable-evidence"]` del `X-Payment-Response`
+   que el vendedor reenvía, con `X-Durable-Evidence` como conveniencia no
+   normativa; endpoints `/dx402/*` como "de esta implementación"; CAIP-2 en
+   payloads firmados. Es un cambio de wire-shape, no de criptografía ni de gate.
+   Estimación: 2-3 días. Sin esto, el primer comentario del revisor es "please
+   restructure".
+2. **Desplegar 2.11.0** (`2ab7deb2` local; `deploy-readiness` emite el GO/NO-GO
+   contra ese hash). Pushear a `main` es el deploy.
+3. **Las 5 filas de Solana pre-gate** marcadas `verified: true` con hash de demo:
+   limpiarlas en la tabla o declararlas en la evidencia. Es dato de producción.
+4. **Cuándo abrir**: el corpus y el spec ya alcanzan; la restructura del punto 1
+   es lo que decide si el PR se abre esta semana o la próxima.
 
-Con 1 y 2, el PR se puede abrir esta semana con números medidos. El criterio de
-"7 días sostenido" se cumple solo si la flota vuelve a correr.
+**Follow-ups técnicos** (míos, no bloquean el PR pero el spec los declara):
+
+- Allowlist de tokens en el proof path (red team #3) — hoy `verified` certifica
+  consistencia con el escrow conocido, no que el pagador fue defraudado.
+- `getHash` en `latest` sin aserción de código del escrow (#5); normalización de
+  `paymentId` como clave (#6); `asset` en el matcher cuando v2 lo traiga (#14).
+- Opt-in en los SDK py/ts (deseable; lista exacta en el reporte de paridad).
+- Gate en Solana (único no-EVM priorizado).
+
+**Fase 2** (`DX402_REQUIRE_PROOF=true`): recién después de que 2.11.0 esté en
+producción ≥48 h con tráfico real pasando — y no antes de que el fix del riel
+(#1) esté desplegado, o fase 2 castiga a los vendedores que perdieron la carrera
+en vez de al secuestrador.

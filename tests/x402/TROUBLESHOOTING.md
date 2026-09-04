@@ -117,11 +117,20 @@ HTTP/1.1 400 Bad Request
 
 ---
 
-### Response: `{"isValid":false,"invalidReason":null,"payer":"0x..."}`
+### Response: `{"isValid":false,"invalidReason":"invalid_signature","payer":"0x..."}`
 
-**Meaning:** The endpoint accepted your request! The payment is invalid (likely bad signature), but the JSON structure is correct.
+**Meaning:** The endpoint accepted your request! The payment did not check out, but the JSON structure is correct.
 
 **This is SUCCESS** - your payload format is now working!
+
+**Read `invalidReason` instead of guessing.** It is a snake_case token naming the
+cause: `invalid_signature`, `invalid_timing`, `insufficient_funds`,
+`insufficient_value`, `receiver_mismatch`, `invalid_network`, `invalid_scheme`,
+`unexpected_settle_error`. The full table is in `/skill.md`.
+
+A literal `null` there means you are on a facilitator older than 2.11.0, where
+every cause serialised the same way and this guide had to guess "likely bad
+signature" - which is exactly why the field was fixed.
 
 ---
 
@@ -139,7 +148,7 @@ curl -X POST https://facilitator.ultravioletadao.xyz/settle \
 ```json
 {
   "isValid": false,
-  "invalidReason": null,
+  "invalidReason": "invalid_signature",
   "payer": "0x87228cF28dd82546d76249A8Bb92AdEa9258F404"
 }
 ```

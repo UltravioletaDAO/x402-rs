@@ -323,7 +323,13 @@ Verifies an x402 payment authorization without settling it on-chain.
 
 That body is runnable as printed. The signature and nonce are well-formed
 placeholders, not a real authorization, so copied verbatim it answers `200` with
-`"isValid": false`.
+`"isValid": false` and `"invalidReason": "invalid_signature"`.
+
+`invalidReason` is a snake_case token, one per cause: `invalid_signature`,
+`invalid_timing`, `insufficient_funds`, `insufficient_value`,
+`receiver_mismatch`, `invalid_network`, `invalid_scheme`,
+`unexpected_settle_error`. Switch on it, but keep a default arm -- the list is
+open. It was `null` for every cause before 2.11.0.
 
 **Five things in that shape are load-bearing:**
 - `paymentPayload` carries its own `x402Version`, `scheme` and `network` at its root.

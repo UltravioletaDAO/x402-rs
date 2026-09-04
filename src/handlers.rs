@@ -4921,6 +4921,21 @@ fn invalid_schema(payer: Option<MixedAddress>) -> VerifyResponse {
     VerifyResponse::invalid(payer, FacilitatorErrorReason::InvalidScheme)
 }
 
+/// A rejection whose cause has no variant in the x402 v1 reason enum.
+///
+/// The enum's four unit variants are the protocol's fixed vocabulary and this
+/// facilitator does not invent a fifth -- adding one would be a breaking change
+/// for every downstream `match`. `FreeForm` carries the extra tokens instead,
+/// and since the enum now serialises as a plain string, a caller cannot tell
+/// which arm produced its value: `insufficient_funds` and `invalid_signature`
+/// are both just tokens on the wire.
+fn invalid_because(payer: MixedAddress, token: &str) -> VerifyResponse {
+    VerifyResponse::invalid(
+        Some(payer),
+        FacilitatorErrorReason::FreeForm(token.to_string()),
+    )
+}
+
 impl IntoResponse for FacilitatorLocalError {
     fn into_response(self) -> Response {
         let error = self;
@@ -4937,12 +4952,37 @@ impl IntoResponse for FacilitatorLocalError {
             FacilitatorLocalError::SchemeMismatch(payer, ..) => {
                 (StatusCode::OK, Json(invalid_schema(payer))).into_response()
             }
-            FacilitatorLocalError::ReceiverMismatch(payer, ..)
-            | FacilitatorLocalError::InvalidSignature(payer, ..)
-            | FacilitatorLocalError::InvalidTiming(payer, ..)
-            | FacilitatorLocalError::InsufficientValue(payer) => {
-                (StatusCode::OK, Json(invalid_schema(Some(payer)))).into_response()
-            }
+            // Four genuinely different rejections used to share one arm and go
+            // out as `invalid_scheme`. Wrong receiver, a bad signature, an
+            // expired window and an underfunded authorization need four
+            // different fixes on the client, so they get four different
+            // tokens. `invalid_scheme` stays reserved for an actual scheme
+            // mismatch, which is what `SchemeMismatch` above already reports.
+            //
+            // The token is all that ships: no prose, no addresses, no
+            // recovered-vs-expected detail. Same split as the `rejected[]`
+            // vocabulary on `/accepts` -- `reason` is for branching, and
+            // anything a human needs to read stays in the server-side log.
+            FacilitatorLocalError::ReceiverMismatch(payer, ..) => (
+                StatusCode::OK,
+                Json(invalid_because(payer, "receiver_mismatch")),
+            )
+                .into_response(),
+            FacilitatorLocalError::InvalidSignature(payer, ..) => (
+                StatusCode::OK,
+                Json(invalid_because(payer, "invalid_signature")),
+            )
+                .into_response(),
+            FacilitatorLocalError::InvalidTiming(payer, ..) => (
+                StatusCode::OK,
+                Json(invalid_because(payer, "invalid_timing")),
+            )
+                .into_response(),
+            FacilitatorLocalError::InsufficientValue(payer) => (
+                StatusCode::OK,
+                Json(invalid_because(payer, "insufficient_value")),
+            )
+                .into_response(),
             FacilitatorLocalError::NetworkMismatch(payer, ..)
             | FacilitatorLocalError::UnsupportedNetwork(payer) => (
                 StatusCode::OK,
@@ -13248,6 +13288,158 @@ mod upstream_rpc_failure_tests {
 /// arm directly (not just the `is_upstream_rpc_failure` classifier) — this is
 /// the response the >95% plain-`/settle` EIP-3009 traffic actually gets,
 /// wired to `is_upstream_rpc_failure` on 2026-08-28.
+#[cfg(test)]
+mod rejection_reason_tests {
+    use super::*;
+    use crate::types::VerifyResponse;
+
+    fn payer() -> MixedAddress {
+        "0x0000000000000000000000000000000000000001"
+            .parse::<crate::types::EvmAddress>()
+            .expect("test address")
+            .into()
+    }
+
+    /// The rejection body exactly as a client receives it.
+    async fn reject(err: FacilitatorLocalError) -> serde_json::Value {
+        let response = err.into_response();
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "a rejected payment is a verdict, not a transport error"
+        );
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        serde_json::from_slice(&bytes).expect("rejection body is JSON")
+    }
+
+    /// Every cause we can name, and the token it must answer with.
+    ///
+    /// Deliberately a table and not one assertion: the defect being fixed was
+    /// four causes sharing one token, which a single-case test cannot see.
+    fn causes() -> Vec<(&'static str, FacilitatorLocalError)> {
+        vec![
+            (
+                "invalid_network",
+                FacilitatorLocalError::NetworkMismatch(
+                    Some(payer()),
+                    crate::network::Network::Base,
+                    crate::network::Network::Avalanche,
+                ),
+            ),
+            (
+                "invalid_scheme",
+                FacilitatorLocalError::SchemeMismatch(
+                    Some(payer()),
+                    crate::types::Scheme::Exact,
+                    crate::types::Scheme::Exact,
+                ),
+            ),
+            (
+                "insufficient_funds",
+                FacilitatorLocalError::InsufficientFunds(payer()),
+            ),
+            (
+                "insufficient_value",
+                FacilitatorLocalError::InsufficientValue(payer()),
+            ),
+            (
+                "invalid_signature",
+                FacilitatorLocalError::InvalidSignature(payer(), "recovered != from".to_string()),
+            ),
+            (
+                "invalid_timing",
+                FacilitatorLocalError::InvalidTiming(payer(), "expired".to_string()),
+            ),
+            (
+                "receiver_mismatch",
+                FacilitatorLocalError::ReceiverMismatch(
+                    payer(),
+                    "0x1".to_string(),
+                    "0x2".to_string(),
+                ),
+            ),
+        ]
+    }
+
+    /// Discriminant by cause: each one names itself.
+    ///
+    /// Before the fix this failed on five of seven rows -- every token read
+    /// `null`, and four of the causes had been collapsed into `invalid_scheme`
+    /// besides.
+    #[tokio::test]
+    async fn each_rejection_cause_reports_its_own_reason() {
+        for (expected, err) in causes() {
+            let body = reject(err).await;
+            assert_eq!(
+                body["invalidReason"],
+                serde_json::json!(expected),
+                "wrong reason for the cause that should answer `{expected}`; got {body}"
+            );
+        }
+    }
+
+    /// The property that matters even if a token is later respelled: two
+    /// different causes must never be indistinguishable to the payer.
+    #[tokio::test]
+    async fn no_two_rejection_causes_share_a_reason() {
+        let mut seen: std::collections::HashMap<String, &'static str> = Default::default();
+        for (name, err) in causes() {
+            let body = reject(err).await;
+            let token = body["invalidReason"]
+                .as_str()
+                .unwrap_or_else(|| panic!("`{name}` answered a non-string reason: {body}"))
+                .to_string();
+            if let Some(first) = seen.insert(token.clone(), name) {
+                panic!("`{first}` and `{name}` both answer `{token}`");
+            }
+        }
+        assert_eq!(seen.len(), 7, "one row per cause");
+    }
+
+    /// The defect that made the field useless rather than merely coarse.
+    ///
+    /// `#[serde(untagged)]` serialises a unit variant as `null`, so the fixed
+    /// reasons never reached the wire at all.
+    #[tokio::test]
+    async fn a_reason_is_never_null() {
+        for (name, err) in causes() {
+            let body = reject(err).await;
+            assert!(
+                body["invalidReason"].is_string(),
+                "`{name}` answered `invalidReason: {}`, which tells the payer nothing",
+                body["invalidReason"]
+            );
+        }
+    }
+
+    /// We emitted a body our own parser refused: `VerifyResponse`'s
+    /// `Deserialize` errors with "`invalidReason` must be present when
+    /// `isValid` is false", and `null` deserialises to `None`. So a client
+    /// built on this crate -- x402-reqwest included -- could not read a
+    /// rejection at all.
+    #[tokio::test]
+    async fn a_rejection_we_emit_can_be_read_back_by_our_own_parser() {
+        for (name, err) in causes() {
+            let body = reject(err).await;
+            let parsed: Result<VerifyResponse, _> = serde_json::from_value(body.clone());
+            let parsed = parsed
+                .unwrap_or_else(|e| panic!("`{name}`: our own parser rejected our body: {e}"));
+            match parsed {
+                VerifyResponse::Invalid { reason, .. } => {
+                    assert_eq!(
+                        reason.to_string(),
+                        body["invalidReason"].as_str().unwrap(),
+                        "`{name}` changed meaning on the round trip"
+                    );
+                }
+                VerifyResponse::Valid { .. } => panic!("`{name}` round-tripped as valid"),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod contract_call_response_tests {
     use super::*;

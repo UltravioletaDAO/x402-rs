@@ -468,10 +468,28 @@ the token and network are supported.
 **A rejected payment is still HTTP 200.** The verdict lives in the body:
 
 ```json
-{ "isValid": false, "invalidReason": null, "payer": "0x0000000000000000000000000000000000000001" }
+{ "isValid": false, "invalidReason": "invalid_signature", "payer": "0x0000000000000000000000000000000000000001" }
 ```
 
 A valid one answers `{"isValid": true}`. Branch on `isValid`, not on the status code.
+
+`invalidReason` is a snake_case token naming the cause, and each cause has its own:
+
+| Token | What to change |
+|---|---|
+| `invalid_signature` | The EIP-712 signature does not recover to `authorization.from` |
+| `invalid_timing` | Now is outside the `validAfter` / `validBefore` window |
+| `insufficient_funds` | The payer's on-chain balance is below the amount |
+| `insufficient_value` | The signed `value` is below `maxAmountRequired` |
+| `receiver_mismatch` | `authorization.to` is not the requirements' `payTo` |
+| `invalid_network` | The network is unsupported, or the two halves disagree |
+| `invalid_scheme` | The payload's `scheme` is not the requirements' `scheme` |
+| `unexpected_settle_error` | Settlement failed for a reason none of the above covers |
+
+Treat the list as open: a token you do not recognise still means "rejected", so
+switch on it but keep a default arm. Until 2.11.0 this field was always `null` —
+if you see `null`, you are talking to an older facilitator and the cause is not
+recoverable from the response.
 A `400` means the *request* was malformed — you sent something the facilitator could
 not read — which is a different bug from a payment that does not check out.
 

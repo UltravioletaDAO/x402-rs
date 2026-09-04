@@ -32,8 +32,8 @@ use base64::Engine as _;
 use bytes::Bytes;
 use x402_rs::dx402::envelope::{seal, PayerPublicKey};
 use x402_rs::dx402::types::{
-    AnchorRequest, DurableEvidence, DurableEvidenceConfig, DurablePointer, EvidenceMode, Retention,
-    SkipReason, StorageBackend, EVIDENCE_HEADER,
+    AnchorRequest, DurableEvidence, DurableEvidenceConfig, DurableEvidenceInfo, DurablePointer,
+    EvidenceMode, Retention, SkipReason, StorageBackend, EVIDENCE_HEADER,
 };
 use x402_rs::network::Network;
 use x402_rs::types::MixedAddress;
@@ -541,8 +541,23 @@ impl OfferDecision {
     /// existing anchors must keep flowing.
     pub fn decide(
         accepts: &[x402_rs::types::PaymentRequirements],
+        extensions: &std::collections::HashMap<String, serde_json::Value>,
+        paid_index: Option<usize>,
         paid: &x402_rs::types::PaymentRequirements,
     ) -> Self {
+        // The registry shape first: one declaration on the challenge naming
+        // the offers by index. A declaration that is present but unreadable
+        // applies to nobody, out loud.
+        if DurableEvidenceInfo::declared_in(extensions) {
+            return match (DurableEvidenceInfo::from_extensions(extensions), paid_index) {
+                (Some(info), Some(i)) if info.accept_indexes.contains(&i) => {
+                    OfferDecision::Declared(info.config)
+                }
+                _ => OfferDecision::NotSelected,
+            };
+        }
+        // The v0.2 shape, per offer under `extra.extensions`, kept one version
+        // so sellers already deployed keep working while they move.
         match DurableEvidenceConfig::from_requirements(paid) {
             Some(cfg) => OfferDecision::Declared(cfg),
             // Declared but unparseable on the PAID offer: the buyer paid for
@@ -1027,11 +1042,11 @@ mod tests {
         let accepts = vec![plain.clone(), durable.clone()];
 
         assert_eq!(
-            OfferDecision::decide(&accepts, &plain),
+            OfferDecision::decide(&accepts, &Default::default(), None, &plain),
             OfferDecision::NotSelected
         );
         assert_eq!(
-            OfferDecision::decide(&accepts, &durable),
+            OfferDecision::decide(&accepts, &Default::default(), None, &durable),
             OfferDecision::Declared(DurableEvidenceConfig::default())
         );
     }
@@ -1048,13 +1063,45 @@ mod tests {
         })));
         let accepts = vec![plain.clone(), broken.clone()];
         assert_eq!(
-            OfferDecision::decide(&accepts, &plain),
+            OfferDecision::decide(&accepts, &Default::default(), None, &plain),
             OfferDecision::NotSelected
         );
         assert_eq!(
-            OfferDecision::decide(&accepts, &broken),
+            OfferDecision::decide(&accepts, &Default::default(), None, &broken),
             OfferDecision::NotSelected,
             "the buyer paid for terms nobody can read: no evidence, said out loud"
+        );
+    }
+
+    #[test]
+    fn the_top_level_declaration_decides_by_index() {
+        // The registry shape: nothing on the requirements themselves; the
+        // challenge says "offer 1 carries evidence".
+        let plain = offer(None);
+        let durable = offer(None);
+        let accepts = vec![plain.clone(), durable.clone()];
+        let mut ext = std::collections::HashMap::new();
+        DurableEvidenceInfo {
+            config: DurableEvidenceConfig {
+                retention: Retention::Year1,
+                ..Default::default()
+            },
+            accept_indexes: vec![1],
+        }
+        .declare(&mut ext);
+
+        assert!(matches!(
+            OfferDecision::decide(&accepts, &ext, Some(1), &durable),
+            OfferDecision::Declared(c) if c.retention == Retention::Year1
+        ));
+        assert_eq!(
+            OfferDecision::decide(&accepts, &ext, Some(0), &plain),
+            OfferDecision::NotSelected
+        );
+        // Unknown index (the payload matched nothing we can place): declined.
+        assert_eq!(
+            OfferDecision::decide(&accepts, &ext, None, &durable),
+            OfferDecision::NotSelected
         );
     }
 
@@ -1065,7 +1112,12 @@ mod tests {
         // treating an undeclared requirement as "declined" would do.
         let plain = offer(None);
         assert_eq!(
-            OfferDecision::decide(std::slice::from_ref(&plain), &plain),
+            OfferDecision::decide(
+                std::slice::from_ref(&plain),
+                &Default::default(),
+                None,
+                &plain
+            ),
             OfferDecision::Legacy
         );
     }

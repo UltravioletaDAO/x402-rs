@@ -280,6 +280,67 @@ impl DurableEvidenceConfig {
     }
 }
 
+/// The `info` half of the top-level declaration.
+///
+/// `extensions["durable-evidence"] = { info, schema }` on the 402, next to
+/// `accepts`. The configuration is flattened into `info`, and `acceptIndexes`
+/// says which offers carry it -- the mechanism `offer-receipt` uses, and the
+/// only way to say "this offer, not that one" without nesting the extension
+/// under a single requirement, which the registry convention does not do.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DurableEvidenceInfo {
+    #[serde(flatten)]
+    pub config: DurableEvidenceConfig,
+    /// Positions in `accepts` of the offers that include evidence. Empty means
+    /// "declared but applying to no offer", which the hook treats as declined.
+    #[serde(default)]
+    pub accept_indexes: Vec<usize>,
+}
+
+impl DurableEvidenceInfo {
+    /// JSON Schema for `info`, published alongside it as the core spec asks.
+    pub fn schema() -> serde_json::Value {
+        serde_json::json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+                "mode": {"type": "string", "enum": ["direct", "escrowed"]},
+                "backend": {"type": "string", "enum": ["s3", "ipfs", "arweave"]},
+                "retention": {"type": "string", "enum": ["90d", "1y", "permanent"]},
+                "maxBodyBytes": {"type": "integer", "minimum": 0},
+                "paidBy": {"type": "string", "enum": ["seller", "buyer"]},
+                "acceptIndexes": {"type": "array", "items": {"type": "integer", "minimum": 0}}
+            },
+            "additionalProperties": false
+        })
+    }
+
+    /// Write the `{ info, schema }` object into a challenge's `extensions`.
+    pub fn declare(&self, extensions: &mut std::collections::HashMap<String, serde_json::Value>) {
+        extensions.insert(
+            EXTENSION_KEY.to_string(),
+            serde_json::json!({
+                "info": serde_json::to_value(self).expect("info serializes"),
+                "schema": Self::schema(),
+            }),
+        );
+    }
+
+    /// The declaration on a challenge, if it carries a readable one.
+    pub fn from_extensions(
+        extensions: &std::collections::HashMap<String, serde_json::Value>,
+    ) -> Option<Self> {
+        let info = extensions.get(EXTENSION_KEY)?.get("info")?;
+        serde_json::from_value(info.clone()).ok()
+    }
+
+    /// Whether the key is present at all, readable or not.
+    pub fn declared_in(extensions: &std::collections::HashMap<String, serde_json::Value>) -> bool {
+        extensions.contains_key(EXTENSION_KEY)
+    }
+}
+
 impl Default for DurableEvidenceConfig {
     fn default() -> Self {
         Self {
@@ -733,6 +794,34 @@ mod tests {
             DurableEvidence::Skipped(s) => assert_eq!(s.skipped, SkipReason::Unknown),
             other => panic!("expected a skip notice, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn the_top_level_declaration_round_trips_and_names_its_offers() {
+        let info = DurableEvidenceInfo {
+            config: DurableEvidenceConfig {
+                retention: Retention::Year1,
+                ..Default::default()
+            },
+            accept_indexes: vec![1],
+        };
+        let mut ext = std::collections::HashMap::new();
+        info.declare(&mut ext);
+        let raw = &ext["durable-evidence"];
+        assert!(raw["schema"].is_object(), "schema published next to info");
+        assert_eq!(raw["info"]["retention"], "1y");
+        assert_eq!(raw["info"]["acceptIndexes"], serde_json::json!([1]));
+        assert_eq!(DurableEvidenceInfo::from_extensions(&ext), Some(info));
+        assert!(DurableEvidenceInfo::declared_in(&ext));
+
+        // Present but unreadable: declared, not usable -- same rule as per-offer.
+        let mut broken = std::collections::HashMap::new();
+        broken.insert(
+            "durable-evidence".to_string(),
+            serde_json::json!({"info": {"retention": "forever-and-ever"}}),
+        );
+        assert_eq!(DurableEvidenceInfo::from_extensions(&broken), None);
+        assert!(DurableEvidenceInfo::declared_in(&broken));
     }
 
     #[test]

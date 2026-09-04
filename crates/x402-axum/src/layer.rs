@@ -73,7 +73,7 @@ use axum_core::{
 use http::{HeaderMap, HeaderValue, StatusCode, Uri};
 use once_cell::sync::Lazy;
 use serde_json::json;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Display};
 use std::sync::Arc;
 use std::{
@@ -85,7 +85,7 @@ use std::{
 use tower::util::BoxCloneSyncService;
 use tower::{Layer, Service};
 use url::Url;
-use x402_rs::dx402::DurableEvidenceConfig;
+use x402_rs::dx402::{DurableEvidenceConfig, DurableEvidenceInfo};
 use x402_rs::facilitator::Facilitator;
 use x402_rs::network::Network;
 use x402_rs::types::{
@@ -125,6 +125,8 @@ pub struct X402Middleware<F> {
     /// declaration on the requirement. Whichever offer gets paid decides
     /// whether the post-hook runs -- see [`crate::durable::OfferDecision`].
     durable_offers: Vec<(PriceTag, DurableEvidenceConfig)>,
+    /// The challenge-level `extensions` map, recomputed with the offers.
+    extensions: HashMap<String, serde_json::Value>,
     /// Timeout in seconds for payment settlement.
     max_timeout_seconds: u64,
     /// Optional input schema describing the API endpoint's input specification.
@@ -177,6 +179,7 @@ impl<F> X402Middleware<F> {
             max_timeout_seconds: 300,
             price_tag: Vec::new(),
             durable_offers: Vec::new(),
+            extensions: HashMap::new(),
             input_schema: None,
             output_schema: None,
             settle_before_execution: false,
@@ -506,6 +509,18 @@ where
     }
 
     fn recompute_offers(mut self) -> Self {
+        // The registry-shaped declaration: one object on the challenge, naming
+        // the durable offers by their position in `accepts`. `all_offers` puts
+        // every plain tag first, so the durable ones sit at the tail.
+        self.extensions.remove(x402_rs::dx402::EXTENSION_KEY);
+        if let Some((_, config)) = self.durable_offers.first() {
+            let first = self.price_tag.len();
+            DurableEvidenceInfo {
+                config: config.clone(),
+                accept_indexes: (first..first + self.durable_offers.len()).collect(),
+            }
+            .declare(&mut self.extensions);
+        }
         let base_url = self.base_url();
         let description = self.description.clone().unwrap_or_default();
         let mime_type = self
@@ -598,6 +613,7 @@ pub struct X402MiddlewareService<F> {
     inner: BoxCloneSyncService<Request, Response, Infallible>,
     /// Optional DX402 `durable-evidence` post-hook.
     durable: Option<Arc<DurableEvidenceHook>>,
+    extensions: HashMap<String, serde_json::Value>,
 }
 
 impl<S, F> Layer<S> for X402Middleware<F>
@@ -621,6 +637,7 @@ where
             settle_before_execution: self.settle_before_execution,
             inner: BoxCloneSyncService::new(inner),
             durable: self.durable.clone(),
+            extensions: self.extensions.clone(),
         }
     }
 }
@@ -645,6 +662,7 @@ where
         let inner = self.inner.clone();
         let settle_before_execution = self.settle_before_execution;
         let durable = self.durable.clone();
+        let extensions = self.extensions.clone();
         Box::pin(async move {
             let payment_requirements =
                 gather_payment_requirements(offers.as_ref(), req.uri(), req.headers()).await;
@@ -653,6 +671,7 @@ where
                 payment_requirements,
                 settle_before_execution,
                 durable,
+                extensions,
             };
             gate.call(inner, req).await
         })
@@ -686,6 +705,7 @@ impl X402Error {
             error: ERR_PAYMENT_HEADER_REQUIRED.clone(),
             accepts: payment_requirements,
             x402_version: X402Version::V1,
+            extensions: Default::default(),
         };
         Self(payment_required_response)
     }
@@ -695,6 +715,7 @@ impl X402Error {
             error: ERR_INVALID_PAYMENT_HEADER.clone(),
             accepts: payment_requirements,
             x402_version: X402Version::V1,
+            extensions: Default::default(),
         };
         Self(payment_required_response)
     }
@@ -704,6 +725,7 @@ impl X402Error {
             error: ERR_NO_PAYMENT_MATCHING.clone(),
             accepts: payment_requirements,
             x402_version: X402Version::V1,
+            extensions: Default::default(),
         };
         Self(payment_required_response)
     }
@@ -716,6 +738,7 @@ impl X402Error {
             error: format!("Verification Failed: {error}"),
             accepts: payment_requirements,
             x402_version: X402Version::V1,
+            extensions: Default::default(),
         };
         Self(payment_required_response)
     }
@@ -728,8 +751,17 @@ impl X402Error {
             error: format!("Settlement Failed: {error}"),
             accepts: payment_requirements,
             x402_version: X402Version::V1,
+            extensions: Default::default(),
         };
         Self(payment_required_response)
+    }
+}
+
+impl X402Error {
+    /// Attach the challenge-level `extensions` map to this 402.
+    pub fn with_extensions(mut self, extensions: HashMap<String, serde_json::Value>) -> Self {
+        self.0.extensions = extensions;
+        self
     }
 }
 
@@ -755,6 +787,8 @@ pub struct X402Paygate<F> {
     /// Optional DX402 `durable-evidence` post-hook. `None` leaves the response
     /// path byte-for-byte as it was.
     pub durable: Option<Arc<DurableEvidenceHook>>,
+    /// Challenge-level `extensions`, served on every 402 this gate answers.
+    pub extensions: HashMap<String, serde_json::Value>,
 }
 
 impl<F> X402Paygate<F>
@@ -772,6 +806,7 @@ where
                 x402_version: X402Version::V1,
                 error: format!("Unable to retrieve supported payment schemes: {e}"),
                 accepts: vec![],
+                extensions: Default::default(),
             })
         })?;
         match payment_header {
@@ -799,7 +834,8 @@ where
                         }
                     })
                     .collect::<Vec<_>>();
-                Err(X402Error::payment_header_required(requirements))
+                Err(X402Error::payment_header_required(requirements)
+                    .with_extensions(self.extensions.clone()))
             }
             Some(payment_header) => {
                 let base64 = Base64Bytes::from(payment_header.as_bytes());
@@ -833,9 +869,10 @@ where
     ) -> Result<VerifyRequest, X402Error> {
         let selected = self
             .find_matching_payment_requirements(&payment_payload)
-            .ok_or(X402Error::no_payment_matching(
-                self.payment_requirements.as_ref().clone(),
-            ))?;
+            .ok_or_else(|| {
+                X402Error::no_payment_matching(self.payment_requirements.as_ref().clone())
+                    .with_extensions(self.extensions.clone())
+            })?;
         let verify_request = VerifyRequest {
             x402_version: payment_payload.x402_version,
             payment_payload,
@@ -932,23 +969,50 @@ where
     ///
     /// Nothing in here can fail the request. Every error path yields a skip
     /// notice, and a response is always returned.
+    /// Put the evidence object where the core specification reserves
+    /// extension metadata: `SettlementResponse.extensions["durable-evidence"]`
+    /// of the settlement the buyer receives in `X-Payment-Response`. The
+    /// `X-Durable-Evidence` header keeps being emitted as a convenience.
+    fn with_evidence(
+        mut settlement: SettleResponse,
+        value: Option<serde_json::Value>,
+    ) -> SettleResponse {
+        if let Some(value) = value {
+            settlement
+                .extensions
+                .get_or_insert_with(Default::default)
+                .insert(x402_rs::dx402::EXTENSION_KEY.to_string(), value);
+        }
+        settlement
+    }
+
     async fn attach_durable_evidence(
         hook: &Arc<DurableEvidenceHook>,
         accepts: &[PaymentRequirements],
+        extensions: &HashMap<String, serde_json::Value>,
         verify_request: &VerifyRequest,
         settlement: &SettleResponse,
         response: Response,
-    ) -> (Response, Option<HeaderValue>) {
+    ) -> (Response, Option<HeaderValue>, Option<serde_json::Value>) {
         use x402_rs::dx402::types::{DurableEvidence, SkipReason};
 
         // The buyer's choice comes first. If the route offered evidence and the
         // buyer paid for the offer without it, deliver and say so; nothing
         // below runs, so the plain offer costs the seller no sealing at all.
-        let offer = match OfferDecision::decide(accepts, &verify_request.payment_requirements) {
+        let paid_index = accepts
+            .iter()
+            .position(|r| r == &verify_request.payment_requirements);
+        let offer = match OfferDecision::decide(
+            accepts,
+            extensions,
+            paid_index,
+            &verify_request.payment_requirements,
+        ) {
             OfferDecision::NotSelected => {
                 let evidence = DurableEvidence::skipped(SkipReason::NotSelected);
                 let header = encode_header(&evidence).and_then(|v| HeaderValue::from_str(&v).ok());
-                return (response, header);
+                let value = serde_json::to_value(&evidence).ok();
+                return (response, header, value);
             }
             OfferDecision::Declared(cfg) => Some(cfg),
             OfferDecision::Legacy => None,
@@ -958,7 +1022,7 @@ where
             // Settled without a transaction hash: nothing stable to bind the
             // ciphertext to, so no evidence rather than evidence keyed on
             // something a verifier could not check.
-            return (response, None);
+            return (response, None, None);
         };
 
         let (parts, body) = response.into_parts();
@@ -974,7 +1038,8 @@ where
             Err(reason) => {
                 let evidence = DurableEvidence::skipped(reason);
                 let header = encode_header(&evidence).and_then(|v| HeaderValue::from_str(&v).ok());
-                return (Response::from_parts(parts, body), header);
+                let value = serde_json::to_value(&evidence).ok();
+                return (Response::from_parts(parts, body), header, value);
             }
         };
 
@@ -988,7 +1053,8 @@ where
                 hook.record_skip(reason);
                 let evidence = DurableEvidence::skipped(reason);
                 let header = encode_header(&evidence).and_then(|v| HeaderValue::from_str(&v).ok());
-                return (Response::from_parts(parts, body), header);
+                let value = serde_json::to_value(&evidence).ok();
+                return (Response::from_parts(parts, body), header, value);
             }
         };
 
@@ -1013,7 +1079,12 @@ where
         drop(permit);
 
         let header = encode_header(&evidence).and_then(|v| HeaderValue::from_str(&v).ok());
-        (Response::from_parts(parts, Body::from(bytes)), header)
+        let value = serde_json::to_value(&evidence).ok();
+        (
+            Response::from_parts(parts, Body::from(bytes)),
+            header,
+            value,
+        )
     }
 
     /// Calls the inner service with proper telemetry instrumentation.
@@ -1097,19 +1168,21 @@ where
             // as in the other branch. Error responses are not evidence.
             let delivered =
                 !(response.status().is_client_error() || response.status().is_server_error());
-            let (response, durable_header) = match &self.durable {
+            let (response, durable_header, durable_value) = match &self.durable {
                 Some(hook) if delivered => {
                     Self::attach_durable_evidence(
                         hook,
                         &self.payment_requirements,
+                        &self.extensions,
                         &verify_request,
                         &settlement,
                         response,
                     )
                     .await
                 }
-                _ => (response, None),
+                _ => (response, None, None),
             };
+            let settlement = Self::with_evidence(settlement, durable_value);
 
             let header_value = match self.settlement_to_header(settlement) {
                 Ok(header) => header,
@@ -1144,19 +1217,21 @@ where
             // DX402: seal and anchor the body before `settlement` is consumed by
             // the header encoder. This is the only point in the whole protocol
             // where the delivered bytes and the settlement identity coexist.
-            let (response, durable_header) = match &self.durable {
+            let (response, durable_header, durable_value) = match &self.durable {
                 Some(hook) => {
                     Self::attach_durable_evidence(
                         hook,
                         &self.payment_requirements,
+                        &self.extensions,
                         &verify_request,
                         &settlement,
                         response.into_response(),
                     )
                     .await
                 }
-                None => (response.into_response(), None),
+                None => (response.into_response(), None, None),
             };
+            let settlement = Self::with_evidence(settlement, durable_value);
 
             let header_value = match self.settlement_to_header(settlement) {
                 Ok(header) => header,

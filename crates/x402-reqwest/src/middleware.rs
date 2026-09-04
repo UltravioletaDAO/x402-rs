@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::SystemTimeError;
 use tracing::instrument;
-use x402_rs::dx402::DurableEvidenceConfig;
+use x402_rs::dx402::{DurableEvidenceConfig, DurableEvidenceInfo};
 use x402_rs::network::{Network, USDCDeployment};
 use x402_rs::types::{
     Base64Bytes, MixedAddressError, MoneyAmount, MoneyAmountParseError, PaymentPayload,
@@ -204,6 +204,37 @@ impl X402Payments {
         &self,
         payment_requirements: &[PaymentRequirements],
     ) -> Result<PaymentRequirements, X402PaymentsError> {
+        self.select_in(payment_requirements, &HashMap::new())
+    }
+
+    /// Select from a whole challenge, honouring its top-level `extensions`.
+    ///
+    /// The registry shape declares `durable-evidence` once on the 402 and
+    /// names the offers by index; the per-offer `extra.extensions` shape is
+    /// still read as a fallback.
+    pub fn select_from_challenge(
+        &self,
+        challenge: &PaymentRequiredResponse,
+    ) -> Result<PaymentRequirements, X402PaymentsError> {
+        self.select_in(&challenge.accepts, &challenge.extensions)
+    }
+
+    fn select_in(
+        &self,
+        payment_requirements: &[PaymentRequirements],
+        extensions: &HashMap<String, serde_json::Value>,
+    ) -> Result<PaymentRequirements, X402PaymentsError> {
+        let declared: Vec<usize> = DurableEvidenceInfo::from_extensions(extensions)
+            .map(|i| i.accept_indexes)
+            .unwrap_or_default();
+        let durable_at = |req: &PaymentRequirements| {
+            payment_requirements
+                .iter()
+                .position(|r| r == req)
+                .map(|i| declared.contains(&i))
+                .unwrap_or(false)
+                || DurableEvidenceConfig::from_requirements(req).is_some()
+        };
         let mut sorted: Vec<PaymentRequirements> = payment_requirements.to_vec();
         // Assign priority score: lower is better
         // Prefer what is in self.prefer and ultimately Base
@@ -218,7 +249,7 @@ impl X402Payments {
             // unless the client asked for it. Deterministic regardless of the
             // order the seller listed them in, so a seller cannot make an
             // indifferent client pay for evidence by listing it first.
-            let durable = DurableEvidenceConfig::from_requirements(req).is_some();
+            let durable = durable_at(req);
             let durable_rank = if self.prefer_durable_evidence {
                 u8::from(!durable)
             } else {
@@ -306,7 +337,17 @@ impl X402Payments {
         &self,
         accepts: &[PaymentRequirements],
     ) -> Result<HeaderValue, X402PaymentsError> {
-        let selected = self.select_payment_requirements(accepts)?;
+        self.build_payment_header_in(accepts, &HashMap::new()).await
+    }
+
+    /// Like [`Self::build_payment_header`], honouring the challenge's
+    /// top-level `extensions` when choosing among offers.
+    pub async fn build_payment_header_in(
+        &self,
+        accepts: &[PaymentRequirements],
+        extensions: &HashMap<String, serde_json::Value>,
+    ) -> Result<HeaderValue, X402PaymentsError> {
+        let selected = self.select_in(accepts, extensions)?;
         #[cfg(feature = "telemetry")]
         tracing::debug!(?selected, "Selected payment requirement");
         self.assert_max_amount(&selected)?;
@@ -547,6 +588,39 @@ mod durable_offer_tests {
                 .retention,
             Retention::Year1,
             "and gets the terms it paid for"
+        );
+    }
+
+    #[test]
+    fn the_top_level_declaration_is_honoured_without_anything_on_the_offers() {
+        let plain = offer("10000");
+        let durable = offer("12000"); // nothing in `extra`
+        let mut extensions = HashMap::new();
+        DurableEvidenceInfo {
+            config: Default::default(),
+            accept_indexes: vec![1],
+        }
+        .declare(&mut extensions);
+        let challenge = PaymentRequiredResponse {
+            error: String::new(),
+            accepts: vec![plain, durable],
+            x402_version: x402_rs::types::X402Version::V1,
+            extensions,
+        };
+        let chosen = client().select_from_challenge(&challenge).unwrap();
+        assert_eq!(
+            chosen.max_amount_required.to_string(),
+            "10000",
+            "indifferent -> plain"
+        );
+        let chosen = client()
+            .prefer_durable_evidence()
+            .select_from_challenge(&challenge)
+            .unwrap();
+        assert_eq!(
+            chosen.max_amount_required.to_string(),
+            "12000",
+            "opted in -> index 1"
         );
     }
 

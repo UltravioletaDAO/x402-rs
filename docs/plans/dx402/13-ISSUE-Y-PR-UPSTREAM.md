@@ -59,10 +59,10 @@ La rama ya está preparada en local (`scratchpad/x402-upstream`, rama
 
 ## 3. Checklist antes de abrir
 
-- [ ] 2.12.0 desplegado (la forma del spec es la que corre en producción)
+- [x] 2.12.0 desplegado 2026-09-04 (la forma del spec es la que corre en producción)
 - [ ] `12-SPEC-v0.3-foundation.md` releído una vez más en frío: cero menciones a DX402/producto, cero anécdotas
-- [ ] Fork de `x402-foundation/x402` bajo `UltravioletaDAO`
-- [ ] `git config user.signingkey` + `commit.gpgsign` en el fork; commit `-S -s`
+- [x] Fork: `0xultravioleta/x402` (la org no permite fork sin admin); rama `spec/durable-evidence` pusheada
+- [x] Commit firmado y **verificado por GitHub** (`verified=true`): clave `AE07…8E75`, autor/committer `ultravioletadao@gmail.com` — `0xultravioleta@gmail.com` es de otra cuenta y no verifica en ésta
 - [ ] Issue abierto; esperar una reacción de maintainer **o** 72 h antes del PR
 - [ ] PR abierto con `Closes #<issue>`
 - [ ] Mensaje en slack.x402.org (un párrafo, con link al issue)

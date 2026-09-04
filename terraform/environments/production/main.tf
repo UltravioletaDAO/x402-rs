@@ -517,6 +517,20 @@ resource "aws_route53_record" "main" {
   }
 }
 
+# Descubrimiento DNS de x402 (draft-hawkins-x402-dns-discovery-03): `_x402.<dominio>` TXT que
+# apunta al manifiesto que este facilitador ya sirve en /.well-known/x402. Pedido del operador
+# el 2026-09-04, la víspera de su reunión con el grupo de descubrimiento de la x402 Foundation:
+# con el manifiesto Y el TXT, este facilitador es una implementación viva del borrador.
+# El borrador exige UN solo registro con v=x402-1 por owner name; `k` y `scheme` son opcionales
+# y aquí dicen la verdad: rol facilitador, esquema exact.
+resource "aws_route53_record" "x402_discovery" {
+  zone_id = data.aws_route53_zone.main.zone_id
+  name    = "_x402.${var.domain_name}"
+  type    = "TXT"
+  ttl     = 300
+  records = ["v=x402-1; wk=https://${var.domain_name}/.well-known/x402; k=facilitator; scheme=exact"]
+}
+
 # ============================================================================
 # CloudWatch Log Group
 # ============================================================================

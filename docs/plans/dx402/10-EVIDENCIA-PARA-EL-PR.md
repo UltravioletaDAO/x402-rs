@@ -1,3 +1,5 @@
+> **Actualización 2026-09-04 (posterior a este documento):** las 5 filas de Solana marcadas `verified: true` por el código anterior a v1.82.0 fueron pasadas a `verified: false` (`notVerifiedReason: pre_gate_self_asserted_2026_08_18`). El corpus certificado es ahora **100 % EVM**; re-conteo tras la corrección: **119 verificados en 7 redes**. Los números de abajo son los medidos antes de esa corrección y se conservan tal cual; el §5 reproduce el estado actual.
+
 # DX402 — Evidencia reproducible para el PR upstream
 
 **Snapshot:** 2026-09-04 03:13Z. **Facilitador en producción:** `2.10.0` (`curl -s https://facilitator.ultravioletadao.xyz/version`).

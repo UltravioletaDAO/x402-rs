@@ -36,7 +36,7 @@ con fecha. Una fila sin evidencia no está hecha, por más que el código exista
 | # | Qué | Dueño | Cómo sabemos que está |
 |---|---|---|---|
 | ✅ | **Corpus certificado — meta superada en un día.** 2026-09-04, número **honesto**: **116 `verified: true` en 7 redes EVM** (avalanche 49, arbitrum 37, optimism 9, base 7, monad 7, ethereum 6, polygon 1), **111 firmados**, **26 compradores y 24 vendedores** distintos (EVM). El 122 que reportamos primero incluía 5 filas de Solana del 2026-08-18 marcadas `verified` por el código pre-v1.82.0 (finalidad autodeclarada) con `txHash` de demo (`KKFIRMADEMO…`); el código actual no puede producirlas. Meta era 50 / 3 / 5 y 5 | KK (enjambre + barrido) | `10-EVIDENCIA-PARA-EL-PR.md` §5 reproduce cada número; recibo EIP-712 recuperado offline al firmante en base y avalanche |
-| ⬜ | **Limpiar las 5 filas de Solana pre-gate** marcadas `verified: true` con hash de demo — o dejarlas y declararlas. Es dato de producción: decisión del operador, no del código | Saul | Las 5 filas quedan `verified: false` o el §4 de la evidencia las nombra |
+| ✅ | **Las 5 filas de Solana pre-gate** (2026-08-18, finalidad autodeclarada, `txHash` de demo) pasaron a `verified: false` con `notVerifiedReason: pre_gate_self_asserted_2026_08_18`, vía `update-item` condicionado a `verified = true`. Re-conteo 2026-09-04: **119 verificados, 100 % EVM**, 7 redes | Saul autorizó; ejecutado | El scan de `10-EVIDENCIA` §5 da 119 y ninguna fila de Solana |
 | ✅ | Barrido en cron cada 5 min por worker | KK | `signed` pasó de 1 a 111 en ~8 h sin intervención |
 | ⬜ | **Sostenido 7 días.** Único sub-criterio abierto. La flota quedó **pausada** 2026-09-04 02:09Z por combustible (ver `2026-09-04-dx402-kk-corpus-final.md`); mientras esté pausada el corpus no crece | Saul (combustible) + KK | El contador sigue subiendo hasta 2026-09-10 |
 | ⬜ | Los SDK (py/ts) exponen el opt-in: helper para armar el par de ofertas + `prefer_durable_evidence` en el cliente | uvd-x402-sdk | Publicados y un e2e que paga la oferta durable desde Python/TS |
@@ -99,8 +99,7 @@ Con el enjambre encendido y el cron del barrido, el corpus se llena solo.
    restructure".
 2. **Desplegar 2.11.0** (`2ab7deb2` local; `deploy-readiness` emite el GO/NO-GO
    contra ese hash). Pushear a `main` es el deploy.
-3. **Las 5 filas de Solana pre-gate** marcadas `verified: true` con hash de demo:
-   limpiarlas en la tabla o declararlas en la evidencia. Es dato de producción.
+3. ~~Las 5 filas de Solana pre-gate~~ — hecho 2026-09-04.
 4. **Cuándo abrir**: el corpus y el spec ya alcanzan; la restructura del punto 1
    es lo que decide si el PR se abre esta semana o la próxima.
 

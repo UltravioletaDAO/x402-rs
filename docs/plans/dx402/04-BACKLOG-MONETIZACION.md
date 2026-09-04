@@ -1,5 +1,7 @@
 # DX402 — Backlog v0.2: opt-in bidireccional y monetización
 
+> **Estado 2026-09-04.** §2 (opt-in del comprador vía `accepts`) cerrado en 2.11.0; §2-bis (sobre bidireccional) cerrado en v1.79.0; §2-ter (el anchor no verificaba el pago) cerrado en v1.78.0→v1.82.0 y endurecido en 2.10.0/2.11.0. Lo que sigue se conserva por el razonamiento, no como estado. Fuente viva: `08-SPEC-v0.2.md` y `09-ESTADO-Y-CAMINO-A-UPSTREAM.md`.
+
 **Fecha:** 2026-08-17
 **Origen:** dos preguntas de Saul durante el despliegue de v1.76.0
 **Estado:** diseño. **No implementado.** Resolver ANTES de proponer upstream,
@@ -183,6 +185,8 @@ opcional.
 ---
 
 ## 2-ter. `POST /dx402/anchor` no verifica que el pago exista
+
+> **CERRADO** (v1.78.0 gate, v1.82.0 escalera de autoridad, 2.10.0 riel de escrow, 2.11.0 red team). Leído en frío parecía una vulnerabilidad abierta; no lo es.
 
 **Superficie de abuso real, hoy, en producción.** Va acá para que no se descubra
 sola.
@@ -369,6 +373,8 @@ redirigir evidencia futura. La regla del anchor sirve igual — una declaración
 firmada supera a una que no lo está, nunca al revés.
 
 ### El PR a la x402 Foundation — EN PAUSA
+
+> **2026-09-04:** la precondición está cumplida — 116 `verified` en 7 redes EVM, 26/24 compradores/vendedores (`10-EVIDENCIA-PARA-EL-PR.md`). El camino que falta está en `09-ESTADO-Y-CAMINO-A-UPSTREAM.md`.
 
 Los dos bloqueantes técnicos están cerrados (gate del anchor v1.78.0, envelope
 bidireccional v1.79.0). **No se propone hasta tener tráfico real.** Una propuesta

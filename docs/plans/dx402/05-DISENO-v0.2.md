@@ -2,7 +2,7 @@
 
 **Fecha:** 2026-08-17
 **Origen:** dos preguntas de Saul después de que v1.77.0 quedó vivo
-**Estado:** diseño. No implementado. Cierra los dos bloqueantes de upstream.
+**Estado:** implementado (gate 1.78.0 / sobre bidireccional 1.79.0 / opt-in 2.11.0). Documento de diseño, conservado. Sigue abierto sólo el gate en Solana.
 
 ---
 

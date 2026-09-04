@@ -10,7 +10,7 @@
 ```
 
 [![Live](https://img.shields.io/badge/live-facilitator.ultravioletadao.xyz-00d4aa)](https://facilitator.ultravioletadao.xyz)
-[![Version](https://img.shields.io/badge/version-1.46.0-blue)](https://github.com/UltravioletaDAO/x402-rs)
+[![Version](https://img.shields.io/badge/version-2.11.0-blue)](https://github.com/UltravioletaDAO/x402-rs)
 [![Swagger](https://img.shields.io/badge/docs-Swagger_UI-85ea2d)](https://facilitator.ultravioletadao.xyz/docs/)
 [![Rust](https://img.shields.io/badge/rust-2021-orange)](https://www.rust-lang.org/)
 
@@ -345,12 +345,24 @@ let hook = DurableEvidenceHook::new(
     Arc::new(HttpPutSink::new("https://evidence.example.com")),
     "https://facilitator.ultravioletadao.xyz",
 );
-let layer = x402.with_price_tag(usdc.amount(0.01)?).with_durable_evidence(hook);
+let hook = hook.with_anchor_signer(seller_key);   // without this every anchor stays provisional
+let layer = x402
+    .with_price_tag(usdc.amount(0.010)?)                              // plain
+    .with_durable_offer(usdc.amount(0.012)?, DurableEvidenceConfig::default()) // + evidence, buyer's choice
+    .with_durable_evidence(hook);
 ```
 
+The buyer opts in from the client side with `X402Payments::with_wallet(w).prefer_durable_evidence()`;
+a client that never asks keeps paying for the plain offer, whatever order the seller listed them in.
+
+Every anchor is judged against the chain (`verified` / `signed` on the record), and a payment
+released from an x402r escrow carries `escrowRelease` so the facilitator can resolve the real
+buyer through the escrow's own `getHash`. See docs/DX402.md — "The anchor gate", "Letting the
+buyer choose", "Payments released from an x402r escrow".
+
 **DX402 can never fail a payment.** An oversized body, a full memory budget, an
-unreachable sink, or a smart-contract wallet with no recoverable key all
-downgrade to a skip notice in the `X-Durable-Evidence` header; the response is
+unreachable sink, a smart-contract wallet with no recoverable key, or a buyer who
+paid for the plain offer (`not_selected`) all downgrade to a skip notice in the `X-Durable-Evidence` header; the response is
 delivered exactly as before.
 
 `DX402_MAX_BODY_BYTES` (default 32 MiB) is the largest body that gets evidence,
@@ -373,11 +385,13 @@ implemented yet (`docs/plans/dx402/04-STREAMING-EVIDENCE-HANDOFF.md`).
 | `POST` | `/dx402/anchor` | a resource server reports an anchor (metadata only) |
 | `GET` | `/dx402/evidence/{paymentId}` | pointer, content hash, mode, receipt |
 | `GET` | `/dx402/receipt/{paymentId}` | signed receipt, verifiable offline |
-| `GET` | `/dx402/stats` | anchors notarised |
-| `POST` | `/dx402/recover` | `escrowed` mode — **501 in v0.1** |
+| `GET` | `/dx402/blob/{paymentId}` | the ciphertext, when the facilitator hosts it (private bucket) |
+| `GET` | `/dx402/stats` | anchor count **and the backends this deployment actually offers** |
+| `POST` | `/dx402/repair/{paymentId}` | rewrite a pointer that names nothing — **admin only** (`DX402_ADMIN_TOKEN`, 404 without it) |
+| `POST` | `/dx402/recover` | `escrowed` mode — **501**, out of scope (spec v0.2 §17) |
 
 Present only when `ENABLE_DX402=true`. Full documentation: **[docs/DX402.md](docs/DX402.md)**;
-normative spec: **[docs/plans/dx402/02-SPEC-v0.1.md](docs/plans/dx402/02-SPEC-v0.1.md)**.
+normative spec: **[docs/plans/dx402/08-SPEC-v0.2.md](docs/plans/dx402/08-SPEC-v0.2.md)** (v0.1 is kept for history).
 
 ---
 
@@ -617,8 +631,8 @@ When bumping the version, adding endpoints, or adding networks, update **all** o
 
 | File | What to update |
 |------|---------------|
-| `Cargo.toml` | `version` field |
-| `src/openapi.rs` | `version` in `#[openapi(info(...))]`, endpoint docs, network lists |
+| `VERSION` | the release version — never `Cargo.toml`, which holds a frozen `0.0.0` placeholder |
+| `src/openapi.rs` | endpoint docs, network lists (the version is patched at runtime from `VERSION`) |
 | `README.md` | Version badge, network tables, API endpoint table, ERC-8004 network count |
 | `static/index.html` | Network cards, stats, ERC-8004 showcase badges, i18n strings (EN/ES) |
 | `docs/CHANGELOG.md` | New version entry |

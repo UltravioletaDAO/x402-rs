@@ -1,6 +1,6 @@
 # DX402 — Estado y camino al PR upstream
 
-**Snapshot:** 2026-09-03. **Facilitador en producción:** 2.10.0.
+**Snapshot:** 2026-09-04 (medido sobre la tabla, no sobre reportes). **Facilitador en producción:** 2.10.0; 2.11.0 commiteado sin desplegar.
 **Pregunta que responde este documento:** ¿podemos abrir el PR a la x402
 Foundation? Y si no, ¿qué falta exactamente, quién lo hace, y cómo sabemos que
 está?
@@ -21,6 +21,7 @@ con fecha. Una fila sin evidencia no está hecha, por más que el código exista
 | ✅ | Firmas **ed25519** para payees de Solana/Stellar | v1.82.0; `gate.rs::verify_ed25519` |
 | ✅ | **Riel de escrow (x402r)**: el comprador se resuelve por `getHash` del propio escrow | **2.10.0**, commit `e55fcf83`; fixture pineada contra optimism `0x5a2822cc…`; muestreo 23/23 |
 | ✅ | Lote ambiguo rechazado (`dx402_escrow_release_ambiguous`) | 2.10.0 |
+| ✅ | **P1 del red team cerrado**: el riel se clasifica desde el receipt, no desde el `payer` declarado; sellar al TokenStore ya no salta la resolución por escrow ni la refusal de ambigüedad. Venía del gate original (v1.78.0), no de 2.10.0 | Este commit; `classify_rail` + 4 tests |
 | ✅ | Gate probado hasta el escalón final con un release **real** reejecutado en fork | `tests/dx402_escrow_sim.rs` + `07-SIMULACION-ESCROW.md`, commit `52cc0af8` |
 | ✅ | Barrido del worker que firma y superpone anclajes provisionales | KK `261df4f8`; **primer `signed: true` en producción** (monad `0xf170a205…`, 2026-09-03) |
 | ✅ | Paybox firma el digest crudo y recupera al payee (no aplica EIP-191) | Medido 2026-09-03 contra el custodio real |
@@ -34,11 +35,29 @@ con fecha. Una fila sin evidencia no está hecha, por más que el código exista
 
 | # | Qué | Dueño | Cómo sabemos que está |
 |---|---|---|---|
-| ⬜ | **Corpus certificado.** Hoy: 699 anclajes, **1 firmado, 12 verificados (tests), 0 multi-destinatario en prod**. Sin esto el PR dice "lo construimos", no "lo corrimos" | **Saul** (encender el enjambre) + barrido corriendo | `aws dynamodb scan facilitator_dx402_evidence` con decenas de `verified: true` sobre trades reales; ≥1 semana de tráfico |
-| ⬜ | Barrido en cron: `dx402_firmar_anclajes.py --horas 0.2` cada ~5 min por agente (la ventana son 900s) | KK | Anclajes nuevos aparecen `signed: true` sin intervención |
+| ✅ | **Corpus certificado — meta superada en un día.** 2026-09-04, número **honesto**: **116 `verified: true` en 7 redes EVM** (avalanche 49, arbitrum 37, optimism 9, base 7, monad 7, ethereum 6, polygon 1), **111 firmados**, **26 compradores y 24 vendedores** distintos (EVM). El 122 que reportamos primero incluía 5 filas de Solana del 2026-08-18 marcadas `verified` por el código pre-v1.82.0 (finalidad autodeclarada) con `txHash` de demo (`KKFIRMADEMO…`); el código actual no puede producirlas. Meta era 50 / 3 / 5 y 5 | KK (enjambre + barrido) | `10-EVIDENCIA-PARA-EL-PR.md` §5 reproduce cada número; recibo EIP-712 recuperado offline al firmante en base y avalanche |
+| ⬜ | **Limpiar las 5 filas de Solana pre-gate** marcadas `verified: true` con hash de demo — o dejarlas y declararlas. Es dato de producción: decisión del operador, no del código | Saul | Las 5 filas quedan `verified: false` o el §4 de la evidencia las nombra |
+| ✅ | Barrido en cron cada 5 min por worker | KK | `signed` pasó de 1 a 111 en ~8 h sin intervención |
+| ⬜ | **Sostenido 7 días.** Único sub-criterio abierto. La flota quedó **pausada** 2026-09-04 02:09Z por combustible (ver `2026-09-04-dx402-kk-corpus-final.md`); mientras esté pausada el corpus no crece | Saul (combustible) + KK | El contador sigue subiendo hasta 2026-09-10 |
 | ⬜ | Los SDK (py/ts) exponen el opt-in: helper para armar el par de ofertas + `prefer_durable_evidence` en el cliente | uvd-x402-sdk | Publicados y un e2e que paga la oferta durable desde Python/TS |
 | ⬜ | Verificar el **proceso** de la Foundation: dónde viven los specs de extensiones, formato, plantilla | Yo | Un link al directorio/PR de referencia en este documento |
 | ⬜ | Fase 2 (`DX402_REQUIRE_PROOF=true`) encendida en prod con tráfico real pasando | Saul | Logs sin `dx402_*` de rechazo sobre tráfico legítimo durante ≥48h |
+
+## 2-bis. Red team 2026-09-04 (14 hallazgos, veredicto SAFE WITH FIXES)
+
+| Sev | Hallazgo | Estado |
+|---|---|---|
+| P1 | #1 sellar al TokenStore saltaba la resolución por escrow | ✅ `classify_rail`, resolución incondicional |
+| P1 | #2 el recibo firmaba `payee`/`txHash` del caller sin cotejar con la prueba | ✅ atados a la prueba, local, antes del RPC |
+| P1 | #3 `PaymentInfo.payer` no es "hecho on-chain": el escrow es permissionless para el operador y acepta cualquier collector | 📝 doc y spec corregidos; **allowlist de tokens** en el proof path = follow-up |
+| P1 | #13 empate de precio → la simple ganaba (evidencia gratis muerta; skim con tag acolchado) | ✅ empate → la que declara; sobrepago → la más cara cubierta |
+| P2 | #4 panic remoto por `Uint::from` en `to_escrow_abi` | ✅ `try_from` → `EscrowReleaseInvalid` |
+| P2 | #9 `settle_before_execution` cobraba evidencia y nunca anclaba | ✅ el hook corre también en esa rama |
+| P2 | #10 declaración malformada fallaba abierta (anclaba a todos) | ✅ presencia ≠ validez; `NotSelected` |
+| P2 | #14 no-EVM: la segunda oferta es impagable; `asset` no está en el filtro | 📝 documentado EVM-only; `asset` no viene en el payload v1 EVM → follow-up en v2 |
+| P2 | #5 un escrow por red, `getHash` en `latest`, sin aserción de código | ⬜ follow-up |
+| P2 | #6 `paymentId` como clave de registro sin normalizar (`0x`/mayúsculas) | ⬜ follow-up |
+| — | #7, #12 mitigados por diseño; #11 INFO | — |
 
 ## 3. Lo que NO bloquea (y el spec lo dice)
 
@@ -49,10 +68,13 @@ con fecha. Una fila sin evidencia no está hecha, por más que el código exista
 | Anclaje on-chain del digest del recibo | No planeado para v0.2 |
 | `escrowed` / `POST /dx402/recover` | 501 honesto. La llave de lectura declarada (EM) lo cubre mejor |
 
-## 4. El flujo que falta, dicho concreto
+## 4. El flujo que faltaba — ya corrió
 
-Lo que más falta **no es código**: es que KarmaCadabra opere sobre Execution
-Market. Cada trade del enjambre produce un release de escrow → EM ancla
+La secuencia completa sobre pagos reales corrió el 2026-09-03/04: trade de KK en
+EM → release de escrow → EM ancla provisional → el worker firma dentro de los
+900 s → el facilitador verifica contra la cadena → `verified: true`. **122 veces,
+en 8 redes.** Lo que sigue abajo es el texto original, conservado como registro
+de lo que hacía falta y por qué. Cada trade del enjambre produce un release de escrow → EM ancla
 provisional → el barrido del worker lo firma dentro de los 900s → el facilitador
 lo verifica contra la cadena → `verified: true`. Todo eso existe y está probado
 por partes. Lo que no ha pasado es **la secuencia completa sobre un pago real**,
@@ -62,8 +84,11 @@ Con el enjambre encendido y el cron del barrido, el corpus se llena solo.
 
 ## 5. Decisión pendiente
 
-- **Abrir hoy como borrador/RFC** (con la spec v0.2) para conversación temprana, o
-- **Esperar ~1-2 semanas** de corpus certificado y abrir con números.
+El corpus cerró en un día en vez de dos semanas. Lo que queda antes de abrir:
 
-Recomendación: la segunda. Una propuesta descartada por falta de uso es más cara
-que dos semanas.
+1. **Verificar el proceso de la Foundation** (dónde viven los specs, formato, plantilla) — nadie lo ha mirado; todo lo anterior salió de notas propias.
+2. **Desplegar 2.11.0** (opt-in `accepts`) para que el spec v0.2 describa lo que está en producción, no en `main`.
+3. Los SDK py/ts con el opt-in — deseable, no bloqueante: la implementación de referencia es Rust.
+
+Con 1 y 2, el PR se puede abrir esta semana con números medidos. El criterio de
+"7 días sostenido" se cumple solo si la flota vuelve a correr.

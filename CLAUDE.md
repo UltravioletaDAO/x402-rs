@@ -235,7 +235,7 @@ python scripts/compare_usdc_contracts.py
 - `events.rs`, `transaction_store{,.rs}` - SSE stream + DynamoDB index behind `/events`, `/transactions`, `/api/stats`
 - `nonce_store.rs`, `writer_lease.rs`, `idempotency_store.rs` - concurrency and replay control
 - `blocklist.rs`, `redact.rs`, `sig_down.rs`, `json_depth.rs`, `fhe_proxy.rs` - compliance and hardening
-- `dx402/` - **DX402 `durable-evidence`** (v1.75.0): seals a paid response to the payer's own public key and anchors it. OFF unless `ENABLE_DX402=true`. See below and `docs/DX402.md`.
+- `dx402/` - **DX402 `durable-evidence`** (v1.75.0+, current through 2.11.0): seals a paid response to the payer's own public key and anchors it. OFF unless `ENABLE_DX402=true`. See below and `docs/DX402.md`.
 - `version.rs` (resolves the VERSION file at runtime), `telemetry.rs`, `openapi.rs`, `from_env.rs`
 
 ### Workspace Structure
@@ -696,7 +696,7 @@ The following networks exist as enum entries in `src/network.rs` but are **NOT s
 - `GET /api/stats` - Aggregated totals per network and asset (JSON)
 - `GET /api/stats/history` - Settlement history reconstructed from the chain. NOT the same claim as `/api/stats` (which is what the facilitator measured); every row carries `source`
 - `GET /transactions` - Recent recorded operations (JSON, `limit` capped at 200)
-- DX402: `POST /dx402/anchor`, `GET /dx402/evidence/{paymentId}`, `GET /dx402/receipt/{paymentId}`, `GET /dx402/blob/{paymentId}`, `GET /dx402/stats`, `POST /dx402/recover` (501 in v0.1). Present only when `ENABLE_DX402=true`.
+- DX402: `POST /dx402/anchor`, `GET /dx402/evidence/{paymentId}`, `GET /dx402/receipt/{paymentId}`, `GET /dx402/blob/{paymentId}`, `GET /dx402/stats`, `POST /dx402/repair/{paymentId}` (admin only: `DX402_ADMIN_TOKEN`, 404 without it), `POST /dx402/recover` (501, out of scope — spec v0.2 §17). Present only when `ENABLE_DX402=true`.
 - `POST /mcp` - MCP server (Streamable HTTP, stateless). Four tools, and only four: `x402_supported`, `x402_accepts`, `x402_verify`, `x402_settle`. Each is dispatched THROUGH the REST router (`src/mcp.rs`, `ServiceExt::oneshot`), never by calling the handler functions -- `POST /settle` carries `settle_writer_gate` and calling `post_settle` directly would skip the writer lease. `/mcp` shares the `verify_settle_config` governor Arc, so it draws on the SAME per-IP bucket as `/verify` and `/settle` (measured: 15 MCP calls + 20 verify calls from one IP = 5 x 429). `GET /mcp` is a JSON 405; there is no SSE stream in stateless mode. `MCP_ALLOWED_HOSTS` overrides the Host allowlist, whose default already contains the production host -- rmcp's own default is loopback only and would 403 everything behind the ALB. **The synthetic request MUST carry the caller's `X-Forwarded-For`** (copied from the outer request's `http::request::Parts`, which rmcp leaves in `context.extensions`): `settle_writer_gate` forwards an EVM settle to the lease holder over direct task-to-task TCP that never touches the ALB, and `SmartIpKeyExtractor` on the far side has no `ConnectInfo` to fall back to (`axum::serve`, not `into_make_service_with_connect_info`), so without it the holder answers 500 `Unable To Extract Key!` on most EVM settles once there is more than one task. `Accept` must name BOTH `application/json` and `text/event-stream` or rmcp answers 406. A tool call carries no headers, so `x402_settle` takes an optional `idempotencyKey` argument that is lifted OUT of the body into the `Idempotency-Key` header -- leaving it in the body would change the body hash `post_settle` uses to detect replays.
 - `GET /.well-known/mcp/server-card.json` - MCP server card. `serverInfo.version` is NOT in the static file; it is stamped from `FACILITATOR_VERSION` when served.
 - `GET /docs` - Interactive Swagger UI (OpenAPI documentation)
@@ -704,7 +704,7 @@ The following networks exist as enum entries in `src/network.rs` but are **NOT s
 - Discovery (Bazaar) API: `POST /discovery/register`, `GET /discovery/resources`, `GET /discovery/stats`, `GET /discovery/attestation/{hash}`; admin: `DELETE /discovery/resources`, `POST /discovery/admin/suppress`, `POST /discovery/admin/release`
 - Asset endpoints: `/logo.png`, `/favicon.ico`, `/avalanche.png`, etc.
 
-### DX402 durable-evidence (v1.75.0)
+### DX402 durable-evidence
 
 x402 settles payment permanently but delivers the resource **once** and keeps
 nothing. DX402 closes that: the seller seals a copy of the response body to the
@@ -731,8 +731,11 @@ sees `/verify` and `/settle`, never a body), so:
 
 **Rules that are load-bearing:**
 - **DX402 can never fail a payment.** Every failure degrades to a `SkipReason`
-  (`too_large`, `anchor_failed`, `no_payer_key`, `disabled`) carried in the
-  `X-Durable-Evidence` header. Same discipline as `transaction_store`.
+  (`too_large`, `busy`, `anchor_failed`, `no_payer_key`, `disabled`,
+  `not_selected`) carried in the `X-Durable-Evidence` header. `busy` is the
+  memory budget, deliberately not `anchor_failed`; `not_selected` is the buyer
+  paying for the plain offer, not a failure at all. Same discipline as
+  `transaction_store`.
 - **`contentHash` is over the PLAINTEXT.** Over the ciphertext it would only
   prove the blob was not corrupted; over the plaintext it proves the anchor
   decrypts to what was actually delivered.
@@ -740,6 +743,18 @@ sees `/verify` and `/settle`, never a body), so:
   Derive it differently on either side and decryption fails with no obvious cause.
 - **Anchoring is publishing.** `retention` defaults to `90d` on purpose;
   `permanent` is irrevocable.
+- **A `paymentId` claim without a payee signature is provisional.** Authority is
+  a ladder — provisional < signed < verified — and a verified anchor supersedes.
+  An unconditional permanent claim was hijackable in production (v1.82.0).
+- **On an x402r escrow release the ERC-20 `from` is the operator's TokenStore,
+  never the buyer** (23/23 live Execution Market releases, 2026-09-02). Those
+  anchors carry `escrowRelease`; the facilitator asks the escrow to `getHash` it
+  and requires a `paymentInfoHash` THIS transaction captured. Without it phase 2
+  would reject the whole rail as fraudulent.
+- **The buyer opts in through `accepts`** (2.11.0). The seller lists the resource
+  twice (`with_durable_offer`); whichever offer is paid decides. Paying the plain
+  one yields `{"skipped":"not_selected"}`, not silence. The layer matches the
+  paid offer by the signed `authorization.to` + `value`, not by listing order.
 - **Small-order ed25519 keys are rejected** (RFC 7748 §6.1, constant time).
   `ed25519-dalek` accepts non-canonical and small-order encodings in
   `VerifyingKey::from_bytes`; unchecked, that collapses the ECDH shared secret to
@@ -751,8 +766,13 @@ sees `/verify` and `/settle`, never a body), so:
   different, perfectly valid public key.
 
 Config (all optional; **default OFF**): `ENABLE_DX402`, `DX402_STORE_BACKEND`
-(only `s3` in v0.1), `DX402_STORE_BUCKET`, `DX402_STORE_PUBLIC_BASE`,
-`DX402_REGISTRY_TABLE_NAME`, `DX402_SIGNING_KEY`, `DX402_RETENTION`. Missing
+(`s3` | `ipfs` — Pinata private files, live; `arweave` is refused),
+`DX402_STORE_BUCKET`, `DX402_STORE_PUBLIC_BASE`, `DX402_REGISTRY_TABLE_NAME`,
+`DX402_SIGNING_KEY`, `DX402_RETENTION`, `DX402_PINATA_JWT`, `DX402_PINATA_GATEWAY`,
+`DX402_ALLOW_PUBLIC_IPFS` (default false — irreversible), `DX402_ADMIN_TOKEN`
+(gates `/dx402/repair`; unset → 404), `DX402_REQUIRE_PROOF` (default `false` =
+phase 1: verify and report, never reject), `DX402_ANCHOR_MAX_AGE_SECS` (default
+900). Seller-side in `x402-axum`: `DX402_MAX_BODY_BYTES`, `DX402_MAX_INFLIGHT_BYTES`. Missing
 config **disables** the feature and logs why — it never falls back to an
 in-memory store that would report evidence for data that dies with the process.
 
@@ -767,12 +787,25 @@ key layout so old pointers survive a re-layout. The receipt-signing key
 `scripts/dx402-bootstrap-secret.sh` and signs attestations only — no funds, no
 gas. Runbook: `docs/plans/dx402/03-DEPLOY-RUNBOOK.md`.
 
-Spec: `docs/plans/dx402/02-SPEC-v0.1.md`. Guide: `docs/DX402.md`. Research and
+Spec: `docs/plans/dx402/08-SPEC-v0.2.md` (v0.1 kept for history). Status and path to the upstream PR: `docs/plans/dx402/09-ESTADO-Y-CAMINO-A-UPSTREAM.md`. Guide: `docs/DX402.md`. Research and
 prior-art survey: `docs/plans/dx402/00-RESEARCH.md`. Handoffs for KarmaCadabra,
 execution.market, MeshRelay and describe.net: `docs/handoffs/2026-08-14-dx402-*.md`.
 
-**Not yet proposed upstream** — the x402 Foundation requires a reviewed PR, and a
-proposal without production usage gets discarded. Propose after real traffic.
+**Not yet proposed upstream.** The precondition we set ourselves is met (116
+chain-verified anchors on 7 EVM networks, 26 buyers / 24 sellers, 2026-09-04 —
+`docs/plans/dx402/09-ESTADO-Y-CAMINO-A-UPSTREAM.md`). The process, verified
+against the repo on 2026-09-03 and NOT what earlier notes assumed: the canonical
+repo is **`x402-foundation/x402`** (coinbase/x402 is a fork; old PR URLs 404),
+specs live in `specs/extensions/`, there is **no template** — convention is a
+`# Extension: \`key\`` title, RFC-2119, an `{info, schema}` envelope under
+`extensions[key]`, a security section. **Spec-only PR first**; a reference
+implementation is not required to merge. Open a GitHub **issue** first
+(Discussions is disabled), commits **GPG-signed and DCO-signed** (`-S -s`), AI
+disclosure is mandatory. There is no written production-usage rule; the real
+gate is a maintainer picking it up (external precedent: 62 days, #935). Five
+open delivery-hash proposals are unreviewed (#3186, #3140, #3304, #2666, #1932)
+— position `durable-evidence` as the encrypted-retrieval layer that composes
+with them (spec v0.2 §18.1), never as a sixth hash.
 
 ### ERC-8004 endpoints
 

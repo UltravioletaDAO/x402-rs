@@ -130,8 +130,8 @@ trae un desafío. Ese `None` es distinguible a propósito de un `accepts` vacío
 
 - **Gate on-chain en Solana** — priorizado, sin hacer. Ahí el máximo sigue siendo
   `signed: true`.
-- **`ipfs-public`** — apagado hasta que exista el opt-in del comprador.
-- **Opt-in del comprador vía `accepts`** — diseñado, sin implementar.
+- **`ipfs-public`** — apagado hasta que exista el opt-in del comprador. → el canal existe desde 2.11.0; falta conectarlo.
+- **Opt-in del comprador vía `accepts`** — diseñado, sin implementar. → **cerrado 2026-09-03 (2.11.0)**, ver `08-SPEC-v0.2.md` §4.2.
 - **`escrowed` / `POST /dx402/recover`** — 501 honesto.
 
 ---

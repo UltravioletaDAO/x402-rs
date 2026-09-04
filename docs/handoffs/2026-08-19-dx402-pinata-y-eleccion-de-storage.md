@@ -189,8 +189,8 @@ afecta y no estaba escrito en ningún lado.
 Para que no lo prueben y se frustren:
 
 - **Gate on-chain en Solana** — priorizado, sin hacer.
-- **`ipfs-public`** — apagado hasta que exista el opt-in del comprador.
-- **Opt-in del comprador vía `accepts`** — diseñado, sin implementar.
+- **`ipfs-public`** — apagado hasta que exista el opt-in del comprador. → el canal existe desde 2.11.0; falta conectarlo.
+- **Opt-in del comprador vía `accepts`** — diseñado, sin implementar. → **cerrado 2026-09-03 (2.11.0)**, ver `08-SPEC-v0.2.md` §4.2.
 - **Barredor de retención en Pinata** — sin él, en el camino Pinata "90 días"
   todavía no se cumple solo. En S3 sí, lo hace una regla del bucket.
 - **`escrowed` / `POST /dx402/recover`** — sigue devolviendo 501 honesto.

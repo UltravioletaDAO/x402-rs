@@ -1,5 +1,7 @@
 # DX402 — Pinata como backend de almacenamiento
 
+> **2026-09-04.** Pinata está vivo (`ipfs-private` en `/dx402/stats`). La tabla de docs a actualizar del final quedó sin ejecutar hasta hoy; CLAUDE.md, README y openapi ya la reflejan. `ipfs-public` sigue apagado: el canal de consentimiento existe desde 2.11.0 (`accepts`), falta conectarlo.
+
 **Fecha:** 2026-08-19
 **Decisiones tomadas (Saul):** privado por defecto, público como opt-in por
 anclaje declarado en el recibo; Pinata primario con **fallback automático a S3**.

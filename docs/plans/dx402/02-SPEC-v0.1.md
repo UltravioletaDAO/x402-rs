@@ -1,6 +1,6 @@
 # DX402 — `durable-evidence` Extension Specification v0.1
 
-**Status:** Draft. Implemented in `x402-rs` before proposal upstream.
+**Status:** Superseded by [08-SPEC-v0.2.md](08-SPEC-v0.2.md) (2026-09-03). Kept for history.
 **Extension key:** `durable-evidence`
 **Product name:** DX402
 **Authors:** Ultravioleta DAO

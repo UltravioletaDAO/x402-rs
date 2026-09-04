@@ -292,7 +292,7 @@ Para que no lo busquen:
 
 - **`POST /dx402/recover` devuelve 501.** Es a propósito: el modo `direct` no
   necesita endpoint de recuperación porque el comprador ya tiene la única clave.
-- **No hay opt-in del comprador todavía.** Hoy el vendedor decide por ruta. Que
+- **No hay opt-in del comprador todavía.** Hoy el vendedor decide por ruta. Que → **cerrado 2026-09-03 (2.11.0)**, ver `08-SPEC-v0.2.md` §4.2.
   el comprador elija (y pague un poco más) está diseñado pero no implementado —
   `docs/plans/dx402/04-BACKLOG-MONETIZACION.md`.
 - **El modo `escrowed`** (que el facilitador guarde la clave) no existe.

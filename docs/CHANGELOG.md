@@ -1,5 +1,63 @@
 # Changelog
 
+## [2.11.0] - 2026-09-04 (committed, not yet deployed)
+
+### Added
+
+- **The buyer chooses durable evidence from `accepts`.** A seller lists the same
+  resource twice — plain, and with `durable-evidence` at its own price
+  (`X402Middleware::with_durable_offer`) — and the client picks
+  (`X402Payments::prefer_durable_evidence`, off by default, order-independent).
+  The seller hook honours the paid offer (`OfferDecision`): the durable offer's
+  `mode`/`retention` win; paying the plain one yields `{"skipped":"not_selected"}`
+  rather than silence; a route without offers behaves exactly as before. No
+  change to the x402 core: the declaration rides in
+  `extra.extensions["durable-evidence"]`.
+- `SkipReason::Unknown` (`#[serde(other)]`): a skip reason from a newer
+  facilitator no longer drops the whole notice, pointer included.
+- Spec v0.2 (`docs/plans/dx402/08-SPEC-v0.2.md`) describing only what is
+  shipped, and `09-ESTADO-Y-CAMINO-A-UPSTREAM.md` tracking the path to the
+  upstream proposal with evidence per row.
+
+### Fixed
+
+- **What was paid is decided by the buyer, not by listing order.** The layer
+  matched a payload to `accepts` by scheme + network and took the first; with
+  two same-network offers that anchored `not_selected` for a buyer who paid the
+  higher price. It now matches on the signed `authorization.to` + `value` when
+  more than one offer survives.
+- **The escrow rail could be bypassed by sealing to the TokenStore** (red team,
+  2026-09-04; present since v1.78.0). The escrow resolution only ran when the
+  declared payer disagreed with the transfer's `from`, so any co-payee of a
+  release could take a stranger's slot as `verified`. The rail is now classified
+  from the receipt's logs (`classify_rail`) and resolved unconditionally;
+  ambiguity is a property of the receipt, not of the branch taken.
+
+## [2.10.0] - 2026-09-03
+
+### Fixed
+
+- **The buyer of an x402r escrow release is never the ERC-20 `from`.** A release
+  moves tokens out of the operator's TokenStore, so the anchor gate's
+  "evidence must be sealed to whoever paid" rejected every escrow-mediated
+  payment — 23 of 23 live Execution Market releases sampled, 690 of 699 anchors
+  in production. Anchors on that rail now carry `escrowRelease`; the facilitator
+  asks the escrow to `getHash` the authorization and requires a
+  `paymentInfoHash` that same transaction captured. Verified against optimism
+  `0x5a2822cc…`. New verdicts: `dx402_escrow_release_missing`, `_invalid`,
+  `_ambiguous` (batched settlements collide on `paymentId` and are refused).
+- The seller hook in `x402-axum` sends `escrowRelease: None` — it sits where the
+  buyer paid directly.
+
+## [2.9.0] - 2026-09-02
+
+### Fixed
+
+- **The nonce resync that existed to heal the EVM nonce was what broke it**
+  (`b4170d76`).
+- The p99 latency alarm measured two populations as one; the nonce alarm
+  pointed at the wrong culprit (`e0128023`, `9c3870c6`).
+
 ## [2.7.0] - 2026-09-01
 
 ### Fixed
@@ -284,7 +342,7 @@ sees the same 503 the forwarding exists to remove.
   said all along. Measured in debug and release, flat from 1 MiB to the 32 MiB
   ceiling.
 
-## [Unreleased]
+## [2.3.0-unreleased-note] (shipped as part of 2.3.0 — the 32 MiB default is live)
 
 ### Changed
 - **DX402 evidence body limit raised from 1 MiB to 32 MiB, and made configurable.**

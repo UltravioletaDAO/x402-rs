@@ -736,6 +736,8 @@ Until 2026-09-03 `escrow`, `commerce` and `upto` appeared **only** under CAIP-2 
 **Escrow networks (9 total):** Base, Ethereum, Polygon, Arbitrum, Celo, Monad, Avalanche, Base Sepolia, Ethereum Sepolia.
 Only networks with a deployed PaymentOperator appear in the response.
 
+**Extensions:** the `extensions` array lists what this deployment actually serves — `bazaar`, and `durable-evidence` **only when DX402 is serviceable** (enabled *and* its store and index are configured), so no client builds against `/dx402/*` routes that would 404.
+
 **Response includes both v1 and v2 formats:**
 - v1: `"network": "base"` (string enum)
 - v2: `"network": "eip155:8453"` (CAIP-2 format)
@@ -888,9 +890,13 @@ async fn path_api_stats() {}
     path = "/dx402/anchor",
     tag = "DX402",
     summary = "Register sealed evidence for a settled payment",
-    description = "A resource server reports that it sealed a response body and wrote the ciphertext somewhere durable. The facilitator notarises the claim with an EIP-712 `EvidenceReceipt` and indexes it.\n\n**This request carries metadata only.** The plaintext never reaches the facilitator, and in `direct` mode neither does anything that could decrypt it — the content key is wrapped to the payer's own public key, recovered from the payment signature. A leak of this facilitator's storage reveals pointers and hashes, never payloads.\n\nAvailable only when `ENABLE_DX402=true`; otherwise the route does not exist.",
+    description = "A resource server reports that it sealed a response body and wrote the ciphertext somewhere durable. The facilitator notarises the claim with an EIP-712 `EvidenceReceipt` and indexes it.\n\n**This request carries metadata only.** The plaintext never reaches the facilitator, and in `direct` mode neither does anything that could decrypt it — the content key is wrapped to the payer's own public key, recovered from the payment signature. A leak of this facilitator's storage reveals pointers and hashes, never payloads.\n\n**Every anchor is judged against the chain.** Send `proofOfPayment` (from `/settle`) and `sellerSignature` (EIP-712 `DX402 Anchor` by the payee; raw ed25519 for Solana/Stellar payees). The record carries `verified` (the chain confirmed the payee and the payer) and `signed` (the signature matched the payee you declared — a diagnostic, not proof). Authority is a ladder: provisional < signed < verified; a weaker claim never locks out a stronger one, and only `verified` is final. `DX402_REQUIRE_PROOF=false` (phase 1, default) records failing anchors as provisional with `notVerifiedReason`; phase 2 rejects them with 402.\n\n**Payments released from an x402r escrow** must add `escrowRelease` (the escrow authorization plus the funder): on that rail the ERC-20 `from` is the operator's TokenStore, so the facilitator asks the escrow to `getHash` the authorization and requires a `paymentInfoHash` this very transaction captured. A transaction that settled more than one escrow payment is refused (`dx402_escrow_release_ambiguous`).\n\nAvailable only when `ENABLE_DX402=true`; otherwise the route does not exist.",
     responses(
-        (status = 201, description = "Evidence recorded; body carries the signed receipt", body = Object),
+        (status = 201, description = "Evidence recorded; body carries the signed receipt plus `verified`/`signed`/`notVerifiedReason`", body = Object),
+        (status = 402, description = "`dx402_proof_rejected` — phase 2 only; the verdict names the rung that failed"),
+        (status = 409, description = "`dx402_already_anchored` — an existing record outranks this one"),
+        (status = 413, description = "Body over 64 KiB — emitted by the request-body limit layer, not by DX402"),
+        (status = 422, description = "`dx402_signature_not_verified` (a signature that could not supersede) or `dx402_backend_unavailable` (a backend this deployment does not serve)"),
         (status = 503, description = "Store or index unavailable — RETRYABLE, do not record as 'no evidence'")
     )
 )]
@@ -901,7 +907,7 @@ async fn path_dx402_anchor() {}
     path = "/dx402/evidence/{paymentId}",
     tag = "DX402",
     summary = "Look up the evidence anchored for a payment",
-    description = "Returns the pointer, the plaintext content hash, the mode, and the signed receipt.\n\n`contentHash` is over the **plaintext**, deliberately. Hashing the ciphertext would only prove the blob was not corrupted in storage; hashing the plaintext lets a buyer prove the anchored blob decrypts to exactly the bytes they were served — the check that catches a seller anchoring something other than what it delivered.\n\n**404 and 410 are different answers.** 404 means no evidence was ever recorded; 410 means the retention window lapsed. In a dispute those are not interchangeable.",
+    description = "Returns the pointer, the plaintext content hash, the mode, the signed receipt, and the trust level: `verified` (the chain confirmed authorship), `signed` (the declared payee signed), and `notVerifiedReason` when it is not verified. An absent `verified` reads as not proven — a pointer alone is a claim, not evidence.\n\n`contentHash` is over the **plaintext**, deliberately. Hashing the ciphertext would only prove the blob was not corrupted in storage; hashing the plaintext lets a buyer prove the anchored blob decrypts to exactly the bytes they were served — the check that catches a seller anchoring something other than what it delivered.\n\n**404 and 410 are different answers.** 404 means no evidence was ever recorded; 410 means the retention window lapsed. In a dispute those are not interchangeable.",
     params(("paymentId" = String, Path, description = "keccak256(caip2Network || txHash), or the `payment-identifier` value")),
     responses(
         (status = 200, description = "Evidence record", body = Object),
@@ -932,7 +938,7 @@ async fn path_dx402_receipt() {}
     path = "/dx402/stats",
     tag = "DX402",
     summary = "How much evidence this facilitator has notarised",
-    description = "Anchor count, configured backend and retention, and the address that signs receipts.\n\n`anchored` is a **floor**, not a ledger. Evidence whose index write failed is real and is not counted here, in the same way `/api/stats` undercounts operations.",
+    description = "Anchor count, the default backend and retention, the address that signs receipts, and `backends[]` — every store this deployment can name, each with `retention`, `revocable`, `public`, `enabled` and a `disabledReason`. Derived from configuration, so it cannot promise a backend that has never held a byte; clients and the landing page read this instead of a hardcoded list.\n\n`anchored` is a **floor**, not a ledger. Evidence whose index write failed is real and is not counted here, in the same way `/api/stats` undercounts operations.",
     responses((status = 200, description = "DX402 status and counters", body = Object))
 )]
 async fn path_dx402_stats() {}
@@ -958,8 +964,8 @@ async fn path_dx402_blob() {}
     path = "/dx402/recover",
     tag = "DX402",
     summary = "Release a wrapped content key (escrowed mode)",
-    description = "**Returns 501 in v0.1.**\n\n`direct` mode — the default and the whole point of DX402 — needs no recovery endpoint at all: the buyer already holds the only key that opens the payload, so retrieval is arithmetic rather than an authorization decision anyone could refuse or misconfigure.\n\nThis returns an honest 501 rather than a stub that appears to work, so no integrator builds an escrowed flow against a signature check that does not exist yet.",
-    responses((status = 501, description = "Escrowed mode is not implemented in v0.1"))
+    description = "**Returns 501 — `escrowed` recovery is out of scope in spec v0.2 (§17).**\n\n`direct` mode — the default and the whole point of DX402 — needs no recovery endpoint at all: the buyer already holds the only key that opens the payload, so retrieval is arithmetic rather than an authorization decision anyone could refuse or misconfigure.\n\nThis returns an honest 501 rather than a stub that appears to work, so no integrator builds an escrowed flow against a signature check that does not exist yet.",
+    responses((status = 501, description = "Escrowed recovery is not served; a declared read key is the recommended pattern for custody"))
 )]
 async fn path_dx402_recover() {}
 

@@ -376,6 +376,91 @@ That is what lets an offer taken straight out of `/discovery/resources` -- which
 CAIP-2 -- be paid without rewriting it. Mixing the two spellings inside one body is
 also accepted, though matching the offer is the sane thing to do.
 
+### The same payment in the x402 v2 shape
+
+If your body says `"x402Version": 2`, the envelope is a **different shape**, not the
+one above with a `2` in it. There is no `paymentRequirements` in v2. The requirements
+split in two: `resource` carries what is being sold, `accepted` carries what is being
+charged.
+
+```json
+{
+  "x402Version": 2,
+  "paymentPayload": {
+    "x402Version": 2,
+    "payload": {
+      "signature": "0x111111111111111111111111111111111111111111111111111111111111111122222222222222222222222222222222222222222222222222222222222222221b",
+      "authorization": {
+        "from": "0x0000000000000000000000000000000000000001",
+        "to": "0x0000000000000000000000000000000000000002",
+        "value": "1000000",
+        "validAfter": "1700000000",
+        "validBefore": "1700100000",
+        "nonce": "0x0000000000000000000000000000000000000000000000000000000000000001"
+      }
+    }
+  },
+  "resource": {
+    "url": "https://example.com/protected",
+    "description": "One API call",
+    "mimeType": "application/json"
+  },
+  "accepted": {
+    "scheme": "exact",
+    "network": "eip155:8453",
+    "amount": "1000000",
+    "payTo": "0x0000000000000000000000000000000000000002",
+    "maxTimeoutSeconds": 60,
+    "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+  }
+}
+```
+
+That is the **same payment** as the v1 body above — same signature, same chain, same
+amount, same recipient — written the other way. The facilitator reduces both to one
+internal request, and a test asserts that they land on the identical one.
+
+What moved, field by field:
+
+| v1 | v2 |
+|---|---|
+| `paymentRequirements` | `accepted` + `resource`, both at the top level |
+| `paymentRequirements.maxAmountRequired` | `accepted.amount` |
+| `paymentRequirements.resource` (a URL string) | `resource.url` |
+| `paymentRequirements.description` / `.mimeType` | `resource.description` / `resource.mimeType` |
+| `paymentPayload.scheme` / `.network` | `accepted.scheme` / `accepted.network` |
+
+`accepted` takes exactly `scheme`, `network`, `asset`, `amount`, `payTo`,
+`maxTimeoutSeconds` and an optional `extra`. Extra keys are ignored rather than
+rejected, so a `402` offer that also carries `maxAmountRequired`, `resource`,
+`description` or `mimeType` can be passed through unedited. `resource` needs all three
+of `url`, `description` and `mimeType`.
+
+**`accepted.network` is CAIP-2 only.** This is the one place the two spellings are
+*not* interchangeable: the v1 `paymentRequirements.network` and
+`paymentPayload.network` take `"base"` or `"eip155:8453"`, but `accepted.network`
+takes `"eip155:8453"` and refuses `"base"`. Measured — a v2 body with `"base"` there
+answers `400 data did not match any variant of untagged enum VerifyRequestEnvelope`.
+An offer copied out of a `402` or out of `/discovery/resources` is already CAIP-2, so
+this only bites if you rewrote it.
+
+**On the duplication you may have seen.** Older facilitator builds *also* required
+`resource` and `accepted` to be repeated **inside** `paymentPayload`, and refused the
+body above with `400 data did not match any variant of untagged enum
+VerifyRequestEnvelope`. That is fixed: the inner copy is optional. If you already send
+it, keep sending it — the duplicated envelope is still accepted, byte for byte, and
+reduces to exactly the same payment. If you do not, the facilitator fills the inner
+pair in from the outer one.
+
+```json
+{ "paymentPayload": { "x402Version": 2, "resource": { "...": "same object" },
+                      "accepted": { "...": "same object" }, "payload": { "...": "as above" } },
+  "resource": { "...": "" }, "accepted": { "...": "" }, "x402Version": 2 }
+```
+
+`/settle` takes the v2 envelope on the same terms as `/verify`; the two endpoints share
+one parser.
+
 What the facilitator checks: payload structure, the EIP-712 signature, nonce validity,
 the amount against `maxAmountRequired`, the `validAfter`/`validBefore` window, and that
 the token and network are supported.
@@ -602,6 +687,12 @@ framework used to answer with an empty body: a `405` for the wrong method (the
 `Allow` header lists what the path accepts), a `404` for a path nothing serves,
 and the `429` from the rate limiter itself. Branch on `code`, not on the prose
 in `error`.
+
+On `invalid_request_body` the `hint` is written for the version **your body
+declares**, so read it: a body saying `"x402Version": 2` is told about `resource`
+and `accepted`, a body saying `1` about `paymentRequirements`, and a body too
+broken to say gets both shapes rather than a guess. It used to name the v1 fields
+to everyone, which is how a correct v2 integration was talked into sending v1.
 
 ### Rate limits, and how to stay under them
 

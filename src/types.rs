@@ -1506,27 +1506,88 @@ impl VerifyRequest {
 /// to be used for settlement.
 pub type SettleRequest = VerifyRequest;
 
-#[derive(Debug, Clone, Serialize, Deserialize, thiserror::Error)]
-#[serde(untagged, rename_all = "camelCase")]
+/// Why a payment was rejected.
+///
+/// On the wire this is always a **snake_case token string**, never `null` and
+/// never an object. That is worth stating because it was not always true: the
+/// enum used to derive `Serialize` with `#[serde(untagged)]`, and an untagged
+/// unit variant serialises as `null` -- so all four fixed reasons went out as
+/// `"invalidReason": null` and `#[serde(rename = ...)]` never applied. Three
+/// genuinely different rejections (network mismatch, expired window, bad
+/// signature) were byte-identical to each other, our own `VerifyResponse`
+/// deserialiser rejected the body we emitted (`invalidReason` must be present
+/// when `isValid` is false), and `tests/x402/TROUBLESHOOTING.md` had to *guess*
+/// the cause in prose ("likely bad signature") because the field would not say.
+///
+/// The token is [`std::fmt::Display`], i.e. the `#[error(...)]` string, so the
+/// wire value and the log line cannot drift apart. Reading is lenient by
+/// design: the four canonical tokens map back to their variants and anything
+/// else becomes [`FacilitatorErrorReason::FreeForm`], which is what lets the
+/// vocabulary grow without breaking a client that pattern-matches on the four.
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum FacilitatorErrorReason {
     /// Payer doesn't have sufficient funds.
     #[error("insufficient_funds")]
-    #[serde(rename = "insufficient_funds")]
     InsufficientFunds,
     /// The scheme in PaymentPayload didn't match expected (e.g., not 'exact'), or settlement failed.
     #[error("invalid_scheme")]
-    #[serde(rename = "invalid_scheme")]
     InvalidScheme,
     /// Network in PaymentPayload didn't match a facilitator's expected network.
     #[error("invalid_network")]
-    #[serde(rename = "invalid_network")]
     InvalidNetwork,
     /// Unexpected settle error
     #[error("unexpected_settle_error")]
-    #[serde(rename = "unexpected_settle_error")]
     UnexpectedSettleError,
     #[error("{0}")]
     FreeForm(String),
+}
+
+impl FacilitatorErrorReason {
+    /// The four tokens this facilitator promises to keep spelling the same way.
+    ///
+    /// Anything outside this set arrives as [`FacilitatorErrorReason::FreeForm`];
+    /// a client should treat an unrecognised token as "rejected, reason not in
+    /// my vocabulary" rather than as a parse failure.
+    pub const CANONICAL: [&'static str; 4] = [
+        "insufficient_funds",
+        "invalid_scheme",
+        "invalid_network",
+        "unexpected_settle_error",
+    ];
+}
+
+/// Emit the token, not `null`.
+///
+/// Delegates to `Display` so there is exactly one place where the spelling of a
+/// reason lives.
+impl Serialize for FacilitatorErrorReason {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.collect_str(self)
+    }
+}
+
+/// Read the token back, and never fail on one we have not seen.
+///
+/// A facilitator that learns a new reason must not break a pinned client, and a
+/// client reading a newer facilitator must not fail closed on a string it does
+/// not know -- so an unknown token lands in `FreeForm` instead of erroring.
+impl<'de> Deserialize<'de> for FacilitatorErrorReason {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        Ok(match raw.as_str() {
+            "insufficient_funds" => FacilitatorErrorReason::InsufficientFunds,
+            "invalid_scheme" => FacilitatorErrorReason::InvalidScheme,
+            "invalid_network" => FacilitatorErrorReason::InvalidNetwork,
+            "unexpected_settle_error" => FacilitatorErrorReason::UnexpectedSettleError,
+            _ => FacilitatorErrorReason::FreeForm(raw),
+        })
+    }
 }
 
 /// Returned from a facilitator after attempting to settle a payment on-chain.
@@ -2427,5 +2488,93 @@ mod settle_response_tx_alias_tests {
             assert!(v.get(key).is_none(), "`{key}` must be absent, not empty");
         }
         assert_eq!(v.get("success").and_then(|x| x.as_bool()), Some(true));
+    }
+}
+
+#[cfg(test)]
+mod facilitator_error_reason_tests {
+    use super::*;
+
+    /// Every fixed reason reaches the wire as its own token.
+    ///
+    /// Under `#[serde(untagged)]` all four serialised as `null`: an untagged
+    /// unit variant is written with `serialize_unit`, and `#[serde(rename)]`
+    /// never applies. The rename attributes were there, and did nothing.
+    #[test]
+    fn every_fixed_reason_serialises_as_its_own_token() {
+        let cases = [
+            (
+                FacilitatorErrorReason::InsufficientFunds,
+                "insufficient_funds",
+            ),
+            (FacilitatorErrorReason::InvalidScheme, "invalid_scheme"),
+            (FacilitatorErrorReason::InvalidNetwork, "invalid_network"),
+            (
+                FacilitatorErrorReason::UnexpectedSettleError,
+                "unexpected_settle_error",
+            ),
+        ];
+        for (reason, token) in cases {
+            assert_eq!(
+                serde_json::to_value(&reason).unwrap(),
+                serde_json::json!(token),
+                "`{token}` did not survive serialisation"
+            );
+        }
+    }
+
+    /// The wire token and the log line are the same string, by construction.
+    #[test]
+    fn the_token_is_the_display_string() {
+        for token in FacilitatorErrorReason::CANONICAL {
+            let reason: FacilitatorErrorReason =
+                serde_json::from_value(serde_json::json!(token)).unwrap();
+            assert_eq!(reason.to_string(), token);
+            assert_eq!(
+                serde_json::to_value(&reason).unwrap(),
+                serde_json::json!(token)
+            );
+        }
+    }
+
+    /// A token we do not know must not fail the parse -- that is what lets the
+    /// vocabulary grow without breaking a pinned client.
+    #[test]
+    fn an_unknown_token_becomes_free_form_rather_than_an_error() {
+        let reason: FacilitatorErrorReason =
+            serde_json::from_value(serde_json::json!("invalid_signature")).unwrap();
+        assert!(matches!(
+            &reason,
+            FacilitatorErrorReason::FreeForm(s) if s == "invalid_signature"
+        ));
+        assert_eq!(
+            serde_json::to_value(&reason).unwrap(),
+            serde_json::json!("invalid_signature"),
+            "a free-form token must be indistinguishable from a fixed one on the wire"
+        );
+    }
+
+    /// `SettleResponse` carries the SAME enum, so a failed settle had the same
+    /// hole: `errorReason` was emitted as `null` next to `success: false`.
+    #[test]
+    fn a_failed_settle_names_its_reason_too() {
+        let response = SettleResponse {
+            success: false,
+            error_reason: Some(FacilitatorErrorReason::InsufficientFunds),
+            payer: "0x0000000000000000000000000000000000000001"
+                .parse::<EvmAddress>()
+                .unwrap()
+                .into(),
+            transaction: None,
+            network: crate::network::Network::Base,
+            proof_of_payment: None,
+            extensions: None,
+        };
+        let v = serde_json::to_value(&response).unwrap();
+        assert_eq!(
+            v["errorReason"],
+            serde_json::json!("insufficient_funds"),
+            "a settle failure must say why: {v}"
+        );
     }
 }

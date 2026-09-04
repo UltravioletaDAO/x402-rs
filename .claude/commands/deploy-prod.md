@@ -18,9 +18,9 @@ Build and deploy the facilitator to production AWS ECS:
 
 3. Push to ECR:
    ```bash
-   docker tag facilitator:[version-tag] 518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator:[version-tag]
-   aws ecr get-login-password --region us-east-2 | docker login --username AWS --password-stdin 518898403364.dkr.ecr.us-east-2.amazonaws.com
-   docker push 518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator:[version-tag]
+   docker tag facilitator:[version-tag] <AWS_ACCOUNT_ID>.dkr.ecr.us-east-2.amazonaws.com/facilitator:[version-tag]
+   aws ecr get-login-password --region us-east-2 | docker login --username AWS --password-stdin <AWS_ACCOUNT_ID>.dkr.ecr.us-east-2.amazonaws.com
+   docker push <AWS_ACCOUNT_ID>.dkr.ecr.us-east-2.amazonaws.com/facilitator:[version-tag]
    ```
 
 **Phase 2: Task Definition Update**
@@ -32,7 +32,7 @@ Build and deploy the facilitator to production AWS ECS:
 
 5. Update image tag in task definition:
    ```bash
-   cat task-def-clean.json | jq '.containerDefinitions[0].image = "518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator:[version-tag]"' > task-def-updated.json
+   cat task-def-clean.json | jq '.containerDefinitions[0].image = "<AWS_ACCOUNT_ID>.dkr.ecr.us-east-2.amazonaws.com/facilitator:[version-tag]"' > task-def-updated.json
    ```
 
 6. Register new task definition:

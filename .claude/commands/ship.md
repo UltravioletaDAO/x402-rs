@@ -33,9 +33,9 @@ Full automated deployment pipeline - from uncommitted changes to production veri
 14. Lint code: `just clippy-all` (optional, report warnings)
 15. Build Docker image: `docker build --platform linux/amd64 -t facilitator:[version] .`
 16. Report build time and image size
-17. Tag for ECR: `docker tag facilitator:[version] 518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator:[version]`
-18. Login to ECR: `aws ecr get-login-password --region us-east-2 | docker login --username AWS --password-stdin 518898403364.dkr.ecr.us-east-2.amazonaws.com`
-19. Push to ECR: `docker push 518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator:[version]`
+17. Tag for ECR: `docker tag facilitator:[version] <AWS_ACCOUNT_ID>.dkr.ecr.us-east-2.amazonaws.com/facilitator:[version]`
+18. Login to ECR: `aws ecr get-login-password --region us-east-2 | docker login --username AWS --password-stdin <AWS_ACCOUNT_ID>.dkr.ecr.us-east-2.amazonaws.com`
+19. Push to ECR: `docker push <AWS_ACCOUNT_ID>.dkr.ecr.us-east-2.amazonaws.com/facilitator:[version]`
 
 **Phase 5: Deploy to Production**
 20. Get and clean current task definition:
@@ -43,7 +43,7 @@ Full automated deployment pipeline - from uncommitted changes to production veri
     aws ecs describe-task-definition --task-definition facilitator-production --region us-east-2 --query 'taskDefinition' > task-def-base.json
     cat task-def-base.json | jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .placementConstraints, .compatibilities, .registeredAt, .registeredBy)' > task-def-clean.json
     ```
-21. Update image: `cat task-def-clean.json | jq '.containerDefinitions[0].image = "518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator:[version]"' > task-def-updated.json`
+21. Update image: `cat task-def-clean.json | jq '.containerDefinitions[0].image = "<AWS_ACCOUNT_ID>.dkr.ecr.us-east-2.amazonaws.com/facilitator:[version]"' > task-def-updated.json`
 22. Register task definition: `aws ecs register-task-definition --cli-input-json file://task-def-updated.json --region us-east-2`
 23. Note the revision number from the response
 24. Deploy: `aws ecs update-service --cluster facilitator-production --service facilitator-production --task-definition facilitator-production:[revision] --force-new-deployment --region us-east-2`

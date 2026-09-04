@@ -121,11 +121,11 @@ sed -i 's/edition = "2024"/edition = "2021"/' x402-rs/Cargo.toml
 
 # 2. Build Docker image
 cd x402-rs
-docker build --platform linux/amd64 -t 518898403364.dkr.ecr.us-east-1.amazonaws.com/karmacadabra/facilitator:latest .
+docker build --platform linux/amd64 -t <AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/karmacadabra/facilitator:latest .
 
 # 3. Push to ECR
-aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 518898403364.dkr.ecr.us-east-1.amazonaws.com
-docker push 518898403364.dkr.ecr.us-east-1.amazonaws.com/karmacadabra/facilitator:latest
+aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin <AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com
+docker push <AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/karmacadabra/facilitator:latest
 
 # 4. Force ECS redeploy
 aws ecs update-service \

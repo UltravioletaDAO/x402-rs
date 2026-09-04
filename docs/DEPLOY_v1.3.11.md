@@ -32,17 +32,17 @@ Expected output: Build succeeds with ~30 layers
 
 ```bash
 # Tag for ECR
-docker tag facilitator:v1.3.11 518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator:v1.3.11
+docker tag facilitator:v1.3.11 <AWS_ACCOUNT_ID>.dkr.ecr.us-east-2.amazonaws.com/facilitator:v1.3.11
 
 # Login to ECR
-aws ecr get-login-password --region us-east-2 | docker login --username AWS --password-stdin 518898403364.dkr.ecr.us-east-2.amazonaws.com
+aws ecr get-login-password --region us-east-2 | docker login --username AWS --password-stdin <AWS_ACCOUNT_ID>.dkr.ecr.us-east-2.amazonaws.com
 
 # Push to ECR
-docker push 518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator:v1.3.11
+docker push <AWS_ACCOUNT_ID>.dkr.ecr.us-east-2.amazonaws.com/facilitator:v1.3.11
 
 # Also tag and push as latest
-docker tag facilitator:v1.3.11 518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator:latest
-docker push 518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator:latest
+docker tag facilitator:v1.3.11 <AWS_ACCOUNT_ID>.dkr.ecr.us-east-2.amazonaws.com/facilitator:latest
+docker push <AWS_ACCOUNT_ID>.dkr.ecr.us-east-2.amazonaws.com/facilitator:latest
 ```
 
 Expected output: Push completes, layers uploaded to ECR
@@ -59,7 +59,7 @@ aws ecs describe-task-definition --task-definition facilitator-production --regi
 cat task-def-base.json | jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .placementConstraints, .compatibilities, .registeredAt, .registeredBy)' > task-def-clean.json
 
 # Update image tag
-cat task-def-clean.json | jq '.containerDefinitions[0].image = "518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator:v1.3.11"' > task-def-updated.json
+cat task-def-clean.json | jq '.containerDefinitions[0].image = "<AWS_ACCOUNT_ID>.dkr.ecr.us-east-2.amazonaws.com/facilitator:v1.3.11"' > task-def-updated.json
 
 # Register new task definition
 aws ecs register-task-definition --cli-input-json file://task-def-updated.json --region us-east-2 --query 'taskDefinition.{family:family,revision:revision}'

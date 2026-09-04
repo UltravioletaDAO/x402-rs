@@ -51,7 +51,7 @@ The x402-rs facilitator is currently deployed as part of a multi-agent ECS Farga
 ### 2. Container Image & Registry
 
 **ECR Repository**: `karmacadabra/facilitator`
-- Full URI: `518898403364.dkr.ecr.us-east-1.amazonaws.com/karmacadabra/facilitator:latest`
+- Full URI: `<AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/karmacadabra/facilitator:latest`
 - Image Scanning: Enabled (scan on push)
 - Encryption: AES256 (free tier)
 - Lifecycle Policy: Keep last 5 tagged images, delete untagged after 7 days
@@ -81,7 +81,7 @@ The x402-rs facilitator is currently deployed as part of a multi-agent ECS Farga
 ### 3. AWS Secrets Manager Dependencies
 
 **Secret 1**: `karmacadabra-facilitator-mainnet`
-- ARN: `arn:aws:secretsmanager:us-east-1:518898403364:secret:karmacadabra-facilitator-mainnet-WTvZkf`
+- ARN: `arn:aws:secretsmanager:us-east-1:<AWS_ACCOUNT_ID>:secret:karmacadabra-facilitator-mainnet-<SUFIJO>`
 - Description: "Facilitator hot wallet for mainnet networks (Avalanche Mainnet, Base Mainnet)"
 - Last Changed: 2025-10-26 15:33:41
 - Structure (JSON):
@@ -93,7 +93,7 @@ The x402-rs facilitator is currently deployed as part of a multi-agent ECS Farga
 - Used for: Signing blockchain transactions on EVM networks (Base, Avalanche, Polygon, Celo, etc.)
 
 **Secret 2**: `karmacadabra-solana-keypair`
-- ARN: `arn:aws:secretsmanager:us-east-1:518898403364:secret:karmacadabra-solana-keypair-yWgz6P`
+- ARN: `arn:aws:secretsmanager:us-east-1:<AWS_ACCOUNT_ID>:secret:karmacadabra-solana-keypair-<SUFIJO>`
 - Description: "Solana keypair for facilitator (mainnet)"
 - Last Changed: 2025-10-29 19:01:55
 - Structure (JSON):
@@ -200,7 +200,7 @@ The x402-rs facilitator is currently deployed as part of a multi-agent ECS Farga
 - Cost: ~$16.20/month (base) + $0.008/LCU-hour (~$6/month) = ~$22/month total
 
 **Target Group**: `facili...` (name truncated, prefix-based naming)
-- ARN: `arn:aws:elasticloadbalancing:us-east-1:518898403364:targetgroup/facili20251026204401441600000016/6443217ea4cd98e0`
+- ARN: `arn:aws:elasticloadbalancing:us-east-1:<AWS_ACCOUNT_ID>:targetgroup/facili20251026204401441600000016/6443217ea4cd98e0`
 - Protocol: HTTP
 - Port: 8080
 - Target Type: `ip` (required for Fargate)
@@ -312,7 +312,7 @@ The x402-rs facilitator is currently deployed as part of a multi-agent ECS Farga
 ### 7. IAM Roles & Policies
 
 **Task Execution Role**: `karmacadabra-prod-ecs-exec-20251026204347677000000004`
-- ARN: `arn:aws:iam::518898403364:role/karmacadabra-prod-ecs-exec-20251026204347677000000004`
+- ARN: `arn:aws:iam::<AWS_ACCOUNT_ID>:role/karmacadabra-prod-ecs-exec-20251026204347677000000004`
 - Purpose: Used by ECS agent to start containers (pull images, write logs, fetch secrets)
 - Managed Policies:
   - `AmazonECSTaskExecutionRolePolicy` (AWS managed)
@@ -356,7 +356,7 @@ The x402-rs facilitator is currently deployed as part of a multi-agent ECS Farga
      ```
 
 **Task Role**: `karmacadabra-prod-ecs-task-20251026204347632600000003`
-- ARN: `arn:aws:iam::518898403364:role/karmacadabra-prod-ecs-task-20251026204347632600000003`
+- ARN: `arn:aws:iam::<AWS_ACCOUNT_ID>:role/karmacadabra-prod-ecs-task-20251026204347632600000003`
 - Purpose: Used by running container application (facilitator Rust code)
 - Inline Policies:
   1. **Secrets Manager Access** (runtime secret fetching - if needed):
@@ -534,7 +534,7 @@ The x402-rs facilitator is currently deployed as part of a multi-agent ECS Farga
 
 1. **Build Docker Image**: `scripts/build-and-push.py facilitator`
    - Builds from `x402-rs/Dockerfile`
-   - Tags as `518898403364.dkr.ecr.us-east-1.amazonaws.com/karmacadabra/facilitator:latest`
+   - Tags as `<AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/karmacadabra/facilitator:latest`
    - Pushes to ECR
    - Duration: ~3-5 minutes
 
@@ -796,11 +796,11 @@ x402-facilitator/
 
    # Tag for new ECR
    docker tag x402-facilitator:latest \
-     518898403364.dkr.ecr.us-east-1.amazonaws.com/x402-facilitator/facilitator:latest
+     <AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/x402-facilitator/facilitator:latest
 
    # Push to ECR
-   aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 518898403364.dkr.ecr.us-east-1.amazonaws.com
-   docker push 518898403364.dkr.ecr.us-east-1.amazonaws.com/x402-facilitator/facilitator:latest
+   aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin <AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com
+   docker push <AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/x402-facilitator/facilitator:latest
    ```
 
 8. **Test Standalone Deployment**:

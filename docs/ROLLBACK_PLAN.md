@@ -12,7 +12,7 @@
 - **Region**: us-east-2
 - **Task Definition**: facilitator-production:14
 - **Running Tasks**: 1/1 (healthy)
-- **Current Image**: 518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator:v1.1.1
+- **Current Image**: <AWS_ACCOUNT_ID>.dkr.ecr.us-east-2.amazonaws.com/facilitator:v1.1.1
 - **Health Check**: Passing (ALB /health endpoint)
 
 ## What's Changing in v1.2.0
@@ -127,12 +127,12 @@ aws ecs update-service \
 
 ```bash
 # 1. Re-push v1.1.1 image as latest
-docker pull 518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator:v1.1.1
-docker tag 518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator:v1.1.1 \
-  518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator:latest
+docker pull <AWS_ACCOUNT_ID>.dkr.ecr.us-east-2.amazonaws.com/facilitator:v1.1.1
+docker tag <AWS_ACCOUNT_ID>.dkr.ecr.us-east-2.amazonaws.com/facilitator:v1.1.1 \
+  <AWS_ACCOUNT_ID>.dkr.ecr.us-east-2.amazonaws.com/facilitator:latest
 
 # 2. Push latest
-docker push 518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator:latest
+docker push <AWS_ACCOUNT_ID>.dkr.ecr.us-east-2.amazonaws.com/facilitator:latest
 
 # 3. Force new deployment
 aws ecs update-service \
@@ -174,7 +174,7 @@ aws logs tail /ecs/facilitator-production --follow --region us-east-2
 ```bash
 # Check target group health
 aws elbv2 describe-target-health \
-  --target-group-arn arn:aws:elasticloadbalancing:us-east-2:518898403364:targetgroup/facilitator-production/eb23fde229b27f7b \
+  --target-group-arn arn:aws:elasticloadbalancing:us-east-2:<AWS_ACCOUNT_ID>:targetgroup/facilitator-production/eb23fde229b27f7b \
   --region us-east-2
 ```
 
@@ -238,7 +238,7 @@ python test_usdc_payment.py --network base-sepolia
 
 - **Previous stable version**: v1.1.1
 - **Previous task definition**: facilitator-production:14
-- **Previous image**: 518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator:v1.1.1
+- **Previous image**: <AWS_ACCOUNT_ID>.dkr.ecr.us-east-2.amazonaws.com/facilitator:v1.1.1
 - **Git tag**: v1.1.1
 - **Git commit**: a61b341
 

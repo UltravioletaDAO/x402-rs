@@ -26,12 +26,12 @@ The x402 v2 protocol introduces **breaking changes** to the HTTP header names, p
 
 | Secret Name | Type | Purpose | v2 Changes Required |
 |-------------|------|---------|---------------------|
-| `facilitator-evm-private-key-sFr9Ip` | JSON | EVM wallet (`private_key`) | **None** |
-| `facilitator-solana-keypair-uVuDZE` | JSON | Solana wallet (`private_key`) | **None** |
-| `facilitator-near-mainnet-keypair-sJdZyu` | JSON | NEAR mainnet wallet | **None** |
-| `facilitator-near-testnet-keypair-fkbKDk` | JSON | NEAR testnet wallet | **None** |
-| `facilitator-rpc-mainnet-5QJ8PN` | JSON | Premium mainnet RPCs | **None** |
-| `facilitator-rpc-testnet-bcODyg` | JSON | Testnet RPCs | **None** |
+| `facilitator-evm-private-key-<SUFIJO>` | JSON | EVM wallet (`private_key`) | **None** |
+| `facilitator-solana-keypair-<SUFIJO>` | JSON | Solana wallet (`private_key`) | **None** |
+| `facilitator-near-mainnet-keypair-<SUFIJO>` | JSON | NEAR mainnet wallet | **None** |
+| `facilitator-near-testnet-keypair-<SUFIJO>` | JSON | NEAR testnet wallet | **None** |
+| `facilitator-rpc-mainnet-<SUFIJO>` | JSON | Premium mainnet RPCs | **None** |
+| `facilitator-rpc-testnet-<SUFIJO>` | JSON | Testnet RPCs | **None** |
 
 ### Analysis
 

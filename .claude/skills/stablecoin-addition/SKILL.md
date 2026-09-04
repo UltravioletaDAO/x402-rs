@@ -426,9 +426,9 @@ Use the `/deploy-prod` skill or manually:
 
 ```bash
 # Tag and push
-docker tag facilitator:vX.Y.Z 518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator:vX.Y.Z
-aws ecr get-login-password --region us-east-2 | docker login --username AWS --password-stdin 518898403364.dkr.ecr.us-east-2.amazonaws.com
-docker push 518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator:vX.Y.Z
+docker tag facilitator:vX.Y.Z <AWS_ACCOUNT_ID>.dkr.ecr.us-east-2.amazonaws.com/facilitator:vX.Y.Z
+aws ecr get-login-password --region us-east-2 | docker login --username AWS --password-stdin <AWS_ACCOUNT_ID>.dkr.ecr.us-east-2.amazonaws.com
+docker push <AWS_ACCOUNT_ID>.dkr.ecr.us-east-2.amazonaws.com/facilitator:vX.Y.Z
 
 # Update ECS service
 aws ecs update-service --cluster facilitator-production --service facilitator-production --force-new-deployment --region us-east-2

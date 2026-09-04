@@ -51,14 +51,14 @@ This plan provides complete AWS infrastructure changes required to support NEAR 
 ```
 facilitator-near-mainnet-keypair
 ├── Format: {"private_key":"ed25519:<base58_key>"}
-├── ARN: arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-near-mainnet-keypair-XXXXXX
+├── ARN: arn:aws:secretsmanager:us-east-2:<AWS_ACCOUNT_ID>:secret:facilitator-near-mainnet-keypair-<SUFIJO>
 ├── Encryption: AWS KMS (aws/secretsmanager)
 ├── Access: ECS task execution role ONLY
 └── Cost: $0.40/month + $0.05/month API calls
 
 facilitator-near-testnet-keypair
 ├── Format: {"private_key":"ed25519:<base58_key>"}
-├── ARN: arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-near-testnet-keypair-XXXXXX
+├── ARN: arn:aws:secretsmanager:us-east-2:<AWS_ACCOUNT_ID>:secret:facilitator-near-testnet-keypair-<SUFIJO>
 ├── Encryption: AWS KMS (aws/secretsmanager)
 ├── Access: ECS task execution role ONLY
 └── Cost: $0.40/month + $0.05/month API calls
@@ -71,8 +71,8 @@ facilitator-near-testnet-keypair
 **Updated Policy**: `facilitator-production-ecs-execution` role
 - **Action**: Add 2 NEAR secret ARNs to existing `secrets-access` policy
 - **New Resources**:
-  - `arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-near-mainnet-keypair-*`
-  - `arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-near-testnet-keypair-*`
+  - `arn:aws:secretsmanager:us-east-2:<AWS_ACCOUNT_ID>:secret:facilitator-near-mainnet-keypair-*`
+  - `arn:aws:secretsmanager:us-east-2:<AWS_ACCOUNT_ID>:secret:facilitator-near-testnet-keypair-*`
 - **Permissions**: `secretsmanager:GetSecretValue` (read-only)
 
 ### 3. ECS Task Definition (UPDATED)
@@ -93,11 +93,11 @@ facilitator-near-testnet-keypair
 ```json
 {
   "name": "NEAR_PRIVATE_KEY_MAINNET",
-  "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-near-mainnet-keypair:private_key::"
+  "valueFrom": "arn:aws:secretsmanager:us-east-2:<AWS_ACCOUNT_ID>:secret:facilitator-near-mainnet-keypair:private_key::"
 },
 {
   "name": "NEAR_PRIVATE_KEY_TESTNET",
-  "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-near-testnet-keypair:private_key::"
+  "valueFrom": "arn:aws:secretsmanager:us-east-2:<AWS_ACCOUNT_ID>:secret:facilitator-near-testnet-keypair:private_key::"
 }
 ```
 
@@ -385,7 +385,7 @@ aws sns create-topic --name facilitator-near-alerts --region us-east-2
 
 # Subscribe email
 aws sns subscribe \
-  --topic-arn arn:aws:sns:us-east-2:518898403364:facilitator-near-alerts \
+  --topic-arn arn:aws:sns:us-east-2:<AWS_ACCOUNT_ID>:facilitator-near-alerts \
   --protocol email \
   --notification-endpoint your-email@domain.com \
   --region us-east-2

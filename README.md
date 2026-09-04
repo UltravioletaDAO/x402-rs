@@ -567,7 +567,7 @@ RPC_URL_ALGORAND_MAINNET=https://mainnet-api.algonode.cloud
 ```bash
 # Build & push
 docker build -t facilitator:v1.46.0 .
-docker push 518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator:v1.46.0
+docker push <AWS_ACCOUNT_ID>.dkr.ecr.us-east-2.amazonaws.com/facilitator:v1.46.0
 
 # Deploy
 aws ecs update-service --cluster facilitator-production \

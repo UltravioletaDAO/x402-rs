@@ -986,11 +986,11 @@ Agregar variables de entorno y secretos en `terraform/environments/production/ma
 # En la seccion de secrets del container:
 {
   name      = "APTOS_PRIVATE_KEY_MAINNET"
-  valueFrom = "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-aptos-private-key-mainnet-XXXXXX"
+  valueFrom = "arn:aws:secretsmanager:us-east-2:<AWS_ACCOUNT_ID>:secret:facilitator-aptos-private-key-mainnet-<SUFIJO>"
 },
 {
   name      = "APTOS_PRIVATE_KEY_TESTNET"
-  valueFrom = "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-aptos-private-key-testnet-XXXXXX"
+  valueFrom = "arn:aws:secretsmanager:us-east-2:<AWS_ACCOUNT_ID>:secret:facilitator-aptos-private-key-testnet-<SUFIJO>"
 },
 ```
 
@@ -1005,8 +1005,8 @@ Actualizar la politica IAM del task role para permitir acceso a los nuevos secre
   "Effect": "Allow",
   "Action": "secretsmanager:GetSecretValue",
   "Resource": [
-    "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-aptos-private-key-mainnet-*",
-    "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-aptos-private-key-testnet-*"
+    "arn:aws:secretsmanager:us-east-2:<AWS_ACCOUNT_ID>:secret:facilitator-aptos-private-key-mainnet-*",
+    "arn:aws:secretsmanager:us-east-2:<AWS_ACCOUNT_ID>:secret:facilitator-aptos-private-key-testnet-*"
   ]
 }
 ```

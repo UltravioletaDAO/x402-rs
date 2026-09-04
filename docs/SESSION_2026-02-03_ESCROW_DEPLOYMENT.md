@@ -191,7 +191,7 @@ rate limiting per source IP. Not a blocker for initial deployment.
 1. `cargo test --lib payment_operator` -- 11/11 tests passed
 2. `cargo build --release` -- compiled clean (121 warnings, 0 errors)
 3. `docker build --platform linux/amd64 --build-arg FACILITATOR_VERSION=v1.24.0`
-4. Tagged and pushed to ECR: `518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator:v1.24.0`
+4. Tagged and pushed to ECR: `<AWS_ACCOUNT_ID>.dkr.ecr.us-east-2.amazonaws.com/facilitator:v1.24.0`
 5. Registered task definition revision 163
 6. Updated ECS service with `--force-new-deployment`
 

@@ -223,12 +223,12 @@ aws ce get-cost-and-usage \
         "secretsmanager:GetSecretValue"
       ],
       "Resource": [
-        "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-evm-private-key-*",
-        "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-solana-keypair-*",
-        "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-rpc-mainnet-*",
-        "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-rpc-testnet-*",
-        "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-near-mainnet-keypair-*",
-        "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-near-testnet-keypair-*"
+        "arn:aws:secretsmanager:us-east-2:<AWS_ACCOUNT_ID>:secret:facilitator-evm-private-key-*",
+        "arn:aws:secretsmanager:us-east-2:<AWS_ACCOUNT_ID>:secret:facilitator-solana-keypair-*",
+        "arn:aws:secretsmanager:us-east-2:<AWS_ACCOUNT_ID>:secret:facilitator-rpc-mainnet-*",
+        "arn:aws:secretsmanager:us-east-2:<AWS_ACCOUNT_ID>:secret:facilitator-rpc-testnet-*",
+        "arn:aws:secretsmanager:us-east-2:<AWS_ACCOUNT_ID>:secret:facilitator-near-mainnet-keypair-*",
+        "arn:aws:secretsmanager:us-east-2:<AWS_ACCOUNT_ID>:secret:facilitator-near-testnet-keypair-*"
       ]
     }
   ]
@@ -253,7 +253,7 @@ aws ce get-cost-and-usage \
         "secretsmanager:UpdateSecret",
         "secretsmanager:PutSecretValue"
       ],
-      "Resource": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-near-*"
+      "Resource": "arn:aws:secretsmanager:us-east-2:<AWS_ACCOUNT_ID>:secret:facilitator-near-*"
     }
   ]
 }

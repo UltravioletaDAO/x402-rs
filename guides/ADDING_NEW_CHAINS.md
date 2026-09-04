@@ -249,7 +249,7 @@ Add secret reference for mainnet (premium RPC):
 ```json
 {
   "name": "RPC_URL_UNICHAIN",
-  "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-rpc-mainnet-5QJ8PN:unichain::"
+  "valueFrom": "arn:aws:secretsmanager:us-east-2:<AWS_ACCOUNT_ID>:secret:facilitator-rpc-mainnet-<SUFIJO>:unichain::"
 }
 ```
 
@@ -458,10 +458,10 @@ docker build --platform linux/amd64 \
 ```bash
 # Tag for ECR
 docker tag facilitator:$VERSION \
-  518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator:$VERSION
+  <AWS_ACCOUNT_ID>.dkr.ecr.us-east-2.amazonaws.com/facilitator:$VERSION
 
 # Push to ECR
-docker push 518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator:$VERSION
+docker push <AWS_ACCOUNT_ID>.dkr.ecr.us-east-2.amazonaws.com/facilitator:$VERSION
 ```
 
 **Checklist**:
@@ -476,7 +476,7 @@ Update image version in task definition:
 
 ```json
 {
-  "image": "518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator:v1.3.4"
+  "image": "<AWS_ACCOUNT_ID>.dkr.ecr.us-east-2.amazonaws.com/facilitator:v1.3.4"
 }
 ```
 

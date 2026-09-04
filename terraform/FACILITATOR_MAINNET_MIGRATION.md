@@ -46,11 +46,11 @@ terraform apply -target="aws_ecs_service.agents[\"facilitator\"]" -auto-approve
 [
     {
         "name": "EVM_PRIVATE_KEY",
-        "valueFrom": "arn:aws:secretsmanager:us-east-1:518898403364:secret:karmacadabra-facilitator-mainnet-WTvZkf:private_key::"
+        "valueFrom": "arn:aws:secretsmanager:us-east-1:<AWS_ACCOUNT_ID>:secret:karmacadabra-facilitator-mainnet-<SUFIJO>:private_key::"
     },
     {
         "name": "SOLANA_PRIVATE_KEY",
-        "valueFrom": "arn:aws:secretsmanager:us-east-1:518898403364:secret:karmacadabra-solana-keypair-yWgz6P:private_key::"
+        "valueFrom": "arn:aws:secretsmanager:us-east-1:<AWS_ACCOUNT_ID>:secret:karmacadabra-solana-keypair-<SUFIJO>:private_key::"
     }
 ]
 ```
@@ -213,4 +213,4 @@ aws ecs describe-tasks --cluster karmacadabra-prod \
 - Date: 2025-10-30
 - Terraform State: Synced
 - Deployment: In Progress (both tasks healthy, old task will drain automatically)
-- Secret ARN: `arn:aws:secretsmanager:us-east-1:518898403364:secret:karmacadabra-facilitator-mainnet-WTvZkf`
+- Secret ARN: `arn:aws:secretsmanager:us-east-1:<AWS_ACCOUNT_ID>:secret:karmacadabra-facilitator-mainnet-<SUFIJO>`

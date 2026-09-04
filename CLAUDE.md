@@ -361,7 +361,7 @@ Golden source is `terraform/environments/production/secrets.tf`. The naming is N
 ```json
 {
   "name": "RPC_URL_ARBITRUM",
-  "valueFrom": "arn:aws:secretsmanager:us-east-2:518898403364:secret:facilitator-rpc-mainnet-5QJ8PN:arbitrum::"
+  "valueFrom": "arn:aws:secretsmanager:us-east-2:<AWS_ACCOUNT_ID>:secret:facilitator-rpc-mainnet-<SUFIJO>:arbitrum::"
 }
 ```
 

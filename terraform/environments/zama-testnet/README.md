@@ -92,7 +92,7 @@ This directory contains Terraform configuration for the **x402-zama FHE Payment 
 
 ### Prerequisites
 
-1. AWS CLI configured with credentials for account `518898403364`
+1. AWS CLI configured with credentials for account `<AWS_ACCOUNT_ID>`
 2. Terraform >= 1.0 installed
 3. Route53 hosted zone for `ultravioletadao.xyz` (already exists)
 4. Lambda deployment package (`handler.zip`) ready
@@ -134,12 +134,12 @@ echo 'exports.handler = async (event) => ({ statusCode: 200, body: "Coming soon"
 cd /tmp && zip handler.zip handler.js
 
 # Upload to S3
-aws s3 cp handler.zip s3://zama-facilitator-artifacts-518898403364/handler.zip
+aws s3 cp handler.zip s3://zama-facilitator-artifacts-<AWS_ACCOUNT_ID>/handler.zip
 
 # Update Lambda function
 aws lambda update-function-code \
   --function-name zama-facilitator-testnet \
-  --s3-bucket zama-facilitator-artifacts-518898403364 \
+  --s3-bucket zama-facilitator-artifacts-<AWS_ACCOUNT_ID> \
   --s3-key handler.zip \
   --region us-east-2
 ```
@@ -337,12 +337,12 @@ pnpm install && pnpm build
 # ... bundle with esbuild ...
 
 # Upload to S3
-aws s3 cp handler.zip s3://zama-facilitator-artifacts-518898403364/handler.zip
+aws s3 cp handler.zip s3://zama-facilitator-artifacts-<AWS_ACCOUNT_ID>/handler.zip
 
 # Update function code
 aws lambda update-function-code \
   --function-name zama-facilitator-testnet \
-  --s3-bucket zama-facilitator-artifacts-518898403364 \
+  --s3-bucket zama-facilitator-artifacts-<AWS_ACCOUNT_ID> \
   --s3-key handler.zip \
   --region us-east-2
 ```

@@ -128,7 +128,7 @@ cause: `invalid_signature`, `invalid_timing`, `insufficient_funds`,
 `insufficient_value`, `receiver_mismatch`, `invalid_network`, `invalid_scheme`,
 `unexpected_settle_error`. The full table is in `/skill.md`.
 
-A literal `null` there means you are on a facilitator older than 2.11.0, where
+A literal `null` there means you are on a facilitator older than 2.13.0, where
 every cause serialised the same way and this guide had to guess "likely bad
 signature" - which is exactly why the field was fixed.
 

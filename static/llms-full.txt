@@ -487,7 +487,7 @@ A valid one answers `{"isValid": true}`. Branch on `isValid`, not on the status 
 | `unexpected_settle_error` | Settlement failed for a reason none of the above covers |
 
 Treat the list as open: a token you do not recognise still means "rejected", so
-switch on it but keep a default arm. Until 2.11.0 this field was always `null` —
+switch on it but keep a default arm. Before 2.13.0 this field was always `null` —
 if you see `null`, you are talking to an older facilitator and the cause is not
 recoverable from the response.
 A `400` means the *request* was malformed — you sent something the facilitator could

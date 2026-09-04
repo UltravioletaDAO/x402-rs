@@ -2443,14 +2443,17 @@ pub async fn get_mcp_page(headers: HeaderMap) -> Response<String> {
         .and_then(|value| value.to_str().ok())
         .unwrap_or_default();
     let asks_for_html = accept.contains("text/html");
-    if accept.contains("text/event-stream") || (accept.contains("application/json") && !asks_for_html)
+    if accept.contains("text/event-stream")
+        || (accept.contains("application/json") && !asks_for_html)
     {
         return mcp_get_not_allowed();
     }
     // HTML first, so it stays the default for a browser, for `curl` with no
     // Accept, and for anything sending `*/*`.
-    let mut response =
-        negotiated_surface(&headers, &[("text/html", MCP_HTML), ("text/markdown", MCP_MD)]);
+    let mut response = negotiated_surface(
+        &headers,
+        &[("text/html", MCP_HTML), ("text/markdown", MCP_MD)],
+    );
     // The Markdown is English-only; the HTML is English by default. Both are
     // `en` -- see CONTENT_LANGUAGE_EN.
     response.headers_mut().insert(
@@ -3586,12 +3589,7 @@ where
                         Json(json!({
                             "error": format!("Failed to deserialize VerifyRequest: {}", e),
                             "code": "invalid_request_body",
-                            "hint": "The body must be a JSON object with \
-                                     `paymentPayload` and `paymentRequirements`. \
-                                     Both the x402 v1 shape (\"network\": \"base\") \
-                                     and the v2 CAIP-2 shape (\"network\": \
-                                     \"eip155:8453\") are accepted. Worked examples: \
-                                     https://facilitator.ultravioletadao.xyz/skill.md",
+                            "hint": invalid_body_hint(body_str, ""),
                         })),
                     )
                         .into_response();
@@ -3624,6 +3622,14 @@ where
                 req.network()
             );
             "x402r-nested"
+        }
+        VerifyRequestEnvelope::V2Lean(req) => {
+            debug!(
+                "Processing x402 v2 verify request (no inner resource/accepted) \
+                 with CAIP-2 network: {}",
+                req.network()
+            );
+            "v2-lean"
         }
     };
     debug!("Processing x402 {} verify request", format_name);
@@ -3724,6 +3730,189 @@ where
                 &format!("{error:?}"),
             );
             error.into_response()
+        }
+    }
+}
+
+/// The `x402Version` the body claims for itself, if it says anything readable.
+///
+/// Read from the envelope first, then from `paymentPayload`, because a caller
+/// who gets the envelope wrong often still stamps the version on the payload it
+/// copied out of a working example. `None` means the body is too broken to have
+/// an opinion -- not that it is v1.
+fn declared_x402_version(body_str: &str) -> Option<u64> {
+    let body: serde_json::Value = serde_json::from_str(body_str).ok()?;
+    body.get("x402Version")
+        .and_then(serde_json::Value::as_u64)
+        .or_else(|| body.get("paymentPayload")?.get("x402Version")?.as_u64())
+}
+
+/// The `hint` on a `400 invalid_request_body`, told for the shape the body
+/// itself declares.
+///
+/// # Why the hint is not one fixed sentence
+///
+/// It was, and for half of its readers it was false. Every rejected body got
+/// "the body must be a JSON object with `paymentPayload` and
+/// `paymentRequirements`" -- the x402 **v1** envelope. A body declaring
+/// `x402Version: 2` has no `paymentRequirements` at all: the v2 envelope is
+/// `paymentPayload` + `resource` + `accepted`
+/// ([`crate::types_v2::VerifyRequestV2`]).
+///
+/// Measured against production 2.10.0 on 2026-09-04, walking the ChatGPT ->
+/// Paybox -> MeshRelay flow by hand: a correct-shaped v2 body reached the chain,
+/// the same body missing a field was told to send v1 field names, and the link
+/// the hint offered went to a document that published only the v1 shape. There
+/// was no surface anywhere that named `resource` and `accepted`.
+///
+/// A wrong error message costs more than a missing one, because it is followed.
+/// So the version is read back out of the body: says 2, the hint names the v2
+/// fields; says 1, the v1 fields; says nothing readable, BOTH shapes are printed
+/// rather than one of them guessed.
+///
+/// `extra` is the endpoint's own sentence, already punctuated, or `""`.
+fn invalid_body_hint(body_str: &str, extra: &str) -> String {
+    // The `network` spelling is NOT the same rule in the two shapes, and saying
+    // it was is the second half of the same lie. In v1 both spellings parse. In
+    // v2 `accepted.network` is a `Caip2NetworkId`, which requires
+    // `namespace:reference` -- a bare "base" is refused. Measured against
+    // production 2.10.0 on 2026-09-04.
+    const V1_SHAPE: &str = "x402 v1 is a JSON object with `paymentPayload` and \
+                            `paymentRequirements`. `network` may be written as \
+                            the x402 v1 name (\"base\") or as the CAIP-2 \
+                            identifier (\"eip155:8453\"), in both objects.";
+    const V2_SHAPE: &str = "x402 v2 is a JSON object with `paymentPayload`, \
+                            `resource` and `accepted` -- v2 has no \
+                            `paymentRequirements`; that is the v1 spelling. \
+                            `accepted` needs `scheme`, `network`, `asset`, \
+                            `amount`, `payTo` and `maxTimeoutSeconds`, and its \
+                            `network` must be CAIP-2 (\"eip155:8453\"): the bare \
+                            v1 name (\"base\") is refused there. `resource` needs \
+                            `url`, `description` and `mimeType`. Repeating \
+                            `resource` and `accepted` inside `paymentPayload` is \
+                            accepted too, but not required.";
+    const DOCS: &str = "Worked examples: \
+                        https://facilitator.ultravioletadao.xyz/skill.md";
+
+    let shape = match declared_x402_version(body_str) {
+        Some(2) => format!("This body declares `x402Version: 2`. {V2_SHAPE}"),
+        Some(1) => format!("This body declares `x402Version: 1`. {V1_SHAPE}"),
+        _ => format!(
+            "The body declares no readable `x402Version`, so both shapes \
+             are listed. {V1_SHAPE} {V2_SHAPE}"
+        ),
+    };
+    format!("{shape} {extra}{DOCS}")
+}
+
+#[cfg(test)]
+mod invalid_body_hint_tests {
+    use super::invalid_body_hint;
+
+    /// A v2 body that fails to parse, missing one field of `accepted`. This is
+    /// the shape the ChatGPT -> Paybox -> MeshRelay flow builds.
+    fn broken_v2() -> String {
+        r#"{
+          "x402Version": 2,
+          "paymentPayload": { "x402Version": 2, "payload": {} },
+          "resource": { "url": "https://example.com/x", "description": "d", "mimeType": "application/json" },
+          "accepted": { "scheme": "exact", "network": "eip155:8453" }
+        }"#
+        .to_string()
+    }
+
+    fn broken_v1() -> String {
+        r#"{ "x402Version": 1, "paymentPayload": { "x402Version": 1 } }"#.to_string()
+    }
+
+    /// **A v2 body is told about the v2 fields.**
+    ///
+    /// It was told about `paymentRequirements` -- a field the v2 envelope does
+    /// not have -- and pointed at a document that published only v1. Measured
+    /// against production 2.10.0 on 2026-09-04.
+    #[test]
+    fn a_v2_body_is_told_about_resource_and_accepted() {
+        let hint = invalid_body_hint(&broken_v2(), "");
+        assert!(
+            hint.contains("`resource`") && hint.contains("`accepted`"),
+            "a v2 body must be told the v2 field names, got: {hint}"
+        );
+        assert!(
+            hint.contains("x402Version: 2"),
+            "the hint must say which version it is answering for, got: {hint}"
+        );
+        // The discriminating half. `paymentRequirements` may be NAMED -- the
+        // hint says it is the v1 spelling -- but it must not be presented as
+        // something this body is missing.
+        assert!(
+            hint.contains("v2 has no `paymentRequirements`"),
+            "a v2 body must not be sent looking for `paymentRequirements`, got: {hint}"
+        );
+    }
+
+    /// **A v1 body still gets the v1 answer.** The fix widened the hint; it must
+    /// not have moved it.
+    #[test]
+    fn a_v1_body_is_told_about_payment_requirements() {
+        let hint = invalid_body_hint(&broken_v1(), "");
+        assert!(
+            hint.contains("`paymentPayload` and `paymentRequirements`"),
+            "a v1 body must be told the v1 field names, got: {hint}"
+        );
+        assert!(
+            hint.contains("x402Version: 1"),
+            "the hint must say which version it is answering for, got: {hint}"
+        );
+        assert!(
+            !hint.contains("`resource` and `accepted`"),
+            "a v1 body must not be sent to the v2 shape, got: {hint}"
+        );
+    }
+
+    /// **A body too broken to declare a version is shown BOTH shapes.**
+    ///
+    /// Picking one would be a coin flip, and the losing half of that flip is
+    /// what this whole change is about.
+    #[test]
+    fn an_unreadable_body_gets_both_shapes() {
+        for body in [
+            "",
+            "not json at all",
+            "{}",
+            "[1,2,3]",
+            r#"{"x402Version":"two"}"#,
+        ] {
+            let hint = invalid_body_hint(body, "");
+            assert!(
+                hint.contains("`paymentPayload` and `paymentRequirements`")
+                    && hint.contains("`resource` and `accepted`"),
+                "`{body}` declares no version, so both shapes must be listed, got: {hint}"
+            );
+        }
+    }
+
+    /// The version is read off `paymentPayload` when the envelope omits it --
+    /// the common half-copied body.
+    #[test]
+    fn the_version_is_read_off_the_payload_when_the_envelope_omits_it() {
+        let hint = invalid_body_hint(r#"{"paymentPayload":{"x402Version":2}}"#, "");
+        assert!(
+            hint.contains("x402Version: 2") && hint.contains("`accepted`"),
+            "the payload's own version must be read, got: {hint}"
+        );
+    }
+
+    /// Every hint carries the endpoint's sentence and the link, whatever the
+    /// version. `/settle` used to append its own by hand.
+    #[test]
+    fn the_endpoint_sentence_and_the_link_survive_every_branch() {
+        for body in [broken_v1(), broken_v2(), "garbage".to_string()] {
+            let hint = invalid_body_hint(&body, "SENTINEL. ");
+            assert!(hint.contains("SENTINEL. "), "endpoint text dropped: {hint}");
+            assert!(
+                hint.contains("https://facilitator.ultravioletadao.xyz/skill.md"),
+                "the worked examples link was dropped: {hint}"
+            );
         }
     }
 }
@@ -4327,17 +4516,23 @@ where
                     return (
                         StatusCode::BAD_REQUEST,
                         Json(json!({
-                            "error": format!("Failed to deserialize SettleRequest: {}", deser_err),
+                            // `e` is the envelope error, `deser_err` the v1-only
+                            // one. Reporting `deser_err` as THE error is how a v2
+                            // body got told "missing field `scheme`" -- a field
+                            // its envelope does not have, named by a reader that
+                            // was never the right one for it. POST /verify already
+                            // reports the envelope error; these two endpoints take
+                            // the same body and now say the same thing about it.
+                            "error": format!("Failed to deserialize SettleRequest: {}", e),
                             "code": "invalid_request_body",
-                            "details": "Check server logs for detailed field-by-field analysis",
-                            "hint": "The body must be a JSON object with \
-                                     `paymentPayload` and `paymentRequirements`, \
-                                     the same shape POST /verify accepts. Both the \
-                                     x402 v1 spelling (\"network\": \"base\") and \
-                                     the v2 CAIP-2 spelling (\"network\": \
-                                     \"eip155:8453\") work. Verify the payload with \
-                                     POST /verify first; worked examples: \
-                                     https://facilitator.ultravioletadao.xyz/skill.md",
+                            "details": format!(
+                                "Read as the x402 v1 shape it fails with: {deser_err}"
+                            ),
+                            "hint": invalid_body_hint(
+                                body_str,
+                                "/settle takes exactly the shape POST /verify takes; \
+                                 verify the payload there first. ",
+                            ),
                         })),
                     )
                         .into_response();
@@ -4370,6 +4565,14 @@ where
                 req.network()
             );
             "x402r-nested"
+        }
+        SettleRequestEnvelope::V2Lean(req) => {
+            debug!(
+                "Processing x402 v2 settle request (no inner resource/accepted) \
+                 with CAIP-2 network: {}",
+                req.network()
+            );
+            "v2-lean"
         }
     };
     debug!("Processing x402 {} settle request", format_name);
@@ -14310,8 +14513,14 @@ mod i18n_tests {
     fn every_key_exists_in_both_languages() {
         for (page, html) in PAGES {
             let (en, es) = dictionaries(page, html);
-            assert!(!en.is_empty(), "{page}: the `en` dictionary parsed as empty");
-            assert!(!es.is_empty(), "{page}: the `es` dictionary parsed as empty");
+            assert!(
+                !en.is_empty(),
+                "{page}: the `en` dictionary parsed as empty"
+            );
+            assert!(
+                !es.is_empty(),
+                "{page}: the `es` dictionary parsed as empty"
+            );
 
             let only_en: Vec<&String> = en.difference(&es).collect();
             let only_es: Vec<&String> = es.difference(&en).collect();
@@ -14468,7 +14677,11 @@ mod sistema_visual_tests {
         ("static/dx402.html", "dx402", DX402_HTML),
         ("static/bazaar.html", "bazaar", BAZAAR_HTML),
         ("static/stats.html", "stats", STATS_HTML),
-        ("static/events-viewer.html", "events-viewer", EVENTS_VIEWER_HTML),
+        (
+            "static/events-viewer.html",
+            "events-viewer",
+            EVENTS_VIEWER_HTML,
+        ),
     ];
 
     /// The one document deliberately outside every clause above.
@@ -14570,7 +14783,8 @@ mod sistema_visual_tests {
                 );
             }
             assert_eq!(
-                doc.matches("<link rel=\"stylesheet\" href=\"/uv.css\">").count(),
+                doc.matches("<link rel=\"stylesheet\" href=\"/uv.css\">")
+                    .count(),
                 1,
                 "{nombre} does not link /uv.css exactly once, written literally"
             );
@@ -14715,8 +14929,15 @@ mod sistema_visual_tests {
 
         let pie = recorte(INDEX_HTML, "<footer class=\"footer\">", "</footer>");
         for enlace in [
-            "/health", "/version", "/stats", "/events/live", "/supported", "/docs",
-            "/openapi.json", "/llms.txt", "/skill.md",
+            "/health",
+            "/version",
+            "/stats",
+            "/events/live",
+            "/supported",
+            "/docs",
+            "/openapi.json",
+            "/llms.txt",
+            "/skill.md",
         ] {
             assert!(
                 pie.contains(&format!("href=\"{enlace}\"")),

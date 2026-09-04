@@ -40,7 +40,7 @@
 # IMPORT (this resource already exists in AWS -- do NOT let Terraform create it)
 # ---------------------------------------------------------------------------
 #
-#   terraform import aws_iam_policy.cicd_infra #     arn:aws:iam::518898403364:policy/facilitator-cicd-infra
+#   terraform import aws_iam_policy.cicd_infra #     arn:aws:iam::<AWS_ACCOUNT_ID>:policy/facilitator-cicd-infra
 #
 # The body below is byte-for-byte the live v5 document, so the plan right after
 # the import is empty. If it is not empty, someone changed the policy by hand
@@ -77,9 +77,9 @@ resource "aws_iam_policy" "cicd_infra" {
           "dynamodb:DescribeContinuousBackups"
         ],
         "Resource" : [
-          "arn:aws:dynamodb:us-east-2:518898403364:table/facilitator_transactions",
-          "arn:aws:dynamodb:us-east-2:518898403364:table/facilitator-nonces",
-          "arn:aws:dynamodb:us-east-2:518898403364:table/idempotency_records"
+          "arn:aws:dynamodb:us-east-2:${data.aws_caller_identity.current.account_id}:table/facilitator_transactions",
+          "arn:aws:dynamodb:us-east-2:${data.aws_caller_identity.current.account_id}:table/facilitator-nonces",
+          "arn:aws:dynamodb:us-east-2:${data.aws_caller_identity.current.account_id}:table/idempotency_records"
         ]
       },
       {
@@ -91,7 +91,7 @@ resource "aws_iam_policy" "cicd_infra" {
           "iam:DeleteRolePolicy",
           "iam:ListRolePolicies"
         ],
-        "Resource" : "arn:aws:iam::518898403364:role/facilitator-production-ecs-task"
+        "Resource" : "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/facilitator-production-ecs-task"
       },
       {
         "Sid" : "DenyPrivilegeEscalation",
@@ -109,7 +109,7 @@ resource "aws_iam_policy" "cicd_infra" {
           "iam:UpdateAssumeRolePolicy"
         ],
         "NotResource" : [
-          "arn:aws:iam::518898403364:role/facilitator-production-ecs-task"
+          "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/facilitator-production-ecs-task"
         ]
       },
       {
@@ -123,7 +123,7 @@ resource "aws_iam_policy" "cicd_infra" {
           "lambda:AddPermission",
           "lambda:RemovePermission"
         ],
-        "Resource" : "arn:aws:lambda:us-east-2:518898403364:function:facilitator-production-balances"
+        "Resource" : "arn:aws:lambda:us-east-2:${data.aws_caller_identity.current.account_id}:function:facilitator-production-balances"
       },
       {
         "Sid" : "AlertTopicManage",
@@ -142,8 +142,8 @@ resource "aws_iam_policy" "cicd_infra" {
           "sns:SetSubscriptionAttributes"
         ],
         "Resource" : [
-          "arn:aws:sns:us-east-2:518898403364:facilitator-production-alerts",
-          "arn:aws:sns:us-east-2:518898403364:facilitator-production-alerts:*"
+          "arn:aws:sns:us-east-2:${data.aws_caller_identity.current.account_id}:facilitator-production-alerts",
+          "arn:aws:sns:us-east-2:${data.aws_caller_identity.current.account_id}:facilitator-production-alerts:*"
         ]
       },
       {
@@ -156,7 +156,7 @@ resource "aws_iam_policy" "cicd_infra" {
           "cloudwatch:UntagResource",
           "cloudwatch:ListTagsForResource"
         ],
-        "Resource" : "arn:aws:cloudwatch:us-east-2:518898403364:alarm:facilitator-*"
+        "Resource" : "arn:aws:cloudwatch:us-east-2:${data.aws_caller_identity.current.account_id}:alarm:facilitator-*"
       },
       {
         "Sid" : "FacilitatorScheduleManage",
@@ -170,7 +170,7 @@ resource "aws_iam_policy" "cicd_infra" {
           "events:UntagResource",
           "events:ListTagsForResource"
         ],
-        "Resource" : "arn:aws:events:us-east-2:518898403364:rule/facilitator-production-*"
+        "Resource" : "arn:aws:events:us-east-2:${data.aws_caller_identity.current.account_id}:rule/facilitator-production-*"
       },
       {
         "Sid" : "AlertsBackupQueueManage",
@@ -184,7 +184,7 @@ resource "aws_iam_policy" "cicd_infra" {
           "sqs:UntagQueue",
           "sqs:ListQueueTags"
         ],
-        "Resource" : "arn:aws:sqs:us-east-2:518898403364:facilitator-production-alerts-backup"
+        "Resource" : "arn:aws:sqs:us-east-2:${data.aws_caller_identity.current.account_id}:facilitator-production-alerts-backup"
       },
       {
         # Scope widened 2026-08-29: only /ecs/facilitator-production* was covered here,
@@ -203,9 +203,9 @@ resource "aws_iam_policy" "cicd_infra" {
           "logs:DescribeLogGroups"
         ],
         "Resource" : [
-          "arn:aws:logs:us-east-2:518898403364:log-group:/ecs/facilitator-production*",
-          "arn:aws:logs:us-east-2:518898403364:log-group:/aws/lambda/facilitator-production-balances*",
-          "arn:aws:logs:us-east-2:518898403364:log-group:/aws/apigateway/facilitator-production-balances*"
+          "arn:aws:logs:us-east-2:${data.aws_caller_identity.current.account_id}:log-group:/ecs/facilitator-production*",
+          "arn:aws:logs:us-east-2:${data.aws_caller_identity.current.account_id}:log-group:/aws/lambda/facilitator-production-balances*",
+          "arn:aws:logs:us-east-2:${data.aws_caller_identity.current.account_id}:log-group:/aws/apigateway/facilitator-production-balances*"
         ]
       }
     ]

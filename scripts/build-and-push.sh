@@ -5,7 +5,7 @@ set -e
 
 # Configuration
 AWS_REGION="${AWS_REGION:-us-east-2}"
-AWS_ACCOUNT_ID="${AWS_ACCOUNT_ID:-518898403364}"
+AWS_ACCOUNT_ID="${AWS_ACCOUNT_ID:-$(aws sts get-caller-identity --query Account --output text)}"  # read at runtime; the repo is public
 ECR_REPOSITORY="facilitator"
 IMAGE_TAG="${1:-latest}"
 

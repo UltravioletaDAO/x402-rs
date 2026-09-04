@@ -1,4 +1,4 @@
-name: No AWS account ID in docs
+name: No AWS account ID in the repo
 
 # This repo is public. The AWS account ID and the random suffixes that Secrets Manager
 # appends to secret ARNs must not live in documentation or in the agent definitions
@@ -16,25 +16,32 @@ on:
 
 jobs:
   no-account-id:
-    name: No AWS account ID in docs
+    name: No AWS account ID in the repo
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      - name: Scan Markdown and .claude/ for the account ID, account ARNs, and secret suffixes
+      - name: Scan the whole tree for account ARNs, ECR hosts and secret suffixes; docs for bare IDs
         shell: bash
         run: |
           set -uo pipefail
-          # Surfaces: every tracked Markdown file, plus everything under .claude/ (agent
-          # definitions, commands, skills). Live infra -- terraform/**, scripts/**, ci.yaml --
-          # is out of scope on purpose: moving the account ID to a variable there is a
-          # separate decision, and this gate must not block a deploy.
+          # Two surfaces. The STRUCTURAL rules (an ARN carrying an account, an ECR host,
+          # a secret name with its suffix) run over EVERY tracked file: terraform reads
+          # the account from data.aws_caller_identity, ci.yaml from the ECR login step,
+          # the scripts from `aws sts get-caller-identity`, so nothing legitimate
+          # matches. The bare-12-digit rule stays on docs and .claude/ only: code and
+          # test fixtures carry 12-digit amounts and chain constants that are not IDs.
+          mapfile -t all < <(git ls-files | sort -u)
           mapfile -t files < <(git ls-files -- '*.md' '.claude' | sort -u)
           fail=0
 
           # 1) An ARN that carries an account: arn:aws:<service>:<region>:<12 digits>:
-          hits=$(grep -nIE 'arn:aws:[a-z0-9-]*:[a-z0-9-]*:[0-9]{12}:' "${files[@]}" || true)
-          if [ -n "$hits" ]; then echo "::error::ARN with an AWS account ID -- write <AWS_ACCOUNT_ID>:"; echo "$hits"; fail=1; fi
+          hits=$(grep -nIE 'arn:aws:[a-z0-9-]*:[a-z0-9-]*:[0-9]{12}:' "${all[@]}" | grep -v '^.github/workflows/no-account-id.yml' || true)
+          if [ -n "$hits" ]; then echo "::error::ARN with an AWS account ID -- interpolate it (terraform: data.aws_caller_identity) or write <AWS_ACCOUNT_ID>:"; echo "$hits"; fail=1; fi
+
+          # 1b) An ECR registry host: <12 digits>.dkr.ecr.<region>.amazonaws.com
+          hits=$(grep -nIE '[0-9]{12}\.dkr\.ecr\.' "${all[@]}" | grep -v '^.github/workflows/no-account-id.yml' || true)
+          if [ -n "$hits" ]; then echo "::error::ECR host with an AWS account ID -- derive it from the login step or sts:"; echo "$hits"; fail=1; fi
 
           # 2) A bare 12-digit number: account IDs, ECR hostnames, S3 bucket suffixes.
           #    The lookarounds cut on a letter or a digit but NOT on _: 12 digits inside a hex
@@ -48,7 +55,7 @@ jobs:
           # 3) A Secrets Manager name with its random suffix (6 chars, at least one digit or
           #    capital), e.g. facilitator-rpc-mainnet-AbC123. Docs carry the logical name
           #    plus -<SUFIJO>; the real ARN is resolved at runtime.
-          hits=$(grep -nIP '(facilitator|karmacadabra)[a-z0-9/_-]*-(?=[A-Za-z0-9]{6}\b)(?=[a-z]*[A-Z0-9])[A-Za-z0-9]{6}\b' "${files[@]}" || true)
+          hits=$(grep -nIP '(facilitator|karmacadabra)[a-z0-9/_-]*-(?=[A-Za-z0-9]{6}\b)(?=[a-z]*[A-Z0-9])[A-Za-z0-9]{6}\b' "${all[@]}" | grep -v '^.github/workflows/no-account-id.yml' || true)
           if [ -n "$hits" ]; then echo "::error::Secrets Manager name with its random suffix -- write <name>-<SUFIJO>:"; echo "$hits"; fail=1; fi
 
           if [ "$fail" -ne 0 ]; then
@@ -56,4 +63,4 @@ jobs:
             echo "(aws sts get-caller-identity / aws secretsmanager describe-secret), never written down."
             exit 1
           fi
-          echo "OK: no AWS account ID, account ARN, or secret suffix in ${#files[@]} files."
+          echo "OK: no account ARN, ECR host or secret suffix in ${#all[@]} files; no bare account ID in ${#files[@]} docs."

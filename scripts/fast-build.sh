@@ -21,7 +21,9 @@ PUSH="${2:-}"
 # Paths
 SOURCE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="$HOME/x402-rs-build"
-ECR_REPO="518898403364.dkr.ecr.us-east-2.amazonaws.com/facilitator"
+AWS_REGION="${AWS_REGION:-us-east-2}"
+AWS_ACCOUNT_ID="${AWS_ACCOUNT_ID:-$(aws sts get-caller-identity --query Account --output text)}"  # read at runtime; the repo is public
+ECR_REPO="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/facilitator"
 
 # ── Kill any previous build processes to avoid parallel builds competing ──
 # Kill orphaned docker build processes for facilitator (safe — won't match ourselves)

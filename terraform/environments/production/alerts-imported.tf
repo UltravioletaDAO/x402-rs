@@ -54,7 +54,7 @@ resource "aws_cloudwatch_metric_alarm" "orphan_5xx_errors" {
   }
 
   alarm_actions = [
-    "arn:aws:sns:us-east-2:518898403364:em-production-mcp-alerts",
+    "arn:aws:sns:us-east-2:${data.aws_caller_identity.current.account_id}:em-production-mcp-alerts",
     aws_sns_topic.alerts.arn,
   ]
   ok_actions = []
@@ -85,7 +85,7 @@ resource "aws_cloudwatch_metric_alarm" "orphan_latency_p99" {
   }
 
   alarm_actions = [
-    "arn:aws:sns:us-east-2:518898403364:em-production-mcp-alerts",
+    "arn:aws:sns:us-east-2:${data.aws_caller_identity.current.account_id}:em-production-mcp-alerts",
     aws_sns_topic.alerts.arn,
   ]
   ok_actions = []
@@ -117,11 +117,11 @@ resource "aws_cloudwatch_metric_alarm" "orphan_no_running_tasks" {
   }
 
   alarm_actions = [
-    "arn:aws:sns:us-east-2:518898403364:em-production-mcp-alerts",
+    "arn:aws:sns:us-east-2:${data.aws_caller_identity.current.account_id}:em-production-mcp-alerts",
     aws_sns_topic.alerts.arn,
   ]
   ok_actions = [
-    "arn:aws:sns:us-east-2:518898403364:em-production-mcp-alerts",
+    "arn:aws:sns:us-east-2:${data.aws_caller_identity.current.account_id}:em-production-mcp-alerts",
     aws_sns_topic.alerts.arn,
   ]
 

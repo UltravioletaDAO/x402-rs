@@ -4171,7 +4171,21 @@ where
                             .into_response();
                     }
                 };
-                return (StatusCode::OK, Json(parsed)).into_response();
+                // Say that no new money moved.
+                //
+                // A replay is byte-identical to the settle it replays, which is
+                // the whole point -- but it left the caller unable to tell a
+                // retry that settled from a retry that was deduplicated. An
+                // agent that restarted mid-purchase and no longer holds its
+                // first response cannot answer "did I pay twice?" from the body
+                // alone. The header answers it. Named after Stripe's
+                // `Idempotent-Replayed`, which clients already know.
+                let mut response = (StatusCode::OK, Json(parsed)).into_response();
+                response.headers_mut().insert(
+                    axum::http::HeaderName::from_static("idempotent-replayed"),
+                    HeaderValue::from_static("true"),
+                );
+                return response;
             }
             Ok(Some(_)) => {
                 let correlation_id = uuid::Uuid::new_v4();
@@ -4921,6 +4935,21 @@ fn invalid_schema(payer: Option<MixedAddress>) -> VerifyResponse {
     VerifyResponse::invalid(payer, FacilitatorErrorReason::InvalidScheme)
 }
 
+/// A rejection whose cause has no variant in the x402 v1 reason enum.
+///
+/// The enum's four unit variants are the protocol's fixed vocabulary and this
+/// facilitator does not invent a fifth -- adding one would be a breaking change
+/// for every downstream `match`. `FreeForm` carries the extra tokens instead,
+/// and since the enum now serialises as a plain string, a caller cannot tell
+/// which arm produced its value: `insufficient_funds` and `invalid_signature`
+/// are both just tokens on the wire.
+fn invalid_because(payer: MixedAddress, token: &str) -> VerifyResponse {
+    VerifyResponse::invalid(
+        Some(payer),
+        FacilitatorErrorReason::FreeForm(token.to_string()),
+    )
+}
+
 impl IntoResponse for FacilitatorLocalError {
     fn into_response(self) -> Response {
         let error = self;
@@ -4937,12 +4966,37 @@ impl IntoResponse for FacilitatorLocalError {
             FacilitatorLocalError::SchemeMismatch(payer, ..) => {
                 (StatusCode::OK, Json(invalid_schema(payer))).into_response()
             }
-            FacilitatorLocalError::ReceiverMismatch(payer, ..)
-            | FacilitatorLocalError::InvalidSignature(payer, ..)
-            | FacilitatorLocalError::InvalidTiming(payer, ..)
-            | FacilitatorLocalError::InsufficientValue(payer) => {
-                (StatusCode::OK, Json(invalid_schema(Some(payer)))).into_response()
-            }
+            // Four genuinely different rejections used to share one arm and go
+            // out as `invalid_scheme`. Wrong receiver, a bad signature, an
+            // expired window and an underfunded authorization need four
+            // different fixes on the client, so they get four different
+            // tokens. `invalid_scheme` stays reserved for an actual scheme
+            // mismatch, which is what `SchemeMismatch` above already reports.
+            //
+            // The token is all that ships: no prose, no addresses, no
+            // recovered-vs-expected detail. Same split as the `rejected[]`
+            // vocabulary on `/accepts` -- `reason` is for branching, and
+            // anything a human needs to read stays in the server-side log.
+            FacilitatorLocalError::ReceiverMismatch(payer, ..) => (
+                StatusCode::OK,
+                Json(invalid_because(payer, "receiver_mismatch")),
+            )
+                .into_response(),
+            FacilitatorLocalError::InvalidSignature(payer, ..) => (
+                StatusCode::OK,
+                Json(invalid_because(payer, "invalid_signature")),
+            )
+                .into_response(),
+            FacilitatorLocalError::InvalidTiming(payer, ..) => (
+                StatusCode::OK,
+                Json(invalid_because(payer, "invalid_timing")),
+            )
+                .into_response(),
+            FacilitatorLocalError::InsufficientValue(payer) => (
+                StatusCode::OK,
+                Json(invalid_because(payer, "insufficient_value")),
+            )
+                .into_response(),
             FacilitatorLocalError::NetworkMismatch(payer, ..)
             | FacilitatorLocalError::UnsupportedNetwork(payer) => (
                 StatusCode::OK,
@@ -12381,6 +12435,257 @@ mod discovery_handler_tests {
 }
 
 #[cfg(test)]
+mod settle_idempotency_tests {
+    //! The double-spend control from the paper's threat model (12.1), which had
+    //! no test at all: `idempotency_store` covered `hash_request_body` and the
+    //! noop store, and nothing exercised the handler's decision -- replay,
+    //! conflict, or fail-closed.
+
+    use super::*;
+    use crate::idempotency_store::{
+        hash_request_body, IdempotencyRecord, IdempotencyStore, IdempotencyStoreError,
+    };
+    use crate::network::Network;
+    use axum::body::Body;
+    use axum::http::Request;
+    use std::borrow::Borrow;
+    use std::sync::Mutex;
+    use tower::ServiceExt;
+
+    /// A store whose contents and health the test controls.
+    #[derive(Debug, Default)]
+    struct FakeStore {
+        records: Mutex<std::collections::HashMap<String, IdempotencyRecord>>,
+        broken: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl IdempotencyStore for FakeStore {
+        async fn get(&self, key: &str) -> Result<Option<IdempotencyRecord>, IdempotencyStoreError> {
+            if self.broken.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err(IdempotencyStoreError::ReadError("test outage".into()));
+            }
+            Ok(self.records.lock().unwrap().get(key).cloned())
+        }
+        async fn put(&self, record: IdempotencyRecord) -> Result<(), IdempotencyStoreError> {
+            self.records
+                .lock()
+                .unwrap()
+                .insert(record.idempotency_key.clone(), record);
+            Ok(())
+        }
+        fn store_type(&self) -> &'static str {
+            "fake"
+        }
+    }
+
+    /// Installed once per test binary; the `OnceCell` ignores a second set.
+    fn store() -> Arc<FakeStore> {
+        static STORE: once_cell::sync::Lazy<Arc<FakeStore>> =
+            once_cell::sync::Lazy::new(|| Arc::new(FakeStore::default()));
+        crate::idempotency_store::set_global_idempotency_store(STORE.clone());
+        STORE.clone()
+    }
+
+    struct NoProviders;
+
+    impl ProviderMap for NoProviders {
+        type Value = NetworkProvider;
+        fn by_network<N: Borrow<Network>>(&self, _network: N) -> Option<&Self::Value> {
+            None
+        }
+        fn values(&self) -> impl Iterator<Item = &Self::Value> + Send {
+            std::iter::empty()
+        }
+    }
+
+    /// Never settles. Reaching it at all means the cache did NOT answer, which
+    /// is exactly what the replay tests need to be able to distinguish.
+    #[derive(Clone)]
+    struct NeverSettles {
+        providers: Arc<NoProviders>,
+    }
+
+    impl HasProviderMap for NeverSettles {
+        type Map = NoProviders;
+        fn provider_map(&self) -> &Self::Map {
+            &self.providers
+        }
+    }
+
+    impl Facilitator for NeverSettles {
+        type Error = FacilitatorLocalError;
+        async fn verify(
+            &self,
+            _r: &crate::types::VerifyRequest,
+        ) -> Result<VerifyResponse, Self::Error> {
+            Err(FacilitatorLocalError::ContractCall("no chain here".into()))
+        }
+        async fn settle(&self, _r: &SettleRequest) -> Result<SettleResponse, Self::Error> {
+            Err(FacilitatorLocalError::ContractCall("no chain here".into()))
+        }
+        async fn supported(
+            &self,
+        ) -> Result<crate::types::SupportedPaymentKindsResponse, Self::Error> {
+            Ok(crate::types::SupportedPaymentKindsResponse { kinds: vec![] })
+        }
+    }
+
+    async fn router() -> Router {
+        verify_settle_routes::<NeverSettles>()
+            .layer(Extension(Arc::new(DiscoveryRegistry::new())))
+            .layer(Extension(Arc::new(crate::events::EventBus::from_env())))
+            .layer(Extension(
+                crate::transaction_store::create_transaction_store().await,
+            ))
+            .with_state(NeverSettles {
+                providers: Arc::new(NoProviders),
+            })
+    }
+
+    const BODY: &str = r#"{"x402Version":1,"paymentPayload":{"network":"base"},"paymentRequirements":{"network":"base"}}"#;
+
+    /// The response a first settle would have cached.
+    fn cached() -> String {
+        serde_json::json!({
+            "success": true,
+            "transaction": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "network": "base",
+            "payer": "0x0000000000000000000000000000000000000001"
+        })
+        .to_string()
+    }
+
+    async fn settle(key: Option<&str>, body: &str) -> (StatusCode, HeaderMap, serde_json::Value) {
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("/settle")
+            .header("content-type", "application/json")
+            .header("x-forwarded-for", "203.0.113.7");
+        if let Some(k) = key {
+            req = req.header("idempotency-key", k);
+        }
+        let response = router()
+            .await
+            .oneshot(req.body(Body::from(body.to_string())).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let headers = response.headers().clone();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, headers, json)
+    }
+
+    /// Serialised: they share the process-global writer flag and store.
+    static LOCK: Mutex<()> = Mutex::new(());
+
+    fn arm() -> std::sync::MutexGuard<'static, ()> {
+        let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::writer_lease::set_writer_for_test(true);
+        guard
+    }
+
+    /// A retry with the same key and body replays; nothing new settles.
+    ///
+    /// `NeverSettles` is what makes this discriminant: if the cache were
+    /// bypassed the request would reach the facilitator and fail, so a `200`
+    /// carrying the cached transaction can only have come from the cache.
+    #[tokio::test]
+    async fn a_retry_with_the_same_key_and_body_replays_the_first_response() {
+        let _g = arm();
+        let store = store();
+        store.records.lock().unwrap().insert(
+            "purchase-1".to_string(),
+            IdempotencyRecord {
+                idempotency_key: "purchase-1".to_string(),
+                request_hash: hash_request_body(BODY.as_bytes()),
+                response_json: cached(),
+                expires_at: u64::MAX,
+            },
+        );
+
+        let (status, headers, body) = settle(Some("purchase-1"), BODY).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["success"], serde_json::json!(true));
+        assert_eq!(
+            headers
+                .get("idempotent-replayed")
+                .map(|v| v.to_str().unwrap()),
+            Some("true"),
+            "a replay that looks identical to a fresh settle leaves an agent \
+             that restarted unable to tell whether it paid twice"
+        );
+    }
+
+    /// The arm that actually stops a double spend: same key, different body.
+    ///
+    /// This is the retry that re-signs an authorization with a fresh nonce --
+    /// on-chain replay protection cannot catch it, because it is a different,
+    /// perfectly valid authorization for the same purchase.
+    #[tokio::test]
+    async fn the_same_key_with_a_different_body_is_refused_rather_than_settled() {
+        let _g = arm();
+        let store = store();
+        store.records.lock().unwrap().insert(
+            "purchase-2".to_string(),
+            IdempotencyRecord {
+                idempotency_key: "purchase-2".to_string(),
+                request_hash: hash_request_body(BODY.as_bytes()),
+                response_json: cached(),
+                expires_at: u64::MAX,
+            },
+        );
+
+        let resigned = BODY.replace("\"base\"", "\"base-sepolia\"");
+        assert_ne!(resigned, BODY);
+        let (status, _, body) = settle(Some("purchase-2"), &resigned).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["error"], serde_json::json!("idempotency_key_conflict"));
+    }
+
+    /// An unreachable store must not become a free pass.
+    #[tokio::test]
+    async fn an_unreachable_store_refuses_to_settle_rather_than_risk_a_duplicate() {
+        let _g = arm();
+        let store = store();
+        store
+            .broken
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let (status, _, body) = settle(Some("purchase-3"), BODY).await;
+        store
+            .broken
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            body["error"],
+            serde_json::json!("idempotency_store_unavailable")
+        );
+    }
+
+    /// Control: without a key there is nothing to deduplicate against, so the
+    /// request must reach the facilitator instead of being served from a cache
+    /// entry belonging to some other caller.
+    #[tokio::test]
+    async fn without_a_key_nothing_is_replayed() {
+        let _g = arm();
+        let _store = store();
+        let (status, headers, _) = settle(None, BODY).await;
+        assert!(
+            headers.get("idempotent-replayed").is_none(),
+            "an unkeyed settle must never claim to be a replay"
+        );
+        assert_ne!(
+            status,
+            StatusCode::OK,
+            "it should have reached `NeverSettles`, not a cache"
+        );
+    }
+}
+
+#[cfg(test)]
 mod writer_lease_gate_tests {
     use super::*;
     use axum::body::Body;
@@ -13248,6 +13553,158 @@ mod upstream_rpc_failure_tests {
 /// arm directly (not just the `is_upstream_rpc_failure` classifier) — this is
 /// the response the >95% plain-`/settle` EIP-3009 traffic actually gets,
 /// wired to `is_upstream_rpc_failure` on 2026-08-28.
+#[cfg(test)]
+mod rejection_reason_tests {
+    use super::*;
+    use crate::types::VerifyResponse;
+
+    fn payer() -> MixedAddress {
+        "0x0000000000000000000000000000000000000001"
+            .parse::<crate::types::EvmAddress>()
+            .expect("test address")
+            .into()
+    }
+
+    /// The rejection body exactly as a client receives it.
+    async fn reject(err: FacilitatorLocalError) -> serde_json::Value {
+        let response = err.into_response();
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "a rejected payment is a verdict, not a transport error"
+        );
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        serde_json::from_slice(&bytes).expect("rejection body is JSON")
+    }
+
+    /// Every cause we can name, and the token it must answer with.
+    ///
+    /// Deliberately a table and not one assertion: the defect being fixed was
+    /// four causes sharing one token, which a single-case test cannot see.
+    fn causes() -> Vec<(&'static str, FacilitatorLocalError)> {
+        vec![
+            (
+                "invalid_network",
+                FacilitatorLocalError::NetworkMismatch(
+                    Some(payer()),
+                    crate::network::Network::Base,
+                    crate::network::Network::Avalanche,
+                ),
+            ),
+            (
+                "invalid_scheme",
+                FacilitatorLocalError::SchemeMismatch(
+                    Some(payer()),
+                    crate::types::Scheme::Exact,
+                    crate::types::Scheme::Exact,
+                ),
+            ),
+            (
+                "insufficient_funds",
+                FacilitatorLocalError::InsufficientFunds(payer()),
+            ),
+            (
+                "insufficient_value",
+                FacilitatorLocalError::InsufficientValue(payer()),
+            ),
+            (
+                "invalid_signature",
+                FacilitatorLocalError::InvalidSignature(payer(), "recovered != from".to_string()),
+            ),
+            (
+                "invalid_timing",
+                FacilitatorLocalError::InvalidTiming(payer(), "expired".to_string()),
+            ),
+            (
+                "receiver_mismatch",
+                FacilitatorLocalError::ReceiverMismatch(
+                    payer(),
+                    "0x1".to_string(),
+                    "0x2".to_string(),
+                ),
+            ),
+        ]
+    }
+
+    /// Discriminant by cause: each one names itself.
+    ///
+    /// Before the fix this failed on five of seven rows -- every token read
+    /// `null`, and four of the causes had been collapsed into `invalid_scheme`
+    /// besides.
+    #[tokio::test]
+    async fn each_rejection_cause_reports_its_own_reason() {
+        for (expected, err) in causes() {
+            let body = reject(err).await;
+            assert_eq!(
+                body["invalidReason"],
+                serde_json::json!(expected),
+                "wrong reason for the cause that should answer `{expected}`; got {body}"
+            );
+        }
+    }
+
+    /// The property that matters even if a token is later respelled: two
+    /// different causes must never be indistinguishable to the payer.
+    #[tokio::test]
+    async fn no_two_rejection_causes_share_a_reason() {
+        let mut seen: std::collections::HashMap<String, &'static str> = Default::default();
+        for (name, err) in causes() {
+            let body = reject(err).await;
+            let token = body["invalidReason"]
+                .as_str()
+                .unwrap_or_else(|| panic!("`{name}` answered a non-string reason: {body}"))
+                .to_string();
+            if let Some(first) = seen.insert(token.clone(), name) {
+                panic!("`{first}` and `{name}` both answer `{token}`");
+            }
+        }
+        assert_eq!(seen.len(), 7, "one row per cause");
+    }
+
+    /// The defect that made the field useless rather than merely coarse.
+    ///
+    /// `#[serde(untagged)]` serialises a unit variant as `null`, so the fixed
+    /// reasons never reached the wire at all.
+    #[tokio::test]
+    async fn a_reason_is_never_null() {
+        for (name, err) in causes() {
+            let body = reject(err).await;
+            assert!(
+                body["invalidReason"].is_string(),
+                "`{name}` answered `invalidReason: {}`, which tells the payer nothing",
+                body["invalidReason"]
+            );
+        }
+    }
+
+    /// We emitted a body our own parser refused: `VerifyResponse`'s
+    /// `Deserialize` errors with "`invalidReason` must be present when
+    /// `isValid` is false", and `null` deserialises to `None`. So a client
+    /// built on this crate -- x402-reqwest included -- could not read a
+    /// rejection at all.
+    #[tokio::test]
+    async fn a_rejection_we_emit_can_be_read_back_by_our_own_parser() {
+        for (name, err) in causes() {
+            let body = reject(err).await;
+            let parsed: Result<VerifyResponse, _> = serde_json::from_value(body.clone());
+            let parsed = parsed
+                .unwrap_or_else(|e| panic!("`{name}`: our own parser rejected our body: {e}"));
+            match parsed {
+                VerifyResponse::Invalid { reason, .. } => {
+                    assert_eq!(
+                        reason.to_string(),
+                        body["invalidReason"].as_str().unwrap(),
+                        "`{name}` changed meaning on the round trip"
+                    );
+                }
+                VerifyResponse::Valid { .. } => panic!("`{name}` round-tripped as valid"),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod contract_call_response_tests {
     use super::*;
@@ -14692,10 +15149,12 @@ mod sistema_visual_tests {
     /// on 2026-09-03 it was restored byte for byte from 1c4c33d9 and only the
     /// shared header, the shared footer and the RLUSD logo were grafted on.
     ///
-    /// It fails this gate by construction and is MEANT to: it ships its own
-    /// `<style>` and its own `:root`, it asks Google for two families, it has
-    /// no `<h1>`, and it carries far more than nine `<h2>`. Every one of those
-    /// is the design that was asked for, not drift.
+    /// It fails this gate by construction and is MEANT to, on three clauses:
+    /// it ships its own `<style>` and its own `:root` and asks Google for two
+    /// families; it has no `<h1>` at all, so there is nothing for the "nothing
+    /// between the header and the h1" check to measure; and it carries 24
+    /// `<h4>`, a level this gate bans outright. Every one of those is the
+    /// design that was asked for, not drift.
     ///
     /// What still holds it: [`la_portada_lleva_la_cabecera_y_el_pie_compartidos`]
     /// below, and the five `i18n_tests`, which never left it. Widening this

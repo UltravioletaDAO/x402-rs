@@ -228,10 +228,28 @@ the token and network are supported.
 **A rejected payment is still HTTP 200.** The verdict lives in the body:
 
 ```json
-{ "isValid": false, "invalidReason": null, "payer": "0x0000000000000000000000000000000000000001" }
+{ "isValid": false, "invalidReason": "invalid_signature", "payer": "0x0000000000000000000000000000000000000001" }
 ```
 
 A valid one answers `{"isValid": true}`. Branch on `isValid`, not on the status code.
+
+`invalidReason` is a snake_case token naming the cause, and each cause has its own:
+
+| Token | What to change |
+|---|---|
+| `invalid_signature` | The EIP-712 signature does not recover to `authorization.from` |
+| `invalid_timing` | Now is outside the `validAfter` / `validBefore` window |
+| `insufficient_funds` | The payer's on-chain balance is below the amount |
+| `insufficient_value` | The signed `value` is below `maxAmountRequired` |
+| `receiver_mismatch` | `authorization.to` is not the requirements' `payTo` |
+| `invalid_network` | The network is unsupported, or the two halves disagree |
+| `invalid_scheme` | The payload's `scheme` is not the requirements' `scheme` |
+| `unexpected_settle_error` | Settlement failed for a reason none of the above covers |
+
+Treat the list as open: a token you do not recognise still means "rejected", so
+switch on it but keep a default arm. Before 2.13.0 this field was always `null` —
+if you see `null`, you are talking to an older facilitator and the cause is not
+recoverable from the response.
 A `400` means the *request* was malformed — you sent something the facilitator could
 not read — which is a different bug from a payment that does not check out.
 
@@ -245,19 +263,51 @@ Same request body as `/verify`. The facilitator re-verifies, then calls
 Success:
 
 ```json
-{ "success": true, "transaction": "0x...", "network": "base", "payer": "0x..." }
+{ "success": true, "transaction": "0x...", "transactionHash": "0x...",
+  "paymentId": "0x...", "network": "base", "payer": "0x..." }
 ```
+
+The hash is emitted under three names — `transaction`, `transactionHash` and
+`transaction_hash` — because clients in the wild read all three. They are one value.
+
+`paymentId` is this payment's canonical identifier: `keccak256(caip2 ‖ txHash)`,
+so it is reproducible by anyone holding the network and the hash. It is the key
+DX402 evidence is stored under, so it is what you pass to
+`/dx402/evidence/{paymentId}` and `/dx402/receipt/{paymentId}`.
 
 Failure:
 
 ```json
-{ "success": false, "errorReason": "insufficient_balance", "payer": "0x...", "network": "base" }
+{ "success": false, "errorReason": "insufficient_funds", "payer": "0x...", "network": "base" }
 ```
 
-**Settlement is not idempotent from your side and a timeout is not a failure.** If the
-connection drops after you sent `/settle`, the transaction may still land. Do not
-re-sign and re-send blindly: re-check on-chain, or look for the operation on `/events`
-or `/transactions`, before deciding it did not happen.
+`errorReason` uses the same token vocabulary as `invalidReason` above.
+
+**A timeout is not a failure.** If the connection drops after you sent `/settle`,
+the transaction may still land. Do not re-sign and re-send blindly: re-check
+on-chain, or look for the operation on `/events` or `/transactions`, before
+deciding it did not happen.
+
+**Send an `Idempotency-Key` and the retry is safe.** Choose one opaque string per
+intended purchase, keep it across retries and restarts, and send it as a header:
+
+```
+Idempotency-Key: 26dece19-37e0-431c-95d4-10b4e44fef98
+```
+
+- **Same key, same body** → the first response is replayed, carrying
+  `Idempotent-Replayed: true`. No second transaction. Read that header rather
+  than comparing bodies: after a restart you no longer hold the first one.
+- **Same key, different body** → `409 idempotency_key_conflict`. This is the one
+  that catches the dangerous mistake: re-signing an authorization with a fresh
+  nonce and reusing the key means you are trying to pay twice for one purchase,
+  and it is refused instead of settled.
+- **Store unreachable** → `503 idempotency_store_unavailable`. It fails closed:
+  no settlement happens that we could not have deduplicated.
+
+Without a key there is nothing to deduplicate against, and a retry is simply a
+second settle attempt. On EVM the token's own `authorizationState` still rejects
+a replay of the *same* nonce, but nothing stops a *newly signed* one.
 
 ### The other schemes, on the same endpoint
 

@@ -323,7 +323,13 @@ Verifies an x402 payment authorization without settling it on-chain.
 
 That body is runnable as printed. The signature and nonce are well-formed
 placeholders, not a real authorization, so copied verbatim it answers `200` with
-`"isValid": false`.
+`"isValid": false` and `"invalidReason": "invalid_signature"`.
+
+`invalidReason` is a snake_case token, one per cause: `invalid_signature`,
+`invalid_timing`, `insufficient_funds`, `insufficient_value`,
+`receiver_mismatch`, `invalid_network`, `invalid_scheme`,
+`unexpected_settle_error`. Switch on it, but keep a default arm -- the list is
+open. It was `null` for every cause before 2.13.0.
 
 **Five things in that shape are load-bearing:**
 - `paymentPayload` carries its own `x402Version`, `scheme` and `network` at its root.
@@ -482,16 +488,29 @@ Escrow contracts deployed on 11 networks. See `/supported` for networks with act
 {
   "success": true,
   "transaction": "0x...",
+  "transactionHash": "0x...",
+  "paymentId": "0x...",
   "network": "base",
   "payer": "0x..."
 }
 ```
 
+`transaction`, `transactionHash` and `transaction_hash` are the same value under
+the three names clients read it by. `paymentId` is `keccak256(caip2 || txHash)`,
+the key DX402 evidence is stored under, so it is what `/dx402/evidence/{paymentId}`
+and `/dx402/receipt/{paymentId}` take.
+
+Send an `Idempotency-Key` header to make a retry safe: the same key with the same
+body replays the first response (marked `Idempotent-Replayed: true`), the same
+key with a different body is refused with `409`, and an unreachable idempotency
+store fails closed with `503` rather than settling something it could not
+deduplicate.
+
 **Response on failure:**
 ```json
 {
   "success": false,
-  "errorReason": "insufficient_balance",
+  "errorReason": "insufficient_funds",
   "payer": "0x...",
   "network": "base"
 }

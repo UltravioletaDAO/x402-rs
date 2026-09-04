@@ -1506,27 +1506,88 @@ impl VerifyRequest {
 /// to be used for settlement.
 pub type SettleRequest = VerifyRequest;
 
-#[derive(Debug, Clone, Serialize, Deserialize, thiserror::Error)]
-#[serde(untagged, rename_all = "camelCase")]
+/// Why a payment was rejected.
+///
+/// On the wire this is always a **snake_case token string**, never `null` and
+/// never an object. That is worth stating because it was not always true: the
+/// enum used to derive `Serialize` with `#[serde(untagged)]`, and an untagged
+/// unit variant serialises as `null` -- so all four fixed reasons went out as
+/// `"invalidReason": null` and `#[serde(rename = ...)]` never applied. Three
+/// genuinely different rejections (network mismatch, expired window, bad
+/// signature) were byte-identical to each other, our own `VerifyResponse`
+/// deserialiser rejected the body we emitted (`invalidReason` must be present
+/// when `isValid` is false), and `tests/x402/TROUBLESHOOTING.md` had to *guess*
+/// the cause in prose ("likely bad signature") because the field would not say.
+///
+/// The token is [`std::fmt::Display`], i.e. the `#[error(...)]` string, so the
+/// wire value and the log line cannot drift apart. Reading is lenient by
+/// design: the four canonical tokens map back to their variants and anything
+/// else becomes [`FacilitatorErrorReason::FreeForm`], which is what lets the
+/// vocabulary grow without breaking a client that pattern-matches on the four.
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum FacilitatorErrorReason {
     /// Payer doesn't have sufficient funds.
     #[error("insufficient_funds")]
-    #[serde(rename = "insufficient_funds")]
     InsufficientFunds,
     /// The scheme in PaymentPayload didn't match expected (e.g., not 'exact'), or settlement failed.
     #[error("invalid_scheme")]
-    #[serde(rename = "invalid_scheme")]
     InvalidScheme,
     /// Network in PaymentPayload didn't match a facilitator's expected network.
     #[error("invalid_network")]
-    #[serde(rename = "invalid_network")]
     InvalidNetwork,
     /// Unexpected settle error
     #[error("unexpected_settle_error")]
-    #[serde(rename = "unexpected_settle_error")]
     UnexpectedSettleError,
     #[error("{0}")]
     FreeForm(String),
+}
+
+impl FacilitatorErrorReason {
+    /// The four tokens this facilitator promises to keep spelling the same way.
+    ///
+    /// Anything outside this set arrives as [`FacilitatorErrorReason::FreeForm`];
+    /// a client should treat an unrecognised token as "rejected, reason not in
+    /// my vocabulary" rather than as a parse failure.
+    pub const CANONICAL: [&'static str; 4] = [
+        "insufficient_funds",
+        "invalid_scheme",
+        "invalid_network",
+        "unexpected_settle_error",
+    ];
+}
+
+/// Emit the token, not `null`.
+///
+/// Delegates to `Display` so there is exactly one place where the spelling of a
+/// reason lives.
+impl Serialize for FacilitatorErrorReason {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.collect_str(self)
+    }
+}
+
+/// Read the token back, and never fail on one we have not seen.
+///
+/// A facilitator that learns a new reason must not break a pinned client, and a
+/// client reading a newer facilitator must not fail closed on a string it does
+/// not know -- so an unknown token lands in `FreeForm` instead of erroring.
+impl<'de> Deserialize<'de> for FacilitatorErrorReason {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        Ok(match raw.as_str() {
+            "insufficient_funds" => FacilitatorErrorReason::InsufficientFunds,
+            "invalid_scheme" => FacilitatorErrorReason::InvalidScheme,
+            "invalid_network" => FacilitatorErrorReason::InvalidNetwork,
+            "unexpected_settle_error" => FacilitatorErrorReason::UnexpectedSettleError,
+            _ => FacilitatorErrorReason::FreeForm(raw),
+        })
+    }
 }
 
 /// Returned from a facilitator after attempting to settle a payment on-chain.
@@ -1596,6 +1657,25 @@ impl Serialize for SettleResponse {
             map.serialize_entry("transaction", tx)?;
             map.serialize_entry("transactionHash", tx)?;
             map.serialize_entry("transaction_hash", tx)?;
+            // The canonical id for this payment, derived rather than stored so
+            // it cannot disagree with the hash printed beside it.
+            //
+            // It already existed and was already load-bearing -- DX402 keys
+            // evidence by it and binds an anchor to it
+            // (`dx402::gate::verify_anchor`) -- but only a caller who knew the
+            // recipe could compute it, so a settle response and the evidence
+            // it can be looked up by shared no identifier. Emitting it is what
+            // lets a payer go from `/settle` straight to
+            // `/dx402/evidence/{paymentId}` without reimplementing a keccak.
+            //
+            // Derivation is `dx402::payment_id` called with `tx.to_string()`,
+            // the same expression `verify_anchor` binds against. A second,
+            // subtly different derivation here is exactly how a pointer stops
+            // opening -- so there is not one.
+            map.serialize_entry(
+                "paymentId",
+                &crate::dx402::payment_id(self.network, &tx.to_string()),
+            )?;
         }
         map.serialize_entry("network", &self.network)?;
         if let Some(proof) = &self.proof_of_payment {
@@ -2436,5 +2516,161 @@ mod settle_response_tx_alias_tests {
             assert!(v.get(key).is_none(), "`{key}` must be absent, not empty");
         }
         assert_eq!(v.get("success").and_then(|x| x.as_bool()), Some(true));
+    }
+}
+
+#[cfg(test)]
+mod facilitator_error_reason_tests {
+    use super::*;
+
+    /// Every fixed reason reaches the wire as its own token.
+    ///
+    /// Under `#[serde(untagged)]` all four serialised as `null`: an untagged
+    /// unit variant is written with `serialize_unit`, and `#[serde(rename)]`
+    /// never applies. The rename attributes were there, and did nothing.
+    #[test]
+    fn every_fixed_reason_serialises_as_its_own_token() {
+        let cases = [
+            (
+                FacilitatorErrorReason::InsufficientFunds,
+                "insufficient_funds",
+            ),
+            (FacilitatorErrorReason::InvalidScheme, "invalid_scheme"),
+            (FacilitatorErrorReason::InvalidNetwork, "invalid_network"),
+            (
+                FacilitatorErrorReason::UnexpectedSettleError,
+                "unexpected_settle_error",
+            ),
+        ];
+        for (reason, token) in cases {
+            assert_eq!(
+                serde_json::to_value(&reason).unwrap(),
+                serde_json::json!(token),
+                "`{token}` did not survive serialisation"
+            );
+        }
+    }
+
+    /// The wire token and the log line are the same string, by construction.
+    #[test]
+    fn the_token_is_the_display_string() {
+        for token in FacilitatorErrorReason::CANONICAL {
+            let reason: FacilitatorErrorReason =
+                serde_json::from_value(serde_json::json!(token)).unwrap();
+            assert_eq!(reason.to_string(), token);
+            assert_eq!(
+                serde_json::to_value(&reason).unwrap(),
+                serde_json::json!(token)
+            );
+        }
+    }
+
+    /// A token we do not know must not fail the parse -- that is what lets the
+    /// vocabulary grow without breaking a pinned client.
+    #[test]
+    fn an_unknown_token_becomes_free_form_rather_than_an_error() {
+        let reason: FacilitatorErrorReason =
+            serde_json::from_value(serde_json::json!("invalid_signature")).unwrap();
+        assert!(matches!(
+            &reason,
+            FacilitatorErrorReason::FreeForm(s) if s == "invalid_signature"
+        ));
+        assert_eq!(
+            serde_json::to_value(&reason).unwrap(),
+            serde_json::json!("invalid_signature"),
+            "a free-form token must be indistinguishable from a fixed one on the wire"
+        );
+    }
+
+    /// `SettleResponse` carries the SAME enum, so a failed settle had the same
+    /// hole: `errorReason` was emitted as `null` next to `success: false`.
+    #[test]
+    fn a_failed_settle_names_its_reason_too() {
+        let response = SettleResponse {
+            success: false,
+            error_reason: Some(FacilitatorErrorReason::InsufficientFunds),
+            payer: "0x0000000000000000000000000000000000000001"
+                .parse::<EvmAddress>()
+                .unwrap()
+                .into(),
+            transaction: None,
+            network: crate::network::Network::Base,
+            proof_of_payment: None,
+            extensions: None,
+        };
+        let v = serde_json::to_value(&response).unwrap();
+        assert_eq!(
+            v["errorReason"],
+            serde_json::json!("insufficient_funds"),
+            "a settle failure must say why: {v}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod settle_response_payment_id_tests {
+    use super::*;
+
+    fn tx() -> TransactionHash {
+        TransactionHash::Evm([0x11u8; 32])
+    }
+
+    fn response(transaction: Option<TransactionHash>) -> SettleResponse {
+        SettleResponse {
+            success: transaction.is_some(),
+            error_reason: None,
+            payer: "0x0000000000000000000000000000000000000001"
+                .parse::<EvmAddress>()
+                .unwrap()
+                .into(),
+            transaction,
+            network: crate::network::Network::Base,
+            proof_of_payment: None,
+            extensions: None,
+        }
+    }
+
+    /// Pinned against an INDEPENDENT keccak256 (pycryptodome), not against our
+    /// own function -- comparing an implementation only to itself is how three
+    /// fabricated SEAL v1 hashes passed CI for months.
+    ///
+    ///   preimage = "eip155:8453" ++ "11" * 32   (the tx hash, `0x` trimmed)
+    #[test]
+    fn the_payment_id_matches_an_independent_keccak() {
+        let v = serde_json::to_value(response(Some(tx()))).unwrap();
+        assert_eq!(
+            v["paymentId"],
+            serde_json::json!("0x411fe7c2e9a1b4fbecf94b48cc628d9c69c0752b90bfd313965a3607d322d466"),
+            "settle emitted a paymentId nothing else can reproduce: {v}"
+        );
+    }
+
+    /// The property that actually matters: the id we hand the payer is the one
+    /// the anchor gate binds against. Derived differently, a pointer would
+    /// simply never resolve -- and nothing would say why.
+    #[test]
+    fn the_payment_id_is_the_one_the_anchor_gate_binds_against() {
+        let v = serde_json::to_value(response(Some(tx()))).unwrap();
+        let bound = crate::dx402::payment_id(crate::network::Network::Base, &tx().to_string());
+        assert_eq!(v["paymentId"].as_str().unwrap(), bound);
+    }
+
+    /// No transaction, no payment: an id derived from a hash that does not
+    /// exist would name a payment that never happened.
+    #[test]
+    fn a_settle_without_a_transaction_has_no_payment_id() {
+        let v = serde_json::to_value(response(None)).unwrap();
+        assert!(
+            v.get("paymentId").is_none(),
+            "`paymentId` must be absent when nothing settled: {v}"
+        );
+    }
+
+    /// The same transaction on a different chain is a different payment.
+    #[test]
+    fn the_network_is_part_of_the_identity() {
+        let base = crate::dx402::payment_id(crate::network::Network::Base, &tx().to_string());
+        let avax = crate::dx402::payment_id(crate::network::Network::Avalanche, &tx().to_string());
+        assert_ne!(base, avax);
     }
 }

@@ -172,28 +172,42 @@ fn schema(value: Value) -> Arc<JsonObject> {
     }
 }
 
-/// The worked example, taken out of the document that publishes it.
+const SKILL_MD: &str = include_str!("../static/skill.md");
+
+/// The first fenced ```json block after `heading` in `static/skill.md`.
+fn published_example(heading: &str) -> Value {
+    let after = SKILL_MD
+        .split_once(heading)
+        .unwrap_or_else(|| panic!("skill.md must carry the heading `{heading}`"))
+        .1;
+    let block = after
+        .split_once("```json")
+        .unwrap_or_else(|| panic!("no json block after `{heading}` in skill.md"))
+        .1
+        .split_once("```")
+        .expect("unterminated json block in skill.md")
+        .0;
+    serde_json::from_str(block.trim())
+        .unwrap_or_else(|e| panic!("the example after `{heading}` must be valid JSON: {e}"))
+}
+
+/// The worked x402 **v1** example, taken out of the document that publishes it.
 ///
 /// NOT a fourth copy of the body. `static/skill.md` is the one place the
 /// example is written; `src/openapi.rs` repeats it for `/docs` and a test
 /// binds the two. Parsing it out of the shipped Markdown means an MCP client
 /// and a human reader cannot be shown different bodies, which is the failure
 /// this schema is fixing in the first place.
-static VERIFY_EXAMPLE: Lazy<Value> = Lazy::new(|| {
-    const SKILL_MD: &str = include_str!("../static/skill.md");
-    let after = SKILL_MD
-        .split_once("## 3. `POST /verify`")
-        .expect("skill.md must document POST /verify")
-        .1;
-    let block = after
-        .split_once("```json")
-        .expect("the /verify section must carry a json example")
-        .1
-        .split_once("```")
-        .expect("unterminated json block in skill.md")
-        .0;
-    serde_json::from_str(block.trim()).expect("the published /verify example must be valid JSON")
-});
+static VERIFY_EXAMPLE: Lazy<Value> = Lazy::new(|| published_example("## 3. `POST /verify`"));
+
+/// The worked x402 **v2** example, from the same document.
+///
+/// A schema that showed only the v1 body was half the reason a v2 integration
+/// had nowhere correct to read: the `400` it got named v1 fields, `/skill.md`
+/// published v1 only, and this schema repeated v1 again. Three surfaces, one
+/// answer, and it was the wrong one for the body being sent.
+static VERIFY_EXAMPLE_V2: Lazy<Value> =
+    Lazy::new(|| published_example("### The same payment in the x402 v2 shape"));
 
 /// The request envelope `POST /verify` and `POST /settle` parse.
 ///
@@ -215,6 +229,19 @@ static VERIFY_EXAMPLE: Lazy<Value> = Lazy::new(|| {
 /// auto-detects x402 v1, v2, x402r and x402r-nested, and carries extensions
 /// (`refund`, `upto`, escrow `action`) inside them. Describing the common case
 /// exactly while leaving the envelope open is the honest shape.
+///
+/// # Why `anyOf` and not one flat `required`
+///
+/// There are two envelopes, not one. x402 v1 pairs `paymentPayload` with
+/// `paymentRequirements`; x402 v2 replaces that with `resource` + `accepted` and
+/// has no `paymentRequirements` at all. This schema used to declare the v1
+/// triple as unconditionally `required`, so a client building a v2 body was told
+/// by its own tool definition to send a field that does not exist in v2 -- the
+/// same thing the `400` hint was doing, one layer up.
+///
+/// The properties stay flat, so a client that ignores `anyOf` still sees every
+/// field described. The `anyOf` carries the part that actually branches: which
+/// fields each shape requires.
 fn payment_envelope_schema(operation: &str) -> Value {
     json!({
         "type": "object",
@@ -226,16 +253,26 @@ fn payment_envelope_schema(operation: &str) -> Value {
             },
             "paymentPayload": {
                 "type": "object",
-                "description": "The payer-signed authorization. Carries its OWN x402Version, scheme and network at its root -- they are not inherited from the envelope.",
+                "description": "The payer-signed authorization. Carries its OWN x402Version at its root -- it is not inherited from the envelope. In x402 v1 it also carries scheme and network; in v2 those live in the top-level `accepted` instead.",
                 "properties": {
                     "x402Version": { "type": "integer", "enum": [1, 2] },
                     "scheme": {
                         "type": "string",
-                        "description": "exact | upto | escrow | commerce | fhe-transfer. GET /supported lists what this facilitator serves."
+                        "description": "x402 v1 ONLY (in v2 this is accepted.scheme). exact | upto | escrow | commerce | fhe-transfer. GET /supported lists what this facilitator serves."
                     },
                     "network": {
                         "type": "string",
-                        "description": "The chain, in EITHER spelling: the x402 v1 name (\"base\") or the CAIP-2 identifier (\"eip155:8453\"). Both are accepted, and GET /supported publishes every network under both."
+                        "description": "x402 v1 ONLY (in v2 this is accepted.network). The chain, in EITHER spelling: the x402 v1 name (\"base\") or the CAIP-2 identifier (\"eip155:8453\"). Both are accepted, and GET /supported publishes every network under both."
+                    },
+                    "resource": {
+                        "type": "object",
+                        "description": "x402 v2, OPTIONAL: a copy of the top-level `resource`. Older builds required it here as well and rejected the body without it; it is now derived from the top-level one when omitted. Sending it still works.",
+                        "additionalProperties": true
+                    },
+                    "accepted": {
+                        "type": "object",
+                        "description": "x402 v2, OPTIONAL: a copy of the top-level `accepted`, on the same terms as `resource` above.",
+                        "additionalProperties": true
                     },
                     "payload": {
                         "type": "object",
@@ -279,12 +316,12 @@ fn payment_envelope_schema(operation: &str) -> Value {
                         "additionalProperties": true
                     }
                 },
-                "required": ["x402Version", "scheme", "network", "payload"],
+                "required": ["x402Version", "payload"],
                 "additionalProperties": true
             },
             "paymentRequirements": {
                 "type": "object",
-                "description": "What the resource server demands. The four descriptive fields have no defaults: omit one and the whole body fails to parse.",
+                "description": "x402 v1 ONLY. What the resource server demands. The four descriptive fields have no defaults: omit one and the whole body fails to parse. In x402 v2 this object does not exist -- see `resource` and `accepted`.",
                 "properties": {
                     "scheme": { "type": "string", "description": "Must match paymentPayload.scheme." },
                     "network": {
@@ -312,16 +349,68 @@ fn payment_envelope_schema(operation: &str) -> Value {
                     "description", "mimeType", "payTo", "maxTimeoutSeconds", "asset"
                 ],
                 "additionalProperties": true
+            },
+            "resource": {
+                "type": "object",
+                "description": "x402 v2 ONLY. What is being sold. Replaces the resource/description/mimeType fields of the v1 paymentRequirements.",
+                "properties": {
+                    "url": { "type": "string", "description": "Absolute URL of the thing being paid for. Required." },
+                    "description": { "type": "string", "description": "Human-readable label. Required; may be empty." },
+                    "mimeType": { "type": "string", "description": "Media type of the resource, e.g. application/json. Required." }
+                },
+                "required": ["url", "description", "mimeType"],
+                "additionalProperties": true
+            },
+            "accepted": {
+                "type": "object",
+                "description": "x402 v2 ONLY. What is being charged. Replaces the rest of the v1 paymentRequirements. Unknown keys are ignored, so a 402 offer carrying extras (maxAmountRequired, resource, description, mimeType) can be forwarded unedited.",
+                "properties": {
+                    "scheme": { "type": "string", "description": "exact | upto | escrow | commerce | fhe-transfer. GET /supported lists what this facilitator serves." },
+                    "network": {
+                        "type": "string",
+                        "description": "The chain as a CAIP-2 identifier (\"eip155:8453\"). CAIP-2 ONLY here: unlike the v1 paymentRequirements.network, this field refuses the bare x402 v1 name (\"base\"). An offer taken straight out of GET /discovery/resources is already CAIP-2 and can be used unmodified."
+                    },
+                    "asset": { "type": "string", "description": "Token contract (EVM) or mint (SVM). Required." },
+                    "amount": {
+                        "type": "string",
+                        "description": "Ceiling in token base units, as a decimal STRING. This is the v2 name for the v1 maxAmountRequired. The authorization's `value` must not exceed it."
+                    },
+                    "payTo": { "type": "string", "description": "Recipient address. Required." },
+                    "maxTimeoutSeconds": { "type": "integer", "description": "How long the offer stands. Required." },
+                    "extra": {
+                        "type": "object",
+                        "description": "Optional. EIP-712 domain (name, version) for tokens not in the static table, escrow addresses, and scheme extensions.",
+                        "additionalProperties": true
+                    }
+                },
+                "required": ["scheme", "network", "asset", "amount", "payTo", "maxTimeoutSeconds"],
+                "additionalProperties": true
             }
         },
-        "required": ["x402Version", "paymentPayload", "paymentRequirements"],
+        "required": ["x402Version", "paymentPayload"],
+        "anyOf": [
+            {
+                "title": "x402 v1",
+                "required": ["paymentRequirements"],
+                "properties": {
+                    "paymentPayload": { "required": ["x402Version", "scheme", "network", "payload"] }
+                }
+            },
+            {
+                "title": "x402 v2",
+                "required": ["resource", "accepted"]
+            }
+        ],
         "additionalProperties": true,
-        "examples": [VERIFY_EXAMPLE.clone()],
+        "examples": [VERIFY_EXAMPLE.clone(), VERIFY_EXAMPLE_V2.clone()],
         "description": format!(
-            "Identical to the JSON body of POST {operation}. The example below is \
-             runnable as printed -- its signature and nonce are well-formed \
-             placeholders, so it answers 200 with isValid:false. More at \
-             https://facilitator.ultravioletadao.xyz/skill.md"
+            "Identical to the JSON body of POST {operation}. TWO envelopes are \
+             accepted and they are not interchangeable field by field: x402 v1 \
+             is paymentPayload + paymentRequirements, x402 v2 is paymentPayload \
+             + resource + accepted and has no paymentRequirements. Both examples \
+             below are runnable as printed -- their signatures and nonces are \
+             well-formed placeholders, so they answer 200 with isValid:false. \
+             More at https://facilitator.ultravioletadao.xyz/skill.md"
         )
     })
 }
@@ -1233,7 +1322,10 @@ mod tests {
             );
             let doc: Value = serde_json::from_str(&body).unwrap();
             assert_eq!(doc["method"], "POST");
-            assert_eq!(doc["humanGuide"], "https://facilitator.ultravioletadao.xyz/mcp");
+            assert_eq!(
+                doc["humanGuide"],
+                "https://facilitator.ultravioletadao.xyz/mcp"
+            );
         }
     }
 
@@ -1284,12 +1376,22 @@ mod tests {
     #[test]
     fn the_payment_schema_names_the_fields_the_type_requires() {
         let schema = payment_envelope_schema("/verify");
-        let required: Vec<&str> = schema["required"]
+        // What a v1 body must carry: the unconditional fields plus the ones the
+        // v1 branch of `anyOf` adds. `paymentRequirements` moved into the branch
+        // when v2 -- which has no such field -- was described alongside it.
+        let mut required: Vec<&str> = schema["required"]
             .as_array()
             .unwrap()
             .iter()
             .map(|v| v.as_str().unwrap())
             .collect();
+        required.extend(
+            v1_branch(&schema)["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap()),
+        );
         assert_eq!(
             required,
             vec!["x402Version", "paymentPayload", "paymentRequirements"]
@@ -1387,6 +1489,112 @@ mod tests {
     /// Both spellings of a network are announced, because the schema is where
     /// an agent looks before it builds a body -- and our own Bazaar hands it
     /// CAIP-2.
+    /// The `anyOf` branch describing one of the two envelopes, by title.
+    fn envelope_branch<'a>(schema: &'a Value, title: &str) -> &'a Value {
+        schema["anyOf"]
+            .as_array()
+            .expect("the envelope schema must branch on the two shapes")
+            .iter()
+            .find(|b| b["title"] == title)
+            .unwrap_or_else(|| panic!("no `{title}` branch in the envelope schema"))
+    }
+
+    fn v1_branch(schema: &Value) -> &Value {
+        envelope_branch(schema, "x402 v1")
+    }
+
+    /// **The schema describes the x402 v2 envelope, not only the v1 one.**
+    ///
+    /// It described v1 alone, and unconditionally: `paymentRequirements` was in
+    /// the top-level `required`. So an agent building the v2 body -- the one the
+    /// ChatGPT -> Paybox -> MeshRelay flow builds -- was told by the tool
+    /// definition itself to add a field x402 v2 does not have, while nothing
+    /// anywhere named `resource` or `accepted`.
+    #[test]
+    fn the_payment_schema_describes_the_v2_envelope() {
+        let schema = payment_envelope_schema("/verify");
+
+        // The two v2 fields exist and carry the sub-fields the type requires.
+        let resource: Vec<&str> = schema["properties"]["resource"]["required"]
+            .as_array()
+            .expect("v2 `resource` must declare its required fields")
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(resource, vec!["url", "description", "mimeType"]);
+
+        let accepted: Vec<&str> = schema["properties"]["accepted"]["required"]
+            .as_array()
+            .expect("v2 `accepted` must declare its required fields")
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(
+            accepted,
+            vec![
+                "scheme",
+                "network",
+                "asset",
+                "amount",
+                "payTo",
+                "maxTimeoutSeconds"
+            ]
+        );
+
+        // ... and they are what the v2 branch demands, while v1 demands
+        // `paymentRequirements`. The two shapes are not merged into one bag of
+        // optional fields: a body still has to be one or the other.
+        assert_eq!(
+            envelope_branch(&schema, "x402 v2")["required"],
+            json!(["resource", "accepted"])
+        );
+        assert_eq!(
+            v1_branch(&schema)["required"],
+            json!(["paymentRequirements"])
+        );
+
+        // The discriminating half: `paymentRequirements` must NOT be required
+        // unconditionally any more, or the v2 branch is unreachable in practice.
+        let top: Vec<&str> = schema["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(
+            !top.contains(&"paymentRequirements"),
+            "`paymentRequirements` is a v1 field and cannot be required of a v2 body"
+        );
+    }
+
+    /// **The v2 example in the schema is a body `/verify` accepts.**
+    ///
+    /// The same binding [`the_example_embedded_in_the_schema_deserialises`]
+    /// makes for v1, on the shape that was actually failing. Both examples are
+    /// read out of `static/skill.md`, so this fails if the document publishes a
+    /// v2 body the parser refuses -- which is exactly what happened to the v1
+    /// one for months.
+    #[test]
+    fn the_v2_example_embedded_in_the_schema_deserialises() {
+        let schema = payment_envelope_schema("/verify");
+        let example = &schema["examples"][1];
+        assert_eq!(
+            example["x402Version"], 2,
+            "the second published example must be the v2 one"
+        );
+        assert!(
+            example.get("paymentRequirements").is_none(),
+            "a v2 example must not carry `paymentRequirements`"
+        );
+        let parsed: Result<crate::types_v2::VerifyRequestEnvelope, _> =
+            serde_json::from_value(example.clone());
+        assert!(
+            parsed.is_ok(),
+            "the v2 example published in the MCP schema does not deserialise: {}",
+            parsed.unwrap_err()
+        );
+    }
+
     #[test]
     fn the_schema_says_both_network_spellings_are_accepted() {
         let schema = payment_envelope_schema("/verify");
@@ -1400,6 +1608,35 @@ mod tests {
                 "the description must show both spellings, got: {text}"
             );
         }
+    }
+
+    /// **`accepted.network` is CAIP-2 only, and the schema says so.**
+    ///
+    /// The two shapes do NOT share the network rule, and the old hint claimed
+    /// they did -- it told every rejected body that `"base"` and
+    /// `"eip155:8453"` both work. In the v2 envelope `accepted.network`
+    /// deserialises as a `Caip2NetworkId`, which needs `namespace:reference`,
+    /// so a bare `"base"` is a hard parse error. Verified against production
+    /// 2.10.0 on 2026-09-04 and pinned to the type here, so the claim goes red
+    /// if `Caip2NetworkId` ever learns the v1 names.
+    #[test]
+    fn the_schema_says_accepted_network_is_caip2_only() {
+        let schema = payment_envelope_schema("/verify");
+        let text = schema["properties"]["accepted"]["properties"]["network"]["description"]
+            .as_str()
+            .expect("accepted.network needs a description");
+        assert!(
+            text.contains("CAIP-2 ONLY"),
+            "accepted.network must say it refuses the v1 name, got: {text}"
+        );
+
+        // The discriminating half: the claim is true of the type.
+        use std::str::FromStr;
+        assert!(crate::caip2::Caip2NetworkId::from_str("eip155:8453").is_ok());
+        assert!(
+            crate::caip2::Caip2NetworkId::from_str("base").is_err(),
+            "the schema says `base` is refused in `accepted`; the type must agree"
+        );
     }
 
     /// `x402_settle` keeps the whole envelope and adds exactly one field.

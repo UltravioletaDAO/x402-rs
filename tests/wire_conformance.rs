@@ -22,6 +22,19 @@
 //! sends the integrator to `/skill.md` -- the document holding the body we had
 //! just rejected. Fixture 3 is the one the ChatGPT/Paybox experiment hit.
 //!
+//! Two more measured against the same production build on 2026-09-04, walking
+//! the ChatGPT -> Paybox -> MeshRelay flow by hand:
+//!
+//! | # | body | measured |
+//! |---|---|---|
+//! | 10 | the x402 **v2** envelope: `paymentPayload` + `resource` + `accepted` | **400** |
+//! | 11 | the same body with `resource`/`accepted` ALSO repeated inside `paymentPayload` | `contract_call_failed` |
+//!
+//! Fixture 11 is not a success -- the signature is invented and the wallet is
+//! empty -- but it is the facilitator arguing about the *payment* instead of
+//! about the *shape*. The only thing separating the two rows is a duplicate of
+//! data already in the request, and nothing published anywhere said so.
+//!
 //! Every fixture here parses a body and asserts nothing about the chain, so the
 //! suite runs in CI with no facilitator, no RPC and no wallet.
 
@@ -243,4 +256,192 @@ fn every_v1_name_keeps_its_meaning_and_gains_its_twin() {
             "`{v1_name}` and `{caip2}` must denote the same chain"
         );
     }
+}
+
+// --- fixture 10: the x402 v2 envelope ------------------------------------
+
+/// The x402 v2 example `/skill.md` publishes.
+fn published_v2_example() -> String {
+    json_block_after(
+        include_str!("../static/skill.md"),
+        "### The same payment in the x402 v2 shape",
+    )
+}
+
+/// **The v2 example published in `/skill.md` is a body `/verify` accepts.**
+///
+/// Measured `400 data did not match any variant of untagged enum
+/// VerifyRequestEnvelope` against production on 2026-09-04. Same fixture shape
+/// as fixture 1, on the shape that was still broken after fixture 1 was fixed:
+/// the document had no v2 example at all, so there was nothing to be wrong --
+/// and nothing to be right either.
+#[test]
+fn the_v2_example_published_in_skill_md_is_a_body_verify_accepts() {
+    let example = published_v2_example();
+    let parsed: Result<VerifyRequestEnvelope, _> = serde_json::from_str(&example);
+    assert!(
+        parsed.is_ok(),
+        "static/skill.md publishes a v2 /verify example the facilitator rejects: {}",
+        parsed.unwrap_err()
+    );
+    assert_eq!(
+        parsed.unwrap().network_v1().unwrap(),
+        Network::Base,
+        "the published v2 example must name a chain we serve"
+    );
+}
+
+/// **The published v1 and v2 examples are the same payment.**
+///
+/// Both reduce to one internal `VerifyRequest`, field for field. This is what
+/// lets `/skill.md` claim they are two spellings of one thing: if the two ever
+/// stop meaning the same payment, the document is lying and this goes red.
+#[test]
+fn the_two_published_examples_reduce_to_the_same_request() {
+    let v1: VerifyRequestEnvelope = serde_json::from_str(&published_example()).unwrap();
+    let v2: VerifyRequestEnvelope = serde_json::from_str(&published_v2_example()).unwrap();
+
+    let a = serde_json::to_value(v1.to_v1().unwrap()).unwrap();
+    let b = serde_json::to_value(v2.to_v1().unwrap()).unwrap();
+    assert_eq!(
+        a, b,
+        "the v1 and v2 examples in skill.md are not the same payment"
+    );
+}
+
+// --- fixture 11: the duplication -----------------------------------------
+
+/// The same v2 body with `resource`/`accepted` ALSO written inside
+/// `paymentPayload` -- the only shape production accepted before this change.
+fn published_v2_example_duplicated() -> String {
+    let mut body: serde_json::Value = serde_json::from_str(&published_v2_example()).unwrap();
+    let resource = body["resource"].clone();
+    let accepted = body["accepted"].clone();
+    body["paymentPayload"]["resource"] = resource;
+    body["paymentPayload"]["accepted"] = accepted;
+    serde_json::to_string(&body).unwrap()
+}
+
+/// **The duplicated envelope still parses.** The fix is additive: an integrator
+/// already sending the inner copy -- and some are, because it was the only shape
+/// that worked -- must not be broken by making it optional.
+#[test]
+fn the_duplicated_v2_envelope_is_still_accepted() {
+    let parsed: Result<VerifyRequestEnvelope, _> =
+        serde_json::from_str(&published_v2_example_duplicated());
+    assert!(
+        parsed.is_ok(),
+        "the duplicated v2 envelope must keep working: {}",
+        parsed.unwrap_err()
+    );
+}
+
+/// **Duplicated or not, it is the same request.**
+///
+/// The lean shape is defined as the duplicated one with the inner pair filled
+/// in from the outer, so there is no second conversion path. Asserted rather
+/// than trusted: `to_full()` is one careless edit away from dropping a field.
+#[test]
+fn the_inner_copy_changes_nothing_when_it_agrees() {
+    let lean: VerifyRequestEnvelope = serde_json::from_str(&published_v2_example()).unwrap();
+    let full: VerifyRequestEnvelope =
+        serde_json::from_str(&published_v2_example_duplicated()).unwrap();
+
+    assert!(
+        matches!(lean, VerifyRequestEnvelope::V2Lean(_)),
+        "a body with one copy of resource/accepted must take the lean variant"
+    );
+    assert!(
+        matches!(full, VerifyRequestEnvelope::V2(_)),
+        "a body with the inner copy must still take the standard v2 variant"
+    );
+
+    assert_eq!(
+        serde_json::to_value(lean.to_v1().unwrap()).unwrap(),
+        serde_json::to_value(full.to_v1().unwrap()).unwrap(),
+        "the inner copy of resource/accepted must not change the payment"
+    );
+}
+
+/// `/settle` takes the v2 envelope on the same terms, in both spellings of it.
+/// The two endpoints share one `pub type`; nothing else guarantees they agree.
+#[test]
+fn settle_accepts_the_v2_envelope_too() {
+    for (label, body) in [
+        ("lean", published_v2_example()),
+        ("duplicated", published_v2_example_duplicated()),
+    ] {
+        let verify: Result<VerifyRequestEnvelope, _> = serde_json::from_str(&body);
+        let settle: Result<SettleRequestEnvelope, _> = serde_json::from_str(&body);
+        assert_eq!(
+            verify.is_ok(),
+            settle.is_ok(),
+            "/verify and /settle disagree about the {label} v2 envelope"
+        );
+        assert!(
+            settle.is_ok(),
+            "/settle must accept the {label} v2 envelope"
+        );
+    }
+}
+
+// --- fixture 12: the guard on the new variant ----------------------------
+
+/// Widening the envelope must not empty it. The lean variant is tried LAST, so
+/// a body that is merely broken still fails to parse rather than being read as
+/// a v2 request with fields invented for it.
+#[test]
+fn the_lean_variant_does_not_swallow_broken_bodies() {
+    let base: serde_json::Value = serde_json::from_str(&published_v2_example()).unwrap();
+
+    for (what, mutate) in [
+        ("no accepted", "accepted"),
+        ("no resource", "resource"),
+        ("no paymentPayload", "paymentPayload"),
+    ] {
+        let mut body = base.clone();
+        body.as_object_mut().unwrap().remove(mutate);
+        let parsed: Result<VerifyRequestEnvelope, _> = serde_json::from_value(body);
+        assert!(
+            parsed.is_err(),
+            "a v2 body with {what} must still be refused, not read as something else"
+        );
+    }
+
+    // A chain we do not serve never becomes a payment in the v2 shape either.
+    //
+    // Where it is refused differs, and the difference is worth writing down.
+    // `accepted.network` is a `Caip2NetworkId`, which validates the SYNTAX
+    // `namespace:reference` and not the chain. So `"base"` -- the bare x402 v1
+    // name -- is a hard parse error here, while `"eip155:99999999"` parses
+    // cleanly as a CAIP-2 id and is only refused later, when it resolves to no
+    // `Network`. Both are refusals; neither is a payment.
+    //
+    // That asymmetry is the one place the two spellings are NOT
+    // interchangeable, and the hint used to tell every caller they were.
+    // Measured against production 2.10.0 on 2026-09-04: a v2 body with
+    // `"base"` in `accepted.network` is a 400.
+    for refused in [
+        "cosmos:hub-4",
+        "eip155:99999999",
+        "base",
+        "not-a-network",
+        "",
+    ] {
+        let mut body = base.clone();
+        body["accepted"]["network"] = serde_json::Value::String(refused.to_string());
+        let parsed: Result<VerifyRequestEnvelope, _> = serde_json::from_value(body);
+        match parsed {
+            Err(_) => {} // refused at the syntax gate
+            Ok(env) => assert!(
+                env.network_v1().is_err() && env.to_v1().is_err(),
+                "`{refused}` parsed AND resolved to a chain in the v2 shape"
+            ),
+        }
+    }
+
+    // The discriminating half: the loop above would also pass if the v2 shape
+    // refused everything. The chain we do serve must still get through.
+    let good: VerifyRequestEnvelope = serde_json::from_value(base).unwrap();
+    assert_eq!(good.network_v1().unwrap(), Network::Base);
 }

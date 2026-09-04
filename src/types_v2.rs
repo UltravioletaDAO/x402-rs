@@ -367,6 +367,92 @@ pub struct VerifyRequestV2 {
     pub accepted: PaymentRequirementsV2,
 }
 
+/// The v2 payment payload with the copy of `resource`/`accepted` left out.
+///
+/// See [`VerifyRequestV2Lean`] for why this shape exists.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaymentPayloadV2Lean {
+    /// Protocol version (always 2 for v2)
+    pub x402_version: u8,
+
+    /// Chain-specific payment authorization data
+    pub payload: ExactPaymentPayload,
+
+    /// Optional protocol extensions (e.g. "bazaar", "sign_in_with_x")
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub extensions: HashMap<String, serde_json::Value>,
+}
+
+/// An x402 v2 verify request that carries `resource` and `accepted` ONCE.
+///
+/// # The shape this exists for
+///
+/// [`VerifyRequestV2`] wants `resource` and `accepted` twice: at the top level,
+/// and again inside `paymentPayload`. Both copies were load-bearing -- the
+/// outer pair becomes the v1 `PaymentRequirements`, the inner pair supplies the
+/// `scheme` and `network` a v1 `PaymentPayload` carries at its root -- so a body
+/// that named each of them once was refused with `400 data did not match any
+/// variant of untagged enum VerifyRequestEnvelope`.
+///
+/// Nobody writes the duplicated shape by accident. Measured against production
+/// 2.10.0 on 2026-09-04, walking the ChatGPT -> Paybox -> MeshRelay flow by
+/// hand: the envelope with one copy of each was rejected on shape, and the
+/// identical body with the inner pair repeated reached the chain and answered
+/// `contract_call_failed`. The only thing separating a parse error from a real
+/// verdict was a duplicate of data already in the request.
+///
+/// # Why a variant and not an `Option`
+///
+/// Making [`PaymentPayloadV2`]'s two fields optional would have reached
+/// `escrow.rs`, which reads `payment_payload.accepted.pay_to` and `.network`
+/// off a `PaymentPayloadV2` with no outer envelope in hand. This variant is
+/// tried LAST in [`VerifyRequestEnvelope`], after every variant that parses
+/// today, so no body already accepted changes the way it is read. It only
+/// answers bodies that used to get a 400.
+///
+/// [`Self::to_full`] fills the inner pair from the outer one, so the lean shape
+/// is *defined* as the duplicated shape rather than reimplementing it. There is
+/// no second conversion path to drift.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifyRequestV2Lean {
+    pub x402_version: u8, // Always 2
+    pub payment_payload: PaymentPayloadV2Lean,
+    pub resource: ResourceInfo,
+    pub accepted: PaymentRequirementsV2,
+}
+
+impl VerifyRequestV2Lean {
+    pub fn network(&self) -> &Caip2NetworkId {
+        &self.accepted.network
+    }
+
+    /// Fill the inner `resource`/`accepted` from the outer pair.
+    ///
+    /// The duplicated envelope is the canonical one; this is the only place the
+    /// lean shape is given a meaning, and it gives it the same one.
+    pub fn to_full(&self) -> VerifyRequestV2 {
+        VerifyRequestV2 {
+            x402_version: self.x402_version,
+            payment_payload: PaymentPayloadV2 {
+                x402_version: self.payment_payload.x402_version,
+                resource: self.resource.clone(),
+                accepted: self.accepted.clone(),
+                payload: self.payment_payload.payload.clone(),
+                extensions: self.payment_payload.extensions.clone(),
+            },
+            resource: self.resource.clone(),
+            accepted: self.accepted.clone(),
+        }
+    }
+
+    /// Convert to v1 for processing, by way of the duplicated envelope.
+    pub fn to_v1(&self) -> Result<VerifyRequest, NetworkParseError> {
+        self.to_full().to_v1()
+    }
+}
+
 // ============================================================================
 // x402r Format Support (from x402r SDK)
 // ============================================================================
@@ -680,6 +766,12 @@ pub enum VerifyRequestEnvelope {
     X402r(VerifyRequestX402r),
     /// Legacy v1 format
     V1(VerifyRequest),
+    /// Standard v2 format WITHOUT the inner copy of `resource`/`accepted`.
+    ///
+    /// MUST be last: every variant above it parses some body today, and trying
+    /// this one first could give a different reading to a request that already
+    /// works. Last means it only ever catches what would otherwise be a 400.
+    V2Lean(VerifyRequestV2Lean),
 }
 
 impl VerifyRequestEnvelope {
@@ -690,6 +782,7 @@ impl VerifyRequestEnvelope {
             VerifyRequestEnvelope::V2(_) => X402Version::V2,
             VerifyRequestEnvelope::X402r(_) => X402Version::V2,
             VerifyRequestEnvelope::X402rNested(_) => X402Version::V2,
+            VerifyRequestEnvelope::V2Lean(_) => X402Version::V2,
         }
     }
 
@@ -705,6 +798,8 @@ impl VerifyRequestEnvelope {
                 Network::from_caip2(&req.network().to_string())
                     .ok_or_else(|| NetworkParseError::InvalidCaip2(req.network().to_string()))
             }
+            VerifyRequestEnvelope::V2Lean(req) => Network::from_caip2(&req.network().to_string())
+                .ok_or_else(|| NetworkParseError::InvalidCaip2(req.network().to_string())),
         }
     }
 
@@ -715,6 +810,7 @@ impl VerifyRequestEnvelope {
             VerifyRequestEnvelope::V2(req) => req.to_v1(),
             VerifyRequestEnvelope::X402r(req) => req.to_v1(),
             VerifyRequestEnvelope::X402rNested(req) => req.to_v1(),
+            VerifyRequestEnvelope::V2Lean(req) => req.to_v1(),
         }
     }
 }

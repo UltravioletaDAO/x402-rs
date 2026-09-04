@@ -41,7 +41,7 @@ La rama ya está preparada en local (`scratchpad/x402-upstream`, rama
 
 **Body:**
 
-> Closes #<issue>.
+> Closes #3371.
 >
 > Adds the `durable-evidence` extension specification. Spec only — no changes to core packages or SDKs, per CONTRIBUTING ("PR 1: Specification Only").
 >
@@ -63,6 +63,6 @@ La rama ya está preparada en local (`scratchpad/x402-upstream`, rama
 - [ ] `12-SPEC-v0.3-foundation.md` releído una vez más en frío: cero menciones a DX402/producto, cero anécdotas
 - [x] Fork: `0xultravioleta/x402` (la org no permite fork sin admin); rama `spec/durable-evidence` pusheada
 - [x] Commit firmado y **verificado por GitHub** (`verified=true`): clave `AE07…8E75`, autor/committer `ultravioletadao@gmail.com` — `0xultravioleta@gmail.com` es de otra cuenta y no verifica en ésta
-- [ ] Issue abierto; esperar una reacción de maintainer **o** 72 h antes del PR
+- [x] Issue abierto: https://github.com/x402-foundation/x402/issues/3371 (2026-09-04). Esperar reacción de maintainer **o** 72 h antes del PR
 - [ ] PR abierto con `Closes #<issue>`
 - [ ] Mensaje en slack.x402.org (un párrafo, con link al issue)

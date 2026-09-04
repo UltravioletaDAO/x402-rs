@@ -26,6 +26,11 @@
   two same-network offers that anchored `not_selected` for a buyer who paid the
   higher price. It now matches on the signed `authorization.to` + `value` when
   more than one offer survives.
+- **`settle_before_execution` routes now run the DX402 hook** (red team #9):
+  they charged for evidence and emitted nothing, not even a skip. The hook runs
+  after the handler, on 2xx/3xx responses only — an error response is not
+  evidence — and the delivered bytes are untouched either way. The default
+  branch is unchanged: it never settled, and so never anchored, on 4xx/5xx.
 - **The escrow rail could be bypassed by sealing to the TokenStore** (red team,
   2026-09-04; present since v1.78.0). The escrow resolution only ran when the
   declared payer disagreed with the transfer's `from`, so any co-payee of a

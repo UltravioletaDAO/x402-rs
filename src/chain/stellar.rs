@@ -1791,7 +1791,7 @@ impl StellarProvider {
         for attempt in 1..=MAX_ATTEMPTS {
             tokio::time::sleep(tokio::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
 
-            let result: GetTransactionResult = self
+            let result: GetTransactionResult = match self
                 .rpc_request(
                     "getTransaction",
                     GetTransactionParams {
@@ -1799,7 +1799,24 @@ impl StellarProvider {
                     },
                 )
                 .await
-                .map_err(FacilitatorLocalError::from)?;
+            {
+                Ok(result) => result,
+                Err(e) => {
+                    // The transaction is already submitted -- `submit_transaction`
+                    // logged its hash before calling us. An RPC that cannot be
+                    // read tells us nothing about its fate, so the hash travels
+                    // with the error instead of being dropped. Control flow is
+                    // unchanged: this still aborts the poll, exactly as the `?`
+                    // it replaces did.
+                    tracing::warn!(
+                        tx_hash = %hash,
+                        attempt = attempt,
+                        error = %e,
+                        "Stellar getTransaction unreadable; transaction may still confirm"
+                    );
+                    return Err(self.settlement_unconfirmed(hash));
+                }
+            };
 
             match result.status.as_str() {
                 "SUCCESS" => {
@@ -1843,10 +1860,39 @@ impl StellarProvider {
             }
         }
 
-        Err(StellarError::TransactionNotFound {
-            attempts: MAX_ATTEMPTS,
+        // Polling ran out, not the transaction. Ledgers close every ~5s and
+        // this waits 30, so a transaction still absent here is usually gone --
+        // but "usually" is not a verdict, and `TransactionNotFound` threw the
+        // hash away so the caller could not go and check.
+        tracing::warn!(
+            tx_hash = %hash,
+            attempts = MAX_ATTEMPTS,
+            "Stellar transaction never confirmed within the polling window"
+        );
+        Err(self.settlement_unconfirmed(hash))
+    }
+
+    /// Build a [`FacilitatorLocalError::SettlementUnconfirmed`] for a hex tx
+    /// hash we submitted and could not resolve.
+    ///
+    /// Decodes strictly, unlike the success path above, which pads a short
+    /// hash with zeros. A zero-padded hash would name a transaction that does
+    /// not exist -- worse than no hash at all on an error whose entire purpose
+    /// is to be looked up -- so a hash that will not decode degrades to the
+    /// old opaque error instead.
+    fn settlement_unconfirmed(&self, hash: &str) -> FacilitatorLocalError {
+        match hex::decode(hash)
+            .ok()
+            .and_then(|bytes| <[u8; 32]>::try_from(bytes.as_slice()).ok())
+        {
+            Some(tx_hash) => FacilitatorLocalError::SettlementUnconfirmed(
+                TransactionHash::Stellar(tx_hash),
+                self.network(),
+            ),
+            None => FacilitatorLocalError::ContractCall(format!(
+                "Stellar transaction submitted but unconfirmed, and its hash is not 32 bytes: {hash}"
+            )),
         }
-        .into())
     }
 }
 
@@ -1918,6 +1964,18 @@ impl Facilitator for StellarProvider {
                     "Stellar settle: Transaction submitted successfully"
                 );
                 hash
+            }
+            // An unconfirmed settlement is not a failed one, so it must not be
+            // reported as `success: false` with no transaction -- that is the
+            // shape that tells a caller the payment did not happen. It travels
+            // as an error so `IntoResponse` can answer `502
+            // settlement_unconfirmed` with the hash.
+            Err(e @ FacilitatorLocalError::SettlementUnconfirmed(..)) => {
+                tracing::error!(
+                    error = %e,
+                    "Stellar settle: transaction submitted, never confirmed"
+                );
+                return Err(e);
             }
             Err(e) => {
                 tracing::error!(

@@ -15,7 +15,7 @@ use crate::facilitator::Facilitator;
 use crate::network::{Network, NetworkFamily};
 use crate::types::{
     MixedAddress, Scheme, SettleRequest, SettleResponse, SupportedPaymentKindsResponse,
-    VerifyRequest, VerifyResponse,
+    TransactionHash, VerifyRequest, VerifyResponse,
 };
 
 #[cfg(feature = "algorand")]
@@ -260,6 +260,17 @@ pub enum FacilitatorLocalError {
     /// Address is blocked by blacklist.
     #[error("Blocked address: {1}")]
     BlockedAddress(MixedAddress, String),
+    /// The transaction was broadcast and we never reached a verdict on it.
+    ///
+    /// This is NOT a failed settlement: the transaction may well be mined. It
+    /// is the one place where the "settlement submitted" / "settlement
+    /// confirmed" distinction survives past the response, so the hash has to
+    /// travel with the error. Reported as `ContractCall` until now, which
+    /// threw the hash away and left the caller with a correlation id and
+    /// nothing to look up on chain -- the concrete shape of the double-spend
+    /// risk, because a caller with no hash can only retry.
+    #[error("Settlement unconfirmed: {0} on {1}")]
+    SettlementUnconfirmed(TransactionHash, Network),
     /// Other errors.
     #[error("{0}")]
     Other(String),

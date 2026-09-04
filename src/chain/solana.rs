@@ -2060,7 +2060,11 @@ impl Facilitator for SolanaProvider {
 
         // Submit the transaction to the network
         let tx_sig = tx
-            .send_and_confirm(&self.rpc_client, CommitmentConfig::confirmed())
+            .send_and_confirm(
+                &self.rpc_client,
+                CommitmentConfig::confirmed(),
+                self.network(),
+            )
             .await?;
 
         tracing::info!(
@@ -2289,6 +2293,7 @@ impl TransactionInt {
         &self,
         rpc_client: &RpcClient,
         commitment_config: CommitmentConfig,
+        network: Network,
     ) -> Result<Signature, FacilitatorLocalError> {
         let tx_sig = self.send(rpc_client).await?;
 
@@ -2356,16 +2361,26 @@ impl TransactionInt {
                     Err(e) => {
                         // We genuinely do not know. Say so rather than
                         // asserting a failure that may not have happened.
+                        //
+                        // Note the asymmetry with the `Ok(_)` arm above: there
+                        // the chain answered and the blockhash window has
+                        // passed, so the transaction can never land and a
+                        // retry is the correct advice. Here the chain gave no
+                        // answer at all, so this is the unconfirmed case and
+                        // the signature has to travel with the error -- the
+                        // prose already told the caller to "check the
+                        // signature on chain", in a string only a human can
+                        // parse.
                         tracing::warn!(
                             tx_sig = %tx_sig,
+                            timeout_secs,
                             error = %crate::redact::scrub_urls(&e.to_string()),
                             "Could not determine the fate of a Solana transaction after the timeout"
                         );
-                        Err(FacilitatorLocalError::ContractCall(format!(
-                            "Solana transaction {tx_sig} did not confirm within {timeout_secs}s \
-                             and its status could not be read. It MAY still have settled -- check \
-                             the signature on chain before retrying."
-                        )))
+                        Err(FacilitatorLocalError::SettlementUnconfirmed(
+                            TransactionHash::Solana(*tx_sig.as_array()),
+                            network,
+                        ))
                     }
                 }
             }

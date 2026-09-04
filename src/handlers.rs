@@ -41,7 +41,7 @@ use crate::idempotency_store::{hash_request_body, IdempotencyRecord, IDEMPOTENCY
 use crate::provider_cache::{HasProviderMap, ProviderMap};
 use crate::types::{
     ErrorResponse, FacilitatorErrorReason, MixedAddress, Scheme, SettleRequest, SettleResponse,
-    SupportedPaymentKind, VerifyRequest, VerifyResponse,
+    SettlementUnconfirmedResponse, SupportedPaymentKind, VerifyRequest, VerifyResponse,
 };
 use crate::types_v2::{
     DiscoveryFilters, DiscoveryResource, RegisterResourceRequest, SettleRequestEnvelope,
@@ -5095,6 +5095,36 @@ impl IntoResponse for FacilitatorLocalError {
                 )),
             )
                 .into_response(),
+            // A transaction we broadcast and never got a verdict on. The
+            // hash is the whole point: it may be mined, so the caller needs
+            // something to look up rather than a correlation id that only we
+            // can resolve. `502` because the failure is upstream (the node
+            // never answered), but deliberately WITHOUT `Retry-After` -- this
+            // is the one upstream failure that must not be retried.
+            FacilitatorLocalError::SettlementUnconfirmed(tx, network) => {
+                let transaction = tx.to_string();
+                // Same derivation as `SettleResponse`'s success path
+                // (`types.rs`), called with the same expression, so a caller
+                // that later finds the transaction confirmed gets the same
+                // `paymentId` from both.
+                let payment_id = crate::dx402::payment_id(network, &transaction);
+                tracing::error!(
+                    %transaction,
+                    %network,
+                    %payment_id,
+                    "Settlement unconfirmed: transaction broadcast, no verdict reached"
+                );
+                (
+                    StatusCode::BAD_GATEWAY,
+                    Json(SettlementUnconfirmedResponse {
+                        error: "settlement_unconfirmed".to_string(),
+                        transaction,
+                        payment_id,
+                        retryable: false,
+                    }),
+                )
+                    .into_response()
+            }
             FacilitatorLocalError::BlockedAddress(addr, reason) => {
                 tracing::warn!(address = %addr, reason = %reason, "Blocked address attempted payment");
                 (
@@ -15678,5 +15708,136 @@ mod accepts_negotiation_tests {
         assert_eq!(rejected.len(), 2);
         assert_eq!(rejected[0]["index"], 0);
         assert_eq!(rejected[1]["index"], 2);
+    }
+}
+
+/// The wire contract of a settlement that was broadcast and never confirmed.
+///
+/// `chain::evm::settlement_unconfirmed_tests` proves the timeout produces the
+/// error; this proves what a client reads when it does. The two halves are
+/// separate on purpose -- the timeout could produce the right error and still
+/// reach the caller as `contract_call_failed`, which is exactly the shape this
+/// change exists to remove.
+#[cfg(test)]
+mod settlement_unconfirmed_response_tests {
+    use super::*;
+    use crate::network::Network;
+    use crate::types::TransactionHash;
+
+    const TX: [u8; 32] = [0x11; 32];
+
+    async fn body_of(err: FacilitatorLocalError) -> (StatusCode, serde_json::Value) {
+        let response = err.into_response();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        (status, serde_json::from_slice(&bytes).expect("JSON body"))
+    }
+
+    /// The whole point: the caller gets the hash and an id, not a correlation
+    /// uuid only we can resolve.
+    #[tokio::test]
+    async fn an_unconfirmed_settlement_answers_502_with_its_hash_and_payment_id() {
+        let (status, body) = body_of(FacilitatorLocalError::SettlementUnconfirmed(
+            TransactionHash::Evm(TX),
+            Network::Base,
+        ))
+        .await;
+
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(body["error"], "settlement_unconfirmed");
+        assert_eq!(body["transaction"], format!("0x{}", hex::encode(TX)));
+        assert_eq!(
+            body["paymentId"],
+            crate::dx402::payment_id(Network::Base, &format!("0x{}", hex::encode(TX))),
+        );
+        assert_eq!(
+            body["retryable"], false,
+            "the transaction may be mined; a retry re-signs a fresh authorization for the same \
+             purchase, which the token's own nonce check cannot stop",
+        );
+    }
+
+    /// The id must be the SAME one `/settle` prints on success, or a caller
+    /// that later finds the transaction confirmed cannot tie the two together
+    /// -- and neither can `/dx402/evidence/{paymentId}`.
+    #[tokio::test]
+    async fn the_payment_id_matches_the_one_a_successful_settle_would_print() {
+        let (_, unconfirmed) = body_of(FacilitatorLocalError::SettlementUnconfirmed(
+            TransactionHash::Evm(TX),
+            Network::Base,
+        ))
+        .await;
+
+        let settled = serde_json::to_value(SettleResponse {
+            success: true,
+            error_reason: None,
+            payer: "0x0000000000000000000000000000000000000001"
+                .parse::<crate::types::EvmAddress>()
+                .expect("test address")
+                .into(),
+            transaction: Some(TransactionHash::Evm(TX)),
+            network: Network::Base,
+            proof_of_payment: None,
+            extensions: None,
+        })
+        .expect("settle response serializes");
+
+        assert_eq!(unconfirmed["paymentId"], settled["paymentId"]);
+        assert_eq!(unconfirmed["transaction"], settled["transaction"]);
+    }
+
+    /// A control. The neighbouring `ContractCall` arm must keep answering the
+    /// opaque body -- if this ever grows a hash, a genuine settle failure
+    /// would start naming a transaction that never existed.
+    #[tokio::test]
+    async fn a_contract_call_failure_still_carries_no_hash() {
+        let (status, body) = body_of(FacilitatorLocalError::ContractCall(
+            "execution reverted".to_string(),
+        ))
+        .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["transaction"].is_null());
+        assert!(body["paymentId"].is_null());
+    }
+
+    /// Every family whose settle path can end unconfirmed encodes its hash
+    /// differently. A caller pasting the value into that chain's explorer is
+    /// the entire remedy on offer, so the encoding must be the chain's own --
+    /// not, say, an EVM-style `0x` hex of an Algorand base32 id.
+    #[tokio::test]
+    async fn each_chain_family_prints_its_own_hash_encoding() {
+        let cases: Vec<(TransactionHash, Network)> = vec![
+            (TransactionHash::Evm(TX), Network::Base),
+            (TransactionHash::Solana([0x22; 64]), Network::Solana),
+            (TransactionHash::Stellar(TX), Network::Stellar),
+            #[cfg(feature = "xrpl")]
+            (TransactionHash::Xrpl(TX), Network::Xrpl),
+            #[cfg(feature = "algorand")]
+            (
+                TransactionHash::Algorand(
+                    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_string(),
+                ),
+                Network::Algorand,
+            ),
+        ];
+
+        for (tx, network) in cases {
+            let expected = tx.to_string();
+            let (status, body) =
+                body_of(FacilitatorLocalError::SettlementUnconfirmed(tx, network)).await;
+            assert_eq!(status, StatusCode::BAD_GATEWAY, "on {network}");
+            assert_eq!(
+                body["transaction"], expected,
+                "{network} printed its hash in another family's encoding",
+            );
+            assert_eq!(
+                body["paymentId"],
+                crate::dx402::payment_id(network, &expected),
+                "{network} derived a paymentId from something other than its own hash",
+            );
+        }
     }
 }

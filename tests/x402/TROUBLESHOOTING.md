@@ -134,6 +134,32 @@ signature" - which is exactly why the field was fixed.
 
 ---
 
+### Response: `502 {"error":"settlement_unconfirmed","transaction":"0x...","paymentId":"0x...","retryable":false}`
+
+**Meaning:** the facilitator broadcast your transaction and never saw a receipt.
+It is NOT a failure and it is NOT `success: false` - the transaction may be
+mined.
+
+**Do not retry.** That is what `retryable: false` says, and it is the whole
+reason the hash is in the body. Re-signing produces a **new** authorization with
+a new nonce for the same purchase; it is perfectly valid, the token's EIP-3009
+nonce check will not stop it, and it is how a buyer pays twice.
+
+**Do this instead:** look `transaction` up on that chain's explorer.
+- Found and successful -> the payment settled. `paymentId` is the same identifier
+  a successful `/settle` would have printed, so use it as you would have.
+- Not found after the chain's finality window -> the transaction is gone and you
+  may re-sign.
+
+Before 2.14.0 this branch answered `400 contract_call_failed (ref: <uuid>)` with
+no hash, so there was nothing to look up and retrying was the only move left.
+
+Note there are two `502`s and they mean opposite things: this one, and
+`upstream_rpc_unavailable`, which carries `Retry-After` and IS retryable. Branch
+on `error`.
+
+---
+
 ## 🧪 Test Your Payload
 
 ### Using cURL:

@@ -734,7 +734,24 @@ impl EvmProvider {
                             // Receipt fetch failed (timeout or other) - reset nonce
                             // Do NOT retry: TX may have been mined, retrying could double-spend
                             self.nonce_manager.reset_nonce(from_address).await;
-                            Err(FacilitatorLocalError::ContractCall(format!("{e:?}")))
+                            // ...and for the same reason the hash cannot be
+                            // dropped here. `ContractCall` used to swallow it,
+                            // so the caller got a correlation id only we can
+                            // resolve for a transaction that may be sitting
+                            // mined on chain -- with nothing to look up, the
+                            // only move left is the retry this branch exists
+                            // to prevent.
+                            tracing::error!(
+                                %tx_hash,
+                                %from_address,
+                                network = %self.chain.network,
+                                error = ?e,
+                                "Receipt never arrived; transaction may be mined"
+                            );
+                            Err(FacilitatorLocalError::SettlementUnconfirmed(
+                                TransactionHash::Evm(tx_hash.0),
+                                self.chain.network,
+                            ))
                         }
                     };
                 }
@@ -3181,5 +3198,130 @@ mod tests {
 
         assert_eq!(read_next(&manager, test_address).await, None);
         assert_eq!(read_high_water(&manager, test_address).await, Some(99));
+    }
+}
+
+/// A settlement that is broadcast and never confirmed must hand the caller the
+/// transaction hash.
+///
+/// The receipt wait is the ONE place where "settlement submitted" and
+/// "settlement confirmed" are different states after the response has gone out.
+/// Until now that branch answered `ContractCall`, which reaches the client as
+/// `contract_call_failed (ref: <uuid>)` -- a correlation id only this
+/// facilitator can resolve, for a transaction that may be sitting mined on
+/// chain. With nothing to look up, the only move left to the caller is the
+/// retry the branch exists to prevent.
+///
+/// The mock RPC accepts the transaction and then answers `null` to every
+/// receipt read, so the timeout in `send_transaction_from` is the real one, not
+/// a stubbed error. `elapsed >= timeout` is asserted for exactly that reason: a
+/// transport error would fail this branch instantly and take the same code
+/// path, which would make the test pass without ever exercising a timeout.
+#[cfg(test)]
+mod settlement_unconfirmed_tests {
+    use super::*;
+    use alloy::network::EthereumWallet;
+    use alloy::signers::local::PrivateKeySigner;
+    use axum::{routing::post, Json as AxumJson, Router};
+    use serde_json::{json, Value};
+
+    /// The hash the mock hands back for `eth_sendRawTransaction`.
+    const SUBMITTED_TX: &str = "0x1111111111111111111111111111111111111111111111111111111111111111";
+
+    /// Answers the JSON-RPC calls one `send_transaction_from` makes, and never
+    /// produces a receipt.
+    fn answer(method: &str) -> Value {
+        match method {
+            // Base's chain id: the provider is built for `Network::Base` below.
+            "eth_chainId" => json!("0x2105"),
+            "eth_getTransactionCount" => json!("0x0"),
+            "eth_gasPrice" => json!("0x3b9aca00"),
+            "eth_maxPriorityFeePerGas" => json!("0x3b9aca00"),
+            "eth_estimateGas" => json!("0x5208"),
+            "eth_sendRawTransaction" => json!(SUBMITTED_TX),
+            // The block height never moves, so the heartbeat never has a block
+            // to check the transaction against and the wait runs to its end.
+            "eth_blockNumber" => json!("0x1"),
+            // The point of the whole fixture: mined or not, we never find out.
+            "eth_getTransactionReceipt" => Value::Null,
+            _ => Value::Null,
+        }
+    }
+
+    async fn rpc(AxumJson(body): AxumJson<Value>) -> AxumJson<Value> {
+        let one = |req: &Value| {
+            json!({
+                "jsonrpc": "2.0",
+                "id": req.get("id").cloned().unwrap_or(json!(1)),
+                "result": answer(req.get("method").and_then(Value::as_str).unwrap_or("")),
+            })
+        };
+        AxumJson(match &body {
+            Value::Array(reqs) => Value::Array(reqs.iter().map(one).collect()),
+            req => one(req),
+        })
+    }
+
+    async fn spawn_rpc() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, Router::new().route("/", post(rpc)))
+                .await
+                .unwrap();
+        });
+        format!("http://{addr}/")
+    }
+
+    #[tokio::test]
+    async fn a_settle_that_never_confirms_returns_the_transaction_hash() {
+        let url = spawn_rpc().await;
+        // 1s so the test costs a second rather than Base's 90.
+        std::env::set_var("TX_RECEIPT_TIMEOUT_SECS", "1");
+
+        let signer = PrivateKeySigner::random();
+        // `eip1559 = false` so gas pricing is one `eth_gasPrice` call rather
+        // than a fee-history negotiation: the fixture is about the receipt,
+        // not about pricing.
+        let provider =
+            EvmProvider::try_new(EthereumWallet::from(signer), &url, false, Network::Base)
+                .await
+                .expect("provider");
+
+        let started = std::time::Instant::now();
+        let result = provider
+            .send_transaction(MetaTransaction {
+                authorization_list: None,
+                to: address!("0000000000000000000000000000000000000001"),
+                calldata: Bytes::from_static(&[0u8; 4]),
+                confirmations: 1,
+            })
+            .await;
+        let elapsed = started.elapsed();
+
+        std::env::remove_var("TX_RECEIPT_TIMEOUT_SECS");
+
+        match result {
+            Err(FacilitatorLocalError::SettlementUnconfirmed(tx, network)) => {
+                assert_eq!(
+                    tx.to_string(),
+                    SUBMITTED_TX,
+                    "the error carries a different transaction than the one we broadcast",
+                );
+                assert_eq!(network, Network::Base);
+            }
+            other => panic!(
+                "a broadcast transaction whose receipt never arrived must report \
+                 SettlementUnconfirmed with its hash, so the caller has something to look up \
+                 on chain; got {other:?}",
+            ),
+        }
+
+        assert!(
+            elapsed >= std::time::Duration::from_secs(1),
+            "returned in {elapsed:?}, faster than the 1s receipt wait -- this failed on \
+             transport before the timeout ever ran, so the fixture is not exercising the \
+             timeout path it claims to",
+        );
     }
 }

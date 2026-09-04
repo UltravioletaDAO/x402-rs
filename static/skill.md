@@ -288,6 +288,23 @@ the transaction may still land. Do not re-sign and re-send blindly: re-check
 on-chain, or look for the operation on `/events` or `/transactions`, before
 deciding it did not happen.
 
+**When the facilitator itself times out waiting, it hands you the hash.** As of
+2.14.0, a transaction we broadcast and never saw confirmed answers `502` with:
+
+```json
+{ "error": "settlement_unconfirmed",
+  "transaction": "0x...", "paymentId": "0x...", "retryable": false }
+```
+
+This is *not* `success: false` — it is not a verdict at all. The transaction may
+be mined. `retryable` is `false` and means it: retrying re-signs a **fresh**
+authorization for the same purchase, which is a new, perfectly valid payment the
+token's own nonce check cannot stop, so a retry here is how you pay twice. The
+hash is there to be **looked up**, and `paymentId` is the same identifier a
+successful `/settle` prints, so once you find the transaction confirmed you can
+tie the two together (and reach `/dx402/evidence/{paymentId}`). Before 2.14.0
+this branch answered `contract_call_failed (ref: <uuid>)` with no hash at all.
+
 **Send an `Idempotency-Key` and the retry is safe.** Choose one opaque string per
 intended purchase, keep it across retries and restarts, and send it as a header:
 
@@ -489,6 +506,8 @@ self-feedback.
 | `503` + `"retryable": true` | the lookup reached **no verdict** | retry; never persist this as "not registered" |
 | `503` on `/events` | subscriber cap reached | honour `Retry-After` |
 | `429` | per-IP rate limit (about 30 req/min on verify/settle) | back off; do not re-sign |
+| `502` + `"error": "settlement_unconfirmed"` | we broadcast the tx and never got a verdict | look up the `transaction` on chain; **never** retry (`retryable: false`) |
+| `502` + `"error": "upstream_rpc_unavailable"` | the node could not answer | honour `Retry-After`; the two `502`s are different — branch on `error` |
 | timeout on `/settle` | unknown — the tx may have landed | check the chain before retrying |
 
 Every refusal is JSON. A `4xx` or `5xx` carries `{"error": ..., "code": ...,

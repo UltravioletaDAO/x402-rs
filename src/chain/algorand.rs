@@ -97,8 +97,13 @@ pub enum AlgorandError {
     #[error("Transaction submission failed: {0}")]
     SubmissionFailed(String),
 
-    #[error("Transaction not confirmed after {attempts} attempts")]
-    TransactionNotConfirmed { attempts: u32 },
+    /// The group was broadcast and never seen confirmed.
+    ///
+    /// Carries `tx_id` because this is not a failed submission: the group may
+    /// yet be committed, and the caller needs the id to check rather than a
+    /// bare attempt count.
+    #[error("Transaction {tx_id} not confirmed after {attempts} attempts")]
+    TransactionNotConfirmed { tx_id: String, attempts: u32 },
 
     #[error("ASA ID mismatch: expected {expected}, got {actual}")]
     AsaIdMismatch { expected: u64, actual: u64 },
@@ -778,7 +783,18 @@ impl AlgorandProvider {
             }
         }
 
+        // Algorand blocks finalise in ~3s and this polls for 10, so an
+        // unconfirmed group here is probably dead -- but the last read may
+        // equally have been an RPC error (the `Err` arm above only warns and
+        // keeps polling), in which case we never learned anything. Either way
+        // the id has to survive the error.
+        tracing::warn!(
+            tx_id = %tx_id,
+            attempts = MAX_ATTEMPTS,
+            "Algorand transaction never confirmed within the polling window"
+        );
         Err(AlgorandError::TransactionNotConfirmed {
+            tx_id: tx_id.to_string(),
             attempts: MAX_ATTEMPTS,
         })
     }
@@ -1006,6 +1022,22 @@ impl Facilitator for AlgorandProvider {
                             "Algorand settle: Transaction submitted successfully"
                         );
                         id
+                    }
+                    // Broadcast-but-unconfirmed is not a failed settlement.
+                    // Reporting it as `success: false` with no transaction
+                    // tells the caller the payment did not happen; it travels
+                    // as an error so `IntoResponse` can answer `502
+                    // settlement_unconfirmed` with the id.
+                    Err(AlgorandError::TransactionNotConfirmed { tx_id, attempts }) => {
+                        tracing::error!(
+                            tx_id = %tx_id,
+                            attempts = attempts,
+                            "Algorand settle: transaction submitted, never confirmed"
+                        );
+                        return Err(FacilitatorLocalError::SettlementUnconfirmed(
+                            TransactionHash::Algorand(tx_id),
+                            self.network(),
+                        ));
                     }
                     Err(e) => {
                         tracing::error!(

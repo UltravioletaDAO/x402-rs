@@ -516,6 +516,27 @@ deduplicate.
 }
 ```
 
+**Response when the transaction was broadcast and never confirmed** (`502`):
+```json
+{
+  "error": "settlement_unconfirmed",
+  "transaction": "0x...",
+  "paymentId": "0x...",
+  "retryable": false
+}
+```
+
+This is not a verdict. The transaction may be mined; the facilitator waited for a
+receipt and never got one. `retryable` is `false` and is load-bearing: retrying
+re-signs a **fresh** authorization for the same purchase, which is a new and
+perfectly valid payment that the token's own EIP-3009 nonce check cannot stop, so
+a retry here is how a buyer pays twice. Look the `transaction` up on chain
+instead. `paymentId` is derived exactly as on the success path, so a transaction
+later found confirmed carries the same identifier.
+
+Do not collapse this with the other `502`, `upstream_rpc_unavailable`, which
+carries `Retry-After` and is a plain upstream failure. Branch on `error`.
+
 **Envelope shapes.** `/settle` and `/verify` share one parser, so both the x402
 v1 envelope (`paymentPayload` + `paymentRequirements`) and the x402 v2 envelope
 (`paymentPayload` + `resource` + `accepted`, no `paymentRequirements`) are
@@ -524,7 +545,12 @@ accepted here on identical terms. Both are written out under `POST /verify`.
     request_body(content = Object, description = "x402 settle request"),
     responses(
         (status = 200, description = "Settlement result", body = Object),
-        (status = 400, description = "Settlement failed", body = Object)
+        (status = 400, description = "Settlement failed", body = Object),
+        (
+            status = 502,
+            description = "`settlement_unconfirmed`: the transaction was broadcast and no receipt                            arrived, so it may be mined -- the body carries `transaction` and                            `paymentId` and `retryable: false`. (Also `upstream_rpc_unavailable`,                            which is retryable and carries `Retry-After`.)",
+            body = Object
+        )
     )
 )]
 async fn path_settle_post() {}

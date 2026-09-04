@@ -57,9 +57,9 @@ pub mod types;
 pub use envelope::{open, seal, PayerPublicKey, PayerSecretKey, SealedEnvelope};
 pub use service::{Dx402Config, Dx402Service};
 pub use types::{
-    AnchorRequest, AnchoredEvidence, DurableEvidence, DurableEvidenceConfig, DurablePointer,
-    Dx402ErrorCode, EvidenceMode, EvidenceReceipt, KeyAlg, Retention, SkipReason, StorageBackend,
-    DX402_VERSION, EVIDENCE_HEADER, EXTENSION_KEY,
+    AnchorRequest, AnchoredEvidence, DurableEvidence, DurableEvidenceConfig, DurableEvidenceInfo,
+    DurablePointer, Dx402ErrorCode, EvidenceMode, EvidenceReceipt, KeyAlg, Retention, SkipReason,
+    StorageBackend, DX402_VERSION, EVIDENCE_HEADER, EXTENSION_KEY,
 };
 
 /// keccak256 of a response body, `0x`-prefixed.

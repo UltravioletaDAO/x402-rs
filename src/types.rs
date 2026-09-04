@@ -2054,6 +2054,15 @@ pub struct PaymentRequiredResponse {
     #[serde(alias = "paymentRequirements")]
     pub accepts: Vec<PaymentRequirements>,
     pub x402_version: X402Version,
+    /// Extensions declared on this challenge, keyed by extension key, each an
+    /// `{ info, schema }` object as the core specification (§5) requires.
+    ///
+    /// Top-level, a sibling of `accepts`, for v1 and v2 alike -- the placement
+    /// every merged extension uses. Which offers an extension applies to is
+    /// said inside `info` (`acceptIndex` / `acceptIndexes`), never by nesting
+    /// it under one requirement.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub extensions: std::collections::HashMap<String, serde_json::Value>,
 }
 
 impl Display for PaymentRequiredResponse {

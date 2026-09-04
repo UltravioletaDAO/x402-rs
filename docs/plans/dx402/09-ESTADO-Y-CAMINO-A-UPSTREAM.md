@@ -1,6 +1,6 @@
 # DX402 — Estado y camino al PR upstream
 
-**Snapshot:** 2026-09-04 (medido sobre la tabla, no sobre reportes). **Facilitador en producción:** 2.10.0; 2.11.0 commiteado sin desplegar.
+**Snapshot:** 2026-09-04 (medido sobre la tabla, no sobre reportes). **Facilitador en producción:** **2.11.0** (desplegado 2026-09-04, CI 33836369835, `/version` verificado); 2.12.0 en curso.
 **Pregunta que responde este documento:** ¿podemos abrir el PR a la x402
 Foundation? Y si no, ¿qué falta exactamente, quién lo hace, y cómo sabemos que
 está?
@@ -86,7 +86,10 @@ Con el enjambre encendido y el cron del barrido, el corpus se llena solo.
 
 **Decisiones de Saul** (cambian código o producción; no las tomo solo):
 
-1. **Restructurar el wire al formato de la Foundation** antes del PR. Verificado
+1. ~~Restructurar el wire al formato de la Foundation~~ — **en curso, 2.12.0**
+   (`11-RESTRUCTURA-FOUNDATION.md` pasos 1-3 y 5 implementados; spec v0.3 en
+   `12-SPEC-v0.3-foundation.md`). Queda: eco en el payload v2 del cliente
+   (nuestro cliente es v1), y el PR en sí. Texto original: Verificado
    contra `x402-foundation/x402` (sin plantilla, pero convención uniforme):
    `extensions` **top-level** en el 402 (offer-receipt lo hace así incluso en v1,
    con `acceptIndex`) en vez de `extra.extensions` por oferta; envelope
@@ -97,13 +100,30 @@ Con el enjambre encendido y el cron del barrido, el corpus se llena solo.
    payloads firmados. Es un cambio de wire-shape, no de criptografía ni de gate.
    Estimación: 2-3 días. Sin esto, el primer comentario del revisor es "please
    restructure".
-2. **Desplegar 2.11.0** (`2ab7deb2` local; `deploy-readiness` emite el GO/NO-GO
-   contra ese hash). Pushear a `main` es el deploy.
+2. ~~Desplegar 2.11.0~~ — **hecho 2026-09-04** (`88105da1`, dos compuertas verdes, GO de `deploy-readiness`).
 3. ~~Las 5 filas de Solana pre-gate~~ — hecho 2026-09-04.
 4. **Cuándo abrir**: el corpus y el spec ya alcanzan; la restructura del punto 1
    es lo que decide si el PR se abre esta semana o la próxima.
 
+**Rollback de 2.11.0**, por si hace falta: producción antes del deploy era la task
+def `facilitator-production:383` = imagen `facilitator:2.10.0-1a1b275` (rev 382 =
+`2.10.0-379b936`). Re-apuntar con `terraform apply -target=aws_ecs_task_definition.facilitator
+-target=aws_ecs_service.facilitator -var="image_tag=2.10.0-1a1b275"` desde
+`terraform/environments/production`, o `aws ecs update-service --cluster
+facilitator-production --service facilitator-production --task-definition
+facilitator-production:383 --force-new-deployment --region us-east-2`.
+
+**Para abrir el issue y el PR** (`13-ISSUE-Y-PR-UPSTREAM.md` tiene los textos):
+fork `0xultravioleta/x402` (parent `x402-foundation/x402`, verificado; la org no
+permite fork sin admin), `gh` autenticado con `repo`, GPG configurada y
+`commit.gpgsign=true`. El fork está 5 meses atrás: la rama del PR sale de
+`upstream/main`, no del `main` del fork.
+
 **Follow-ups técnicos** (míos, no bloquean el PR pero el spec los declara):
+
+- `/dx402/anchor` no tiene `request_body` tipado en `src/openapi.rs`; los campos
+  (`proofOfPayment`, `sellerSignature`, `escrowRelease`) sólo aparecen en prosa.
+  Hueco previo, señalado por `deploy-readiness`.
 
 - Allowlist de tokens en el proof path (red team #3) — hoy `verified` certifica
   consistencia con el escrow conocido, no que el pagador fue defraudado.

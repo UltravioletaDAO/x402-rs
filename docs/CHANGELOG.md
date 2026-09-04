@@ -1,5 +1,24 @@
 # Changelog
 
+## [2.12.0] - 2026-09-04 (committed, not yet deployed)
+
+### Changed
+
+- **`durable-evidence` takes the shape every merged x402 extension has.** The
+  declaration moves to the top level of the 402 as `{ info, schema }` with
+  `acceptIndexes` naming the offers (`DurableEvidenceInfo`); the evidence object
+  is placed under `extensions["durable-evidence"]` of the forwarded settlement
+  response, the slot the core specification reserves, with the
+  `X-Durable-Evidence` header kept as a convenience. `PaymentRequiredResponse`
+  gains `extensions`. The v0.2 per-offer form under `extra.extensions` is still
+  emitted and read as a fallback for one version. Verified against the
+  registry convention on 2026-09-03; without this the first review comment is
+  "please restructure". Nothing cryptographic, no gate rule and no receipt
+  field changes — every anchor already verified stays valid.
+- `X402Payments::select_from_challenge` / `build_payment_header_in` honour the
+  top-level declaration; `select_payment_requirements` keeps its signature.
+- Spec **v0.3** in registry format: `docs/plans/dx402/12-SPEC-v0.3-foundation.md`.
+
 ## [2.11.0] - 2026-09-04 (committed, not yet deployed)
 
 ### Added

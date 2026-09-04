@@ -2631,9 +2631,7 @@ mod settle_response_payment_id_tests {
         let v = serde_json::to_value(response(Some(tx()))).unwrap();
         assert_eq!(
             v["paymentId"],
-            serde_json::json!(
-                "0x411fe7c2e9a1b4fbecf94b48cc628d9c69c0752b90bfd313965a3607d322d466"
-            ),
+            serde_json::json!("0x411fe7c2e9a1b4fbecf94b48cc628d9c69c0752b90bfd313965a3607d322d466"),
             "settle emitted a paymentId nothing else can reproduce: {v}"
         );
     }

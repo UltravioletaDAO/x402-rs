@@ -337,6 +337,65 @@ placeholders, not a real authorization, so copied verbatim it answers `200` with
 `network` is accepted in either spelling, in both objects: the x402 v1 name
 (`"base"`) or the CAIP-2 identifier (`"eip155:8453"`). This is what lets an offer
 taken straight from `/discovery/resources`, which is CAIP-2, be paid unmodified.
+
+**The x402 v2 request body:**
+```json
+{
+  "x402Version": 2,
+  "paymentPayload": {
+    "x402Version": 2,
+    "payload": {
+      "signature": "0x111111111111111111111111111111111111111111111111111111111111111122222222222222222222222222222222222222222222222222222222222222221b",
+      "authorization": {
+        "from": "0x0000000000000000000000000000000000000001",
+        "to": "0x0000000000000000000000000000000000000002",
+        "value": "1000000",
+        "validAfter": "1700000000",
+        "validBefore": "1700100000",
+        "nonce": "0x0000000000000000000000000000000000000000000000000000000000000001"
+      }
+    }
+  },
+  "resource": {
+    "url": "https://example.com/protected",
+    "description": "One API call",
+    "mimeType": "application/json"
+  },
+  "accepted": {
+    "scheme": "exact",
+    "network": "eip155:8453",
+    "amount": "1000000",
+    "payTo": "0x0000000000000000000000000000000000000002",
+    "maxTimeoutSeconds": 60,
+    "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+  }
+}
+```
+
+v2 is a **different envelope**, not the v1 one with a `2` in it. There is no
+`paymentRequirements`: the requirements split into `accepted` (what is charged:
+`scheme`, `network`, `asset`, `amount`, `payTo`, `maxTimeoutSeconds`, optional
+`extra`) and `resource` (what is sold: `url`, `description`, `mimeType`), both at
+the top level. `maxAmountRequired` becomes `accepted.amount`, and
+`paymentPayload` no longer carries `scheme`/`network` at its root — they live in
+`accepted`. Unknown keys in `accepted` are ignored, so a `402` offer that also
+carries `maxAmountRequired` or `resource` can be forwarded unedited.
+
+`accepted.network` is **CAIP-2 only** — the one field where the two spellings are
+not interchangeable. The v1 `paymentRequirements.network` and
+`paymentPayload.network` take `"base"` or `"eip155:8453"`; `accepted.network`
+takes `"eip155:8453"` and refuses `"base"`.
+
+The two bodies above are the same payment written two ways, and they reduce to
+the same internal request. Both are runnable as printed.
+
+**On the inner copy of `resource`/`accepted`.** Earlier builds also required them
+repeated *inside* `paymentPayload` and answered `400 data did not match any
+variant of untagged enum VerifyRequestEnvelope` without it. The inner copy is now
+optional and derived from the outer pair when absent; sending it still works
+unchanged.
+
+`POST /settle` takes exactly this body, in either version.
 "#,
     request_body(content = Object, description = "x402 verify request"),
     responses(
@@ -437,6 +496,11 @@ Escrow contracts deployed on 11 networks. See `/supported` for networks with act
   "network": "base"
 }
 ```
+
+**Envelope shapes.** `/settle` and `/verify` share one parser, so both the x402
+v1 envelope (`paymentPayload` + `paymentRequirements`) and the x402 v2 envelope
+(`paymentPayload` + `resource` + `accepted`, no `paymentRequirements`) are
+accepted here on identical terms. Both are written out under `POST /verify`.
 "#,
     request_body(content = Object, description = "x402 settle request"),
     responses(
@@ -2660,6 +2724,49 @@ mod tests {
             from_docs, from_skill,
             "the /verify example in src/openapi.rs and the one in \
              static/skill.md have drifted apart"
+        );
+    }
+
+    /// `/docs` and `/skill.md` publish the same **v2** body too.
+    ///
+    /// The v1 pair already had this guard. The v2 example is newer and has the
+    /// same failure mode -- two hand-maintained copies of one contract, and the
+    /// half that drifts is the half nobody reads.
+    #[test]
+    fn the_two_published_v2_examples_are_the_same_body() {
+        let spec = ApiDoc::openapi();
+        let from_docs: serde_json::Value = serde_json::from_str(&json_block_after(
+            spec.paths.paths["/verify"]
+                .post
+                .as_ref()
+                .unwrap()
+                .description
+                .as_deref()
+                .unwrap(),
+            "**The x402 v2 request body:**",
+        ))
+        .expect("the /docs v2 example must be JSON");
+
+        let from_skill: serde_json::Value = serde_json::from_str(&json_block_after(
+            include_str!("../static/skill.md"),
+            "### The same payment in the x402 v2 shape",
+        ))
+        .expect("the skill.md v2 example must be JSON");
+
+        assert_eq!(
+            from_docs, from_skill,
+            "the v2 /verify example in src/openapi.rs and the one in \
+             static/skill.md have drifted apart"
+        );
+
+        // And it is a body the parser accepts -- the same binding the v1
+        // example carries. A matching pair of wrong examples is still wrong.
+        let parsed: Result<crate::types_v2::VerifyRequestEnvelope, _> =
+            serde_json::from_value(from_docs);
+        assert!(
+            parsed.is_ok(),
+            "the v2 example published in /docs does not deserialise: {}",
+            parsed.unwrap_err()
         );
     }
 

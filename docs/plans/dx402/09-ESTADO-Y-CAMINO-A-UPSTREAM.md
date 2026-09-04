@@ -1,6 +1,6 @@
 # DX402 — Estado y camino al PR upstream
 
-**Snapshot:** 2026-09-04 (medido sobre la tabla, no sobre reportes). **Facilitador en producción:** **2.11.0** (desplegado 2026-09-04, CI 33836369835, `/version` verificado); 2.12.0 en curso.
+**Snapshot:** 2026-09-04 (medido sobre la tabla, no sobre reportes). **Facilitador en producción:** **2.12.0** (desplegado 2026-09-04, CI 33837812160, `/version` verificado). La forma del spec v0.3 es la que corre.
 **Pregunta que responde este documento:** ¿podemos abrir el PR a la x402
 Foundation? Y si no, ¿qué falta exactamente, quién lo hace, y cómo sabemos que
 está?
@@ -86,7 +86,7 @@ Con el enjambre encendido y el cron del barrido, el corpus se llena solo.
 
 **Decisiones de Saul** (cambian código o producción; no las tomo solo):
 
-1. ~~Restructurar el wire al formato de la Foundation~~ — **en curso, 2.12.0**
+1. ~~Restructurar el wire al formato de la Foundation~~ — **hecho y desplegado, 2.12.0**
    (`11-RESTRUCTURA-FOUNDATION.md` pasos 1-3 y 5 implementados; spec v0.3 en
    `12-SPEC-v0.3-foundation.md`). Queda: eco en el payload v2 del cliente
    (nuestro cliente es v1), y el PR en sí. Texto original: Verificado

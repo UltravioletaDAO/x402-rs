@@ -488,16 +488,28 @@ Escrow contracts deployed on 11 networks. See `/supported` for networks with act
 {
   "success": true,
   "transaction": "0x...",
+  "transactionHash": "0x...",
+  "paymentId": "0x...",
   "network": "base",
   "payer": "0x..."
 }
 ```
 
+`transaction`, `transactionHash` and `transaction_hash` are the same value under
+the three names clients read it by. `paymentId` is `keccak256(caip2 || txHash)`,
+the key DX402 evidence is stored under, so it is what `/dx402/evidence/{paymentId}`
+and `/dx402/receipt/{paymentId}` take.
+
+Send an `Idempotency-Key` header to make a retry safe: the same key with the same
+body replays the first response, the same key with a different body is refused
+with `409`, and an unreachable idempotency store fails closed with `503` rather
+than settling something it could not deduplicate.
+
 **Response on failure:**
 ```json
 {
   "success": false,
-  "errorReason": "insufficient_balance",
+  "errorReason": "insufficient_funds",
   "payer": "0x...",
   "network": "base"
 }

@@ -1143,10 +1143,27 @@ impl XrplProvider {
             );
         }
 
-        Err(XrplError::NotValidated {
-            attempts: MAX_POLL_ATTEMPTS,
-        }
-        .into())
+        // The polling window closed, which is not the same as the transaction
+        // being gone: rippled kept answering `txnNotFound` and a submitted
+        // transaction can still make a later ledger. `NotValidated` dropped
+        // the hash, leaving the caller with nothing to check the ledger for.
+        tracing::warn!(
+            tx_hash = %tx_hash_hex,
+            attempts = MAX_POLL_ATTEMPTS,
+            "XRPL transaction never validated within the polling window"
+        );
+        // A hash that will not decode degrades to the opaque error rather than
+        // naming a transaction that does not exist.
+        Err(match decode_tx_hash(tx_hash_hex) {
+            Ok(tx_hash) => FacilitatorLocalError::SettlementUnconfirmed(
+                TransactionHash::Xrpl(tx_hash),
+                self.network(),
+            ),
+            Err(_) => XrplError::NotValidated {
+                attempts: MAX_POLL_ATTEMPTS,
+            }
+            .into(),
+        })
     }
 }
 
@@ -1265,6 +1282,17 @@ impl Facilitator for XrplProvider {
                     "XRPL settle: Transaction validated"
                 );
                 hash
+            }
+            // Submitted-but-unvalidated is not a failed settlement. Reporting
+            // it as `success: false` with no transaction tells the caller the
+            // payment did not happen; it travels as an error so `IntoResponse`
+            // can answer `502 settlement_unconfirmed` with the hash.
+            Err(e @ FacilitatorLocalError::SettlementUnconfirmed(..)) => {
+                tracing::error!(
+                    error = %e,
+                    "XRPL settle: transaction submitted, never validated"
+                );
+                return Err(e);
             }
             Err(e) => {
                 tracing::error!(

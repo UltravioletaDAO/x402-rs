@@ -1820,6 +1820,34 @@ pub struct ErrorResponse {
     pub error: String,
 }
 
+/// The body of a `502` for a settlement that was broadcast and never reached a
+/// verdict.
+///
+/// Separate from [`ErrorResponse`] because this is the one error on the money
+/// path that must carry data: a bare `{"error": "..."}` here is what left a
+/// caller unable to tell "the payment did not happen" from "the payment may
+/// have happened and I cannot name it".
+///
+/// `retryable` is `false` and is not a hint. The transaction may be mined;
+/// retrying re-signs a fresh authorization for the same purchase, which the
+/// token's own nonce check cannot stop. The hash is here to be *looked up*,
+/// not to be retried -- and `paymentId` is the same identifier `/settle`
+/// returns on success, so a caller that later confirms the transaction can
+/// correlate the two.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SettlementUnconfirmedResponse {
+    /// Always `settlement_unconfirmed`.
+    pub error: String,
+    /// The hash of the transaction we were waiting on, in that chain's own
+    /// encoding -- the same value `SettleResponse.transaction` would carry.
+    pub transaction: String,
+    /// `keccak256(caip2 ‖ txHash)`, derived exactly as on the success path.
+    #[serde(rename = "paymentId")]
+    pub payment_id: String,
+    /// Always `false`. See the type docs.
+    pub retryable: bool,
+}
+
 /// Contains bytes of base64 encoded some other bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Base64Bytes<'a>(pub Cow<'a, [u8]>);

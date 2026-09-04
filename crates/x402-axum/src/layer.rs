@@ -89,9 +89,9 @@ use x402_rs::dx402::DurableEvidenceConfig;
 use x402_rs::facilitator::Facilitator;
 use x402_rs::network::Network;
 use x402_rs::types::{
-    Base64Bytes, FacilitatorErrorReason, MixedAddress, PaymentPayload, PaymentRequiredResponse,
-    PaymentRequirements, Scheme, SettleRequest, SettleResponse, TokenAmount, VerifyRequest,
-    VerifyResponse, X402Version,
+    Base64Bytes, ExactPaymentPayload, FacilitatorErrorReason, MixedAddress, PaymentPayload,
+    PaymentRequiredResponse, PaymentRequirements, Scheme, SettleRequest, SettleResponse,
+    TokenAmount, VerifyRequest, VerifyResponse, X402Version,
 };
 
 #[cfg(feature = "telemetry")]
@@ -814,18 +814,12 @@ where
         }
     }
 
-    /// Finds the payment requirement entry matching the given payload's scheme and network.
+    /// Finds the payment requirement entry the payload actually pays for.
     fn find_matching_payment_requirements(
         &self,
         payment_payload: &PaymentPayload,
     ) -> Option<PaymentRequirements> {
-        self.payment_requirements
-            .iter()
-            .find(|requirement| {
-                requirement.scheme == payment_payload.scheme
-                    && requirement.network == payment_payload.network
-            })
-            .cloned()
+        match_paid_requirement(&self.payment_requirements, payment_payload)
     }
 
     /// Verifies the provided payment using the facilitator and known requirements. Returns a [`VerifyRequest`] if the payment is valid.
@@ -1192,6 +1186,45 @@ impl PaymentRequirementsNoResource {
     }
 }
 
+/// The offer a payload pays for, out of everything the route accepts.
+///
+/// Scheme and network narrow the field; when more than one offer survives --
+/// the normal shape once a route lists the same resource with and without
+/// `durable-evidence` -- the payload has to pick between them, and for an EVM
+/// authorization it can: `to` and `value` are signed, so they are what the
+/// buyer committed to. Taking the first survivor instead meant "what was paid"
+/// was decided by the seller's listing order, not by the buyer: durable listed
+/// first made the plain offer fail verification on amount, plain listed first
+/// anchored `not_selected` for a buyer who had paid the higher price.
+///
+/// A lone survivor is returned as before, so single-offer routes -- every
+/// integrator before offers existed -- see no change. Non-EVM payloads do not
+/// expose the paid amount without parsing a transaction, so they keep the
+/// first survivor; a route offering two same-network non-EVM entries is
+/// ambiguous there, and a seller doing that today gets what it always got.
+fn match_paid_requirement(
+    accepts: &[PaymentRequirements],
+    payment_payload: &PaymentPayload,
+) -> Option<PaymentRequirements> {
+    let survivors: Vec<&PaymentRequirements> = accepts
+        .iter()
+        .filter(|r| r.scheme == payment_payload.scheme && r.network == payment_payload.network)
+        .collect();
+    if survivors.len() <= 1 {
+        return survivors.first().map(|r| (*r).clone());
+    }
+    if let ExactPaymentPayload::Evm(evm) = &payment_payload.payload {
+        let paid_to: MixedAddress = evm.authorization.to.into();
+        if let Some(exact) = survivors
+            .iter()
+            .find(|r| r.pay_to == paid_to && r.max_amount_required == evm.authorization.value)
+        {
+            return Some((*exact).clone());
+        }
+    }
+    survivors.first().map(|r| (*r).clone())
+}
+
 impl<F> X402Middleware<F> {
     /// Every offer on the route: the plain price tags first, then the ones
     /// that carry `durable-evidence`. Plain first on purpose -- a client that
@@ -1434,5 +1467,90 @@ impl DynamicPriceFn {
         base_url: &Url,
     ) -> Result<TokenAmount, X402Error> {
         (self.0)(headers, uri, base_url).await
+    }
+}
+
+#[cfg(test)]
+mod paid_offer_tests {
+    use super::*;
+    use x402_rs::dx402::DurableEvidenceConfig;
+
+    fn offer(amount: &str) -> PaymentRequirements {
+        serde_json::from_value(json!({
+            "scheme": "exact", "network": "base", "maxAmountRequired": amount,
+            "resource": "https://kk.example/data/42", "description": "d",
+            "mimeType": "application/json",
+            "payTo": "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8",
+            "maxTimeoutSeconds": 300,
+            "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+        }))
+        .unwrap()
+    }
+
+    fn paid(value: &str) -> PaymentPayload {
+        serde_json::from_value(json!({
+            "x402Version": 1, "scheme": "exact", "network": "base",
+            "payload": {
+                "signature": format!("0x{}", "11".repeat(65)),
+                "authorization": {
+                    "from": "0x103040545AC5031A11E8C03dd11324C7333a13C7",
+                    "to": "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8",
+                    "value": value,
+                    "validAfter": "0", "validBefore": "9999999999",
+                    "nonce": format!("0x{}", "22".repeat(32))
+                }
+            }
+        }))
+        .unwrap()
+    }
+
+    fn pair(durable_first: bool) -> Vec<PaymentRequirements> {
+        let plain = offer("10000");
+        let mut durable = offer("12000");
+        DurableEvidenceConfig::default().declare_on(&mut durable);
+        if durable_first {
+            vec![durable, plain]
+        } else {
+            vec![plain, durable]
+        }
+    }
+
+    #[test]
+    fn the_buyer_decides_which_offer_was_paid_not_the_listing_order() {
+        // Found by the SDK-parity review: with scheme+network matching and
+        // "take the first", listing order decided what the buyer had bought.
+        for durable_first in [false, true] {
+            let accepts = pair(durable_first);
+            let chosen = match_paid_requirement(&accepts, &paid("12000")).unwrap();
+            assert!(
+                DurableEvidenceConfig::from_requirements(&chosen).is_some(),
+                "paid 12000 -> the durable offer, listed {}",
+                if durable_first { "first" } else { "second" }
+            );
+            let chosen = match_paid_requirement(&accepts, &paid("10000")).unwrap();
+            assert!(
+                DurableEvidenceConfig::from_requirements(&chosen).is_none(),
+                "paid 10000 -> the plain offer, listed {}",
+                if durable_first { "second" } else { "first" }
+            );
+        }
+    }
+
+    #[test]
+    fn a_single_offer_route_is_untouched() {
+        // Every integrator from before offers existed. The value may not even
+        // match on a loose client; the facilitator's verify decides that, as
+        // it always did.
+        let only = vec![offer("10000")];
+        let chosen = match_paid_requirement(&only, &paid("99999")).unwrap();
+        assert_eq!(chosen.max_amount_required.to_string(), "10000");
+    }
+
+    #[test]
+    fn a_value_matching_no_offer_falls_back_rather_than_refusing_here() {
+        // Refusal belongs to verify, which reports the amount mismatch with the
+        // real requirements attached. Matching only has to be deterministic.
+        let accepts = pair(false);
+        assert!(match_paid_requirement(&accepts, &paid("5")).is_some());
     }
 }

@@ -501,9 +501,10 @@ the key DX402 evidence is stored under, so it is what `/dx402/evidence/{paymentI
 and `/dx402/receipt/{paymentId}` take.
 
 Send an `Idempotency-Key` header to make a retry safe: the same key with the same
-body replays the first response, the same key with a different body is refused
-with `409`, and an unreachable idempotency store fails closed with `503` rather
-than settling something it could not deduplicate.
+body replays the first response (marked `Idempotent-Replayed: true`), the same
+key with a different body is refused with `409`, and an unreachable idempotency
+store fails closed with `503` rather than settling something it could not
+deduplicate.
 
 **Response on failure:**
 ```json

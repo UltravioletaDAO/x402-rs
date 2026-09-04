@@ -535,7 +535,9 @@ intended purchase, keep it across retries and restarts, and send it as a header:
 Idempotency-Key: 26dece19-37e0-431c-95d4-10b4e44fef98
 ```
 
-- **Same key, same body** → the first response is replayed. No second transaction.
+- **Same key, same body** → the first response is replayed, carrying
+  `Idempotent-Replayed: true`. No second transaction. Read that header rather
+  than comparing bodies: after a restart you no longer hold the first one.
 - **Same key, different body** → `409 idempotency_key_conflict`. This is the one
   that catches the dangerous mistake: re-signing an authorization with a fresh
   nonce and reusing the key means you are trying to pay twice for one purchase,

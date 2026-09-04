@@ -54,7 +54,19 @@ async fn a_replayed_escrow_release_reaches_the_final_rung() {
 
     let provider = ProviderBuilder::new().connect_http(rpc.parse().unwrap());
 
+    let declared_payee: MixedAddress = sim["payee"]
+        .as_str()
+        .unwrap()
+        .parse::<alloy::primitives::Address>()
+        .unwrap()
+        .into();
+    let declared_tx = sim["proof"]["transactionHash"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let claim = AnchorClaim {
+        declared_payee: &declared_payee,
+        declared_tx_hash: &declared_tx,
         network: Network::Monad,
         proof: Some(&proof),
         sealed_to: &sealed_to,

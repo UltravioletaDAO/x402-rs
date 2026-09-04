@@ -74,8 +74,10 @@ pub fn content_hash(body: &[u8]) -> String {
 
 /// A stable identifier for a settled payment.
 ///
-/// Uses the `payment-identifier` extension's value when the caller has one;
-/// otherwise derives `keccak256(network ‖ txHash)`. It has to be deterministic
+/// `keccak256(caip2 ‖ txHash-without-0x)`, always. (An earlier version of this
+/// comment claimed it reused a `payment-identifier` value when present; it
+/// never did, and a doc that promises a branch the code lacks is how an SDK
+/// ends up deriving an id nothing can open.) It has to be deterministic
 /// from data both sides already hold, because it is the AEAD associated data
 /// binding a ciphertext to its payment -- if buyer and seller derived it
 /// differently, decryption would fail with no obvious cause.

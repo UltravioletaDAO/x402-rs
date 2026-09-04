@@ -147,7 +147,7 @@ impl Dx402Config {
                     // Named precisely: it is not missing config, it is a
                     // deliberate hold until the buyer -- whose ciphertext this
                     // makes permanent -- can consent through `accepts`.
-                    Some("irreversible; awaiting buyer opt-in".to_string())
+                    Some("irreversible; the accepts opt-in exists since 2.11.0 but this backend is not wired to it yet".to_string())
                 } else {
                     None
                 },
@@ -462,6 +462,8 @@ impl Dx402Service {
             pointer: req.pointer.as_ref().map(|p| p.as_str()).unwrap_or(""),
             seller_signature: req.seller_signature.as_deref(),
             escrow_release: req.escrow_release.as_ref(),
+            declared_payee: &req.payee,
+            declared_tx_hash: &req.tx_hash,
             chain_id: chain_id_of(req.network),
         };
 
@@ -1897,7 +1899,7 @@ mod offer_tests {
         assert!(!public.enabled);
         assert_eq!(
             public.disabled_reason.as_deref(),
-            Some("irreversible; awaiting buyer opt-in")
+            Some("irreversible; the accepts opt-in exists since 2.11.0 but this backend is not wired to it yet")
         );
     }
 

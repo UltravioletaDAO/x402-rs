@@ -254,12 +254,29 @@ impl DurableEvidenceConfig {
         req.extra = Some(serde_json::Value::Object(extra));
     }
 
+    /// Whether a requirement carries the declaration key at all -- valid or not.
+    ///
+    /// Separate from [`Self::from_requirements`] on purpose. A malformed
+    /// declaration must read as "not usable" for the terms but as "present"
+    /// for the choice: treating it as absent made the hook fall back to the
+    /// route-wide behaviour and anchor every buyer, including the ones who
+    /// paid for the plain offer. For an extension whose premise is consent,
+    /// the safe failure is anchoring nobody (red team, 2026-09-04).
+    pub fn declared_on(req: &crate::types::PaymentRequirements) -> bool {
+        req.extra
+            .as_ref()
+            .and_then(|e| e.get(REQUIREMENTS_EXTENSIONS_KEY))
+            .and_then(|x| x.get(EXTENSION_KEY))
+            .is_some()
+    }
+
     /// Whether any offer in an `accepts` array declares the extension.
     ///
     /// The switch the seller-side hook keys on: once a route offers evidence as
     /// a choice, paying for the offer WITHOUT it means the buyer declined.
+    /// Presence, not validity -- see [`Self::declared_on`].
     pub fn offered_in(accepts: &[crate::types::PaymentRequirements]) -> bool {
-        accepts.iter().any(|r| Self::from_requirements(r).is_some())
+        accepts.iter().any(Self::declared_on)
     }
 }
 
@@ -328,6 +345,15 @@ pub enum SkipReason {
     /// expected evidence can tell "I picked the plain offer" from "the seller
     /// could not anchor", which otherwise look identical -- no header at all.
     NotSelected,
+    /// A reason this reader does not know.
+    ///
+    /// The set grows. Without a catch-all, `DurableEvidence` (untagged) failed
+    /// BOTH arms on a new word and `decode_header` returned `None` -- the whole
+    /// notice dropped, pointer included, over one string. Found by auditing the
+    /// spec's "clients MUST treat `skipped` as an open set" against our own
+    /// reader, which did not.
+    #[serde(other)]
+    Unknown,
 }
 
 /// The `durable-evidence` payload: what rides in the `X-Durable-Evidence` header
@@ -688,8 +714,25 @@ mod tests {
             "extensions": {"durable-evidence": {"retention": "forever-and-ever"}}
         })));
         assert_eq!(DurableEvidenceConfig::from_requirements(&req), None);
+        // ...but it still COUNTS as offered, so a plain payer is "declined",
+        // never silently anchored under the route's terms.
+        assert!(DurableEvidenceConfig::declared_on(&req));
+        assert!(DurableEvidenceConfig::offered_in(std::slice::from_ref(
+            &req
+        )));
         let req = requirements(Some(serde_json::json!({"extensions": "not-a-map"})));
         assert_eq!(DurableEvidenceConfig::from_requirements(&req), None);
+        assert!(!DurableEvidenceConfig::declared_on(&req));
+    }
+
+    #[test]
+    fn a_skip_reason_from_the_future_does_not_drop_the_notice() {
+        let ev: DurableEvidence =
+            serde_json::from_str(r#"{"v":1,"skipped":"from_the_future"}"#).unwrap();
+        match ev {
+            DurableEvidence::Skipped(s) => assert_eq!(s.skipped, SkipReason::Unknown),
+            other => panic!("expected a skip notice, got {other:?}"),
+        }
     }
 
     #[test]

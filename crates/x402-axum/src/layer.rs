@@ -1083,19 +1083,43 @@ where
                 Err(err) => return err.into_response(),
             };
 
+            // Settlement succeeded, now execute the request
+            let response = match Self::call_inner(inner, req).await {
+                Ok(response) => response.into_response(),
+                Err(err) => return err.into_response(),
+            };
+
+            // DX402 runs here too. This branch used to skip the hook entirely,
+            // so a route with `with_durable_offer` + `settle_before_execution`
+            // charged for evidence and emitted nothing -- not even a skip
+            // (red team #9). The settlement is held until after the handler so
+            // the delivered body and the settlement identity coexist, exactly
+            // as in the other branch. Error responses are not evidence.
+            let delivered =
+                !(response.status().is_client_error() || response.status().is_server_error());
+            let (response, durable_header) = match &self.durable {
+                Some(hook) if delivered => {
+                    Self::attach_durable_evidence(
+                        hook,
+                        &self.payment_requirements,
+                        &verify_request,
+                        &settlement,
+                        response,
+                    )
+                    .await
+                }
+                _ => (response, None),
+            };
+
             let header_value = match self.settlement_to_header(settlement) {
                 Ok(header) => header,
                 Err(response) => return *response,
             };
 
-            // Settlement succeeded, now execute the request
-            let response = match Self::call_inner(inner, req).await {
-                Ok(response) => response,
-                Err(err) => return err.into_response(),
-            };
-
-            // Add payment response header
             let mut res = response;
+            if let Some(value) = durable_header {
+                res.headers_mut().insert(crate::durable::HEADER_NAME, value);
+            }
             res.headers_mut().insert("X-Payment-Response", header_value);
             res.into_response()
         } else {
@@ -1215,11 +1239,34 @@ fn match_paid_requirement(
     }
     if let ExactPaymentPayload::Evm(evm) = &payment_payload.payload {
         let paid_to: MixedAddress = evm.authorization.to.into();
+        let value = evm.authorization.value;
+        // Deref-coerced at each call site: the iterator hands out `&&T` and
+        // `max_by_key` adds one more `&`.
+        fn declares(r: &PaymentRequirements) -> bool {
+            DurableEvidenceConfig::declared_on(r)
+        }
+        // Exact match first. Among several -- the seller priced the durable
+        // offer the same as the plain one, or padded a plain tag to the durable
+        // price -- the DECLARING offer wins: it is the only one a buyer can
+        // have paid that amount for on purpose. Taking the first let a seller
+        // bill the durable price and answer `not_selected` (red team #13).
         if let Some(exact) = survivors
             .iter()
-            .find(|r| r.pay_to == paid_to && r.max_amount_required == evm.authorization.value)
+            .filter(|r| r.pay_to == paid_to && r.max_amount_required == value)
+            .max_by_key(|r| declares(r))
         {
             return Some((*exact).clone());
+        }
+        // No exact match: the buyer authorised more than any offer asks
+        // (`maxAmountRequired` reads as a ceiling to some clients). The most
+        // expensive offer the payment covers is what they bought; verify
+        // accepts `>=` on EVM, so this is the offer that will actually settle.
+        if let Some(covered) = survivors
+            .iter()
+            .filter(|r| r.pay_to == paid_to && r.max_amount_required <= value)
+            .max_by_key(|r| (r.max_amount_required, declares(r)))
+        {
+            return Some((*covered).clone());
         }
     }
     survivors.first().map(|r| (*r).clone())
@@ -1534,6 +1581,32 @@ mod paid_offer_tests {
                 if durable_first { "second" } else { "first" }
             );
         }
+    }
+
+    #[test]
+    fn an_equal_price_tie_goes_to_the_offer_that_declares() {
+        // "Evidence at no extra charge" is the first thing a seller will try.
+        // With first-match it was dead: every buyer got `not_selected`. And
+        // the same rule closes the skim -- a plain tag padded to the durable
+        // price no longer captures a buyer who paid for evidence.
+        let plain = offer("12000");
+        let mut durable = offer("12000");
+        DurableEvidenceConfig::default().declare_on(&mut durable);
+        for accepts in [vec![plain.clone(), durable.clone()], vec![durable, plain]] {
+            let chosen = match_paid_requirement(&accepts, &paid("12000")).unwrap();
+            assert!(DurableEvidenceConfig::from_requirements(&chosen).is_some());
+        }
+    }
+
+    #[test]
+    fn a_buyer_that_overpays_gets_the_most_expensive_offer_it_covered() {
+        // Some clients read `maxAmountRequired` as a ceiling and authorise
+        // more. That used to fall to "first survivor" = plain: overpaid, no
+        // evidence, no error.
+        let accepts = pair(false);
+        let chosen = match_paid_requirement(&accepts, &paid("15000")).unwrap();
+        assert_eq!(chosen.max_amount_required.to_string(), "12000");
+        assert!(DurableEvidenceConfig::from_requirements(&chosen).is_some());
     }
 
     #[test]

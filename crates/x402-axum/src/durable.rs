@@ -336,6 +336,8 @@ pub struct EvidenceStats {
     /// because it is not one: a route where this dominates is a route whose
     /// buyers are choosing, not a hook that is broken.
     not_selected: AtomicU64,
+    /// A reason from a newer facilitator this build does not know.
+    unknown: AtomicU64,
 }
 
 /// A point-in-time read of [`EvidenceStats`].
@@ -348,6 +350,7 @@ pub struct EvidenceCounts {
     pub no_payer_key: u64,
     pub disabled: u64,
     pub not_selected: u64,
+    pub unknown: u64,
 }
 
 impl EvidenceStats {
@@ -359,6 +362,7 @@ impl EvidenceStats {
             SkipReason::NoPayerKey => &self.no_payer_key,
             SkipReason::Disabled => &self.disabled,
             SkipReason::NotSelected => &self.not_selected,
+            SkipReason::Unknown => &self.unknown,
         };
         counter.fetch_add(1, Ordering::Relaxed);
     }
@@ -381,6 +385,7 @@ impl EvidenceStats {
             no_payer_key: self.no_payer_key.load(Ordering::Relaxed),
             disabled: self.disabled.load(Ordering::Relaxed),
             not_selected: self.not_selected.load(Ordering::Relaxed),
+            unknown: self.unknown.load(Ordering::Relaxed),
         }
     }
 }
@@ -540,6 +545,10 @@ impl OfferDecision {
     ) -> Self {
         match DurableEvidenceConfig::from_requirements(paid) {
             Some(cfg) => OfferDecision::Declared(cfg),
+            // Declared but unparseable on the PAID offer: the buyer paid for
+            // terms nobody can read. Fail closed -- no evidence, and the header
+            // says so -- rather than anchor under terms they did not buy.
+            None if DurableEvidenceConfig::declared_on(paid) => OfferDecision::NotSelected,
             None if DurableEvidenceConfig::offered_in(accepts) => OfferDecision::NotSelected,
             None => OfferDecision::Legacy,
         }
@@ -1024,6 +1033,28 @@ mod tests {
         assert_eq!(
             OfferDecision::decide(&accepts, &durable),
             OfferDecision::Declared(DurableEvidenceConfig::default())
+        );
+    }
+
+    #[test]
+    fn a_malformed_declaration_anchors_nobody() {
+        // Before: unparseable -> "not offered" -> Legacy -> every buyer on the
+        // route anchored under the route's terms, including the ones who paid
+        // for the plain offer. The safe failure for a consent feature is the
+        // other way round.
+        let plain = offer(None);
+        let broken = offer(Some(serde_json::json!({
+            "extensions": {"durable-evidence": {"retention": "forever-and-ever"}}
+        })));
+        let accepts = vec![plain.clone(), broken.clone()];
+        assert_eq!(
+            OfferDecision::decide(&accepts, &plain),
+            OfferDecision::NotSelected
+        );
+        assert_eq!(
+            OfferDecision::decide(&accepts, &broken),
+            OfferDecision::NotSelected,
+            "the buyer paid for terms nobody can read: no evidence, said out loud"
         );
     }
 

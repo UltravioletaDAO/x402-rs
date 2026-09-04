@@ -389,8 +389,14 @@ pub fn verify_authorization(
 ///
 /// Supplied by the anchoring party when the money did not move directly from
 /// buyer to seller. It is not trusted: `getHash` is recomputed on the escrow
-/// contract and must equal a `paymentInfoHash` this very transaction captured,
-/// which is what makes `payer` below an on-chain fact rather than a claim.
+/// contract and must equal a `paymentInfoHash` this very transaction captured.
+/// That proves the struct is **authentic and belongs to this transaction** --
+/// not that the named `payer` funded it. The escrow's `charge`/`authorize` are
+/// permissionless for the operator named in the struct and accept any token
+/// collector, so a party can settle a payment of its own that names anyone as
+/// payer. What the gate certifies is "a chain event consistent with this
+/// claim exists between these parties on the known escrow", and a token
+/// allowlist is the missing piece (red team, 2026-09-04).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EscrowRelease {
@@ -413,50 +419,91 @@ pub struct AnchorClaim<'a> {
     pub seller_signature: Option<&'a str>,
     /// Present when the payment was released from an x402r escrow.
     pub escrow_release: Option<&'a EscrowRelease>,
+    /// The payee and transaction hash the caller wrote into the record.
+    ///
+    /// They end up inside the EIP-712 receipt the facilitator signs, so they
+    /// are bound to the proof here: a caller used to be able to anchor its own
+    /// payment honestly and still get a chain-verified attestation naming a
+    /// stranger as payee, for a transaction hash of its choosing. Red team,
+    /// 2026-09-04.
+    pub declared_payee: &'a crate::types::MixedAddress,
+    pub declared_tx_hash: &'a str,
     pub chain_id: u64,
 }
 
-/// Who really bought this, when the ERC-20 `from` is an escrow.
+/// Which rail a transaction settled on, read from its own receipt.
 ///
-/// # Why this exists
+/// Decided from the logs and from nothing the caller sent. That is the whole
+/// point: the earlier version only resolved the buyer through the escrow when
+/// the caller's `payer` disagreed with the transfer's `from` -- so a caller
+/// who *sealed to the TokenStore* made the two agree and skipped the escrow
+/// check, the `receiver == payee` binding and the ambiguity refusal in one
+/// move. Any co-payee of the transaction (the fee receiver, a batch neighbour)
+/// could then sign as `facts.payee` and take a stranger's slot as `verified`.
+/// Found by the 2026-09-04 red team.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Rail {
+    /// No capture from the known escrow: the buyer is the transfer's `from`.
+    Plain,
+    /// Exactly one payment captured by the escrow we know for this network.
+    Escrow { escrow: Address, captured: B256 },
+    /// More than one payment captured in this transaction. `paymentId` cannot
+    /// say which one the evidence is for, so nothing is certified.
+    EscrowAmbiguous { count: usize },
+}
+
+/// Classify from the receipt's logs.
 ///
-/// The gate binds the envelope's recipient to the payment: evidence must be
-/// sealed to whoever paid. Reading that off the `Transfer` log is correct for
-/// plain x402, where the buyer signs an EIP-3009 authorization and the buyer is
-/// the `from`.
+/// Only logs emitted BY the known escrow count; a capture-shaped event from any
+/// other contract is somebody else's business. Both `capture` (two-step) and
+/// `charge` (one-step) carry the hash as topic 1.
+pub fn classify_rail<'a>(
+    logs: impl Iterator<Item = &'a alloy::primitives::Log>,
+    escrow: Option<Address>,
+) -> Rail {
+    let Some(escrow) = escrow else {
+        return Rail::Plain;
+    };
+    let captured: Vec<B256> = logs
+        .filter(|log| log.address == escrow)
+        .filter_map(|log| {
+            EscrowContract::PaymentCaptured::decode_log(log)
+                .map(|d| d.paymentInfoHash)
+                .or_else(|_| {
+                    EscrowContract::PaymentCharged::decode_log(log).map(|d| d.paymentInfoHash)
+                })
+                .ok()
+        })
+        .collect();
+    match captured.as_slice() {
+        [] => Rail::Plain,
+        [one] => Rail::Escrow {
+            escrow,
+            captured: *one,
+        },
+        many => Rail::EscrowAmbiguous { count: many.len() },
+    }
+}
+
+/// Who really bought this, on the escrow rail.
 ///
-/// It is wrong for x402r escrow, and quietly so. On a release the tokens leave
-/// the operator's **TokenStore** -- one contract per operator per chain -- so
-/// every honest anchor on that rail reports a `from` that is not the buyer and
-/// never can be. Sampled 2026-09-02 across Avalanche, Optimism and Monad: 23 of
-/// 23 live Execution Market releases, all of them `payer_MISMATCH`. Left as it
-/// was, phase 2 would have rejected the entire escrow rail as fraudulent.
-///
-/// # Why the answer is trustworthy
-///
-/// The escrow computes `paymentInfoHash` itself and emits it in
-/// `PaymentCaptured` / `PaymentCharged`. So we ask the escrow to hash the
-/// authorization we were handed and require the answer to be a hash **this
-/// transaction** captured. That binds three things at once: the authorization is
-/// authentic (any edited field changes the hash), it belongs to this payment
-/// (the hash came out of this receipt), and it came from the escrow we know for
-/// this network (we only read logs at that address).
+/// The receipt already told us this transaction captured exactly one payment
+/// on the escrow we know (`captured`). We ask that escrow to `getHash` the
+/// authorization we were handed and require the same 32 bytes. That binds
+/// three things at once: the authorization is authentic (any edited field
+/// changes the hash), it belongs to this payment (the hash came out of this
+/// receipt), and it came from the escrow we know for this network.
 ///
 /// Supplying no authorization is not an error to be papered over -- it means we
 /// cannot tell who funded the escrow, and the anchor stays unverified.
 async fn beneficial_payer<P: Provider>(
     rpc: &P,
-    network: Network,
-    tx_hash: FixedBytes<32>,
+    escrow: Address,
+    captured: B256,
     release: Option<&EscrowRelease>,
     payee: Address,
 ) -> Result<Address, AnchorRejection> {
     let Some(release) = release else {
-        return Err(AnchorRejection::EscrowReleaseMissing);
-    };
-    let Some(escrow) = escrow_for_network(network) else {
-        // No x402r deployment on this chain, so an escrow release is not a thing
-        // that can have happened here.
         return Err(AnchorRejection::EscrowReleaseMissing);
     };
 
@@ -467,53 +514,9 @@ async fn beneficial_payer<P: Provider>(
         return Err(AnchorRejection::EscrowReleaseInvalid);
     }
 
-    let receipt = match rpc.get_transaction_receipt(tx_hash).await {
-        Ok(Some(r)) => r,
-        // `verify_payment_facts` already read this receipt and retried; reaching
-        // here means the node stopped serving it mid-verification. No verdict,
-        // not a rejection.
-        Ok(None) => return Err(AnchorRejection::RpcUnavailable),
-        Err(e) => {
-            warn!(
-                error = %crate::redact::scrub_urls(&e.to_string()),
-                "escrow payer resolution could not read the receipt"
-            );
-            return Err(AnchorRejection::RpcUnavailable);
-        }
-    };
-
-    // Every paymentInfoHash this transaction settled, from the escrow we know.
-    // Both events carry it as topic 1; `charge` is the single-step path and
-    // `capture` the two-step one, and Execution Market uses whichever the task
-    // shape called for.
-    let captured: Vec<B256> = receipt
-        .inner
-        .logs()
-        .iter()
-        .filter(|log| log.address() == escrow)
-        .filter_map(|log| {
-            EscrowContract::PaymentCaptured::decode_log(&log.inner)
-                .map(|d| d.paymentInfoHash)
-                .or_else(|_| {
-                    EscrowContract::PaymentCharged::decode_log(&log.inner)
-                        .map(|d| d.paymentInfoHash)
-                })
-                .ok()
-        })
-        .collect();
-    let [captured_hash] = captured.as_slice() else {
-        return Err(if captured.is_empty() {
-            // The money did not leave a known escrow in this transaction, so
-            // calling it an escrow release is simply false.
-            AnchorRejection::EscrowReleaseInvalid
-        } else {
-            AnchorRejection::EscrowReleaseAmbiguous
-        });
-    };
-
     // Ask the escrow to hash what we were handed.
     let call = EscrowContract::getHashCall {
-        paymentInfo: to_escrow_abi(&release.payment_info, release.payer),
+        paymentInfo: to_escrow_abi(&release.payment_info, release.payer)?,
     };
     let tx = TransactionRequest::default()
         .with_to(escrow)
@@ -532,7 +535,7 @@ async fn beneficial_payer<P: Provider>(
         return Err(AnchorRejection::RpcUnavailable);
     };
 
-    if *captured_hash != hash {
+    if captured != hash {
         return Err(AnchorRejection::EscrowReleaseInvalid);
     }
     Ok(release.payer)
@@ -546,24 +549,30 @@ async fn beneficial_payer<P: Provider>(
 fn to_escrow_abi(
     info: &EscrowPaymentInfo,
     payer: Address,
-) -> crate::payment_operator::abi::EscrowPaymentInfo {
-    use alloy::primitives::Uint;
-    use alloy::primitives::U256;
+) -> Result<crate::payment_operator::abi::EscrowPaymentInfo, AnchorRejection> {
+    use alloy::primitives::{Uint, U256};
 
-    crate::payment_operator::abi::EscrowPaymentInfo {
+    // `Uint::from` PANICS on overflow, and these four come straight from the
+    // anchor JSON as u128/u64 -- so a `preApprovalExpiry` of 2^48 unwound the
+    // request task. A value the escrow's own types cannot hold cannot be an
+    // authorization the escrow hashed; refuse it like any other bad release.
+    let narrow = || AnchorRejection::EscrowReleaseInvalid;
+    Ok(crate::payment_operator::abi::EscrowPaymentInfo {
         operator: info.operator,
         payer,
         receiver: info.receiver,
         token: info.token,
-        maxAmount: Uint::from(info.max_amount),
-        preApprovalExpiry: Uint::from(info.pre_approval_expiry),
-        authorizationExpiry: Uint::from(info.authorization_expiry),
-        refundExpiry: Uint::from(info.refund_expiry),
+        maxAmount: Uint::<120, 2>::try_from(info.max_amount).map_err(|_| narrow())?,
+        preApprovalExpiry: Uint::<48, 1>::try_from(info.pre_approval_expiry)
+            .map_err(|_| narrow())?,
+        authorizationExpiry: Uint::<48, 1>::try_from(info.authorization_expiry)
+            .map_err(|_| narrow())?,
+        refundExpiry: Uint::<48, 1>::try_from(info.refund_expiry).map_err(|_| narrow())?,
         minFeeBps: info.min_fee_bps,
         maxFeeBps: info.max_fee_bps,
         feeReceiver: info.fee_receiver,
         salt: U256::from_be_bytes(info.salt.0),
-    }
+    })
 }
 
 /// Verify an anchor claim.
@@ -603,6 +612,22 @@ pub async fn verify_anchor<P: Provider>(
         return Err(AnchorRejection::PaymentIdNotBound);
     }
 
+    // What the caller wrote into the record has to be what the proof says.
+    // Both fields go into the receipt this facilitator SIGNS, and the gate
+    // never compared them: `payee` was only used for the `signed` diagnostic
+    // and `txHash` for nothing at all. Local, so a dead RPC cannot turn this
+    // into "no verdict".
+    if !proof
+        .transaction_hash
+        .to_string()
+        .eq_ignore_ascii_case(claim.declared_tx_hash)
+    {
+        return Err(AnchorRejection::Payment("declared_tx_hash_mismatch".into()));
+    }
+    if &proof.payee != claim.declared_payee {
+        return Err(AnchorRejection::Payment("declared_payee_mismatch".into()));
+    }
+
     let sealed_to: Address = claim
         .sealed_to
         .clone()
@@ -618,25 +643,43 @@ pub async fn verify_anchor<P: Provider>(
 
     let facts = verify_payment_facts(rpc, claim.network, proof, anchor_max_age_secs()).await?;
 
-    // The evidence must be sealed to whoever actually paid.
+    // Which rail this was: read from the receipt, never from the request.
     //
-    // On the escrow rail "whoever actually paid" is not the `from` of the
-    // transfer -- that is the operator's TokenStore. Resolve the buyer through
-    // the escrow's own authorization before concluding anything, and only then
-    // compare. The direct rail is untouched: it matches on the first line and
-    // never makes the extra calls.
-    if facts.payer != sealed_to {
-        let funder = beneficial_payer(
-            rpc,
-            claim.network,
-            tx_hash,
-            claim.escrow_release,
-            facts.payee,
-        )
-        .await?;
-        if funder != sealed_to {
-            return Err(AnchorRejection::PayerIsNotRecipient);
+    // `verify_payment_facts` proved the declared transfer is in the transaction;
+    // it does not say whether that transfer came out of an escrow. On the
+    // escrow rail the `from` is the operator's TokenStore, so "whoever paid" has
+    // to be resolved through the escrow -- and it has to be resolved EVERY
+    // time the transaction captured a payment, not only when the caller's
+    // `payer` happens to disagree with the transfer. Making it conditional let
+    // a caller seal to the TokenStore and skip the whole check.
+    let receipt = match rpc.get_transaction_receipt(tx_hash).await {
+        Ok(Some(r)) => r,
+        // The facts step read this receipt moments ago and retried; losing it
+        // now is the node, not the payment. No verdict, not a rejection.
+        Ok(None) => return Err(AnchorRejection::RpcUnavailable),
+        Err(e) => {
+            warn!(
+                error = %crate::redact::scrub_urls(&e.to_string()),
+                "anchor gate could not re-read the receipt to classify the rail"
+            );
+            return Err(AnchorRejection::RpcUnavailable);
         }
+    };
+    let rail = classify_rail(
+        receipt.inner.logs().iter().map(|l| &l.inner),
+        escrow_for_network(claim.network),
+    );
+    let funder = match rail {
+        Rail::Plain => facts.payer,
+        Rail::EscrowAmbiguous { .. } => return Err(AnchorRejection::EscrowReleaseAmbiguous),
+        Rail::Escrow { escrow, captured } => {
+            beneficial_payer(rpc, escrow, captured, claim.escrow_release, facts.payee).await?
+        }
+    };
+
+    // The evidence must be sealed to whoever actually paid.
+    if funder != sealed_to {
+        return Err(AnchorRejection::PayerIsNotRecipient);
     }
 
     // And the anchor must come from whoever got paid.
@@ -965,6 +1008,8 @@ mod tests {
             pointer: "",
             seller_signature: Some("0x00"),
             escrow_release: None,
+            declared_payee: &addr_of("0x2222222222222222222222222222222222222222"),
+            declared_tx_hash: &mallorys_own_tx,
             chain_id: 8453,
         };
 
@@ -987,6 +1032,67 @@ mod tests {
             verify_anchor(&dead_rpc, &ok_claim).await.unwrap_err(),
             AnchorRejection::PaymentIdNotBound,
             "a correctly bound paymentId must pass this check and go on to the chain"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_receipts_payee_and_tx_hash_are_bound_to_the_proof_locally() {
+        // The facilitator SIGNS `payee` and `txHash` into the receipt. They were
+        // free text: anchor your own payment honestly, write a stranger as payee
+        // and any 32 bytes as txHash, and get a chain-verified attestation
+        // saying so. Both checks are local and definite -- a dead RPC must not
+        // hide them behind "no verdict".
+        use crate::erc8004::ProofOfPayment;
+        let dead_rpc = dead_provider();
+        let tx = crate::types::TransactionHash::Evm([0xab; 32]);
+        let tx_s = tx.to_string();
+        let payee = addr_of("0x2222222222222222222222222222222222222222");
+        let proof = ProofOfPayment {
+            transaction_hash: tx.clone(),
+            block_number: 1,
+            network: crate::network::Network::Base,
+            payer: addr_of("0x1111111111111111111111111111111111111111"),
+            payee: payee.clone(),
+            amount: 1u128.into(),
+            token: addr_of("0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"),
+            timestamp: 1,
+            payment_hash: Default::default(),
+        };
+        let pid: B256 = crate::dx402::payment_id(crate::network::Network::Base, &tx_s)
+            .parse()
+            .unwrap();
+        let base = AnchorClaim {
+            network: crate::network::Network::Base,
+            proof: Some(&proof),
+            sealed_to: &proof.payer,
+            payment_id: pid,
+            content_hash: b256(9),
+            pointer: "",
+            seller_signature: Some("0x00"),
+            escrow_release: None,
+            declared_payee: &payee,
+            declared_tx_hash: &tx_s,
+            chain_id: 8453,
+        };
+
+        let other_tx = crate::types::TransactionHash::Evm([0xcd; 32]).to_string();
+        let wrong_tx = AnchorClaim {
+            declared_tx_hash: &other_tx,
+            ..base
+        };
+        assert_eq!(
+            verify_anchor(&dead_rpc, &wrong_tx).await.unwrap_err(),
+            AnchorRejection::Payment("declared_tx_hash_mismatch".into())
+        );
+
+        let stranger = addr_of("0x3333333333333333333333333333333333333333");
+        let wrong_payee = AnchorClaim {
+            declared_payee: &stranger,
+            ..base
+        };
+        assert_eq!(
+            verify_anchor(&dead_rpc, &wrong_payee).await.unwrap_err(),
+            AnchorRejection::Payment("declared_payee_mismatch".into())
         );
     }
 
@@ -1056,7 +1162,7 @@ mod tests {
         // transaction, which is what the escrow itself hashed.
         let (info, payer) = em_release_fixture();
         let call = EscrowContract::getHashCall {
-            paymentInfo: to_escrow_abi(&info, payer),
+            paymentInfo: to_escrow_abi(&info, payer).unwrap(),
         };
         let expected = concat!(
             "063a70ff",
@@ -1091,8 +1197,8 @@ mod tests {
 
         let missing = beneficial_payer(
             &rpc,
-            crate::network::Network::Optimism,
-            alloy::primitives::FixedBytes::from([7u8; 32]),
+            escrow_for_network(crate::network::Network::Optimism).unwrap(),
+            B256::from([7u8; 32]),
             None,
             info.receiver,
         )
@@ -1128,8 +1234,8 @@ mod tests {
         assert_eq!(
             beneficial_payer(
                 &rpc,
-                crate::network::Network::Optimism,
-                alloy::primitives::FixedBytes::from([7u8; 32]),
+                escrow_for_network(crate::network::Network::Optimism).unwrap(),
+                B256::from([7u8; 32]),
                 Some(&release),
                 other,
             )
@@ -1140,27 +1246,74 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn a_chain_with_no_escrow_deployment_cannot_have_had_an_escrow_release() {
-        let (info, payer) = em_release_fixture();
-        let rpc = dead_provider();
-        let release = EscrowRelease {
-            payment_info: info.clone(),
-            payer,
-        };
+    fn capture_log(from: Address, hash: B256) -> alloy::primitives::Log {
+        use alloy::primitives::LogData;
+        alloy::primitives::Log {
+            address: from,
+            data: LogData::new_unchecked(
+                vec![EscrowContract::PaymentCaptured::SIGNATURE_HASH, hash],
+                // amount, feeBps, feeReceiver -- three words, values irrelevant
+                Bytes::from(vec![0u8; 96]),
+            ),
+        }
+    }
+
+    #[test]
+    fn the_rail_is_read_from_the_receipt_not_from_the_request() {
+        // The P1: the escrow check used to run only when the caller's `payer`
+        // disagreed with the transfer's `from`. Sealing to the TokenStore made
+        // them agree and skipped it. Now the rail is a function of the logs
+        // alone, and the caller's `payer` is compared AFTER the buyer is
+        // resolved -- there is no input here that can turn an escrow release
+        // into a plain one.
+        let escrow = escrow_for_network(crate::network::Network::Optimism).unwrap();
+        let h = B256::from([9u8; 32]);
+        let logs = [capture_log(escrow, h)];
         assert_eq!(
-            beneficial_payer(
-                &rpc,
-                // No x402r deployment here, so there is no escrow whose word we
-                // could take for it.
-                crate::network::Network::Bsc,
-                alloy::primitives::FixedBytes::from([7u8; 32]),
-                Some(&release),
-                info.receiver,
-            )
-            .await
-            .unwrap_err(),
-            AnchorRejection::EscrowReleaseMissing
+            classify_rail(logs.iter(), Some(escrow)),
+            Rail::Escrow {
+                escrow,
+                captured: h
+            }
+        );
+    }
+
+    #[test]
+    fn a_capture_from_a_foreign_contract_is_not_an_escrow_release() {
+        // Anyone can deploy a contract that emits PaymentCaptured. Only the
+        // escrow we know for the network gets to say a payment was captured.
+        let escrow = escrow_for_network(crate::network::Network::Optimism).unwrap();
+        let stranger: Address = "0x000000000000000000000000000000000000dead"
+            .parse()
+            .unwrap();
+        let logs = [capture_log(stranger, B256::from([9u8; 32]))];
+        assert_eq!(classify_rail(logs.iter(), Some(escrow)), Rail::Plain);
+    }
+
+    #[test]
+    fn a_chain_with_no_escrow_deployment_is_always_the_plain_rail() {
+        let logs = [capture_log(
+            "0x000000000000000000000000000000000000dead"
+                .parse()
+                .unwrap(),
+            B256::from([9u8; 32]),
+        )];
+        assert_eq!(classify_rail(logs.iter(), None), Rail::Plain);
+    }
+
+    #[test]
+    fn two_captures_are_ambiguous_whatever_the_caller_sent() {
+        // Before, the ambiguity refusal lived inside the escrow branch, so a
+        // caller who avoided that branch avoided the refusal too. Now it is a
+        // property of the receipt.
+        let escrow = escrow_for_network(crate::network::Network::Optimism).unwrap();
+        let logs = [
+            capture_log(escrow, B256::from([1u8; 32])),
+            capture_log(escrow, B256::from([2u8; 32])),
+        ];
+        assert_eq!(
+            classify_rail(logs.iter(), Some(escrow)),
+            Rail::EscrowAmbiguous { count: 2 }
         );
     }
 

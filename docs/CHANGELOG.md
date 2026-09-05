@@ -1,6 +1,57 @@
 # Changelog
 
-## [2.12.0] - 2026-09-04 (committed, not yet deployed)
+## [2.14.0] - 2026-09-04
+
+### Changed
+
+- **A settle that broadcast and never confirmed returns the transaction hash,
+  not a uuid only we can resolve** (`1cf251e6`). That arm used to answer `400
+  contract_call_failed (ref: <uuid>)` for a payment that may well be mined; with
+  nothing to look up on chain, the only move left to the caller was the retry
+  the arm exists to prevent -- and re-signing is a NEW, perfectly valid
+  authorization for the same purchase, which the EIP-3009 nonce does not stop.
+  It now answers `502` with
+  `{"error":"settlement_unconfirmed","transaction","paymentId","retryable":false}`
+  and deliberately no `Retry-After`. **The two 502s mean opposite things**:
+  `upstream_rpc_unavailable` is retryable, `settlement_unconfirmed` is not, so
+  an SDK that retries every 502 double-spends here. Built in five families (EVM,
+  Solana, Stellar, XRPL, Algorand); NEAR and Sui cannot have it, because their
+  single call yields a hash only on success.
+- Stellar, XRPL and Algorand stop answering `success:false` with
+  `transaction:null` on that path, which told the caller the payment had not
+  happened when it may have.
+
+## [2.13.0] - 2026-09-04
+
+### Fixed
+
+- **`invalidReason` went to the wire as `null`** (`6833f9ed`).
+  `FacilitatorErrorReason` derived `Serialize` with `#[serde(untagged)]`, and an
+  untagged unit variant is written with `serialize_unit` -- so all four fixed
+  reasons serialised as `null` and every `#[serde(rename = "...")]` on them was
+  present and inert. `VerifyResponse`'s own `Deserialize` refuses that body, so
+  the facilitator was emitting a response its own parser -- and every client
+  built on this crate -- could not read. Serialisation now delegates to
+  `Display`, so the wire token and the log line cannot drift.
+- **Four rejections stopped collapsing into `invalid_scheme`.**
+  `ReceiverMismatch`, `InvalidSignature`, `InvalidTiming` and
+  `InsufficientValue` shared one match arm. They need four different fixes on
+  the client, so they now answer `receiver_mismatch`, `invalid_signature`,
+  `invalid_timing` and `insufficient_value`, and `invalid_scheme` goes back to
+  meaning an actual scheme mismatch. The extra tokens ride in `FreeForm` rather
+  than as new enum variants, so no downstream exhaustive `match` breaks.
+
+### Added
+
+- **The settle response carries the payment's canonical id.** `paymentId` --
+  `keccak256(caip2 || txHash)` -- was already load-bearing (DX402 stores
+  evidence under it) but nothing ever handed it to the payer, so a caller who
+  had just settled could not name the payment without reimplementing the keccak
+  from the spec. Derived at serialisation time from `network` and `transaction`,
+  so it cannot drift from the hash printed beside it, and absent when there is
+  no transaction.
+
+## [2.12.0] - 2026-09-04
 
 ### Changed
 
@@ -19,7 +70,7 @@
   top-level declaration; `select_payment_requirements` keeps its signature.
 - Spec **v0.3** in registry format: `docs/plans/dx402/12-SPEC-v0.3-foundation.md`.
 
-## [2.11.0] - 2026-09-04 (committed, not yet deployed)
+## [2.11.0] - 2026-09-04
 
 ### Added
 
@@ -74,6 +125,19 @@
   buyer paid directly.
 
 ## [2.9.0] - 2026-09-02
+
+### Added
+
+- **The four x402 calls are served as MCP tools at `POST /mcp`** (`445f2a15`).
+  `x402_supported`, `x402_accepts`, `x402_verify` and `x402_settle` -- exactly
+  four -- over MCP Streamable HTTP (rmcp, stateless), plus the card at
+  `/.well-known/mcp/server-card.json`. A tool call is dispatched THROUGH the
+  REST router (`ServiceExt::oneshot`), never by calling the handler functions:
+  `POST /settle` is wrapped in `settle_writer_gate`, which serialises the nonce
+  of the single EOA that spends gas, and calling `post_settle` directly would
+  let two ECS tasks sign at once. `/mcp` shares the `verify_settle_config`
+  governor `Arc` -- the same `Arc`, not a second config with the same numbers --
+  so an MCP settle and an HTTP settle from one IP draw on one bucket.
 
 ### Fixed
 

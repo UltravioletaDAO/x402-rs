@@ -232,6 +232,13 @@ layer they imply: its `contentHash` is over the plaintext so it can consume
 whichever hash commitment lands, rather than compete with it. Where such a
 commitment exists in the same exchange, implementations SHOULD bind to it.
 
+A settlement-status vocabulary in which every state names an on-chain object a
+third party can check (#3208) composes the same way: the notarised anchor —
+`paymentId`, `contentHash`, pointer and the facilitator's receipt — is such an
+object, and a settled state MAY reference it. Third-party evidence exports
+(signed attestations re-derivable from public bytes) SHOULD verify against
+`contentHash` rather than against a copy of the body.
+
 ## Reference implementation (non-normative)
 
 Facilitator, seller hook and buyer client in Rust (`x402-rs`, `x402-axum`,

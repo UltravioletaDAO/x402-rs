@@ -87,6 +87,16 @@ pub enum OperatorError {
 
     #[error("Pre-approval expired")]
     PreApprovalExpired,
+
+    /// A `release` / `refundInEscrow` order was refused under
+    /// `ESCROW_LIFECYCLE_AUTH=enforce`. `category` is bounded (see
+    /// `lifecycle_auth::Verdict::category`); `owner_unverifiable` is the one
+    /// that is retryable.
+    #[error("Escrow lifecycle order rejected ({category}): {detail}")]
+    LifecycleAuthRejected {
+        category: &'static str,
+        detail: String,
+    },
 }
 
 impl From<OperatorError> for FacilitatorLocalError {

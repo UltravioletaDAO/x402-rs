@@ -12,8 +12,10 @@
 //! 1. Verifies the ERC-3009 signature
 //! 2. Calls `PaymentOperator.authorize()` to place funds in escrow
 //!
-//! That's it - the facilitator ONLY handles authorize. Other actions like charge,
-//! release, and refunds are handled by the resource server or other systems.
+//! `release` and `refundInEscrow` are served here too (`operator.rs`); they take no
+//! ERC-3009 signature because the funds are already escrowed, and are instead gated
+//! by a signed order under `ESCROW_LIFECYCLE_AUTH` (see `lifecycle_auth`). `charge`
+//! and `refundPostEscrow` are not implemented.
 //!
 //! # Request Format
 //!
@@ -69,6 +71,7 @@
 pub mod abi;
 pub mod addresses;
 pub mod errors;
+pub mod lifecycle_auth;
 pub mod operator;
 pub mod types;
 

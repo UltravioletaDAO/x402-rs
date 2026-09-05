@@ -11,7 +11,8 @@ issue está abierto; el PR está a un comando, esperando reacción de maintainer
 | Facilitador en producción | **2.12.0** (`0274ccc4`, CI 33837812160). Hoy se desplegaron 2.11.0 y 2.12.0, cada uno con compuerta local + CI verdes |
 | Corpus certificado | **119 `verified: true`, 100 % EVM, 7 redes, 26 compradores / 24 vendedores** — medido sobre `facilitator_dx402_evidence`; las 5 filas de Solana pre-gate pasaron a provisionales |
 | Spec | v0.3 en formato registro: `docs/plans/dx402/12-SPEC-v0.3-foundation.md` = `specs/extensions/durable-evidence.md` del PR |
-| Issue upstream | **https://github.com/x402-foundation/x402/issues/3371** (abierto 2026-09-04) |
+| Issue upstream | **https://github.com/x402-foundation/x402/issues/3371** (abierto 2026-09-04; primera reacción de la comunidad en <1 h) |
+| **PR upstream** | **https://github.com/x402-foundation/x402/pull/3377** — spec-only, `Closes #3371`, firmado y verificado, abierto 2026-09-04 |
 | Rama del PR | fork `0xultravioleta/x402`, rama `spec/durable-evidence`, 3 archivos (spec, `docs/extensions/durable-evidence.mdx`, fila en `overview.mdx`), base `upstream/main` del 04-sep, commit **firmado y verificado por GitHub** (`ultravioletadao@gmail.com`) |
 | Textos del PR | `docs/plans/dx402/13-ISSUE-Y-PR-UPSTREAM.md` §2 (poner `Closes #3371`) |
 

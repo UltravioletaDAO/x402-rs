@@ -113,7 +113,7 @@ def `facilitator-production:383` = imagen `facilitator:2.10.0-1a1b275` (rev 382 
 facilitator-production --service facilitator-production --task-definition
 facilitator-production:383 --force-new-deployment --region us-east-2`.
 
-**Issue abierto: https://github.com/x402-foundation/x402/issues/3371 (2026-09-04).** El PR sale de la rama del fork con `Closes #3371` cuando haya reacción o pasen 72 h (`13-ISSUE-Y-PR-UPSTREAM.md`):
+**Issue #3371 abierto y PR abierto: https://github.com/x402-foundation/x402/pull/3377 (2026-09-04).** Primera reacción en el issue en <1 h (cv-scvd, comunidad): validó la línea hash-vs-recuperación y pidió cross-ref con #3208, incorporada. Queda: seguimiento del review.
 fork `0xultravioleta/x402` (parent `x402-foundation/x402`, verificado; la org no
 permite fork sin admin), `gh` autenticado con `repo`, GPG configurada y
 `commit.gpgsign=true`. El fork está 5 meses atrás: la rama del PR sale de

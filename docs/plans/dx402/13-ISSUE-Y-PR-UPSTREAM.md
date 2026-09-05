@@ -64,5 +64,5 @@ La rama ya está preparada en local (`scratchpad/x402-upstream`, rama
 - [x] Fork: `0xultravioleta/x402` (la org no permite fork sin admin); rama `spec/durable-evidence` pusheada
 - [x] Commit firmado y **verificado por GitHub** (`verified=true`): clave `AE07…8E75`, autor/committer `ultravioletadao@gmail.com` — `0xultravioleta@gmail.com` es de otra cuenta y no verifica en ésta
 - [x] Issue abierto: https://github.com/x402-foundation/x402/issues/3371 (2026-09-04). Esperar reacción de maintainer **o** 72 h antes del PR
-- [ ] PR abierto con `Closes #<issue>`
+- [x] **PR abierto: https://github.com/x402-foundation/x402/pull/3377** (2026-09-04, `Closes #3371`, commit firmado y verificado, +#3208 cross-ref pedida en el issue)
 - [ ] Mensaje en slack.x402.org (un párrafo, con link al issue)

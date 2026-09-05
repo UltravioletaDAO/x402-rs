@@ -84,7 +84,12 @@ pub async fn get_settle_info() -> impl IntoResponse {
         "body": {
             "paymentPayload": "PaymentPayload",
             "paymentRequirements": "PaymentRequirements",
-        }
+        },
+        // Effective value of ESCROW_LIFECYCLE_AUTH, published so an env
+        // override is auditable from outside: `off` today, `log` verifies
+        // and reports, `enforce` refuses escrow release/refundInEscrow
+        // without a valid `payload.lifecycleAuth`.
+        "escrowLifecycleAuth": crate::payment_operator::lifecycle_auth::mode().as_str(),
     }))
 }
 
@@ -4415,26 +4420,49 @@ where
                     // 502 + Retry-After tells the caller to come back rather
                     // than go debug a payload that was fine.
                     let upstream = is_upstream_rpc_failure(&format!("{e:?}"));
-                    let (code, reason, category) = if upstream {
-                        (
+                    // A refused lifecycle order is neither a bad payload nor an
+                    // outage: it is "you are not entitled to this". 403, so a
+                    // caller does not go debug a body that was well-formed.
+                    // The one retryable case is the owner read failing.
+                    let (code, reason, category, retryable) = match &e {
+                        crate::payment_operator::OperatorError::LifecycleAuthRejected {
+                            category: "owner_unverifiable",
+                            ..
+                        } => (
+                            StatusCode::BAD_GATEWAY,
+                            format!("{e}"),
+                            "upstream_rpc_unavailable",
+                            true,
+                        ),
+                        crate::payment_operator::OperatorError::LifecycleAuthRejected {
+                            ..
+                        } => (
+                            StatusCode::FORBIDDEN,
+                            format!("{e}"),
+                            "lifecycle_auth_rejected",
+                            false,
+                        ),
+                        _ if upstream => (
                             StatusCode::BAD_GATEWAY,
                             "Upstream RPC unavailable for this network; the request was not \
-                             rejected, the node could not answer. Retry later.".to_string(),
+                             rejected, the node could not answer. Retry later."
+                                .to_string(),
                             "upstream_rpc_unavailable",
-                        )
-                    } else {
-                        (
+                            true,
+                        ),
+                        _ => (
                             StatusCode::BAD_REQUEST,
                             format!("Escrow scheme error: {e}"),
                             "escrow_error",
-                        )
+                            false,
+                        ),
                     };
                     let mut resp = (
                         code,
                         Json(json!({ "success": false, "errorReason": reason })),
                     )
                         .into_response();
-                    if upstream {
+                    if retryable {
                         resp.headers_mut()
                             .insert(header::RETRY_AFTER, HeaderValue::from_static("30"));
                     }

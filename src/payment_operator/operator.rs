@@ -4,8 +4,9 @@
 //! supporting the full escrow lifecycle:
 //! - verify: Validate escrow payload (balance check, address validation)
 //! - authorize: Lock funds in escrow (ERC-3009 signature required)
-//! - release: Send escrowed funds to receiver (no signature needed)
-//! - refundInEscrow: Return escrowed funds to payer (no signature needed)
+//! - release: Send escrowed funds to receiver (no ERC-3009 signature; gated by
+//!   a signed lifecycle order under `ESCROW_LIFECYCLE_AUTH`, see `lifecycle_auth`)
+//! - refundInEscrow: Return escrowed funds to payer (same gate)
 //! - charge / refundPostEscrow: Deferred to Phase 3
 //!
 //! Based on reference implementation:
@@ -28,6 +29,7 @@ use crate::types::{EvmAddress, MixedAddress, SettleResponse, TransactionHash};
 use super::abi::{EscrowContract, OperatorContract};
 use super::addresses::OperatorAddresses;
 use super::errors::OperatorError;
+use super::lifecycle_auth::{self, LifecycleAction};
 use super::types::{
     ContractPaymentInfo, EscrowExtra, EscrowLifecyclePayload, EscrowPayload, EscrowStateQuery,
     EscrowStateResponse,
@@ -364,6 +366,7 @@ where
         payment_info: query.payment_info,
         payer: query.payer,
         amount: 0, // not used for state query
+        lifecycle_auth: None,
     };
     let payment_info = ContractPaymentInfo::from_lifecycle_payload(&lifecycle);
     // Use escrow ABI type for EscrowContract calls (different Rust type from OperatorContract's)
@@ -470,6 +473,7 @@ where
     let addrs = OperatorAddresses::for_network(network)
         .ok_or_else(|| OperatorError::unsupported_network(&network))?;
     let evm_provider = get_evm_provider(facilitator, network)?;
+    lifecycle_auth::gate(LifecycleAction::Release, lifecycle, network, evm_provider).await?;
     let tx_hash = execute_release(lifecycle, extra, &addrs, evm_provider, network).await?;
 
     info!(tx_hash = ?tx_hash, "Escrow release transaction submitted");
@@ -508,6 +512,13 @@ where
     let addrs = OperatorAddresses::for_network(network)
         .ok_or_else(|| OperatorError::unsupported_network(&network))?;
     let evm_provider = get_evm_provider(facilitator, network)?;
+    lifecycle_auth::gate(
+        LifecycleAction::RefundInEscrow,
+        lifecycle,
+        network,
+        evm_provider,
+    )
+    .await?;
     let tx_hash = execute_refund_in_escrow(lifecycle, extra, &addrs, evm_provider, network).await?;
 
     info!(tx_hash = ?tx_hash, "Escrow refundInEscrow transaction submitted");
@@ -728,7 +739,8 @@ async fn execute_authorize(
 
 /// Execute release on PaymentOperator
 ///
-/// Sends escrowed funds to the receiver. No ERC-3009 signature needed.
+/// Sends escrowed funds to the receiver. No ERC-3009 signature: the caller's
+/// entitlement was checked by `lifecycle_auth::gate` before this runs.
 /// The PaymentOperator contract checks msg.sender == operator for access control.
 /// Operator address is not restricted — the escrow contract enforces operator rules.
 #[instrument(skip_all, err)]
@@ -791,7 +803,8 @@ async fn execute_release(
 
 /// Execute refundInEscrow on PaymentOperator
 ///
-/// Returns escrowed funds to the payer. No ERC-3009 signature needed.
+/// Returns escrowed funds to the payer. No ERC-3009 signature: the caller's
+/// entitlement was checked by `lifecycle_auth::gate` before this runs.
 /// The amount parameter is uint120 in the ABI.
 /// Operator address is not restricted — the escrow contract enforces operator rules.
 #[instrument(skip_all, err)]
@@ -976,7 +989,7 @@ async fn send_operator_tx(
 }
 
 /// Make an eth_call (view function) against a contract
-async fn eth_call(
+pub(super) async fn eth_call(
     provider: &EvmProvider,
     target: alloy::primitives::Address,
     call: &impl SolCall,

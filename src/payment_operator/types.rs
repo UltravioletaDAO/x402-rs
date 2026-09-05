@@ -158,13 +158,15 @@ pub struct EscrowExtra {
 }
 
 // ============================================================================
-// EscrowLifecyclePayload - For release and refundInEscrow (no signature needed)
+// EscrowLifecyclePayload - For release and refundInEscrow
 // ============================================================================
 
-/// Payload for release and refundInEscrow actions (no ERC-3009 signature needed)
+/// Payload for release and refundInEscrow actions.
 ///
-/// These operations only need the paymentInfo to identify the escrow,
-/// the payer address, and the amount to release/refund.
+/// No ERC-3009 signature: the funds are already in escrow. What these carry
+/// instead is `lifecycleAuth`, an EIP-712 order by whoever is entitled to the
+/// action (see `lifecycle_auth`). It is optional on the wire and required only
+/// when `ESCROW_LIFECYCLE_AUTH=enforce`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EscrowLifecyclePayload {
@@ -177,6 +179,11 @@ pub struct EscrowLifecyclePayload {
     /// Amount to release or refund (in token decimals, as string)
     #[serde(with = "string_u128")]
     pub amount: u128,
+
+    /// Signed order authorizing this action. Optional on the wire; whether it
+    /// is required depends on `ESCROW_LIFECYCLE_AUTH` (see `lifecycle_auth`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle_auth: Option<super::lifecycle_auth::LifecycleAuth>,
 }
 
 // ============================================================================

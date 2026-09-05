@@ -460,13 +460,23 @@ The `action` field controls the operation:
 
 | Action | Description | Signature Required |
 |--------|-------------|-------------------|
-| `authorize` (default) | Lock funds in escrow | Yes (ERC-3009) |
-| `release` | Send escrowed funds to receiver | No |
-| `refundInEscrow` | Return escrowed funds to payer | No |
+| `authorize` (default) | Lock funds in escrow | Yes (ERC-3009, by the payer) |
+| `release` | Send escrowed funds to receiver | EIP-712 lifecycle order by the payer or the operator owner (`payload.lifecycleAuth`) |
+| `refundInEscrow` | Return escrowed funds to payer | EIP-712 lifecycle order by the receiver, the operator owner, or the payer once `authorizationExpiry` has passed |
 
 Escrow contracts deployed on 11 networks. See `/supported` for networks with active PaymentOperator deployments.
 
-**Escrow release/refund payload** (no signature needed):
+**Lifecycle orders.** `release` and `refundInEscrow` carry no ERC-3009 signature (the funds are
+already escrowed) but they do move money, so they carry `payload.lifecycleAuth`: an EIP-712
+signature over `LifecycleOrder(string action, uint256 amount, uint256 deadline, bytes32 nonce, PaymentInfo paymentInfo)`
+with domain `{ name: "x402 escrow lifecycle", version: "1", chainId }` and `PaymentInfo` the
+AuthCaptureEscrow type verbatim. The "operator owner" is the operator's `FEE_RECIPIENT()`, read
+on chain. Whether the order is required is governed by `ESCROW_LIFECYCLE_AUTH` (`off` | `log` |
+`enforce`); `GET /settle` publishes the effective mode. Under `enforce` a missing or invalid order
+is 403 with a bounded `errorReason` (`missing`, `bad_signature`, `expired`, `deadline_too_far`,
+`replayed`, `unauthorized_role`); `owner_unverifiable` is 502 and retryable.
+
+**Escrow release/refund payload**:
 ```json
 {
   "scheme": "escrow",
@@ -474,7 +484,13 @@ Escrow contracts deployed on 11 networks. See `/supported` for networks with act
   "payload": {
     "paymentInfo": { "operator": "0x...", "receiver": "0x...", ... },
     "payer": "0x...",
-    "amount": "1000000"
+    "amount": "1000000",
+    "lifecycleAuth": {
+      "signer": "0x...",
+      "deadline": 1757088000,
+      "nonce": "0x<32 bytes>",
+      "signature": "0x<65 bytes>"
+    }
   },
   "paymentRequirements": {
     "network": "eip155:8453",

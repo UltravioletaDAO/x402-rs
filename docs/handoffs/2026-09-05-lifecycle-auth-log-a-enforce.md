@@ -258,3 +258,14 @@ cadena. Ningún valor de secreto se leyó ni se imprimió (solo nombres). Un ún
 apply`, acotado a `aws_ecs_task_definition.facilitator` y `aws_ecs_service.facilitator`,
 autorizado por `autorizaciones.toml`. El apply de los access logs del ALB no se hizo. Push
 solo de ramas `0xultravioleta/x4-enforce` y `0xultravioleta/x4-alb-access-logs`; `main` intacto.
+
+---
+
+## Última lectura de la sesión
+
+Ventana `2026-09-06T00:41:14Z` → `2026-09-06T01:03:09Z` (21 min): **0** `escrow lifecycle order`, **0**
+`Processing escrow scheme settlement (release|refundInEscrow)`. Modo en vivo al
+cierre: `log`. CI de PR #23: `Build & test` pass, deploy saltado (es PR, no `main`). La ventana
+sigue abierta; la completa c0der con la consulta de la fase 2.
+
+PRs: #23 (`log`, mergeable) y #24 (access logs del ALB, draft, merge = apply).

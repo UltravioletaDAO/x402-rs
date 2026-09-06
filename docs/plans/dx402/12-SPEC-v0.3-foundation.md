@@ -196,11 +196,15 @@ payment MUST be refused: `paymentId` is per transaction and cannot say which.
 4. **A defence inside a conditional branch is bypassed by avoiding the
    branch.** Rail classification, ambiguity refusal and receipt binding MUST be
    properties of the receipt and payload, not of the code path taken.
-5. **What `verified` means.** An escrow accepts any token collector for the
-   operator named in the authorization, and a proof matches any `Transfer` in
-   the transaction. `verified` asserts that a chain event consistent with the
-   claim exists between the parties on the known escrow — not that the named
-   payer was defrauded of funds. A token allowlist tightens this.
+5. **The proof's `token` is attacker-chosen unless restricted.** A `Transfer`
+   is read from the logs of whatever contract the proof names, and any contract
+   can emit one naming any `from`. Facilitators MUST accept only tokens they
+   would settle on that network. On an escrow rail, the authorization's `token`
+   MUST equal the verified transfer's, and its `operator` MUST be one the
+   facilitator knows to collect from the payer it names: the escrow is
+   permissionless for the operator in the struct and accepts any collector, so
+   an authentic authorization from an unknown operator proves only that the
+   escrow hashed it, not that the named payer funded it.
 6. **Harvest-now-decrypt-later.** ECDH is not post-quantum; do not anchor
    permanently what must not survive.
 7. **Memory.** Sealing holds plaintext and ciphertext; bound concurrency and

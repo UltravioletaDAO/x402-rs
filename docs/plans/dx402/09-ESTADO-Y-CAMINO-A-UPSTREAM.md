@@ -49,7 +49,7 @@ con fecha. Una fila sin evidencia no está hecha, por más que el código exista
 |---|---|---|
 | P1 | #1 sellar al TokenStore saltaba la resolución por escrow | ✅ `classify_rail`, resolución incondicional |
 | P1 | #2 el recibo firmaba `payee`/`txHash` del caller sin cotejar con la prueba | ✅ atados a la prueba, local, antes del RPC |
-| P1 | #3 `PaymentInfo.payer` no es "hecho on-chain": el escrow es permissionless para el operador y acepta cualquier collector | 📝 doc y spec corregidos; **allowlist de tokens** en el proof path = follow-up |
+| P1 | #3 `PaymentInfo.payer` no es "hecho on-chain": el escrow es permissionless para el operador y acepta cualquier collector | ✅ **2.15.0** (2026-09-06): allowlist de tokens en `verify_payment_facts` (misma lista que `/verify`/`/settle`, local, antes del RPC — cierra también el `Transfer` fabricado por un contrato ajeno en el riel plano y en ERC-8004); en el riel de escrow `paymentInfo.token` == token del `Transfer` verificado y `paymentInfo.operator` ∈ PaymentOperators conocidos de la red (`dx402_escrow_operator_unknown`). Fixture real de EM pasa los tres chequeos locales. Pendiente: reflejar el §5 del spec en el PR (commit firmado, con go) |
 | P1 | #13 empate de precio → la simple ganaba (evidencia gratis muerta; skim con tag acolchado) | ✅ empate → la que declara; sobrepago → la más cara cubierta |
 | P2 | #4 panic remoto por `Uint::from` en `to_escrow_abi` | ✅ `try_from` → `EscrowReleaseInvalid` |
 | P2 | #9 `settle_before_execution` cobraba evidencia y nunca anclaba | ✅ el hook corre también en esa rama |
@@ -125,8 +125,8 @@ permite fork sin admin), `gh` autenticado con `repo`, GPG configurada y
   (`proofOfPayment`, `sellerSignature`, `escrowRelease`) sólo aparecen en prosa.
   Hueco previo, señalado por `deploy-readiness`.
 
-- Allowlist de tokens en el proof path (red team #3) — hoy `verified` certifica
-  consistencia con el escrow conocido, no que el pagador fue defraudado.
+- ~~Allowlist de tokens en el proof path (red team #3)~~ — hecho en 2.15.0
+  (token + operador). Queda el eco en el spec del PR (§5, un commit firmado).
 - `getHash` en `latest` sin aserción de código del escrow (#5); normalización de
   `paymentId` como clave (#6); `asset` en el matcher cuando v2 lo traiga (#14).
 - Opt-in en los SDK py/ts (deseable; lista exacta en el reporte de paridad).

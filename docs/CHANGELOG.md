@@ -1,5 +1,35 @@
 # Changelog
 
+## [2.15.0] - 2026-09-06
+
+### Fixed
+
+- **The payment proof trusted the token the caller named.** `verify_payment_facts`
+  looked for the ERC-20 `Transfer` in the logs of whatever contract
+  `proof.token` pointed at -- and a contract is free to emit
+  `Transfer(victim, payee, amount)` without the victim ever signing anything.
+  "The chain confirms the payer" therefore meant "a contract the anchoring
+  party chose says so": a stranger's address could be certified as the buyer of
+  a delivery (DX402 `verified`), or as the rater of an agent (ERC-8004 proof
+  gate), for the price of deploying one contract, on **both** rails. The proof
+  path now applies the same strict deployment list `/verify` and `/settle`
+  already enforce (`is_supported_asset`), locally and before any RPC, and
+  answers `proof_token_not_allowed` (`dx402_proof_invalid` on the anchor path).
+  Red team 2026-09-04, finding #3.
+- **On the escrow rail the authorization is now bound to the token and to a
+  known operator.** `getHash` proved the struct was authentic and captured by
+  this transaction; it did not prove the named `payer` funded it, because the
+  escrow is permissionless for the operator in the struct and pulls funds
+  through whatever collector that operator chose. Two local checks close it:
+  `paymentInfo.token` must be the token the verified `Transfer` was emitted by
+  (else `dx402_escrow_release_invalid`), and `paymentInfo.operator` must be one
+  of the PaymentOperators in `payment_operator::addresses` for the network
+  (else the new `dx402_escrow_operator_unknown`, enforceable in phase 2). The
+  live Execution Market release kept as a fixture clears all three local checks
+  and is the test that proves an honest anchor still reaches the escrow call.
+- Anchors already recorded as `verified` are not re-judged; the check applies
+  to anchors from this release on. `PaymentFacts` now carries `token`.
+
 ## [2.14.0] - 2026-09-04
 
 ### Changed

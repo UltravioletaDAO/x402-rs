@@ -58,7 +58,7 @@ use crate::erc8004::proof::{verify_payment_facts, ProofRejection};
 use crate::erc8004::ProofOfPayment;
 use crate::network::Network;
 use crate::payment_operator::abi::EscrowContract;
-use crate::payment_operator::addresses::escrow_for_network;
+use crate::payment_operator::addresses::{escrow_for_network, OperatorAddresses};
 use crate::payment_operator::types::EscrowPaymentInfo;
 
 /// How old a payment may be when its evidence is anchored.
@@ -137,6 +137,19 @@ pub enum AnchorRejection {
     /// THIS transaction captured. A caller that edits a single field -- the
     /// payer above all -- changes the hash and lands here.
     EscrowReleaseInvalid,
+    /// The authorization names an operator this facilitator does not know for
+    /// the network.
+    ///
+    /// The escrow's `charge`/`authorize` are permissionless for the operator in
+    /// the struct and pull funds through whatever token collector that operator
+    /// chose. A stranger deploying its own operator can therefore have the real
+    /// escrow capture an authentic authorization that names anyone as `payer`,
+    /// funded from the stranger's own pocket -- and `getHash` would agree with
+    /// every word of it. Only the PaymentOperators in
+    /// `payment_operator::addresses` are known to collect from the payer they
+    /// name, so only those get to say who funded a release. Red team
+    /// 2026-09-04, finding #3.
+    EscrowOperatorUnknown,
     /// No seller signature.
     SellerSignatureMissing,
     /// The seller signature does not recover to the payee of the payment.
@@ -187,6 +200,7 @@ impl AnchorRejection {
             AnchorRejection::EscrowReleaseMissing => "dx402_escrow_release_missing",
             AnchorRejection::EscrowReleaseAmbiguous => "dx402_escrow_release_ambiguous",
             AnchorRejection::EscrowReleaseInvalid => "dx402_escrow_release_invalid",
+            AnchorRejection::EscrowOperatorUnknown => "dx402_escrow_operator_unknown",
             AnchorRejection::SellerSignatureMissing => "dx402_seller_signature_missing",
             AnchorRejection::SellerSignatureInvalid => "dx402_seller_signature_invalid",
             AnchorRejection::PaymentIdNotBound => "dx402_payment_id_not_bound",
@@ -394,9 +408,11 @@ pub fn verify_authorization(
 /// not that the named `payer` funded it. The escrow's `charge`/`authorize` are
 /// permissionless for the operator named in the struct and accept any token
 /// collector, so a party can settle a payment of its own that names anyone as
-/// payer. What the gate certifies is "a chain event consistent with this
-/// claim exists between these parties on the known escrow", and a token
-/// allowlist is the missing piece (red team, 2026-09-04).
+/// payer. Two more bindings close that: the `token` in the struct must be the
+/// one the verified `Transfer` was emitted by (itself restricted to the known
+/// deployments), and the `operator` must be a PaymentOperator this facilitator
+/// knows for the network -- the ones whose collectors pull from the payer they
+/// name (red team, 2026-09-04, finding #3).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EscrowRelease {
@@ -498,10 +514,12 @@ pub fn classify_rail<'a>(
 /// cannot tell who funded the escrow, and the anchor stays unverified.
 async fn beneficial_payer<P: Provider>(
     rpc: &P,
+    network: Network,
     escrow: Address,
     captured: B256,
     release: Option<&EscrowRelease>,
     payee: Address,
+    token: Address,
 ) -> Result<Address, AnchorRejection> {
     let Some(release) = release else {
         return Err(AnchorRejection::EscrowReleaseMissing);
@@ -512,6 +530,23 @@ async fn beneficial_payer<P: Provider>(
     // signature would be demanded from the wrong party.
     if release.payment_info.receiver != payee {
         return Err(AnchorRejection::EscrowReleaseInvalid);
+    }
+
+    // Same for the token: the authorization and the verified `Transfer` have
+    // to move the same asset, or the authorization is for some other payment
+    // that happened to be captured alongside.
+    if release.payment_info.token != token {
+        return Err(AnchorRejection::EscrowReleaseInvalid);
+    }
+
+    // And the operator has to be one we know. An authentic authorization from
+    // an unknown operator proves the escrow hashed it, not that the named payer
+    // funded it -- the operator picked the collector. Local, before the RPC.
+    let known = OperatorAddresses::for_network(network)
+        .map(|a| a.payment_operators.contains(&release.payment_info.operator))
+        .unwrap_or(false);
+    if !known {
+        return Err(AnchorRejection::EscrowOperatorUnknown);
     }
 
     // Ask the escrow to hash what we were handed.
@@ -673,7 +708,16 @@ pub async fn verify_anchor<P: Provider>(
         Rail::Plain => facts.payer,
         Rail::EscrowAmbiguous { .. } => return Err(AnchorRejection::EscrowReleaseAmbiguous),
         Rail::Escrow { escrow, captured } => {
-            beneficial_payer(rpc, escrow, captured, claim.escrow_release, facts.payee).await?
+            beneficial_payer(
+                rpc,
+                claim.network,
+                escrow,
+                captured,
+                claim.escrow_release,
+                facts.payee,
+                facts.token,
+            )
+            .await?
         }
     };
 
@@ -1197,10 +1241,12 @@ mod tests {
 
         let missing = beneficial_payer(
             &rpc,
+            crate::network::Network::Optimism,
             escrow_for_network(crate::network::Network::Optimism).unwrap(),
             B256::from([7u8; 32]),
             None,
             info.receiver,
+            info.token,
         )
         .await
         .unwrap_err();
@@ -1234,16 +1280,127 @@ mod tests {
         assert_eq!(
             beneficial_payer(
                 &rpc,
+                crate::network::Network::Optimism,
                 escrow_for_network(crate::network::Network::Optimism).unwrap(),
                 B256::from([7u8; 32]),
                 Some(&release),
                 other,
+                release.payment_info.token,
             )
             .await
             .unwrap_err(),
             AnchorRejection::EscrowReleaseInvalid,
             "an authorization whose receiver is not the payee names another payment"
         );
+    }
+
+    #[tokio::test]
+    async fn an_authorization_for_a_different_token_is_refused_before_any_rpc() {
+        // The verified `Transfer` moved USDC; an authorization that names some
+        // other token is for some other payment, however authentic it is.
+        let (info, payer) = em_release_fixture();
+        let rpc = dead_provider();
+        let release = EscrowRelease {
+            payment_info: info,
+            payer,
+        };
+        let other_token: Address = "0x000000000000000000000000000000000000beef"
+            .parse()
+            .unwrap();
+        assert_eq!(
+            beneficial_payer(
+                &rpc,
+                crate::network::Network::Optimism,
+                escrow_for_network(crate::network::Network::Optimism).unwrap(),
+                B256::from([7u8; 32]),
+                Some(&release),
+                release.payment_info.receiver,
+                other_token,
+            )
+            .await
+            .unwrap_err(),
+            AnchorRejection::EscrowReleaseInvalid
+        );
+    }
+
+    #[tokio::test]
+    async fn an_authorization_from_an_unknown_operator_is_refused_before_any_rpc() {
+        // THE ATTACK behind finding #3: Mallory deploys her own operator with a
+        // collector that pulls from HER wallet, has the real escrow capture an
+        // authorization naming Alice as payer, and releases it to herself.
+        // `getHash` agrees with every field, the receipt shows the capture on
+        // the known escrow, and the `Transfer` is real USDC. Nothing on the
+        // chain says Alice paid -- only the struct does, and Mallory wrote it.
+        let (mut info, payer) = em_release_fixture();
+        info.operator = "0x000000000000000000000000000000000000dead"
+            .parse()
+            .unwrap();
+        let rpc = dead_provider();
+        let release = EscrowRelease {
+            payment_info: info,
+            payer,
+        };
+        let refused = beneficial_payer(
+            &rpc,
+            crate::network::Network::Optimism,
+            escrow_for_network(crate::network::Network::Optimism).unwrap(),
+            B256::from([7u8; 32]),
+            Some(&release),
+            release.payment_info.receiver,
+            release.payment_info.token,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(refused, AnchorRejection::EscrowOperatorUnknown);
+        assert!(
+            refused.is_enforceable(),
+            "an unknown operator must refuse in phase 2"
+        );
+        assert_eq!(refused.as_str(), "dx402_escrow_operator_unknown");
+    }
+
+    #[tokio::test]
+    async fn the_real_execution_market_release_passes_every_local_check() {
+        // The fixture is a live Optimism release from the known EM operator in
+        // USDC. It must clear receiver, token and operator locally and only
+        // then go to the chain -- which here is a closed port, so the ONLY
+        // verdict that proves it got past the local checks is RpcUnavailable.
+        let (info, payer) = em_release_fixture();
+        let rpc = dead_provider();
+        let release = EscrowRelease {
+            payment_info: info,
+            payer,
+        };
+        assert_eq!(
+            beneficial_payer(
+                &rpc,
+                crate::network::Network::Optimism,
+                escrow_for_network(crate::network::Network::Optimism).unwrap(),
+                B256::from([7u8; 32]),
+                Some(&release),
+                release.payment_info.receiver,
+                release.payment_info.token,
+            )
+            .await
+            .unwrap_err(),
+            AnchorRejection::RpcUnavailable,
+            "an honest EM release must reach the escrow call"
+        );
+    }
+
+    #[test]
+    fn the_known_operator_table_covers_every_escrow_network() {
+        // The operator check refuses on a network with no table entry. That is
+        // the right default for a chain with no escrow, but on a chain where we
+        // DO classify escrow releases it would refuse every honest anchor.
+        for network in crate::payment_operator::addresses::ESCROW_NETWORKS {
+            let table = OperatorAddresses::for_network(*network)
+                .unwrap_or_else(|| panic!("{network:?} has an escrow but no operator table"));
+            assert!(
+                !table.payment_operators.is_empty(),
+                "{network:?} has an escrow but no known PaymentOperator"
+            );
+        }
     }
 
     fn capture_log(from: Address, hash: B256) -> alloy::primitives::Log {

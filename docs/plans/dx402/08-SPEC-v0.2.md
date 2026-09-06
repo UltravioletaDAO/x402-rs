@@ -368,7 +368,9 @@ collector, so a party can settle a payment of its own that names anyone as
 `payer`. `verified` therefore means *a chain event consistent with this claim
 exists between these parties on the known escrow*, not that the named payer
 was defrauded of funds. A token allowlist on the proof path is the natural
-tightening and is not in v0.2.
+tightening and is not in v0.2. (Landed in v2.15.0 of the reference
+implementation together with an operator allowlist on the escrow rail; see
+v0.3 §5.)
 
 A transaction that settles **more than one** escrow payment answers
 `dx402_escrow_release_ambiguous`: `paymentId` is a function of `(network, txHash)`,

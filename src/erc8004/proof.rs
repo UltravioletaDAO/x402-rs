@@ -147,6 +147,17 @@ pub enum ProofRejection {
     TimestampMismatch,
     /// No matching ERC-20 `Transfer` in that transaction.
     TransferNotFound,
+    /// The proof names a token this facilitator does not know for the network.
+    ///
+    /// The `Transfer` check reads the logs of whatever contract `token` points
+    /// at, and a contract is free to emit `Transfer(victim, payee, amount)`
+    /// without the victim ever signing anything. Left open, "the chain confirms
+    /// the payer" meant "a contract the anchoring party chose says so": a
+    /// stranger's address could be certified as the buyer of a delivery, or as
+    /// the rater of an agent, for the price of deploying one contract. The same
+    /// strict list `/verify` and `/settle` enforce (`is_supported_asset`) is
+    /// applied here, locally, before any RPC. Red team 2026-09-04, finding #3.
+    TokenNotAllowed,
     /// The payment was made by somebody other than the rater.
     PayerIsNotRater,
     /// The payment did not go to an address the registry ties to this agent.
@@ -181,6 +192,7 @@ impl ProofRejection {
             Self::BlockNumberMismatch => "proof_block_number_mismatch",
             Self::TimestampMismatch => "proof_timestamp_mismatch",
             Self::TransferNotFound => "proof_transfer_not_found",
+            Self::TokenNotAllowed => "proof_token_not_allowed",
             Self::PayerIsNotRater => "proof_payer_is_not_rater",
             Self::PayeeIsNotAgent => "proof_payee_is_not_agent",
             Self::Expired => "proof_expired",
@@ -405,6 +417,14 @@ pub async fn verify_payment_facts<P: Provider>(
     let payee = evm_address(&proof.payee)?;
     let token = evm_address(&proof.token)?;
 
+    // 2b. The token is one we know for this network. Step 6 below trusts the
+    //    logs of whatever contract `token` names, and any contract can emit a
+    //    `Transfer` naming any `from`. Local, and before the RPC, so an outage
+    //    cannot turn this definite refusal into "no verdict".
+    if !crate::network::is_supported_asset(request_network, &proof.token) {
+        return Err(ProofRejection::TokenNotAllowed);
+    }
+
     // 3. The transaction exists and succeeded.
     //
     // A null receipt is NOT proof the transaction never happened, and there are
@@ -537,7 +557,11 @@ pub async fn verify_payment_facts<P: Provider>(
         return Err(ProofRejection::TransferNotFound);
     }
 
-    Ok(PaymentFacts { payer, payee })
+    Ok(PaymentFacts {
+        payer,
+        payee,
+        token,
+    })
 }
 
 /// Who the verified payment moved value between.
@@ -549,6 +573,9 @@ pub async fn verify_payment_facts<P: Provider>(
 pub struct PaymentFacts {
     pub payer: Address,
     pub payee: Address,
+    /// The token the verified `Transfer` was emitted by -- one of the known
+    /// deployments for the network, never an address the caller picked.
+    pub token: Address,
 }
 
 pub async fn verify_proof_of_payment<P: Provider>(
@@ -812,7 +839,12 @@ mod tests {
 
     const PAYER: [u8; 20] = [0x11; 20];
     const PAYEE: [u8; 20] = [0x22; 20];
-    const TOKEN: [u8; 20] = [0x33; 20];
+    /// Base USDC. The gate refuses any token outside the static deployment
+    /// table, so the fixture has to be one the table knows.
+    const TOKEN: [u8; 20] = [
+        0x83, 0x35, 0x89, 0xfc, 0xd6, 0xed, 0xb6, 0xe0, 0x8f, 0x4c, 0x7c, 0x32, 0xd4, 0xf7, 0x1b,
+        0x54, 0xbd, 0xa0, 0x29, 0x13,
+    ];
     const STRANGER: [u8; 20] = [0x44; 20];
     const IDENTITY: [u8; 20] = [0x80; 20];
     const AGENT_ID: u64 = 18896;
@@ -1225,6 +1257,35 @@ mod tests {
         );
     }
 
+    /// A `Transfer` from a contract we do not know proves nothing: the
+    /// contract chose the `from`. Refused locally, before any RPC -- nothing is
+    /// queued on the asserter, so reaching the network would surface as
+    /// `RpcUnavailable` and fail this test.
+    #[tokio::test]
+    async fn a_transfer_in_a_token_we_do_not_know_is_refused_before_any_rpc() {
+        let ts = now() - 60;
+        let mut proof = good_proof(ts);
+        proof.token = mixed(STRANGER);
+        let proof = ProofOfPayment::new(
+            proof.transaction_hash,
+            proof.block_number,
+            proof.network,
+            proof.payer,
+            proof.payee,
+            proof.amount,
+            proof.token,
+            proof.timestamp,
+        );
+        let params = params_with(proof, Some(mixed(PAYER)));
+        let refused = verdict(Asserter::new(), &params).await.unwrap_err();
+        assert_eq!(refused, ProofRejection::TokenNotAllowed);
+        assert!(
+            refused.blocks_write(),
+            "a fabricated token must refuse in phase 2"
+        );
+        assert!(!refused.is_retryable());
+    }
+
     /// Paying somebody who is not this agent buys nothing.
     #[tokio::test]
     async fn a_payment_to_a_stranger_is_refused() {
@@ -1446,6 +1507,7 @@ mod tests {
             ProofRejection::BlockNumberMismatch,
             ProofRejection::TimestampMismatch,
             ProofRejection::TransferNotFound,
+            ProofRejection::TokenNotAllowed,
             ProofRejection::PayerIsNotRater,
             ProofRejection::PayeeIsNotAgent,
             ProofRejection::Expired,
@@ -1463,7 +1525,7 @@ mod tests {
             assert!(!r.as_str().contains("0x"));
             assert!(!r.as_str().contains("://"));
         }
-        assert_eq!(seen.len(), 19);
+        assert_eq!(seen.len(), 20);
     }
 
     #[test]
@@ -1498,6 +1560,7 @@ mod tests {
             ProofRejection::BlockNumberMismatch,
             ProofRejection::TimestampMismatch,
             ProofRejection::TransferNotFound,
+            ProofRejection::TokenNotAllowed,
             ProofRejection::PayerIsNotRater,
             ProofRejection::PayeeIsNotAgent,
             ProofRejection::Expired,

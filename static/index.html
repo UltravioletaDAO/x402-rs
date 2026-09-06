@@ -2455,6 +2455,52 @@
                 </div>
             </section>
 
+            <!-- MCP server -->
+            <section class="section fade-in" style="margin-top: 3rem;">
+                <div style="text-align: center; margin-bottom: 2rem;">
+                    <div style="display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.4rem 1rem; border-radius: 20px; background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3); margin-bottom: 1rem;">
+                        <span style="font-size: 0.75rem; color: #10b981; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;" data-i18n="mcp.badge">MCP &middot; Streamable HTTP</span>
+                    </div>
+                    <h3 class="section-title" style="background: linear-gradient(135deg, #10b981, #06b6d4); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;" data-i18n="mcp.title">Four Tools Your Agent Can Pay With</h3>
+                    <p class="section-description" data-i18n="mcp.description">
+                        The same verify, settle, supported and accepts calls this facilitator answers over HTTP are exposed as MCP tools at /mcp, dispatched through the very same handlers. Streamable HTTP and stateless: every call is an independent POST, there is nothing to log in to, and the endpoint itself charges nothing. The only money that moves is the buyer's payment reaching the seller.
+                    </p>
+                </div>
+
+                <div class="features" style="grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); margin-bottom: 2rem;">
+                    <div class="feature-card" data-mcp-client="claudeCode">
+                        <h4 data-i18n="mcp.claudeCode.title">Claude Code</h4>
+                        <pre style="background: rgba(0,0,0,0.35); border: 1px solid rgba(16,185,129,0.2); border-radius: 8px; padding: 0.75rem; margin: 0.75rem 0 0 0; white-space: pre-wrap; word-break: break-word; font-size: 0.72rem; line-height: 1.5; text-align: left;"><code>claude mcp add --transport http x402-facilitator https://facilitator.ultravioletadao.xyz/mcp</code></pre>
+                    </div>
+                    <div class="feature-card" data-mcp-client="configFile">
+                        <h4 data-i18n="mcp.configFile.title">Claude Desktop, and any client with a config file</h4>
+                        <pre style="background: rgba(0,0,0,0.35); border: 1px solid rgba(16,185,129,0.2); border-radius: 8px; padding: 0.75rem; margin: 0.75rem 0 0 0; white-space: pre-wrap; word-break: break-word; font-size: 0.72rem; line-height: 1.5; text-align: left;"><code>{
+  "mcpServers": {
+    "x402-facilitator": {
+      "type": "streamable-http",
+      "url": "https://facilitator.ultravioletadao.xyz/mcp"
+    }
+  }
+}</code></pre>
+                    </div>
+                    <div class="feature-card" data-mcp-client="byHand">
+                        <h4 data-i18n="mcp.byHand.title">By hand</h4>
+                        <p data-i18n="mcp.byHand.text">A handshake is optional on a stateless server, but Accept has to name both application/json and text/event-stream or the transport answers 406 with no other explanation. It is the first wall a hand-written client runs into.</p>
+                    </div>
+                </div>
+
+                <div style="display: flex; gap: 0.75rem; justify-content: center; flex-wrap: wrap;">
+                    <a href="/mcp" style="font-size: 0.7rem; color: #10b981; text-decoration: none; padding: 0.25rem 0.6rem; border: 1px solid #10b981; border-radius: 4px; transition: all 0.2s;"
+                       onmouseover="this.style.background='#10b981'; this.style.color='#000';"
+                       onmouseout="this.style.background='transparent'; this.style.color='#10b981';"
+                       data-i18n="mcp.link.guide">MCP Guide</a>
+                    <a href="/.well-known/mcp/server-card.json" style="font-size: 0.7rem; color: #10b981; text-decoration: none; padding: 0.25rem 0.6rem; border: 1px solid #10b981; border-radius: 4px; transition: all 0.2s;"
+                       onmouseover="this.style.background='#10b981'; this.style.color='#000';"
+                       onmouseout="this.style.background='transparent'; this.style.color='#10b981';"
+                       data-i18n="mcp.link.card">Server Card</a>
+                </div>
+            </section>
+
             <section class="endpoints fade-in">
                 <h3 data-i18n="endpoints.title">API Endpoints</h3>
 
@@ -2697,6 +2743,24 @@
                         <span class="endpoint-desc" data-i18n="endpoints.register">Register a paid endpoint in the Bazaar</span>
                     </div>
                 </div>
+                <!-- MCP Server -->
+                <div class="endpoint-group">
+                    <h4 data-i18n="endpoints.group.mcp">MCP Server</h4>
+                    <div class="endpoint">
+                        <span class="method post">POST</span>
+                        <span class="endpoint-path">/mcp</span>
+                        <span class="endpoint-desc" data-i18n="endpoints.mcpPost">MCP server (Streamable HTTP, stateless): the same four calls as tools</span>
+                    </div>
+                    <div class="endpoint">
+                        <span class="method get">GET</span>
+                        <span class="endpoint-path">/mcp</span>
+                        <span class="endpoint-desc" data-i18n="endpoints.mcpGet">The MCP guide for humans: transports, the four tools, and the traps</span>
+                    </div>
+                    <p style="color: var(--text-muted); font-size: 0.8rem; margin: 0.5rem 0 0 0; padding-left: 1rem;" data-i18n="endpoints.mcpNote">
+                        No payment and no session: the endpoint charges nothing and never answers 402. Accept has to name both application/json and text/event-stream, or the transport answers 406.
+                    </p>
+                </div>
+
             </section>
 
             <!-- Interactive API Documentation Banner -->
@@ -2899,6 +2963,19 @@
                 "endpoints.group.compliance": "Compliance",
                 "endpoints.group.escrow": "x402r Escrow (Refund Support)",
                 "endpoints.group.discovery": "Discovery (Bazaar)",
+                "endpoints.group.mcp": "MCP Server",
+                "endpoints.mcpPost": "MCP server (Streamable HTTP, stateless): the same four calls as tools",
+                "endpoints.mcpGet": "The MCP guide for humans: transports, the four tools, and the traps",
+                "endpoints.mcpNote": "No payment and no session: the endpoint charges nothing and never answers 402. Accept has to name both application/json and text/event-stream, or the transport answers 406.",
+                "mcp.badge": "MCP \u00b7 Streamable HTTP",
+                "mcp.title": "Four Tools Your Agent Can Pay With",
+                "mcp.description": "The same verify, settle, supported and accepts calls this facilitator answers over HTTP are exposed as MCP tools at /mcp, dispatched through the very same handlers. Streamable HTTP and stateless: every call is an independent POST, there is nothing to log in to, and the endpoint itself charges nothing. The only money that moves is the buyer's payment reaching the seller.",
+                "mcp.claudeCode.title": "Claude Code",
+                "mcp.configFile.title": "Claude Desktop, and any client with a config file",
+                "mcp.byHand.title": "By hand",
+                "mcp.byHand.text": "A handshake is optional on a stateless server, but Accept has to name both application/json and text/event-stream or the transport answers 406 with no other explanation. It is the first wall a hand-written client runs into.",
+                "mcp.link.guide": "MCP Guide",
+                "mcp.link.card": "Server Card",
                 "endpoints.escrowSettle": "Settle to escrow proxy when 'refund' extension is present",
                 "endpoints.escrowNote": "Add {\"refund\": {\"window\": 86400}} to extensions for trustless refund support via DepositRelay proxies.",
                 "endpoints.group.paymentOperator": "x402r PaymentOperator (Advanced Escrow)",
@@ -3051,6 +3128,19 @@
                 "endpoints.group.compliance": "Cumplimiento",
                 "endpoints.group.escrow": "x402r Escrow (Soporte de Reembolsos)",
                 "endpoints.group.discovery": "Descubrimiento (Bazaar)",
+                "endpoints.group.mcp": "Servidor MCP",
+                "endpoints.mcpPost": "Servidor MCP (Streamable HTTP, sin estado): las mismas cuatro llamadas como herramientas",
+                "endpoints.mcpGet": "La gu\u00eda MCP para humanos: transportes, las cuatro herramientas y las trampas",
+                "endpoints.mcpNote": "Sin pago y sin sesi\u00f3n: el endpoint no cobra nada y nunca responde 402. Accept tiene que nombrar application/json y text/event-stream a la vez, o el transporte responde 406.",
+                "mcp.badge": "MCP \u00b7 Streamable HTTP",
+                "mcp.title": "Cuatro herramientas con las que tu agente paga",
+                "mcp.description": "Las mismas llamadas verify, settle, supported y accepts que este facilitador responde por HTTP est\u00e1n expuestas como herramientas MCP en /mcp, despachadas por esos mismos handlers. Streamable HTTP y sin estado: cada llamada es un POST independiente, no hay sesi\u00f3n que iniciar y el endpoint no cobra nada. El \u00fanico dinero que se mueve es el pago del comprador llegando al vendedor.",
+                "mcp.claudeCode.title": "Claude Code",
+                "mcp.configFile.title": "Claude Desktop, y cualquier cliente con archivo de configuraci\u00f3n",
+                "mcp.byHand.title": "A mano",
+                "mcp.byHand.text": "El handshake es opcional en un servidor sin estado, pero Accept tiene que nombrar application/json y text/event-stream a la vez o el transporte responde 406 sin m\u00e1s explicaci\u00f3n. Es la primera pared con la que choca un cliente escrito a mano.",
+                "mcp.link.guide": "Gu\u00eda MCP",
+                "mcp.link.card": "Server Card",
                 "endpoints.escrowSettle": "Liquidar a proxy escrow cuando la extension 'refund' esta presente",
                 "endpoints.escrowNote": "Agrega {\"refund\": {\"window\": 86400}} a extensions para soporte de reembolsos sin confianza via proxies DepositRelay.",
                 "endpoints.group.paymentOperator": "x402r PaymentOperator (Escrow Avanzado)",

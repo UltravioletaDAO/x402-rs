@@ -15869,3 +15869,150 @@ mod settlement_unconfirmed_response_tests {
         }
     }
 }
+
+/// The landing is the index of the hub, and MCP is the door it left out.
+///
+/// Measured 2026-09-06 on `origin/main`: `/mcp` was a live page with three
+/// client blocks, and `/x402` carried two `/mcp` rows in its endpoint table --
+/// while the landing named MCP only in its nav, and its own endpoint table
+/// listed ten groups, none of them the MCP server. Nothing was red, because no
+/// test tied the landing to the pages it links to.
+///
+/// These three do, and each is written to fail from the other side: they read
+/// `static/mcp.html` and require the landing to agree with it. A client added
+/// there without touching the landing turns red instead of drifting quietly,
+/// which is the failure mode a hand-copied snippet always has.
+#[cfg(test)]
+mod landing_mcp_tests {
+    use super::{INDEX_HTML, MCP_HTML};
+
+    /// The `<section class="endpoints ...">` block of the landing.
+    fn endpoint_table() -> &'static str {
+        let start = INDEX_HTML
+            .find("<section class=\"endpoints")
+            .expect("the landing must have an endpoints section");
+        let rest = &INDEX_HTML[start..];
+        let end = rest
+            .find("</section>")
+            .expect("the endpoints section must be closed");
+        &rest[..end]
+    }
+
+    /// Whitespace collapsed and shell line-continuations dropped, so that a
+    /// re-indent or a rewrap is not a failure but a changed token is.
+    fn squeeze(s: &str) -> String {
+        s.split_whitespace()
+            .filter(|t| *t != "\\")
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// The client ids `static/mcp.html` documents, in the order it lists them.
+    ///
+    /// Read from the `<h3 data-i18n="transport.*">` headings rather than from a
+    /// literal list, because a literal list here would have to be edited by the
+    /// same person who forgot the landing.
+    fn mcp_page_clients() -> Vec<String> {
+        const MARK: &str = "<h3 data-i18n=\"transport.";
+        MCP_HTML
+            .match_indices(MARK)
+            .map(|(i, _)| {
+                let after = &MCP_HTML[i + MARK.len()..];
+                let end = after
+                    .find('"')
+                    .expect("a data-i18n attribute must be closed");
+                after[..end].to_string()
+            })
+            .collect()
+    }
+
+    /// The endpoint table names the MCP server, with both methods.
+    ///
+    /// `GET /mcp` and `POST /mcp` are different products on the same path --
+    /// the guide for a person and the JSON-RPC door for an agent -- so a table
+    /// that lists one is as wrong as a table that lists neither.
+    #[test]
+    fn the_landing_endpoint_table_lists_the_mcp_server() {
+        let table = endpoint_table();
+        let start = table.find("endpoints.group.mcp").unwrap_or_else(|| {
+            panic!("the landing endpoint table has no MCP group, but /mcp is a served route")
+        });
+        let rest = &table[start..];
+        let group = &rest[..rest.find("<h4").unwrap_or(rest.len())];
+
+        assert!(
+            group.contains("<span class=\"method post\">POST</span>"),
+            "the MCP group does not list POST /mcp, which is the endpoint an agent calls"
+        );
+        assert!(
+            group.contains("<span class=\"method get\">GET</span>"),
+            "the MCP group does not list GET /mcp, which is the guide a person reads"
+        );
+        assert_eq!(
+            group
+                .matches("<span class=\"endpoint-path\">/mcp</span>")
+                .count(),
+            2,
+            "the MCP group must carry exactly the two /mcp rows"
+        );
+    }
+
+    /// The landing offers the same clients the MCP page documents.
+    ///
+    /// Tagged with `data-mcp-client` rather than matched on prose so that the
+    /// check survives translation: the landing is bilingual and the client
+    /// headings are not.
+    #[test]
+    fn the_landing_lists_the_same_mcp_clients_as_the_mcp_page() {
+        const MARK: &str = "data-mcp-client=\"";
+        let landing: Vec<String> = INDEX_HTML
+            .match_indices(MARK)
+            .map(|(i, _)| {
+                let after = &INDEX_HTML[i + MARK.len()..];
+                let end = after
+                    .find('"')
+                    .expect("a data-mcp-client attribute must be closed");
+                after[..end].to_string()
+            })
+            .collect();
+        let page = mcp_page_clients();
+
+        assert!(
+            !page.is_empty(),
+            "static/mcp.html declares no transport headings; this test lost its source of truth"
+        );
+        assert_eq!(
+            landing, page,
+            "the landing and /mcp disagree on which clients exist: landing {landing:?}, page {page:?}"
+        );
+    }
+
+    /// The one command a reader will copy is byte-for-byte the same in both.
+    ///
+    /// This is the check that pays for the duplication: the landing repeats the
+    /// Claude Code line so a visitor never has to leave the page, and if the
+    /// server name or the base URL ever changes on `/mcp`, the copy on the
+    /// landing goes red instead of handing out a command that connects nowhere.
+    #[test]
+    fn the_landing_and_the_mcp_page_agree_on_the_connection_command() {
+        let start = MCP_HTML
+            .find("<h3 data-i18n=\"transport.claudeCode\">")
+            .expect("the MCP page must document the Claude Code client");
+        let rest = &MCP_HTML[start..];
+        let open = rest
+            .find("<code>")
+            .expect("that block must carry a snippet")
+            + "<code>".len();
+        let close = rest.find("</code>").expect("that snippet must be closed");
+        let command = squeeze(&rest[open..close]);
+
+        assert!(
+            command.starts_with("claude mcp add"),
+            "read {command:?} from /mcp, which is not the add command this test meant to pin"
+        );
+        assert!(
+            squeeze(INDEX_HTML).contains(&command),
+            "the landing does not carry the connection command verbatim: {command:?}"
+        );
+    }
+}

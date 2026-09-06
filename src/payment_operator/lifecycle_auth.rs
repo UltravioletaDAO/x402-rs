@@ -590,6 +590,7 @@ pub async fn gate(
             mode = mode.as_str(),
             verdict = verdict.category(),
             signer = ?signer,
+            operator = ?payment_info.operator,
             payer = ?payment_info.payer,
             receiver = ?payment_info.receiver,
             "escrow lifecycle order accepted"
@@ -601,6 +602,7 @@ pub async fn gate(
             mode = mode.as_str(),
             verdict = verdict.category(),
             signer = ?signer,
+            operator = ?payment_info.operator,
             payer = ?payment_info.payer,
             receiver = ?payment_info.receiver,
             detail = %describe(&verdict),

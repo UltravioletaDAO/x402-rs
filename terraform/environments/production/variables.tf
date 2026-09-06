@@ -351,6 +351,38 @@ variable "alerts_email" {
   default     = "0xultravioleta@gmail.com"
 }
 
+variable "escrow_lifecycle_auth" {
+  description = <<-EOT
+    Whether escrow `release` / `refundInEscrow` on POST /settle need a signed
+    EIP-712 LifecycleOrder in `payload.lifecycleAuth`. Reaches the container as
+    ESCROW_LIFECYCLE_AUTH (src/payment_operator/lifecycle_auth.rs). The
+    effective value is published by GET /settle as `escrowLifecycleAuth`, so a
+    drift between this file and what runs is visible from outside.
+
+      off     - today's behaviour before 2026-09-05: nobody has to sign.
+      log     - verify `lifecycleAuth` when present, log the verdict
+                (`escrow lifecycle order accepted` / `NOT authorized`, with
+                verdict=missing when nobody signed), NEVER reject. This is
+                the measurement phase: it answers who calls and whether they
+                could sign, before a rejection can cut Execution Market off.
+      enforce - refuse the order without a valid signature (4xx,
+                errorReason=lifecycle_auth_rejected). Execution Market treats
+                a 4xx from the facilitator as permanent and stops retrying,
+                so this is an outage for them until they sign. Flip it ONLY
+                after the log phase shows zero `missing` from real callers.
+
+    Rollback from `enforce` is this value back to `log`: one env var, no
+    image rebuild. Background: docs/handoffs/2026-09-05-lifecycle-auth-log-a-enforce.md
+  EOT
+  type        = string
+  default     = "off"
+
+  validation {
+    condition     = contains(["off", "log", "enforce"], var.escrow_lifecycle_auth)
+    error_message = "escrow_lifecycle_auth must be one of: off, log, enforce."
+  }
+}
+
 variable "alb_access_logs_enabled" {
   description = <<-EOT
     Turn on ALB access logging to S3 (see alb-access-logs.tf).

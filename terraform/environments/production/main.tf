@@ -1045,6 +1045,20 @@ resource "aws_ecs_task_definition" "facilitator" {
           value = "true"
         },
         # ============================================================
+        # Escrow lifecycle orders: who may ask us to release / refund
+        # ============================================================
+        # `release` and `refundInEscrow` used to need no signature at all,
+        # and POST /settle is reachable from the internet with no
+        # credentials, so anyone holding a public `paymentInfo` (it is in
+        # the PaymentAuthorized event) could have us release or refund any
+        # open escrow. The value is a variable ON PURPOSE: it moves through
+        # off -> log -> enforce, and each step is a reviewable diff of
+        # production.auto.tfvars, never a hand edit of a task definition.
+        {
+          name  = "ESCROW_LIFECYCLE_AUTH"
+          value = var.escrow_lifecycle_auth
+        },
+        # ============================================================
         # Upto Scheme (Permit2-based variable amount settlement)
         # ============================================================
         # This enables the "upto" payment scheme where clients authorize

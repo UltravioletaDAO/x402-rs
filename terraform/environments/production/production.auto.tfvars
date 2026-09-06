@@ -79,6 +79,15 @@ memory_target_value            = 80
 
 # ALB
 alb_idle_timeout = 600 # must outlast the facilitator's own 300s timeout
+# Step 2 of the two-step rollout in var.alb_access_logs_enabled. Step 1 (the
+# bucket facilitator-production-alb-logs, its policy and lifecycle) is applied
+# and in state since before 2026-09-05. This flips the ALB to write into it.
+# aws_lb.main sits inside CI's targeted deploy graph, so MERGING this line
+# applies it on the next deploy of main -- that is the owner's call, which is
+# why it lives in its own PR. It is what finally answers "where did the
+# 2026-08-30 release probe come from": today neither the ALB nor the app keeps
+# the peer address.
+alb_access_logs_enabled = true
 
 # DNS
 domain_name      = "facilitator.ultravioletadao.xyz"

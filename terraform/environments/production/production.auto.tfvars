@@ -89,6 +89,12 @@ evm_secret_name       = "facilitator-evm-private-key"
 solana_secret_name    = "facilitator-solana-keypair"
 quicknode_secret_name = "facilitator-quicknode-base-rpc"
 
+# Escrow lifecycle orders (release / refundInEscrow on POST /settle).
+# off -> log on 2026-09-05: verify-and-report only, nothing is rejected yet.
+# See var.escrow_lifecycle_auth before touching this: "enforce" cuts off every
+# caller that does not sign, and today that is all of Execution Market.
+escrow_lifecycle_auth = "log"
+
 # CloudWatch
 log_retention_days        = 30   # 7 lost the 2026-08-10 incident to expiry
 enable_container_insights = true # this IS what the cluster runs -- verified with --include SETTINGS

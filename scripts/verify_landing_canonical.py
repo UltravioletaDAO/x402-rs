@@ -53,6 +53,15 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 DEFAULT_URL = "https://facilitator.ultravioletadao.xyz"
 
+# The repository this fork came from. Nothing on the landing page may link to
+# it: a person who clicks "Source Code" has to land on the code that is actually
+# running. This is not hypothetical -- `72909f8f` (2026-09-03, "the home goes
+# back to the 1c4c33d9 design") reintroduced both upstream links that had
+# already been fixed, and each one was then fixed again separately and by
+# chance, five days apart. A revert is exactly the kind of change no reviewer
+# reads line by line.
+UPSTREAM_REPO = "github.com/x402-rs/x402-rs"
+
 # Substrings in a network id / Network enum variant that mark it as a testnet.
 TESTNET_MARKERS = (
     "testnet", "sepolia", "devnet", "fuji", "amoy",
@@ -257,6 +266,39 @@ def landing_numbers() -> dict:
 
 
 # ---------------------------------------------------------------------------
+def _hero_ok(text: str | None) -> bool:
+    """The hero line is right only if it carries BOTH the base URL and the fee.
+
+    Checked together on purpose: the two were written for machines in four files
+    and for people in none, and a hero that names the URL while dropping "0%"
+    answers half of the first question a visitor has.
+    """
+    return bool(text) and DEFAULT_URL in text and "0%" in text
+
+
+def landing_claims() -> dict:
+    """Two facts the landing states about itself, in every place it states them.
+
+    Neither is a count, so the drift checks above cannot see them -- and both
+    have been silently wrong in production before. They are read from the markup
+    AND from both dictionaries, because the page is bilingual in one document
+    and a claim fixed in English only is still wrong for half the readers.
+    """
+    html = (REPO / "static" / "index.html").read_text()
+    dicts = landing_dictionaries(html)
+    hero = {"markup": None, "en": None, "es": None}
+    marker = 'data-i18n-html="hero.baseUrl">'
+    if marker in html:
+        start = html.index(marker) + len(marker)
+        hero["markup"] = html[start:html.index("</p>", start)]
+    for lang in ("en", "es"):
+        hero[lang] = dict_value(dicts.get(lang, ""), "hero.baseUrl")
+    return {
+        "upstream_links": html.count(UPSTREAM_REPO),
+        "hero": hero,
+    }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--url", default=DEFAULT_URL, help="facilitator base URL")
@@ -295,6 +337,7 @@ def main() -> int:
         return 2
 
     land = landing_numbers()
+    claims = landing_claims()
 
     print("=" * 70)
     print("CANONICAL MAP  (source of truth)")
@@ -313,6 +356,9 @@ def main() -> int:
           f"{'not typed on this page' if land['sdk_mainnets'] is None else land['sdk_mainnets']}")
     print(f"  erc-8004 stat card                        : {land['erc8004_stat']}")
     print(f"  hedera references                         : {land['hedera_refs']}")
+    print(f"  links to the upstream repo                : {claims['upstream_links']}")
+    print(f"  hero states base URL + fee (markup/en/es) : "
+          f"{'/'.join('yes' if _hero_ok(claims['hero'][k]) else 'NO' for k in ('markup', 'en', 'es'))}")
     print("-" * 70)
     print("LANDING DICTIONARIES  (en / es, same document, one URL)")
     for key, (producer, _pattern) in COUNT_KEYS.items():
@@ -334,6 +380,13 @@ def main() -> int:
                       f"but source has {len(erc_all)} total / {len(erc_main)} mainnet")
     if land["hedera_refs"] != 0:
         errors.append(f"landing still has {land['hedera_refs']} 'hedera' reference(s)")
+    if claims["upstream_links"]:
+        errors.append(f"landing has {claims['upstream_links']} link(s) to {UPSTREAM_REPO}: "
+                      f"a person who clicks through does not reach the code that runs")
+    for where in ("markup", "en", "es"):
+        if not _hero_ok(claims["hero"][where]):
+            errors.append(f"the hero line in `{where}` no longer states both the base URL "
+                          f"({DEFAULT_URL}) and the 0% fee; got {claims['hero'][where]!r}")
 
     # ----- the dictionaries, both languages -----
     producers = {"payment": pay_count, "escrow": len(escrow), "erc8004": len(erc_all)}

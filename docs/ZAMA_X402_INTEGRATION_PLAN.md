@@ -1,3 +1,7 @@
+---
+backlog_schema: 1
+---
+
 # x402-zama Integration Plan
 
 ## Executive Summary

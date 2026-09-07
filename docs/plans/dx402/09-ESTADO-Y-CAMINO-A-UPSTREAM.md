@@ -55,8 +55,8 @@ con fecha. Una fila sin evidencia no está hecha, por más que el código exista
 | P2 | #9 `settle_before_execution` cobraba evidencia y nunca anclaba | ✅ el hook corre también en esa rama |
 | P2 | #10 declaración malformada fallaba abierta (anclaba a todos) | ✅ presencia ≠ validez; `NotSelected` |
 | P2 | #14 no-EVM: la segunda oferta es impagable; `asset` no está en el filtro | 📝 documentado EVM-only; `asset` no viene en el payload v1 EVM → follow-up en v2 |
-| P2 | #5 un escrow por red, `getHash` en `latest`, sin aserción de código | ⬜ follow-up |
-| P2 | #6 `paymentId` como clave de registro sin normalizar (`0x`/mayúsculas) | ⬜ follow-up |
+| P2 | #5 un escrow por red, `getHash` en `latest`, sin aserción de código | ✅ **2.16.0**: retorno vacío/indecodificable → `eth_getCode`; sin código = `dx402_escrow_not_deployed` (ERROR en log, nunca se impone: es nuestra tabla). `latest` se queda a propósito: `getHash` es pura y la ventana de 900 s acota cualquier upgrade; una llamada pineada falla en nodos sin archivo |
+| P2 | #6 `paymentId` como clave de registro sin normalizar (`0x`/mayúsculas) | ✅ **2.16.0**: `normalize_payment_id` en anchor, evidence, receipt, blob y repair. Lo disparó goun7 en #3379 (recomputó el id en mayúsculas y reportó el anchor "desaparecido") |
 | — | #7, #12 mitigados por diseño; #11 INFO | — |
 
 ## 3. Lo que NO bloquea (y el spec lo dice)
@@ -127,8 +127,9 @@ permite fork sin admin), `gh` autenticado con `repo`, GPG configurada y
 
 - ~~Allowlist de tokens en el proof path (red team #3)~~ — hecho en 2.15.0
   (token + operador). Queda el eco en el spec del PR (§5, un commit firmado).
-- `getHash` en `latest` sin aserción de código del escrow (#5); normalización de
-  `paymentId` como clave (#6); `asset` en el matcher cuando v2 lo traiga (#14).
+- ~~`getHash` en `latest` sin aserción de código del escrow (#5); normalización de
+  `paymentId` como clave (#6)~~ — hechos en 2.16.0. Queda `asset` en el matcher
+  cuando v2 lo traiga (#14).
 - Opt-in en los SDK py/ts (deseable; lista exacta en el reporte de paridad).
 - Gate en Solana (único no-EVM priorizado).
 

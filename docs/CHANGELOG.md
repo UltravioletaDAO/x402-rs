@@ -1,5 +1,33 @@
 # Changelog
 
+## [2.16.0] - 2026-09-07
+
+### Fixed
+
+- **A `paymentId` keyed the registry in whatever spelling the caller sent.**
+  `payment_id()` emits `0x` + 64 lowercase hex, but the registry and the store
+  key on the string, so an anchor written as `0xABC…` and a lookup of
+  `0xabc…` were two different payments, and an id without `0x` was a third.
+  Not theoretical: a third party recomputed the demo id from the spec's
+  `keccak256(caip2 || txHash)` with a library that upper-cases, asked the
+  facilitator, and reported the anchor gone (x402-foundation/x402#3379,
+  2026-09-07) while it answered 200 in canonical form. Every path that keys on
+  a `paymentId` -- `POST /dx402/anchor`, `GET /dx402/{evidence,receipt,blob}`,
+  `POST /dx402/repair` -- now goes through one canonical form. An anchor whose
+  id cannot be one answers `400 dx402_invalid_payment_id`; a lookup of one
+  answers `404 dx402_unknown_payment`, since it names nothing. Red team
+  2026-09-04, finding #6.
+- **An escrow address with no code was reported as an RPC outage.** `eth_call`
+  to an address without a contract succeeds with zero bytes, and the gate read
+  that as `dx402_rpc_unavailable` -- a verdict that never arrives, on every
+  retry, with nothing pointing at the wrong table entry. On an undecodable
+  `getHash` return the gate now asks `eth_getCode`; no code answers the new
+  `dx402_escrow_not_deployed`, logged at ERROR, and **never enforced**: our
+  own wrong table entry must not erase somebody's evidence. `getHash` stays at
+  `latest` on purpose -- it is a pure function of the struct, and the 900 s
+  anchor window bounds any escrow upgrade between capture and anchor; a pinned
+  call would fail on every non-archive node. Red team 2026-09-04, finding #5.
+
 ## [2.15.0] - 2026-09-06
 
 ### Fixed

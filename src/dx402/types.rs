@@ -642,6 +642,10 @@ pub enum Dx402ErrorCode {
     Dx402ChallengeExpired,
     Dx402ChallengeReplayed,
     Dx402DirectMode,
+    /// The `paymentId` is not `0x` + 64 hex digits in any casing, so it cannot
+    /// name a payment. Distinct from `Dx402UnknownPayment` on the anchor path:
+    /// that one is "no such record", this one is "no such shape".
+    Dx402InvalidPaymentId,
     Dx402EvidenceExpired,
     Dx402StoreUnavailable,
     /// The anchor gate refused it: no proof, a proof that did not check out, or
@@ -694,6 +698,7 @@ impl Dx402ErrorCode {
             Dx402ErrorCode::Dx402ChallengeExpired => "dx402_challenge_expired",
             Dx402ErrorCode::Dx402ChallengeReplayed => "dx402_challenge_replayed",
             Dx402ErrorCode::Dx402DirectMode => "dx402_direct_mode",
+            Dx402ErrorCode::Dx402InvalidPaymentId => "dx402_invalid_payment_id",
             Dx402ErrorCode::Dx402EvidenceExpired => "dx402_evidence_expired",
             Dx402ErrorCode::Dx402StoreUnavailable => "dx402_store_unavailable",
             Dx402ErrorCode::Dx402ProofRejected => "dx402_proof_rejected",

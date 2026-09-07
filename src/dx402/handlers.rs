@@ -52,7 +52,8 @@ fn error_response(code: Dx402ErrorCode) -> axum::response::Response {
         Dx402ErrorCode::Dx402NotPayer => StatusCode::FORBIDDEN,
         Dx402ErrorCode::Dx402ChallengeExpired
         | Dx402ErrorCode::Dx402ChallengeReplayed
-        | Dx402ErrorCode::Dx402DirectMode => StatusCode::BAD_REQUEST,
+        | Dx402ErrorCode::Dx402DirectMode
+        | Dx402ErrorCode::Dx402InvalidPaymentId => StatusCode::BAD_REQUEST,
         // 402: the anchor describes a payment we could not confirm happened.
         // Not 403 -- this is not about who the caller is, it is about whether
         // the payment behind the evidence is real.
@@ -335,6 +336,10 @@ mod tests {
                 StatusCode::SERVICE_UNAVAILABLE,
             ),
             (Dx402ErrorCode::Dx402DirectMode, StatusCode::BAD_REQUEST),
+            (
+                Dx402ErrorCode::Dx402InvalidPaymentId,
+                StatusCode::BAD_REQUEST,
+            ),
         ];
         for (code, expected) in cases {
             assert_eq!(error_response(code).status(), expected, "{code:?}");

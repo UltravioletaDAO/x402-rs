@@ -480,6 +480,15 @@ impl Dx402Service {
         chain_id: u64,
         now: u64,
     ) -> Result<AnchoredEvidence, Dx402ErrorCode> {
+        // The id is the registry key, the store key and the first field of the
+        // receipt we sign. It is stored in ONE spelling, whatever the caller
+        // sent, or the same payment ends up under two keys and the second
+        // anchor never sees the first (red team 2026-09-04, #6).
+        let Some(payment_id) = super::normalize_payment_id(&req.payment_id) else {
+            return Err(Dx402ErrorCode::Dx402InvalidPaymentId);
+        };
+        let req = AnchorRequest { payment_id, ..req };
+
         // The gate. Phase 1 (`DX402_REQUIRE_PROOF=false`, the default) verifies
         // and reports; phase 2 rejects. Two verdicts never block in either
         // phase -- see `AnchorRejection::is_enforceable`.
@@ -809,7 +818,12 @@ impl Dx402Service {
         payment_id: &str,
         now: u64,
     ) -> Result<EvidenceRecord, Dx402ErrorCode> {
-        let record = self.registry.get(payment_id).await.map_err(|e| match e {
+        // A string that cannot be a paymentId names no payment; every real one
+        // is looked up in the spelling it was stored under.
+        let Some(payment_id) = super::normalize_payment_id(payment_id) else {
+            return Err(Dx402ErrorCode::Dx402UnknownPayment);
+        };
+        let record = self.registry.get(&payment_id).await.map_err(|e| match e {
             RegistryError::NotFound => Dx402ErrorCode::Dx402UnknownPayment,
             // Unreachable on a read, but spelled out rather than lumped in: a
             // catch-all here would silently mistranslate a future variant.
@@ -859,6 +873,10 @@ impl Dx402Service {
         now: u64,
         write: bool,
     ) -> Result<RepairOutcome, Dx402ErrorCode> {
+        let Some(payment_id) = super::normalize_payment_id(payment_id) else {
+            return Err(Dx402ErrorCode::Dx402UnknownPayment);
+        };
+        let payment_id = payment_id.as_str();
         let record = self.lookup(payment_id, now).await?;
 
         if self.store.get(&record.pointer).await.is_ok() {
@@ -1291,6 +1309,43 @@ mod tests {
             record.backend,
             StorageBackend::S3,
             "the backend must be the one that took the bytes, not the one the caller declared"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_anchor_is_found_whatever_spelling_the_reader_uses() {
+        // goun7 recomputed the demo paymentId from the spec's keccak with a
+        // library that upper-cases, asked the facilitator, and got 404 for an
+        // anchor that was there (x402-foundation/x402#3379, 2026-09-07). The
+        // registry keys on the string; the string is now canonical on both
+        // sides.
+        let svc = service_that_falls_back(PrivateKeySigner::random());
+        let canonical = format!("0x{}", "11".repeat(32));
+        let mut req = sealed_request();
+        req.payment_id = canonical.to_uppercase().replacen("0X", "0x", 1);
+        let out = svc.anchor(req, 8453, 1_000).await.unwrap();
+        assert_eq!(
+            out.payment_id, canonical,
+            "stored and signed in canonical form"
+        );
+
+        for spelling in [
+            canonical.clone(),
+            canonical.to_uppercase(),
+            canonical.trim_start_matches("0x").to_string(),
+        ] {
+            let record = svc.lookup(&spelling, 1_000).await.unwrap();
+            assert_eq!(record.payment_id, canonical, "{spelling}");
+        }
+        assert_eq!(
+            svc.lookup("0xnope", 1_000).await.unwrap_err(),
+            Dx402ErrorCode::Dx402UnknownPayment
+        );
+        let mut bad = sealed_request();
+        bad.payment_id = "0xnope".into();
+        assert_eq!(
+            svc.anchor(bad, 8453, 1_000).await.unwrap_err(),
+            Dx402ErrorCode::Dx402InvalidPaymentId
         );
     }
 

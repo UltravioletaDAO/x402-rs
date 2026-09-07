@@ -150,6 +150,14 @@ pub enum AnchorRejection {
     /// name, so only those get to say who funded a release. Red team
     /// 2026-09-04, finding #3.
     EscrowOperatorUnknown,
+    /// The escrow address this facilitator knows for the network has no code.
+    ///
+    /// Not the caller's fault and not an outage: `payment_operator::addresses`
+    /// names a contract that is not on this chain. Reported as `RpcUnavailable`
+    /// it would sit in "no verdict" forever and the table entry would never be
+    /// questioned. Never enforced -- our configuration must not erase somebody's
+    /// evidence -- but named, so an operator sees it. Red team 2026-09-04, #5.
+    EscrowNotDeployed,
     /// No seller signature.
     SellerSignatureMissing,
     /// The seller signature does not recover to the payee of the payment.
@@ -188,7 +196,9 @@ impl AnchorRejection {
     pub fn is_enforceable(&self) -> bool {
         !matches!(
             self,
-            AnchorRejection::RpcUnavailable | AnchorRejection::UnverifiableChain
+            AnchorRejection::RpcUnavailable
+                | AnchorRejection::UnverifiableChain
+                | AnchorRejection::EscrowNotDeployed
         )
     }
 
@@ -201,6 +211,7 @@ impl AnchorRejection {
             AnchorRejection::EscrowReleaseAmbiguous => "dx402_escrow_release_ambiguous",
             AnchorRejection::EscrowReleaseInvalid => "dx402_escrow_release_invalid",
             AnchorRejection::EscrowOperatorUnknown => "dx402_escrow_operator_unknown",
+            AnchorRejection::EscrowNotDeployed => "dx402_escrow_not_deployed",
             AnchorRejection::SellerSignatureMissing => "dx402_seller_signature_missing",
             AnchorRejection::SellerSignatureInvalid => "dx402_seller_signature_invalid",
             AnchorRejection::PaymentIdNotBound => "dx402_payment_id_not_bound",
@@ -549,7 +560,12 @@ async fn beneficial_payer<P: Provider>(
         return Err(AnchorRejection::EscrowOperatorUnknown);
     }
 
-    // Ask the escrow to hash what we were handed.
+    // Ask the escrow to hash what we were handed. The call runs at `latest`:
+    // `getHash` is a pure function of the struct (and of the escrow's own
+    // address and chain), so no block-pinned state enters the answer, and the
+    // 900-second anchor window bounds any upgrade of the escrow between the
+    // capture and this call. A non-archive node would refuse the pinned call
+    // that pinning would need.
     let call = EscrowContract::getHashCall {
         paymentInfo: to_escrow_abi(&release.payment_info, release.payer)?,
     };
@@ -567,7 +583,23 @@ async fn beneficial_payer<P: Provider>(
         }
     };
     let Ok(hash) = EscrowContract::getHashCall::abi_decode_returns(&returned) else {
-        return Err(AnchorRejection::RpcUnavailable);
+        // An empty or undecodable return is either a node that could not run
+        // the call or an address with nothing behind it -- `eth_call` to an
+        // address without code succeeds and returns zero bytes. The two need
+        // different verdicts: one is "ask again", the other is a table entry
+        // that is wrong for this chain and will be wrong on every retry.
+        return match rpc.get_code_at(escrow).await {
+            Ok(code) if code.is_empty() => {
+                tracing::error!(
+                    %escrow,
+                    network = ?network,
+                    "DX402 escrow address has no code on this chain; \
+                     payment_operator::addresses names a contract that is not deployed here"
+                );
+                Err(AnchorRejection::EscrowNotDeployed)
+            }
+            _ => Err(AnchorRejection::RpcUnavailable),
+        };
     };
 
     if captured != hash {
@@ -1385,6 +1417,60 @@ mod tests {
             .unwrap_err(),
             AnchorRejection::RpcUnavailable,
             "an honest EM release must reach the escrow call"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_escrow_with_no_code_is_named_not_mistaken_for_an_outage() {
+        // `eth_call` to an address without code succeeds with zero bytes. Read
+        // as "the RPC is down" that is a verdict that never arrives, on every
+        // retry, with nothing pointing at the wrong table entry.
+        use alloy::providers::mock::Asserter;
+        let (info, payer) = em_release_fixture();
+        let release = EscrowRelease {
+            payment_info: info,
+            payer,
+        };
+        let a = Asserter::new();
+        a.push_success(&"0x"); // eth_call: empty return
+        a.push_success(&"0x"); // eth_getCode: no code
+        let rpc = alloy::providers::ProviderBuilder::new().connect_mocked_client(a);
+        let verdict = beneficial_payer(
+            &rpc,
+            crate::network::Network::Optimism,
+            escrow_for_network(crate::network::Network::Optimism).unwrap(),
+            B256::from([7u8; 32]),
+            Some(&release),
+            release.payment_info.receiver,
+            release.payment_info.token,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(verdict, AnchorRejection::EscrowNotDeployed);
+        assert!(
+            !verdict.is_enforceable(),
+            "our own wrong table entry must never erase somebody's evidence"
+        );
+        assert_eq!(verdict.as_str(), "dx402_escrow_not_deployed");
+
+        // Same empty return, but the contract IS there: that is the node.
+        let a = Asserter::new();
+        a.push_success(&"0x");
+        a.push_success(&"0x6080604052"); // some code
+        let rpc = alloy::providers::ProviderBuilder::new().connect_mocked_client(a);
+        assert_eq!(
+            beneficial_payer(
+                &rpc,
+                crate::network::Network::Optimism,
+                escrow_for_network(crate::network::Network::Optimism).unwrap(),
+                B256::from([7u8; 32]),
+                Some(&release),
+                release.payment_info.receiver,
+                release.payment_info.token,
+            )
+            .await
+            .unwrap_err(),
+            AnchorRejection::RpcUnavailable
         );
     }
 

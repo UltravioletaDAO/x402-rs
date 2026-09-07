@@ -87,6 +87,76 @@ pub fn payment_id(network: crate::network::Network, tx_hash: &str) -> String {
     format!("0x{:x}", alloy::primitives::keccak256(&preimage))
 }
 
+/// The canonical form of a `paymentId` as a registry key: `0x` followed by
+/// 64 lowercase hex digits, exactly what [`payment_id`] emits.
+///
+/// Callers hand the id back in whatever shape their tooling produced --
+/// upper-case hex, no `0x`, surrounding whitespace -- and the registry keys on
+/// the string. Unnormalised, an anchor written under `0xABC…` and a lookup of
+/// `0xabc…` were two different payments (red team 2026-09-04, #6), and a third
+/// party that recomputed the id from the spec's `keccak256(...)` with a
+/// library that upper-cases got 404 for an anchor that was there
+/// (x402-foundation/x402#3379, 2026-09-07). Every path that keys on a
+/// `paymentId` goes through here; `None` means the string cannot be one.
+pub fn normalize_payment_id(raw: &str) -> Option<String> {
+    let s = raw.trim();
+    let hex = s
+        .strip_prefix("0x")
+        .or_else(|| s.strip_prefix("0X"))
+        .unwrap_or(s);
+    if hex.len() != 64 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(format!("0x{}", hex.to_ascii_lowercase()))
+}
+
+#[cfg(test)]
+mod payment_id_tests {
+    use super::*;
+
+    #[test]
+    fn a_derived_id_is_already_canonical() {
+        let id = payment_id(
+            crate::network::Network::Base,
+            &format!("0x{}", "ab".repeat(32)),
+        );
+        assert_eq!(normalize_payment_id(&id).as_deref(), Some(id.as_str()));
+    }
+
+    #[test]
+    fn every_spelling_of_the_same_id_keys_the_same_record() {
+        let canonical = format!("0x{}", "7e7ca6a1".repeat(8));
+        for spelling in [
+            canonical.clone(),
+            canonical.to_uppercase(),
+            canonical.replacen("0x", "0X", 1),
+            canonical.trim_start_matches("0x").to_string(),
+            canonical.trim_start_matches("0x").to_uppercase(),
+            format!("  {canonical}\n"),
+        ] {
+            assert_eq!(
+                normalize_payment_id(&spelling).as_deref(),
+                Some(canonical.as_str()),
+                "{spelling:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_string_that_cannot_be_a_payment_id_names_nothing() {
+        for bad in [
+            "",
+            "0x",
+            "0xnope",
+            &format!("0x{}", "ab".repeat(31)),
+            &format!("0x{}", "ab".repeat(33)),
+            &format!("0x{}zz", "ab".repeat(31)),
+        ] {
+            assert_eq!(normalize_payment_id(bad), None, "{bad:?}");
+        }
+    }
+}
+
 /// Environment variables read by this module.
 pub mod env {
     /// Master switch. Absent or anything but `true` leaves DX402 entirely off.

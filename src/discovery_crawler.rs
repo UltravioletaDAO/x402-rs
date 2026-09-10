@@ -48,7 +48,7 @@
 //! ```
 
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 use url::Url;
 
@@ -431,7 +431,13 @@ pub struct CrawlSummary {
 // Background Task
 // ============================================================================
 
+/// How often the crawl loop asks whether it still owns the work.
+const OWNERSHIP_TICK: Duration = Duration::from_secs(30);
+
 /// Start a background task that periodically crawls well-known endpoints.
+///
+/// Runs only on the task that owns the periodic discovery work; see
+/// [`crate::discovery_owner`].
 ///
 /// # Arguments
 ///
@@ -450,18 +456,32 @@ pub fn start_crawl_task(
     tokio::spawn(async move {
         let crawler = DiscoveryCrawler::new().add_targets(targets);
 
-        // Initial crawl
-        info!("Starting initial well-known crawl");
-        crawler.crawl_all(&registry).await;
-
-        // Periodic crawl
-        let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
-        interval.tick().await; // Skip first tick (already did initial crawl)
+        // Crawling is periodic discovery work like aggregation and health
+        // probing, so it belongs to whichever task owns that work -- otherwise
+        // three replicas fetch the same `/.well-known/x402` documents. Same
+        // shape as the aggregation loop: ownership is asked on a short tick, so
+        // a handover takes effect without a restart and without waiting out a
+        // 24-hour interval.
+        let interval = Duration::from_secs(interval_secs);
+        let tick = interval.min(OWNERSHIP_TICK);
+        let mut last_run: Option<Instant> = None;
 
         loop {
-            interval.tick().await;
-            info!("Starting periodic well-known crawl");
-            crawler.crawl_all(&registry).await;
+            if crate::discovery_owner::owns_jobs() {
+                let due = last_run.map_or(true, |at| at.elapsed() >= interval);
+                if due {
+                    if last_run.is_none() {
+                        info!("Starting initial well-known crawl");
+                    } else {
+                        info!("Starting periodic well-known crawl");
+                    }
+                    crawler.crawl_all(&registry).await;
+                    last_run = Some(Instant::now());
+                }
+            } else {
+                debug!("Skipping the well-known crawl: another task owns the discovery jobs");
+            }
+            tokio::time::sleep(tick).await;
         }
     })
 }

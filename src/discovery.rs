@@ -56,7 +56,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
-use crate::discovery_store::{DiscoveryStore, NoOpStore, StoreError};
+use crate::discovery_store::{DiscoveryStore, NoOpStore, StoreError, Version};
 use crate::types_v2::{
     CurationInfo, DiscoveryFilters, DiscoveryResource, DiscoveryResponse, DiscoverySource,
     HealthState, HealthStatus, Pagination, Tier,
@@ -485,6 +485,12 @@ pub struct DiscoveryRegistry {
     suppressed: Arc<RwLock<std::collections::HashSet<String>>>,
     /// Catalog writes waiting to be applied, in the order they were issued.
     writes: Arc<WriteQueue>,
+    /// Version of the stored catalog this cache was last built from.
+    ///
+    /// Only the replicas that do NOT own the discovery jobs read it: it is how
+    /// they tell "the owner published something" from "nothing moved" without
+    /// re-reading a 15 MB object every minute.
+    cached_version: Arc<RwLock<Version>>,
 }
 
 /// One pending catalog write.
@@ -537,6 +543,15 @@ impl WriteQueue {
         self.pending.lock().ok().and_then(|mut q| q.pop_front())
     }
 
+    /// How many writes are still waiting to reach the store.
+    ///
+    /// A poisoned lock answers "one", not "none": the caller uses this to
+    /// decide whether replacing the in-memory cache from the store is safe, and
+    /// a lock nobody can read is not an answer that should authorise that.
+    fn pending(&self) -> usize {
+        self.pending.lock().map(|q| q.len()).unwrap_or(1)
+    }
+
     /// Apply everything queued, one at a time, in order.
     async fn drain(&self, store: &Arc<dyn DiscoveryStore>) {
         let _one_at_a_time = self.draining.write().await;
@@ -580,6 +595,7 @@ impl Clone for DiscoveryRegistry {
             stats_cache: Arc::clone(&self.stats_cache),
             suppressed: Arc::clone(&self.suppressed),
             writes: Arc::clone(&self.writes),
+            cached_version: Arc::clone(&self.cached_version),
         }
     }
 }
@@ -607,6 +623,7 @@ impl DiscoveryRegistry {
             stats_cache: Arc::new(RwLock::new(None)),
             suppressed: Arc::new(RwLock::new(std::collections::HashSet::new())),
             writes: Arc::new(WriteQueue::default()),
+            cached_version: Arc::new(RwLock::new(Version::Absent)),
         }
     }
 
@@ -800,13 +817,14 @@ impl DiscoveryRegistry {
             "Initializing Bazaar discovery registry with persistence"
         );
 
-        // Load existing resources from store
-        let existing = store.load_all().await?;
-        let count = existing.len();
+        // Load existing resources from store, keeping the version they came at
+        // so a follower can tell later whether the catalog moved.
+        let snapshot = store.load_snapshot().await?;
+        let count = snapshot.resources.len();
 
         // Populate cache
         let mut cache = HashMap::new();
-        for resource in existing {
+        for resource in snapshot.resources {
             cache.insert(resource.url.to_string(), resource);
         }
 
@@ -845,7 +863,80 @@ impl DiscoveryRegistry {
             stats_cache: Arc::new(RwLock::new(None)),
             suppressed: Arc::new(RwLock::new(std::collections::HashSet::new())),
             writes: Arc::new(WriteQueue::default()),
+            cached_version: Arc::new(RwLock::new(snapshot.version)),
         })
+    }
+
+    /// Reload the catalog from the store, if the store moved.
+    ///
+    /// The read half of single ownership (A4). One replica runs the periodic
+    /// jobs and publishes the catalog; every other replica follows it with this,
+    /// so `/discovery/*` stays as fresh on all three as it was when all three
+    /// aggregated — fresher, in fact, since a replica used to be as stale as its
+    /// own last hourly cycle.
+    ///
+    /// Returns `Ok(Some(count))` when the cache was replaced, `Ok(None)` when
+    /// there was nothing to do.
+    ///
+    /// # Why it refuses while local writes are queued
+    ///
+    /// A `POST /discovery/register` mutates the cache immediately and persists
+    /// through [`WriteQueue`], which drains off the caller's path. Replacing the
+    /// cache from the store in that window would drop the new resource from
+    /// memory while its write is still in flight, and the caller would have had
+    /// a 200 for a registration that vanished. So a pending queue means "not
+    /// now"; the next refresh picks it up.
+    pub async fn refresh_from_store(&self) -> Result<Option<usize>, StoreError> {
+        if self.writes.pending() > 0 {
+            return Ok(None);
+        }
+
+        let latest = self.store.current_version().await?;
+        if latest == *self.cached_version.read().await {
+            return Ok(None);
+        }
+
+        let snapshot = self.store.load_snapshot().await?;
+
+        // Asked again: a registration can arrive while the object is in flight,
+        // and the read that started before it would erase it.
+        if self.writes.pending() > 0 {
+            return Ok(None);
+        }
+
+        let loaded = snapshot.resources.len();
+        let mut fresh: HashMap<String, DiscoveryResource> = snapshot
+            .resources
+            .into_iter()
+            .map(|r| (r.url.to_string(), r))
+            .collect();
+
+        // Trim on the way in, for the same reason [`Self::with_store`] does:
+        // this is a load of the whole object, and an object written before the
+        // cap existed — or by a task running an older image — is bigger than
+        // this one can carry. Without this a follower re-inhales the oversized
+        // catalog every time it moves, which is precisely the memory the 2.21.2
+        // cap exists to bound.
+        let dropped = enforce_capacity(&mut fresh, max_resources());
+        if dropped > 0 {
+            warn!(
+                loaded = loaded,
+                dropped = dropped,
+                held = fresh.len(),
+                "refreshed catalog was over capacity; trimmed the oldest aggregated copies"
+            );
+        }
+
+        let count = fresh.len();
+        let mut cache = self.resources.write().await;
+        *cache = fresh;
+        drop(cache);
+
+        *self.cached_version.write().await = snapshot.version;
+        // Everything derived from the catalog is now stale.
+        *self.stats_cache.write().await = None;
+
+        Ok(Some(count))
     }
 
     /// Get the store type for diagnostics.
@@ -1788,6 +1879,7 @@ pub(crate) fn host_as_encoded_ipv4(host: &str) -> Option<std::net::Ipv4Addr> {
 mod tests {
     use super::*;
     use crate::caip2::Caip2NetworkId;
+    use crate::discovery_store::{Snapshot, Version};
     use crate::types::{MixedAddress, Scheme, TokenAmount};
     use crate::types_v2::{DiscoveryMetadata, PaymentRequirementsV2};
     use url::Url;
@@ -3055,5 +3147,326 @@ mod tests {
         let response = registry.list(10, 0, None).await;
         assert_eq!(response.items.len(), 1);
         assert_eq!(response.items[0].resource_type, "facilitator");
+    }
+
+    // ===================================================================
+    // A4: the replicas that do not own the jobs follow the one that does
+    // ===================================================================
+    //
+    // Single ownership only pays for itself if the other two replicas stay as
+    // fresh as they were when all three aggregated. These cover the half that
+    // makes that true, and the two ways it could quietly stop being true: a
+    // read that fails, and a local registration that is still in flight.
+
+    /// A store that answers `current_version` and `load_snapshot` on demand,
+    /// and can fail either.
+    #[derive(Debug, Default)]
+    struct FollowedStore {
+        state: std::sync::Mutex<FollowedState>,
+    }
+
+    #[derive(Debug, Default)]
+    struct FollowedState {
+        resources: Vec<DiscoveryResource>,
+        version: u64,
+        fail_head: bool,
+        fail_read: bool,
+        heads: u32,
+        reads: u32,
+    }
+
+    impl FollowedStore {
+        fn publish(&self, resources: Vec<DiscoveryResource>) {
+            let mut state = self.state.lock().unwrap();
+            state.resources = resources;
+            state.version += 1;
+        }
+
+        fn counts(&self) -> (u32, u32) {
+            let state = self.state.lock().unwrap();
+            (state.heads, state.reads)
+        }
+
+        fn fail_head(&self, yes: bool) {
+            self.state.lock().unwrap().fail_head = yes;
+        }
+
+        fn fail_read(&self, yes: bool) {
+            self.state.lock().unwrap().fail_read = yes;
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl DiscoveryStore for Arc<FollowedStore> {
+        async fn load_all(&self) -> Result<Vec<DiscoveryResource>, StoreError> {
+            Ok(self.load_snapshot().await?.resources)
+        }
+
+        async fn load_snapshot(&self) -> Result<Snapshot, StoreError> {
+            let mut state = self.state.lock().unwrap();
+            state.reads += 1;
+            if state.fail_read {
+                return Err(StoreError::ReadError("injected read failure".into()));
+            }
+            Ok(Snapshot {
+                resources: state.resources.clone(),
+                version: Version::At(state.version.to_string()),
+            })
+        }
+
+        async fn current_version(&self) -> Result<Version, StoreError> {
+            let mut state = self.state.lock().unwrap();
+            state.heads += 1;
+            if state.fail_head {
+                return Err(StoreError::ReadError("injected head failure".into()));
+            }
+            Ok(Version::At(state.version.to_string()))
+        }
+
+        async fn save_snapshot(
+            &self,
+            resources: &[DiscoveryResource],
+            _expected: &Version,
+        ) -> Result<Version, StoreError> {
+            let mut state = self.state.lock().unwrap();
+            state.resources = resources.to_vec();
+            state.version += 1;
+            Ok(Version::At(state.version.to_string()))
+        }
+
+        async fn save(&self, resource: &DiscoveryResource) -> Result<(), StoreError> {
+            let mut state = self.state.lock().unwrap();
+            state.resources.push(resource.clone());
+            state.version += 1;
+            Ok(())
+        }
+
+        async fn delete(&self, url: &str) -> Result<(), StoreError> {
+            let mut state = self.state.lock().unwrap();
+            state.resources.retain(|r| r.url.to_string() != url);
+            state.version += 1;
+            Ok(())
+        }
+
+        async fn health_check(&self) -> Result<(), StoreError> {
+            Ok(())
+        }
+
+        fn store_type(&self) -> &'static str {
+            "followed"
+        }
+    }
+
+    /// The freshness half of A4: a replica that does not aggregate still sees
+    /// what the owner published, and sees it on the refresh cadence rather than
+    /// at its own next restart.
+    #[tokio::test]
+    async fn a_follower_picks_up_what_the_owner_published() {
+        let store = Arc::new(FollowedStore::default());
+        store.publish(vec![create_test_resource("https://a.example.com/x", None)]);
+
+        let follower = DiscoveryRegistry::with_store(Arc::clone(&store))
+            .await
+            .unwrap();
+        assert_eq!(follower.count().await, 1);
+
+        // The owner runs a cycle and publishes two more.
+        store.publish(vec![
+            create_test_resource("https://a.example.com/x", None),
+            create_test_resource("https://b.example.com/x", None),
+            create_test_resource("https://c.example.com/x", None),
+        ]);
+
+        assert_eq!(follower.refresh_from_store().await.unwrap(), Some(3));
+        assert_eq!(follower.count().await, 3);
+
+        // ...and a delete propagates too, which a merge-based follower would
+        // have missed: the owner's snapshot is authoritative about removals.
+        store.publish(vec![create_test_resource("https://a.example.com/x", None)]);
+        assert_eq!(follower.refresh_from_store().await.unwrap(), Some(1));
+        assert_eq!(follower.count().await, 1);
+    }
+
+    /// The cheap question is asked every time; the expensive one only when the
+    /// answer changed. Without this the follower would pull a 15 MB object
+    /// every minute on every replica, which is worse than the duplicated work
+    /// it replaced.
+    #[tokio::test]
+    async fn an_unchanged_catalog_is_not_re_read() {
+        let store = Arc::new(FollowedStore::default());
+        store.publish(vec![create_test_resource("https://a.example.com/x", None)]);
+
+        let follower = DiscoveryRegistry::with_store(Arc::clone(&store))
+            .await
+            .unwrap();
+        let (_, reads_after_boot) = store.counts();
+
+        for _ in 0..5 {
+            assert_eq!(follower.refresh_from_store().await.unwrap(), None);
+        }
+
+        let (heads, reads) = store.counts();
+        assert_eq!(heads, 5, "every refresh asks the cheap question");
+        assert_eq!(
+            reads, reads_after_boot,
+            "an unchanged catalog must not be downloaded again"
+        );
+    }
+
+    /// A read that failed says nothing about the catalog. The same rule as A3,
+    /// on the other side of it: a failed refresh must leave the copy this task
+    /// already serves, not empty it.
+    #[tokio::test]
+    async fn a_failed_refresh_keeps_the_catalog_it_already_has() {
+        let store = Arc::new(FollowedStore::default());
+        store.publish(vec![
+            create_test_resource("https://a.example.com/x", None),
+            create_test_resource("https://b.example.com/x", None),
+        ]);
+
+        let follower = DiscoveryRegistry::with_store(Arc::clone(&store))
+            .await
+            .unwrap();
+        assert_eq!(follower.count().await, 2);
+
+        store.fail_head(true);
+        assert!(follower.refresh_from_store().await.is_err());
+        assert_eq!(
+            follower.count().await,
+            2,
+            "a failed HEAD emptied the catalog"
+        );
+
+        store.fail_head(false);
+        store.publish(vec![create_test_resource("https://a.example.com/x", None)]);
+        store.fail_read(true);
+        assert!(follower.refresh_from_store().await.is_err());
+        assert_eq!(
+            follower.count().await,
+            2,
+            "a failed GET emptied the catalog"
+        );
+
+        // ...and it recovers on the next attempt, without a restart.
+        store.fail_read(false);
+        assert_eq!(follower.refresh_from_store().await.unwrap(), Some(1));
+    }
+
+    /// A registration this task accepted must not disappear because a refresh
+    /// landed between the 200 and the write reaching the store. The queue is
+    /// drained off the caller's path, so "something is queued" means "not now".
+    #[tokio::test]
+    async fn a_refresh_never_drops_a_registration_still_in_flight() {
+        let store = Arc::new(FollowedStore::default());
+        store.publish(vec![create_test_resource("https://a.example.com/x", None)]);
+
+        let registry = DiscoveryRegistry::with_store(Arc::clone(&store))
+            .await
+            .unwrap();
+
+        // Queue a write without letting the drain run, which is exactly the
+        // window between `register` mutating the cache and its store write
+        // landing.
+        registry
+            .writes
+            .push(StoreOp::Save(Box::new(create_test_resource(
+                "https://just-registered.example.com/x",
+                None,
+            ))));
+
+        store.publish(vec![create_test_resource("https://a.example.com/x", None)]);
+        assert_eq!(
+            registry.refresh_from_store().await.unwrap(),
+            None,
+            "a refresh must stand down while a local write is still in flight"
+        );
+
+        // Once the queue drains, refreshing is safe again.
+        registry.writes.drain(&registry.store).await;
+        assert!(registry.refresh_from_store().await.unwrap().is_some());
+    }
+
+    /// The 2.21.2 cap applies to a refresh, not only to a boot load.
+    ///
+    /// A follower re-reads the whole object every time the owner publishes. If
+    /// that path did not trim, a task would re-inhale an oversized catalog on
+    /// every refresh — the exact memory the cap exists to bound, reached by the
+    /// one code path that runs every minute instead of once per restart. The
+    /// oversized object is not hypothetical: it is what is in S3 right now,
+    /// written before the cap existed.
+    #[tokio::test]
+    async fn a_refresh_trims_an_oversized_catalog_the_same_way_a_boot_load_does() {
+        std::env::set_var("DISCOVERY_MAX_RESOURCES", "3");
+
+        let store = Arc::new(FollowedStore::default());
+        store.publish(vec![create_test_resource(
+            "https://seed.example.com/x",
+            None,
+        )]);
+        let follower = DiscoveryRegistry::with_store(Arc::clone(&store))
+            .await
+            .unwrap();
+
+        // The owner publishes more than this task may hold. Aggregated copies,
+        // which is what `enforce_capacity` is allowed to evict.
+        let mut oversized = Vec::new();
+        for i in 0..10 {
+            let mut r = create_test_resource(&format!("https://big{i}.example.com/x"), None);
+            r.source = DiscoverySource::Aggregated;
+            r.last_updated = 1_000 + i as u64;
+            oversized.push(r);
+        }
+        store.publish(oversized);
+
+        let held = follower
+            .refresh_from_store()
+            .await
+            .unwrap()
+            .expect("the catalog moved");
+        std::env::remove_var("DISCOVERY_MAX_RESOURCES");
+
+        assert_eq!(
+            held, 3,
+            "a refresh loaded {held} records against a cap of 3"
+        );
+        assert_eq!(follower.count().await, 3);
+    }
+
+    /// A task that TAKES the role over must not publish a snapshot computed
+    /// from the catalog it had at boot: that would undo everything the previous
+    /// owner did. The conditional write refuses it, and the refresher is what
+    /// makes the next attempt succeed.
+    #[tokio::test]
+    async fn a_new_owner_publishes_from_the_catalog_it_refreshed_to() {
+        let store = Arc::new(FollowedStore::default());
+        store.publish(vec![create_test_resource("https://a.example.com/x", None)]);
+
+        let successor = DiscoveryRegistry::with_store(Arc::clone(&store))
+            .await
+            .unwrap();
+
+        // The previous owner ran several cycles while this task only served
+        // reads.
+        for host in ["b", "c", "d"] {
+            store.publish(vec![
+                create_test_resource("https://a.example.com/x", None),
+                create_test_resource(&format!("https://{host}.example.com/x"), None),
+            ]);
+        }
+
+        // It takes the role over; the refresher has kept it current.
+        assert!(successor.refresh_from_store().await.unwrap().is_some());
+        assert_eq!(successor.count().await, 2);
+
+        let (added, _, _) = successor
+            .bulk_import(
+                vec![create_test_resource("https://new.example.com/x", None)],
+                ImportPolicy::Filtered,
+            )
+            .await
+            .unwrap();
+        assert_eq!(added, 1);
+        // Everything the previous owner published is still there.
+        assert_eq!(successor.count().await, 3);
     }
 }

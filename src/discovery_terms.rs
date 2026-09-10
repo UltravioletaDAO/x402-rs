@@ -492,6 +492,13 @@ pub struct TermsOverlay {
     overlay: RwLock<Option<S3Overlay>>,
     dirty: AtomicBool,
     last_persist: AtomicU64,
+    /// ETag of the object this process last read or wrote.
+    ///
+    /// The prober is the only writer, and with the discovery job lease exactly
+    /// one replica runs it. Every other replica still SERVES `priceFreshness`
+    /// and `observedTerms` on its listings, so it has to follow what the owner
+    /// writes -- and asking "did it move" has to be cheaper than reading it.
+    etag: RwLock<Option<String>>,
 }
 
 impl Default for TermsOverlay {
@@ -507,6 +514,7 @@ impl TermsOverlay {
             overlay: RwLock::new(None),
             dirty: AtomicBool::new(false),
             last_persist: AtomicU64::new(0),
+            etag: RwLock::new(None),
         }
     }
 
@@ -521,11 +529,16 @@ impl TermsOverlay {
         let client = aws_sdk_s3::Client::new(&config);
         match client.get_object().bucket(&bucket).key(&key).send().await {
             Ok(obj) => {
+                // Read the version BEFORE the body: `collect()` consumes the
+                // output, and an ETag taken afterwards would have to come from
+                // somewhere else.
+                let etag = obj.e_tag().map(str::to_string);
                 if let Ok(bytes) = obj.body.collect().await {
                     let data = bytes.into_bytes();
                     let (loaded, version, dropped) = decode_overlay(&data);
                     let n = loaded.len();
                     *self.records.write().await = loaded;
+                    *self.etag.write().await = etag;
                     info!(
                         count = n,
                         dropped = dropped,
@@ -659,12 +672,93 @@ impl TermsOverlay {
             .send()
             .await
         {
-            Ok(_) => {
+            Ok(out) => {
                 self.dirty.store(false, Ordering::SeqCst);
                 self.last_persist.store(now, Ordering::SeqCst);
+                // Remember what we wrote, so a task that later stops owning the
+                // jobs does not re-read its own object on its first refresh.
+                *self.etag.write().await = out.e_tag().map(str::to_string);
             }
             Err(e) => error!(error = %e, "Failed to persist observed-terms overlay"),
         }
+    }
+
+    /// Re-read the overlay if the object moved. For replicas that do not probe.
+    ///
+    /// The prober is the single writer of this object, and the discovery job
+    /// lease means one replica runs it. The others still answer
+    /// `GET /discovery/resources` with `priceFreshness` and `observedTerms`
+    /// resolved from THIS map, so without following it they would report every
+    /// price as unverified for as long as they stayed up -- reporting a stale
+    /// state as a fresh judgement, which is the failure `priceFreshness` exists
+    /// to avoid.
+    ///
+    /// A HEAD first, and a GET only when the ETag moved. Best-effort
+    /// throughout: a failed refresh keeps the copy this task already has.
+    pub async fn refresh_overlay(&self) {
+        let guard = self.overlay.read().await;
+        let Some(overlay) = guard.as_ref() else {
+            return;
+        };
+
+        let head = match overlay
+            .client
+            .head_object()
+            .bucket(&overlay.bucket)
+            .key(&overlay.key)
+            .send()
+            .await
+        {
+            Ok(head) => head,
+            Err(e) => {
+                debug!(error = %e, "Could not check the observed-terms overlay for changes");
+                return;
+            }
+        };
+
+        let latest = head.e_tag().map(str::to_string);
+        // An unreadable ETag means "reload": the alternative is to skip forever
+        // against a store that stops reporting one.
+        if latest.is_some() && latest == *self.etag.read().await {
+            return;
+        }
+
+        let obj = match overlay
+            .client
+            .get_object()
+            .bucket(&overlay.bucket)
+            .key(&overlay.key)
+            .send()
+            .await
+        {
+            Ok(obj) => obj,
+            Err(e) => {
+                debug!(error = %e, "Could not re-read the observed-terms overlay");
+                return;
+            }
+        };
+        let etag = obj.e_tag().map(str::to_string);
+        let Ok(bytes) = obj.body.collect().await else {
+            return;
+        };
+        let (loaded, version, dropped) = decode_overlay(&bytes.into_bytes());
+        // `decode_overlay` reports an unparseable object as an empty map, and
+        // an empty map must not replace real observations: erasing every
+        // reading would report the whole catalog as price-unverified on the
+        // strength of one bad read.
+        if loaded.is_empty() {
+            debug!("Observed-terms overlay read as empty; keeping the current records");
+            return;
+        }
+        let n = loaded.len();
+        *self.records.write().await = loaded;
+        *self.etag.write().await = etag;
+        info!(
+            count = n,
+            dropped = dropped,
+            format_version = version,
+            "Reloaded the observed-terms overlay published by the job owner"
+        );
     }
 }
 

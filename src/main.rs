@@ -63,6 +63,7 @@ mod discovery_attestation;
 mod discovery_crawler;
 mod discovery_curation;
 mod discovery_health;
+mod discovery_owner;
 mod discovery_price;
 mod discovery_security;
 mod discovery_store;
@@ -78,6 +79,7 @@ mod from_env;
 mod handlers;
 mod idempotency_store;
 mod json_depth;
+mod lease;
 mod mcp;
 mod negotiate;
 mod network;
@@ -141,6 +143,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // cannot reach the control plane at all does not sign
     // (ENABLE_WRITER_LEASE=false is the break-glass).
     let writer_lease = writer_lease::spawn().await;
+
+    // Elect ONE owner of the periodic discovery work across the cluster.
+    //
+    // Awaited here, before the aggregation and health tasks are started, for
+    // the same reason the writer election is: a task that begins a cycle while
+    // nobody has decided anything is a task doing work a peer is also doing.
+    // Every task keeps serving `/discovery/*`; only the owner refreshes the
+    // catalog, and the others follow the snapshot it publishes.
+    let discovery_owner = discovery_owner::spawn().await;
 
     // Initialize compliance checker (OFAC + blacklist)
     tracing::info!("Initializing compliance checker...");
@@ -420,6 +431,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     } else {
         tracing::info!("Discovery health prober is disabled (DISCOVERY_ENABLE_HEALTH=false)");
+    }
+
+    // Follow the catalog the owner publishes.
+    //
+    // This is the other half of single ownership, and without it the change
+    // would be a freshness regression rather than a saving: before, every
+    // replica kept its own cache current by running its own aggregation, so
+    // taking that away leaves two of three tasks answering from whatever they
+    // loaded at boot. A non-owner asks S3 for the object's ETag on this cadence
+    // and reloads only when it moved -- which is also strictly fresher than
+    // before, where a replica's view was as old as its own last hourly cycle.
+    {
+        let refresh_secs = std::env::var("DISCOVERY_REFRESH_INTERVAL")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(discovery_owner::DEFAULT_REFRESH_SECS);
+        let registry_for_refresh = Arc::clone(&discovery_registry);
+        let _refresh_handle = discovery_owner::start_snapshot_refresh_task(
+            (*registry_for_refresh).clone(),
+            refresh_secs,
+        );
     }
 
     // Start the ERC-8004 attestation task (WS-E). ON-CHAIN writes are gated by
@@ -845,6 +877,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // couple of seconds of refused settles and fifteen.
     if let Some(lease) = writer_lease {
         lease.release().await;
+    }
+
+    // Same reasoning for the discovery role: releasing lets the successor pick
+    // the periodic work up on its next tick instead of waiting out the TTL.
+    if let Some(owner) = discovery_owner {
+        owner.release().await;
     }
 
     Ok(())

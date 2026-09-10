@@ -47,7 +47,7 @@
 
 use reqwest::Client;
 use serde::{Deserialize, Deserializer, Serialize};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 use url::Url;
 
@@ -593,6 +593,88 @@ pub struct AlternativeDiscoveryResponse {
     pub pagination: Option<CoinbasePagination>,
 }
 
+/// How often the aggregation loop asks whether it still owns the work.
+///
+/// Far shorter than the interval so a handover takes effect on the next tick.
+/// The check itself is two atomic loads and a clock read.
+const OWNERSHIP_TICK: Duration = Duration::from_secs(30);
+
+/// The shortest gap between a takeover and the cycle it triggers.
+///
+/// A fresh owner runs a cycle immediately so the catalog does not sit stale for
+/// an interval. This keeps a lease that flaps from turning that courtesy into a
+/// fetch loop against the upstream feeds.
+const TAKEOVER_MIN_GAP: Duration = Duration::from_secs(300);
+
+/// Whether this task should run a cycle now.
+///
+/// The whole gate, as one function rather than an `if` inside a loop nothing
+/// can drive: A4 is exactly the decision "does this replica do the periodic
+/// work", and a decision worth making is worth a test.
+///
+/// `owns_jobs` false ends it: a replica that does not hold the lease never
+/// aggregates, however overdue the catalog looks from where it is sitting. Of
+/// the rest, the last case is the one worth stating — a task that has just
+/// TAKEN the role over runs a cycle straight away rather than waiting out an
+/// interval it did not spend owning anything. Without that, single ownership
+/// would cost up to an hour of freshness on every handover — a deploy, an
+/// autoscaling event — which is the regression this whole change has to avoid.
+/// The minimum gap keeps a lease that flaps from turning that into a fetch loop
+/// against the upstream feeds.
+fn cycle_is_due(
+    owns_jobs: bool,
+    since_last_run: Option<Duration>,
+    interval: Duration,
+    took_over: bool,
+) -> bool {
+    if !owns_jobs {
+        return false;
+    }
+    match since_last_run {
+        None => true,
+        Some(elapsed) if elapsed >= interval => true,
+        Some(elapsed) => took_over && elapsed >= TAKEOVER_MIN_GAP,
+    }
+}
+
+/// Adopt the published catalog before computing a new one from ours.
+///
+/// This is load-bearing, and the conditional write does NOT make it optional.
+/// `save_all` reads the current version immediately before writing, so a
+/// snapshot computed from a cache that is an hour behind is published happily —
+/// it is a perfectly valid write against a base nobody else touched in that
+/// instant — and everything anybody else added in that hour is gone. The
+/// version check catches a concurrent writer; it cannot catch a stale author.
+///
+/// Two authors matter here. A task that has just TAKEN the role over has a
+/// cache from before the previous owner's last cycles. And every replica, owner
+/// or not, still registers resources on its own from `POST /discovery/register`
+/// and from settlements — those land in the catalog through a per-resource
+/// read-modify-write, and a cycle that publishes without reading first would
+/// erase them. That hazard predates single ownership (three snapshot publishers
+/// meant three chances an hour); this shrinks it to one publisher that reads
+/// first.
+///
+/// It costs one read of the catalog per cycle — 24 a day against the 92 that
+/// three uncoordinated replicas were making.
+async fn adopt_published_catalog(registry: &crate::discovery::DiscoveryRegistry) {
+    match registry.refresh_from_store().await {
+        Ok(Some(count)) => info!(
+            count,
+            "Adopted the published catalog before this aggregation cycle"
+        ),
+        Ok(None) => debug!("Catalog already current; nothing to adopt before this cycle"),
+        // Refusing to aggregate here would be worse: the cycle republishes the
+        // full aggregated set anyway, and a catalog that stops being refreshed
+        // is the failure this is trying to avoid. Say it loudly instead.
+        Err(e) => warn!(
+            error = %e,
+            "Could not adopt the published catalog; this cycle publishes from the copy this \
+             task already had, which may be behind what another replica wrote"
+        ),
+    }
+}
+
 // ============================================================================
 // Discovery Aggregator
 // ============================================================================
@@ -947,17 +1029,26 @@ pub fn start_aggregation_task(
         let aggregator =
             DiscoveryAggregator::with_facilitators(FacilitatorConfig::all_with_source_config());
         let interval = Duration::from_secs(interval_secs);
+        // Ownership is asked far more often than a cycle runs, so a handover
+        // costs at most one tick instead of one interval.
+        let tick = interval.min(OWNERSHIP_TICK);
 
-        // Run immediately on startup, then apply the retention GC to clean the
-        // historical catalog of items that fail the curation rules.
-        run_aggregation(&aggregator, &registry).await;
-        registry.apply_retention().await;
+        let mut last_run: Option<Instant> = None;
+        let mut owned = false;
 
-        // Then run periodically, GC-ing after each cycle.
         loop {
-            tokio::time::sleep(interval).await;
-            run_aggregation(&aggregator, &registry).await;
-            registry.apply_retention().await;
+            let owns = crate::discovery_owner::owns_jobs();
+            let took_over = owns && !owned;
+            owned = owns;
+
+            if cycle_is_due(owns, last_run.map(|at| at.elapsed()), interval, took_over) {
+                adopt_published_catalog(&registry).await;
+                run_aggregation(&aggregator, &registry).await;
+                registry.apply_retention().await;
+                last_run = Some(Instant::now());
+            }
+
+            tokio::time::sleep(tick).await;
         }
     })
 }
@@ -973,6 +1064,19 @@ async fn run_aggregation(
 
     if resources.is_empty() {
         warn!("No resources fetched from external facilitators");
+        return;
+    }
+
+    // Asked again, because a fetch takes minutes and ownership can move inside
+    // one. Publishing here would be safe -- the catalog write is conditional on
+    // the version it read -- but it would still be the duplicate 15 MB PUT this
+    // change exists to remove, on top of a catalog the new owner is already
+    // rebuilding.
+    if !crate::discovery_owner::owns_jobs() {
+        warn!(
+            count = resources.len(),
+            "Discovery job ownership moved while this cycle was fetching; not importing"
+        );
         return;
     }
 
@@ -1165,5 +1269,269 @@ mod tests {
         }
         let parsed: TestStruct = serde_json::from_str(json).unwrap();
         assert_eq!(parsed.last_updated, None);
+    }
+
+    // ===================================================================
+    // A4: only the owner runs a cycle, and a fresh owner runs one at once
+    // ===================================================================
+
+    /// The finding itself, as an assertion: a replica that does not own the
+    /// work does not do the work. No other input changes that.
+    #[test]
+    fn a_replica_that_does_not_own_the_jobs_never_aggregates() {
+        let hour = Duration::from_secs(3600);
+        for since in [None, Some(Duration::ZERO), Some(hour), Some(hour * 24)] {
+            for took_over in [false, true] {
+                assert!(
+                    !cycle_is_due(false, since, hour, took_over),
+                    "a non-owner aggregated with since={since:?} took_over={took_over}"
+                );
+            }
+        }
+    }
+
+    /// The three cases the owner has to get right. The last is what keeps
+    /// single ownership from costing freshness on every deploy.
+    #[test]
+    fn a_fresh_owner_aggregates_at_once_and_a_flapping_lease_does_not() {
+        let hour = Duration::from_secs(3600);
+
+        // Never run in this process: run now, exactly as every task did before
+        // ownership existed.
+        assert!(cycle_is_due(true, None, hour, false));
+        assert!(cycle_is_due(true, None, hour, true));
+
+        // Due by the clock, whether or not the role just moved.
+        assert!(cycle_is_due(true, Some(hour), hour, false));
+        assert!(cycle_is_due(
+            true,
+            Some(hour + Duration::from_secs(1)),
+            hour,
+            true
+        ));
+
+        // Not due, and this task already owned the work: wait.
+        assert!(!cycle_is_due(
+            true,
+            Some(Duration::from_secs(60)),
+            hour,
+            false
+        ));
+
+        // Just took the role over with a catalog that has been sitting: run,
+        // rather than leaving it stale for the rest of the interval.
+        assert!(cycle_is_due(true, Some(TAKEOVER_MIN_GAP), hour, true));
+
+        // ...but a lease that flaps must not turn that into a fetch loop
+        // against the upstream feeds.
+        assert!(!cycle_is_due(
+            true,
+            Some(TAKEOVER_MIN_GAP - Duration::from_secs(1)),
+            hour,
+            true
+        ));
+    }
+
+    /// A store that records what was published, and enforces nothing else.
+    #[derive(Debug, Default)]
+    struct PublishedCatalog {
+        state: std::sync::Mutex<(Vec<DiscoveryResource>, u64)>,
+    }
+
+    impl PublishedCatalog {
+        fn publish(&self, resources: Vec<DiscoveryResource>) {
+            let mut state = self.state.lock().unwrap();
+            state.0 = resources;
+            state.1 += 1;
+        }
+
+        fn urls(&self) -> Vec<String> {
+            let mut urls: Vec<String> = self
+                .state
+                .lock()
+                .unwrap()
+                .0
+                .iter()
+                .map(|r| r.url.to_string())
+                .collect();
+            urls.sort();
+            urls
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::discovery_store::DiscoveryStore for std::sync::Arc<PublishedCatalog> {
+        async fn load_all(
+            &self,
+        ) -> Result<Vec<DiscoveryResource>, crate::discovery_store::StoreError> {
+            Ok(self.state.lock().unwrap().0.clone())
+        }
+
+        async fn load_snapshot(
+            &self,
+        ) -> Result<crate::discovery_store::Snapshot, crate::discovery_store::StoreError> {
+            let state = self.state.lock().unwrap();
+            Ok(crate::discovery_store::Snapshot {
+                resources: state.0.clone(),
+                version: crate::discovery_store::Version::At(state.1.to_string()),
+            })
+        }
+
+        async fn current_version(
+            &self,
+        ) -> Result<crate::discovery_store::Version, crate::discovery_store::StoreError> {
+            let state = self.state.lock().unwrap();
+            Ok(crate::discovery_store::Version::At(state.1.to_string()))
+        }
+
+        async fn save_snapshot(
+            &self,
+            resources: &[DiscoveryResource],
+            _expected: &crate::discovery_store::Version,
+        ) -> Result<crate::discovery_store::Version, crate::discovery_store::StoreError> {
+            let mut state = self.state.lock().unwrap();
+            state.0 = resources.to_vec();
+            state.1 += 1;
+            Ok(crate::discovery_store::Version::At(state.1.to_string()))
+        }
+
+        async fn save(
+            &self,
+            resource: &DiscoveryResource,
+        ) -> Result<(), crate::discovery_store::StoreError> {
+            let mut state = self.state.lock().unwrap();
+            state.0.push(resource.clone());
+            state.1 += 1;
+            Ok(())
+        }
+
+        async fn delete(&self, url: &str) -> Result<(), crate::discovery_store::StoreError> {
+            let mut state = self.state.lock().unwrap();
+            state.0.retain(|r| r.url.to_string() != url);
+            state.1 += 1;
+            Ok(())
+        }
+
+        async fn health_check(&self) -> Result<(), crate::discovery_store::StoreError> {
+            Ok(())
+        }
+
+        fn store_type(&self) -> &'static str {
+            "published"
+        }
+    }
+
+    fn listable(url: &str) -> DiscoveryResource {
+        use crate::caip2::Caip2NetworkId;
+        use crate::types::{MixedAddress, Scheme, TokenAmount};
+        use crate::types_v2::PaymentRequirementsV2;
+
+        let accepts = vec![PaymentRequirementsV2 {
+            scheme: Scheme::Exact,
+            network: Caip2NetworkId::eip155(8453),
+            asset: MixedAddress::Evm(
+                "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+                    .parse()
+                    .unwrap(),
+            ),
+            amount: TokenAmount::from(1_000_000u64),
+            pay_to: MixedAddress::Evm(
+                "0x1234567890123456789012345678901234567890"
+                    .parse()
+                    .unwrap(),
+            ),
+            max_timeout_seconds: 300,
+            extra: None,
+        }
+        .into()];
+        DiscoveryResource::new(
+            url::Url::parse(url).unwrap(),
+            "http".to_string(),
+            "Test resource".to_string(),
+            accepts,
+        )
+    }
+
+    /// Why [`adopt_published_catalog`] exists, stated as the loss it prevents.
+    ///
+    /// The conditional write does NOT make this optional: `save_all` reads the
+    /// current version immediately before writing, so a snapshot computed from
+    /// an hour-old cache is a perfectly valid write against a base nobody else
+    /// touched in that instant. The version check catches a concurrent writer;
+    /// it cannot catch a stale author.
+    #[tokio::test]
+    async fn a_successor_adopts_the_catalog_before_publishing_over_it() {
+        use crate::discovery::{DiscoveryRegistry, ImportPolicy};
+
+        let store = std::sync::Arc::new(PublishedCatalog::default());
+        store.publish(vec![listable("https://boot.example.com/x")]);
+
+        // A task that has been serving reads since boot...
+        let successor = DiscoveryRegistry::with_store(std::sync::Arc::clone(&store))
+            .await
+            .unwrap();
+
+        // ...while the owner published two more resources.
+        store.publish(vec![
+            listable("https://boot.example.com/x"),
+            listable("https://owner-added-1.example.com/x"),
+            listable("https://owner-added-2.example.com/x"),
+        ]);
+
+        // It takes the role over and runs its first cycle.
+        adopt_published_catalog(&successor).await;
+        successor
+            .bulk_import(
+                vec![listable("https://fresh.example.com/x")],
+                ImportPolicy::Filtered,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            store.urls(),
+            vec![
+                "https://boot.example.com/x".to_string(),
+                "https://fresh.example.com/x".to_string(),
+                "https://owner-added-1.example.com/x".to_string(),
+                "https://owner-added-2.example.com/x".to_string(),
+            ],
+            "the successor published over what the previous owner had added"
+        );
+    }
+
+    /// The same sequence WITHOUT the adoption, so the test above cannot pass
+    /// for the wrong reason. This is the data loss, reproduced.
+    #[tokio::test]
+    async fn without_adopting_the_successor_erases_the_previous_owners_work() {
+        use crate::discovery::{DiscoveryRegistry, ImportPolicy};
+
+        let store = std::sync::Arc::new(PublishedCatalog::default());
+        store.publish(vec![listable("https://boot.example.com/x")]);
+
+        let successor = DiscoveryRegistry::with_store(std::sync::Arc::clone(&store))
+            .await
+            .unwrap();
+
+        store.publish(vec![
+            listable("https://boot.example.com/x"),
+            listable("https://owner-added-1.example.com/x"),
+        ]);
+
+        successor
+            .bulk_import(
+                vec![listable("https://fresh.example.com/x")],
+                ImportPolicy::Filtered,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            !store
+                .urls()
+                .contains(&"https://owner-added-1.example.com/x".to_string()),
+            "if this ever stops being true, `adopt_published_catalog` is no longer load-bearing \
+             and the test above proves nothing"
+        );
     }
 }

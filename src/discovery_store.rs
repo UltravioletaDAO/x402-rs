@@ -358,6 +358,10 @@ impl DiscoveryStore for MemoryStore {
         })
     }
 
+    async fn current_version(&self) -> Result<Version, StoreError> {
+        Ok(self.inner.read().await.version())
+    }
+
     async fn save_snapshot(
         &self,
         resources: &[DiscoveryResource],
@@ -763,6 +767,12 @@ impl NoOpStore {
 impl DiscoveryStore for NoOpStore {
     async fn load_all(&self) -> Result<Vec<DiscoveryResource>, StoreError> {
         Ok(Vec::new())
+    }
+
+    /// Always absent, so a refresher sees a store that never moves and never
+    /// reloads. Correct: there is nothing here to follow.
+    async fn current_version(&self) -> Result<Version, StoreError> {
+        Ok(Version::Absent)
     }
 
     async fn save_snapshot(

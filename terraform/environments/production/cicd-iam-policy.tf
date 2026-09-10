@@ -207,6 +207,32 @@ resource "aws_iam_policy" "cicd_infra" {
           "arn:aws:logs:us-east-2:${data.aws_caller_identity.current.account_id}:log-group:/aws/lambda/facilitator-production-balances*",
           "arn:aws:logs:us-east-2:${data.aws_caller_identity.current.account_id}:log-group:/aws/apigateway/facilitator-production-balances*"
         ]
+      },
+      {
+        # Added 2026-09-10 for terraform/environments/production/discovery-bucket.tf.
+        #
+        # The Bazaar catalog bucket was created by hand and has never been versioned, so
+        # every registration -- a read-modify-write of one 15 MB object -- left the previous
+        # catalog with no copy behind it. Turning versioning on is a deploy step now, and
+        # the deploy user could not do it: simulated against the live identity on
+        # 2026-09-10, s3:PutBucketVersioning and s3:PutLifecycleConfiguration both came back
+        # implicitDeny. The two reads are already granted by the attached ReadOnlyAccess and
+        # are named here anyway, so this statement stands on its own if that attachment ever
+        # goes away -- the drift gate's plan needs them to refresh the resource.
+        #
+        # Scoped to the one bucket. Not `s3:*`, and not a prefix: the deploy user has no
+        # business reconfiguring the Terraform state bucket, the ALB log bucket or the DX402
+        # evidence bucket, and this is a bucket-configuration grant, not an object grant --
+        # it cannot read or write a single byte of the catalog.
+        "Sid" : "DiscoveryBucketVersioning",
+        "Effect" : "Allow",
+        "Action" : [
+          "s3:PutBucketVersioning",
+          "s3:GetBucketVersioning",
+          "s3:PutLifecycleConfiguration",
+          "s3:GetLifecycleConfiguration"
+        ],
+        "Resource" : "arn:aws:s3:::facilitator-discovery-prod"
       }
     ]
   })

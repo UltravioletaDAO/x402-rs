@@ -21,6 +21,7 @@ use crate::types::{
 #[cfg(feature = "algorand")]
 pub mod algorand;
 pub mod evm;
+pub mod failure;
 pub mod near;
 pub mod solana;
 pub mod stellar;
@@ -271,6 +272,16 @@ pub enum FacilitatorLocalError {
     /// risk, because a caller with no hash can only retry.
     #[error("Settlement unconfirmed: {0} on {1}")]
     SettlementUnconfirmed(TransactionHash, Network),
+    /// This process is not currently authorized to sign for the shared EVM
+    /// signer.
+    ///
+    /// Not a failure of the request and not a failure of the chain: the writer
+    /// lease moved, or its grant ran out, between the moment the request was
+    /// routed here and the moment it asked to sign. Reported as `ContractCall`
+    /// until 2026-09-10, which made it a `400` — telling a caller with a
+    /// perfectly good payload that the payload was wrong.
+    #[error("writer lease not held: {0}")]
+    WriterLeaseUnavailable(String),
     /// Other errors.
     #[error("{0}")]
     Other(String),

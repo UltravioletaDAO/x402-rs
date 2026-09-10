@@ -206,6 +206,88 @@ pub struct DiscoveryRegistry {
     /// Runtime suppression set (admin API), keyed by canonical URL. Additive to
     /// the manifest's static `suppressed[]` list.
     suppressed: Arc<RwLock<std::collections::HashSet<String>>>,
+    /// Catalog writes waiting to be applied, in the order they were issued.
+    writes: Arc<WriteQueue>,
+}
+
+/// One pending catalog write.
+#[derive(Debug)]
+enum StoreOp {
+    Save(Box<DiscoveryResource>),
+    Delete(String),
+}
+
+/// Fire-and-forget catalog writes, applied in the ORDER THEY WERE ISSUED.
+///
+/// Persistence used to be a bare `tokio::spawn` per operation, so the order in
+/// which a save and a delete reached the store was up to the scheduler. Register
+/// then unregister could arrive the other way round, and the save — a
+/// read-modify-write against whatever it found — would put the deleted resource
+/// back. Conditional writes do not fix that: both writes are perfectly valid
+/// against the base each one read.
+///
+/// So the queue is filled SYNCHRONOUSLY, in the same order the in-memory cache
+/// was mutated, and drained by at most one task at a time.
+///
+/// This orders one process. Between the three ECS tasks the ordering is the
+/// store's conditional write, which prevents a lost update but not a
+/// cross-process resurrection; that needs a per-resource record with its own
+/// conditional update, which is the evolution the audit describes and this
+/// change deliberately does not attempt.
+#[derive(Debug, Default)]
+struct WriteQueue {
+    pending: std::sync::Mutex<std::collections::VecDeque<StoreOp>>,
+    /// Held for the whole drain, so two drainers cannot interleave and undo the
+    /// ordering the queue exists to provide.
+    draining: RwLock<()>,
+}
+
+impl WriteQueue {
+    /// Enqueue, in call order. Synchronous and non-blocking on purpose: an
+    /// `await` here would be a point at which two callers could swap places.
+    fn push(&self, op: StoreOp) {
+        match self.pending.lock() {
+            Ok(mut queue) => queue.push_back(op),
+            // A poisoned lock means a previous holder panicked while holding
+            // it. Dropping the write is the safe answer -- the in-memory cache
+            // is still correct and the next aggregation snapshot re-publishes
+            // it -- and it is strictly better than panicking a request path.
+            Err(_) => warn!("catalog write queue is poisoned; dropping one persistence op"),
+        }
+    }
+
+    fn pop(&self) -> Option<StoreOp> {
+        self.pending.lock().ok().and_then(|mut q| q.pop_front())
+    }
+
+    /// Apply everything queued, one at a time, in order.
+    async fn drain(&self, store: &Arc<dyn DiscoveryStore>) {
+        let _one_at_a_time = self.draining.write().await;
+        while let Some(op) = self.pop() {
+            let result = match &op {
+                StoreOp::Save(resource) => store.save(resource).await,
+                StoreOp::Delete(url) => store.delete(url).await,
+            };
+            if let Err(e) = result {
+                let what = match &op {
+                    StoreOp::Save(resource) => resource.url.to_string(),
+                    StoreOp::Delete(url) => url.clone(),
+                };
+                match e {
+                    // The catalog was not damaged: every attempt was refused,
+                    // none half-applied. Worth a warning rather than an error,
+                    // and distinguishable in the logs from a store that is down.
+                    StoreError::VersionConflict(ref detail) => warn!(
+                        url = %what,
+                        detail = %detail,
+                        "catalog write lost every conditional attempt; the catalog is intact and \
+                         the in-memory cache still holds this resource"
+                    ),
+                    _ => error!(url = %what, error = %e, "Failed to persist catalog write"),
+                }
+            }
+        }
+    }
 }
 
 impl Clone for DiscoveryRegistry {
@@ -219,6 +301,7 @@ impl Clone for DiscoveryRegistry {
             evidence: Arc::clone(&self.evidence),
             stats_cache: Arc::clone(&self.stats_cache),
             suppressed: Arc::clone(&self.suppressed),
+            writes: Arc::clone(&self.writes),
         }
     }
 }
@@ -244,6 +327,7 @@ impl DiscoveryRegistry {
             evidence: Arc::new(RwLock::new(HashMap::new())),
             stats_cache: Arc::new(RwLock::new(None)),
             suppressed: Arc::new(RwLock::new(std::collections::HashSet::new())),
+            writes: Arc::new(WriteQueue::default()),
         }
     }
 
@@ -456,6 +540,7 @@ impl DiscoveryRegistry {
             evidence: Arc::new(RwLock::new(HashMap::new())),
             stats_cache: Arc::new(RwLock::new(None)),
             suppressed: Arc::new(RwLock::new(std::collections::HashSet::new())),
+            writes: Arc::new(WriteQueue::default()),
         })
     }
 
@@ -464,30 +549,28 @@ impl DiscoveryRegistry {
         self.store.store_type()
     }
 
-    /// Persist a resource to the store asynchronously.
+    /// Persist a resource to the store, off the caller's path.
     ///
-    /// This spawns a background task to avoid blocking the caller.
+    /// Enqueued synchronously so the write lands AFTER anything issued before
+    /// it and BEFORE anything issued after — see [`WriteQueue`] for the delete
+    /// that used to come back to life without it.
     fn persist_async(&self, resource: DiscoveryResource) {
-        let store = Arc::clone(&self.store);
-        tokio::spawn(async move {
-            if let Err(e) = store.save(&resource).await {
-                error!(
-                    url = %resource.url,
-                    error = %e,
-                    "Failed to persist resource to store"
-                );
-            }
-        });
+        self.writes.push(StoreOp::Save(Box::new(resource)));
+        self.drain_writes();
     }
 
-    /// Delete a resource from the store asynchronously.
+    /// Delete a resource from the store, off the caller's path.
     fn delete_from_store_async(&self, url: String) {
+        self.writes.push(StoreOp::Delete(url));
+        self.drain_writes();
+    }
+
+    /// Kick the drainer. Cheap when one is already running: the second task
+    /// blocks on the drain lock, finds the queue empty and returns.
+    fn drain_writes(&self) {
         let store = Arc::clone(&self.store);
-        tokio::spawn(async move {
-            if let Err(e) = store.delete(&url).await {
-                error!(url = %url, error = %e, "Failed to delete resource from store");
-            }
-        });
+        let writes = Arc::clone(&self.writes);
+        tokio::spawn(async move { writes.drain(&store).await });
     }
 
     /// Register a new resource in the registry.
@@ -817,10 +900,18 @@ impl DiscoveryRegistry {
             // this write completes BEFORE the retention GC's snapshot — otherwise
             // an out-of-order spawned write could re-persist junk the GC removed.
             let n = snapshot.len();
-            if let Err(e) = self.store.save_all(&snapshot).await {
-                error!(error = %e, "Failed to persist bulk import snapshot");
-            } else {
-                info!(count = n, "Persisted bulk import snapshot to store");
+            match self.store.save_all(&snapshot).await {
+                Ok(()) => info!(count = n, "Persisted bulk import snapshot to store"),
+                // Refused, not failed. Another writer moved the catalog between
+                // the read and the write, and republishing this snapshot over
+                // theirs would undo it -- deletions included. The next cycle
+                // recomputes from a fresh read.
+                Err(StoreError::VersionConflict(detail)) => warn!(
+                    detail = %detail,
+                    count = n,
+                    "Bulk import snapshot not published: the catalog moved underneath it"
+                ),
+                Err(e) => error!(error = %e, "Failed to persist bulk import snapshot"),
             }
         }
 
@@ -877,10 +968,16 @@ impl DiscoveryRegistry {
             // Synchronous snapshot: this is the authoritative last write of the
             // aggregation cycle (see bulk_import note).
             let kept = keep.len();
-            if let Err(e) = self.store.save_all(&keep).await {
-                error!(error = %e, "Failed to persist retention GC snapshot");
-            } else {
-                info!(kept = kept, "Retention GC snapshot persisted");
+            match self.store.save_all(&keep).await {
+                Ok(()) => info!(kept = kept, "Retention GC snapshot persisted"),
+                Err(StoreError::VersionConflict(detail)) => warn!(
+                    detail = %detail,
+                    kept = kept,
+                    "Retention GC snapshot not published: the catalog moved underneath it. \
+                     The GC is deterministic on stored data, so the next cycle removes the \
+                     same set from the newer catalog"
+                ),
+                Err(e) => error!(error = %e, "Failed to persist retention GC snapshot"),
             }
         }
         removed

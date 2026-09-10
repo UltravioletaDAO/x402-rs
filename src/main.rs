@@ -368,20 +368,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .ok()
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(60);
-        // Global in-flight probe cap. Politeness toward any single target is
-        // enforced separately (max 3 probes per host per tick), so this bound
-        // only governs our own outbound fan-out. At 15 the initial sweep of a
-        // ~21k catalog took ~19h because most of the wall-clock is probes
-        // sitting on the 12s timeout; 40 converges in well under a day without
-        // touching the per-host rate any target actually sees.
+        // Global in-flight probe cap, and the per-tick budget it feeds.
+        //
+        // These were sized for wall-clock ("converge the sweep in under a day")
+        // on the assumption that a probe costs almost nothing locally because it
+        // spends its time waiting. It does not: every probe is a TLS handshake,
+        // and 40 in flight against a budget of `max_rps * tick` = 1200 per
+        // minute is a CPU load, not an I/O wait. On a one-vCPU task that is what
+        // the 60-100 % bursts EVERY MINUTE were -- measured 19:48Z-20:00Z on
+        // 2.21.1, with 20 000 freshly imported resources none of which had ever
+        // been probed.
+        //
+        // 8 in flight and 2/s is 120 probes a tick: a 2 000-resource catalog
+        // sweeps in ~17 minutes and then everything backs off to the healthy
+        // re-probe cadence of seven days. Slower to converge, and convergence
+        // was never the thing under pressure.
         let health_concurrency = std::env::var("DISCOVERY_HEALTH_CONCURRENCY")
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(40);
+            .unwrap_or(8);
         let health_max_rps = std::env::var("DISCOVERY_HEALTH_MAX_RPS")
             .ok()
             .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(20);
+            .unwrap_or(2);
 
         let tracker = discovery_registry.health();
         if let Ok(bucket) = std::env::var("DISCOVERY_S3_BUCKET") {

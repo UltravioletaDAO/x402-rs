@@ -1,4 +1,13 @@
-FROM --platform=$BUILDPLATFORM rust:bullseye AS builder
+# Base: bookworm, NOT bullseye. Debian 11 became oldoldstable and stopped re-signing
+# its security Release file (last signed 2026-08-31, Valid-Until 2026-09-07), so the
+# apt-get update below rejects the index as expired and the build fails -- in THIS
+# stage too, not only the runtime one, which merely got there first because this
+# layer was still cached on the runner.
+#
+# The two stages are a PAIR and must move together: openssl-sys links the system
+# libssl, which is 1.1 on bullseye and 3 on bookworm. Bumping only the runtime stage
+# yields an image that builds clean and then cannot start.
+FROM --platform=$BUILDPLATFORM rust:bookworm AS builder
 
 # FACILITATOR_VERSION is deliberately NOT declared in this stage. It changes on
 # every release, and an ARG/ENV carrying it here would key every layer below it —
@@ -83,7 +92,8 @@ RUN set -eux; \
     grep -aq 'Ultravioleta' target/release/x402-rs
 
 # --- Stage 2 ---
-FROM --platform=$BUILDPLATFORM debian:bullseye-slim
+# bookworm-slim, matching the builder's libssl and glibc. See the note above stage 1.
+FROM --platform=$BUILDPLATFORM debian:bookworm-slim
 
 ARG FACILITATOR_VERSION=dev
 ENV FACILITATOR_VERSION=${FACILITATOR_VERSION}

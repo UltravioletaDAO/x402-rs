@@ -1570,6 +1570,63 @@ async fn settle_writer_gate(
     require_writer_lease(request, next).await
 }
 
+/// The one HTTP client every forwarded write goes through.
+///
+/// # Why one, and why it is built here rather than per call
+///
+/// A `reqwest::Client` is not a handle, it is the connection pool — plus a TLS
+/// configuration and, on a fresh build, the system root store loaded from disk.
+/// `forward_to_writer` used to build one per request and drop it with the
+/// response, so every proxied write paid a full TCP handshake to the holder and
+/// threw the connection away, and no two writes ever shared one. Measured on
+/// 2026-09-10: 774 forwarded hops in six hours, 774 connections.
+///
+/// The client is deliberately built WITHOUT a timeout. The hop's budget is
+/// [`writer_forward_timeout`], which reads `TX_RECEIPT_TIMEOUT_SECS` at call
+/// time; baking it into a process-lived client would freeze whatever the
+/// variable said the first time a write was forwarded. It is applied per
+/// request instead, where `reqwest` gives it exactly the same meaning — the
+/// total time from send to the end of the response.
+///
+/// Everything else stays at reqwest's defaults, which is what the per-request
+/// builder used too: same redirect policy, same proxy resolution, same TLS.
+/// The only change is that connections now outlive the request that opened
+/// them.
+///
+/// `OnceLock<Option<..>>` rather than a `Lazy` that unwraps: a client that
+/// cannot be built must still produce the `forward_failed` 503 this had before,
+/// not a panic on the settle path.
+fn writer_forward_client() -> Result<&'static reqwest::Client, String> {
+    static CLIENT: std::sync::OnceLock<Option<reqwest::Client>> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| match reqwest::Client::builder().build() {
+            Ok(client) => {
+                info!("Writer-forwarding HTTP client built; connections are pooled across writes");
+                Some(client)
+            }
+            Err(e) => {
+                error!(error = %e, "could not build the writer-forwarding HTTP client");
+                None
+            }
+        })
+        .as_ref()
+        .ok_or_else(|| "could not build forwarding client".to_string())
+}
+
+/// How many writes this task has proxied to the holder, and how many
+/// connections that has cost.
+///
+/// The hop is invisible in the logs today: a successful forward writes nothing,
+/// so "how many writes crossed it" had to be derived from the gap between the
+/// ALB's request count and the application's own. A count logged once every
+/// [`FORWARD_LOG_EVERY`] hops makes the after-measurement a single Logs Insights
+/// query instead of a subtraction across two systems, without adding a line per
+/// request to a service that already logs 26k health checks a day.
+static FORWARDED_WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many forwarded writes between progress lines.
+const FORWARD_LOG_EVERY: u64 = 100;
+
 /// Proxy one request to `holder` and return its response verbatim.
 ///
 /// Deliberately transparent: same method, same path and query, same body, and
@@ -1577,6 +1634,27 @@ async fn settle_writer_gate(
 /// rejects must look to the caller exactly like a settle this task rejected —
 /// anything else would make the forwarding visible in the protocol.
 async fn forward_to_writer(
+    holder: &str,
+    request: axum::extract::Request,
+) -> Result<Response, String> {
+    forward_with(
+        writer_forward_client()?,
+        writer_forward_timeout(),
+        holder,
+        request,
+    )
+    .await
+}
+
+/// [`forward_to_writer`] with the client and the budget passed in.
+///
+/// Split out so the hop can be exercised against a local server with a timeout
+/// a test can wait for, and so a test can drive the SAME code with a shared
+/// client and with a per-request one and compare the connection counts. Both
+/// are invisible from outside a `reqwest::Client`.
+async fn forward_with(
+    client: &reqwest::Client,
+    timeout: std::time::Duration,
     holder: &str,
     request: axum::extract::Request,
 ) -> Result<Response, String> {
@@ -1598,11 +1676,6 @@ async fn forward_to_writer(
         .await
         .map_err(|e| format!("could not buffer request body: {e}"))?;
 
-    let client = reqwest::Client::builder()
-        .timeout(writer_forward_timeout())
-        .build()
-        .map_err(|e| format!("could not build forwarding client: {e}"))?;
-
     let mut headers = parts.headers.clone();
     // Hop-by-hop and length headers describe THIS connection, not the next one;
     // reqwest sets its own. `host` would otherwise still name the ALB.
@@ -1621,11 +1694,25 @@ async fn forward_to_writer(
 
     let upstream = client
         .request(parts.method.clone(), &url)
+        // Per request, not per client: the budget depends on
+        // `TX_RECEIPT_TIMEOUT_SECS`, which a client built once at startup
+        // cannot see change. `reqwest` gives a request-level timeout the same
+        // meaning a client-level one has — send to end of response.
+        .timeout(timeout)
         .headers(headers)
         .body(bytes)
         .send()
         .await
         .map_err(|e| format!("{e}"))?;
+
+    let forwarded = FORWARDED_WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    if forwarded % FORWARD_LOG_EVERY == 0 {
+        info!(
+            forwarded,
+            holder = %holder,
+            "proxied writes to the EVM writer lease holder over pooled connections"
+        );
+    }
 
     let status = upstream.status();
     let mut response_headers = upstream.headers().clone();
@@ -13424,6 +13511,493 @@ mod writer_lease_gate_tests {
     // `erc8004_write_routes()` itself so wiring is one reviewable line that
     // travels with the routes, instead of a call-site detail in main.rs that a
     // future caller can quietly drop.
+}
+
+/// The forwarding hop, measured against a real socket.
+///
+/// A5 of the 2026-09-09/10 architecture audit: `forward_to_writer` built a
+/// `reqwest::Client` per call, so every proxied write opened its own TCP
+/// connection to the holder and dropped it with the response. What follows
+/// asserts the two halves that matter — the connection is now reused, and
+/// nothing else about the hop changed — against a local origin that counts
+/// CONNECTIONS rather than requests, because the difference between the two is
+/// the entire finding and it is invisible from outside a `reqwest::Client`.
+#[cfg(test)]
+mod writer_forward_pool_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    /// What one origin request looked like on the wire.
+    #[derive(Debug, Clone)]
+    struct Seen {
+        request_line: String,
+        headers: Vec<(String, String)>,
+        body: Vec<u8>,
+    }
+
+    impl Seen {
+        fn header(&self, name: &str) -> Option<&str> {
+            self.headers
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(name))
+                .map(|(_, v)| v.as_str())
+        }
+    }
+
+    /// How the origin answers. Fixed per server, which is all these tests need.
+    #[derive(Clone)]
+    struct Reply {
+        status_line: &'static str,
+        headers: Vec<(&'static str, &'static str)>,
+        body: &'static str,
+        /// Accept the connection, read the request, and then never answer.
+        /// Exercises the hop's own budget rather than the origin's.
+        hang: bool,
+    }
+
+    impl Default for Reply {
+        fn default() -> Self {
+            Self {
+                status_line: "HTTP/1.1 200 OK",
+                headers: Vec::new(),
+                body: "ok",
+                hang: false,
+            }
+        }
+    }
+
+    /// A minimal keep-alive HTTP/1.1 origin.
+    ///
+    /// Hand-rolled rather than an `axum::serve`, for one reason: it has to
+    /// count the connections it ACCEPTS. A server that only counts requests
+    /// cannot tell a pooled client from an unpooled one, which is precisely the
+    /// property under test.
+    struct Origin {
+        addr: std::net::SocketAddr,
+        connections: Arc<AtomicUsize>,
+        seen: Arc<std::sync::Mutex<Vec<Seen>>>,
+    }
+
+    impl Origin {
+        fn url(&self) -> String {
+            format!("http://{}", self.addr)
+        }
+
+        fn connections(&self) -> usize {
+            self.connections.load(Ordering::SeqCst)
+        }
+
+        fn requests(&self) -> usize {
+            self.seen.lock().unwrap().len()
+        }
+
+        fn last(&self) -> Seen {
+            self.seen
+                .lock()
+                .unwrap()
+                .last()
+                .cloned()
+                .expect("a request")
+        }
+    }
+
+    async fn spawn_origin(reply: Reply) -> Origin {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let connections = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let conn_count = Arc::clone(&connections);
+        let log = Arc::clone(&seen);
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                conn_count.fetch_add(1, Ordering::SeqCst);
+                let log = Arc::clone(&log);
+                let reply = reply.clone();
+                tokio::spawn(async move {
+                    let mut buffered: Vec<u8> = Vec::new();
+                    loop {
+                        // One request: headers up to the blank line, then
+                        // exactly `content-length` bytes of body.
+                        let head_end = loop {
+                            if let Some(at) = find_double_crlf(&buffered) {
+                                break at;
+                            }
+                            let mut chunk = [0u8; 4096];
+                            match socket.read(&mut chunk).await {
+                                Ok(0) | Err(_) => return,
+                                Ok(n) => buffered.extend_from_slice(&chunk[..n]),
+                            }
+                        };
+
+                        let head = String::from_utf8_lossy(&buffered[..head_end]).to_string();
+                        let mut lines = head.split("\r\n");
+                        let request_line = lines.next().unwrap_or_default().to_string();
+                        let headers: Vec<(String, String)> = lines
+                            .filter_map(|line| line.split_once(':'))
+                            .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+                            .collect();
+                        let want = headers
+                            .iter()
+                            .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
+                            .and_then(|(_, v)| v.parse::<usize>().ok())
+                            .unwrap_or(0);
+
+                        let body_start = head_end + 4;
+                        while buffered.len() < body_start + want {
+                            let mut chunk = [0u8; 4096];
+                            match socket.read(&mut chunk).await {
+                                Ok(0) | Err(_) => return,
+                                Ok(n) => buffered.extend_from_slice(&chunk[..n]),
+                            }
+                        }
+                        let body = buffered[body_start..body_start + want].to_vec();
+                        buffered.drain(..body_start + want);
+
+                        log.lock().unwrap().push(Seen {
+                            request_line,
+                            headers,
+                            body,
+                        });
+
+                        if reply.hang {
+                            // Hold the connection open, answering nothing.
+                            tokio::time::sleep(Duration::from_secs(30)).await;
+                            return;
+                        }
+
+                        let mut out = format!("{}\r\n", reply.status_line);
+                        for (k, v) in &reply.headers {
+                            out.push_str(&format!("{k}: {v}\r\n"));
+                        }
+                        out.push_str(&format!("content-length: {}\r\n\r\n", reply.body.len()));
+                        out.push_str(reply.body);
+                        if socket.write_all(out.as_bytes()).await.is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+
+        Origin {
+            addr,
+            connections,
+            seen,
+        }
+    }
+
+    fn find_double_crlf(buf: &[u8]) -> Option<usize> {
+        buf.windows(4).position(|w| w == b"\r\n\r\n")
+    }
+
+    fn settle_request(body: &'static str) -> axum::extract::Request {
+        Request::builder()
+            .method("POST")
+            .uri("/settle?x=1")
+            .header("content-type", "application/json")
+            .header("idempotency-key", "abc-123")
+            .body(Body::from(body))
+            .unwrap()
+    }
+
+    /// A fresh client per call, which is what this code did before A5. Kept in
+    /// the test rather than in the handler so the comparison the audit asked
+    /// for can be run against the SAME hop implementation.
+    fn per_request_client() -> reqwest::Client {
+        reqwest::Client::builder().build().expect("client")
+    }
+
+    /// The finding, stated as an assertion: N writes over one connection.
+    ///
+    /// Twenty sequential forwards through the shared client must reach the
+    /// origin as twenty requests on ONE accepted connection. Restoring the
+    /// per-call `Client::builder()` makes this twenty connections and the test
+    /// fails, which is how it was checked.
+    #[tokio::test]
+    async fn forwarded_writes_share_one_connection() {
+        let origin = spawn_origin(Reply::default()).await;
+
+        for _ in 0..20 {
+            // `forward_to_writer`, not `forward_with`: the client it chooses is
+            // exactly what is under test, so a future edit that builds one per
+            // call has to fail here.
+            let response = forward_to_writer(&origin.url(), settle_request("{}"))
+                .await
+                .expect("the hop reached the origin");
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        assert_eq!(origin.requests(), 20, "the origin saw every write");
+        assert_eq!(
+            origin.connections(),
+            1,
+            "20 forwarded writes opened {} connections; the pool is not being reused",
+            origin.connections()
+        );
+    }
+
+    /// The control: the same hop, driven with a client built per call, opens a
+    /// connection per call. Without this the test above could pass for the
+    /// wrong reason — a keep-alive origin, a coincidence of timing — and prove
+    /// nothing about the client.
+    #[tokio::test]
+    async fn a_client_built_per_call_opens_a_connection_per_call() {
+        let origin = spawn_origin(Reply::default()).await;
+
+        for _ in 0..5 {
+            let client = per_request_client();
+            forward_with(
+                &client,
+                Duration::from_secs(5),
+                &origin.url(),
+                settle_request("{}"),
+            )
+            .await
+            .expect("the hop reached the origin");
+        }
+
+        assert_eq!(origin.requests(), 5);
+        assert_eq!(
+            origin.connections(),
+            5,
+            "the pre-A5 shape must still cost one connection per write, or the \
+             comparison above measures nothing"
+        );
+    }
+
+    /// Pooling must not change what crosses the hop. Method, path, query, body,
+    /// the loop guard and the caller's own headers travel exactly as they did;
+    /// the framing headers of THIS connection do not.
+    #[tokio::test]
+    async fn the_hop_carries_the_request_verbatim() {
+        let origin = spawn_origin(Reply::default()).await;
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/settle?x=1")
+            .header("content-type", "application/json")
+            .header("idempotency-key", "abc-123")
+            .header("host", "facilitator.ultravioletadao.xyz")
+            .header("connection", "keep-alive")
+            .body(Body::from(r#"{"paymentPayload":{"network":"base"}}"#))
+            .unwrap();
+
+        forward_to_writer(&origin.url(), request)
+            .await
+            .expect("the hop reached the origin");
+
+        let seen = origin.last();
+        assert_eq!(seen.request_line, "POST /settle?x=1 HTTP/1.1");
+        assert_eq!(
+            seen.body,
+            br#"{"paymentPayload":{"network":"base"}}"#.to_vec()
+        );
+        assert_eq!(seen.header("content-type"), Some("application/json"));
+        assert_eq!(
+            seen.header("idempotency-key"),
+            Some("abc-123"),
+            "the holder detects a replay by the key, so it has to survive the hop"
+        );
+        assert_eq!(
+            seen.header(crate::writer_lease::FORWARDED_HEADER),
+            Some("1"),
+            "the one-hop guard has to be on the wire, or two tasks can bounce a write"
+        );
+        assert_eq!(
+            seen.header("host").map(str::to_ascii_lowercase),
+            Some(origin.addr.to_string()),
+            "`host` must name the holder, not the ALB the caller reached"
+        );
+    }
+
+    /// ...and in the other direction: the holder's status, body and headers
+    /// come back untouched, minus the framing of ITS connection.
+    #[tokio::test]
+    async fn the_hop_returns_the_holder_response_verbatim() {
+        let origin = spawn_origin(Reply {
+            status_line: "HTTP/1.1 402 Payment Required",
+            headers: vec![
+                ("x-payment-response", "settled"),
+                ("retry-after", "5"),
+                ("connection", "keep-alive"),
+            ],
+            body: r#"{"error":"insufficient_funds"}"#,
+            hang: false,
+        })
+        .await;
+
+        let response = forward_to_writer(&origin.url(), settle_request("{}"))
+            .await
+            .expect("the hop reached the origin");
+
+        assert_eq!(response.status(), StatusCode::PAYMENT_REQUIRED);
+        assert_eq!(
+            response
+                .headers()
+                .get("x-payment-response")
+                .and_then(|v| v.to_str().ok()),
+            Some("settled")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok()),
+            Some("5")
+        );
+        assert!(
+            response.headers().get("connection").is_none(),
+            "the holder's hop-by-hop headers describe its connection, not ours"
+        );
+        assert!(
+            response.headers().get("content-length").is_none(),
+            "axum frames the response it is about to write"
+        );
+
+        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .expect("body");
+        assert_eq!(body, br#"{"error":"insufficient_funds"}"#.as_slice());
+    }
+
+    /// The budget is per request, so it still governs a client that outlives
+    /// the request. A client built once with a baked-in timeout would freeze
+    /// whatever `TX_RECEIPT_TIMEOUT_SECS` said the first time a write was
+    /// forwarded; this asserts the hop gives up on ITS budget instead.
+    #[tokio::test]
+    async fn the_per_request_budget_still_ends_a_hop_that_never_answers() {
+        let origin = spawn_origin(Reply {
+            hang: true,
+            ..Reply::default()
+        })
+        .await;
+        let client = writer_forward_client().expect("shared client");
+
+        let started = std::time::Instant::now();
+        let outcome = forward_with(
+            client,
+            Duration::from_millis(300),
+            &origin.url(),
+            settle_request("{}"),
+        )
+        .await;
+        let elapsed = started.elapsed();
+
+        assert!(outcome.is_err(), "a holder that never answers is a failure");
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "the hop waited {elapsed:?} on a 300ms budget"
+        );
+    }
+
+    /// A dead holder still degrades to an error the caller can act on, over a
+    /// pooled client exactly as it did over a fresh one. Port 1 on loopback is
+    /// closed, so this is the real connect failure rather than a mock of it.
+    #[tokio::test]
+    async fn an_unreachable_holder_is_still_an_error_not_a_hang() {
+        let outcome = forward_to_writer("http://127.0.0.1:1", settle_request("{}")).await;
+        assert!(outcome.is_err());
+    }
+
+    /// A pool must not leak one holder's connections to the next one. After a
+    /// handover the writes go to a different address, and the client has to
+    /// open a connection there rather than reuse the old holder's.
+    #[tokio::test]
+    async fn a_handover_moves_the_writes_to_the_new_holder() {
+        let old = spawn_origin(Reply::default()).await;
+        let new = spawn_origin(Reply::default()).await;
+
+        for _ in 0..3 {
+            forward_to_writer(&old.url(), settle_request("{}"))
+                .await
+                .expect("old holder");
+        }
+        for _ in 0..3 {
+            forward_to_writer(&new.url(), settle_request("{}"))
+                .await
+                .expect("new holder");
+        }
+
+        assert_eq!((old.requests(), old.connections()), (3, 1));
+        assert_eq!((new.requests(), new.connections()), (3, 1));
+    }
+
+    /// The measurement behind the handoff, kept runnable rather than pasted.
+    ///
+    /// ```text
+    /// cargo test -p x402-rs --features solana,near,stellar,algorand,sui,xrpl \
+    ///   writer_forward_pool_tests::bench_the_hop -- --ignored --nocapture --test-threads=1
+    /// ```
+    ///
+    /// Ignored by default: it is a measurement, and its numbers depend on the
+    /// machine. What it asserts is only the invariant the other tests already
+    /// cover, so it can never fail CI for being slow.
+    #[tokio::test]
+    #[ignore = "measurement, not a gate: run with --ignored --nocapture"]
+    async fn bench_the_hop() {
+        const N: usize = 200;
+
+        async fn run(shared: bool, n: usize) -> (usize, Vec<Duration>) {
+            let origin = spawn_origin(Reply::default()).await;
+            let shared_client = writer_forward_client().expect("shared client").clone();
+            let mut samples = Vec::with_capacity(n);
+            for _ in 0..n {
+                let client = if shared {
+                    shared_client.clone()
+                } else {
+                    per_request_client()
+                };
+                let started = std::time::Instant::now();
+                forward_with(
+                    &client,
+                    Duration::from_secs(5),
+                    &origin.url(),
+                    settle_request("{}"),
+                )
+                .await
+                .expect("hop");
+                samples.push(started.elapsed());
+            }
+            (origin.connections(), samples)
+        }
+
+        fn pct(samples: &mut [Duration], p: f64) -> Duration {
+            samples.sort_unstable();
+            let idx = (((samples.len() - 1) as f64) * p).round() as usize;
+            samples[idx]
+        }
+
+        // Warm both paths so the first sample does not carry one-time setup.
+        let _ = run(true, 5).await;
+        let _ = run(false, 5).await;
+
+        let (fresh_conns, mut fresh) = run(false, N).await;
+        let (pooled_conns, mut pooled) = run(true, N).await;
+
+        println!("hop over {N} forwarded writes, loopback origin");
+        println!(
+            "  client per request : connections={fresh_conns:>4}  p50={:>8.3?}  p95={:>8.3?}",
+            pct(&mut fresh, 0.50),
+            pct(&mut fresh, 0.95)
+        );
+        println!(
+            "  shared client      : connections={pooled_conns:>4}  p50={:>8.3?}  p95={:>8.3?}",
+            pct(&mut pooled, 0.50),
+            pct(&mut pooled, 0.95)
+        );
+
+        assert_eq!(pooled_conns, 1);
+        assert_eq!(fresh_conns, N);
+    }
 }
 
 /// The admin gate on `POST /feedback/revoke`.

@@ -43,7 +43,7 @@ Va **ultimo a proposito**. Configura un bucket que no tiene nada que ver con la 
 imagen ya se aplico, el rollout ya espero y `/health` ya contesto. Si este paso falla, no
 puede saltearse el veredicto del rollout.
 
-### Bloqueante antes de mergear: falta un permiso IAM
+### El permiso IAM: declarado aca, aplicado a mano por c0der
 
 Simulado contra la identidad viva el 2026-09-10, no supuesto:
 
@@ -59,18 +59,8 @@ escrituras son las que necesita el apply. **Sin ese permiso el paso nuevo falla 
 AccessDenied** (el paso lo detecta y lo dice con ese nombre, en vez de dejar un error
 cripto). No rompe la release: la imagen y el rollout ya pasaron.
 
-Es un cambio de IAM, va a mano y con credenciales humanas, **antes** del merge. La politica
-que corresponde es la gestionada `facilitator-cicd-infra`, que hoy esta en v6 y coincide
-byte a byte con `terraform/environments/production/cicd-iam-policy.tf`.
-
-**No agregue el statement a ese archivo en este PR, y es a proposito.** Ese recurso no esta
-en ninguna lista de targets (nunca debe estarlo: si CI pudiera aplicarlo, CI podria darse
-permisos). Declararlo antes de aplicarlo deja el drift gate en rojo hasta que alguien corra
-el apply a mano, y el criterio de cierre pide el gate verde. El orden seguro en este repo es
-**aplicar primero, declarar despues**: es exactamente lo que dice la cabecera de ese archivo
-("byte-for-byte the live document, so the plan right after the import is empty").
-
-El statement a agregar:
+El statement quedo declarado en `cicd-iam-policy.tf`, statement `DiscoveryBucketVersioning`,
+al final de la lista:
 
 ```json
 {
@@ -86,15 +76,35 @@ El statement a agregar:
 }
 ```
 
+Alcance verificado por simulacion antes de pedirlo, no razonado:
+
+| Consulta | Veredicto |
+|---|---|
+| Las cuatro acciones sobre `facilitator-discovery-prod` | `allowed` |
+| Las mismas sobre `facilitator-terraform-state` y el bucket de evidencia DX402 | `implicitDeny` |
+| `s3:GetObject` / `s3:PutObject` / `s3:DeleteObjectVersion` sobre el catalogo | `implicitDeny` |
+
+O sea: el usuario de deploy puede **encender** el versionado y **no puede borrar versiones**,
+ni leer ni escribir un byte del catalogo. Es un permiso de configuracion de bucket, no de
+objetos. Las dos lecturas ya las da el `ReadOnlyAccess` adjunto y estan igual en el
+statement, para que se sostenga solo si ese adjunto alguna vez desaparece.
+
+**Secuencia acordada con c0der (2 pushes, cero rerun):**
+
+1. **Push 1 -- hecho.** El statement esta declarado. `aws_iam_policy.cicd_infra` no esta
+   -- ni debe estar -- en ninguna lista de targets, porque si CI pudiera aplicarlo, CI
+   podria darse permisos y `DenyPrivilegeEscalation` seria decorativo. Asi que el drift gate
+   de este push **sale rojo**, con una unica fila: `aws_iam_policy.cicd_infra`. Eso es el
+   gate diciendo la verdad, no una rotura.
+2. **c0der aplica a mano**, fuera de banda, desde esta rama y con credenciales humanas:
+   `terraform apply -target=aws_iam_policy.cicd_infra`. Es el humano que la cabecera de ese
+   archivo pide.
+3. **Push 2.** Con el statement ya vivo, el plan de ese recurso sale vacio y el gate queda
+   verde. Ahi se mergea, y el paso del deploy crea el versionado.
+
 Ojo con el limite de versiones: AWS corta una politica gestionada en 5 versiones y esta ya
 va por la v6, asi que la rotacion ya viene pasando. Si el apply falla con `LimitExceeded`,
 borra la version no-default mas vieja y repeti.
-
-Despues de aplicarlo, agregalo tambien a `cicd-iam-policy.tf` en un cambio aparte: el plan
-sale vacio porque el archivo ya coincide con lo vivo, y el gate se queda verde. Ese archivo
-existe justamente porque "there is no drift detection for a resource that is not declared
-anywhere", y tres permisos faltantes fueron invisibles hasta que un deploy se estrello con
-ellos.
 
 ### El chequeo que grita si se apaga
 
@@ -211,7 +221,9 @@ filas que no debia -- queda como la unica copia. La auditoria pidio el versionad
 ## Lo que no toque
 
 - El bucket en si: sin declarar y sin importar.
-- `cicd-iam-policy.tf`: ver arriba, aplicar primero y declarar despues.
+- El formateo preexistente de `cicd-iam-policy.tf`: el archivo ya no pasaba `terraform fmt`
+  antes de tocarlo (la alineacion de `name` en la linea 54). No lo arregle: es ruido en el
+  diff de un archivo sensible y no es de este cambio.
 - `scripts/`, `src/chain/`, `terraform/environments/production/alerts*.tf` (x4-polygon-cola)
   y `src/discovery*`, `static/bazaar.html` (x4-precios-p0).
 - `expired_object_delete_marker` en el lifecycle: util e higienico, pero no lo puedo validar

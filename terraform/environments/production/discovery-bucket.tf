@@ -65,8 +65,17 @@
 #
 # The reads are what the drift gate's plan needs, so the gate works today. The
 # writes are what the deploy step needs, and until they are granted the apply
-# fails with AccessDenied. The grant is an IAM change: it goes through a human,
-# by hand, BEFORE this is merged. The command is in
+# fails with AccessDenied.
+#
+# The grant is declared alongside every other one, as the `DiscoveryBucketVersioning`
+# statement in cicd-iam-policy.tf -- scoped to this one bucket, and to its
+# CONFIGURATION only: simulated before it was asked for, it allows no object read,
+# no object write and no version delete, on this bucket or any other.
+#
+# It is applied BY HAND, before this merges, because aws_iam_policy.cicd_infra is
+# deliberately outside every deploy target list: if CI could apply it, CI could grant
+# itself permissions. So the drift gate flags that one resource until a human runs
+# the apply, which is the gate working rather than failing. Sequence and command:
 # docs/handoffs/2026-09-10-bucket-versioning.md.
 # ----------------------------------------------------------------------------
 

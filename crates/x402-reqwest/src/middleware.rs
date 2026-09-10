@@ -460,9 +460,33 @@ impl rqm::Middleware for X402Payments {
 
         let payment_required_response = challenge_from(res).await?;
 
+        // A challenge that carried offers, none of which this build can read,
+        // is not "no matching payment method": it is a seller asking for a
+        // scheme we do not implement, and saying so names what they wanted.
+        // Without this the caller sees `Accepted: []` and goes looking for a bug
+        // in its own code.
+        if payment_required_response.accepts.is_empty()
+            && !payment_required_response.unreadable_offers.is_empty()
+        {
+            let refusal =
+                crate::policy::no_readable_offer(&payment_required_response.unreadable_offers);
+            #[cfg(feature = "telemetry")]
+            tracing::debug!(
+                cause = refusal.code(),
+                "no offer in this challenge is payable"
+            );
+            return Err(X402PaymentsError::PolicyRefused(refusal).into());
+        }
+
         let retry_req = async {
+            // `_in`, with the challenge's own extensions: that map is where a
+            // seller declares how long its offer stands, and passing `accepts`
+            // alone threw the declaration away before the policy could read it.
             let payment_header = self
-                .build_payment_header(&payment_required_response.accepts)
+                .build_payment_header_in(
+                    &payment_required_response.accepts,
+                    &payment_required_response.extensions,
+                )
                 .await?;
             let mut req = retry_req.ok_or(X402PaymentsError::RequestNotCloneable)?;
             let headers = req.headers_mut();

@@ -144,6 +144,25 @@ mismo objeto. La falla que describe el anexo no puede ocurrir con el middleware
 actual, y por eso no construí un libro de cotizaciones para prevenirla. Lo que
 faltaba era la mitad positiva: decir cuánto vale la oferta. Eso sí está.
 
+## Dos cosas que estaban construidas y no conectadas
+
+Las encontré revisando mi propio trabajo mientras corría el CI, antes del merge.
+Las dos eran de la misma clase: la función existía y el camino real no la
+llamaba, que es peor que no tenerla, porque los tests de la pieza pasan y la
+capacidad no está.
+
+- **El middleware no pasaba las `extensions` del desafío.** Llamaba a
+  `build_payment_header(&challenge.accepts)`, así que el mapa donde el vendedor
+  declara `validUntil` se tiraba antes de que la política pudiera leerlo. El
+  vendedor lo declaraba, la política sabía comprobarlo, y entre las dos no había
+  cable. Ahora usa `build_payment_header_in` con el mapa del desafío.
+- **La negativa que nombra los esquemas no se alcanzaba.** Un desafío con todas
+  las ofertas ilegibles daba `NoSuitablePaymentMethod { accepts: [] }` — que es
+  justo el mensaje que manda a alguien a buscar un bug en su propio código. Ahora
+  `handle()` la detecta antes de intentar construir nada.
+
+Dos tests nuevos, y los dos afirman el camino de punta a punta y no la pieza.
+
 ## Para c0der
 
 ### El contrato para los SDK

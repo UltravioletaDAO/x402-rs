@@ -52,3 +52,55 @@ fn a_scheme_we_cannot_pay_does_not_cost_us_the_one_we_can() {
         Some("batch-settlement")
     );
 }
+
+/// A challenge whose offers are ALL unreadable.
+const NONE_READABLE: &str = r#"{
+  "x402Version": 1,
+  "error": "Payment required",
+  "accepts": [
+    {"scheme": "batch-settlement", "network": "base", "maxAmountRequired": "1",
+     "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+     "payTo": "0xe4dc963c56979E0260fc146b87eE24F18220e545",
+     "resource": "https://api.example.com/t", "description": "", "mimeType": "",
+     "maxTimeoutSeconds": 300},
+    {"scheme": "agent-pay", "network": "base", "maxAmountRequired": "1",
+     "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+     "payTo": "0xe4dc963c56979E0260fc146b87eE24F18220e545",
+     "resource": "https://api.example.com/t", "description": "", "mimeType": "",
+     "maxTimeoutSeconds": 300}
+  ]
+}"#;
+
+#[test]
+fn a_challenge_with_nothing_payable_still_parses_and_names_what_was_offered() {
+    // The parse succeeding is the point: the buyer has to be able to SAY what
+    // the seller wanted. A refusal reading "Accepted: []" sends a caller looking
+    // for a bug in its own code.
+    let parsed: PaymentRequiredResponse = serde_json::from_str(NONE_READABLE).unwrap();
+    assert!(parsed.accepts.is_empty());
+    assert_eq!(parsed.unreadable_offers.len(), 2);
+
+    let refusal = x402_reqwest::policy::no_readable_offer(&parsed.unreadable_offers);
+    assert_eq!(refusal.code(), "no-readable-offer");
+    let message = refusal.to_string();
+    assert!(message.contains("batch-settlement"), "{message}");
+    assert!(message.contains("agent-pay"), "{message}");
+}
+
+#[test]
+fn the_sellers_validity_reaches_the_buyers_policy_from_a_real_challenge() {
+    // The end-to-end path that was NOT wired: a seller declares how long its
+    // offer stands in the challenge's `extensions`, and the middleware has to
+    // carry that map into the policy. Passing `accepts` alone threw the
+    // declaration away before anything could read it.
+    let with_validity = MIXED.replace(
+        r#""accepts": ["#,
+        r#""extensions": {"offer-receipt/1": {"info": {"validUntil": 1700000000}}}, "accepts": ["#,
+    );
+    let parsed: PaymentRequiredResponse = serde_json::from_str(&with_validity).unwrap();
+    assert_eq!(
+        x402_reqwest::policy::offer_valid_until(&parsed.extensions),
+        Some(1_700_000_000),
+        "what the seller declared must survive the parse the buyer actually runs"
+    );
+}

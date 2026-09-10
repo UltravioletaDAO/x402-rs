@@ -488,12 +488,16 @@ impl EvmProvider {
         // Only the elected writer may allocate nonces for the shared EOA. Two
         // ECS tasks overlap on every rolling deploy, and each keeps a private
         // nonce cache; without this gate they race for the same nonce and one
-        // of them loses. Fails open when the lease is unreachable, so a
-        // control-plane outage degrades to the old behaviour rather than
-        // halting settlement.
+        // of them loses.
+        //
+        // This check is only the cheap one: it saves a gas estimate and a fee
+        // lookup on a task that plainly cannot sign. The check that carries the
+        // guarantee is the per-attempt `signing_permit` below -- between this
+        // line and the broadcast sit an `eth_call`, a gas estimate and a nonce
+        // resync, seconds in which a grant can end.
         if !crate::writer_lease::is_writer() {
-            return Err(FacilitatorLocalError::ContractCall(
-                "this instance does not hold the EVM writer lease; retry".to_string(),
+            return Err(FacilitatorLocalError::WriterLeaseUnavailable(
+                "this task holds no EVM writer grant".to_string(),
             ));
         }
 
@@ -657,6 +661,30 @@ impl EvmProvider {
                 }
             }
 
+            // The exclusive section starts here and ends when the broadcast
+            // resolves. Everything above is read-only against the chain and
+            // safe to run on any task; from here to `send_transaction` we are
+            // allocating a nonce for a signer shared with every other task, and
+            // that is the one thing exactly one process may do at a time.
+            //
+            // Refused rather than risked when the grant is nearly out: a
+            // signature nobody can prove we were entitled to make is worse than
+            // a 503 the caller can retry against the task that IS entitled.
+            let permit = match crate::writer_lease::signing_permit() {
+                Some(permit) => permit,
+                None => {
+                    tracing::warn!(
+                        %from_address,
+                        network = %self.chain.network,
+                        attempt = attempt + 1,
+                        "refusing to allocate a nonce: no writer grant with enough headroom"
+                    );
+                    return Err(FacilitatorLocalError::WriterLeaseUnavailable(
+                        "no writer grant with enough headroom to broadcast".to_string(),
+                    ));
+                }
+            };
+
             // Reserve the nonce explicitly so that a failure below can hand it
             // back precisely, rather than leaving the shared counter ahead of
             // the chain. `NonceFiller` short-circuits once the nonce is set.
@@ -678,7 +706,30 @@ impl EvmProvider {
             };
 
             // Send transaction
-            match self.inner.send_transaction(txr).await {
+            let send_outcome = self.inner.send_transaction(txr).await;
+
+            // The permit is released as soon as the broadcast resolves, NOT
+            // after the receipt: the receipt wait is up to 900s on Ethereum and
+            // allocates nothing, so holding it across would make every handover
+            // wait for a confirmation it has no stake in.
+            let inside_tenancy = permit.still_valid();
+            drop(permit);
+            if !inside_tenancy {
+                // The grant ended, or the lease changed hands, while this
+                // broadcast was in flight. It is out either way -- refusing now
+                // would only throw away the hash. Say so loudly: this is the
+                // one observable that tells an operator the margins are too
+                // tight for this network's RPC.
+                tracing::error!(
+                    %from_address,
+                    network = %self.chain.network,
+                    generation = crate::writer_lease::generation(),
+                    "broadcast finished OUTSIDE the writer grant that authorised it; \
+                     the handover margin is too small for this RPC's latency"
+                );
+            }
+
+            match send_outcome {
                 Ok(pending_tx) => {
                     // Log TX hash for debugging (visible on block explorers)
                     let tx_hash = *pending_tx.tx_hash();

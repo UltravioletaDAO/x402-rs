@@ -1018,6 +1018,7 @@ fn failure_category(debug: &str) -> &'static str {
         "ContractCall" => "contract_revert",
         "InvalidSignature" => "invalid_signature",
         "InsufficientFunds" => "insufficient_funds",
+        "WriterLeaseUnavailable" => "writer_lease_unavailable",
         "InsufficientValue" => "insufficient_value",
         "InvalidTiming" => "invalid_timing",
         "BlockedAddress" => "blocked_address",
@@ -5239,6 +5240,24 @@ impl IntoResponse for FacilitatorLocalError {
                     }),
                 )
                     .into_response()
+            }
+            // The writer lease moved, or its grant ran out, between routing and
+            // signing. 503 + `Retry-After`, because the caller's request is
+            // fine and a peer can serve it within a lease interval. Reported as
+            // `ContractCall` -> 400 until 2026-09-10, which sent callers to
+            // debug a payload that was never the problem.
+            FacilitatorLocalError::WriterLeaseUnavailable(ref e) => {
+                tracing::warn!(reason = %e, "refusing to sign: no writer grant");
+                let mut resp = (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(ErrorResponse {
+                        error: "writer_lease_unavailable".to_string(),
+                    }),
+                )
+                    .into_response();
+                resp.headers_mut()
+                    .insert(header::RETRY_AFTER, HeaderValue::from_static("5"));
+                resp
             }
             FacilitatorLocalError::Other(ref e) => {
                 let correlation_id = uuid::Uuid::new_v4();
@@ -14092,6 +14111,38 @@ mod chain_failure_response_tests {
         );
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(retry_after.is_none());
+    }
+
+    /// The lease moved between routing and signing. Not the caller's payload,
+    /// not the chain's fault: 503 so a peer can serve it, and `Retry-After` so
+    /// the caller knows to come back rather than go debug a body that was fine.
+    /// Reported as `contract_call_failed` -> 400 until 2026-09-10.
+    #[tokio::test]
+    async fn losing_the_writer_grant_mid_request_is_not_a_bad_payload() {
+        let err = FacilitatorLocalError::WriterLeaseUnavailable(
+            "no writer grant with enough headroom to broadcast".to_string(),
+        );
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            resp.headers().get(axum::http::header::RETRY_AFTER).unwrap(),
+            "5"
+        );
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let body: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        assert_eq!(body["error"], "writer_lease_unavailable");
+    }
+
+    /// ...and it names itself in `/events` too, so a burst of them is
+    /// distinguishable from a chain problem in the stream.
+    #[test]
+    fn a_lost_grant_has_its_own_event_category() {
+        assert_eq!(
+            failure_category("WriterLeaseUnavailable(\"no grant\")"),
+            "writer_lease_unavailable"
+        );
     }
 
     /// Every category this module can emit is in the bounded vocabulary — no

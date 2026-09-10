@@ -129,8 +129,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Elect a single EVM writer across overlapping tasks. ECS runs two tasks
     // on every rolling deploy, and the in-process nonce allocator is only
-    // sound while one process signs for a given EOA. Fail-open by design: if
-    // the lease cannot be reached this process keeps writing.
+    // sound while one process signs for a given EOA.
+    //
+    // Awaited, and awaited HERE, before the server binds: this call performs
+    // the first election attempt, and a task the ALB can already reach while
+    // nobody has decided anything is exactly the state that must never be read
+    // as "may sign". A task that loses forwards to the winner; a task that
+    // cannot reach the control plane at all does not sign
+    // (ENABLE_WRITER_LEASE=false is the break-glass).
     let writer_lease = writer_lease::spawn().await;
 
     // Initialize compliance checker (OFAC + blacklist)

@@ -566,6 +566,7 @@ The set is closed:
 | `upstream_rpc_unavailable` | 502 | 30s | The node could not answer. Unchanged. |
 | `broadcast_uncertain` | 502 | **none** | The transaction was handed to the network and no verdict was reached. Same rule as `settlement_unconfirmed`: do not retry, look it up. |
 | `receipt_pending` | 502 | **none** | Broadcast succeeded, the receipt has not arrived. Do not retry. |
+| `writer_lease_unavailable` | 503 | 5s | This facilitator task was not authorised to sign for the shared EVM signer at the moment it asked. Nothing about the request is wrong; another task can serve it within a lease interval. |
 
 The absence of `Retry-After` is the signal, not the status code: two of these are
 `502` and must never be retried automatically. The escrow branch also carries an
@@ -582,7 +583,7 @@ accepted here on identical terms. Both are written out under `POST /verify`.
         (status = 400, description = "Settlement failed", body = Object),
         (
             status = 503,
-            description = "`facilitator_signer_unfunded` (the facilitator's signer cannot cover gas                            on this network) or `upstream_rate_limited`. Neither is caused by the                            request; both carry `Retry-After`.",
+            description = "`facilitator_signer_unfunded` (the facilitator's signer cannot cover gas                            on this network), `upstream_rate_limited`, or                            `writer_lease_unavailable` (this task was not authorised to sign).                            None is caused by the request; all carry `Retry-After`.",
             body = Object
         ),
         (

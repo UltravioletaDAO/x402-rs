@@ -33,6 +33,18 @@
       "$evidence": "live 402 probe api.402milly.xyz/purchase 2026-07-23 + self_registered MCP listing."
     },
     {
+      "name": "describe.net",
+      "tier": "first_party",
+      "prefixes": [
+        { "host": "api.describe.net", "path": "/reputation/" },
+        { "host": "api.describe.net", "path": "/leaderboard/page" },
+        { "host": "api.describe.net", "path": "/mcp" }
+      ],
+      "homepage": "https://describe.net",
+      "expectedPayTo": ["0xe4dc963c56979E0260fc146b87eE24F18220e545"],
+      "$evidence": "live 402 probes 2026-09-10, all six accepts on every paid route and one payTo: /reputation/wallet/{w} (10000), /reputation/wallet/{w}/history (30000), /reputation/rater/{r} (10000), /reputation/agent/{chain}/{id} (20000) and /leaderboard/page (10000), each 402 with eip155:8453, 43114, 42161, 10, 137, 42220 and payTo 0xe4dc963c56979E0260fc146b87eE24F18220e545. The free routes are excluded on purpose and measured as such: GET /leaderboard and GET /health answered 200, and the manifest path /leaderboard/page cannot match them. POST /mcp answered 200 to initialize (serverInfo describe.net 2.0.0) and listed 14 tools; it is free at the door and its paid tools relay the 402 of their own route. That payTo is the SAME address MeshRelay lists above -- the owner's shared collection wallet, not a copy-paste error; MeshRelay could not be re-probed the same day because GET /channels answered {\"total\":0} and its /payments/access/ paths 404. No erc8004 field: describe.net's agent card (GET /.well-known/agent-card.json, 200 on both describe.net and api.describe.net) declares no registration, agentId or registry, and the payTo wallet holds 12 identities shared across products (9 Base + 3 Avalanche per its own GET /wallets/{payTo}/chains), so none can be attributed to describe.net from the outside. That describe.net settles through THIS facilitator is the one claim here not verified from outside: its brief cites describe-net/describenet/paywall.py:84 and mcp_server.py:129 pinning FACILITATOR_URL=https://facilitator.ultravioletadao.xyz, and that repo is not checked out here; its public surface (402 body, /openapi.json, /skill.md) never names a facilitator, and the last 200 rows of our own GET /transactions carry no payTo of ours to match -- which proves nothing either way, that index being a fire-and-forget sample rather than a ledger. GET /discovery/resources held no describe.net URL on 2026-09-10; the tier applies once the resources are registered."
+    },
+    {
       "name": "Tenjin",
       "tier": "vip",
       "prefixes": [{ "host": "tenjin.blog", "path": "/api/read/" }],

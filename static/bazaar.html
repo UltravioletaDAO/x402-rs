@@ -11,9 +11,9 @@
   <meta property="og:description" content="Live, payable agent endpoints across the x402 ecosystem, filtered for junk and swept for dead links." />
   <meta property="og:image" content="https://facilitator.ultravioletadao.xyz/logo.png" />
   <link rel="icon" href="/favicon.ico" />
-  <link rel="stylesheet" href="/uv.css">
+  <link rel="stylesheet" href="/uv.css?v=20260909">
 </head>
-<body data-page="bazaar">
+<body data-page="bazaar" class="product-page">
 <header class="nav">
   <a class="brand" href="/">
     <img src="/logo.png" alt="" width="69" height="20" decoding="async">
@@ -40,79 +40,72 @@
 </header>
 
   <main class="wrap">
-    <section class="answer">
-      <h1 data-i18n="title">Find an endpoint that will actually take your money</h1>
-      <p class="deck" data-i18n="subtitle">We aggregate upstream x402 facilitators and then throw most of it away: only what answered a live 402 probe is shown, and how much was thrown away is printed next to it.</p>
-    </section>
-
-    <div class="cards" id="stats">
-      <div class="card"><div class="v" id="s-total">—</div><div class="k" data-i18n="s_total">Listed endpoints</div></div>
-      <div class="card"><div class="v" id="s-alive">—</div><div class="k" data-i18n="s_alive">Verified alive (402)</div></div>
-      <div class="card"><div class="v" id="s-firstparty">—</div><div class="k" data-i18n="s_fp">First-party + VIP</div></div>
-      <div class="card"><div class="v" id="s-sources">—</div><div class="k" data-i18n="s_src">Aggregated facilitators</div></div>
-    </div>
-
-
-    <h2 data-i18n="x.h">What these numbers mean</h2>
-    <p class="muted" data-i18n="x.p1">The catalog holds far more endpoints than it shows, and the gap is the product rather than a defect. Everything ever aggregated is counted in the first number below; what survives the sweep is what the browser above lists by default. The rest failed a health probe, and a directory that keeps serving dead links is worth less than one that admits how many it found.</p>
-
-    <div class="cards" id="x-health"></div>
-
-    <h2 data-i18n="x.srcH">Where the catalog comes from</h2>
-    <p class="muted" data-i18n="x.p2">Aggregation is not neutral, and this table is the reason to say so out loud: the totals are dominated by whichever upstream feed publishes the most, not by whichever ecosystem is the busiest. Read a share of 90 percent as one aggregator having an opinion, not as a measurement of the market.</p>
-    <div class="scroll"><table id="x-sources"><tbody></tbody></table></div>
-
-    <h2 data-i18n="x.netH">Where those endpoints live</h2>
-    <p class="muted" data-i18n="x.p3">Same caution, one layer down. A chain that carries almost the whole catalog carries almost the whole of one aggregator's crawl of it.</p>
-    <div class="scroll"><table id="x-networks"><tbody></tbody></table></div>
-
-    <h2 data-i18n="x.tierH">The four tiers, and the five health states</h2>
-    <p class="muted" data-i18n="x.p4">First-party is ours. VIP is a partner we curated by hand. Verified answered a payment challenge correctly. Listed is everything else that was aggregated and has not been checked beyond existing. On the health side: alive answered 402, auth-gated wanted credentials before it would say, degraded answered something else, quarantined stopped answering at all, and unprobeable could not be reached in a way that proves anything either way. Quarantined is not a judgement about the seller: it is a statement about a URL on the day it was probed.</p>
-    <div class="scroll"><table id="x-tiers"><tbody></tbody></table></div>
-
-    <p class="muted" data-i18n="x.note">Every number on this page is read from GET /discovery/stats when the page loads. None of them is typed here.</p>
-
-    <h2 data-i18n="fp_title">★ First-class citizens</h2>
-    <div class="muted" data-i18n="fp_sub">Our products and curated partners, always first.</div>
-    <div class="vip-grid" id="vip"></div>
-
-    <h2 data-i18n="browse_title">Browse the bazaar</h2>
-    <div class="controls">
-      <div class="search">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        <input id="q" placeholder="Search url / description…" data-i18n-ph="search" />
-      </div>
-      <select id="f-tier"><option value="" data-i18n="f.tier.all">All tiers</option><option value="first_party" data-i18n="f.tier.firstParty">First-party</option><option value="vip" data-i18n="f.tier.vip">VIP</option><option value="verified" data-i18n="f.tier.verified">Verified</option><option value="listed" data-i18n="f.tier.listed">Listed</option></select>
-      <select id="f-health"><option value="" data-i18n="f.health.default">Alive + unknown</option><option value="alive" data-i18n="f.health.alive">Alive (402)</option><option value="auth_gated" data-i18n="f.health.authGated">Auth-gated</option><option value="degraded" data-i18n="f.health.degraded">Degraded</option><option value="any" data-i18n="f.health.any">All (incl. quarantined)</option></select>
-      <select id="f-network"><option value="" data-i18n="f.network.all">All networks</option><option value="eip155:8453">Base</option><option value="eip155:1">Ethereum</option><option value="eip155:42161">Arbitrum</option><option value="eip155:137">Polygon</option><option value="eip155:10">Optimism</option><option value="eip155:43114">Avalanche</option><option value="eip155:42220">Celo</option><option value="eip155:1187947933">SKALE</option></select>
-      <select id="f-source"><option value="" data-i18n="f.source.all">All sources</option><option value="self_registered" data-i18n="f.source.native">Ultravioleta natives</option><option value="aggregated" data-i18n="f.source.aggregated">Aggregated</option></select>
-    </div>
-
-    <div class="cards" id="grid"></div>
-    <div class="controls" id="pager"></div>
-
-    <h2 data-i18n="rutas.discovery">The discovery routes</h2>
-    <div class="scroll">
-      <table>
-        <thead><tr><th data-i18n="rutas.th.method">Method</th><th data-i18n="rutas.th.route">Route</th><th data-i18n="rutas.th.what">What it answers</th><th data-i18n="rutas.th.money">Moves money</th></tr></thead>
-        <tbody>
-          <tr>
-            <td><code>GET</code></td>
-            <td><code>/discovery/resources</code></td>
-            <td data-i18n="endpoints.discovery">List registered paid APIs and services</td>
-            <td data-i18n="money.read">no</td>
-          </tr>
-          <tr>
-            <td><code>POST</code></td>
-            <td><code>/discovery/register</code></td>
-            <td data-i18n="endpoints.register">Register a paid endpoint in the Bazaar</td>
-            <td data-i18n="money.no">no</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-    
-  </main>
+<section class="answer product-hero">
+<section class="hero-copy"><span class="product-eyebrow" data-i18n="ui.label">Bazaar / API discovery</span>
+<h1 data-i18n="title">Find an API your agent can use.</h1>
+<p class="deck" data-i18n="subtitle">Search paid APIs across the x402 ecosystem. Compare their capabilities and payment options, then check the endpoint’s current terms before buying.</p>
+<div class="product-actions"><a class="product-button primary" data-i18n="ui.primary" href="#browse-title">Browse APIs</a><a class="product-button secondary" data-i18n="ui.secondary" href="#rutas-discovery">Discovery API</a></div></section>
+<aside class="product-journey"><p class="journey-title" data-i18n="ui.journey">The flow at a glance</p><ol class="journey-steps"><li><span aria-hidden="true" class="step-number">01</span><div><strong data-i18n="ui.step0">Find a service</strong><p data-i18n="ui.desc0">Search by the capability you need.</p></div></li><li><span aria-hidden="true" class="step-number">02</span><div><strong data-i18n="ui.step1">Inspect its terms</strong><p data-i18n="ui.desc1">Check inputs, network, and current price.</p></div></li><li><span aria-hidden="true" class="step-number">03</span><div><strong data-i18n="ui.step2">Connect your agent</strong><p data-i18n="ui.desc2">Use the endpoint with an x402 client.</p></div></li></ol></aside>
+</section>
+<nav aria-label="On this page" class="page-toc"><span data-i18n="ui.onpage">On this page</span><ul><li><a data-i18n="browse_title" href="#browse-title">Browse APIs</a></li><li><a data-i18n="fp_title" href="#fp-title">Featured services</a></li><li><a data-i18n="x.h" href="#x-h">Catalog health</a></li><li><a data-i18n="x.srcH" href="#x-srcH">Catalog sources</a></li><li><a data-i18n="x.netH" href="#x-netH">Network distribution</a></li><li><a data-i18n="x.tierH" href="#x-tierH">Listing tiers and health states</a></li><li><a data-i18n="rutas.discovery" href="#rutas-discovery">The discovery routes</a></li></ul></nav>
+<div class="cards" id="stats">
+<div class="card"><div class="v" id="s-total">—</div><div class="k" data-i18n="s_total">Listed endpoints</div></div>
+<div class="card"><div class="v" id="s-alive">—</div><div class="k" data-i18n="s_alive">Verified alive (402)</div></div>
+<div class="card"><div class="v" id="s-firstparty">—</div><div class="k" data-i18n="s_fp">First-party + VIP</div></div>
+<div class="card"><div class="v" id="s-sources">—</div><div class="k" data-i18n="s_src">Aggregated facilitators</div></div>
+</div>
+<section class="content-section" id="browse-title"><h2 data-i18n="browse_title">Browse APIs</h2>
+<div class="controls">
+<div class="search">
+<svg fill="none" height="16" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24" width="16"><circle cx="11" cy="11" r="8"></circle><line x1="21" x2="16.65" y1="21" y2="16.65"></line></svg>
+<input data-i18n-ph="search" id="q" placeholder="Search url / description…"/>
+</div>
+<select id="f-tier"><option data-i18n="f.tier.all" value="">All tiers</option><option data-i18n="f.tier.firstParty" value="first_party">First-party</option><option data-i18n="f.tier.vip" value="vip">VIP</option><option data-i18n="f.tier.verified" value="verified">Verified</option><option data-i18n="f.tier.listed" value="listed">Listed</option></select>
+<select id="f-health"><option data-i18n="f.health.default" value="">Alive + unknown</option><option data-i18n="f.health.alive" value="alive">Alive (402)</option><option data-i18n="f.health.authGated" value="auth_gated">Auth-gated</option><option data-i18n="f.health.degraded" value="degraded">Degraded</option><option data-i18n="f.health.any" value="any">All (incl. quarantined)</option></select>
+<select id="f-network"><option data-i18n="f.network.all" value="">All networks</option><option value="eip155:8453">Base</option><option value="eip155:1">Ethereum</option><option value="eip155:42161">Arbitrum</option><option value="eip155:137">Polygon</option><option value="eip155:10">Optimism</option><option value="eip155:43114">Avalanche</option><option value="eip155:42220">Celo</option><option value="eip155:1187947933">SKALE</option></select>
+<select id="f-source"><option data-i18n="f.source.all" value="">All sources</option><option data-i18n="f.source.native" value="self_registered">Ultravioleta natives</option><option data-i18n="f.source.aggregated" value="aggregated">Aggregated</option></select>
+</div><div class="cards" id="grid"></div><div class="controls" id="pager"></div></section>
+<section class="content-section" id="fp-title"><h2 data-i18n="fp_title">Featured services</h2>
+<div class="muted" data-i18n="fp_sub">Our products and curated partners, always first.</div><div class="vip-grid" id="vip"></div></section>
+<details class="product-detail" id="x-h">
+<summary><h2 data-i18n="x.h">Catalog health</h2>
+</summary>
+<div class="detail-content"><p class="muted" data-i18n="x.p1">The catalog holds far more endpoints than it shows, and the gap is the product rather than a defect. Everything ever aggregated is counted in the first number below; what survives the sweep is what the browser above lists by default. The rest failed a health probe, and a directory that keeps serving dead links is worth less than one that admits how many it found.</p><div class="cards" id="x-health"></div></div></details>
+<details class="product-detail" id="x-srcH">
+<summary><h2 data-i18n="x.srcH">Catalog sources</h2>
+</summary>
+<div class="detail-content"><p class="muted" data-i18n="x.p2">Aggregation is not neutral, and this table is the reason to say so out loud: the totals are dominated by whichever upstream feed publishes the most, not by whichever ecosystem is the busiest. Read a share of 90 percent as one aggregator having an opinion, not as a measurement of the market.</p><div class="scroll"><table id="x-sources"><tbody></tbody></table></div></div></details>
+<details class="product-detail" id="x-netH">
+<summary><h2 data-i18n="x.netH">Network distribution</h2>
+</summary>
+<div class="detail-content"><p class="muted" data-i18n="x.p3">Same caution, one layer down. A chain that carries almost the whole catalog carries almost the whole of one aggregator's crawl of it.</p><div class="scroll"><table id="x-networks"><tbody></tbody></table></div></div></details>
+<details class="product-detail" id="x-tierH">
+<summary><h2 data-i18n="x.tierH">Listing tiers and health states</h2>
+</summary>
+<div class="detail-content"><p class="muted" data-i18n="x.p4">First-party is ours. VIP is a partner we curated by hand. Verified answered a payment challenge correctly. Listed is everything else that was aggregated and has not been checked beyond existing. On the health side: alive answered 402, auth-gated wanted credentials before it would say, degraded answered something else, quarantined stopped answering at all, and unprobeable could not be reached in a way that proves anything either way. Quarantined is not a judgement about the seller: it is a statement about a URL on the day it was probed.</p><div class="scroll"><table id="x-tiers"><tbody></tbody></table></div><p class="muted" data-i18n="x.note">Every number on this page is read from GET /discovery/stats when the page loads. None of them is typed here.</p></div></details>
+<details class="product-detail" id="rutas-discovery">
+<summary><h2 data-i18n="rutas.discovery">The discovery routes</h2>
+</summary>
+<div class="detail-content"><div class="scroll">
+<table>
+<thead><tr><th data-i18n="rutas.th.method">Method</th><th data-i18n="rutas.th.route">Route</th><th data-i18n="rutas.th.what">What it answers</th><th data-i18n="rutas.th.money">Moves money</th></tr></thead>
+<tbody>
+<tr>
+<td><code>GET</code></td>
+<td><code>/discovery/resources</code></td>
+<td data-i18n="endpoints.discovery">Discover registered paid APIs and services</td>
+<td data-i18n="money.read">no</td>
+</tr>
+<tr>
+<td><code>POST</code></td>
+<td><code>/discovery/register</code></td>
+<td data-i18n="endpoints.register">Register a new paid endpoint in the Bazaar</td>
+<td data-i18n="money.no">no</td>
+</tr>
+</tbody>
+</table>
+</div></div></details>
+</main>
 
   <dialog id="detail"></dialog>
 <footer class="footer">
@@ -185,14 +178,197 @@
     }
 
     const I18N = {
-      en:{ "endpoints.discovery":"Discover registered paid APIs and services", "endpoints.register":"Register a new paid endpoint in the Bazaar", "money.no":"no", "money.read":"no", "rutas.discovery":"The discovery routes", "rutas.th.method":"Method", "rutas.th.money":"Moves money", "rutas.th.route":"Route", "rutas.th.what":"What it answers", "footer.by":"Ultravioleta DAO · x402 payment facilitator · 0% fee", "nav.bazaar":"Bazaar", "nav.dx402":"DX402", "nav.erc8004":"ERC-8004", "nav.home":"Overview", "nav.integrate":"Integrate", "nav.mcp":"MCP", "nav.networks":"Networks", "nav.x402":"x402", "next.h":"And after this", "next.integrar":"Integrate", "next.integrar.why":"publishing yours in this list", "next.mcp":"MCP", "next.mcp.why":"calling these endpoints from an agent", "next.x402":"x402", "next.x402.why":"what happens when you pay one", "x.h":"What these numbers mean", "x.p1":"The catalog holds far more endpoints than it shows, and the gap is the product rather than a defect. Everything ever aggregated is counted in the first number below; what survives the sweep is what the browser above lists by default. The rest failed a health probe, and a directory that keeps serving dead links is worth less than one that admits how many it found.", "x.srcH":"Where the catalog comes from", "x.p2":"Aggregation is not neutral, and this table is the reason to say so out loud: the totals are dominated by whichever upstream feed publishes the most, not by whichever ecosystem is the busiest. Read a share of 90 percent as one aggregator having an opinion, not as a measurement of the market.", "x.netH":"Where those endpoints live", "x.p3":"Same caution, one layer down. A chain that carries almost the whole catalog carries almost the whole of one aggregator's crawl of it.", "x.tierH":"The four tiers, and the five health states", "x.p4":"First-party is ours. VIP is a partner we curated by hand. Verified answered a payment challenge correctly. Listed is everything else that was aggregated and has not been checked beyond existing. On the health side: alive answered 402, auth-gated wanted credentials before it would say, degraded answered something else, quarantined stopped answering at all, and unprobeable could not be reached in a way that proves anything either way. Quarantined is not a judgement about the seller: it is a statement about a URL on the day it was probed.", "x.note":"Every number on this page is read from GET /discovery/stats when the page loads. None of them is typed here.", "x.k.total":"Aggregated, ever", "x.k.visible":"Shown by default", "x.k.quarantined":"Quarantined (stopped answering)", "x.k.sources":"Upstream facilitators", "pageTitle":"Bazaar - x402 endpoints that take payment", 'f.tier.all':'All tiers', 'f.tier.firstParty':'First-party', 'f.tier.vip':'VIP', 'f.tier.verified':'Verified', 'f.tier.listed':'Listed', 'f.health.default':'Alive + unknown', 'f.health.alive':'Alive (402)', 'f.health.authGated':'Auth-gated', 'f.health.degraded':'Degraded', 'f.health.any':'All (incl. quarantined)', 'f.network.all':'All networks', 'f.source.all':'All sources', 'f.source.native':'Ultravioleta natives', 'f.source.aggregated':'Aggregated', "title":"Find an endpoint that will actually take your money", "subtitle":"We aggregate upstream x402 facilitators and then throw most of it away: only what answered a live 402 probe is shown, and how much was thrown away is printed next to it.", s_total:'Listed endpoints', s_alive:'Verified alive (402)', s_fp:'First-party + VIP', s_src:'Aggregated facilitators', fp_title:'★ First-class citizens', fp_sub:'Our products and curated partners, always first.', browse_title:'Browse the bazaar', search:'Search url / description…', footer:'Ultravioleta DAO — x402 Facilitator Bazaar.' },
-      es:{ "endpoints.discovery":"Descubrir APIs y servicios de pago registrados", "endpoints.register":"Registrar un nuevo endpoint de pago en el Bazaar", "money.no":"no", "money.read":"no", "rutas.discovery":"Las rutas de discovery", "rutas.th.method":"Metodo", "rutas.th.money":"Mueve dinero", "rutas.th.route":"Ruta", "rutas.th.what":"Que contesta", "footer.by":"Ultravioleta DAO · facilitador de pagos x402 · 0% de comisión", "nav.bazaar":"Bazar", "nav.dx402":"DX402", "nav.erc8004":"ERC-8004", "nav.home":"Resumen", "nav.integrate":"Integrar", "nav.mcp":"MCP", "nav.networks":"Redes", "nav.x402":"x402", "next.h":"Y después de esto", "next.integrar":"Integrar", "next.integrar.why":"publicar el tuyo en esta lista", "next.mcp":"MCP", "next.mcp.why":"llamar estos endpoints desde un agente", "next.x402":"x402", "next.x402.why":"qué pasa cuando pagás uno", "x.h":"Qué significan estos números", "x.p1":"El catálogo tiene muchos más endpoints de los que muestra, y esa diferencia es el producto y no un defecto. Todo lo que alguna vez se agregó está en el primer número de abajo; lo que sobrevive al barrido es lo que el explorador de arriba lista por defecto. El resto falló una sonda de salud, y un directorio que sigue sirviendo enlaces muertos vale menos que uno que admite cuántos encontró.", "x.srcH":"De dónde sale el catálogo", "x.p2":"Agregar no es neutral, y esta tabla es la razón para decirlo en voz alta: los totales los domina el feed de arriba que más publica, no el ecosistema que más se mueve. Leé un 90 por ciento de participación como un agregador teniendo una opinión, no como una medición del mercado.", "x.netH":"Dónde viven esos endpoints", "x.p3":"La misma advertencia, una capa más abajo. Una cadena que carga casi todo el catálogo carga casi todo el crawl que un solo agregador hizo de él.", "x.tierH":"Los cuatro niveles, y los cinco estados de salud", "x.p4":"First-party es nuestro. VIP es un socio que curamos a mano. Verified contestó bien un desafío de pago. Listed es todo lo demás que se agregó y no se chequeó más allá de que existe. Del lado de la salud: alive contestó 402, auth-gated pidió credenciales antes de contestar, degraded contestó otra cosa, quarantined dejó de contestar del todo, y unprobeable no se pudo alcanzar de una forma que pruebe nada en ninguna dirección. Quarantined no es un juicio sobre el vendedor: es una afirmación sobre una URL el día que se la sondeó.", "x.note":"Cada número de esta página se lee de GET /discovery/stats al cargar. Ninguno está tipeado acá.", "x.k.total":"Agregados, en total", "x.k.visible":"Mostrados por defecto", "x.k.quarantined":"En cuarentena (dejaron de contestar)", "x.k.sources":"Facilitadores de origen", "pageTitle":"Bazar - endpoints x402 que aceptan pago", 'f.tier.all':'Todos los niveles', 'f.tier.firstParty':'First-party', 'f.tier.vip':'VIP', 'f.tier.verified':'Verificados', 'f.tier.listed':'Listados', 'f.health.default':'Vivos + desconocidos', 'f.health.alive':'Vivos (402)', 'f.health.authGated':'Con auth', 'f.health.degraded':'Degradados', 'f.health.any':'Todos (incl. en cuarentena)', 'f.network.all':'Todas las redes', 'f.source.all':'Todas las fuentes', 'f.source.native':'Nativos de Ultravioleta', 'f.source.aggregated':'Agregados', "title":"Encontrá un endpoint que de verdad te acepte la plata", "subtitle":"Agregamos facilitadores x402 de aguas arriba y después tiramos casi todo: sólo se muestra lo que contestó una sonda 402 en vivo, y cuánto se tiró está impreso al lado.", s_total:'Endpoints listados', s_alive:'Verificados vivos (402)', s_fp:'First-party + VIP', s_src:'Facilitadores agregados', fp_title:'★ Ciudadanos de primera clase', fp_sub:'Nuestros productos y socios curados, siempre de primeros.', browse_title:'Explora el bazar', search:'Buscar url / descripción…', footer:'Ultravioleta DAO — Bazar del Facilitador x402.' },
-    };
+  en: {
+    "endpoints.discovery": "Discover registered paid APIs and services",
+    "endpoints.register": "Register a new paid endpoint in the Bazaar",
+    "money.no": "no",
+    "money.read": "no",
+    "rutas.discovery": "The discovery routes",
+    "rutas.th.method": "Method",
+    "rutas.th.money": "Moves money",
+    "rutas.th.route": "Route",
+    "rutas.th.what": "What it answers",
+    "footer.by": "Ultravioleta DAO · x402 payment facilitator · 0% fee",
+    "nav.bazaar": "Bazaar",
+    "nav.dx402": "DX402",
+    "nav.erc8004": "ERC-8004",
+    "nav.home": "Overview",
+    "nav.integrate": "Integrate",
+    "nav.mcp": "MCP",
+    "nav.networks": "Networks",
+    "nav.x402": "x402",
+    "next.h": "And after this",
+    "next.integrar": "Integrate",
+    "next.integrar.why": "publishing yours in this list",
+    "next.mcp": "MCP",
+    "next.mcp.why": "calling these endpoints from an agent",
+    "next.x402": "x402",
+    "next.x402.why": "what happens when you pay one",
+    "x.h": "Catalog health",
+    "x.p1": "The catalog holds far more endpoints than it shows, and the gap is the product rather than a defect. Everything ever aggregated is counted in the first number below; what survives the sweep is what the browser above lists by default. The rest failed a health probe, and a directory that keeps serving dead links is worth less than one that admits how many it found.",
+    "x.srcH": "Catalog sources",
+    "x.p2": "Aggregation is not neutral, and this table is the reason to say so out loud: the totals are dominated by whichever upstream feed publishes the most, not by whichever ecosystem is the busiest. Read a share of 90 percent as one aggregator having an opinion, not as a measurement of the market.",
+    "x.netH": "Network distribution",
+    "x.p3": "Same caution, one layer down. A chain that carries almost the whole catalog carries almost the whole of one aggregator's crawl of it.",
+    "x.tierH": "Listing tiers and health states",
+    "x.p4": "First-party is ours. VIP is a partner we curated by hand. Verified answered a payment challenge correctly. Listed is everything else that was aggregated and has not been checked beyond existing. On the health side: alive answered 402, auth-gated wanted credentials before it would say, degraded answered something else, quarantined stopped answering at all, and unprobeable could not be reached in a way that proves anything either way. Quarantined is not a judgement about the seller: it is a statement about a URL on the day it was probed.",
+    "x.note": "Every number on this page is read from GET /discovery/stats when the page loads. None of them is typed here.",
+    "x.k.total": "Aggregated, ever",
+    "x.k.visible": "Shown by default",
+    "x.k.quarantined": "Quarantined (stopped answering)",
+    "x.k.sources": "Upstream facilitators",
+    "pageTitle": "Bazaar - x402 endpoints that take payment",
+    "f.tier.all": "All tiers",
+    "f.tier.firstParty": "First-party",
+    "f.tier.vip": "VIP",
+    "f.tier.verified": "Verified",
+    "f.tier.listed": "Listed",
+    "f.health.default": "Alive + unknown",
+    "f.health.alive": "Alive (402)",
+    "f.health.authGated": "Auth-gated",
+    "f.health.degraded": "Degraded",
+    "f.health.any": "All (incl. quarantined)",
+    "f.network.all": "All networks",
+    "f.source.all": "All sources",
+    "f.source.native": "Ultravioleta natives",
+    "f.source.aggregated": "Aggregated",
+    "title": "Find an API your agent can use.",
+    "subtitle": "Search paid APIs across the x402 ecosystem. Compare their capabilities and payment options, then check the endpoint’s current terms before buying.",
+    "s_total": "Listed endpoints",
+    "s_alive": "Verified alive (402)",
+    "s_fp": "First-party + VIP",
+    "s_src": "Aggregated facilitators",
+    "fp_title": "Featured services",
+    "fp_sub": "Our products and curated partners, always first.",
+    "browse_title": "Browse APIs",
+    "search": "Search url / description…",
+    "footer": "Ultravioleta DAO — x402 Facilitator Bazaar.",
+    "ui.label": "Bazaar / API discovery",
+    "ui.journey": "The flow at a glance",
+    "ui.onpage": "On this page",
+    "ui.activity": "Live service details",
+    "ui.technical": "Technical details",
+    "ui.primary": "Browse APIs",
+    "ui.secondary": "Discovery API",
+    "ui.step0": "Find a service",
+    "ui.desc0": "Search by the capability you need.",
+    "ui.step1": "Inspect its terms",
+    "ui.desc1": "Check inputs, network, and current price.",
+    "ui.step2": "Connect your agent",
+    "ui.desc2": "Use the endpoint with an x402 client.",
+    "list.error": "Could not load the bazaar.",
+    "list.retry": "Retry",
+    "list.empty": "No endpoints match these filters.",
+    "list.prev": "Previous",
+    "list.next": "Next",
+    "list.of": "of",
+    "detail.description": "Description",
+    "detail.url": "Endpoint URL",
+    "detail.accepts": "Payment options",
+    "detail.health": "Last health check",
+    "detail.checked": "checked",
+    "detail.noAccepts": "No payment methods declared.",
+    "detail.close": "Close details"
+  },
+  es: {
+    "endpoints.discovery": "Descubrir APIs y servicios de pago registrados",
+    "endpoints.register": "Registrar un nuevo endpoint de pago en el Bazaar",
+    "money.no": "no",
+    "money.read": "no",
+    "rutas.discovery": "Las rutas de discovery",
+    "rutas.th.method": "Metodo",
+    "rutas.th.money": "Mueve dinero",
+    "rutas.th.route": "Ruta",
+    "rutas.th.what": "Que contesta",
+    "footer.by": "Ultravioleta DAO · facilitador de pagos x402 · 0% de comisión",
+    "nav.bazaar": "Bazar",
+    "nav.dx402": "DX402",
+    "nav.erc8004": "ERC-8004",
+    "nav.home": "Resumen",
+    "nav.integrate": "Integrar",
+    "nav.mcp": "MCP",
+    "nav.networks": "Redes",
+    "nav.x402": "x402",
+    "next.h": "Y después de esto",
+    "next.integrar": "Integrar",
+    "next.integrar.why": "publicar el tuyo en esta lista",
+    "next.mcp": "MCP",
+    "next.mcp.why": "llamar estos endpoints desde un agente",
+    "next.x402": "x402",
+    "next.x402.why": "qué pasa cuando pagás uno",
+    "x.h": "Estado del catálogo",
+    "x.p1": "El catálogo tiene muchos más endpoints de los que muestra, y esa diferencia es el producto y no un defecto. Todo lo que alguna vez se agregó está en el primer número de abajo; lo que sobrevive al barrido es lo que el explorador de arriba lista por defecto. El resto falló una sonda de salud, y un directorio que sigue sirviendo enlaces muertos vale menos que uno que admite cuántos encontró.",
+    "x.srcH": "Fuentes del catálogo",
+    "x.p2": "Agregar no es neutral, y esta tabla es la razón para decirlo en voz alta: los totales los domina el feed de arriba que más publica, no el ecosistema que más se mueve. Leé un 90 por ciento de participación como un agregador teniendo una opinión, no como una medición del mercado.",
+    "x.netH": "Distribución por redes",
+    "x.p3": "La misma advertencia, una capa más abajo. Una cadena que carga casi todo el catálogo carga casi todo el crawl que un solo agregador hizo de él.",
+    "x.tierH": "Niveles y estado de los listings",
+    "x.p4": "First-party es nuestro. VIP es un socio que curamos a mano. Verified contestó bien un desafío de pago. Listed es todo lo demás que se agregó y no se chequeó más allá de que existe. Del lado de la salud: alive contestó 402, auth-gated pidió credenciales antes de contestar, degraded contestó otra cosa, quarantined dejó de contestar del todo, y unprobeable no se pudo alcanzar de una forma que pruebe nada en ninguna dirección. Quarantined no es un juicio sobre el vendedor: es una afirmación sobre una URL el día que se la sondeó.",
+    "x.note": "Cada número de esta página se lee de GET /discovery/stats al cargar. Ninguno está tipeado acá.",
+    "x.k.total": "Agregados, en total",
+    "x.k.visible": "Mostrados por defecto",
+    "x.k.quarantined": "En cuarentena (dejaron de contestar)",
+    "x.k.sources": "Facilitadores de origen",
+    "pageTitle": "Bazar - endpoints x402 que aceptan pago",
+    "f.tier.all": "Todos los niveles",
+    "f.tier.firstParty": "First-party",
+    "f.tier.vip": "VIP",
+    "f.tier.verified": "Verificados",
+    "f.tier.listed": "Listados",
+    "f.health.default": "Vivos + desconocidos",
+    "f.health.alive": "Vivos (402)",
+    "f.health.authGated": "Con auth",
+    "f.health.degraded": "Degradados",
+    "f.health.any": "Todos (incl. en cuarentena)",
+    "f.network.all": "Todas las redes",
+    "f.source.all": "Todas las fuentes",
+    "f.source.native": "Nativos de Ultravioleta",
+    "f.source.aggregated": "Agregados",
+    "title": "Encuentra una API para tu agente.",
+    "subtitle": "Busca APIs de pago en el ecosistema x402. Compara sus capacidades y opciones de pago, y consulta las condiciones actuales del endpoint antes de comprar.",
+    "s_total": "Endpoints listados",
+    "s_alive": "Verificados vivos (402)",
+    "s_fp": "First-party + VIP",
+    "s_src": "Facilitadores agregados",
+    "fp_title": "Servicios destacados",
+    "fp_sub": "Nuestros productos y socios curados, siempre de primeros.",
+    "browse_title": "Explora las APIs",
+    "search": "Buscar url / descripción…",
+    "footer": "Ultravioleta DAO — Bazar del Facilitador x402.",
+    "ui.label": "Bazaar / Descubrimiento de APIs",
+    "ui.journey": "El flujo de un vistazo",
+    "ui.onpage": "En esta página",
+    "ui.activity": "Detalles del servicio en vivo",
+    "ui.technical": "Detalles técnicos",
+    "ui.primary": "Explora las APIs",
+    "ui.secondary": "API de descubrimiento",
+    "ui.step0": "Encuentra un servicio",
+    "ui.desc0": "Busca la capacidad que necesitas.",
+    "ui.step1": "Revisa sus condiciones",
+    "ui.desc1": "Comprueba entradas, red y precio actual.",
+    "ui.step2": "Conecta tu agente",
+    "ui.desc2": "Usa el endpoint con un cliente x402.",
+    "list.error": "No se pudo cargar el bazar.",
+    "list.retry": "Reintentar",
+    "list.empty": "Ningún endpoint coincide con estos filtros.",
+    "list.prev": "Anterior",
+    "list.next": "Siguiente",
+    "list.of": "de",
+    "detail.description": "Descripción",
+    "detail.url": "URL del endpoint",
+    "detail.accepts": "Opciones de pago",
+    "detail.health": "Última comprobación",
+    "detail.checked": "comprobado",
+    "detail.noAccepts": "No hay métodos de pago declarados.",
+    "detail.close": "Cerrar detalles"
+  }
+};
 
     let state = { page: 0, q: '', tier: '', health: '', network: '', source: '' };
     const cache = new Map();
     let inflight = null;
 
+    function tr(key){ return (I18N[curLang()] || I18N.en)[key] || key; }
     function fmtPrice(a){ if(!a||!a.length) return null; const x=a[0]; const amt=Number(x.amount); if(!isFinite(amt)) return null; const v=amt/10**USDC_DECIMALS; return '$'+(v<0.01? v.toFixed(4): v.toFixed(2)); }
     function hostOf(u){ try { return new URL(u).host; } catch { return u; } }
     function pathOf(u){ try { const p=new URL(u); return p.pathname+p.search; } catch { return ''; } }
@@ -277,7 +453,7 @@
       if(h.status) badges.push(`<span class="tag ${h.status}">${esc(h.status.replace('_',' '))}</span>`);
       if(net) badges.push(`<span class="tag">${esc(net)}</span>`);
       if(price) badges.push(`<span class="tag price">${esc(price)}</span>`);
-      return `<div class="card" data-url="${esc(it.url)}">
+      return `<div class="card" role="button" tabindex="0" data-url="${esc(it.url)}">
         <div class="card-top"><div><div class="card-host">${esc(hostOf(it.url))}</div><div class="card-path">${esc(pathOf(it.url))}</div></div></div>
         ${it.description?`<div class="card-desc">${esc(it.description.slice(0,140))}</div>`:''}
         <div class="badges">${badges.join('')}</div>
@@ -296,26 +472,34 @@
       try {
         if(cache.has(key)) { data = cache.get(key); }
         else { data = await fetchJSON('/discovery/resources?'+qs()); }
-      } catch(e){ if(e.name==='AbortError') return; grid.innerHTML = '<div class="empty">Could not load the bazaar. <a class="mono" href="javascript:location.reload()">Retry</a></div>'; return; }
+      } catch(e){ if(e.name==='AbortError') return; grid.innerHTML = `<div class="empty"><span data-i18n="list.error">${tr('list.error')}</span> <button type="button" onclick="load()" data-i18n="list.retry">${tr('list.retry')}</button></div>`; return; }
       inflight = null;
       // Search is server-side (`q=`), so the whole catalog is searched and the
       // pagination totals stay correct.
       const items = data.items||[];
       cache.set(key, data); if(cache.size>30) cache.delete(cache.keys().next().value);
 
-      if(!items.length){ grid.innerHTML = '<div class="empty">No endpoints match these filters.</div>'; }
+      if(!items.length){ grid.innerHTML = `<div class="empty" data-i18n="list.empty">${tr('list.empty')}</div>`; }
       else { grid.innerHTML = items.map(cardHTML).join(''); }
-      grid.querySelectorAll('.card').forEach(c => c.addEventListener('click', () => openDetail(c.dataset.url, data.items)));
+      grid.querySelectorAll('.card').forEach(c => {
+        c.addEventListener('click', () => openDetail(c.dataset.url, data.items));
+        c.addEventListener('keydown', e => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            openDetail(c.dataset.url, data.items);
+          }
+        });
+      });
 
       const total = data.pagination.total||0;
       const from = state.page*PAGE+1, to = Math.min((state.page+1)*PAGE, total);
       document.getElementById('pager').innerHTML =
-        `<button ${state.page===0?'disabled':''} id="prev">← Prev</button>
-         <span class="pinfo">${total? `${from}–${to} of ${total.toLocaleString()}`:'0'}</span>
-         <button ${(state.page+1)*PAGE>=total?'disabled':''} id="next">Next →</button>`;
+        `<button ${state.page===0?'disabled':''} id="prev" data-i18n="list.prev">${tr('list.prev')}</button>
+         <span class="pinfo">${total? `${from}–${to} <span data-i18n="list.of">${tr('list.of')}</span> ${total.toLocaleString()}`:'0'}</span>
+         <button ${(state.page+1)*PAGE>=total?'disabled':''} id="next" data-i18n="list.next">${tr('list.next')}</button>`;
       const prev=document.getElementById('prev'), next=document.getElementById('next');
-      if(prev) prev.onclick=()=>{ state.page--; syncUrl(); load(); window.scrollTo({top:0,behavior:'smooth'}); };
-      if(next) next.onclick=()=>{ state.page++; syncUrl(); load(); window.scrollTo({top:0,behavior:'smooth'}); };
+      if(prev) prev.onclick=()=>{ state.page--; syncUrl(); load(); document.getElementById('browse-title').scrollIntoView({behavior:'smooth'}); };
+      if(next) next.onclick=()=>{ state.page++; syncUrl(); load(); document.getElementById('browse-title').scrollIntoView({behavior:'smooth'}); };
     }
 
     function openDetail(url, items){
@@ -324,7 +508,7 @@
       const accepts = (it.accepts||[]).map(a=>`<div class="accept-row"><div class="mono"><b>${esc(NET_NAMES[a.network]||a.network)}</b> · ${esc(a.asset)}</div><div class="mono">${esc(fmtPrice([a])||a.amount)} → ${esc(a.payTo)}</div></div>`).join('') || '<div class="card-desc">No payment methods declared.</div>';
       const h = it.health||{}; const cur = it.curation||{};
       d.innerHTML = `
-        <div class="modal-head"><div><div class="card-host">${esc(hostOf(it.url))}</div><div class="card-path">${esc(pathOf(it.url))}</div></div><button class="close-x" onclick="document.getElementById('detail').close()">×</button></div>
+        <div class="modal-head"><div><div class="card-host">${esc(hostOf(it.url))}</div><div class="card-path">${esc(pathOf(it.url))}</div></div><button class="close-x" aria-label="${tr('detail.close')}" onclick="document.getElementById('detail').close()">×</button></div>
         <div class="modal-body">
           <div class="badges">
             ${cur.tier&&cur.tier!=='listed'?`<span class="tag ${cur.tier}">${esc(cur.label||cur.tier)}</span>`:''}
@@ -332,10 +516,10 @@
             <span class="tag">${esc(it.source||'')}</span>
             ${it.sourceFacilitator?`<span class="tag">via ${esc(it.sourceFacilitator)}</span>`:''}
           </div>
-          ${it.description?`<h3>Description</h3><div class="card-desc">${esc(it.description)}</div>`:''}
-          <h3>Full URL</h3><div class="mono"><a class="mono" href="${esc(it.url)}" target="_blank" rel="noopener">${esc(it.url)}</a></div>
-          <h3>Accepts</h3>${accepts}
-          ${h.lastChecked?`<h3>Health</h3><div class="mono">${esc(h.status)} · HTTP ${esc(h.httpStatus||'?')} · ${esc(h.latencyMs||'?')}ms · checked ${new Date((h.lastChecked||0)*1000).toISOString().slice(0,16).replace('T',' ')}</div>`:''}
+          ${it.description?`<h3 data-i18n="detail.description">${tr('detail.description')}</h3><div class="card-desc">${esc(it.description)}</div>`:''}
+          <h3 data-i18n="detail.url">${tr('detail.url')}</h3><div class="mono"><a class="mono" href="${esc(it.url)}" target="_blank" rel="noopener">${esc(it.url)}</a></div>
+          <h3 data-i18n="detail.accepts">${tr('detail.accepts')}</h3>${accepts}
+          ${h.lastChecked?`<h3 data-i18n="detail.health">${tr('detail.health')}</h3><div class="mono">${esc(h.status)} · HTTP ${esc(h.httpStatus||'?')} · ${esc(h.latencyMs||'?')}ms · ${tr('detail.checked')} ${new Date((h.lastChecked||0)*1000).toISOString().slice(0,16).replace('T',' ')}</div>`:''}
         </div>`;
       d.showModal();
     }
@@ -391,5 +575,26 @@
     explainStats();
     load();
   </script>
+
+<script>
+// Make links to collapsed reference sections work with mouse, keyboard and deep links.
+(() => {
+  const reveal = () => {
+    let id;
+    try { id = decodeURIComponent(location.hash.slice(1)); } catch (_) { return; }
+    const target = document.getElementById(id);
+    if (!target) return;
+    for (let node = target; node; node = node.parentElement) {
+      if (node.tagName === 'DETAILS') node.open = true;
+    }
+  };
+  addEventListener('hashchange', reveal);
+  document.querySelectorAll('.page-toc a').forEach(link => link.addEventListener('click', () => {
+    const target = document.getElementById(link.hash.slice(1));
+    if (target && target.tagName === 'DETAILS') target.open = true;
+  }));
+  reveal();
+})();
+</script>
 </body>
 </html>

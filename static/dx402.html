@@ -4,16 +4,16 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title data-i18n="title">DX402 - durable evidence for x402</title>
-<meta name="description" content="x402 settles payment forever but delivers the resource once. DX402 seals a copy of the response to the payer's own public key, recovered from the payment signature, and anchors it.">
+<meta name="description" content="Save an encrypted copy of a paid API response. Learn how buyers retrieve evidence and how sellers integrate DX402.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://facilitator.ultravioletadao.xyz/dx402">
 <meta property="og:title" content="DX402 · durable evidence for x402">
-<meta property="og:description" content="Paying is publishing your encryption key. No registration, no extra round trip, and it can never fail a payment.">
+<meta property="og:description" content="Save, retrieve, and verify encrypted evidence of your paid API response.">
 <meta property="og:image" content="https://facilitator.ultravioletadao.xyz/logo.png">
 <link rel="icon" href="/favicon.ico">
-<link rel="stylesheet" href="/uv.css">
+<link rel="stylesheet" href="/uv.css?v=20260909">
 </head>
-<body data-page="dx402">
+<body data-page="dx402" class="product-page">
 
 <header class="nav">
   <a class="brand" href="/">
@@ -41,93 +41,94 @@
 </header>
 
 <main class="wrap">
-
-<section class="answer">
-  <h1 data-i18n="h1">Keep a copy of the response you already paid for</h1>
-  <p class="deck" data-i18n="lead">The seller seals it to the public key your payment already revealed and you recover it later with the same wallet — 90 days by default, and it can never fail the payment it rides on.</p>
+<section class="answer product-hero">
+<section class="hero-copy"><span class="product-eyebrow" data-i18n="ui.label">DX402 / Durable evidence</span>
+<h1 data-i18n="h1">Keep a private copy of your API response.</h1>
+<p class="deck" data-i18n="lead">Save an encrypted copy of the API response you paid for. Retrieve it later and verify that it matches what was delivered.</p>
+<div class="product-actions"><a class="product-button primary" data-i18n="ui.primary" href="#start">Get started</a><a class="product-button secondary" data-i18n="ui.secondary" href="#api">API reference</a></div></section>
+<aside class="product-journey"><p class="journey-title" data-i18n="ui.journey">The flow at a glance</p><ol class="journey-steps"><li><span aria-hidden="true" class="step-number">01</span><div><strong data-i18n="ui.step0">Pay for a response</strong><p data-i18n="ui.desc0">Use an API that supports durable evidence.</p></div></li><li><span aria-hidden="true" class="step-number">02</span><div><strong data-i18n="ui.step1">The seller saves a private copy</strong><p data-i18n="ui.desc1">The response is encrypted for the buyer.</p></div></li><li><span aria-hidden="true" class="step-number">03</span><div><strong data-i18n="ui.step2">Retrieve and verify</strong><p data-i18n="ui.desc2">Use the payment ID to find the evidence.</p></div></li></ol></aside>
 </section>
-
-
+<nav aria-label="On this page" class="page-toc"><span data-i18n="ui.onpage">On this page</span><ul><li><a data-i18n="ui.start" href="#start">Start with your role</a></li><li><a data-i18n="h.idea" href="#idea">How it works</a></li><li><a data-i18n="h.api" href="#api">API reference</a></li><li><a data-i18n="h.where" href="#where">Architecture and responsibilities</a></li><li><a data-i18n="h.rules" href="#rules">Encryption and verification</a></li><li><a data-i18n="h.backends" href="#backends-section">Storage and retention</a></li><li><a data-i18n="h.status" href="#status">Project status and specification</a></li></ul></nav>
+<section class="content-section" id="start"><h2 data-i18n="ui.start">Start with your role</h2>
+<div class="role-grid">
+<article class="role-card"><h3 data-i18n="ui.buyer">I bought an API response</h3>
+<p data-i18n="ui.buyerText">Use a seller that supports DX402. Keep the payment ID and the buyer key used for that purchase. Retrieve the evidence record, download the encrypted copy, then decrypt and verify it locally.</p><a data-i18n="ui.guide" href="/integrar#buyer">Open the integration guide</a></article>
+<article class="role-card"><h3 data-i18n="ui.seller">I sell access to an API</h3>
+<p data-i18n="ui.sellerText">Add the durable-evidence hook to your seller integration. Once the payment succeeds, encrypt the delivered response, upload it to the configured storage, and anchor the evidence.</p><a data-i18n="ui.guide" href="/integrar#seller">Open the integration guide</a></article>
+</div></section>
+<section class="content-section" id="idea"><h2 data-i18n="h.idea">How it works</h2>
+<p data-i18n="idea.p1">The seller saves an encrypted copy of the response and records its location and content hash. The buyer can retrieve that copy later and check that its decrypted content matches the recorded hash.</p><p data-i18n="idea.p2">Access uses the buyer’s encryption key material. Key recovery depends on the network, wallet, and integration; supported flows can recover it from the payment or use an explicitly declared buyer key.</p></section>
+<section class="content-section" id="api"><h2 data-i18n="h.api">API reference</h2>
+<pre><code>GET /dx402/evidence/{paymentId}</code></pre><div class="scroll">
+<table>
+<thead><tr><th data-i18n="a.th.route">route</th><th data-i18n="a.th.what">what it does</th></tr></thead>
+<tbody>
+<tr><td><code>POST /dx402/anchor</code></td><td data-i18n="a.anchor">record a pointer and sign its receipt</td></tr>
+<tr><td><code>GET /dx402/evidence/{paymentId}</code></td><td data-i18n="a.evidence">what is anchored for that payment</td></tr>
+<tr><td><code>GET /dx402/receipt/{paymentId}</code></td><td data-i18n="a.receipt">the signed EIP-712 attestation</td></tr>
+<tr><td><code>GET /dx402/blob/{paymentId}</code></td><td data-i18n="a.blob">the sealed bytes. The store is private: a pointer resolves through here, never through a public bucket, and it addresses the <em>payment</em> rather than a storage key so old pointers survive a re-layout</td></tr>
+<tr><td><code>GET /dx402/stats</code></td><td data-i18n="a.stats">storage configuration and evidence counters</td></tr>
+<tr><td><code>POST /dx402/recover</code></td><td data-i18n="a.recover">not implemented in v0.1 — answers 501 rather than pretending</td></tr>
+</tbody>
+</table>
+</div></section>
+<details class="product-detail" id="where">
+<summary><h2 data-i18n="h.where">Architecture and responsibilities</h2>
+</summary>
+<div class="detail-content"><p data-i18n="where.p1">The seller handles the response, the facilitator records the evidence, and the buyer decrypts it. In direct mode, the facilitator holds neither the plaintext nor the buyer’s private key.</p><div class="scroll">
+<table>
+<thead><tr><th data-i18n="w.th.piece">piece</th><th data-i18n="w.th.runs">runs</th><th data-i18n="w.th.holds">holds</th></tr></thead>
+<tbody>
+<tr><td><code>x402-axum</code> <span class="muted" data-i18n="w.seller">the seller hook</span></td>
+<td data-i18n="w.sellerRuns">in the seller, at the one point where the delivered body and the settlement identity both exist</td>
+<td data-i18n="w.sellerHolds">the plaintext. It encrypts and uploads.</td></tr>
+<tr><td><code>src/dx402/</code> <span class="muted" data-i18n="w.fac">this facilitator</span></td>
+<td data-i18n="w.facRuns">notary and index: signs EIP-712 receipts, records pointers</td>
+<td data-i18n="w.facHolds">in <code>direct</code> mode, neither plaintext nor key material</td></tr>
+<tr><td><code>x402-reqwest</code> <span class="muted" data-i18n="w.buyer">the buyer</span></td>
+<td data-i18n="w.buyerRuns">fetches, decrypts and checks <code>contentHash</code></td>
+<td data-i18n="w.buyerHolds">the private key, which never leaves that side</td></tr>
+</tbody>
+</table>
+</div></div></details>
+<details class="product-detail" id="rules">
+<summary><h2 data-i18n="h.rules">Encryption and verification</h2>
+</summary>
+<div class="detail-content"><div class="note warn">
+<p style="margin:0"><b data-i18n="rules.neverFailTitle">Evidence storage is independent of payment success.</b> <span data-i18n="rules.neverFailText">If saving evidence fails, the payment result is preserved and the integration reports why evidence was skipped. Buyers should check that evidence was actually created before relying on later recovery.</span></p>
+</div><ul>
+<li data-i18n="rules.hash"><b><code>contentHash</code> is over the PLAINTEXT.</b> Over the ciphertext it would only prove the blob was not corrupted. Over the plaintext it proves the anchor decrypts to what was actually delivered — which is the entire claim.</li>
+<li data-i18n="rules.pid"><b><code>paymentId</code> is the AEAD associated data</b>, and it is <code>keccak256(caip2Network || txHash)</code>. Derive it differently on either side and decryption fails with nothing to point at.</li>
+<li data-i18n="rules.anchor"><b>Anchoring is publishing.</b> Retention defaults to 90 days on purpose. A permanent, irrevocable anchor is a decision the buyer has to make, not a default someone inherits.</li>
+<li data-i18n="rules.small"><b>Key validation.</b> Small-order ed25519 keys are rejected to protect the encryption process.</li>
+<li data-i18n="rules.domain"><b>Signature metadata.</b> EVM key recovery uses the facilitator’s EIP-712 metadata lookup.</li>
+</ul></div></details>
+<details class="product-detail" id="backends-section">
+<summary><h2 data-i18n="h.backends">Storage and retention</h2>
+</summary>
+<div class="detail-content"><p data-i18n="backends.p1">Storage availability and retention depend on the configured backend. The table below reports the current service configuration.</p><div class="scroll">
+<table>
+<thead><tr>
+<th data-i18n="b.th.id">backend</th><th data-i18n="b.th.retention">retention</th>
+<th data-i18n="b.th.revocable">revocable</th><th data-i18n="b.th.public">public</th>
+<th data-i18n="b.th.enabled">enabled</th>
+</tr></thead>
+<tbody id="backends"><tr><td class="muted" colspan="5" data-i18n="loading">loading…</td></tr></tbody>
+</table>
+</div>
+<details class="product-detail runtime-detail">
+<summary data-i18n="ui.activity">Live service details</summary>
 <div class="cards">
-  <div class="card"><div class="v" id="d-anchored">—</div><div class="k" data-i18n="d.anchored">responses anchored</div><div class="src" data-i18n="d.src">GET /dx402/stats</div></div>
-  <div class="card"><div class="v mono" id="d-mode">—</div><div class="k" data-i18n="d.mode">default retention</div><div class="src" data-i18n="d.src">GET /dx402/stats</div></div>
-  <div class="card"><div class="v mono" id="d-backend">—</div><div class="k" data-i18n="d.backend">active backend</div><div class="src" data-i18n="d.src">GET /dx402/stats</div></div>
-  <div class="card"><div class="v mono" id="d-signer">—</div><div class="k" data-i18n="d.signer">receipt signer</div><div class="src" data-i18n="d.signerSrc">signs attestations only — no funds, no gas</div></div>
-</div>
-<p class="muted" id="d-note">&nbsp;</p>
-
-<h2 data-i18n="h.idea">The idea, in one sentence</h2>
-
-<p data-i18n="idea.p1"><b>A payment authorization is a signature, and a signature yields the signer's public key</b> — not merely their address. So paying <em>is</em> publishing your encryption key. There is nothing to register and no extra round trip: by the time the seller has been paid, it already holds everything it needs to encrypt the response to the one wallet that is entitled to read it.</p>
-
-<p data-i18n="idea.p2">Four of the seven chain families need nothing but the address, because Solana, Stellar, Algorand and NEAR are ed25519 and the address <em>is</em> the key. EVM and XRPL recover it from the signature. Sui reads it out of the signature envelope. No family needs a step the buyer has to remember to take.</p>
-
-<h2 data-i18n="h.where">Where each piece runs</h2>
-
-<p data-i18n="where.p1">The facilitator is <b>not</b> in the response path. It sees <code>/verify</code> and <code>/settle</code> and never a body, so it could not encrypt one even if it wanted to. That constraint decides the whole architecture:</p>
-
-<div class="scroll">
-<table>
-  <thead><tr><th data-i18n="w.th.piece">piece</th><th data-i18n="w.th.runs">runs</th><th data-i18n="w.th.holds">holds</th></tr></thead>
-  <tbody>
-    <tr><td><code>x402-axum</code> <span class="muted" data-i18n="w.seller">the seller hook</span></td>
-        <td data-i18n="w.sellerRuns">in the seller, at the one point where the delivered body and the settlement identity both exist</td>
-        <td data-i18n="w.sellerHolds">the plaintext. It encrypts and uploads.</td></tr>
-    <tr><td><code>src/dx402/</code> <span class="muted" data-i18n="w.fac">this facilitator</span></td>
-        <td data-i18n="w.facRuns">notary and index: signs EIP-712 receipts, records pointers</td>
-        <td data-i18n="w.facHolds">in <code>direct</code> mode, neither plaintext nor key material</td></tr>
-    <tr><td><code>x402-reqwest</code> <span class="muted" data-i18n="w.buyer">the buyer</span></td>
-        <td data-i18n="w.buyerRuns">fetches, decrypts and checks <code>contentHash</code></td>
-        <td data-i18n="w.buyerHolds">the private key, which never leaves that side</td></tr>
-  </tbody>
-</table>
-</div>
-
-<h2 data-i18n="h.rules">The rules that are load-bearing</h2>
-
-<div class="note warn">
-  <p style="margin:0"><b data-i18n="rules.neverFailTitle">DX402 can never fail a payment.</b> <span data-i18n="rules.neverFailText">Every failure degrades to a reason carried in the <code>X-Durable-Evidence</code> header — <code>too_large</code>, <code>anchor_failed</code>, <code>no_payer_key</code>, <code>disabled</code> — and the payment goes through regardless. An extension that can take down settlement is not an extension, it is a liability.</span></p>
-</div>
-
-<ul>
-  <li data-i18n="rules.hash"><b><code>contentHash</code> is over the PLAINTEXT.</b> Over the ciphertext it would only prove the blob was not corrupted. Over the plaintext it proves the anchor decrypts to what was actually delivered — which is the entire claim.</li>
-  <li data-i18n="rules.pid"><b><code>paymentId</code> is the AEAD associated data</b>, and it is <code>keccak256(caip2Network || txHash)</code>. Derive it differently on either side and decryption fails with nothing to point at.</li>
-  <li data-i18n="rules.anchor"><b>Anchoring is publishing.</b> Retention defaults to 90 days on purpose. A permanent, irrevocable anchor is a decision the buyer has to make, not a default someone inherits.</li>
-  <li data-i18n="rules.small"><b>Small-order ed25519 keys are rejected</b>, in constant time (RFC 7748 §6.1). <code>ed25519-dalek</code> accepts non-canonical and small-order encodings, and unchecked that collapses the shared secret to a constant. The check is tested against libsodium's seven-value blacklist — not against invented vectors, which is exactly how three fabricated hashes once passed CI for months by being compared only to themselves.</li>
-  <li data-i18n="rules.domain"><b>Domain resolution is not duplicated.</b> DX402 calls the facilitator's own EIP-712 metadata lookup rather than keeping a second copy, because a second copy drifts and then silently recovers a different — perfectly valid — public key.</li>
-</ul>
-
-<h2 data-i18n="h.backends">The backends, and which one is on</h2>
-<p data-i18n="backends.p1">Read from <code>/dx402/stats</code>, not described here. A backend that is provisioned is not the same as a backend that is switched on, and the difference is the whole point of the column that says so.</p>
-<div class="scroll">
-<table>
-  <thead><tr>
-    <th data-i18n="b.th.id">backend</th><th data-i18n="b.th.retention">retention</th>
-    <th data-i18n="b.th.revocable">revocable</th><th data-i18n="b.th.public">public</th>
-    <th data-i18n="b.th.enabled">enabled</th>
-  </tr></thead>
-  <tbody id="backends"><tr><td colspan="5" class="muted" data-i18n="loading">loading…</td></tr></tbody>
-</table>
-</div>
-
-<h2 data-i18n="h.api">The endpoints</h2>
-<div class="scroll">
-<table>
-  <thead><tr><th data-i18n="a.th.route">route</th><th data-i18n="a.th.what">what it does</th></tr></thead>
-  <tbody>
-    <tr><td><code>POST /dx402/anchor</code></td><td data-i18n="a.anchor">record a pointer and sign its receipt</td></tr>
-    <tr><td><code>GET /dx402/evidence/{paymentId}</code></td><td data-i18n="a.evidence">what is anchored for that payment</td></tr>
-    <tr><td><code>GET /dx402/receipt/{paymentId}</code></td><td data-i18n="a.receipt">the signed EIP-712 attestation</td></tr>
-    <tr><td><code>GET /dx402/blob/{paymentId}</code></td><td data-i18n="a.blob">the sealed bytes. The store is private: a pointer resolves through here, never through a public bucket, and it addresses the <em>payment</em> rather than a storage key so old pointers survive a re-layout</td></tr>
-    <tr><td><code>GET /dx402/stats</code></td><td data-i18n="a.stats">the four numbers at the top of this page</td></tr>
-    <tr><td><code>POST /dx402/recover</code></td><td data-i18n="a.recover">not implemented in v0.1 — answers 501 rather than pretending</td></tr>
-  </tbody>
-</table>
-</div>
-
-<h2 data-i18n="h.status">Where this stands</h2>
-<p data-i18n="status.p1">Running, and counted above. It is <b>not</b> a proposed x402 standard: the Foundation asks for a reviewed pull request, and a proposal with no production traffic behind it gets discarded. The order is traffic first, proposal second. The specification, the research and the prior-art survey are in the repository, and the handoffs for the four products already wired to it are next to them.</p>
-
+<div class="card"><div class="v" id="d-anchored">—</div><div class="k" data-i18n="d.anchored">responses anchored</div><div class="src" data-i18n="d.src">GET /dx402/stats</div></div>
+<div class="card"><div class="v mono" id="d-mode">—</div><div class="k" data-i18n="d.mode">default retention</div><div class="src" data-i18n="d.src">GET /dx402/stats</div></div>
+<div class="card"><div class="v mono" id="d-backend">—</div><div class="k" data-i18n="d.backend">active backend</div><div class="src" data-i18n="d.src">GET /dx402/stats</div></div>
+<div class="card"><div class="v mono" id="d-signer">—</div><div class="k" data-i18n="d.signer">receipt signer</div><div class="src" data-i18n="d.signerSrc">signs attestations only — no funds, no gas</div></div>
+</div><p class="muted" id="d-note"> </p></details>
+</div></details>
+<details class="product-detail" id="status">
+<summary><h2 data-i18n="h.status">Project status and specification</h2>
+</summary>
+<div class="detail-content"><p data-i18n="status.p1">DX402 is the durable-evidence extension implemented by Ultravioleta DAO. Read the <a href="https://github.com/UltravioletaDAO/x402-rs/blob/main/docs/plans/dx402/02-SPEC-v0.1.md">specification and integration details</a>. It is not part of the core x402 standard.</p></div></details>
 </main>
 
 <footer class="footer">
@@ -169,131 +170,195 @@
 <script>
 const I18N = {
   en: {
-    "footer.by":"Ultravioleta DAO · x402 payment facilitator · 0% fee",
-    "h1":"Keep a copy of the response you already paid for",
-    "nav.bazaar":"Bazaar",
-    "nav.dx402":"DX402",
-    "nav.erc8004":"ERC-8004",
-    "nav.home":"Overview",
-    "nav.integrate":"Integrate",
-    "nav.mcp":"MCP",
-    "nav.networks":"Networks",
-    "nav.x402":"x402",
-    "next.erc8004":"ERC-8004",
-    "next.erc8004.why":"the other thing that stays written after paying",
-    "next.h":"And after this",
-    "next.integrar":"Integrate",
-    "next.integrar.why":"how to ask for the evidence while integrating",
-    "next.x402":"x402",
-    "next.x402.why":"the payment the evidence hangs off",
-    "title":"DX402 - durable evidence for x402",
-    "lead":"The seller seals it to the public key your payment already revealed and you recover it later with the same wallet — 90 days by default, and it can never fail the payment it rides on.",
-    "d.anchored":"responses anchored", "d.mode":"default retention",
-    "d.backend":"active backend", "d.signer":"receipt signer",
-    "d.src":"GET /dx402/stats", "d.signerSrc":"signs attestations only — no funds, no gas",
-    "h.idea":"The idea, in one sentence",
-    "idea.p1":"<b>A payment authorization is a signature, and a signature yields the signer's public key</b> — not merely their address. So paying <em>is</em> publishing your encryption key. There is nothing to register and no extra round trip: by the time the seller has been paid, it already holds everything it needs to encrypt the response to the one wallet that is entitled to read it.",
-    "idea.p2":"Four of the seven chain families need nothing but the address, because Solana, Stellar, Algorand and NEAR are ed25519 and the address <em>is</em> the key. EVM and XRPL recover it from the signature. Sui reads it out of the signature envelope. No family needs a step the buyer has to remember to take.",
-    "h.where":"Where each piece runs",
-    "where.p1":"The facilitator is <b>not</b> in the response path. It sees <code>/verify</code> and <code>/settle</code> and never a body, so it could not encrypt one even if it wanted to. That constraint decides the whole architecture:",
-    "w.th.piece":"piece", "w.th.runs":"runs", "w.th.holds":"holds",
-    "w.seller":"the seller hook",
-    "w.sellerRuns":"in the seller, at the one point where the delivered body and the settlement identity both exist",
-    "w.sellerHolds":"the plaintext. It encrypts and uploads.",
-    "w.fac":"this facilitator",
-    "w.facRuns":"notary and index: signs EIP-712 receipts, records pointers",
-    "w.facHolds":"in <code>direct</code> mode, neither plaintext nor key material",
-    "w.buyer":"the buyer",
-    "w.buyerRuns":"fetches, decrypts and checks <code>contentHash</code>",
-    "w.buyerHolds":"the private key, which never leaves that side",
-    "h.rules":"The rules that are load-bearing",
-    "rules.neverFailTitle":"DX402 can never fail a payment.",
-    "rules.neverFailText":"Every failure degrades to a reason carried in the <code>X-Durable-Evidence</code> header — <code>too_large</code>, <code>anchor_failed</code>, <code>no_payer_key</code>, <code>disabled</code> — and the payment goes through regardless. An extension that can take down settlement is not an extension, it is a liability.",
-    "rules.hash":"<b><code>contentHash</code> is over the PLAINTEXT.</b> Over the ciphertext it would only prove the blob was not corrupted. Over the plaintext it proves the anchor decrypts to what was actually delivered — which is the entire claim.",
-    "rules.pid":"<b><code>paymentId</code> is the AEAD associated data</b>, and it is <code>keccak256(caip2Network || txHash)</code>. Derive it differently on either side and decryption fails with nothing to point at.",
-    "rules.anchor":"<b>Anchoring is publishing.</b> Retention defaults to 90 days on purpose. A permanent, irrevocable anchor is a decision the buyer has to make, not a default someone inherits.",
-    "rules.small":"<b>Small-order ed25519 keys are rejected</b>, in constant time (RFC 7748 §6.1). <code>ed25519-dalek</code> accepts non-canonical and small-order encodings, and unchecked that collapses the shared secret to a constant. The check is tested against libsodium's seven-value blacklist — not against invented vectors, which is exactly how three fabricated hashes once passed CI for months by being compared only to themselves.",
-    "rules.domain":"<b>Domain resolution is not duplicated.</b> DX402 calls the facilitator's own EIP-712 metadata lookup rather than keeping a second copy, because a second copy drifts and then silently recovers a different — perfectly valid — public key.",
-    "h.backends":"The backends, and which one is on",
-    "backends.p1":"Read from <code>/dx402/stats</code>, not described here. A backend that is provisioned is not the same as a backend that is switched on, and the difference is the whole point of the column that says so.",
-    "b.th.id":"backend", "b.th.retention":"retention", "b.th.revocable":"revocable",
-    "b.th.public":"public", "b.th.enabled":"enabled",
-    "h.api":"The endpoints",
-    "a.th.route":"route", "a.th.what":"what it does",
-    "a.anchor":"record a pointer and sign its receipt",
-    "a.evidence":"what is anchored for that payment",
-    "a.receipt":"the signed EIP-712 attestation",
-    "a.blob":"the sealed bytes. The store is private: a pointer resolves through here, never through a public bucket, and it addresses the <em>payment</em> rather than a storage key so old pointers survive a re-layout",
-    "a.stats":"the four numbers at the top of this page",
-    "a.recover":"not implemented in v0.1 — answers 501 rather than pretending",
-    "h.status":"Where this stands",
-    "status.p1":"Running, and counted above. It is <b>not</b> a proposed x402 standard: the Foundation asks for a reviewed pull request, and a proposal with no production traffic behind it gets discarded. The order is traffic first, proposal second. The specification, the research and the prior-art survey are in the repository, and the handoffs for the four products already wired to it are next to them.",
-    footer:"Ultravioleta DAO · x402 Payment Facilitator.",
-    loading:"loading…", yes:"yes", no:"no", off:"off",
+    "footer.by": "Ultravioleta DAO · x402 payment facilitator · 0% fee",
+    "h1": "Keep a private copy of your API response.",
+    "nav.bazaar": "Bazaar",
+    "nav.dx402": "DX402",
+    "nav.erc8004": "ERC-8004",
+    "nav.home": "Overview",
+    "nav.integrate": "Integrate",
+    "nav.mcp": "MCP",
+    "nav.networks": "Networks",
+    "nav.x402": "x402",
+    "next.erc8004": "ERC-8004",
+    "next.erc8004.why": "the other thing that stays written after paying",
+    "next.h": "And after this",
+    "next.integrar": "Integrate",
+    "next.integrar.why": "how to ask for the evidence while integrating",
+    "next.x402": "x402",
+    "next.x402.why": "the payment the evidence hangs off",
+    "title": "DX402 - durable evidence for x402",
+    "lead": "Save an encrypted copy of the API response you paid for. Retrieve it later and verify that it matches what was delivered.",
+    "d.anchored": "responses anchored",
+    "d.mode": "default retention",
+    "d.backend": "active backend",
+    "d.signer": "receipt signer",
+    "d.src": "GET /dx402/stats",
+    "d.signerSrc": "signs attestations only — no funds, no gas",
+    "h.idea": "How it works",
+    "idea.p1": "The seller saves an encrypted copy of the response and records its location and content hash. The buyer can retrieve that copy later and check that its decrypted content matches the recorded hash.",
+    "idea.p2": "Access uses the buyer’s encryption key material. Key recovery depends on the network, wallet, and integration; supported flows can recover it from the payment or use an explicitly declared buyer key.",
+    "h.where": "Architecture and responsibilities",
+    "where.p1": "The seller handles the response, the facilitator records the evidence, and the buyer decrypts it. In direct mode, the facilitator holds neither the plaintext nor the buyer’s private key.",
+    "w.th.piece": "piece",
+    "w.th.runs": "runs",
+    "w.th.holds": "holds",
+    "w.seller": "the seller hook",
+    "w.sellerRuns": "in the seller, at the one point where the delivered body and the settlement identity both exist",
+    "w.sellerHolds": "the plaintext. It encrypts and uploads.",
+    "w.fac": "this facilitator",
+    "w.facRuns": "notary and index: signs EIP-712 receipts, records pointers",
+    "w.facHolds": "in <code>direct</code> mode, neither plaintext nor key material",
+    "w.buyer": "the buyer",
+    "w.buyerRuns": "fetches, decrypts and checks <code>contentHash</code>",
+    "w.buyerHolds": "the private key, which never leaves that side",
+    "h.rules": "Encryption and verification",
+    "rules.neverFailTitle": "Evidence storage is independent of payment success.",
+    "rules.neverFailText": "If saving evidence fails, the payment result is preserved and the integration reports why evidence was skipped. Buyers should check that evidence was actually created before relying on later recovery.",
+    "rules.hash": "<b><code>contentHash</code> is over the PLAINTEXT.</b> Over the ciphertext it would only prove the blob was not corrupted. Over the plaintext it proves the anchor decrypts to what was actually delivered — which is the entire claim.",
+    "rules.pid": "<b><code>paymentId</code> is the AEAD associated data</b>, and it is <code>keccak256(caip2Network || txHash)</code>. Derive it differently on either side and decryption fails with nothing to point at.",
+    "rules.anchor": "<b>Anchoring is publishing.</b> Retention defaults to 90 days on purpose. A permanent, irrevocable anchor is a decision the buyer has to make, not a default someone inherits.",
+    "rules.small": "<b>Key validation.</b> Small-order ed25519 keys are rejected to protect the encryption process.",
+    "rules.domain": "<b>Signature metadata.</b> EVM key recovery uses the facilitator’s EIP-712 metadata lookup.",
+    "h.backends": "Storage and retention",
+    "backends.p1": "Storage availability and retention depend on the configured backend. The table below reports the current service configuration.",
+    "b.th.id": "backend",
+    "b.th.retention": "retention",
+    "b.th.revocable": "revocable",
+    "b.th.public": "public",
+    "b.th.enabled": "enabled",
+    "h.api": "API reference",
+    "a.th.route": "route",
+    "a.th.what": "what it does",
+    "a.anchor": "record a pointer and sign its receipt",
+    "a.evidence": "what is anchored for that payment",
+    "a.receipt": "the signed EIP-712 attestation",
+    "a.blob": "the sealed bytes. The store is private: a pointer resolves through here, never through a public bucket, and it addresses the <em>payment</em> rather than a storage key so old pointers survive a re-layout",
+    "a.stats": "storage configuration and evidence counters",
+    "a.recover": "not implemented in v0.1 — answers 501 rather than pretending",
+    "h.status": "Project status and specification",
+    "status.p1": "DX402 is the durable-evidence extension implemented by Ultravioleta DAO. Read the <a href='https://github.com/UltravioletaDAO/x402-rs/blob/main/docs/plans/dx402/02-SPEC-v0.1.md'>specification and integration details</a>. It is not part of the core x402 standard.",
+    "footer": "Ultravioleta DAO · x402 Payment Facilitator.",
+    "loading": "loading…",
+    "yes": "yes",
+    "no": "no",
+    "off": "off",
+    "ui.label": "DX402 / Durable evidence",
+    "ui.journey": "The flow at a glance",
+    "ui.onpage": "On this page",
+    "ui.activity": "Live service details",
+    "ui.technical": "Technical details",
+    "ui.primary": "Get started",
+    "ui.secondary": "API reference",
+    "ui.step0": "Pay for a response",
+    "ui.desc0": "Use an API that supports durable evidence.",
+    "ui.step1": "The seller saves a private copy",
+    "ui.desc1": "The response is encrypted for the buyer.",
+    "ui.step2": "Retrieve and verify",
+    "ui.desc2": "Use the payment ID to find the evidence.",
+    "ui.start": "Start with your role",
+    "ui.buyer": "I bought an API response",
+    "ui.buyerText": "Use a seller that supports DX402. Keep the payment ID and the buyer key used for that purchase. Retrieve the evidence record, download the encrypted copy, then decrypt and verify it locally.",
+    "ui.seller": "I sell access to an API",
+    "ui.sellerText": "Add the durable-evidence hook to your seller integration. Once the payment succeeds, encrypt the delivered response, upload it to the configured storage, and anchor the evidence.",
+    "ui.guide": "Open the integration guide",
+    "ui.lookup": "Find a saved response"
   },
   es: {
-    "footer.by":"Ultravioleta DAO · facilitador de pagos x402 · 0% de comisión",
-    "h1":"Quedate con una copia de la respuesta que ya pagaste",
-    "nav.bazaar":"Bazar",
-    "nav.dx402":"DX402",
-    "nav.erc8004":"ERC-8004",
-    "nav.home":"Resumen",
-    "nav.integrate":"Integrar",
-    "nav.mcp":"MCP",
-    "nav.networks":"Redes",
-    "nav.x402":"x402",
-    "next.erc8004":"ERC-8004",
-    "next.erc8004.why":"la otra cosa que queda escrita después de pagar",
-    "next.h":"Y después de esto",
-    "next.integrar":"Integrar",
-    "next.integrar.why":"cómo se pide la evidencia al integrar",
-    "next.x402":"x402",
-    "next.x402.why":"el pago del que cuelga la evidencia",
-    "title":"DX402 - evidencia durable para x402",
-    "lead":"El vendedor la sella contra la clave pública que tu pago ya reveló y la recuperás después con la misma wallet — 90 días por defecto, y nunca puede hacer fallar el pago sobre el que viaja.",
-    "d.anchored":"respuestas ancladas", "d.mode":"retención por defecto",
-    "d.backend":"backend activo", "d.signer":"firmante de recibos",
-    "d.src":"GET /dx402/stats", "d.signerSrc":"solo firma atestaciones — sin fondos, sin gas",
-    "h.idea":"La idea, en una frase",
-    "idea.p1":"<b>Una autorización de pago es una firma, y una firma da la clave pública de quien firmó</b> — no solamente su dirección. Así que pagar <em>es</em> publicar tu clave de cifrado. No hay nada que registrar ni un viaje de ida y vuelta de más: para cuando al vendedor le pagaron, ya tiene todo lo que necesita para cifrar la respuesta hacia la única wallet que tiene derecho a leerla.",
-    "idea.p2":"Cuatro de las siete familias de cadenas no necesitan más que la dirección, porque Solana, Stellar, Algorand y NEAR son ed25519 y la dirección <em>es</em> la clave. EVM y XRPL la recuperan de la firma. Sui la lee del sobre de la firma. Ninguna familia necesita un paso que el comprador tenga que acordarse de dar.",
-    "h.where":"Dónde corre cada pieza",
-    "where.p1":"El facilitador <b>no</b> está en el camino de la respuesta. Ve <code>/verify</code> y <code>/settle</code> y nunca un cuerpo, así que no podría cifrar uno aunque quisiera. Esa restricción decide toda la arquitectura:",
-    "w.th.piece":"pieza", "w.th.runs":"corre", "w.th.holds":"tiene",
-    "w.seller":"el hook del vendedor",
-    "w.sellerRuns":"en el vendedor, en el único punto donde coexisten el cuerpo entregado y la identidad de la liquidación",
-    "w.sellerHolds":"el texto plano. Cifra y sube.",
-    "w.fac":"este facilitador",
-    "w.facRuns":"notario e índice: firma recibos EIP-712, registra punteros",
-    "w.facHolds":"en modo <code>direct</code>, ni texto plano ni material de clave",
-    "w.buyer":"el comprador",
-    "w.buyerRuns":"busca, descifra y verifica el <code>contentHash</code>",
-    "w.buyerHolds":"la clave privada, que nunca sale de ese lado",
-    "h.rules":"Las reglas que sostienen todo",
-    "rules.neverFailTitle":"DX402 no puede hacer fallar un pago, nunca.",
-    "rules.neverFailText":"Toda falla degrada a un motivo que viaja en el header <code>X-Durable-Evidence</code> — <code>too_large</code>, <code>anchor_failed</code>, <code>no_payer_key</code>, <code>disabled</code> — y el pago pasa igual. Una extensión que puede tumbar la liquidación no es una extensión, es un pasivo.",
-    "rules.hash":"<b>El <code>contentHash</code> es sobre el TEXTO PLANO.</b> Sobre el cifrado solo probaría que el blob no se corrompió. Sobre el texto plano prueba que el ancla descifra a lo que realmente se entregó — que es la afirmación entera.",
-    "rules.pid":"<b>El <code>paymentId</code> es el dato asociado del AEAD</b>, y es <code>keccak256(caip2Network || txHash)</code>. Derivalo distinto de cada lado y el descifrado falla sin nada a lo que apuntar.",
-    "rules.anchor":"<b>Anclar es publicar.</b> La retención es de 90 días por defecto a propósito. Un ancla permanente e irrevocable es una decisión que tiene que tomar el comprador, no un default que alguien hereda.",
-    "rules.small":"<b>Las claves ed25519 de orden pequeño se rechazan</b>, en tiempo constante (RFC 7748 §6.1). <code>ed25519-dalek</code> acepta codificaciones no canónicas y de orden pequeño, y sin ese chequeo el secreto compartido colapsa a una constante. El chequeo se prueba contra la lista negra de siete valores de libsodium — no contra vectores inventados, que es exactamente cómo tres hashes fabricados pasaron el CI durante meses comparándose solo consigo mismos.",
-    "rules.domain":"<b>La resolución de dominio no se duplica.</b> DX402 llama a la búsqueda de metadatos EIP-712 del propio facilitador en vez de tener una segunda copia, porque una segunda copia deriva y después recupera en silencio otra clave pública, perfectamente válida.",
-    "h.backends":"Los backends, y cuál está prendido",
-    "backends.p1":"Leídos de <code>/dx402/stats</code>, no descritos acá. Un backend aprovisionado no es lo mismo que un backend prendido, y esa diferencia es todo el punto de la columna que lo dice.",
-    "b.th.id":"backend", "b.th.retention":"retención", "b.th.revocable":"revocable",
-    "b.th.public":"público", "b.th.enabled":"prendido",
-    "h.api":"Los endpoints",
-    "a.th.route":"ruta", "a.th.what":"qué hace",
-    "a.anchor":"registra un puntero y firma su recibo",
-    "a.evidence":"qué hay anclado para ese pago",
-    "a.receipt":"la atestación EIP-712 firmada",
-    "a.blob":"los bytes sellados. El almacén es privado: un puntero se resuelve por acá, nunca por un bucket público, y direcciona el <em>pago</em> y no una clave de almacenamiento, así los punteros viejos sobreviven a un re-layout",
-    "a.stats":"los cuatro números de arriba de esta página",
-    "a.recover":"no implementado en v0.1 — contesta 501 en vez de fingir",
-    "h.status":"En qué punto está",
-    "status.p1":"Corriendo, y contado arriba. <b>No</b> es un estándar x402 propuesto: la Foundation pide un pull request revisado, y una propuesta sin tráfico de producción detrás se descarta. El orden es tráfico primero, propuesta después. La especificación, la investigación y el relevamiento de trabajo previo están en el repositorio, y los handoffs de los cuatro productos ya cableados están al lado.",
-    footer:"Ultravioleta DAO · Facilitador de pagos x402.",
-    loading:"cargando…", yes:"sí", no:"no", off:"apagado",
-  },
+    "footer.by": "Ultravioleta DAO · facilitador de pagos x402 · 0% de comisión",
+    "h1": "Conserva la respuesta de tu compra.",
+    "nav.bazaar": "Bazar",
+    "nav.dx402": "DX402",
+    "nav.erc8004": "ERC-8004",
+    "nav.home": "Resumen",
+    "nav.integrate": "Integrar",
+    "nav.mcp": "MCP",
+    "nav.networks": "Redes",
+    "nav.x402": "x402",
+    "next.erc8004": "ERC-8004",
+    "next.erc8004.why": "la otra cosa que queda escrita después de pagar",
+    "next.h": "Y después de esto",
+    "next.integrar": "Integrar",
+    "next.integrar.why": "cómo se pide la evidencia al integrar",
+    "next.x402": "x402",
+    "next.x402.why": "el pago del que cuelga la evidencia",
+    "title": "DX402 - evidencia durable para x402",
+    "lead": "Guarda una copia cifrada de la respuesta por la que pagaste. Recupérala después y verifica que coincide con lo entregado.",
+    "d.anchored": "respuestas ancladas",
+    "d.mode": "retención por defecto",
+    "d.backend": "backend activo",
+    "d.signer": "firmante de recibos",
+    "d.src": "GET /dx402/stats",
+    "d.signerSrc": "solo firma atestaciones — sin fondos, sin gas",
+    "h.idea": "Cómo funciona",
+    "idea.p1": "El vendedor guarda una copia cifrada de la respuesta y registra su ubicación y hash de contenido. El comprador puede recuperarla después y comprobar que el contenido descifrado coincide con el hash registrado.",
+    "idea.p2": "El acceso usa el material de cifrado del comprador. La recuperación de la clave depende de la red, la wallet y la integración; los flujos compatibles pueden obtenerla del pago o usar una clave declarada por el comprador.",
+    "h.where": "Arquitectura y responsabilidades",
+    "where.p1": "El vendedor maneja la respuesta, el facilitador registra la evidencia y el comprador la descifra. En modo directo, el facilitador no conserva el texto sin cifrar ni la clave privada del comprador.",
+    "w.th.piece": "pieza",
+    "w.th.runs": "corre",
+    "w.th.holds": "tiene",
+    "w.seller": "el hook del vendedor",
+    "w.sellerRuns": "en el vendedor, en el único punto donde coexisten el cuerpo entregado y la identidad de la liquidación",
+    "w.sellerHolds": "el texto plano. Cifra y sube.",
+    "w.fac": "este facilitador",
+    "w.facRuns": "notario e índice: firma recibos EIP-712, registra punteros",
+    "w.facHolds": "en modo <code>direct</code>, ni texto plano ni material de clave",
+    "w.buyer": "el comprador",
+    "w.buyerRuns": "busca, descifra y verifica el <code>contentHash</code>",
+    "w.buyerHolds": "la clave privada, que nunca sale de ese lado",
+    "h.rules": "Cifrado y verificación",
+    "rules.neverFailTitle": "Guardar la evidencia es independiente del éxito del pago.",
+    "rules.neverFailText": "Si falla el guardado, se conserva el resultado del pago y la integración informa por qué se omitió la evidencia. El comprador debe comprobar que se creó antes de depender de su recuperación posterior.",
+    "rules.hash": "<b>El <code>contentHash</code> es sobre el TEXTO PLANO.</b> Sobre el cifrado solo probaría que el blob no se corrompió. Sobre el texto plano prueba que el ancla descifra a lo que realmente se entregó — que es la afirmación entera.",
+    "rules.pid": "<b>El <code>paymentId</code> es el dato asociado del AEAD</b>, y es <code>keccak256(caip2Network || txHash)</code>. Derivalo distinto de cada lado y el descifrado falla sin nada a lo que apuntar.",
+    "rules.anchor": "<b>Anclar es publicar.</b> La retención es de 90 días por defecto a propósito. Un ancla permanente e irrevocable es una decisión que tiene que tomar el comprador, no un default que alguien hereda.",
+    "rules.small": "<b>Validación de claves.</b> Se rechazan las claves ed25519 de orden pequeño para proteger el proceso de cifrado.",
+    "rules.domain": "<b>Metadatos de firma.</b> La recuperación de claves EVM usa la consulta de metadatos EIP-712 del facilitador.",
+    "h.backends": "Almacenamiento y retención",
+    "backends.p1": "La disponibilidad y retención dependen del almacenamiento configurado. La tabla muestra la configuración actual del servicio.",
+    "b.th.id": "backend",
+    "b.th.retention": "retención",
+    "b.th.revocable": "revocable",
+    "b.th.public": "público",
+    "b.th.enabled": "prendido",
+    "h.api": "Referencia de API",
+    "a.th.route": "ruta",
+    "a.th.what": "qué hace",
+    "a.anchor": "registra un puntero y firma su recibo",
+    "a.evidence": "qué hay anclado para ese pago",
+    "a.receipt": "la atestación EIP-712 firmada",
+    "a.blob": "los bytes sellados. El almacén es privado: un puntero se resuelve por acá, nunca por un bucket público, y direcciona el <em>pago</em> y no una clave de almacenamiento, así los punteros viejos sobreviven a un re-layout",
+    "a.stats": "configuración de almacenamiento y contadores de evidencia de esta página",
+    "a.recover": "no implementado en v0.1 — contesta 501 en vez de fingir",
+    "h.status": "Estado del proyecto y especificación",
+    "status.p1": "DX402 es la extensión de evidencia durable implementada por Ultravioleta DAO. Consulta la <a href='https://github.com/UltravioletaDAO/x402-rs/blob/main/docs/plans/dx402/02-SPEC-v0.1.md'>especificación y los detalles de integración</a>. No forma parte del estándar central de x402.",
+    "footer": "Ultravioleta DAO · Facilitador de pagos x402.",
+    "loading": "cargando…",
+    "yes": "sí",
+    "no": "no",
+    "off": "apagado",
+    "ui.label": "DX402 / Evidencia durable",
+    "ui.journey": "El flujo de un vistazo",
+    "ui.onpage": "En esta página",
+    "ui.activity": "Detalles del servicio en vivo",
+    "ui.technical": "Detalles técnicos",
+    "ui.primary": "Cómo empezar",
+    "ui.secondary": "Referencia de API",
+    "ui.step0": "Paga por una respuesta",
+    "ui.desc0": "Usa una API compatible con evidencia durable.",
+    "ui.step1": "El vendedor guarda una copia privada",
+    "ui.desc1": "La respuesta se cifra para el comprador.",
+    "ui.step2": "Recupera y verifica",
+    "ui.desc2": "Encuentra la evidencia con el ID del pago.",
+    "ui.start": "Empieza por tu rol",
+    "ui.buyer": "Compré una respuesta de una API",
+    "ui.buyerText": "Usa un vendedor compatible con DX402. Conserva el ID del pago y la clave del comprador usada en esa compra. Consulta la evidencia, descarga la copia cifrada y descífrala y verifícala localmente.",
+    "ui.seller": "Vendo acceso a una API",
+    "ui.sellerText": "Añade el hook de evidencia durable a tu integración de vendedor. Cuando el pago termine, cifra la respuesta entregada, súbela al almacenamiento configurado y ancla la evidencia.",
+    "ui.guide": "Abrir la guía de integración",
+    "ui.lookup": "Encuentra una respuesta guardada"
+  }
 };
 
 let LANG = 'en';
@@ -352,6 +417,27 @@ fetch('/dx402/stats').then(r => r.ok ? r.json() : null).then(d => {
 }).catch(() => { /* leave the dashes */ });
 
 applyLang(LANG);
+</script>
+
+<script>
+// Make links to collapsed reference sections work with mouse, keyboard and deep links.
+(() => {
+  const reveal = () => {
+    let id;
+    try { id = decodeURIComponent(location.hash.slice(1)); } catch (_) { return; }
+    const target = document.getElementById(id);
+    if (!target) return;
+    for (let node = target; node; node = node.parentElement) {
+      if (node.tagName === 'DETAILS') node.open = true;
+    }
+  };
+  addEventListener('hashchange', reveal);
+  document.querySelectorAll('.page-toc a').forEach(link => link.addEventListener('click', () => {
+    const target = document.getElementById(link.hash.slice(1));
+    if (target && target.tagName === 'DETAILS') target.open = true;
+  }));
+  reveal();
+})();
 </script>
 </body>
 </html>

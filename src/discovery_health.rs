@@ -97,8 +97,9 @@ impl HealthRecord {
 }
 
 /// Outcome class of a single probe.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum ProbeClass {
+    #[default]
     Alive,
     AuthGated,
     Degraded,
@@ -265,10 +266,7 @@ impl HealthTracker {
     /// uploaded every minute** -- 7 GB a day -- to record that some liveness
     /// counters moved. Nothing reads this object except a task that is starting.
     fn persist_interval_secs() -> u64 {
-        std::env::var("DISCOVERY_HEALTH_PERSIST_SECS")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(300)
+        crate::discovery_config::health_persist_secs()
     }
 
     /// Persist the overlay to S3 if it changed AND the debounce has elapsed.
@@ -731,7 +729,25 @@ fn read_challenge(v: &serde_json::Value) -> ChallengeReading {
 /// header -- because the caller has to check for a payTo swap and sellers put
 /// the challenge in either one. Reading only the body found nothing on 36 of 36
 /// live resources measured 2026-08-20.
-async fn probe(url: &url::Url) -> (ProbeClass, Option<u16>, u64, Option<String>, Option<String>) {
+/// One probe's result.
+///
+/// A struct rather than a tuple because it grew a sixth member: the origin's own
+/// `Retry-After`. A politeness instruction that arrives and is dropped on the
+/// floor is worse than not asking for one, and a six-tuple is where that happens.
+#[derive(Debug, Default)]
+struct ProbeOutcome {
+    class: ProbeClass,
+    http: Option<u16>,
+    latency_ms: u64,
+    /// 402 response body, when there was one.
+    body: Option<String>,
+    /// `PAYMENT-REQUIRED` header, when there was one.
+    challenge_header: Option<String>,
+    /// What the origin asked us to wait, when it asked.
+    retry_after: Option<Duration>,
+}
+
+async fn probe(url: &url::Url) -> ProbeOutcome {
     let start = std::time::Instant::now();
     let result = safe_get(PROBE_UA, PROBE_TIMEOUT, url).await;
     let latency = start.elapsed().as_millis() as u64;
@@ -746,6 +762,12 @@ async fn probe(url: &url::Url) -> (ProbeClass, Option<u16>, u64, Option<String>,
                 c if (500..600).contains(&c) => ProbeClass::Fail,
                 _ => ProbeClass::Degraded,
             };
+            // Read before the body is consumed: `text()` takes the response.
+            let retry_after = resp
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(crate::discovery_revalidation::parse_retry_after);
             // Only a 402 carries payment terms worth diffing.
             let (body, header) = if code == 402 {
                 let header = resp
@@ -758,7 +780,14 @@ async fn probe(url: &url::Url) -> (ProbeClass, Option<u16>, u64, Option<String>,
             } else {
                 (None, None)
             };
-            return (class, Some(code), latency, body, header);
+            ProbeOutcome {
+                class,
+                http: Some(code),
+                latency_ms: latency,
+                body,
+                challenge_header: header,
+                retry_after,
+            }
         }
         // A URL the SSRF connector refuses (private/template/bad-port) is not a
         // dead endpoint — it is simply not probeable this way.
@@ -766,9 +795,17 @@ async fn probe(url: &url::Url) -> (ProbeClass, Option<u16>, u64, Option<String>,
         | Err(SecurityReject::Scheme(_))
         | Err(SecurityReject::Userinfo)
         | Err(SecurityReject::Port(_))
-        | Err(SecurityReject::NoHost) => (ProbeClass::Unprobeable, None, latency, None, None),
+        | Err(SecurityReject::NoHost) => ProbeOutcome {
+            class: ProbeClass::Unprobeable,
+            latency_ms: latency,
+            ..ProbeOutcome::default()
+        },
         // Resolution failure / connection error / redirect loop -> dead.
-        Err(_) => (ProbeClass::Fail, None, latency, None, None),
+        Err(_) => ProbeOutcome {
+            class: ProbeClass::Fail,
+            latency_ms: latency,
+            ..ProbeOutcome::default()
+        },
     }
 }
 
@@ -845,9 +882,67 @@ pub fn start_health_task(
                     "dropped observed terms for resources no longer in the catalog"
                 );
             }
+            // ----------------------------------------------------------------
+            // The budget, split.
+            //
+            // `max_per_tick` is the SAME allowance 2.21.2 settled on. Demand
+            // spends from it first; the periodic sweep keeps a reserved floor
+            // so a busy resource cannot starve the long tail. Nothing here adds
+            // a probe: this decides which probes the tick spends.
+            // ----------------------------------------------------------------
+            let queue = registry.revalidation();
+            let (demand_budget, _reserved) = crate::discovery_revalidation::split_budget(
+                max_per_tick,
+                crate::discovery_config::long_tail_share(),
+            );
+
+            let mut demanded: Vec<(url::Url, String, Vec<String>)> = Vec::new();
+            if crate::discovery_config::revalidation_enabled() {
+                // Fold in what the other replicas asked for, then take the top
+                // of the queue. Both are owner-only: this whole block is behind
+                // the ownership gate above.
+                let folded = queue.absorb_shared(now).await;
+                queue.evict_expired(now).await;
+                let batch = queue.take_batch(demand_budget, now).await;
+                if !batch.is_empty() || folded > 0 {
+                    // Resolved BEFORE the macro: an `.await` inside a tracing
+                    // macro's argument list holds a non-Send `format_args!`
+                    // temporary across the suspension point.
+                    let depth = queue.depth().await;
+                    debug!(
+                        folded_from_replicas = folded,
+                        taken = batch.len(),
+                        depth = depth,
+                        demand_budget = demand_budget,
+                        "revalidation batch"
+                    );
+                }
+                let by_url: HashMap<String, (url::Url, String, Vec<String>)> = targets
+                    .iter()
+                    .map(|(u, ty, p)| (u.to_string(), (u.clone(), ty.clone(), p.clone())))
+                    .collect();
+                for (url, reason) in batch {
+                    // A queued URL that has left the catalog is simply dropped:
+                    // we do not probe what we no longer list.
+                    if let Some(target) = by_url.get(&url) {
+                        let host = target.0.host_str().unwrap_or_default().to_string();
+                        *per_host.entry(host).or_insert(0) += 1;
+                        debug!(url = %url, reason = reason.as_str(), "revalidating on demand");
+                        demanded.push(target.clone());
+                    }
+                }
+            }
+
+            let already: std::collections::HashSet<String> =
+                demanded.iter().map(|(u, _, _)| u.to_string()).collect();
+            due.extend(demanded);
+
             for (u, ty, pay_to) in targets {
                 if due.len() >= max_per_tick {
                     break;
+                }
+                if already.contains(u.as_str()) {
+                    continue;
                 }
                 if !tracker_due(&tracker, &u, now) {
                     continue;
@@ -872,17 +967,31 @@ pub fn start_health_task(
                 let tracker = Arc::clone(&tracker);
                 let terms_overlay = registry.terms();
                 let registry_for_terms = registry.clone();
+                let queue_for_probe = registry.revalidation();
                 handles.push(tokio::spawn(async move {
                     let _permit = sem.acquire().await.ok();
                     // MCP endpoints answer a POST JSON-RPC handshake, not a GET
                     // 402 — probing them with GET would mark our own first-party
                     // MCP services dead.
-                    let (mut class, http, latency, body, pr_header) = if resource_type == "mcp" {
+                    let outcome = if resource_type == "mcp" {
                         let (c, h, l) = probe_mcp(&u).await;
-                        (c, h, l, None, None)
+                        ProbeOutcome {
+                            class: c,
+                            http: h,
+                            latency_ms: l,
+                            ..ProbeOutcome::default()
+                        }
                     } else {
                         probe(&u).await
                     };
+                    let ProbeOutcome {
+                        mut class,
+                        http,
+                        latency_ms: latency,
+                        body,
+                        challenge_header: pr_header,
+                        retry_after,
+                    } = outcome;
 
                     // The challenge is read ONCE, and read whole. Two callers
                     // want it and they want different halves: the hijack check
@@ -933,6 +1042,24 @@ pub fn start_health_task(
                     }
 
                     tracker.record_probe(u.as_str(), class, http, latency).await;
+
+                    // Politeness feedback. A host that refuses us goes into
+                    // backoff -- its own `Retry-After` when it sent one, an
+                    // exponential schedule with jitter when it did not -- so a
+                    // failing origin is asked less often rather than by every
+                    // replica at the same instant.
+                    match http {
+                        Some(429) | Some(503) => {
+                            queue_for_probe
+                                .note_refusal(u.as_str(), retry_after, now_secs())
+                                .await
+                        }
+                        Some(code) if (500..600).contains(&code) => {
+                            queue_for_probe.note_refusal(u.as_str(), None, now_secs()).await
+                        }
+                        None => queue_for_probe.note_refusal(u.as_str(), None, now_secs()).await,
+                        _ => queue_for_probe.note_success(u.as_str()).await,
+                    }
 
                     // Record what the origin actually said, with the context it
                     // said it in. Written even when the probe quarantined the

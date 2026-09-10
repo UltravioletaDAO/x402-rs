@@ -60,11 +60,13 @@ mod chain;
 mod discovery;
 mod discovery_aggregator;
 mod discovery_attestation;
+mod discovery_config;
 mod discovery_crawler;
 mod discovery_curation;
 mod discovery_health;
 mod discovery_owner;
 mod discovery_price;
+mod discovery_revalidation;
 mod discovery_security;
 mod discovery_store;
 mod discovery_terms;
@@ -403,6 +405,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .ok()
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(2);
+
+        // The cross-replica hand-off for demand-driven revalidation. Same table
+        // as the leases and the nonces: same key schema, same TTL attribute, and
+        // an IAM statement that already permits the writes. A replica that is
+        // not the job owner puts requests here; the owner claims them each tick.
+        //
+        // Configured only when the control plane is reachable. Without it the
+        // queue still works within each replica -- it simply cannot pool demand
+        // across the three, which costs a slower refresh and nothing else.
+        {
+            let config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
+            let dynamo = aws_sdk_dynamodb::Client::new(&config);
+            discovery_registry
+                .revalidation()
+                .configure_shared(dynamo, lease::table_name())
+                .await;
+            tracing::info!(
+                table = %lease::table_name(),
+                "Revalidation hand-off attached"
+            );
+        }
 
         let tracker = discovery_registry.health();
         if let Ok(bucket) = std::env::var("DISCOVERY_S3_BUCKET") {

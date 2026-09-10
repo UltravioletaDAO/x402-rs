@@ -422,7 +422,12 @@ jobs:
           # had `alarm_actions = []` and the other three published to Execution Market's
           # SNS topic -- we found out about our own outages from another team's email.
           if files=$(gh api "repos/${{ github.repository }}/compare/${{ github.event.before }}...${{ github.sha }}" --jq '.files[].filename' 2>/dev/null); then
-            if printf '%s\n' "$files" | grep -qE '^terraform/environments/production/(alerts\.tf|alerts-imported\.tf|cloudwatch-.*\.tf|variables\.tf)$'; then
+            # `alerts-.*\.tf` and not a list of names: this pattern used to spell
+            # out `alerts.tf|alerts-imported.tf`, which silently excluded
+            # alerts-solana-mint.tf -- those alarms only ever got applied when some
+            # OTHER observability file happened to change in the same push. A gate
+            # that skips the file you just added is worse than no gate.
+            if printf '%s\n' "$files" | grep -qE '^terraform/environments/production/(alerts.*\.tf|cloudwatch-.*\.tf|variables\.tf)$'; then
               echo "Observability config changed; applying."
             else
               echo "No observability changes in this push; skipping."
@@ -462,7 +467,9 @@ jobs:
             -target=aws_cloudwatch_metric_alarm.orphan_no_running_tasks \
             -target=aws_cloudwatch_metric_alarm.solana_mint_headroom_low \
             -target=aws_cloudwatch_log_metric_filter.solana_mint_fee_payer_dry \
-            -target=aws_cloudwatch_metric_alarm.solana_mint_fee_payer_dry
+            -target=aws_cloudwatch_metric_alarm.solana_mint_fee_payer_dry \
+            -target=aws_cloudwatch_log_metric_filter.evm_signer_transactions_stuck \
+            -target=aws_cloudwatch_metric_alarm.evm_signer_transactions_stuck
 
       - name: Wait for ECS rollout to stabilize
         run: |

@@ -85,6 +85,7 @@ mod payment_operator;
 mod provider_cache;
 mod redact;
 mod sig_down;
+mod stuck_tx_monitor;
 mod telemetry;
 mod timestamp;
 mod transaction_store;
@@ -163,6 +164,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // through the same connections the facilitator already opened, instead of
     // building a second set.
     let provider_cache = Arc::new(provider_cache);
+
+    // Watch for the facilitator's own transactions wedged in a node's mempool.
+    // Read-only, and it runs on every task rather than only the writer: the
+    // symptom is visible from any of them, and a queue nobody is watching is
+    // how a Polygon settle stayed broken for six days in September 2026.
+    stuck_tx_monitor::spawn(Arc::clone(&provider_cache));
+
     let facilitator = FacilitatorLocal::new(Arc::clone(&provider_cache), compliance_checker);
     let axum_state = Arc::new(facilitator);
 

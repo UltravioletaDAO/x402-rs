@@ -193,6 +193,9 @@ resource "aws_iam_policy" "cicd_infra" {
         #
         # DescribeMetricFilters is here because it is Terraform's READ: without it
         # a plan cannot tell an existing filter from a missing one.
+        #
+        # Applied out of band by c0der, 2026-09-10 16:40Z (plan 0/1/0; simulating
+        # logs:PutMetricFilter and logs:DeleteMetricFilter now returns allowed).
         "Sid" : "FacilitatorMetricFilterManage",
         "Effect" : "Allow",
         "Action" : [

@@ -203,6 +203,103 @@ pub struct ExactEvmPayment {
     pub signature: EvmSignature,
 }
 
+/// One gwei, in wei.
+const GWEI: u128 = 1_000_000_000;
+
+/// How many times the latest base fee a transaction's cap is allowed to reach.
+///
+/// Same multiplier alloy's default estimator uses. Deliberately unchanged: the
+/// term that actually protects this rail is [`Eip1559Floor::min_max_fee`], and
+/// widening the multiplier instead would inflate the txpool reservation on every
+/// chain to buy a buffer that still does not survive the swings we measured.
+const BASE_FEE_MULTIPLIER: u128 = 2;
+
+/// Explicit EIP-1559 fee bounds for one network.
+///
+/// `maxFeePerGas` is a CAP, not a payment -- EIP-1559 charges
+/// `baseFee + priority` and refunds the rest -- so a generous floor costs
+/// nothing but txpool reservation headroom. That asymmetry is the whole reason
+/// floors are the right lever here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Eip1559Floor {
+    /// Never tip below this.
+    pub min_priority: u128,
+    /// Never cap below this. Zero means "no floor": price on the multiplier
+    /// alone, which reproduces alloy's own estimator for chains whose fee
+    /// behaviour we have not measured.
+    pub min_max_fee: u128,
+    /// Base fee to assume when the node answers `eth_feeHistory` without one.
+    pub fallback_base_fee: u128,
+}
+
+/// Fee floors per network. Only networks whose fee behaviour has been MEASURED
+/// get one; everything else prices on the multiplier alone.
+///
+/// # Why Polygon has the floor it has
+///
+/// Polygon's base fee sits at ~250 gwei in steady state and periodically
+/// collapses to ~0 for hours before snapping back within the hour. Measured
+/// three times in three days (2026-09-01 23:02Z, 2026-09-02 01:54Z, 2026-09-03
+/// 17:53Z; each recovery took 40-80 minutes and the last one ran 0 -> 248 gwei).
+///
+/// On 2026-09-03 at 21:28:00Z the facilitator priced an escrow `release` in the
+/// third of those troughs. The base fee was 1.072 gwei, alloy's estimator gave
+/// `2 * 1.072 + 30.1 = 32.25` gwei, and forty minutes later the base fee was
+/// 248 gwei. That transaction -- nonce 1157 -- could never be mined again, and
+/// because nonces are strictly ordered it froze the signer: 399 correctly
+/// priced transactions stacked up behind it, their pooled
+/// `gasLimit * maxFeePerGas` reached 82.80 of the wallet's 82.86 POL, and every
+/// new Polygon settle was refused by the node for six days.
+///
+/// No multiplier over the *latest* base fee survives that -- the trough lasts
+/// hours, so a window maximum is no help either. An absolute floor above the
+/// steady state is the only term that does. 1000 gwei is 4x the observed
+/// steady state and reserves 0.36 POL per in-flight settle against an 82 POL
+/// balance, so it buys the protection without crowding the pool.
+pub(crate) const fn eip1559_fee_floor(network: Network) -> Eip1559Floor {
+    match network {
+        // Unchanged from the hand-rolled Ethereum branch this table replaced:
+        // alloy's auto-estimation was producing 0.08 gwei caps on L1.
+        Network::Ethereum | Network::EthereumSepolia => Eip1559Floor {
+            min_priority: GWEI,
+            min_max_fee: 5 * GWEI,
+            fallback_base_fee: 2 * GWEI,
+        },
+        Network::Polygon | Network::PolygonAmoy => Eip1559Floor {
+            min_priority: 30 * GWEI,
+            min_max_fee: 1000 * GWEI,
+            fallback_base_fee: 250 * GWEI,
+        },
+        _ => Eip1559Floor {
+            min_priority: GWEI,
+            min_max_fee: 0,
+            fallback_base_fee: 2 * GWEI,
+        },
+    }
+}
+
+/// Turn a base fee and the node's priority estimate into the pair actually set
+/// on the transaction.
+///
+/// Split out from the send path so the arithmetic can be tested against the
+/// real numbers from the 2026-09-03 incident without an RPC.
+pub(crate) fn compute_eip1559_fees(
+    base_fee: u128,
+    rpc_priority: u128,
+    floor: Eip1559Floor,
+) -> (u128, u128) {
+    let priority = rpc_priority.max(floor.min_priority);
+    let max_fee = base_fee
+        .saturating_mul(BASE_FEE_MULTIPLIER)
+        .saturating_add(priority)
+        .max(floor.min_max_fee);
+    // A type-2 transaction with maxFeePerGas < maxPriorityFeePerGas is invalid
+    // and every node rejects it. Reachable whenever a node reports a priority
+    // above `BASE_FEE_MULTIPLIER * baseFee + min_priority`, which is exactly
+    // what a chain in a base-fee trough reports.
+    (priority, max_fee.max(priority))
+}
+
 /// EVM implementation of the x402 facilitator.
 ///
 /// Holds a composed Alloy ethereum provider [`InnerProvider`],
@@ -555,44 +652,61 @@ impl EvmProvider {
                     .await
                     .map_err(|e| FacilitatorLocalError::ContractCall(format!("{e:?}")))?;
                 txr.set_gas_price(gas);
-            } else if self.chain.network == Network::Ethereum {
-                // Ethereum L1 gas floor: Alloy's auto-estimation can produce absurdly
-                // low values (0.08 Gwei). We query current fees and apply a floor so
-                // TXs aren't dropped when base fee fluctuates.
-                const GWEI: u128 = 1_000_000_000;
-                const MIN_PRIORITY: u128 = 1 * GWEI; // 1 Gwei floor
-                const MIN_MAX_FEE: u128 = 5 * GWEI; // 5 Gwei floor
-
-                // Get current base fee from latest block
-                let (priority, max_fee) = if let Ok(fee_history) = self
+            } else {
+                // Price EVERY EIP-1559 chain explicitly, not just Ethereum.
+                //
+                // Left to alloy's default estimator, a transaction's entire
+                // buffer is `2 * baseFee`, measured on the latest block. That is
+                // fine on a chain whose fee drifts and fatal on one whose fee
+                // moves in steps: on 2026-09-03 Polygon went from 1.07 gwei to
+                // 248 gwei in forty minutes, and the settle priced at the bottom
+                // of that move froze the mainnet signer for six days. See
+                // [`eip1559_fee_floor`] for the full account.
+                let floor = eip1559_fee_floor(self.chain.network);
+                match self
                     .inner
                     .get_fee_history(1, alloy::eips::BlockNumberOrTag::Latest, &[])
                     .await
                 {
-                    let base_fee = fee_history.latest_block_base_fee().unwrap_or(2 * GWEI);
-                    // priority: max of RPC estimate and floor
-                    let rpc_priority = self
-                        .inner
-                        .get_max_priority_fee_per_gas()
-                        .await
-                        .unwrap_or(MIN_PRIORITY);
-                    let priority = std::cmp::max(rpc_priority, MIN_PRIORITY);
-                    // max_fee: base_fee * 2 + priority, floored at MIN_MAX_FEE
-                    let computed_max = base_fee * 2 + priority;
-                    let max_fee = std::cmp::max(computed_max, MIN_MAX_FEE);
-                    (priority, max_fee)
-                } else {
-                    // Fallback: use generous static values
-                    (MIN_PRIORITY, MIN_MAX_FEE)
-                };
-
-                txr.set_max_priority_fee_per_gas(priority);
-                txr.set_max_fee_per_gas(max_fee);
-                tracing::info!(
-                    priority_gwei = priority / GWEI,
-                    max_fee_gwei = max_fee / GWEI,
-                    "Ethereum L1 gas pricing"
-                );
+                    Ok(fee_history) => {
+                        let base_fee = fee_history
+                            .latest_block_base_fee()
+                            .unwrap_or(floor.fallback_base_fee);
+                        let rpc_priority = self
+                            .inner
+                            .get_max_priority_fee_per_gas()
+                            .await
+                            .unwrap_or(floor.min_priority);
+                        let (priority, max_fee) =
+                            compute_eip1559_fees(base_fee, rpc_priority, floor);
+                        txr.set_max_priority_fee_per_gas(priority);
+                        txr.set_max_fee_per_gas(max_fee);
+                        tracing::debug!(
+                            network = %self.chain.network,
+                            base_fee_gwei = base_fee / GWEI,
+                            priority_gwei = priority / GWEI,
+                            max_fee_gwei = max_fee / GWEI,
+                            "EIP-1559 gas pricing"
+                        );
+                    }
+                    Err(error) => {
+                        // A chain with a measured floor gets it even here: that
+                        // floor is the whole protection and dropping it on a
+                        // flaky read reintroduces the failure. A chain without
+                        // one is left untouched so alloy's filler still runs,
+                        // which is exactly today's behaviour for it.
+                        if floor.min_max_fee > 0 {
+                            txr.set_max_priority_fee_per_gas(floor.min_priority);
+                            txr.set_max_fee_per_gas(floor.min_max_fee.max(floor.min_priority));
+                        }
+                        tracing::warn!(
+                            network = %self.chain.network,
+                            ?error,
+                            floored = floor.min_max_fee > 0,
+                            "fee history unavailable; falling back for gas pricing"
+                        );
+                    }
+                }
             }
 
             // Estimate gas BEFORE reserving a nonce.
@@ -2695,6 +2809,107 @@ impl PendingNonceManager {
 mod tests {
     use super::*;
     use alloy::primitives::address;
+
+    // ---------------------------------------------------------------
+    // EIP-1559 gas pricing.
+    //
+    // The numbers below are the real ones from the 2026-09-03 Polygon
+    // incident, read out of the provider's txpool on 2026-09-10:
+    // nonce 1157 was priced at maxFeePerGas 32.247 gwei / priority
+    // 30.103 gwei against a base fee of 1.072 gwei, and the base fee
+    // reached 248 gwei forty minutes later.
+    // ---------------------------------------------------------------
+
+    /// Base fee at block 93177231, the block the stuck transaction was priced on.
+    const POLYGON_TROUGH_BASE_FEE: u128 = 1_072_065_664;
+    /// Base fee once the trough recovered, and Polygon's steady state since.
+    const POLYGON_STEADY_BASE_FEE: u128 = 248 * GWEI;
+    /// What the node reported as the priority estimate in the trough.
+    const POLYGON_TROUGH_PRIORITY: u128 = 30_103_229_849;
+
+    #[test]
+    fn polygon_priced_in_a_base_fee_trough_still_mines_after_the_recovery() {
+        // This is the regression test for the incident. Alloy's estimator gave
+        // 2 * 1.072 + 30.103 = 32.247 gwei here, which is what froze the signer.
+        let floor = eip1559_fee_floor(Network::Polygon);
+        let (priority, max_fee) =
+            compute_eip1559_fees(POLYGON_TROUGH_BASE_FEE, POLYGON_TROUGH_PRIORITY, floor);
+
+        assert!(
+            max_fee > POLYGON_STEADY_BASE_FEE,
+            "a settle priced in the trough ({max_fee} wei cap) would not survive \
+             Polygon returning to its {POLYGON_STEADY_BASE_FEE} wei steady state \
+             -- this is exactly how nonce 1157 wedged the signer for six days"
+        );
+        assert!(
+            max_fee >= priority,
+            "maxFeePerGas below maxPriorityFeePerGas is invalid"
+        );
+    }
+
+    #[test]
+    fn the_old_default_estimator_would_have_failed_that_same_case() {
+        // Pins WHY the floor exists: the multiplier alone is not enough, so a
+        // future simplification that drops `min_max_fee` fails here.
+        let multiplier_only =
+            POLYGON_TROUGH_BASE_FEE * BASE_FEE_MULTIPLIER + POLYGON_TROUGH_PRIORITY;
+        assert!(
+            multiplier_only < POLYGON_STEADY_BASE_FEE,
+            "if the multiplier alone now clears the steady state, this test's \
+             premise is stale -- re-measure before relaxing the floor"
+        );
+    }
+
+    #[test]
+    fn polygon_at_its_steady_state_is_priced_above_the_base_fee() {
+        let floor = eip1559_fee_floor(Network::Polygon);
+        let (_, max_fee) = compute_eip1559_fees(POLYGON_STEADY_BASE_FEE, 78 * GWEI, floor);
+        assert!(max_fee > POLYGON_STEADY_BASE_FEE);
+    }
+
+    #[test]
+    fn ethereum_keeps_the_floors_it_had_before_the_table_existed() {
+        // The Ethereum branch this table replaced used exactly these numbers:
+        // 1 gwei priority floor, 5 gwei cap floor, 2 gwei fallback base fee.
+        let floor = eip1559_fee_floor(Network::Ethereum);
+        assert_eq!(floor.min_priority, GWEI);
+        assert_eq!(floor.min_max_fee, 5 * GWEI);
+        assert_eq!(floor.fallback_base_fee, 2 * GWEI);
+
+        // The 0.08 gwei auto-estimate that motivated the original branch.
+        let (priority, max_fee) = compute_eip1559_fees(80_000_000, 0, floor);
+        assert_eq!(priority, GWEI);
+        assert_eq!(max_fee, 5 * GWEI);
+    }
+
+    #[test]
+    fn an_unmeasured_chain_is_left_on_the_multiplier_alone() {
+        // No floor invented for chains whose fee behaviour has not been
+        // measured: they price exactly as alloy's estimator would, so this
+        // change cannot move gas costs on a chain nobody looked at.
+        let floor = eip1559_fee_floor(Network::Base);
+        assert_eq!(floor.min_max_fee, 0);
+        let (priority, max_fee) = compute_eip1559_fees(5_000_000, 2 * GWEI, floor);
+        assert_eq!(priority, 2 * GWEI);
+        assert_eq!(max_fee, 5_000_000 * BASE_FEE_MULTIPLIER + 2 * GWEI);
+    }
+
+    #[test]
+    fn max_fee_never_drops_below_priority() {
+        // A node in a trough can report a priority far above 2 * baseFee. The
+        // resulting transaction would be rejected outright as malformed.
+        let floor = eip1559_fee_floor(Network::Base);
+        let (priority, max_fee) = compute_eip1559_fees(1, 900 * GWEI, floor);
+        assert!(max_fee >= priority);
+    }
+
+    #[test]
+    fn absurd_inputs_saturate_instead_of_overflowing() {
+        let floor = eip1559_fee_floor(Network::Polygon);
+        let (priority, max_fee) = compute_eip1559_fees(u128::MAX, u128::MAX, floor);
+        assert_eq!(priority, u128::MAX);
+        assert_eq!(max_fee, u128::MAX);
+    }
 
     #[test]
     fn test_is_nonce_error() {

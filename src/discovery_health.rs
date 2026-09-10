@@ -122,6 +122,12 @@ pub struct HealthTracker {
     dirty: AtomicBool,
     /// Unix seconds of the last successful upload. `0` means never.
     last_persist: AtomicU64,
+    /// ETag of the overlay this process last read or wrote.
+    ///
+    /// Only a replica that does NOT own the discovery jobs uses it: with the
+    /// job lease exactly one task probes, so this is how the others learn what
+    /// it found -- a HEAD, and a read of the 5 MB object only when it moved.
+    etag: RwLock<Option<String>>,
 }
 
 impl Default for HealthTracker {
@@ -137,6 +143,7 @@ impl HealthTracker {
             overlay: RwLock::new(None),
             dirty: AtomicBool::new(false),
             last_persist: AtomicU64::new(0),
+            etag: RwLock::new(None),
         }
     }
 
@@ -147,12 +154,17 @@ impl HealthTracker {
         // Load existing overlay (best-effort).
         match client.get_object().bucket(&bucket).key(&key).send().await {
             Ok(obj) => {
+                // Read the version BEFORE the body: `collect()` consumes the
+                // output, and an ETag taken afterwards would have to come from
+                // somewhere else.
+                let etag = obj.e_tag().map(str::to_string);
                 if let Ok(bytes) = obj.body.collect().await {
                     let data = bytes.into_bytes();
                     match serde_json::from_slice::<HashMap<String, HealthRecord>>(&data) {
                         Ok(loaded) => {
                             let n = loaded.len();
                             *self.records.write().await = loaded;
+                            *self.etag.write().await = etag;
                             info!(count = n, "Loaded health overlay from S3");
                         }
                         Err(e) => warn!(error = %e, "Health overlay parse failed; starting empty"),
@@ -296,11 +308,92 @@ impl HealthTracker {
             .send()
             .await
         {
-            Ok(_) => self.last_persist.store(now, Ordering::SeqCst),
+            Ok(out) => {
+                self.last_persist.store(now, Ordering::SeqCst);
+                // Remember what we wrote, so that if this task later stops
+                // owning the jobs its first refresh does not re-read its own
+                // object.
+                *self.etag.write().await = out.e_tag().map(str::to_string);
+            }
             Err(e) => {
                 self.dirty.store(true, Ordering::SeqCst);
                 error!(error = %e, "Failed to persist health overlay");
             }
+        }
+    }
+
+    /// Re-read the overlay if the object moved. Non-owners only.
+    ///
+    /// The counterpart of single ownership for liveness: one task probes, and
+    /// this is how the other two learn what it found. Without it a non-owner
+    /// would annotate every listing with the health it loaded at boot, and
+    /// quarantine decisions made hours ago would be the newest it ever had.
+    ///
+    /// A HEAD first, and a GET only when the ETag moved. The overlay is ~5.8 MB
+    /// and usually unchanged between refreshes, so the cheap question is the
+    /// one worth asking every time. Best-effort throughout: a failed refresh
+    /// leaves the copy this task already has, which is exactly what it had
+    /// before this existed.
+    pub async fn refresh_overlay(&self) {
+        let guard = self.overlay.read().await;
+        let Some(overlay) = guard.as_ref() else {
+            return;
+        };
+
+        let head = match overlay
+            .client
+            .head_object()
+            .bucket(&overlay.bucket)
+            .key(&overlay.key)
+            .send()
+            .await
+        {
+            Ok(head) => head,
+            Err(e) => {
+                debug!(error = %e, "Could not check the health overlay for changes");
+                return;
+            }
+        };
+
+        let latest = head.e_tag().map(str::to_string);
+        // An unreadable ETag means "reload": the alternative is to skip
+        // forever on a store that stops reporting one.
+        if latest.is_some() && latest == *self.etag.read().await {
+            return;
+        }
+
+        let obj = match overlay
+            .client
+            .get_object()
+            .bucket(&overlay.bucket)
+            .key(&overlay.key)
+            .send()
+            .await
+        {
+            Ok(obj) => obj,
+            Err(e) => {
+                debug!(error = %e, "Could not re-read the health overlay");
+                return;
+            }
+        };
+        let etag = obj.e_tag().map(str::to_string);
+        let Ok(bytes) = obj.body.collect().await else {
+            return;
+        };
+        match serde_json::from_slice::<HashMap<String, HealthRecord>>(&bytes.into_bytes()) {
+            Ok(loaded) => {
+                let n = loaded.len();
+                *self.records.write().await = loaded;
+                *self.etag.write().await = etag;
+                info!(
+                    count = n,
+                    "Reloaded the health overlay published by the job owner"
+                );
+            }
+            // A parse failure must NOT empty the records: what is in memory is
+            // still the last good view, and replacing it with nothing would
+            // un-quarantine every dead endpoint in the catalog.
+            Err(e) => warn!(error = %e, "Health overlay parse failed; keeping the current records"),
         }
     }
 
@@ -703,6 +796,23 @@ pub fn start_health_task(
         let interval = Duration::from_secs(tick_secs.max(5));
         loop {
             tokio::time::sleep(interval).await;
+
+            // Probing is periodic discovery work: one task does it, and the
+            // others read the overlay it publishes with
+            // [`HealthTracker::refresh_overlay`]. Every replica probing the
+            // same catalog is that many times the outbound TLS handshakes --
+            // the CPU that took production down on 2026-09-10 -- and that many
+            // writers of one whole-object PUT, where the last one to finish
+            // erases what the others found. The 2.21.2 debounce made each
+            // writer cheaper; this makes there be one.
+            //
+            // Note this gate covers the two overlay prunes and both persists
+            // below as well, which is the point: a task that probes nothing has
+            // nothing to prune and nothing to publish.
+            if !crate::discovery_owner::owns_jobs() {
+                continue;
+            }
+
             let now = now_secs();
 
             // Collect due URLs from the registry (a plain snapshot of URLs, so

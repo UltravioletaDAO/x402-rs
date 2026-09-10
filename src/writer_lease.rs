@@ -123,12 +123,14 @@
 //! Set `ENABLE_WRITER_LEASE=false` to disable the mechanism entirely, or
 //! `ENABLE_WRITER_FORWARD=false` to keep the lease but go back to refusing.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
-use aws_sdk_dynamodb::types::{AttributeValue, ReturnValuesOnConditionCheckFailure};
+use aws_sdk_dynamodb::types::AttributeValue;
 use tracing::{error, info, warn};
+
+use crate::lease::{self, Grant, Outcome, Record, Timings, Transition};
 
 /// Partition key of the lease record.
 const LEASE_KEY: &str = "writer-lease#evm";
@@ -142,9 +144,6 @@ pub const FORWARDED_HEADER: &str = "x-facilitator-forwarded-for-writer";
 
 /// Attribute on the lease record holding the writer's routable address.
 const ENDPOINT_ATTR: &str = "endpoint";
-
-/// Attribute on the lease record holding the tenancy counter.
-const GENERATION_ATTR: &str = "generation";
 
 /// How long a lease survives without renewal, as written on the record.
 ///
@@ -198,103 +197,53 @@ const ERROR_RETRY_INTERVAL: Duration = Duration::from_millis(750);
 /// one `eth_sendRawTransaction`), and well inside the ECS stop timeout.
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// The four durations as one system, for [`crate::lease`] to apply. Stated from
+/// the constants above so there is exactly one place each number lives.
+const TIMINGS: Timings = Timings {
+    ttl: LEASE_TTL,
+    renew: RENEW_INTERVAL,
+    handover_margin: HANDOVER_MARGIN,
+    error_retry: ERROR_RETRY_INTERVAL,
+};
+
 /// How long this process may sign for, once an acquire succeeds.
 ///
 /// A function rather than a `const` so the relationship to [`LEASE_TTL`] and
 /// [`HANDOVER_MARGIN`] is stated once and cannot drift.
 const fn grant_len() -> Duration {
-    Duration::from_secs(LEASE_TTL.as_secs() - HANDOVER_MARGIN.as_secs())
+    TIMINGS.grant_len()
 }
 
-/// Whether this process runs with no coordinator at all.
+/// How often the holder renews.
 ///
-/// True when the lease is switched off, and true before [`spawn`] has decided
-/// anything — so a process that never manages to run the lease loop behaves
-/// exactly as it did before the lease existed. [`spawn`] clears it the moment
-/// this process decides to stand in the election, and from then on the grant
-/// decides.
-static STANDALONE: AtomicBool = AtomicBool::new(true);
+/// Test-only, and read from one place: the discovery lease asserts its own
+/// heartbeat is the slower of the two, because it governs work measured in
+/// minutes rather than signatures. Stating that as an assertion is what keeps
+/// somebody from tuning one of the two into the other.
+#[cfg(test)]
+pub const fn renew_interval() -> Duration {
+    RENEW_INTERVAL
+}
 
-/// Monotonic deadline of the current grant, in microseconds since
-/// [`process_start`]. `0` means no grant.
+/// This process's claim on the EVM signer.
 ///
-/// Monotonic, so a wall-clock correction cannot extend it.
-static GRANT_UNTIL_MICROS: AtomicU64 = AtomicU64::new(0);
-
-/// Wall-clock deadline of the same grant, in Unix seconds. `0` means no grant.
-///
-/// Both are checked. `CLOCK_MONOTONIC` does not advance while a host is
-/// suspended, so a monotonic deadline alone would survive a suspend that a
-/// peer's wall clock ran straight through — which is precisely the "long
-/// process pause" the audit asked about.
-static GRANT_UNTIL_UNIX: AtomicU64 = AtomicU64::new(0);
-
-/// Tenancy counter of the grant this process currently holds.
-static GENERATION: AtomicU64 = AtomicU64::new(0);
+/// Starts standalone — no coordinator — so a process that never runs the lease
+/// loop behaves exactly as it did before the lease existed. [`spawn`] ends that
+/// the moment this process decides to stand in the election, and from then on
+/// the grant decides.
+static WRITER_GRANT: Grant = Grant::standalone();
 
 /// Signatures currently inside the exclusive section.
 static IN_FLIGHT_SIGNINGS: AtomicUsize = AtomicUsize::new(0);
 
-/// This process's own start, for the monotonic clock.
-fn process_start() -> Instant {
-    static START: OnceLock<Instant> = OnceLock::new();
-    *START.get_or_init(Instant::now)
-}
-
-/// Monotonic microseconds since [`process_start`].
-fn now_micros() -> u64 {
-    process_start().elapsed().as_micros() as u64
-}
-
-/// Wall-clock Unix seconds, or `0` if the clock is unreadable.
-///
-/// `0` reads as "before every deadline", so an unreadable clock revokes the
-/// grant rather than extending it.
-fn now_unix() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
-/// Record a grant earned by an acquire that was SENT at `sent_at`.
-///
-/// Deliberately measured from the send, not from the reply: a slow round trip
-/// then shortens our own grant instead of pushing it past the point where a
-/// successor may legitimately take over.
-fn grant_from(sent_at_micros: u64, sent_at_unix: u64, generation: u64) {
-    GRANT_UNTIL_MICROS.store(
-        sent_at_micros + grant_len().as_micros() as u64,
-        Ordering::Release,
-    );
-    GRANT_UNTIL_UNIX.store(sent_at_unix + grant_len().as_secs(), Ordering::Release);
-    GENERATION.store(generation, Ordering::Release);
-}
-
 /// Drop the grant. Called when the election is lost, on release, and by tests.
 fn revoke_grant() {
-    GRANT_UNTIL_MICROS.store(0, Ordering::Release);
-    GRANT_UNTIL_UNIX.store(0, Ordering::Release);
+    WRITER_GRANT.revoke();
 }
 
 /// Remaining grant, or `None` when there is none.
-///
-/// Both clocks have to agree. Returns the SMALLER of the two remainders, so
-/// whichever clock is less favourable to us wins.
 fn grant_remaining() -> Option<Duration> {
-    let until_mono = GRANT_UNTIL_MICROS.load(Ordering::Acquire);
-    let until_wall = GRANT_UNTIL_UNIX.load(Ordering::Acquire);
-    if until_mono == 0 || until_wall == 0 {
-        return None;
-    }
-    let now_mono = now_micros();
-    let now_wall = now_unix();
-    if now_mono >= until_mono || now_wall >= until_wall {
-        return None;
-    }
-    let mono_left = Duration::from_micros(until_mono - now_mono);
-    let wall_left = Duration::from_secs(until_wall - now_wall);
-    Some(mono_left.min(wall_left))
+    WRITER_GRANT.remaining()
 }
 
 /// Whether the lease mechanism is switched on. Kill-switch, default ON.
@@ -322,15 +271,12 @@ static HOLDER_ENDPOINT: RwLock<Option<Arc<str>>> = RwLock::new(None);
 /// election). Never true merely because the control plane failed to answer:
 /// that is the defect this replaced.
 pub fn is_writer() -> bool {
-    if STANDALONE.load(Ordering::Acquire) {
-        return true;
-    }
-    grant_remaining().is_some()
+    WRITER_GRANT.held()
 }
 
 /// The tenancy this process's grant belongs to. `0` before any acquire.
 pub fn generation() -> u64 {
-    GENERATION.load(Ordering::Acquire)
+    WRITER_GRANT.generation()
 }
 
 /// Signatures currently inside the exclusive section.
@@ -364,7 +310,7 @@ impl SigningPermit {
     /// by the third.
     pub fn still_valid(&self) -> bool {
         if self.standalone {
-            return STANDALONE.load(Ordering::Acquire);
+            return WRITER_GRANT.is_standalone();
         }
         generation() == self.generation && grant_remaining().is_some()
     }
@@ -384,7 +330,7 @@ impl Drop for SigningPermit {
 /// inside [`HANDOVER_MARGIN`] even if the RPC takes its whole timeout, which is
 /// what keeps the signature inside the tenancy that authorised it.
 pub fn signing_permit() -> Option<SigningPermit> {
-    if STANDALONE.load(Ordering::Acquire) {
+    if WRITER_GRANT.is_standalone() {
         IN_FLIGHT_SIGNINGS.fetch_add(1, Ordering::AcqRel);
         return Some(SigningPermit {
             generation: generation(),
@@ -583,56 +529,25 @@ fn lease_refusal(own_endpoint: Option<&str>) -> Option<String> {
 #[cfg(test)]
 pub fn set_writer_for_test(value: bool) {
     if value {
-        STANDALONE.store(true, Ordering::Release);
+        WRITER_GRANT.enter_standalone();
     } else {
-        STANDALONE.store(false, Ordering::Release);
-        revoke_grant();
+        WRITER_GRANT.enter_coordination();
     }
 }
 
 /// Install a grant that lasts `remaining`, at tenancy `generation`. Tests only.
 #[cfg(test)]
 pub fn grant_for_test(remaining: Duration, generation: u64) {
-    STANDALONE.store(false, Ordering::Release);
-    GRANT_UNTIL_MICROS.store(
-        now_micros() + remaining.as_micros() as u64,
-        Ordering::Release,
-    );
-    // Rounded UP, so the wall-clock half never becomes the reason a test-set
-    // grant is shorter than it asked for.
-    GRANT_UNTIL_UNIX.store(now_unix() + remaining.as_secs() + 1, Ordering::Release);
-    GENERATION.store(generation, Ordering::Release);
+    WRITER_GRANT.install_for_test(remaining, generation);
 }
 
-/// Lease holder identity and DynamoDB plumbing.
+/// Lease holder identity, and the record it competes for.
 pub struct WriterLease {
-    client: aws_sdk_dynamodb::Client,
-    table_name: String,
-    owner: String,
+    record: Record,
     /// This task's routable address, published on the lease record so peers
     /// can forward writes here. `None` when it could not be discovered, in
     /// which case peers keep answering 503 as they did before.
     endpoint: Option<String>,
-    /// Highest tenancy counter this process has SEEN on the record, whether it
-    /// won or lost. A fresh claim raises it by one; a claim built on a stale
-    /// observation loses the conditional check and learns the real value from
-    /// the rejection, so it converges in one extra round rather than needing a
-    /// read of its own.
-    observed_generation: AtomicU64,
-}
-
-/// What one attempt at the lease produced.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AcquireOutcome {
-    /// The record is ours until `sent_*` plus [`LEASE_TTL`], so the grant runs
-    /// to `sent_*` plus [`grant_len`].
-    Held {
-        generation: u64,
-        sent_mono: u64,
-        sent_unix: u64,
-    },
-    /// Somebody else holds a live lease.
-    Lost,
 }
 
 impl WriterLease {
@@ -648,11 +563,8 @@ impl WriterLease {
     /// process that must not touch the lease table must not reach it for any
     /// reason, credential resolution included.
     pub async fn from_env(own_endpoint: Option<String>) -> Self {
-        let table_name = std::env::var("NONCE_STORE_TABLE_NAME")
-            .unwrap_or_else(|_| "facilitator-nonces".to_string());
         let config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
         let client = aws_sdk_dynamodb::Client::new(&config);
-        let owner = uuid::Uuid::new_v4().to_string();
 
         let endpoint = if forwarding_enabled() {
             if let Some(e) = own_endpoint.as_deref() {
@@ -665,125 +577,47 @@ impl WriterLease {
         };
 
         Self {
-            client,
-            table_name,
-            owner,
+            record: Record::new(client, lease::table_name(), LEASE_KEY),
             endpoint,
-            observed_generation: AtomicU64::new(0),
         }
+    }
+
+    /// This process's opaque owner id, for logging.
+    fn owner(&self) -> &str {
+        self.record.owner()
     }
 
     /// Attempt to take or renew the lease.
     ///
-    /// `renewing` carries the tenancy this process believes it holds. `Some(g)`
-    /// renews conditionally on the record still being ours AT that tenancy;
-    /// `None` claims afresh and raises the tenancy past the highest value this
-    /// process has seen.
+    /// A thin wrapper over [`crate::lease::Record::try_acquire`]: the expiry
+    /// and generation arithmetic lives there, shared with every other elected
+    /// role, and what belongs to the writer is what it does with a REJECTION.
     ///
-    /// Returns `Err` only for transport failures — a lost election is
-    /// `Ok(AcquireOutcome::Lost)`, and the caller must treat the two
-    /// differently: a lost election proves somebody else is entitled, a
-    /// transport failure proves nothing at all.
-    ///
-    /// A lost election also refreshes [`HOLDER_ENDPOINT`] and the observed
-    /// tenancy. Both come back in the SAME response thanks to
+    /// A lost election refreshes [`HOLDER_ENDPOINT`]. The winning record comes
+    /// back on that same rejection thanks to
     /// `ReturnValuesOnConditionCheckFailure::AllOld`, so learning where to
     /// forward costs no extra request and cannot itself fail separately.
-    ///
-    /// The timestamps returned are taken BEFORE the request goes out. The grant
-    /// they earn is therefore never longer than the record actually guarantees,
-    /// whatever the round trip costs.
-    async fn try_acquire(&self, renewing: Option<u64>) -> Result<AcquireOutcome, String> {
-        let sent_unix = now_unix();
-        let sent_mono = now_micros();
-        let expires_at = sent_unix + LEASE_TTL.as_secs();
-
-        let generation = match renewing {
-            Some(current) => current,
-            None => self.observed_generation.load(Ordering::Acquire) + 1,
-        };
-
-        let mut request = self
-            .client
-            .put_item()
-            .table_name(&self.table_name)
-            .item("pk", AttributeValue::S(LEASE_KEY.to_string()))
-            .item("owner", AttributeValue::S(self.owner.clone()))
-            .item("expires_at", AttributeValue::N(expires_at.to_string()))
-            .item(GENERATION_ATTR, AttributeValue::N(generation.to_string()))
-            .expression_attribute_names("#owner", "owner")
-            .expression_attribute_names("#generation", GENERATION_ATTR)
-            .expression_attribute_values(":me", AttributeValue::S(self.owner.clone()))
-            .expression_attribute_values(":gen", AttributeValue::N(generation.to_string()))
-            .return_values_on_condition_check_failure(ReturnValuesOnConditionCheckFailure::AllOld);
-
-        // DynamoDB rejects an expression attribute name or value that no
-        // condition uses, so each branch declares exactly what it references.
-        request = match renewing {
-            // Renewal. Conditional on the tenancy as well as the owner, so an
-            // A -> B -> A handover cannot be mistaken for an unbroken tenancy.
-            Some(_) => request.condition_expression("#owner = :me AND #generation = :gen"),
-            // Fresh claim. Allowed when nobody holds it, when the holder's
-            // record has expired, or when it was already ours -- and only ever
-            // at a HIGHER tenancy, which is what makes the counter a fence
-            // rather than a label.
-            None => request
-                .expression_attribute_names("#expires_at", "expires_at")
-                .expression_attribute_values(":now", AttributeValue::N(sent_unix.to_string()))
-                .condition_expression(
-                    "(attribute_not_exists(pk) OR #expires_at < :now OR #owner = :me) \
-                     AND (attribute_not_exists(#generation) OR #generation < :gen)",
-                ),
-        };
-
+    async fn try_acquire(&self, renewing: Option<u64>) -> Result<Outcome, String> {
         // Only advertise an address we actually resolved. Writing an empty or
         // guessed one would send peers into a black hole.
-        if let Some(endpoint) = &self.endpoint {
-            request = request.item(ENDPOINT_ATTR, AttributeValue::S(endpoint.clone()));
+        let extra: Vec<(&'static str, AttributeValue)> = match &self.endpoint {
+            Some(endpoint) => vec![(ENDPOINT_ATTR, AttributeValue::S(endpoint.clone()))],
+            None => Vec::new(),
+        };
+
+        let outcome = self.record.try_acquire(renewing, LEASE_TTL, &extra).await?;
+
+        if let Outcome::Lost { previous } = &outcome {
+            let holder = previous
+                .as_ref()
+                .and_then(|item| item.get(ENDPOINT_ATTR))
+                .and_then(|v| v.as_s().ok())
+                .filter(|e| !e.is_empty())
+                .map(|e| Arc::from(e.as_str()));
+            set_holder_endpoint(holder);
         }
 
-        match request.send().await {
-            Ok(_) => {
-                self.observe_generation(generation);
-                Ok(AcquireOutcome::Held {
-                    generation,
-                    sent_mono,
-                    sent_unix,
-                })
-            }
-            Err(e) => {
-                // A failed condition means somebody else holds a live lease.
-                // That is a normal outcome, not an error.
-                let service_err = e.into_service_error();
-                if let aws_sdk_dynamodb::operation::put_item::PutItemError::
-                    ConditionalCheckFailedException(failed) = &service_err
-                {
-                    // The winner's record rides along on the rejection.
-                    let item = failed.item();
-                    let holder = item
-                        .and_then(|item| item.get(ENDPOINT_ATTR))
-                        .and_then(|v| v.as_s().ok())
-                        .filter(|e| !e.is_empty())
-                        .map(|e| Arc::from(e.as_str()));
-                    set_holder_endpoint(holder);
-                    if let Some(seen) = item
-                        .and_then(|item| item.get(GENERATION_ATTR))
-                        .and_then(|v| v.as_n().ok())
-                        .and_then(|n| n.parse::<u64>().ok())
-                    {
-                        self.observe_generation(seen);
-                    }
-                    return Ok(AcquireOutcome::Lost);
-                }
-                Err(format!("{service_err:?}"))
-            }
-        }
-    }
-
-    /// Raise the highest tenancy this process has seen. Never lowers it: a
-    /// stale rejection must not walk the fence backwards.
-    fn observe_generation(&self, seen: u64) {
-        self.observed_generation.fetch_max(seen, Ordering::AcqRel);
+        Ok(outcome)
     }
 
     /// Give the lease up so a successor can take it immediately instead of
@@ -818,20 +652,9 @@ impl WriterLease {
             );
         }
 
-        let result = self
-            .client
-            .delete_item()
-            .table_name(&self.table_name)
-            .key("pk", AttributeValue::S(LEASE_KEY.to_string()))
-            .condition_expression("#owner = :me")
-            .expression_attribute_names("#owner", "owner")
-            .expression_attribute_values(":me", AttributeValue::S(self.owner.clone()))
-            .send()
-            .await;
-
-        match result {
-            Ok(_) => info!(owner = %self.owner, "Released EVM writer lease"),
-            Err(e) => warn!(owner = %self.owner, error = ?e, "Could not release writer lease"),
+        match self.record.delete_if_ours().await {
+            Ok(()) => info!(owner = %self.owner(), "Released EVM writer lease"),
+            Err(e) => warn!(owner = %self.owner(), error = %e, "Could not release writer lease"),
         }
         set_holder_endpoint(None);
     }
@@ -890,10 +713,9 @@ pub async fn spawn() -> Option<Arc<WriterLease>> {
 
     // From here on this process is under a coordinator, and only a grant makes
     // it a writer. Nothing before this point may be read as one.
-    STANDALONE.store(false, Ordering::Release);
-    revoke_grant();
+    WRITER_GRANT.enter_coordination();
 
-    let first = apply_outcome(&lease.owner, lease.try_acquire(None).await, None);
+    let first = apply_outcome(lease.owner(), lease.try_acquire(None).await, None);
     if first.is_none() && !is_writer() {
         warn!(
             "This task starts WITHOUT the EVM writer lease. EVM writes will be forwarded to the \
@@ -908,7 +730,7 @@ pub async fn spawn() -> Option<Arc<WriterLease>> {
         loop {
             let outcome = loop_lease.try_acquire(held).await;
             let failed = outcome.is_err();
-            held = apply_outcome(&loop_lease.owner, outcome, held);
+            held = apply_outcome(loop_lease.owner(), outcome, held);
             // A failed attempt spends grant this process cannot get back, so it
             // comes back sooner. Bounded and fixed: the table is not
             // overloaded, it is unreachable, and there is nothing to back off
@@ -927,71 +749,63 @@ pub async fn spawn() -> Option<Arc<WriterLease>> {
 
 /// Fold one attempt into the process's grant, and report the tenancy now held.
 ///
-/// The whole A2 fix is the `Err` arm: it neither extends the grant nor revokes
-/// it. Before 2026-09-10 it set `IS_WRITER = true`, which meant one
-/// control-plane failure authorised every task at once for the same signer.
+/// The decision itself is [`crate::lease::fold`], shared with every elected
+/// role; what stays here is what a WRITER does about it — the logging, and the
+/// peer address bookkeeping that only forwarding needs. The `Err` arm is the
+/// whole of A2: it neither extends the grant nor revokes it. Before 2026-09-10
+/// it set `IS_WRITER = true`, which meant one control-plane failure authorised
+/// every task at once for the same signer.
+///
 /// `owner` is only ever logged, which is what lets the tests drive this
 /// function -- the one that actually decides -- instead of a stand-in.
 fn apply_outcome(
     owner: &str,
-    outcome: Result<AcquireOutcome, String>,
+    outcome: Result<Outcome, String>,
     previous: Option<u64>,
 ) -> Option<u64> {
-    match outcome {
-        Ok(AcquireOutcome::Held {
-            generation,
-            sent_mono,
-            sent_unix,
-        }) => {
-            if previous.is_none() {
-                info!(
-                    owner,
-                    generation,
-                    grant_secs = grant_len().as_secs(),
-                    "Acquired EVM writer lease"
-                );
-            }
-            grant_from(sent_mono, sent_unix, generation);
+    let (held, transition) = lease::fold(&WRITER_GRANT, &TIMINGS, outcome, previous);
+
+    match transition {
+        Transition::Acquired(generation) => {
+            info!(
+                owner,
+                generation,
+                grant_secs = grant_len().as_secs(),
+                "Acquired EVM writer lease"
+            );
             // We are the destination now; a stale peer address must not survive
             // to send our own traffic somewhere else.
             set_holder_endpoint(None);
-            Some(generation)
         }
-        Ok(AcquireOutcome::Lost) => {
+        Transition::Renewed => set_holder_endpoint(None),
+        Transition::Lost => {
             if previous.is_some() {
                 warn!(owner, "Lost EVM writer lease");
             }
-            // Somebody else is demonstrably entitled. Stop now, whatever our
-            // own clock says.
-            revoke_grant();
-            None
         }
-        Err(e) => {
-            // A control-plane failure proves NOTHING about who holds the lease,
-            // so it changes nothing. The grant keeps running down on its own; a
-            // blip is absorbed, a sustained outage ends it without anyone
-            // having to decide. The last known holder endpoint is deliberately
-            // kept: while we cannot renew, forwarding to the task that probably
-            // still holds it is the only thing that keeps writes flowing.
-            match grant_remaining() {
-                Some(left) => warn!(
-                    owner,
-                    error = %e,
-                    grant_left_ms = left.as_millis() as u64,
-                    "Writer lease check failed; the existing grant is unchanged and still running"
-                ),
-                None => error!(
-                    owner,
-                    error = %e,
-                    "Writer lease check failed and this task holds no grant, so it will NOT sign. \
-                     EVM writes are forwarded to the holder if one is known, otherwise answered \
-                     503. Set ENABLE_WRITER_LEASE=false to restore the pre-lease behaviour if \
-                     the control plane stays unreachable"
-                ),
-            }
-            previous
-        }
+        // A control-plane failure proves NOTHING about who holds the lease, so
+        // it changes nothing. The last known holder endpoint is deliberately
+        // kept: while we cannot renew, forwarding to the task that probably
+        // still holds it is the only thing that keeps writes flowing.
+        Transition::Unproven { error, remaining } => match remaining {
+            Some(left) => warn!(
+                owner,
+                error = %error,
+                grant_left_ms = left.as_millis() as u64,
+                "Writer lease check failed; the existing grant is unchanged and still running"
+            ),
+            None => error!(
+                owner,
+                error = %error,
+                "Writer lease check failed and this task holds no grant, so it will NOT sign. \
+                 EVM writes are forwarded to the holder if one is known, otherwise answered \
+                 503. Set ENABLE_WRITER_LEASE=false to restore the pre-lease behaviour if \
+                 the control plane stays unreachable"
+            ),
+        },
     }
+
+    held
 }
 
 #[cfg(test)]
@@ -1305,7 +1119,7 @@ mod tests {
     fn losing_the_election_revokes_the_grant_at_once() {
         grant_for_test(grant_len(), 4);
         assert!(is_writer());
-        let held = apply_outcome("task", Ok(AcquireOutcome::Lost), Some(4));
+        let held = apply_outcome("task", Ok(Outcome::Lost { previous: None }), Some(4));
         assert_eq!(held, None);
         assert!(
             !is_writer(),
@@ -1321,11 +1135,11 @@ mod tests {
     fn a_slow_round_trip_shortens_our_own_grant() {
         set_writer_for_test(false);
         // Two seconds of monotonic time already gone when the answer arrives.
-        let sent_mono = now_micros().saturating_sub(2_000_000);
-        let sent_unix = now_unix().saturating_sub(2);
+        let sent_mono = lease::now_micros().saturating_sub(2_000_000);
+        let sent_unix = lease::now_unix().saturating_sub(2);
         let held = apply_outcome(
             "task",
-            Ok(AcquireOutcome::Held {
+            Ok(Outcome::Held {
                 generation: 5,
                 sent_mono,
                 sent_unix,
@@ -1400,9 +1214,8 @@ mod tests {
     fn a_paused_process_wakes_up_without_a_grant() {
         // A grant whose wall-clock half is already in the past, which is what a
         // suspend that the monotonic clock slept through looks like.
-        STANDALONE.store(false, Ordering::Release);
-        GRANT_UNTIL_MICROS.store(now_micros() + 3_600_000_000, Ordering::Release);
-        GRANT_UNTIL_UNIX.store(now_unix().saturating_sub(1), Ordering::Release);
+        WRITER_GRANT
+            .set_deadlines_for_test(lease::now_micros() + 3_600_000_000, lease::now_unix() - 1);
         assert!(
             !is_writer(),
             "an hour of monotonic grant does not survive a wall clock that ran past it"
@@ -1410,8 +1223,10 @@ mod tests {
 
         // ...and the mirror case: a wall clock dragged forward by an NTP
         // correction must not extend a grant either.
-        GRANT_UNTIL_MICROS.store(now_micros().saturating_sub(1), Ordering::Release);
-        GRANT_UNTIL_UNIX.store(now_unix() + 3600, Ordering::Release);
+        WRITER_GRANT.set_deadlines_for_test(
+            lease::now_micros().saturating_sub(1),
+            lease::now_unix() + 3600,
+        );
         assert!(!is_writer());
         set_writer_for_test(true);
     }

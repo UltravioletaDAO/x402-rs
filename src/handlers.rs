@@ -2169,7 +2169,7 @@ pub async fn post_discovery_refresh(
         )
         .await;
     if accepted && !crate::discovery_owner::owns_jobs() {
-        queue.offer_to_owner(body.url.clone());
+        queue.offer_to_owner(vec![body.url.clone()]);
     }
 
     info!(url = %body.url, accepted, "price-change notification accepted");

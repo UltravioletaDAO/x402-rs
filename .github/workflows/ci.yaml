@@ -281,6 +281,82 @@ jobs:
           fi
           echo "No unapplied infrastructure."
 
+      # ---------------------------------------------------------------------
+      # The catalog bucket must stay versioned
+      # ---------------------------------------------------------------------
+      #
+      # The drift gate above cannot carry this on its own. Once
+      # aws_s3_bucket_versioning.discovery is in a deploy step's target list,
+      # a suspended bucket shows up in the plan as a change the deploy DOES
+      # cover, which the report prints under "Pending, but a deploy applies
+      # these - not a failure". True in principle and useless in practice: that
+      # step only runs when discovery-bucket.tf changes, so the row would sit
+      # there indefinitely and never fail anything.
+      #
+      # So ask S3 directly. Read-only, and it runs on every PR and every push.
+      #
+      # Suspended is the loud case, and it is the only state that can mean
+      # somebody turned this off: S3 versioning is one-way. A bucket that has
+      # ever been Enabled can go to Suspended but never back to the empty,
+      # never-configured response, so an empty answer after this ships means the
+      # resource was never created rather than disabled.
+      #
+      # `if: '!cancelled()'` because this is a different question from drift. If
+      # the report step above fails on some unrelated uncovered resource, that
+      # must not swallow the answer to "is the catalog still recoverable".
+      - name: Discovery catalog bucket is still versioned
+        if: '!cancelled()'
+        working-directory: terraform/environments/production
+        run: |
+          ADDR=aws_s3_bucket_versioning.discovery
+          BUCKET=facilitator-discovery-prod
+
+          # What the configuration asks for, read out of the plan rather than
+          # grepped out of the .tf -- a grep cannot tell a live resource from one
+          # inside a comment, and this has to notice the resource being deleted.
+          want=""
+          plan_actions=""
+          if [ -f full.tfplan ]; then
+            terraform show -json full.tfplan > versioning.json
+            want=$(jq -r --arg a "$ADDR" '.resource_changes[]? | select(.address==$a) | .change.after.versioning_configuration[0].status // empty' versioning.json)
+            plan_actions=$(jq -r --arg a "$ADDR" '.resource_changes[]? | select(.address==$a) | .change.actions | join("+")' versioning.json)
+          else
+            echo "::warning title=Versioning check::No plan file; the earlier step did not get that far. Checking the live bucket only."
+          fi
+
+          if [ -f full.tfplan ] && [ "$want" != "Enabled" ]; then
+            echo "::error title=Discovery catalog bucket::${ADDR} no longer asks for Enabled (plan says '${want:-absent}'). The catalog is a read-modify-write of one 15 MB object; without versioning a bad write is the only copy."
+            exit 1
+          fi
+
+          if ! live=$(aws s3api get-bucket-versioning --bucket "$BUCKET" --region "$AWS_REGION" --query 'Status' --output text 2>&1); then
+            echo "::warning title=Versioning check inconclusive::Could not read the bucket: ${live}. Not failing on a read we did not complete."
+            exit 0
+          fi
+          echo "Live versioning status: ${live:-<unset>}  (plan: ${plan_actions:-n/a})"
+
+          case "$live" in
+            Enabled)
+              echo "Catalog bucket is versioned."
+              ;;
+            Suspended)
+              echo "::error title=Discovery catalog bucket is NOT versioned::${BUCKET} reports Suspended. Somebody turned versioning off. Every catalog write is a full-object overwrite, so right now a bad write has no version behind it to recover from. Re-enable it by running this workflow manually on main (Run workflow), which re-applies ${ADDR}."
+              exit 1
+              ;;
+            *)
+              # Empty/None. Only legitimate before the resource has ever been created.
+              case "$plan_actions" in
+                *create*)
+                  echo "::notice title=Versioning not enabled yet::${BUCKET} is unversioned and the plan creates ${ADDR}. Expected on the change that introduces it; the deploy step enables it on merge."
+                  ;;
+                *)
+                  echo "::error title=Discovery catalog bucket is NOT versioned::${BUCKET} reports no versioning status and no plan step creates ${ADDR}. The resource is declared but was never applied -- exactly the hole the drift gate exists to close."
+                  exit 1
+                  ;;
+              esac
+              ;;
+          esac
+
   deploy:
     name: Push to ECR & deploy to ECS (production)
     needs: [test, preflight]
@@ -482,3 +558,50 @@ jobs:
           done
           echo "::error::Facilitator did not return healthy /health after rollout."
           exit 1
+
+      # Deliberately the LAST step in the job.
+      #
+      # This configures a bucket that has nothing to do with the release: the
+      # image is already applied, the rollout already waited, /health already
+      # answered. Ordering it here means a failure to enable versioning cannot
+      # skip -- and so cannot hide -- the rollout's own verdict. The other two
+      # targeted applies above sit before the wait because they are part of
+      # what the release ships; this one is not.
+      #
+      # Same change-detection shape as those two, and for the same reason: the
+      # resources are outside the image deploy's target list, so without their
+      # own step they would sit in main unapplied. The catalog bucket has been
+      # unversioned since it was created, and nothing in this pipeline would
+      # ever have noticed.
+      - name: Deploy discovery bucket versioning (only when its config changed)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        working-directory: terraform/environments/production
+        run: |
+          if files=$(gh api "repos/${{ github.repository }}/compare/${{ github.event.before }}...${{ github.sha }}" --jq '.files[].filename' 2>/dev/null); then
+            if printf '%s\n' "$files" | grep -qE '^terraform/environments/production/discovery-bucket\.tf$'; then
+              echo "Discovery bucket config changed; applying."
+            else
+              echo "No discovery bucket changes in this push; skipping."
+              exit 0
+            fi
+          else
+            echo "Could not list changed files; applying to be safe."
+          fi
+          # The fallback above is also the repair path. Versioning is bucket state,
+          # not repository state: if somebody suspends it in the console, no push
+          # re-enables it, because no file changed. The drift gate's versioning
+          # check goes red, and a manual "Run workflow" on main -- which has no
+          # `github.event.before`, so the compare fails and this applies -- puts it
+          # back without needing a commit.
+          terraform init -input=false
+          if ! terraform apply -input=false -auto-approve -no-color \
+            -target=aws_s3_bucket_versioning.discovery \
+            -target=aws_s3_bucket_lifecycle_configuration.discovery > apply.log 2>&1; then
+            tail -60 apply.log
+            if grep -qi 'AccessDenied\|not authorized' apply.log; then
+              echo "::error title=Discovery bucket: the deploy user lacks the S3 grant::The apply was refused. github-actions-facilitator-deploy needs s3:PutBucketVersioning and s3:PutLifecycleConfiguration on the facilitator-discovery-prod bucket. That is an IAM change and is applied BY HAND, before this merges -- see docs/handoffs/2026-09-10-bucket-versioning.md. Nothing was changed; re-run this workflow once the grant is in place."
+            fi
+            exit 1
+          fi
+          tail -20 apply.log

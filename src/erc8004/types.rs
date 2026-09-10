@@ -138,6 +138,17 @@ pub struct RegisterAgentResponse {
     pub error: Option<String>,
     /// Network where the agent was registered
     pub network: Network,
+    /// Solana identity-mint detail: how far the mint actually got on chain, what
+    /// the fee payer held, and whether this call resumed a half-minted identity.
+    ///
+    /// Read `mint.status` rather than `success` to decide whether to retry. The
+    /// two disagree on purpose: a mint that registered the asset but never
+    /// transferred it has an `agentId` that nobody but the facilitator can use,
+    /// and before v2.17.0 that was reported as a plain success.
+    ///
+    /// Absent on the EVM path, whose response contract is unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mint: Option<crate::erc8004::solana_mint::SolanaMintReport>,
 }
 
 // ============================================================================

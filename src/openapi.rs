@@ -1105,11 +1105,37 @@ Without that account the ATOM Engine records feedback but scores none of it.
 `agentWallet` does not survive the transfer and must be re-set by the new owner,
 the same as on EVM.
 
-If the mint succeeds but the transfer fails, the response is a 500 that still carries
-`agentId` and `transaction`: the agent exists and is held by the facilitator, and is
-never reported as delivered.
+**Solana mints are atomic (v2.17.0).** All three instructions ride in a single
+transaction, so no prefix of the mint can land on its own. The three used to be
+three transactions, and a fee payer that ran dry mid-batch left identities created
+but never transferred, reported as a plain success.
 
-**EVM response:** `agentId` is a numeric string (ERC-721 tokenId).
+Solana responses therefore carry a `mint` object. **Read `mint.status`, not
+`success`, to decide whether to retry:**
+
+| `mint.status` | Meaning |
+|---|---|
+| `complete` | Everything the request asked for confirmed. |
+| `pending_stats` | The identity exists without its ATOM stats and the facilitator still holds it. Repeat the same request to finish it. |
+| `pending_transfer` | The identity exists and is initialized but the facilitator still holds it. Repeat the same request to finish it. |
+| `not_minted` | No identity exists and nothing was left behind. Safe to retry. |
+
+`mint.resumed` is true when the call finished an identity an earlier call had left
+half minted, rather than creating a new one. Repeating a request with the same
+`agentUri` is the documented way to recover a stranded identity: the facilitator
+matches it among the agents it still holds and runs only the missing steps.
+
+`mint.atomic` is true when one transaction carried every step, in which case
+`transaction`, `mint.statsTransaction` and `transferTransaction` are the same
+signature.
+
+A mint whose fee payer cannot cover it is refused **before** anything is sent:
+`503` with `mint.errorCode = "fee_payer_insufficient_balance"` and
+`mint.feePayer` carrying `availableLamports`, `requiredLamports` and
+`mintsRemaining`. Nothing is written, so there is no partial identity to clean up.
+A mint costs about 0.0134 SOL, almost all of it rent for the accounts it creates.
+
+**EVM response:** `agentId` is a numeric string (ERC-721 tokenId). No `mint` object.
 **Solana response:** `agentId` is a base58 Pubkey (Metaplex Core NFT mint address).
 
 ```json
@@ -1117,8 +1143,22 @@ never reported as delivered.
   "success": true,
   "agentId": "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgHkv",
   "transaction": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d6...",
-  "owner": "facilitator-pubkey...",
-  "network": "solana"
+  "transferTransaction": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d6...",
+  "owner": "6xNPewUdKRbEZDReQdpyfNUdgNg8QRc8Mt263T5GZSRv",
+  "network": "solana",
+  "mint": {
+    "status": "complete",
+    "resumed": false,
+    "atomic": true,
+    "metadataSkipped": false,
+    "statsTransaction": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d6...",
+    "feePayer": {
+      "address": "F742C4VfFLQ9zRQyithoj5229ZgtX2WqKCSFKgH2EThq",
+      "availableLamports": 1000000000,
+      "requiredLamports": 13402400,
+      "mintsRemaining": 74
+    }
+  }
 }
 ```
 
@@ -1139,7 +1179,9 @@ re-minted — the async path returns the existing job, the sync path returns
         (status = 200, description = "Registration result (sync)", body = Object),
         (status = 202, description = "Async registration accepted; poll /register/status/{jobId}", body = Object),
         (status = 400, description = "Registration failed", body = Object),
-        (status = 409, description = "A registration for this agent is already in progress", body = Object)
+        (status = 409, description = "A registration for this agent is already in progress", body = Object),
+        (status = 500, description = "Solana: the identity exists but is still held by the facilitator (`mint.status` is `pending_stats` or `pending_transfer`). Repeat the request to finish it", body = Object),
+        (status = 503, description = "Solana: refused before touching the chain -- the fee payer cannot cover the mint, or the facilitator could not tell whether this agent already has a half-minted identity", body = Object)
     )
 )]
 async fn path_register_post() {}

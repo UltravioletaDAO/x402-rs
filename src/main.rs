@@ -66,6 +66,7 @@ mod discovery_health;
 mod discovery_price;
 mod discovery_security;
 mod discovery_store;
+mod discovery_terms;
 mod dx402;
 mod erc8004;
 mod escrow;
@@ -396,7 +397,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Ok(bucket) = std::env::var("DISCOVERY_S3_BUCKET") {
             let key = std::env::var("DISCOVERY_HEALTH_S3_KEY")
                 .unwrap_or_else(|_| "bazaar/health.json".to_string());
-            tracker.configure_s3(bucket, key).await;
+            tracker.configure_s3(bucket.clone(), key).await;
+            // Observed payment terms get their OWN object, not a column in the
+            // catalog. One writer (this prober), out of reach of any import, and
+            // a build that predates it neither reads nor writes it -- so a
+            // rollback leaves the observations intact instead of stripping them
+            // on the next snapshot.
+            let terms_key = std::env::var("DISCOVERY_TERMS_S3_KEY")
+                .unwrap_or_else(|_| "bazaar/terms.json".to_string());
+            discovery_registry
+                .terms()
+                .configure_s3(bucket, terms_key)
+                .await;
         }
         let registry_for_health = Arc::clone(&discovery_registry);
         let _health_handle = discovery_health::start_health_task(

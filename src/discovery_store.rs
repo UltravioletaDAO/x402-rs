@@ -22,6 +22,35 @@
 //! The registry maintains an in-memory cache for fast reads, while the store
 //! handles persistence. On startup, the registry loads all resources from the
 //! store. On writes, the registry updates both memory and store.
+//!
+//! # The persisted format, and what a rollback does to it
+//!
+//! The object is a bare JSON array of [`DiscoveryResource`], and it stays one.
+//! Each record carries its own [`RECORD_FORMAT_VERSION`] stamp; there is no
+//! envelope around the array.
+//!
+//! That choice is about failure, not tidiness. The read is
+//! `from_slice::<Vec<DiscoveryResource>>` and it is all-or-nothing: **one**
+//! record a build cannot parse takes down the whole catalog on startup. Wrapping
+//! the array in `{"version": N, "resources": [...]}` would do exactly that to
+//! every build that predates the envelope -- the rollback would find an object
+//! where it expects an array and load nothing. A version marker whose
+//! introduction breaks the version it is meant to protect against is not a
+//! version marker.
+//!
+//! Inside a record, forward and backward compatibility both hold by
+//! construction: new fields are optional with defaults, so a new build reads an
+//! old record, and `serde` ignores unknown fields, so an old build reads a new
+//! one. What an old build cannot do is *preserve* what it does not know: the
+//! next snapshot it writes drops the fields it ignored. That is why the observed
+//! terms live in their own object ([`crate::discovery_terms`]) rather than
+//! inline -- a rolled-back build neither reads nor writes that object, so those
+//! records survive a rollback untouched.
+//!
+//! Migration reads a `recordVersion: 1` record as it is. No date is invented:
+//! an absent `lastSettledAt` on a v1 record means *we never recorded one*, and
+//! filling it with `now` would manufacture exactly the false freshness this
+//! phase exists to remove.
 
 use async_trait::async_trait;
 use aws_sdk_s3::error::ProvideErrorMetadata;
@@ -29,7 +58,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
-use crate::types_v2::DiscoveryResource;
+use crate::types_v2::{DiscoveryResource, RECORD_FORMAT_VERSION};
 
 // ============================================================================
 // Error Types
@@ -502,6 +531,8 @@ impl DiscoveryStore for S3Store {
                 let resources = Self::deserialize(&body.into_bytes())?;
                 info!(
                     count = resources.len(),
+                    format_versions = ?format_census(&resources),
+                    current_format = RECORD_FORMAT_VERSION,
                     "Loaded discovery resources from S3"
                 );
                 Ok(Snapshot { resources, version })
@@ -685,6 +716,20 @@ impl DiscoveryStore for S3Store {
     fn store_type(&self) -> &'static str {
         "s3"
     }
+}
+
+/// How many stored records carry each format version.
+///
+/// The migration's denominator. Records are rewritten to the current version
+/// only when something touches them, so this number is how you tell "the new
+/// format is deployed" from "the catalog has been rewritten in it" -- two claims
+/// that a deploy alone does not connect.
+pub fn format_census(resources: &[DiscoveryResource]) -> std::collections::BTreeMap<u32, usize> {
+    let mut census = std::collections::BTreeMap::new();
+    for r in resources {
+        *census.entry(r.record_version).or_insert(0) += 1;
+    }
+    census
 }
 
 /// Whether S3 refused a PUT because of the condition we attached.
@@ -1325,6 +1370,88 @@ mod tests {
         );
     }
 
+    /// A snapshot in the shape the catalog had before the date model existed.
+    ///
+    /// Copied from the production object's schema, not invented: no
+    /// `recordVersion`, no `lastSettledAt`, no `sourceUpdatedAt` (0 of 24 636
+    /// records carried one on 2026-09-10), and a `scheme` string that is still
+    /// spelled the way it always was.
+    const LEGACY_SNAPSHOT: &str = r#"[
+      {
+        "url": "https://api.legacy.example/premium",
+        "type": "http",
+        "x402Version": 2,
+        "description": "A record written before the date model existed",
+        "accepts": [
+          {
+            "scheme": "exact",
+            "network": "eip155:8453",
+            "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            "amount": "10000",
+            "payTo": "0xe4dc963c56979E0260fc146b87eE24F18220e545",
+            "maxTimeoutSeconds": 300
+          }
+        ],
+        "lastUpdated": 1757000000,
+        "source": "aggregated",
+        "sourceFacilitator": "coinbase",
+        "firstSeen": 1750000000
+      }
+    ]"#;
+
+    #[test]
+    fn a_snapshot_in_the_previous_format_still_loads_and_no_date_is_invented() {
+        let loaded = S3Store::deserialize(LEGACY_SNAPSHOT.as_bytes())
+            .expect("a snapshot in the previous format must still parse");
+        assert_eq!(loaded.len(), 1);
+        let r = &loaded[0];
+
+        assert_eq!(
+            r.record_version, 1,
+            "an unstamped record is the format that predates the stamp"
+        );
+        // The three absences that MUST stay absences. Filling any of them with
+        // `now` at migration is the exact move this phase removed from the
+        // aggregator: it manufactures freshness for content nobody re-checked.
+        assert_eq!(r.source_updated_at, None);
+        assert_eq!(r.last_settled_at, None);
+        assert_eq!(r.first_seen, Some(1_750_000_000));
+        assert_eq!(r.last_updated, 1_757_000_000, "our write time is unchanged");
+        // And the offer itself survives intact.
+        assert_eq!(r.accepts.len(), 1);
+        assert_eq!(r.accepts[0].scheme.to_string(), "exact");
+        assert_eq!(r.accepts[0].amount.to_string(), "10000");
+    }
+
+    #[test]
+    fn the_census_separates_deployed_from_migrated() {
+        let mut legacy = S3Store::deserialize(LEGACY_SNAPSHOT.as_bytes()).unwrap();
+        let fresh = create_test_resource("https://api.fresh.example/x");
+        assert_eq!(fresh.record_version, RECORD_FORMAT_VERSION);
+        legacy.push(fresh);
+        let census = format_census(&legacy);
+        assert_eq!(census.get(&1), Some(&1));
+        assert_eq!(census.get(&RECORD_FORMAT_VERSION), Some(&1));
+    }
+
+    #[test]
+    fn a_record_in_the_current_format_round_trips_through_the_snapshot() {
+        let mut r = create_test_resource("https://api.roundtrip.example/x");
+        r.last_settled_at = Some(1_757_100_000);
+        r.source_updated_at = Some(1_757_000_000);
+        let bytes = S3Store::serialize(std::slice::from_ref(&r)).unwrap();
+        let back = S3Store::deserialize(&bytes).unwrap();
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].last_settled_at, Some(1_757_100_000));
+        assert_eq!(back[0].source_updated_at, Some(1_757_000_000));
+        assert_eq!(back[0].record_version, RECORD_FORMAT_VERSION);
+        assert_eq!(
+            back[0].content_fingerprint(),
+            r.content_fingerprint(),
+            "a snapshot round trip is not a content change"
+        );
+    }
+
     #[test]
     fn the_snapshot_is_written_compact() {
         // Machine state, read by no human. On the real catalog the indentation
@@ -1344,6 +1471,31 @@ mod tests {
         let back = S3Store::deserialize(&bytes).unwrap();
         assert_eq!(back.len(), 2);
         assert_eq!(back[0].accepts.len(), resources[0].accepts.len());
+    }
+
+    #[test]
+    fn the_response_only_fields_never_reach_the_snapshot() {
+        // The listing path sets these on a response CLONE. If one ever reached
+        // a stored record it would keep asserting a freshness nobody rechecked,
+        // which is the failure mode `health` and `curation` were split out for.
+        let mut r = create_test_resource("https://api.responseonly.example/x");
+        r.price_freshness = Some("fresh".to_string());
+        r.terms_observed_at = Some(1_757_000_000);
+        r.content_hash = Some("deadbeef".to_string());
+        r.strip_response_only();
+        let text =
+            String::from_utf8(S3Store::serialize(std::slice::from_ref(&r)).unwrap()).unwrap();
+        for field in [
+            "priceFreshness",
+            "termsObservedAt",
+            "contentHash",
+            "observedTerms",
+        ] {
+            assert!(
+                !text.contains(field),
+                "{field} must not be persisted onto a record"
+            );
+        }
     }
 
     #[test]

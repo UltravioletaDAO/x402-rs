@@ -1209,6 +1209,28 @@ pub struct CurationInfo {
     pub verification: Option<VerificationInfo>,
 }
 
+/// Version stamped on every record this build writes.
+///
+/// * **1** -- everything written before the date model existed. Such a record
+///   has no `lastSettledAt` and may have no `sourceUpdatedAt`, and in both cases
+///   the absence means *we never recorded it*, not *it never happened*. That
+///   distinction is the whole reason the number is here: without it a reader
+///   cannot tell an unknown date from an event that has not occurred.
+/// * **2** -- carries the separated dates.
+///
+/// The catalog object stays a bare JSON array of records, and the version rides
+/// inside each one. An envelope would have been tidier and is the reason it was
+/// rejected: a build that predates it reads the object with
+/// `from_slice::<Vec<DiscoveryResource>>`, an object where an array is expected
+/// fails that outright, and one failed load is the whole catalog. A rollback has
+/// to be boring.
+pub const RECORD_FORMAT_VERSION: u32 = 2;
+
+/// What a record with no version stamp is: everything written before P1.
+fn legacy_record_version() -> u32 {
+    1
+}
+
 /// The `source` and `source_facilitator` fields enable filtering and attribution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1281,6 +1303,51 @@ pub struct DiscoveryResource {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settlement_count: Option<u32>,
 
+    /// When a payment for this resource last settled through us.
+    ///
+    /// **Activity, not verification.** A settlement proves somebody paid; it
+    /// says nothing about whether the terms this record publishes are still the
+    /// terms on offer, and for `upto` the amount that settled is legitimately
+    /// below the ceiling that was authorized. It used to be recorded by moving
+    /// `last_updated` instead, which made a payment look like a content update
+    /// and let commercial activity reorder the catalog and outrank imports (F7).
+    ///
+    /// Absent on a `recordVersion: 1` record means unknown, not "never settled".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_settled_at: Option<u64>,
+
+    /// Which version of the persisted shape this record was written in.
+    ///
+    /// See [`RECORD_FORMAT_VERSION`]. Read as 1 when absent, which is what every
+    /// record stored before this field existed serializes as.
+    #[serde(default = "legacy_record_version")]
+    pub record_version: u32,
+
+    /// Fingerprint of the commercially meaningful content. Response-only.
+    ///
+    /// Resolved at read time from the record itself, exactly like `health` and
+    /// the price annotations: a stored hash is a hash of whatever the record was
+    /// when somebody last wrote it down, which is a different claim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_hash: Option<String>,
+
+    /// `fresh` | `stale` | `unknown` | `conflict`. Response-only.
+    ///
+    /// Independent of `health`: an endpoint can be alive with a price nothing
+    /// has ever checked, and can have a freshly read price while quarantined.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_freshness: Option<String>,
+
+    /// When the origin's live payment terms were last read. Response-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terms_observed_at: Option<u64>,
+
+    /// The origin's live payment terms as last read, with the context, phase and
+    /// provenance of the reading. Response-only; the record itself is stored in
+    /// its own overlay so an import cannot erase it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_terms: Option<crate::discovery_terms::ObservedTerms>,
+
     /// Liveness health (WS-B). Response-only: the cache/S3 copy keeps this
     /// `None` (skipped on serialize); `list()` annotates response clones from
     /// the separate health overlay so imports can never clobber it.
@@ -1330,6 +1397,12 @@ impl DiscoveryResource {
             source_facilitator: None,
             first_seen: Some(now),
             settlement_count: None,
+            last_settled_at: None,
+            record_version: RECORD_FORMAT_VERSION,
+            content_hash: None,
+            price_freshness: None,
+            terms_observed_at: None,
+            observed_terms: None,
             health: None,
             curation: None,
         }
@@ -1379,6 +1452,12 @@ impl DiscoveryResource {
             source_facilitator: Some(source_facilitator),
             first_seen: Some(now),
             settlement_count: None,
+            last_settled_at: None,
+            record_version: RECORD_FORMAT_VERSION,
+            content_hash: None,
+            price_freshness: None,
+            terms_observed_at: None,
+            observed_terms: None,
             health: None,
             curation: None,
         }
@@ -1420,6 +1499,13 @@ impl DiscoveryResource {
             source_facilitator: None,
             first_seen: Some(now),
             settlement_count: Some(1),
+            // The one date a settlement is entitled to move.
+            last_settled_at: Some(now),
+            record_version: RECORD_FORMAT_VERSION,
+            content_hash: None,
+            price_freshness: None,
+            terms_observed_at: None,
+            observed_terms: None,
             health: None,
             curation: None,
         }
@@ -1437,15 +1523,89 @@ impl DiscoveryResource {
         self
     }
 
-    /// Increment settlement count (for Settlement source)
-    pub fn increment_settlement_count(&mut self) {
+    /// Record that a payment for this resource settled.
+    ///
+    /// Moves `settlement_count` and `last_settled_at`, and **deliberately not
+    /// `last_updated`**. A settlement is commercial activity; the terms in this
+    /// record did not change because somebody paid, and nothing about the
+    /// payment was checked against them.
+    ///
+    /// Moving `last_updated` here had three effects, all wrong (F7). It reordered
+    /// the listing, which sorts on that field, so a busy resource floated above
+    /// recently-updated ones. It reset the age a reader uses to judge the record.
+    /// And because `merge_resource` refuses to walk `last_updated` backwards, a
+    /// settlement could make an in-flight import look stale and lose.
+    pub fn record_settlement(&mut self) {
         self.settlement_count = Some(self.settlement_count.unwrap_or(0) + 1);
-        // Update last_updated timestamp
         use std::time::{SystemTime, UNIX_EPOCH};
-        self.last_updated = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        self.last_settled_at = Some(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        );
+        // A record we are rewriting is a record in this build's shape.
+        self.record_version = RECORD_FORMAT_VERSION;
+    }
+
+    /// Fingerprint of everything that describes what is being sold and for how
+    /// much, and of nothing else.
+    ///
+    /// Two records with the same fingerprint are the same offer, however many
+    /// times either was downloaded. That is what makes "this feed republished
+    /// the same page" distinguishable from "the terms changed", which is the
+    /// question `import_supersedes` cannot answer from dates alone when neither
+    /// side carries one.
+    ///
+    /// Excluded on purpose: every date, `first_seen`, `settlement_count`,
+    /// `source`, `source_facilitator`, and every response-only field. Those
+    /// describe our relationship with the record, not the offer -- fold any of
+    /// them in and an unchanged feed hashes differently on every cycle, which is
+    /// precisely the false change this exists to detect.
+    ///
+    /// The hash detects change. It does not prove origin and it does not prove
+    /// currency; a stale document hashes as confidently as a fresh one.
+    pub fn content_fingerprint(&self) -> String {
+        use sha2::{Digest, Sha256};
+        // `serde_json::Value` maps are BTreeMaps in this build (no
+        // `preserve_order`), so a nested `extra` or `extensions` blob serializes
+        // with its keys sorted regardless of how the source ordered them. Two
+        // feeds publishing the same object in different key order agree here.
+        let canonical = serde_json::json!({
+            "url": self.url.as_str(),
+            "type": self.resource_type,
+            "x402Version": self.x402_version,
+            "description": self.description,
+            "accepts": self.accepts.iter().map(|o| {
+                serde_json::json!({
+                    "scheme": o.scheme.to_string(),
+                    "network": o.network.to_string(),
+                    "asset": o.asset.to_string(),
+                    "amount": o.amount.to_string(),
+                    "payTo": o.pay_to.to_string(),
+                    "maxTimeoutSeconds": o.max_timeout_seconds,
+                    "extra": o.extra,
+                })
+            }).collect::<Vec<_>>(),
+            "metadata": self.metadata,
+            "extensions": self.extensions,
+        });
+        let bytes = serde_json::to_vec(&canonical).unwrap_or_default();
+        hex::encode(Sha256::digest(bytes))
+    }
+
+    /// Drop the fields that are resolved when a listing is composed.
+    ///
+    /// Same discipline as [`CatalogPaymentOption::strip_response_only`], one
+    /// level up: a caller must not be able to *assert* that its own price is
+    /// fresh, or that we observed terms we never observed.
+    pub fn strip_response_only(&mut self) {
+        self.content_hash = None;
+        self.price_freshness = None;
+        self.terms_observed_at = None;
+        self.observed_terms = None;
+        self.health = None;
+        self.curation = None;
     }
 }
 

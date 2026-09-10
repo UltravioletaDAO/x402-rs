@@ -16,6 +16,9 @@
 #               only /ecs/facilitator-production*, so the balances Lambda and API
 #               Gateway log groups drifted to 7d against the code's 30 and nothing
 #               -- not CI, not a routine deploy -- could ever fix them
+#   2026-09-10  logs:PutMetricFilter                -> the deploy could create the
+#               ALARM but not the log metric filter it reads, so every log-based
+#               alarm this stack owns was un-deployable. See below.
 #
 # There is no drift detection for a resource that is not declared anywhere.
 #
@@ -157,6 +160,53 @@ resource "aws_iam_policy" "cicd_infra" {
           "cloudwatch:ListTagsForResource"
         ],
         "Resource" : "arn:aws:cloudwatch:us-east-2:${data.aws_caller_identity.current.account_id}:alarm:facilitator-*"
+      },
+      {
+        # Added 2026-09-10. `FacilitatorAlarmManage` above grants PutMetricAlarm,
+        # so the deploy could always create the ALARM -- but every log-based alarm
+        # this stack owns reads a metric that only exists because of a
+        # `aws_cloudwatch_log_metric_filter`, and that call was never granted. The
+        # two halves are one feature and the policy only had one of them.
+        #
+        # It stayed invisible because of a second bug, fixed in the same push
+        # (#34): the "Deploy observability" step's change gate listed
+        # `alerts.tf|alerts-imported.tf|cloudwatch-*.tf|variables.tf` by name, which
+        # silently excluded `alerts-solana-mint.tf`. Its two resources -- a filter
+        # and an alarm, added 2026-09-10 -- had therefore never been applied, so
+        # the missing permission had never been exercised. Widening the gate to
+        # `alerts-.*\.tf` made the deploy actually try, and it failed:
+        #
+        #   Error: putting CloudWatch Logs Metric Filter (): api error
+        #   AccessDeniedException: User: .../github-actions-facilitator-deploy is
+        #   not authorized to perform: logs:PutMetricFilter on resource:
+        #   arn:aws:logs:us-east-2:...:log-group:/ecs/facilitator-production
+        #   because no identity-based policy allows the logs:PutMetricFilter action
+        #
+        # (run 34500930933, 2026-09-10 16:27:35Z. The ECS rollout to 2.19.0 was a
+        # separate, earlier step and completed fine; only this step failed.)
+        #
+        # Both ARN forms are listed explicitly rather than with a trailing `*`. The
+        # API reports the resource WITHOUT the `:*` suffix, as the error above
+        # shows, while other log-group calls use the suffixed form -- and a
+        # trailing wildcard would also match `/ecs/facilitator-production-anything`,
+        # which is wider than this needs to be.
+        #
+        # DescribeMetricFilters is here because it is Terraform's READ: without it
+        # a plan cannot tell an existing filter from a missing one.
+        #
+        # Applied out of band by c0der, 2026-09-10 16:40Z (plan 0/1/0; simulating
+        # logs:PutMetricFilter and logs:DeleteMetricFilter now returns allowed).
+        "Sid" : "FacilitatorMetricFilterManage",
+        "Effect" : "Allow",
+        "Action" : [
+          "logs:PutMetricFilter",
+          "logs:DeleteMetricFilter",
+          "logs:DescribeMetricFilters"
+        ],
+        "Resource" : [
+          "arn:aws:logs:us-east-2:${data.aws_caller_identity.current.account_id}:log-group:/ecs/facilitator-production",
+          "arn:aws:logs:us-east-2:${data.aws_caller_identity.current.account_id}:log-group:/ecs/facilitator-production:*"
+        ]
       },
       {
         "Sid" : "FacilitatorScheduleManage",

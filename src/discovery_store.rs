@@ -127,6 +127,19 @@ pub trait DiscoveryStore: Send + Sync + std::fmt::Debug {
         })
     }
 
+    /// The version the catalog is at, WITHOUT reading the catalog.
+    ///
+    /// A conditional write needs the version and nothing else. Getting it from
+    /// [`DiscoveryStore::load_snapshot`] means downloading and parsing the whole
+    /// object to read one header and throw the rest away -- on the production
+    /// catalog, 98 MB over the wire and 520 MB of parsed structures, per cycle,
+    /// per task, discarded immediately.
+    ///
+    /// The default keeps the old behaviour for stores where a read is free.
+    async fn current_version(&self) -> Result<Version, StoreError> {
+        Ok(self.load_snapshot().await?.version)
+    }
+
     /// Replace the whole catalog, but only if it is still at `expected`.
     ///
     /// Returns the new version. Returns [`StoreError::VersionConflict`] when
@@ -161,8 +174,8 @@ pub trait DiscoveryStore: Send + Sync + std::fmt::Debug {
     /// over the newer catalog and resurrect exactly what was removed. The
     /// caller redoes its cycle from a fresh read.
     async fn save_all(&self, resources: &[DiscoveryResource]) -> Result<(), StoreError> {
-        let base = self.load_snapshot().await?;
-        self.save_snapshot(resources, &base.version).await?;
+        let base = self.current_version().await?;
+        self.save_snapshot(resources, &base).await?;
         Ok(())
     }
 
@@ -431,9 +444,14 @@ impl S3Store {
     }
 
     /// Serialize resources to JSON bytes.
+    ///
+    /// Compact, not pretty. Nobody reads this object by eye -- it is machine
+    /// state -- and on the real catalog the indentation costs 44 MB of the 98 MB
+    /// (measured on 39 593 records: 98 MB pretty, 54 MB compact). That is 44 MB
+    /// of extra CPU to produce, upload, store, version, and download again on
+    /// every task start, per cycle, per task.
     fn serialize(resources: &[DiscoveryResource]) -> Result<Vec<u8>, StoreError> {
-        serde_json::to_vec_pretty(resources)
-            .map_err(|e| StoreError::SerializationError(e.to_string()))
+        serde_json::to_vec(resources).map_err(|e| StoreError::SerializationError(e.to_string()))
     }
 
     /// Deserialize resources from JSON bytes.
@@ -597,14 +615,47 @@ impl DiscoveryStore for S3Store {
         .await
     }
 
+    /// The ETag, from a HEAD. No body, no parse.
+    ///
+    /// `HeadObject` returns exactly the metadata `GetObject` does, ETag
+    /// included, and transfers none of the 98 MB body. Same conditional-write
+    /// guarantee, because it is the same ETag.
+    async fn current_version(&self) -> Result<Version, StoreError> {
+        match self
+            .client
+            .head_object()
+            .bucket(&self.bucket)
+            .key(&self.key)
+            .send()
+            .await
+        {
+            Ok(output) => Ok(output
+                .e_tag()
+                .filter(|tag| !tag.is_empty())
+                .map(|tag| Version::At(tag.to_string()))
+                // Same reasoning as the GET path: no ETag means the write
+                // attempts create-if-absent and is REFUSED against an object
+                // that exists, which is the right way round to fail.
+                .unwrap_or(Version::Absent)),
+            Err(sdk_err) => {
+                let service_err = sdk_err.into_service_error();
+                if service_err.is_not_found() {
+                    return Ok(Version::Absent);
+                }
+                error!(error = %service_err, "Failed to read catalog version from S3");
+                Err(StoreError::ReadError(service_err.to_string()))
+            }
+        }
+    }
+
     async fn save_all(&self, resources: &[DiscoveryResource]) -> Result<(), StoreError> {
         // Deliberately NOT the retry loop. See the trait's doc comment: a
         // snapshot is authoritative about deletions, so re-applying a stale one
         // over a newer catalog resurrects what was removed. One attempt against
         // the version read immediately before, and a conflict is reported.
         let _serialized = self.writes.lock().await;
-        let base = self.load_snapshot().await?;
-        match self.save_snapshot(resources, &base.version).await {
+        let base = self.current_version().await?;
+        match self.save_snapshot(resources, &base).await {
             Ok(_) => Ok(()),
             Err(StoreError::VersionConflict(code)) => {
                 warn!(
@@ -830,6 +881,10 @@ mod tests {
         /// Counters, so a test can say how many attempts were made.
         reads: u32,
         writes: u32,
+        /// Version reads that did NOT pull the catalog body -- the S3 store's
+        /// `HeadObject` path, counted separately so a test can tell the cheap
+        /// question from the expensive one.
+        version_reads: u32,
     }
 
     impl FlakyStore {
@@ -864,6 +919,15 @@ mod tests {
             urls
         }
 
+        /// Reads that pulled the whole catalog body.
+        fn reads(&self) -> u32 {
+            self.state.lock().unwrap().reads
+        }
+
+        fn version_reads(&self) -> u32 {
+            self.state.lock().unwrap().version_reads
+        }
+
         fn writes(&self) -> u32 {
             self.state.lock().unwrap().writes
         }
@@ -885,6 +949,21 @@ mod tests {
             Ok(Snapshot {
                 resources: state.resources.clone(),
                 version: Version::At(state.version.to_string()),
+            })
+        }
+
+        /// The version without the body, exactly as `HeadObject` answers it.
+        async fn current_version(&self) -> Result<Version, StoreError> {
+            let mut state = self.state.lock().unwrap();
+            state.version_reads += 1;
+            if state.fail_reads > 0 {
+                state.fail_reads -= 1;
+                return Err(StoreError::ReadError("head failed".into()));
+            }
+            Ok(if state.version == 0 {
+                Version::Absent
+            } else {
+                Version::At(state.version.to_string())
             })
         }
 
@@ -1193,6 +1272,80 @@ mod tests {
     }
 
     /// The two codes S3 uses to refuse a conditional write, and nothing else.
+    // =======================================================================
+    // 2026-09-10: the catalog was downloaded and parsed to read one header
+    // =======================================================================
+
+    #[tokio::test]
+    async fn publishing_a_snapshot_reads_the_version_not_the_catalog() {
+        // `save_all` needs the version to attach a conditional write, and
+        // NOTHING else -- it is about to replace every byte. It got it from
+        // `load_snapshot`, which downloads and parses the whole object and then
+        // drops the result. On the production catalog of 2026-09-10 that was
+        // 98 MB over the wire and 520 MB of parsed structures, per cycle, per
+        // task, discarded immediately. The task has 2 GiB.
+        let store = FlakyStore::with_resources(vec![
+            create_test_resource("https://api1.example.com/a"),
+            create_test_resource("https://api2.example.com/b"),
+        ]);
+        let publish = vec![create_test_resource("https://api3.example.com/c")];
+
+        store.save_all(&publish).await.unwrap();
+
+        assert_eq!(
+            store.version_reads(),
+            1,
+            "the version is asked for, once, without the body"
+        );
+        assert_eq!(
+            store.reads(),
+            0,
+            "and the catalog itself is never downloaded to publish over it"
+        );
+        // Still the same conditional write: the snapshot replaced the catalog.
+        assert_eq!(store.urls(), vec!["https://api3.example.com/c".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn a_version_read_that_fails_still_never_publishes() {
+        // The cheap path has to keep the A3 guarantee: a read we could not
+        // complete tells us nothing, and must not become a write.
+        let store = FlakyStore::with_resources(vec![create_test_resource(
+            "https://api.survivor.example/x",
+        )]);
+        store.fail_next_reads(1);
+
+        let err = store.save_all(&[]).await.unwrap_err();
+        assert!(matches!(err, StoreError::ReadError(_)));
+        assert_eq!(store.writes(), 0, "nothing was published");
+        assert_eq!(
+            store.urls(),
+            vec!["https://api.survivor.example/x".to_string()],
+            "and the catalog is intact"
+        );
+    }
+
+    #[test]
+    fn the_snapshot_is_written_compact() {
+        // Machine state, read by no human. On the real catalog the indentation
+        // was 44 MB of the 98 MB -- produced, uploaded, versioned in S3, and
+        // downloaded again by every task that starts.
+        let resources = vec![
+            create_test_resource("https://api1.example.com/a"),
+            create_test_resource("https://api2.example.com/b"),
+        ];
+        let bytes = S3Store::serialize(&resources).unwrap();
+        let text = String::from_utf8(bytes.clone()).unwrap();
+        assert!(
+            !text.contains("\n  "),
+            "the snapshot must not be pretty-printed"
+        );
+        // And it is still the same catalog.
+        let back = S3Store::deserialize(&bytes).unwrap();
+        assert_eq!(back.len(), 2);
+        assert_eq!(back[0].accepts.len(), resources[0].accepts.len());
+    }
+
     #[test]
     fn only_a_conditional_refusal_counts_as_a_conflict() {
         assert!(is_conditional_refusal("PreconditionFailed"));

@@ -108,6 +108,85 @@ pub enum ImportPolicy {
 /// a future-timestamp poisoning attempt (F5).
 const FUTURE_TIMESTAMP_SKEW_SECS: u64 = 300;
 
+/// Most resources the in-memory catalog will hold.
+///
+/// # Why there is a number here at all
+///
+/// There was not one, and on 2026-09-10 that stopped being free. Fixing the
+/// Coinbase feed parser (2.20.0) turned a source that had been failing entirely
+/// into one that returns tens of thousands of resources: the aggregation cycle
+/// went from `Total resources aggregated total=752` to `total=29133` inside the
+/// same minute, and to 43 410 eighteen minutes later. The catalog followed --
+/// 24 636 records and 14.5 MB in S3 at 16:48Z, **39 593 records and 98.5 MB at
+/// 17:06Z** -- and every whole-catalog operation followed it: the resident
+/// footprint, the snapshot the import clones, the scan `list()` does per
+/// request, the URL set the health prober copies per tick.
+///
+/// Measured on that exact object, release build: **520 MB resident** for 39 593
+/// records, 13.4 KB each. The task is provisioned with 2 GiB and one vCPU.
+///
+/// So the number is not a preference, it is the provisioning: 20 000 records is
+/// ~270 MB resident, which leaves room for the import's own copy and the
+/// serialized body inside a 2 GiB budget. Today it also keeps every resource the
+/// default listing actually shows (15 863 of the 39 593 survive the health
+/// filter). Raise it when the task is raised, not before.
+const DEFAULT_MAX_RESOURCES: usize = 20_000;
+
+/// [`DEFAULT_MAX_RESOURCES`], overridable. `0` disables the cap.
+fn max_resources() -> usize {
+    std::env::var("DISCOVERY_MAX_RESOURCES")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_MAX_RESOURCES)
+}
+
+/// Trim `cache` to `cap`, dropping the least defensible records first.
+///
+/// Eviction is by PROVENANCE before recency, and that order is the whole point.
+/// A resource somebody registered with us, or that we watched a payment settle
+/// for, or that we read from the origin's own document, is first-hand and
+/// irreplaceable: we cannot get it back by asking a third party. An aggregated
+/// copy is, by construction, a copy of something still published elsewhere --
+/// dropping it costs a re-fetch, and the next cycle will offer it again.
+///
+/// Within the aggregated tier, the oldest `last_updated` goes first: that is the
+/// registry's own write clock, so "least recently touched by us" is exactly the
+/// record whose absence we are least likely to notice.
+///
+/// Returns how many were dropped.
+fn enforce_capacity(cache: &mut HashMap<String, DiscoveryResource>, cap: usize) -> usize {
+    if cap == 0 || cache.len() <= cap {
+        return 0;
+    }
+    let mut evictable: Vec<(String, u64)> = cache
+        .iter()
+        .filter(|(_, r)| matches!(r.source, DiscoverySource::Aggregated))
+        .map(|(url, r)| (url.clone(), r.last_updated))
+        .collect();
+    // Oldest first.
+    evictable.sort_by_key(|(_, last_updated)| *last_updated);
+
+    let over = cache.len() - cap;
+    let mut dropped = 0;
+    for (url, _) in evictable.into_iter().take(over) {
+        cache.remove(&url);
+        dropped += 1;
+    }
+    if dropped < over {
+        // Every remaining record is first-hand. Refusing to evict those is
+        // deliberate: going over the cap is a capacity problem with a known
+        // answer (a bigger task), and silently deleting the only copy of
+        // somebody's listing to stay under a number is not it.
+        warn!(
+            held = cache.len(),
+            cap = cap,
+            first_hand = cache.len() - cap,
+            "catalog is over capacity and everything left is first-hand; not evicting further"
+        );
+    }
+    dropped
+}
+
 /// Whether an incoming import should replace the record already held.
 ///
 /// # Why this is not `incoming.last_updated > existing.last_updated`
@@ -556,9 +635,27 @@ impl DiscoveryRegistry {
             cache.insert(resource.url.to_string(), resource);
         }
 
+        // Trim on the way in. A snapshot written before the cap existed is
+        // bigger than the task can carry, and it is the FIRST thing a task
+        // touches -- so the cap has to apply here and not only at import, or
+        // every restart re-inhales the whole object and the fix never arrives.
+        // This is also what makes the oversized object in S3 safe to deploy
+        // against: the next snapshot this process writes is already trimmed.
+        let dropped = enforce_capacity(&mut cache, max_resources());
+        if dropped > 0 {
+            warn!(
+                store_type = store_type,
+                loaded = count,
+                dropped = dropped,
+                held = cache.len(),
+                "catalog loaded over capacity; trimmed the oldest aggregated copies"
+            );
+        }
+
         info!(
             store_type = store_type,
             loaded_count = count,
+            held = cache.len(),
             "Loaded discovery resources from persistent storage"
         );
 
@@ -924,10 +1021,21 @@ impl DiscoveryRegistry {
             }
         }
 
+        // Cap before snapshotting, so the bound applies to what gets published
+        // and not just to what this process happens to hold.
+        let evicted = enforce_capacity(&mut cache, max_resources());
+        if evicted > 0 {
+            info!(
+                evicted = evicted,
+                held = cache.len(),
+                "catalog trimmed to capacity after import"
+            );
+        }
+
         // Persist the FULL cache as one snapshot (single PUT) rather than
         // per-item read-modify-write. This avoids the S3 race where a stale
         // per-item save would re-add items the retention GC just removed.
-        let changed = added + updated;
+        let changed = added + updated + evicted;
         let snapshot: Vec<DiscoveryResource> = if changed > 0 {
             cache.values().cloned().collect()
         } else {
@@ -1711,6 +1819,141 @@ mod tests {
         assert_eq!(held.accepts[0].settleable, None);
         assert_eq!(held.accepts[0].asset_symbol, None);
         assert_eq!(held.accepts[0].asset_decimals, None);
+    }
+
+    // =======================================================================
+    // 2026-09-10: the catalog outgrew the task
+    // =======================================================================
+
+    /// An aggregated record with a chosen write date.
+    fn aggregated_at(url: &str, last_updated: u64) -> DiscoveryResource {
+        let mut r = create_test_resource(url, None);
+        r.source = DiscoverySource::Aggregated;
+        r.source_facilitator = Some("some-feed".to_string());
+        r.last_updated = last_updated;
+        r
+    }
+
+    fn cache_of(resources: Vec<DiscoveryResource>) -> HashMap<String, DiscoveryResource> {
+        resources
+            .into_iter()
+            .map(|r| (r.url.to_string(), r))
+            .collect()
+    }
+
+    #[test]
+    fn a_catalog_under_capacity_is_left_alone() {
+        let mut cache = cache_of(vec![
+            aggregated_at("https://a.example/1", 100),
+            aggregated_at("https://b.example/2", 200),
+        ]);
+        assert_eq!(enforce_capacity(&mut cache, 10), 0);
+        assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn over_capacity_the_oldest_aggregated_copies_go_first() {
+        let mut cache = cache_of(vec![
+            aggregated_at("https://old.example/1", 100),
+            aggregated_at("https://mid.example/2", 200),
+            aggregated_at("https://new.example/3", 300),
+        ]);
+        assert_eq!(enforce_capacity(&mut cache, 2), 1);
+        assert!(
+            !cache.contains_key("https://old.example/1"),
+            "the least recently touched copy is the one we least miss"
+        );
+        assert!(cache.contains_key("https://new.example/3"));
+    }
+
+    #[test]
+    fn a_cap_never_evicts_a_first_hand_record() {
+        // The eviction order is provenance BEFORE recency, and this is why: an
+        // aggregated copy can be re-fetched from the source that still publishes
+        // it, and a listing somebody registered with us cannot be re-fetched
+        // from anywhere. Deleting the only copy of a seller's listing to stay
+        // under a number is not a capacity fix.
+        let mut own = create_test_resource("https://owner.example/x", None);
+        own.last_updated = 1; // by far the oldest
+        let mut settled = create_test_resource("https://settled.example/x", None);
+        settled.source = DiscoverySource::Settlement;
+        settled.last_updated = 2;
+        let mut crawled = create_test_resource("https://crawled.example/x", None);
+        crawled.source = DiscoverySource::Crawled;
+        crawled.last_updated = 3;
+
+        let mut cache = cache_of(vec![
+            own,
+            settled,
+            crawled,
+            aggregated_at("https://copy.example/1", 9_000),
+            aggregated_at("https://copy.example/2", 9_001),
+        ]);
+
+        let dropped = enforce_capacity(&mut cache, 3);
+        assert_eq!(dropped, 2, "both copies go");
+        assert!(cache.contains_key("https://owner.example/x"));
+        assert!(cache.contains_key("https://settled.example/x"));
+        assert!(cache.contains_key("https://crawled.example/x"));
+    }
+
+    #[test]
+    fn a_catalog_of_only_first_hand_records_is_never_trimmed_below_them() {
+        let mut own_a = create_test_resource("https://owner.example/a", None);
+        own_a.last_updated = 1;
+        let mut own_b = create_test_resource("https://owner.example/b", None);
+        own_b.last_updated = 2;
+        let mut cache = cache_of(vec![own_a, own_b]);
+        assert_eq!(enforce_capacity(&mut cache, 1), 0);
+        assert_eq!(cache.len(), 2, "over capacity, but nothing is evictable");
+    }
+
+    #[test]
+    fn a_cap_of_zero_disables_the_bound() {
+        let mut cache = cache_of(vec![
+            aggregated_at("https://a.example/1", 100),
+            aggregated_at("https://b.example/2", 200),
+        ]);
+        assert_eq!(enforce_capacity(&mut cache, 0), 0);
+        assert_eq!(cache.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_snapshot_written_before_the_cap_is_trimmed_on_the_way_in() {
+        // The oversized object in S3 is the FIRST thing a task touches. If the
+        // cap applied only at import, every restart would re-inhale the whole
+        // thing and the fix would never arrive. This is also what makes the
+        // 98 MB object safe to deploy against without touching S3 by hand.
+        use crate::discovery_store::MemoryStore;
+        let store = MemoryStore::new();
+        let fat: Vec<DiscoveryResource> = (0..30)
+            .map(|i| aggregated_at(&format!("https://fat.example/{i}"), 1_000 + i))
+            .collect();
+        store.save_all(&fat).await.unwrap();
+
+        std::env::set_var("DISCOVERY_MAX_RESOURCES", "10");
+        let registry = DiscoveryRegistry::with_store(store).await.unwrap();
+        std::env::remove_var("DISCOVERY_MAX_RESOURCES");
+
+        assert_eq!(registry.count().await, 10, "trimmed on load");
+        // The newest survive.
+        assert!(registry.get("https://fat.example/29").await.is_some());
+        assert!(registry.get("https://fat.example/0").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn an_import_cannot_grow_the_catalog_past_the_cap() {
+        std::env::set_var("DISCOVERY_MAX_RESOURCES", "5");
+        let registry = DiscoveryRegistry::new();
+        let incoming: Vec<DiscoveryResource> = (0..20)
+            .map(|i| aggregated_at(&format!("https://feed.example/{i}"), 1_000 + i))
+            .collect();
+        registry
+            .bulk_import(incoming, ImportPolicy::Filtered)
+            .await
+            .unwrap();
+        std::env::remove_var("DISCOVERY_MAX_RESOURCES");
+        assert_eq!(registry.count().await, 5);
     }
 
     #[tokio::test]

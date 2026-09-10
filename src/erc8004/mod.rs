@@ -59,6 +59,7 @@ pub mod register_jobs;
 pub mod relay;
 pub mod relay_v4;
 pub mod solana;
+pub mod solana_mint;
 mod types;
 
 pub use abi::*;

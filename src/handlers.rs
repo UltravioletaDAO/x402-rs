@@ -9822,6 +9822,7 @@ where
                     owner: None,
                     error: Some(format!("Invalid request format: {}", e)),
                     network: crate::network::Network::Ethereum,
+                    mint: None,
                 }),
             )
                 .into_response();
@@ -9847,6 +9848,7 @@ where
                     network, supported
                 )),
                 network,
+                mint: None,
             }),
         )
             .into_response();
@@ -9862,265 +9864,18 @@ where
     // Get the provider for this network
     let provider_map = facilitator.provider_map();
 
-    // ── Solana registration via Anchor register() ──
+    // ── Solana registration: one transaction, resumable, balance-gated ──
+    //
+    // Minting an identity is three registry instructions and they used to be
+    // three transactions, so any prefix of them was a reachable end state. They
+    // now ride in one transaction whenever the wire size and the compute budget
+    // allow, which measurement says is always in practice: 890 bytes at the
+    // longest URI the program accepts, against a 1232-byte packet, and 600,000
+    // compute units against the 200,000 each instruction gets today running
+    // alone. See `erc8004::solana_mint`.
     if let Some(NetworkProvider::Solana(p)) = provider_map.by_network(&network) {
-        // A Solana recipient must be a base58 pubkey; an EVM address here is a
-        // client bug that would otherwise burn a mint before failing.
-        let solana_recipient = match &request.recipient {
-            Some(addr) => match solana_erc8004::parse_agent_id(&addr.to_string()) {
-                Ok(pk) => Some(pk),
-                Err(_) => {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(RegisterAgentResponse {
-                            success: false,
-                            agent_id: None,
-                            transaction: None,
-                            transfer_transaction: None,
-                            owner: None,
-                            error: Some(format!(
-                                "recipient must be a base58 Solana address on {}",
-                                network
-                            )),
-                            network,
-                        }),
-                    )
-                        .into_response();
-                }
-            },
-            None => None,
-        };
-
-        let programs = match solana_erc8004::get_program_ids(&network) {
-            Some(prog) => prog,
-            None => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(RegisterAgentResponse {
-                        success: false,
-                        agent_id: None,
-                        transaction: None,
-                        transfer_transaction: None,
-                        owner: None,
-                        error: Some(format!("No Solana ERC-8004 programs for {}", network)),
-                        network,
-                    }),
-                )
-                    .into_response();
-            }
-        };
-
-        // Resolve root_config -> collection -> registry_config from on-chain state
-        let registry_ctx =
-            match solana_erc8004::read_registry_context(p.rpc_client(), &programs.agent_registry)
-                .await
-            {
-                Ok(c) => c,
-                Err(e) => {
-                    error!(network = %network, error = %e, "Failed to resolve registry context");
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(RegisterAgentResponse {
-                            success: false,
-                            agent_id: None,
-                            transaction: None,
-                            transfer_transaction: None,
-                            owner: None,
-                            error: Some(format!("Failed to read registry config: {}", e)),
-                            network,
-                        }),
-                    )
-                        .into_response();
-                }
-            };
-
-        // Generate a new keypair for the NFT asset
-        let asset_keypair = solana_sdk::signature::Keypair::new();
-        let asset_pubkey = asset_keypair.pubkey();
-        let fee_payer = p.keypair();
-
-        let ix = solana_erc8004::build_register_ix(
-            &programs,
-            &registry_ctx,
-            &asset_pubkey,
-            &fee_payer.pubkey(),
-            &request.agent_uri,
-        );
-
-        // Register requires both fee_payer and asset keypairs to sign
-        match solana_erc8004::send_erc8004_transaction_with_signers(
-            p.rpc_client(),
-            fee_payer,
-            &[fee_payer, &asset_keypair],
-            vec![ix],
-        )
-        .await
-        {
-            Ok(sig) => {
-                let agent_id = asset_pubkey.to_string();
-                info!(
-                    network = %network,
-                    tx = %sig,
-                    agent_id = %agent_id,
-                    "ERC-8004 Solana agent registered successfully"
-                );
-
-                // Set metadata if provided
-                if let Some(ref metadata) = request.metadata {
-                    for entry in metadata {
-                        let ix = solana_erc8004::build_set_metadata_pda_ix(
-                            &programs,
-                            &asset_pubkey,
-                            &fee_payer.pubkey(),
-                            &entry.key,
-                            entry.value.as_bytes(),
-                            false,
-                        );
-                        if let Err(e) = solana_erc8004::send_erc8004_transaction(
-                            p.rpc_client(),
-                            fee_payer,
-                            vec![ix],
-                        )
-                        .await
-                        {
-                            warn!(
-                                key = %entry.key, error = %e,
-                                "Failed to set metadata (agent registered successfully)"
-                            );
-                        }
-                    }
-                }
-
-                // Initialize the ATOM stats account while the facilitator still owns
-                // the agent. Only the owner may do this, so after a transfer it is
-                // out of reach, and without it every feedback is recorded unscored.
-                let ix = solana_erc8004::build_initialize_stats_ix(
-                    &programs,
-                    &registry_ctx.collection,
-                    &asset_pubkey,
-                    &fee_payer.pubkey(),
-                );
-                let atom_ready = match solana_erc8004::send_erc8004_transaction(
-                    p.rpc_client(),
-                    fee_payer,
-                    vec![ix],
-                )
-                .await
-                {
-                    Ok(stats_sig) => {
-                        info!(
-                            network = %network, agent_id = %agent_id, tx = %stats_sig,
-                            "ATOM stats initialized"
-                        );
-                        true
-                    }
-                    Err(e) => {
-                        // Not fatal: the agent exists and is usable, it just cannot
-                        // accumulate reputation until someone initializes the stats.
-                        error!(
-                            network = %network, agent_id = %agent_id, error = %e,
-                            "Failed to initialize ATOM stats; feedback for this agent will not be scored"
-                        );
-                        false
-                    }
-                };
-
-                // Hand the agent to the requested owner, last so the steps above still
-                // run under facilitator ownership.
-                let mut transfer_tx = None;
-                let mut final_owner = MixedAddress::Solana(fee_payer.pubkey());
-                if let Some(recipient) = solana_recipient {
-                    let ix = solana_erc8004::build_transfer_agent_ix(
-                        &programs,
-                        &registry_ctx.collection,
-                        &asset_pubkey,
-                        &fee_payer.pubkey(),
-                        &recipient,
-                    );
-                    match solana_erc8004::send_erc8004_transaction(
-                        p.rpc_client(),
-                        fee_payer,
-                        vec![ix],
-                    )
-                    .await
-                    {
-                        Ok(xfer_sig) => {
-                            info!(
-                                network = %network, agent_id = %agent_id, tx = %xfer_sig,
-                                recipient = %recipient, "Agent transferred to recipient"
-                            );
-                            transfer_tx =
-                                Some(crate::types::TransactionHash::Solana(xfer_sig.into()));
-                            final_owner = MixedAddress::Solana(recipient);
-                        }
-                        Err(e) => {
-                            // The mint succeeded, so report the agent rather than lose
-                            // it, but do not claim it was delivered.
-                            error!(
-                                network = %network, agent_id = %agent_id, error = %e,
-                                "Agent minted but transfer to recipient failed"
-                            );
-                            return (
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                Json(RegisterAgentResponse {
-                                    success: false,
-                                    agent_id: Some(agent_id),
-                                    transaction: Some(crate::types::TransactionHash::Solana(
-                                        sig.into(),
-                                    )),
-                                    transfer_transaction: None,
-                                    owner: Some(MixedAddress::Solana(fee_payer.pubkey())),
-                                    error: Some(format!(
-                                        "Agent minted but transfer to {} failed, it is still \
-                                         held by the facilitator: {}",
-                                        recipient, e
-                                    )),
-                                    network,
-                                }),
-                            )
-                                .into_response();
-                        }
-                    }
-                }
-
-                if !atom_ready {
-                    warn!(
-                        network = %network, agent_id = %agent_id,
-                        "Agent registered without ATOM stats"
-                    );
-                }
-
-                return (
-                    StatusCode::OK,
-                    Json(RegisterAgentResponse {
-                        success: true,
-                        agent_id: Some(agent_id),
-                        transaction: Some(crate::types::TransactionHash::Solana(sig.into())),
-                        transfer_transaction: transfer_tx,
-                        owner: Some(final_owner),
-                        error: None,
-                        network,
-                    }),
-                )
-                    .into_response();
-            }
-            Err(e) => {
-                error!(network = %network, error = %e, "Solana registration failed");
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(RegisterAgentResponse {
-                        success: false,
-                        agent_id: None,
-                        transaction: None,
-                        transfer_transaction: None,
-                        owner: None,
-                        error: Some(format!("Registration failed: {}", e)),
-                        network,
-                    }),
-                )
-                    .into_response();
-            }
-        }
+        let (status, resp) = run_solana_registration(p, network, &request).await;
+        return (status, Json(resp)).into_response();
     }
 
     // ── EVM registration: dispatch sync vs async (P1 pollable, P3 in-flight lock) ──
@@ -10164,6 +9919,544 @@ where
     (status, Json(resp)).into_response()
 }
 
+/// Solana ERC-8004 registration: mint an identity, or finish one that was left
+/// half minted, and report which of those actually happened.
+///
+/// # The failure this replaces
+///
+/// The old shape sent `register`, then `initialize_stats`, then `transfer_agent`
+/// as three independent transactions, and treated the first one landing as the
+/// mint having happened. On 2026-09-09 KarmaKadabra's fee payer ran out of SOL
+/// part-way through a batch of twenty: two agents ended with the asset created,
+/// the facilitator as owner, and a response the client read as success. The
+/// retries could not tell they were retries, so each minted a second stranded
+/// asset. Four are stranded that way.
+///
+/// Four things changed, in the order the request meets them:
+///
+/// 1. **A retry is recognised as one.** Before minting, the agents the fee payer
+///    still holds are scanned for this `agentUri`. A match is resumed, not
+///    duplicated. An inconclusive scan is a 503 -- minting past it is precisely
+///    how a retry became a second orphan.
+/// 2. **The fee payer's balance is checked against what this mint costs**, rent
+///    included, so an underfunded wallet is `fee_payer_insufficient_balance`
+///    with both numbers rather than an RPC `-32002 Transaction simulation
+///    failed: Error processing Instruction 0` that reads like a broken program.
+/// 3. **Every instruction rides in one transaction** when it fits, so there is
+///    no prefix left behind when something fails.
+/// 4. **The response says how far it got.** `mint.status` is the field to read;
+///    `success` is true only for [`MintStatus::Complete`].
+async fn run_solana_registration(
+    p: &crate::chain::solana::SolanaProvider,
+    network: crate::network::Network,
+    request: &RegisterAgentRequest,
+) -> (StatusCode, RegisterAgentResponse) {
+    use crate::erc8004::solana_mint as mint;
+
+    let fee_payer = p.keypair();
+    let fee_payer_pubkey = fee_payer.pubkey();
+
+    // A Solana recipient must be a base58 pubkey; an EVM address here is a
+    // client bug that would otherwise burn a mint before failing.
+    let recipient = match &request.recipient {
+        Some(addr) => match solana_erc8004::parse_agent_id(&addr.to_string()) {
+            Ok(pk) => Some(pk),
+            Err(_) => {
+                return solana_mint_response(
+                    network,
+                    StatusCode::BAD_REQUEST,
+                    mint::refusal(
+                        fee_payer_pubkey,
+                        "invalid_recipient",
+                        format!("recipient must be a base58 Solana address on {}", network),
+                        None,
+                    ),
+                );
+            }
+        },
+        None => None,
+    };
+
+    let programs = match solana_erc8004::get_program_ids(&network) {
+        Some(prog) => prog,
+        None => {
+            return solana_mint_response(
+                network,
+                StatusCode::BAD_REQUEST,
+                mint::refusal(
+                    fee_payer_pubkey,
+                    "unsupported_network",
+                    format!("No Solana ERC-8004 programs for {}", network),
+                    None,
+                ),
+            );
+        }
+    };
+
+    // Resolve root_config -> collection -> registry_config from on-chain state.
+    let registry_ctx =
+        match solana_erc8004::read_registry_context(p.rpc_client(), &programs.agent_registry).await
+        {
+            Ok(c) => c,
+            Err(e) => {
+                error!(network = %network, error = %e, "Failed to resolve registry context");
+                return solana_mint_response(
+                    network,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    mint::refusal(
+                        fee_payer_pubkey,
+                        "registry_unavailable",
+                        format!("Failed to read registry config: {}", e),
+                        None,
+                    ),
+                );
+            }
+        };
+
+    let metadata: Vec<(String, Vec<u8>)> = request
+        .metadata
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|entry| (entry.key.clone(), entry.value.as_bytes().to_vec()))
+        .collect();
+
+    // ── Mint a new identity, or finish one this facilitator already holds? ──
+    //
+    // The stranded assets are owned by the fee payer, so they are invisible to a
+    // lookup by the agent's own address -- that is why `GET /identity/solana/
+    // owner/<agent>` correctly answered 404 while an identity for that agent sat
+    // in the registry. The link back to the request is the `agentUri`.
+    let decision = if request.agent_uri.is_empty() {
+        mint::MintDecision::Fresh
+    } else {
+        match solana_erc8004::find_agents_by_owner(
+            p.rpc_client(),
+            &fee_payer_pubkey,
+            &programs.agent_registry,
+        )
+        .await
+        {
+            Ok(held) => mint::decide_mint(&request.agent_uri, &fee_payer_pubkey, &held),
+            Err(e) => {
+                // No verdict is not "nothing there". Minting on an inconclusive
+                // scan is exactly what turned a retry into a second orphan, and
+                // it is the same rule `/identity/:network/owner/:address`
+                // already follows: 503 and retryable, never a silent mint.
+                warn!(
+                    network = %network, fee_payer = %fee_payer_pubkey, error = %e,
+                    "Cannot tell whether this agent already has a half-minted identity; refusing to mint"
+                );
+                return solana_mint_response(
+                    network,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    mint::refusal(
+                        fee_payer_pubkey,
+                        mint::ERROR_OWNER_LOOKUP_INCONCLUSIVE,
+                        format!(
+                            "Could not read the agents held by the facilitator on {}, so a retry \
+                             could not be told apart from a first attempt and no identity was \
+                             minted. Retry: {}",
+                            network, e
+                        ),
+                        None,
+                    ),
+                );
+            }
+        }
+    };
+
+    let asset_keypair = match decision {
+        mint::MintDecision::Fresh => Some(solana_sdk::signature::Keypair::new()),
+        mint::MintDecision::Resume { .. } => None,
+    };
+    let resumed = asset_keypair.is_none();
+    let asset_pubkey = match (&asset_keypair, decision) {
+        (Some(kp), _) => kp.pubkey(),
+        (None, mint::MintDecision::Resume { asset }) => asset,
+        (None, mint::MintDecision::Fresh) => unreachable!("Fresh always mints a keypair"),
+    };
+
+    // A resumed identity may already have its ATOM stats: the first attempt can
+    // have died anywhere. Only the owner can create them, so getting this wrong
+    // in either direction is expensive -- skipping a missing account leaves
+    // feedback permanently unscored, re-creating an existing one fails the
+    // transaction.
+    let needs_stats = if resumed {
+        match solana_erc8004::read_atom_stats(p.rpc_client(), &asset_pubkey, &programs.atom_engine)
+            .await
+        {
+            Ok(_) => false,
+            Err(solana_erc8004::SolanaErc8004Error::AccountNotFound(_)) => true,
+            Err(e) => {
+                warn!(
+                    network = %network, agent_id = %asset_pubkey, error = %e,
+                    "Cannot tell whether the resumed identity has ATOM stats; refusing to guess"
+                );
+                return solana_mint_response(
+                    network,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    mint::refusal(
+                        fee_payer_pubkey,
+                        mint::ERROR_STATS_LOOKUP_INCONCLUSIVE,
+                        format!(
+                            "Identity {} exists but its ATOM stats could not be read, and \
+                             guessing would either strand it or leave its feedback unscored \
+                             forever. Retry: {}",
+                            asset_pubkey, e
+                        ),
+                        None,
+                    ),
+                );
+            }
+        }
+    } else {
+        true
+    };
+
+    let mint_request = mint::MintRequest {
+        programs: &programs,
+        registry: &registry_ctx,
+        asset: &asset_pubkey,
+        fee_payer: &fee_payer_pubkey,
+        agent_uri: &request.agent_uri,
+        metadata: &metadata,
+        recipient: recipient.as_ref(),
+    };
+    let plan = if resumed {
+        mint::plan_resume(&mint_request, needs_stats)
+    } else {
+        mint::plan_mint(&mint_request)
+    };
+    let metadata_skipped = resumed && !metadata.is_empty();
+
+    info!(
+        network = %network,
+        agent_id = %asset_pubkey,
+        resumed,
+        instructions = plan.instructions.len(),
+        serialized_len = plan.serialized_len,
+        compute_units = plan.compute_units,
+        atomic = plan.is_atomic(),
+        "Planned ERC-8004 Solana identity mint"
+    );
+    if let Some(reason) = plan.not_atomic {
+        warn!(
+            network = %network, agent_id = %asset_pubkey, %reason,
+            "Mint does not fit one transaction; sending it in stages, which can leave it \
+             half finished. A retry with the same agentUri resumes it."
+        );
+    }
+
+    // ── What this costs, and whether the fee payer can pay it ──
+    let priced_metadata: Vec<(String, usize)> = if resumed {
+        Vec::new()
+    } else {
+        metadata.iter().map(|(k, v)| (k.clone(), v.len())).collect()
+    };
+    let (transactions, signatures) = if plan.is_atomic() {
+        (1, if resumed { 1 } else { 2 })
+    } else {
+        // Staged: one transaction per instruction, and `register` carries the
+        // new asset's signature on top of the fee payer's.
+        let n = plan.instructions.len();
+        (n, n + usize::from(!resumed))
+    };
+    let cost = mint::estimate_mint_cost(
+        plan.creates_asset,
+        plan.creates_stats,
+        &priced_metadata,
+        transactions,
+        signatures,
+    );
+
+    // Reading the balance is a guard, not the operation: an RPC that will not
+    // answer must not become a refusal to mint. The mint proceeds without the
+    // guard and says so.
+    let funds = match p.rpc_client().get_balance(&fee_payer_pubkey).await {
+        Ok(available) => Some(mint::FeePayerFunds::new(
+            &fee_payer_pubkey,
+            available,
+            &cost,
+        )),
+        Err(e) => {
+            warn!(
+                network = %network, fee_payer = %fee_payer_pubkey, error = %e,
+                "Could not read the fee payer balance; minting without the preflight"
+            );
+            None
+        }
+    };
+
+    if let Some(funds) = &funds {
+        if !funds.is_sufficient() {
+            // The named version of the "-32002 Transaction simulation failed:
+            // Error processing Instruction 0" that took ten of KarmaKadabra's
+            // twenty mints down and named neither the balance nor the wallet.
+            error!(
+                network = %network,
+                fee_payer = %fee_payer_pubkey,
+                available_lamports = funds.available_lamports,
+                required_lamports = funds.required_lamports,
+                available_sol = %mint::lamports_to_sol_string(funds.available_lamports),
+                required_sol = %mint::lamports_to_sol_string(funds.required_lamports),
+                "solana_mint_fee_payer_insufficient"
+            );
+            return solana_mint_response(
+                network,
+                StatusCode::SERVICE_UNAVAILABLE,
+                mint::refusal(
+                    fee_payer_pubkey,
+                    mint::ERROR_FEE_PAYER_INSUFFICIENT_BALANCE,
+                    format!(
+                        "The facilitator's Solana fee payer {} holds {} SOL and this mint needs \
+                         {} SOL, almost all of it rent for the accounts it creates. Nothing was \
+                         sent to the chain, so there is no partial identity to clean up. Fund \
+                         the wallet and retry.",
+                        fee_payer_pubkey,
+                        mint::lamports_to_sol_string(funds.available_lamports),
+                        mint::lamports_to_sol_string(funds.required_lamports),
+                    ),
+                    Some(funds.clone()),
+                ),
+            );
+        }
+
+        // The line the `facilitator-solana-mint-fee-payer-low` metric filter
+        // reads. Emitted on every mint so the metric exists before it matters.
+        info!(
+            network = %network,
+            fee_payer = %fee_payer_pubkey,
+            available_lamports = funds.available_lamports,
+            required_lamports = funds.required_lamports,
+            mints_remaining = funds.mints_remaining,
+            "solana_mint_fee_payer_balance"
+        );
+        if funds.mints_remaining < mint::mint_headroom() {
+            warn!(
+                network = %network,
+                fee_payer = %fee_payer_pubkey,
+                mints_remaining = funds.mints_remaining,
+                headroom = mint::mint_headroom(),
+                available_sol = %mint::lamports_to_sol_string(funds.available_lamports),
+                "solana_mint_fee_payer_low"
+            );
+        }
+    }
+
+    let mut outcome = mint::attempt(
+        asset_pubkey,
+        fee_payer_pubkey,
+        recipient,
+        &plan,
+        resumed,
+        metadata_skipped,
+        funds,
+    );
+
+    // A resume that finds nothing left to do is already the requested end state.
+    if plan.instructions.is_empty() {
+        info!(
+            network = %network, agent_id = %asset_pubkey,
+            "Identity already complete; nothing to send"
+        );
+        return solana_mint_response(network, StatusCode::OK, outcome);
+    }
+
+    if plan.is_atomic() {
+        send_solana_mint_atomically(p, network, &plan, &asset_keypair, &mut outcome).await;
+    } else {
+        send_solana_mint_in_stages(p, network, &plan, &asset_keypair, &mut outcome).await;
+    }
+
+    let status = match outcome.status() {
+        mint::MintStatus::Complete => StatusCode::OK,
+        // The identity exists and the facilitator holds it. Not a client error
+        // and not nothing: a retry with the same body finishes it.
+        mint::MintStatus::PendingStats | mint::MintStatus::PendingTransfer => {
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+        mint::MintStatus::NotMinted => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    solana_mint_response(network, status, outcome)
+}
+
+/// Send the whole mint as one transaction. Nothing lands unless all of it does.
+async fn send_solana_mint_atomically(
+    p: &crate::chain::solana::SolanaProvider,
+    network: crate::network::Network,
+    plan: &crate::erc8004::solana_mint::MintPlan,
+    asset_keypair: &Option<solana_sdk::signature::Keypair>,
+    outcome: &mut crate::erc8004::solana_mint::MintOutcome,
+) {
+    use crate::erc8004::solana_mint as mint;
+
+    let fee_payer = p.keypair();
+    let mut signers: Vec<&solana_sdk::signature::Keypair> = vec![fee_payer];
+    if let Some(asset) = asset_keypair {
+        signers.push(asset);
+    }
+
+    match solana_erc8004::send_erc8004_transaction_with_signers(
+        p.rpc_client(),
+        fee_payer,
+        &signers,
+        plan.instructions.clone(),
+    )
+    .await
+    {
+        Ok(sig) => {
+            let hash = crate::types::TransactionHash::Solana(sig.into());
+            outcome.registered = true;
+            outcome.stats_ready = true;
+            if plan.creates_asset {
+                outcome.register_tx = Some(hash.clone());
+            }
+            // One transaction carried every step, so every step reports its
+            // signature -- the same one. `mint.atomic` says why they match.
+            if plan.creates_stats {
+                outcome.stats_tx = Some(hash.clone());
+            }
+            if plan.transfers {
+                outcome.transfer_tx = Some(hash.clone());
+            }
+            info!(
+                network = %network,
+                agent_id = %outcome.asset,
+                tx = %sig,
+                resumed = outcome.resumed,
+                "ERC-8004 Solana identity minted in one transaction"
+            );
+        }
+        Err(e) => {
+            // Atomic: the whole transaction reverted, so a fresh mint left
+            // nothing behind and a resume is exactly where it was.
+            error!(
+                network = %network, agent_id = %outcome.asset, error = %e,
+                resumed = outcome.resumed,
+                "ERC-8004 Solana mint transaction failed; nothing was written"
+            );
+            outcome.failure = Some((
+                mint::ERROR_MINT_TRANSACTION_FAILED.to_string(),
+                e.to_string(),
+            ));
+        }
+    }
+}
+
+/// Send the mint one instruction per transaction, stopping at the first failure.
+///
+/// Only reachable when the bundle does not fit a packet, which measurement puts
+/// well past any real request. It is kept because "too big to be atomic" must
+/// degrade to an honest partial report rather than to a refusal.
+async fn send_solana_mint_in_stages(
+    p: &crate::chain::solana::SolanaProvider,
+    network: crate::network::Network,
+    plan: &crate::erc8004::solana_mint::MintPlan,
+    asset_keypair: &Option<solana_sdk::signature::Keypair>,
+    outcome: &mut crate::erc8004::solana_mint::MintOutcome,
+) {
+    use crate::erc8004::solana_mint as mint;
+
+    let fee_payer = p.keypair();
+
+    for (ix, step) in plan.instructions.iter().zip(plan.steps.iter().copied()) {
+        let sent = if step == mint::MintStep::Register {
+            // Only `plan_mint` emits a Register step and it always mints the
+            // keypair alongside it, so this is unreachable -- but a handler is
+            // the wrong place to prove an invariant with a panic.
+            let Some(asset) = asset_keypair.as_ref() else {
+                error!(
+                    network = %network, agent_id = %outcome.asset,
+                    "Register step without an asset keypair; refusing to send"
+                );
+                outcome.failure = Some((
+                    mint::ERROR_REGISTER_FAILED.to_string(),
+                    "internal: register step reached without an asset keypair".to_string(),
+                ));
+                return;
+            };
+            solana_erc8004::send_erc8004_transaction_with_signers(
+                p.rpc_client(),
+                fee_payer,
+                &[fee_payer, asset],
+                vec![ix.clone()],
+            )
+            .await
+        } else {
+            solana_erc8004::send_erc8004_transaction(p.rpc_client(), fee_payer, vec![ix.clone()])
+                .await
+        };
+
+        match sent {
+            Ok(sig) => {
+                let hash = crate::types::TransactionHash::Solana(sig.into());
+                match step {
+                    mint::MintStep::Register => {
+                        outcome.registered = true;
+                        outcome.register_tx = Some(hash);
+                    }
+                    mint::MintStep::Metadata => {}
+                    mint::MintStep::InitializeStats => {
+                        outcome.stats_ready = true;
+                        outcome.stats_tx = Some(hash);
+                    }
+                    mint::MintStep::Transfer => outcome.transfer_tx = Some(hash),
+                }
+                info!(
+                    network = %network, agent_id = %outcome.asset, tx = %sig, ?step,
+                    "ERC-8004 Solana mint step confirmed"
+                );
+            }
+            Err(e) => {
+                // Stop here. Carrying on past a failed `initialize_stats` would
+                // transfer an identity whose feedback can never be scored, and
+                // nobody but the owner can create that account afterwards.
+                error!(
+                    network = %network, agent_id = %outcome.asset, ?step, error = %e,
+                    "ERC-8004 Solana mint stopped; the identity is still held by the facilitator"
+                );
+                outcome.failure = Some((mint::error_code_for(step).to_string(), e.to_string()));
+                return;
+            }
+        }
+    }
+}
+
+/// Shape a mint outcome into the `POST /register` body.
+fn solana_mint_response(
+    network: crate::network::Network,
+    status: StatusCode,
+    outcome: crate::erc8004::solana_mint::MintOutcome,
+) -> (StatusCode, RegisterAgentResponse) {
+    let complete = outcome.status().is_complete();
+    // No identity, no agent id and no owner: a refusal must not name the
+    // facilitator as the holder of something that does not exist.
+    let (agent_id, owner) = if outcome.registered {
+        (
+            Some(outcome.asset.to_string()),
+            Some(MixedAddress::Solana(outcome.owner())),
+        )
+    } else {
+        (None, None)
+    };
+    (
+        status,
+        RegisterAgentResponse {
+            // True only when everything the request asked for confirmed. An
+            // identity the facilitator still holds is not a delivered one.
+            success: complete,
+            agent_id,
+            transaction: outcome.register_tx.clone(),
+            transfer_transaction: outcome.transfer_tx.clone(),
+            owner,
+            error: outcome.error_message(),
+            network,
+            mint: Some(outcome.report()),
+        },
+    )
+}
+
 /// EVM ERC-8004 registration core: mint (+ optional transfer to recipient).
 /// Shared by the synchronous and async (`Prefer: respond-async`) paths of
 /// `POST /register`. Applies the same `TX_RECEIPT_TIMEOUT_SECS` receipt-wait
@@ -10195,6 +10488,7 @@ where
                     owner: None,
                     error: Some(format!("No ERC-8004 contracts for network {}", network)),
                     network,
+                    mint: None,
                 },
             );
         }
@@ -10214,6 +10508,7 @@ where
                     owner: None,
                     error: Some(format!("No EVM provider available for network {}", network)),
                     network,
+                    mint: None,
                 },
             );
         }
@@ -10242,6 +10537,7 @@ where
                     owner: None,
                     error: Some("Unexpected non-EVM signer address".to_string()),
                     network,
+                    mint: None,
                 },
             );
         }
@@ -10298,6 +10594,7 @@ where
                                 ))),
                                 error: None,
                                 network,
+                                mint: None,
                             },
                         );
                     }
@@ -10332,6 +10629,7 @@ where
                                      (retryable, no mint attempted)"
                                 )),
                                 network,
+                                mint: None,
                             },
                         );
                     }
@@ -10363,6 +10661,7 @@ where
                                      (retryable, no mint attempted): {e}"
                                 )),
                                 network,
+                                mint: None,
                             },
                         );
                     }
@@ -10420,6 +10719,7 @@ where
                                 owner: recipient.clone(),
                                 error: None,
                                 network,
+                                mint: None,
                             },
                         );
                     }
@@ -10461,6 +10761,7 @@ where
                         owner: None,
                         error: Some(format!("Failed to get gas price: {}", e)),
                         network,
+                        mint: None,
                     },
                 );
             }
@@ -10529,6 +10830,7 @@ where
                     owner: None,
                     error: Some(format!("Failed to send registration transaction: {}", e)),
                     network,
+                    mint: None,
                 },
             );
         }
@@ -10553,6 +10855,7 @@ where
                     owner: None,
                     error: Some(format!("Registration transaction failed: {}", e)),
                     network,
+                    mint: None,
                 },
             );
         }
@@ -10576,6 +10879,7 @@ where
                 owner: None,
                 error: Some("Registration transaction reverted on-chain".to_string()),
                 network,
+                mint: None,
             },
         );
     }
@@ -10616,6 +10920,7 @@ where
                                     .to_string(),
                             ),
                             network,
+                            mint: None,
                         },
                     );
                 }
@@ -10653,6 +10958,7 @@ where
                                 .to_string(),
                         ),
                         network,
+                        mint: None,
                     },
                 );
             }
@@ -10724,6 +11030,7 @@ where
                             agent_id_str, e
                         )),
                         network,
+                        mint: None,
                     },
                 );
             }
@@ -10747,6 +11054,7 @@ where
             owner: Some(final_owner),
             error: None,
             network,
+            mint: None,
         },
     )
 }
@@ -10967,6 +11275,7 @@ fn already_inflight_response(async_mode: bool, job: register_jobs::RegisterJob) 
                     .to_string(),
             ),
             network: job.network,
+            mint: None,
         }),
     )
         .into_response()

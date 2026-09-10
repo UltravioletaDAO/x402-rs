@@ -459,7 +459,10 @@ jobs:
             -target=aws_cloudwatch_metric_alarm.latency_p99_early \
             -target=aws_cloudwatch_metric_alarm.orphan_5xx_errors \
             -target=aws_cloudwatch_metric_alarm.orphan_latency_p99 \
-            -target=aws_cloudwatch_metric_alarm.orphan_no_running_tasks
+            -target=aws_cloudwatch_metric_alarm.orphan_no_running_tasks \
+            -target=aws_cloudwatch_metric_alarm.solana_mint_headroom_low \
+            -target=aws_cloudwatch_log_metric_filter.solana_mint_fee_payer_dry \
+            -target=aws_cloudwatch_metric_alarm.solana_mint_fee_payer_dry
 
       - name: Wait for ECS rollout to stabilize
         run: |

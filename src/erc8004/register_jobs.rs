@@ -341,6 +341,7 @@ mod tests {
             owner: None,
             error: error.map(|e| e.to_string()),
             network: Network::Base,
+            mint: None,
         }
     }
 
@@ -441,6 +442,7 @@ mod tests {
             owner: Some(recipient),
             error: Some("registered but transfer failed".to_string()),
             network: Network::Base,
+            mint: None,
         };
         finalize_from_response(&job_id, &failed);
         assert!(get_stranded(&key).is_none());

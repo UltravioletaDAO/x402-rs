@@ -21,6 +21,7 @@ use std::collections::HashMap;
 use url::Url;
 
 use crate::caip2::{Caip2NetworkId, Namespace};
+use crate::discovery_price::CatalogPaymentOption;
 use crate::network::Network;
 use crate::timestamp::UnixTimestamp;
 use crate::types::{
@@ -1225,15 +1226,43 @@ pub struct DiscoveryResource {
     /// Human-readable description of the resource
     pub description: String,
 
-    /// Accepted payment methods
-    pub accepts: Vec<PaymentRequirementsV2>,
+    /// Accepted payment methods, as the source declared them.
+    ///
+    /// [`CatalogPaymentOption`], not [`PaymentRequirementsV2`]: a catalog has to
+    /// be able to carry an offer whose scheme this build cannot settle, and say
+    /// so, instead of relabelling it as one it can.
+    pub accepts: Vec<CatalogPaymentOption>,
 
-    /// Unix timestamp of last registration/update
+    /// Unix timestamp this registry last wrote the record.
+    ///
+    /// **Ours, not the source's.** It answers "when did we touch this", which is
+    /// never the same question as "when did these terms change". For the
+    /// source's own claim see `source_updated_at`, which stays absent when the
+    /// source made none.
     pub last_updated: u64,
+
+    /// The date the SOURCE claimed for this content, when it claimed one.
+    ///
+    /// Absent means unknown, and unknown stays unknown: filling it with `now`
+    /// let an undated re-download of stale content outrank a dated record purely
+    /// by being downloaded again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_updated_at: Option<u64>,
 
     /// Optional metadata for categorization and search
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<DiscoveryMetadata>,
+
+    /// Resource-level x402 extensions, preserved verbatim and size-bounded.
+    ///
+    /// Carries the `bazaar` extension's declared input/output schema, which is
+    /// what says *what* is being sold. Two prices are not comparable without it.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::discovery_price::deserialize_tolerant_extensions"
+    )]
+    pub extensions: Option<serde_json::Value>,
 
     // ========== Meta-Bazaar Source Tracking ==========
     /// How this resource was discovered/registered
@@ -1270,9 +1299,15 @@ impl DiscoveryResource {
         url: Url,
         resource_type: String,
         description: String,
-        accepts: Vec<PaymentRequirementsV2>,
+        accepts: Vec<CatalogPaymentOption>,
     ) -> Self {
         use std::time::{SystemTime, UNIX_EPOCH};
+        // Response-only fields are resolved at read time; nobody upstream gets
+        // to assert them. See `CatalogPaymentOption::strip_response_only`.
+        let mut accepts = accepts;
+        for option in accepts.iter_mut() {
+            option.strip_response_only();
+        }
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -1285,7 +1320,12 @@ impl DiscoveryResource {
             description,
             accepts,
             last_updated: now,
+            // First-hand: the owner is telling us these terms right now. That is
+            // a real claim with a real date, not a date invented for content
+            // somebody else published at an unknown time.
+            source_updated_at: Some(now),
             metadata: None,
+            extensions: None,
             source: DiscoverySource::SelfRegistered,
             source_facilitator: None,
             first_seen: Some(now),
@@ -1296,15 +1336,27 @@ impl DiscoveryResource {
     }
 
     /// Create a resource from aggregation (another facilitator's Bazaar)
+    /// Create a resource from aggregation (another facilitator's Bazaar).
+    ///
+    /// `source_updated_at` is the date the feed itself published, or `None` when
+    /// it published none. It is deliberately not defaulted: an undated feed used
+    /// to be stamped with `now`, which made a re-download of unchanged, stale
+    /// content look newer than a record that carried a real date.
     pub fn from_aggregation(
         url: Url,
         resource_type: String,
         description: String,
-        accepts: Vec<PaymentRequirementsV2>,
+        accepts: Vec<CatalogPaymentOption>,
         source_facilitator: String,
-        original_last_updated: u64,
+        source_updated_at: Option<u64>,
     ) -> Self {
         use std::time::{SystemTime, UNIX_EPOCH};
+        // Response-only fields are resolved at read time; nobody upstream gets
+        // to assert them. See `CatalogPaymentOption::strip_response_only`.
+        let mut accepts = accepts;
+        for option in accepts.iter_mut() {
+            option.strip_response_only();
+        }
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -1316,8 +1368,13 @@ impl DiscoveryResource {
             x402_version: 2,
             description,
             accepts,
-            last_updated: original_last_updated,
+            // Our own write time when the source declared no date. `last_updated`
+            // means "when we touched this"; the source's claim, present or
+            // absent, lives in `source_updated_at`.
+            last_updated: source_updated_at.unwrap_or(now),
+            source_updated_at,
             metadata: None,
+            extensions: None,
             source: DiscoverySource::Aggregated,
             source_facilitator: Some(source_facilitator),
             first_seen: Some(now),
@@ -1332,9 +1389,15 @@ impl DiscoveryResource {
         url: Url,
         resource_type: String,
         description: String,
-        accepts: Vec<PaymentRequirementsV2>,
+        accepts: Vec<CatalogPaymentOption>,
     ) -> Self {
         use std::time::{SystemTime, UNIX_EPOCH};
+        // Response-only fields are resolved at read time; nobody upstream gets
+        // to assert them. See `CatalogPaymentOption::strip_response_only`.
+        let mut accepts = accepts;
+        for option in accepts.iter_mut() {
+            option.strip_response_only();
+        }
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -1347,7 +1410,12 @@ impl DiscoveryResource {
             description,
             accepts,
             last_updated: now,
+            // First-hand again: these are terms we just saw settle, observed at
+            // this instant. Note that observing a settlement dates the
+            // observation, not the seller's price list.
+            source_updated_at: Some(now),
             metadata: None,
+            extensions: None,
             source: DiscoverySource::Settlement,
             source_facilitator: None,
             first_seen: Some(now),
@@ -1451,19 +1519,34 @@ pub struct RegisterResourceRequest {
     /// Human-readable description
     pub description: String,
 
-    /// Accepted payment methods
-    pub accepts: Vec<PaymentRequirementsV2>,
+    /// Accepted payment methods.
+    ///
+    /// Same type, and therefore the same parsing rules, as every other ingestion
+    /// route. `maxAmountRequired` is accepted as the v1 spelling of `amount`;
+    /// an amount that is not an integer in atomic units is a `400`, never a zero.
+    pub accepts: Vec<CatalogPaymentOption>,
 
     /// Optional metadata for categorization
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<DiscoveryMetadata>,
+
+    /// Resource-level x402 extensions, preserved verbatim.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::discovery_price::deserialize_tolerant_extensions"
+    )]
+    pub extensions: Option<serde_json::Value>,
 }
 
 impl RegisterResourceRequest {
     /// Convert to a DiscoveryResource
     pub fn into_resource(self) -> DiscoveryResource {
-        let resource =
+        let mut resource =
             DiscoveryResource::new(self.url, self.resource_type, self.description, self.accepts);
+        // Same size cap the crawl paths apply. The catalog snapshot is written
+        // whole on every import, so one caller's blob is everyone's latency.
+        resource.extensions = crate::discovery_price::sanitize_extensions(self.extensions);
         match self.metadata {
             Some(meta) => resource.with_metadata(meta),
             None => resource,

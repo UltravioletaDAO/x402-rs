@@ -27,7 +27,12 @@ pub const MAX_EXTRA_JSON_DEPTH: usize = 16;
 
 /// Compute the maximum container-nesting depth of a `serde_json::Value`
 /// iteratively, with no recursion of its own. Returns 0 for scalar leaves.
-fn json_value_depth(root: &serde_json::Value) -> usize {
+///
+/// Public because the catalog needs the same measurement against a *different*
+/// bound: [`MAX_EXTRA_JSON_DEPTH`] is calibrated for a payment `extra` (observed
+/// depth 2-3), and a resource-level JSON Schema legitimately nests far deeper --
+/// the live Coinbase feed publishes one 26 levels down.
+pub fn json_value_depth(root: &serde_json::Value) -> usize {
     let mut max_depth = 0usize;
     let mut stack: Vec<(&serde_json::Value, usize)> = vec![(root, 0)];
     while let Some((v, d)) = stack.pop() {

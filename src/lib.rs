@@ -24,6 +24,7 @@ pub mod discovery_aggregator;
 pub mod discovery_attestation;
 pub mod discovery_curation;
 pub mod discovery_health;
+pub mod discovery_price;
 pub mod discovery_security;
 pub mod discovery_store;
 pub mod dx402;

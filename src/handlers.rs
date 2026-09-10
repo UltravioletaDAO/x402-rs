@@ -4903,7 +4903,10 @@ where
                     .unwrap_or(false);
 
                 if is_discoverable {
-                    // Convert v1 PaymentRequirements to v2 for the accepts array
+                    // Convert v1 PaymentRequirements to the catalog option shape.
+                    // The scheme comes from the requirements we just settled, so
+                    // this path never had the aggregator's `exact` problem -- and
+                    // it stays that way because there is one option type now.
                     use crate::types_v2::PaymentRequirementsV1ToV2;
                     let (_resource_info, requirements_v2) = body.payment_requirements.to_v2();
 
@@ -4912,7 +4915,7 @@ where
                         body.payment_requirements.resource.clone(),
                         "http".to_string(), // Default to HTTP resource type
                         body.payment_requirements.description.clone(),
-                        vec![requirements_v2],
+                        vec![requirements_v2.into()],
                     );
 
                     // Track the settlement (register or increment count)

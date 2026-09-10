@@ -51,15 +51,17 @@ use std::time::Duration;
 use tracing::{debug, error, info, warn};
 use url::Url;
 
-use alloy::primitives::U256;
-use std::str::FromStr;
-
 // ============================================================================
 // Timestamp Parsing (handles both u64 and ISO8601 string)
 // ============================================================================
 
-/// Deserialize a timestamp that can be either a u64 (Unix seconds) or an ISO8601 string.
-fn deserialize_flexible_timestamp<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+/// Deserialize a timestamp that can be either a u64 (Unix seconds) or an ISO8601
+/// string. Shared with the well-known crawler so both crawl paths read a
+/// publisher's date the same way -- and, just as importantly, both leave it
+/// `None` when there is none.
+pub(crate) fn deserialize_flexible_timestamp<'de, D>(
+    deserializer: D,
+) -> Result<Option<u64>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -199,9 +201,10 @@ fn days_since_epoch(year: u32, month: u32, day: u32) -> i64 {
     era * 146097 + doe as i64 - 719468
 }
 
-use crate::caip2::Caip2NetworkId;
-use crate::types::{MixedAddress, Scheme, TokenAmount};
-use crate::types_v2::{DiscoveryMetadata, DiscoveryResource, PaymentRequirementsV2};
+use crate::discovery_price::{
+    normalize_declared_option, sanitize_extensions, CatalogPaymentOption, DeclaredPaymentOption,
+};
+use crate::types_v2::{DiscoveryMetadata, DiscoveryResource};
 
 /// Hard cap on items pulled from a single facilitator per fetch — bounds a
 /// misbehaving or hostile source that returns full pages without a pagination
@@ -493,35 +496,34 @@ pub struct CoinbaseResource {
     pub resource_type: Option<String>,
     /// Description
     pub description: Option<String>,
-    /// Payment requirements (v1 format)
+    /// Payment requirements, in whichever of the v1/v2 spellings the feed uses.
     #[serde(default)]
     pub accepts: Vec<CoinbasePaymentRequirement>,
-    /// Last updated timestamp (can be u64 or ISO8601 string)
+    /// Last updated timestamp (can be u64 or ISO8601 string).
+    ///
+    /// Stays `None` when the feed declares none. Nothing downstream may
+    /// substitute a clock reading for it.
     #[serde(default, deserialize_with = "deserialize_flexible_timestamp")]
     pub last_updated: Option<u64>,
     /// Metadata
     #[serde(default)]
     pub metadata: Option<CoinbaseMetadata>,
+    /// Resource-level x402 extensions (the `bazaar` extension's declared input
+    /// and output schemas, chiefly). Carried through so a listing says what is
+    /// being sold, not only what it costs.
+    #[serde(
+        default,
+        deserialize_with = "crate::discovery_price::deserialize_tolerant_extensions"
+    )]
+    pub extensions: Option<serde_json::Value>,
 }
 
-/// Coinbase payment requirement (v1-style network names).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CoinbasePaymentRequirement {
-    /// Payment scheme
-    pub scheme: Option<String>,
-    /// Network name (v1 format like "base-mainnet" or "base")
-    pub network: Option<String>,
-    /// Token asset address
-    pub asset: Option<String>,
-    /// Amount required
-    #[serde(alias = "maxAmountRequired")]
-    pub amount: Option<String>,
-    /// Pay-to address
-    pub pay_to: Option<String>,
-    /// Max timeout
-    pub max_timeout_seconds: Option<u64>,
-}
+/// One payment option as an upstream bazaar published it.
+///
+/// An alias of [`DeclaredPaymentOption`], which is where the parsing rules live
+/// so that every ingestion route shares them. The name is kept because it is
+/// what the upstream response format is called.
+pub type CoinbasePaymentRequirement = DeclaredPaymentOption;
 
 /// Coinbase metadata format.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -784,60 +786,59 @@ impl DiscoveryAggregator {
         )))
     }
 
-    /// Convert Coinbase resources to our v2 format.
+    /// Convert an upstream page to catalog resources, logging what was lost.
     fn convert_coinbase_resources(
         &self,
         resources: Vec<CoinbaseResource>,
         facilitator_id: &str,
     ) -> Vec<DiscoveryResource> {
-        let mut converted = Vec::new();
-
-        for cb_resource in resources {
-            match self.convert_single_resource(cb_resource, facilitator_id) {
-                Ok(resource) => converted.push(resource),
-                Err(e) => {
-                    debug!(error = %e, "Skipping resource due to conversion error");
-                }
-            }
+        let (converted, rejected) = convert_resources(resources, facilitator_id);
+        if !rejected.is_empty() {
+            warn!(
+                facilitator = %facilitator_id,
+                rejected = ?rejected,
+                "Dropped payment options that could not be catalogued"
+            );
         }
-
         converted
     }
 
-    /// Convert a single Coinbase resource.
+    /// Convert a single upstream resource. Thin wrapper kept for call sites.
     fn convert_single_resource(
-        &self,
         cb: CoinbaseResource,
         facilitator_id: &str,
+        rejected: &mut RejectionCounts,
     ) -> Result<DiscoveryResource, AggregatorError> {
         // Parse URL
         let url = Url::parse(&cb.url)
             .map_err(|e| AggregatorError::InvalidUrl(format!("{}: {}", cb.url, e)))?;
 
-        // Convert payment requirements
-        let accepts: Vec<PaymentRequirementsV2> = cb
+        // Normalize payment options through the one shared rule. An option we
+        // cannot read is dropped and counted; it is never turned into a price.
+        let accepts: Vec<CatalogPaymentOption> = cb
             .accepts
             .into_iter()
-            .filter_map(|req| self.convert_payment_requirement(req))
+            .filter_map(|req| match normalize_declared_option(req) {
+                Ok(option) => Some(option),
+                Err(reject) => {
+                    *rejected.entry(reject.rule()).or_insert(0) += 1;
+                    None
+                }
+            })
             .collect();
 
-        // Use default timestamp if not provided
-        let last_updated = cb.last_updated.unwrap_or_else(|| {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs()
-        });
-
-        // Create resource with aggregation source
+        // Create resource with aggregation source. `cb.last_updated` is passed
+        // through as-is, `None` included: an undated feed stays undated.
         let mut resource = DiscoveryResource::from_aggregation(
             url,
             cb.resource_type.unwrap_or_else(|| "http".to_string()),
             cb.description.unwrap_or_default(),
             accepts,
             facilitator_id.to_string(),
-            last_updated,
+            cb.last_updated,
         );
+
+        resource.extensions = sanitize_extensions(cb.extensions);
 
         // Convert metadata if present
         if let Some(meta) = cb.metadata {
@@ -850,82 +851,38 @@ impl DiscoveryAggregator {
 
         Ok(resource)
     }
+}
 
-    /// Convert a Coinbase payment requirement to v2 format.
-    fn convert_payment_requirement(
-        &self,
-        req: CoinbasePaymentRequirement,
-    ) -> Option<PaymentRequirementsV2> {
-        // Parse network - Coinbase uses v1 names like "base", "base-mainnet"
-        let network_str = req.network.as_deref()?;
-        let network = self.parse_network_to_caip2(network_str)?;
+/// Count of payment options dropped, keyed by
+/// [`OptionReject::rule`](crate::discovery_price::OptionReject::rule).
+pub type RejectionCounts = std::collections::HashMap<&'static str, usize>;
 
-        // Parse asset address
-        let asset_str = req.asset.as_deref()?;
-        let asset = self.parse_address(asset_str)?;
-
-        // Parse pay_to address
-        let pay_to_str = req.pay_to.as_deref()?;
-        let pay_to = self.parse_address(pay_to_str)?;
-
-        // Parse amount (assumed to be in smallest units, e.g., 1000000 = 1 USDC)
-        let amount_str = req.amount.as_deref().unwrap_or("0");
-        let amount = U256::from_str(amount_str)
-            .map(TokenAmount::from)
-            .unwrap_or_else(|_| TokenAmount::from(0u64));
-
-        Some(PaymentRequirementsV2 {
-            scheme: Scheme::Exact,
-            network,
-            asset,
-            amount,
-            pay_to,
-            max_timeout_seconds: req.max_timeout_seconds.unwrap_or(300),
-            extra: None,
-        })
-    }
-
-    /// Parse a v1 network name to CAIP-2 format.
-    fn parse_network_to_caip2(&self, network: &str) -> Option<Caip2NetworkId> {
-        // Handle common v1 network names
-        let chain_id = match network.to_lowercase().as_str() {
-            "base" | "base-mainnet" => 8453,
-            "base-sepolia" => 84532,
-            "ethereum" | "mainnet" | "ethereum-mainnet" => 1,
-            "sepolia" | "ethereum-sepolia" => 11155111,
-            "polygon" | "polygon-mainnet" | "matic" => 137,
-            "polygon-amoy" | "amoy" => 80002,
-            "optimism" | "optimism-mainnet" => 10,
-            "optimism-sepolia" => 11155420,
-            "arbitrum" | "arbitrum-mainnet" | "arbitrum-one" => 42161,
-            "arbitrum-sepolia" => 421614,
-            "avalanche" | "avalanche-mainnet" | "avalanche-c-chain" => 43114,
-            "avalanche-fuji" | "fuji" => 43113,
-            "celo" | "celo-mainnet" => 42220,
-            "celo-alfajores" | "alfajores" => 44787,
-            _ => {
-                // Try to parse as CAIP-2 directly
-                if network.starts_with("eip155:") {
-                    return Caip2NetworkId::parse(network).ok();
-                }
-                // Try to parse as number
-                network.parse::<u64>().ok()?
-            }
-        };
-
-        Some(Caip2NetworkId::eip155(chain_id))
-    }
-
-    /// Parse an address string to MixedAddress.
-    fn parse_address(&self, addr: &str) -> Option<MixedAddress> {
-        // Try EVM address first
-        if addr.starts_with("0x") && addr.len() == 42 {
-            addr.parse().ok().map(MixedAddress::Evm)
-        } else {
-            // Could be Solana or other - for now just skip non-EVM
-            None
+/// Convert an upstream page to catalog resources, returning what was dropped.
+///
+/// Free function rather than a method because it touches nothing on the
+/// aggregator: it is pure, and a conversion this load-bearing should be testable
+/// against a captured feed page without a network client.
+///
+/// The rejection map is the deliberate output. Every entry in it is an option we
+/// refused to publish because we could not read it -- which, before this pass
+/// existed, was published as a price of zero.
+pub fn convert_resources(
+    resources: Vec<CoinbaseResource>,
+    facilitator_id: &str,
+) -> (Vec<DiscoveryResource>, RejectionCounts) {
+    let mut converted = Vec::new();
+    let mut rejected = RejectionCounts::new();
+    for cb_resource in resources {
+        match DiscoveryAggregator::convert_single_resource(
+            cb_resource,
+            facilitator_id,
+            &mut rejected,
+        ) {
+            Ok(resource) => converted.push(resource),
+            Err(e) => debug!(error = %e, "Skipping resource due to conversion error"),
         }
     }
+    (converted, rejected)
 }
 
 // ============================================================================
@@ -1010,62 +967,40 @@ async fn run_aggregation(
 mod tests {
     use super::*;
 
+    use crate::discovery_price::{parse_catalog_address, resolve_catalog_network};
+    use crate::types::MixedAddress;
+
     #[test]
     fn test_parse_network_to_caip2() {
-        let aggregator = DiscoveryAggregator::new();
-
-        // Test common network names
-        assert_eq!(
-            aggregator
-                .parse_network_to_caip2("base")
-                .unwrap()
-                .to_string(),
-            "eip155:8453"
-        );
-        assert_eq!(
-            aggregator
-                .parse_network_to_caip2("base-mainnet")
-                .unwrap()
-                .to_string(),
-            "eip155:8453"
-        );
-        assert_eq!(
-            aggregator
-                .parse_network_to_caip2("ethereum")
-                .unwrap()
-                .to_string(),
-            "eip155:1"
-        );
-        assert_eq!(
-            aggregator
-                .parse_network_to_caip2("polygon")
-                .unwrap()
-                .to_string(),
-            "eip155:137"
-        );
-
-        // Test CAIP-2 passthrough
-        assert_eq!(
-            aggregator
-                .parse_network_to_caip2("eip155:8453")
-                .unwrap()
-                .to_string(),
-            "eip155:8453"
-        );
+        // Network resolution moved to discovery_price so every ingestion route
+        // shares one table; these assertions are kept verbatim so the move is
+        // provably behaviour-preserving for the names the aggregator handled.
+        for (input, expected) in [
+            ("base", "eip155:8453"),
+            ("base-mainnet", "eip155:8453"),
+            ("ethereum", "eip155:1"),
+            ("polygon", "eip155:137"),
+            ("eip155:8453", "eip155:8453"),
+        ] {
+            assert_eq!(
+                resolve_catalog_network(input).unwrap().to_string(),
+                expected,
+                "{input}"
+            );
+        }
     }
 
     #[test]
     fn test_parse_address() {
-        let aggregator = DiscoveryAggregator::new();
-
         // Valid EVM address
-        let addr = aggregator.parse_address("0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913");
+        let addr = parse_catalog_address("0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913");
         assert!(addr.is_some());
         assert!(matches!(addr.unwrap(), MixedAddress::Evm(_)));
 
-        // Invalid address
-        assert!(aggregator.parse_address("invalid").is_none());
-        assert!(aggregator.parse_address("0x123").is_none()); // Too short
+        // Invalid address. "invalid" is refused because the permissive
+        // `MixedAddress::Offchain` fallback is not accepted from a feed.
+        assert!(parse_catalog_address("invalid").is_none());
+        assert!(parse_catalog_address("0x123").is_none()); // Too short
     }
 
     #[test]

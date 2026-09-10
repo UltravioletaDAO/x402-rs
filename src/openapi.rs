@@ -1973,12 +1973,46 @@ Pass `health=any` to return everything, or a specific status to filter to it.
 }
 ```
 
-**Optional fields:** `metadata`, `sourceFacilitator`, `firstSeen`, `health` and `curation` are
-omitted when unknown. Only `url`, `type`, `x402Version`, `accepts`, `lastUpdated` and `source`
-are always present.
+**Optional fields:** `metadata`, `sourceFacilitator`, `firstSeen`, `sourceUpdatedAt`,
+`extensions`, `health` and `curation` are omitted when unknown. Only `url`, `type`,
+`x402Version`, `accepts`, `lastUpdated` and `source` are always present.
 
-**Timestamps** (`firstSeen`, `lastUpdated`, `health.lastChecked`) are Unix epoch **seconds**,
-serialized as JSON numbers -- not ISO-8601 strings and not milliseconds.
+**Timestamps** (`firstSeen`, `lastUpdated`, `sourceUpdatedAt`, `health.lastChecked`) are Unix
+epoch **seconds**, serialized as JSON numbers -- not ISO-8601 strings and not milliseconds.
+
+**`lastUpdated` is ours; `sourceUpdatedAt` is theirs.** `lastUpdated` says when this registry
+last wrote the record, which is never the same question as when the terms changed.
+`sourceUpdatedAt` is the date the source itself published, and it is **absent when the source
+published none** -- it is not filled in with the time of the fetch. Neither field is evidence
+that a price is current.
+
+**Price semantics on each `accepts` entry:**
+
+- `scheme` is the scheme the source declared, verbatim. It is **not** normalized to `exact`.
+  A scheme this facilitator does not implement (`batch-settlement`, say) appears under its own
+  name; treat any value outside `exact | upto | escrow | commerce | fhe-transfer` as one whose
+  meaning you must not assume.
+- `amount` is an integer in the asset's **atomic units**, as a decimal string. It can exceed
+  2^53, so parse it as a big integer. `maxAmountRequired` is accepted on input as the x402 v1
+  spelling of the same field; it is not a range and it does not change the scheme. For `exact`
+  the number is the price; for `upto` it is the ceiling the buyer authorizes, and the effective
+  charge is settled separately and may be lower.
+- An option whose amount could not be read is **dropped at import**, with a counted reason. It
+  is never published as `"0"`. An `"0"` you do see was declared as zero by the source.
+- `settleable` (bool) and `unsupportedReason` say whether **this facilitator** can settle the
+  option, which is a narrower question than whether the offer is real. `false` with
+  `unknown-scheme`, `network-not-served` or `upto-proxy-not-deployed` still describes a
+  genuine listing that some other facilitator may serve.
+- `assetSymbol` and `assetDecimals` are resolved per **deployment**, and are absent when the
+  asset is not one we have registered -- absent means unknown, which is not the same as six
+  decimals and a dollar sign. USDC is 6 decimals on Base, 18 on BSC and 7 on Stellar.
+
+`settleable`, `unsupportedReason`, `assetSymbol` and `assetDecimals` are response-only: they are
+computed when the listing is composed and are never stored, so they cannot go stale.
+
+**`extensions`** carries the resource-level x402 extensions the source published (chiefly the
+`bazaar` extension's declared input and output schema). Two prices are not comparable without
+knowing what each one buys.
 
 **Unknown parameters are rejected with a 400**, listing the ones supported. A parameter the
 server accepted and ignored would be indistinguishable from a filter that matched everything,
@@ -2203,13 +2237,24 @@ outbound fetches against caller-supplied URLs.
 
 **Fields:**
 - `type` (required): one of `http`, `mcp`, `a2a`, `facilitator`.
-- `accepts` (required, except for `facilitator` entries): payment options in x402 v2 shape with
-  CAIP-2 `network` values.
+- `accepts` (required, except for `facilitator` entries): payment options. `network` accepts
+  CAIP-2 (`eip155:8453`) or the x402 v1 name (`base`); `amount` accepts `maxAmountRequired` as
+  its v1 spelling.
 - `metadata` (optional): `provider`, `category`, `tags`.
+- `extensions` (optional): resource-level x402 extensions, stored verbatim.
 
-**Validation (400):** unsupported `scheme`, userinfo embedded in the URL
-(`https://user:pass@host`), a host resolving to a private / loopback / link-local / cloud metadata
-IP, or an empty `accepts` array on a non-`facilitator` type.
+**Schemes you cannot settle here are still registrable.** `scheme` is stored as published, so a
+listing for a scheme this facilitator does not implement is catalogued under its own name rather
+than rewritten to `exact`. The listing then reports `settleable: false` with a reason.
+
+**Validation (400):** an `amount` that is not a non-negative integer in the asset's atomic units
+(a decimal such as `"0.002"`, a negative, a hex literal, or a value beyond 2^256-1); `amount` and
+`maxAmountRequired` both present and disagreeing; an unrecognized `network`; userinfo embedded in
+the URL (`https://user:pass@host`); a host resolving to a private / loopback / link-local / cloud
+metadata IP; or an empty `accepts` array on a non-`facilitator` type.
+
+An unreadable amount is a `400`. It is never accepted and stored as zero, which would publish
+your endpoint as free.
 "#,
     request_body(content = Object, description = "Resource registration request"),
     responses(

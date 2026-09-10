@@ -573,7 +573,8 @@ mod tests {
                 ),
                 max_timeout_seconds: 300,
                 extra: None,
-            }]
+            }
+            .into()]
         } else {
             vec![]
         };

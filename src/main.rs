@@ -63,6 +63,7 @@ mod discovery_attestation;
 mod discovery_crawler;
 mod discovery_curation;
 mod discovery_health;
+mod discovery_price;
 mod discovery_security;
 mod discovery_store;
 mod dx402;

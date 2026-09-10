@@ -19,7 +19,7 @@
 //! - SSRF-refused / template / non-http -> unprobeable.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -113,6 +113,8 @@ pub struct HealthTracker {
     records: Arc<RwLock<HashMap<String, HealthRecord>>>,
     overlay: RwLock<Option<S3Overlay>>,
     dirty: AtomicBool,
+    /// Unix seconds of the last successful upload. `0` means never.
+    last_persist: AtomicU64,
 }
 
 impl Default for HealthTracker {
@@ -127,6 +129,7 @@ impl HealthTracker {
             records: Arc::new(RwLock::new(HashMap::new())),
             overlay: RwLock::new(None),
             dirty: AtomicBool::new(false),
+            last_persist: AtomicU64::new(0),
         }
     }
 
@@ -236,9 +239,27 @@ impl HealthTracker {
             .collect()
     }
 
-    /// Persist the overlay to S3 if dirty. Debounced by the caller's cadence.
+    /// Minimum seconds between two uploads of the overlay.
+    ///
+    /// It was "every tick", i.e. every 60 seconds, because `dirty` is set by any
+    /// probe and the sweep probes on every tick. On 2026-09-10 that was **5,0 MB
+    /// uploaded every minute** -- 7 GB a day -- to record that some liveness
+    /// counters moved. Nothing reads this object except a task that is starting.
+    fn persist_interval_secs() -> u64 {
+        std::env::var("DISCOVERY_HEALTH_PERSIST_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(300)
+    }
+
+    /// Persist the overlay to S3 if it changed AND the debounce has elapsed.
     async fn persist(&self) {
-        if !self.dirty.swap(false, Ordering::SeqCst) {
+        if !self.dirty.load(Ordering::SeqCst) {
+            return;
+        }
+        let now = now_secs();
+        let last = self.last_persist.load(Ordering::SeqCst);
+        if last != 0 && now.saturating_sub(last) < Self::persist_interval_secs() {
             return;
         }
         let guard = self.overlay.read().await;
@@ -254,7 +275,12 @@ impl HealthTracker {
             }
         };
         drop(records);
-        if let Err(e) = overlay
+        // Cleared HERE and nowhere earlier. An earlier clear consumes the flag
+        // on every call that returns without writing -- no overlay configured,
+        // or configuration not finished yet -- and the first real upload then
+        // finds nothing to write. A failed PUT sets it back below.
+        self.dirty.store(false, Ordering::SeqCst);
+        match overlay
             .client
             .put_object()
             .bucket(&overlay.bucket)
@@ -263,7 +289,11 @@ impl HealthTracker {
             .send()
             .await
         {
-            error!(error = %e, "Failed to persist health overlay");
+            Ok(_) => self.last_persist.store(now, Ordering::SeqCst),
+            Err(e) => {
+                self.dirty.store(true, Ordering::SeqCst);
+                error!(error = %e, "Failed to persist health overlay");
+            }
         }
     }
 
@@ -734,6 +764,34 @@ mod tests {
         let held = t.snapshot().await;
         assert_eq!(held.len(), 1);
         assert!(held.contains_key("https://a.example/x"));
+    }
+
+    #[tokio::test]
+    async fn the_overlay_is_not_uploaded_again_within_the_debounce() {
+        // It was uploaded every tick, i.e. every 60 seconds: 5,0 MB a minute,
+        // 7 GB a day, to record that some counters moved. Nothing reads this
+        // object except a task that is starting.
+        let t = HealthTracker::new();
+        t.record_probe("https://a.example/x", ProbeClass::Alive, Some(402), 5)
+            .await;
+        assert!(t.dirty.load(Ordering::SeqCst), "a probe marks it changed");
+
+        // No overlay is attached, so `persist` cannot upload; what it must do is
+        // leave the dirty flag alone rather than consume it, or the first real
+        // upload after configuration would find nothing to write.
+        t.persist().await;
+        assert!(
+            t.dirty.load(Ordering::SeqCst),
+            "an upload that did not happen must not clear the change flag"
+        );
+
+        // And a tracker that just uploaded holds off.
+        t.last_persist.store(now_secs(), Ordering::SeqCst);
+        assert!(
+            now_secs().saturating_sub(t.last_persist.load(Ordering::SeqCst))
+                < HealthTracker::persist_interval_secs(),
+            "the debounce window is what suppresses the next upload"
+        );
     }
 
     #[tokio::test]

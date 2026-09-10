@@ -209,7 +209,7 @@ use crate::types_v2::{DiscoveryMetadata, DiscoveryResource};
 /// Hard cap on items pulled from a single facilitator per fetch — bounds a
 /// misbehaving or hostile source that returns full pages without a pagination
 /// terminus.
-const DEFAULT_MAX_ITEMS_PER_SOURCE: usize = 20_000;
+const DEFAULT_MAX_ITEMS_PER_SOURCE: usize = 1_000;
 
 /// Most items this cycle will pull from ONE source.
 ///
@@ -224,6 +224,10 @@ const DEFAULT_MAX_ITEMS_PER_SOURCE: usize = 20_000;
 /// It is bounded here as well as at the catalog, because these are two different
 /// costs: this one is the peak DURING a cycle, the catalog cap is what survives
 /// it.
+///
+/// 2.21.1 set it to 20 000, which with twelve sources still admits 240 000 items
+/// into one `Vec` before the import starts. 1 000 per source keeps the intake in
+/// the same order of magnitude as the catalog it is allowed to produce.
 fn max_items_per_source() -> usize {
     std::env::var("DISCOVERY_MAX_ITEMS_PER_SOURCE")
         .ok()

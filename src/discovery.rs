@@ -125,12 +125,38 @@ const FUTURE_TIMESTAMP_SKEW_SECS: u64 = 300;
 /// Measured on that exact object, release build: **520 MB resident** for 39 593
 /// records, 13.4 KB each. The task is provisioned with 2 GiB and one vCPU.
 ///
-/// So the number is not a preference, it is the provisioning: 20 000 records is
-/// ~270 MB resident, which leaves room for the import's own copy and the
-/// serialized body inside a 2 GiB budget. Today it also keeps every resource the
-/// default listing actually shows (15 863 of the 39 593 survive the health
-/// filter). Raise it when the task is raised, not before.
-const DEFAULT_MAX_RESOURCES: usize = 20_000;
+/// # The number, measured twice
+///
+/// 2.21.1 set this to 20 000 on an estimate of 13.4 KB resident per record. That
+/// estimate was taken in a process that had also just parsed a 98 MB file, so it
+/// mixed the live structures with the allocator arena the parse left behind, and
+/// it was wrong in both directions at once. 20 000 did not restore the baseline:
+/// production sat flat at **57 % of 2 GiB** and reads stayed at 2,7-5,3 s.
+///
+/// Measured properly -- one scenario per process, against objects that really
+/// are that size, release build:
+///
+/// | records | object | resident |
+/// |---:|---:|---:|
+/// | 20 000 | 45 MB | 440 MB |
+/// | 10 000 | 23 MB | 224 MB |
+/// | 5 000 | 12 MB | 119 MB |
+/// | **2 000** | **4,8 MB** | **54 MB** |
+/// | 752 (the 2.19.0 baseline) | 1,8 MB | 25 MB |
+///
+/// Linear, at ~22 KB of process RSS per record. So 2 000 is ~54 MB, twice the
+/// baseline this service ran on for months, and it leaves the whole 2 GiB for
+/// everything else.
+///
+/// # Why trimming after the fact could not fix it
+///
+/// RSS is a high-water mark. Loading 20 000 records and then trimming to 2 000
+/// measured 420 MB after the parse and **386 MB after the trim**: dropping 90 %
+/// of the records returned 8 % of the memory, because the allocator keeps the
+/// arena. Whatever peak a task reaches, it holds. That is why the memory was
+/// FLAT at 57 % rather than settling, and why the fix has to be that the object
+/// is small, not that we shrink it after reading it.
+const DEFAULT_MAX_RESOURCES: usize = 2_000;
 
 /// [`DEFAULT_MAX_RESOURCES`], overridable. `0` disables the cap.
 fn max_resources() -> usize {
@@ -153,6 +179,53 @@ fn max_resources() -> usize {
 /// registry's own write clock, so "least recently touched by us" is exactly the
 /// record whose absence we are least likely to notice.
 ///
+/// The `last_updated` an incoming aggregated record must beat to be worth
+/// admitting, when the catalog is already full.
+///
+/// # Why admission has to be checked, and not just eviction
+///
+/// 2.21.1 admitted everything and evicted afterwards. That looks equivalent and
+/// is not, because the feed republishes what we evicted. Measured over five
+/// cycles of one unchanged page larger than the cap:
+///
+/// ```text
+/// cycle 1: added=25 updated=0 skipped=0  held=10
+/// cycle 2: added=15 updated=0 skipped=10 held=10
+/// cycle 3: added=15 updated=0 skipped=10 held=10
+/// ```
+///
+/// The catalog contents never change, and `added=15` forever -- the records the
+/// cap dropped are no longer in the cache, so next cycle they arrive as new,
+/// get inserted, and get dropped again. Three consequences, all paid every
+/// cycle: the whole snapshot is serialized and uploaded although nothing
+/// changed, `added` in the logs is permanently fiction, and -- the expensive one
+/// -- a re-added record has no health record, so [`crate::discovery_health`]
+/// treats it as never probed and probes it again. At ~9 000 re-added records per
+/// cycle that is a self-inflicted probe storm, which is what the CPU bursts
+/// every minute actually were.
+///
+/// Returns `None` when the catalog is below capacity and everything is welcome.
+fn admission_threshold(cache: &HashMap<String, DiscoveryResource>, cap: usize) -> Option<u64> {
+    if cap == 0 || cache.len() < cap {
+        return None;
+    }
+    let mut dates: Vec<u64> = cache
+        .values()
+        .filter(|r| matches!(r.source, DiscoverySource::Aggregated))
+        .map(|r| r.last_updated)
+        .collect();
+    if dates.is_empty() {
+        // Nothing evictable: admitting more would only push us further over a
+        // cap we already cannot enforce. Refuse everything new.
+        return Some(u64::MAX);
+    }
+    dates.sort_unstable();
+    // The oldest survivor: anything not newer than this would be evicted the
+    // moment it was admitted.
+    let first_kept = dates.len().saturating_sub(cap.min(dates.len()));
+    Some(dates[first_kept])
+}
+
 /// Returns how many were dropped.
 fn enforce_capacity(cache: &mut HashMap<String, DiscoveryResource>, cap: usize) -> usize {
     if cap == 0 || cache.len() <= cap {
@@ -957,6 +1030,10 @@ impl DiscoveryRegistry {
         let now = now_secs();
 
         let mut cache = self.resources.write().await;
+        // Computed once, against the catalog as it stands. A record that would
+        // be evicted the instant it landed is refused at the door instead.
+        let cap = max_resources();
+        let threshold = admission_threshold(&cache, cap);
 
         for resource in resources {
             // Filter (aggregator/crawler) or strict-validate (register).
@@ -986,6 +1063,20 @@ impl DiscoveryRegistry {
             }
 
             let url_key = resource.url.to_string();
+
+            // Admission. Only for records we do not already hold: an update to
+            // something in the catalog is not growth, and refusing it would
+            // freeze the terms of everything we kept.
+            if let Some(floor) = threshold {
+                if !cache.contains_key(&url_key)
+                    && matches!(resource.source, DiscoverySource::Aggregated)
+                    && resource.last_updated <= floor
+                {
+                    *reject_counts.entry("over-capacity").or_insert(0) += 1;
+                    skipped += 1;
+                    continue;
+                }
+            }
 
             if let Some(existing) = cache.get(&url_key) {
                 if import_supersedes(&resource, existing) {
@@ -1022,8 +1113,11 @@ impl DiscoveryRegistry {
         }
 
         // Cap before snapshotting, so the bound applies to what gets published
-        // and not just to what this process happens to hold.
-        let evicted = enforce_capacity(&mut cache, max_resources());
+        // and not just to what this process happens to hold. With admission in
+        // place this is now a backstop -- it fires on the first cycle after a
+        // cap change, and on records that entered by a path admission does not
+        // gate -- rather than the every-cycle churn it was.
+        let evicted = enforce_capacity(&mut cache, cap);
         if evicted > 0 {
             info!(
                 evicted = evicted,
@@ -1825,12 +1919,18 @@ mod tests {
     // 2026-09-10: the catalog outgrew the task
     // =======================================================================
 
-    /// An aggregated record with a chosen write date.
+    /// An aggregated record whose feed date and our write date agree.
+    ///
+    /// Both are set: the cap orders evictions by `last_updated` (our clock) and
+    /// the merge decides by `source_updated_at` (the feed's claim). A fixture
+    /// that moved only one of them tested the cap while the merge quietly
+    /// refused everything for a different reason.
     fn aggregated_at(url: &str, last_updated: u64) -> DiscoveryResource {
         let mut r = create_test_resource(url, None);
         r.source = DiscoverySource::Aggregated;
         r.source_facilitator = Some("some-feed".to_string());
         r.last_updated = last_updated;
+        r.source_updated_at = Some(last_updated);
         r
     }
 
@@ -1939,6 +2039,115 @@ mod tests {
         // The newest survive.
         assert!(registry.get("https://fat.example/29").await.is_some());
         assert!(registry.get("https://fat.example/0").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_feed_larger_than_the_cap_stops_rewriting_the_catalog_every_cycle() {
+        // 2.21.1 admitted everything and evicted afterwards, so the records it
+        // dropped came back from the feed next cycle as NEW: `added` never went
+        // to zero, the snapshot was republished forever although nothing
+        // changed, and every re-added record looked unprobed to the health
+        // prober. Measured then, over five cycles of one unchanged page:
+        // added=25, then 15, 15, 15, 15.
+        std::env::set_var("DISCOVERY_MAX_RESOURCES", "10");
+        let registry = DiscoveryRegistry::new();
+        let base = now_secs() - 3_600;
+        let page: Vec<DiscoveryResource> = (0..25)
+            .map(|i| aggregated_at(&format!("https://feed.example/{i}"), base + i))
+            .collect();
+
+        let (added, _u, _s) = registry
+            .bulk_import(page.clone(), ImportPolicy::Filtered)
+            .await
+            .unwrap();
+        assert_eq!(added, 25, "the first cycle takes the page in");
+        assert_eq!(registry.count().await, 10, "and the cap trims it");
+
+        // Every later cycle of the SAME page must be a no-op.
+        for cycle in 2..=4 {
+            let (added, updated, _skipped) = registry
+                .bulk_import(page.clone(), ImportPolicy::Filtered)
+                .await
+                .unwrap();
+            assert_eq!(
+                (added, updated),
+                (0, 0),
+                "cycle {cycle} re-added records the cap had already refused"
+            );
+            assert_eq!(registry.count().await, 10);
+        }
+        std::env::remove_var("DISCOVERY_MAX_RESOURCES");
+    }
+
+    #[tokio::test]
+    async fn a_genuinely_newer_entry_still_gets_in_when_the_catalog_is_full() {
+        // Admission must not freeze the catalog on whatever it saw first. An
+        // entry newer than the oldest survivor displaces it; that is the cap
+        // working, not the cap refusing to work.
+        std::env::set_var("DISCOVERY_MAX_RESOURCES", "3");
+        let registry = DiscoveryRegistry::new();
+        let base = now_secs() - 3_600;
+        registry
+            .bulk_import(
+                (0..3)
+                    .map(|i| aggregated_at(&format!("https://old.example/{i}"), base + i))
+                    .collect(),
+                ImportPolicy::Filtered,
+            )
+            .await
+            .unwrap();
+
+        let (added, _u, _s) = registry
+            .bulk_import(
+                vec![aggregated_at("https://fresh.example/x", base + 100)],
+                ImportPolicy::Filtered,
+            )
+            .await
+            .unwrap();
+        std::env::remove_var("DISCOVERY_MAX_RESOURCES");
+        assert_eq!(added, 1, "a newer entry is admitted");
+        assert_eq!(registry.count().await, 3, "and the oldest left");
+        assert!(registry.get("https://fresh.example/x").await.is_some());
+        assert!(registry.get("https://old.example/0").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn an_update_to_a_held_record_is_never_refused_by_admission() {
+        // Admission gates GROWTH. Refusing an update to something we already
+        // list would freeze its terms at whatever we first saw, which is the
+        // opposite of what a catalog is for.
+        std::env::set_var("DISCOVERY_MAX_RESOURCES", "2");
+        let registry = DiscoveryRegistry::new();
+        let base = now_secs() - 3_600;
+        registry
+            .bulk_import(
+                vec![
+                    aggregated_at("https://a.example/x", base + 10),
+                    aggregated_at("https://b.example/x", base + 11),
+                ],
+                ImportPolicy::Filtered,
+            )
+            .await
+            .unwrap();
+
+        // Same URL, newer source date, different description: an update, and the
+        // catalog is full.
+        let mut revised = aggregated_at("https://a.example/x", base + 50);
+        revised.description = "revised terms".to_string();
+        let (_a, updated, _s) = registry
+            .bulk_import(vec![revised], ImportPolicy::Filtered)
+            .await
+            .unwrap();
+        std::env::remove_var("DISCOVERY_MAX_RESOURCES");
+        assert_eq!(updated, 1);
+        assert_eq!(
+            registry
+                .get("https://a.example/x")
+                .await
+                .unwrap()
+                .description,
+            "revised terms"
+        );
     }
 
     #[tokio::test]

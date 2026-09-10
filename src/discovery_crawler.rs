@@ -292,6 +292,12 @@ impl DiscoveryCrawler {
             source_facilitator: Some(source_domain.to_string()),
             first_seen: Some(now),
             settlement_count: None,
+            last_settled_at: None,
+            record_version: crate::types_v2::RECORD_FORMAT_VERSION,
+            content_hash: None,
+            price_freshness: None,
+            terms_observed_at: None,
+            observed_terms: None,
             health: None,
             curation: None,
         }

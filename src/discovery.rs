@@ -156,7 +156,7 @@ const FUTURE_TIMESTAMP_SKEW_SECS: u64 = 300;
 /// arena. Whatever peak a task reaches, it holds. That is why the memory was
 /// FLAT at 57 % rather than settling, and why the fix has to be that the object
 /// is small, not that we shrink it after reading it.
-const DEFAULT_MAX_RESOURCES: usize = 2_000;
+pub(crate) const DEFAULT_MAX_RESOURCES: usize = 2_000;
 
 /// [`DEFAULT_MAX_RESOURCES`], overridable. `0` disables the cap.
 fn max_resources() -> usize {
@@ -166,19 +166,6 @@ fn max_resources() -> usize {
         .unwrap_or(DEFAULT_MAX_RESOURCES)
 }
 
-/// Trim `cache` to `cap`, dropping the least defensible records first.
-///
-/// Eviction is by PROVENANCE before recency, and that order is the whole point.
-/// A resource somebody registered with us, or that we watched a payment settle
-/// for, or that we read from the origin's own document, is first-hand and
-/// irreplaceable: we cannot get it back by asking a third party. An aggregated
-/// copy is, by construction, a copy of something still published elsewhere --
-/// dropping it costs a re-fetch, and the next cycle will offer it again.
-///
-/// Within the aggregated tier, the oldest `last_updated` goes first: that is the
-/// registry's own write clock, so "least recently touched by us" is exactly the
-/// record whose absence we are least likely to notice.
-///
 /// The `last_updated` an incoming aggregated record must beat to be worth
 /// admitting, when the catalog is already full.
 ///
@@ -226,6 +213,29 @@ fn admission_threshold(cache: &HashMap<String, DiscoveryResource>, cap: usize) -
     Some(dates[first_kept])
 }
 
+/// Trim `cache` to `cap`, dropping the least defensible records first.
+///
+/// Eviction is by PROVENANCE before recency, and that order is the whole point.
+/// A resource somebody registered with us, or that we watched a payment settle
+/// for, or that we read from the origin's own document, is first-hand and
+/// irreplaceable: we cannot get it back by asking a third party. An aggregated
+/// copy is, by construction, a copy of something still published elsewhere --
+/// dropping it costs a re-fetch, and the next cycle will offer it again.
+///
+/// Within the aggregated tier, the oldest `last_updated` goes first: that is the
+/// registry's own write clock, so "least recently touched by us" is exactly the
+/// record whose absence we are least likely to notice.
+///
+/// # Why this names `Aggregated` instead of asking [`provenance_rank`]
+///
+/// They are the same ladder and they must stay in step, but they answer
+/// different questions. `provenance_rank` orders authorities so a merge can pick
+/// a winner; this one asks something narrower -- *is this record replaceable* --
+/// and only the bottom rung is. Evicting "whatever ranks lowest" would start
+/// deleting crawled records the moment a catalog held no aggregated ones, which
+/// is precisely the first-hand data the rule exists to protect. If a rung is
+/// ever added between them, this is the second place to look.
+///
 /// Returns how many were dropped.
 fn enforce_capacity(cache: &mut HashMap<String, DiscoveryResource>, cap: usize) -> usize {
     if cap == 0 || cache.len() <= cap {
@@ -260,6 +270,38 @@ fn enforce_capacity(cache: &mut HashMap<String, DiscoveryResource>, cap: usize) 
     dropped
 }
 
+/// What an import should do with a record it collides with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImportVerdict {
+    /// The incoming record wins; write it.
+    Replace,
+    /// Same offer, same claimed date. Not a change, so not a write.
+    Unchanged,
+    /// The held record wins; drop the incoming one.
+    Keep,
+}
+
+/// Where a record's terms came from, as a rank. Higher wins.
+///
+/// The ladder the annex specifies is *direct observation > verified owner
+/// declaration > aggregated feed*, and it exists because a timestamp is not
+/// authority. A feed that stamps its copy with today's date has written a date,
+/// not learned a price.
+///
+/// `SelfRegistered` and `Settlement` share a rank: both are first-hand, and no
+/// path feeds a settlement-sourced record into an import, so ordering them
+/// against each other would be a rule with no caller.
+fn provenance_rank(source: DiscoverySource) -> u8 {
+    match source {
+        // The owner told us directly, or we watched a payment for it settle.
+        DiscoverySource::SelfRegistered | DiscoverySource::Settlement => 3,
+        // The origin's own well-known document, fetched by us.
+        DiscoverySource::Crawled => 2,
+        // Somebody else's copy of somebody else's listing.
+        DiscoverySource::Aggregated => 1,
+    }
+}
+
 /// Whether an incoming import should replace the record already held.
 ///
 /// # Why this is not `incoming.last_updated > existing.last_updated`
@@ -269,25 +311,74 @@ fn enforce_capacity(cache: &mut HashMap<String, DiscoveryResource>, cap: usize) 
 /// months-old content was enough to outrank a record that carried a real date --
 /// the fetch itself manufactured the evidence of freshness (F6).
 ///
-/// Authority here is the SOURCE's own claim (`source_updated_at`), never our
-/// ingestion clock. Four cases, and only the first is a comparison:
+/// # The order the three rules are applied in
+///
+/// **1. Same content, same claimed date: nothing happened.** Comparing
+/// [`DiscoveryResource::content_fingerprint`] is what separates "this feed
+/// republished its page" from "the terms changed". Without it every cycle of an
+/// unchanged upstream counts as an update and rewrites a 15 MB snapshot to say
+/// the same thing.
+///
+/// **2. Different authorities are not ordered by the clock.** A third party's
+/// copy does not supersede the owner's own declaration because the copy carries
+/// a newer date -- the date is the copier's, and it is a statement about when
+/// they copied. This is the rule that was missing: every record stored before
+/// this phase has no `sourceUpdatedAt` at all (0 of 24 636 in the production
+/// snapshot on 2026-09-10), so *every* dated feed entry outranked *every*
+/// self-registered listing, purely on a field one side did not have.
+///
+/// **3. Within one authority, the source's own claim orders the versions.**
+/// Five cases, and only the first is a comparison:
 ///
 /// | incoming | existing | verdict |
 /// |---|---|---|
-/// | dated | dated | the newer claim wins |
+/// | dated | dated, older | the newer claim wins |
+/// | dated | dated, newer | no |
 /// | dated | undated | a dated claim beats an undated record |
 /// | undated | dated | **no** -- this is the case that used to invert |
-/// | undated | undated | yes: no date decides, so let content changes land |
+/// | no date between them | | the publisher of the two decides |
 ///
-/// Deciding *which content is right* when neither side is dated needs a content
-/// hash and a provenance ladder. That is the next phase's work, and this
-/// function is deliberately the only place it will have to change.
-fn import_supersedes(incoming: &DiscoveryResource, existing: &DiscoveryResource) -> bool {
+/// The last row is the one the content hash made answerable. Two entries the
+/// dates cannot separate, and the content differs: if the SAME publisher sent
+/// both, this is that publisher revising its own entry without moving its own
+/// clock, and it is the authority on its own listing, so it lands. If two
+/// different publishers of equal rank disagree with no date between them,
+/// nothing here can rank them -- and taking whichever was fetched last would
+/// make the record flip on every cycle, in crawl order, forever. It stays put.
+///
+/// Our ingestion clock decides nothing at any step.
+fn import_verdict(incoming: &DiscoveryResource, existing: &DiscoveryResource) -> ImportVerdict {
+    if incoming.source_updated_at == existing.source_updated_at
+        && incoming.content_fingerprint() == existing.content_fingerprint()
+    {
+        return ImportVerdict::Unchanged;
+    }
+
+    let (incoming_rank, existing_rank) = (
+        provenance_rank(incoming.source),
+        provenance_rank(existing.source),
+    );
+    if incoming_rank != existing_rank {
+        return if incoming_rank > existing_rank {
+            ImportVerdict::Replace
+        } else {
+            ImportVerdict::Keep
+        };
+    }
+
     match (incoming.source_updated_at, existing.source_updated_at) {
-        (Some(i), Some(e)) => i > e,
-        (Some(_), None) => true,
-        (None, Some(_)) => false,
-        (None, None) => true,
+        (Some(i), Some(e)) if i > e => ImportVerdict::Replace,
+        (Some(i), Some(e)) if i < e => ImportVerdict::Keep,
+        (Some(_), None) => ImportVerdict::Replace,
+        (None, Some(_)) => ImportVerdict::Keep,
+        // Equal dates, or no dates at all.
+        _ => {
+            if incoming.source_facilitator == existing.source_facilitator {
+                ImportVerdict::Replace
+            } else {
+                ImportVerdict::Keep
+            }
+        }
     }
 }
 
@@ -378,6 +469,9 @@ pub struct DiscoveryRegistry {
     store: Arc<dyn DiscoveryStore>,
     /// Liveness overlay (WS-B health prober).
     health: Arc<crate::discovery_health::HealthTracker>,
+    /// Observed payment terms overlay. Separate object, one writer (the
+    /// prober), and therefore structurally out of reach of any import.
+    terms: Arc<crate::discovery_terms::TermsOverlay>,
     /// Curated tier manifest (WS-C).
     curation: Arc<crate::discovery_curation::CurationManifest>,
     /// On-chain reputation cache (WS-E), keyed by resource URL.
@@ -479,6 +573,7 @@ impl Clone for DiscoveryRegistry {
             resources: Arc::clone(&self.resources),
             store: Arc::clone(&self.store),
             health: Arc::clone(&self.health),
+            terms: Arc::clone(&self.terms),
             curation: Arc::clone(&self.curation),
             reputation: Arc::clone(&self.reputation),
             evidence: Arc::clone(&self.evidence),
@@ -505,6 +600,7 @@ impl DiscoveryRegistry {
             resources: Arc::new(RwLock::new(HashMap::new())),
             store: Arc::new(NoOpStore::new()),
             health: Arc::new(crate::discovery_health::HealthTracker::new()),
+            terms: Arc::new(crate::discovery_terms::TermsOverlay::new()),
             curation: Arc::new(crate::discovery_curation::CurationManifest::load()),
             reputation: Arc::new(RwLock::new(HashMap::new())),
             evidence: Arc::new(RwLock::new(HashMap::new())),
@@ -517,6 +613,12 @@ impl DiscoveryRegistry {
     /// The liveness overlay (WS-B). Used by the health prober and by `list()`.
     pub fn health(&self) -> Arc<crate::discovery_health::HealthTracker> {
         Arc::clone(&self.health)
+    }
+
+    /// The observed-terms overlay. Used by the health prober (the only writer)
+    /// and by `list()` to annotate freshness.
+    pub fn terms(&self) -> Arc<crate::discovery_terms::TermsOverlay> {
+        Arc::clone(&self.terms)
     }
 
     /// The curation manifest (WS-C). Used to build attestation targets.
@@ -736,6 +838,7 @@ impl DiscoveryRegistry {
             resources: Arc::new(RwLock::new(cache)),
             store: Arc::new(store),
             health: Arc::new(crate::discovery_health::HealthTracker::new()),
+            terms: Arc::new(crate::discovery_terms::TermsOverlay::new()),
             curation: Arc::new(crate::discovery_curation::CurationManifest::load()),
             reputation: Arc::new(RwLock::new(HashMap::new())),
             evidence: Arc::new(RwLock::new(HashMap::new())),
@@ -786,6 +889,8 @@ impl DiscoveryRegistry {
     pub async fn register(&self, resource: DiscoveryResource) -> Result<(), DiscoveryError> {
         // Validate resource
         self.validate_resource(&resource)?;
+        let mut resource = resource;
+        resource.strip_response_only();
 
         let url_key = resource.url.to_string();
 
@@ -823,6 +928,8 @@ impl DiscoveryRegistry {
     /// The update is immediately applied to cache and persisted asynchronously.
     pub async fn update(&self, resource: DiscoveryResource) -> Result<(), DiscoveryError> {
         self.validate_resource(&resource)?;
+        let mut resource = resource;
+        resource.strip_response_only();
 
         let url_key = resource.url.to_string();
 
@@ -901,6 +1008,11 @@ impl DiscoveryRegistry {
         // the tracker is behind its own async lock, and holding the resources
         // guard across its `.await` is the guard-across-await hazard.
         let health = self.health.snapshot().await;
+        // Same reason, one overlay along: the observed-terms records are behind
+        // their own async lock, so they are read BEFORE the resources guard.
+        let observed = self.terms.snapshot().await;
+        let freshness_window = crate::discovery_terms::freshness_window_secs();
+        let now = now_secs();
         let reputation = self.reputation.read().await.clone();
         let suppressed = self.suppressed_snapshot().await;
         let health_filter = filters.as_ref().and_then(|f| f.health.clone());
@@ -983,6 +1095,19 @@ impl DiscoveryRegistry {
                 for option in c.accepts.iter_mut() {
                     option.annotate();
                 }
+                // Freshness and provenance of the PRICE, which is a different
+                // question from `health` and is answered from a different
+                // overlay. An alive endpoint can have a price nothing has ever
+                // read; a quarantined one can have a price read an hour ago.
+                let seen = observed.get(r.url.as_str());
+                c.content_hash = Some(r.content_fingerprint());
+                c.price_freshness = Some(
+                    crate::discovery_terms::assess_freshness(r, seen, now, freshness_window)
+                        .as_str()
+                        .to_string(),
+                );
+                c.terms_observed_at = seen.map(|t| t.observed_at);
+                c.observed_terms = seen.cloned();
                 c
             })
             .collect();
@@ -1035,7 +1160,12 @@ impl DiscoveryRegistry {
         let cap = max_resources();
         let threshold = admission_threshold(&cache, cap);
 
-        for resource in resources {
+        for mut resource in resources {
+            // Response-only fields are resolved when a listing is composed.
+            // Nobody upstream gets to assert that their own price is fresh, or
+            // that we observed terms we never observed.
+            resource.strip_response_only();
+
             // Filter (aggregator/crawler) or strict-validate (register).
             match policy {
                 ImportPolicy::Strict => {
@@ -1079,32 +1209,52 @@ impl DiscoveryRegistry {
             }
 
             if let Some(existing) = cache.get(&url_key) {
-                if import_supersedes(&resource, existing) {
-                    // Field-preserving merge: incoming wins for content, but
-                    // provenance is protected (F4) — first_seen keeps the
-                    // earliest, settlement_count the max, and a self-registered
-                    // or settlement record is never downgraded to aggregated by
-                    // a colliding feed item.
-                    let mut merged = resource;
-                    merged.first_seen = match (existing.first_seen, merged.first_seen) {
-                        (Some(a), Some(b)) => Some(a.min(b)),
-                        (a, b) => a.or(b),
-                    };
-                    merged.settlement_count =
-                        match (existing.settlement_count, merged.settlement_count) {
-                            (Some(a), Some(b)) => Some(a.max(b)),
+                match import_verdict(&resource, existing) {
+                    ImportVerdict::Replace => {
+                        // Field-preserving merge: incoming wins for content, but
+                        // provenance is protected (F4) — first_seen keeps the
+                        // earliest, settlement_count the max, and a self-registered
+                        // or settlement record is never downgraded to aggregated by
+                        // a colliding feed item.
+                        let mut merged = resource;
+                        merged.first_seen = match (existing.first_seen, merged.first_seen) {
+                            (Some(a), Some(b)) => Some(a.min(b)),
                             (a, b) => a.or(b),
                         };
-                    merged.source = match existing.source {
-                        DiscoverySource::SelfRegistered | DiscoverySource::Settlement => {
-                            existing.source
-                        }
-                        _ => merged.source,
-                    };
-                    cache.insert(url_key, merged);
-                    updated += 1;
-                } else {
-                    skipped += 1;
+                        merged.settlement_count =
+                            match (existing.settlement_count, merged.settlement_count) {
+                                (Some(a), Some(b)) => Some(a.max(b)),
+                                (a, b) => a.or(b),
+                            };
+                        // A settlement date is ours, observed, and about an event
+                        // that happened. An import carries no opinion about it, so
+                        // it never clears one.
+                        merged.last_settled_at =
+                            match (existing.last_settled_at, merged.last_settled_at) {
+                                (Some(a), Some(b)) => Some(a.max(b)),
+                                (a, b) => a.or(b),
+                            };
+                        merged.source = match existing.source {
+                            DiscoverySource::SelfRegistered | DiscoverySource::Settlement => {
+                                existing.source
+                            }
+                            _ => merged.source,
+                        };
+                        cache.insert(url_key, merged);
+                        updated += 1;
+                    }
+                    // Counted apart from a losing merge, because they mean
+                    // opposite things operationally: `unchanged` is the healthy
+                    // steady state of an aggregation cycle, and a rising
+                    // `superseded` is a feed fighting a higher authority.
+                    ImportVerdict::Unchanged => {
+                        *reject_counts.entry("unchanged").or_insert(0) += 1;
+                        skipped += 1;
+                    }
+                    ImportVerdict::Keep => {
+                        *reject_counts.entry("superseded").or_insert(0) += 1;
+                        skipped += 1;
+                    }
                 }
             } else {
                 cache.insert(url_key, resource);
@@ -1362,8 +1512,12 @@ impl DiscoveryRegistry {
         let mut resources = self.resources.write().await;
 
         if let Some(existing) = resources.get_mut(&url_key) {
-            // Resource exists - increment settlement count
-            existing.increment_settlement_count();
+            // Resource exists: this is activity on it, so the settlement
+            // count and `lastSettledAt` move and NOTHING else does. In
+            // particular `accepts` is left exactly as the source declared it --
+            // the facilitator sees one payment's requirements, not the seller's
+            // price list, and one settled amount is not a universal price.
+            existing.record_settlement();
             let resource_for_store = existing.clone();
             debug!(
                 url = %url_key,
@@ -1890,6 +2044,374 @@ mod tests {
             registry.get(url).await.unwrap().description,
             "the seller's own listing"
         );
+    }
+
+    #[tokio::test]
+    async fn a_settlement_is_activity_and_does_not_rejuvenate_the_price() {
+        // F7. `track_settlement` used to move `last_updated`, which is the field
+        // the listing sorts on, the field a reader judges age by, and the field
+        // `merge_resource` uses to refuse an out-of-order write. A payment moved
+        // all three, and a payment is not a statement about the price.
+        let registry = DiscoveryRegistry::new();
+        let url = "https://api.settled.example/x";
+        let mut original = create_test_resource(url, None);
+        original.last_updated = 1_000;
+        original.source_updated_at = Some(900);
+        let declared_terms = original.accepts.clone();
+        let fingerprint_before = original.content_fingerprint();
+        registry.update(original).await.unwrap();
+
+        // A settlement arrives carrying DIFFERENT terms -- one option, a
+        // different amount -- exactly as the settle path would build it.
+        let mut settled = create_test_resource(url, None);
+        settled.accepts[0].amount = crate::types::TokenAmount::from(999u64);
+        settled.source = DiscoverySource::Settlement;
+        let created = registry.track_settlement(settled).await.unwrap();
+        assert!(!created, "the resource already existed");
+
+        let held = registry.get(url).await.unwrap();
+        assert_eq!(
+            held.last_updated, 1_000,
+            "a payment is not a content update"
+        );
+        assert_eq!(
+            held.source_updated_at,
+            Some(900),
+            "and it is certainly not a claim by the source"
+        );
+        assert_eq!(held.settlement_count, Some(1), "the activity IS recorded");
+        assert!(
+            held.last_settled_at.is_some(),
+            "on its own date, which is the one thing a settlement dates"
+        );
+        assert_eq!(
+            held.accepts, declared_terms,
+            "one settled amount is not the seller's price list"
+        );
+        assert_eq!(
+            held.content_fingerprint(),
+            fingerprint_before,
+            "nothing about the offer changed"
+        );
+    }
+
+    #[tokio::test]
+    async fn reimporting_an_identical_feed_is_not_a_change() {
+        // A feed that republishes its page every hour has not repriced anything.
+        // Counting it as an update rewrites a 15 MB snapshot to say the same
+        // thing, and -- worse -- makes the record look freshly checked.
+        let registry = DiscoveryRegistry::new();
+        let url = "https://api.identical.example/x";
+        let entry = aggregated(url, Some(now_secs() - 3_600), "unchanged");
+        let (added, _u, _s) = registry
+            .bulk_import(vec![entry.clone()], ImportPolicy::Filtered)
+            .await
+            .unwrap();
+        assert_eq!(added, 1);
+        let first = registry.get(url).await.unwrap();
+
+        let (added, updated, skipped) = registry
+            .bulk_import(vec![entry], ImportPolicy::Filtered)
+            .await
+            .unwrap();
+        assert_eq!(
+            (added, updated, skipped),
+            (0, 0, 1),
+            "an identical re-import is skipped, not counted as an update"
+        );
+        let second = registry.get(url).await.unwrap();
+        assert_eq!(
+            second.last_updated, first.last_updated,
+            "and nothing was rewritten, so no date moved"
+        );
+
+        // A real change on the same date still lands: the hash decides, and it
+        // is not being used as a general "skip everything" shortcut.
+        let mut changed = aggregated(url, Some(now_secs() - 3_600), "unchanged");
+        changed.accepts[0].amount = crate::types::TokenAmount::from(4242u64);
+        let (_a, updated, _s) = registry
+            .bulk_import(vec![changed], ImportPolicy::Filtered)
+            .await
+            .unwrap();
+        assert_eq!(updated, 1, "a changed amount is a change");
+        assert_eq!(
+            registry.get(url).await.unwrap().accepts[0].amount,
+            crate::types::TokenAmount::from(4242u64)
+        );
+    }
+
+    #[tokio::test]
+    async fn an_aggregated_copy_never_outranks_the_owners_own_declaration() {
+        // The case that is live in production today: every record stored before
+        // this phase has NO `sourceUpdatedAt` (0 of 24 636 on 2026-09-10), so a
+        // dated feed entry beat every self-registered listing on a field one
+        // side did not have. Dates order versions within one authority; they do
+        // not promote a third party's copy above the owner.
+        let registry = DiscoveryRegistry::new();
+        let url = "https://api.ladder.example/x";
+        let mut own = create_test_resource(url, None);
+        own.description = "the seller's own listing".to_string();
+        own.source_updated_at = None; // a record from before the field existed
+        registry.update(own).await.unwrap();
+
+        let (_a, updated, skipped) = registry
+            .bulk_import(
+                vec![aggregated(
+                    url,
+                    Some(now_secs() - 10),
+                    "a freshly dated copy",
+                )],
+                ImportPolicy::Filtered,
+            )
+            .await
+            .unwrap();
+        assert_eq!((updated, skipped), (0, 1));
+        assert_eq!(
+            registry.get(url).await.unwrap().description,
+            "the seller's own listing"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_provenance_ladder_decides_when_neither_side_is_dated() {
+        // Neither carries a date, so nothing about time can decide. The ladder
+        // does: the origin's own document outranks a third party's copy of it.
+        let registry = DiscoveryRegistry::new();
+        let url = "https://api.undated.example/x";
+        registry
+            .bulk_import(
+                vec![aggregated(url, None, "a third party's copy")],
+                ImportPolicy::Filtered,
+            )
+            .await
+            .unwrap();
+
+        let mut crawled = aggregated(url, None, "the origin's own document");
+        crawled.source = DiscoverySource::Crawled;
+        let (_a, updated, _s) = registry
+            .bulk_import(vec![crawled], ImportPolicy::Filtered)
+            .await
+            .unwrap();
+        assert_eq!(updated, 1, "the higher rung wins");
+        assert_eq!(
+            registry.get(url).await.unwrap().description,
+            "the origin's own document"
+        );
+
+        // ... and the copy cannot take it back, however it dates itself.
+        let (_a, updated, skipped) = registry
+            .bulk_import(
+                vec![aggregated(url, Some(now_secs() - 5), "the copy, redated")],
+                ImportPolicy::Filtered,
+            )
+            .await
+            .unwrap();
+        assert_eq!((updated, skipped), (0, 1));
+        assert_eq!(
+            registry.get(url).await.unwrap().description,
+            "the origin's own document"
+        );
+    }
+
+    #[tokio::test]
+    async fn two_undated_feeds_of_equal_rank_do_not_flip_the_record_every_cycle() {
+        // Nothing separates them: same rung, no dates, different content. The
+        // answer is not "whichever was fetched last" -- that makes the record
+        // oscillate in crawl order for as long as both feeds publish it.
+        let registry = DiscoveryRegistry::new();
+        let url = "https://api.twofeeds.example/x";
+        let mut first = aggregated(url, None, "feed one says this");
+        first.source_facilitator = Some("feed-one".to_string());
+        registry
+            .bulk_import(vec![first], ImportPolicy::Filtered)
+            .await
+            .unwrap();
+
+        let mut second = aggregated(url, None, "feed two says that");
+        second.source_facilitator = Some("feed-two".to_string());
+        let (_a, updated, skipped) = registry
+            .bulk_import(vec![second], ImportPolicy::Filtered)
+            .await
+            .unwrap();
+        assert_eq!((updated, skipped), (0, 1));
+        assert_eq!(
+            registry.get(url).await.unwrap().description,
+            "feed one says this"
+        );
+
+        // But the publisher that owns the entry can still revise it, date or no
+        // date -- it is the authority on its own listing.
+        let mut revised = aggregated(url, None, "feed one, revised");
+        revised.source_facilitator = Some("feed-one".to_string());
+        let (_a, updated, _s) = registry
+            .bulk_import(vec![revised], ImportPolicy::Filtered)
+            .await
+            .unwrap();
+        assert_eq!(updated, 1);
+        assert_eq!(
+            registry.get(url).await.unwrap().description,
+            "feed one, revised"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_late_import_cannot_erase_a_direct_observation() {
+        // The overlay is a different object with one writer, so this is not a
+        // rule being enforced -- it is a shape that cannot be expressed. The
+        // import rewrites the terms; the reading of the origin stays, and the
+        // listing reports the disagreement rather than hiding it.
+        use crate::discovery_terms::{
+            ObservationContext, ObservationPhase, ObservedTerms, PriceFreshness, TermsProvenance,
+            TermsTransport,
+        };
+        let registry = DiscoveryRegistry::new();
+        let url = "https://api.observed.example/x";
+        let listed = aggregated(url, Some(now_secs() - 7_200), "listed");
+        registry
+            .bulk_import(vec![listed.clone()], ImportPolicy::Filtered)
+            .await
+            .unwrap();
+
+        let observed_price = listed.accepts.clone();
+        registry
+            .terms()
+            .record(
+                url,
+                ObservedTerms {
+                    accepts: observed_price,
+                    observed_at: now_secs(),
+                    context: ObservationContext::anonymous_get("http"),
+                    phase: ObservationPhase::Verification,
+                    provenance: TermsProvenance::OriginResponse,
+                    transport: TermsTransport::Header,
+                    x402_version: Some(2),
+                    http_status: Some(402),
+                    content_hash: Some(listed.content_fingerprint()),
+                    conflict: None,
+                    rejected: Default::default(),
+                    truncated: false,
+                },
+            )
+            .await;
+
+        let listing = registry.list(10, 0, None).await;
+        assert_eq!(
+            listing.items[0].price_freshness.as_deref(),
+            Some(PriceFreshness::Fresh.as_str())
+        );
+        assert!(listing.items[0].terms_observed_at.is_some());
+
+        // Now a stale feed lands with a newer date and a different price.
+        let mut late = aggregated(url, Some(now_secs() - 60), "a late feed");
+        late.accepts[0].amount = crate::types::TokenAmount::from(777_777u64);
+        registry
+            .bulk_import(vec![late], ImportPolicy::Filtered)
+            .await
+            .unwrap();
+
+        let observation = registry.terms().get(url).await;
+        assert!(
+            observation.is_some(),
+            "an import cannot reach the observation overlay"
+        );
+        let listing = registry.list(10, 0, None).await;
+        assert_eq!(
+            listing.items[0].price_freshness.as_deref(),
+            Some(PriceFreshness::Conflict.as_str()),
+            "the disagreement is reported, not resolved by overwriting one side"
+        );
+        assert_eq!(
+            listing.items[0].accepts[0].amount,
+            crate::types::TokenAmount::from(777_777u64),
+            "the declared listing is still what the source declared"
+        );
+        assert_eq!(
+            listing.items[0].observed_terms.as_ref().unwrap().accepts[0].amount,
+            listed.accepts[0].amount,
+            "and the observation is still what the origin answered"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_restart_keeps_the_dates_and_the_observation() {
+        use crate::discovery_store::MemoryStore;
+        use crate::discovery_terms::{
+            ObservationContext, ObservationPhase, ObservedTerms, PriceFreshness, TermsProvenance,
+            TermsTransport,
+        };
+        let url = "https://api.restart.example/x";
+        let store = MemoryStore::new();
+        let mut r = create_test_resource(url, None);
+        r.last_updated = 1_000;
+        r.source_updated_at = Some(900);
+        r.last_settled_at = Some(1_500);
+        let fingerprint = r.content_fingerprint();
+        store.save(&r).await.unwrap();
+
+        // The catalog comes back from the store...
+        let registry = DiscoveryRegistry::with_store(store).await.unwrap();
+        let back = registry.get(url).await.unwrap();
+        assert_eq!(back.last_updated, 1_000);
+        assert_eq!(back.source_updated_at, Some(900));
+        assert_eq!(back.last_settled_at, Some(1_500));
+        assert_eq!(back.record_version, crate::types_v2::RECORD_FORMAT_VERSION);
+        assert_eq!(back.content_fingerprint(), fingerprint);
+
+        // ... and the overlay comes back separately, which is the point of it
+        // being separate.
+        registry
+            .terms()
+            .record(
+                url,
+                ObservedTerms {
+                    accepts: back.accepts.clone(),
+                    observed_at: now_secs(),
+                    context: ObservationContext::anonymous_get("http"),
+                    phase: ObservationPhase::Verification,
+                    provenance: TermsProvenance::OriginResponse,
+                    transport: TermsTransport::Header,
+                    x402_version: Some(2),
+                    http_status: Some(402),
+                    content_hash: Some(fingerprint),
+                    conflict: None,
+                    rejected: Default::default(),
+                    truncated: false,
+                },
+            )
+            .await;
+        let listing = registry.list(10, 0, None).await;
+        let item = &listing.items[0];
+        assert_eq!(
+            item.price_freshness.as_deref(),
+            Some(PriceFreshness::Fresh.as_str())
+        );
+        assert_eq!(item.observed_terms.as_ref().unwrap().context.method, "GET");
+        assert_eq!(
+            item.observed_terms.as_ref().unwrap().provenance,
+            TermsProvenance::OriginResponse
+        );
+        assert_eq!(item.last_settled_at, Some(1_500));
+    }
+
+    #[tokio::test]
+    async fn a_registrant_cannot_assert_that_its_own_price_is_fresh() {
+        let registry = DiscoveryRegistry::new();
+        let url = "https://api.selfclaim.example/x";
+        let mut r = create_test_resource(url, None);
+        r.price_freshness = Some("fresh".to_string());
+        r.terms_observed_at = Some(now_secs());
+        r.content_hash = Some("whatever-i-say".to_string());
+        registry.register(r).await.unwrap();
+
+        let held = registry.get(url).await.unwrap();
+        assert_eq!(held.price_freshness, None);
+        assert_eq!(held.terms_observed_at, None);
+        assert_eq!(held.content_hash, None);
+
+        // The listing answers it from the overlay, where there is nothing.
+        let listing = registry.list(10, 0, None).await;
+        assert_eq!(listing.items[0].price_freshness.as_deref(), Some("unknown"));
+        assert_eq!(listing.items[0].terms_observed_at, None);
     }
 
     #[tokio::test]

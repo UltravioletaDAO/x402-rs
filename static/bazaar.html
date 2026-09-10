@@ -286,6 +286,24 @@
     "price.unsupported": "we cannot settle this",
     "price.unsupportedWhy": "This facilitator does not implement this payment scheme. The listing is real; we simply cannot pay it for you.",
     "price.atomic": "{v} (atomic units, unknown asset)",
+    "fresh.unknown": "price not verified",
+    "fresh.unknownWhy": "Nothing has read this endpoint's live payment challenge yet, so this price is what the source published, not what the endpoint answers today.",
+    "fresh.observed": "observed {t}",
+    "fresh.observedWhy": "We read this endpoint's own payment challenge {t} and it matched this listing. That is a past reading, not a quote: check the 402 for your own request before you sign.",
+    "fresh.stale": "last read {t}",
+    "fresh.staleWhy": "The last reading of this endpoint's payment challenge was {t}, or the listing has been revised since. It is due to be checked again.",
+    "fresh.conflict": "price disagrees",
+    "fresh.conflictWhy": "The endpoint's own payment challenge does not match this listing. Both are shown below; neither has been deleted in favour of the other.",
+    "detail.observed": "What the endpoint answered",
+    "detail.observedCtx": "read with an unauthenticated {m} on {d}",
+    "detail.observedNone": "Nothing has read this endpoint's live payment challenge yet.",
+    "detail.observedConflict": "The response header and the response body declared different terms. The other reading is kept as evidence and is not merged into this one.",
+    "detail.settled": "Last settled through us",
+    "detail.settledWhy": "A payment happened. It is activity, not a check on the price.",
+    "ago.days": "{n}d ago",
+    "ago.hours": "{n}h ago",
+    "ago.minutes": "{n}m ago",
+    "ago.now": "just now",
     "detail.close": "Close details"
   },
   es: {
@@ -390,6 +408,24 @@
     "price.unsupported": "no lo podemos liquidar",
     "price.unsupportedWhy": "Este facilitador no implementa ese esquema de pago. El listado es real; simplemente no podemos pagarlo por vos.",
     "price.atomic": "{v} (unidades atómicas, activo desconocido)",
+    "fresh.unknown": "precio no verificado",
+    "fresh.unknownWhy": "Todavía nadie leyó el desafío de pago en vivo de este endpoint, así que este precio es el que publicó la fuente, no el que el endpoint responde hoy.",
+    "fresh.observed": "observado {t}",
+    "fresh.observedWhy": "Leímos el desafío de pago del propio endpoint {t} y coincidía con este listado. Es una lectura pasada, no una cotización: revisá el 402 de tu propia solicitud antes de firmar.",
+    "fresh.stale": "leído {t}",
+    "fresh.staleWhy": "La última lectura del desafío de pago de este endpoint fue {t}, o el listado se revisó desde entonces. Toca volver a comprobarlo.",
+    "fresh.conflict": "el precio no coincide",
+    "fresh.conflictWhy": "El desafío de pago del propio endpoint no coincide con este listado. Abajo se muestran los dos; ninguno se borró a favor del otro.",
+    "detail.observed": "Lo que respondió el endpoint",
+    "detail.observedCtx": "leído con un {m} sin autenticar el {d}",
+    "detail.observedNone": "Todavía nadie leyó el desafío de pago en vivo de este endpoint.",
+    "detail.observedConflict": "La cabecera y el cuerpo de la respuesta declararon términos distintos. La otra lectura se conserva como evidencia y no se mezcla con ésta.",
+    "detail.settled": "Última liquidación con nosotros",
+    "detail.settledWhy": "Hubo un pago. Es actividad, no una comprobación del precio.",
+    "ago.days": "hace {n}d",
+    "ago.hours": "hace {n}h",
+    "ago.minutes": "hace {n}min",
+    "ago.now": "recién",
     "detail.close": "Cerrar detalles"
   }
 };
@@ -456,6 +492,40 @@
       if(scaledAmount(lo) === scaledAmount(hi)) return { text: fmtOption(lo), cls: 'tag price', title: '' };
       return { text: tr('price.from').replace('{v}', fmtOption(lo)), cls: 'tag price', title: tr('price.fromWhy') };
     }
+    // How long ago, in the coarsest unit that is still honest. A price read
+    // eight days ago is not "8d 3h 12m ago" to anyone deciding whether to trust
+    // it; it is old.
+    function ago(ts){
+      if(!ts) return null;
+      const s = Math.max(0, Math.floor(Date.now()/1000) - Number(ts));
+      if(s >= 86400) return tr('ago.days').replace('{n}', Math.floor(s/86400));
+      if(s >= 3600) return tr('ago.hours').replace('{n}', Math.floor(s/3600));
+      if(s >= 60) return tr('ago.minutes').replace('{n}', Math.floor(s/60));
+      return tr('ago.now');
+    }
+
+    // What the catalog knows about the price, which is a different question
+    // from whether the endpoint is alive. `unknown` is the honest default and
+    // covers most of the catalog: the listing is what a source published, not
+    // what the endpoint answers today.
+    function freshnessBadge(it){
+      const t = ago(it.termsObservedAt);
+      switch(it.priceFreshness){
+        case 'fresh':
+          return { text: tr('fresh.observed').replace('{t}', t), cls: 'tag alive',
+                   title: tr('fresh.observedWhy').replace('{t}', t) };
+        case 'stale':
+          return { text: tr('fresh.stale').replace('{t}', t), cls: 'tag',
+                   title: tr('fresh.staleWhy').replace('{t}', t) };
+        case 'conflict':
+          return { text: tr('fresh.conflict'), cls: 'tag warn', title: tr('fresh.conflictWhy') };
+        case 'unknown':
+          return { text: tr('fresh.unknown'), cls: 'tag warn', title: tr('fresh.unknownWhy') };
+        default:
+          return null;
+      }
+    }
+
     function hostOf(u){ try { return new URL(u).host; } catch { return u; } }
     function pathOf(u){ try { const p=new URL(u); return p.pathname+p.search; } catch { return ''; } }
     function esc(s){ const d=document.createElement('div'); d.textContent=s==null?'':String(s); return d.innerHTML; }
@@ -542,6 +612,11 @@
       if(h.status) badges.push(`<span class="tag ${h.status}">${esc(h.status.replace('_',' '))}</span>`);
       if(net) badges.push(`<span class="tag">${esc(net)}</span>`);
       if(price) badges.push(`<span class="${price.cls}"${price.title?` title="${esc(price.title)}"`:''}>${esc(price.text)}</span>`);
+      // Only alongside a price we could actually render: "0.10 USDC, price not
+      // verified" is informative, "price not verified, price not verified" is
+      // not.
+      const fresh = price && price.text !== tr('price.unverified') ? freshnessBadge(it) : null;
+      if(fresh) badges.push(`<span class="${fresh.cls}" title="${esc(fresh.title)}">${esc(fresh.text)}</span>`);
       return `<div class="card" role="button" tabindex="0" data-url="${esc(it.url)}">
         <div class="card-top"><div><div class="card-host">${esc(hostOf(it.url))}</div><div class="card-path">${esc(pathOf(it.url))}</div></div></div>
         ${it.description?`<div class="card-desc">${esc(it.description.slice(0,140))}</div>`:''}
@@ -610,18 +685,39 @@
         return `<div class="accept-row"><div class="mono"><b>${esc(NET_NAMES[a.network]||a.network)}</b> · ${esc(a.assetSymbol||a.asset)} · ${esc(scheme)}${flag}</div><div class="mono">${esc(price)} → ${esc(a.payTo)}</div></div>`;
       }).join('') || `<div class="card-desc">${esc(tr('detail.noAccepts'))}</div>`;
       const h = it.health||{}; const cur = it.curation||{};
+      // What the endpoint itself answered, kept apart from what the source
+      // published. Both are shown; neither replaces the other.
+      const ot = it.observedTerms;
+      const observed = ot
+        ? `<div class="card-desc">${esc(tr('detail.observedCtx')
+              .replace('{m}', ot.context && ot.context.method || 'GET')
+              .replace('{d}', new Date((ot.observedAt||0)*1000).toISOString().slice(0,16).replace('T',' ')))}</div>`
+          + (ot.accepts||[]).map(a=>{
+              const shown = fmtOption(a);
+              const scheme = String(a.scheme||'');
+              const price = shown
+                ? (scheme === 'upto' ? tr('price.upTo').replace('{v}', shown) : shown)
+                : tr('price.atomic').replace('{v}', String(a.amount));
+              return `<div class="accept-row"><div class="mono"><b>${esc(NET_NAMES[a.network]||a.network)}</b> · ${esc(a.assetSymbol||a.asset)} · ${esc(scheme)}</div><div class="mono">${esc(price)} → ${esc(a.payTo)}</div></div>`;
+            }).join('')
+          + (ot.conflict ? `<div class="card-desc">${esc(tr('detail.observedConflict'))}</div>` : '')
+        : `<div class="card-desc">${esc(tr('detail.observedNone'))}</div>`;
+      const freshTag = freshnessBadge(it);
       d.innerHTML = `
         <div class="modal-head"><div><div class="card-host">${esc(hostOf(it.url))}</div><div class="card-path">${esc(pathOf(it.url))}</div></div><button class="close-x" aria-label="${tr('detail.close')}" onclick="document.getElementById('detail').close()">×</button></div>
         <div class="modal-body">
           <div class="badges">
             ${cur.tier&&cur.tier!=='listed'?`<span class="tag ${cur.tier}">${esc(cur.label||cur.tier)}</span>`:''}
             ${h.status?`<span class="tag ${h.status}">${esc(h.status)}</span>`:''}
+            ${freshTag?`<span class="${freshTag.cls}" title="${esc(freshTag.title)}">${esc(freshTag.text)}</span>`:''}
             <span class="tag">${esc(it.source||'')}</span>
             ${it.sourceFacilitator?`<span class="tag">via ${esc(it.sourceFacilitator)}</span>`:''}
           </div>
           ${it.description?`<h3 data-i18n="detail.description">${tr('detail.description')}</h3><div class="card-desc">${esc(it.description)}</div>`:''}
           <h3 data-i18n="detail.url">${tr('detail.url')}</h3><div class="mono"><a class="mono" href="${esc(it.url)}" target="_blank" rel="noopener">${esc(it.url)}</a></div>
           <h3 data-i18n="detail.accepts">${tr('detail.accepts')}</h3>${accepts}
+          <h3 data-i18n="detail.observed">${tr('detail.observed')}</h3>${observed}
+          ${it.lastSettledAt?`<h3 data-i18n="detail.settled">${tr('detail.settled')}</h3><div class="card-desc">${esc(new Date(it.lastSettledAt*1000).toISOString().slice(0,16).replace('T',' '))} · ${esc(tr('detail.settledWhy'))}</div>`:''}
           ${h.lastChecked?`<h3 data-i18n="detail.health">${tr('detail.health')}</h3><div class="mono">${esc(h.status)} · HTTP ${esc(h.httpStatus||'?')} · ${esc(h.latencyMs||'?')}ms · ${tr('detail.checked')} ${new Date((h.lastChecked||0)*1000).toISOString().slice(0,16).replace('T',' ')}</div>`:''}
         </div>`;
       d.showModal();

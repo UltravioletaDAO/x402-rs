@@ -18,7 +18,7 @@
 //! - `404/410` / dead / 5xx / DNS-fail -> fail (counts toward quarantine).
 //! - SSRF-refused / template / non-http -> unprobeable.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -28,7 +28,14 @@ use tokio::sync::{RwLock, Semaphore};
 use tracing::{debug, error, info, warn};
 
 use crate::discovery::DiscoveryRegistry;
+use crate::discovery_price::{
+    normalize_declared_option, CatalogPaymentOption, DeclaredPaymentOption,
+};
 use crate::discovery_security::{safe_get, safe_post_json, SecurityReject};
+use crate::discovery_terms::{
+    ObservationContext, ObservationPhase, ObservedTerms, TermsProvenance, TermsTransport,
+    TransportReading,
+};
 use crate::types_v2::{HealthState, HealthStatus};
 
 /// Consecutive fail-class probes before a resource is quarantined.
@@ -426,15 +433,46 @@ async fn probe_mcp(url: &url::Url) -> (ProbeClass, Option<u16>, u64) {
 /// The distinction is the whole point. "The recipients match" and "we could not
 /// find any recipients" are different answers, and collapsing them is what let
 /// the hijack check pass silently on every resource we probe.
+///
+/// It used to carry the recipients and nothing else, which is why a resource
+/// could be marked alive and go on advertising a price from months ago (F4):
+/// the one component that actually reads a live challenge was throwing away
+/// every field except `payTo`.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct LiveTerms {
-    /// `payTo` recipients, lowercased.
+    /// `payTo` recipients, lowercased. The union of BOTH transports: a hijack
+    /// declared anywhere in the challenge is a hijack.
     pub pay_to: Vec<String>,
     /// Whether a parseable x402 challenge was found in either transport.
     pub readable: bool,
+    /// The full requirements from the transport that won. Never a blend of the
+    /// two: fields taken from different transports compose an offer nobody made.
+    pub accepts: Vec<CatalogPaymentOption>,
+    /// Which transport `accepts` came from.
+    pub transport: Option<TermsTransport>,
+    /// Protocol version that transport declared, when it declared one.
+    pub x402_version: Option<u64>,
+    /// The losing transport's reading, kept whenever the two disagreed.
+    pub conflict: Option<TransportReading>,
+    /// Options in the challenge we could not read, counted by cause.
+    pub rejected: BTreeMap<String, usize>,
 }
 
-/// Extract the `payTo` recipients a live 402 advertises.
+/// One transport's reading of a challenge, before the two are reconciled.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ChallengeReading {
+    pay_to: Vec<String>,
+    accepts: Vec<CatalogPaymentOption>,
+    x402_version: Option<u64>,
+    rejected: BTreeMap<String, usize>,
+    /// Whether the document looked like an x402 challenge at all. A body that
+    /// parses as JSON but carries no payment terms -- a free preview, an error
+    /// object -- has not been read.
+    found_shape: bool,
+}
+
+/// Read the payment terms a live 402 advertises, from whichever transport
+/// carries them.
 ///
 /// x402 allows the challenge in EITHER transport and sellers pick freely:
 ///
@@ -448,18 +486,78 @@ pub struct LiveTerms {
 /// payment terms in it at all -- so the parse succeeded and returned nothing.
 ///
 /// Reported by an external prober measuring our catalog's walls.
+///
+/// # When the two transports disagree
+///
+/// They are not merged. A record whose network came from a header and whose
+/// amount came from a body describes an offer neither document made, and it
+/// would be indistinguishable from a real one afterwards. Instead:
+///
+/// 1. The higher declared `x402Version` wins -- a seller serving two protocol
+///    versions is telling us which one is current by numbering it.
+/// 2. On a tie, or with no version declared, the header wins, because that is
+///    where sellers actually put the challenge.
+/// 3. The loser is preserved whole, in `conflict`, as evidence.
+///
+/// `pay_to` stays the union of both, deliberately: the hijack check must fire
+/// on a recipient declared anywhere in the response, whichever transport the
+/// terms were finally taken from.
 fn pay_to_from_402(body: Option<&str>, header: Option<&str>) -> LiveTerms {
-    let mut terms = LiveTerms::default();
+    let from_header = header
+        .and_then(decode_payment_required)
+        .map(|v| read_challenge(&v))
+        .filter(|r| r.found_shape);
+    let from_body = body
+        .and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok())
+        .map(|v| read_challenge(&v))
+        .filter(|r| r.found_shape);
 
-    // Header first: it is where real sellers put it.
-    if let Some(raw) = header {
-        if let Some(v) = decode_payment_required(raw) {
-            collect_pay_to(&v, &mut terms);
+    let mut terms = LiveTerms::default();
+    for reading in [from_header.as_ref(), from_body.as_ref()]
+        .into_iter()
+        .flatten()
+    {
+        terms.readable = true;
+        for p in &reading.pay_to {
+            if !terms.pay_to.contains(p) {
+                terms.pay_to.push(p.clone());
+            }
         }
     }
-    if let Some(b) = body {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(b) {
-            collect_pay_to(&v, &mut terms);
+    if !terms.readable {
+        return terms;
+    }
+
+    let (winner, winning_transport, loser, losing_transport) = match (from_header, from_body) {
+        (Some(h), Some(b)) => {
+            let header_wins = match (h.x402_version, b.x402_version) {
+                (Some(hv), Some(bv)) if bv > hv => false,
+                _ => true,
+            };
+            if header_wins {
+                (h, TermsTransport::Header, Some(b), TermsTransport::Body)
+            } else {
+                (b, TermsTransport::Body, Some(h), TermsTransport::Header)
+            }
+        }
+        (Some(h), None) => (h, TermsTransport::Header, None, TermsTransport::Body),
+        (None, Some(b)) => (b, TermsTransport::Body, None, TermsTransport::Header),
+        (None, None) => unreachable!("readable implies at least one reading"),
+    };
+
+    terms.transport = Some(winning_transport);
+    terms.x402_version = winner.x402_version;
+    terms.accepts = winner.accepts;
+    terms.rejected = winner.rejected;
+    if let Some(other) = loser {
+        // Only a real disagreement is worth keeping. Two transports carrying the
+        // same offer is the common case and is not evidence of anything.
+        if other.accepts != terms.accepts || other.x402_version != terms.x402_version {
+            terms.conflict = Some(TransportReading {
+                transport: losing_transport,
+                x402_version: other.x402_version,
+                accepts: other.accepts,
+            });
         }
     }
     terms
@@ -481,34 +579,57 @@ fn decode_payment_required(raw: &str) -> Option<serde_json::Value> {
     serde_json::from_slice(&decoded).ok()
 }
 
-/// Pull `accepts[].payTo` (v2) and a top-level `payTo` (v1) out of a challenge.
+/// Read one challenge document: its recipients, its full requirements and the
+/// protocol version it declares.
 ///
-/// Marks `readable` only when the value actually looks like an x402 challenge.
-/// A body that parses as JSON but carries no payment terms -- a free preview,
-/// an error object -- must NOT count as "read": that is exactly the case that
-/// made the check pass while seeing nothing.
-fn collect_pay_to(v: &serde_json::Value, terms: &mut LiveTerms) {
-    let mut found_shape = false;
+/// `found_shape` is set only when the value actually looks like an x402
+/// challenge. A body that parses as JSON but carries no payment terms -- a free
+/// preview, an error object -- must NOT count as "read": that is exactly the
+/// case that made the hijack check pass while seeing nothing.
+///
+/// Requirements go through [`normalize_declared_option`], the same single
+/// normalization rule the aggregator, the crawler and `POST /discovery/register`
+/// use. An observation parsed by its own private rules would be comparable with
+/// nothing -- and would be free to invent the `exact` that P0 removed.
+fn read_challenge(v: &serde_json::Value) -> ChallengeReading {
+    let mut reading = ChallengeReading::default();
+    reading.x402_version = v.get("x402Version").and_then(|x| x.as_u64());
+
     // `paymentRequirements` is the v1 spelling of `accepts`. Missing it made a
     // seller using it look like "no terms here" -- which is exactly the state
     // that let the hijack check pass while seeing nothing.
     for key in ["accepts", "paymentRequirements"] {
         if let Some(accepts) = v.get(key).and_then(|a| a.as_array()) {
-            found_shape = true;
+            reading.found_shape = true;
             for a in accepts {
                 if let Some(p) = a.get("payTo").and_then(|p| p.as_str()) {
-                    terms.pay_to.push(p.to_ascii_lowercase());
+                    reading.pay_to.push(p.to_ascii_lowercase());
+                }
+                match serde_json::from_value::<DeclaredPaymentOption>(a.clone()) {
+                    Ok(declared) => match normalize_declared_option(declared) {
+                        Ok(option) => reading.accepts.push(option),
+                        Err(reject) => {
+                            *reading
+                                .rejected
+                                .entry(reject.rule().to_string())
+                                .or_insert(0) += 1;
+                        }
+                    },
+                    Err(_) => {
+                        *reading
+                            .rejected
+                            .entry("option-malformed".to_string())
+                            .or_insert(0) += 1;
+                    }
                 }
             }
         }
     }
     if let Some(p) = v.get("payTo").and_then(|p| p.as_str()) {
-        found_shape = true;
-        terms.pay_to.push(p.to_ascii_lowercase());
+        reading.found_shape = true;
+        reading.pay_to.push(p.to_ascii_lowercase());
     }
-    if found_shape {
-        terms.readable = true;
-    }
+    reading
 }
 
 /// Classify a single probe of `url` (GET, no payment attached).
@@ -604,6 +725,16 @@ pub fn start_health_task(
                     "dropped health records for resources no longer in the catalog"
                 );
             }
+            // The observed-terms overlay is a second object written whole, so it
+            // needs the same hygiene against the same keep-set.
+            let pruned_terms = registry.terms().retain_urls(&live).await;
+            if pruned_terms > 0 {
+                info!(
+                    pruned = pruned_terms,
+                    held = live.len(),
+                    "dropped observed terms for resources no longer in the catalog"
+                );
+            }
             for (u, ty, pay_to) in targets {
                 if due.len() >= max_per_tick {
                     break;
@@ -629,6 +760,8 @@ pub fn start_health_task(
             for (u, resource_type, expected_pay_to) in due {
                 let sem = Arc::clone(&sem);
                 let tracker = Arc::clone(&tracker);
+                let terms_overlay = registry.terms();
+                let registry_for_terms = registry.clone();
                 handles.push(tokio::spawn(async move {
                     let _permit = sem.acquire().await.ok();
                     // MCP endpoints answer a POST JSON-RPC handshake, not a GET
@@ -641,49 +774,156 @@ pub fn start_health_task(
                         probe(&u).await
                     };
 
+                    // The challenge is read ONCE, and read whole. Two callers
+                    // want it and they want different halves: the hijack check
+                    // wants the recipients, the terms overlay wants the price.
+                    // Probing twice for that would double every seller's load.
+                    let live = if class == ProbeClass::Alive
+                        && (body.is_some() || pr_header.is_some())
+                    {
+                        Some(pay_to_from_402(body.as_deref(), pr_header.as_deref()))
+                    } else {
+                        None
+                    };
+
                     // payTo drift (F4): a live 402 that now pays a recipient the
                     // listing never declared is a hijack signal, not a health
                     // signal. Quarantine immediately and alarm.
-                    if class == ProbeClass::Alive && !expected_pay_to.is_empty() {
-                        let live = pay_to_from_402(body.as_deref(), pr_header.as_deref());
-                        let drifted: Vec<&String> = live
-                            .pay_to
-                            .iter()
-                            .filter(|p| !expected_pay_to.contains(p))
-                            .collect();
-                        if !drifted.is_empty() {
-                            warn!(
-                                url = %u,
-                                expected = ?expected_pay_to,
-                                observed = ?live.pay_to,
-                                "paytoswap: live 402 pays an undeclared recipient; quarantining"
-                            );
-                            class = ProbeClass::PayToDrift;
-                        } else if !live.readable {
-                            // A check that did NOT run must not look like one
-                            // that passed. This is the state that hid the bug:
-                            // the terms were in the header, the body parsed as
-                            // a free preview, and the swap check quietly saw
-                            // nothing on every resource it examined.
-                            warn!(
-                                url = %u,
-                                has_body = body.is_some(),
-                                has_header = pr_header.is_some(),
-                                "paytoswap: could not read payment terms from either transport -- \
-                                 the hijack check did not run for this resource"
-                            );
+                    //
+                    // A changed AMOUNT is deliberately not in this branch and
+                    // must never be: a seller repricing is ordinary commerce,
+                    // and quarantining for it would hide a live resource over a
+                    // change it is entitled to make. The price change is
+                    // recorded below, as an observation.
+                    if !expected_pay_to.is_empty() {
+                        if let Some(live) = live.as_ref() {
+                            if pay_to_drifted(&expected_pay_to, live) {
+                                warn!(
+                                    url = %u,
+                                    expected = ?expected_pay_to,
+                                    observed = ?live.pay_to,
+                                    "paytoswap: live 402 pays an undeclared recipient; quarantining"
+                                );
+                                class = ProbeClass::PayToDrift;
+                            } else if !live.readable {
+                                // A check that did NOT run must not look like one
+                                // that passed. This is the state that hid the bug:
+                                // the terms were in the header, the body parsed as
+                                // a free preview, and the swap check quietly saw
+                                // nothing on every resource it examined.
+                                warn!(
+                                    url = %u,
+                                    has_body = body.is_some(),
+                                    has_header = pr_header.is_some(),
+                                    "paytoswap: could not read payment terms from either transport -- \
+                                     the hijack check did not run for this resource"
+                                );
+                            }
                         }
                     }
 
                     tracker.record_probe(u.as_str(), class, http, latency).await;
+
+                    // Record what the origin actually said, with the context it
+                    // said it in. Written even when the probe quarantined the
+                    // resource: the reading happened, and hiding it would lose
+                    // the evidence of what it was hidden for.
+                    if let Some(live) = live {
+                        record_observation(
+                            &registry_for_terms,
+                            &terms_overlay,
+                            &u,
+                            &resource_type,
+                            http,
+                            live,
+                        )
+                        .await;
+                    }
                 }));
             }
             for h in handles {
                 let _ = h.await;
             }
             tracker.persist().await;
+            // Its own debounce, slower than the tick: a price observed twice in
+            // five minutes is the same observation, and this object is larger.
+            registry.terms().persist().await;
         }
     })
+}
+
+/// Whether a live challenge pays a recipient the listing never declared.
+///
+/// The AMOUNT is not an input here, and must never become one. A seller
+/// repricing is ordinary commerce; a seller redirecting the money is a hijack.
+/// Quarantine is the response to the second, and applying it to the first would
+/// hide a live resource over a change it is entitled to make. A price change is
+/// recorded as an observation instead, where a reader can see it and decide.
+fn pay_to_drifted(expected: &[String], live: &LiveTerms) -> bool {
+    live.pay_to.iter().any(|p| !expected.contains(p))
+}
+
+/// Store one reading of an origin's live terms in the observed-terms overlay.
+///
+/// The record's fingerprint is captured alongside it, so a later listing can
+/// tell "observed against these exact terms" from "observed, and the listing has
+/// been revised since" -- which is the difference between a fresh price and one
+/// that is due for revalidation.
+///
+/// Nothing here can fail a probe. A response that was not a challenge at all
+/// records nothing -- we learned nothing, and overwriting a real reading with an
+/// empty one would erase evidence. A challenge we DID read but whose options we
+/// could not parse is recorded, with the causes counted: that dates the look,
+/// and the freshness assessment reports the price as unverified rather than
+/// treating an empty reading as agreement.
+async fn record_observation(
+    registry: &DiscoveryRegistry,
+    overlay: &Arc<crate::discovery_terms::TermsOverlay>,
+    url: &url::Url,
+    resource_type: &str,
+    http_status: Option<u16>,
+    live: LiveTerms,
+) {
+    if !live.readable {
+        return;
+    }
+    let content_hash = registry
+        .get(url.as_str())
+        .await
+        .map(|r| r.content_fingerprint());
+    let observation = ObservedTerms {
+        accepts: live.accepts,
+        observed_at: now_secs(),
+        context: ObservationContext::anonymous_get(resource_type),
+        // A challenge is the verification phase by construction: no payment has
+        // been made, so an `upto` amount here is the ceiling, not a charge.
+        phase: ObservationPhase::Verification,
+        provenance: TermsProvenance::OriginResponse,
+        transport: live.transport.unwrap_or(TermsTransport::Header),
+        x402_version: live.x402_version,
+        http_status,
+        content_hash,
+        conflict: live.conflict,
+        rejected: live.rejected,
+        truncated: false,
+    };
+    if observation.conflict.is_some() {
+        warn!(
+            url = %url,
+            context = %observation.context.key(),
+            transport = ?observation.transport,
+            "the header and the body of this 402 declare different terms; keeping both"
+        );
+    } else {
+        debug!(
+            url = %url,
+            context = %observation.context.key(),
+            options = observation.accepts.len(),
+            rejected = ?observation.rejected,
+            "recorded the payment terms this origin advertises"
+        );
+    }
+    overlay.record(url.as_str(), observation).await;
 }
 
 /// Whether `url` is due for a probe now (blocking helper is cheap: one read).
@@ -905,6 +1145,159 @@ mod payment_required_transport_tests {
         let terms = pay_to_from_402(Some(r#"{"payTo":"0xBBBB"}"#), None);
         assert!(terms.readable);
         assert_eq!(terms.pay_to, vec!["0xbbbb".to_string()]);
+    }
+
+    // ========================================================================
+    // The whole challenge, not just its recipients
+    // ========================================================================
+
+    /// A full v2 challenge in the body: scheme, network, asset, amount, payTo.
+    const FULL_BODY: &str = r#"{"x402Version":2,"accepts":[{
+        "scheme":"exact","network":"eip155:8453",
+        "asset":"0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        "amount":"30000",
+        "payTo":"0xe4dc963c56979E0260fc146b87eE24F18220e545",
+        "maxTimeoutSeconds":300}]}"#;
+
+    #[test]
+    fn the_whole_requirement_is_read_not_only_the_recipient() {
+        // F4: this component is the only one that sees a live 402, and it kept
+        // the recipients and threw the price away. A resource could be marked
+        // alive and go on advertising an amount from months ago.
+        let terms = pay_to_from_402(None, Some(REAL_HEADER));
+        assert_eq!(terms.accepts.len(), 1);
+        let o = &terms.accepts[0];
+        assert_eq!(o.scheme.to_string(), "exact");
+        assert_eq!(o.network.to_string(), "eip155:8453");
+        assert_eq!(o.amount.to_string(), "100000");
+        assert_eq!(o.max_timeout_seconds, 300);
+        assert_eq!(terms.x402_version, Some(2));
+        assert_eq!(terms.transport, Some(TermsTransport::Header));
+    }
+
+    #[test]
+    fn the_v1_spelling_of_the_amount_is_read_by_the_same_rule_as_every_import() {
+        // `maxAmountRequired` is the v1 name for the same number. The prober
+        // goes through the one shared normalization rule, so a challenge and a
+        // feed entry describing the same offer produce the same record -- and
+        // the prober cannot invent the `exact` that P0 removed.
+        let body = r#"{"x402Version":1,"paymentRequirements":[{
+            "scheme":"upto","network":"base",
+            "asset":"0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            "maxAmountRequired":"100000",
+            "payTo":"0xe4dc963c56979E0260fc146b87eE24F18220e545"}]}"#;
+        let terms = pay_to_from_402(Some(body), None);
+        assert_eq!(terms.accepts.len(), 1);
+        assert_eq!(terms.accepts[0].scheme.to_string(), "upto");
+        assert_eq!(terms.accepts[0].amount.to_string(), "100000");
+        assert_eq!(terms.x402_version, Some(1));
+    }
+
+    #[test]
+    fn an_unreadable_option_is_counted_by_cause_and_never_becomes_a_price() {
+        let body = r#"{"x402Version":2,"accepts":[{
+            "scheme":"exact","network":"eip155:8453",
+            "asset":"0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            "amount":"0.002",
+            "payTo":"0xe4dc963c56979E0260fc146b87eE24F18220e545"}]}"#;
+        let terms = pay_to_from_402(Some(body), None);
+        assert!(terms.readable, "we read the challenge");
+        assert!(terms.accepts.is_empty(), "and refused the option");
+        assert_eq!(terms.rejected.get("amount-not-an-integer"), Some(&1));
+    }
+
+    #[test]
+    fn two_transports_carrying_the_same_offer_are_not_a_conflict() {
+        let terms = pay_to_from_402(Some(FULL_BODY), Some(header_of(FULL_BODY).as_str()));
+        assert!(terms.conflict.is_none());
+        assert_eq!(terms.accepts.len(), 1);
+    }
+
+    #[test]
+    fn a_header_and_a_body_that_disagree_are_kept_apart_not_blended() {
+        // The header says 0.10, the body says 0.03. There is no single offer
+        // here, and manufacturing one -- a network from the header, an amount
+        // from the body -- would be indistinguishable afterwards from an offer
+        // the seller really made.
+        let cheaper = FULL_BODY.replace("30000", "100000");
+        let terms = pay_to_from_402(Some(FULL_BODY), Some(header_of(&cheaper).as_str()));
+        assert_eq!(
+            terms.transport,
+            Some(TermsTransport::Header),
+            "same protocol version: the header is where sellers put the challenge"
+        );
+        assert_eq!(terms.accepts[0].amount.to_string(), "100000");
+        let conflict = terms.conflict.expect("the other reading is kept");
+        assert_eq!(conflict.transport, TermsTransport::Body);
+        assert_eq!(conflict.accepts[0].amount.to_string(), "30000");
+    }
+
+    #[test]
+    fn a_newer_protocol_version_decides_which_transport_is_current() {
+        // A seller serving two protocol versions is telling us which is current
+        // by numbering it. The tie-break is the version, not the transport.
+        let v1_header = header_of(
+            &FULL_BODY
+                .replace(r#""x402Version":2"#, r#""x402Version":1"#)
+                .replace("30000", "100000"),
+        );
+        let terms = pay_to_from_402(Some(FULL_BODY), Some(v1_header.as_str()));
+        assert_eq!(terms.transport, Some(TermsTransport::Body));
+        assert_eq!(terms.x402_version, Some(2));
+        assert_eq!(terms.accepts[0].amount.to_string(), "30000");
+        let conflict = terms.conflict.expect("the v1 reading is kept as evidence");
+        assert_eq!(conflict.x402_version, Some(1));
+    }
+
+    #[test]
+    fn a_hijacked_recipient_is_seen_in_either_transport_even_when_one_wins() {
+        // The terms come from one transport; the drift check sees BOTH. A
+        // recipient declared anywhere in the response is a recipient declared.
+        let other_payee = FULL_BODY.replace(
+            "0xe4dc963c56979E0260fc146b87eE24F18220e545",
+            "0x000000000000000000000000000000000000dEaD",
+        );
+        let terms = pay_to_from_402(Some(&other_payee), Some(header_of(FULL_BODY).as_str()));
+        assert_eq!(terms.pay_to.len(), 2);
+        assert!(terms
+            .pay_to
+            .contains(&"0x000000000000000000000000000000000000dead".to_string()));
+    }
+
+    #[test]
+    fn a_repriced_offer_is_not_a_hijack() {
+        // Same recipient, a very different number. This must NOT quarantine:
+        // the whole distinction between an identity failure and a commercial
+        // one lives in this predicate.
+        let expected = vec!["0xe4dc963c56979e0260fc146b87ee24f18220e545".to_string()];
+        let repriced = FULL_BODY.replace(r#""amount":"30000""#, r#""amount":"500000""#);
+        let terms = pay_to_from_402(Some(&repriced), None);
+        assert!(terms.readable);
+        assert!(
+            !pay_to_drifted(&expected, &terms),
+            "a price change is not a payTo swap"
+        );
+        assert_eq!(
+            terms.accepts[0].amount.to_string(),
+            "500000",
+            "and the new price is what gets recorded"
+        );
+    }
+
+    #[test]
+    fn a_redirected_payment_still_is_a_hijack() {
+        let expected = vec!["0xe4dc963c56979e0260fc146b87ee24f18220e545".to_string()];
+        let hijacked = FULL_BODY.replace(
+            "0xe4dc963c56979E0260fc146b87eE24F18220e545",
+            "0x000000000000000000000000000000000000dEaD",
+        );
+        let terms = pay_to_from_402(Some(&hijacked), None);
+        assert!(pay_to_drifted(&expected, &terms));
+    }
+
+    fn header_of(json: &str) -> String {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.encode(json)
     }
 
     #[test]

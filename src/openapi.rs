@@ -1915,7 +1915,8 @@ async fn path_identity_total_supply() {}
 Lists x402-enabled resources known to the curated Bazaar catalog.
 
 **Ordering:** results are sorted by curated tier first (`first_party` > `vip` > `verified` > `listed`),
-then by liveness (`alive` resources first), then by `lastUpdated` descending.
+then by liveness (`alive` resources first), then by `lastUpdated` descending. A settlement does
+not reorder the listing: it moves `lastSettledAt`, never `lastUpdated`.
 
 **Health visibility:** when `health` is omitted, quarantined resources are hidden.
 Pass `health=any` to return everything, or a specific status to filter to it.
@@ -1941,6 +1942,31 @@ Pass `health=any` to return everything, or a specific status to filter to it.
         }
       ],
       "lastUpdated": 1784818083,
+      "sourceUpdatedAt": 1784818083,
+      "lastSettledAt": 1784899100,
+      "recordVersion": 2,
+      "contentHash": "9f2c1d…",
+      "priceFreshness": "fresh",
+      "termsObservedAt": 1784900000,
+      "observedTerms": {
+        "accepts": [
+          {
+            "scheme": "exact",
+            "network": "eip155:8453",
+            "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            "amount": "100000",
+            "payTo": "0xe4dc963c56979E0260fc146b87eE24F18220e545",
+            "maxTimeoutSeconds": 300
+          }
+        ],
+        "observedAt": 1784900000,
+        "context": { "method": "GET", "resourceType": "http", "authenticated": false },
+        "phase": "verification",
+        "provenance": "origin_response",
+        "transport": "header",
+        "x402Version": 2,
+        "httpStatus": 402
+      },
       "metadata": {
         "provider": "MeshRelay",
         "category": "communication",
@@ -1974,17 +2000,76 @@ Pass `health=any` to return everything, or a specific status to filter to it.
 ```
 
 **Optional fields:** `metadata`, `sourceFacilitator`, `firstSeen`, `sourceUpdatedAt`,
-`extensions`, `health` and `curation` are omitted when unknown. Only `url`, `type`,
-`x402Version`, `accepts`, `lastUpdated` and `source` are always present.
+`lastSettledAt`, `extensions`, `health`, `curation` and `observedTerms` are omitted when
+unknown. Only `url`, `type`, `x402Version`, `accepts`, `lastUpdated`, `recordVersion` and
+`source` are always present.
 
-**Timestamps** (`firstSeen`, `lastUpdated`, `sourceUpdatedAt`, `health.lastChecked`) are Unix
-epoch **seconds**, serialized as JSON numbers -- not ISO-8601 strings and not milliseconds.
+**Timestamps** (`firstSeen`, `lastUpdated`, `sourceUpdatedAt`, `lastSettledAt`,
+`termsObservedAt`, `health.lastChecked`) are Unix epoch **seconds**, serialized as JSON numbers
+-- not ISO-8601 strings and not milliseconds.
 
-**`lastUpdated` is ours; `sourceUpdatedAt` is theirs.** `lastUpdated` says when this registry
-last wrote the record, which is never the same question as when the terms changed.
-`sourceUpdatedAt` is the date the source itself published, and it is **absent when the source
-published none** -- it is not filled in with the time of the fetch. Neither field is evidence
-that a price is current.
+**Four dates, four different questions.** None of them is interchangeable with another, and
+none of them is evidence on its own that a price is current:
+
+| Field | Answers | Whose clock |
+| --- | --- | --- |
+| `lastUpdated` | when this registry last wrote the record | ours |
+| `sourceUpdatedAt` | the date the source itself claimed for the content | theirs |
+| `lastSettledAt` | when a payment for this resource last settled through us | ours, observed |
+| `termsObservedAt` | when we last read the origin's live payment challenge | ours, observed |
+
+`sourceUpdatedAt` is **absent when the source published none**; it is not filled in with the
+time of the fetch, because an undated re-download of stale content is not news.
+`lastSettledAt` is commercial **activity**: somebody paid, which says nothing about whether
+these terms are still on offer, and for `upto` the amount that settled is legitimately below
+the ceiling that was authorized. Only `termsObservedAt` is about the price, and only for the
+request context recorded next to it.
+
+**`priceFreshness`** is `fresh`, `stale`, `unknown` or `conflict`, and it is **independent of
+`health`**. An endpoint can answer 402 perfectly while nothing has ever read what it charges
+(`unknown`), and a quarantined one can carry a price read an hour ago.
+
+- `fresh` -- the origin's challenge was read inside the freshness window and agrees with
+  `accepts`. It is a statement about a past reading, not a quote: get the 402 for your own
+  request before you sign.
+- `stale` -- read, but the reading has aged out of the window or the listing has been revised
+  since. Revalidation is due.
+- `unknown` -- never read. The listing may be perfectly right; nothing has checked.
+- `conflict` -- a current reading disagrees with `accepts` on a comparable option, or the
+  origin advertises nothing comparable to what is listed. Both sides are returned; neither is
+  deleted in favour of the other.
+
+Two options are **comparable** only when scheme, network, asset and `payTo` all match. The
+same number in a different currency, on a different chain, or to a different recipient is not
+the same commercial offer, so it is never reported as a price change.
+
+**`observedTerms`** is that reading in full: `accepts` as the origin declared them,
+`observedAt`, the `context` it was read in (`method`, `resourceType`, `authenticated` -- the
+prober issues an unauthenticated `GET`, so a variant behind a login or a parameterized `POST`
+stays unverified rather than being reported as free or dead), the `phase`
+(`verification` for a challenge, where an `upto` amount is the ceiling; `settlement` for a
+completed payment, where it can be the charge), the `provenance`, and the `transport` the
+challenge arrived on. When the `PAYMENT-REQUIRED` header and the response body declare
+different terms, the higher protocol version wins, the header wins a tie, and the losing
+reading is kept whole under `conflict` -- the two are never blended into an offer nobody made.
+`observedTerms.accepts` carries no `extra`: the declared listing is where a scheme's
+parameters live.
+
+**`contentHash`** fingerprints what is being sold and for how much -- url, type, description,
+metadata, extensions and every declared payment option -- and nothing else. Two records with
+the same hash are the same offer, however many times either was downloaded. It detects change;
+it does not prove origin and it does not prove currency.
+
+**`recordVersion`** is the shape the stored record was written in. `1` predates the date model
+above: on such a record an absent `lastSettledAt` or `sourceUpdatedAt` means *never recorded*,
+not *never happened*. Records are rewritten to the current version only when something touches
+them, so the field is also how a consumer tells "the new format is deployed" from "the catalog
+has been rewritten in it".
+
+`contentHash`, `priceFreshness`, `termsObservedAt` and `observedTerms` are response-only, like
+`health` and `curation`: resolved when the listing is composed and never stored, so a
+registrant cannot assert that its own price is fresh and a stored record cannot keep claiming a
+freshness nobody rechecked.
 
 **Price semantics on each `accepts` entry:**
 
@@ -2049,6 +2134,11 @@ so `?search=logs` fails loudly and points at `q` instead of quietly returning th
                         "maxTimeoutSeconds": 300
                     }],
                     "lastUpdated": 1784818083,
+                    "sourceUpdatedAt": 1784818083,
+                    "lastSettledAt": 1784899100,
+                    "recordVersion": 2,
+                    "priceFreshness": "fresh",
+                    "termsObservedAt": 1784900000,
                     "metadata": {
                         "provider": "MeshRelay",
                         "category": "communication",

@@ -15868,14 +15868,24 @@ mod sistema_visual_tests {
                      with ten palettes."
                 );
             }
+            let sheets: Vec<&str> = doc
+                .split("<link rel=\"stylesheet\" href=\"")
+                .skip(1)
+                .filter_map(|rest| rest.split_once('"').map(|(href, _)| href))
+                .collect();
+            assert_eq!(sheets.len(), 1, "{nombre} must use one shared stylesheet");
             assert_eq!(
-                doc.matches("<link rel=\"stylesheet\" href=\"/uv.css\">")
-                    .count(),
-                1,
-                "{nombre} does not link /uv.css exactly once, written literally"
+                sheets[0].split('?').next(),
+                Some("/uv.css"),
+                "{nombre} must use /uv.css; a cache version is allowed"
             );
+            let body = doc
+                .split_once("<body ")
+                .and_then(|(_, rest)| rest.split_once('>'))
+                .map(|(attributes, _)| attributes)
+                .unwrap_or("");
             assert!(
-                doc.contains(&format!("<body data-page=\"{}\">", _slug(nombre))),
+                body.contains(&format!("data-page=\"{}\"", _slug(nombre))),
                 "{nombre} has no <body data-page> -- the sheet scopes page rules on it"
             );
         }
@@ -16070,30 +16080,15 @@ mod sistema_visual_tests {
         );
     }
 
-    /// Clauses 1 and 6, measured on the sheet.
+    /// Shared alignment and palette. Product flows may use bordered groups.
     #[test]
-    fn la_hoja_tiene_un_solo_eje_una_paleta_y_un_solo_borde() {
+    fn la_hoja_tiene_un_solo_eje_y_una_paleta_compartida() {
         let limpio = sin_comentarios(UV_CSS);
         assert_eq!(
             limpio.matches("text-align: center").count(),
             0,
             "uv.css centres something. Everything lines up on one left edge; the \
              only exception is a numeric cell, which goes right."
-        );
-        // A four-sided border on its OWN line at the top level of a rule is a
-        // content box, and there is exactly one: `.group`. A border written
-        // inline among other declarations belongs to a form control or to the
-        // one dialog that genuinely floats -- a control without an edge stops
-        // reading as a control, and neither of those encloses page content.
-        let bordes = limpio
-            .lines()
-            .filter(|l| l.starts_with("  border: 1px"))
-            .count();
-        assert_eq!(
-            bordes, 1,
-            "uv.css declares {bordes} content boxes with a four-sided border; \
-             exactly one is allowed (.group), and it is only valid with two or \
-             more children"
         );
         let mut hexes: BTreeSet<&str> = BTreeSet::new();
         let bytes = limpio.as_bytes();

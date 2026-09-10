@@ -724,7 +724,8 @@ mod tests {
             ),
             max_timeout_seconds: 300,
             extra: None,
-        }];
+        }
+        .into()];
 
         DiscoveryResource::new(
             Url::parse(url).unwrap(),

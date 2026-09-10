@@ -1,0 +1,136 @@
+{
+  "items": [
+    {
+      "resource": "https://api.example-v1.test/exact",
+      "type": "http",
+      "description": "x402 v1 shape: v1 network name, maxAmountRequired instead of amount, an exact price of 0.01 USDC on Base.",
+      "lastUpdated": 1789000000,
+      "accepts": [
+        {
+          "scheme": "exact",
+          "network": "base",
+          "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+          "maxAmountRequired": "10000",
+          "payTo": "0x52E29e0d2Aa49bfBfC548C0A9F2196F4aa51f3ea",
+          "maxTimeoutSeconds": 300,
+          "extra": { "name": "USD Coin", "version": "2" }
+        }
+      ]
+    },
+    {
+      "resource": "https://api.example-v1.test/upto",
+      "type": "http",
+      "description": "An upto listing: maxAmountRequired is the CEILING the buyer authorises, not a range and not a scheme change. The effective charge is settled separately, up to that ceiling.",
+      "lastUpdated": 1789000001,
+      "accepts": [
+        {
+          "scheme": "upto",
+          "network": "base",
+          "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+          "maxAmountRequired": "100000",
+          "payTo": "0x52E29e0d2Aa49bfBfC548C0A9F2196F4aa51f3ea",
+          "maxTimeoutSeconds": 600,
+          "extra": {
+            "name": "USD Coin",
+            "version": "2",
+            "unit": "1000 tokens",
+            "pricePerUnit": "250"
+          }
+        }
+      ]
+    },
+    {
+      "resource": "https://api.example-v1.test/unknown-scheme",
+      "type": "http",
+      "description": "A scheme this build does not implement. Catalogable, not settleable. It must never surface as exact.",
+      "lastUpdated": 1789000002,
+      "accepts": [
+        {
+          "scheme": "batch-settlement",
+          "network": "base",
+          "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+          "maxAmountRequired": "3000",
+          "payTo": "0x52E29e0d2Aa49bfBfC548C0A9F2196F4aa51f3ea",
+          "maxTimeoutSeconds": 3600,
+          "extra": {
+            "name": "USD Coin",
+            "version": "2",
+            "receiverAuthorizer": "0x11dF9F6280632aB8F12926b3f569E493EaEcf81b",
+            "withdrawDelay": 86400
+          }
+        }
+      ]
+    },
+    {
+      "resource": "https://api.example-v1.test/bad-amounts",
+      "type": "http",
+      "description": "Four ways to fail to declare a price, and one legitimate free listing. None of the four may become a price.",
+      "lastUpdated": 1789000003,
+      "accepts": [
+        {
+          "scheme": "exact",
+          "network": "base",
+          "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+          "maxAmountRequired": "0.002",
+          "payTo": "0x52E29e0d2Aa49bfBfC548C0A9F2196F4aa51f3ea",
+          "maxTimeoutSeconds": 300
+        },
+        {
+          "scheme": "exact",
+          "network": "base",
+          "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+          "maxAmountRequired": "-10000",
+          "payTo": "0x52E29e0d2Aa49bfBfC548C0A9F2196F4aa51f3ea",
+          "maxTimeoutSeconds": 300
+        },
+        {
+          "scheme": "exact",
+          "network": "base",
+          "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+          "payTo": "0x52E29e0d2Aa49bfBfC548C0A9F2196F4aa51f3ea",
+          "maxTimeoutSeconds": 300
+        },
+        {
+          "scheme": "exact",
+          "network": "base",
+          "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+          "maxAmountRequired": "115792089237316195423570985008687907853269984665640564039457584007913129639936",
+          "payTo": "0x52E29e0d2Aa49bfBfC548C0A9F2196F4aa51f3ea",
+          "maxTimeoutSeconds": 300
+        },
+        {
+          "scheme": "exact",
+          "network": "base",
+          "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+          "maxAmountRequired": "0",
+          "payTo": "0x52E29e0d2Aa49bfBfC548C0A9F2196F4aa51f3ea",
+          "maxTimeoutSeconds": 300
+        }
+      ]
+    },
+    {
+      "resource": "https://api.example-v1.test/decimals",
+      "type": "http",
+      "description": "Two assets, two decimal counts. USDC on BSC is 18 decimals; USDC on Base is 6. The same integer is not the same money.",
+      "lastUpdated": 1789000004,
+      "accepts": [
+        {
+          "scheme": "exact",
+          "network": "base",
+          "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+          "maxAmountRequired": "10000",
+          "payTo": "0x52E29e0d2Aa49bfBfC548C0A9F2196F4aa51f3ea",
+          "maxTimeoutSeconds": 300
+        },
+        {
+          "scheme": "exact",
+          "network": "bsc",
+          "asset": "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d",
+          "maxAmountRequired": "10000000000000000",
+          "payTo": "0x52E29e0d2Aa49bfBfC548C0A9F2196F4aa51f3ea",
+          "maxTimeoutSeconds": 300
+        }
+      ]
+    }
+  ]
+}

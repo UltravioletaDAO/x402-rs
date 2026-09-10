@@ -1,0 +1,321 @@
+{
+  "items": [
+    {
+      "resource": "https://api.onesource.io/api/chain/erc20-balance",
+      "type": "http",
+      "x402Version": 2,
+      "description": "ERC20 token balance for any Ethereum wallet - USDC, USDT, DAI, or any token - via balanceOf (eth_call) on OneSource live Ethereum RPC",
+      "accepts": [
+        {
+          "scheme": "exact",
+          "network": "eip155:8453",
+          "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+          "amount": "3000",
+          "payTo": "0x52E29e0d2Aa49bfBfC548C0A9F2196F4aa51f3ea",
+          "maxTimeoutSeconds": 3600,
+          "maxAmountRequired": "3000",
+          "extra": {
+            "credentialTypes": [
+              "authorization"
+            ],
+            "name": "USD Coin",
+            "version": "2"
+          }
+        },
+        {
+          "scheme": "batch-settlement",
+          "network": "eip155:8453",
+          "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+          "amount": "3000",
+          "payTo": "0x52E29e0d2Aa49bfBfC548C0A9F2196F4aa51f3ea",
+          "maxTimeoutSeconds": 3600,
+          "maxAmountRequired": "3000",
+          "extra": {
+            "name": "USD Coin",
+            "receiverAuthorizer": "0x11dF9F6280632aB8F12926b3f569E493EaEcf81b",
+            "version": "2",
+            "withdrawDelay": 86400
+          }
+        }
+      ],
+      "lastUpdated": "2026-09-10T13:11:10.809Z",
+      "extensions": {
+        "bazaar": {
+          "info": {
+            "input": {
+              "method": "GET",
+              "queryParams": {
+                "address": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
+                "contract": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+                "network": "ethereum"
+              },
+              "type": "http"
+            },
+            "output": {
+              "example": {
+                "data": {
+                  "account": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
+                  "balance": "1234567890",
+                  "contract_address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+                  "decimals": 6,
+                  "name": "Tether USD",
+                  "symbol": "USDT"
+                },
+                "meta": {
+                  "cost_usdc": "0.001",
+                  "endpoint": "/api/chain/erc20-balance",
+                  "payment_chain": "base",
+                  "payment_token": "USDC",
+                  "request_id": "00000000abcdef01"
+                }
+              },
+              "type": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "resource": "https://stableenrich.dev/api/fullenrich/people-search",
+      "type": "http",
+      "x402Version": 2,
+      "description": "FullEnrich People Search — filter by company domain/name/LinkedIn URL, seniority, title, location, skills, and 20+ FullEnrich filters. Default lean roster: companies map + company_",
+      "accepts": [
+        {
+          "scheme": "exact",
+          "network": "eip155:8453",
+          "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+          "amount": "150000",
+          "payTo": "0x325bdF6F7efAB24a2210c48c1b64cAb2eAe1d430",
+          "maxTimeoutSeconds": 300,
+          "extra": {
+            "name": "USD Coin",
+            "version": "2"
+          }
+        },
+        {
+          "scheme": "exact",
+          "network": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+          "asset": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "amount": "150000",
+          "payTo": "8EgACpZ16XWEt7YjJPsh1ZheVRZUGmmwQ8nJdmA1o5w4",
+          "maxTimeoutSeconds": 300,
+          "extra": {
+            "feePayer": "CjNFTjvBhbJJd2B5ePPMHRLx1ELZpa8dwQgGL727eKww",
+            "lastValidBlockHeight": "423673692",
+            "recentBlockhash": "4eAdAMSUcDG1DwSGP6jQwTdHnyJkAXLgefPJAe2EreHa"
+          }
+        }
+      ],
+      "lastUpdated": "2026-09-09T14:21:25.535Z",
+      "extensions": {
+        "bazaar": {
+          "info": {
+            "input": {
+              "body": {
+                "current_company_domains": [
+                  {
+                    "value": "stripe.com"
+                  }
+                ],
+                "current_company_names": [
+                  {
+                    "value": "Timber Creek High School"
+                  }
+                ],
+                "current_position_seniority_level": [
+                  {
+                    "value": "C-level"
+                  },
+                  {
+                    "value": "VP"
+                  },
+                  {
+                    "value": "Director"
+                  },
+                  {
+                    "value": "Senior"
+                  }
+                ],
+                "current_position_titles": [
+                  {
+                    "value": "Software Engineer"
+                  }
+                ],
+                "offset": 0,
+                "person_locations": [
+                  {
+                    "value": "New York"
+                  }
+                ],
+                "person_names": [
+                  {
+                    "value": "Julie Abel"
+                  }
+                ],
+                "person_skills": [
+                  {
+                    "value": "Rust"
+                  },
+                  {
+                    "value": "DeFi"
+                  }
+                ]
+              },
+              "bodyType": "json",
+              "method": "POST",
+              "type": "http"
+            },
+            "output": {
+              "example": {
+                "companies": {
+                  "co_stripe": {
+                    "domain": "stripe.com",
+                    "id": "co_stripe",
+                    "name": "Stripe"
+                  }
+                },
+                "metadata": {
+                  "offset": 0,
+                  "total": 1
+                },
+                "people": [
+                  {
+                    "employment": {
+                      "current": {
+                        "company_id": "co_stripe",
+                        "is_current": true,
+                        "seniority": "VP",
+                        "title": "VP Engineering"
+                      }
+                    },
+                    "full_name": "Jane Doe",
+                    "location": {
+                      "city": "San Francisco",
+                      "country": "United States"
+                    },
+                    "social_profiles": {
+                      "professional_network": {
+                        "url": "https://www.linkedin.com/in/janedoe"
+                      }
+                    }
+                  }
+                ]
+              },
+              "type": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "resource": "https://x402.tavily.com/search",
+      "type": "http",
+      "x402Version": 2,
+      "description": "Tavily Search - advanced mode",
+      "accepts": [
+        {
+          "scheme": "exact",
+          "network": "eip155:8453",
+          "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+          "amount": "10000",
+          "payTo": "0xfe2d09ca270818e9736207ee27f0fa464a67ac66",
+          "maxTimeoutSeconds": 60,
+          "extra": {
+            "name": "USD Coin",
+            "terms": "By using the Tavily solution, you agree to be bound by the T…",
+            "tier": "advanced",
+            "version": "2"
+          }
+        },
+        {
+          "scheme": "agent-pay",
+          "network": "aws:base",
+          "asset": "iso4217:USD",
+          "amount": "0.016",
+          "payTo": "urn:x402:agent-pay:see-quote",
+          "maxTimeoutSeconds": 300,
+          "extra": {
+            "quoteToken": "<elided-jwt>",
+            "reference": "tavily-search-advanced",
+            "settlement": {
+              "product_id": "prod-maeet6sajeg42"
+            },
+            "tier": "advanced"
+          }
+        }
+      ],
+      "lastUpdated": "2026-09-10T14:09:28.172Z",
+      "extensions": {
+        "bazaar": {
+          "info": {
+            "input": {
+              "body": {
+                "end_date": "2026-05-28",
+                "exclude_domains": [
+                  "example.com"
+                ],
+                "include_answer": true,
+                "include_domains": [
+                  "x402.org",
+                  "docs.cdp.coinbase.com"
+                ],
+                "include_images": true,
+                "include_raw_content": true,
+                "max_results": 5,
+                "query": "what is x402?",
+                "search_depth": "advanced",
+                "start_date": "2026-01-01",
+                "time_range": "month",
+                "topic": "general"
+              },
+              "bodyType": "json",
+              "method": "POST",
+              "type": "http"
+            },
+            "output": {
+              "example": {
+                "answer": null,
+                "follow_up_questions": null,
+                "images": [],
+                "query": "what is x402?",
+                "request_id": "8146b0d8-db42-42a7-8fb9-3796fce6853e",
+                "response_time": 0.7,
+                "results": [
+                  {
+                    "content": "x402 is an open payment protocol that revives the HTTP 402 status code so AI agents can pay per request in stablecoins, with no API keys or accounts.",
+                    "raw_content": null,
+                    "score": 0.92,
+                    "title": "x402 — Payment Required",
+                    "url": "https://x402.org/"
+                  }
+                ]
+              },
+              "type": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "resource": "https://api.example-nodate.test/quote",
+      "type": "http",
+      "x402Version": 2,
+      "description": "Captured shape of a feed entry that publishes no lastUpdated at all.",
+      "accepts": [
+        {
+          "scheme": "exact",
+          "network": "eip155:8453",
+          "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+          "amount": "2500",
+          "payTo": "0x52E29e0d2Aa49bfBfC548C0A9F2196F4aa51f3ea",
+          "maxTimeoutSeconds": 300,
+          "extra": {
+            "name": "USD Coin",
+            "version": "2"
+          }
+        }
+      ]
+    }
+  ]
+}

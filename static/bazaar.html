@@ -146,7 +146,13 @@
 
   <script>
     const PAGE = 24;
-    const USDC_DECIMALS = 6; // known 6-dec stablecoins (USDC/USDT/EURC/AUSD/PYUSD/USDG)
+    // There is deliberately no page-wide decimals constant any more. Decimals
+    // are a property of a DEPLOYMENT, not of a token: USDC is 6 on Base, 18 on
+    // BSC and 7 on Stellar. The server resolves them per (network, asset) and
+    // sends `assetSymbol` + `assetDecimals` on each payment option; when it
+    // sends neither, the unit is unknown and this page says so instead of
+    // guessing six decimals and a dollar sign.
+    const KNOWN_SCHEMES = ['exact', 'upto', 'escrow', 'commerce', 'fhe-transfer'];
     const NET_NAMES = {
       'eip155:8453':'Base','eip155:1':'Ethereum','eip155:42161':'Arbitrum','eip155:137':'Polygon',
       'eip155:10':'Optimism','eip155:43114':'Avalanche','eip155:42220':'Celo','eip155:1187947933':'SKALE',
@@ -268,6 +274,18 @@
     "detail.health": "Last health check",
     "detail.checked": "checked",
     "detail.noAccepts": "No payment methods declared.",
+    "price.unverified": "price not verified",
+    "price.unverifiedWhy": "This listing declares no amount we can read, or an asset whose unit we do not know. It is not a claim that the service is free.",
+    "price.from": "from {v}",
+    "price.fromWhy": "The lowest of several options in the same currency and the same scheme. Other options cost more.",
+    "price.upTo": "up to {v}",
+    "price.upToWhy": "An upto listing authorises a ceiling. What is actually charged is settled separately and can be less.",
+    "price.options": "{n} ways to pay",
+    "price.optionsWhy": "The options differ in currency or in payment scheme, so there is no single price to compare. Open the card to see each one.",
+    "price.networks": "{n} networks",
+    "price.unsupported": "we cannot settle this",
+    "price.unsupportedWhy": "This facilitator does not implement this payment scheme. The listing is real; we simply cannot pay it for you.",
+    "price.atomic": "{v} (atomic units, unknown asset)",
     "detail.close": "Close details"
   },
   es: {
@@ -360,6 +378,18 @@
     "detail.health": "Última comprobación",
     "detail.checked": "comprobado",
     "detail.noAccepts": "No hay métodos de pago declarados.",
+    "price.unverified": "precio no verificado",
+    "price.unverifiedWhy": "Este listado no declara un importe que podamos leer, o usa un activo cuya unidad no conocemos. No afirma que el servicio sea gratis.",
+    "price.from": "desde {v}",
+    "price.fromWhy": "El menor de varias opciones en la misma moneda y el mismo esquema. Las demás cuestan más.",
+    "price.upTo": "hasta {v}",
+    "price.upToWhy": "Un listado upto autoriza un techo. Lo que se cobra de verdad se liquida aparte y puede ser menos.",
+    "price.options": "{n} formas de pagar",
+    "price.optionsWhy": "Las opciones difieren en moneda o en esquema de pago, así que no hay un precio único que comparar. Abrí la tarjeta para verlas.",
+    "price.networks": "{n} redes",
+    "price.unsupported": "no lo podemos liquidar",
+    "price.unsupportedWhy": "Este facilitador no implementa ese esquema de pago. El listado es real; simplemente no podemos pagarlo por vos.",
+    "price.atomic": "{v} (unidades atómicas, activo desconocido)",
     "detail.close": "Cerrar detalles"
   }
 };
@@ -369,7 +399,63 @@
     let inflight = null;
 
     function tr(key){ return (I18N[curLang()] || I18N.en)[key] || key; }
-    function fmtPrice(a){ if(!a||!a.length) return null; const x=a[0]; const amt=Number(x.amount); if(!isFinite(amt)) return null; const v=amt/10**USDC_DECIMALS; return '$'+(v<0.01? v.toFixed(4): v.toFixed(2)); }
+    // Money never touches a float here. Amounts are integers in the asset's
+    // atomic units, and an 18-decimal asset passes JavaScript's 2^53 integer
+    // ceiling at 9.007 tokens, so every conversion goes through BigInt. The old
+    // `Number(x.amount)/10**6` did three wrong things at once: it read only the
+    // first payment option, it assumed six decimals, and it printed a dollar
+    // sign over whatever currency it found.
+    function fmtAtomic(raw, dec){
+      const padded = String(raw).padStart(dec + 1, '0');
+      const whole = padded.slice(0, padded.length - dec) || '0';
+      if(!dec) return whole;
+      let frac = padded.slice(padded.length - dec).replace(/0+$/, '');
+      if(!frac) return whole + '.00';
+      if(frac.length < 2) frac = frac.padEnd(2, '0');
+      return whole + '.' + frac;
+    }
+
+    // "1.50 USDC", or null when we do not know the unit. Null is a real answer:
+    // an amount without a unit is not a price.
+    function fmtOption(o){
+      if(!o || o.amount == null || !o.assetSymbol) return null;
+      if(!Number.isInteger(o.assetDecimals) || o.assetDecimals < 0 || o.assetDecimals > 36) return null;
+      let raw; try { raw = BigInt(String(o.amount)); } catch(e){ return null; }
+      if(raw < 0n) return null;
+      return fmtAtomic(raw, o.assetDecimals) + ' ' + o.assetSymbol;
+    }
+
+    // A comparable value at one fixed scale, so the same symbol on two chains
+    // with different decimals compares correctly.
+    function scaledAmount(o){
+      if(!o || o.amount == null || !Number.isInteger(o.assetDecimals) || o.assetDecimals > 36) return null;
+      try { return BigInt(String(o.amount)) * (10n ** BigInt(36 - o.assetDecimals)); }
+      catch(e){ return null; }
+    }
+
+    // What to print on a card. Comparable means the same unit AND the same
+    // scheme: a ceiling and a fixed price are not two points on one range, and
+    // neither are two currencies. "From" is only used when the minimum really is
+    // the minimum of one comparable set.
+    function priceBadge(accepts){
+      const opts = (accepts || []).filter(o => fmtOption(o) !== null);
+      if(!opts.length) return { text: tr('price.unverified'), cls: 'tag warn', title: tr('price.unverifiedWhy') };
+
+      const keys = new Set(opts.map(o => o.assetSymbol + '|' + String(o.scheme)));
+      if(keys.size > 1) return { text: tr('price.options').replace('{n}', opts.length), cls: 'tag', title: tr('price.optionsWhy') };
+
+      const scheme = String(opts[0].scheme);
+      let lo = opts[0], hi = opts[0];
+      for(const o of opts){
+        if(scaledAmount(o) < scaledAmount(lo)) lo = o;
+        if(scaledAmount(o) > scaledAmount(hi)) hi = o;
+      }
+      if(scheme === 'upto') return { text: tr('price.upTo').replace('{v}', fmtOption(hi)), cls: 'tag price', title: tr('price.upToWhy') };
+      if(KNOWN_SCHEMES.indexOf(scheme) < 0)
+        return { text: fmtOption(lo) + ' · ' + scheme, cls: 'tag warn', title: tr('price.unsupportedWhy') };
+      if(scaledAmount(lo) === scaledAmount(hi)) return { text: fmtOption(lo), cls: 'tag price', title: '' };
+      return { text: tr('price.from').replace('{v}', fmtOption(lo)), cls: 'tag price', title: tr('price.fromWhy') };
+    }
     function hostOf(u){ try { return new URL(u).host; } catch { return u; } }
     function pathOf(u){ try { const p=new URL(u); return p.pathname+p.search; } catch { return ''; } }
     function esc(s){ const d=document.createElement('div'); d.textContent=s==null?'':String(s); return d.innerHTML; }
@@ -446,13 +532,16 @@
 
     function cardHTML(it){
       const cur = it.curation||{}; const h = it.health||{};
-      const price = fmtPrice(it.accepts);
-      const net = it.accepts && it.accepts[0] ? (NET_NAMES[it.accepts[0].network]||it.accepts[0].network) : null;
+      const price = priceBadge(it.accepts);
+      const nets = new Set((it.accepts||[]).map(a=>a.network));
+      const net = nets.size === 1
+        ? (NET_NAMES[it.accepts[0].network]||it.accepts[0].network)
+        : (nets.size > 1 ? tr('price.networks').replace('{n}', nets.size) : null);
       const badges = [];
       if(cur.tier && cur.tier!=='listed') badges.push(`<span class="tag ${cur.tier}">${esc(cur.label||cur.tier.replace('_',' '))}</span>`);
       if(h.status) badges.push(`<span class="tag ${h.status}">${esc(h.status.replace('_',' '))}</span>`);
       if(net) badges.push(`<span class="tag">${esc(net)}</span>`);
-      if(price) badges.push(`<span class="tag price">${esc(price)}</span>`);
+      if(price) badges.push(`<span class="${price.cls}"${price.title?` title="${esc(price.title)}"`:''}>${esc(price.text)}</span>`);
       return `<div class="card" role="button" tabindex="0" data-url="${esc(it.url)}">
         <div class="card-top"><div><div class="card-host">${esc(hostOf(it.url))}</div><div class="card-path">${esc(pathOf(it.url))}</div></div></div>
         ${it.description?`<div class="card-desc">${esc(it.description.slice(0,140))}</div>`:''}
@@ -505,7 +594,21 @@
     function openDetail(url, items){
       const it = (items||[]).find(i=>i.url===url); if(!it) return;
       const d = document.getElementById('detail');
-      const accepts = (it.accepts||[]).map(a=>`<div class="accept-row"><div class="mono"><b>${esc(NET_NAMES[a.network]||a.network)}</b> · ${esc(a.asset)}</div><div class="mono">${esc(fmtPrice([a])||a.amount)} → ${esc(a.payTo)}</div></div>`).join('') || '<div class="card-desc">No payment methods declared.</div>';
+      // Every alternative is listed, with its own unit and its own scheme. The
+      // page used to show accepts[0] only, so a resource payable in four
+      // currencies advertised one of them as the price. The empty case uses
+      // `detail.noAccepts`, which was already translated but never read.
+      const accepts = (it.accepts||[]).map(a=>{
+        const shown = fmtOption(a);
+        const scheme = String(a.scheme||'');
+        const price = shown
+          ? (scheme === 'upto' ? tr('price.upTo').replace('{v}', shown) : shown)
+          : tr('price.atomic').replace('{v}', String(a.amount));
+        const flag = a.settleable === false
+          ? ` <span class="tag warn" title="${esc(tr('price.unsupportedWhy'))}">${esc(a.unsupportedReason||tr('price.unsupported'))}</span>`
+          : '';
+        return `<div class="accept-row"><div class="mono"><b>${esc(NET_NAMES[a.network]||a.network)}</b> · ${esc(a.assetSymbol||a.asset)} · ${esc(scheme)}${flag}</div><div class="mono">${esc(price)} → ${esc(a.payTo)}</div></div>`;
+      }).join('') || `<div class="card-desc">${esc(tr('detail.noAccepts'))}</div>`;
       const h = it.health||{}; const cur = it.curation||{};
       d.innerHTML = `
         <div class="modal-head"><div><div class="card-host">${esc(hostOf(it.url))}</div><div class="card-path">${esc(pathOf(it.url))}</div></div><button class="close-x" aria-label="${tr('detail.close')}" onclick="document.getElementById('detail').close()">×</button></div>
@@ -559,7 +662,10 @@
       document.documentElement.lang=l;
       document.querySelectorAll('.lang button').forEach(b =>
         b.setAttribute('aria-pressed', String(b.getAttribute('data-lang') === l)));
-      renderVip(); explainStats();
+      // The cards carry translated price wording now, so they have to be
+      // re-rendered too. `load()` is served from its own cache, so this is a
+      // repaint, not a refetch.
+      renderVip(); explainStats(); load();
     }
     document.querySelectorAll('.lang button').forEach(b => b.addEventListener('click', () => {
       const l = b.getAttribute('data-lang');
@@ -568,12 +674,11 @@
     }));
 
     // ---- boot ----
+    // `applyLang` renders the VIP row, the explanation tables and the grid, so
+    // boot does not repeat them: a second `load()` here would race the first.
     readUrl();
     applyLang(storedLang());
-    renderVip();
     loadStats();
-    explainStats();
-    load();
   </script>
 
 <script>

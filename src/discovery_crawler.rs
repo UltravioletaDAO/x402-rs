@@ -53,7 +53,8 @@ use tracing::{debug, error, info, warn};
 use url::Url;
 
 use crate::discovery::DiscoveryRegistry;
-use crate::types_v2::{DiscoveryResource, DiscoverySource, PaymentRequirementsV2};
+use crate::discovery_price::{sanitize_extensions, CatalogPaymentOption};
+use crate::types_v2::{DiscoveryResource, DiscoverySource};
 
 // ============================================================================
 // Well-Known Response Types
@@ -89,12 +90,41 @@ pub struct WellKnownResource {
     /// Human-readable description
     pub description: String,
 
-    /// Payment methods accepted
-    pub accepts: Vec<PaymentRequirementsV2>,
+    /// Payment methods accepted.
+    ///
+    /// The same type -- and therefore the same parse rules -- the aggregator and
+    /// `POST /discovery/register` use. A well-known file advertising `upto` used
+    /// to reach the catalog as `exact` through one route and be rejected
+    /// outright through another.
+    pub accepts: Vec<CatalogPaymentOption>,
 
     /// Optional metadata
     #[serde(default)]
     pub metadata: Option<WellKnownMetadata>,
+
+    /// The date the publisher claims for this entry, if it claims one.
+    ///
+    /// Absent stays absent. `/.well-known/x402` has no required date field, so
+    /// most entries will have none, and a crawl is not evidence that the terms
+    /// changed today.
+    #[serde(default, deserialize_with = "flexible_optional_timestamp")]
+    pub last_updated: Option<u64>,
+
+    /// Resource-level x402 extensions, preserved verbatim.
+    #[serde(
+        default,
+        deserialize_with = "crate::discovery_price::deserialize_tolerant_extensions"
+    )]
+    pub extensions: Option<serde_json::Value>,
+}
+
+/// Accept a publisher's date as either Unix seconds or an ISO-8601 string,
+/// reusing the aggregator's parser so the two crawl paths agree.
+fn flexible_optional_timestamp<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    crate::discovery_aggregator::deserialize_flexible_timestamp(deserializer)
 }
 
 /// Optional metadata in well-known resources.
@@ -253,8 +283,11 @@ impl DiscoveryCrawler {
             x402_version: 2,
             description: resource.description,
             accepts: resource.accepts,
-            last_updated: now,
+            // Our write time. Crawling something does not date its contents.
+            last_updated: resource.last_updated.unwrap_or(now),
+            source_updated_at: resource.last_updated,
             metadata,
+            extensions: sanitize_extensions(resource.extensions),
             source: DiscoverySource::Crawled,
             source_facilitator: Some(source_domain.to_string()),
             first_seen: Some(now),

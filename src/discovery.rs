@@ -108,6 +108,37 @@ pub enum ImportPolicy {
 /// a future-timestamp poisoning attempt (F5).
 const FUTURE_TIMESTAMP_SKEW_SECS: u64 = 300;
 
+/// Whether an incoming import should replace the record already held.
+///
+/// # Why this is not `incoming.last_updated > existing.last_updated`
+///
+/// It used to be, and the aggregator stamped `now` on any feed entry that
+/// carried no date of its own. The two together meant re-downloading unchanged,
+/// months-old content was enough to outrank a record that carried a real date --
+/// the fetch itself manufactured the evidence of freshness (F6).
+///
+/// Authority here is the SOURCE's own claim (`source_updated_at`), never our
+/// ingestion clock. Four cases, and only the first is a comparison:
+///
+/// | incoming | existing | verdict |
+/// |---|---|---|
+/// | dated | dated | the newer claim wins |
+/// | dated | undated | a dated claim beats an undated record |
+/// | undated | dated | **no** -- this is the case that used to invert |
+/// | undated | undated | yes: no date decides, so let content changes land |
+///
+/// Deciding *which content is right* when neither side is dated needs a content
+/// hash and a provenance ladder. That is the next phase's work, and this
+/// function is deliberately the only place it will have to change.
+fn import_supersedes(incoming: &DiscoveryResource, existing: &DiscoveryResource) -> bool {
+    match (incoming.source_updated_at, existing.source_updated_at) {
+        (Some(i), Some(e)) => i > e,
+        (Some(_), None) => true,
+        (None, Some(_)) => false,
+        (None, None) => true,
+    }
+}
+
 /// Current Unix time in seconds (0 if the clock is before the epoch).
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
@@ -773,6 +804,15 @@ impl DiscoveryRegistry {
                 let mut c = r.clone();
                 c.health = health.get(r.url.as_str()).cloned();
                 c.curation = cur;
+                // Price semantics are resolved here, on the response copy only,
+                // for the same reason health and curation are: settleability and
+                // a token's decimals are properties of THIS build and the
+                // current deployment table, not of the record. Persisting them
+                // would let a listing keep claiming six decimals for an asset
+                // after we learned it has eighteen.
+                for option in c.accepts.iter_mut() {
+                    option.annotate();
+                }
                 c
             })
             .collect();
@@ -851,7 +891,7 @@ impl DiscoveryRegistry {
             let url_key = resource.url.to_string();
 
             if let Some(existing) = cache.get(&url_key) {
-                if resource.last_updated > existing.last_updated {
+                if import_supersedes(&resource, existing) {
                     // Field-preserving merge: incoming wins for content, but
                     // provenance is protected (F4) — first_seen keeps the
                     // earliest, settlement_count the max, and a self-registered
@@ -1414,7 +1454,8 @@ mod tests {
             ),
             max_timeout_seconds: 300,
             extra: None,
-        }];
+        }
+        .into()];
 
         let mut resource = DiscoveryResource::new(
             Url::parse(url).unwrap(),
@@ -1531,6 +1572,145 @@ mod tests {
             "d".to_string(),
             vec![],
         )
+    }
+
+    /// Build an aggregated copy of the fixture with a chosen source date.
+    fn aggregated(
+        url: &str,
+        source_updated_at: Option<u64>,
+        description: &str,
+    ) -> DiscoveryResource {
+        let base = create_test_resource(url, None);
+        let mut r = DiscoveryResource::from_aggregation(
+            base.url.clone(),
+            "http".to_string(),
+            description.to_string(),
+            base.accepts.clone(),
+            "some-feed".to_string(),
+            source_updated_at,
+        );
+        // Keep the record inside the future-timestamp guard regardless of clock.
+        r.last_updated = source_updated_at.unwrap_or_else(now_secs);
+        r
+    }
+
+    #[tokio::test]
+    async fn an_undated_import_cannot_outrank_a_dated_record() {
+        // F6, the shape it actually took: the aggregator stamped `now` on any
+        // feed entry that carried no date, so re-downloading unchanged, stale
+        // content was enough to win the merge. The download manufactured the
+        // evidence of freshness.
+        let registry = DiscoveryRegistry::new();
+        let url = "https://api.dated.example/x";
+        let dated = aggregated(url, Some(now_secs() - 86_400), "the dated original");
+        registry
+            .bulk_import(vec![dated], ImportPolicy::Filtered)
+            .await
+            .unwrap();
+
+        let undated = aggregated(url, None, "an undated re-download of older content");
+        let (_added, updated, skipped) = registry
+            .bulk_import(vec![undated], ImportPolicy::Filtered)
+            .await
+            .unwrap();
+        assert_eq!(updated, 0, "an undated feed must not win on our clock");
+        assert_eq!(skipped, 1);
+
+        let held = registry.get(url).await.expect("record still held");
+        assert_eq!(held.description, "the dated original");
+    }
+
+    #[tokio::test]
+    async fn a_newer_source_date_still_wins_and_a_dated_claim_beats_an_undated_record() {
+        let registry = DiscoveryRegistry::new();
+        let url = "https://api.dates.example/x";
+
+        // Undated first, then a dated claim: the dated one wins.
+        registry
+            .bulk_import(
+                vec![aggregated(url, None, "undated")],
+                ImportPolicy::Filtered,
+            )
+            .await
+            .unwrap();
+        let (_a, updated, _s) = registry
+            .bulk_import(
+                vec![aggregated(url, Some(now_secs() - 100), "dated")],
+                ImportPolicy::Filtered,
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated, 1, "a dated claim beats an undated record");
+        assert_eq!(registry.get(url).await.unwrap().description, "dated");
+
+        // A newer source date still wins, exactly as before this change.
+        let (_a, updated, _s) = registry
+            .bulk_import(
+                vec![aggregated(url, Some(now_secs() - 10), "newer")],
+                ImportPolicy::Filtered,
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated, 1);
+        assert_eq!(registry.get(url).await.unwrap().description, "newer");
+
+        // And an older source date does not.
+        let (_a, updated, skipped) = registry
+            .bulk_import(
+                vec![aggregated(url, Some(now_secs() - 1_000), "older")],
+                ImportPolicy::Filtered,
+            )
+            .await
+            .unwrap();
+        assert_eq!((updated, skipped), (0, 1));
+        assert_eq!(registry.get(url).await.unwrap().description, "newer");
+    }
+
+    #[tokio::test]
+    async fn a_self_registered_record_is_not_replaced_by_an_undated_feed() {
+        // A seller's own declaration is first-hand and dated. An aggregated copy
+        // that carries no date of its own must not overwrite its terms.
+        let registry = DiscoveryRegistry::new();
+        let url = "https://api.owner.example/x";
+        let mut own = create_test_resource(url, None);
+        own.description = "the seller's own listing".to_string();
+        registry.register(own).await.unwrap();
+
+        let (_a, updated, skipped) = registry
+            .bulk_import(
+                vec![aggregated(url, None, "a stale aggregated copy")],
+                ImportPolicy::Filtered,
+            )
+            .await
+            .unwrap();
+        assert_eq!((updated, skipped), (0, 1));
+        assert_eq!(
+            registry.get(url).await.unwrap().description,
+            "the seller's own listing"
+        );
+    }
+
+    #[tokio::test]
+    async fn listing_resolves_price_semantics_without_persisting_them() {
+        let registry = DiscoveryRegistry::new();
+        registry
+            .register(create_test_resource("https://api.annotated.com/x", None))
+            .await
+            .unwrap();
+
+        let listed = registry.list(10, 0, None).await;
+        let option = &listed.items[0].accepts[0];
+        assert_eq!(option.settleable, Some(true));
+        assert_eq!(option.asset_symbol.as_deref(), Some("USDC"));
+        assert_eq!(option.asset_decimals, Some(6));
+
+        // The held copy stays clean: these are answers about this build and the
+        // current deployment table, so they are resolved on every read rather
+        // than frozen into the record.
+        let held = registry.get("https://api.annotated.com/x").await.unwrap();
+        assert_eq!(held.accepts[0].settleable, None);
+        assert_eq!(held.accepts[0].asset_symbol, None);
+        assert_eq!(held.accepts[0].asset_decimals, None);
     }
 
     #[tokio::test]
@@ -1807,7 +1987,8 @@ mod tests {
             ),
             max_timeout_seconds: 300,
             extra: None,
-        }];
+        }
+        .into()];
 
         let resource = DiscoveryResource::new(
             Url::parse("ftp://invalid.com").unwrap(),
@@ -1841,7 +2022,8 @@ mod tests {
             ),
             max_timeout_seconds: 300,
             extra: None,
-        }];
+        }
+        .into()];
 
         let resource = DiscoveryResource::new(
             Url::parse("https://api.example.com").unwrap(),

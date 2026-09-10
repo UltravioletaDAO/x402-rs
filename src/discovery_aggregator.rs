@@ -209,7 +209,28 @@ use crate::types_v2::{DiscoveryMetadata, DiscoveryResource};
 /// Hard cap on items pulled from a single facilitator per fetch — bounds a
 /// misbehaving or hostile source that returns full pages without a pagination
 /// terminus.
-const MAX_AGGREGATION_ITEMS_PER_SOURCE: usize = 50_000;
+const DEFAULT_MAX_ITEMS_PER_SOURCE: usize = 20_000;
+
+/// Most items this cycle will pull from ONE source.
+///
+/// The old value was a hard-coded 50 000, chosen when the largest source
+/// answered with 752 resources and the number was theoretical. It stopped being
+/// theoretical on 2026-09-10: with the Coinbase parser fixed, one cycle fetched
+/// 43 410 items, and every one of them is converted and held in a single `Vec`
+/// before the import even starts. At the measured 13.4 KB per record that
+/// transient is hundreds of megabytes on a 2 GiB task, on top of the catalog it
+/// is about to merge into.
+///
+/// It is bounded here as well as at the catalog, because these are two different
+/// costs: this one is the peak DURING a cycle, the catalog cap is what survives
+/// it.
+fn max_items_per_source() -> usize {
+    std::env::var("DISCOVERY_MAX_ITEMS_PER_SOURCE")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(DEFAULT_MAX_ITEMS_PER_SOURCE)
+}
 
 // ============================================================================
 // Error Types
@@ -713,7 +734,17 @@ impl DiscoveryAggregator {
                 Some(t) => !full_page || offset >= t,
                 None => !full_page,
             };
-            if done || offset as usize >= MAX_AGGREGATION_ITEMS_PER_SOURCE {
+            if offset as usize >= max_items_per_source() {
+                warn!(
+                    facilitator = %config.id,
+                    fetched = offset,
+                    cap = max_items_per_source(),
+                    total = ?total,
+                    "source truncated at the per-source cap; the rest of its catalog was not fetched"
+                );
+                break;
+            }
+            if done {
                 break;
             }
 

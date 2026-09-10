@@ -192,6 +192,40 @@ impl HealthTracker {
         Some((bps, probes, oks))
     }
 
+    /// Drop records for URLs the catalog no longer holds.
+    ///
+    /// The overlay is keyed by URL and written WHOLE on every prober tick. It
+    /// only ever grew: nothing removed a record when its resource left the
+    /// catalog, so on 2026-09-10 it reached 9.8 MB -- uploaded every 60 seconds,
+    /// for resources that no longer exist. Pruning it against the catalog is not
+    /// a loss: a record whose URL we no longer list is a record nothing can read.
+    ///
+    /// # An empty catalog prunes nothing
+    ///
+    /// A task whose S3 read fails at startup does not stop: `main` falls back to
+    /// an empty in-memory registry and keeps serving. Its prober would then
+    /// offer an empty keep-set, and pruning against it would delete the whole
+    /// overlay -- every resource's liveness history and the cumulative counts
+    /// the uptime attestation is built from -- because one GET failed. Same rule
+    /// as the catalog store's: a read we could not complete tells us nothing,
+    /// and must never become a delete.
+    ///
+    /// Returns how many were dropped.
+    pub async fn retain_urls(&self, keep: &std::collections::HashSet<String>) -> usize {
+        if keep.is_empty() {
+            return 0;
+        }
+        let mut records = self.records.write().await;
+        let before = records.len();
+        records.retain(|url, _| keep.contains(url));
+        let dropped = before - records.len();
+        drop(records);
+        if dropped > 0 {
+            self.dirty.store(true, Ordering::SeqCst);
+        }
+        dropped
+    }
+
     /// Response-facing snapshot: url -> HealthState, for annotating listings.
     pub async fn snapshot(&self) -> HashMap<String, HealthState> {
         self.records
@@ -526,7 +560,21 @@ pub fn start_health_task(
             // of listings) is spread across ticks rather than hammered.
             let mut per_host: HashMap<String, usize> = HashMap::new();
             let mut due: Vec<(url::Url, String, Vec<String>)> = Vec::new();
-            for (u, ty, pay_to) in registry.probe_targets().await {
+            let targets = registry.probe_targets().await;
+            // The catalog is bounded now, so the overlay has to be too: a health
+            // record for a URL that left the catalog is written to S3 every tick
+            // and read by nobody.
+            let live: std::collections::HashSet<String> =
+                targets.iter().map(|(u, _, _)| u.to_string()).collect();
+            let pruned = tracker.retain_urls(&live).await;
+            if pruned > 0 {
+                info!(
+                    pruned = pruned,
+                    held = live.len(),
+                    "dropped health records for resources no longer in the catalog"
+                );
+            }
+            for (u, ty, pay_to) in targets {
                 if due.len() >= max_per_tick {
                     break;
                 }
@@ -666,6 +714,58 @@ mod tests {
         let junk = pay_to_from_402(Some("not json"), None);
         assert!(junk.pay_to.is_empty());
         assert!(!junk.readable);
+    }
+
+    #[tokio::test]
+    async fn the_overlay_drops_records_for_resources_that_left_the_catalog() {
+        // 9.8 MB on 2026-09-10, uploaded whole every 60 seconds, and nothing
+        // ever removed an entry. A record whose URL is no longer listed is a
+        // record nothing can read.
+        let t = HealthTracker::new();
+        for url in ["https://a.example/x", "https://gone.example/x"] {
+            t.record_probe(url, ProbeClass::Alive, Some(402), 5).await;
+        }
+        assert_eq!(t.snapshot().await.len(), 2);
+
+        let live: std::collections::HashSet<String> =
+            ["https://a.example/x".to_string()].into_iter().collect();
+        assert_eq!(t.retain_urls(&live).await, 1);
+
+        let held = t.snapshot().await;
+        assert_eq!(held.len(), 1);
+        assert!(held.contains_key("https://a.example/x"));
+    }
+
+    #[tokio::test]
+    async fn an_empty_catalog_never_empties_the_overlay() {
+        // `main` falls back to an EMPTY in-memory registry when the S3 read
+        // fails at startup, and keeps serving. Without this guard one transient
+        // GET failure would delete every liveness record and every cumulative
+        // count the uptime attestation is built from.
+        let t = HealthTracker::new();
+        for url in ["https://a.example/x", "https://b.example/x"] {
+            t.record_probe(url, ProbeClass::Alive, Some(402), 5).await;
+        }
+        let nothing: std::collections::HashSet<String> = std::collections::HashSet::new();
+        assert_eq!(t.retain_urls(&nothing).await, 0);
+        assert_eq!(
+            t.snapshot().await.len(),
+            2,
+            "a catalog we could not read is not a catalog with no resources"
+        );
+    }
+
+    #[tokio::test]
+    async fn pruning_nothing_does_not_dirty_the_overlay() {
+        // A no-op prune must not schedule a 9.8 MB upload.
+        let t = HealthTracker::new();
+        t.record_probe("https://a.example/x", ProbeClass::Alive, Some(402), 5)
+            .await;
+        t.dirty.store(false, Ordering::SeqCst);
+        let live: std::collections::HashSet<String> =
+            ["https://a.example/x".to_string()].into_iter().collect();
+        assert_eq!(t.retain_urls(&live).await, 0);
+        assert!(!t.dirty.load(Ordering::SeqCst));
     }
 
     #[tokio::test]

@@ -1342,6 +1342,26 @@ pub struct DiscoveryResource {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terms_observed_at: Option<u64>,
 
+    /// `idle` | `pending` | `not_verifiable`. Response-only.
+    ///
+    /// The point of this field is that "we are re-reading it" and "this is
+    /// current" are different answers. A caller that needs current terms and
+    /// sees `pending` knows the amounts beside it are the PREVIOUS reading, and
+    /// a caller that sees `not_verifiable` knows no amount of waiting will
+    /// produce one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_revalidation: Option<String>,
+
+    /// Why this resource's price cannot be checked by observation, when it
+    /// cannot. Response-only; see `discovery_revalidation::NotVerifiable`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_verifiable_reason: Option<String>,
+
+    /// When the observation stops counting as current. Response-only, derived
+    /// from `termsObservedAt` and the freshness window in force.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observation_expires_at: Option<u64>,
+
     /// The origin's live payment terms as last read, with the context, phase and
     /// provenance of the reading. Response-only; the record itself is stored in
     /// its own overlay so an import cannot erase it.
@@ -1402,6 +1422,9 @@ impl DiscoveryResource {
             content_hash: None,
             price_freshness: None,
             terms_observed_at: None,
+            price_revalidation: None,
+            not_verifiable_reason: None,
+            observation_expires_at: None,
             observed_terms: None,
             health: None,
             curation: None,
@@ -1457,6 +1480,9 @@ impl DiscoveryResource {
             content_hash: None,
             price_freshness: None,
             terms_observed_at: None,
+            price_revalidation: None,
+            not_verifiable_reason: None,
+            observation_expires_at: None,
             observed_terms: None,
             health: None,
             curation: None,
@@ -1505,6 +1531,9 @@ impl DiscoveryResource {
             content_hash: None,
             price_freshness: None,
             terms_observed_at: None,
+            price_revalidation: None,
+            not_verifiable_reason: None,
+            observation_expires_at: None,
             observed_terms: None,
             health: None,
             curation: None,
@@ -1603,6 +1632,9 @@ impl DiscoveryResource {
         self.content_hash = None;
         self.price_freshness = None;
         self.terms_observed_at = None;
+        self.price_revalidation = None;
+        self.not_verifiable_reason = None;
+        self.observation_expires_at = None;
         self.observed_terms = None;
         self.health = None;
         self.curation = None;

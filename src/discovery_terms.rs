@@ -67,11 +67,7 @@ const MAX_OBSERVED_OPTIONS: usize = 6;
 /// configuration is worse than unreachable -- it reads as a catalog scale this
 /// service is provisioned for, which is the whole thing that incident disproved.
 fn max_records() -> usize {
-    std::env::var("DISCOVERY_TERMS_MAX_RECORDS")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .filter(|n| *n > 0)
-        .unwrap_or(2_000)
+    crate::discovery_config::terms_max_records()
 }
 
 /// Minimum seconds between two flushes of the overlay to S3.
@@ -81,10 +77,7 @@ fn max_records() -> usize {
 /// same observation -- so it gets its own, slower debounce rather than riding
 /// the tick.
 fn persist_interval_secs() -> u64 {
-    std::env::var("DISCOVERY_TERMS_PERSIST_SECS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(300)
+    crate::discovery_config::terms_persist_secs()
 }
 
 /// How long an observation is treated as current.
@@ -96,11 +89,7 @@ fn persist_interval_secs() -> u64 {
 /// nothing. Adaptive cadence is the next phase's work; when it lands, this
 /// window follows it.
 pub fn freshness_window_secs() -> u64 {
-    std::env::var("DISCOVERY_TERMS_FRESH_SECS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .filter(|n| *n > 0)
-        .unwrap_or(7 * 24 * 3600)
+    crate::discovery_config::terms_fresh_secs()
 }
 
 fn now_secs() -> u64 {

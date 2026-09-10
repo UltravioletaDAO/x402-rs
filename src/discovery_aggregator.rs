@@ -229,11 +229,7 @@ const DEFAULT_MAX_ITEMS_PER_SOURCE: usize = 1_000;
 /// into one `Vec` before the import starts. 1 000 per source keeps the intake in
 /// the same order of magnitude as the catalog it is allowed to produce.
 fn max_items_per_source() -> usize {
-    std::env::var("DISCOVERY_MAX_ITEMS_PER_SOURCE")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .filter(|n| *n > 0)
-        .unwrap_or(DEFAULT_MAX_ITEMS_PER_SOURCE)
+    crate::discovery_config::max_items_per_source()
 }
 
 // ============================================================================

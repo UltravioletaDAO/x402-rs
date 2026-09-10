@@ -89,9 +89,11 @@ a liveness `health` status from periodic probing, and a curated `tier`
 - `GET /discovery/stats` - Aggregate catalog metrics (60s cache)
 - `GET /bazaar` - HTML Bazaar explorer UI
 - `GET /discovery/attestation/{hash}` - ERC-8004 attestation evidence body
+- `GET /discovery/config` - The tuning this task resolved, and what it is spending
 - `POST /discovery/register` - Register a new resource (rate limited)
 
 **Admin** (require `Authorization: Bearer <BAZAAR_ADMIN_TOKEN>`; return 404 when no admin token is configured):
+- `POST /discovery/refresh` - Invalidate and re-read a resource's terms (never accepts terms)
 
 - `DELETE /discovery/resources?url=...` - Permanently unregister a resource
 - `POST /discovery/admin/suppress` - Hide a resource from listings without deleting it
@@ -211,6 +213,8 @@ constraint rather than as grounds for a `406`.
         path_identity_total_supply,
         // Bazaar endpoints
         path_bazaar_list,
+        path_bazaar_config,
+        path_bazaar_refresh,
         path_bazaar_stats,
         path_bazaar_ui,
         path_bazaar_attestation,
@@ -1948,6 +1952,8 @@ Pass `health=any` to return everything, or a specific status to filter to it.
       "contentHash": "9f2c1d…",
       "priceFreshness": "fresh",
       "termsObservedAt": 1784900000,
+      "observationExpiresAt": 1785504800,
+      "priceRevalidation": "idle",
       "observedTerms": {
         "accepts": [
           {
@@ -2066,10 +2072,39 @@ not *never happened*. Records are rewritten to the current version only when som
 them, so the field is also how a consumer tells "the new format is deployed" from "the catalog
 has been rewritten in it".
 
-`contentHash`, `priceFreshness`, `termsObservedAt` and `observedTerms` are response-only, like
-`health` and `curation`: resolved when the listing is composed and never stored, so a
-registrant cannot assert that its own price is fresh and a stored record cannot keep claiming a
-freshness nobody rechecked.
+**`priceRevalidation`** is `idle`, `pending` or `not_verifiable`, and it answers a different
+question from `priceFreshness`. Freshness says how old the reading is; this says what is being
+done about it:
+
+- `pending` -- a refresh is queued or running. **The amounts beside it are the previous
+  reading**, not a current one. A caller that needs current terms should get the `402` from the
+  origin for its own request rather than treat this listing as a quote.
+- `not_verifiable` -- this resource's price cannot be established by observation, and
+  `notVerifiableReason` says why: `not-a-get-resource` (an MCP or A2A endpoint answers a
+  handshake, not a payment challenge), `auth-gated` (the origin wants credentials before it will
+  quote, and the prober has none), `unprobeable` (a URL template or an address the SSRF
+  connector refuses). None of these means the resource is broken and none means it is free.
+- `idle` -- nothing is pending; what you see is what was last read.
+
+The prober issues exactly one kind of request: an **unauthenticated GET** of the listing URL.
+It never sends a POST, never attaches credentials, and never fires a resource's real commercial
+operation to discover what it charges. A purchase that is a POST, or that is parameterised, is
+a different request that may legitimately cost something else, and it is reported as
+`not_verifiable` rather than guessed at.
+
+**`observationExpiresAt`** is when the current reading stops counting as fresh, so a consumer
+holding its own cache can revalidate on the same clock this service uses instead of inventing
+one.
+
+**Reading a stale listing is what schedules its refresh.** No caller has to ask. The refresh is
+never awaited: the response is composed from what is known now, marked `pending`, and the work
+is done by whichever replica owns the periodic jobs, inside the probe budget it already had.
+Many reads of one stale record produce **one** job.
+
+`contentHash`, `priceFreshness`, `termsObservedAt`, `observationExpiresAt`, `priceRevalidation`,
+`notVerifiableReason` and `observedTerms` are response-only, like `health` and `curation`:
+resolved when the listing is composed and never stored, so a registrant cannot assert that its
+own price is fresh and a stored record cannot keep claiming a freshness nobody rechecked.
 
 **Price semantics on each `accepts` entry:**
 
@@ -2139,6 +2174,8 @@ so `?search=logs` fails loudly and points at `q` instead of quietly returning th
                     "recordVersion": 2,
                     "priceFreshness": "fresh",
                     "termsObservedAt": 1784900000,
+                    "observationExpiresAt": 1785504800,
+                    "priceRevalidation": "idle",
                     "metadata": {
                         "provider": "MeshRelay",
                         "category": "communication",
@@ -2182,6 +2219,87 @@ so `?search=logs` fails loudly and points at `q` instead of quietly returning th
     )
 )]
 async fn path_bazaar_list() {}
+
+#[utoipa::path(
+    get,
+    path = "/discovery/config",
+    tag = "Bazaar",
+    summary = "The tuning this task actually resolved",
+    description = r#"
+Every parameter that governs how much background work the Bazaar does, with the value **this
+running task resolved**, plus a few live counters.
+
+It exists because during the 2026-09-10 incident nobody could ask a running task what it had
+resolved: the numbers were reasoned about from what people believed was configured. Each
+parameter is defined once, in one module, and this endpoint publishes that same resolution.
+
+Public and unauthenticated: it is a list of tuning numbers and switches, it holds nothing that
+could not be read from the source, and the whole point is that it can be read during an
+incident. **No credential, endpoint or key is defined in this registry**, so none can appear
+here.
+
+Groups follow what each one costs: `catalog` (how many records are held, and how many are taken
+from one source per cycle), `healthProber` (the probe budget -- `budgetPerTick` is
+`maxRps * tickSeconds` and is the number the revalidation queue spends from, never adds to),
+`revalidation`, `observedTerms`, and `runtime` (whether this replica owns the periodic jobs,
+the queue depth, and the catalog size right now).
+
+A diagnostic, not a contract: names and groups follow the code.
+"#,
+    responses(
+        (status = 200, description = "Resolved configuration", body = Object,
+            example = json!({
+                "catalog": {"maxResources": 2000, "maxItemsPerSource": 1000},
+                "healthProber": {
+                    "tickSeconds": 60, "maxRps": 2, "concurrency": 8,
+                    "budgetPerTick": 120, "overlayPersistSeconds": 300
+                },
+                "revalidation": {
+                    "enabled": true, "longTailSharePercent": 40,
+                    "coalesceWindowSeconds": 300, "queueCap": 500,
+                    "perHostPerTick": 2, "backoffBaseSeconds": 60, "backoffMaxSeconds": 3600
+                },
+                "observedTerms": {"freshnessWindowSeconds": 604800, "maxRecords": 2000},
+                "runtime": {"ownsPeriodicJobs": true, "revalidationQueueDepth": 12, "catalogHeld": 2000}
+            })
+        )
+    )
+)]
+async fn path_bazaar_config() {}
+
+#[utoipa::path(
+    post,
+    path = "/discovery/refresh",
+    tag = "Bazaar",
+    summary = "Tell the catalog a resource's price moved",
+    description = r#"
+Invalidates what we last read for a resource and puts it at the front of the revalidation queue.
+
+**It never accepts terms.** The body names a resource; it does not carry a price, and if it did
+that price would not be stored. The server goes back to the origin and reads the challenge
+itself before believing anything. A notification that could write a price would be a way to
+publish a price for somebody else's endpoint by sending us JSON.
+
+The resource has to be one already in the catalog. A refresh request for an arbitrary URL would
+otherwise be a way to make this service fetch an address on demand.
+
+`202` with `"queued": false` is **not** a failure: it means an identical request is already in
+flight for this window, which is the coalescing working as intended.
+
+Requires `Authorization: Bearer <BAZAAR_ADMIN_TOKEN>`. Opening this to resource owners needs
+per-owner credentials, which is a key-management design rather than a change to this handler.
+"#,
+    request_body(content = Object, description = "Resource to revalidate",
+        example = json!({"url": "https://api.example.com/premium-data"})),
+    responses(
+        (status = 202, description = "Queued (or already queued for this window)", body = Object,
+            example = json!({"success": true, "url": "https://api.example.com/premium-data", "queued": true})),
+        (status = 401, description = "Missing or wrong admin token"),
+        (status = 404, description = "The resource is not in the catalog")
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn path_bazaar_refresh() {}
 
 #[utoipa::path(
     get,

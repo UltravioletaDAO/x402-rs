@@ -56,6 +56,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
+use crate::discovery_revalidation::{NotVerifiable, RefreshReason, RevalidationState};
 use crate::discovery_store::{DiscoveryStore, NoOpStore, StoreError, Version};
 use crate::types_v2::{
     CurationInfo, DiscoveryFilters, DiscoveryResource, DiscoveryResponse, DiscoverySource,
@@ -160,10 +161,7 @@ pub(crate) const DEFAULT_MAX_RESOURCES: usize = 2_000;
 
 /// [`DEFAULT_MAX_RESOURCES`], overridable. `0` disables the cap.
 fn max_resources() -> usize {
-    std::env::var("DISCOVERY_MAX_RESOURCES")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(DEFAULT_MAX_RESOURCES)
+    crate::discovery_config::max_resources()
 }
 
 /// The `last_updated` an incoming aggregated record must beat to be worth
@@ -382,6 +380,37 @@ fn import_verdict(incoming: &DiscoveryResource, existing: &DiscoveryResource) ->
     }
 }
 
+/// Why this resource's price cannot be established by probing it.
+///
+/// The prober issues one kind of request: an unauthenticated `GET` of the
+/// listing URL. Anything else is a different purchase, and the annex is explicit
+/// that we do not fire a seller's real commercial operation to find out what it
+/// charges. So a resource that cannot be answered that way is reported as
+/// unverifiable rather than queued forever or, worse, probed anyway.
+fn not_verifiable_reason(r: &DiscoveryResource) -> Option<NotVerifiable> {
+    // A URL template is not an address. Braces in a path are a declaration that
+    // the real request is built from parameters we do not have.
+    //
+    // Both spellings, because `Url::parse` percent-encodes them: a feed that
+    // published `/item/{id}` reaches us as `/item/%7Bid%7D`, and checking only
+    // for the literal brace would have found none of them.
+    let url = r.url.as_str();
+    let templated = ['{', '}'].iter().any(|c| url.contains(*c))
+        || url.contains("%7B")
+        || url.contains("%7b")
+        || url.contains("%7D")
+        || url.contains("%7d");
+    if templated {
+        return Some(NotVerifiable::Unprobeable);
+    }
+    // MCP and A2A endpoints answer a handshake, not a payment challenge. They
+    // are probed for liveness, and their price is not observable that way.
+    if r.resource_type == "mcp" || r.resource_type == "a2a" {
+        return Some(NotVerifiable::NotAGetResource);
+    }
+    None
+}
+
 /// Current Unix time in seconds (0 if the clock is before the epoch).
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
@@ -472,6 +501,9 @@ pub struct DiscoveryRegistry {
     /// Observed payment terms overlay. Separate object, one writer (the
     /// prober), and therefore structurally out of reach of any import.
     terms: Arc<crate::discovery_terms::TermsOverlay>,
+    /// Demand-driven revalidation queue (P2). Every replica holds one; only the
+    /// job owner drains it, and non-owners hand their requests over through it.
+    revalidation: Arc<crate::discovery_revalidation::RevalidationQueue>,
     /// Curated tier manifest (WS-C).
     curation: Arc<crate::discovery_curation::CurationManifest>,
     /// On-chain reputation cache (WS-E), keyed by resource URL.
@@ -589,6 +621,7 @@ impl Clone for DiscoveryRegistry {
             store: Arc::clone(&self.store),
             health: Arc::clone(&self.health),
             terms: Arc::clone(&self.terms),
+            revalidation: Arc::clone(&self.revalidation),
             curation: Arc::clone(&self.curation),
             reputation: Arc::clone(&self.reputation),
             evidence: Arc::clone(&self.evidence),
@@ -617,6 +650,7 @@ impl DiscoveryRegistry {
             store: Arc::new(NoOpStore::new()),
             health: Arc::new(crate::discovery_health::HealthTracker::new()),
             terms: Arc::new(crate::discovery_terms::TermsOverlay::new()),
+            revalidation: Arc::new(crate::discovery_revalidation::RevalidationQueue::new()),
             curation: Arc::new(crate::discovery_curation::CurationManifest::load()),
             reputation: Arc::new(RwLock::new(HashMap::new())),
             evidence: Arc::new(RwLock::new(HashMap::new())),
@@ -636,6 +670,11 @@ impl DiscoveryRegistry {
     /// and by `list()` to annotate freshness.
     pub fn terms(&self) -> Arc<crate::discovery_terms::TermsOverlay> {
         Arc::clone(&self.terms)
+    }
+
+    /// The demand-driven revalidation queue (P2).
+    pub fn revalidation(&self) -> Arc<crate::discovery_revalidation::RevalidationQueue> {
+        Arc::clone(&self.revalidation)
     }
 
     /// The curation manifest (WS-C). Used to build attestation targets.
@@ -857,6 +896,7 @@ impl DiscoveryRegistry {
             store: Arc::new(store),
             health: Arc::new(crate::discovery_health::HealthTracker::new()),
             terms: Arc::new(crate::discovery_terms::TermsOverlay::new()),
+            revalidation: Arc::new(crate::discovery_revalidation::RevalidationQueue::new()),
             curation: Arc::new(crate::discovery_curation::CurationManifest::load()),
             reputation: Arc::new(RwLock::new(HashMap::new())),
             evidence: Arc::new(RwLock::new(HashMap::new())),
@@ -1102,6 +1142,10 @@ impl DiscoveryRegistry {
         // Same reason, one overlay along: the observed-terms records are behind
         // their own async lock, so they are read BEFORE the resources guard.
         let observed = self.terms.snapshot().await;
+        // And the queue, for the same reason: one snapshot instead of a lock
+        // acquisition per item.
+        let queued = self.revalidation.pending_snapshot().await;
+        let mut stale_seen: Vec<(String, RefreshReason)> = Vec::new();
         let freshness_window = crate::discovery_terms::freshness_window_secs();
         let now = now_secs();
         let reputation = self.reputation.read().await.clone();
@@ -1192,16 +1236,79 @@ impl DiscoveryRegistry {
                 // read; a quarantined one can have a price read an hour ago.
                 let seen = observed.get(r.url.as_str());
                 c.content_hash = Some(r.content_fingerprint());
-                c.price_freshness = Some(
-                    crate::discovery_terms::assess_freshness(r, seen, now, freshness_window)
-                        .as_str()
-                        .to_string(),
-                );
+                let freshness =
+                    crate::discovery_terms::assess_freshness(r, seen, now, freshness_window);
+                c.price_freshness = Some(freshness.as_str().to_string());
                 c.terms_observed_at = seen.map(|t| t.observed_at);
+                c.observation_expires_at = seen.map(|t| t.observed_at + freshness_window);
                 c.observed_terms = seen.cloned();
+
+                // What a caller asking for current terms is told. A resource we
+                // cannot probe says so instead of sitting in `pending` forever;
+                // one that is queued says `pending`, which is the statement that
+                // the amounts beside it are the PREVIOUS reading.
+                let state = match not_verifiable_reason(r) {
+                    Some(reason) => {
+                        c.not_verifiable_reason = Some(reason.as_str().to_string());
+                        RevalidationState::NotVerifiable(reason)
+                    }
+                    None if queued.contains(r.url.as_str()) => RevalidationState::Pending,
+                    None => RevalidationState::Idle,
+                };
+                c.price_revalidation = Some(state.as_str().to_string());
+
+                // A listing served from a reading that is no longer current is
+                // itself the demand signal. Collected here and enqueued after
+                // the guard is dropped, then drained by the job owner inside the
+                // probe budget it already had -- never awaited, and never on
+                // this response's critical path.
+                if c.not_verifiable_reason.is_none() {
+                    match freshness {
+                        crate::discovery_terms::PriceFreshness::Conflict => {
+                            stale_seen.push((r.url.to_string(), RefreshReason::Conflict))
+                        }
+                        crate::discovery_terms::PriceFreshness::Stale
+                        | crate::discovery_terms::PriceFreshness::Unknown => {
+                            stale_seen.push((r.url.to_string(), RefreshReason::ListingStale))
+                        }
+                        crate::discovery_terms::PriceFreshness::Fresh => {}
+                    }
+                }
                 c
             })
             .collect();
+
+        drop(resources);
+
+        // The catalog guard is gone before anything asynchronous happens.
+        // Requesting a refresh takes the queue's own lock and, on a replica that
+        // does not own the periodic work, spawns a hand-off to the one that
+        // does; neither belongs under the catalog guard, and neither may delay
+        // this response.
+        if crate::discovery_config::revalidation_enabled() && !stale_seen.is_empty() {
+            let owns = crate::discovery_owner::owns_jobs();
+            let mut accepted = 0;
+            for (url, reason) in &stale_seen {
+                if self.revalidation.request(url, *reason, now).await {
+                    accepted += 1;
+                    // Only a request THIS replica accepted as new work is handed
+                    // over. The coalescing window is what makes many reads of
+                    // one stale record into one job rather than one write per
+                    // read.
+                    if !owns {
+                        self.revalidation.offer_to_owner(url.clone());
+                    }
+                }
+            }
+            if accepted > 0 {
+                debug!(
+                    seen = stale_seen.len(),
+                    accepted = accepted,
+                    owns_jobs = owns,
+                    "queued stale listings for revalidation"
+                );
+            }
+        }
 
         debug!(
             total = total,
@@ -2483,6 +2590,121 @@ mod tests {
             TermsProvenance::OriginResponse
         );
         assert_eq!(item.last_settled_at, Some(1_500));
+    }
+
+    #[tokio::test]
+    async fn a_stale_listing_queues_itself_without_blocking_the_response() {
+        // Refresh-on-read: serving a listing whose reading has aged out IS the
+        // demand signal. What must not happen is the response waiting for it.
+        let registry = DiscoveryRegistry::new();
+        let url = "https://api.staleread.example/x";
+        registry
+            .register(create_test_resource(url, None))
+            .await
+            .unwrap();
+
+        // Never observed, so `unknown`.
+        let listed = registry.list(10, 0, None).await;
+        assert_eq!(listed.items[0].price_freshness.as_deref(), Some("unknown"));
+        assert!(
+            registry.revalidation().is_pending(url).await,
+            "the read enqueued it"
+        );
+
+        // A second read of the same page does not add a second job.
+        registry.list(10, 0, None).await;
+        assert_eq!(registry.revalidation().depth().await, 1);
+
+        // And the listing says so, rather than presenting the cache as current.
+        let listed = registry.list(10, 0, None).await;
+        assert_eq!(
+            listed.items[0].price_revalidation.as_deref(),
+            Some("pending")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_resource_we_cannot_probe_says_so_instead_of_queueing_forever() {
+        // An MCP endpoint answers a JSON-RPC handshake, not a payment challenge.
+        // Its price is not observable that way, and firing a POST at it to find
+        // out would be starting somebody's operation to see what it costs.
+        let registry = DiscoveryRegistry::new();
+        let url = "https://api.mcp.example/x";
+        let mut r = create_test_resource(url, None);
+        r.resource_type = "mcp".to_string();
+        registry.register(r).await.unwrap();
+
+        let listed = registry.list(10, 0, None).await;
+        assert_eq!(
+            listed.items[0].price_revalidation.as_deref(),
+            Some("not_verifiable")
+        );
+        assert_eq!(
+            listed.items[0].not_verifiable_reason.as_deref(),
+            Some("not-a-get-resource")
+        );
+        assert!(
+            !registry.revalidation().is_pending(url).await,
+            "and it is not queued for a probe that could never answer"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_url_template_is_not_an_address_to_probe() {
+        let registry = DiscoveryRegistry::new();
+        let url = "https://api.tmpl.example/item/%7Bid%7D";
+        registry
+            .register(create_test_resource(url, None))
+            .await
+            .unwrap();
+        let listed = registry.list(10, 0, None).await;
+        assert_eq!(
+            listed.items[0].not_verifiable_reason.as_deref(),
+            Some("unprobeable")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fresh_listing_asks_for_nothing() {
+        use crate::discovery_terms::{
+            ObservationContext, ObservationPhase, ObservedTerms, TermsProvenance, TermsTransport,
+        };
+        let registry = DiscoveryRegistry::new();
+        let url = "https://api.fresh.example/x";
+        let r = create_test_resource(url, None);
+        let fingerprint = r.content_fingerprint();
+        let accepts = r.accepts.clone();
+        registry.register(r).await.unwrap();
+        registry
+            .terms()
+            .record(
+                url,
+                ObservedTerms {
+                    accepts,
+                    observed_at: now_secs(),
+                    context: ObservationContext::anonymous_get("http"),
+                    phase: ObservationPhase::Verification,
+                    provenance: TermsProvenance::OriginResponse,
+                    transport: TermsTransport::Header,
+                    x402_version: Some(2),
+                    http_status: Some(402),
+                    content_hash: Some(fingerprint),
+                    conflict: None,
+                    rejected: Default::default(),
+                    truncated: false,
+                },
+            )
+            .await;
+
+        let listed = registry.list(10, 0, None).await;
+        assert_eq!(listed.items[0].price_freshness.as_deref(), Some("fresh"));
+        assert_eq!(listed.items[0].price_revalidation.as_deref(), Some("idle"));
+        assert!(listed.items[0].observation_expires_at.is_some());
+        assert_eq!(
+            registry.revalidation().depth().await,
+            0,
+            "a current reading is not work"
+        );
     }
 
     #[tokio::test]

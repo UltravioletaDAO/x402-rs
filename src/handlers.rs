@@ -1896,6 +1896,7 @@ pub fn discovery_routes() -> Router<Arc<DiscoveryRegistry>> {
             "/discovery/attestation/{hash}",
             get(get_attestation_evidence),
         )
+        .route("/discovery/config", get(get_discovery_config))
 }
 
 /// Admin routes for curating the Bazaar. Mounted behind the strict governor and
@@ -1909,6 +1910,7 @@ pub fn discovery_admin_routes() -> Router<Arc<DiscoveryRegistry>> {
         )
         .route("/discovery/admin/suppress", post(post_discovery_suppress))
         .route("/discovery/admin/release", post(post_discovery_release))
+        .route("/discovery/refresh", post(post_discovery_refresh))
 }
 
 /// `GET /discovery/stats`: aggregate catalog metrics (60s cached).
@@ -2083,6 +2085,104 @@ pub async fn post_discovery_suppress(
     (
         StatusCode::OK,
         Json(json!({"success": true, "url": body.url, "suppressed": true, "changed": changed})),
+    )
+        .into_response()
+}
+
+/// `GET /discovery/config`: the tuning a running task actually resolved.
+///
+/// Every knob the Bazaar has, with the value THIS process is using, from the one
+/// place each is defined ([`crate::discovery_config`]). Public and unauthenticated
+/// on purpose: it is a list of numbers governing how much background work this
+/// service does, it holds nothing that could not be read from the source, and
+/// the entire reason it exists is that during the 2026-09-10 incident nobody
+/// could ask a running task what it had resolved — the values were reasoned
+/// about from what people believed was set.
+///
+/// It is a diagnostic, not a contract: names and groups follow the code.
+#[instrument(skip_all)]
+pub async fn get_discovery_config(
+    State(registry): State<Arc<DiscoveryRegistry>>,
+) -> impl IntoResponse {
+    let mut body = crate::discovery_config::effective();
+    // Two live numbers alongside the settings, because the first question after
+    // reading a budget is what it is currently spending.
+    body["runtime"] = json!({
+        "ownsPeriodicJobs": crate::discovery_owner::owns_jobs(),
+        "revalidationQueueDepth": registry.revalidation().depth().await,
+        "catalogHeld": registry.count().await,
+    });
+    (StatusCode::OK, Json(body)).into_response()
+}
+
+/// `POST /discovery/refresh`: the owner of a resource says its price moved.
+///
+/// **This never accepts terms.** The body carries a resource, optionally the
+/// revision the caller believes is now current, and an idempotency key. All it
+/// does is invalidate and enqueue: the server goes back to the origin and reads
+/// the challenge itself before believing anything. A notification that could
+/// write a price would be a way to publish a price for somebody else's endpoint
+/// by sending us JSON.
+///
+/// Authenticated with the Bazaar admin token, which today means first-party and
+/// operator use. Opening it to resource owners needs per-owner credentials, and
+/// that is a key-management design rather than a handler change.
+#[instrument(skip_all)]
+pub async fn post_discovery_refresh(
+    State(registry): State<Arc<DiscoveryRegistry>>,
+    headers: axum::http::HeaderMap,
+    raw: axum::body::Bytes,
+) -> impl IntoResponse {
+    if let Some(r) = admin_reject(admin_auth(&headers, BAZAAR_ADMIN_TOKEN_VAR)) {
+        return r;
+    }
+    let body = match parse_admin_body(&raw) {
+        Ok(b) => b,
+        Err(r) => return r,
+    };
+
+    // The resource has to be one we list. A refresh request for a URL that is
+    // not in the catalog would otherwise be a way to make this service fetch an
+    // arbitrary address on demand.
+    if registry.get(&body.url).await.is_none() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "error": "unknown resource",
+                "url": body.url,
+                "hint": "refresh applies to resources already in the catalog",
+            })),
+        )
+            .into_response();
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let queue = registry.revalidation();
+    let accepted = queue
+        .request(
+            &body.url,
+            crate::discovery_revalidation::RefreshReason::OwnerNotified,
+            now,
+        )
+        .await;
+    if accepted && !crate::discovery_owner::owns_jobs() {
+        queue.offer_to_owner(body.url.clone());
+    }
+
+    info!(url = %body.url, accepted, "price-change notification accepted");
+    (
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "success": true,
+            "url": body.url,
+            // `false` is not a failure: an identical request is already in
+            // flight for this window, which is the deduplication working.
+            "queued": accepted,
+            "note": "the origin will be re-read; terms in this request are not trusted or stored",
+        })),
     )
         .into_response()
 }

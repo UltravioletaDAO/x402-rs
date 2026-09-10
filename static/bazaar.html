@@ -292,6 +292,10 @@
     "fresh.observedWhy": "We read this endpoint's own payment challenge {t} and it matched this listing. That is a past reading, not a quote: check the 402 for your own request before you sign.",
     "fresh.stale": "last read {t}",
     "fresh.staleWhy": "The last reading of this endpoint's payment challenge was {t}, or the listing has been revised since. It is due to be checked again.",
+    "fresh.pending": "re-checking now",
+    "fresh.pendingWhy": "We are re-reading this endpoint's own payment challenge. The amount shown is the PREVIOUS reading, not a current quote.",
+    "fresh.unverifiable": "price cannot be checked",
+    "fresh.unverifiableWhy": "This resource is not bought with a plain GET, or it wants credentials first, so we cannot read its price without starting somebody's real operation. It is not broken and it is not free.",
     "fresh.conflict": "price disagrees",
     "fresh.conflictWhy": "The endpoint's own payment challenge does not match this listing. Both are shown below; neither has been deleted in favour of the other.",
     "detail.observed": "What the endpoint answered",
@@ -414,6 +418,10 @@
     "fresh.observedWhy": "Leímos el desafío de pago del propio endpoint {t} y coincidía con este listado. Es una lectura pasada, no una cotización: revisá el 402 de tu propia solicitud antes de firmar.",
     "fresh.stale": "leído {t}",
     "fresh.staleWhy": "La última lectura del desafío de pago de este endpoint fue {t}, o el listado se revisó desde entonces. Toca volver a comprobarlo.",
+    "fresh.pending": "comprobando ahora",
+    "fresh.pendingWhy": "Estamos releyendo el desafío de pago del propio endpoint. El importe que ves es la lectura ANTERIOR, no una cotización actual.",
+    "fresh.unverifiable": "no se puede comprobar el precio",
+    "fresh.unverifiableWhy": "Este recurso no se compra con un GET simple, o pide credenciales antes, así que no podemos leer su precio sin arrancar la operación real de alguien. Ni está roto ni es gratis.",
     "fresh.conflict": "el precio no coincide",
     "fresh.conflictWhy": "El desafío de pago del propio endpoint no coincide con este listado. Abajo se muestran los dos; ninguno se borró a favor del otro.",
     "detail.observed": "Lo que respondió el endpoint",
@@ -510,6 +518,13 @@
     // what the endpoint answers today.
     function freshnessBadge(it){
       const t = ago(it.termsObservedAt);
+      // What is being DONE about the price outranks how old it is: "we are
+      // re-reading this" and "this is current" are different answers, and the
+      // card must never present the cache as the second.
+      if(it.priceRevalidation === 'not_verifiable')
+        return { text: tr('fresh.unverifiable'), cls: 'tag warn', title: tr('fresh.unverifiableWhy') };
+      if(it.priceRevalidation === 'pending')
+        return { text: tr('fresh.pending'), cls: 'tag', title: tr('fresh.pendingWhy') };
       switch(it.priceFreshness){
         case 'fresh':
           return { text: tr('fresh.observed').replace('{t}', t), cls: 'tag alive',

@@ -1034,49 +1034,91 @@ fn failure_category(debug: &str) -> &'static str {
     }
 }
 
-/// Did this failure come from the node we depend on, rather than the request?
+/// Turn a classified chain-write failure into the answer a caller gets.
 ///
-/// The distinction decides the status code, and getting it wrong has a cost we
-/// measured: while Celo's RPC was down, every settle there returned 400 — which
-/// tells the caller "your request is malformed". Agents spent hours re-checking
-/// signatures that were fine, because the only signal they got pointed at
-/// themselves. Two of the three failure classes we see are not the caller's
-/// fault at all.
+/// One place, so the three sites that report a failed chain write — the escrow
+/// branch of `/settle`, the generic `ContractCall` arm of
+/// `impl IntoResponse for FacilitatorLocalError`, and `/escrow/state` — cannot
+/// drift into giving three different answers for the same condition. They did:
+/// until 2026-09-10 an unfunded signer came back as `502 upstream_rpc_unavailable`
+/// with `Retry-After: 30` from two of them and as a flat `400` from the third.
 ///
-/// The split is on the JSON-RPC error code, which is stable in a way the prose
-/// is not:
-///   * `code: 3` is an EVM execution revert — the chain ran the call and
-///     rejected it. Bad signature, insufficient balance: genuinely about the
-///     request, so 400 stays correct.
-///   * `-32000`, `-32603`, `-32801` and transport errors are the node failing
-///     to answer at all — pruned history, missing headers, retries exhausted.
-///     Nothing in the request can fix those.
-///   * `txpool is full` is matched by MESSAGE via
-///     [`crate::chain::evm::is_mempool_full`], not by its `-32003` code — that
-///     code is overloaded (see that function's doc comment) and a caller
-///     retrying a genuine `-32003` payload rejection is not what this buys.
+/// `salt` only spreads the retry hint; see
+/// [`ChainFailure::retry_after_secs`](crate::chain::failure::ChainFailure::retry_after_secs).
+fn chain_failure_parts(
+    failure: crate::chain::failure::ChainFailure,
+    salt: u64,
+) -> (StatusCode, &'static str, Option<HeaderValue>) {
+    let status =
+        StatusCode::from_u16(failure.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let retry_after = failure
+        .retry_after_secs(salt)
+        .and_then(|secs| HeaderValue::from_str(&secs.to_string()).ok());
+    (status, failure.category(), retry_after)
+}
+
+/// A salt for [`chain_failure_parts`], distinct per response.
 ///
-/// This retryable classification is only correct together with releasing the
-/// nonce on the same condition (`evm.rs`'s `is_pre_broadcast_rejection`): a
-/// `txpool is full` that keeps its nonce burned turns a client retry into a
-/// faster nonce-gap wedge, not a cure. Deploy that fix first — see "Los fixes,
-/// en el orden seguro" in
-/// docs/handoffs/2026-08-20-diagnostico-performance-facilitador.md.
+/// A counter rather than a clock read: it costs nothing, it cannot be affected
+/// by a clock the container does not control, and all it has to do is differ.
+fn failure_salt() -> u64 {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Log a classified chain-write failure with the figures an operator needs.
 ///
-/// Conservative by design: anything unrecognised keeps the old 400. A wrong 502
-/// would tell a caller with a genuinely bad payload to go wait for us.
-fn is_upstream_rpc_failure(debug: &str) -> bool {
-    const NODE_CODES: [&str; 3] = ["-32000", "-32603", "-32801"];
-    // An execution revert can also carry a node code in a nested transport
-    // error, so the revert check wins: if the chain executed and rejected it,
-    // that is an answer, not an outage.
-    if debug.contains("execution reverted") {
-        return false;
+/// For a gas shortfall that means the USABLE margin, not the balance. The
+/// incident this exists for ran for at least 24 hours on a wallet holding
+/// 82.86 POL, because the balance looked healthy and nothing reported that
+/// 82.80 of it was committed to 400 queued transactions.
+///
+/// The raw error goes to `error = %debug` as it always did — that field is
+/// already scrubbed by `redact::scrub_urls` on the escrow path and stays
+/// server-side either way. Only the bounded category reaches the caller.
+fn log_chain_failure(
+    failure: crate::chain::failure::ChainFailure,
+    network: Option<&str>,
+    debug: &str,
+) {
+    use crate::chain::failure::{GasShortfall, Reason};
+
+    if failure.reason == Reason::SignerUnfunded {
+        let shortfall = GasShortfall::parse(debug);
+        if shortfall.is_empty() {
+            // The node said "insufficient funds" in a phrasing that carries no
+            // figures. Worth saying out loud: without them nobody can tell a
+            // drained wallet from a wallet whose queue ate its margin, which is
+            // the distinction that decides what an operator does next.
+            warn!(
+                "gas shortfall reported without figures; the node's phrasing carries no \
+                 balance/queued cost, so usable margin cannot be derived from this line"
+            );
+        }
+        error!(
+            stage = failure.stage.as_str(),
+            category = failure.category(),
+            network = network.unwrap_or("unknown"),
+            balance_wei = ?shortfall.balance,
+            queued_cost_wei = ?shortfall.queued_cost,
+            usable_wei = ?shortfall.usable(),
+            tx_cost_wei = ?shortfall.tx_cost,
+            overshot_wei = ?shortfall.overshot,
+            "FACILITATOR SIGNER CANNOT PAY FOR GAS on this network. This is not an \
+             upstream outage and not a bad payload: the caller can do nothing about it. \
+             Compare usable_wei against tx_cost_wei -- a healthy balance_wei with a \
+             queued_cost_wei close to it means transactions are stuck in the mempool and \
+             the queue has to be drained, not the wallet topped up"
+        );
+        return;
     }
-    NODE_CODES.iter().any(|c| debug.contains(c))
-        || debug.contains("Max retries exceeded")
-        || debug.contains("Transport(")
-        || crate::chain::evm::is_mempool_full(debug)
+
+    warn!(
+        stage = failure.stage.as_str(),
+        category = failure.category(),
+        network = network.unwrap_or("unknown"),
+        "chain write failed"
+    );
 }
 
 /// Persist one operation, off the request path.
@@ -4416,15 +4458,26 @@ where
                 }
                 Err(e) => {
                     error!(error = %e, "Escrow scheme settlement failed");
-                    // A node that cannot answer is not a malformed request.
-                    // 502 + Retry-After tells the caller to come back rather
-                    // than go debug a payload that was fine.
-                    let upstream = is_upstream_rpc_failure(&format!("{e:?}"));
+                    // What actually went wrong, by stage and reason. The
+                    // boolean this replaced answered only "node or caller?",
+                    // and answered it wrong for the single condition that
+                    // produced 7,196 error lines in the 24 hours to 2026-09-10:
+                    // our own signer out of usable gas, reported as an upstream
+                    // outage with an invitation to retry in thirty seconds.
+                    let debug = format!("{e:?}");
+                    let failure = crate::chain::failure::ChainFailure::classify(&debug);
+                    let network_label = fields
+                        .network
+                        .as_deref()
+                        .map(canonical_network_name)
+                        .unwrap_or_else(|| "unknown".to_string());
+                    log_chain_failure(failure, Some(&network_label), &debug);
+                    let salt = failure_salt();
                     // A refused lifecycle order is neither a bad payload nor an
                     // outage: it is "you are not entitled to this". 403, so a
                     // caller does not go debug a body that was well-formed.
                     // The one retryable case is the owner read failing.
-                    let (code, reason, category, retryable) = match &e {
+                    let (code, reason, category, retry_after) = match &e {
                         crate::payment_operator::OperatorError::LifecycleAuthRejected {
                             category: "owner_unverifiable",
                             ..
@@ -4432,7 +4485,7 @@ where
                             StatusCode::BAD_GATEWAY,
                             format!("{e}"),
                             "upstream_rpc_unavailable",
-                            true,
+                            HeaderValue::from_static("30").into(),
                         ),
                         crate::payment_operator::OperatorError::LifecycleAuthRejected {
                             ..
@@ -4440,31 +4493,47 @@ where
                             StatusCode::FORBIDDEN,
                             format!("{e}"),
                             "lifecycle_auth_rejected",
-                            false,
+                            None,
                         ),
-                        _ if upstream => (
-                            StatusCode::BAD_GATEWAY,
-                            "Upstream RPC unavailable for this network; the request was not \
-                             rejected, the node could not answer. Retry later."
-                                .to_string(),
-                            "upstream_rpc_unavailable",
-                            true,
-                        ),
+                        // Anything the classifier recognised answers with its
+                        // own status, its own bounded token and its own retry
+                        // advice -- including none at all, for a transaction
+                        // that may already be on the wire.
+                        _ if failure.reason
+                            != crate::chain::failure::Reason::Unclassified
+                            && failure.reason
+                                != crate::chain::failure::Reason::PayloadRejected =>
+                        {
+                            let (code, category, retry_after) =
+                                chain_failure_parts(failure, salt);
+                            (
+                                code,
+                                failure.client_message().to_string(),
+                                category,
+                                retry_after,
+                            )
+                        }
                         _ => (
                             StatusCode::BAD_REQUEST,
                             format!("Escrow scheme error: {e}"),
                             "escrow_error",
-                            false,
+                            None,
                         ),
                     };
                     let mut resp = (
                         code,
-                        Json(json!({ "success": false, "errorReason": reason })),
+                        Json(json!({
+                            "success": false,
+                            "errorReason": reason,
+                            // Explicit, because a 502 is retried by default by
+                            // more clients than not, and the one failure that
+                            // must never be retried is also a 502.
+                            "retryable": retry_after.is_some(),
+                        })),
                     )
                         .into_response();
-                    if retryable {
-                        resp.headers_mut()
-                            .insert(header::RETRY_AFTER, HeaderValue::from_static("30"));
+                    if let Some(value) = retry_after {
+                        resp.headers_mut().insert(header::RETRY_AFTER, value);
                     }
                     return Some(AltSchemeOutcome {
                         response: resp,
@@ -5042,20 +5111,22 @@ impl IntoResponse for FacilitatorLocalError {
                 // This is the generic `post_settle` error path -- the >95%
                 // EIP-3009 traffic, NOT the escrow branch (escrow errors are
                 // `OperatorError`, classified separately at `:2870`/`:3516` and
-                // never reach here). Wired to `is_upstream_rpc_failure` on
+                // never reach here). Wired to the shared classification on
                 // 2026-08-28 (Saul, via team-lead), same predicate the escrow
-                // branch already uses: a node that cannot answer (Celo's RPC
+                // branch already used: a node that cannot answer (Celo's RPC
                 // outage, `txpool is full`, `-32000`/`-32603`/`-32801`) is not
                 // a malformed request. Safe to retry as of the fix #1 nonce
                 // release (`chain/evm.rs`'s `is_pre_broadcast_rejection`) --
                 // before it, a client retrying `txpool is full` burned another
                 // nonce and widened the gap instead of curing it.
                 //
-                // The revert check inside `is_upstream_rpc_failure` runs BEFORE
-                // any node-code check, so a genuine contract revert -- bad
-                // signature, insufficient balance, an expired/used
-                // authorization, ANY custom Solidity error regardless of
-                // selector -- still gets 400. See
+                // Replaced on 2026-09-10 by the typed classification in
+                // `chain/failure.rs`, because that boolean answered "node or
+                // caller?" and the answer for an unfunded signer is neither.
+                // The revert check still runs FIRST, so a genuine contract
+                // revert -- bad signature, insufficient balance, an
+                // expired/used authorization, ANY custom Solidity error
+                // regardless of selector -- still gets 400. See
                 // `contract_call_response_tests` below, which exercises this
                 // exact arm (not just the classifier) against a revert shaped
                 // like `AuthCaptureEscrow.AfterAuthorizationExpiry`
@@ -5064,26 +5135,32 @@ impl IntoResponse for FacilitatorLocalError {
                 // -- 173 of 226 reverts on 2026-08-19/20 were exactly this, on
                 // the escrow path where it was already correctly classified.
                 // See docs/handoffs/2026-08-20-diagnostico-performance-facilitador.md.
-                if is_upstream_rpc_failure(e) {
-                    let mut resp = (
-                        StatusCode::BAD_GATEWAY,
-                        Json(ErrorResponse {
-                            error: format!("upstream_rpc_unavailable (ref: {correlation_id})"),
-                        }),
-                    )
-                        .into_response();
-                    resp.headers_mut()
-                        .insert(header::RETRY_AFTER, HeaderValue::from_static("30"));
-                    resp
-                } else {
-                    (
-                        StatusCode::BAD_REQUEST,
-                        Json(ErrorResponse {
-                            error: format!("contract_call_failed (ref: {correlation_id})"),
-                        }),
-                    )
-                        .into_response()
+                //
+                // The network is not in scope here (this impl sees only the
+                // error), so the shortfall log carries `network=unknown`. The
+                // figures it does carry -- balance, queued cost, usable margin
+                // -- are what identify the signer in practice.
+                let failure = crate::chain::failure::ChainFailure::classify(e);
+                log_chain_failure(failure, None, e);
+                let (status, category, retry_after) = chain_failure_parts(failure, failure_salt());
+                let token = match failure.reason {
+                    // Preserved verbatim: this token is what clients have been
+                    // branching on since 2026-08-28.
+                    crate::chain::failure::Reason::PayloadRejected
+                    | crate::chain::failure::Reason::Unclassified => "contract_call_failed",
+                    _ => category,
+                };
+                let mut resp = (
+                    status,
+                    Json(ErrorResponse {
+                        error: format!("{token} (ref: {correlation_id})"),
+                    }),
+                )
+                    .into_response();
+                if let Some(value) = retry_after {
+                    resp.headers_mut().insert(header::RETRY_AFTER, value);
                 }
+                resp
             }
             FacilitatorLocalError::InvalidAddress(ref e) => {
                 let correlation_id = uuid::Uuid::new_v4();
@@ -5214,22 +5291,34 @@ where
         }
         Err(e) => {
             error!(error = %e, "Escrow state query failed");
-            // Same split as the settle path: a node that cannot answer is not a
-            // malformed query. This branch was missed when the settle branches
-            // were fixed — 9 of the RPC failures observed over 48h came through
-            // here and went out as 400, telling callers their request was wrong
-            // about an outage they cannot influence.
-            if is_upstream_rpc_failure(&format!("{e:?}")) {
+            // Same classification as the settle path: a node that cannot answer
+            // is not a malformed query. This branch was missed when the settle
+            // branches were fixed — 9 of the RPC failures observed over 48h came
+            // through here and went out as 400, telling callers their request
+            // was wrong about an outage they cannot influence.
+            //
+            // A state query never signs anything, so the gas classes cannot
+            // arise here. It shares the classifier anyway so the three sites
+            // cannot drift apart again.
+            let debug = format!("{e:?}");
+            let failure = crate::chain::failure::ChainFailure::classify(&debug);
+            let (status, _category, retry_after) = chain_failure_parts(failure, failure_salt());
+            if !matches!(
+                failure.reason,
+                crate::chain::failure::Reason::PayloadRejected
+                    | crate::chain::failure::Reason::Unclassified
+            ) {
                 let mut resp = (
-                    StatusCode::BAD_GATEWAY,
+                    status,
                     Json(json!({
-                        "error": "Upstream RPC unavailable for this network; the query was not \
-                                  rejected, the node could not answer. Retry later."
+                        "error": failure.client_message(),
+                        "retryable": retry_after.is_some(),
                     })),
                 )
                     .into_response();
-                resp.headers_mut()
-                    .insert(header::RETRY_AFTER, HeaderValue::from_static("30"));
+                if let Some(value) = retry_after {
+                    resp.headers_mut().insert(header::RETRY_AFTER, value);
+                }
                 return resp;
             }
             (
@@ -13844,82 +13933,202 @@ mod alt_request_fields_tests {
     }
 }
 
+/// The classification a caller actually SEES.
+///
+/// `chain/failure.rs` owns the string-to-reason table and tests it there. This
+/// module tests the half that lives here: the reason-to-response mapping, and
+/// that the three sites reporting a failed chain write all go through it.
 #[cfg(test)]
-mod upstream_rpc_failure_tests {
-    use super::is_upstream_rpc_failure;
+mod chain_failure_response_tests {
+    use super::*;
+    use crate::chain::failure::{ChainFailure, Reason};
 
-    /// Real error strings captured from production while Celo's RPC was down.
-    /// Every one of these returned 400 to the caller, which reads as "your
-    /// request is wrong" for a failure the caller cannot influence.
+    /// The message that produced 7,196 error lines in the 24 hours to
+    /// 2026-09-10, sanitized only by dropping the tracing frame around it.
+    /// Polygon mainnet, the EVM mainnet facilitator signer: 400 transactions
+    /// queued, 82.7994 of its 82.8616 POL committed to them, 0.0623 usable
+    /// against a transaction costing 0.0785.
+    const REAL_UNFUNDED: &str = r#"ContractCall("ErrorResp(ErrorPayload { code: -32000, message: \"insufficient funds for gas * price + value: balance 82861633384675957709, queued cost 82799377752610042973, tx cost 78463640160630732, overshot 16208008094715996\", data: None })")"#;
+
+    /// The regression, stated as the response a caller gets: not 502, not 400,
+    /// and not a thirty-second retry.
     #[test]
-    fn node_level_failures_are_recognised() {
-        for e in [
+    fn a_gas_shortfall_is_not_reported_as_an_upstream_outage() {
+        let failure = ChainFailure::classify(REAL_UNFUNDED);
+        let (status, category, retry_after) = chain_failure_parts(failure, 0);
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(category, "facilitator_signer_unfunded");
+        let secs: u32 = retry_after
+            .expect("a shortfall is retryable, just not soon")
+            .to_str()
+            .expect("ascii")
+            .parse()
+            .expect("seconds");
+        assert!(
+            secs >= 270,
+            "{secs}s invites the hammering this change exists to stop"
+        );
+    }
+
+    /// The same string through the arm the >95% plain-`/settle` traffic hits.
+    #[test]
+    fn the_plain_settle_path_reports_the_shortfall_as_ours() {
+        let err = FacilitatorLocalError::ContractCall(REAL_UNFUNDED.to_string());
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(resp.headers().contains_key(axum::http::header::RETRY_AFTER));
+    }
+
+    /// The token has to reach the client, or nothing downstream can tell this
+    /// apart from an RPC outage — which is exactly how it stayed invisible for
+    /// 24 hours.
+    #[tokio::test]
+    async fn the_shortfall_names_itself_in_the_body() {
+        let err = FacilitatorLocalError::ContractCall(REAL_UNFUNDED.to_string());
+        let bytes = axum::body::to_bytes(err.into_response().into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let body: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        let error = body["error"].as_str().expect("error token");
+        assert!(
+            error.starts_with("facilitator_signer_unfunded"),
+            "got {error}"
+        );
+    }
+
+    /// A transaction that may be on the wire gets no `Retry-After` at all.
+    /// The escrow path flattens every `FacilitatorLocalError` into a string, so
+    /// the variant name is the only thing that survives to be classified.
+    #[test]
+    fn an_uncertain_broadcast_carries_no_retry_advice() {
+        let flattened = r#"ContractCall("SettlementUnconfirmed(Evm(0x1111111111111111111111111111111111111111111111111111111111111111), Polygon) (operator=0x0000000000000000000000000000000000000002, selector=0xa9059cbb)")"#;
+        let failure = ChainFailure::classify(flattened);
+        assert_eq!(failure.reason, Reason::BroadcastUncertain);
+        let (status, category, retry_after) = chain_failure_parts(failure, 0);
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(category, "broadcast_uncertain");
+        assert!(
+            retry_after.is_none(),
+            "retrying a payment that may be mined is a second payment"
+        );
+    }
+
+    /// Everything the previous boolean called an outage keeps its old answer,
+    /// byte for byte. This class is the one A1 does not touch.
+    #[test]
+    fn node_failures_keep_the_answer_they_had() {
+        for fixture in [
             r#"ContractCall("ErrorResp(ErrorPayload { code: -32000, message: \"header not found\" })")"#,
             r#"error code -32000: historical state fa81e909 is not available"#,
             r#"ErrorResp(ErrorPayload { code: -32801, message: "no historical RPC is available for this historical (pre-L2) execution request" })"#,
             r#"ContractCall("ErrorResp(ErrorPayload { code: -32603, message: \"json: unsupported value\" })")"#,
             r#"Transport(Custom("Max retries exceeded server returned an error response"))"#,
         ] {
-            assert!(is_upstream_rpc_failure(e), "should be upstream: {e}");
+            let (status, category, retry_after) =
+                chain_failure_parts(ChainFailure::classify(fixture), 0);
+            assert_eq!(status, StatusCode::BAD_GATEWAY, "{fixture}");
+            assert_eq!(category, "upstream_rpc_unavailable", "{fixture}");
+            assert_eq!(retry_after.unwrap(), "30", "{fixture}");
         }
     }
 
-    /// These the chain DID execute and reject. The caller can act on them —
-    /// fix the signature, fund the wallet — so 400 remains the honest answer.
+    /// A revert the chain executed stays the caller's to fix, including when a
+    /// node code is nested inside the transport error that carries it.
     #[test]
-    fn execution_reverts_stay_client_errors() {
-        for e in [
+    fn a_revert_still_gets_400() {
+        for fixture in [
             r#"ErrorResp(ErrorPayload { code: 3, message: "execution reverted: FiatTokenV2: invalid signature" })"#,
             r#"ErrorResp(ErrorPayload { code: 3, message: "execution reverted: ERC20: transfer amount exceeds balance" })"#,
+            r#"Transport(Custom("... code: -32000 ... execution reverted: FiatTokenV2: invalid signature"))"#,
         ] {
-            assert!(!is_upstream_rpc_failure(e), "should stay client error: {e}");
+            let (status, _, retry_after) = chain_failure_parts(ChainFailure::classify(fixture), 0);
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{fixture}");
+            assert!(retry_after.is_none(), "{fixture}");
         }
     }
 
-    /// A revert wrapped in a transport error is still a revert: the chain
-    /// answered. Without this precedence a bad signature would be reported as
-    /// our outage, which is the same mistake in the opposite direction.
-    #[test]
-    fn revert_wins_over_a_nested_transport_code() {
-        let e = r#"Transport(Custom("... code: -32000 ... execution reverted: FiatTokenV2: invalid signature"))"#;
-        assert!(!is_upstream_rpc_failure(e));
+    /// Unrecognised text keeps the conservative 400 and the token clients have
+    /// branched on since 2026-08-28.
+    #[tokio::test]
+    async fn unknown_text_keeps_its_old_token() {
+        let err = FacilitatorLocalError::ContractCall("something entirely new".to_string());
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let body: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        assert!(body["error"]
+            .as_str()
+            .expect("token")
+            .starts_with("contract_call_failed"));
     }
 
-    /// Unrecognised text keeps the old behaviour. Guessing 502 would tell a
-    /// caller with a genuinely broken payload to sit and wait for us.
+    /// `txpool is full` never entered the mempool, so it stays retryable —
+    /// now named as a mempool refusal rather than as an outage.
     #[test]
-    fn unknown_errors_are_not_promoted_to_upstream() {
-        assert!(!is_upstream_rpc_failure("SchemeMismatch"));
-        assert!(!is_upstream_rpc_failure("something entirely new"));
-    }
-
-    /// `txpool is full` never entered the mempool -- retrying is the correct
-    /// caller behaviour (paired with `evm.rs` releasing the nonce on the same
-    /// condition, so the retry lands on a clean slot instead of widening a
-    /// gap).
-    #[test]
-    fn mempool_full_is_retryable() {
-        assert!(is_upstream_rpc_failure(
-            r#"ErrorResp(ErrorPayload { code: -32003, message: "txpool is full" })"#
-        ));
+    fn a_full_mempool_is_still_retryable() {
+        let (status, category, retry_after) = chain_failure_parts(
+            ChainFailure::classify(
+                r#"ErrorResp(ErrorPayload { code: -32003, message: "txpool is full" })"#,
+            ),
+            0,
+        );
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(category, "upstream_nonce_or_mempool");
+        assert_eq!(retry_after.unwrap(), "30");
     }
 
     /// `-32003` is overloaded: `eth_call`'s out-of-gas rejection carries the
-    /// same code but is a real answer about the request, not an outage. This
-    /// must stay a 400, not follow `-32003` into retryable.
+    /// same code but is a real answer about the request.
     #[test]
     fn out_of_gas_32003_stays_a_client_error() {
-        assert!(!is_upstream_rpc_failure(
-            "server returned an error response: error code -32003: out of gas: \
-             gas exhausted during memory expansion: 600000000"
-        ));
+        let (status, _, retry_after) = chain_failure_parts(
+            ChainFailure::classify(
+                "server returned an error response: error code -32003: out of gas: \
+                 gas exhausted during memory expansion: 600000000",
+            ),
+            0,
+        );
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(retry_after.is_none());
+    }
+
+    /// Every category this module can emit is in the bounded vocabulary — no
+    /// error text, no addresses, no RPC URL with a key in it.
+    #[test]
+    fn every_category_is_a_bounded_token() {
+        const ALLOWED: [&str; 8] = [
+            "payload_rejected",
+            "facilitator_signer_unfunded",
+            "upstream_nonce_or_mempool",
+            "upstream_rate_limited",
+            "upstream_rpc_unavailable",
+            "broadcast_uncertain",
+            "receipt_pending",
+            "unclassified",
+        ];
+        for fixture in [
+            REAL_UNFUNDED,
+            "execution reverted: whatever",
+            "txpool is full",
+            "rate limit exceeded",
+            "-32000 header not found",
+            "SettlementUnconfirmed(Evm(0x00), Base)",
+            "timed out waiting for receipt",
+            "something entirely new",
+        ] {
+            let category = ChainFailure::classify(fixture).category();
+            assert!(ALLOWED.contains(&category), "{category} from {fixture}");
+        }
     }
 }
 
 /// Exercises `impl IntoResponse for FacilitatorLocalError`'s `ContractCall`
-/// arm directly (not just the `is_upstream_rpc_failure` classifier) — this is
-/// the response the >95% plain-`/settle` EIP-3009 traffic actually gets,
-/// wired to `is_upstream_rpc_failure` on 2026-08-28.
+/// arm directly (not just the classifier in `chain/failure.rs`) — this is the
+/// response the >95% plain-`/settle` EIP-3009 traffic actually gets, wired to
+/// the shared classification on 2026-08-28 and re-wired to the typed one on
+/// 2026-09-10.
 #[cfg(test)]
 mod rejection_reason_tests {
     use super::*;
@@ -14087,9 +14296,9 @@ mod contract_call_response_tests {
     /// (`:3516`), not by this arm — plain `/settle` never calls
     /// `AuthCaptureEscrow`. This fixture is shaped like it anyway (real
     /// selector, schematic ABI-encoded args) to prove the point requested:
-    /// the classifier is selector-agnostic. `is_upstream_rpc_failure` returns
-    /// false for ANY string containing "execution reverted" before it looks
-    /// at a single node code, so wiring it into this arm cannot turn an
+    /// the classifier is selector-agnostic. `ChainFailure::classify` answers
+    /// `PayloadRejected` for ANY string containing "execution reverted" before
+    /// it looks at a single node code, so wiring it into this arm cannot turn an
     /// expired/invalid payload into an infinite retry loop — not for this
     /// selector, not for one we have never seen.
     #[test]
@@ -14103,7 +14312,7 @@ mod contract_call_response_tests {
     }
 
     /// The two FiatTokenV2 (real USDC contract) reverts already proven in
-    /// `upstream_rpc_failure_tests::execution_reverts_stay_client_errors` —
+    /// `chain::failure::tests::a_revert_stays_the_callers_problem` —
     /// re-asserted here against the actual response arm, since that is what
     /// plain `/settle` calls on every mainnet USDC transfer.
     #[test]

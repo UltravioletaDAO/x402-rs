@@ -21,6 +21,7 @@ use crate::types::{
 #[cfg(feature = "algorand")]
 pub mod algorand;
 pub mod evm;
+pub mod failure;
 pub mod near;
 pub mod solana;
 pub mod stellar;

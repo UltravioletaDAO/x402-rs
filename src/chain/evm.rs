@@ -866,7 +866,13 @@ impl EvmProvider {
 /// Used to decide whether a reserved nonce can be handed back. Anything not
 /// listed here is treated as ambiguous — the transaction may be propagating —
 /// and keeps the conservative reset instead.
-fn is_pre_broadcast_rejection(error: &str) -> bool {
+///
+/// `pub(crate)`: `chain/failure.rs` asserts against it that every failure it
+/// advertises as retryable is one this function proves never queued. A retry
+/// advised for a nonce the allocator did NOT release widens a gap rather than
+/// curing it, so the two must be checked together rather than reasoned about
+/// separately.
+pub(crate) fn is_pre_broadcast_rejection(error: &str) -> bool {
     let lower = error.to_lowercase();
     // A nonce error means the node evaluated our nonce against its own view;
     // the transaction never queued, but the resync path (not release) is the
@@ -935,7 +941,11 @@ pub(crate) fn is_nonce_too_high(error: &str) -> bool {
 /// `replacement underpriced`, and a nonce left ahead of the chain surfaces as
 /// `nonce too high`. All three are recoverable by resyncing and retrying, so
 /// each is matched on its own rather than behind the `nonce` guard.
-fn is_nonce_error(error: &str) -> bool {
+///
+/// `pub(crate)`: `chain/failure.rs` classifies HTTP responses on the same
+/// phrasings. One list, so a phrasing that earns a retry here cannot fail to
+/// earn one there.
+pub(crate) fn is_nonce_error(error: &str) -> bool {
     let lower = error.to_lowercase();
     lower.contains("already known")
         || lower.contains("replacement transaction underpriced")

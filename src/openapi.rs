@@ -553,6 +553,24 @@ later found confirmed carries the same identifier.
 Do not collapse this with the other `502`, `upstream_rpc_unavailable`, which
 carries `Retry-After` and is a plain upstream failure. Branch on `error`.
 
+**Why a chain write failed, as a token.** Since 2026-09-10 the `error` field on a
+failed write names the stage and reason rather than only saying "node or caller".
+The set is closed:
+
+| `error` | Status | `Retry-After` | What it means |
+|---|---|---|---|
+| `contract_call_failed` | 400 | — | The chain executed the call and rejected it, or the failure could not be classified. Fix the request. |
+| `facilitator_signer_unfunded` | **503** | ~300s | **The facilitator's own signer cannot cover gas on this network.** Nothing about the request is wrong. Until 2026-09-10 this was reported as `upstream_rpc_unavailable` with `Retry-After: 30`, because the node returns it under JSON-RPC code `-32000` like a genuine outage. A retry cannot help before an operator restores the signer's usable margin, so the hint is minutes and jittered. |
+| `upstream_nonce_or_mempool` | 502 | 30s | The node refused on nonce or mempool grounds and never queued the transaction. Safe to retry. |
+| `upstream_rate_limited` | 503 | 60s | The facilitator is being rate limited by this network's RPC provider. |
+| `upstream_rpc_unavailable` | 502 | 30s | The node could not answer. Unchanged. |
+| `broadcast_uncertain` | 502 | **none** | The transaction was handed to the network and no verdict was reached. Same rule as `settlement_unconfirmed`: do not retry, look it up. |
+| `receipt_pending` | 502 | **none** | Broadcast succeeded, the receipt has not arrived. Do not retry. |
+
+The absence of `Retry-After` is the signal, not the status code: two of these are
+`502` and must never be retried automatically. The escrow branch also carries an
+explicit `"retryable"` boolean in the body for the same reason.
+
 **Envelope shapes.** `/settle` and `/verify` share one parser, so both the x402
 v1 envelope (`paymentPayload` + `paymentRequirements`) and the x402 v2 envelope
 (`paymentPayload` + `resource` + `accepted`, no `paymentRequirements`) are
@@ -563,8 +581,13 @@ accepted here on identical terms. Both are written out under `POST /verify`.
         (status = 200, description = "Settlement result", body = Object),
         (status = 400, description = "Settlement failed", body = Object),
         (
+            status = 503,
+            description = "`facilitator_signer_unfunded` (the facilitator's signer cannot cover gas                            on this network) or `upstream_rate_limited`. Neither is caused by the                            request; both carry `Retry-After`.",
+            body = Object
+        ),
+        (
             status = 502,
-            description = "`settlement_unconfirmed`: the transaction was broadcast and no receipt                            arrived, so it may be mined -- the body carries `transaction` and                            `paymentId` and `retryable: false`. (Also `upstream_rpc_unavailable`,                            which is retryable and carries `Retry-After`.)",
+            description = "`settlement_unconfirmed` / `broadcast_uncertain`: the transaction was                            broadcast and no receipt arrived, so it may be mined -- the body                            carries `retryable: false` and NO `Retry-After`. Also                            `upstream_rpc_unavailable` and `upstream_nonce_or_mempool`, which                            are retryable and carry `Retry-After`.",
             body = Object
         )
     )

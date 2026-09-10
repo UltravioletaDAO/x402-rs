@@ -2606,6 +2606,27 @@ pub struct PendingNonceManager {
 /// the signer behind a nonce that will never be used.
 const NONCE_TRUST_CHAIN_AFTER: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// How long the chain must CONTINUOUSLY report a pending count at or below this
+/// process's high-water mark before the mark is abandoned anyway.
+///
+/// [`NONCE_TRUST_CHAIN_AFTER`] releases the mark only during a lull, and under
+/// continuous traffic there is never one. That gap is not hypothetical: on
+/// 2026-09-10, with a Polygon signer wedged behind an unmineable transaction,
+/// every send was being refused by the node before it reached the mempool. Each
+/// refusal released its nonce, but a sibling settle had usually taken the next
+/// one already, so the rollback declined and the high-water mark ratcheted --
+/// 1738 locally against 1557 on the chain, and climbing.
+///
+/// Nothing broke while the signer was frozen, because none of those allocations
+/// reached a pool. It breaks on RECOVERY: the moment sends are accepted again,
+/// this process would start at 1738 and leave 1557..1737 empty -- a real nonce
+/// gap, which is the one failure mode that cannot heal on its own.
+///
+/// Five minutes because the reasoning is the same as the other constant's, only
+/// anchored to a different clock: a transaction this process allocated and that
+/// no node has acknowledged in five minutes is not still propagating.
+const NONCE_TRUST_CHAIN_AFTER_DRIFT: std::time::Duration = std::time::Duration::from_secs(300);
+
 /// Decides what a resync should hand out, given the chain's own pending count
 /// and this process's bookkeeping for the address.
 ///
@@ -2618,11 +2639,22 @@ fn resync_target(
     pending: u64,
     high_water: Option<u64>,
     last_allocated: Option<std::time::Instant>,
+    chain_behind_for: Option<std::time::Duration>,
 ) -> u64 {
     match (high_water, last_allocated) {
         // Nothing we allocated can still be in flight: trust the chain so a
         // gap left by a dropped transaction heals.
         (_, Some(last)) if last.elapsed() >= NONCE_TRUST_CHAIN_AFTER => pending,
+        // The chain has been reporting a lower count than our bookkeeping for
+        // long enough that nothing we allocated can be in flight either --
+        // even though traffic never paused long enough for the branch above to
+        // fire. Trust the chain and give up the mark, or the drift becomes a
+        // real nonce gap the first time sends start being accepted again.
+        (Some(_), _)
+            if chain_behind_for.is_some_and(|since| since >= NONCE_TRUST_CHAIN_AFTER_DRIFT) =>
+        {
+            pending
+        }
         // A transaction we allocated may still be propagating and this node
         // may not have seen it. Handing back a nonce at or below the
         // high-water mark would try to REPLACE that in-flight transaction
@@ -2645,6 +2677,10 @@ struct NonceState {
     /// When the last nonce was handed out, used to decide whether anything we
     /// allocated could still be pending.
     last_allocated: Option<std::time::Instant>,
+    /// When the chain first started reporting a pending count at or below
+    /// [`Self::high_water`], and has done so on every resync since. `None` when
+    /// the chain has caught up. See [`NONCE_TRUST_CHAIN_AFTER_DRIFT`].
+    chain_behind_since: Option<std::time::Instant>,
 }
 
 #[async_trait]
@@ -2681,7 +2717,39 @@ impl NonceManager for PendingNonceManager {
                 // not reuse a nonce that is already queued.
                 tracing::trace!(%address, "resyncing nonce against chain");
                 let pending = provider.get_transaction_count(address).pending().await?;
-                resync_target(pending, state.high_water, state.last_allocated)
+
+                // Run the drift clock BEFORE deciding, so the decision sees how
+                // long this divergence has lasted rather than only that it
+                // exists right now.
+                if state.high_water.is_some_and(|mark| pending <= mark) {
+                    state
+                        .chain_behind_since
+                        .get_or_insert_with(std::time::Instant::now);
+                } else {
+                    state.chain_behind_since = None;
+                }
+                let chain_behind_for = state.chain_behind_since.map(|at| at.elapsed());
+
+                let target = resync_target(
+                    pending,
+                    state.high_water,
+                    state.last_allocated,
+                    chain_behind_for,
+                );
+                if state.high_water.is_some_and(|mark| target <= mark) {
+                    // Giving up the mark is worth a line: it means this process
+                    // had drifted above the chain, and every nonce between the
+                    // two was allocated to a transaction that never landed.
+                    tracing::warn!(
+                        %address,
+                        chain_pending = pending,
+                        high_water = ?state.high_water,
+                        behind_for_secs = chain_behind_for.map(|d| d.as_secs()),
+                        "nonce high-water mark abandoned; resyncing down to the chain"
+                    );
+                    state.chain_behind_since = None;
+                }
+                target
             }
         };
 
@@ -3058,7 +3126,98 @@ mod tests {
         high_water: Option<u64>,
         last_allocated: Option<std::time::Instant>,
     ) -> u64 {
-        resync_target(pending, high_water, last_allocated)
+        resync_target(pending, high_water, last_allocated, None)
+    }
+
+    // ---------------------------------------------------------------
+    // Downward resync on sustained drift.
+    //
+    // The shape measured on 2026-09-10: a Polygon signer wedged behind an
+    // unmineable transaction, the node refusing every new send before it
+    // reached the mempool, and this process's high-water mark ratcheting to
+    // 1738 while the chain reported 1557.
+    // ---------------------------------------------------------------
+
+    const DRIFTED: u64 = 1557; // chain pending
+    const RATCHETED: u64 = 1737; // local high-water mark
+
+    #[test]
+    fn drift_below_the_threshold_still_protects_in_flight_transactions() {
+        // Four minutes of divergence is well inside normal propagation trouble.
+        // Rewinding here would try to REPLACE a transaction that is merely slow.
+        let target = resync_target(
+            DRIFTED,
+            Some(RATCHETED),
+            Some(std::time::Instant::now()),
+            Some(std::time::Duration::from_secs(240)),
+        );
+        assert_eq!(target, RATCHETED + 1);
+    }
+
+    #[test]
+    fn sustained_drift_gives_up_the_high_water_mark() {
+        // Five minutes of the chain reporting less than we believe. Nothing we
+        // allocated is still propagating; keeping the mark would leave
+        // 1557..1737 permanently empty once sends are accepted again.
+        let target = resync_target(
+            DRIFTED,
+            Some(RATCHETED),
+            Some(std::time::Instant::now()),
+            Some(std::time::Duration::from_secs(300)),
+        );
+        assert_eq!(
+            target, DRIFTED,
+            "high-water mark survived sustained drift; recovery would open a real nonce gap"
+        );
+    }
+
+    #[test]
+    fn sustained_drift_does_not_rewind_when_the_chain_is_ahead() {
+        // The chain has seen everything we allocated and more. There is no
+        // drift to resolve, and `pending` is the answer either way -- but it
+        // must come from the ordinary branch, not from the escape hatch.
+        let target = resync_target(
+            RATCHETED + 50,
+            Some(RATCHETED),
+            Some(std::time::Instant::now()),
+            Some(std::time::Duration::from_secs(3_600)),
+        );
+        assert_eq!(target, RATCHETED + 50);
+    }
+
+    #[test]
+    fn the_quiet_period_branch_still_wins_when_both_apply() {
+        // Both escapes agree on the answer; this pins that adding the second
+        // one did not change what the first one does.
+        let long_ago = std::time::Instant::now() - std::time::Duration::from_secs(600);
+        assert_eq!(
+            resync_target(DRIFTED, Some(RATCHETED), Some(long_ago), None),
+            DRIFTED
+        );
+        assert_eq!(
+            resync_target(
+                DRIFTED,
+                Some(RATCHETED),
+                Some(long_ago),
+                Some(std::time::Duration::from_secs(600))
+            ),
+            DRIFTED
+        );
+    }
+
+    #[test]
+    fn drift_alone_cannot_rewind_an_address_with_no_high_water_mark() {
+        // Nothing was ever allocated here, so there is no mark to abandon and
+        // no in-flight transaction to protect.
+        assert_eq!(
+            resync_target(
+                DRIFTED,
+                None,
+                None,
+                Some(std::time::Duration::from_secs(3_600))
+            ),
+            DRIFTED
+        );
     }
 
     #[tokio::test]
@@ -3144,7 +3303,7 @@ mod tests {
 
         // With no mark, a resync takes the chain's own count -- which is the
         // whole point.
-        assert_eq!(resync_target(1555, None, None), 1555);
+        assert_eq!(resync_target(1555, None, None, None), 1555);
     }
 
     /// `reset_nonce` must KEEP preserving the mark. The two recoveries answer
@@ -3172,11 +3331,11 @@ mod tests {
     #[test]
     fn a_surviving_mark_is_what_makes_the_ratchet_climb() {
         // Chain stuck at 1555; the mark keeps climbing with each failed try.
-        assert_eq!(resync_target(1555, Some(1555), None), 1556);
-        assert_eq!(resync_target(1555, Some(1586), None), 1587);
-        assert_eq!(resync_target(1555, Some(1602), None), 1603);
+        assert_eq!(resync_target(1555, Some(1555), None, None), 1556);
+        assert_eq!(resync_target(1555, Some(1586), None, None), 1587);
+        assert_eq!(resync_target(1555, Some(1602), None, None), 1603);
         // Drop the mark and it collapses back to the chain in one step.
-        assert_eq!(resync_target(1555, None, None), 1555);
+        assert_eq!(resync_target(1555, None, None, None), 1555);
     }
 
     /// A provider pointed at a closed port.

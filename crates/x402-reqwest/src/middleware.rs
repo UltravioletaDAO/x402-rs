@@ -106,6 +106,10 @@ pub enum X402PaymentsError {
     /// This should be an extremely rare occurrence.
     #[error("Failed to encode payment payload to json")]
     JsonEncodeError(#[source] serde_json::Error),
+    /// The offer was readable and the wallet could have signed it, and the
+    /// caller's own policy said no. Carries the concrete cause.
+    #[error("payment refused by policy: {0}")]
+    PolicyRefused(#[source] crate::policy::PolicyRefusal),
     /// Raised when the base64-encoded JSON payload cannot be inserted into a [`HeaderValue`].
     /// Typically caused by invalid characters or excessive length.
     #[error("Failed to encode payment payload to HTTP header")]
@@ -149,6 +153,14 @@ pub struct X402Payments {
     /// and a client that never asked for durability must not start paying for
     /// it because a seller began offering it.
     prefer_durable_evidence: bool,
+    /// The spending rules the caller authorised in advance.
+    ///
+    /// Empty by default, which permits: this crate did not have a budget before
+    /// and turning one on silently would refuse payments callers are making
+    /// today. `assert_max_amount` keeps working exactly as it did; the policy is
+    /// the layer that can also say "not to that recipient" and "not any more
+    /// this month".
+    policy: crate::policy::PurchasePolicy,
 }
 
 impl X402Payments {
@@ -158,6 +170,7 @@ impl X402Payments {
             max_token_amount: HashMap::new(),
             prefer: vec![],
             prefer_durable_evidence: false,
+            policy: crate::policy::PurchasePolicy::new(),
         }
     }
 
@@ -169,6 +182,7 @@ impl X402Payments {
             max_token_amount: self.max_token_amount,
             prefer: self.prefer,
             prefer_durable_evidence: self.prefer_durable_evidence,
+            policy: self.policy.clone(),
         }
     }
 
@@ -180,6 +194,26 @@ impl X402Payments {
     }
 
     /// Extend the preferred token list, prioritizing what the client wants to pay with.
+    /// Attach the spending rules this client is authorised to work within.
+    ///
+    /// See [`crate::policy::PurchasePolicy`]. Nothing in the payment path ever
+    /// widens what is set here.
+    pub fn with_policy(&self, policy: crate::policy::PurchasePolicy) -> Self {
+        Self {
+            wallets: self.wallets.clone(),
+            max_token_amount: self.max_token_amount.clone(),
+            prefer: self.prefer.clone(),
+            prefer_durable_evidence: self.prefer_durable_evidence,
+            policy,
+        }
+    }
+
+    /// The policy in force, for a caller that wants to record a settled payment
+    /// against it with [`crate::policy::PurchasePolicy::record_spend`].
+    pub fn policy(&self) -> &crate::policy::PurchasePolicy {
+        &self.policy
+    }
+
     pub fn prefer<T: Into<Vec<TokenAsset>>>(&self, prefer: T) -> Self {
         let mut this = self.clone();
         this.prefer.append(&mut prefer.into());
@@ -347,10 +381,54 @@ impl X402Payments {
         accepts: &[PaymentRequirements],
         extensions: &HashMap<String, serde_json::Value>,
     ) -> Result<HeaderValue, X402PaymentsError> {
+        self.build_payment_header_for(accepts, extensions, None)
+            .await
+    }
+
+    /// The same, told what the catalog advertised.
+    ///
+    /// The comparison never decides anything -- see
+    /// [`crate::policy::PurchasePolicy`] -- but a caller that read a listing can
+    /// hand it over and get the divergence reported instead of having to diff
+    /// the two itself.
+    pub async fn build_payment_header_for(
+        &self,
+        accepts: &[PaymentRequirements],
+        extensions: &HashMap<String, serde_json::Value>,
+        quote: Option<&crate::policy::AdvertisedQuote>,
+    ) -> Result<HeaderValue, X402PaymentsError> {
         let selected = self.select_in(accepts, extensions)?;
         #[cfg(feature = "telemetry")]
         tracing::debug!(?selected, "Selected payment requirement");
+        // The pre-existing per-asset ceiling, unchanged: a caller that set one
+        // and no policy keeps exactly the behaviour it had.
         self.assert_max_amount(&selected)?;
+
+        // And the policy, evaluated against THIS offer, before anything is
+        // signed. An offer that diverges from the listing but sits inside an
+        // authorised policy proceeds; one that does not is refused with a cause,
+        // and the policy is not widened to fit it.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(X402PaymentsError::ClockError)?
+            .as_secs();
+        let approval = self
+            .policy
+            .evaluate(
+                &selected,
+                quote,
+                crate::policy::offer_valid_until(extensions),
+                now,
+            )
+            .map_err(X402PaymentsError::PolicyRefused)?;
+        #[cfg(feature = "telemetry")]
+        tracing::debug!(
+            versus_quote = approval.versus_quote.code(),
+            amount = %approval.amount,
+            "policy approved this offer"
+        );
+        let _ = &approval;
+
         let payment_payload = self.make_payment_payload(selected).await?;
         Self::encode_payment_header(&payment_payload)
     }
@@ -553,6 +631,7 @@ mod durable_offer_tests {
             max_token_amount: HashMap::new(),
             prefer: vec![],
             prefer_durable_evidence: false,
+            policy: crate::policy::PurchasePolicy::new(),
         }
     }
 
@@ -604,6 +683,8 @@ mod durable_offer_tests {
         let challenge = PaymentRequiredResponse {
             error: String::new(),
             accepts: vec![plain, durable],
+            // A challenge we BUILD has no unreadable offers: we wrote it.
+            unreadable_offers: Vec::new(),
             x402_version: x402_rs::types::X402Version::V1,
             extensions,
         };

@@ -2150,7 +2150,7 @@ impl From<TokenDeployment> for TokenAsset {
 /// - Malformed or unverifiable payment payload
 /// - No matching payment requirements found
 /// - Verification or settlement failed
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code)] // Public for consumption by downstream crates.
 pub struct PaymentRequiredResponse {
@@ -2159,8 +2159,15 @@ pub struct PaymentRequiredResponse {
     /// answering with it was unpayable by this crate -- the challenge simply
     /// failed to deserialize. Found by KarmaKadabra's buyer, which matched both
     /// keys in production, 2026-08-20.
-    #[serde(alias = "paymentRequirements")]
     pub accepts: Vec<PaymentRequirements>,
+
+    /// Offers in this challenge that this build could not read, kept as a
+    /// count and a scheme name rather than dropped in silence.
+    ///
+    /// Not on the wire: filled in while deserializing `accepts`. A seller that
+    /// serializes a challenge does not emit it.
+    #[serde(skip)]
+    pub unreadable_offers: Vec<UnreadableOffer>,
     pub x402_version: X402Version,
     /// Extensions declared on this challenge, keyed by extension key, each an
     /// `{ info, schema }` object as the core specification (§5) requires.
@@ -2171,6 +2178,94 @@ pub struct PaymentRequiredResponse {
     /// it under one requirement.
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub extensions: std::collections::HashMap<String, serde_json::Value>,
+}
+
+/// Extension key under which a seller declares how long its offer stands.
+///
+/// Defined here, once, because BOTH sides need it and they do not depend on each
+/// other: `x402-axum` writes it and `x402-reqwest` reads it. Two constants would
+/// be two chances to disagree, and a seller and a buyer naming different keys is
+/// a seller and a buyer with nothing to say to each other.
+///
+/// The version is in the key. The offer-and-receipt extension's transport may
+/// still change, and a value read from an unversioned key could not be compared
+/// against anything later.
+pub const OFFER_VALIDITY_EXTENSION: &str = "offer-receipt/1";
+
+/// An offer in a 402 that this build cannot interpret.
+///
+/// Carries the scheme name and nothing else. Enough for a buyer to refuse with a
+/// concrete cause -- "the only offers were `batch-settlement`" -- without
+/// pretending to understand terms it could not parse.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnreadableOffer {
+    /// The `scheme` the seller named, when it named one. Bounded in length: it
+    /// is somebody else's string and it ends up in an error message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheme: Option<String>,
+}
+
+/// Longest scheme name kept from an unreadable offer.
+const MAX_UNREADABLE_SCHEME_LEN: usize = 64;
+
+/// Wire shape of a challenge, before the offers are sorted into readable and not.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PaymentRequiredResponseWire {
+    error: String,
+    #[serde(alias = "paymentRequirements", default)]
+    accepts: Vec<serde_json::Value>,
+    x402_version: X402Version,
+    #[serde(default)]
+    extensions: std::collections::HashMap<String, serde_json::Value>,
+}
+
+/// Read a challenge, keeping the offers this build understands.
+///
+/// # Why this is tolerant
+///
+/// [`Scheme`] is a closed enum, because a payment we cannot name is a payment we
+/// cannot make. But `accepts` is a LIST of offers, and one unreadable entry used
+/// to fail the whole list -- so a seller advertising `exact` alongside anything
+/// this build does not implement was **unpayable**, and the buyer never learned
+/// that a perfectly payable offer had been sitting beside it.
+///
+/// That is the mistake the catalog made before P0, one layer along: a closed
+/// type doing duty for an open collection. The offers we can read are kept; the
+/// ones we cannot are counted, with their scheme name, so a refusal can say what
+/// the seller actually offered instead of "could not parse".
+///
+/// A challenge whose `accepts` is not an array at all is still an error. That is
+/// a malformed challenge, not an unfamiliar offer.
+impl<'de> Deserialize<'de> for PaymentRequiredResponse {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = PaymentRequiredResponseWire::deserialize(deserializer)?;
+        let mut accepts = Vec::with_capacity(wire.accepts.len());
+        let mut unreadable_offers = Vec::new();
+        for value in wire.accepts {
+            match serde_json::from_value::<PaymentRequirements>(value.clone()) {
+                Ok(requirement) => accepts.push(requirement),
+                Err(_) => {
+                    // The scheme name is the one thing worth keeping, and it is
+                    // somebody else's string: bounded before it can reach a log
+                    // line or an error message.
+                    let scheme = value
+                        .get("scheme")
+                        .and_then(|s| s.as_str())
+                        .map(|s| s.chars().take(MAX_UNREADABLE_SCHEME_LEN).collect());
+                    unreadable_offers.push(UnreadableOffer { scheme });
+                }
+            }
+        }
+        Ok(PaymentRequiredResponse {
+            error: wire.error,
+            accepts,
+            unreadable_offers,
+            x402_version: wire.x402_version,
+            extensions: wire.extensions,
+        })
+    }
 }
 
 impl Display for PaymentRequiredResponse {

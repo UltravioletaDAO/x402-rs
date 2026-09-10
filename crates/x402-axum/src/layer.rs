@@ -704,6 +704,8 @@ impl X402Error {
         let payment_required_response = PaymentRequiredResponse {
             error: ERR_PAYMENT_HEADER_REQUIRED.clone(),
             accepts: payment_requirements,
+            // A challenge we BUILD has no unreadable offers: we wrote it.
+            unreadable_offers: Vec::new(),
             x402_version: X402Version::V1,
             extensions: Default::default(),
         };
@@ -714,6 +716,8 @@ impl X402Error {
         let payment_required_response = PaymentRequiredResponse {
             error: ERR_INVALID_PAYMENT_HEADER.clone(),
             accepts: payment_requirements,
+            // A challenge we BUILD has no unreadable offers: we wrote it.
+            unreadable_offers: Vec::new(),
             x402_version: X402Version::V1,
             extensions: Default::default(),
         };
@@ -724,6 +728,8 @@ impl X402Error {
         let payment_required_response = PaymentRequiredResponse {
             error: ERR_NO_PAYMENT_MATCHING.clone(),
             accepts: payment_requirements,
+            // A challenge we BUILD has no unreadable offers: we wrote it.
+            unreadable_offers: Vec::new(),
             x402_version: X402Version::V1,
             extensions: Default::default(),
         };
@@ -737,6 +743,8 @@ impl X402Error {
         let payment_required_response = PaymentRequiredResponse {
             error: format!("Verification Failed: {error}"),
             accepts: payment_requirements,
+            // A challenge we BUILD has no unreadable offers: we wrote it.
+            unreadable_offers: Vec::new(),
             x402_version: X402Version::V1,
             extensions: Default::default(),
         };
@@ -750,6 +758,8 @@ impl X402Error {
         let payment_required_response = PaymentRequiredResponse {
             error: format!("Settlement Failed: {error}"),
             accepts: payment_requirements,
+            // A challenge we BUILD has no unreadable offers: we wrote it.
+            unreadable_offers: Vec::new(),
             x402_version: X402Version::V1,
             extensions: Default::default(),
         };
@@ -763,7 +773,50 @@ impl X402Error {
         self.0.extensions = extensions;
         self
     }
+
+    /// Declare how long these terms stand, dated now.
+    ///
+    /// # Why a seller should say this out loud
+    ///
+    /// A buyer evaluating a `402` has to decide whether to sign it, and one of
+    /// the things it must be able to check is whether the offer has lapsed. With
+    /// nothing published, "has this expired" has no answer, so every buyer
+    /// either treats every offer as eternal or invents a window of its own --
+    /// and a window a buyer invented is not a commitment a seller made.
+    ///
+    /// The key carries its version. The offer-and-receipt extension's transport
+    /// may still change, and a value read from an unversioned key could not be
+    /// compared against anything later.
+    ///
+    /// This is a statement about the OFFER, not about the payment
+    /// authorization: `maxTimeoutSeconds` still governs how long a signed
+    /// authorization stays usable, and the facilitator still enforces it. This
+    /// says how long the price stands.
+    pub fn with_offer_validity(mut self, valid_for: std::time::Duration) -> Self {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        self.0.extensions.insert(
+            OFFER_VALIDITY_EXTENSION.to_string(),
+            serde_json::json!({
+                "info": { "validUntil": now + valid_for.as_secs() },
+                "schema": {
+                    "validUntil": "unix seconds; the last instant these terms stand"
+                }
+            }),
+        );
+        self
+    }
+
+    /// The challenge this error carries, for a caller that wants to inspect what
+    /// it is about to send.
+    pub fn challenge(&self) -> &PaymentRequiredResponse {
+        &self.0
+    }
 }
+
+pub use x402_rs::types::OFFER_VALIDITY_EXTENSION;
 
 impl IntoResponse for X402Error {
     fn into_response(self) -> Response {
@@ -806,6 +859,8 @@ where
                 x402_version: X402Version::V1,
                 error: format!("Unable to retrieve supported payment schemes: {e}"),
                 accepts: vec![],
+                // A challenge we BUILD has no unreadable offers: we wrote it.
+                unreadable_offers: Vec::new(),
                 extensions: Default::default(),
             })
         })?;

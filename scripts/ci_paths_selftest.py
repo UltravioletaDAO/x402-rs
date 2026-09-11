@@ -158,6 +158,25 @@ CASES: list[tuple[str, list[str], dict[str, bool]]] = [
     # -- mixed: one build input anywhere in the push is enough --------------
     ("docs plus one source file", ["docs/CHANGELOG.md", "src/network.rs"], {CI: True}),
     ("a release: VERSION plus prose", ["VERSION", "docs/CHANGELOG.md", "README.md"], {CI: True}),
+
+    # -- adversarial: paths that only look like build inputs ----------------
+    #
+    # Every one of these is a way the anchoring could quietly come undone. A
+    # pattern that matched a prefix or floated free of the repository root
+    # would pass every case above and still be wrong.
+    ("a doc that happens to live under a src/ directory",
+     ["docs/src/note.md"], {CI: False}),
+    ("a doc whose name contains VERSION", ["docs/VERSION.md"], {CI: False}),
+    ("a directory whose name starts with static", ["staticky/x.html"], {CI: False}),
+    ("a backup of the landing checker",
+     ["scripts/verify_landing_canonical.py.bak"], {CI: False}),
+    ("a same-named script somewhere else",
+     ["scripts/bench/verify_landing_canonical.py"], {CI: False}),
+    ("the other workflow, spelled .yml not .yaml",
+     [".github/workflows/ci.yml"], {CI: False}),
+    ("a deeply nested asset -- `**` must cross separators",
+     ["static/a/b/c/deep.png"], {CI: True}),
+    ("a deeply nested module", ["src/chain/solana/mod.rs"], {CI: True}),
 ]
 
 # The leak gate reads prose on purpose: its bare-12-digit rule scans *.md and

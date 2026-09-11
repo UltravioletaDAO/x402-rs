@@ -42,6 +42,7 @@
 // code, and the tests in each submodule exercise all of it.
 #![allow(dead_code, unused_imports)]
 
+pub mod commercial;
 pub mod envelope;
 pub mod gate;
 pub mod handlers;

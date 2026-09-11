@@ -112,7 +112,18 @@ env:
 
 concurrency:
   group: cicd-${{ github.ref }}
-  cancel-in-progress: false
+  # A pull request gets a fresh run on every push to its branch, and until now
+  # the superseded one kept compiling for another six minutes with nobody
+  # waiting on its answer. Measured 2026-09-11: 8 of the 22 pull-request runs in
+  # 24 h were overtaken before they finished, 54 of 392 wall-minutes -- more
+  # than the `paths` filter above saves.
+  #
+  # `false` on main is load-bearing and is what this expression still returns
+  # there. The group key is github.ref, so a push to main never shares a group
+  # with a pull request; two releases queued back to back must BOTH run, because
+  # cancelling the first would stop it between `terraform apply` and the rollout
+  # wait. The deploy job's own deploy-production group is the second guard.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:

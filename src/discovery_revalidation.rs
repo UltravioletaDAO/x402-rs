@@ -269,13 +269,38 @@ impl RevalidationQueue {
     /// Fire-and-forget on purpose: this runs off a public read path, and a
     /// listing must never wait on DynamoDB. A request that does not make it
     /// costs a slower refresh, and the periodic sweep still comes round.
-    pub fn offer_to_owner(self: &Arc<Self>, url: String) {
+    /// # Why this takes a batch and not a URL
+    ///
+    /// It took a URL, and one listing page can carry a hundred stale records, so
+    /// one public read produced a hundred spawned tasks and a hundred DynamoDB
+    /// writes. Worse, it did not self-limit: once the shared set reaches its cap
+    /// the conditional write starts FAILING, and a hundred failing writes cost
+    /// exactly what a hundred succeeding ones do.
+    ///
+    /// A string set takes many values in one `ADD`, so a page is one write. Same
+    /// lesson as the rest of 2026-09-10: work on a read path must not scale with
+    /// the size of the catalog.
+    pub fn offer_to_owner(self: &Arc<Self>, urls: Vec<String>) {
+        if urls.is_empty() {
+            return;
+        }
         let queue = Arc::clone(self);
         tokio::spawn(async move {
             let guard = queue.shared.read().await;
-            if let Some(shared) = guard.as_ref() {
-                if let Err(e) = shared.offer(&url).await {
-                    debug!(url = %url, error = %e, "could not hand a revalidation request to the owner");
+            let Some(shared) = guard.as_ref() else {
+                return;
+            };
+            for chunk in chunks_for_offer(&urls) {
+                if let Err(e) = shared.offer_many(&chunk).await {
+                    debug!(
+                        count = chunk.len(),
+                        error = %e,
+                        "could not hand revalidation requests to the owner"
+                    );
+                    // One refusal is enough: the rest of this page would be
+                    // refused for the same reason, and retrying it here is the
+                    // amplification just removed.
+                    return;
                 }
             }
         });
@@ -444,6 +469,27 @@ pub fn split_budget(max_per_tick: usize, long_tail_percent: u64) -> (usize, usiz
     (max_per_tick.saturating_sub(reserved), reserved)
 }
 
+/// Most URLs to put in one `ADD`.
+///
+/// A DynamoDB item is capped at 400 KB and a catalog URL runs to a couple of
+/// hundred bytes, so a hundred per write is an order of magnitude inside the
+/// limit while turning a page of listings into one round trip.
+const MAX_URLS_PER_OFFER: usize = 100;
+
+/// Split a batch into writes, dropping duplicates.
+fn chunks_for_offer(urls: &[String]) -> Vec<Vec<String>> {
+    let mut seen = std::collections::HashSet::new();
+    let unique: Vec<String> = urls
+        .iter()
+        .filter(|u| seen.insert((*u).clone()))
+        .cloned()
+        .collect();
+    unique
+        .chunks(MAX_URLS_PER_OFFER)
+        .map(|c| c.to_vec())
+        .collect()
+}
+
 fn host_of(url: &str) -> String {
     url::Url::parse(url)
         .ok()
@@ -466,21 +512,30 @@ impl SharedQueue {
     /// `ADD` on a string set is idempotent, which is the deduplication: a value
     /// already there costs one write and changes nothing. The condition bounds
     /// the item so a stampede cannot grow it towards DynamoDB's 400 KB limit.
-    async fn offer(&self, url: &str) -> Result<(), String> {
+    async fn offer_many(&self, urls: &[String]) -> Result<(), String> {
         use aws_sdk_dynamodb::types::AttributeValue;
+        if urls.is_empty() {
+            return Ok(());
+        }
         let ttl = now_secs() + cfg::revalidation_shared_ttl_secs();
+        // The condition is evaluated BEFORE the `ADD`, so a bound of `size < cap`
+        // permits a write that then adds up to a whole batch on top: the set
+        // could settle at `cap + batch - 1` from one replica, and further with
+        // three racing. The headroom has to be the batch we are about to add.
+        //
+        // Saturating, so a cap smaller than a batch does not wrap to an enormous
+        // bound; it becomes zero, which refuses the write, which is the safe
+        // direction for a bound.
+        let headroom = cfg::revalidation_shared_cap().saturating_sub(urls.len());
         self.client
             .update_item()
             .table_name(&self.table)
             .key("pk", AttributeValue::S(QUEUE_KEY.to_string()))
             .update_expression("ADD pending :url SET expires_at = :ttl")
-            .condition_expression("attribute_not_exists(pending) OR size(pending) < :cap")
-            .expression_attribute_values(":url", AttributeValue::Ss(vec![url.to_string()]))
+            .condition_expression("attribute_not_exists(pending) OR size(pending) <= :headroom")
+            .expression_attribute_values(":url", AttributeValue::Ss(urls.to_vec()))
             .expression_attribute_values(":ttl", AttributeValue::N(ttl.to_string()))
-            .expression_attribute_values(
-                ":cap",
-                AttributeValue::N(cfg::revalidation_shared_cap().to_string()),
-            )
+            .expression_attribute_values(":headroom", AttributeValue::N(headroom.to_string()))
             .send()
             .await
             .map(|_| ())
@@ -752,6 +807,68 @@ mod tests {
             parse_retry_after("99999999"),
             Some(Duration::from_secs(cfg::revalidation_max_backoff_secs()))
         );
+    }
+
+    #[test]
+    fn a_page_of_stale_listings_is_one_write_not_a_hundred() {
+        // The read path must not scale with the catalog. Handing a page over one
+        // record at a time was a hundred spawned tasks and a hundred writes per
+        // public read, and it did not self-limit: at the shared cap those become
+        // a hundred FAILING writes, which cost the same.
+        let page: Vec<String> = (0..100)
+            .map(|i| format!("https://h{i}.example/x"))
+            .collect();
+        let chunks = chunks_for_offer(&page);
+        assert_eq!(chunks.len(), 1, "one page, one round trip");
+        assert_eq!(chunks[0].len(), 100);
+    }
+
+    #[test]
+    fn a_batch_beyond_one_item_is_split_rather_than_refused() {
+        let many: Vec<String> = (0..250)
+            .map(|i| format!("https://h{i}.example/x"))
+            .collect();
+        let chunks = chunks_for_offer(&many);
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks.iter().map(|c| c.len()).sum::<usize>(), 250);
+    }
+
+    #[test]
+    fn duplicates_inside_a_batch_never_reach_the_wire() {
+        let dupes: Vec<String> = std::iter::repeat(A.to_string()).take(50).collect();
+        let chunks = chunks_for_offer(&dupes);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].len(), 1);
+    }
+
+    #[test]
+    fn the_shared_cap_leaves_room_for_the_batch_about_to_be_added() {
+        // DynamoDB evaluates a condition BEFORE the update, so `size < cap` lets
+        // through a write that then adds a whole batch on top: one replica could
+        // settle the set at `cap + batch - 1`, and three racing go further. The
+        // headroom has to be the batch we are about to add.
+        let cap = cfg::revalidation_shared_cap();
+        for batch in [1usize, 10, MAX_URLS_PER_OFFER] {
+            let headroom = cap.saturating_sub(batch);
+            assert!(
+                headroom + batch <= cap,
+                "a set at the headroom plus this batch must not exceed the cap"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cap_smaller_than_a_batch_refuses_rather_than_wrapping() {
+        // Saturating, not subtracting: an unsigned wrap would turn a tiny cap
+        // into an enormous bound, which is the opposite of a bound.
+        let tiny: usize = 5;
+        let headroom = tiny.saturating_sub(MAX_URLS_PER_OFFER);
+        assert_eq!(headroom, 0, "which refuses the write, the safe direction");
+    }
+
+    #[test]
+    fn an_empty_batch_is_no_write_at_all() {
+        assert!(chunks_for_offer(&[]).is_empty());
     }
 
     #[test]

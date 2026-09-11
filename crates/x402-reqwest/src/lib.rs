@@ -143,6 +143,7 @@ mod middleware;
 
 pub mod chains;
 pub mod durable;
+pub mod policy;
 
 pub use builder::*;
 pub use middleware::*;

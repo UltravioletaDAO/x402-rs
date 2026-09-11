@@ -1287,26 +1287,27 @@ impl DiscoveryRegistry {
         // this response.
         if crate::discovery_config::revalidation_enabled() && !stale_seen.is_empty() {
             let owns = crate::discovery_owner::owns_jobs();
-            let mut accepted = 0;
+            let mut to_hand_over: Vec<String> = Vec::new();
             for (url, reason) in &stale_seen {
+                // Only a request THIS replica accepted as new work is handed
+                // over. The coalescing window is what makes many reads of one
+                // stale record into one job rather than one write per read.
                 if self.revalidation.request(url, *reason, now).await {
-                    accepted += 1;
-                    // Only a request THIS replica accepted as new work is handed
-                    // over. The coalescing window is what makes many reads of
-                    // one stale record into one job rather than one write per
-                    // read.
-                    if !owns {
-                        self.revalidation.offer_to_owner(url.clone());
-                    }
+                    to_hand_over.push(url.clone());
                 }
             }
-            if accepted > 0 {
+            if !to_hand_over.is_empty() {
                 debug!(
                     seen = stale_seen.len(),
-                    accepted = accepted,
+                    accepted = to_hand_over.len(),
                     owns_jobs = owns,
                     "queued stale listings for revalidation"
                 );
+                // One page, one hand-off. Never one per record: this is a public
+                // read path, and work on it must not scale with the catalog.
+                if !owns {
+                    self.revalidation.offer_to_owner(to_hand_over);
+                }
             }
         }
 

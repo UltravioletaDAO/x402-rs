@@ -1,8 +1,15 @@
 # CI/CD Setup — GitHub Actions → AWS ECR → ECS
 
-The `.github/workflows/ci.yaml` pipeline builds + tests on every PR and push to `main`, and
-on push to `main` it builds the Docker image, pushes it to **AWS ECR**, runs **`terraform apply`**
-to roll ECS production to the new image, and verifies `/health`.
+The `.github/workflows/ci.yaml` pipeline builds + tests on every PR and push to `main`
+**that touches a build input**, and on such a push to `main` it builds the Docker image, pushes
+it to **AWS ECR**, runs **`terraform apply`** to roll ECS production to the new image, and
+verifies `/health`.
+
+A push whose whole diff is documentation triggers nothing: the workflow carries a `paths` list
+holding the union of what its four jobs read. `docs/handoffs/2026-09-11-ci-paths.md` has the
+job-by-job table and `python3 scripts/ci_paths_selftest.py` asserts the list is neither too
+wide nor too narrow. `workflow_dispatch` has no `paths` and deploys whatever the last commit
+changed, which is the escape hatch if a filter ever turns out to be too narrow.
 
 It authenticates to AWS with **IAM access-key secrets**. Until those secrets exist the deploy job
 is **skipped** (the run still goes green on the `test` job), so merging the workflow itself is safe.
@@ -143,9 +150,14 @@ That's it. The next push to `main` will build → push to ECR → `terraform app
 
 | Trigger | `test` job | `deploy` job |
 |---|---|---|
-| Pull request → `main` | ✅ build + full test suite | skipped |
-| Push → `main` (no AWS secrets) | ✅ | **skipped** (run stays green) |
-| Push → `main` (secrets set) | ✅ | ✅ build → ECR → terraform apply → verify |
+| PR or push touching only `docs/**`, `*.md`, `scripts/bench/**` … | **no run at all** (`paths`) | — |
+| Pull request → `main` (build input changed) | ✅ build + full test suite | skipped |
+| Push → `main` (build input changed, no AWS secrets) | ✅ | **skipped** (run stays green) |
+| Push → `main` (build input changed, secrets set) | ✅ | ✅ build → ECR → terraform apply → verify |
+| `workflow_dispatch` on `main` | ✅ | ✅ — no `paths`, runs whatever changed |
+
+A superseded pull-request run is cancelled (`cancel-in-progress` is on for `pull_request` and
+stays off for `main`, so two releases queued back to back both run to completion).
 
 - **Image tag:** `<Cargo.toml version>-<short-sha>` (e.g. `1.47.0-6999058`) plus `:latest`, pushed to
   `<AWS_ACCOUNT_ID>.dkr.ecr.us-east-2.amazonaws.com/facilitator`.

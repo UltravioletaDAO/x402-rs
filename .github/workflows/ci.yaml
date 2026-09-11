@@ -4,19 +4,101 @@ name: CI/CD — build, test, and deploy to AWS
 # and docker.io/ukstv/... — namespaces this fork cannot write to, so it always failed).
 #
 # This pipeline:
-#   - on every PR and push to main: build + run the test suite (the green gate)
-#   - on push to main (once AWS secrets are set): build the image, push to AWS ECR,
+#   - on every PR and push to main THAT TOUCHES A BUILD INPUT (see `paths` below):
+#     build + run the test suite (the green gate)
+#   - on such a push to main (once AWS secrets are set): build the image, push to AWS ECR,
 #     and `terraform apply` the new image to ECS production, then verify.
 #
 # AWS auth: IAM access keys stored as repo secrets AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY.
 # See docs/CICD_SETUP.md for the IAM policy and secret setup. Until those secrets exist,
 # the deploy job is skipped (the run still goes green on the test job).
 
+# What does NOT trigger this pipeline, and why that is safe
+# ---------------------------------------------------------
+# Nothing under docs/, guides/, README.md, CLAUDE.md, .claude/ or scripts/
+# (except the one script the test job runs) reaches production. The runtime
+# image copies exactly three things out of the builder -- the binary,
+# /app/config and /app/static (Dockerfile) -- so prose cannot change what runs.
+# Measured 2026-09-11: 36 runs in 24 h burned 392 wall-minutes, of which 35.6
+# were pushes and PRs whose entire diff was documentation.
+#
+# The `paths` list below is duplicated across push and pull_request on purpose:
+# GitHub Actions does not support YAML anchors. scripts/ci_paths_selftest.py
+# fails if the two copies ever drift apart, and asserts that every build input
+# named here is actually matched.
+#
+# workflow_dispatch carries no paths: a manual "Run workflow" on main is the
+# escape hatch that deploys, re-applies the Lambda and re-runs the drift gate
+# regardless of what changed.
 on:
   push:
     branches: ['main']
+    paths:
+      # The union of every input any job in this workflow reads. GitHub has no
+      # per-job `paths`: the choice is this union, or a change-detection job
+      # gating each job with `if:`. The second was measured and rejected --
+      # see docs/handoffs/2026-09-11-ci-paths.md -- because the deploy job's
+      # image tag is `$(cat VERSION)-$(git rev-parse --short HEAD)`, so any job
+      # graph that skips the build for an infra-only commit points the task
+      # definition at a tag that was never pushed to ECR.
+      #
+      # Compiled INTO the binary, so a change here changes the image:
+      - 'src/**'
+      - 'crates/**'
+      - 'examples/**'
+      - 'abi/**'                 # sol!(..., "abi/*.json") -- a build input, not an asset
+      - 'config/**'              # include_str!("../config/bazaar_curation.json") + copied to /app/config
+      - 'static/**'              # include_str!/include_bytes! x40 in handlers.rs -- the landing lives in the binary
+      - 'tests/**'               # tests/*.rs are x402-rs integration tests; fixtures/ and vectors/ feed them
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'              # [patch.crates-io] path overrides -- changes what cargo resolves
+      # Read by the deploy job:
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'VERSION'                # the image tag and FACILITATOR_VERSION come from here
+      - 'terraform/**'           # the drift gate plans it; the deploy applies a subset
+      - 'lambda/**'              # the balances-Lambda step applies it when it changes
+      # Read by the test job:
+      - 'scripts/verify_landing_canonical.py'
+      # This file. The drift gate greps it for `-target=` flags, and a pipeline
+      # change has to exercise the pipeline.
+      - '.github/workflows/ci.yaml'
   pull_request:
     branches: ['main']
+    paths:
+      # The union of every input any job in this workflow reads. GitHub has no
+      # per-job `paths`: the choice is this union, or a change-detection job
+      # gating each job with `if:`. The second was measured and rejected --
+      # see docs/handoffs/2026-09-11-ci-paths.md -- because the deploy job's
+      # image tag is `$(cat VERSION)-$(git rev-parse --short HEAD)`, so any job
+      # graph that skips the build for an infra-only commit points the task
+      # definition at a tag that was never pushed to ECR.
+      #
+      # Compiled INTO the binary, so a change here changes the image:
+      - 'src/**'
+      - 'crates/**'
+      - 'examples/**'
+      - 'abi/**'                 # sol!(..., "abi/*.json") -- a build input, not an asset
+      - 'config/**'              # include_str!("../config/bazaar_curation.json") + copied to /app/config
+      - 'static/**'              # include_str!/include_bytes! x40 in handlers.rs -- the landing lives in the binary
+      - 'tests/**'               # tests/*.rs are x402-rs integration tests; fixtures/ and vectors/ feed them
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'              # [patch.crates-io] path overrides -- changes what cargo resolves
+      # Read by the deploy job:
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'VERSION'                # the image tag and FACILITATOR_VERSION come from here
+      - 'terraform/**'           # the drift gate plans it; the deploy applies a subset
+      - 'lambda/**'              # the balances-Lambda step applies it when it changes
+      # Read by the test job:
+      - 'scripts/verify_landing_canonical.py'
+      # This file. The drift gate greps it for `-target=` flags, and a pipeline
+      # change has to exercise the pipeline.
+      - '.github/workflows/ci.yaml'
   workflow_dispatch:
 
 env:
@@ -30,7 +112,18 @@ env:
 
 concurrency:
   group: cicd-${{ github.ref }}
-  cancel-in-progress: false
+  # A pull request gets a fresh run on every push to its branch, and until now
+  # the superseded one kept compiling for another six minutes with nobody
+  # waiting on its answer. Measured 2026-09-11: 8 of the 22 pull-request runs in
+  # 24 h were overtaken before they finished, 54 of 392 wall-minutes -- more
+  # than the `paths` filter above saves.
+  #
+  # `false` on main is load-bearing and is what this expression still returns
+  # there. The group key is github.ref, so a push to main never shares a group
+  # with a pull request; two releases queued back to back must BOTH run, because
+  # cancelling the first would stop it between `terraform apply` and the rollout
+  # wait. The deploy job's own deploy-production group is the second guard.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:

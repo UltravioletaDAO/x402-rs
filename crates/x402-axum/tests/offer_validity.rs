@@ -56,13 +56,21 @@ fn a_challenge_without_the_extension_states_no_expiry() {
 }
 
 #[test]
-fn the_key_has_one_definition() {
-    // Seller and buyer do not depend on each other, so the key lives in the
-    // crate they both depend on. Two constants would be two chances to
-    // disagree, and a seller and a buyer naming different keys have nothing to
-    // say to each other.
-    assert_eq!(
-        OFFER_VALIDITY_EXTENSION,
-        x402_rs::types::OFFER_VALIDITY_EXTENSION
+fn the_key_is_the_literal_both_sides_publish() {
+    // The previous version of this test compared the re-export with its own
+    // source and could never fail. This pins the LITERAL: a rename in the shared
+    // crate changes what goes on the wire for every seller and every buyer at
+    // once, and silence is not the right response to that.
+    assert_eq!(OFFER_VALIDITY_EXTENSION, "offer-receipt/1");
+    // And the version is in the key, which is the property the annex insists on:
+    // the extension's transport may still change, and a value read from an
+    // unversioned key could not be compared against anything later.
+    let (name, version) = OFFER_VALIDITY_EXTENSION
+        .split_once('/')
+        .expect("the key must carry its version");
+    assert_eq!(name, "offer-receipt");
+    assert!(
+        version.parse::<u32>().is_ok(),
+        "the version must be a number, got {version:?}"
     );
 }

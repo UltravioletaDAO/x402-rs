@@ -155,11 +155,13 @@ pub struct X402Payments {
     prefer_durable_evidence: bool,
     /// The spending rules the caller authorised in advance.
     ///
-    /// Empty by default, which permits: this crate did not have a budget before
-    /// and turning one on silently would refuse payments callers are making
-    /// today. `assert_max_amount` keeps working exactly as it did; the policy is
-    /// the layer that can also say "not to that recipient" and "not any more
-    /// this month".
+    /// [`crate::policy::PurchasePolicy::permissive`] by default, which is NOT
+    /// what `PurchasePolicy::new()` gives you: a policy built by a caller
+    /// refuses an asset it was never given a ceiling for, and the default here
+    /// permits one. Deliberate, and the asymmetry is the point -- this crate had
+    /// no budget before P3, so defaulting to deny would refuse payments callers
+    /// are making today, while a caller who sits down to WRITE a policy should
+    /// get the safe default.
     policy: crate::policy::PurchasePolicy,
 }
 
@@ -170,7 +172,7 @@ impl X402Payments {
             max_token_amount: HashMap::new(),
             prefer: vec![],
             prefer_durable_evidence: false,
-            policy: crate::policy::PurchasePolicy::new(),
+            policy: crate::policy::PurchasePolicy::permissive(),
         }
     }
 
@@ -391,6 +393,42 @@ impl X402Payments {
     /// [`crate::policy::PurchasePolicy`] -- but a caller that read a listing can
     /// hand it over and get the divergence reported instead of having to diff
     /// the two itself.
+    /// Everything the middleware decides between reading a `402` and signing.
+    ///
+    /// # Why this is a method and not inline in `handle`
+    ///
+    /// It was inline, and the consequence was that the ONLY way to exercise it
+    /// was to drive a whole `reqwest` middleware stack -- so nothing did. The
+    /// wiring that carries a challenge's `extensions` into the policy was
+    /// missing for a full commit, every unit test passed, and the capability was
+    /// simply absent. A decision that cannot be called without a network stack
+    /// is a decision nobody tests.
+    ///
+    /// Takes the WHOLE challenge, deliberately. Passing `accepts` alone is what
+    /// dropped the seller's `validUntil` on the floor, and a signature that
+    /// takes the parts invites doing it again.
+    pub async fn pay_for_challenge(
+        &self,
+        challenge: &PaymentRequiredResponse,
+    ) -> Result<HeaderValue, X402PaymentsError> {
+        // A challenge that carried offers, none of which this build can read, is
+        // not "no matching payment method": it is a seller asking for a scheme
+        // we do not implement, and saying so names what they wanted. Without
+        // this the caller sees `Accepted: []` and goes looking for a bug in its
+        // own code.
+        if challenge.accepts.is_empty() && !challenge.unreadable_offers.is_empty() {
+            let refusal = crate::policy::no_readable_offer(&challenge.unreadable_offers);
+            #[cfg(feature = "telemetry")]
+            tracing::debug!(
+                cause = refusal.code(),
+                "no offer in this challenge is payable"
+            );
+            return Err(X402PaymentsError::PolicyRefused(refusal));
+        }
+        self.build_payment_header_in(&challenge.accepts, &challenge.extensions)
+            .await
+    }
+
     pub async fn build_payment_header_for(
         &self,
         accepts: &[PaymentRequirements],
@@ -460,34 +498,9 @@ impl rqm::Middleware for X402Payments {
 
         let payment_required_response = challenge_from(res).await?;
 
-        // A challenge that carried offers, none of which this build can read,
-        // is not "no matching payment method": it is a seller asking for a
-        // scheme we do not implement, and saying so names what they wanted.
-        // Without this the caller sees `Accepted: []` and goes looking for a bug
-        // in its own code.
-        if payment_required_response.accepts.is_empty()
-            && !payment_required_response.unreadable_offers.is_empty()
-        {
-            let refusal =
-                crate::policy::no_readable_offer(&payment_required_response.unreadable_offers);
-            #[cfg(feature = "telemetry")]
-            tracing::debug!(
-                cause = refusal.code(),
-                "no offer in this challenge is payable"
-            );
-            return Err(X402PaymentsError::PolicyRefused(refusal).into());
-        }
-
         let retry_req = async {
-            // `_in`, with the challenge's own extensions: that map is where a
-            // seller declares how long its offer stands, and passing `accepts`
-            // alone threw the declaration away before the policy could read it.
-            let payment_header = self
-                .build_payment_header_in(
-                    &payment_required_response.accepts,
-                    &payment_required_response.extensions,
-                )
-                .await?;
+            // The whole challenge, never its parts: see `pay_for_challenge`.
+            let payment_header = self.pay_for_challenge(&payment_required_response).await?;
             let mut req = retry_req.ok_or(X402PaymentsError::RequestNotCloneable)?;
             let headers = req.headers_mut();
             headers.insert("X-Payment", payment_header);
@@ -655,7 +668,7 @@ mod durable_offer_tests {
             max_token_amount: HashMap::new(),
             prefer: vec![],
             prefer_durable_evidence: false,
-            policy: crate::policy::PurchasePolicy::new(),
+            policy: crate::policy::PurchasePolicy::permissive(),
         }
     }
 

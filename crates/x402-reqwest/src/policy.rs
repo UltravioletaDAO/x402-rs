@@ -65,6 +65,11 @@ pub enum PolicyRefusal {
     #[error("this policy does not pay {pay_to}")]
     RecipientNotPermitted { pay_to: String },
 
+    /// The offer is priced in an asset this policy was never given a ceiling
+    /// for. Refused rather than permitted: see [`PurchasePolicy::new`].
+    #[error("this policy has no budget for {asset}; it pays only what it was told it may pay")]
+    AssetNotBudgeted { asset: TokenAsset },
+
     /// One payment exceeds the per-payment ceiling for its asset.
     #[error("offer of {requested} exceeds the per-payment limit of {allowed} for {asset}")]
     PerPaymentLimit {
@@ -95,6 +100,7 @@ impl PolicyRefusal {
             PolicyRefusal::NoReadableOffer { .. } => "no-readable-offer",
             PolicyRefusal::OfferExpired { .. } => "offer-expired",
             PolicyRefusal::RecipientNotPermitted { .. } => "recipient-not-permitted",
+            PolicyRefusal::AssetNotBudgeted { .. } => "asset-not-budgeted",
             PolicyRefusal::PerPaymentLimit { .. } => "per-payment-limit",
             PolicyRefusal::CumulativeLimit { .. } => "cumulative-limit",
         }
@@ -163,11 +169,56 @@ pub struct PurchasePolicy {
     cumulative: HashMap<TokenAsset, TokenAmount>,
     spent: Arc<Mutex<HashMap<TokenAsset, TokenAmount>>>,
     recipients: Option<HashSet<String>>,
+    /// Whether an asset with no configured ceiling may be paid at all.
+    allow_unlisted_assets: bool,
 }
 
 impl PurchasePolicy {
+    /// A policy that pays nothing until it is told what it may pay.
+    ///
+    /// # Why the default is deny
+    ///
+    /// The limits are a map keyed by asset, and a map answers "no entry" for
+    /// every asset nobody thought of. Permitting on a missing entry means a
+    /// budget in USDC is **no budget at all** for any other token: a seller
+    /// offering the same resource priced in something unlisted walks straight
+    /// past the ceiling, and the wallet will sign it, because the EVM signer
+    /// takes the EIP-712 domain from the seller's own `extra` and will happily
+    /// sign for a token and a network it has never heard of.
+    ///
+    /// So an asset with no stated ceiling is refused. A caller that genuinely
+    /// wants to pay anything says so, once, with
+    /// [`PurchasePolicy::allow_unlisted_assets`], and that sentence is then in
+    /// their code where a reader can find it.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A policy that permits an asset it was never told about.
+    ///
+    /// This is what [`crate::X402Payments`] holds when the caller never
+    /// supplied a policy, and it exists for exactly one reason: this crate had
+    /// no budget before P3, and turning one on silently would refuse payments
+    /// that callers are making today. Named rather than defaulted, so choosing
+    /// it is visible.
+    pub fn permissive() -> Self {
+        Self {
+            allow_unlisted_assets: true,
+            ..Self::default()
+        }
+    }
+
+    /// Permit assets with no configured ceiling.
+    pub fn allow_unlisted_assets(mut self) -> Self {
+        self.allow_unlisted_assets = true;
+        self
+    }
+
+    /// Refuse assets with no configured ceiling. The default; here so the
+    /// intent can be written down at a call site that wants it explicit.
+    pub fn deny_unlisted_assets(mut self) -> Self {
+        self.allow_unlisted_assets = false;
+        self
     }
 
     /// Most this policy will pay in one payment of `asset`.
@@ -183,11 +234,21 @@ impl PurchasePolicy {
         self
     }
 
-    /// Restrict payment to a set of recipients. Addresses are compared
-    /// case-insensitively, because EVM addresses arrive in both checksummed and
-    /// lowercase form and a case difference is not a different payee.
+    /// Restrict payment to a set of recipients.
+    ///
+    /// Addresses are canonicalised **by family**, not by lowercasing the string.
+    /// See [`canonical_recipient`]: EVM hex is case-insensitive, and base58 --
+    /// Solana, XRPL -- is not. Lowercasing a base58 address produces a string
+    /// that is not an address at all, so an allowlist written in the seller's
+    /// own spelling would silently never match and every payment to it would be
+    /// refused.
     pub fn only_pay(mut self, recipients: impl IntoIterator<Item = String>) -> Self {
-        self.recipients = Some(recipients.into_iter().map(|r| r.to_lowercase()).collect());
+        self.recipients = Some(
+            recipients
+                .into_iter()
+                .map(|r| canonical_recipient(&r))
+                .collect(),
+        );
         self
     }
 
@@ -233,7 +294,7 @@ impl PurchasePolicy {
 
         // 3. Recipient.
         if let Some(allowed) = &self.recipients {
-            let pay_to = offer.pay_to.to_string().to_lowercase();
+            let pay_to = canonical_recipient(&offer.pay_to.to_string());
             if !allowed.contains(&pay_to) {
                 return Err(PolicyRefusal::RecipientNotPermitted {
                     pay_to: offer.pay_to.to_string(),
@@ -244,7 +305,18 @@ impl PurchasePolicy {
         let asset = offer.token_asset();
         let requested = offer.max_amount_required;
 
-        // 4. Per-payment ceiling.
+        // 4. An asset nobody budgeted for. Checked BEFORE the ceilings, because
+        //    the ceilings are a map and a map has no opinion about a key it does
+        //    not hold -- which is precisely how an unlisted token would sail
+        //    past a budget that looks complete.
+        if !self.allow_unlisted_assets
+            && !self.per_payment.contains_key(&asset)
+            && !self.cumulative.contains_key(&asset)
+        {
+            return Err(PolicyRefusal::AssetNotBudgeted { asset });
+        }
+
+        // 5. Per-payment ceiling.
         if let Some(allowed) = self.per_payment.get(&asset) {
             if requested > *allowed {
                 return Err(PolicyRefusal::PerPaymentLimit {
@@ -255,7 +327,7 @@ impl PurchasePolicy {
             }
         }
 
-        // 5. Cumulative ceiling.
+        // 6. Cumulative ceiling.
         if let Some(allowed) = self.cumulative.get(&asset) {
             let spent = self.spent(&asset);
             // Overflow is treated as exceeding the limit. A total we cannot
@@ -330,6 +402,37 @@ pub fn offer_valid_until(
         .get("info")?
         .get("validUntil")?
         .as_u64()
+}
+
+/// Canonical form of a recipient address, for comparison.
+///
+/// # Why this is not `to_lowercase()`
+///
+/// It was, and that is only correct for one family. EVM addresses are hex and
+/// arrive both checksummed and lowercase, so folding case is right and
+/// necessary. **Base58 is case-sensitive** -- Solana and XRPL addresses use both
+/// cases as distinct symbols -- so lowercasing one does not produce the same
+/// address in a different spelling, it produces a string that is not an address.
+///
+/// An allowlist written in a seller's own spelling would then never match, and
+/// every payment to a legitimate Solana payee would be refused with
+/// `recipient-not-permitted`. Worse in the other direction: two distinct base58
+/// addresses can fold to the same lowercase string, so an allowlist could admit
+/// an address nobody put on it.
+///
+/// So: hex is folded, everything else is compared exactly.
+pub fn canonical_recipient(address: &str) -> String {
+    let trimmed = address.trim();
+    let is_hex = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+        .map(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_hexdigit()))
+        .unwrap_or(false);
+    if is_hex {
+        trimmed.to_ascii_lowercase()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 /// Turn a challenge with nothing payable in it into a refusal that says so.
@@ -435,7 +538,7 @@ mod tests {
 
     #[test]
     fn the_same_amount_in_another_asset_is_not_the_same_price() {
-        let policy = PurchasePolicy::new();
+        let policy = PurchasePolicy::permissive();
         let other = TokenAsset {
             address: addr(OTHER_PAYEE),
             network: Network::Base,
@@ -457,6 +560,125 @@ mod tests {
     // Expiry
     // ========================================================================
 
+    // ========================================================================
+    // An asset nobody budgeted for
+    // ========================================================================
+
+    #[test]
+    fn an_asset_with_no_ceiling_is_refused_by_default() {
+        // The limits are a MAP, and a map has no opinion about a key it does not
+        // hold. A budget in USDC that permits an unlisted token is not a budget:
+        // the same resource priced in something else walks straight past it, and
+        // the EVM signer will sign for a token and a network it has never heard
+        // of because the EIP-712 domain comes from the seller's own `extra`.
+        let policy = PurchasePolicy::new().per_payment(asset(), amount(100_000));
+        let other = TokenAsset {
+            address: addr(OTHER_PAYEE),
+            network: Network::Base,
+        };
+        let mut offer = offer_of(1, PAYEE);
+        offer.asset = other.address.clone();
+
+        let refusal = policy.evaluate(&offer, None, None, 1_000).unwrap_err();
+        assert_eq!(refusal.code(), "asset-not-budgeted");
+    }
+
+    #[test]
+    fn the_budgeted_asset_still_goes_through() {
+        let policy = PurchasePolicy::new().per_payment(asset(), amount(100_000));
+        assert!(policy
+            .evaluate(&offer_of(10_000, PAYEE), None, None, 1_000)
+            .is_ok());
+    }
+
+    #[test]
+    fn a_cumulative_ceiling_alone_is_a_budget_for_that_asset() {
+        // Either kind of ceiling counts as "this asset was thought about".
+        let policy = PurchasePolicy::new().cumulative(asset(), amount(100_000));
+        assert!(policy
+            .evaluate(&offer_of(10_000, PAYEE), None, None, 1_000)
+            .is_ok());
+    }
+
+    #[test]
+    fn permitting_unlisted_assets_is_available_and_has_to_be_asked_for() {
+        let policy = PurchasePolicy::new().allow_unlisted_assets();
+        let other = TokenAsset {
+            address: addr(OTHER_PAYEE),
+            network: Network::Base,
+        };
+        let mut offer = offer_of(999_999, PAYEE);
+        offer.asset = other.address;
+        assert!(policy.evaluate(&offer, None, None, 1_000).is_ok());
+    }
+
+    #[test]
+    fn the_permissive_constructor_is_the_one_the_middleware_defaults_to() {
+        // Backward compatibility, named rather than defaulted, so choosing it is
+        // visible in the code that chooses it.
+        let mut offer = offer_of(999_999, PAYEE);
+        offer.asset = addr(OTHER_PAYEE);
+        assert!(PurchasePolicy::permissive()
+            .evaluate(&offer, None, None, 1_000)
+            .is_ok());
+        assert!(PurchasePolicy::new()
+            .evaluate(&offer, None, None, 1_000)
+            .is_err());
+    }
+
+    #[test]
+    fn the_asset_check_runs_before_the_ceilings() {
+        // Order is contract. A caller branching on the cause must be told to
+        // budget the asset, not to raise a ceiling that does not exist.
+        let policy = PurchasePolicy::new();
+        let refusal = policy
+            .evaluate(&offer_of(u64::MAX, PAYEE), None, None, 1_000)
+            .unwrap_err();
+        assert_eq!(refusal.code(), "asset-not-budgeted");
+    }
+
+    // ========================================================================
+    // Recipient canonicalisation, by family
+    // ========================================================================
+
+    #[test]
+    fn a_base58_recipient_is_compared_exactly() {
+        // Solana and XRPL addresses are base58, where case is a symbol and not a
+        // spelling. Lowercasing one does not produce the same address written
+        // differently; it produces a string that is not an address, so an
+        // allowlist in the seller's own spelling would never match and every
+        // legitimate payment to it would be refused.
+        let solana = "F742C4VfFLQ9zRQyithoj5229ZgtX2WqKCSFKgH2EThq";
+        assert_eq!(canonical_recipient(solana), solana);
+        assert_ne!(canonical_recipient(solana), solana.to_lowercase());
+
+        let xrpl = "rfADKkVXBNqK3z72tVSS3LVzAR3psYkonp";
+        assert_eq!(canonical_recipient(xrpl), xrpl);
+    }
+
+    #[test]
+    fn an_evm_recipient_is_still_case_folded() {
+        let checksummed = PAYEE;
+        assert_eq!(
+            canonical_recipient(checksummed),
+            checksummed.to_ascii_lowercase()
+        );
+        assert_eq!(
+            canonical_recipient(checksummed),
+            canonical_recipient(&checksummed.to_lowercase()),
+            "checksummed and lowercase are the same payee"
+        );
+    }
+
+    #[test]
+    fn two_base58_addresses_that_fold_alike_stay_distinct() {
+        // The dangerous direction: folding case could make an allowlist admit an
+        // address nobody put on it.
+        let a = "SoLaNa1111111111111111111111111111111111111";
+        let b = "solana1111111111111111111111111111111111111";
+        assert_ne!(canonical_recipient(a), canonical_recipient(b));
+    }
+
     #[test]
     fn an_expired_offer_is_never_signed() {
         let policy = PurchasePolicy::new().per_payment(asset(), amount(100_000));
@@ -470,7 +692,7 @@ mod tests {
     fn an_offer_expiring_this_second_is_still_valid() {
         // The boundary belongs to the seller: `validUntil` is the last instant
         // the offer stands, not the first instant it does not.
-        let policy = PurchasePolicy::new();
+        let policy = PurchasePolicy::permissive();
         assert!(policy
             .evaluate(&offer_of(10_000, PAYEE), None, Some(1_000), 1_000)
             .is_ok());
@@ -545,7 +767,9 @@ mod tests {
 
     #[test]
     fn a_recipient_outside_the_list_is_refused_however_cheap() {
-        let policy = PurchasePolicy::new().only_pay([PAYEE.to_string()]);
+        // Permissive on assets, so the cause under test is the recipient and
+        // not a missing budget: the recipient check runs first either way.
+        let policy = PurchasePolicy::permissive().only_pay([PAYEE.to_string()]);
         let refusal = policy
             .evaluate(&offer_of(1, OTHER_PAYEE), None, None, 1_000)
             .unwrap_err();
@@ -555,7 +779,7 @@ mod tests {
     #[test]
     fn a_recipients_case_is_not_a_different_recipient() {
         // EVM addresses arrive checksummed and lowercase from different sellers.
-        let policy = PurchasePolicy::new().only_pay([PAYEE.to_lowercase()]);
+        let policy = PurchasePolicy::permissive().only_pay([PAYEE.to_lowercase()]);
         assert!(policy
             .evaluate(&offer_of(1, PAYEE), None, None, 1_000)
             .is_ok());
@@ -678,14 +902,17 @@ mod tests {
     fn no_extension_at_all_means_no_stated_expiry() {
         assert_eq!(offer_valid_until(&std::collections::HashMap::new()), None);
         // ... and an offer with no stated expiry is payable.
-        assert!(PurchasePolicy::new()
+        assert!(PurchasePolicy::permissive()
             .evaluate(&offer_of(1, PAYEE), None, None, u64::MAX)
             .is_ok());
     }
 
     #[test]
-    fn a_policy_with_no_limits_permits_and_says_it_did_not_compare() {
-        let approval = PurchasePolicy::new()
+    fn a_permissive_policy_pays_and_says_it_did_not_compare() {
+        // `permissive()`, not `new()`: since the asset check landed, a policy
+        // with no ceilings at all pays nothing. That is the safe default and
+        // this test now names which constructor it is exercising.
+        let approval = PurchasePolicy::permissive()
             .evaluate(&offer_of(999_999_999, PAYEE), None, None, 1_000)
             .unwrap();
         assert_eq!(approval.versus_quote, QuoteComparison::NotCompared);

@@ -518,18 +518,24 @@ impl SharedQueue {
             return Ok(());
         }
         let ttl = now_secs() + cfg::revalidation_shared_ttl_secs();
+        // The condition is evaluated BEFORE the `ADD`, so a bound of `size < cap`
+        // permits a write that then adds up to a whole batch on top: the set
+        // could settle at `cap + batch - 1` from one replica, and further with
+        // three racing. The headroom has to be the batch we are about to add.
+        //
+        // Saturating, so a cap smaller than a batch does not wrap to an enormous
+        // bound; it becomes zero, which refuses the write, which is the safe
+        // direction for a bound.
+        let headroom = cfg::revalidation_shared_cap().saturating_sub(urls.len());
         self.client
             .update_item()
             .table_name(&self.table)
             .key("pk", AttributeValue::S(QUEUE_KEY.to_string()))
             .update_expression("ADD pending :url SET expires_at = :ttl")
-            .condition_expression("attribute_not_exists(pending) OR size(pending) < :cap")
+            .condition_expression("attribute_not_exists(pending) OR size(pending) <= :headroom")
             .expression_attribute_values(":url", AttributeValue::Ss(urls.to_vec()))
             .expression_attribute_values(":ttl", AttributeValue::N(ttl.to_string()))
-            .expression_attribute_values(
-                ":cap",
-                AttributeValue::N(cfg::revalidation_shared_cap().to_string()),
-            )
+            .expression_attribute_values(":headroom", AttributeValue::N(headroom.to_string()))
             .send()
             .await
             .map(|_| ())
@@ -833,6 +839,31 @@ mod tests {
         let chunks = chunks_for_offer(&dupes);
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].len(), 1);
+    }
+
+    #[test]
+    fn the_shared_cap_leaves_room_for_the_batch_about_to_be_added() {
+        // DynamoDB evaluates a condition BEFORE the update, so `size < cap` lets
+        // through a write that then adds a whole batch on top: one replica could
+        // settle the set at `cap + batch - 1`, and three racing go further. The
+        // headroom has to be the batch we are about to add.
+        let cap = cfg::revalidation_shared_cap();
+        for batch in [1usize, 10, MAX_URLS_PER_OFFER] {
+            let headroom = cap.saturating_sub(batch);
+            assert!(
+                headroom + batch <= cap,
+                "a set at the headroom plus this batch must not exceed the cap"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cap_smaller_than_a_batch_refuses_rather_than_wrapping() {
+        // Saturating, not subtracting: an unsigned wrap would turn a tiny cap
+        // into an enormous bound, which is the opposite of a bound.
+        let tiny: usize = 5;
+        let headroom = tiny.saturating_sub(MAX_URLS_PER_OFFER);
+        assert_eq!(headroom, 0, "which refuses the write, the safe direction");
     }
 
     #[test]

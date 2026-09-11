@@ -104,3 +104,121 @@ fn the_sellers_validity_reaches_the_buyers_policy_from_a_real_challenge() {
         "what the seller declared must survive the parse the buyer actually runs"
     );
 }
+
+// ============================================================================
+// The path the middleware actually takes
+// ============================================================================
+//
+// These drive `pay_for_challenge`, which is what `Middleware::handle` calls.
+// The wiring that carries a challenge's `extensions` into the policy was missing
+// for a whole commit while every unit test passed, because nothing exercised the
+// decision end to end. This is that test.
+
+use std::time::Duration;
+use x402_reqwest::policy::PurchasePolicy;
+use x402_reqwest::X402Payments;
+use x402_rs::network::Network;
+use x402_rs::types::{TokenAmount, TokenAsset};
+
+/// A wallet is required to build the client; no signing happens in these tests
+/// because every one of them is refused before the wallet is reached.
+fn client() -> X402Payments {
+    let signer = alloy::signers::local::PrivateKeySigner::random();
+    X402Payments::with_wallet(signer)
+}
+
+fn usdc_base() -> TokenAsset {
+    TokenAsset {
+        address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+            .parse::<x402_rs::types::EvmAddress>()
+            .unwrap()
+            .into(),
+        network: Network::Base,
+    }
+}
+
+fn challenge_expiring_at(valid_until: u64) -> PaymentRequiredResponse {
+    let json = MIXED.replace(
+        r#""accepts": ["#,
+        &format!(
+            r#""extensions": {{"offer-receipt/1": {{"info": {{"validUntil": {valid_until}}}}}}}, "accepts": ["#
+        ),
+    );
+    serde_json::from_str(&json).unwrap()
+}
+
+#[tokio::test]
+async fn an_expired_offer_is_refused_on_the_path_the_middleware_takes() {
+    // The seller said these terms stood until an instant that has passed. The
+    // policy knows how to check that and the parse preserves it; what was
+    // missing was the wire between them, and only a test at this level sees it.
+    let expired = challenge_expiring_at(1_000); // 1970, thoroughly past
+    let payments = client().with_policy(
+        PurchasePolicy::new().per_payment(usdc_base(), TokenAmount::from(1_000_000u64)),
+    );
+
+    let err = payments
+        .pay_for_challenge(&expired)
+        .await
+        .expect_err("an offer that lapsed must not be signed");
+    let message = err.to_string();
+    assert!(
+        message.contains("expired"),
+        "expected an expiry refusal, got: {message}"
+    );
+}
+
+#[tokio::test]
+async fn an_unexpired_offer_is_not_refused_for_expiry() {
+    // The other half: the check must not refuse everything. A far-future
+    // `validUntil` gets past the expiry gate.
+    let far_future = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + Duration::from_secs(3600).as_secs();
+    let live = challenge_expiring_at(far_future);
+    let payments = client().with_policy(
+        PurchasePolicy::new().per_payment(usdc_base(), TokenAmount::from(1_000_000u64)),
+    );
+
+    // It may still fail for wallet reasons; what it must NOT say is "expired".
+    if let Err(e) = payments.pay_for_challenge(&live).await {
+        assert!(
+            !e.to_string().contains("expired"),
+            "a live offer was refused as expired: {e}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_challenge_with_nothing_payable_refuses_by_naming_the_schemes() {
+    let none: PaymentRequiredResponse = serde_json::from_str(NONE_READABLE).unwrap();
+    let err = client()
+        .pay_for_challenge(&none)
+        .await
+        .expect_err("nothing here is payable");
+    let message = err.to_string();
+    assert!(message.contains("batch-settlement"), "{message}");
+}
+
+#[tokio::test]
+async fn an_asset_the_policy_never_budgeted_is_refused_on_the_same_path() {
+    // Default-deny reaches the real path too, not just the unit test.
+    let live = challenge_expiring_at(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 3600,
+    );
+    let payments = client().with_policy(PurchasePolicy::new()); // no budget at all
+    let err = payments
+        .pay_for_challenge(&live)
+        .await
+        .expect_err("an unbudgeted asset must not be signed");
+    assert!(
+        err.to_string().contains("no budget"),
+        "expected an asset refusal, got: {err}"
+    );
+}

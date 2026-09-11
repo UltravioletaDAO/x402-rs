@@ -256,6 +256,21 @@ inglés: los cinco de arriba. Cada uno lleva los números que lo causaron
 **Comparación con el listado**: `not-compared` | `matches` | `amount-differs` |
 `different-asset`. **Nunca decide**; se reporta.
 
+> **Sin `with_policy` no hay reja de activo.** El middleware sostiene
+> `PurchasePolicy::permissive()` cuando nadie le pasó una política, y permissive
+> **permite cualquier activo**, incluido uno que nadie presupuestó. Es
+> retrocompatibilidad deliberada — este crate no tenía presupuesto antes de P3 —
+> y significa que un integrador que nunca llama `with_policy` **no tiene la reja
+> de la regla 4b**. Si su SDK expone un cliente sin política, dígalo con estas
+> palabras en su documentación, no como nota al pie.
+>
+> **Nota sobre el `0x`.** Sólo se trata como hex lo que empieza con `0x`. Una
+> entrada de allowlist escrita como hex pelado se compara exacta y **nunca
+> coincidirá** con el `payTo` de una oferta, que siempre llega con prefijo: el
+> pago se rechaza con `recipient-not-permitted`. Falla del lado seguro y es una
+> trampa; no la normalicen por el usuario, porque agregar el prefijo es adivinar
+> la familia y un base58 pelado no se distingue de un hex pelado mirándolo.
+
 **Reglas de comportamiento, no negociables:**
 
 1. Evaluar **no** gasta. `recordSpend` es una llamada aparte, después de que la

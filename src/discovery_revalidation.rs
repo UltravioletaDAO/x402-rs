@@ -523,10 +523,18 @@ impl SharedQueue {
         // could settle at `cap + batch - 1` from one replica, and further with
         // three racing. The headroom has to be the batch we are about to add.
         //
-        // Saturating, so a cap smaller than a batch does not wrap to an enormous
-        // bound; it becomes zero, which refuses the write, which is the safe
-        // direction for a bound.
-        let headroom = cfg::revalidation_shared_cap().saturating_sub(urls.len());
+        // And the batch itself has to be trimmed to the cap. Headroom alone is
+        // not enough: `attribute_not_exists(pending)` is true on the FIRST write,
+        // so with a cap below one batch that write lands a whole batch -- up to
+        // 100 -- on an item whose bound is smaller. Found by review, and the
+        // earlier comment claiming zero headroom "refuses the write" was only
+        // true from the second write onward.
+        let cap = cfg::revalidation_shared_cap();
+        let urls = &urls[..urls.len().min(cap)];
+        if urls.is_empty() {
+            return Ok(());
+        }
+        let headroom = cap.saturating_sub(urls.len());
         self.client
             .update_item()
             .table_name(&self.table)
@@ -855,6 +863,24 @@ mod tests {
                 "a set at the headroom plus this batch must not exceed the cap"
             );
         }
+    }
+
+    #[test]
+    fn a_batch_is_trimmed_to_the_cap_before_the_first_write() {
+        // `attribute_not_exists(pending)` is true on the FIRST write, so headroom
+        // alone does not bound it: with a cap below one batch, that write lands a
+        // whole batch on an item whose bound is smaller. The batch itself has to
+        // be trimmed. Found by review after the previous fix.
+        let cap: usize = 5;
+        let batch: Vec<String> = (0..MAX_URLS_PER_OFFER)
+            .map(|i| format!("https://h{i}.example/x"))
+            .collect();
+        let trimmed = &batch[..batch.len().min(cap)];
+        assert_eq!(trimmed.len(), cap);
+        assert!(
+            trimmed.len() <= cap,
+            "the first write can never exceed the cap it is bounded by"
+        );
     }
 
     #[test]

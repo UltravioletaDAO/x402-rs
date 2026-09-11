@@ -421,6 +421,19 @@ pub fn offer_valid_until(
 /// an address nobody put on it.
 ///
 /// So: hex is folded, everything else is compared exactly.
+///
+/// # The `0x` is load-bearing
+///
+/// Only a string that STARTS with `0x` is treated as hex. An allowlist entry
+/// written as bare hex (`e4dc96...`) is therefore compared exactly, while the
+/// `payTo` on an offer always arrives `0x`-prefixed and is folded -- so the two
+/// never match and the payment is refused with `recipient-not-permitted`.
+///
+/// That fails in the safe direction, and it is still a trap, so it is written
+/// down here and in the SDK contract rather than silently normalised: adding a
+/// prefix to somebody's allowlist entry is guessing which family they meant, and
+/// a bare 32-character base58 string is not distinguishable from bare hex by
+/// looking at it.
 pub fn canonical_recipient(address: &str) -> String {
     let trimmed = address.trim();
     let is_hex = trimmed
@@ -668,6 +681,27 @@ mod tests {
             canonical_recipient(&checksummed.to_lowercase()),
             "checksummed and lowercase are the same payee"
         );
+    }
+
+    #[test]
+    fn a_bare_hex_allowlist_entry_is_compared_exactly_and_therefore_will_not_match() {
+        // The trap, pinned rather than papered over. A caller who writes an EVM
+        // address without `0x` gets a refusal, not a silent match, and the
+        // contract says so. Normalising for them would mean guessing the family
+        // from a string that does not say which one it is.
+        let bare = &PAYEE[2..];
+        assert_eq!(canonical_recipient(bare), bare, "compared exactly");
+        assert_ne!(
+            canonical_recipient(bare),
+            canonical_recipient(PAYEE),
+            "so an allowlist written this way refuses the payee it meant to allow"
+        );
+
+        let policy = PurchasePolicy::permissive().only_pay([bare.to_string()]);
+        let refusal = policy
+            .evaluate(&offer_of(1, PAYEE), None, None, 1_000)
+            .unwrap_err();
+        assert_eq!(refusal.code(), "recipient-not-permitted");
     }
 
     #[test]

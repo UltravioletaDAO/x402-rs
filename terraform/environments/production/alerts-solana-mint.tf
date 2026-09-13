@@ -41,6 +41,13 @@ locals {
   # DEFAULT_MINT_HEADROOM in `src/erc8004/solana_mint.rs`, which is what the
   # facilitator's own `solana_mint_fee_payer_low` warning uses.
   solana_mint_headroom = 50
+
+  # The alarm threshold, in SOL. Owner's decision, 2026-09-13: 0.10 SOL. The
+  # alarm was born red on 2026-09-10 (fee payer at 0.33 SOL against the 0.67
+  # that 50 mints imply) and never went green; the operator would rather be
+  # told at ~7 mints (0.10 / 0.0134) than fund 0.67 SOL of idle rent. The
+  # facilitator's own warning keeps the 50-mint headroom above.
+  solana_mint_alarm_threshold_sol = 0.10
 }
 
 # The early one. Reads the same ChainNativeBalance the balances Lambda already
@@ -55,7 +62,7 @@ resource "aws_cloudwatch_metric_alarm" "solana_mint_headroom_low" {
   namespace           = "Facilitator/Chains"
   period              = 900
   statistic           = "Minimum"
-  threshold           = local.solana_mint_cost_sol * local.solana_mint_headroom
+  threshold           = local.solana_mint_alarm_threshold_sol
 
   # Ambiguous here for the same reason as `chain_balance_low`: a missing
   # datapoint means the Lambda could not read Solana, and `chain_rpc_unreachable`
@@ -65,7 +72,8 @@ resource "aws_cloudwatch_metric_alarm" "solana_mint_headroom_low" {
   dimensions = { Chain = "solana-mainnet" }
 
   alarm_description = join(" ", [
-    "The facilitator's Solana fee payer is under ${local.solana_mint_headroom}",
+    "The facilitator's Solana fee payer is under ${local.solana_mint_alarm_threshold_sol} SOL,",
+    "about ${floor(local.solana_mint_alarm_threshold_sol / local.solana_mint_cost_sol)}",
     "ERC-8004 identity mints of margin (${local.solana_mint_cost_sol} SOL each,",
     "almost all of it account rent). Minting still works; it stops working long",
     "before the 0.02 SOL settle floor fires, which is why this alarm exists",

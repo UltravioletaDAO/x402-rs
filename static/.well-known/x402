@@ -339,7 +339,8 @@
         "network": "mainnet",
         "tokens": [
           "USDC",
-          "AUSD"
+          "AUSD",
+          "PYUSD"
         ],
         "escrow": false,
         "upto": false

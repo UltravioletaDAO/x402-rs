@@ -15258,6 +15258,62 @@ mod agentic_surface_tests {
         );
     }
 
+    /// The SVM entries of the x402 document name exactly the tokens the
+    /// allow-list in `network.rs` accepts there, and Solana names PYUSD.
+    ///
+    /// `/supported` carries only `feePayer` for SVM networks, so this document is
+    /// where an integrator learns which mints are payable. It is hand-kept; this
+    /// test is what stops it drifting from the deployment table.
+    #[tokio::test]
+    async fn the_x402_document_lists_the_svm_tokens_the_allow_list_accepts() {
+        let (_, _, body) = fetch("/.well-known/x402").await;
+        let doc: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let svm: Vec<&serde_json::Value> = doc["x402"]["networks"]
+            .as_array()
+            .expect("x402.networks is an array")
+            .iter()
+            .filter(|entry| entry["family"] == "svm")
+            .collect();
+        assert!(
+            svm.len() >= 2,
+            "expected solana and fogo, found {}",
+            svm.len()
+        );
+
+        for entry in &svm {
+            let name = entry["name"].as_str().expect("network name");
+            let network: crate::network::Network = serde_json::from_value(entry["name"].clone())
+                .unwrap_or_else(|e| panic!("{name} is not a known network: {e}"));
+            let mut listed: Vec<&str> = entry["tokens"]
+                .as_array()
+                .expect("tokens is an array")
+                .iter()
+                .map(|token| token.as_str().expect("token symbol"))
+                .collect();
+            listed.sort_unstable();
+            let mut accepted: Vec<&str> = crate::network::supported_tokens_for_network(network)
+                .iter()
+                .map(|token| token.symbol())
+                .collect();
+            accepted.sort_unstable();
+            assert_eq!(
+                listed, accepted,
+                "{name}: /.well-known/x402 and network.rs disagree"
+            );
+        }
+
+        let solana = svm
+            .iter()
+            .find(|entry| entry["name"] == "solana")
+            .expect("solana entry");
+        assert!(
+            solana["tokens"]
+                .as_array()
+                .is_some_and(|tokens| tokens.iter().any(|t| t == "PYUSD")),
+            "solana must list PYUSD"
+        );
+    }
+
     /// The legacy card is byte-identical to the current one.
     #[tokio::test]
     async fn the_legacy_agent_json_is_the_same_card() {

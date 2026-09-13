@@ -3,6 +3,7 @@ use solana_client::rpc_config::{
     RpcSendTransactionConfig, RpcSimulateTransactionAccountsConfig, RpcSimulateTransactionConfig,
 };
 use solana_commitment_config::CommitmentConfig;
+use solana_sdk::clock::Clock;
 use solana_sdk::instruction::CompiledInstruction;
 use solana_sdk::pubkey;
 use solana_sdk::pubkey::Pubkey;
@@ -12,6 +13,8 @@ use solana_sdk::transaction::VersionedTransaction;
 use solana_transaction_status_client_types::{
     option_serializer::OptionSerializer, UiInnerInstructions, UiInstruction,
 };
+use spl_token_2022::extension::transfer_fee::TransferFeeConfig;
+use spl_token_2022::extension::{BaseStateWithExtensions, ExtensionType, StateWithExtensions};
 use std::fmt::{Debug, Formatter};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -43,6 +46,55 @@ fn parse_token_account_balance(raw: &[u8]) -> Option<u64> {
     let mut buf = [0u8; 8];
     buf.copy_from_slice(&raw[64..72]);
     Some(u64::from_le_bytes(buf))
+}
+
+/// Upper bound on the transfer fee a mint takes from a transfer of `amount`:
+/// the larger of the fee in force at `epoch` and the newer fee in the config.
+///
+/// The newer fee counts even while it is still scheduled. spl-token-2022 starts a
+/// new fee two epochs after it is set (`newer_fee_start_epoch = epoch + 2` in the
+/// transfer_fee processor), so reading both entries means a fee change can never
+/// land between a verify that saw 0 and the settlement it approved.
+///
+/// A legacy SPL Token mint has no extensions and charges nothing. An account that
+/// no token program owns is refused rather than read as fee-free.
+fn transfer_fee_upper_bound(
+    mint_owner: &Pubkey,
+    mint_data: &[u8],
+    epoch: u64,
+    amount: u64,
+) -> Result<u64, FacilitatorLocalError> {
+    if *mint_owner == spl_token::ID {
+        return Ok(0);
+    }
+    if *mint_owner != spl_token_2022::ID {
+        return Err(FacilitatorLocalError::DecodingError(
+            "invalid_exact_svm_payload_transaction_mint_not_a_token_mint".to_string(),
+        ));
+    }
+    let unreadable = || {
+        FacilitatorLocalError::DecodingError(
+            "invalid_exact_svm_payload_transaction_mint_unreadable".to_string(),
+        )
+    };
+    let mint = StateWithExtensions::<spl_token_2022::state::Mint>::unpack(mint_data)
+        .map_err(|_| unreadable())?;
+    let has_fee_config = mint
+        .get_extension_types()
+        .map_err(|_| unreadable())?
+        .contains(&ExtensionType::TransferFeeConfig);
+    if !has_fee_config {
+        return Ok(0);
+    }
+    let config = mint
+        .get_extension::<TransferFeeConfig>()
+        .map_err(|_| unreadable())?;
+    let in_force = config.calculate_epoch_fee(epoch, amount);
+    let newer = config.newer_transfer_fee.calculate_fee(amount);
+    match (in_force, newer) {
+        (Some(in_force), Some(newer)) => Ok(in_force.max(newer)),
+        _ => Err(unreadable()),
+    }
 }
 
 // ============================================================================
@@ -1071,6 +1123,59 @@ impl SolanaProvider {
         Ok(())
     }
 
+    /// Refuse a Token-2022 mint whose transfer fee would pay the payee short.
+    ///
+    /// `TransferChecked` on a mint with a `TransferFeeConfig` debits the payer
+    /// `amount` but credits the payee `amount - fee` (the fee stays withheld in
+    /// the destination account). Every amount check in verify compares the
+    /// INSTRUCTION amount, so a non-zero fee would turn an exact payment into a
+    /// short one that still verifies. PYUSD and AUSD both carry the extension at
+    /// 0 (measured 2026-09-13) and both issuers keep the authority to change it,
+    /// so the mint is read on every verify, and settle re-runs verify.
+    ///
+    /// The mint and the Clock sysvar come from one `getMultipleAccounts`, so the
+    /// epoch belongs to the same slot as the config it is compared against. An
+    /// RPC failure refuses the payment: no verdict is not a zero fee.
+    async fn verify_mint_charges_no_transfer_fee(
+        &self,
+        mint: &Pubkey,
+        amount: u64,
+    ) -> Result<(), FacilitatorLocalError> {
+        let accounts = self
+            .rpc_client
+            .get_multiple_accounts(&[*mint, solana_sdk::sysvar::clock::ID])
+            .await
+            .map_err(|e| FacilitatorLocalError::ContractCall(format!("{e}")))?;
+        let mint_account = accounts.first().cloned().flatten().ok_or_else(|| {
+            FacilitatorLocalError::DecodingError(
+                "invalid_exact_svm_payload_transaction_mint_not_found".to_string(),
+            )
+        })?;
+        let clock = accounts
+            .get(1)
+            .cloned()
+            .flatten()
+            .and_then(|account| bincode::deserialize::<Clock>(&account.data).ok())
+            .ok_or_else(|| {
+                FacilitatorLocalError::ContractCall("clock sysvar unavailable".to_string())
+            })?;
+        let fee =
+            transfer_fee_upper_bound(&mint_account.owner, &mint_account.data, clock.epoch, amount)?;
+        if fee != 0 {
+            tracing::warn!(
+                mint = %mint,
+                amount,
+                fee,
+                epoch = clock.epoch,
+                "Token-2022 mint charges a transfer fee: the payee would receive less than the signed amount"
+            );
+            return Err(FacilitatorLocalError::DecodingError(
+                "invalid_exact_svm_payload_transaction_transfer_fee_not_zero".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     async fn verify_transfer(
         &self,
         request: &VerifyRequest,
@@ -1331,6 +1436,16 @@ impl SolanaProvider {
                 }
             }
         };
+
+        // 6. Token-2022 transfer fee: both paths above matched the instruction
+        // amount, which is what the payer sends, not what the payee receives.
+        if transfer_instruction.token_program == spl_token_2022::ID {
+            self.verify_mint_charges_no_transfer_fee(
+                &transfer_instruction.mint,
+                transfer_instruction.amount,
+            )
+            .await?;
+        }
 
         let payer: SolanaAddress = transfer_instruction.authority.into();
         Ok(VerifyTransferResult { payer, transaction })
@@ -2405,6 +2520,380 @@ impl TransactionInt {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine as _;
+    use solana_client::rpc_request::RpcRequest;
+    use solana_sdk::instruction::Instruction;
+    use solana_sdk::message::Message;
+    use solana_sdk::transaction::Transaction;
+    use spl_token_2022::extension::{BaseStateWithExtensionsMut, StateWithExtensionsMut};
+
+    // ---- Token-2022 verify: PYUSD allow-list and the mint's transfer fee ------
+    //
+    // These drive `Facilitator::verify` end to end against a mock RPC. The mint
+    // accounts are the REAL on-chain bytes (getAccountInfo, base64, finalized,
+    // 2026-09-13), not hand-built vectors: the transfer-fee guard has to parse
+    // what PayPal and Agora actually deployed.
+
+    const PYUSD_MAINNET_MINT: &str = "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo";
+    const AUSD_MAINNET_MINT: &str = "AUSD1jCcCyPLybk1YnvPWsHQSrZ46dxwoMniN4N2UEB9";
+
+    /// PYUSD mint account, Solana mainnet slot 446743095 (866 bytes).
+    /// transferFeeConfig: 0 bps, maximumFee 0, both entries from epoch 605.
+    const PYUSD_MAINNET_MINT_B64: &str = "AQAAAGyRqkllkBL4q+lh7CS2EHSSZUdTL/CU7VtpOYLbmHMTPvSEM5CDAgAGAQEAAAAXhTJh72q4Uypn8FOGWq0xKT/PB88SCrW5oVcGVI3AKwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQMAIAAXhTJh72q4Uypn8FOGWq0xKT/PB88SCrW5oVcGVI3AKwwAIAAXhTJh72q4Uypn8FOGWq0xKT/PB88SCrW5oVcGVI3AKwEAbAAXhTJh72q4Uypn8FOGWq0xKT/PB88SCrW5oVcGVI3AKxeFMmHvarhTKmfwU4ZarTEpP88HzxIKtbmhVwZUjcArAAAAAAAAAABdAgAAAAAAAAAAAAAAAAAAAABdAgAAAAAAAAAAAAAAAAAAAAAEAEEAF4UyYe9quFMqZ/BThlqtMSk/zwfPEgq1uaFXBlSNwCsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAIEAF4UyYe9quFMqZ/BThlqtMSk/zwfPEgq1uaFXBlSNwCscN+ZDO3ME3YJzeuQNm4vzxJ9bDmxJqNUzKLPlBpAcVwEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADgBAABeFMmHvarhTKmfwU4ZarTEpP88HzxIKtbmhVwZUjcArAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAASAEAAF4UyYe9quFMqZ/BThlqtMSk/zwfPEgq1uaFXBlSNwCsXkkg7bIoqh7dHHYFPlZH5OVyECpzj2fTVun06S4p0nhMArgAXhTJh72q4Uypn8FOGWq0xKT/PB88SCrW5oVcGVI3AKxeSSDtsiiqHt0cdgU+Vkfk5XIQKnOPZ9NW6fTpLinSeCgAAAFBheVBhbCBVU0QFAAAAUFlVU0RPAAAAaHR0cHM6Ly90b2tlbi1tZXRhZGF0YS5wYXhvcy5jb20vcHl1c2RfbWV0YWRhdGEvcHJvZC9zb2xhbmEvcHl1c2RfbWV0YWRhdGEuanNvbgAAAAA=";
+
+    /// AUSD mint account, Solana mainnet slot 446743098 (895 bytes).
+    /// transferFeeConfig: 0 bps, maximumFee 1_000_000, both entries from epoch 724.
+    const AUSD_MAINNET_MINT_B64: &str = "AQAAAMOSBBNIrZ30q7bS6nks2GZ1Q7trvbXm+Ae5jxjAjDYeqqotl/0CAAAGAQEAAABQUymI/Gx1HsDmGa2p2RwvDgQNrShd0PcHdNXT6cY8rAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQMAIACzSF9xVg5DV9jy3vEg0xhShcLif3Pkz+feC9nbTgP/GAwAIABObi70qCWGj5qOj0PTsRGsNjy+H3yfox5TL518nnDsZwEAbACzSF9xVg5DV9jy3vEg0xhShcLif3Pkz+feC9nbTgP/GLNIX3FWDkNX2PLe8SDTGFKFwuJ/c+TP594L2dtOA/8YAAAAAAAAAADUAgAAAAAAAEBCDwAAAAAAAADUAgAAAAAAAEBCDwAAAAAAAAAEAEEAs0hfcVYOQ1fY8t7xINMYUoXC4n9z5M/n3gvZ204D/xgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAIEAs0hfcVYOQ1fY8t7xINMYUoXC4n9z5M/n3gvZ204D/xhY0WVHP5Y/c7RO15LRwgarfUfESJ93BmP4wsPhSxp/KQEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADgBAALNIX3FWDkNX2PLe8SDTGFKFwuJ/c+TP594L2dtOA/8YAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAASAEAAs0hfcVYOQ1fY8t7xINMYUoXC4n9z5M/n3gvZ204D/xiMwF2vQ0qn90haKEhPwwaTEThLF8NttR9LO7ICy8gMyBMAywCzSF9xVg5DV9jy3vEg0xhShcLif3Pkz+feC9nbTgP/GIzAXa9DSqf3SFooSE/DBpMROEsXw221H0s7sgLLyAzIBAAAAEFVU0QEAAAAQVVTRHMAAABodHRwczovL3Jhdy5naXRodWJ1c2VyY29udGVudC5jb20vYWdvcmEtZmluYW5jZS9wdWJsaWMtYXNzZXRzL3JlZnMvaGVhZHMvbWFzdGVyL3NyYy90b2tlbi1tZXRhZGF0YS9zb2xhbmEtYXVzZC5qc29uAAAAAA==";
+
+    /// Mainnet epoch when the fixtures were captured.
+    const FIXTURE_EPOCH: u64 = 1034;
+
+    fn b64(data: &[u8]) -> String {
+        base64::engine::general_purpose::STANDARD.encode(data)
+    }
+
+    fn unb64(data: &str) -> Vec<u8> {
+        base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .unwrap()
+    }
+
+    fn mock_provider(
+        network: Network,
+        mocks: Vec<(RpcRequest, serde_json::Value)>,
+    ) -> SolanaProvider {
+        SolanaProvider {
+            keypair: Arc::new(Keypair::new()),
+            chain: SolanaChain::try_from(network).unwrap(),
+            rpc_client: Arc::new(RpcClient::new_mock_with_mocks_map(
+                "succeeds",
+                mocks.into_iter().collect(),
+            )),
+            max_compute_unit_limit: 400_000,
+            max_compute_unit_price: 1_000_000,
+        }
+    }
+
+    fn ui_account(owner: &Pubkey, data: &[u8]) -> serde_json::Value {
+        serde_json::json!({
+            "lamports": 2_039_280u64,
+            "data": [b64(data), "base64"],
+            "owner": owner.to_string(),
+            "executable": false,
+            "rentEpoch": 0,
+            "space": data.len(),
+        })
+    }
+
+    fn multiple_accounts(accounts: Vec<serde_json::Value>) -> serde_json::Value {
+        serde_json::json!({ "context": { "slot": 1 }, "value": accounts })
+    }
+
+    fn clock_account(epoch: u64) -> serde_json::Value {
+        let clock = Clock {
+            slot: 1,
+            epoch_start_timestamp: 0,
+            epoch,
+            leader_schedule_epoch: epoch + 1,
+            unix_timestamp: 0,
+        };
+        ui_account(
+            &solana_sdk::sysvar::ID,
+            &bincode::serialize(&clock).unwrap(),
+        )
+    }
+
+    /// The deployed mint with only its newer transfer fee rewritten.
+    fn mint_with_newer_transfer_fee(
+        mint_b64: &str,
+        epoch: u64,
+        basis_points: u16,
+        maximum_fee: u64,
+    ) -> Vec<u8> {
+        let mut data = unb64(mint_b64);
+        {
+            let mut mint =
+                StateWithExtensionsMut::<spl_token_2022::state::Mint>::unpack(&mut data).unwrap();
+            let config = mint.get_extension_mut::<TransferFeeConfig>().unwrap();
+            config.newer_transfer_fee.epoch = epoch.into();
+            config.newer_transfer_fee.transfer_fee_basis_points = basis_points.into();
+            config.newer_transfer_fee.maximum_fee = maximum_fee.into();
+        }
+        data
+    }
+
+    /// A payment the way a standard wallet builds it: compute budget, then a
+    /// top-level Token-2022 TransferChecked into pay_to's ATA.
+    fn token_2022_payment(
+        fee_payer: &Pubkey,
+        payer: &Pubkey,
+        mint: &Pubkey,
+        pay_to: &Pubkey,
+        amount: u64,
+    ) -> String {
+        let ata = |owner: &Pubkey| {
+            Pubkey::find_program_address(
+                &[owner.as_ref(), spl_token_2022::ID.as_ref(), mint.as_ref()],
+                &ATA_PROGRAM_PUBKEY,
+            )
+            .0
+        };
+        let mut limit = vec![2u8];
+        limit.extend_from_slice(&200_000u32.to_le_bytes());
+        let mut price = vec![3u8];
+        price.extend_from_slice(&1u64.to_le_bytes());
+        let instructions = [
+            Instruction {
+                program_id: solana_sdk::compute_budget::ID,
+                accounts: vec![],
+                data: limit,
+            },
+            Instruction {
+                program_id: solana_sdk::compute_budget::ID,
+                accounts: vec![],
+                data: price,
+            },
+            spl_token_2022::instruction::transfer_checked(
+                &spl_token_2022::ID,
+                &ata(payer),
+                mint,
+                &ata(pay_to),
+                payer,
+                &[],
+                amount,
+                6,
+            )
+            .unwrap(),
+        ];
+        let tx = Transaction::new_unsigned(Message::new(&instructions, Some(fee_payer)));
+        b64(&bincode::serialize(&VersionedTransaction::from(tx)).unwrap())
+    }
+
+    fn verify_request(
+        network: Network,
+        asset: &Pubkey,
+        pay_to: &Pubkey,
+        amount: u64,
+        transaction: String,
+    ) -> VerifyRequest {
+        serde_json::from_value(serde_json::json!({
+            "x402Version": 1,
+            "paymentPayload": {
+                "x402Version": 1,
+                "scheme": "exact",
+                "network": network.to_string(),
+                "payload": { "transaction": transaction },
+            },
+            "paymentRequirements": {
+                "scheme": "exact",
+                "network": network.to_string(),
+                "maxAmountRequired": amount.to_string(),
+                "resource": "https://example.com/paid",
+                "description": "",
+                "mimeType": "application/json",
+                "payTo": pay_to.to_string(),
+                "maxTimeoutSeconds": 60,
+                "asset": asset.to_string(),
+            },
+        }))
+        .unwrap()
+    }
+
+    /// Mocks for a verify that reaches the transfer-fee guard: first the source
+    /// and destination ATAs exist, then the mint and the clock.
+    fn mocks_through_fee_guard(
+        mint_data: &[u8],
+        epoch: u64,
+    ) -> Vec<(RpcRequest, serde_json::Value)> {
+        let token_account = ui_account(&spl_token_2022::ID, &[0u8; 82]);
+        vec![
+            (
+                RpcRequest::GetMultipleAccounts,
+                multiple_accounts(vec![token_account.clone(), token_account]),
+            ),
+            (
+                RpcRequest::GetMultipleAccounts,
+                multiple_accounts(vec![
+                    ui_account(&spl_token_2022::ID, mint_data),
+                    clock_account(epoch),
+                ]),
+            ),
+        ]
+    }
+
+    #[tokio::test]
+    async fn test_verify_pyusd_token2022_transfer_listed_mint_passes_unlisted_mint_fails() {
+        let pyusd = Pubkey::from_str(PYUSD_MAINNET_MINT).unwrap();
+        let payer = Keypair::new().pubkey();
+        let pay_to = Keypair::new().pubkey();
+        let amount = 10_000; // 0.01 PYUSD
+
+        let provider = mock_provider(
+            Network::Solana,
+            mocks_through_fee_guard(&unb64(PYUSD_MAINNET_MINT_B64), FIXTURE_EPOCH),
+        );
+        let tx = token_2022_payment(&provider.keypair.pubkey(), &payer, &pyusd, &pay_to, amount);
+        let result = provider
+            .verify(&verify_request(
+                Network::Solana,
+                &pyusd,
+                &pay_to,
+                amount,
+                tx,
+            ))
+            .await;
+        assert!(
+            result.is_ok(),
+            "a Token-2022 TransferChecked of listed PYUSD must verify: {result:?}"
+        );
+
+        // The same transaction shape over a Token-2022 mint nobody listed.
+        let unlisted = Keypair::new().pubkey();
+        let provider = mock_provider(Network::Solana, vec![]);
+        let tx = token_2022_payment(
+            &provider.keypair.pubkey(),
+            &payer,
+            &unlisted,
+            &pay_to,
+            amount,
+        );
+        let err = provider
+            .verify(&verify_request(
+                Network::Solana,
+                &unlisted,
+                &pay_to,
+                amount,
+                tx,
+            ))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("unsupported_asset"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn test_verify_rejects_token2022_mint_with_nonzero_transfer_fee() {
+        let payer = Keypair::new().pubkey();
+        let pay_to = Keypair::new().pubkey();
+        let amount = 10_000;
+        let as_deployed = |mint_b64: &str| unb64(mint_b64);
+
+        // (case, mint address, mint account bytes, must verify)
+        //
+        // AUSD goes first: it was already listed before PYUSD, so its fee case is
+        // the one that fails for the right reason on a facilitator without the guard.
+        let cases = [
+            (
+                "AUSD as deployed: 0 bps under a 1 AUSD cap is still 0",
+                AUSD_MAINNET_MINT,
+                as_deployed(AUSD_MAINNET_MINT_B64),
+                true,
+            ),
+            (
+                "AUSD with a 1 bps fee in force",
+                AUSD_MAINNET_MINT,
+                mint_with_newer_transfer_fee(AUSD_MAINNET_MINT_B64, FIXTURE_EPOCH, 1, 1_000_000),
+                false,
+            ),
+            (
+                "PYUSD as deployed",
+                PYUSD_MAINNET_MINT,
+                as_deployed(PYUSD_MAINNET_MINT_B64),
+                true,
+            ),
+            (
+                "PYUSD with a 0.5% fee in force",
+                PYUSD_MAINNET_MINT,
+                mint_with_newer_transfer_fee(PYUSD_MAINNET_MINT_B64, FIXTURE_EPOCH, 50, u64::MAX),
+                false,
+            ),
+            (
+                "PYUSD with a 0.5% fee scheduled two epochs out",
+                PYUSD_MAINNET_MINT,
+                mint_with_newer_transfer_fee(
+                    PYUSD_MAINNET_MINT_B64,
+                    FIXTURE_EPOCH + 2,
+                    50,
+                    u64::MAX,
+                ),
+                false,
+            ),
+        ];
+
+        for (case, mint, mint_data, must_verify) in cases {
+            let mint = Pubkey::from_str(mint).unwrap();
+            let provider = mock_provider(
+                Network::Solana,
+                mocks_through_fee_guard(&mint_data, FIXTURE_EPOCH),
+            );
+            let tx = token_2022_payment(&provider.keypair.pubkey(), &payer, &mint, &pay_to, amount);
+            let result = provider
+                .verify(&verify_request(Network::Solana, &mint, &pay_to, amount, tx))
+                .await;
+            if must_verify {
+                assert!(result.is_ok(), "{case}: {result:?}");
+            } else {
+                let err = result.expect_err(case);
+                assert!(
+                    err.to_string().contains("transfer_fee_not_zero"),
+                    "{case}: {err}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_transfer_fee_upper_bound_on_the_deployed_mints() {
+        let fee = |owner: &Pubkey, data: &[u8], epoch: u64| {
+            transfer_fee_upper_bound(owner, data, epoch, 10_000)
+        };
+        let t22 = spl_token_2022::ID;
+
+        // As deployed, neither mint takes anything.
+        assert_eq!(
+            fee(&t22, &unb64(PYUSD_MAINNET_MINT_B64), FIXTURE_EPOCH).unwrap(),
+            0
+        );
+        assert_eq!(
+            fee(&t22, &unb64(AUSD_MAINNET_MINT_B64), FIXTURE_EPOCH).unwrap(),
+            0
+        );
+
+        // 0.5% in force: 50 units out of 10_000.
+        let in_force =
+            mint_with_newer_transfer_fee(PYUSD_MAINNET_MINT_B64, FIXTURE_EPOCH, 50, u64::MAX);
+        assert_eq!(fee(&t22, &in_force, FIXTURE_EPOCH).unwrap(), 50);
+
+        // Scheduled two epochs out: already counted, so it cannot race a settlement.
+        let scheduled =
+            mint_with_newer_transfer_fee(PYUSD_MAINNET_MINT_B64, FIXTURE_EPOCH + 2, 50, u64::MAX);
+        assert_eq!(fee(&t22, &scheduled, FIXTURE_EPOCH).unwrap(), 50);
+
+        // maximumFee caps the fee: 50 bps of 10_000 capped at 3.
+        let capped = mint_with_newer_transfer_fee(PYUSD_MAINNET_MINT_B64, FIXTURE_EPOCH, 50, 3);
+        assert_eq!(fee(&t22, &capped, FIXTURE_EPOCH).unwrap(), 3);
+
+        // A Token-2022 mint with no extensions (base layout only): no fee config, no fee.
+        let mut plain = [0u8; 82];
+        plain[44] = 6; // decimals
+        plain[45] = 1; // is_initialized
+        assert_eq!(fee(&t22, &plain, FIXTURE_EPOCH).unwrap(), 0);
+
+        // Legacy SPL Token (USDC) never has a fee.
+        assert_eq!(fee(&spl_token::ID, &plain, FIXTURE_EPOCH).unwrap(), 0);
+
+        // Not a token program: refused, not read as fee-free.
+        let err = fee(
+            &solana_sdk::system_program::ID,
+            &unb64(PYUSD_MAINNET_MINT_B64),
+            FIXTURE_EPOCH,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("mint_not_a_token_mint"), "{err}");
+
+        // Truncated account data: refused.
+        let truncated = &unb64(PYUSD_MAINNET_MINT_B64)[..100];
+        assert!(fee(&t22, truncated, FIXTURE_EPOCH).is_err());
+    }
 
     // ---- parse_token_account_balance ----------------------------------------
 

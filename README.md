@@ -49,7 +49,7 @@ Includes [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) on-chain reputation
 | **Scroll** | 534352 | USDC | [scrollscan.com](https://scrollscan.com) |
 | **Robinhood Chain** | 4663 | USDG | [robinhoodchain.blockscout.com](https://robinhoodchain.blockscout.com) |
 | **Sui** | - | USDC | [suiscan.xyz](https://suiscan.xyz) |
-| **Solana** | - | USDC, AUSD | [solscan.io](https://solscan.io) |
+| **Solana** | - | USDC, AUSD, PYUSD | [solscan.io](https://solscan.io) |
 | **Fogo** | - | USDC | [fogoscan.com](https://fogoscan.com) |
 | **NEAR** | - | USDC | [nearblocks.io](https://nearblocks.io) |
 | **Stellar** | - | USDC | [stellarchain.io](https://stellarchain.io) |
@@ -89,7 +89,7 @@ Includes [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) on-chain reputation
 | **AUSD** | Ethereum, Polygon, Arbitrum, Avalanche, Monad, BSC, Solana, Sui |
 | **EURC** | Ethereum, Base, Avalanche |
 | **USDT** | Arbitrum, Celo, Optimism, Monad |
-| **PYUSD** | Ethereum |
+| **PYUSD** | Ethereum, Solana (Token-2022) |
 | **USDG** | Robinhood Chain (Paxos Global Dollar, EIP-712 domain "Global Dollar" v1) |
 | **RLUSD** | XRPL |
 | **XRP** | XRPL (native) |
@@ -112,7 +112,7 @@ Includes [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) on-chain reputation
 | Scroll | Y | - | - | - | - | - |
 | Robinhood Chain | - | - | - | - | - | Y |
 | SKALE Base | Y | - | - | - | - | - |
-| Solana | Y | Y | - | - | - | - |
+| Solana | Y | Y | - | - | Y | - |
 | Sui | Y | Y | - | - | - | - |
 | Fogo | Y | - | - | - | - | - |
 | NEAR | Y | - | - | - | - | - |
@@ -287,7 +287,11 @@ Design docs: [`docs/plans/bazaar/`](docs/plans/bazaar/).
 Standard `transferWithAuthorization` for gasless USDC transfers.
 
 ### Solana (SPL Token + Token2022)
-Supports both SPL Token (USDC) and Token2022 (AUSD) programs.
+Supports both SPL Token (USDC) and Token2022 (AUSD, PYUSD) programs. Both
+Token-2022 mints carry a `transferFeeConfig` extension that is 0 today; the
+facilitator reads the mint on every verify and settle and refuses the payment if
+a fee is in force or scheduled, since the payee would then receive less than the
+signed amount.
 
 ### NEAR (NEP-366)
 Meta-transactions with delegate actions for gasless payments.

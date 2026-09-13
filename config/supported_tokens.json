@@ -161,17 +161,19 @@
 
   "svm_networks": {
     "solana": {
-      "tokens": ["usdc", "ausd"],
+      "tokens": ["usdc", "ausd", "pyusd"],
       "explorer": "https://solscan.io",
       "facilitatorWallet": "F742C4VfFLQ9zRQyithoj5229ZgtX2WqKCSFKgH2EThq",
       "usdcMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-      "ausdMint": "AUSD1jCcCyPLybk1YnvPWsHQSrZ46dxwoMniN4N2UEB9"
+      "ausdMint": "AUSD1jCcCyPLybk1YnvPWsHQSrZ46dxwoMniN4N2UEB9",
+      "pyusdMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
     },
     "solana-devnet": {
-      "tokens": ["usdc"],
+      "tokens": ["usdc", "pyusd"],
       "explorer": "https://solscan.io",
       "facilitatorWallet": "6xNPewUdKRbEZDReQdpyfNUdgNg8QRc8Mt263T5GZSRv",
-      "usdcMint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
+      "usdcMint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+      "pyusdMint": "CXk2AMBfi3TwaEL2468s6zP8xq9NxTXjp9gjMgzeUynM"
     },
     "fogo": {
       "tokens": ["usdc"],

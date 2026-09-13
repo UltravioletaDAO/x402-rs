@@ -1720,7 +1720,11 @@ static AUSD_BSC: Lazy<AUSDDeployment> = Lazy::new(|| {
 
 /// AUSD deployment on Solana mainnet (Token2022).
 /// Address: AUSD1jCcCyPLybk1YnvPWsHQSrZ46dxwoMniN4N2UEB9
-/// Uses Token2022 with extensions: PermanentDelegate, TransferHook, Metadata.
+/// Extensions read on-chain 2026-09-13: MintCloseAuthority, PermanentDelegate,
+/// TransferFeeConfig (0 bps, maximumFee 1_000_000), ConfidentialTransferMint,
+/// ConfidentialTransferFeeConfig, TransferHook (no program set), MetadataPointer,
+/// TokenMetadata. The transfer fee is re-read on every verify, see
+/// `transfer_fee_upper_bound` in `chain/solana.rs`.
 static AUSD_SOLANA: Lazy<AUSDDeployment> = Lazy::new(|| {
     AUSDDeployment(TokenDeployment {
         asset: TokenAsset {
@@ -1841,6 +1845,43 @@ static PYUSD_ETHEREUM: Lazy<PYUSDDeployment> = Lazy::new(|| {
     })
 });
 
+/// PYUSD deployment on Solana mainnet (Token-2022).
+/// Mint: 2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo
+/// Extensions read on-chain 2026-09-13: MintCloseAuthority, PermanentDelegate,
+/// TransferFeeConfig (0 bps, maximumFee 0), ConfidentialTransferMint,
+/// ConfidentialTransferFeeConfig, TransferHook (no program set), MetadataPointer,
+/// TokenMetadata. Same shape as AUSD_SOLANA: only the public TransferChecked
+/// path is accepted, and the transfer fee is re-read on every verify, see
+/// `transfer_fee_upper_bound` in `chain/solana.rs`.
+static PYUSD_SOLANA: Lazy<PYUSDDeployment> = Lazy::new(|| {
+    PYUSDDeployment(TokenDeployment {
+        asset: TokenAsset {
+            address: MixedAddress::Solana(
+                Pubkey::from_str("2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo").unwrap(),
+            ),
+            network: Network::Solana,
+        },
+        decimals: 6,
+        eip712: None, // Not needed for Solana - uses fee-payer model
+    })
+});
+
+/// PYUSD deployment on Solana devnet (Token-2022), the Paxos sandbox mint.
+/// Mint: CXk2AMBfi3TwaEL2468s6zP8xq9NxTXjp9gjMgzeUynM, read on-chain 2026-09-13:
+/// decimals 6 and the same extension set as mainnet (fee 0 bps, maximumFee 0).
+static PYUSD_SOLANA_DEVNET: Lazy<PYUSDDeployment> = Lazy::new(|| {
+    PYUSDDeployment(TokenDeployment {
+        asset: TokenAsset {
+            address: MixedAddress::Solana(
+                Pubkey::from_str("CXk2AMBfi3TwaEL2468s6zP8xq9NxTXjp9gjMgzeUynM").unwrap(),
+            ),
+            network: Network::SolanaDevnet,
+        },
+        decimals: 6,
+        eip712: None, // Not needed for Solana - uses fee-payer model
+    })
+});
+
 /// A known PYUSD (PayPal USD) deployment as a wrapper around [`TokenDeployment`].
 #[derive(Clone, Debug)]
 pub struct PYUSDDeployment(pub TokenDeployment);
@@ -1863,17 +1904,19 @@ impl PYUSDDeployment {
     /// Return the known PYUSD deployment for the given network.
     ///
     /// Returns `None` if PYUSD is not deployed on the specified network.
-    /// Note: PYUSD is currently only available on Ethereum mainnet.
+    /// Ethereum uses EIP-3009 (v,r,s variant); Solana uses the Token-2022 fee-payer model.
     pub fn by_network<N: Borrow<Network>>(network: N) -> Option<&'static PYUSDDeployment> {
         match network.borrow() {
             Network::Ethereum => Some(&PYUSD_ETHEREUM),
+            Network::Solana => Some(&PYUSD_SOLANA),
+            Network::SolanaDevnet => Some(&PYUSD_SOLANA_DEVNET),
             _ => None,
         }
     }
 
     /// Return all networks where PYUSD is deployed.
     pub fn supported_networks() -> &'static [Network] {
-        &[Network::Ethereum]
+        &[Network::Ethereum, Network::Solana, Network::SolanaDevnet]
     }
 }
 
@@ -2382,14 +2425,65 @@ mod tests {
     }
 
     // ============================================================
-    // PYUSD Deployment Tests (Ethereum only)
+    // PYUSD Deployment Tests (Ethereum + Solana Token-2022)
     // ============================================================
 
     #[test]
-    fn test_pyusd_ethereum_only() {
+    fn test_pyusd_supported_networks() {
         let networks = PYUSDDeployment::supported_networks();
-        assert_eq!(networks.len(), 1);
-        assert_eq!(networks[0], Network::Ethereum);
+        assert_eq!(networks.len(), 3);
+        assert!(networks.contains(&Network::Ethereum));
+        assert!(networks.contains(&Network::Solana));
+        assert!(networks.contains(&Network::SolanaDevnet));
+    }
+
+    #[test]
+    fn test_pyusd_supported_on_solana_not_on_base_or_polygon() {
+        assert!(is_token_supported(Network::Solana, TokenType::Pyusd));
+        assert!(is_token_supported(Network::SolanaDevnet, TokenType::Pyusd));
+        assert!(!is_token_supported(Network::Base, TokenType::Pyusd));
+        assert!(!is_token_supported(Network::Polygon, TokenType::Pyusd));
+        // Fogo is SVM as well, but there is no PYUSD mint on it.
+        assert!(!is_token_supported(Network::Fogo, TokenType::Pyusd));
+    }
+
+    #[test]
+    fn test_pyusd_solana_address() {
+        // Read on-chain 2026-09-13: owner TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb, decimals 6.
+        let mint = Pubkey::from_str("2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo").unwrap();
+        let deployment = get_token_deployment(Network::Solana, TokenType::Pyusd).unwrap();
+        assert!(matches!(deployment.asset.address, MixedAddress::Solana(_)));
+        assert_eq!(deployment.asset.address, MixedAddress::Solana(mint));
+        assert_eq!(deployment.decimals, 6);
+        assert!(deployment.eip712.is_none());
+        // verify/settle gate on this allow-list before touching the RPC.
+        assert!(is_supported_asset(
+            Network::Solana,
+            &MixedAddress::Solana(mint)
+        ));
+    }
+
+    #[test]
+    fn test_pyusd_solana_devnet_address() {
+        let devnet_mint = Pubkey::from_str("CXk2AMBfi3TwaEL2468s6zP8xq9NxTXjp9gjMgzeUynM").unwrap();
+        let mainnet_mint =
+            Pubkey::from_str("2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo").unwrap();
+        let deployment = get_token_deployment(Network::SolanaDevnet, TokenType::Pyusd).unwrap();
+        assert_eq!(deployment.asset.address, MixedAddress::Solana(devnet_mint));
+        assert_eq!(deployment.decimals, 6);
+        assert!(is_supported_asset(
+            Network::SolanaDevnet,
+            &MixedAddress::Solana(devnet_mint)
+        ));
+        // Each cluster accepts only its own mint.
+        assert!(!is_supported_asset(
+            Network::SolanaDevnet,
+            &MixedAddress::Solana(mainnet_mint)
+        ));
+        assert!(!is_supported_asset(
+            Network::Solana,
+            &MixedAddress::Solana(devnet_mint)
+        ));
     }
 
     #[test]
@@ -2547,11 +2641,12 @@ mod tests {
 
     #[test]
     fn test_supported_tokens_for_solana() {
-        // Solana supports USDC and AUSD (Token2022)
+        // Solana supports USDC (SPL Token) plus AUSD and PYUSD (Token-2022)
         let tokens = supported_tokens_for_network(Network::Solana);
-        assert_eq!(tokens.len(), 2);
+        assert_eq!(tokens.len(), 3);
         assert!(tokens.contains(&TokenType::Usdc));
         assert!(tokens.contains(&TokenType::Ausd));
+        assert!(tokens.contains(&TokenType::Pyusd));
     }
 
     #[test]

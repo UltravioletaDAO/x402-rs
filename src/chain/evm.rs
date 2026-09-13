@@ -3004,6 +3004,13 @@ mod tests {
                 let outcome = match method.as_str() {
                     "eth_estimateGas" => {
                         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                        // Recorded when the answer lands, not when it is asked
+                        // for: "was the nonce requested before the estimate
+                        // came back" is the whole question the guard answers.
+                        this.calls
+                            .lock()
+                            .unwrap()
+                            .push(ESTIMATE_ANSWERED.to_string());
                         if this.estimate_reverts {
                             r#""error":{"code":3,"message":"execution reverted","data":"0x"}"#
                                 .to_string()
@@ -3023,6 +3030,9 @@ mod tests {
             })
         }
     }
+
+    /// Marker [`ScriptedRpc`] records once `eth_estimateGas` has answered.
+    const ESTIMATE_ANSWERED: &str = "eth_estimateGas answered";
 
     /// A contract call over the filler stack `EvmProvider` builds, pointed at
     /// [`ScriptedRpc`], plus the address it sends from.
@@ -3094,8 +3104,14 @@ mod tests {
         );
     }
 
-    /// The guard must not cost the happy path its send: estimate first, then
-    /// the nonce, then the broadcast -- and the filler does not estimate again.
+    /// The guard must not cost the happy path its send: the estimate has
+    /// ANSWERED before the nonce is even requested, then the broadcast -- and
+    /// the filler does not estimate again.
+    ///
+    /// Ordering by request alone could not tell the guard from a bare
+    /// `call.send()`: alloy's gas filler asks for the estimate first there too,
+    /// and the nonce filler asks while that estimate is still in flight. Only
+    /// the answer marker separates the two.
     #[tokio::test]
     async fn a_passing_estimate_is_sent_with_the_nonce_reserved_after_it() {
         let rpc = ScriptedRpc::new(false);
@@ -3115,8 +3131,8 @@ mod tests {
                 .unwrap_or_else(|| panic!("{m} never called: {calls:?}"))
         };
         assert!(
-            pos("eth_estimateGas") < pos("eth_getTransactionCount"),
-            "{calls:?}"
+            pos(ESTIMATE_ANSWERED) < pos("eth_getTransactionCount"),
+            "the nonce was requested before the estimate answered: {calls:?}"
         );
         assert!(
             pos("eth_getTransactionCount") < pos("eth_sendRawTransaction"),

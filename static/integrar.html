@@ -4,9 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title data-i18n="title">Integrate with this x402 facilitator</title>
-<meta name="description" content="How to charge for an HTTP endpoint, or pay for one, using this x402 facilitator: the two paths, the SDKs, the traps that bite first, and what is not promised.">
+<meta name="description" data-i18n-content="meta.description" content="How to charge for an HTTP endpoint, or pay for one, using this x402 facilitator: the two paths, the SDKs, the traps that bite first, and what is not promised.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://facilitator.ultravioletadao.xyz/integrar">
+<link rel="canonical" href="https://facilitator.ultravioletadao.xyz/integrar">
 <meta property="og:title" content="Integrate with this x402 facilitator">
 <meta property="og:description" content="0% fee, no account, no API key. Point your middleware at one URL. And an honest list of what is not promised.">
 <meta property="og:image" content="https://facilitator.ultravioletadao.xyz/logo.png">
@@ -247,6 +248,7 @@ const I18N = {
     "next.x402": "x402",
     "next.x402.why": "the detail of the two calls and the schemes",
     "title": "Integrate with this x402 facilitator",
+    "meta.description": "How to charge for an HTTP endpoint, or pay for one, using this x402 facilitator: the two paths, the SDKs, the traps that bite first, and what is not promised.",
     "nav.networks": "Networks",
     "lead": "Add payments to an HTTP endpoint or connect a buyer to a paid API. Start with the example for your side of the transaction.",
     "seller.h": "You are selling",
@@ -331,6 +333,7 @@ const I18N = {
     "next.x402": "x402",
     "next.x402.why": "el detalle de las dos llamadas y los esquemas",
     "title": "Integrar con este facilitador x402",
+    "meta.description": "Cómo cobrar por un endpoint HTTP, o pagar por uno, con este facilitador x402: los dos caminos, los SDK, las trampas que muerden primero y lo que no se promete.",
     "nav.networks": "Redes",
     "lead": "Añade pagos a un endpoint HTTP o conecta un comprador a una API de pago. Empieza con el ejemplo de tu lado de la transacción.",
     "seller.h": "Estás vendiendo",
@@ -393,6 +396,7 @@ const t = k => (I18N[LANG] && I18N[LANG][k]) ?? I18N.en[k] ?? k;
 function applyLang(lang){
   if (I18N[lang]) LANG = lang;
   document.documentElement.lang = LANG;
+  document.querySelectorAll('[data-i18n-content]').forEach(el => el.setAttribute('content', t(el.getAttribute('data-i18n-content'))));
   document.querySelectorAll('[data-i18n]').forEach(el => {
     el.innerHTML = t(el.getAttribute('data-i18n'));
   });

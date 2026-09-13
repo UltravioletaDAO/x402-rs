@@ -4,9 +4,10 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title data-i18n="pageTitle">Bazaar - x402 endpoints that take payment</title>
-  <meta name="description" content="Curated x402 Bazaar: browse live, payable agent endpoints across the ecosystem." />
+  <meta name="description" data-i18n-content="meta.description" content="Curated x402 Bazaar: browse live, payable agent endpoints across the ecosystem." />
   <meta property="og:type" content="website" />
   <meta property="og:url" content="https://facilitator.ultravioletadao.xyz/bazaar" />
+  <link rel="canonical" href="https://facilitator.ultravioletadao.xyz/bazaar" />
   <meta property="og:title" content="The Curated x402 Bazaar" />
   <meta property="og:description" content="Live, payable agent endpoints across the x402 ecosystem, filtered for junk and swept for dead links." />
   <meta property="og:image" content="https://facilitator.ultravioletadao.xyz/logo.png" />
@@ -224,6 +225,7 @@
     "x.k.quarantined": "Quarantined (stopped answering)",
     "x.k.sources": "Upstream facilitators",
     "pageTitle": "Bazaar - x402 endpoints that take payment",
+    "meta.description": "Curated x402 Bazaar: browse live, payable agent endpoints across the ecosystem.",
     "f.tier.all": "All tiers",
     "f.tier.firstParty": "First-party",
     "f.tier.vip": "VIP",
@@ -350,6 +352,7 @@
     "x.k.quarantined": "En cuarentena (dejaron de contestar)",
     "x.k.sources": "Facilitadores de origen",
     "pageTitle": "Bazar - endpoints x402 que aceptan pago",
+    "meta.description": "Bazar x402 curado: explora endpoints de agentes vivos y que aceptan pago en todo el ecosistema.",
     "f.tier.all": "Todos los niveles",
     "f.tier.firstParty": "First-party",
     "f.tier.vip": "VIP",
@@ -770,6 +773,7 @@
       const t = I18N[l]||I18N.en;
       document.querySelectorAll('[data-i18n]').forEach(e=>{ const k=e.getAttribute('data-i18n'); if(t[k]) e.textContent=t[k]; });
       document.querySelectorAll('[data-i18n-ph]').forEach(e=>{ const k=e.getAttribute('data-i18n-ph'); if(t[k]) e.setAttribute('placeholder',t[k]); });
+      document.querySelectorAll('[data-i18n-content]').forEach(e=>{ const k=e.getAttribute('data-i18n-content'); if(t[k]) e.setAttribute('content',t[k]); });
       document.documentElement.lang=l;
       document.querySelectorAll('.lang button').forEach(b =>
         b.setAttribute('aria-pressed', String(b.getAttribute('data-lang') === l)));

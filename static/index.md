@@ -12,6 +12,9 @@ the money that moves is the buyer's payment going to the seller.
   `GET /supported` is the only list that is true today; this one is a snapshot.
 - **Schemes:** `exact`, `upto`, `escrow`, `commerce`, `fhe-transfer`
 - **Release:** `GET /version`
+- **Language (idioma):** this page is English (`en`) and has no Spanish translation.
+  The HTML landing page at `/` and the other human pages carry English and Spanish
+  at the same URL, switched by their EN/ES selector; there is no `/es/` path.
 
 ## API
 

@@ -4,9 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title data-i18n="title">x402 facilitator - metrics</title>
-<meta name="description" content="Everything this facilitator has verified and settled, by network and token. Not a ledger: the chain is.">
+<meta name="description" data-i18n-content="meta.description" content="Everything this facilitator has verified and settled, by network and token. Not a ledger: the chain is.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://facilitator.ultravioletadao.xyz/stats">
+<link rel="canonical" href="https://facilitator.ultravioletadao.xyz/stats">
 <meta property="og:title" content="x402 · facilitator metrics">
 <meta property="og:description" content="Everything this facilitator has verified and settled, by network and token. Not a ledger: the chain is.">
 <meta property="og:image" content="https://facilitator.ultravioletadao.xyz/logo.png">
@@ -156,6 +157,7 @@ const I18N = {
     "next.x402":"x402",
     "next.x402.why":"what a settle is, and why the failures are published too",
     "title":"x402 facilitator - metrics",
+    "meta.description":"Everything this facilitator has verified and settled, by network and token. Not a ledger: the chain is.",
     histTitle:"Everything processed since launch",
     liveTitle:"Live record (recent window)",
     liveNote:"<b>These are NOT the totals.</b> They count only what the facilitator recorded "+
@@ -219,6 +221,7 @@ const I18N = {
     "next.x402":"x402",
     "next.x402.why":"qué es un settle, y por qué los fallos también se publican",
     "title":"x402 facilitator - métricas",
+    "meta.description":"Todo lo que este facilitador ha verificado y liquidado, por red y por token. No es un libro contable: el libro es la cadena.",
     histTitle:"Todo lo procesado desde el lanzamiento",
     liveTitle:"Registro en vivo (ventana reciente)",
     liveNote:"<b>Estos NO son los totales.</b> Cuentan solo lo que el facilitador registró por su "+
@@ -272,6 +275,7 @@ const t = k => (I18N[LANG] && I18N[LANG][k]) ?? I18N.en[k] ?? k;
 function applyLang(lang){
   if (I18N[lang]) LANG = lang;
   document.documentElement.lang = LANG;
+  document.querySelectorAll('[data-i18n-content]').forEach(el => el.setAttribute('content', t(el.getAttribute('data-i18n-content'))));
   document.title = t('title');
   document.querySelectorAll('[data-i18n]').forEach(el => {
     el.textContent = t(el.getAttribute('data-i18n'));

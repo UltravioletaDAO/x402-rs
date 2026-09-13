@@ -20,6 +20,10 @@ tokio-stream = { version = "0.1.18", features = ["sync"] }  # BroadcastStream pa
 dotenvy = { version = "0.15.7" }
 serde_json = { version = "1.0.149" }
 tower-http = { version = "0.6.8", features = ["trace", "cors", "limit"] }
+# gzip for the documents compiled into the binary, computed once per process
+# (handlers::precompressed_static). Already in the lock through
+# compression-codecs, so declaring it adds no crate.
+flate2 = { version = "1.1" }
 tower_governor = { version = "0.8" }
 serde = { version = "1.0.228", features = ["derive"] }
 once_cell = { version = "1.21.3" }

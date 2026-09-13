@@ -1,5 +1,53 @@
 # Changelog
 
+## [2.29.0] - 2026-09-13
+
+### Added
+
+- **The human pages had no rate limit.** `/`, `/bazaar`, `/networks`, `/x402`,
+  `/dx402`, `/erc8004`, `/integrar`, `/events/live` and `/stats` now share one
+  per-IP governor: burst 60, one token every 500 ms, overridable with
+  `HUMAN_PAGES_RATE_BURST` / `HUMAN_PAGES_RATE_PER_MS`. It is built inside
+  `handlers::human_page_routes_governed`, so its test fires at the router
+  production mounts. The agentic documents (`/llms.txt`, `/.well-known/*`) stay
+  unmetered on purpose, and `/verify`, `/settle` and `/supported` keep the
+  budgets they had.
+- **Compiled-in documents go out gzip to a client that asks, compressed once per
+  process** (`handlers::precompressed_static`). The landing drops from 251 KB to
+  38 KB and `llms-full.txt` from 59 KB to 20 KB. This is deliberately not
+  tower-http's `CompressionLayer`, whose per-request cost was measured first
+  (release build, localhost, 16 connections): p95 for `/` went from 0.82 ms to
+  16.97 ms at the default level and to 2.94 ms at the fastest, against 0.25 ms
+  for bytes compressed once. Bodies built at request time (`/supported`, the
+  catalog, the stats) are not compressed. Every static document now also sends
+  `Vary: Accept-Encoding`.
+- **The landing gets `<meta name="description">`, `og:` tags and a canonical
+  URL, and the other nine pages get a canonical URL.** Every description stays
+  English in the markup, which is what a crawler indexes, and switches with the
+  EN/ES selector through a new `data-i18n-content` attribute. A test ties each
+  canonical URL to its page's `og:url` and asserts there is no `hreflang`.
+- **`llms.txt`, `skill.md`, `index.md` and `auth.md` declare their language**:
+  English, with no Spanish translation, while the human pages are bilingual at
+  the same URLs. `skill.md` gains section 12 (DX402) and section 13 (the
+  Bazaar), and `llms.txt` lists the DX402 evidence endpoint.
+
+### Fixed
+
+- **`text_surface()` sent no `Content-Language`.** That covers `llms-full.txt`,
+  `robots.txt`, the sitemap and every `.well-known` card, which is also the path
+  every new agentic document is added through. They now send `en`, like the
+  negotiated surfaces and the HTML pages already did.
+- **Three runs of prose on the landing had no dictionary key**, so they stayed
+  English for a reader who chose Spanish. A new test (N3) scans the landing for
+  visible text of three or more words that no `data-i18n*` attribute covers,
+  with a declared allowlist of proper names that cannot rot.
+
+### Changed
+
+- `docs/MONETIZATION_MASTER_PLAN.md` moved to `docs/plans/_archivo/` with a note:
+  the facilitator charges no fee, and the "precios P0-P4" releases are about
+  other sellers' prices, not about this plan.
+
 ## [2.28.0] - 2026-09-13
 
 ### Fixed
@@ -23,6 +71,486 @@
 - `base-mainnet` is accepted as an alias of `base` wherever a network is parsed
   from a string (`/identity/base-mainnet/…` answered `400`). The wire name is
   still `base`.
+
+## [Infra/CI merged between 2.26.0 and 2.27.0] (#46, #47)
+
+Infra/CI-only changes merged after 2.26.0, with no `VERSION` bump. No binary
+behaviour changed; they reached production with 2.27.0 (#48, PYUSD on Solana,
+whose own entry is still to be written).
+
+### Changed
+
+- **CI ran the whole pipeline on every push and every PR, whatever the diff
+  touched** (#46). `ci.yaml` now carries a workflow-level `paths` filter: the
+  union of everything its four jobs read, including `static/**`, `config/**`
+  and `abi/**`, which are compile-time inputs. PR runs superseded by a later
+  push are cancelled. Measured over the 24 h to 2026-09-11: 89.9 of 392 runner
+  minutes (22.9%) saved. `workflow_dispatch` stays unfiltered as the escape
+  hatch, the account-id scan workflow stays unfiltered on purpose, and
+  `scripts/ci_paths_selftest.py` asserts the filter (identical push/PR lists,
+  every pattern matches a tracked file).
+- **The `solana-mint-headroom-low` alarm threshold drops from 0.67 SOL to 0.10
+  SOL** (#47). Sized at 50 mints of headroom (0.0134 SOL each), the alarm had
+  been red since it was created on 2026-09-10 and never cleared; the owner
+  chose a warning at about seven mints over holding 0.67 SOL of idle rent.
+  Terraform only; the facilitator's own in-process headroom warning (50 mints)
+  is unchanged.
+
+## [2.26.0] - 2026-09-11
+
+### Added
+
+- **DX402 commercial evidence: listing, offer, ceiling and charge as separate
+  claims next to the delivery proof** (#45, `src/dx402/commercial.rs`). DX402
+  proves the recovered bytes are the ones delivered; it could not say whether
+  that was the advertised price or whether the charge stayed inside what the
+  buyer authorized. Putting that into the delivery hash would change what the
+  hash means for every receipt already in circulation, so `CommercialEvidence`
+  references delivery evidence by `paymentId` and copies `contentHash` without
+  recomputing it, under its own version (`cv`), separate from `DX402_VERSION`.
+  A test fails if listing data ever enters the delivery hash; the dx402 tests
+  pass untouched.
+- **Each section names who asserts it and what backs it.** Listing snapshot:
+  the buyer (`stated`). Accepted offer: the seller (`archived` or `signed`).
+  Authorized ceiling: the buyer (`signed`). Effective charge: the chain
+  (`on_chain`). A buyer-supplied snapshot is not a statement signed by the
+  bazaar, and an archived HTTPS response is not a signed offer.
+  `completeness()` / `missing()` make partial evidence explicit -- complete is
+  not verified -- and `charge_within_authorization()` returns `None` when
+  either half is missing. For `upto`, ceiling and charge stay separate fields.
+- **`public_view()` exposes the shape of the evidence, never its contents.** It
+  keeps joins and provenance labels and drops the offer bytes, read context,
+  digest and reported consumption; a test searches the output for every
+  private literal.
+
+### Fixed
+
+- **The revalidation queue's first write could exceed its cap.** Headroom alone
+  did not bound it: `attribute_not_exists(pending)` is true on the first write,
+  so with a cap below one batch a whole batch landed. The batch is now trimmed
+  to the cap before writing, and the earlier comment claiming otherwise was
+  corrected.
+- **Buyer policy footguns are now documented and pinned by tests.** Without
+  `with_policy` the `x402-reqwest` middleware is `permissive()` with no asset
+  restriction. An allowlist entry written as bare hex (no `0x`) is compared
+  exactly and never matches an offer's `payTo`, so it refuses with
+  `recipient-not-permitted`; it is deliberately not normalized.
+
+## [2.25.0] - 2026-09-11
+
+### Added
+
+- **Buyer purchase policy in `x402-reqwest`, evaluated against the concrete
+  offer before signing** (#44, `PurchasePolicy` in
+  `crates/x402-reqwest/src/policy.rs`). A divergence from the catalog listing is
+  not on its own a refusal: an offer that costs more than the listing but fits
+  an already-authorized policy is paid, with no human-confirmation hook. A
+  policy is never widened to admit an offer. Checks run in a fixed order that
+  is part of the contract: `no-readable-offer` -> `offer-expired` ->
+  `recipient-not-permitted` -> `per-payment-limit` -> `cumulative-limit`.
+  Evaluating does not spend, and a clone spends from the same budget.
+- **Sellers can declare how long an offer is valid** (`with_offer_validity` in
+  `x402-axum`) and the buyer reads it. The extension key (`offer-receipt/1`) is
+  defined once, in `x402-rs`, because both crates need it and neither depends
+  on the other; the version is part of the key.
+- Out of scope, stated in the handoff: `offer-receipt` signature verification,
+  input binding, `upto` accounting, reconciliation of uncertain settlements and
+  a facilitator-side check.
+
+### Fixed
+
+- **One unreadable entry in a 402 challenge's `accepts` made the whole
+  challenge unpayable.** `Scheme` is a closed enum, so a single option with a
+  scheme this build does not implement (for example `batch-settlement`) failed
+  the parse of the entire list: a seller offering `exact` next to it could not
+  be paid, and the buyer never learned a payable offer was there. Unreadable
+  entries no longer sink the list, and when nothing is payable the error names
+  what the seller offered.
+- **A single listing read could fan out into one revalidation write per stale
+  record** (regression from 2.24.0). `offer_to_owner` took one URL, so a page of
+  a hundred stale listings meant a hundred tasks and a hundred DynamoDB writes,
+  and failing writes at the shared-set cap cost the same. A page is now one
+  write.
+
+## [2.24.0] - 2026-09-10
+
+### Added
+
+- **Bazaar prices are re-read on demand, inside the probe budget that already
+  existed** (#43, `src/discovery_revalidation.rs`). After 2.21.2 brought the
+  prober back to 120 probes per tick, on-demand refresh adds no probes: the
+  tick budget is split 60% demand / 40% periodic sweep, reserved so the long
+  tail is not starved, and a test asserts the halves sum to the old budget.
+  Measured against the real 2,000-record catalog: still 120 probes per tick,
+  ~1.5 ms of extra CPU per tick. `DISCOVERY_ENABLE_REVALIDATION=false` restores
+  the 2.21.2 periodic sweep without a deploy.
+- **Refresh demand is deduplicated in the existing DynamoDB lease table.**
+  Non-owner replicas add requests to a string set with an idempotent `ADD` (same
+  table, key schema and IAM statement; no lock, no scan, no new table), and the
+  discovery owner claims a batch by deleting exactly the values it took.
+  Priority follows the cost of a wrong price: `purchase-intent` >
+  `owner-notified` > `conflict` > `revision-changed` > `listing-stale` >
+  `periodic`. At most two probes per host per tick; an origin's `Retry-After`
+  wins, otherwise exponential backoff with jitter.
+- **Reading a stale listing schedules its refresh; the response never waits.**
+  Listings say what is happening: `pending` (the amount shown is the PREVIOUS
+  read), `not_verifiable` with a bounded cause, or `idle`, plus
+  `observationExpiresAt` so consumers with their own cache revalidate on the
+  same clock. The prober only ever sends an unauthenticated `GET`.
+- **`GET /discovery/config` publishes the discovery configuration a running
+  task actually resolved**, from `src/discovery_config.rs`, which replaces
+  seventeen environment reads across eleven files; no secret can be defined
+  there. `POST /discovery/refresh` names a resource and makes the server re-read
+  the origin. It never accepts terms, so it cannot be used to write a price for
+  someone else's endpoint.
+
+## [2.23.0] - 2026-09-10
+
+### Changed
+
+- **Every replica ran the whole discovery workload** (#38, audit finding A4;
+  the PR title says 2.22.0, `VERSION` shipped 2.23.0). Over 24 h with three
+  tasks: 76 aggregation cycles, 92 GETs and 106 PUTs of the 15.2 MB catalog,
+  and 8 rejected conditional writes, each discarding the whole cycle that
+  produced it. The health overlay was written unconditionally, so the last
+  writer erased the other replicas' probes. Aggregation and GC, the health
+  prober and the crawler now run only on the replica holding the
+  `discovery-jobs#owner` lease (TTL 60 s, renewal 10 s) in the existing DynamoDB
+  lease table, with no Terraform change. `/discovery/*`, `/bazaar` and
+  registration by API or settlement still run on every replica, and only
+  processes running under ECS stand for election.
+- **The lease contract was generalized, not copied.** `src/lease.rs` is
+  extracted from `writer_lease.rs` and holds the decision logic: the expiring
+  grant dated from when the request left, generation fencing, both clocks and
+  the conditional `PutItem`. The writer lease's 30 tests pass without a changed
+  assertion, and restoring the old fail-open branch turns the writer and the
+  discovery tests red together.
+- **Non-owner replicas stay fresh.** They `HEAD` the catalog and health overlay
+  every 60 s and re-read only when the object moved, which is fresher than
+  before (a replica's view used to be as old as its own hourly cycle). A new
+  owner runs a cycle at once, with a 300 s floor against a flapping lease, and
+  adopts the published catalog before every cycle: a conditional write catches
+  a concurrent writer, not an author working from an hour-old cache.
+- **Failure posture: nobody, never two.** If DynamoDB is unreachable from every
+  task for longer than a grant, no replica aggregates and each logs
+  `discovery_owner_unreachable`. `ENABLE_DISCOVERY_LEASE=false` restores the
+  previous behaviour.
+
+## [2.22.0] - 2026-09-10
+
+### Fixed
+
+- **The bazaar catalog had four ways to look more current than it was** (#40).
+  A settlement moved `last_updated` -- the sort key, the age readers judge by,
+  and what `merge_resource` uses to reject out-of-order writes -- and now moves
+  only `lastSettledAt`. An aggregated copy beat the owner's own listing on a
+  date the owner never had (0 of 24,636 stored records carried
+  `sourceUpdatedAt`); different authorities are no longer ordered by clock.
+  Re-importing an unchanged feed counted as a change; a content hash over the
+  offer, with no dates in it, now tells it apart from a real revision, and no
+  change means no write. And the health prober read a live 402 on every probe
+  but kept only the recipients.
+
+### Added
+
+- **Four timestamps for four questions**: `lastUpdated` (our write clock),
+  `sourceUpdatedAt` (what the source declared), `lastSettledAt` (commercial
+  activity) and `termsObservedAt` (the only one about price). Observed terms
+  live in their own single-writer S3 overlay (`bazaar/terms.json`), so a stale
+  feed cannot overwrite a direct observation and a rollback leaves observations
+  intact. Each observation records its context (unauthenticated `GET`), phase,
+  provenance, transport and the hash of the record it was taken against.
+- **`LiveTerms` reads the whole challenge from both transports.** When the
+  `PAYMENT-REQUIRED` header and the body disagree, the higher protocol version
+  wins, the header breaks ties, and the losing read is kept whole as evidence.
+  The two are never mixed into an offer nobody issued.
+- **`priceFreshness` (`fresh` / `stale` / `unknown` / `conflict`), independent
+  of `health`.** An owner repricing marks `stale`, not a contradiction; a third
+  party changing its copy yields `conflict` with both sides served. Only options
+  with the same scheme, network, asset and `payTo` are compared, and a price
+  change does not trigger the `payTo` quarantine. Persisted records carry
+  `recordVersion`, and migration invents no dates. Documented in `openapi.rs`
+  and shown on `/bazaar` in EN and ES.
+- **Capacity benchmark and cost model** (#39, docs and tooling only:
+  `docs/reports/2026-09-10-benchmark-capacidad.md`, `scripts/bench/`). Run
+  against a local binary with a mocked RPC, never production:
+  `/discovery/resources` is 15.5% of requests and 95% of CPU; 79% of CPU is
+  background work no client asks for; at 1x and 2x the observed peak no read
+  route degrades, and the knee at 4x is on writes (4-6 settles per second per
+  task). Of three cost options the report recommends fewer tasks of the same
+  size with a different scaling metric, and rules out half a vCPU.
+
+## [2.21.2] - 2026-09-10
+
+### Fixed
+
+- **The 20,000-record cap from 2.21.1 did not bound memory** (#42). 2.21.1 did
+  not restore the baseline and production was rolled back to 2.19.0 again:
+  resident memory flat at 57% (1.17 GiB), read p95 2.7-5.3 s, write p95 12-16 s
+  against a 7 s baseline. The ~280 MB estimate had been taken in a process that
+  had just parsed a 98 MB file and truncated after parsing. Re-measured one
+  scenario per process, it is ~22 KB of RSS per record: 440 MB at 20,000, 54 MB
+  at 2,000. RSS is a high-water mark the allocator does not return -- pruning
+  20,000 records to 2,000 after load released 8% -- so the object itself has
+  to be small.
+- **Evicting after admitting fed itself.** The feed re-delivered evicted entries
+  as new every cycle (~9,000 re-additions per cycle), and since pruning the
+  overlay drops an evicted record's health, each re-addition looked
+  never-probed, driving the prober to 1,200 TLS handshakes per minute on one
+  vCPU. There is now admission control as well as eviction: a newer entry still
+  gets in, and an update to something already listed is never refused.
+- **New limits.** `DISCOVERY_MAX_RESOURCES` 20,000 -> 2,000;
+  `DISCOVERY_MAX_ITEMS_PER_SOURCE` 20,000 -> 1,000; prober at 2 rps with 8 in
+  flight (was 20 / 40), i.e. 120 probes per tick; `health.json` persisted with a
+  300 s debounce instead of once per tick. Measured after: S3 object 45 MB ->
+  4.8 MB, resident 440 MB -> 53 MB, `list()` 34.6 ms -> 3.4 ms. Mirroring
+  third-party catalogs of 14-20k records is deliberately out of scope; that
+  needs a per-resource store, real pagination and a bigger task.
+
+## [2.21.1] - 2026-09-10
+
+### Fixed
+
+- **The catalog grew 39x in twenty minutes and nothing capped it** (#41). 2.20.0
+  fixed the Coinbase CDP feed parser, which had been failing whole: aggregated
+  resources jumped from 752 to 43,410 and the S3 catalog from 14.5 MB to 98.5
+  MB (39,593 records). Every discovery operation works on the whole catalog, and
+  an import cycle peaked at ~1.85 GiB of a 2 GiB task. Writes suffered about 5x
+  more than reads (12-25 s) because every EVM settle is forwarded to the single
+  lease holder, which could be mid-import. Live in production 16:34Z-18:42Z on
+  2026-09-10 and mitigated by rolling back to 2.19.0. The fix touches none of
+  `/verify`, `/settle`, escrow or ERC-8004.
+- **Four changes.** A catalog cap (`DISCOVERY_MAX_RESOURCES`, 20,000) applied at
+  load and after each import, evicting by provenance before age:
+  self-registered, settled or crawled resources cannot be re-fetched from a
+  third party and are never evicted. `save_all` reads the ETag with `HeadObject`
+  instead of downloading and parsing the catalog. The snapshot is written
+  compact (indentation was 44 of the 98 MB). A per-source intake cap
+  (`DISCOVERY_MAX_ITEMS_PER_SOURCE`, 20,000; previously a 50,000 constant).
+- **The health overlay is pruned against the live catalog**, with a guard so
+  that a failed S3 read at startup, which leaves an empty registry, cannot prune
+  the overlay to nothing (the same defect class as A3 in 2.18.0). The memory
+  estimates behind this release proved wrong; see 2.21.2.
+
+## [2.21.0] - 2026-09-10
+
+### Changed
+
+- **Forwarding a write to the lease holder built a new HTTP client per
+  request** (#37, audit finding A5). `forward_to_writer` constructed a
+  `reqwest::Client` -- a connection pool, TLS configuration and, when fresh, the
+  system root store read from disk -- on every call, so each forwarded write
+  paid a full TCP handshake and threw the connection away (derived from ALB vs
+  application logs: ~774 hops in 6 h). There is now one client per process
+  behind a `OnceLock`, with the hop timeout applied per request so
+  `TX_RECEIPT_TIMEOUT_SECS` is still read on every call. A client that cannot be
+  built still yields the 503 `forward_failed`, not a panic. Loopback benchmark,
+  200 forwarded writes: 200 connections -> 1, p50 236-275 us -> 105-117 us.
+- **The hop is now countable**: one log line every 100 forwards with the running
+  total. Discovery's per-probe client in `discovery_security::safe_request` is
+  deliberately unchanged, because its per-host DNS pinning is the SSRF defence
+  and cannot live on a shared client.
+
+## [2.20.0] - 2026-09-10
+
+### Fixed
+
+- **The bazaar catalog said everything cost an exact amount** (#35). On import
+  the facilitator wrote `exact` into every payment option whatever the source
+  said, dropped `extra`, and stored an amount it could not parse as zero, which
+  a catalog reads as free. In the 2026-09-10 production snapshot all 24,728
+  options were `exact`, while the first page of the Coinbase CDP feed alone
+  lists 26 `batch-settlement` and 1 `agent-pay` options out of 178. The catalog
+  now has its own type (`src/discovery_price.rs`), separate from the protocol's
+  closed `PaymentRequirementsV2`; the wire JSON is unchanged for every known
+  scheme and nothing on the payment path changes. One normalization rule covers
+  the aggregator, the crawler, `POST /discovery/register` and bulk import.
+- **The Coinbase CDP feed failed whole on every cycle.** `maxAmountRequired` was
+  a serde alias, so a document carrying both spellings (55 of 178 options on the
+  real feed) was a `duplicate field` error that aborted the entire source:
+  14,235 resources published by CDP, 335 in our catalog. Both spellings are now
+  read explicitly and must agree, or the option is rejected.
+- **Non-EVM addresses were silently dropped** by the aggregator's own `0x`-only
+  parser instead of `MixedAddress`: CDP lists 33 Solana options on its first
+  page, and the whole catalog had 1.
+- **Amounts and dates stay honest.** An unreadable amount rejects the option with
+  a cause, while a declared `"0"` is kept. `settleable` + `unsupportedReason`
+  separate "can be listed" from "can be settled here". Currency and decimals are
+  resolved per deployment and are response-only (USDC is 6 decimals on Base, 18
+  on BSC, 7 on Stellar). An absent `sourceUpdatedAt` stays absent, and merges
+  are decided by the source's date, never our clock. `extensions` has its own
+  depth limit, and an over-deep blob is dropped instead of failing the document.
+- **Deployment note.** Already-stored records are not repaired in place; the
+  24,078 aggregated records recover through the hourly re-import. Unblocking the
+  CDP feed let the catalog grow ~39x, which caused the production regression
+  fixed in 2.21.1 and 2.21.2 (production was rolled back to 2.19.0 meanwhile).
+
+### Changed
+
+- **The deploy could create a CloudWatch alarm but not the metric filter it
+  reads** (#36, IAM only, merged under 2.20.0 without a version bump). The CI/CD
+  policy granted `cloudwatch:PutMetricAlarm` but never `logs:PutMetricFilter`,
+  which stayed hidden while the observability step skipped
+  `alerts-solana-mint.tf` (fixed in 2.19.0). The new
+  `FacilitatorMetricFilterManage` statement grants put/delete/describe on
+  metric filters for the production log group only, with both ARN forms spelled
+  out instead of a trailing wildcard. Applied by hand: CI cannot change its own
+  IAM policy by design.
+
+## [2.19.0] - 2026-09-10
+
+### Fixed
+
+- **One mispriced transaction froze the mainnet EVM signer on Polygon for six
+  days** (#34). On 2026-09-03 Polygon's `baseFee` was in a trough (1.072 gwei,
+  down from ~250). An escrow `release` priced there with Alloy's default
+  estimator (`2 x baseFee + priority`) got a 32.247 gwei cap; forty minutes
+  later `baseFee` was back at 248 gwei and that nonce could never be mined.
+  Nonces are strictly ordered: 399 correctly priced transactions queued behind
+  it, their gas reservation reached 82.799 of the signer's 82.862 POL, and the
+  node rejected every new settle with `insufficient funds` (2,928 rejections in
+  6 h). The Polygon escrow settles failing since 2026-09-04 were this; nonce-gap
+  and double-writer hypotheses were checked against the pool and refuted.
+- **EIP-1559 fees use an explicit per-network floor table**, replacing the
+  hand-written Ethereum special case. Ethereum keeps its exact numbers (1 / 5
+  gwei); Polygon and Amoy get a 30 gwei priority fee and a 1000 gwei max-fee
+  floor; every other network prices as before, with no floor. The 2x multiplier
+  is unchanged: the floor is what survives a trough, and `maxFeePerGas` is a
+  ceiling, not what is paid.
+- **The nonce manager resyncs downward on sustained drift.** With continuous
+  traffic the high-water mark kept climbing above the chain (1738 in memory
+  against 1557 on chain), because rejected sends never produced the idle gap
+  `NONCE_TRUST_CHAIN_AFTER` waits for; recovery would then have opened a real
+  nonce gap. `NONCE_TRUST_CHAIN_AFTER_DRIFT` (300 s) counts how long the chain
+  has continuously reported less than we believe. Not the incident's cause, but
+  the failure its recovery would have triggered.
+
+### Added
+
+- **Stuck own-transaction detector** (`src/stuck_tx_monitor.rs`) and the
+  `evm_signer_transactions_stuck` alarm. Every two minutes per EVM network it
+  reads the signer's `latest` and `pending` nonces and warns when the head has
+  not advanced for ten minutes with a queue behind it, naming the first unmined
+  nonce; a queue that drains slowly deliberately does not fire. No existing
+  alarm saw the incident: the balance never moved (it was reserved, not spent),
+  the RPC answered, responses were clean 4xx, and the nonce-desync alarm matches
+  the opposite failure.
+- **`scripts/polygon_destrabar_cola.py`**, an operator tool that replaces stuck
+  transactions with correctly priced zero-value self-transfers in ascending
+  nonce order (`head` or `cancel-all`). `--dry-run` is the default; credentials
+  are read inside the process and never printed or written to disk.
+- **CI:** the observability deploy step matches `alerts-*.tf` instead of a list
+  of file names, so the Solana mint alarms and the new stuck-transaction alarm
+  are actually applied.
+
+## [2.18.0] - 2026-09-10
+
+### Fixed
+
+- **A signer without gas was reported as an RPC outage** (#31, audit finding
+  A1). geth also returns `-32000` when our own wallet cannot pay for gas, and
+  `is_upstream_rpc_failure` sent every such case to the client as `502
+  upstream_rpc_unavailable` with `Retry-After: 30`: 7,196 error lines in 24 h,
+  all from one signer on one network (the Polygon queue fixed in 2.19.0).
+  `src/chain/failure.rs` now classifies by stage (request / broadcast /
+  confirmation) and reason, each pair with its own status, bounded token and
+  retry advice, including none -- `facilitator_signer_unfunded` is a 503, while
+  `broadcast_uncertain` and `receipt_pending` carry no retry because the
+  transaction may be mined. A revert always wins, and nothing past broadcast
+  carries `Retry-After`.
+- **The writer lease lost exclusivity when DynamoDB failed** (#31, A2). On a
+  control-plane error the renewal loop made the task a writer, and such an
+  error is seen by every task at once, so all of them could sign for the same
+  EVM signer with private nonce caches. The lease is now an expiring grant,
+  measured from when the request left and ending before the record it wrote; an
+  error neither extends nor revokes it. Each handover bumps a `generation`, and
+  signing holds a `SigningPermit` across nonce reservation and broadcast.
+  Trade-off: if DynamoDB is unreachable from every task for longer than a grant,
+  EVM writes become unavailable instead of racing. `ENABLE_WRITER_LEASE=false`
+  remains the break-glass.
+- **A failed read could publish an empty discovery catalog** (#31, A3).
+  `load_all().await.unwrap_or_default()` followed by a full-object PUT turned
+  any failed GET into an empty catalog written over the real one, and concurrent
+  writers silently overwrote each other. A missing object is now distinguished
+  from a read error (never written over); writes are conditional (`If-Match` /
+  `If-None-Match: *`); `save` and `delete` retry a bounded number of times
+  against a fresh read; `merge_resource` refuses to move `last_updated`
+  backwards. `save_all` deliberately does not retry, since reapplying a snapshot
+  would resurrect deletions.
+
+### Added
+
+- **describe.net is a first-party bazaar provider** (#29, merged under 2.18.0
+  without a version bump). A fourth `first_party` entry in
+  `config/bazaar_curation.json` covers only its paid routes on
+  `api.describe.net` (`/reputation/`, `/leaderboard/page`, `/mcp`), each probed
+  live on 2026-09-10, plus a line in the `/bazaar` showcase. The tier orders and
+  labels resources already listed; it does not create them. Tests pin that free
+  routes and lookalike hosts inherit nothing, and that showcase and manifest
+  name the same entries.
+- **Seven interior pages reorganized on the shared stylesheet** (#33, no version
+  bump). `/dx402`, `/x402`, `/erc8004`, `/mcp`, `/integrar`, `/networks` and
+  `/bazaar` open with a product hero, an at-a-glance flow, a page index and
+  collapsible detail, in EN and ES, with no new dependencies. The landing page
+  is unchanged: the computed style and geometry of its 1,098 elements match
+  before and after.
+
+### Changed
+
+- **The discovery catalog bucket gets versioning and a lifecycle policy** (#32,
+  infra only, no version bump; `terraform/environments/production/discovery-bucket.tf`).
+  Conditional writes stop concurrent writers from clobbering each other, but a
+  write that passes every check and is still wrong would remain the only copy.
+  Noncurrent versions expire after 30 days (1 day for the derived
+  `bazaar/health.json` overlay), incomplete multipart uploads after 7. The
+  bucket is referenced by literal name, so no plan can propose destroying it.
+  CI applies it at the end of the deploy job, and the drift gate fails if
+  versioning is suspended or missing.
+
+## [2.17.0] - 2026-09-10
+
+### Fixed
+
+- **A Solana ERC-8004 identity mint could be left half-done** (#28). Minting was
+  three transactions, each final on its own, and the response carried
+  `agent_id` and `success` without checking that all three landed. On
+  2026-09-09 the fee payer ran out of SOL mid-batch: two agents were created but
+  left owned by the facilitator, and retries, unable to know they were retries,
+  minted more half-finished identities (four orphaned assets). `register`,
+  `initialize_stats` and `transfer_agent` now ride in one transaction (890 bytes
+  worst case against a 1232-byte limit, 600k CU). Above seven bundled
+  instructions the plan is sent in stages and stops at the first failure.
+  Requested metadata is part of the atomic unit.
+- **`mint.status`, not `success`, is what to branch on, and repeating a request
+  resumes.** `RegisterAgentResponse` gains a `mint` object (absent on EVM):
+  `complete` (the only case with `success: true`), `pending_stats` /
+  `pending_transfer` (the identity exists and the facilitator holds it;
+  answered as 500; repeating the request finishes it) and `not_minted` (nothing
+  exists; retry is safe). Before minting, identities still held by the fee payer
+  are matched on `agent_uri` and only the missing instructions run. An empty
+  `agent_uri` never adopts anything, an inconclusive owner scan is a 503, never
+  a blind mint, and a resume reports skipped metadata in `mint.metadataSkipped`.
+- **An underfunded fee payer is refused before touching the chain.** The mint is
+  priced from on-chain rent (~0.0134 SOL: agent PDA, ATOM stats, Metaplex Core
+  asset, fees), and a short balance answers `503 fee_payer_insufficient_balance`
+  with both numbers instead of a simulation failure that read like a program
+  bug.
+- **Docker images stopped building when Debian 11's security `Release` file
+  expired on 2026-09-07** (#30, merged under 2.17.0 without a version bump; it is
+  what let 2.17.0 reach production). Both stages move together: `rust:bullseye`
+  -> `rust:bookworm` and `debian:bullseye-slim` -> `debian:bookworm-slim`.
+  `openssl-sys` links the system `libssl` (1.1 on bullseye, 3 on bookworm), so
+  moving only one stage builds an image that does not start. Disabling the
+  `Valid-Until` check or pointing at the Debian archive were rejected because
+  they silence the signal; trixie is deferred.
+
+### Added
+
+- **Two Solana mint alarms** (`alerts-solana-mint.tf`): `solana-mint-headroom-low`
+  on the fee payer's native balance (0.67 SOL, 50 mints of headroom; lowered
+  under Unreleased) and `solana-mint-fee-payer-dry` on a metric filter over
+  `solana_mint_fee_payer_insufficient`. The existing 0.02 SOL `solana-mainnet`
+  floor was sized for settles and covers about one and a half mints.
 
 ## [2.16.0] - 2026-09-07
 
@@ -376,142 +904,6 @@
   line; far above, the middleware still cuts first, because it is the outermost
   layer on the router.
 
-## [2.0.1] - 2026-08-31
-
-### Fixed - el timeout del reenvio abortaba antes que el holder
-
-El arreglo de 2.0.0 presupuso una espera de recibo de 60s y le sumo 30s de margen.
-Ese numero no aparece en ninguna parte del camino real: la espera se elige POR RED
-(`evm_receipt_timeout` y su gemela en `chain::evm`) — Ethereum 900s, Base 90s, el
-resto 30s — y `TX_RECEIPT_TIMEOUT_SECS` no esta definida en la task definition, asi
-que rigen los defaults.
-
-Efecto en las dos tasks que reenvian: un settle o un `/register` sincrono en Ethereum
-abortaba el salto a los 90s con `forward_failed` mientras el holder seguia esperando
-hasta 900s y la transaccion aterrizaba igual. En Base el margen prometido era
-directamente negativo (90 contra 90, mas el tiempo de firma). Es el desenlace que el
-propio commit de 2.0.0 define como peor que rechazar: un fallo reportado sobre un pago
-que se ejecuta. Ethereum y Base llevan trafico real.
-
-El salto ahora presupone la espera mas larga que puede tocarle (900s + 30s) porque no
-sabe que red transporta — las rutas ERC-8004 nunca parsean una. Cuando
-`TX_RECEIPT_TIMEOUT_SECS` esta puesta, reemplaza el default de todas las redes, asi que
-el salto usa ese valor mas el margen y no el peor caso.
-
-Dos tests nuevos, y el primero falla contra el codigo de 2.0.0: fija el timeout del salto
-contra los MISMOS numeros por red que usa el camino de recibo, de modo que subir la espera
-de Ethereum rompe el test en vez de reintroducir en silencio un salto que se rinde primero.
-
-Encontrado en revision adversarial del propio 2.0.0, no por un reporte de usuario.
-
-
-## [2.0.0] - 2026-08-31
-
-### Fixed - P0: two out of every three EVM writes were being refused
-
-Since 2026-08-29 14:28Z the facilitator refused most EVM writes, and the cause
-was a correct guard meeting a changed assumption.
-
-Exactly one process may sign EVM transactions, because the nonce for the shared
-signer is allocated in memory (`PendingNonceManager`). A DynamoDB lease elects
-that process, and non-holders answered `503`. That was right while "more than
-one task" meant "for about a minute per rolling deploy".
-
-On 2026-08-29 `min_capacity` went 1 -> 2 and the ALB request-count alarm took the
-service to 3 in the same minute. From then on the ALB spread writes evenly over
-three tasks of which exactly one could serve them: **two out of every three EVM
-writes were rejected, permanently**. Measured over the six hours before the fix:
-582 rejections on the settle path, 132 on the ERC-8004 write routes, and zero
-lease handovers -- the lease never moved, the other two tasks simply never wrote.
-
-Callers could not diagnose it from outside. They had a valid signature, a funded
-signer, a passing `eth_call` simulation, and a 502; a retry had a one-in-three
-chance, so it read as an intermittent facilitator fault. It surfaced as
-"facilitator lease time-out", `SETTLEMENT_FAILED` before approve, `lock_failed`
-on Arbitrum/Ethereum/Base, and `em_rate_agent` 503s.
-
-**A non-holder now forwards the write to the holder instead of refusing it.**
-The invariant is untouched -- one process still allocates every nonce -- but
-every task serves 100% of the traffic the ALB hands it, so adding tasks adds
-capacity instead of subtracting availability.
-
-- The lease record carries the holder's routable address. A lost election
-  returns it in the SAME response via
-  `ReturnValuesOnConditionCheckFailure::AllOld`: no extra read, no second
-  table, no service discovery.
-- Forwarding is capped at ONE hop (`x-facilitator-forwarded-for-writer`). A task
-  that receives a forwarded request while not holding the lease answers rather
-  than forwarding again, so a stale address cannot bounce a settle between tasks.
-- `/settle` uses a separate gate that forwards **only EVM** payments. Solana,
-  Stellar, NEAR, Algorand, Sui and XRPL touch neither the EVM signer nor its
-  nonce; forwarding them would funnel six chain families through one task and
-  trade a correctness bug for a capacity one. A body that cannot be parsed is
-  treated as EVM, because the holder can serve every family while a non-holder
-  cannot serve EVM.
-- The forward timeout clears `TX_RECEIPT_TIMEOUT_SECS` by 30s. Cutting the hop
-  while the holder is still mining would report failure for a payment that then
-  lands -- the one outcome worse than refusing.
-- Every failure path (address unknown, holder unreachable, body too large,
-  forwarding disabled) falls back to the previous `503` + `Retry-After`, so the
-  change can never be worse than what it replaces.
-- `GET /settle` and `/verify` are reads and stay unlayered on every task.
-
-### Infrastructure
-
-`aws_security_group.ecs_tasks` gains self-ingress **and self-egress** on 8080,
-scoped with `self = true` so it opens nothing to the wider VPC. Both halves are
-required: egress on this SG is deliberately not `0.0.0.0/0`, so without the
-egress rule the forwarding connection is dropped on the way out and the caller
-sees the same 503 the forwarding exists to remove.
-
-### Configuration
-
-| Variable | Default | Notes |
-|---|---|---|
-| `ENABLE_WRITER_FORWARD` | `true` | `false` keeps the lease but restores refusal |
-| `WRITER_LEASE_ENDPOINT` | *(unset)* | Pin this task's advertised address by hand; otherwise read from ECS task metadata |
-
-
-## [2.1.0] - 2026-08-31
-
-### Fixed
-
-- **SECURITY: the DX402 authority ladder had two rungs against the table, not
-  three.** `POST /dx402/anchor` ranks claims -- 2 = the chain confirms the
-  payee, 1 = the claimant committed to an identity, 0 = anonymous -- and each
-  rung may only take a slot from a lower one. That is the v1.82.0 anti-hijack
-  rule. Rung 1 was not enforced: DynamoDB hoisted `payment_id`, `record`,
-  `expires_at` and `verified` but never `signed`, while the rung-1 condition
-  asks `attribute_not_exists(signed)`. Against an attribute nobody writes that
-  is unconditionally true, so the clause was a tautology and any self-signed
-  claim could take the evidence slot from any other.
-
-  It costs nothing to mount: `paymentId` is `keccak256(caip2 || txHash)` over
-  public chain data, and a rung-1 claim only requires signing over an address
-  the claimant types into its own request. `put_object` then overwrites the
-  real seller's ciphertext -- unconditional, versioning disabled. Worst
-  affected are the sellers who can never reach rung 2: `proof_rpc_unavailable`,
-  and the whole Solana path via `proof_unverifiable_chain`.
-
-  The tests were green throughout because `the_ladder_only_climbs` exercises
-  `MemoryEvidenceRegistry`, which enforces the rule in Rust and always got it
-  right. Production is DynamoDB. The new tests evaluate the CONDITION the way
-  DynamoDB would -- including the asymmetry that caused this, where a
-  comparison against a missing attribute is false and existence is the only
-  thing you can ask about it -- across the full 3x3 rung matrix, plus flagless
-  legacy rows and empty slots. One more is structural and catches the next
-  occurrence: every flag a condition names must be a flag the writer hoists.
-
-- **The envelope reserved 64 bytes for a 115-byte header, and doubled.**
-  `SealedEnvelope::to_bytes` under-reserved by 51 bytes on the smallest
-  possible envelope, so every seal ever performed overflowed its reservation
-  and `RawVec` doubled the entire ciphertext to absorb it. Invisible because it
-  was correct, just needlessly large. Reserving the real header dropped a
-  capture's measured peak from **5.0x the body to 4.0x** -- 32 MiB saved per
-  capture at the ceiling -- which is what the four copies one can actually see
-  said all along. Measured in debug and release, flat from 1 MiB to the 32 MiB
-  ceiling.
-
 ## [2.3.0-unreleased-note] (shipped as part of 2.3.0 — the 32 MiB default is live)
 
 ### Changed
@@ -616,6 +1008,142 @@ dropped body is paid-for goods that can never be re-fetched.
 multipart, and the `tee` of the body — is still open, along with the decision it
 forces: the `contentHash` cannot ride in a header the streaming case has already
 sent. See `docs/plans/dx402/04-STREAMING-EVIDENCE-HANDOFF.md`.
+
+## [2.1.0] - 2026-08-31
+
+### Fixed
+
+- **SECURITY: the DX402 authority ladder had two rungs against the table, not
+  three.** `POST /dx402/anchor` ranks claims -- 2 = the chain confirms the
+  payee, 1 = the claimant committed to an identity, 0 = anonymous -- and each
+  rung may only take a slot from a lower one. That is the v1.82.0 anti-hijack
+  rule. Rung 1 was not enforced: DynamoDB hoisted `payment_id`, `record`,
+  `expires_at` and `verified` but never `signed`, while the rung-1 condition
+  asks `attribute_not_exists(signed)`. Against an attribute nobody writes that
+  is unconditionally true, so the clause was a tautology and any self-signed
+  claim could take the evidence slot from any other.
+
+  It costs nothing to mount: `paymentId` is `keccak256(caip2 || txHash)` over
+  public chain data, and a rung-1 claim only requires signing over an address
+  the claimant types into its own request. `put_object` then overwrites the
+  real seller's ciphertext -- unconditional, versioning disabled. Worst
+  affected are the sellers who can never reach rung 2: `proof_rpc_unavailable`,
+  and the whole Solana path via `proof_unverifiable_chain`.
+
+  The tests were green throughout because `the_ladder_only_climbs` exercises
+  `MemoryEvidenceRegistry`, which enforces the rule in Rust and always got it
+  right. Production is DynamoDB. The new tests evaluate the CONDITION the way
+  DynamoDB would -- including the asymmetry that caused this, where a
+  comparison against a missing attribute is false and existence is the only
+  thing you can ask about it -- across the full 3x3 rung matrix, plus flagless
+  legacy rows and empty slots. One more is structural and catches the next
+  occurrence: every flag a condition names must be a flag the writer hoists.
+
+- **The envelope reserved 64 bytes for a 115-byte header, and doubled.**
+  `SealedEnvelope::to_bytes` under-reserved by 51 bytes on the smallest
+  possible envelope, so every seal ever performed overflowed its reservation
+  and `RawVec` doubled the entire ciphertext to absorb it. Invisible because it
+  was correct, just needlessly large. Reserving the real header dropped a
+  capture's measured peak from **5.0x the body to 4.0x** -- 32 MiB saved per
+  capture at the ceiling -- which is what the four copies one can actually see
+  said all along. Measured in debug and release, flat from 1 MiB to the 32 MiB
+  ceiling.
+
+## [2.0.1] - 2026-08-31
+
+### Fixed - el timeout del reenvio abortaba antes que el holder
+
+El arreglo de 2.0.0 presupuso una espera de recibo de 60s y le sumo 30s de margen.
+Ese numero no aparece en ninguna parte del camino real: la espera se elige POR RED
+(`evm_receipt_timeout` y su gemela en `chain::evm`) — Ethereum 900s, Base 90s, el
+resto 30s — y `TX_RECEIPT_TIMEOUT_SECS` no esta definida en la task definition, asi
+que rigen los defaults.
+
+Efecto en las dos tasks que reenvian: un settle o un `/register` sincrono en Ethereum
+abortaba el salto a los 90s con `forward_failed` mientras el holder seguia esperando
+hasta 900s y la transaccion aterrizaba igual. En Base el margen prometido era
+directamente negativo (90 contra 90, mas el tiempo de firma). Es el desenlace que el
+propio commit de 2.0.0 define como peor que rechazar: un fallo reportado sobre un pago
+que se ejecuta. Ethereum y Base llevan trafico real.
+
+El salto ahora presupone la espera mas larga que puede tocarle (900s + 30s) porque no
+sabe que red transporta — las rutas ERC-8004 nunca parsean una. Cuando
+`TX_RECEIPT_TIMEOUT_SECS` esta puesta, reemplaza el default de todas las redes, asi que
+el salto usa ese valor mas el margen y no el peor caso.
+
+Dos tests nuevos, y el primero falla contra el codigo de 2.0.0: fija el timeout del salto
+contra los MISMOS numeros por red que usa el camino de recibo, de modo que subir la espera
+de Ethereum rompe el test en vez de reintroducir en silencio un salto que se rinde primero.
+
+Encontrado en revision adversarial del propio 2.0.0, no por un reporte de usuario.
+
+
+## [2.0.0] - 2026-08-31
+
+### Fixed - P0: two out of every three EVM writes were being refused
+
+Since 2026-08-29 14:28Z the facilitator refused most EVM writes, and the cause
+was a correct guard meeting a changed assumption.
+
+Exactly one process may sign EVM transactions, because the nonce for the shared
+signer is allocated in memory (`PendingNonceManager`). A DynamoDB lease elects
+that process, and non-holders answered `503`. That was right while "more than
+one task" meant "for about a minute per rolling deploy".
+
+On 2026-08-29 `min_capacity` went 1 -> 2 and the ALB request-count alarm took the
+service to 3 in the same minute. From then on the ALB spread writes evenly over
+three tasks of which exactly one could serve them: **two out of every three EVM
+writes were rejected, permanently**. Measured over the six hours before the fix:
+582 rejections on the settle path, 132 on the ERC-8004 write routes, and zero
+lease handovers -- the lease never moved, the other two tasks simply never wrote.
+
+Callers could not diagnose it from outside. They had a valid signature, a funded
+signer, a passing `eth_call` simulation, and a 502; a retry had a one-in-three
+chance, so it read as an intermittent facilitator fault. It surfaced as
+"facilitator lease time-out", `SETTLEMENT_FAILED` before approve, `lock_failed`
+on Arbitrum/Ethereum/Base, and `em_rate_agent` 503s.
+
+**A non-holder now forwards the write to the holder instead of refusing it.**
+The invariant is untouched -- one process still allocates every nonce -- but
+every task serves 100% of the traffic the ALB hands it, so adding tasks adds
+capacity instead of subtracting availability.
+
+- The lease record carries the holder's routable address. A lost election
+  returns it in the SAME response via
+  `ReturnValuesOnConditionCheckFailure::AllOld`: no extra read, no second
+  table, no service discovery.
+- Forwarding is capped at ONE hop (`x-facilitator-forwarded-for-writer`). A task
+  that receives a forwarded request while not holding the lease answers rather
+  than forwarding again, so a stale address cannot bounce a settle between tasks.
+- `/settle` uses a separate gate that forwards **only EVM** payments. Solana,
+  Stellar, NEAR, Algorand, Sui and XRPL touch neither the EVM signer nor its
+  nonce; forwarding them would funnel six chain families through one task and
+  trade a correctness bug for a capacity one. A body that cannot be parsed is
+  treated as EVM, because the holder can serve every family while a non-holder
+  cannot serve EVM.
+- The forward timeout clears `TX_RECEIPT_TIMEOUT_SECS` by 30s. Cutting the hop
+  while the holder is still mining would report failure for a payment that then
+  lands -- the one outcome worse than refusing.
+- Every failure path (address unknown, holder unreachable, body too large,
+  forwarding disabled) falls back to the previous `503` + `Retry-After`, so the
+  change can never be worse than what it replaces.
+- `GET /settle` and `/verify` are reads and stay unlayered on every task.
+
+### Infrastructure
+
+`aws_security_group.ecs_tasks` gains self-ingress **and self-egress** on 8080,
+scoped with `self = true` so it opens nothing to the wider VPC. Both halves are
+required: egress on this SG is deliberately not `0.0.0.0/0`, so without the
+egress rule the forwarding connection is dropped on the way out and the caller
+sees the same 503 the forwarding exists to remove.
+
+### Configuration
+
+| Variable | Default | Notes |
+|---|---|---|
+| `ENABLE_WRITER_FORWARD` | `true` | `false` keeps the lease but restores refusal |
+| `WRITER_LEASE_ENDPOINT` | *(unset)* | Pin this task's advertised address by hand; otherwise read from ECS task metadata |
+
 
 ## [1.92.0] - 2026-08-21
 

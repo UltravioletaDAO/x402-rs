@@ -12,6 +12,12 @@
 > never pays gas. It is the facilitator OTHER services point at — it does not charge
 > for its own routes.
 
+Language (idioma): this file is English (`en`), and so are `/index.md`, `/skill.md`
+and `/auth.md`; none of the four has a Spanish translation. The Spanish version
+exists only for the human pages (`/`, `/x402`, `/dx402`, `/erc8004`, `/bazaar`,
+`/networks`, `/mcp`, `/integrar`, `/stats`, `/events/live`), at the same URL as the
+English, behind each page's EN/ES selector. There is no `/es/` path.
+
 ## When to use this, and when not to
 
 Reach for this facilitator when the job is **checking or landing someone
@@ -147,6 +153,11 @@ Base URL: `https://facilitator.ultravioletadao.xyz/`
 - `GET  /api/stats` — aggregated totals per network and asset
 - `GET  /blacklist` — blocked payer addresses
 - `GET  /discovery/resources` — the Bazaar catalog of x402-priced resources
+- `GET  /dx402/evidence/{paymentId}` — DX402 durable evidence for a settled payment
+  (pointer, `contentHash`, `verified`), with `/dx402/receipt/{paymentId}`,
+  `/dx402/blob/{paymentId}` and https://facilitator.ultravioletadao.xyz/dx402/stats.
+  Off unless the operator enables it: when `durable-evidence` is absent from the
+  `extensions` of `/supported`, these paths answer the generic 404
 - `GET  /identity/{network}/{agentId}` and `GET /reputation/{network}/{agentId}` —
   ERC-8004 Trustless Agents, live on 12 mainnets and 21 networks in total
 
@@ -190,6 +201,9 @@ the money that moves is the buyer's payment going to the seller.
   `GET /supported` is the only list that is true today; this one is a snapshot.
 - **Schemes:** `exact`, `upto`, `escrow`, `commerce`, `fhe-transfer`
 - **Release:** `GET /version`
+- **Language (idioma):** this page is English (`en`) and has no Spanish translation.
+  The HTML landing page at `/` and the other human pages carry English and Spanish
+  at the same URL, switched by their EN/ES selector; there is no `/es/` path.
 
 ## API
 
@@ -246,6 +260,12 @@ back, and which failures mean "retry" rather than "stop".
 
 Every example below is a real request and a real response shape, taken from the
 service's own OpenAPI document (`/openapi.json`) or from a live call to production.
+
+Language (idioma): this manual is English (`en`) and has no Spanish translation, like
+`/llms.txt`, `/index.md` and `/auth.md`. The Spanish version exists only for the human
+pages (`/`, `/x402`, `/dx402`, `/erc8004`, `/bazaar`, `/networks`, `/mcp`, `/integrar`,
+`/stats`, `/events/live`), at the same URL as the English, behind each page's EN/ES
+selector. There is no `/es/` path.
 
 ---
 
@@ -912,6 +932,148 @@ same key with a different payment is refused with `409`.
 - `x402-axum` — Rust middleware that prices a route and calls this facilitator.
 - `x402-reqwest` — Rust client that answers a 402 challenge for you.
 
+---
+
+## 12. Durable evidence (DX402): the paid response, retrievable later
+
+x402 delivers a paid response once and keeps nothing. DX402 (extension key
+`durable-evidence`) lets the seller seal a copy of the response body to the payer's
+own public key and anchor it here; the payer recovers it later with the wallet it
+paid with. This facilitator is the notary and the index -- it signs an EIP-712
+receipt and records a pointer and a hash. It is not in the response path, and in
+`direct` mode it never holds the plaintext or any key that opens it.
+
+**Check that it is on before relying on it.** DX402 is off unless the operator
+enables it. `durable-evidence` appears in the `extensions` of `GET /supported` only
+when this deployment can actually serve it. Without it the `/dx402/...` routes are
+not registered at all, so every one of them answers the generic `404`
+(`"code": "not_found"` when you ask for JSON). That means "no DX402 here", not "no
+evidence for this payment".
+
+**It can never fail a payment.** Settlement never calls into DX402. When evidence
+cannot be produced, the seller's hook still delivers the body and says why in the
+`X-Durable-Evidence` response header (base64url JSON, no padding) as
+`{"skipped": "<reason>"}`: `too_large`, `busy`, `anchor_failed`, `no_payer_key`,
+`disabled`, `not_selected`. Treat the set as open. `not_selected` is not a failure:
+you paid for the offer without evidence.
+
+**You opt in by paying the durable offer.** A seller that offers evidence lists the
+same resource twice in its `402`, plain and with evidence, priced separately, and
+names the evidence offers in `extensions["durable-evidence"].info.acceptIndexes`.
+The offer you pay decides; a client that does not choose pays the plain one. Only
+EVM offers can be told apart this way today, so on other families a seller lists
+one offer per network. The offer's `retention` is `90d` by default, or `1y`, or
+`permanent` -- and `permanent` is irrevocable: anchoring is publishing.
+
+| Call | Returns |
+|---|---|
+| `GET /dx402/evidence/{paymentId}` | `pointer`, `contentHash`, `mode`, `retention`, `retentionUntil`, `receipt`, `verified`, `signed` |
+| `GET /dx402/receipt/{paymentId}` | the signed EIP-712 receipt (domain `DX402 Evidence`, version `1`), verifiable offline |
+| `GET /dx402/blob/{paymentId}` | the sealed ciphertext; unauthenticated on purpose, since only the payer's key opens it |
+| `GET /dx402/stats` | anchors counted (a floor, not a ledger), backend, default retention, receipt signer |
+| `POST /dx402/anchor` | the seller's call: metadata only, `201` when recorded |
+| `POST /dx402/recover` | `501`: `direct` mode needs no recovery, the payer already holds the key |
+
+`paymentId` is the value `/settle` returns (section 4): `keccak256(caip2 ‖ txHash)`,
+`0x` + 64 hex digits. Any casing, with or without `0x`, resolves to the same record.
+
+After decrypting, recompute `contentHash` over the **plaintext** and compare. That
+check is what catches a seller that anchored something other than what it served;
+`x402-reqwest`'s `recover` does it for you.
+
+Errors are `{"error": "<code>", "retryable": <bool>}` -- branch on `error`:
+
+| You see | It means | Do |
+|---|---|---|
+| `404` + `"code": "not_found"` | DX402 is not enabled on this deployment | read `/supported`; do not retry |
+| `404` + `dx402_unknown_payment` | nothing is anchored for that id | a real negative; the seller may have skipped, so read `X-Durable-Evidence` |
+| `410` + `dx402_evidence_expired` | it existed and its retention ran out | a different answer from `404`; do not retry |
+| `503` + `dx402_store_unavailable` | the store did not answer (`retryable: true`) | retry later; never record it as "no evidence" |
+| `200` + `"verified": false` | provisional: the payee has not proved the anchor is theirs | the bytes still decrypt and the hash still checks, but it is not proof of who produced them |
+
+The anchoring side (`POST /dx402/anchor`, the payee signature, and its `409`/`422`
+answers) belongs to the seller integration; the human guide is `/dx402`.
+
+---
+
+## 13. The Bazaar: finding x402-priced resources
+
+The Bazaar is a catalog of x402-priced endpoints: registered here, seen settling
+through this facilitator, crawled, or aggregated from other facilitators' feeds.
+It takes no part in a transaction and moves no money. The human view is `/bazaar`.
+
+### Reading it
+
+```
+GET /discovery/resources?q=weather&network=eip155:8453&limit=20
+```
+
+Returns `{"x402Version": 2, "items": [...], "pagination": {"limit", "offset",
+"total"}}`. Each item carries `url`, `type`, `description`, `accepts` (CAIP-2 offers
+you can pay as they are, see section 3), `source`, and the read-time annotations
+`health`, `curation` and `priceFreshness`.
+
+The parameters, and only these: `limit` (default 10, capped at 100), `offset`, `q`
+(free text, at most 128 characters), `category`, `network` (CAIP-2), `provider`,
+`tag`, `source` (`self_registered`, `settlement`, `crawled`, `aggregated`),
+`sourceFacilitator`, `health` (`alive`, `degraded`, `auth_gated`, `quarantined`,
+`unknown`, `unprobeable`, `any`), `tier` (`first_party`, `vip`, `verified`, `listed`).
+
+- **An unknown parameter is a `400`, never ignored.** The body lists `supported`
+  and, when the intent is obvious, a `hint` (`?search=` gets "did you mean q?").
+  A filter that was silently dropped would look like one that matched everything.
+- **Quarantined entries are hidden by default**; `health=any` shows everything.
+  Order is tier (`first_party`, `vip`, `verified`, `listed`), then alive first,
+  then most recently updated.
+- **The catalog is a previous reading, not the offer.** `priceFreshness` is
+  `fresh`, `stale`, `unknown` or `conflict`, and `priceRevalidation: "pending"`
+  means the amounts beside it are the last reading. Before paying, call the
+  resource and decide against the `402` it answers now.
+- Page with `offset` until it reaches `pagination.total`. Reads draw on their own
+  per-IP bucket (see `/auth.md`), separate from `/settle`.
+- `GET /discovery/stats` -- aggregate catalog numbers, cached for 60 seconds.
+- `GET /discovery/attestation/{hash}` -- a hosted ERC-8004 attestation body, keyed
+  by `sha256(url)` as 64 hex characters. Any other key is a `400`; a miss is a `404`.
+
+### Registering a resource
+
+`POST /discovery/register`:
+
+```json
+{
+  "url": "https://api.example.com/premium-data",
+  "type": "http",
+  "description": "Premium market data API",
+  "accepts": [{
+    "scheme": "exact", "network": "eip155:8453",
+    "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "amount": "10000",
+    "payTo": "0x0000000000000000000000000000000000000002",
+    "maxTimeoutSeconds": 60
+  }],
+  "metadata": { "category": "finance", "provider": "Example Corp", "tags": ["market-data"] }
+}
+```
+
+`amount` is a string in atomic units (`maxAmountRequired` is accepted as its v1
+spelling); a non-integer amount is a `400`, never a zero. Success is `201` with
+`{"success": true, "url": ...}`. These refusals carry `error` but no `code`, so
+branch on the status and on `error`:
+
+| You see | It means |
+|---|---|
+| `400` `Invalid URL` | not http(s), credentials in the URL, or a private, loopback or link-local IP literal |
+| `400` `Invalid resource type` | `type` must be `http`, `mcp` or `a2a` (`facilitator` also exists, and is the only type allowed an empty `accepts`) |
+| `400` `No payment methods specified` | `accepts` is empty |
+| `409` `Resource already registered` | that URL is already listed |
+| `429` | registration has its own, much slower bucket (see `/auth.md`) |
+
+A registered URL is health-probed like any other entry. `first_party` and `vip` are
+curated by hand, `verified` answered a payment challenge correctly, and `listed` is
+everything else.
+
+---
+
 Source: https://github.com/UltravioletaDAO/x402-rs
 Operator: Ultravioleta DAO — https://ultravioletadao.xyz
 
@@ -921,6 +1083,11 @@ Operator: Ultravioleta DAO — https://ultravioletadao.xyz
 
 You are an agent. This document describes how to authenticate against the Ultravioleta
 DAO x402 payment facilitator at `https://facilitator.ultravioletadao.xyz/`.
+
+Language (idioma): English (`en`). This document has no Spanish translation. The
+Spanish version of the human pages (`/`, `/bazaar`, `/dx402`, `/integrar`, ...) is at
+the same URL as the English, behind each page's EN/ES selector; there is no `/es/`
+path.
 
 ## The short answer: you do not
 

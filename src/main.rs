@@ -691,6 +691,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .expect("secondary_read governor config must be valid"),
     );
 
+    // The HTML pages a person reads (/, /bazaar, /x402, ...). Built inside
+    // `handlers::human_page_routes_governed` so its test fires at the same
+    // router this mounts; see `human_page_rate_limit` for why they are metered
+    // and why the number is generous.
+    let (human_page_per_ms, human_page_burst) = handlers::human_page_rate_limit();
+    tracing::info!(
+        per_millisecond = human_page_per_ms,
+        burst = human_page_burst,
+        "Human page rate limit configured"
+    );
+
     let verify_settle = handlers::verify_settle_routes()
         .with_state(axum_state.clone())
         .layer(
@@ -797,6 +808,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Stateless and unmetered: they are static documents, and a crawler
         // that gets 429 on /llms.txt reports the service as unreachable.
         .merge(handlers::agentic_routes())
+        // The human pages: metered, unlike the agentic documents above.
+        .merge(handlers::human_page_routes_governed(
+            human_page_per_ms,
+            human_page_burst,
+        ))
         .merge(openapi::swagger_routes())
         .merge(
             handlers::events_routes()
@@ -858,6 +874,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .layer(Extension(event_bus))
         .layer(Extension(transaction_store))
         .layer(telemetry.http_tracing())
+        // gzip for the documents compiled into the binary, computed once per
+        // process -- never a gzip pass per request on the task that settles.
+        // Outside the tracing layer, so spans still see the plain response. See
+        // `handlers::precompressed_static` for the measurement behind this.
+        .layer(axum::middleware::from_fn(handlers::precompressed_static))
         // CORS stays permissive — facilitator is intentionally public.
         // First-party callers: photo2melee, ExecutionMarket, meshrelay, plus arbitrary third
         // parties using the public x402 protocol. Tightening CORS would break consumers.

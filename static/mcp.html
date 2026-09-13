@@ -4,9 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title data-i18n="title">x402 facilitator - MCP server</title>
-<meta name="description" content="The x402 facilitator as an MCP server: one stateless Streamable HTTP endpoint, four tools, no install and no API key. Transports, the tool contract, the errors and the measured traps.">
+<meta name="description" data-i18n-content="meta.description" content="The x402 facilitator as an MCP server: one stateless Streamable HTTP endpoint, four tools, no install and no API key. Transports, the tool contract, the errors and the measured traps.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://facilitator.ultravioletadao.xyz/mcp">
+<link rel="canonical" href="https://facilitator.ultravioletadao.xyz/mcp">
 <meta property="og:title" content="x402 facilitator · MCP server">
 <meta property="og:description" content="Four tools over one stateless Streamable HTTP endpoint. Same handlers as the REST routes, so a tool and a curl cannot disagree.">
 <meta property="og:image" content="https://facilitator.ultravioletadao.xyz/logo.png">
@@ -272,6 +273,7 @@ const I18N = {
     "next.x402": "x402",
     "next.x402.why": "what each tool does underneath",
     "title": "x402 facilitator - MCP server",
+    "meta.description": "The x402 facilitator as an MCP server: one stateless Streamable HTTP endpoint, four tools, no install and no API key. Transports, the tool contract, the errors and the measured traps.",
     "nav.card": "server card",
     "lead": "One MCP endpoint for checking supported networks, matching payment options, verifying authorizations, and submitting signed payments.",
     "fact.endpoint": "Endpoint",
@@ -373,6 +375,7 @@ const I18N = {
     "next.x402": "x402",
     "next.x402.why": "qué hace cada tool por debajo",
     "title": "Facilitador x402 - servidor MCP",
+    "meta.description": "El facilitador x402 como servidor MCP: un endpoint Streamable HTTP sin estado, cuatro herramientas, sin instalación y sin API key. Transportes, el contrato de las herramientas, los errores y las trampas medidas.",
     "nav.card": "server card",
     "lead": "Un endpoint MCP para consultar redes, elegir opciones de pago, verificar autorizaciones y enviar pagos firmados.",
     "fact.endpoint": "Endpoint",
@@ -464,6 +467,7 @@ const t = k => (I18N[LANG] && I18N[LANG][k]) ?? I18N.en[k] ?? k;
 function applyLang(lang){
   if (I18N[lang]) LANG = lang;
   document.documentElement.lang = LANG;
+  document.querySelectorAll('[data-i18n-content]').forEach(el => el.setAttribute('content', t(el.getAttribute('data-i18n-content'))));
   document.querySelectorAll('[data-i18n]').forEach(el => {
     // Every value in this dictionary is an author-written literal in this file
     // -- never user input, never fetched -- and several carry <code> and <b>

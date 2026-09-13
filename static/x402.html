@@ -4,9 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title data-i18n="title">x402 facilitator - verify and settle</title>
-<meta name="description" content="How this facilitator verifies and settles an x402 payment: the two calls, the escrow and upto extensions, and the two counters it publishes with the warning that comes with them.">
+<meta name="description" data-i18n-content="meta.description" content="How this facilitator verifies and settles an x402 payment: the two calls, the escrow and upto extensions, and the two counters it publishes with the warning that comes with them.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://facilitator.ultravioletadao.xyz/x402">
+<link rel="canonical" href="https://facilitator.ultravioletadao.xyz/x402">
 <meta property="og:title" content="x402 facilitator · verify and settle">
 <meta property="og:description" content="Two calls, gasless for the buyer, 0% fee. Escrow and upto included, and both counters published with their caveat.">
 <meta property="og:image" content="https://facilitator.ultravioletadao.xyz/logo.png">
@@ -271,6 +272,7 @@ const I18N = {
     "next.networks": "Networks",
     "next.networks.why": "where each scheme is flagged",
     "title": "x402 facilitator - verify and settle",
+    "meta.description": "How this facilitator verifies and settles an x402 payment: the two calls, the escrow and upto extensions, and the two counters it publishes with the warning that comes with them.",
     "nav.networks": "Networks",
     "lead": "Verify a payment authorization, settle it on chain, and deliver your response. Choose exact payments, usage-based charges, or escrow.",
     "t.ok": "settles recorded OK",
@@ -372,6 +374,7 @@ const I18N = {
     "next.networks": "Redes",
     "next.networks.why": "dónde está advertido cada esquema",
     "title": "Facilitador x402 - verify y settle",
+    "meta.description": "Cómo verifica y liquida este facilitador un pago x402: las dos llamadas, las extensiones escrow y upto, y los dos contadores que publica con la advertencia que los acompaña.",
     "nav.networks": "Redes",
     "lead": "Verifica una autorización de pago, liquídala en la cadena y entrega tu respuesta. Elige pagos exactos, cobro por uso o escrow.",
     "t.ok": "settles registrados OK",
@@ -436,6 +439,7 @@ const esc = s => { const d = document.createElement('div'); d.textContent = s ==
 function applyLang(lang){
   if (I18N[lang]) LANG = lang;
   document.documentElement.lang = LANG;
+  document.querySelectorAll('[data-i18n-content]').forEach(el => el.setAttribute('content', t(el.getAttribute('data-i18n-content'))));
   document.querySelectorAll('[data-i18n]').forEach(el => {
     // Author-written literals only; several carry <code>, <b> and links that
     // textContent would flatten.

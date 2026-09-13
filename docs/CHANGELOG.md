@@ -1,5 +1,29 @@
 # Changelog
 
+## [2.28.0] - 2026-09-13
+
+### Fixed
+
+- **The ERC-8004 writers could burn a nonce on a call that reverted.**
+  `post_feedback`, `post_revoke_feedback`, `post_append_response`,
+  `run_evm_registration` and `transfer_agent_nft` sent with a bare
+  `call.send()`, and alloy fills gas and nonce concurrently: the nonce was
+  reserved even when gas estimation reverted, and every later write from the
+  shared signer queued behind the gap (Monad, 2026-08-24: nonces 379-381 frozen
+  for 151-283 s). All 14 sends now go through `send_call_estimated`, which
+  estimates against `latest` before any nonce is reserved -- the guard
+  `settle()` already had. A transport failure still falls through to the
+  filler.
+- **An asset off the network's allow-list answered `400 internal_error (ref:
+  <uuid>)`.** It is a verdict on the payload, now `200` with
+  `invalidReason: "invalid_asset"`, on EVM and Solana.
+
+### Added
+
+- `base-mainnet` is accepted as an alias of `base` wherever a network is parsed
+  from a string (`/identity/base-mainnet/…` answered `400`). The wire name is
+  still `base`.
+
 ## [2.16.0] - 2026-09-07
 
 ### Fixed

@@ -1,26 +1,28 @@
-# 2026-09-13 — escrow `log`→`enforce` (medido, NO movido), estimate-antes-del-nonce en los 5 escritores ERC-8004, `invalid_asset` con nombre y `base-mainnet`
+# 2026-09-13 — escrow `log`→`enforce` (medido, NO movido: el bloqueo son llaves y roles), estimate-antes-del-nonce en los 5 escritores ERC-8004, `invalid_asset` con nombre y `base-mainnet`
 
-**Worker:** Orca x4-escrow-enforce (despachado por c0der, spec `SPEC-c0der.txt`, 2026-09-13 16:29Z), macOS.
-**Rama:** `0xultravioleta/x4-escrow-enforce` desde `origin/main` = `d8a33603`.
-**Versión:** `VERSION` 2.26.0 → **2.28.0** (2.27.0 la toma el PR #48 de PYUSD; ver "Para c0der").
+**Worker:** Orca x4-escrow-enforce (despachado por c0der, spec `SPEC-c0der.txt`, 2026-09-13 16:29Z; ronda 2 `RONDA2-c0der.txt`, 20:xxZ), macOS.
+**Rama:** `0xultravioleta/x4-escrow-enforce`, rebaseada sobre `origin/main` = `c2346897` (PR #48 PYUSD).
+**Versión:** `VERSION` 2.27.0 → **2.28.0**; entrada en `docs/CHANGELOG.md`.
 **Base medida en producción:** `/version` = `2.26.0`, `GET /settle` → `escrowLifecycleAuth = "log"` (2026-09-13 ~16:45Z).
 
 ## Estado de cada fila del spec
 
 | Fila | Estado | Resumen |
 |---|---|---|
-| [89] guard estimate-antes-de-reservar-nonce en los 5 handlers | **cerrada** | `send_call_estimated` en `src/chain/evm.rs`; los 14 `send()` de los 5 handlers pasan por él; test de regresión rojo sin el guard, verde con él |
+| [89] guard estimate-antes-de-reservar-nonce en los 5 handlers | **cerrada** | `send_call_estimated` en `src/chain/evm.rs`; los 14 `send()` de los 5 handlers pasan por él; los dos tests de regresión son rojos sin el guard y verdes con él |
 | [103] activo desconocido → `internal_error (ref: <uuid>)` | **cerrada en código** (prod pendiente del deploy) | variante `UnsupportedAsset` → veredicto `invalid_asset` (200, `isValid:false`), EVM y Solana |
 | [5] `base-mainnet` → 400 | **cerrada en código** (prod pendiente del deploy) | `"base" \| "base-mainnet"` en `Network::from_str`; el nombre de wire sigue siendo `base` |
-| [126] `escrow_lifecycle_auth` a `enforce` | **no hecha — bloqueada** | medido: 1625 de 1630 órdenes de mainnet sin firma, todas de Execution Market; ni EM ni `uvd-x402-sdk-python` firman. Se queda en `log` (la suposición reversible del spec) |
+| [126] `escrow_lifecycle_auth` a `enforce` | **no hecha — bloqueada por llaves y roles** | EM y el SDK Python YA firman; las órdenes llegan sin firma porque la llave de EM no tiene rol sobre esos escrows. Se queda en `log` |
 
-## [126] La medición — por qué sigue en `log`
+## [126] Por qué sigue en `log`
+
+### Lo que ve el facilitador
 
 Ventana declarada: desde que `log` quedó activo (`2026-09-06T00:41:14Z`, handoff
 `2026-09-05-lifecycle-auth-log-a-enforce.md`) hasta 2026-09-13 ~16:50Z. CloudWatch Logs
 Insights sobre `/ecs/facilitator-production`, líneas `escrow lifecycle order accepted` /
 `escrow lifecycle order NOT authorized` (`src/payment_operator/lifecycle_auth.rs:586-610`),
-con los códigos ANSI quitados antes de parsear (el primer intento agrupó mal por eso).
+con los códigos ANSI quitados antes de parsear.
 
 | Veredicto | Acción | Órdenes |
 |---|---|---:|
@@ -41,23 +43,57 @@ Por operador (direcciones de contrato públicas, abreviadas):
 | `0x9620…8cc3` | monad | 18 |
 | `0x69b6…001b` | ethereum | 2 |
 
-- Los cinco operadores de mainnet están en `execution-market/shared/networks.generated.ts`:
-  **el llamador sin firma es Execution Market**, en todas las redes.
-- `grep -rl 'lifecycleAuth\|LifecycleOrder\|lifecycle_auth'` sobre `uvd-x402-sdk-python`
-  (`cfdd270`, 2026-09-02) y `execution-market` (`10800a5c`, 2026-09-08) no devuelve nada:
-  **ningún llamador firma todavía**. Las únicas órdenes `ok` son 2 en base-sepolia, del
-  worker del 2026-09-05.
-- Con `enforce` hoy: **99,7 % de las órdenes de mainnet rechazadas** con 4xx, que EM trata
-  como permanente. No es una degradación, es un corte del rail.
-- Dato lateral: la última orden de ciclo de vida es de `2026-09-11T23:21:31Z`; desde entonces
-  el tráfico `settle_escrow` cayó a ~0. No lo investigué (fuera de alcance); si EM pausó
-  escrow, esa pausa es también la ventana más barata para desplegar la firma.
+**Órdenes no son escrows.** Contando escrows distintos por (operador, red, payer, receiver)
+entre las 1624 órdenes de mainnet sin firma: **298** (285 con `release`, 17 con
+`refundInEscrow`). El refutador de c0der contó **303** (286 / 17); la diferencia es de clave,
+porque el log no trae `salt` ni monto y ninguna de las dos cuentas identifica el escrow
+exacto. El grueso de los refunds es reintento: las 892 `refundInEscrow` de polygon caen sobre
+**un solo par (payer, receiver)**, entre `2026-09-08T22:09Z` y `2026-09-10T18:32Z` (primera y
+última línea de polygon). Con `enforce` hoy quedarían sin mover **~300 escrows**, no "el 99,7 %
+de 1625 movimientos" como decía la ronda 1.
 
-"Arreglar a los llamadores" vive en otros dos repos (SDK Python → EM) y el spec no los
-incluye: queda como fila para c0der con el orden ya escrito en el handoff del 2026-09-05
-(SDK firma `LifecycleOrder` EIP-712 → EM consume y firma como dueño del operador → ventana
-en `log` con `missing = 0` → una línea en `production.auto.tfvars`). `production.auto.tfvars`
-**no se tocó**.
+### Quién llama y por qué no firma
+
+- **El llamador es el `mcp-server` de Execution Market.** `/ecs/em-production/mcp-server`,
+  2026-09-07 a 2026-09-11: **976** líneas `lifecycle_auth: EM no tiene rol para firmar %s en %s
+  … — se manda sin firma` (**603** `release`, que cuadran con las 606 del facilitador; **373**
+  `refundInEscrow`). Además `/ecs/em-production/payshell-mcp`: **50** `refundInEscrow` con la
+  misma línea (no estaba en el reporte del refutador).
+- **EM sí firma** (`execution-market` `origin/main` = `2975ae7c`, contiene `dff9af68`
+  "EM firma release y refundInEscrow — y la llave que tiene no alcanza", 2026-09-06):
+  - `mcp_server/integrations/x402/lifecycle_auth.py` arma la orden; la llave sale de
+    `EM_LIFECYCLE_SIGNER_KEY` (dedicada, preferida) o de la llave general (`:88`, `:104`).
+  - Cuando esa llave no es payer, receiver ni owner del operador, loguea `:280-281` y manda
+    **sin firma**.
+  - Cableado en `payment_dispatcher.py:2328-2349` (release), `:2818-2839` (refund) y
+    `:5145-5160` (refund vía `sdk_lifecycle_kwargs`).
+  - El gate de firma del payer, `EM_LIFECYCLE_PAYER_SIGNS`, está **apagado por default**
+    (`lifecycle_auth.py:411-418`) y no aparece en `infrastructure/` (`git grep` sin hits).
+- **El SDK Python también firma** (`uvd-x402-sdk-python` `origin/main`): `build_lifecycle_auth`
+  en `src/uvd_x402_sdk/escrow_signing.py:770`, llamado desde `advanced_escrow.py:1023-1038`;
+  entró con `5a7007c` (0.78.0, 2026-09-05). (El spec de ronda 2 citaba `84e20ae`, que está en
+  `main` pero es un commit de `orca.yaml`.)
+
+**Error de la ronda 1, dicho claro:** medí sobre los checkouts locales sin `git fetch`. EM
+local estaba en `main` = `10800a5c`, que NO contiene `dff9af68`; el SDK local estaba en la
+rama `feat/x402client-fetch-buyer-loop` = `cfdd270`, que NO contiene `5a7007c`. El `grep`
+vacío era cierto para esos árboles y falso para lo que corre. De ahí salían los dos encargos
+"SDK firma → EM consume", que quedan **borrados**.
+
+### Orden para llegar a `enforce`
+
+1. **El dueño decide qué firmante con rol usa EM**: la llave del `FEE_RECIPIENT()` del
+   operador cargada como `EM_LIFECYCLE_SIGNER_KEY`, u operadores cuyo owner sea el firmante
+   que EM ya tiene. El secreto se nombra; su valor nunca.
+2. **Encender `EM_LIFECYCLE_PAYER_SIGNS`** para que los `release` los firme el payer.
+3. **Los refunds** necesitan firma de receiver u owner del operador; el paso 1 los cubre si
+   el firmante es el owner.
+4. **Ventana en `log`** hasta que `verdict=missing` sea 0 en los operadores de EM (misma
+   query de arriba).
+5. Recién ahí, **una línea** en `terraform/environments/production/production.auto.tfvars`
+   (`escrow_lifecycle_auth = "enforce"`); rollback, la misma línea a `"log"`.
+
+`production.auto.tfvars` **no se tocó**.
 
 ## [89] Estimate antes del nonce
 
@@ -82,28 +118,31 @@ status, mismo `release_feedback_proof` en `/feedback`, misma respuesta del job d
 `/register`), así que la máquina de estados `pending → mint_confirmed → done/failed` no ve
 un camino nuevo. Los dos comentarios `KNOWN GAP` (evm.rs y `post_feedback`) se reemplazaron.
 
-**Test de regresión** (`chain::evm::tests`):
-- `a_reverting_estimate_consumes_no_nonce` — transporte JSON-RPC guionado por método
-  (`ScriptedRpc`), con el stack de fillers de producción y un `PendingNonceManager` real.
-  `eth_estimateGas` revierte tras 50 ms, como un round-trip HTTP: sin ese retardo el
-  `try_join!` de alloy terminaría antes de pollear el nonce y un envío sin guard pasaría el
-  test. Afirma: nunca se llama `eth_getTransactionCount`, el manager no asignó, no hubo
-  `eth_sendRawTransaction`, y el error es `Reverted`.
-- `a_passing_estimate_is_sent_with_the_nonce_reserved_after_it` — orden
-  `eth_estimateGas` < `eth_getTransactionCount` < `eth_sendRawTransaction`, una sola
-  estimación, nonce asignado (7 → next 8).
+**Tests de regresión** (`chain::evm::tests`), sobre un transporte JSON-RPC guionado por
+método (`ScriptedRpc`) con el stack de fillers de producción y un `PendingNonceManager` real.
+`eth_estimateGas` contesta tras 50 ms, como un round-trip HTTP: sin ese retardo el
+`try_join!` de alloy terminaría antes de pollear el nonce y un envío sin guard pasaría.
+- `a_reverting_estimate_consumes_no_nonce` — la estimación revierte. Afirma: nunca se llama
+  `eth_getTransactionCount`, el manager no asignó, no hubo `eth_sendRawTransaction`, y el
+  error es `Reverted`.
+- `a_passing_estimate_is_sent_with_the_nonce_reserved_after_it` — la estimación pasa. Afirma
+  que la estimación **ya contestó** (marcador `eth_estimateGas answered`) antes de que se
+  **pida** `eth_getTransactionCount`, que el nonce va antes de `eth_sendRawTransaction`, que
+  hay una sola estimación y que el nonce se asignó (7 → next 8). **Ronda 2:** en la ronda 1 este
+  test comparaba solo el orden de los pedidos y pasaba igual sin el guard (el filler también
+  pide la estimación primero); el marcador de respuesta es lo que lo vuelve discriminante.
 
 ## [103] `invalid_asset`
 
 `FacilitatorLocalError::UnsupportedAsset(payer, network, asset)` + `chain::assert_supported_asset`
-(`src/chain/mod.rs`), usado por la allow-list de EVM (`evm.rs`, antes `:2159`) y por verify y
-settle de Solana (`solana.rs`, antes `:1972`, `:2004`). `IntoResponse` lo contesta como
-`invalid_network`: `200 {"isValid":false,"invalidReason":"invalid_asset","payer":…}`.
-`failure_category` (stream `/events`) lo nombra `invalid_asset`. El `Display` sigue diciendo
-`unsupported_asset: network=…, asset=…`, así que los logs y el test del PR #48 que busca
-`unsupported_asset` en el mensaje no cambian.
+(`src/chain/mod.rs`), usado por la allow-list de EVM (`evm.rs`) y por verify y settle de
+Solana (`solana.rs`). `IntoResponse` lo contesta como `invalid_network`:
+`200 {"isValid":false,"invalidReason":"invalid_asset","payer":…}`. `failure_category` (stream
+`/events`) lo nombra `invalid_asset`. El `Display` sigue diciendo
+`unsupported_asset: network=…, asset=…`, así que los logs y los tests de PYUSD (#48, ya en
+`main`) que buscan `unsupported_asset` en el mensaje no cambian.
 
-Base en producción hoy (2026-09-13T16:56:34Z, `POST /verify`, v1, network `base`, asset
+Base en producción (2026-09-13T16:56:34Z, `POST /verify`, v1, network `base`, asset
 inventado `0x…dEaD`, firma basura, timing válido): **`HTTP 400 {"error":"internal_error (ref: <uuid>)"}`**.
 
 Tests (`handlers::rejection_reason_tests`): fila nueva en la tabla `causes()` (ahora 8, y
@@ -116,16 +155,15 @@ unsupported_asset…"`, ya con nombre en el texto; ver backlog.
 
 ## [5] `base-mainnet`
 
-`src/network.rs:222`: `"base" | "base-mainnet" => Ok(Network::Base)`. Solo `FromStr`
-(y `resolve_network`, que lo usa); el serde derivado y `Display` siguen en `base`, así que
+`src/network.rs`: `"base" | "base-mainnet" => Ok(Network::Base)`. Solo `FromStr` (y
+`resolve_network`, que lo usa); el serde derivado y `Display` siguen en `base`, así que
 `/supported` y el wire no cambian. Producción hoy: `/identity/base-mainnet/1` → `400`.
 Cierra `UltravioletaDAO/uvd-x402-sdk-typescript#6` (referenciado en el commit).
 
 ## Rojo / verde (discriminante)
 
-Con los tres arreglos quitados a la vez (guard reemplazado por `call.send()`,
-`assert_supported_asset` devolviendo `Other(...)` como antes, alias borrado), los tres tests
-nuevos, en una corrida:
+Ronda 1 — con los tres arreglos quitados a la vez (guard reemplazado por `call.send()`,
+`assert_supported_asset` devolviendo `Other(...)` como antes, alias borrado):
 
 ```
 test chain::evm::tests::a_reverting_estimate_consumes_no_nonce ... FAILED
@@ -136,20 +174,30 @@ test network::tests::base_mainnet_is_an_alias_for_base ... FAILED
 test result: FAILED. 0 passed; 3 failed
 ```
 
+Ronda 2 — el test del camino feliz con el guard quitado:
+
+```
+test chain::evm::tests::a_passing_estimate_is_sent_with_the_nonce_reserved_after_it ... FAILED
+  the nonce was requested before the estimate answered: ["eth_estimateGas", "eth_getTransactionCount", "eth_chainId", "eth_estimateGas answered", "eth_sendRawTransaction"]
+test chain::evm::tests::a_reverting_estimate_consumes_no_nonce ... FAILED
+  a nonce was fetched for a call that reverted on estimation: ["eth_estimateGas", "eth_getTransactionCount", "eth_chainId", "eth_estimateGas answered"]
+test result: FAILED. 0 passed; 2 failed
+```
+
 Archivos restaurados desde copia y comparados con `cmp`. Con el código del PR: verdes (tabla
 de pre-CI).
 
-## Pre-CI
+## Pre-CI (ronda 2, sobre `c2346897` + esta rama)
 
-macOS, `rustc` stable, contra el árbol de este PR:
+macOS, `rustc` stable, árbol rebaseado sobre `c2346897`:
 
 | Paso | Comando | Resultado |
 |---|---|---|
-| fmt | `cargo fmt --check` | ok |
+| fmt | `cargo fmt --check` | ok (la primera pasada marcó una línea larga del test nuevo; `cargo fmt` la partió, solo espacios, y los dos tests de nonce se re-corrieron verdes después) |
 | landing (CI `ci.yaml:148`) | `python3 scripts/verify_landing_canonical.py --offline` | `[OK]` |
-| tests x402-rs (CI `:154`) | `cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl -- --test-threads=1` | lib **1067 passed**, bin **1116 passed**, integraciones ok; **0 failed** |
+| tests x402-rs (CI `:154`) | `cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl -- --test-threads=1` | lib **1074 passed**, bin **1123 passed** (+7 respecto de la ronda 1: los tests de PYUSD de #48), integraciones ok; **0 failed** |
 | tests crates (CI `:156`) | `cargo test --locked -p x402-axum -p x402-reqwest -p x402-compliance -- --test-threads=1` | 9 suites ok, 0 failed |
-| clippy (CI no lo corre) | `cargo clippy --locked -p x402-rs --features … --tests` | 288 avisos preexistentes en el crate, **0 en líneas que cambia este PR** |
+| clippy (CI no lo corre) | `cargo clippy --locked -p x402-rs --features … --tests` | 288 avisos preexistentes en el crate, **0 en líneas que cambia este PR** (diff contra `origin/main`) |
 | terraform | — | no aplica: `terraform/` sin tocar |
 
 CI no corre `cargo fmt` ni `clippy` (`.github/workflows/ci.yaml:128-157`: landing offline,
@@ -183,28 +231,34 @@ autoscaling (`:541-547`), espera `aws ecs wait services-stable` (`:643-645`) y v
 
 ## Para c0der
 
-- **No hice [126]** y no se debe hacer todavía: medido arriba. El siguiente paso son dos
-  encargos fuera de este repo (SDK Python firma `LifecycleOrder`; EM lo consume) y después
-  una ventana en `log` con `missing = 0`. Quién decide la ventana: el dueño.
-- **VERSION choca con el PR #48** (2.27.0). El que mergee segundo rebasea `VERSION`; no hay
-  otro solapamiento de lógica: #48 usa `is_supported_asset` solo en `src/network.rs` (tests),
-  y su test sobre Solana busca `unsupported_asset` en el `Display`, que no cambió. Sí
-  tocamos los dos `src/chain/solana.rs` y `src/handlers.rs`: conflicto textual posible,
-  semántico no.
+- **No hice [126]** y no se debe hacer todavía. El bloqueo no es código en otro repo: EM y
+  el SDK ya firman. Es **qué llave con rol usa EM** (decisión del dueño) y encender
+  `EM_LIFECYCLE_PAYER_SIGNS`; el orden está arriba. Los dos encargos "SDK firma → EM consume"
+  de la ronda 1 quedan borrados: salieron de checkouts locales viejos.
+- **Rebase sobre #48 hecho:** el único conflicto fue `VERSION` (queda 2.28.0);
+  `solana.rs`, `handlers.rs` y `network.rs` se auto-mergearon, y la suite completa corrió
+  sobre el resultado (tabla de pre-CI).
 - **Issue #6 del SDK TS** se cierra con el merge (el commit lo referencia con `Closes`). Si
   preferís cerrarlo recién tras el `curl` de producción, quitá la referencia antes de
   mergear.
-- **Mientras mergeás**: `run_evm_registration` es el único de los 5 con máquina de estados;
-  el diff ahí son 6 líneas `send()` → helper, sin otra rama nueva. Vale un vistazo del
-  refutador.
+- **La fila P1 "escritores ERC-8004 sin writer lease" de la ronda 1 era falsa**:
+  `require_writer_lease` envuelve `/register`, `/feedback`, `/feedback/response` y el resto
+  del router ERC-8004 (`src/handlers.rs:1828`) y `/feedback/revoke` (`:1790`). Queda un
+  residual P2 (abajo).
+- **El reporte del refutador** (`REFUTACION-x4-49.md`) está en una ruta de Windows que esta
+  Mac no ve; trabajé con lo que cita `RONDA2-c0der.txt` y verifiqué cada archivo:línea contra
+  los `origin/main` de EM y del SDK.
 - Worktree: `contracts/` untracked es previo a este worker; no lo toqué ni lo stageé.
 
 ## Filas de backlog nuevas
 
 | Prioridad | Fila | Evidencia |
 |---|---|---|
-| P1 | Los escritores ERC-8004 firman con el signer EVM compartido **sin writer lease**: solo `/settle` lleva `settle_writer_gate` (`src/handlers.rs:113`) y `signing_permit()` (`src/chain/evm.rs:848`). Con más de una tarea ECS, dos tareas pueden asignar nonces del mismo signer a la vez. El guard de este PR no lo cubre (evita nonces quemados por revert, no colisiones entre tareas) | `grep -n settle_writer_gate src/handlers.rs`; `grep -rn 'signing_permit()' src` |
-| P1 | [126] SDK Python firma `LifecycleOrder` → EM firma → ventana en `log` con `missing = 0` → `enforce` | tabla de arriba; handoff 2026-09-05 §"Orden para llegar a enforce" |
+| P1 | [126] firmante con rol para EM (decisión del dueño: `FEE_RECIPIENT` vía `EM_LIFECYCLE_SIGNER_KEY` u operadores cuyo owner sea el firmante de EM) → `EM_LIFECYCLE_PAYER_SIGNS` on → refunds con firma de receiver/owner → ventana en `log` con `missing = 0` → `enforce` | sección [126] |
+| P2 | Writer lease residual en los escritores ERC-8004: `require_writer_lease` se evalúa al entrar el request (`src/handlers.rs:1790`, `:1828`), pero no hay `signing_permit()` por intento como en `settle` (`src/chain/evm.rs`, antes de reservar el nonce), y el job asíncrono de `/register` firma después de contestar sin volver a mirar `is_writer` | `grep -n require_writer_lease src/handlers.rs`; `grep -rn 'signing_permit()' src` |
+| P2 | Escritores ERC-8004: reserva explícita del nonce + `release_nonce` cuando el nodo rechaza antes del broadcast (lo que `settle` ya hace con `is_pre_broadcast_rejection`); el guard de este PR evita el revert en estimación, no el rechazo en envío | `src/chain/evm.rs` rama `Err` de `send_transaction` en `settle` |
+| P2 | `discovery_attestation::attest_uptime` sigue con `send()` pelado sobre el signer compartido: debería pasar por `send_call_estimated` | `src/discovery_attestation.rs:203`, `:205` |
+| P2 | EM: `refund_trustless_escrow` reintenta sin tope un único escrow en polygon — 892 órdenes `refundInEscrow` sobre un solo par (payer, receiver) entre 2026-09-08T22:09Z y 2026-09-10T18:32Z, vía `stranded_escrow_sweeper` según el refutador | query de la sección [126] |
 | P2 | Escrow en silencio desde 2026-09-11 23:21Z (última orden de ciclo de vida; `settle_escrow` ~0 desde entonces): confirmar con EM si es pausa deliberada | query de la sección [126] |
 | P3 | `upto` contesta un activo desconocido como `400 "Upto scheme error: unsupported_asset…"`, no con el veredicto `invalid_asset` | `src/upto/permit2.rs:243-247`, `src/handlers.rs` rama `upto_error` |
 
@@ -213,7 +267,9 @@ autoscaling (`:541-547`), espera `aws ecs wait services-stable` (`:643-645`) y v
 Ningún `settle`, `release`, `refundInEscrow` ni escritura ERC-8004 contra producción ni
 contra ninguna cadena. Contra producción: `GET /version`, `GET /settle`,
 `GET /identity/base-mainnet/1` y un `POST /verify` con activo inventado y firma basura
-(sin fondos). CloudWatch solo lectura. Ningún secreto leído ni impreso. `terraform/` sin
-tocar. Un push, de la rama `0xultravioleta/x4-escrow-enforce`.
+(sin fondos). CloudWatch solo lectura (facilitador y logs de EM). En los repos de EM y del
+SDK solo `git fetch` + lectura de `origin/main`, sin tocar sus working trees. Ningún secreto
+leído ni impreso. `terraform/` sin tocar. Ronda 1: un push; ronda 2: un push
+(`--force-with-lease`, por el rebase), de la rama `0xultravioleta/x4-escrow-enforce`.
 
-LISTO PARA c0der — código en `a2ea7dd9` (estimate antes del nonce + `invalid_asset`) sobre `41d9dbc7` (`base-mainnet`); este handoff y `VERSION` 2.28.0 van en el commit siguiente, cuyo SHA (head del push) está en el cuerpo del PR.
+LISTO PARA c0der 59e8d45b — ronda 2: código hasta `59e8d45b` (test discriminante) sobre `1940d3fd` (estimate antes del nonce + `invalid_asset`) y `1cc55158` (`base-mainnet`), rebaseado sobre `c2346897`; este handoff y `docs/CHANGELOG.md` van en el commit siguiente, cuyo SHA (head del push) está en el cuerpo del PR #49.

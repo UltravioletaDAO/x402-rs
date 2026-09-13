@@ -1023,6 +1023,7 @@ fn failure_category(debug: &str) -> &'static str {
         "InvalidTiming" => "invalid_timing",
         "BlockedAddress" => "blocked_address",
         "UnsupportedNetwork" => "unsupported_network",
+        "UnsupportedAsset" => "invalid_asset",
         "NetworkMismatch" => "network_mismatch",
         "SchemeMismatch" => "scheme_mismatch",
         "ReceiverMismatch" => "receiver_mismatch",
@@ -5294,6 +5295,17 @@ impl IntoResponse for FacilitatorLocalError {
                 )),
             )
                 .into_response(),
+            // An asset off the network's allow-list is a verdict on the
+            // payload, like `invalid_network`. It went out through `Other` as
+            // `400 internal_error (ref: <uuid>)` until 2.28.0.
+            FacilitatorLocalError::UnsupportedAsset(payer, ..) => (
+                StatusCode::OK,
+                Json(VerifyResponse::invalid(
+                    payer,
+                    FacilitatorErrorReason::FreeForm("invalid_asset".to_string()),
+                )),
+            )
+                .into_response(),
             FacilitatorLocalError::ContractCall(ref e) => {
                 // Opaque external error to avoid leaking RPC URLs / revert reasons / API keys
                 // that appear in alloy RpcError messages. Full detail logged server-side.
@@ -6150,34 +6162,15 @@ where
                 feedback_hash,
             );
 
-            // KNOWN GAP (2026-08-28,
-            // docs/handoffs/2026-08-20-diagnostico-performance-facilitador.md):
-            // both `.send().await` calls below skip the estimate-first guard that
-            // `EvmProvider::settle()` uses (`chain/evm.rs`, next to
-            // `PendingNonceManager`'s doc comment). Sending straight to
-            // `.send()` lets alloy's `JoinFill` fill gas AND nonce CONCURRENTLY
-            // (`try_join!`): `NonceFiller::prepare` commits the nonce reservation
-            // before gas estimation can even fail, so a call that reverts on
-            // estimation still burns the nonce it never broadcast. `/settle`
-            // dodges this by calling `estimate_gas` before reserving a nonce at
-            // all; this handler — and 4 others sharing the same
-            // `PendingNonceManager` (`post_revoke_feedback`,
-            // `post_append_response`, `run_evm_registration`,
-            // `transfer_agent_nft`) — do not.
+            // Both sends below go through `send_call_estimated`
+            // (`chain/evm.rs`): gas is estimated BEFORE a nonce is reserved, so a
+            // rating that reverts on estimation is refused without consuming one.
+            // A bare `.send()` let alloy fill gas and nonce concurrently, and on
+            // Monad (2026-08-24) one reverting `/feedback` burned a nonce and
+            // froze nonces 379/380/381 for 151-283s behind the gap. The same
+            // guard covers `post_revoke_feedback`, `post_append_response`,
+            // `run_evm_registration` and `transfer_agent_nft`.
             //
-            // Measured cost on Monad (2026-08-24, no global mempool to absorb
-            // the gap): a reverting `/feedback` at 03:58:40 burned a nonce;
-            // nonces 379/380/381 sat unmined for 151-283s until nonce 378
-            // finally landed at 04:02:57 and unstuck all three at once. The
-            // distribution was bimodal (0-1s or 151-283s, nothing between) —
-            // the gap does not fail transactions, it FREEZES them until
-            // something fills the hole.
-            //
-            // Deliberately not fixed here: `run_evm_registration` carries a
-            // `pending -> mint_confirmed -> done/failed` job state machine that
-            // a rushed guard could break, and none of the 5 call sites have a
-            // nonce-reservation regression test today. Extending the guard is
-            // a scoped follow-up, not a drive-by edit.
             //
             // Legacy chains (SKALE) need explicit gasPrice to avoid EIP-1559 rejection
             let send_result = if !provider.is_eip1559() {
@@ -6187,7 +6180,10 @@ where
                     .await
                     .map_err(|e| format!("{e:?}"));
                 match gp {
-                    Ok(gas_price) => call.gas_price(gas_price).send().await,
+                    Ok(gas_price) => {
+                        crate::chain::evm::send_call_estimated(call.gas_price(gas_price), network)
+                            .await
+                    }
                     Err(e) => {
                         error!(error = %e, "Failed to get gas price");
                         // Nothing was written, so the proof has not been spent.
@@ -6207,7 +6203,7 @@ where
                     }
                 }
             } else {
-                call.send().await
+                crate::chain::evm::send_call_estimated(call, network).await
             };
 
             match send_result {
@@ -7416,20 +7412,26 @@ where
             );
 
             // Legacy chains (SKALE) need explicit gasPrice
-            let send_result =
-                if !provider.is_eip1559() {
-                    match provider.inner().get_gas_price().await {
-                        Ok(gas_price) => call.gas_price(gas_price).send().await,
-                        Err(e) => {
-                            error!(error = %e, "Failed to get gas price");
-                            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-                            "success": false, "error": format!("Failed to get gas price: {}", e)
-                        }))).into_response();
-                        }
+            let send_result = if !provider.is_eip1559() {
+                match provider.inner().get_gas_price().await {
+                    Ok(gas_price) => {
+                        crate::chain::evm::send_call_estimated(call.gas_price(gas_price), network)
+                            .await
                     }
-                } else {
-                    call.send().await
-                };
+                    Err(e) => {
+                        error!(error = %e, "Failed to get gas price");
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(json!({
+                                "success": false, "error": format!("Failed to get gas price: {}", e)
+                            })),
+                        )
+                            .into_response();
+                    }
+                }
+            } else {
+                crate::chain::evm::send_call_estimated(call, network).await
+            };
 
             match send_result {
                 Ok(pending_tx) => match pending_tx.get_receipt().await {
@@ -8052,20 +8054,26 @@ where
             );
 
             // Legacy chains (SKALE) need explicit gasPrice
-            let send_result =
-                if !provider.is_eip1559() {
-                    match provider.inner().get_gas_price().await {
-                        Ok(gas_price) => call.gas_price(gas_price).send().await,
-                        Err(e) => {
-                            error!(error = %e, "Failed to get gas price");
-                            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-                            "success": false, "error": format!("Failed to get gas price: {}", e)
-                        }))).into_response();
-                        }
+            let send_result = if !provider.is_eip1559() {
+                match provider.inner().get_gas_price().await {
+                    Ok(gas_price) => {
+                        crate::chain::evm::send_call_estimated(call.gas_price(gas_price), network)
+                            .await
                     }
-                } else {
-                    call.send().await
-                };
+                    Err(e) => {
+                        error!(error = %e, "Failed to get gas price");
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(json!({
+                                "success": false, "error": format!("Failed to get gas price: {}", e)
+                            })),
+                        )
+                            .into_response();
+                    }
+                }
+            } else {
+                crate::chain::evm::send_call_estimated(call, network).await
+            };
 
             match send_result {
                 Ok(pending_tx) => match pending_tx.get_receipt().await {
@@ -11089,27 +11097,27 @@ where
         // register_0 = register(string, MetadataEntry[]) - first overload in ABI
         let call = identity_registry.register_0(agent_uri, metadata_entries);
         if let Some(gp) = legacy_gas_price {
-            call.gas_price(gp).send().await
+            crate::chain::evm::send_call_estimated(call.gas_price(gp), network).await
         } else {
-            call.send().await
+            crate::chain::evm::send_call_estimated(call, network).await
         }
     } else if !agent_uri.is_empty() {
         info!("Registering agent with URI only");
         // register_1 = register(string) - second overload in ABI
         let call = identity_registry.register_1(agent_uri);
         if let Some(gp) = legacy_gas_price {
-            call.gas_price(gp).send().await
+            crate::chain::evm::send_call_estimated(call.gas_price(gp), network).await
         } else {
-            call.send().await
+            crate::chain::evm::send_call_estimated(call, network).await
         }
     } else {
         info!("Registering agent without URI or metadata");
         // register_2 = register() - third overload in ABI
         let call = identity_registry.register_2();
         if let Some(gp) = legacy_gas_price {
-            call.gas_price(gp).send().await
+            crate::chain::evm::send_call_estimated(call.gas_price(gp), network).await
         } else {
-            call.send().await
+            crate::chain::evm::send_call_estimated(call, network).await
         }
     };
 
@@ -11490,9 +11498,9 @@ async fn transfer_agent_nft(
             .get_gas_price()
             .await
             .map_err(|e| format!("Failed to get gas price for transfer: {e}"))?;
-        transfer_call.gas_price(gas_price).send().await
+        crate::chain::evm::send_call_estimated(transfer_call.gas_price(gas_price), network).await
     } else {
-        transfer_call.send().await
+        crate::chain::evm::send_call_estimated(transfer_call, network).await
     };
 
     let pending = send_result.map_err(|e| format!("Failed to send transfer transaction: {e}"))?;
@@ -14929,6 +14937,14 @@ mod rejection_reason_tests {
                     "0x2".to_string(),
                 ),
             ),
+            (
+                "invalid_asset",
+                FacilitatorLocalError::UnsupportedAsset(
+                    Some(payer()),
+                    crate::network::Network::Base,
+                    "0x000000000000000000000000000000000000dEaD".to_string(),
+                ),
+            ),
         ]
     }
 
@@ -14949,6 +14965,42 @@ mod rejection_reason_tests {
         }
     }
 
+    /// The allow-list check itself, not only the variant it returns: an asset
+    /// nobody deployed on the network answers the verdict `invalid_asset`.
+    /// Through `Other` it answered `400 internal_error (ref: <uuid>)`, which
+    /// told a client with a wrong `asset` that the facilitator had broken.
+    #[tokio::test]
+    async fn an_unknown_asset_is_a_named_rejection_not_an_internal_error() {
+        let invented: MixedAddress = "0x000000000000000000000000000000000000dEaD"
+            .parse::<crate::types::EvmAddress>()
+            .expect("test address")
+            .into();
+        let err = crate::chain::assert_supported_asset(
+            crate::network::Network::Base,
+            Some(payer()),
+            &invented,
+        )
+        .expect_err("an invented asset is not on Base's allow-list");
+        let body = reject(err).await;
+        assert_eq!(body["isValid"], serde_json::json!(false), "{body}");
+        assert_eq!(
+            body["invalidReason"],
+            serde_json::json!("invalid_asset"),
+            "{body}"
+        );
+        assert_eq!(
+            failure_category(&format!(
+                "{:?}",
+                FacilitatorLocalError::UnsupportedAsset(
+                    None,
+                    crate::network::Network::Base,
+                    String::new()
+                )
+            )),
+            "invalid_asset"
+        );
+    }
+
     /// The property that matters even if a token is later respelled: two
     /// different causes must never be indistinguishable to the payer.
     #[tokio::test]
@@ -14964,7 +15016,7 @@ mod rejection_reason_tests {
                 panic!("`{first}` and `{name}` both answer `{token}`");
             }
         }
-        assert_eq!(seen.len(), 7, "one row per cause");
+        assert_eq!(seen.len(), 8, "one row per cause");
     }
 
     /// The defect that made the field useless rather than merely coarse.

@@ -26,7 +26,7 @@ use once_cell::sync::OnceCell;
 use crate::chain::{FacilitatorLocalError, FromEnvByNetworkBuild, NetworkProviderOps};
 use crate::facilitator::Facilitator;
 use crate::from_env;
-use crate::network::{is_supported_asset, Network};
+use crate::network::Network;
 use crate::nonce_store::NonceStore;
 use crate::types::{
     Base64Bytes, ExactPaymentPayload, FacilitatorErrorReason, MixedAddress, PaymentRequirements,
@@ -2084,13 +2084,11 @@ impl Facilitator for SolanaProvider {
         // RPC call so a hostile payload cannot trick the facilitator into
         // settling a transfer for a token we did not pre-approve. Covers both
         // the standard transfer path and the settlement-account path.
-        if !is_supported_asset(self.network(), &request.payment_requirements.asset) {
-            return Err(FacilitatorLocalError::Other(format!(
-                "unsupported_asset: network={}, asset={}",
-                self.network(),
-                request.payment_requirements.asset
-            )));
-        }
+        crate::chain::assert_supported_asset(
+            self.network(),
+            None,
+            &request.payment_requirements.asset,
+        )?;
 
         // Route: settlement account vs standard transaction
         if let ExactPaymentPayload::SolanaSettlementAccount(sa_payload) =
@@ -2116,13 +2114,11 @@ impl Facilitator for SolanaProvider {
         // B6: strict asset allow-list. Mirrors the verify path so the
         // settlement-account flow (which bypasses verify_transfer) is also
         // gated.
-        if !is_supported_asset(self.network(), &request.payment_requirements.asset) {
-            return Err(FacilitatorLocalError::Other(format!(
-                "unsupported_asset: network={}, asset={}",
-                self.network(),
-                request.payment_requirements.asset
-            )));
-        }
+        crate::chain::assert_supported_asset(
+            self.network(),
+            None,
+            &request.payment_requirements.asset,
+        )?;
 
         // Route: settlement account vs standard transaction
         if let ExactPaymentPayload::SolanaSettlementAccount(sa_payload) =

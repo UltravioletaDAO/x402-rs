@@ -282,7 +282,36 @@ pub enum FacilitatorLocalError {
     /// perfectly good payload that the payload was wrong.
     #[error("writer lease not held: {0}")]
     WriterLeaseUnavailable(String),
+    /// The asset is not on this network's allow-list (`src/network.rs`).
+    ///
+    /// A verdict on the request, not a failure of the facilitator. Reported as
+    /// `Other` until 2.28.0, which answered `internal_error (ref: <uuid>)`: a
+    /// client with a wrong `asset` was told we had broken, and handed a
+    /// correlation id only we can resolve.
+    #[error("unsupported_asset: network={1}, asset={2}")]
+    UnsupportedAsset(Option<MixedAddress>, Network, String),
     /// Other errors.
     #[error("{0}")]
     Other(String),
+}
+
+/// Refuse an asset that is not on `network`'s allow-list in `src/network.rs`.
+///
+/// The one place every family asks, so the rejection has one shape:
+/// [`FacilitatorLocalError::UnsupportedAsset`], which reaches the caller as the
+/// verdict `invalid_asset`.
+pub fn assert_supported_asset(
+    network: Network,
+    payer: Option<MixedAddress>,
+    asset: &MixedAddress,
+) -> Result<(), FacilitatorLocalError> {
+    if crate::network::is_supported_asset(network, asset) {
+        Ok(())
+    } else {
+        Err(FacilitatorLocalError::UnsupportedAsset(
+            payer,
+            network,
+            asset.to_string(),
+        ))
+    }
 }

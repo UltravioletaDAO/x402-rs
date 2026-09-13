@@ -48,8 +48,8 @@ use crate::erc8004::{Erc8004Extension, ProofOfPayment};
 use crate::facilitator::Facilitator;
 use crate::from_env;
 use crate::network::{
-    get_token_deployment, is_supported_asset, supported_tokens_for_network, AUSDDeployment,
-    EURCDeployment, Network, PYUSDDeployment, USDCDeployment, USDGDeployment, USDTDeployment,
+    get_token_deployment, supported_tokens_for_network, AUSDDeployment, EURCDeployment, Network,
+    PYUSDDeployment, USDCDeployment, USDGDeployment, USDTDeployment,
 };
 use crate::timestamp::UnixTimestamp;
 use crate::types::{
@@ -82,6 +82,77 @@ sol! {
 /// If absent on a target chain, verification will fail; you should deploy the validator there.
 const VALIDATOR_ADDRESS: alloy::primitives::Address =
     address!("0xdAcD51A54883eb67D95FAEb2BBfdC4a9a6BD2a3B");
+
+/// Why [`send_call_estimated`] did not hand back a pending transaction.
+#[derive(Debug)]
+pub enum EstimatedSendError {
+    /// Gas estimation executed the call and it reverted. Nothing was sent and
+    /// no nonce was reserved.
+    Reverted(alloy::contract::Error),
+    /// The broadcast itself failed.
+    Send(alloy::contract::Error),
+}
+
+impl std::fmt::Display for EstimatedSendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Reverted(e) => write!(f, "gas estimation reverted, transaction not sent: {e}"),
+            Self::Send(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for EstimatedSendError {}
+
+/// Send a contract call from the shared signer, estimating gas BEFORE a nonce
+/// is reserved.
+///
+/// A bare `call.send()` lets alloy fill gas and nonce CONCURRENTLY
+/// (`JoinFill::prepare` is a `try_join!`), and `NonceFiller::prepare` commits
+/// the allocation as soon as it runs. A call that reverts on estimation then
+/// still consumes a nonce it never broadcasts, and every later write from the
+/// signer queues behind the gap: on Monad (2026-08-24) one reverting
+/// `/feedback` froze nonces 379-381 for 151-283 s. `EvmProvider::settle` has
+/// carried this guard since 2026-08-28; this is the same guard for the
+/// ERC-8004 writers that share its `PendingNonceManager` (`post_feedback`,
+/// `post_revoke_feedback`, `post_append_response`, `run_evm_registration`,
+/// `transfer_agent_nft`).
+///
+/// Same rules as `settle`: estimate against `latest`, and only an execution
+/// revert stops the send -- a transport failure falls through to the filler,
+/// so a flaky RPC behaves exactly as before. Estimating goes through the same
+/// `FillProvider`, whose `estimate_gas` runs only `prepare_call_sync` (the
+/// wallet's `from`), never the nonce filler.
+pub async fn send_call_estimated<P, D>(
+    call: alloy::contract::CallBuilder<P, D, AlloyEthereum>,
+    network: Network,
+) -> Result<alloy::providers::PendingTransactionBuilder<AlloyEthereum>, EstimatedSendError>
+where
+    P: Provider<AlloyEthereum>,
+    D: alloy::contract::CallDecoder,
+{
+    let call = call.block(BlockId::latest());
+    match call.estimate_gas().await {
+        Ok(gas) => call.gas(gas).send().await.map_err(EstimatedSendError::Send),
+        Err(e) => {
+            let msg = format!("{e:?}");
+            if crate::handlers::is_execution_revert(&msg) {
+                tracing::warn!(
+                    %network,
+                    error = %msg,
+                    "Gas estimation reverted; call not sent, no nonce consumed"
+                );
+                return Err(EstimatedSendError::Reverted(e));
+            }
+            tracing::warn!(
+                %network,
+                error = %msg,
+                "Gas estimation unavailable, falling back to filler"
+            );
+            call.send().await.map_err(EstimatedSendError::Send)
+        }
+    }
+}
 
 /// Combined filler type for gas, blob gas, nonce, and chain ID.
 type InnerFiller = JoinFill<
@@ -721,20 +792,10 @@ impl EvmProvider {
             // nothing, and the explicit limit also saves the filler's own
             // estimate round-trip on the happy path.
             //
-            // KNOWN GAP (2026-08-28, docs/handoffs/2026-08-20-diagnostico-performance-facilitador.md):
-            // this guard protects ONLY this `settle()` path. It shares its
-            // `PendingNonceManager` with 5 handlers in `src/handlers.rs` that
-            // send a `SolCallBuilder` with a bare `call.send().await` and no
-            // estimate-first step: `post_feedback` (:4169, :4189),
-            // `post_revoke_feedback` (:5401, :5410), `post_append_response`
-            // (:6037, :6046), `run_evm_registration` (:8018-:8038, the async
-            // `/register` job) and `transfer_agent_nft` (:8412, :8414). Any of
-            // those can burn a nonce the same way this block prevents. Not
-            // extended here on purpose — `run_evm_registration` carries a
-            // `pending -> mint_confirmed -> done/failed` state machine that a
-            // rushed guard could break, and none of the 5 have a regression
-            // test for nonce reservation today. See the first call site
-            // (`handlers.rs:4189`) for the on-chain cost this pays.
+            // The 5 ERC-8004 writers in `src/handlers.rs` share this
+            // `PendingNonceManager`; they get the same guard through
+            // `send_call_estimated` (top of this file), which is where the
+            // nonce-reservation regression test lives.
             // Only a revert is treated as fatal here: if estimation fails for
             // transport reasons we fall through and let the filler try, which
             // preserves the previous behaviour on flaky RPCs.
@@ -2156,12 +2217,7 @@ async fn assert_valid_payment<P: Provider>(
     // network. Refuses arbitrary ERC-20s before any RPC call so a hostile
     // payload cannot trick the facilitator into invoking
     // `transferWithAuthorization` on a token we did not pre-approve.
-    if !is_supported_asset(chain.network, &requirements.asset) {
-        return Err(FacilitatorLocalError::Other(format!(
-            "unsupported_asset: network={}, asset={}",
-            chain.network, requirements.asset
-        )));
-    }
+    crate::chain::assert_supported_asset(chain.network, Some(payer.into()), &requirements.asset)?;
 
     let asset_address = requirements
         .asset
@@ -2877,6 +2933,202 @@ impl PendingNonceManager {
 mod tests {
     use super::*;
     use alloy::primitives::address;
+
+    // ---------------------------------------------------------------
+    // Estimate before nonce: `send_call_estimated`.
+    // ---------------------------------------------------------------
+
+    /// A JSON-RPC endpoint answered by method name, recording every call.
+    ///
+    /// `eth_estimateGas` answers after a short sleep, the way a real HTTP
+    /// round-trip does, and that is what makes the tests below discriminating.
+    /// Alloy races gas and nonce inside one `try_join!`: an estimate that
+    /// failed on its first poll would end the join before the nonce filler ever
+    /// ran, and an unguarded send would look innocent here while it burns
+    /// nonces in production.
+    #[derive(Clone)]
+    struct ScriptedRpc {
+        estimate_reverts: bool,
+        calls: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl ScriptedRpc {
+        fn new(estimate_reverts: bool) -> Self {
+            Self {
+                estimate_reverts,
+                calls: Default::default(),
+            }
+        }
+
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    /// The JSON-RPC response packet, named through the transport future: the
+    /// `alloy` facade re-exports `alloy_json_rpc` only under its `json-rpc`
+    /// feature, which this crate does not enable.
+    trait OkOf {
+        type Ok;
+    }
+    impl<T, E> OkOf for Result<T, E> {
+        type Ok = T;
+    }
+    type ResponsePacket =
+        <<alloy::transports::TransportFut<'static> as Future>::Output as OkOf>::Ok;
+
+    // Generic over the request so the packet type never has to be named; the
+    // only request it is ever handed is alloy's serialized single request.
+    impl<Req: serde::Serialize> tower::Service<Req> for ScriptedRpc {
+        type Response = ResponsePacket;
+        type Error = alloy::transports::TransportError;
+        type Future = alloy::transports::TransportFut<'static>;
+
+        fn poll_ready(
+            &mut self,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn call(&mut self, packet: Req) -> Self::Future {
+            let this = self.clone();
+            let req = serde_json::to_value(&packet).expect("request serialises");
+            Box::pin(async move {
+                let method = req["method"]
+                    .as_str()
+                    .expect("ScriptedRpc does not script batches")
+                    .to_string();
+                this.calls.lock().unwrap().push(method.clone());
+                let id = req["id"].to_string();
+                let outcome = match method.as_str() {
+                    "eth_estimateGas" => {
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                        if this.estimate_reverts {
+                            r#""error":{"code":3,"message":"execution reverted","data":"0x"}"#
+                                .to_string()
+                        } else {
+                            r#""result":"0x5208""#.to_string()
+                        }
+                    }
+                    "eth_getTransactionCount" => r#""result":"0x7""#.to_string(),
+                    "eth_chainId" => r#""result":"0x2105""#.to_string(),
+                    "eth_sendRawTransaction" => format!(r#""result":"0x{}""#, "ab".repeat(32)),
+                    other => {
+                        format!(r#""error":{{"code":-32601,"message":"{other} not scripted"}}"#)
+                    }
+                };
+                let body = format!(r#"{{"jsonrpc":"2.0","id":{id},{outcome}}}"#);
+                Ok(serde_json::from_str(&body).expect("scripted response parses"))
+            })
+        }
+    }
+
+    /// A contract call over the filler stack `EvmProvider` builds, pointed at
+    /// [`ScriptedRpc`], plus the address it sends from.
+    ///
+    /// Legacy pricing (as on SKALE): with `gas_price` set, the estimate is the
+    /// only thing the gas filler still asks the node for, so the script does
+    /// not have to fake a fee history.
+    fn scripted_call(
+        rpc: ScriptedRpc,
+        nonces: PendingNonceManager,
+    ) -> (
+        alloy::contract::CallBuilder<impl Provider<AlloyEthereum>, ()>,
+        Address,
+    ) {
+        let signer = alloy::signers::local::PrivateKeySigner::random();
+        let from = signer.address();
+        let filler = JoinFill::new(
+            GasFiller,
+            JoinFill::new(
+                BlobGasFiller::default(),
+                JoinFill::new(NonceFiller::new(nonces), ChainIdFiller::default()),
+            ),
+        );
+        let provider = ProviderBuilder::default()
+            .filler(filler)
+            .wallet(EthereumWallet::from(signer))
+            .connect_client(RpcClient::new(rpc, true));
+        let call = alloy::contract::CallBuilder::new_raw(
+            provider,
+            Bytes::from_static(&[0xde, 0xad, 0xbe, 0xef]),
+        )
+        .to(address!("0x00000000000000000000000000000000000c0de0"))
+        .gas_price(1_000_000_000);
+        (call, from)
+    }
+
+    /// The regression test for the Monad freeze (2026-08-24): an estimate that
+    /// reverts must leave the signer's nonce where it was. Replace the body of
+    /// `send_call_estimated` with a bare `call.send()` and this fails on the
+    /// first assertion -- the nonce filler reads `eth_getTransactionCount` and
+    /// allocates for a transaction that is never broadcast.
+    #[tokio::test]
+    async fn a_reverting_estimate_consumes_no_nonce() {
+        let rpc = ScriptedRpc::new(true);
+        let nonces = PendingNonceManager::default();
+        let (call, from) = scripted_call(rpc.clone(), nonces.clone());
+
+        let outcome = send_call_estimated(call, Network::Base).await;
+
+        assert!(
+            !rpc.calls().iter().any(|m| m == "eth_getTransactionCount"),
+            "a nonce was fetched for a call that reverted on estimation: {:?}",
+            rpc.calls()
+        );
+        assert_eq!(
+            read_next(&nonces, from).await,
+            None,
+            "the nonce manager allocated for a call that was never broadcast"
+        );
+        assert!(
+            !rpc.calls().iter().any(|m| m == "eth_sendRawTransaction"),
+            "{:?}",
+            rpc.calls()
+        );
+        assert!(
+            matches!(outcome, Err(EstimatedSendError::Reverted(_))),
+            "got {:?}",
+            outcome.map(|_| ())
+        );
+    }
+
+    /// The guard must not cost the happy path its send: estimate first, then
+    /// the nonce, then the broadcast -- and the filler does not estimate again.
+    #[tokio::test]
+    async fn a_passing_estimate_is_sent_with_the_nonce_reserved_after_it() {
+        let rpc = ScriptedRpc::new(false);
+        let nonces = PendingNonceManager::default();
+        let (call, from) = scripted_call(rpc.clone(), nonces.clone());
+
+        let pending = send_call_estimated(call, Network::Base)
+            .await
+            .expect("a call whose estimate passes is sent");
+        assert_eq!(*pending.tx_hash(), FixedBytes::<32>::from([0xab; 32]));
+
+        let calls = rpc.calls();
+        let pos = |m: &str| {
+            calls
+                .iter()
+                .position(|c| c == m)
+                .unwrap_or_else(|| panic!("{m} never called: {calls:?}"))
+        };
+        assert!(
+            pos("eth_estimateGas") < pos("eth_getTransactionCount"),
+            "{calls:?}"
+        );
+        assert!(
+            pos("eth_getTransactionCount") < pos("eth_sendRawTransaction"),
+            "{calls:?}"
+        );
+        assert_eq!(
+            calls.iter().filter(|m| *m == "eth_estimateGas").count(),
+            1,
+            "the filler estimated a second time: {calls:?}"
+        );
+        assert_eq!(read_next(&nonces, from).await, Some(8));
+    }
 
     // ---------------------------------------------------------------
     // EIP-1559 gas pricing.

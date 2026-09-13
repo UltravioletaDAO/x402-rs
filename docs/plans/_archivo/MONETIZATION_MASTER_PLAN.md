@@ -1,3 +1,22 @@
+> **ARCHIVADO el 2026-09-13. Nada de este documento describe el facilitador vivo.**
+>
+> Es un borrador del 2025-12-19 que nunca se ejecutó, y contradice lo que el servicio
+> publica hoy:
+>
+> - **No cobra comisión y no es una API con precio x402.** `static/.well-known/x402`
+>   declara `paidRoutes` vacío a propósito, y `static/llms.txt` (sección *Calling this
+>   facilitator is free*) lo dice en prosa. No hay cuentas ni API keys (`static/auth.md`).
+>   El "Enterprise SLA a $2,499/mes" de la sección de precios no existe.
+> - **La postura pública es la decisión del dueño del 2026-09-02:** `/` es la portada
+>   para el stack propio y `/integrar` la puerta para quien integra desde afuera.
+> - **Los "precios P0-P4" (releases 2.20.0 a 2.26.0) NO son la monetización de este
+>   plan.** Tratan de que el catálogo del Bazaar y DX402 digan la verdad sobre los
+>   precios de *otros* vendedores (`docs/handoffs/2026-09-10-bazar-precios-p0.md` a
+>   `-p4.md`); el facilitador no cobra nada en ninguno de ellos.
+>
+> Se conserva por historia. Si alguna vez se decide cobrar, el punto de partida es lo
+> que el servicio promete hoy en los tres archivos citados, no este plan.
+
 # Plan Maestro de Monetizacion x402-rs Facilitator
 ## Ultravioleta DAO - Estrategia para Superar a Coinbase
 

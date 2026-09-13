@@ -219,7 +219,7 @@ impl FromStr for Network {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "base-sepolia" => Ok(Network::BaseSepolia),
-            "base" => Ok(Network::Base),
+            "base" | "base-mainnet" => Ok(Network::Base),
             "xdc" => Ok(Network::XdcMainnet),
             "avalanche-fuji" => Ok(Network::AvalancheFuji),
             "avalanche" => Ok(Network::Avalanche),
@@ -2288,6 +2288,23 @@ mod tests {
     use super::*;
     use crate::types::EvmAddress;
     use alloy::primitives::address;
+
+    /// `base-mainnet` names Base, the way `xrpl-mainnet`, `sui-mainnet` and
+    /// `scroll-mainnet` already name theirs. Base was the one mainnet without
+    /// the alias, so a caller spelling it that way got `400 Invalid network`
+    /// from every path-parsed endpoint (`/identity`, `/reputation`). The wire
+    /// name does not move: it still serialises as `base`.
+    #[test]
+    fn base_mainnet_is_an_alias_for_base() {
+        assert_eq!(Network::from_str("base-mainnet").unwrap(), Network::Base);
+        assert_eq!(Network::from_str("base").unwrap(), Network::Base);
+        assert_eq!(resolve_network("base-mainnet"), Some(Network::Base));
+        assert_eq!(Network::Base.to_string(), "base");
+        assert_eq!(
+            serde_json::to_value(Network::Base).unwrap(),
+            serde_json::json!("base")
+        );
+    }
 
     // ============================================================
     // USDC Deployment Tests

@@ -230,6 +230,7 @@ Ver la tabla del PR (mismos comandos que el job `test` de `ci.yaml`, mas fmt y c
 | B10 | NEAR: tratar `UnknownAccessKey` como falla de RPC (hoy es rechazo `Other`). |
 | B11 | Sui: `Deleted` rechaza sin comparar la version del borrado con la referenciada (improbable para coins). |
 | B12 | Nonce store: un claim cuyo `PutItem` condicional se aplica en DynamoDB pero vence en el cliente deja la clave tomada; ese pago no se puede reintentar con la misma autorizacion hasta que venza el TTL. Declarado en la seccion 8 ("Un claim que vence en el cliente"), sin implementar. |
+| B13 | Con hilos por defecto (sin `--test-threads=1`), `cargo test --lib` falla en tests que no toca #54: medido en una corrida sobre la rama de #54, `discovery::tests::a_feed_larger_than_the_cap_stops_rewriting_the_catalog_every_cycle` y `writer_lease::tests::a_sustained_outage_ends_the_grant_without_a_decision` (`1110 passed; 2 failed`); la refutacion vio 3 o 4 entre discovery cap y writer_lease. CI corre con `--test-threads=1`. |
 
 ## 8. Nonce store: lectura consistente y timeout de operacion (2.29.2, #53)
 
@@ -267,10 +268,10 @@ protocolo JSON 1.0) y credenciales de prueba:
 | `bounded_client_keeps_the_ambient_timeouts` | fija el de operacion y conserva un connect timeout ya presente |
 | `dynamo_is_used_reads_consistently` | el `GetItem` que manda `is_used` lleva `"ConsistentRead": true` y la clave pedida |
 | `dynamo_calls_give_up_at_the_operation_timeout` | con un stub que no contesta y 200 ms: `is_used` -> `ReadError`; `check_and_mark_used` y `release` -> `WriteError` que dice `timed out`; todo antes de 5 s |
-| `from_env_bounds_calls_with_the_configured_operation_timeout` | por `DynamoNonceStore::from_env`: `AWS_ENDPOINT_URL` a un listener que acepta y no contesta, credenciales de prueba, `NONCE_STORE_OPERATION_TIMEOUT_MS=400` -> `ReadError` en menos de 2 s |
+| `from_env_bounds_calls_with_the_configured_operation_timeout` | por `DynamoNonceStore::from_env`: `AWS_ENDPOINT_URL` a un listener que acepta y no contesta, credenciales de prueba, `NONCE_STORE_OPERATION_TIMEOUT_MS=400` -> `ReadError` que dice `timed out`, despues de al menos 350 ms y antes de 2 s, y el listener acepto al menos una conexion. Lo ultimo es lo que distingue un endpoint mudo de un puerto cerrado: medido, con el puerto cerrado el SDK reintenta con backoff hasta el mismo limite y tambien devuelve `timed out` a los ~400 ms, asi que `timed out` y los 350 ms solos no lo detectan |
 
 Los dos tests del parser eran, en #53, dos tests que escribian la misma variable de entorno y
-fallaban 2 de 40 corridas con hilos (medido por el refutador); ahora no tocan el entorno. El unico
+fallaban 2 de 40 corridas (medido con hilos); ahora no tocan el entorno. El unico
 test que escribe entorno es el de `from_env`, y ningun otro test del crate lee esas variables.
 
 Mutaciones (archivo restaurado despues, hash verificado):
@@ -280,6 +281,7 @@ Mutaciones (archivo restaurado despues, hash verificado):
 | sin `.consistent_read(true)` | `dynamo_is_used_reads_consistently` **FAILED** |
 | operation timeout ignorado (1 h) | `bounded_client_keeps_the_ambient_timeouts` y `dynamo_calls_give_up_at_the_operation_timeout` **FAILED** |
 | (seguimiento) `from_env` arma el cliente con `Client::new(&config)`, sin `bounded_client` | `from_env_bounds_calls_with_the_configured_operation_timeout` **FAILED** (se colgo hasta el techo de 10 s del test); en #53 este mutante sobrevivia |
+| (seguimiento, ronda 2) nadie escucha en el endpoint (puerto cerrado) | con solo `timed out` y `>= 350 ms` el test **seguia verde**: el SDK reintenta con backoff ante la conexion rechazada y devuelve `request has timed out` a los ~400 ms. Con la condicion de conexion aceptada: **FAILED**, `the listener accepted no connection; got Err(ReadError("request has timed out"))` |
 | (seguimiento) brazos `SdkError::TimeoutError` de put y delete desactivados | `dynamo_calls_give_up_at_the_operation_timeout` **FAILED**: `WriteError("unhandled error")` |
 | (seguimiento) `return Ok(())` temprano en el brazo `NotExists` de Sui | `verify_rejects_when_the_gas_is_unknown_and_the_coin_moved_on` **FAILED** (`11 passed; 1 failed`) |
 
@@ -304,6 +306,10 @@ Algorand el comprador tiene que firmar una autorizacion nueva, y en Solana ese p
 barrer hasta que venza el TTL o alguien intervenga.
 
 **Como verificarlo en produccion despues del release**: `curl -s
-https://facilitator.ultravioletadao.xyz/version` -> `{"version":"2.29.2"}`; en los logs del
-arranque del primer uso del store, `DynamoDB nonce store operation timeout` con
-`operation_timeout_ms=3000`.
+https://facilitator.ultravioletadao.xyz/version` -> `{"version":"2.29.3"}` (2.29.2 fue #53. El
+texto de los timeouts de put y delete llego a produccion con el merge de #54, cuya imagen todavia
+reportaba 2.29.2; 2.29.3 sale en un PR aparte con la ronda 2 de la refutacion de #54 y es la primera
+version que lo reporta). En los logs del primer
+uso del store, `DynamoDB nonce store operation timeout` con `operation_timeout_ms=3000`; un put o un
+delete que vence loguea `DynamoDB put_item timed out` o `DynamoDB delete_item timed out`, donde
+antes decia `unhandled error`.

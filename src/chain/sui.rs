@@ -23,10 +23,11 @@
 use std::str::FromStr;
 
 use shared_crypto::intent::{Intent, IntentMessage};
-use sui_sdk::rpc_types::SuiTransactionBlockResponseOptions;
-use sui_sdk::SuiClientBuilder;
-use sui_types::base_types::{ObjectID, SuiAddress};
+use sui_sdk::rpc_types::{SuiObjectDataOptions, SuiTransactionBlockResponseOptions};
+use sui_sdk::{SuiClient, SuiClientBuilder};
+use sui_types::base_types::{ObjectID, ObjectRef, SuiAddress};
 use sui_types::crypto::{EncodeDecodeBase64, Signature, SuiKeyPair, SuiSignature, ToFromBytes};
+use sui_types::error::SuiObjectResponseError;
 use sui_types::transaction::{
     Argument, CallArg, Command, Transaction, TransactionData, TransactionDataAPI, TransactionKind,
 };
@@ -575,17 +576,11 @@ impl SuiProvider {
     /// the coin-type-confusion hole (audit 04) where a payer splits a worthless `Coin<JUNK>`.
     async fn check_balance(
         &self,
+        client: &SuiClient,
         address: &SuiAddress,
         required_amount: u64,
         spent_coin_id: &ObjectID,
     ) -> Result<(), FacilitatorLocalError> {
-        let client = SuiClientBuilder::default()
-            .build(&self.rpc_url)
-            .await
-            .map_err(|e| {
-                FacilitatorLocalError::ContractCall(format!("Failed to connect to Sui RPC: {}", e))
-            })?;
-
         // Get all USDC coins owned by the address (filtered to the canonical USDC type).
         let coins = client
             .coin_read_api()
@@ -625,6 +620,100 @@ impl SuiProvider {
             required = required_amount,
             "Sui USDC balance check passed"
         );
+
+        Ok(())
+    }
+
+    /// Connect to the Sui RPC with every request bounded by `timeout`.
+    async fn connect_within(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Result<SuiClient, FacilitatorLocalError> {
+        SuiClientBuilder::default()
+            .request_timeout(timeout)
+            .build(&self.rpc_url)
+            .await
+            .map_err(|e| {
+                FacilitatorLocalError::ContractCall(format!("Failed to connect to Sui RPC: {}", e))
+            })
+    }
+
+    /// Refuse a transaction whose owned inputs are no longer at the version it
+    /// references.
+    ///
+    /// Executing a transaction gives every owned object it takes -- the coin it
+    /// splits and the gas coins it pays with -- a new version, or deletes it, so
+    /// a transaction that already executed references versions the chain has
+    /// left behind. One `sui_multiGetObjects` call, read-only.
+    async fn check_inputs_current(
+        &self,
+        client: &SuiClient,
+        tx_data: &TransactionData,
+    ) -> Result<(), FacilitatorLocalError> {
+        let mut inputs: Vec<ObjectRef> = tx_data.gas_data().payment.clone();
+        if let TransactionKind::ProgrammableTransaction(ptb) = tx_data.kind() {
+            inputs.extend(ptb.inputs.iter().filter_map(|input| match input {
+                CallArg::Object(sui_types::transaction::ObjectArg::ImmOrOwnedObject(obj_ref)) => {
+                    Some(*obj_ref)
+                }
+                _ => None,
+            }));
+        }
+
+        let responses = client
+            .read_api()
+            .multi_get_object_with_options(
+                inputs.iter().map(|(id, _, _)| *id).collect(),
+                SuiObjectDataOptions::new(),
+            )
+            .await
+            .map_err(|e| {
+                FacilitatorLocalError::ContractCall(format!(
+                    "Failed to read Sui transaction inputs: {}",
+                    e
+                ))
+            })?;
+        if responses.len() != inputs.len() {
+            return Err(FacilitatorLocalError::ContractCall(format!(
+                "Sui RPC returned {} objects for {} transaction inputs",
+                responses.len(),
+                inputs.len()
+            )));
+        }
+
+        for ((id, version, digest), response) in inputs.iter().zip(responses) {
+            match (response.data, response.error) {
+                (Some(current), _) if current.version == *version && current.digest == *digest => {}
+                (Some(current), _) => {
+                    return Err(FacilitatorLocalError::Other(format!(
+                        "Sui input object {} already used: transaction references version {} ({}), chain holds version {} ({})",
+                        id,
+                        version.value(),
+                        digest,
+                        current.version.value(),
+                        current.digest
+                    )));
+                }
+                (
+                    None,
+                    Some(
+                        SuiObjectResponseError::Deleted { .. }
+                        | SuiObjectResponseError::NotExists { .. },
+                    ),
+                ) => {
+                    return Err(FacilitatorLocalError::Other(format!(
+                        "Sui input object {} already used: it no longer exists",
+                        id
+                    )));
+                }
+                (None, error) => {
+                    return Err(FacilitatorLocalError::ContractCall(format!(
+                        "Failed to read Sui input object {}: {:?}",
+                        id, error
+                    )));
+                }
+            }
+        }
 
         Ok(())
     }
@@ -799,7 +888,7 @@ impl Facilitator for SuiProvider {
         let payer = MixedAddress::Sui(payload.from.clone());
 
         // Full verification including signature and transaction structure
-        let (_tx_data, _signature, payer_addr) = self.verify_transaction(payload, request).await?;
+        let (tx_data, _signature, payer_addr) = self.verify_transaction(payload, request).await?;
 
         // Check balance — parse explicitly; a non-numeric amount is a hard error, not 0.
         let required_amount: u64 = payload.amount.parse().map_err(|e| {
@@ -815,7 +904,12 @@ impl Facilitator for SuiProvider {
                 payload.coin_object_id, e
             ))
         })?;
-        self.check_balance(&payer_addr, required_amount, &spent_coin_id)
+        let client = self
+            .connect_within(crate::chain::rpc_http_timeout())
+            .await?;
+        // Settle is unchanged: execution refuses an input that has moved on.
+        self.check_inputs_current(&client, &tx_data).await?;
+        self.check_balance(&client, &payer_addr, required_amount, &spent_coin_id)
             .await?;
 
         info!(
@@ -848,7 +942,13 @@ impl Facilitator for SuiProvider {
                 payload.coin_object_id, e
             ))
         })?;
-        self.check_balance(&sender, required_amount, &spent_coin_id)
+        let client = SuiClientBuilder::default()
+            .build(&self.rpc_url)
+            .await
+            .map_err(|e| {
+                FacilitatorLocalError::ContractCall(format!("Failed to connect to Sui RPC: {}", e))
+            })?;
+        self.check_balance(&client, &sender, required_amount, &spent_coin_id)
             .await?;
 
         // Submit the sponsored transaction
@@ -1245,6 +1345,319 @@ mod tests {
         assert!(
             ptb_ok.is_ok(),
             "validate_ptb accepts 0==0; outer guard handles rejection"
+        );
+    }
+}
+
+/// `verify` against the current versions of the transaction's owned inputs.
+///
+/// Uses nothing newer than `verify` and `SuiProvider::new`, so the module also
+/// runs against the code before the check. The RPC node is a local JSON-RPC
+/// stub answering the SDK handshake, `suix_getCoins` and `sui_multiGetObjects`.
+#[cfg(test)]
+mod replay_verify_tests {
+    use super::*;
+    use crate::types::{PaymentPayload, PaymentRequirements, TokenAmount};
+    use axum::{routing::post, Json, Router};
+    use serde_json::{json, Value};
+    use sui_sdk::rpc_types::{Coin, CoinPage, SuiObjectData, SuiObjectResponse};
+    use sui_types::base_types::{ObjectDigest, ObjectRef, SequenceNumber};
+    use sui_types::digests::TransactionDigest;
+    use sui_types::error::SuiObjectResponseError;
+    use sui_types::transaction::{
+        GasData, ObjectArg, ProgrammableTransaction, TransactionDataV1, TransactionExpiration,
+    };
+
+    const AMOUNT: u64 = 1_000_000;
+
+    // Ids built from bytes, not 0x-prefixed literals: .githooks/pre-commit
+    // blocks any added 0x + 64 hex, keys and fixtures alike.
+    fn coin_ref() -> ObjectRef {
+        (
+            ObjectID::new([0x11; 32]),
+            SequenceNumber::from_u64(5),
+            ObjectDigest::new([3u8; 32]),
+        )
+    }
+
+    fn gas_ref() -> ObjectRef {
+        (
+            ObjectID::new([0xee; 32]),
+            SequenceNumber::from_u64(9),
+            ObjectDigest::new([4u8; 32]),
+        )
+    }
+
+    fn merchant() -> SuiAddress {
+        SuiAddress::from(ObjectID::new([0xbb; 32]))
+    }
+
+    fn sender_keypair() -> SuiKeyPair {
+        // flag 0x00 = Ed25519, then a 32-byte seed.
+        let mut bytes = [9u8; 33];
+        bytes[0] = 0;
+        SuiKeyPair::from_bytes(&bytes).unwrap()
+    }
+
+    #[derive(Clone, Copy)]
+    pub(super) enum Inputs {
+        /// Every input is at the version the transaction references.
+        Current,
+        /// The coin has a newer version, as after the transaction executed.
+        CoinAdvanced,
+        /// The coin is gone, as after a transaction that spent all of it.
+        CoinDeleted,
+        /// sui_multiGetObjects answers with a JSON-RPC error.
+        Unreadable,
+        /// sui_multiGetObjects never answers.
+        Hangs,
+    }
+
+    fn object(obj_ref: ObjectRef) -> SuiObjectResponse {
+        SuiObjectResponse::new_with_data(SuiObjectData {
+            object_id: obj_ref.0,
+            version: obj_ref.1,
+            digest: obj_ref.2,
+            type_: None,
+            owner: None,
+            previous_transaction: None,
+            storage_rebate: None,
+            display: None,
+            content: None,
+            bcs: None,
+        })
+    }
+
+    fn objects(inputs: Inputs, ids: &Value) -> Value {
+        let responses: Vec<SuiObjectResponse> = ids
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|id| {
+                let id = ObjectID::from_str(id.as_str().unwrap()).unwrap();
+                let moved_on = (
+                    id,
+                    SequenceNumber::from_u64(6),
+                    ObjectDigest::new([5u8; 32]),
+                );
+                match inputs {
+                    Inputs::CoinAdvanced if id == coin_ref().0 => object(moved_on),
+                    Inputs::CoinDeleted if id == coin_ref().0 => {
+                        SuiObjectResponse::new_with_error(SuiObjectResponseError::Deleted {
+                            object_id: id,
+                            version: moved_on.1,
+                            digest: moved_on.2,
+                        })
+                    }
+                    _ if id == coin_ref().0 => object(coin_ref()),
+                    _ => object(gas_ref()),
+                }
+            })
+            .collect();
+        serde_json::to_value(responses).unwrap()
+    }
+
+    pub(super) async fn sui_stub(inputs: Inputs) -> String {
+        let app = Router::new().route(
+            "/",
+            post(move |Json(req): Json<Value>| async move {
+                let error = |message: String| {
+                    Json(json!({"jsonrpc": "2.0", "id": req["id"], "error": {
+                        "code": -32603, "message": message,
+                    }}))
+                };
+                let result = match req["method"].as_str().unwrap_or_default() {
+                    "rpc.discover" => json!({"info": {"version": "1.37.3"}, "methods": []}),
+                    "suix_getCoins" => serde_json::to_value(CoinPage {
+                        data: vec![Coin {
+                            coin_type: USDC_COIN_TYPE_TESTNET.to_string(),
+                            coin_object_id: coin_ref().0,
+                            version: coin_ref().1,
+                            digest: coin_ref().2,
+                            balance: 5 * AMOUNT,
+                            previous_transaction: TransactionDigest::new([0u8; 32]),
+                        }],
+                        next_cursor: None,
+                        has_next_page: false,
+                    })
+                    .unwrap(),
+                    "sui_multiGetObjects" => match inputs {
+                        Inputs::Unreadable => return error("scripted".to_string()),
+                        Inputs::Hangs => {
+                            tokio::time::sleep(std::time::Duration::from_secs(3_600)).await;
+                            Value::Null
+                        }
+                        _ => objects(inputs, &req["params"][0]),
+                    },
+                    other => return error(format!("unexpected method {other}")),
+                };
+                Json(json!({"jsonrpc": "2.0", "id": req["id"], "result": result}))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        format!("http://{addr}")
+    }
+
+    pub(super) async fn provider(inputs: Inputs) -> SuiProvider {
+        // flag 0x00 = Ed25519, then a 32-byte seed.
+        let keypair = SuiKeyPair::from_bytes(&[0u8; 33]).unwrap();
+        let signer = SuiAddress::from(&keypair.public());
+        SuiProvider::new(Network::SuiTestnet, sui_stub(inputs).await, signer, keypair)
+    }
+
+    /// The two-command USDC transfer PTB, sponsored by `sponsor`.
+    pub(super) fn transaction(sponsor: SuiAddress, sender: SuiAddress) -> TransactionData {
+        let ptb = ProgrammableTransaction {
+            inputs: vec![
+                CallArg::Object(ObjectArg::ImmOrOwnedObject(coin_ref())),
+                CallArg::Pure(AMOUNT.to_le_bytes().to_vec()),
+                CallArg::Pure(merchant().to_vec()),
+            ],
+            commands: vec![
+                Command::SplitCoins(Argument::Input(0), vec![Argument::Input(1)]),
+                Command::TransferObjects(vec![Argument::Result(0)], Argument::Input(2)),
+            ],
+        };
+        TransactionData::V1(TransactionDataV1 {
+            kind: TransactionKind::ProgrammableTransaction(ptb),
+            sender,
+            gas_data: GasData {
+                payment: vec![gas_ref()],
+                owner: sponsor,
+                price: 1_000,
+                budget: 10_000_000,
+            },
+            expiration: TransactionExpiration::None,
+        })
+    }
+
+    fn request(provider: &SuiProvider) -> (VerifyRequest, SuiAddress) {
+        use base64::{engine::general_purpose::STANDARD, Engine};
+
+        let sender_keypair = sender_keypair();
+        let sender = SuiAddress::from(&sender_keypair.public());
+        let tx = transaction(provider.signer_address, sender);
+        let signature = Signature::new_secure(
+            &IntentMessage::new(Intent::sui_transaction(), tx.clone()),
+            &sender_keypair,
+        );
+        let payload = ExactSuiPayload {
+            transaction_bytes: STANDARD.encode(bcs::to_bytes(&tx).unwrap()),
+            sender_signature: STANDARD.encode(signature.as_ref()),
+            from: sender.to_string(),
+            to: merchant().to_string(),
+            amount: AMOUNT.to_string(),
+            coin_object_id: coin_ref().0.to_string(),
+        };
+        let request = VerifyRequest {
+            x402_version: X402Version::V1,
+            payment_payload: PaymentPayload {
+                x402_version: X402Version::V1,
+                scheme: Scheme::Exact,
+                network: Network::SuiTestnet,
+                payload: ExactPaymentPayload::Sui(payload),
+            },
+            payment_requirements: PaymentRequirements {
+                scheme: Scheme::Exact,
+                network: Network::SuiTestnet,
+                max_amount_required: TokenAmount(alloy::primitives::U256::from(AMOUNT)),
+                resource: url::Url::parse("https://example.com/paid").unwrap(),
+                description: String::new(),
+                mime_type: "application/json".to_string(),
+                output_schema: None,
+                pay_to: MixedAddress::Sui(merchant().to_string()),
+                max_timeout_seconds: 60,
+                asset: MixedAddress::Sui(USDC_COIN_TYPE_TESTNET.to_string()),
+                extra: None,
+            },
+        };
+        (request, sender)
+    }
+
+    #[tokio::test]
+    async fn verify_rejects_a_transaction_whose_coin_moved_past_the_signed_version() {
+        let provider = provider(Inputs::CoinAdvanced).await;
+        let (request, _) = request(&provider);
+
+        let err = provider
+            .verify(&request)
+            .await
+            .expect_err("a transaction whose coin moved on must not verify");
+        assert!(
+            matches!(&err, FacilitatorLocalError::Other(msg) if msg.contains("already used")),
+            "got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_rejects_a_transaction_whose_coin_no_longer_exists() {
+        let provider = provider(Inputs::CoinDeleted).await;
+        let (request, _) = request(&provider);
+
+        let err = provider
+            .verify(&request)
+            .await
+            .expect_err("a transaction whose coin is gone must not verify");
+        assert!(
+            matches!(&err, FacilitatorLocalError::Other(msg) if msg.contains("already used")),
+            "got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_accepts_a_transaction_whose_inputs_are_current() {
+        let provider = provider(Inputs::Current).await;
+        let (request, sender) = request(&provider);
+
+        let response = provider
+            .verify(&request)
+            .await
+            .expect("a transaction with current inputs verifies");
+        assert!(
+            matches!(&response, VerifyResponse::Valid { payer } if *payer == MixedAddress::Sui(sender.to_string())),
+            "got {response:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_fails_closed_when_the_inputs_cannot_be_read() {
+        let provider = provider(Inputs::Unreadable).await;
+        let (request, _) = request(&provider);
+
+        let err = provider
+            .verify(&request)
+            .await
+            .expect_err("an unanswered input read must not vouch for a transaction");
+        assert!(
+            matches!(&err, FacilitatorLocalError::ContractCall(_)),
+            "got {err:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod replay_verify_bound_tests {
+    use super::replay_verify_tests::{provider, transaction, Inputs};
+    use super::*;
+
+    #[tokio::test]
+    async fn input_read_gives_up_at_its_timeout() {
+        let provider = provider(Inputs::Hangs).await;
+        let tx = transaction(provider.signer_address, provider.signer_address);
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let client = provider
+                .connect_within(std::time::Duration::from_millis(200))
+                .await?;
+            provider.check_inputs_current(&client, &tx).await
+        })
+        .await
+        .expect("the check must return on its own timeout, not hang");
+        assert!(
+            matches!(&result, Err(FacilitatorLocalError::ContractCall(_))),
+            "got {result:?}"
         );
     }
 }

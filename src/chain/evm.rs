@@ -293,11 +293,10 @@ const BASE_FEE_MULTIPLIER: u128 = 2;
 /// floors are the right lever here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Eip1559Floor {
-    /// Never tip below this.
+    /// Never tip below this. Zero means the node's own priority estimate stands.
     pub min_priority: u128,
     /// Never cap below this. Zero means "no floor": price on the multiplier
-    /// alone, which reproduces alloy's own estimator for chains whose fee
-    /// behaviour we have not measured.
+    /// alone.
     pub min_max_fee: u128,
     /// Base fee to assume when the node answers `eth_feeHistory` without one.
     pub fallback_base_fee: u128,
@@ -341,8 +340,24 @@ pub(crate) const fn eip1559_fee_floor(network: Network) -> Eip1559Floor {
             min_max_fee: 1000 * GWEI,
             fallback_base_fee: 250 * GWEI,
         },
+        // A 1 mwei tip floor, not 1 gwei and not 0.
+        //
+        // From 2026-09-10 to 2026-09-14 this arm carried a 1 gwei `min_priority`,
+        // copied from the Ethereum branch, and every chain here paid it: on Base
+        // (base fee 0.005 gwei, node tip 0.001 gwei) a settle cost 0.0001038 ETH
+        // at 1.005 gwei instead of ~0.0000006 ETH, and the 1.01 gwei cap is also
+        // what a node reserves against the signer's balance. The mainnet signer
+        // ran dry in four days and every Base settle was refused.
+        //
+        // Zero is not the answer either. geth and op-geth admit no tip below
+        // 1 wei to the pool (`txpool.PriceLimit`) and mine none below 1 mwei
+        // (`miner.GasPrice`), and a zero floor is what a failed
+        // `eth_maxPriorityFeePerGas` read falls back to -- as it is what
+        // hyperevm and arbitrum quote outright. That transaction is refused or
+        // never mined, and a hung settle holds a nonce with nothing to replace
+        // it. 1 mwei is what Base, Optimism and Unichain quote anyway.
         _ => Eip1559Floor {
-            min_priority: GWEI,
+            min_priority: 1_000_000,
             min_max_fee: 0,
             fallback_base_fee: 2 * GWEI,
         },
@@ -3228,6 +3243,104 @@ mod tests {
         let (priority, max_fee) = compute_eip1559_fees(5_000_000, 2 * GWEI, floor);
         assert_eq!(priority, 2 * GWEI);
         assert_eq!(max_fee, 5_000_000 * BASE_FEE_MULTIPLIER + 2 * GWEI);
+    }
+
+    /// Base mainnet, 2026-09-14, measured: base fee 0.005 gwei, node priority
+    /// estimate 0.001 gwei.
+    const BASE_BASE_FEE: u128 = 5_000_000;
+    const BASE_NODE_PRIORITY: u128 = 1_000_000;
+    /// `gasUsed` of an EIP-3009 settle on Base that day (103,244 and 103,252).
+    const BASE_SETTLE_GAS_USED: u128 = 103_244;
+    /// The Base mainnet signer's balance once settles started failing, in wei.
+    const BASE_DRAINED_BALANCE: u128 = 28_119_576_771_839;
+
+    #[test]
+    fn an_l2_settle_is_priced_on_the_nodes_tip_not_a_one_gwei_floor() {
+        let floor = eip1559_fee_floor(Network::Base);
+        let (priority, max_fee) = compute_eip1559_fees(BASE_BASE_FEE, BASE_NODE_PRIORITY, floor);
+        assert_eq!(
+            priority, BASE_NODE_PRIORITY,
+            "a 1 gwei tip on a 0.005 gwei chain is 167x the price of the settle"
+        );
+        assert_eq!(
+            max_fee,
+            BASE_BASE_FEE * BASE_FEE_MULTIPLIER + BASE_NODE_PRIORITY
+        );
+
+        // What a settle pays is base fee + tip. `before` is the figure on the
+        // 2026-09-14 receipts (0.00010376022 ETH); `after` is the same gas at
+        // the node's tip.
+        let before = BASE_SETTLE_GAS_USED * (BASE_BASE_FEE + GWEI);
+        let after = BASE_SETTLE_GAS_USED * (BASE_BASE_FEE + priority);
+        assert_eq!(before, 103_760_220_000_000);
+        assert_eq!(after, 619_464_000_000);
+        assert!(before / after >= 150);
+    }
+
+    #[test]
+    fn the_drained_base_signer_can_settle_again_at_the_nodes_tip() {
+        // The node reserves `gasLimit * maxFeePerGas` against the balance; the
+        // send path sets the limit to the estimate times 5/4.
+        let gas_limit = BASE_SETTLE_GAS_USED * 5 / 4;
+        let floor = eip1559_fee_floor(Network::Base);
+        let (_, max_fee) = compute_eip1559_fees(BASE_BASE_FEE, BASE_NODE_PRIORITY, floor);
+        assert!(
+            BASE_DRAINED_BALANCE / (gas_limit * max_fee) >= 10,
+            "the balance that refused every settle at a 1.01 gwei cap admits \
+             {} at {max_fee} wei",
+            BASE_DRAINED_BALANCE / (gas_limit * max_fee)
+        );
+        assert_eq!(
+            BASE_DRAINED_BALANCE / (gas_limit * (2 * BASE_BASE_FEE + GWEI)),
+            0,
+            "premise: at the old cap that balance admitted none"
+        );
+    }
+
+    /// geth's default miner does not include a tip below 1 mwei.
+    const ONE_MWEI: u128 = 1_000_000;
+
+    /// hyperevm and arbitrum quote a zero tip outright, and when
+    /// `eth_maxPriorityFeePerGas` fails the send path falls back to
+    /// `floor.min_priority`. Neither may put a zero-tip transaction on the wire:
+    /// a pool refuses it or a sequencer never mines it, and the nonce behind it
+    /// waits with nothing to replace it.
+    #[test]
+    fn a_zero_or_missing_tip_estimate_still_tips_one_mwei() {
+        for network in Network::variants() {
+            let floor = eip1559_fee_floor(*network);
+            // A node quoting zero, then the fallback a failed read takes.
+            for node_tip in [0, floor.min_priority] {
+                let (priority, max_fee) = compute_eip1559_fees(BASE_BASE_FEE, node_tip, floor);
+                assert!(
+                    priority >= ONE_MWEI,
+                    "{network}: a {node_tip} wei estimate went out as a {priority} wei tip"
+                );
+                assert!(max_fee >= priority);
+            }
+        }
+    }
+
+    #[test]
+    fn only_ethereum_and_polygon_tip_above_one_mwei() {
+        for network in Network::variants() {
+            let measured = matches!(
+                network,
+                Network::Ethereum
+                    | Network::EthereumSepolia
+                    | Network::Polygon
+                    | Network::PolygonAmoy
+            );
+            let min_priority = eip1559_fee_floor(*network).min_priority;
+            if measured {
+                assert!(min_priority > ONE_MWEI, "{network} lost its measured floor");
+            } else {
+                assert_eq!(
+                    min_priority, ONE_MWEI,
+                    "{network}: a tip floor above 1 mwei must be measured for the chain it is on"
+                );
+            }
+        }
     }
 
     #[test]

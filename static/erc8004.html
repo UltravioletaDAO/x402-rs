@@ -4,9 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title data-i18n="title">ERC-8004 - agent identity and reputation</title>
-<meta name="description" content="This facilitator's ERC-8004 implementation: gasless registration, real rater authorship, the proof-of-payment gate, and why an owner lookup answers 503 and 404 for different things.">
+<meta name="description" data-i18n-content="meta.description" content="This facilitator's ERC-8004 implementation: gasless registration, real rater authorship, the proof-of-payment gate, and why an owner lookup answers 503 and 404 for different things.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://facilitator.ultravioletadao.xyz/erc8004">
+<link rel="canonical" href="https://facilitator.ultravioletadao.xyz/erc8004">
 <meta property="og:title" content="ERC-8004 · agent identity and reputation">
 <meta property="og:description" content="Gasless registration and feedback across EVM and Solana, with the authorship problem and the payment gate written down.">
 <meta property="og:image" content="https://facilitator.ultravioletadao.xyz/logo.png">
@@ -255,6 +256,7 @@ const I18N = {
     "next.x402": "x402",
     "next.x402.why": "where that payment comes from",
     "title": "ERC-8004 - agent identity and reputation",
+    "meta.description": "This facilitator's ERC-8004 implementation: gasless registration, real rater authorship, the proof-of-payment gate, and why an owner lookup answers 503 and 404 for different things.",
     "nav.networks": "Networks",
     "lead": "Register agents, publish feedback, and read their on-chain reputation. The facilitator sponsors gas on supported networks.",
     "h.nets": "Supported networks",
@@ -351,6 +353,7 @@ const I18N = {
     "next.x402": "x402",
     "next.x402.why": "de dónde sale ese pago",
     "title": "ERC-8004 - identidad y reputación de agentes",
+    "meta.description": "La implementación ERC-8004 de este facilitador: registro sin gas, autoría real de quien califica, la compuerta de prueba de pago y por qué una búsqueda por dueño responde 503 y 404 por cosas distintas.",
     "nav.networks": "Redes",
     "lead": "Registra agentes, publica reseñas y consulta su reputación en la cadena. El facilitador patrocina el gas en las redes compatibles.",
     "h.nets": "Redes compatibles",
@@ -420,6 +423,7 @@ let NETS = null;
 function applyLang(lang){
   if (I18N[lang]) LANG = lang;
   document.documentElement.lang = LANG;
+  document.querySelectorAll('[data-i18n-content]').forEach(el => el.setAttribute('content', t(el.getAttribute('data-i18n-content'))));
   document.querySelectorAll('[data-i18n]').forEach(el => {
     el.innerHTML = t(el.getAttribute('data-i18n'));
   });

@@ -254,6 +254,224 @@ where
         .route("/escrow/state", post(post_escrow_state::<A>))
 }
 
+/// Env overrides for [`human_page_rate_limit`].
+const ENV_HUMAN_PAGES_PER_MS: &str = "HUMAN_PAGES_RATE_PER_MS";
+const ENV_HUMAN_PAGES_BURST: &str = "HUMAN_PAGES_RATE_BURST";
+
+/// Default budget for [`human_page_routes`]: one token every 500 ms (~120 pages
+/// a minute sustained), burst 60.
+///
+/// WHY THE PAGES ARE METERED AT ALL
+///     They were the last unmetered HTML on this host, and `/` alone is ~245 KB
+///     served from the same task that settles payments. An unmetered 404 was
+///     already ruled a free amplification surface (see [`agent_not_found`]); a
+///     245 KB page is a bigger one.
+///
+/// WHY THE NUMBER IS GENEROUS
+///     A reader fetches one document per navigation -- the logos, the sheet and
+///     the fonts are separate routes and are NOT in this bucket -- so no person
+///     gets near 60 pages in a burst or 120 a minute. What does get near it is
+///     an office or a carrier NAT putting many readers behind one address, and
+///     that is exactly who a tight number would lock out. The ceiling is sized
+///     against a loop, not against a reader.
+///
+/// WHAT IS NOT IN THIS BUCKET
+///     The agentic documents (`/llms.txt`, `/.well-known/*`, ...) stay
+///     unmetered on purpose -- see [`agentic_routes`]. `/verify`, `/settle` and
+///     `/supported` keep the budgets they had. `GET /mcp` is not here either: it
+///     is an MCP route first and already sits under the verify/settle governor.
+const DEFAULT_HUMAN_PAGES_PER_MS: u64 = 500;
+const DEFAULT_HUMAN_PAGES_BURST: u32 = 60;
+
+/// Rate limit for [`human_page_routes`], as `(per_millisecond, burst_size)`.
+///
+/// Same GCRA semantics as [`identity_read_rate_limit`]: `per_millisecond` is a
+/// replenish PERIOD, not a rate.
+pub fn human_page_rate_limit() -> (u64, u32) {
+    let per_ms = std::env::var(ENV_HUMAN_PAGES_PER_MS)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(DEFAULT_HUMAN_PAGES_PER_MS);
+    let burst = std::env::var(ENV_HUMAN_PAGES_BURST)
+        .ok()
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(DEFAULT_HUMAN_PAGES_BURST);
+    (per_ms, burst)
+}
+
+/// The HTML pages a person reads, split out of [`routes`] so they can carry a
+/// governor of their own.
+///
+/// Stateless, like [`agentic_routes`], so it merges after `.with_state(...)`
+/// and its tests build it without a facilitator. `main.rs` mounts
+/// [`human_page_routes_governed`], never this bare router.
+pub fn human_page_routes() -> Router {
+    Router::new()
+        .route("/", get(get_root))
+        .route("/bazaar", get(get_bazaar))
+        .route("/networks", get(get_networks_page))
+        .route("/x402", get(get_x402_page))
+        .route("/dx402", get(get_dx402_page))
+        .route("/erc8004", get(get_erc8004_page))
+        .route("/integrar", get(get_integrar_page))
+        .route("/events/live", get(get_events_viewer))
+        .route("/stats", get(get_stats_page))
+}
+
+/// [`human_page_routes`] under a per-IP governor of `(per_ms, burst)`.
+///
+/// The config is built HERE rather than beside the others in `main.rs` so that
+/// the test firing a burst at it exercises the router production mounts, not a
+/// copy assembled in the test. One bucket per address for all nine pages: a
+/// loop that rotates paths spends the same budget as one that repeats a path.
+pub fn human_page_routes_governed(per_ms: u64, burst: u32) -> Router {
+    let config = Arc::new(
+        tower_governor::governor::GovernorConfigBuilder::default()
+            .per_millisecond(per_ms)
+            .burst_size(burst)
+            .key_extractor(tower_governor::key_extractor::SmartIpKeyExtractor)
+            .use_headers()
+            .finish()
+            .expect("human page governor config must be valid"),
+    );
+    human_page_routes()
+        .layer(tower_governor::GovernorLayer::new(config).error_handler(rate_limit_error))
+}
+
+/// Below this many bytes a document is sent as it is: under ~1 KB gzip saves
+/// less than one TCP segment.
+const COMPRESSION_MIN_BYTES: usize = 1024;
+
+/// Marks a response whose body is a document compiled into this binary, so
+/// [`precompressed_static`] can answer it from gzip bytes computed once.
+///
+/// Set by [`html_page`], [`text_surface`], [`negotiated_response`] and the
+/// sheet, script and licence handlers -- every path that serves an
+/// `include_str!`. A document served any other way is simply not compressed.
+#[derive(Clone, Copy)]
+struct StaticBody(&'static str);
+
+/// gzip for the documents compiled into this binary, computed once per process.
+///
+/// WHY NOT tower-http's `CompressionLayer`
+///     It compresses on every request, on the same tokio workers that settle
+///     payments, and that cost was measured before anything shipped
+///     (2026-09-13; release build, localhost, `oha`, 16 connections): p95 for
+///     `/` went from 0.82 ms to 16.97 ms at the default level and to 2.94 ms at
+///     the fastest, with throughput down 18x and 4x. Bytes compressed once took
+///     the same p95 to 0.25 ms -- lower than not compressing, because a 37 KB
+///     write is cheaper than a 251 KB one -- and at a steady 200 req/s from
+///     1.21 ms to 0.34 ms. This service has already shipped two P0s for CPU
+///     (2.21.1, 2.21.2); a gzip pass per request over a 245 KB page is not a
+///     cost to take on for bandwidth.
+///
+/// WHAT IS NOT COMPRESSED
+///     Anything built at request time -- `/supported`, `/discovery/resources`,
+///     the stats. Compressing those is per-request CPU again (a 194 KB catalog
+///     page: p95 0.51 ms -> 1.90 ms at the fastest level), which is a trade to
+///     make with those numbers in hand, not a side effect of this layer. Event
+///     streams, images, fonts and DX402 ciphertext never carry [`StaticBody`],
+///     so they are never touched.
+///
+/// CACHE CORRECTNESS
+///     Every static document leaves with `Vary: Accept-Encoding`, compressed or
+///     not: a shared cache that stored the gzip variant without it would hand
+///     gzip to a client that cannot inflate it. The negotiated surfaces already
+///     send it and do not get a second one.
+pub async fn precompressed_static(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let gzip = accepts_gzip(request.headers());
+    let mut response = next.run(request).await;
+    let Some(StaticBody(document)) = response.extensions().get::<StaticBody>().copied() else {
+        return response;
+    };
+    let varies = response
+        .headers()
+        .get_all(header::VARY)
+        .iter()
+        .any(|value| {
+            value.to_str().is_ok_and(|v| {
+                v.split(',')
+                    .any(|item| item.trim().eq_ignore_ascii_case("accept-encoding"))
+            })
+        });
+    if !varies {
+        response
+            .headers_mut()
+            .append(header::VARY, HeaderValue::from_static("accept-encoding"));
+    }
+    if !gzip
+        || document.len() < COMPRESSION_MIN_BYTES
+        || response.headers().contains_key(header::CONTENT_ENCODING)
+    {
+        return response;
+    }
+    let (mut parts, _) = response.into_parts();
+    parts
+        .headers
+        .insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+    parts.headers.remove(header::CONTENT_LENGTH);
+    Response::from_parts(parts, axum::body::Body::from(gzip_once(document)))
+}
+
+/// Whether `Accept-Encoding` names gzip with a weight above zero.
+///
+/// Only an explicit `gzip` (or its legacy alias `x-gzip`) counts. A bare `*`
+/// is not read as consent: every browser and `curl --compressed` name gzip
+/// outright, and the one client this could misjudge is better served a larger
+/// page than one it cannot read.
+fn accepts_gzip(headers: &HeaderMap) -> bool {
+    headers
+        .get_all(header::ACCEPT_ENCODING)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .any(|item| {
+            let mut fields = item.split(';');
+            let coding = fields.next().unwrap_or_default().trim();
+            let refused = fields.any(|param| {
+                let param = param.trim();
+                param.get(..2).is_some_and(|k| k.eq_ignore_ascii_case("q="))
+                    && param[2..].trim().parse::<f32>().is_ok_and(|q| q <= 0.0)
+            });
+            let named =
+                coding.eq_ignore_ascii_case("gzip") || coding.eq_ignore_ascii_case("x-gzip");
+            named && !refused
+        })
+}
+
+/// The gzip bytes of one compiled-in document, compressed on first use and
+/// kept for the life of the process.
+///
+/// Keyed by the document's address and length. Every caller passes an
+/// `include_str!` constant or a string stamped once into a `OnceLock`, so the
+/// set is bounded by what this binary embeds. Two first requests that race
+/// each compress once and one result wins; nothing is lost but a few ms.
+fn gzip_once(document: &'static str) -> Bytes {
+    use std::io::Write as _;
+    static CACHE: std::sync::OnceLock<dashmap::DashMap<(usize, usize), Bytes>> =
+        std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(dashmap::DashMap::new);
+    let key = (document.as_ptr() as usize, document.len());
+    if let Some(hit) = cache.get(&key) {
+        return hit.clone();
+    }
+    let mut encoder = flate2::write::GzEncoder::new(
+        Vec::with_capacity(document.len() / 4),
+        flate2::Compression::default(),
+    );
+    encoder
+        .write_all(document.as_bytes())
+        .expect("writing into a Vec cannot fail");
+    let bytes = Bytes::from(encoder.finish().expect("finishing into a Vec cannot fail"));
+    cache.insert(key, bytes.clone());
+    bytes
+}
+
 /// The agentic-discovery surfaces: the files an agent or a scanner fetches
 /// BEFORE it knows how to call anything.
 ///
@@ -524,6 +742,7 @@ fn negotiated_response(
                 // CONTENT_LANGUAGE_EN) and the four agent surfaces, which are
                 // English on purpose and are not translated.
                 .header(header::CONTENT_LANGUAGE, CONTENT_LANGUAGE_EN)
+                .extension(StaticBody(body))
                 .body(body.to_string())
                 .unwrap()
         }
@@ -561,10 +780,19 @@ const TEXT_PLAIN_UTF8: &str = "text/plain; charset=utf-8";
 const APPLICATION_JSON_UTF8: &str = "application/json; charset=utf-8";
 
 /// Serve a compiled-in text document with an explicit content type.
+///
+/// Every document that comes through here is English -- `llms-full.txt`,
+/// `robots.txt`, the sitemap and the `.well-known` cards, whose prose fields
+/// (`description`, `displayName`, ...) are written in English and are not
+/// translated -- so it declares `en` like the negotiated surfaces and the human
+/// pages do. Until 2026-09-13 this was the one path that declared nothing, and
+/// it is the path every new agentic document gets added through.
 fn text_surface(body: &'static str, content_type: &'static str) -> Response<String> {
     Response::builder()
         .status(StatusCode::OK)
         .header("content-type", content_type)
+        .header(header::CONTENT_LANGUAGE, CONTENT_LANGUAGE_EN)
+        .extension(StaticBody(body))
         .body(body.to_string())
         .unwrap()
 }
@@ -661,6 +889,7 @@ fn html_page(body: &'static str) -> Response<String> {
         .status(StatusCode::OK)
         .header("content-type", "text/html; charset=utf-8")
         .header(header::CONTENT_LANGUAGE, CONTENT_LANGUAGE_EN)
+        .extension(StaticBody(body))
         .body(body.to_string())
         .unwrap()
 }
@@ -864,15 +1093,8 @@ where
     A::Map: ProviderMap<Value = NetworkProvider>,
 {
     Router::new()
-        .route("/", get(get_root))
-        .route("/bazaar", get(get_bazaar))
-        .route("/networks", get(get_networks_page))
-        .route("/x402", get(get_x402_page))
-        .route("/dx402", get(get_dx402_page))
-        .route("/erc8004", get(get_erc8004_page))
-        .route("/integrar", get(get_integrar_page))
-        .route("/events/live", get(get_events_viewer))
-        .route("/stats", get(get_stats_page))
+        // The HTML pages moved to human_page_routes() so they can carry their
+        // own rate limit -- see human_page_rate_limit for why.
         // Escrow state query lives in secondary_read_routes() so it can carry
         // its own rate limit -- see that function for why.
         // ERC-8004 Registration endpoints (GET info only; gas-spending POST writes are
@@ -2765,6 +2987,7 @@ pub async fn get_uv_css() -> impl IntoResponse {
             ("content-type", "text/css; charset=utf-8"),
             ("cache-control", "public, max-age=3600"),
         ],
+        Extension(StaticBody(UV_CSS)),
         UV_CSS,
     )
 }
@@ -2781,6 +3004,7 @@ pub async fn get_x402_js() -> impl IntoResponse {
             ("content-type", "application/javascript; charset=utf-8"),
             ("cache-control", "public, max-age=3600"),
         ],
+        Extension(StaticBody(X402_JS)),
         X402_JS,
     )
 }
@@ -2833,6 +3057,7 @@ pub async fn get_font_license() -> impl IntoResponse {
             ("content-type", "text/plain; charset=utf-8"),
             ("cache-control", "public, max-age=31536000, immutable"),
         ],
+        Extension(StaticBody(OFL_TXT)),
         OFL_TXT,
     )
 }
@@ -15210,6 +15435,30 @@ mod agentic_surface_tests {
         }
     }
 
+    /// Every surface declares its language, and the language is English.
+    ///
+    /// The owner's ruling of 2026-09-02: the agentic documents stay in English
+    /// and say so. `text_surface` -- the path most of them go through, and the
+    /// one every new `.well-known` card gets added through -- declared nothing
+    /// until 2026-09-13, while the negotiated ones already sent `en`.
+    #[tokio::test]
+    async fn every_surface_declares_its_language() {
+        for (path, _) in SURFACES {
+            let response = agentic_routes()
+                .oneshot(Request::builder().uri(*path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                response
+                    .headers()
+                    .get(header::CONTENT_LANGUAGE)
+                    .and_then(|v| v.to_str().ok()),
+                Some(CONTENT_LANGUAGE_EN),
+                "{path} does not declare `Content-Language: en`"
+            );
+        }
+    }
+
     /// None of them is HTML, and none of them is the landing page.
     ///
     /// This is the check that a scanner actually runs (`distinto_de_raiz`): a
@@ -16126,6 +16375,308 @@ mod json_error_tests {
     }
 }
 
+/// Response compression and the human-page rate limit, each exercised
+/// through the layer or router production mounts rather than a copy of it.
+#[cfg(test)]
+mod human_surface_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use std::io::Read;
+    use tower::ServiceExt;
+
+    const LLMS_FULL_TXT: &str = include_str!("../static/llms-full.txt");
+
+    /// The nine pages [`human_page_routes`] must serve, and nothing else.
+    const PAGES: &[&str] = &[
+        "/",
+        "/bazaar",
+        "/networks",
+        "/x402",
+        "/dx402",
+        "/erc8004",
+        "/integrar",
+        "/events/live",
+        "/stats",
+    ];
+
+    async fn send(router: Router, path: &str, headers: &[(&str, &str)]) -> Response<Body> {
+        let mut request = Request::builder().uri(path);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        router
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+    }
+
+    fn encoding(response: &Response<Body>) -> Option<&str> {
+        response
+            .headers()
+            .get(header::CONTENT_ENCODING)
+            .and_then(|v| v.to_str().ok())
+    }
+
+    fn with_compression(router: Router) -> Router {
+        router.layer(axum::middleware::from_fn(precompressed_static))
+    }
+
+    fn gunzip(bytes: &[u8]) -> String {
+        let mut plain = String::new();
+        flate2::read::GzDecoder::new(bytes)
+            .read_to_string(&mut plain)
+            .expect("a valid gzip stream");
+        plain
+    }
+
+    fn varies_on_encoding(response: &Response<Body>) -> bool {
+        response
+            .headers()
+            .get_all(header::VARY)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .any(|v| v.to_ascii_lowercase().contains("accept-encoding"))
+    }
+
+    /// A client that asks for gzip gets gzip, the bytes decode to the document,
+    /// the headers the handler set survive, and a cache is told the answer
+    /// depends on `Accept-Encoding`.
+    #[tokio::test]
+    async fn a_text_document_is_gzipped_for_a_client_that_asks() {
+        let router = with_compression(agentic_routes());
+        let response = send(router, "/llms-full.txt", &[("accept-encoding", "gzip")]).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(encoding(&response), Some("gzip"));
+        assert!(varies_on_encoding(&response));
+        assert!(response
+            .headers()
+            .get(header::CONTENT_LENGTH)
+            .is_none_or(|len| {
+                len.to_str().ok() != Some(LLMS_FULL_TXT.len().to_string().as_str())
+            }));
+        assert_eq!(
+            response.headers()[header::CONTENT_LANGUAGE],
+            CONTENT_LANGUAGE_EN
+        );
+        let compressed = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(gunzip(&compressed), LLMS_FULL_TXT);
+        assert!(
+            compressed.len() * 2 < LLMS_FULL_TXT.len(),
+            "gzip saved less than half: {} -> {} bytes",
+            LLMS_FULL_TXT.len(),
+            compressed.len()
+        );
+    }
+
+    /// The landing, through the governed router production mounts, with the
+    /// `Accept-Encoding` a browser actually sends.
+    #[tokio::test]
+    async fn the_landing_is_gzipped_through_the_governed_page_router() {
+        let router = with_compression(human_page_routes_governed(60_000, 10));
+        let response = send(
+            router,
+            "/",
+            &[
+                ("accept-encoding", "gzip, deflate, br, zstd"),
+                ("x-forwarded-for", "203.0.113.40"),
+            ],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(encoding(&response), Some("gzip"));
+        let compressed = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(gunzip(&compressed), INDEX_HTML);
+    }
+
+    /// No `Accept-Encoding`, or gzip refused with `q=0`: no gzip. Both still
+    /// vary on the header, or a cache could serve them to the next caller.
+    #[tokio::test]
+    async fn nothing_is_compressed_for_a_client_that_does_not_ask() {
+        for headers in [&[][..], &[("accept-encoding", "gzip;q=0, identity")][..]] {
+            let router = with_compression(agentic_routes());
+            let response = send(router, "/llms-full.txt", headers).await;
+            assert_eq!(encoding(&response), None, "{headers:?}");
+            assert!(varies_on_encoding(&response), "{headers:?}");
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            assert_eq!(bytes, LLMS_FULL_TXT.as_bytes(), "{headers:?}");
+        }
+    }
+
+    /// Only compiled-in documents above the threshold: a body built at request
+    /// time -- the shape of `/supported` or a catalog page -- is sent as it is,
+    /// and so is a static document too small to be worth it.
+    #[tokio::test]
+    async fn request_time_bodies_and_tiny_documents_are_left_alone() {
+        let router = with_compression(
+            Router::new()
+                .route(
+                    "/dynamic",
+                    get(|| async {
+                        (
+                            [(header::CONTENT_TYPE, APPLICATION_JSON_UTF8)],
+                            "x".repeat(64 * 1024),
+                        )
+                    }),
+                )
+                .route(
+                    "/tiny",
+                    get(|| async {
+                        text_surface("small enough to send as it is", TEXT_PLAIN_UTF8)
+                    }),
+                ),
+        );
+        for path in ["/dynamic", "/tiny"] {
+            let response = send(router.clone(), path, &[("accept-encoding", "gzip")]).await;
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            assert_eq!(encoding(&response), None, "{path} was compressed");
+        }
+    }
+
+    /// The negotiated surfaces already send `Vary: Accept, Accept-Encoding`;
+    /// compressing one must not stack a second `Vary` on top.
+    #[tokio::test]
+    async fn a_negotiated_surface_keeps_a_single_vary() {
+        let router = with_compression(agentic_routes());
+        let response = send(router, "/skill.md", &[("accept-encoding", "gzip")]).await;
+        assert_eq!(encoding(&response), Some("gzip"));
+        let vary: Vec<_> = response.headers().get_all(header::VARY).iter().collect();
+        assert_eq!(vary.len(), 1, "Vary headers: {vary:?}");
+    }
+
+    /// Compressed once: the second request for a document gets the same
+    /// allocation, not a second gzip pass.
+    #[test]
+    fn a_document_is_compressed_once_per_process() {
+        let first = gzip_once(LLMS_FULL_TXT);
+        let second = gzip_once(LLMS_FULL_TXT);
+        assert_eq!(first.as_ptr(), second.as_ptr());
+    }
+
+    /// The sheet, the script and the licence are served outside the three
+    /// helpers; they have to carry the marker themselves or they never compress.
+    #[tokio::test]
+    async fn the_sheet_the_script_and_the_licence_are_marked_static() {
+        for response in [
+            get_uv_css().await.into_response(),
+            get_x402_js().await.into_response(),
+            get_font_license().await.into_response(),
+        ] {
+            assert!(response.extensions().get::<StaticBody>().is_some());
+        }
+    }
+
+    /// A burst at a page from one address runs out, the refusal is the same
+    /// JSON 429 every governed route answers, and a second address is not
+    /// charged for the first one's loop.
+    #[tokio::test]
+    async fn a_burst_at_a_human_page_gets_429_for_that_address_only() {
+        let router = human_page_routes_governed(60_000, 3);
+        let loop_ip = [("x-forwarded-for", "203.0.113.20")];
+        for n in 1..=3 {
+            let response = send(router.clone(), "/stats", &loop_ip).await;
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "request {n} of the burst"
+            );
+        }
+        let refused = send(router.clone(), "/stats", &loop_ip).await;
+        assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(refused.headers().contains_key("retry-after"));
+        assert_eq!(
+            refused.headers()[header::CONTENT_TYPE],
+            APPLICATION_JSON_UTF8
+        );
+        let reader = send(router, "/stats", &[("x-forwarded-for", "203.0.113.21")]).await;
+        assert_eq!(reader.status(), StatusCode::OK);
+    }
+
+    /// All nine pages draw on one bucket per address: rotating paths buys a
+    /// loop nothing, and every page answers under the governor.
+    #[tokio::test]
+    async fn every_human_page_spends_the_same_bucket() {
+        let router = human_page_routes_governed(60_000, PAGES.len() as u32);
+        let ip = [("x-forwarded-for", "203.0.113.30")];
+        for path in PAGES {
+            let response = send(router.clone(), path, &ip).await;
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            assert!(
+                response.headers().contains_key("x-ratelimit-limit"),
+                "{path} answered outside the governor"
+            );
+        }
+        for path in PAGES {
+            let response = send(router.clone(), path, &ip).await;
+            assert_eq!(
+                response.status(),
+                StatusCode::TOO_MANY_REQUESTS,
+                "{path} was served past the shared budget"
+            );
+        }
+    }
+
+    /// The pages left the unmetered [`routes`], nothing that pays or answers an
+    /// agent joined their budget, and `main.rs` mounts both the governed pages
+    /// and the compression layer. Read from source because axum will not list
+    /// a router's paths, and a layer tested only in isolation proves nothing
+    /// about the service.
+    #[test]
+    fn the_pages_are_metered_in_production_and_only_the_pages() {
+        let src = include_str!("handlers.rs");
+        let body_of = |signature: &str| -> &str {
+            src.split(signature)
+                .nth(1)
+                .unwrap_or_else(|| panic!("`{signature}` must exist"))
+                .split("\n}")
+                .next()
+                .unwrap()
+        };
+        let unmetered = body_of("pub fn routes<A>() -> Router<A>");
+        for handler in [
+            "get(get_root)",
+            "get(get_bazaar)",
+            "get(get_networks_page)",
+            "get(get_x402_page)",
+            "get(get_dx402_page)",
+            "get(get_erc8004_page)",
+            "get(get_integrar_page)",
+            "get(get_events_viewer)",
+            "get(get_stats_page)",
+        ] {
+            assert!(
+                !unmetered.contains(handler),
+                "routes() still serves {handler} with no rate limit"
+            );
+        }
+        let pages = body_of("pub fn human_page_routes() -> Router {");
+        assert_eq!(pages.matches(".route(").count(), PAGES.len());
+        for path in PAGES {
+            assert!(pages.contains(&format!(".route(\"{path}\"")), "{path}");
+        }
+
+        let main = include_str!("main.rs");
+        assert!(
+            main.contains("handlers::human_page_routes_governed("),
+            "main.rs does not mount the governed human pages"
+        );
+        assert!(
+            !main.contains("handlers::human_page_routes()"),
+            "main.rs mounts the bare, unmetered page router"
+        );
+        assert!(
+            main.contains(".layer(axum::middleware::from_fn(handlers::precompressed_static))"),
+            "main.rs does not mount the compression middleware"
+        );
+    }
+}
+
 /// The bilingual pages, checked as a contract instead of by eye.
 ///
 /// Every human page here carries BOTH languages in one document at one URL:
@@ -16169,12 +16720,19 @@ mod i18n_tests {
         ("static/integrar.html", INTEGRAR_HTML),
     ];
 
-    /// The three attributes that make the runtime look a key up.
+    /// The four attributes that make the runtime look a key up.
     ///
     /// `data-i18n-ph` is the one that is easy to forget: only `bazaar.html` uses
     /// it, for a `placeholder`, and a checker that scanned the other two would
-    /// pass while that string stayed monolingual.
-    const ATTRIBUTES: &[&str] = &["data-i18n=\"", "data-i18n-html=\"", "data-i18n-ph=\""];
+    /// pass while that string stayed monolingual. `data-i18n-content` is the
+    /// same trap one tag over: it sits on `<meta name="description">`, which no
+    /// reader ever watches change.
+    const ATTRIBUTES: &[&str] = &[
+        "data-i18n=\"",
+        "data-i18n-html=\"",
+        "data-i18n-ph=\"",
+        "data-i18n-content=\"",
+    ];
 
     /// The inside of the first `{...}` at or after `from`, brace-matched with
     /// string and comment awareness.
@@ -16505,6 +17063,211 @@ mod i18n_tests {
                      canonical English; the Spanish lives in the `es` dictionary."
                 );
             }
+        }
+    }
+
+    /// One `<meta name="description">` a crawler reads in English and a reader
+    /// can switch, and one canonical URL that agrees with the page's `og:url`.
+    ///
+    /// Each half fails without looking broken. A description with no key stays
+    /// English for a reader who chose Spanish. A key that no runtime line
+    /// applies is defined, parity-checked by N1 and never used. A canonical
+    /// that disagrees with `og:url` hands a crawler and a link preview two
+    /// addresses for one page. And a `hreflang` would claim a per-language URL
+    /// that does not exist: one URL per page is the owner's choice (see the
+    /// module docs), so its absence is asserted too.
+    #[test]
+    fn every_page_has_a_translatable_description_and_one_canonical_url() {
+        const HOST: &str = "https://facilitator.ultravioletadao.xyz/";
+        // A leading space, so `content` does not match inside `data-i18n-content`.
+        let attr = |tag: &str, name: &str| -> Option<String> {
+            tag.split_once(&format!(" {name}=\""))
+                .and_then(|(_, rest)| rest.split_once('"'))
+                .map(|(value, _)| value.to_string())
+        };
+        for (page, html) in PAGES {
+            assert_eq!(
+                html.matches("<meta name=\"description\"").count(),
+                1,
+                "{page}: expected exactly one <meta name=\"description\">"
+            );
+            let description = html
+                .split_once("<meta name=\"description\"")
+                .and_then(|(_, rest)| rest.split_once('>'))
+                .map(|(tag, _)| format!(" {tag}"))
+                .unwrap();
+            assert_eq!(
+                attr(&description, "data-i18n-content").as_deref(),
+                Some("meta.description"),
+                "{page}: the description carries no `data-i18n-content` key"
+            );
+            assert!(
+                attr(&description, "content").is_some_and(|c| c.len() >= 50),
+                "{page}: the description is missing or too short to describe anything"
+            );
+            assert!(
+                html.contains("[data-i18n-content]"),
+                "{page}: nothing applies `data-i18n-content`, so the Spanish \
+                 description is defined and never shown"
+            );
+
+            let canonical: Vec<&str> = html
+                .split("<link rel=\"canonical\" href=\"")
+                .skip(1)
+                .filter_map(|rest| rest.split_once('"').map(|(href, _)| href))
+                .collect();
+            assert_eq!(
+                canonical.len(),
+                1,
+                "{page}: expected exactly one canonical link, found {canonical:?}"
+            );
+            let og_url = html
+                .split_once("<meta property=\"og:url\" content=\"")
+                .and_then(|(_, rest)| rest.split_once('"'))
+                .map(|(url, _)| url)
+                .unwrap_or_else(|| panic!("{page} has no og:url"));
+            assert_eq!(
+                canonical[0], og_url,
+                "{page}: the canonical URL and og:url disagree"
+            );
+            assert!(
+                og_url.starts_with(HOST),
+                "{page}: the canonical URL {og_url} is not on this host"
+            );
+            assert!(
+                !html.contains("hreflang"),
+                "{page}: carries a hreflang, but there is no per-language URL"
+            );
+        }
+    }
+
+    /// Text the landing may show with no dictionary key: proper names that read
+    /// the same in both languages, and nothing else.
+    const PROSE_ALLOWLIST: &[&str] = &["SKALE Base Sepolia"];
+
+    /// Visible runs of three words or more with no `data-i18n*` attribute on
+    /// the element or on any ancestor, in document order, whitespace-collapsed.
+    ///
+    /// A scanner sized to what these pages contain, not an HTML parser. It
+    /// skips comments, the raw text of `<script>` and `<style>`, and everything
+    /// under `<code>`, `<pre>`, `<svg>` and `<noscript>` -- commands and
+    /// identifiers, not prose. A word is a whitespace-separated token with a
+    /// letter in it; a character reference such as `&middot;` is not one.
+    fn uncovered_prose(html: &str) -> Vec<String> {
+        const SKIP: &[&str] = &["code", "pre", "svg", "noscript"];
+        const RAW: &[&str] = &["script", "style"];
+        const VOID: &[&str] = &[
+            "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source",
+            "track", "wbr",
+        ];
+        let mut rest = &html[html.find("<body").expect("the page has a <body>")..];
+        let mut open: Vec<(String, bool)> = Vec::new();
+        let mut found = Vec::new();
+        while !rest.is_empty() {
+            if let Some(after) = rest.strip_prefix("<!--") {
+                rest = after.find("-->").map_or("", |end| &after[end + 3..]);
+                continue;
+            }
+            let is_tag = rest.starts_with('<')
+                && rest[1..].starts_with(|c: char| c.is_ascii_alphabetic() || c == '/');
+            if is_tag {
+                // The tag ends at the first `>` outside a quoted attribute value.
+                let mut quote: Option<char> = None;
+                let end = rest
+                    .char_indices()
+                    .skip(1)
+                    .find(|&(_, c)| match quote {
+                        Some(q) => {
+                            if c == q {
+                                quote = None;
+                            }
+                            false
+                        }
+                        None => {
+                            if c == '"' || c == '\'' {
+                                quote = Some(c);
+                            }
+                            c == '>'
+                        }
+                    })
+                    .map_or(rest.len(), |(at, _)| at);
+                let tag = &rest[1..end];
+                rest = rest.get(end + 1..).unwrap_or("");
+                if let Some(closing) = tag.strip_prefix('/') {
+                    let name = closing.trim().to_ascii_lowercase();
+                    if let Some(at) = open.iter().rposition(|(t, _)| *t == name) {
+                        open.truncate(at);
+                    }
+                    continue;
+                }
+                let name = tag
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric())
+                    .collect::<String>()
+                    .to_ascii_lowercase();
+                if RAW.contains(&name.as_str()) {
+                    let close = format!("</{name}");
+                    rest = rest.find(&close).map_or("", |at| &rest[at..]);
+                    continue;
+                }
+                if VOID.contains(&name.as_str()) || tag.ends_with('/') {
+                    continue;
+                }
+                let covered = ATTRIBUTES.iter().any(|attribute| tag.contains(attribute));
+                open.push((name, covered));
+                continue;
+            }
+            let end = rest
+                .char_indices()
+                .skip(1)
+                .find(|&(_, c)| c == '<')
+                .map_or(rest.len(), |(at, _)| at);
+            let text = &rest[..end];
+            rest = &rest[end..];
+            let skipped = open
+                .iter()
+                .any(|(tag, covered)| *covered || SKIP.contains(&tag.as_str()));
+            if skipped {
+                continue;
+            }
+            let words = text
+                .split_whitespace()
+                .filter(|w| !(w.starts_with('&') && w.ends_with(';')))
+                .filter(|w| w.chars().any(char::is_alphabetic))
+                .count();
+            if words >= 3 {
+                found.push(text.split_whitespace().collect::<Vec<_>>().join(" "));
+            }
+        }
+        found
+    }
+
+    /// N3, coverage of what is on screen rather than of what is in a dictionary.
+    ///
+    /// N1 and N2 only see keys; a sentence typed into the markup with no key at
+    /// all passes both and stays English in every language. The 2026-09-02
+    /// audit counted 24 such runs on the landing; by 2026-09-13 three were
+    /// left, and they are covered by the same commit that adds this test.
+    #[test]
+    fn the_landing_shows_no_prose_outside_the_dictionary() {
+        let runs = uncovered_prose(INDEX_HTML);
+        let uncovered: Vec<&String> = runs
+            .iter()
+            .filter(|run| !PROSE_ALLOWLIST.contains(&run.as_str()))
+            .collect();
+        assert!(
+            uncovered.is_empty(),
+            "static/index.html shows {} run(s) of prose that no dictionary covers: \
+             {uncovered:?}. Give each a data-i18n key in BOTH dictionaries; only a \
+             proper name that reads the same in Spanish belongs in PROSE_ALLOWLIST.",
+            uncovered.len()
+        );
+        for allowed in PROSE_ALLOWLIST {
+            assert!(
+                runs.iter().any(|run| run == allowed),
+                "PROSE_ALLOWLIST names {allowed:?}, which the landing no longer shows; \
+                 drop it before it excuses something else"
+            );
         }
     }
 }

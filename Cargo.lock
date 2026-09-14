@@ -15515,6 +15515,7 @@ dependencies = [
  "data-encoding",
  "dotenvy",
  "ed25519-dalek 2.2.0",
+ "flate2",
  "hex",
  "hkdf",
  "k256 0.13.4",

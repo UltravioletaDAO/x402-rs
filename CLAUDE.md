@@ -485,7 +485,7 @@ Located in `tests/crossmint-smart-wallet/`:
 
 - **guides/ADDING_NEW_CHAINS.md** - Complete checklist and guide for adding new blockchain networks
 - **docs/CUSTOMIZATIONS.md** - Detailed inventory of all customizations vs upstream
-- **docs/CHANGELOG.md** - Version history and release notes. **Lags the shipped release** (top entry 1.64.0 while prod is 1.73.0) — for the real version use `curl -s https://facilitator.ultravioletadao.xyz/version` and the `VERSION` file.
+- **docs/CHANGELOG.md** - Version history and release notes. Rebuilt through 2.26.0 on 2026-09-13 (2.2, 2.4, 2.5, 2.8 and 1.65–1.73 are still missing), and releases are not git-tagged after v2.0.2 — for the real version use `curl -s https://facilitator.ultravioletadao.xyz/version` and the `VERSION` file.
 - **docs/DEPLOYMENT.md** - Deployment procedures and infrastructure guide
 - **docs/TESTING.md** - Complete testing guide
 - **docs/WALLET_ROTATION.md** - Security procedures for rotating facilitator keys

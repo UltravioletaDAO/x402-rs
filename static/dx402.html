@@ -4,9 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title data-i18n="title">DX402 - durable evidence for x402</title>
-<meta name="description" content="Save an encrypted copy of a paid API response. Learn how buyers retrieve evidence and how sellers integrate DX402.">
+<meta name="description" data-i18n-content="meta.description" content="Save an encrypted copy of a paid API response. Learn how buyers retrieve evidence and how sellers integrate DX402.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://facilitator.ultravioletadao.xyz/dx402">
+<link rel="canonical" href="https://facilitator.ultravioletadao.xyz/dx402">
 <meta property="og:title" content="DX402 · durable evidence for x402">
 <meta property="og:description" content="Save, retrieve, and verify encrypted evidence of your paid API response.">
 <meta property="og:image" content="https://facilitator.ultravioletadao.xyz/logo.png">
@@ -188,6 +189,7 @@ const I18N = {
     "next.x402": "x402",
     "next.x402.why": "the payment the evidence hangs off",
     "title": "DX402 - durable evidence for x402",
+    "meta.description": "Save an encrypted copy of a paid API response. Learn how buyers retrieve evidence and how sellers integrate DX402.",
     "lead": "Save an encrypted copy of the API response you paid for. Retrieve it later and verify that it matches what was delivered.",
     "d.anchored": "responses anchored",
     "d.mode": "default retention",
@@ -283,6 +285,7 @@ const I18N = {
     "next.x402": "x402",
     "next.x402.why": "el pago del que cuelga la evidencia",
     "title": "DX402 - evidencia durable para x402",
+    "meta.description": "Guarda una copia cifrada de una respuesta de API pagada. Cómo recupera el comprador la evidencia y cómo integra DX402 el vendedor.",
     "lead": "Guarda una copia cifrada de la respuesta por la que pagaste. Recupérala después y verifica que coincide con lo entregado.",
     "d.anchored": "respuestas ancladas",
     "d.mode": "retención por defecto",
@@ -370,6 +373,7 @@ let STATS = null;
 function applyLang(lang){
   if (I18N[lang]) LANG = lang;
   document.documentElement.lang = LANG;
+  document.querySelectorAll('[data-i18n-content]').forEach(el => el.setAttribute('content', t(el.getAttribute('data-i18n-content'))));
   document.querySelectorAll('[data-i18n]').forEach(el => {
     el.innerHTML = t(el.getAttribute('data-i18n'));
   });

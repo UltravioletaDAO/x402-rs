@@ -5,6 +5,12 @@
 > never pays gas. It is the facilitator OTHER services point at — it does not charge
 > for its own routes.
 
+Language (idioma): this file is English (`en`), and so are `/index.md`, `/skill.md`
+and `/auth.md`; none of the four has a Spanish translation. The Spanish version
+exists only for the human pages (`/`, `/x402`, `/dx402`, `/erc8004`, `/bazaar`,
+`/networks`, `/mcp`, `/integrar`, `/stats`, `/events/live`), at the same URL as the
+English, behind each page's EN/ES selector. There is no `/es/` path.
+
 ## When to use this, and when not to
 
 Reach for this facilitator when the job is **checking or landing someone
@@ -140,6 +146,11 @@ Base URL: `https://facilitator.ultravioletadao.xyz/`
 - `GET  /api/stats` — aggregated totals per network and asset
 - `GET  /blacklist` — blocked payer addresses
 - `GET  /discovery/resources` — the Bazaar catalog of x402-priced resources
+- `GET  /dx402/evidence/{paymentId}` — DX402 durable evidence for a settled payment
+  (pointer, `contentHash`, `verified`), with `/dx402/receipt/{paymentId}`,
+  `/dx402/blob/{paymentId}` and https://facilitator.ultravioletadao.xyz/dx402/stats.
+  Off unless the operator enables it: when `durable-evidence` is absent from the
+  `extensions` of `/supported`, these paths answer the generic 404
 - `GET  /identity/{network}/{agentId}` and `GET /reputation/{network}/{agentId}` —
   ERC-8004 Trustless Agents, live on 12 mainnets and 21 networks in total
 

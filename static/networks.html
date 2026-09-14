@@ -4,9 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title data-i18n="title">x402 facilitator - networks</title>
-<meta name="description" content="Every network and scheme this x402 facilitator settles, read live from GET /supported: the payment schemes, the stablecoins on each chain, and the facilitator's own gas balance.">
+<meta name="description" data-i18n-content="meta.description" content="Every network and scheme this x402 facilitator settles, read live from GET /supported: the payment schemes, the stablecoins on each chain, and the facilitator's own gas balance.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://facilitator.ultravioletadao.xyz/networks">
+<link rel="canonical" href="https://facilitator.ultravioletadao.xyz/networks">
 <meta property="og:title" content="x402 facilitator · networks">
 <meta property="og:description" content="Every network and scheme this facilitator settles, read live from GET /supported. No number on this page is typed by hand.">
 <meta property="og:image" content="https://facilitator.ultravioletadao.xyz/logo.png">
@@ -343,6 +344,7 @@ const I18N = {
     "next.x402": "x402",
     "next.x402.why": "what each scheme in that column means",
     "title": "x402 facilitator - networks",
+    "meta.description": "Every network and scheme this x402 facilitator settles, read live from GET /supported: the payment schemes, the stablecoins on each chain, and the facilitator's own gas balance.",
     "lead": "Explore supported chains, payment schemes, and assets. Live capabilities come from the facilitator’s supported endpoint.",
     "c.mainnets": "payment mainnets",
     "c.mainnetsSrc": "distinct v1 names, testnets excluded",
@@ -417,6 +419,7 @@ const I18N = {
     "next.x402": "x402",
     "next.x402.why": "qué significa cada esquema de la columna",
     "title": "Facilitador x402 - redes",
+    "meta.description": "Cada red y esquema que liquida este facilitador x402, leídos en vivo de GET /supported: los esquemas de pago, las stablecoins de cada cadena y el saldo de gas del propio facilitador.",
     "lead": "Explora las cadenas, los esquemas de pago y los activos compatibles. Las capacidades se consultan en el endpoint del facilitador.",
     "c.mainnets": "mainnets de pago",
     "c.mainnetsSrc": "nombres v1 distintos, sin testnets",
@@ -466,6 +469,7 @@ const t = k => (I18N[LANG] && I18N[LANG][k]) ?? I18N.en[k] ?? k;
 function applyLang(lang){
   if (I18N[lang]) LANG = lang;
   document.documentElement.lang = LANG;
+  document.querySelectorAll('[data-i18n-content]').forEach(el => el.setAttribute('content', t(el.getAttribute('data-i18n-content'))));
   document.querySelectorAll('[data-i18n]').forEach(el => {
     // Every value is an author-written literal in this file, never user input
     // and never fetched; several carry <code> and <b> that textContent flattens.

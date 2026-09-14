@@ -4,9 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title data-i18n="title">x402 facilitator - live events</title>
-<meta name="description" content="The live x402 traffic stream: one message per verify and settle, straight off the wire.">
+<meta name="description" data-i18n-content="meta.description" content="The live x402 traffic stream: one message per verify and settle, straight off the wire.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://facilitator.ultravioletadao.xyz/events/live">
+<link rel="canonical" href="https://facilitator.ultravioletadao.xyz/events/live">
 <meta property="og:title" content="x402 · /events live">
 <meta property="og:description" content="The live x402 traffic stream: one message per verify and settle, straight off the wire.">
 <meta property="og:image" content="https://facilitator.ultravioletadao.xyz/logo.png">
@@ -133,6 +134,7 @@ const I18N = {
     "next.x402":"x402",
     "next.x402.why":"what each message on the wire is",
     "title":"x402 facilitator - live events",
+    "meta.description":"The live x402 traffic stream: one message per verify and settle, straight off the wire.",
     events:"events", last:"last",
     viewTable:"table", viewRaw:"raw (straight off the wire)",
     clear:"clear", pause:"pause", resume:"resume",
@@ -170,6 +172,7 @@ const I18N = {
     "next.x402":"x402",
     "next.x402.why":"qué es cada mensaje del cable",
     "title":"x402 facilitator - eventos en vivo",
+    "meta.description":"El flujo de tráfico x402 en vivo: un mensaje por cada verify y settle, directo del cable.",
     events:"eventos", last:"último",
     viewTable:"tabla", viewRaw:"raw (tal cual el cable)",
     clear:"limpiar", pause:"pausar", resume:"reanudar",
@@ -197,6 +200,7 @@ const t = k => (I18N[LANG] && I18N[LANG][k]) || (I18N.en[k] ?? k);
 function applyLang(lang){
   if (I18N[lang]) LANG = lang;
   document.documentElement.lang = LANG;
+  document.querySelectorAll('[data-i18n-content]').forEach(el => el.setAttribute('content', t(el.getAttribute('data-i18n-content'))));
   document.title = t('title');
   document.querySelectorAll('[data-i18n]').forEach(el => {
     el.textContent = t(el.getAttribute('data-i18n'));

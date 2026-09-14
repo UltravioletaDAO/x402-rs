@@ -3,6 +3,11 @@
 You are an agent. This document describes how to authenticate against the Ultravioleta
 DAO x402 payment facilitator at `https://facilitator.ultravioletadao.xyz/`.
 
+Language (idioma): English (`en`). This document has no Spanish translation. The
+Spanish version of the human pages (`/`, `/bazaar`, `/dx402`, `/integrar`, ...) is at
+the same URL as the English, behind each page's EN/ES selector; there is no `/es/`
+path.
+
 ## The short answer: you do not
 
 **The facilitator has no accounts, no API keys, no OAuth, and no registration.** There

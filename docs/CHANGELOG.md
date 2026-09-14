@@ -12,11 +12,14 @@
     bounded by an operation timeout, retries included: 3000 ms by default,
     overridable with `NONCE_STORE_OPERATION_TIMEOUT_MS` (accepted range
     250–30000; any other value logs a warning and keeps the default). The SDK
-    set no such bound. Every caller already rejects when the store errors, so
-    a store that stops answering now rejects within the bound instead of
-    holding the request. Paths: Stellar and Algorand verify and settle, Solana
-    settlement-account settle, ERC-8004 proof claims. The timeouts the ambient
-    AWS config already carries, such as the connect timeout, are kept.
+    set no such bound. On Stellar and Algorand verify and settle, and on
+    Solana settlement-account settle, a store error already rejects, so a store
+    that stops answering now rejects within the bound instead of holding the
+    request. ERC-8004 proof claims keep their existing fail-open: a store that
+    does not answer lets the rating through without replay protection, now
+    after the bound (3 s by default) instead of after however long the call
+    hung. The timeouts the ambient AWS config already carries, such as the
+    connect timeout, are kept.
 - Tests only: Sui `/verify` with mixed inputs, one read behind its referenced
   version and the other moved past it, in both orders.
 

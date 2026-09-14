@@ -229,6 +229,7 @@ Ver la tabla del PR (mismos comandos que el job `test` de `ci.yaml`, mas fmt y c
 | B9 | **Resuelto en 2.29.2** (#53): el cliente de DynamoDB del nonce store tiene `operation_timeout` (3000 ms, `NONCE_STORE_OPERATION_TIMEOUT_MS`, rango 250–30000). Ver seccion 8. |
 | B10 | NEAR: tratar `UnknownAccessKey` como falla de RPC (hoy es rechazo `Other`). |
 | B11 | Sui: `Deleted` rechaza sin comparar la version del borrado con la referenciada (improbable para coins). |
+| B12 | Nonce store: un claim cuyo `PutItem` condicional se aplica en DynamoDB pero vence en el cliente deja la clave tomada; ese pago no se puede reintentar con la misma autorizacion hasta que venza el TTL. Declarado en la seccion 8 ("Un claim que vence en el cliente"), sin implementar. |
 
 ## 8. Nonce store: lectura consistente y timeout de operacion (2.29.2, #53)
 
@@ -246,8 +247,13 @@ Mismo PR que los tests de Sui con inputs mezclados, para salir como un solo rele
 - **Que conserva**: el `TimeoutConfig` que ya trae `aws_config::load_defaults` (el connect
   timeout, entre otros); solo se agrega el de operacion.
 - **Que ve un llamador**: un store que no contesta da `ReadError`/`WriteError` dentro del limite.
-  Todos los llamadores ya lo tratan como rechazo (Stellar y Algorand fail-closed en verify; settle
-  no transmite nada si el claim falla), asi que el cambio es cuanto tarda ese rechazo, no si ocurre.
+  Stellar y Algorand lo tratan como rechazo (fail-closed en verify; settle no transmite nada si el
+  claim falla), y el settle de la cuenta de liquidacion de Solana tambien: ahi el cambio es cuanto
+  tarda ese rechazo, no si ocurre. **ERC-8004 no rechaza**: `claim_feedback_proof`
+  (`src/handlers.rs`) mantiene su fail-open existente y deja pasar la calificacion sin proteccion
+  de replay (log `proof replay store unavailable; proceeding WITHOUT replay protection`); con el
+  limite eso ocurre a los 3 s en vez de cuando termine la llamada colgada. `release_feedback_proof`
+  solo loguea el error.
 - **Costo de `consistent_read`**: una lectura consistente consume el doble de capacidad de lectura
   que una eventual; con claves de un solo atributo proyectado es despreciable.
 
@@ -256,11 +262,16 @@ protocolo JSON 1.0) y credenciales de prueba:
 
 | Test | Que prueba |
 |---|---|
-| `operation_timeout_defaults_and_reads_the_override` | default sin env; override valido, con espacios, y los dos bordes |
-| `operation_timeout_rejects_garbage_and_out_of_range` | `not-a-number`, vacio, `-5`, `3s`, `0`, `249`, `30001` -> default |
+| `parse_operation_timeout_defaults_and_reads_the_override` | parser puro, sin env: default con `None`; override valido, con espacios, y los dos bordes |
+| `parse_operation_timeout_rejects_garbage_and_out_of_range` | parser puro: `not-a-number`, vacio, `-5`, `3s`, `0`, `249`, `30001` -> default |
 | `bounded_client_keeps_the_ambient_timeouts` | fija el de operacion y conserva un connect timeout ya presente |
 | `dynamo_is_used_reads_consistently` | el `GetItem` que manda `is_used` lleva `"ConsistentRead": true` y la clave pedida |
-| `dynamo_calls_give_up_at_the_operation_timeout` | con un stub que no contesta y 200 ms: `is_used` -> `ReadError`, `check_and_mark_used` -> `WriteError`, ambos antes de 5 s |
+| `dynamo_calls_give_up_at_the_operation_timeout` | con un stub que no contesta y 200 ms: `is_used` -> `ReadError`; `check_and_mark_used` y `release` -> `WriteError` que dice `timed out`; todo antes de 5 s |
+| `from_env_bounds_calls_with_the_configured_operation_timeout` | por `DynamoNonceStore::from_env`: `AWS_ENDPOINT_URL` a un listener que acepta y no contesta, credenciales de prueba, `NONCE_STORE_OPERATION_TIMEOUT_MS=400` -> `ReadError` en menos de 2 s |
+
+Los dos tests del parser eran, en #53, dos tests que escribian la misma variable de entorno y
+fallaban 2 de 40 corridas con hilos (medido por el refutador); ahora no tocan el entorno. El unico
+test que escribe entorno es el de `from_env`, y ningun otro test del crate lee esas variables.
 
 Mutaciones (archivo restaurado despues, hash verificado):
 
@@ -268,6 +279,29 @@ Mutaciones (archivo restaurado despues, hash verificado):
 |---|---|
 | sin `.consistent_read(true)` | `dynamo_is_used_reads_consistently` **FAILED** |
 | operation timeout ignorado (1 h) | `bounded_client_keeps_the_ambient_timeouts` y `dynamo_calls_give_up_at_the_operation_timeout` **FAILED** |
+| (seguimiento) `from_env` arma el cliente con `Client::new(&config)`, sin `bounded_client` | `from_env_bounds_calls_with_the_configured_operation_timeout` **FAILED** (se colgo hasta el techo de 10 s del test); en #53 este mutante sobrevivia |
+| (seguimiento) brazos `SdkError::TimeoutError` de put y delete desactivados | `dynamo_calls_give_up_at_the_operation_timeout` **FAILED**: `WriteError("unhandled error")` |
+| (seguimiento) `return Ok(())` temprano en el brazo `NotExists` de Sui | `verify_rejects_when_the_gas_is_unknown_and_the_coin_moved_on` **FAILED** (`11 passed; 1 failed`) |
+
+Sui, seguimiento: `verify_rejects_when_the_gas_is_unknown_and_the_coin_moved_on` (gas `NotExists`,
+coin v6) y `verify_rejects_when_the_coin_is_unknown_and_the_gas_moved_on` (coin `NotExists`, gas
+v10) esperan `already used`; como el gas se lee primero, el primer orden es el que mata el mutante.
+
+**Un claim que vence en el cliente puede haberse escrito (sin implementar, fila B12).** El
+`operation_timeout` corta la espera del cliente, no la escritura: si el `PutItem` condicional llego
+a DynamoDB y la respuesta no volvio a tiempo, la clave queda tomada con su TTL aunque el llamador
+recibio `WriteError` (`DynamoDB put_item timed out`).
+
+| Camino | Que pasa con el pago | Hasta cuando queda tomada la clave |
+|---|---|---|
+| Stellar settle (`check_and_mark_nonce_used`) | no se transmite; el reintento con la misma autorizacion da `nonce already used` | TTL `stellar_ttl_seconds`: ledgers hasta la expiracion de la autorizacion + 1 h, o sea mas alla de su validez |
+| Algorand settle (`submit_group`) | no se transmite; el reintento con el mismo grupo da `already processed` | TTL `algorand_ttl_seconds`: rounds hasta `last_valid` + 1 h, mas alla de su validez |
+| Solana settle de cuenta de liquidacion (`settle_settlement_account`) | no se barre; el reintento con la misma firma de transaccion se rechaza | `SOLANA_SETTLE_TTL_SECONDS` = 7 dias |
+| ERC-8004 (`claim_feedback_proof`) | la calificacion sigue (fail-open); la clave tomada solo impide otra calificacion con la misma prueba | `replay_ttl_secs` |
+
+En ninguno hay doble cobro: el claim falla antes de transmitir. El costo es que en Stellar y
+Algorand el comprador tiene que firmar una autorizacion nueva, y en Solana ese pago queda sin
+barrer hasta que venza el TTL o alguien intervenga.
 
 **Como verificarlo en produccion despues del release**: `curl -s
 https://facilitator.ultravioletadao.xyz/version` -> `{"version":"2.29.2"}`; en los logs del

@@ -264,13 +264,19 @@ const MIN_OPERATION_TIMEOUT_MS: u64 = 250;
 const MAX_OPERATION_TIMEOUT_MS: u64 = 30_000;
 
 /// Read the operation timeout from the environment, falling back to the default.
-///
-/// A bad value warns and falls back; it never panics, and the range is checked
-/// as well as the type.
 fn operation_timeout_from_env() -> Duration {
-    let raw = match std::env::var(ENV_OPERATION_TIMEOUT_MS) {
-        Ok(v) => v,
-        Err(_) => return Duration::from_millis(DEFAULT_OPERATION_TIMEOUT_MS),
+    parse_operation_timeout(std::env::var(ENV_OPERATION_TIMEOUT_MS).ok().as_deref())
+}
+
+/// The operation timeout an override asks for.
+///
+/// `None` (unset) gives the default. A bad value warns and falls back too; it
+/// never panics, and the range is checked as well as the type. Takes the raw
+/// value rather than reading the environment, so it is tested without touching
+/// process state.
+fn parse_operation_timeout(raw: Option<&str>) -> Duration {
+    let Some(raw) = raw else {
+        return Duration::from_millis(DEFAULT_OPERATION_TIMEOUT_MS);
     };
 
     let millis = match raw.trim().parse::<u64>() {
@@ -409,6 +415,14 @@ impl NonceStore for DynamoNonceStore {
                 );
                 Ok(())
             }
+            // The client stopped waiting at the operation timeout. The put may
+            // still have been applied, so the key can be taken all the same.
+            Err(aws_sdk_dynamodb::error::SdkError::TimeoutError(_)) => {
+                error!(key = %key, "DynamoDB put_item timed out");
+                Err(NonceStoreError::WriteError(
+                    "DynamoDB put_item timed out".to_string(),
+                ))
+            }
             Err(err) => {
                 let service_err = err.into_service_error();
                 // Check if it's a conditional check failure (nonce already used)
@@ -454,15 +468,29 @@ impl NonceStore for DynamoNonceStore {
     async fn release(&self, key: &str) -> Result<(), NonceStoreError> {
         use aws_sdk_dynamodb::types::AttributeValue;
 
-        self.client
+        let result = self
+            .client
             .delete_item()
             .table_name(&self.table_name)
             .key("pk", AttributeValue::S(key.to_string()))
             .send()
-            .await
-            .map_err(|e| NonceStoreError::WriteError(e.into_service_error().to_string()))?;
-        debug!(key = %key, "Released nonce claim (DynamoDB)");
-        Ok(())
+            .await;
+
+        match result {
+            Ok(_) => {
+                debug!(key = %key, "Released nonce claim (DynamoDB)");
+                Ok(())
+            }
+            Err(aws_sdk_dynamodb::error::SdkError::TimeoutError(_)) => {
+                error!(key = %key, "DynamoDB delete_item timed out");
+                Err(NonceStoreError::WriteError(
+                    "DynamoDB delete_item timed out".to_string(),
+                ))
+            }
+            Err(err) => Err(NonceStoreError::WriteError(
+                err.into_service_error().to_string(),
+            )),
+        }
     }
 
     async fn health_check(&self) -> Result<(), NonceStoreError> {
@@ -608,52 +636,35 @@ mod tests {
     // DynamoDB client: consistent reads and the operation timeout
     // ------------------------------------------------------------------------
 
-    /// Run `f` with `ENV_OPERATION_TIMEOUT_MS` set to `value` (or unset for
-    /// `None`), then restore whatever was there. CI runs this suite with
-    /// `--test-threads=1`, which is what makes touching process env safe here.
-    fn with_timeout_env<T>(value: Option<&str>, f: impl FnOnce() -> T) -> T {
-        let previous = std::env::var(ENV_OPERATION_TIMEOUT_MS).ok();
-        match value {
-            Some(v) => std::env::set_var(ENV_OPERATION_TIMEOUT_MS, v),
-            None => std::env::remove_var(ENV_OPERATION_TIMEOUT_MS),
-        }
-        let out = f();
-        match previous {
-            Some(v) => std::env::set_var(ENV_OPERATION_TIMEOUT_MS, v),
-            None => std::env::remove_var(ENV_OPERATION_TIMEOUT_MS),
-        }
-        out
-    }
-
     #[test]
-    fn operation_timeout_defaults_and_reads_the_override() {
+    fn parse_operation_timeout_defaults_and_reads_the_override() {
         let default = Duration::from_millis(DEFAULT_OPERATION_TIMEOUT_MS);
-        assert_eq!(with_timeout_env(None, operation_timeout_from_env), default);
+        assert_eq!(parse_operation_timeout(None), default);
         assert_eq!(
-            with_timeout_env(Some("1500"), operation_timeout_from_env),
+            parse_operation_timeout(Some("1500")),
             Duration::from_millis(1_500)
         );
         assert_eq!(
-            with_timeout_env(Some(" 800 "), operation_timeout_from_env),
+            parse_operation_timeout(Some(" 800 ")),
             Duration::from_millis(800)
         );
         // The bounds themselves are accepted.
         assert_eq!(
-            with_timeout_env(Some("250"), operation_timeout_from_env),
+            parse_operation_timeout(Some("250")),
             Duration::from_millis(MIN_OPERATION_TIMEOUT_MS)
         );
         assert_eq!(
-            with_timeout_env(Some("30000"), operation_timeout_from_env),
+            parse_operation_timeout(Some("30000")),
             Duration::from_millis(MAX_OPERATION_TIMEOUT_MS)
         );
     }
 
     #[test]
-    fn operation_timeout_rejects_garbage_and_out_of_range() {
+    fn parse_operation_timeout_rejects_garbage_and_out_of_range() {
         let default = Duration::from_millis(DEFAULT_OPERATION_TIMEOUT_MS);
         for bad in ["not-a-number", "", "-5", "3s", "0", "249", "30001"] {
             assert_eq!(
-                with_timeout_env(Some(bad), operation_timeout_from_env),
+                parse_operation_timeout(Some(bad)),
                 default,
                 "{bad:?} should fall back to the default"
             );
@@ -779,8 +790,108 @@ mod tests {
         .await
         .expect("the conditional put must return on its own timeout, not hang");
         assert!(
-            matches!(claim, Err(NonceStoreError::WriteError(_))),
+            matches!(&claim, Err(NonceStoreError::WriteError(msg)) if msg.contains("timed out")),
             "got {claim:?}"
+        );
+
+        let released = tokio::time::timeout(
+            Duration::from_secs(5),
+            store.release("stellar#GABC123#12346"),
+        )
+        .await
+        .expect("the delete must return on its own timeout, not hang");
+        assert!(
+            matches!(&released, Err(NonceStoreError::WriteError(msg)) if msg.contains("timed out")),
+            "got {released:?}"
+        );
+    }
+
+    /// Process environment set for one test and put back on drop, panics included.
+    struct EnvGuard(Vec<(&'static str, Option<String>)>);
+
+    impl EnvGuard {
+        fn set(vars: &[(&'static str, Option<&str>)]) -> Self {
+            let previous = vars
+                .iter()
+                .map(|(name, _)| (*name, std::env::var(name).ok()))
+                .collect();
+            for (name, value) in vars {
+                match value {
+                    Some(v) => std::env::set_var(name, v),
+                    None => std::env::remove_var(name),
+                }
+            }
+            Self(previous)
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (name, value) in &self.0 {
+                match value {
+                    Some(v) => std::env::set_var(name, v),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+    }
+
+    /// A TCP listener that accepts connections and never writes a byte.
+    async fn silent_listener() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((socket, _)) = listener.accept().await {
+                held.push(socket);
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    /// The production constructor applies the configured bound: the store
+    /// `from_env` builds gives up on a silent endpoint at
+    /// `NONCE_STORE_OPERATION_TIMEOUT_MS`. The environment stays set until the
+    /// call returns, because the SDK reads credentials on the first request.
+    /// No other test in the crate reads these variables.
+    #[tokio::test]
+    async fn from_env_bounds_calls_with_the_configured_operation_timeout() {
+        let endpoint = silent_listener().await;
+        let _env = EnvGuard::set(&[
+            ("AWS_ENDPOINT_URL", Some(endpoint.as_str())),
+            ("AWS_REGION", Some("us-east-2")),
+            ("AWS_ACCESS_KEY_ID", Some("test")),
+            ("AWS_SECRET_ACCESS_KEY", Some("test")),
+            ("AWS_SESSION_TOKEN", None),
+            ("AWS_PROFILE", None),
+            ("AWS_CONFIG_FILE", Some("/nonexistent/aws-config")),
+            (
+                "AWS_SHARED_CREDENTIALS_FILE",
+                Some("/nonexistent/aws-credentials"),
+            ),
+            ("AWS_EC2_METADATA_DISABLED", Some("true")),
+            (ENV_OPERATION_TIMEOUT_MS, Some("400")),
+        ]);
+
+        let store = DynamoNonceStore::from_env()
+            .await
+            .expect("the store builds");
+        let started = std::time::Instant::now();
+        let read = tokio::time::timeout(
+            Duration::from_secs(10),
+            store.is_used("stellar#GABC123#12345"),
+        )
+        .await
+        .expect("the read must return on its own timeout, not hang");
+
+        assert!(
+            matches!(read, Err(NonceStoreError::ReadError(_))),
+            "got {read:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "gave up after {:?}",
+            started.elapsed()
         );
     }
 }

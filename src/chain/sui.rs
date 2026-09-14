@@ -1432,6 +1432,10 @@ mod replay_verify_tests {
         GasBehindCoinAdvanced,
         /// The coin reads behind its referenced version, the gas coin moved on.
         CoinBehindGasAdvanced,
+        /// The RPC does not know the gas coin, the coin moved on.
+        GasUnknownCoinAdvanced,
+        /// The RPC does not know the coin, the gas coin moved on.
+        CoinUnknownGasAdvanced,
         /// sui_multiGetObjects answers with a JSON-RPC error.
         Unreadable,
         /// sui_multiGetObjects never answers.
@@ -1503,6 +1507,17 @@ mod replay_verify_tests {
                         SequenceNumber::from_u64(10),
                         ObjectDigest::new([9u8; 32]),
                     )),
+                    Inputs::GasUnknownCoinAdvanced if id == coin_ref().0 => object(moved_on),
+                    Inputs::CoinUnknownGasAdvanced if id != coin_ref().0 => object((
+                        id,
+                        SequenceNumber::from_u64(10),
+                        ObjectDigest::new([9u8; 32]),
+                    )),
+                    Inputs::GasUnknownCoinAdvanced | Inputs::CoinUnknownGasAdvanced => {
+                        SuiObjectResponse::new_with_error(SuiObjectResponseError::NotExists {
+                            object_id: id,
+                        })
+                    }
                     _ if id == coin_ref().0 => object(coin_ref()),
                     _ => object(gas_ref()),
                 }
@@ -1748,6 +1763,40 @@ mod replay_verify_tests {
             .verify(&request)
             .await
             .expect_err("a gas coin that moved on must not verify beside a lagging coin read");
+        assert!(
+            matches!(&err, FacilitatorLocalError::Other(msg) if msg.contains("already used")),
+            "got {err:?}"
+        );
+    }
+
+    /// Same rule for an object the RPC does not know: it lets verify go on to
+    /// the next input and never decides for the whole transaction. The gas
+    /// payment is read first, so here the unknown object comes before the one
+    /// that moved on.
+    #[tokio::test]
+    async fn verify_rejects_when_the_gas_is_unknown_and_the_coin_moved_on() {
+        let provider = provider(Inputs::GasUnknownCoinAdvanced).await;
+        let (request, _) = request(&provider);
+
+        let err = provider
+            .verify(&request)
+            .await
+            .expect_err("a coin that moved on must not verify behind an unknown gas coin");
+        assert!(
+            matches!(&err, FacilitatorLocalError::Other(msg) if msg.contains("already used")),
+            "got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_rejects_when_the_coin_is_unknown_and_the_gas_moved_on() {
+        let provider = provider(Inputs::CoinUnknownGasAdvanced).await;
+        let (request, _) = request(&provider);
+
+        let err = provider
+            .verify(&request)
+            .await
+            .expect_err("a gas coin that moved on must not verify beside an unknown coin");
         assert!(
             matches!(&err, FacilitatorLocalError::Other(msg) if msg.contains("already used")),
             "got {err:?}"

@@ -1,5 +1,25 @@
 # Changelog
 
+## [2.29.4] - 2026-09-14
+
+### Fixed
+
+- **EIP-1559 chains without a measured fee floor no longer pay a 1 gwei tip.**
+  Since 2.19.0 (e57c5b18, 2026-09-10) the default arm of `eip1559_fee_floor`
+  carried `min_priority: 1 gwei`, copied from the Ethereum branch, and every
+  chain in it paid it.
+  - **Base**: base fee 0.005 gwei, so a settle paid 1.005 gwei. Measured cost
+    0.0001038 ETH per settle, against ~0.0000006 ETH at the node's tip.
+  - The 1.01 gwei cap is also what a node reserves against the signer's
+    balance. The Base mainnet signer ran dry and every settle was refused from
+    2026-09-14 18:09Z.
+
+  The default arm now tips `max(node estimate, 1 mwei)`. 1 mwei is the
+  smallest tip a geth or op-geth node includes by default, so a node that
+  quotes a zero tip, or a failed `eth_maxPriorityFeePerGas` read, can no longer
+  send a transaction the pool rejects or never mines. Ethereum and Polygon keep
+  the floors they were measured for.
+
 ## [2.29.3] - 2026-09-14
 
 ### Changed

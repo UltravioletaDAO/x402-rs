@@ -1,0 +1,3 @@
+# .githooks/pre-commit corre con /bin/sh; un CRLF en el shebang o en el
+# script lo rompe en silencio. Fuerza LF sin importar el autocrlf local.
+.githooks/* text eol=lf

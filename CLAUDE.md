@@ -638,6 +638,7 @@ git merge upstream/main      # Follow docs/CUSTOMIZATIONS.md strategy
 
 ### Other Security Rules
 
+- **Pre-commit anti-llaves**: `git config core.hooksPath .githooks` (once per clone) activates the hook that blocks a commit whose staged diff adds `0x` + 64 hex - INC-2026-03-30, two wallets drained by hardcoded private keys in public repos. Detail in `.githooks/README.md`.
 - **NEVER** commit `.env` file with actual private keys
 - **NEVER** commit `.unused/` directory - it's in `.gitignore` and CONTAINS SECRETS
 - Use testnet keys for local development only

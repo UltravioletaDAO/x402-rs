@@ -1,0 +1,17 @@
+# .githooks/pre-commit.local -- LOCAL sensitive list for the pre-commit hook.
+#
+# Copy this file to .githooks/pre-commit.local (gitignored) and fill it in.
+# NEVER commit the real file: it names exactly what the policy protects
+# (corpus paths, disk letters/labels, handles from the 2000-2002 logs).
+#
+# Format: one FIXED STRING per line (no regex), matched case-insensitively
+# against every added line of the staged diff. Blank lines and lines starting
+# with '#' are ignored. Prefer distinctive strings (a full path fragment, a
+# rare handle) -- a short common word will block unrelated commits.
+#
+# Optional: point PRECOMMIT_LOCAL_LIST at one shared file for several repos.
+#
+# Examples of the *kind* of entry (placeholders, not real values):
+#   X:/some/corpus/root
+#   corpus-disk-label
+#   some_handle_from_the_logs

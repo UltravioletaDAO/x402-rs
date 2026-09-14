@@ -116,3 +116,6 @@ tmpclaude-*
 
 # Local S3 registry backups (large)
 /backups/
+
+# pre-commit: local sensitive list -- see .githooks/README.md
+.githooks/*.local

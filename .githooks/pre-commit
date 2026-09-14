@@ -1,0 +1,82 @@
+#!/bin/sh
+# pre-commit: block private keys and corpus PII before they reach the repo.
+# Activate once per clone:  git config core.hooksPath .githooks
+#
+# The patterns tracked here are GENERIC ONLY:
+#   hex64   0x + 64 hex chars   (private keys; also tx hashes, so expect noise)
+#   logptr  .log:<digits>       (a pointer into a raw chat log)
+#   query   line starting with  query:<letter>  (a raw query dump)
+# The sensitive list -- corpus paths, disk names, handles -- is NOT in this
+# file. It lives in .githooks/pre-commit.local (gitignored; see the .example),
+# one fixed string per line, '#' comments allowed, matched case-insensitively.
+# The hook loads it only if it exists. Override its location with the env var
+# PRECOMMIT_LOCAL_LIST (handy to share one list across repos).
+#
+# Only ADDED lines of the staged diff are scanned. Nothing printed here ever
+# includes the matched text or an entry of the local list: just file, line and
+# rule id.
+#
+# Bypass is deliberate and loud: git commit --no-verify. Do not.
+
+set -u
+
+repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+local_list="${PRECOMMIT_LOCAL_LIST:-$repo_root/.githooks/pre-commit.local}"
+[ -f "$local_list" ] || local_list=""
+
+# Fail closed if this awk cannot do {n} intervals (the hex64 rule would silently
+# never match). 64 zeros is a valid hex payload and not a key.
+if ! printf '0x%064d\n' 0 | awk '/0x[0-9a-fA-F]{64}/{f=1} END{exit !f}' 2>/dev/null; then
+    echo "[pre-commit] awk without interval support; cannot scan. Install gawk." >&2
+    exit 1
+fi
+
+# Added lines only ("+" but not "+++"), zero context, no colour, no external
+# diff driver. ACMR = no deletions. Binary files produce no "+" lines.
+diff=$(git diff --cached -U0 --no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ --diff-filter=ACMR) || exit 0
+[ -n "$diff" ] || exit 0
+
+report=$(printf '%s\n' "$diff" | awk -v list="$local_list" '
+BEGIN {
+    n = 0
+    if (list != "") {
+        while ((getline l < list) > 0) {
+            sub(/\r$/, "", l)
+            if (l ~ /^[ \t]*(#|$)/) continue
+            n++; needle[n] = tolower(l)
+        }
+        close(list)
+    }
+    bad = 0; file = ""; line = 0
+}
+/^\+\+\+ / { file = $0; sub(/^\+\+\+ b\//, "", file); sub(/\t$/, "", file); next }
+/^--- /    { next }
+/^@@ /     { s = $3; sub(/^\+/, "", s); split(s, p, ","); line = p[1] + 0; next }
+/^\+/ {
+    content = substr($0, 2)
+    hit = ""
+    if (content ~ /0x[0-9a-fA-F]{64}/)      hit = "hex64"
+    else if (content ~ /\.log:[0-9]+/)      hit = "logptr"
+    else if (content ~ /^query:[A-Za-z]/)   hit = "query"
+    else if (n > 0) {
+        lc = tolower(content)
+        for (i = 1; i <= n; i++) if (index(lc, needle[i]) > 0) { hit = "local-list"; break }
+    }
+    if (hit != "") { printf "  %s:%d  [%s]\n", file, line, hit; bad++ }
+    line++
+    next
+}
+END { exit(bad > 0 ? 1 : 0) }
+')
+status=$?
+
+if [ "$status" -ne 0 ]; then
+    echo "[pre-commit] COMMIT BLOCKED. Staged additions match a forbidden pattern:" >&2
+    printf '%s\n' "$report" >&2
+    echo "  hex64      -> read keys from env / Secrets Manager; tx hashes: cite explorer URL or a prefix" >&2
+    echo "  logptr     -> no pointers into raw chat logs; aggregate + key, never a line" >&2
+    echo "  query      -> no raw query dumps" >&2
+    echo "  local-list -> corpus path / disk / handle from the local list; aggregate only" >&2
+    exit 1
+fi
+exit 0

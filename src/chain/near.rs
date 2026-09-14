@@ -1118,6 +1118,11 @@ mod replay_verify_tests {
         Hangs,
     }
 
+    /// The key PAYER signs with. The stub answers only for this key, so a read
+    /// of any other access key (the relayer's, say) fails the tests.
+    static PAYER_KEY: once_cell::sync::Lazy<SecretKey> =
+        once_cell::sync::Lazy::new(|| SecretKey::from_random(KeyType::ED25519));
+
     pub(super) async fn near_stub(node: Node) -> String {
         let app = Router::new().route(
             "/",
@@ -1127,6 +1132,7 @@ mod replay_verify_tests {
                         let params = &req["params"];
                         let body = if params["request_type"] == "view_access_key"
                             && params["account_id"] == PAYER
+                            && params["public_key"] == PAYER_KEY.public_key().to_string()
                         {
                             json!({"jsonrpc": "2.0", "id": req["id"], "result": {
                                 "nonce": nonce,
@@ -1167,10 +1173,8 @@ mod replay_verify_tests {
 
     /// A USDC transfer delegate action signed by PAYER with DELEGATE_NONCE.
     pub(super) fn signed_delegate_action() -> SignedDelegateAction {
-        let payer: Signer = InMemorySigner::from_secret_key(
-            PAYER.parse().unwrap(),
-            SecretKey::from_random(KeyType::ED25519),
-        );
+        let payer: Signer =
+            InMemorySigner::from_secret_key(PAYER.parse().unwrap(), PAYER_KEY.clone());
         let transfer = Action::FunctionCall(Box::new(FunctionCallAction {
             method_name: "ft_transfer".to_string(),
             args: json!({"receiver_id": MERCHANT, "amount": AMOUNT.to_string()})

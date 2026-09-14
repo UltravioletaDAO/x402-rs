@@ -15,7 +15,7 @@
 |---|---|---|---|
 | Algorand | `NonceStore::is_used` sobre `algorand_nonce_key(chain, group_id)` — `AlgorandProvider::check_group_unused` | el group_id ya esta reclamado (lo reclama `submit_group` antes de transmitir) | **fail-closed**, igual que Stellar: `NonceStoreUnavailable("verification_unavailable (ref)")` |
 | NEAR | `view_access_key(sender_id, public_key)` a finality `optimistic` — `NearProvider::check_delegate_nonce_unused` | `delegate_action.nonce <= access_key.nonce`, o la access key / cuenta no existe | **fail-closed**: `ContractCall`; acotado por `RPC_REQUEST_TIMEOUT_SECS` (10 s por defecto) con `tokio::time::timeout` |
-| Sui | `sui_multiGetObjects` sobre los objetos owned de la tx (coin del PTB + gas) — `SuiProvider::check_inputs_current` | algun objeto esta en otra version/digest que la referenciada, o fue borrado / no existe | **fail-closed**: `ContractCall`; mismo limite via `SuiClientBuilder::request_timeout` |
+| Sui | `sui_multiGetObjects` sobre los objetos owned de la tx (coin del PTB + gas) — `SuiProvider::check_inputs_current` | algun objeto esta en una version MAYOR que la referenciada, en la misma version con otro digest, o figura `Deleted`. Version MENOR o `NotExists`: no rechaza (seccion 1, Sui) | **fail-closed**: `ContractCall`; mismo limite via `SuiClientBuilder::request_timeout` |
 
 Las tres lecturas son de solo lectura y viven en `Facilitator::verify`, no en `verify_payment*`
 (que tambien usa settle).
@@ -51,7 +51,29 @@ el verify rechaza un pago que seguia siendo valido y el comprador tiene que firm
 `check_balance` ya abria un `SuiClient` (handshake `rpc.discover`) en cada verify. Ahora `verify`
 abre uno solo, con `request_timeout`, y lo comparte entre `check_inputs_current` y
 `check_balance`. `settle` abre su cliente como antes (sin limite nuevo) y se lo pasa a
-`check_balance`.
+`check_balance`. **Consecuencia**: en el camino de verify, `check_balance` pasa del
+`request_timeout` por defecto del SDK (60 s, `SuiClientBuilder::default`) a 10 s
+(`RPC_REQUEST_TIMEOUT_SECS`).
+
+### Sui: un RPC atrasado no es replay (ronda 2, decision de c0der)
+
+El cliente arma el PTB contra su propio RPC; el del facilitador puede ir detras. La ejecucion
+solo mueve un objeto hacia adelante, asi que:
+
+| Lo que ve el RPC del facilitador | Veredicto del verify |
+|---|---|
+| misma version y mismo digest | sigue |
+| version MAYOR que la referenciada | rechaza (`already used`) |
+| misma version, otro digest | rechaza (`already used`) |
+| `Deleted` | rechaza (`already used`) |
+| version MENOR que la referenciada | **no rechaza**: log `warn` sin datos del pagador, la guarda queda en settle |
+| `NotExists` | **no rechaza**: mismo tratamiento |
+| error de lectura / sin respuesta | fail-closed (`ContractCall`) |
+
+Las dos filas que no rechazan dan exactamente lo que daba 2.29.0: cero falsos rechazos por un
+RPC atrasado, a cambio de no frenar en verify ese caso. Ronda 1 rechazaba la version menor
+(medido por el refutador: `references version 5, chain holds version 4` -> `Err`, 2.29.0 ->
+`Valid`).
 
 ## 2. Que ve un cliente
 
@@ -123,22 +145,30 @@ solana,near,stellar,algorand,sui,xrpl --lib replay_verify -- --test-threads=1`.
 | `near::replay_verify_tests::verify_fails_closed_when_the_rpc_cannot_answer` | **FAILED** (`Valid`) | ok |
 | `near::replay_verify_tests::verify_accepts_a_delegate_action_with_a_fresh_nonce` | ok | ok |
 | `sui::replay_verify_tests::verify_rejects_a_transaction_whose_coin_moved_past_the_signed_version` | **FAILED** (`Valid`) | ok |
-| `sui::replay_verify_tests::verify_rejects_a_transaction_whose_coin_no_longer_exists` | **FAILED** (`Valid`) | ok |
+| `sui::replay_verify_tests::verify_rejects_a_transaction_whose_coin_no_longer_exists` (`Deleted`) | **FAILED** (`Valid`) | ok |
+| `sui::replay_verify_tests::verify_rejects_a_transaction_whose_coin_has_another_digest_at_the_referenced_version` | **FAILED** (`Valid`) | ok |
 | `sui::replay_verify_tests::verify_fails_closed_when_the_inputs_cannot_be_read` | **FAILED** (`Valid`) | ok |
 | `sui::replay_verify_tests::verify_accepts_a_transaction_whose_inputs_are_current` | ok | ok |
+| `sui::replay_verify_tests::verify_accepts_a_transaction_when_the_rpc_is_behind_the_referenced_version` | ok | ok |
+| `sui::replay_verify_tests::verify_accepts_a_transaction_whose_coin_the_rpc_does_not_know` (`NotExists`) | ok | ok |
 | `near::replay_verify_bound_tests::access_key_read_gives_up_at_its_timeout` | n/a (llama al helper nuevo) | ok |
 | `sui::replay_verify_bound_tests::input_read_gives_up_at_its_timeout` | n/a (llama al helper nuevo) | ok |
 
-Los tres `accepts` pasan en ambos lados a proposito: prueban que la lectura nueva no rechaza un
-pago sano, y que en la rama el stub efectivamente contesta lo que el cliente real espera.
+Base (ronda 2): `5 passed; 8 failed`. Rama: `15 passed; 0 failed`.
+
+Los cinco `accepts` pasan en ambos lados a proposito: prueban que la lectura nueva no rechaza un
+pago sano (ni un RPC atrasado, en Sui), y que en la rama el stub contesta lo que el cliente real
+espera. El stub de NEAR contesta `view_access_key` solo para la `public_key` con la que firmo el
+pagador; medido con mutacion (el verify consulta la clave del relayer): `accepts` y `rejects` de
+NEAR fallan, `2 passed; 2 failed`.
 
 ## 5. Como verificarlo en produccion despues del release
 
 1. `curl -s https://facilitator.ultravioletadao.xyz/version` -> `{"version":"2.29.1"}`.
 2. **NEAR (sin gastar)**: con una cuenta de testnet propia, firmar un delegate action de USDC con
    `nonce` <= el nonce actual de su access key (`view_access_key`) y mandar `POST /verify`
-   (`network: near-testnet`). Esperado: 400 `internal_error (ref)`; en 2.29.0 el mismo cuerpo
-   daba 200 `isValid: true`. Con `nonce` = actual + 1: 200 `isValid: true`.
+   (`network: near-testnet`). Esperado: 400 `internal_error (ref)`. Con `nonce` = actual + 1:
+   200 `isValid: true`.
 3. **Sui (sin gastar)**: firmar el PTB de USDC referenciando una version ANTERIOR de una coin
    propia (`sui_getObject` da la actual; cualquier tx previa sobre esa coin deja una vieja) y mandar
    `POST /verify` (`sui-testnet`). Esperado: 400. Con la version actual: 200 valido.
@@ -174,3 +204,6 @@ Ver la tabla del PR (mismos comandos que el job `test` de `ci.yaml`, mas fmt y c
 | B5 | NEAR: `settle` registra al receptor (`storage_deposit`, lo paga el facilitador) antes de saber si el runtime va a aceptar el delegate action; podria correr la misma lectura de nonce antes. |
 | B6 | Sui: el cliente de `settle` (balance y `execute_transaction_block`) sigue con el `request_timeout` por defecto del SDK (60 s). |
 | B7 | Algorand: `simulate_group` sigue sin llamadores. |
+| B8 | `DynamoNonceStore::is_used` lee sin `consistent_read(true)`; afecta al verify de Algorand y al de Stellar. |
+| B9 | El cliente de DynamoDB del nonce store no tiene `operation_timeout`. |
+| B10 | NEAR: tratar `UnknownAccessKey` como falla de RPC (hoy es rechazo `Other`). |

@@ -684,7 +684,10 @@ impl SuiProvider {
         for ((id, version, digest), response) in inputs.iter().zip(responses) {
             match (response.data, response.error) {
                 (Some(current), _) if current.version == *version && current.digest == *digest => {}
-                (Some(current), _) => {
+                // Execution only moves an object forward, so a newer version, or
+                // the referenced version under another digest, means the
+                // referenced one is gone.
+                (Some(current), _) if current.version >= *version => {
                     return Err(FacilitatorLocalError::Other(format!(
                         "Sui input object {} already used: transaction references version {} ({}), chain holds version {} ({})",
                         id,
@@ -694,17 +697,29 @@ impl SuiProvider {
                         current.digest
                     )));
                 }
-                (
-                    None,
-                    Some(
-                        SuiObjectResponseError::Deleted { .. }
-                        | SuiObjectResponseError::NotExists { .. },
-                    ),
-                ) => {
+                // An older version is our RPC behind the one the client built
+                // the transaction against, not a replay. Leave the verdict to
+                // settle, as before this check.
+                (Some(current), _) => {
+                    warn!(
+                        network = %self.network,
+                        referenced_version = version.value(),
+                        rpc_version = current.version.value(),
+                        "Sui input read behind the referenced version; leaving the verdict to settle"
+                    );
+                }
+                (None, Some(SuiObjectResponseError::Deleted { .. })) => {
                     return Err(FacilitatorLocalError::Other(format!(
-                        "Sui input object {} already used: it no longer exists",
+                        "Sui input object {} already used: it was deleted",
                         id
                     )));
+                }
+                // Same reading: an object the RPC has not seen yet.
+                (None, Some(SuiObjectResponseError::NotExists { .. })) => {
+                    warn!(
+                        network = %self.network,
+                        "Sui input object unknown to the RPC; leaving the verdict to settle"
+                    );
                 }
                 (None, error) => {
                     return Err(FacilitatorLocalError::ContractCall(format!(
@@ -1407,6 +1422,12 @@ mod replay_verify_tests {
         CoinAdvanced,
         /// The coin is gone, as after a transaction that spent all of it.
         CoinDeleted,
+        /// The referenced version number under another digest.
+        CoinOtherDigest,
+        /// The RPC is behind: the coin is at an older version than the one referenced.
+        CoinBehind,
+        /// The RPC does not know the coin.
+        CoinUnknown,
         /// sui_multiGetObjects answers with a JSON-RPC error.
         Unreadable,
         /// sui_multiGetObjects never answers.
@@ -1447,6 +1468,19 @@ mod replay_verify_tests {
                             object_id: id,
                             version: moved_on.1,
                             digest: moved_on.2,
+                        })
+                    }
+                    Inputs::CoinOtherDigest if id == coin_ref().0 => {
+                        object((id, coin_ref().1, ObjectDigest::new([7u8; 32])))
+                    }
+                    Inputs::CoinBehind if id == coin_ref().0 => object((
+                        id,
+                        SequenceNumber::from_u64(4),
+                        ObjectDigest::new([6u8; 32]),
+                    )),
+                    Inputs::CoinUnknown if id == coin_ref().0 => {
+                        SuiObjectResponse::new_with_error(SuiObjectResponseError::NotExists {
+                            object_id: id,
                         })
                     }
                     _ if id == coin_ref().0 => object(coin_ref()),
@@ -1615,6 +1649,52 @@ mod replay_verify_tests {
             .verify(&request)
             .await
             .expect("a transaction with current inputs verifies");
+        assert!(
+            matches!(&response, VerifyResponse::Valid { payer } if *payer == MixedAddress::Sui(sender.to_string())),
+            "got {response:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_rejects_a_transaction_whose_coin_has_another_digest_at_the_referenced_version()
+    {
+        let provider = provider(Inputs::CoinOtherDigest).await;
+        let (request, _) = request(&provider);
+
+        let err = provider
+            .verify(&request)
+            .await
+            .expect_err("the referenced version under another digest must not verify");
+        assert!(
+            matches!(&err, FacilitatorLocalError::Other(msg) if msg.contains("already used")),
+            "got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_accepts_a_transaction_when_the_rpc_is_behind_the_referenced_version() {
+        let provider = provider(Inputs::CoinBehind).await;
+        let (request, sender) = request(&provider);
+
+        let response = provider
+            .verify(&request)
+            .await
+            .expect("an RPC behind the client is not a replay");
+        assert!(
+            matches!(&response, VerifyResponse::Valid { payer } if *payer == MixedAddress::Sui(sender.to_string())),
+            "got {response:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_accepts_a_transaction_whose_coin_the_rpc_does_not_know() {
+        let provider = provider(Inputs::CoinUnknown).await;
+        let (request, sender) = request(&provider);
+
+        let response = provider
+            .verify(&request)
+            .await
+            .expect("an object the RPC has not seen is not a replay");
         assert!(
             matches!(&response, VerifyResponse::Valid { payer } if *payer == MixedAddress::Sui(sender.to_string())),
             "got {response:?}"

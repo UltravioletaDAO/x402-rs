@@ -14,9 +14,14 @@
     finality) and rejects a delegate action whose nonce the key has already
     reached. The read is bounded by `RPC_REQUEST_TIMEOUT_SECS`.
   - **Sui** reads the transaction's owned inputs (`sui_multiGetObjects`) and
-    rejects when one is no longer at the version the transaction references or
-    no longer exists. Same bound; the balance check now shares that client
-    instead of opening its own.
+    rejects when one has moved past the version the transaction references,
+    sits at that version under another digest, or was deleted. An RPC that
+    reports an older version, or does not know the object, is taken as behind
+    the client's: verify does not reject, logs at `warn` and leaves the verdict
+    to `/settle`, as before. Same bound. The balance check now shares that
+    client instead of opening its own, so on the verify path its
+    `request_timeout` drops from the SDK default of 60 s to 10 s
+    (`RPC_REQUEST_TIMEOUT_SECS`).
   - The rejection has the same shape as Stellar's (`400 internal_error (ref)`),
     and an RPC that cannot answer rejects rather than vouching. `/settle` is
     unchanged on all three.

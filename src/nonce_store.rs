@@ -251,10 +251,12 @@ const ENV_OPERATION_TIMEOUT_MS: &str = "NONCE_STORE_OPERATION_TIMEOUT_MS";
 /// Bound on one nonce store call, retries included.
 ///
 /// The SDK sets none, so a DynamoDB that takes the connection and never
-/// answers holds a verify or a settle for as long as its caller waits. Every
-/// caller already treats a store error as a rejection, so the bound only turns
-/// that hang into the same rejection sooner. In-region reads and conditional
-/// puts answer in milliseconds; the rest is room for the SDK's own retries.
+/// answers holds a verify or a settle for as long as its caller waits. Stellar,
+/// Algorand and Solana already treat a store error as a rejection, so for them
+/// the bound only turns that hang into the same rejection sooner. ERC-8004
+/// proof claims keep their fail-open: within the bound, the rating goes through
+/// without replay protection. In-region reads and conditional puts answer in
+/// milliseconds; the rest is room for the SDK's own retries.
 const DEFAULT_OPERATION_TIMEOUT_MS: u64 = 3_000;
 
 /// Accepted range for the override. Below the floor, ordinary jitter would
@@ -836,17 +838,21 @@ mod tests {
         }
     }
 
-    /// A TCP listener that accepts connections and never writes a byte.
-    async fn silent_listener() -> String {
+    /// A TCP listener that accepts connections and never writes a byte, with a
+    /// count of the connections it accepted.
+    async fn silent_listener() -> (String, Arc<std::sync::atomic::AtomicUsize>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
+        let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = accepted.clone();
         tokio::spawn(async move {
             let mut held = Vec::new();
             while let Ok((socket, _)) = listener.accept().await {
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 held.push(socket);
             }
         });
-        format!("http://{addr}")
+        (format!("http://{addr}"), accepted)
     }
 
     /// The production constructor applies the configured bound: the store
@@ -856,7 +862,7 @@ mod tests {
     /// No other test in the crate reads these variables.
     #[tokio::test]
     async fn from_env_bounds_calls_with_the_configured_operation_timeout() {
-        let endpoint = silent_listener().await;
+        let (endpoint, accepted) = silent_listener().await;
         let _env = EnvGuard::set(&[
             ("AWS_ENDPOINT_URL", Some(endpoint.as_str())),
             ("AWS_REGION", Some("us-east-2")),
@@ -884,14 +890,27 @@ mod tests {
         .await
         .expect("the read must return on its own timeout, not hang");
 
+        let elapsed = started.elapsed();
+
+        // The request reached an endpoint that held it. This is what tells a
+        // silent endpoint from a closed port: against a closed port the SDK
+        // retries with backoff until the same bound and also reports a timeout.
         assert!(
-            matches!(read, Err(NonceStoreError::ReadError(_))),
-            "got {read:?}"
+            accepted.load(std::sync::atomic::Ordering::SeqCst) >= 1,
+            "the listener accepted no connection; got {read:?}"
         );
         assert!(
-            started.elapsed() < Duration::from_secs(2),
-            "gave up after {:?}",
-            started.elapsed()
+            matches!(&read, Err(NonceStoreError::ReadError(msg)) if msg.contains("timed out")),
+            "got {read:?}"
+        );
+        // It waited for the configured 400 ms, and not for the 3000 ms default.
+        assert!(
+            elapsed >= Duration::from_millis(350),
+            "gave up after {elapsed:?}, before the configured bound"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "gave up after {elapsed:?}"
         );
     }
 }

@@ -1,5 +1,35 @@
 # Changelog
 
+## [2.29.3] - 2026-09-14
+
+### Changed
+
+- **A nonce store put or delete that times out says so.**
+  `DynamoNonceStore::check_and_mark_used` and `release` recognise the SDK's
+  timeout: they return `WriteError("DynamoDB put_item timed out")` /
+  `WriteError("DynamoDB delete_item timed out")` and log the same text, where
+  they used to return and log `unhandled error`. Every other store error keeps
+  its previous text. This change reached production with the merge of #54,
+  whose image still reported 2.29.2; 2.29.3 is the first version that
+  reports it.
+- The comment on `DEFAULT_OPERATION_TIMEOUT_MS` no longer says every caller
+  rejects when the store errors: Stellar, Algorand and Solana do, ERC-8004
+  keeps its fail-open.
+- Tests only, merged with #54: `DynamoNonceStore::from_env` against a local
+  endpoint that accepts and never answers, with
+  `NONCE_STORE_OPERATION_TIMEOUT_MS=400`; the override parser as a pure
+  function whose tests no longer write process environment; Sui `/verify`
+  with one input unknown to the RPC and the other moved past its referenced
+  version, in both orders. New in 2.29.3: the `from_env` test also requires
+  the error to say `timed out`, at least 350 ms to pass, and the local
+  endpoint to have accepted a connection, so a closed port no longer passes.
+
+### Errata
+
+- The 2.29.2 entry originally listed ERC-8004 proof claims among the callers
+  that reject when the nonce store errors. They do not: ERC-8004 keeps its
+  existing fail-open. The 2.29.2 entry below carries the corrected text.
+
 ## [2.29.2] - 2026-09-14
 
 ### Changed
@@ -18,8 +48,9 @@
     request. ERC-8004 proof claims keep their existing fail-open: a store that
     does not answer lets the rating through without replay protection, now
     after the bound (3 s by default) instead of after however long the call
-    hung. The timeouts the ambient AWS config already carries, such as the
-    connect timeout, are kept.
+    hung. (Errata, 2.29.3: this sentence originally counted ERC-8004 among the
+    callers that reject.) The timeouts the ambient AWS config already carries,
+    such as the connect timeout, are kept.
 - Tests only: Sui `/verify` with mixed inputs, one read behind its referenced
   version and the other moved past it, in both orders.
 

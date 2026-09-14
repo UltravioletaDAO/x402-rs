@@ -1,5 +1,31 @@
 # Changelog
 
+## [2.29.1] - 2026-09-14
+
+### Changed
+
+- **`/verify` on Algorand, NEAR and Sui now reads the replay state, for parity
+  with EVM and Stellar.** Until now it checked structure, signatures and
+  amounts only, and left the replay check to `/settle` or to the chain.
+  - **Algorand** reads the group_id in the nonce store, read-only; `/settle`
+    keeps its atomic claim in `submit_group`. A store that cannot be read
+    rejects, the same rule Stellar's verify already follows.
+  - **NEAR** reads the payer's access key (`view_access_key`, optimistic
+    finality) and rejects a delegate action whose nonce the key has already
+    reached. The read is bounded by `RPC_REQUEST_TIMEOUT_SECS`.
+  - **Sui** reads the transaction's owned inputs (`sui_multiGetObjects`) and
+    rejects when one has moved past the version the transaction references,
+    sits at that version under another digest, or was deleted. An RPC that
+    reports an older version, or does not know the object, is taken as behind
+    the client's: verify does not reject, logs at `warn` and leaves the verdict
+    to `/settle`, as before. Same bound. The balance check now shares that
+    client instead of opening its own, so on the verify path its
+    `request_timeout` drops from the SDK default of 60 s to 10 s
+    (`RPC_REQUEST_TIMEOUT_SECS`).
+  - The rejection has the same shape as Stellar's (`400 internal_error (ref)`),
+    and an RPC that cannot answer rejects rather than vouching. `/settle` is
+    unchanged on all three.
+
 ## [2.29.0] - 2026-09-13
 
 ### Added

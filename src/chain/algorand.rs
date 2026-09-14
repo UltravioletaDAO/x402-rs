@@ -134,6 +134,14 @@ pub enum AlgorandError {
 
     #[error("Fee transaction amount {amount} exceeds maximum allowed {max}")]
     FeeTooHigh { amount: u64, max: u64 },
+
+    #[error("Transaction group {group_id} already used")]
+    GroupAlreadyUsed { group_id: String },
+
+    // Same fail-closed rule as Stellar's nonce read on verify: a store that
+    // cannot answer rejects the payment instead of vouching for it.
+    #[error("Nonce store unavailable: {0}")]
+    NonceStoreUnavailable(String),
 }
 
 impl From<AlgorandError> for FacilitatorLocalError {
@@ -334,6 +342,37 @@ impl AlgorandProvider {
                 ),
                 other => AlgorandError::RpcError(format!("Nonce store error: {}", other)),
             })
+    }
+
+    /// Check that group_id has not been used (read-only, for verification).
+    ///
+    /// The fee transaction can only be signed by this facilitator, and
+    /// submit_group() claims the group_id in the store before broadcasting it,
+    /// so every group that reached the chain through us is recorded here. The
+    /// claim outlives the group's validity window (algorand_ttl_seconds), and
+    /// past that window verify_payment_group() already rejects it as expired.
+    async fn check_group_unused(&self, group_id: &[u8; 32]) -> Result<(), AlgorandError> {
+        let store = get_global_nonce_store().await;
+        let key = algorand_nonce_key(self.chain_name(), group_id);
+
+        match store.is_used(&key).await {
+            Ok(true) => Err(AlgorandError::GroupAlreadyUsed {
+                group_id: hex::encode(group_id),
+            }),
+            Ok(false) => Ok(()),
+            Err(e) => {
+                let correlation_id = uuid::Uuid::new_v4();
+                tracing::error!(
+                    %correlation_id,
+                    error = %e,
+                    group_id = %hex::encode(group_id),
+                    "Nonce store read failed during verify, failing closed"
+                );
+                Err(AlgorandError::NonceStoreUnavailable(format!(
+                    "verification_unavailable (ref: {correlation_id})"
+                )))
+            }
+        }
     }
 
     /// Create a new Algorand provider
@@ -976,6 +1015,11 @@ impl Facilitator for AlgorandProvider {
                     )
                     .await
                     .map_err(FacilitatorLocalError::from)?;
+                // Settle keeps its own atomic claim in submit_group(); this
+                // read gives verify the same answer settle would.
+                self.check_group_unused(&verification.group_id)
+                    .await
+                    .map_err(FacilitatorLocalError::from)?;
                 Ok(VerifyResponse::valid(verification.payer.into()))
             }
             _ => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
@@ -1143,5 +1187,239 @@ mod tests {
         // The cap should be strictly above the minimum and below 1 ALGO (1_000_000).
         assert!(MAX_ALGORAND_FEE_TX_MICROALGOS > 2_000);
         assert!(MAX_ALGORAND_FEE_TX_MICROALGOS < 1_000_000);
+    }
+}
+
+/// `verify` against the replay state `settle` writes.
+///
+/// Uses nothing newer than `verify`, the global nonce store and the provider
+/// constructor, so the module also runs against the code before the check.
+/// algod is a local stub answering `GET /v2/status`; transactions are built
+/// with algonaut's builder, which needs no node.
+#[cfg(test)]
+mod replay_verify_tests {
+    use super::*;
+    use crate::types::{PaymentPayload, TokenAmount};
+    use algonaut::core::{MicroAlgos, Round, SuggestedTransactionParams};
+    use algonaut::crypto::HashDigest;
+    use algonaut::transaction::builder::TxnFee;
+    use algonaut::transaction::tx_group::TxGroup;
+    use algonaut::transaction::{Pay, TransferAsset, TxnBuilder};
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+
+    const AMOUNT: u64 = 1_000_000;
+    const CURRENT_ROUND: u64 = 1_000;
+
+    /// A nonce store whose reads can be made to fail, key by key.
+    #[derive(Debug, Default)]
+    struct ScriptedStore {
+        used: Mutex<HashSet<String>>,
+        unreadable: Mutex<HashSet<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl NonceStore for ScriptedStore {
+        async fn check_and_mark_used(
+            &self,
+            key: &str,
+            _ttl_seconds: u64,
+        ) -> Result<(), NonceStoreError> {
+            if self.used.lock().unwrap().insert(key.to_string()) {
+                Ok(())
+            } else {
+                Err(NonceStoreError::NonceAlreadyUsed(key.to_string()))
+            }
+        }
+
+        async fn is_used(&self, key: &str) -> Result<bool, NonceStoreError> {
+            if self.unreadable.lock().unwrap().contains(key) {
+                return Err(NonceStoreError::ReadError("scripted".to_string()));
+            }
+            Ok(self.used.lock().unwrap().contains(key))
+        }
+
+        async fn health_check(&self) -> Result<(), NonceStoreError> {
+            Ok(())
+        }
+
+        fn store_type(&self) -> &'static str {
+            "scripted"
+        }
+    }
+
+    static SCRIPTED_STORE: once_cell::sync::Lazy<Arc<ScriptedStore>> =
+        once_cell::sync::Lazy::new(Default::default);
+
+    /// The scripted store, installed as the providers' global store.
+    fn scripted_store() -> Arc<ScriptedStore> {
+        let scripted = SCRIPTED_STORE.clone();
+        let installed = GLOBAL_NONCE_STORE.get_or_init(|| scripted.clone());
+        assert!(
+            std::ptr::addr_eq(Arc::as_ptr(installed), Arc::as_ptr(&scripted)),
+            "the Algorand nonce store was initialized before the scripted one"
+        );
+        scripted
+    }
+
+    /// An algod node at CURRENT_ROUND.
+    async fn algod_stub() -> String {
+        let status = serde_json::json!({
+            "catchup-time": 0,
+            "last-round": CURRENT_ROUND,
+            "last-version": "future",
+            "next-version": "future",
+            "next-version-round": CURRENT_ROUND + 1,
+            "next-version-supported": true,
+            "stopped-at-unsupported-round": false,
+            "time-since-last-round": 0,
+        });
+        let app = axum::Router::new().route(
+            "/v2/status",
+            axum::routing::get(move || async move { axum::Json(status) }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        format!("http://{addr}/")
+    }
+
+    struct Fixture {
+        provider: AlgorandProvider,
+        request: VerifyRequest,
+        group_id: [u8; 32],
+        payer: String,
+    }
+
+    /// A group as a client sends it: the facilitator's unsigned fee
+    /// transaction, then the payer's signed USDC transfer. `note` gives each
+    /// test its own group_id.
+    async fn fixture(note: &[u8]) -> Fixture {
+        let provider = AlgorandProvider::try_new(
+            Account::generate().mnemonic(),
+            Some(algod_stub().await),
+            Network::AlgorandTestnet,
+        )
+        .unwrap();
+        let facilitator = AlgoAddress::from_str(&provider.public_address).unwrap();
+        let payer = Account::generate();
+        let pay_to = Account::generate().address();
+
+        let params = SuggestedTransactionParams {
+            genesis_id: "testnet-v1.0".to_string(),
+            genesis_hash: HashDigest([7u8; 32]),
+            consensus_version: "future".to_string(),
+            fee_per_byte: MicroAlgos(0),
+            min_fee: MicroAlgos(1_000),
+            first_valid: Round(CURRENT_ROUND - 10),
+            last_valid: Round(CURRENT_ROUND + 500),
+        };
+        let mut fee_tx = TxnBuilder::with_fee(
+            &params,
+            TxnFee::Fixed(MicroAlgos(2_000)),
+            Pay::new(facilitator, facilitator, MicroAlgos(0)).build(),
+        )
+        .build()
+        .unwrap();
+        let mut payment_tx = TxnBuilder::with_fee(
+            &params,
+            TxnFee::zero(),
+            TransferAsset::new(payer.address(), USDC_ASA_ID_TESTNET, AMOUNT, pay_to).build(),
+        )
+        .note(note.to_vec())
+        .build()
+        .unwrap();
+        TxGroup::assign_group_id(&mut [&mut fee_tx, &mut payment_tx]).unwrap();
+        let group_id = fee_tx.group.unwrap().0;
+        let payment_signed = payer.sign_transaction(payment_tx).unwrap();
+
+        let payload = ExactAlgorandPayload {
+            payment_index: 1,
+            payment_group: vec![
+                BASE64.encode(rmp_serde::to_vec_named(&fee_tx).unwrap()),
+                BASE64.encode(rmp_serde::to_vec_named(&payment_signed).unwrap()),
+            ],
+        };
+        let request = VerifyRequest {
+            x402_version: X402Version::V1,
+            payment_payload: PaymentPayload {
+                x402_version: X402Version::V1,
+                scheme: Scheme::Exact,
+                network: Network::AlgorandTestnet,
+                payload: ExactPaymentPayload::Algorand(payload),
+            },
+            payment_requirements: PaymentRequirements {
+                scheme: Scheme::Exact,
+                network: Network::AlgorandTestnet,
+                max_amount_required: TokenAmount(alloy::primitives::U256::from(AMOUNT)),
+                resource: url::Url::parse("https://example.com/paid").unwrap(),
+                description: String::new(),
+                mime_type: "application/json".to_string(),
+                output_schema: None,
+                pay_to: MixedAddress::Algorand(pay_to.to_string()),
+                max_timeout_seconds: 60,
+                asset: MixedAddress::Offchain(USDC_ASA_ID_TESTNET.to_string()),
+                extra: None,
+            },
+        };
+
+        Fixture {
+            provider,
+            request,
+            group_id,
+            payer: payer.address().to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn verify_rejects_a_group_settle_already_claimed() {
+        let store = scripted_store();
+        let f = fixture(b"claimed").await;
+        let key = algorand_nonce_key(f.provider.chain_name(), &f.group_id);
+        store.check_and_mark_used(&key, 3_600).await.unwrap();
+
+        let err = f
+            .provider
+            .verify(&f.request)
+            .await
+            .expect_err("a group settle already claimed must not verify");
+        assert!(
+            matches!(&err, FacilitatorLocalError::Other(msg) if msg.contains("already used")),
+            "got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_accepts_a_group_not_yet_settled() {
+        scripted_store();
+        let f = fixture(b"unclaimed").await;
+
+        let response = f
+            .provider
+            .verify(&f.request)
+            .await
+            .expect("an unclaimed group verifies");
+        assert!(
+            matches!(&response, VerifyResponse::Valid { payer } if *payer == MixedAddress::Algorand(f.payer.clone())),
+            "got {response:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_fails_closed_when_the_nonce_store_cannot_be_read() {
+        let store = scripted_store();
+        let f = fixture(b"unreadable").await;
+        let key = algorand_nonce_key(f.provider.chain_name(), &f.group_id);
+        store.unreadable.lock().unwrap().insert(key);
+
+        let err = f
+            .provider
+            .verify(&f.request)
+            .await
+            .expect_err("an unreadable nonce store must not vouch for a group");
+        assert!(
+            matches!(&err, FacilitatorLocalError::Other(msg) if msg.contains("unavailable")),
+            "got {err:?}"
+        );
     }
 }

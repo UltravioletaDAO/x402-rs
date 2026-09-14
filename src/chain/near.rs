@@ -16,7 +16,7 @@
 
 use near_crypto::{InMemorySigner, PublicKey, SecretKey, Signer};
 use near_jsonrpc_client::{methods, JsonRpcClient};
-use near_jsonrpc_primitives::types::query::QueryResponseKind;
+use near_jsonrpc_primitives::types::query::{QueryResponseKind, RpcQueryError};
 use near_primitives::action::delegate::{NonDelegateAction, SignedDelegateAction};
 use near_primitives::hash::CryptoHash;
 use near_primitives::transaction::{Action, FunctionCallAction, Transaction, TransactionV0};
@@ -680,6 +680,68 @@ impl NearProvider {
         })
     }
 
+    /// Refuse a delegate action whose nonce the payer's access key has reached.
+    ///
+    /// The runtime executes a delegate action only while its nonce is above the
+    /// access key's, and executing it raises the key's nonce to that value, so a
+    /// delegate action that already ran fails here. That also covers "already
+    /// executed": the relayer's transaction hash does not exist until settle,
+    /// the access key nonce does. Read at optimistic finality so a settlement
+    /// that just landed counts before its block is final.
+    async fn check_delegate_nonce_unused(
+        &self,
+        signed_delegate_action: &SignedDelegateAction,
+        timeout: std::time::Duration,
+    ) -> Result<(), FacilitatorLocalError> {
+        let delegate_action = &signed_delegate_action.delegate_action;
+        let request = methods::query::RpcQueryRequest {
+            block_reference: BlockReference::Finality(Finality::None),
+            request: near_primitives::views::QueryRequest::ViewAccessKey {
+                account_id: delegate_action.sender_id.clone(),
+                public_key: delegate_action.public_key.clone(),
+            },
+        };
+
+        let response = match tokio::time::timeout(timeout, self.rpc_client.call(request)).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(e)) => {
+                if let Some(
+                    RpcQueryError::UnknownAccessKey { .. } | RpcQueryError::UnknownAccount { .. },
+                ) = e.handler_error()
+                {
+                    return Err(FacilitatorLocalError::Other(format!(
+                        "Access key {} does not exist for {}",
+                        delegate_action.public_key, delegate_action.sender_id
+                    )));
+                }
+                return Err(FacilitatorLocalError::ContractCall(format!(
+                    "Failed to query access key: {e}"
+                )));
+            }
+            Err(_) => {
+                return Err(FacilitatorLocalError::ContractCall(format!(
+                    "Access key query timed out after {}ms",
+                    timeout.as_millis()
+                )))
+            }
+        };
+
+        match response.kind {
+            QueryResponseKind::AccessKey(access_key)
+                if delegate_action.nonce <= access_key.nonce =>
+            {
+                Err(FacilitatorLocalError::Other(format!(
+                    "Delegate action nonce {} already used for {} (access key nonce {})",
+                    delegate_action.nonce, delegate_action.sender_id, access_key.nonce
+                )))
+            }
+            QueryResponseKind::AccessKey(_) => Ok(()),
+            _ => Err(FacilitatorLocalError::ContractCall(
+                "Unexpected query response kind".to_string(),
+            )),
+        }
+    }
+
     /// Submit a meta-transaction (NEP-366)
     ///
     /// Wraps the SignedDelegateAction in a Transaction with Action::Delegate,
@@ -785,6 +847,12 @@ impl Facilitator for NearProvider {
 
     async fn verify(&self, request: &VerifyRequest) -> Result<VerifyResponse, Self::Error> {
         let verification = self.verify_payment(request).await?;
+        // Settle is unchanged: the runtime refuses a used nonce on submission.
+        self.check_delegate_nonce_unused(
+            &verification.signed_delegate_action,
+            crate::chain::rpc_http_timeout(),
+        )
+        .await?;
         Ok(VerifyResponse::valid(verification.payer.into()))
     }
 
@@ -1016,5 +1084,216 @@ mod tests {
             }
             other => panic!("unexpected error variant: {:?}", other),
         }
+    }
+}
+
+/// `verify` against the payer's access key nonce.
+///
+/// Uses nothing newer than `verify` and the provider constructor, so the
+/// module also runs against the code before the check. The RPC node is a local
+/// JSON-RPC stub.
+#[cfg(test)]
+mod replay_verify_tests {
+    use super::*;
+    use crate::types::{ExactNearPayload, PaymentPayload, PaymentRequirements, TokenAmount};
+    use axum::http::StatusCode;
+    use axum::{routing::post, Json, Router};
+    use near_crypto::KeyType;
+    use near_primitives::action::delegate::DelegateAction;
+    use serde_json::{json, Value};
+
+    const USDC: &str = "usdc.testnet";
+    const MERCHANT: &str = "merchant.testnet";
+    const PAYER: &str = "payer.testnet";
+    const AMOUNT: u64 = 1_000_000;
+    pub(super) const DELEGATE_NONCE: u64 = 42;
+
+    #[derive(Clone, Copy)]
+    pub(super) enum Node {
+        /// Answers view_access_key for PAYER with this nonce.
+        AccessKeyNonce(u64),
+        /// Answers every call with HTTP 503.
+        Down,
+        /// Never answers.
+        Hangs,
+    }
+
+    /// The key PAYER signs with. The stub answers only for this key, so a read
+    /// of any other access key (the relayer's, say) fails the tests.
+    static PAYER_KEY: once_cell::sync::Lazy<SecretKey> =
+        once_cell::sync::Lazy::new(|| SecretKey::from_random(KeyType::ED25519));
+
+    pub(super) async fn near_stub(node: Node) -> String {
+        let app = Router::new().route(
+            "/",
+            post(move |Json(req): Json<Value>| async move {
+                match node {
+                    Node::AccessKeyNonce(nonce) => {
+                        let params = &req["params"];
+                        let body = if params["request_type"] == "view_access_key"
+                            && params["account_id"] == PAYER
+                            && params["public_key"] == PAYER_KEY.public_key().to_string()
+                        {
+                            json!({"jsonrpc": "2.0", "id": req["id"], "result": {
+                                "nonce": nonce,
+                                "permission": "FullAccess",
+                                "block_height": 1,
+                                "block_hash": "11111111111111111111111111111111",
+                            }})
+                        } else {
+                            json!({"jsonrpc": "2.0", "id": req["id"], "error": {
+                                "code": -32601, "message": format!("unexpected call {req}"),
+                            }})
+                        };
+                        (StatusCode::OK, Json(body))
+                    }
+                    Node::Down => (StatusCode::SERVICE_UNAVAILABLE, Json(json!({}))),
+                    Node::Hangs => {
+                        tokio::time::sleep(std::time::Duration::from_secs(3_600)).await;
+                        (StatusCode::OK, Json(json!({})))
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        format!("http://{addr}")
+    }
+
+    pub(super) async fn provider(node: Node) -> NearProvider {
+        NearProvider::try_new(
+            SecretKey::from_random(KeyType::ED25519),
+            "facilitator.testnet".to_string(),
+            near_stub(node).await,
+            Network::NearTestnet,
+        )
+        .unwrap()
+    }
+
+    /// A USDC transfer delegate action signed by PAYER with DELEGATE_NONCE.
+    pub(super) fn signed_delegate_action() -> SignedDelegateAction {
+        let payer: Signer =
+            InMemorySigner::from_secret_key(PAYER.parse().unwrap(), PAYER_KEY.clone());
+        let transfer = Action::FunctionCall(Box::new(FunctionCallAction {
+            method_name: "ft_transfer".to_string(),
+            args: json!({"receiver_id": MERCHANT, "amount": AMOUNT.to_string()})
+                .to_string()
+                .into_bytes(),
+            gas: Gas::from_gas(30_000_000_000_000),
+            deposit: NearToken::from_yoctonear(1),
+        }));
+        let delegate_action = DelegateAction {
+            sender_id: PAYER.parse().unwrap(),
+            receiver_id: USDC.parse().unwrap(),
+            actions: vec![NonDelegateAction::try_from(transfer).unwrap()],
+            nonce: DELEGATE_NONCE,
+            max_block_height: 1_000_000,
+            public_key: payer.public_key(),
+        };
+        let signature = payer.sign(delegate_action.get_nep461_hash().as_bytes());
+        SignedDelegateAction {
+            delegate_action,
+            signature,
+        }
+    }
+
+    fn request() -> VerifyRequest {
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            borsh::to_vec(&signed_delegate_action()).unwrap(),
+        );
+        VerifyRequest {
+            x402_version: X402Version::V1,
+            payment_payload: PaymentPayload {
+                x402_version: X402Version::V1,
+                scheme: Scheme::Exact,
+                network: Network::NearTestnet,
+                payload: ExactPaymentPayload::Near(ExactNearPayload {
+                    signed_delegate_action: encoded,
+                }),
+            },
+            payment_requirements: PaymentRequirements {
+                scheme: Scheme::Exact,
+                network: Network::NearTestnet,
+                max_amount_required: TokenAmount(alloy::primitives::U256::from(AMOUNT)),
+                resource: url::Url::parse("https://example.com/paid").unwrap(),
+                description: String::new(),
+                mime_type: "application/json".to_string(),
+                output_schema: None,
+                pay_to: MixedAddress::Near(MERCHANT.to_string()),
+                max_timeout_seconds: 60,
+                asset: MixedAddress::Near(USDC.to_string()),
+                extra: None,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn verify_rejects_a_delegate_action_the_access_key_nonce_has_reached() {
+        // Executing the delegate action set the access key nonce to its nonce.
+        let provider = provider(Node::AccessKeyNonce(DELEGATE_NONCE)).await;
+
+        let err = provider
+            .verify(&request())
+            .await
+            .expect_err("an executed delegate action must not verify");
+        assert!(
+            matches!(&err, FacilitatorLocalError::Other(msg) if msg.contains("already used")),
+            "got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_accepts_a_delegate_action_with_a_fresh_nonce() {
+        let provider = provider(Node::AccessKeyNonce(DELEGATE_NONCE - 1)).await;
+
+        let response = provider
+            .verify(&request())
+            .await
+            .expect("a delegate action above the access key nonce verifies");
+        assert!(
+            matches!(&response, VerifyResponse::Valid { payer } if *payer == MixedAddress::Near(PAYER.to_string())),
+            "got {response:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_fails_closed_when_the_rpc_cannot_answer() {
+        let provider = provider(Node::Down).await;
+
+        let err = provider
+            .verify(&request())
+            .await
+            .expect_err("an unanswered access key read must not vouch for a delegate action");
+        assert!(
+            matches!(&err, FacilitatorLocalError::ContractCall(_)),
+            "got {err:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod replay_verify_bound_tests {
+    use super::replay_verify_tests::{provider, signed_delegate_action, Node};
+    use super::*;
+
+    #[tokio::test]
+    async fn access_key_read_gives_up_at_its_timeout() {
+        let provider = provider(Node::Hangs).await;
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            provider.check_delegate_nonce_unused(
+                &signed_delegate_action(),
+                std::time::Duration::from_millis(200),
+            ),
+        )
+        .await
+        .expect("the check must return on its own timeout, not hang");
+        assert!(
+            matches!(&result, Err(FacilitatorLocalError::ContractCall(msg)) if msg.contains("timed out")),
+            "got {result:?}"
+        );
     }
 }

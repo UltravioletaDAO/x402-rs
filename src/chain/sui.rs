@@ -1428,6 +1428,10 @@ mod replay_verify_tests {
         CoinBehind,
         /// The RPC does not know the coin.
         CoinUnknown,
+        /// The gas coin reads behind its referenced version, the coin moved on.
+        GasBehindCoinAdvanced,
+        /// The coin reads behind its referenced version, the gas coin moved on.
+        CoinBehindGasAdvanced,
         /// sui_multiGetObjects answers with a JSON-RPC error.
         Unreadable,
         /// sui_multiGetObjects never answers.
@@ -1483,6 +1487,22 @@ mod replay_verify_tests {
                             object_id: id,
                         })
                     }
+                    Inputs::GasBehindCoinAdvanced if id == coin_ref().0 => object(moved_on),
+                    Inputs::GasBehindCoinAdvanced => object((
+                        id,
+                        SequenceNumber::from_u64(8),
+                        ObjectDigest::new([8u8; 32]),
+                    )),
+                    Inputs::CoinBehindGasAdvanced if id == coin_ref().0 => object((
+                        id,
+                        SequenceNumber::from_u64(4),
+                        ObjectDigest::new([6u8; 32]),
+                    )),
+                    Inputs::CoinBehindGasAdvanced => object((
+                        id,
+                        SequenceNumber::from_u64(10),
+                        ObjectDigest::new([9u8; 32]),
+                    )),
                     _ if id == coin_ref().0 => object(coin_ref()),
                     _ => object(gas_ref()),
                 }
@@ -1698,6 +1718,39 @@ mod replay_verify_tests {
         assert!(
             matches!(&response, VerifyResponse::Valid { payer } if *payer == MixedAddress::Sui(sender.to_string())),
             "got {response:?}"
+        );
+    }
+
+    /// A lagging read only lets verify go on to the next input; it must not
+    /// decide for the whole transaction. The gas payment is read first, so here
+    /// the lagging read comes before the one that moved on.
+    #[tokio::test]
+    async fn verify_rejects_when_the_gas_reads_behind_and_the_coin_moved_on() {
+        let provider = provider(Inputs::GasBehindCoinAdvanced).await;
+        let (request, _) = request(&provider);
+
+        let err = provider
+            .verify(&request)
+            .await
+            .expect_err("a coin that moved on must not verify behind a lagging gas read");
+        assert!(
+            matches!(&err, FacilitatorLocalError::Other(msg) if msg.contains("already used")),
+            "got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_rejects_when_the_coin_reads_behind_and_the_gas_moved_on() {
+        let provider = provider(Inputs::CoinBehindGasAdvanced).await;
+        let (request, _) = request(&provider);
+
+        let err = provider
+            .verify(&request)
+            .await
+            .expect_err("a gas coin that moved on must not verify beside a lagging coin read");
+        assert!(
+            matches!(&err, FacilitatorLocalError::Other(msg) if msg.contains("already used")),
+            "got {err:?}"
         );
     }
 

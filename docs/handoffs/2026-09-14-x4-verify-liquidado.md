@@ -162,6 +162,20 @@ espera. El stub de NEAR contesta `view_access_key` solo para la `public_key` con
 pagador; medido con mutacion (el verify consulta la clave del relayer): `accepts` y `rejects` de
 NEAR fallan, `2 passed; 2 failed`.
 
+**Seguimiento post-merge (inputs mezclados, Sui).** Dos tests mas en `replay_verify_tests`, ambos
+esperan `already used`:
+
+| Test | Gas (ref. v9) | Coin (ref. v5) |
+|---|---|---|
+| `verify_rejects_when_the_gas_reads_behind_and_the_coin_moved_on` | v8 (atrasado) | v6 (avanzo) |
+| `verify_rejects_when_the_coin_reads_behind_and_the_gas_moved_on` | v10 (avanzo) | v4 (atrasada) |
+
+`check_inputs_current` lee primero el gas, asi que el primer orden es el que pone la lectura
+atrasada antes de la que avanzo. Medido con mutacion (un `return Ok(())` temprano en el brazo de
+version menor): sobrevive a los 8 tests anteriores y al del orden inverso, y lo mata
+`verify_rejects_when_the_gas_reads_behind_and_the_coin_moved_on` (`9 passed; 1 failed`). En la
+rama: `10 passed` en `sui::replay_verify`.
+
 ## 5. Como verificarlo en produccion despues del release
 
 1. `curl -s https://facilitator.ultravioletadao.xyz/version` -> `{"version":"2.29.1"}`.
@@ -179,7 +193,9 @@ NEAR fallan, `2 passed; 2 failed`.
    S=$(( ($(date +%s) - 86400) * 1000 ))
    for p in '"already used"' '"Nonce store read failed during verify"' \
             '"Failed to query access key"' '"Access key query timed out"' \
-            '"Failed to read Sui transaction inputs"'; do
+            '"Failed to read Sui transaction inputs"' \
+            '"Sui input read behind the referenced version"' \
+            '"Sui input object unknown to the RPC"'; do
      echo "$p: $(aws logs filter-log-events --log-group-name /ecs/facilitator-production \
        --region us-east-2 --start-time $S --filter-pattern "$p" \
        --query 'length(events)' --output text | paste -sd+ - | bc)"
@@ -188,6 +204,11 @@ NEAR fallan, `2 passed; 2 failed`.
    `"Nonce store read failed during verify"` es el mismo texto que Stellar; el campo `group_id`
    lo distingue de `from`/`nonce`. Un pico de `Failed to query access key` o
    `Failed to read Sui transaction inputs` es el RPC de esa red, no pagos rechazados.
+   Los dos `warn` de Sui (`read behind the referenced version`, `unknown to the RPC`) cuentan
+   lecturas en las que el RPC del facilitador iba detras del cliente y el verify dejo la guarda al
+   settle; un pico sostenido es ese RPC atrasado, no pagos rechazados.
+   `already used` en Sui tambien cuenta referencias de gas vencidas: el objeto de gas referenciado
+   ya avanzo de version, aunque la coin del pagador siga intacta.
 
 ## 6. Pre-CI local
 
@@ -207,3 +228,4 @@ Ver la tabla del PR (mismos comandos que el job `test` de `ci.yaml`, mas fmt y c
 | B8 | `DynamoNonceStore::is_used` lee sin `consistent_read(true)`; afecta al verify de Algorand y al de Stellar. |
 | B9 | El cliente de DynamoDB del nonce store no tiene `operation_timeout`. |
 | B10 | NEAR: tratar `UnknownAccessKey` como falla de RPC (hoy es rechazo `Other`). |
+| B11 | Sui: `Deleted` rechaza sin comparar la version del borrado con la referenciada (improbable para coins). |

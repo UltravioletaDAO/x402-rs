@@ -364,6 +364,17 @@ pub(crate) const fn eip1559_fee_floor(network: Network) -> Eip1559Floor {
     }
 }
 
+/// What [`EvmProvider::quote_eip1559_fees`] measured and decided.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Eip1559Quote {
+    /// The latest block's base fee, or the floor's fallback when absent.
+    pub base_fee: u128,
+    /// `maxPriorityFeePerGas`.
+    pub priority: u128,
+    /// `maxFeePerGas`: the cap a node checks the signer's balance against.
+    pub max_fee: u128,
+}
+
 /// Turn a base fee and the node's priority estimate into the pair actually set
 /// on the transaction.
 ///
@@ -645,6 +656,59 @@ impl EvmProvider {
         self.signer_addresses.contains(&address)
     }
 
+    /// Every signer this provider rotates through.
+    ///
+    /// For the readiness probe, which has to grade each one: a round-robin
+    /// settle lands on any of them, so the emptiest decides.
+    pub fn signer_addresses(&self) -> &[Address] {
+        &self.signer_addresses
+    }
+
+    /// The EIP-1559 fee pair the send path sets right now, from the node's
+    /// latest base fee and priority estimate and this network's floor.
+    ///
+    /// One implementation for both callers: the settle path and the readiness
+    /// probe. A probe that priced differently from the transaction it predicts
+    /// would report a margin the node does not grant.
+    pub(crate) async fn quote_eip1559_fees(
+        &self,
+    ) -> Result<Eip1559Quote, alloy::transports::TransportError> {
+        let floor = eip1559_fee_floor(self.chain.network);
+        let fee_history = self
+            .inner
+            .get_fee_history(1, alloy::eips::BlockNumberOrTag::Latest, &[])
+            .await?;
+        let base_fee = fee_history
+            .latest_block_base_fee()
+            .unwrap_or(floor.fallback_base_fee);
+        let rpc_priority = self
+            .inner
+            .get_max_priority_fee_per_gas()
+            .await
+            .unwrap_or(floor.min_priority);
+        let (priority, max_fee) = compute_eip1559_fees(base_fee, rpc_priority, floor);
+        Ok(Eip1559Quote {
+            base_fee,
+            priority,
+            max_fee,
+        })
+    }
+
+    /// The most per unit of gas the node will reserve against this signer's
+    /// balance for the next transaction: `maxFeePerGas` on EIP-1559 chains,
+    /// `gasPrice` on legacy ones.
+    ///
+    /// That, not the price finally paid, is what `eth_estimateGas` and the
+    /// txpool check a balance against -- which is why a signer with enough to
+    /// pay can still be refused.
+    pub(crate) async fn quote_fee_cap(&self) -> Result<u128, alloy::transports::TransportError> {
+        if self.eip1559 {
+            Ok(self.quote_eip1559_fees().await?.max_fee)
+        } else {
+            self.inner.get_gas_price().await
+        }
+    }
+
     /// Sends a meta-transaction from a SPECIFIC signer instead of the
     /// round-robin one.
     ///
@@ -749,22 +813,12 @@ impl EvmProvider {
                 // of that move froze the mainnet signer for six days. See
                 // [`eip1559_fee_floor`] for the full account.
                 let floor = eip1559_fee_floor(self.chain.network);
-                match self
-                    .inner
-                    .get_fee_history(1, alloy::eips::BlockNumberOrTag::Latest, &[])
-                    .await
-                {
-                    Ok(fee_history) => {
-                        let base_fee = fee_history
-                            .latest_block_base_fee()
-                            .unwrap_or(floor.fallback_base_fee);
-                        let rpc_priority = self
-                            .inner
-                            .get_max_priority_fee_per_gas()
-                            .await
-                            .unwrap_or(floor.min_priority);
-                        let (priority, max_fee) =
-                            compute_eip1559_fees(base_fee, rpc_priority, floor);
+                match self.quote_eip1559_fees().await {
+                    Ok(Eip1559Quote {
+                        base_fee,
+                        priority,
+                        max_fee,
+                    }) => {
                         txr.set_max_priority_fee_per_gas(priority);
                         txr.set_max_fee_per_gas(max_fee);
                         tracing::debug!(

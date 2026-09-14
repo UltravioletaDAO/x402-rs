@@ -1319,10 +1319,15 @@ fn log_chain_failure(
                  balance/queued cost, so usable margin cannot be derived from this line"
             );
         }
+        // `network` is an `Option`: tracing omits the field when it is `None`.
+        // No literal "unknown" -- `post_verify`/`post_settle` record the chain
+        // on their span, and an "unknown" on the line itself read as a verdict
+        // that contradicted it. On 2026-09-14 that label hid which chain had
+        // stopped settling.
         error!(
             stage = failure.stage.as_str(),
             category = failure.category(),
-            network = network.unwrap_or("unknown"),
+            network,
             balance_wei = ?shortfall.balance,
             queued_cost_wei = ?shortfall.queued_cost,
             usable_wei = ?shortfall.usable(),
@@ -1340,7 +1345,7 @@ fn log_chain_failure(
     warn!(
         stage = failure.stage.as_str(),
         category = failure.category(),
-        network = network.unwrap_or("unknown"),
+        network,
         "chain write failed"
     );
 }
@@ -3733,7 +3738,7 @@ where
 ///
 /// **x402 v2 Header Support**: If the `PAYMENT-SIGNATURE` header is present, the payload
 /// is extracted from the base64-decoded header value instead of the request body.
-#[instrument(skip_all)]
+#[instrument(skip_all, fields(network = tracing::field::Empty))]
 pub async fn post_verify<A>(
     State(facilitator): State<A>,
     Extension(event_bus): Extension<Arc<crate::events::EventBus>>,
@@ -3824,6 +3829,13 @@ where
     let alt_outcome: Option<AltSchemeOutcome> = async {
         let json_value = serde_json::from_str::<serde_json::Value>(body_str).ok()?;
         let fields = alt_request_fields(&json_value);
+        // On the span, so every line this request logs carries the chain --
+        // including the `ContractCall` arm of `IntoResponse`, which sees only
+        // the error. Recorded here because this is the one parse every scheme
+        // goes through.
+        if let Some(network) = fields.network.as_deref() {
+            tracing::Span::current().record("network", canonical_network_name(network));
+        }
         let detail = |ok: bool, scheme: Option<&str>, error: Option<&'static str>| OperationDetail {
             kind: "verify",
             // "unknown" rather than a guess. These payloads do not always name
@@ -4490,7 +4502,7 @@ fn log_settle_deserialization_error(body_str: &str, e: &serde_json::Error) {
 /// **Phase 2 Settlement Tracking**: After successful settlement, if `discoverable=true`
 /// is set in the payment requirements extra field, the resource is auto-registered
 /// in the Bazaar discovery registry.
-#[instrument(skip_all)]
+#[instrument(skip_all, fields(network = tracing::field::Empty))]
 pub async fn post_settle<A>(
     State(facilitator): State<A>,
     Extension(discovery_registry): Extension<Arc<DiscoveryRegistry>>,
@@ -4706,6 +4718,13 @@ where
     let alt_outcome: Option<AltSchemeOutcome> = async {
         let json_value = serde_json::from_str::<serde_json::Value>(body_str).ok()?;
         let fields = alt_request_fields(&json_value);
+        // On the span, so every line this request logs carries the chain --
+        // including the `ContractCall` arm of `IntoResponse`, which sees only
+        // the error. Recorded here because this is the one parse every scheme
+        // goes through.
+        if let Some(network) = fields.network.as_deref() {
+            tracing::Span::current().record("network", canonical_network_name(network));
+        }
         let detail = |ok: bool, scheme: Option<&str>, error: Option<&'static str>| OperationDetail {
             kind: "settle",
             network: fields
@@ -5565,9 +5584,10 @@ impl IntoResponse for FacilitatorLocalError {
                 // See docs/handoffs/2026-08-20-diagnostico-performance-facilitador.md.
                 //
                 // The network is not in scope here (this impl sees only the
-                // error), so the shortfall log carries `network=unknown`. The
-                // figures it does carry -- balance, queued cost, usable margin
-                // -- are what identify the signer in practice.
+                // error). `post_verify`/`post_settle` record it on their span,
+                // so the line carries it as span context; the figures a
+                // shortfall log adds -- balance, queued cost, usable margin --
+                // identify the signer.
                 let failure = crate::chain::failure::ChainFailure::classify(e);
                 log_chain_failure(failure, None, e);
                 let (status, category, retry_after) = chain_failure_parts(failure, failure_salt());
@@ -14896,6 +14916,36 @@ mod chain_failure_response_tests {
         assert!(
             secs >= 270,
             "{secs}s invites the hammering this change exists to stop"
+        );
+    }
+
+    /// Base mainnet, 2026-09-14, verbatim: the node capping `eth_estimateGas`
+    /// at the signer's balance. Every settle that hit it answered
+    /// `502 upstream_rpc_unavailable` with `Retry-After: 30`, for hours, while
+    /// the RPC was fine.
+    #[tokio::test]
+    async fn a_balance_capped_estimate_on_plain_settle_names_the_signer() {
+        const REAL_ALLOWANCE_CAPPED: &str = r#"ErrorResp(ErrorPayload { code: -32000, message: "gas required exceeds allowance (27979)", data: None })"#;
+        let resp =
+            FacilitatorLocalError::ContractCall(REAL_ALLOWANCE_CAPPED.to_string()).into_response();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let secs: u32 = resp
+            .headers()
+            .get(axum::http::header::RETRY_AFTER)
+            .expect("retryable, just not soon")
+            .to_str()
+            .expect("ascii")
+            .parse()
+            .expect("seconds");
+        assert!(secs >= 270, "{secs}s is the transport hint");
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let body: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        let error = body["error"].as_str().expect("error token");
+        assert!(
+            error.starts_with("facilitator_signer_unfunded"),
+            "got {error}"
         );
     }
 

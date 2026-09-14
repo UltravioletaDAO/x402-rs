@@ -89,6 +89,7 @@ mod nonce_store;
 mod openapi;
 mod payment_operator;
 mod provider_cache;
+mod readiness;
 mod redact;
 mod sig_down;
 mod stuck_tx_monitor;
@@ -766,7 +767,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .error_handler(handlers::rate_limit_error),
                 ),
         )
-        .merge(handlers::routes().with_state(axum_state.clone()));
+        .merge(handlers::routes().with_state(axum_state.clone()))
+        // `/health/ready`: per-chain RPC reachability and signer gas, cached.
+        // Its own state, because all it needs is the provider map. NOT for the
+        // ALB: `/health` stays the liveness check, or a chain outage would
+        // have ECS cycle healthy tasks. Metered like the other on-chain reads:
+        // the cache bounds the RPC traffic, the governor bounds who gets to
+        // make the task wait for a probe.
+        .merge(
+            readiness::routes()
+                .with_state(Arc::new(readiness::ReadinessState::new(
+                    Arc::clone(&provider_cache),
+                    readiness::ReadinessConfig::from_env(),
+                )))
+                .layer(
+                    GovernorLayer::new(Arc::clone(&secondary_read_config))
+                        .error_handler(handlers::rate_limit_error),
+                ),
+        );
     if erc8004_writes_enabled {
         let erc8004_writes = handlers::erc8004_write_routes()
             .with_state(axum_state)

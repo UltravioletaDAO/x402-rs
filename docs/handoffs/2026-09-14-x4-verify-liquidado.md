@@ -225,7 +225,51 @@ Ver la tabla del PR (mismos comandos que el job `test` de `ci.yaml`, mas fmt y c
 | B5 | NEAR: `settle` registra al receptor (`storage_deposit`, lo paga el facilitador) antes de saber si el runtime va a aceptar el delegate action; podria correr la misma lectura de nonce antes. |
 | B6 | Sui: el cliente de `settle` (balance y `execute_transaction_block`) sigue con el `request_timeout` por defecto del SDK (60 s). |
 | B7 | Algorand: `simulate_group` sigue sin llamadores. |
-| B8 | `DynamoNonceStore::is_used` lee sin `consistent_read(true)`; afecta al verify de Algorand y al de Stellar. |
-| B9 | El cliente de DynamoDB del nonce store no tiene `operation_timeout`. |
+| B8 | **Resuelto en 2.29.2** (#53): `DynamoNonceStore::is_used` lee con `consistent_read(true)`; afecta al verify de Algorand y al de Stellar. Ver seccion 8. |
+| B9 | **Resuelto en 2.29.2** (#53): el cliente de DynamoDB del nonce store tiene `operation_timeout` (3000 ms, `NONCE_STORE_OPERATION_TIMEOUT_MS`, rango 250–30000). Ver seccion 8. |
 | B10 | NEAR: tratar `UnknownAccessKey` como falla de RPC (hoy es rechazo `Other`). |
 | B11 | Sui: `Deleted` rechaza sin comparar la version del borrado con la referenciada (improbable para coins). |
+
+## 8. Nonce store: lectura consistente y timeout de operacion (2.29.2, #53)
+
+Mismo PR que los tests de Sui con inputs mezclados, para salir como un solo release.
+
+| Cambio | Donde | Quien lo usa |
+|---|---|---|
+| `consistent_read(true)` en el `GetItem` | `DynamoNonceStore::is_used` | `/verify` de Stellar y de Algorand |
+| `operation_timeout` en el cliente, reintentos incluidos | `bounded_client`, llamado desde `DynamoNonceStore::from_env` | toda llamada del store: verify y settle de Stellar y Algorand, settle de la cuenta de liquidacion de Solana, claims de prueba de ERC-8004 |
+
+- **Valor**: 3000 ms por defecto (`DEFAULT_OPERATION_TIMEOUT_MS`), override con
+  `NONCE_STORE_OPERATION_TIMEOUT_MS`. Rango aceptado 250–30000; un valor no numerico o fuera de
+  rango loguea `warn` y usa el default, nunca hace panic. Terraform no lo fija: produccion corre
+  con el default.
+- **Que conserva**: el `TimeoutConfig` que ya trae `aws_config::load_defaults` (el connect
+  timeout, entre otros); solo se agrega el de operacion.
+- **Que ve un llamador**: un store que no contesta da `ReadError`/`WriteError` dentro del limite.
+  Todos los llamadores ya lo tratan como rechazo (Stellar y Algorand fail-closed en verify; settle
+  no transmite nada si el claim falla), asi que el cambio es cuanto tarda ese rechazo, no si ocurre.
+- **Costo de `consistent_read`**: una lectura consistente consume el doble de capacidad de lectura
+  que una eventual; con claves de un solo atributo proyectado es despreciable.
+
+Tests (`src/nonce_store.rs`, modulo `tests`), con el stub de DynamoDB en localhost (axum,
+protocolo JSON 1.0) y credenciales de prueba:
+
+| Test | Que prueba |
+|---|---|
+| `operation_timeout_defaults_and_reads_the_override` | default sin env; override valido, con espacios, y los dos bordes |
+| `operation_timeout_rejects_garbage_and_out_of_range` | `not-a-number`, vacio, `-5`, `3s`, `0`, `249`, `30001` -> default |
+| `bounded_client_keeps_the_ambient_timeouts` | fija el de operacion y conserva un connect timeout ya presente |
+| `dynamo_is_used_reads_consistently` | el `GetItem` que manda `is_used` lleva `"ConsistentRead": true` y la clave pedida |
+| `dynamo_calls_give_up_at_the_operation_timeout` | con un stub que no contesta y 200 ms: `is_used` -> `ReadError`, `check_and_mark_used` -> `WriteError`, ambos antes de 5 s |
+
+Mutaciones (archivo restaurado despues, hash verificado):
+
+| Mutante | Resultado |
+|---|---|
+| sin `.consistent_read(true)` | `dynamo_is_used_reads_consistently` **FAILED** |
+| operation timeout ignorado (1 h) | `bounded_client_keeps_the_ambient_timeouts` y `dynamo_calls_give_up_at_the_operation_timeout` **FAILED** |
+
+**Como verificarlo en produccion despues del release**: `curl -s
+https://facilitator.ultravioletadao.xyz/version` -> `{"version":"2.29.2"}`; en los logs del
+arranque del primer uso del store, `DynamoDB nonce store operation timeout` con
+`operation_timeout_ms=3000`.

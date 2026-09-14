@@ -1,5 +1,25 @@
 # Changelog
 
+## [2.29.2] - 2026-09-14
+
+### Changed
+
+- **The nonce store reads consistently and every call has a time bound.**
+  - `DynamoNonceStore::is_used` reads with `ConsistentRead`, so a claim written
+    just before is visible to the next read. Callers: `/verify` on Stellar and
+    Algorand.
+  - Every nonce store call (the read, the conditional put, the delete) is
+    bounded by an operation timeout, retries included: 3000 ms by default,
+    overridable with `NONCE_STORE_OPERATION_TIMEOUT_MS` (accepted range
+    250–30000; any other value logs a warning and keeps the default). The SDK
+    set no such bound. Every caller already rejects when the store errors, so
+    a store that stops answering now rejects within the bound instead of
+    holding the request. Paths: Stellar and Algorand verify and settle, Solana
+    settlement-account settle, ERC-8004 proof claims. The timeouts the ambient
+    AWS config already carries, such as the connect timeout, are kept.
+- Tests only: Sui `/verify` with mixed inputs, one read behind its referenced
+  version and the other moved past it, in both orders.
+
 ## [2.29.1] - 2026-09-14
 
 ### Changed

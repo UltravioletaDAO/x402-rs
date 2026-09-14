@@ -35,7 +35,7 @@
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
@@ -245,6 +245,77 @@ impl NonceStore for MemoryNonceStore {
 // DynamoDB Store
 // ============================================================================
 
+/// Environment variable overriding [`DEFAULT_OPERATION_TIMEOUT_MS`].
+const ENV_OPERATION_TIMEOUT_MS: &str = "NONCE_STORE_OPERATION_TIMEOUT_MS";
+
+/// Bound on one nonce store call, retries included.
+///
+/// The SDK sets none, so a DynamoDB that takes the connection and never
+/// answers holds a verify or a settle for as long as its caller waits. Every
+/// caller already treats a store error as a rejection, so the bound only turns
+/// that hang into the same rejection sooner. In-region reads and conditional
+/// puts answer in milliseconds; the rest is room for the SDK's own retries.
+const DEFAULT_OPERATION_TIMEOUT_MS: u64 = 3_000;
+
+/// Accepted range for the override. Below the floor, ordinary jitter would
+/// start rejecting payments; above the ceiling the bound outlasts the RPC
+/// timeouts on the same paths and stops meaning anything.
+const MIN_OPERATION_TIMEOUT_MS: u64 = 250;
+const MAX_OPERATION_TIMEOUT_MS: u64 = 30_000;
+
+/// Read the operation timeout from the environment, falling back to the default.
+///
+/// A bad value warns and falls back; it never panics, and the range is checked
+/// as well as the type.
+fn operation_timeout_from_env() -> Duration {
+    let raw = match std::env::var(ENV_OPERATION_TIMEOUT_MS) {
+        Ok(v) => v,
+        Err(_) => return Duration::from_millis(DEFAULT_OPERATION_TIMEOUT_MS),
+    };
+
+    let millis = match raw.trim().parse::<u64>() {
+        Ok(ms) if (MIN_OPERATION_TIMEOUT_MS..=MAX_OPERATION_TIMEOUT_MS).contains(&ms) => ms,
+        Ok(ms) => {
+            warn!(
+                value = ms,
+                min = MIN_OPERATION_TIMEOUT_MS,
+                max = MAX_OPERATION_TIMEOUT_MS,
+                default = DEFAULT_OPERATION_TIMEOUT_MS,
+                "{ENV_OPERATION_TIMEOUT_MS} out of range, using default"
+            );
+            DEFAULT_OPERATION_TIMEOUT_MS
+        }
+        Err(_) => {
+            warn!(
+                value = %raw,
+                default = DEFAULT_OPERATION_TIMEOUT_MS,
+                "{ENV_OPERATION_TIMEOUT_MS} is not a number, using default"
+            );
+            DEFAULT_OPERATION_TIMEOUT_MS
+        }
+    };
+    Duration::from_millis(millis)
+}
+
+/// A DynamoDB client whose every operation is bounded by `operation_timeout`.
+///
+/// `ambient` is the timeout config the loaded AWS config already carries (the
+/// connect timeout, for one); it is kept, and only the operation timeout is set.
+fn bounded_client(
+    builder: aws_sdk_dynamodb::config::Builder,
+    ambient: Option<&aws_sdk_dynamodb::config::timeout::TimeoutConfig>,
+    operation_timeout: Duration,
+) -> aws_sdk_dynamodb::Client {
+    use aws_sdk_dynamodb::config::timeout::TimeoutConfig;
+
+    let timeouts = ambient
+        .map(TimeoutConfig::to_builder)
+        .unwrap_or_else(TimeoutConfig::builder)
+        .operation_timeout(operation_timeout)
+        .build();
+    aws_sdk_dynamodb::Client::from_conf(builder.timeout_config(timeouts).build())
+}
+
 /// DynamoDB-based persistent nonce store for production.
 ///
 /// Uses conditional PutItem for atomic check-and-mark operations.
@@ -254,6 +325,8 @@ impl NonceStore for MemoryNonceStore {
 ///
 /// Environment variables:
 /// - `NONCE_STORE_TABLE_NAME`: DynamoDB table name (default: "facilitator-nonces")
+/// - `NONCE_STORE_OPERATION_TIMEOUT_MS`: bound on each call, retries included
+///   (default 3000, accepted 250-30000)
 /// - `AWS_REGION`: AWS region (uses default from environment)
 #[derive(Debug)]
 pub struct DynamoNonceStore {
@@ -274,7 +347,16 @@ impl DynamoNonceStore {
             .unwrap_or_else(|_| "facilitator-nonces".to_string());
 
         let config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
-        let client = aws_sdk_dynamodb::Client::new(&config);
+        let operation_timeout = operation_timeout_from_env();
+        let client = bounded_client(
+            aws_sdk_dynamodb::config::Builder::from(&config),
+            config.timeout_config(),
+            operation_timeout,
+        );
+        info!(
+            operation_timeout_ms = operation_timeout.as_millis() as u64,
+            "DynamoDB nonce store operation timeout"
+        );
 
         Ok(Self::new(client, table_name))
     }
@@ -351,6 +433,9 @@ impl NonceStore for DynamoNonceStore {
             .table_name(&self.table_name)
             .key("pk", AttributeValue::S(key.to_string()))
             .projection_expression("expires_at")
+            // A claim written just before must be visible here; an eventually
+            // consistent read can miss it.
+            .consistent_read(true)
             .send()
             .await
             .map_err(|e| NonceStoreError::ReadError(e.to_string()))?;
@@ -517,5 +602,185 @@ mod tests {
         // 100 rounds until expiry = 400 seconds + 3600 buffer = 4000
         let ttl = algorand_ttl_seconds(1000, 1100);
         assert_eq!(ttl, 4000);
+    }
+
+    // ------------------------------------------------------------------------
+    // DynamoDB client: consistent reads and the operation timeout
+    // ------------------------------------------------------------------------
+
+    /// Run `f` with `ENV_OPERATION_TIMEOUT_MS` set to `value` (or unset for
+    /// `None`), then restore whatever was there. CI runs this suite with
+    /// `--test-threads=1`, which is what makes touching process env safe here.
+    fn with_timeout_env<T>(value: Option<&str>, f: impl FnOnce() -> T) -> T {
+        let previous = std::env::var(ENV_OPERATION_TIMEOUT_MS).ok();
+        match value {
+            Some(v) => std::env::set_var(ENV_OPERATION_TIMEOUT_MS, v),
+            None => std::env::remove_var(ENV_OPERATION_TIMEOUT_MS),
+        }
+        let out = f();
+        match previous {
+            Some(v) => std::env::set_var(ENV_OPERATION_TIMEOUT_MS, v),
+            None => std::env::remove_var(ENV_OPERATION_TIMEOUT_MS),
+        }
+        out
+    }
+
+    #[test]
+    fn operation_timeout_defaults_and_reads_the_override() {
+        let default = Duration::from_millis(DEFAULT_OPERATION_TIMEOUT_MS);
+        assert_eq!(with_timeout_env(None, operation_timeout_from_env), default);
+        assert_eq!(
+            with_timeout_env(Some("1500"), operation_timeout_from_env),
+            Duration::from_millis(1_500)
+        );
+        assert_eq!(
+            with_timeout_env(Some(" 800 "), operation_timeout_from_env),
+            Duration::from_millis(800)
+        );
+        // The bounds themselves are accepted.
+        assert_eq!(
+            with_timeout_env(Some("250"), operation_timeout_from_env),
+            Duration::from_millis(MIN_OPERATION_TIMEOUT_MS)
+        );
+        assert_eq!(
+            with_timeout_env(Some("30000"), operation_timeout_from_env),
+            Duration::from_millis(MAX_OPERATION_TIMEOUT_MS)
+        );
+    }
+
+    #[test]
+    fn operation_timeout_rejects_garbage_and_out_of_range() {
+        let default = Duration::from_millis(DEFAULT_OPERATION_TIMEOUT_MS);
+        for bad in ["not-a-number", "", "-5", "3s", "0", "249", "30001"] {
+            assert_eq!(
+                with_timeout_env(Some(bad), operation_timeout_from_env),
+                default,
+                "{bad:?} should fall back to the default"
+            );
+        }
+    }
+
+    #[test]
+    fn bounded_client_keeps_the_ambient_timeouts() {
+        use aws_sdk_dynamodb::config::timeout::TimeoutConfig;
+        use aws_sdk_dynamodb::config::{BehaviorVersion, Builder, Region};
+
+        let ambient = TimeoutConfig::builder()
+            .connect_timeout(Duration::from_millis(3_100))
+            .build();
+        let client = bounded_client(
+            Builder::new()
+                .behavior_version(BehaviorVersion::latest())
+                .region(Region::new("us-east-2")),
+            Some(&ambient),
+            Duration::from_millis(1_234),
+        );
+
+        let timeouts = client.config().timeout_config().expect("timeouts are set");
+        assert_eq!(
+            timeouts.operation_timeout(),
+            Some(Duration::from_millis(1_234))
+        );
+        assert_eq!(
+            timeouts.connect_timeout(),
+            Some(Duration::from_millis(3_100))
+        );
+    }
+
+    /// A DynamoDB endpoint on localhost. Records every request body and answers
+    /// `{}` (no item), or, with `hang`, never answers.
+    async fn dynamo_stub(
+        hang: bool,
+        seen: Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+    ) -> String {
+        let app = axum::Router::new().route(
+            "/",
+            axum::routing::post(move |body: axum::body::Bytes| {
+                let seen = seen.clone();
+                async move {
+                    seen.lock()
+                        .unwrap()
+                        .push(serde_json::from_slice(&body).unwrap_or_default());
+                    if hang {
+                        tokio::time::sleep(Duration::from_secs(3_600)).await;
+                    }
+                    (
+                        [(
+                            axum::http::header::CONTENT_TYPE,
+                            "application/x-amz-json-1.0",
+                        )],
+                        "{}",
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        format!("http://{addr}")
+    }
+
+    fn stub_store(endpoint: String, operation_timeout: Duration) -> DynamoNonceStore {
+        use aws_sdk_dynamodb::config::{BehaviorVersion, Builder, Credentials, Region};
+
+        let builder = Builder::new()
+            .behavior_version(BehaviorVersion::latest())
+            .endpoint_url(endpoint)
+            .region(Region::new("us-east-2"))
+            .credentials_provider(Credentials::new("test", "test", None, None, "test"));
+        DynamoNonceStore::new(
+            bounded_client(builder, None, operation_timeout),
+            "facilitator-nonces".to_string(),
+        )
+    }
+
+    #[tokio::test]
+    async fn dynamo_is_used_reads_consistently() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let store = stub_store(
+            dynamo_stub(false, seen.clone()).await,
+            Duration::from_secs(5),
+        );
+
+        assert!(!store.is_used("stellar#GABC123#12345").await.unwrap());
+
+        let requests = seen.lock().unwrap();
+        assert_eq!(requests.len(), 1, "got {requests:?}");
+        assert_eq!(requests[0]["Key"]["pk"]["S"], "stellar#GABC123#12345");
+        assert_eq!(
+            requests[0]["ConsistentRead"], true,
+            "is_used must read consistently, got {}",
+            requests[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn dynamo_calls_give_up_at_the_operation_timeout() {
+        let store = stub_store(
+            dynamo_stub(true, Default::default()).await,
+            Duration::from_millis(200),
+        );
+
+        let read = tokio::time::timeout(
+            Duration::from_secs(5),
+            store.is_used("stellar#GABC123#12345"),
+        )
+        .await
+        .expect("the read must return on its own timeout, not hang");
+        assert!(
+            matches!(read, Err(NonceStoreError::ReadError(_))),
+            "got {read:?}"
+        );
+
+        let claim = tokio::time::timeout(
+            Duration::from_secs(5),
+            store.check_and_mark_used("stellar#GABC123#12346", 60),
+        )
+        .await
+        .expect("the conditional put must return on its own timeout, not hang");
+        assert!(
+            matches!(claim, Err(NonceStoreError::WriteError(_))),
+            "got {claim:?}"
+        );
     }
 }

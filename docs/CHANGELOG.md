@@ -1,5 +1,47 @@
 # Changelog
 
+## [2.29.5] - 2026-09-14
+
+### Fixed
+
+- **A signer that cannot reserve gas at estimation is no longer reported as an
+  RPC outage.** Nodes answer `eth_estimateGas` with
+  `-32000 gas required exceeds allowance (N)` when the signer's balance over the
+  fee cap is below what the call needs. The classifier only knew the
+  broadcast-time phrasing (`insufficient funds`), so this one fell through on
+  its `-32000` code to `upstream_rpc_unavailable` (502, `Retry-After: 30`). It
+  is now `facilitator_signer_unfunded` (503, `Retry-After` ~300 s). An allowance
+  of 1M gas or more is the node's gas cap, not the balance, and keeps its
+  previous classification: nothing the facilitator signs needs that much, and
+  the lowest block gas limit measured on a served chain is 3M (hyperevm).
+  Measured on 2026-09-14: settles from one consumer on Base failed for hours
+  with `upstream_rpc_unavailable` while the RPC was healthy and the mainnet
+  signer could not cover one transaction.
+- **Failed chain writes on `/verify` and `/settle` log the network.** Both
+  handlers record it on their span. The plain `/settle` path used to print
+  `network="unknown"`.
+
+### Added
+
+- **`GET /health/ready`**: whether the task can settle, chain by chain. For
+  each configured EVM chain it reads the fee cap the settle path would set and
+  each signer's balance, and reports the settles that balance still admits.
+  - Below `HEALTH_READY_MIN_SETTLES` (1-100000, default 10) the chain is `down`,
+    and below `HEALTH_READY_WARN_SETTLES` (default 100) it is `degraded`.
+  - An RPC that does not answer within `HEALTH_READY_PROBE_TIMEOUT_MS` (default
+    5000, published as `probeTimeoutMs`) is `down`.
+  - The overall answer is 503 when a mainnet is down; `?network=` scopes the
+    status and the code to one chain.
+  - Probes are cached for `HEALTH_READY_TTL_SECS` (default 60) and refreshed
+    by a background task that callers wait on but do not own. A caller that
+    disconnects does not cancel the probe, so neither repeated nor abandoned
+    requests multiply RPC traffic.
+  - Rate limited per IP with the same governor as the other on-chain reads.
+  - The body holds no RPC URL, key or address, and no literal balance.
+    Non-EVM chains are listed as `unchecked`.
+
+  `/health` is unchanged and remains the load-balancer check.
+
 ## [2.29.4] - 2026-09-14
 
 ### Fixed

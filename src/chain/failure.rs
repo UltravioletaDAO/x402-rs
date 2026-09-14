@@ -343,7 +343,44 @@ fn is_receipt_pending(lower: &str) -> bool {
 /// the revert check in [`ChainFailure::classify`] runs first anyway, which
 /// covers a token contract that words its revert this way.
 fn is_signer_unfunded(lower: &str) -> bool {
-    lower.contains("insufficient funds")
+    lower.contains("insufficient funds") || is_balance_capped_estimate(lower)
+}
+
+/// Above this, an `eth_estimateGas` allowance is the node's gas cap, not our
+/// balance.
+///
+/// Nothing the facilitator signs needs anywhere near it: one EIP-3009 settle
+/// uses ~103k gas. And every block gas limit measured on the chains it serves is
+/// at least three times higher -- hyperevm 3M, sei 12.5M, scroll 20M, most
+/// others 30M or more (2026-09-14). That limit, or the node's own `RPCGasCap`,
+/// is what bounds an estimate when the sender can afford it. A 10M ceiling read
+/// an out-of-gas call at hyperevm's 3M block limit as our balance.
+const BALANCE_CAPPED_ALLOWANCE_CEILING: u128 = 1_000_000;
+
+/// The OTHER way a node says our signer cannot pay: at estimation, not at
+/// broadcast.
+///
+/// geth, erigon and reth cap `eth_estimateGas` at `balance / maxFeePerGas` and
+/// answer `gas required exceeds allowance (N)` when the call needs more than
+/// that. It arrives under JSON-RPC code `-32000`, so before this check it fell
+/// through to [`is_transport`] and was reported as `upstream_rpc_unavailable`:
+/// on 2026-09-14 every Base settle for hours, with the signer holding
+/// 0.0000281 ETH and the node answering `(27979)` -- exactly that balance over a
+/// 1.005 gwei cap.
+///
+/// An allowance at or above [`BALANCE_CAPPED_ALLOWANCE_CEILING`] is the gas cap
+/// and says nothing about our balance, so it is left to the checks below. A
+/// phrasing with no figure is read as the balance case: every node that emits
+/// the phrase for the gas cap prints the number.
+fn is_balance_capped_estimate(lower: &str) -> bool {
+    const PHRASE: &str = "gas required exceeds allowance";
+    if !lower.contains(PHRASE) {
+        return false;
+    }
+    match number_after(lower, "gas required exceeds allowance (") {
+        Some(allowance) => allowance < BALANCE_CAPPED_ALLOWANCE_CEILING,
+        None => true,
+    }
 }
 
 /// Nonce and mempool refusals. The transaction never entered the pool.
@@ -469,6 +506,11 @@ mod tests {
     /// The other phrasing the same condition takes, with the address sanitized.
     const REAL_UNFUNDED_HAVE_WANT: &str = r#"ErrorResp(ErrorPayload { code: -32000, message: "insufficient funds for gas * price + value: address 0x0000000000000000000000000000000000000001 have 62255632065914740 want 78463640160630732", data: None })"#;
 
+    /// Base mainnet, 2026-09-14 from 18:09Z, verbatim from the production log:
+    /// the node capping `eth_estimateGas` at the signer's balance over the fee
+    /// cap. Reported as `upstream_rpc_unavailable` until this fixture existed.
+    const REAL_ALLOWANCE_CAPPED: &str = r#"ErrorResp(ErrorPayload { code: -32000, message: "gas required exceeds allowance (27979)", data: None })"#;
+
     fn classify(s: &str) -> ChainFailure {
         ChainFailure::classify(s)
     }
@@ -477,7 +519,11 @@ mod tests {
     /// outage, and it is not a malformed request either.
     #[test]
     fn a_gas_shortfall_is_named_as_one() {
-        for fixture in [REAL_UNFUNDED, REAL_UNFUNDED_HAVE_WANT] {
+        for fixture in [
+            REAL_UNFUNDED,
+            REAL_UNFUNDED_HAVE_WANT,
+            REAL_ALLOWANCE_CAPPED,
+        ] {
             let f = classify(fixture);
             assert_eq!(f.reason, Reason::SignerUnfunded, "{fixture}");
             assert_eq!(f.stage, Stage::Broadcast);
@@ -560,12 +606,59 @@ mod tests {
     /// this module advertises becomes a nonce gap.
     #[test]
     fn the_only_retry_we_advise_after_a_shortfall_lands_on_a_released_nonce() {
-        for fixture in [REAL_UNFUNDED, REAL_UNFUNDED_HAVE_WANT] {
+        for fixture in [
+            REAL_UNFUNDED,
+            REAL_UNFUNDED_HAVE_WANT,
+            REAL_ALLOWANCE_CAPPED,
+        ] {
             assert!(
                 crate::chain::evm::is_pre_broadcast_rejection(fixture),
                 "advising a retry for a transaction that may be queued is a second broadcast"
             );
         }
+    }
+
+    /// `chain/evm.rs` already knew this phrasing never queued a transaction
+    /// (`is_pre_broadcast_rejection` matches `gas required exceeds`), and still
+    /// the caller was told the RPC was down: that predicate only decides whether
+    /// a nonce goes back, and the answer to the caller came from here, where
+    /// the only match was the `-32000` code. Pin both halves.
+    #[test]
+    fn a_balance_capped_estimate_is_not_an_upstream_outage() {
+        assert!(REAL_ALLOWANCE_CAPPED.contains("-32000"));
+        let f = classify(REAL_ALLOWANCE_CAPPED);
+        assert_ne!(f.category(), "upstream_rpc_unavailable");
+        assert_eq!(f.reason, Reason::SignerUnfunded);
+        let after = f
+            .retry_after_secs(0)
+            .expect("a shortfall is retryable, just not soon");
+        assert!((270..=330).contains(&after), "{after}s");
+    }
+
+    /// An allowance at the node's gas cap is not about our balance. Leave it to
+    /// the checks that ran before this phrasing was recognised.
+    #[test]
+    fn an_allowance_at_the_gas_cap_is_not_read_as_our_balance() {
+        // Measured block gas limits (hyperevm, sei, scroll), then the usual
+        // 30M, geth's default RPCGasCap and a large one.
+        for cap in [
+            "3000000",
+            "12500000",
+            "20000000",
+            "30000000",
+            "50000000",
+            "150000000",
+        ] {
+            let fixture = format!(
+                r#"ErrorResp(ErrorPayload {{ code: -32000, message: "gas required exceeds allowance ({cap})", data: None }})"#
+            );
+            assert_ne!(classify(&fixture).reason, Reason::SignerUnfunded, "{cap}");
+        }
+        assert_eq!(
+            classify("gas required exceeds allowance").reason,
+            Reason::SignerUnfunded,
+            "no figure: every node prints one for the gas cap"
+        );
     }
 
     /// The audit's false positive, pinned. `429` appears inside wei amounts;

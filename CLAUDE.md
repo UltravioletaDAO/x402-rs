@@ -680,7 +680,8 @@ The following networks exist as enum entries in `src/network.rs` but are **NOT s
 ## API Endpoints Reference
 
 - `GET /` - Ultravioleta DAO landing page (HTML)
-- `GET /health` - Health check: `{"status":"healthy"}`
+- `GET /health` - Liveness only: a constant `{"status":"healthy"}`, and the ALB target-group check. It never reports a chain problem, by design
+- `GET /health/ready` - Can this task settle, per EVM chain: RPC reachability + settles each signer's gas still admits (`src/readiness.rs`). 503 when a mainnet is `down`; `?network=base` scopes it. Cached per `HEALTH_READY_TTL_SECS` (60) and refreshed by its own background task, so a caller that hangs up never restarts the probe; same per-IP governor as the other on-chain reads. No URLs/addresses/literal balances in the body. **Never point a load balancer at it** - a chain outage would cycle healthy tasks
 - `GET /supported` - List supported networks/schemes (returns both v1 and v2 formats)
 - `GET /verify` - Verification schema
 - `POST /verify` - Verify payment authorization (accepts both v1 and v2 request formats)

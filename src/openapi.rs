@@ -234,6 +234,7 @@ constraint rather than as grounds for a `406`.
         path_blacklist,
         // Health
         path_health,
+        path_health_ready,
         // Agentic discovery surfaces
         path_llms_txt,
         path_llms_full_txt,
@@ -2646,6 +2647,73 @@ async fn path_blacklist() {}
     )
 )]
 async fn path_health() {}
+
+#[utoipa::path(
+    get,
+    path = "/health/ready",
+    tag = "Health",
+    summary = "Can this facilitator settle, chain by chain",
+    description = "`/health` only proves the process answers HTTP; it is what the load balancer \
+probes, and it never reports a chain problem (a load-balancer check that did would have ECS cycle \
+healthy tasks during a chain outage). This route is the operator's view.
+
+For every configured EVM chain it reads the fee cap the settle path would set and each signer's \
+native balance, and grades the signer by how many settles that balance still admits \
+(`balance / (130000 gas * fee cap)`): below `minSettles` is `down`, below `warnSettles` is \
+`degraded`. A chain whose RPC does not answer within the probe timeout is `down` with reason \
+`rpc_unreachable` or `rpc_timeout`. Non-EVM chains are listed under `unchecked`, never counted as \
+green.
+
+**Cached**: one probe per `ttlSecs` (default 60) per task, however often the route is called \
+and however its callers disconnect: the refresh runs in its own task, so a caller that hangs up \
+does not cancel it. `checkedAtUnix` and `ageSecs` say when it was measured, and `probeTimeoutMs` \
+bounds each chain's read. Rate limited per IP like the other on-chain reads (429 past the burst). **No secrets**: no RPC URL, key, signer \
+address or balance appears in the body.
+
+Overall `status` is `down` (HTTP 503) when any MAINNET chain is down, `degraded` when anything \
+else is short of green or nothing was probed, `ok` otherwise. With `?network=` the status and the \
+code are that chain's alone.
+
+Tunables: `HEALTH_READY_TTL_SECS` (5-3600, default 60), `HEALTH_READY_PROBE_TIMEOUT_MS` \
+(250-30000, default 5000), `HEALTH_READY_MIN_SETTLES` (1-100000, default 10), \
+`HEALTH_READY_WARN_SETTLES` (default 100, never below the minimum). An out-of-range value logs a \
+warning and keeps the default.",
+    params(
+        ("network" = Option<String>, Query, description = "Scope to one chain: `base` or `eip155:8453`")
+    ),
+    responses(
+        (status = 200, description = "`ok` or `degraded`", body = Object,
+            example = json!({
+                "status": "ok",
+                "checkedAtUnix": 1789416000,
+                "ageSecs": 12,
+                "ttlSecs": 60,
+                "probeTimeoutMs": 5000,
+                "thresholds": { "minSettles": 10, "warnSettles": 100, "settleGasBudget": 130000 },
+                "summary": { "ok": 1, "degraded": 0, "down": 0 },
+                "networks": [{
+                    "network": "base", "mainnet": true, "status": "ok", "rpc": "ok",
+                    "signers": [{ "index": 0, "status": "ok", "gasOk": true, "settlesRemaining": 380 }]
+                }],
+                "unchecked": ["solana"]
+            })
+        ),
+        (status = 503, description = "`down`: a mainnet (or the chain named in `?network=`) cannot settle; or `probe_failed` if the refresh task died without an answer", body = Object,
+            example = json!({
+                "status": "down",
+                "networks": [{
+                    "network": "base", "mainnet": true, "status": "down",
+                    "reason": "signer_gas_critical", "rpc": "ok",
+                    "signers": [{ "index": 0, "status": "down", "gasOk": false, "settlesRemaining": 0 }]
+                }]
+            })
+        ),
+        (status = 400, description = "`unknown_network`"),
+        (status = 429, description = "Rate limited: same per-IP governor as the other on-chain reads"),
+        (status = 404, description = "`network_not_probed`: the chain is not configured, or is not EVM")
+    )
+)]
+async fn path_health_ready() {}
 
 // ============================================================================
 // Agentic Discovery Surfaces

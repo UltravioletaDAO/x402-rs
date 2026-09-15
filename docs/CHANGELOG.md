@@ -1,5 +1,31 @@
 # Changelog
 
+## [2.29.6] - 2026-09-15
+
+### Fixed
+
+- **The ERC-8004 proof of payment a settle returns now passes the
+  facilitator's own proof check.** `create_proof_of_payment` stamped
+  `timestamp` with the facilitator's clock, while `verify_payment_facts`
+  requires the timestamp of the block the proof names, to the second. Every
+  proof the EVM settle emitted was refused with `proof_timestamp_mismatch`
+  unless the two happened to agree.
+  - The timestamp is now the block's. It is read from the receipt's logs when
+    the node includes `blockTimestamp` there, at no extra RPC cost. Measured on
+    2026-09-15 on the public RPCs of Base, Base Sepolia, Optimism, Arbitrum,
+    Ethereum, Polygon, Celo, BSC, Unichain, Monad and HyperEVM, where it always
+    equalled the block header. Avalanche's public RPC omits it.
+  - Otherwise it comes from one `eth_getBlockByNumber`, capped at 2 s
+    (`PROOF_BLOCK_READ_TIMEOUT`). The RPC layer's rate-limit retries run inside
+    that cap.
+  - When that read fails, answers `null` or times out, the settle succeeds
+    without a proof and logs a warning. It no longer returns a proof already
+    known to fail, so a rating takes the provisional path instead.
+  - A receipt without a block number yields no proof, instead of a proof
+    naming block 0.
+  - Settles without the `8004-reputation` extension make no extra call. Solana
+    is unchanged: it emits no proof.
+
 ## [2.29.5] - 2026-09-14
 
 ### Fixed

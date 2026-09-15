@@ -1723,6 +1723,7 @@ where
 
             // Check if ERC-8004 extension is present and create ProofOfPayment
             let proof_of_payment = create_proof_of_payment(
+                self.inner(),
                 &receipt,
                 requirements,
                 payload.network,
@@ -1730,7 +1731,8 @@ where
                 requirements.pay_to.clone(),
                 TokenAmount::from(payment.value),
                 requirements.asset.clone(),
-            );
+            )
+            .await;
 
             Ok(SettleResponse {
                 success: true,
@@ -1797,13 +1799,31 @@ where
     }
 }
 
+/// How long a settle waits for the block behind its proof of payment.
+///
+/// The read happens after the transfer is confirmed, and only when the
+/// `8004-reputation` extension asks for a proof and the receipt's logs do not
+/// already carry the block timestamp, so this is the most it can add to such a
+/// settle. The provider's rate-limit retries run inside it. Past it the settle
+/// answers without a proof: the proof is optional, the payment is not.
+const PROOF_BLOCK_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Create ProofOfPayment if ERC-8004 extension is active.
 ///
 /// Returns Some(ProofOfPayment) if:
 /// - The `8004-reputation` extension is present in payment requirements
 /// - The network supports ERC-8004 contracts
 /// - The include_proof flag is true (default)
-fn create_proof_of_payment(
+/// - The receipt names its block, and that block's timestamp can be read
+///
+/// `None` in every other case, the last two included: a proof that
+/// `verify_payment_facts` is bound to reject is worse than none, because a
+/// rating without a proof takes the provisional path while one carrying a bad
+/// proof carries a failure. Never an error either -- the transfer is already
+/// confirmed and the settle must say so.
+#[allow(clippy::too_many_arguments)]
+async fn create_proof_of_payment<R: Provider>(
+    rpc: &R,
     receipt: &TransactionReceipt,
     requirements: &PaymentRequirements,
     network: Network,
@@ -1829,13 +1849,19 @@ fn create_proof_of_payment(
         return None;
     }
 
-    // Extract block number and timestamp from receipt
-    let block_number = receipt.block_number.unwrap_or(0);
-    // Use current timestamp as fallback (block timestamp requires additional RPC call)
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    // Block 0 is genesis: a proof naming it fails verification with
+    // `proof_block_mismatch`.
+    let Some(block_number) = receipt.block_number else {
+        tracing::warn!(
+            tx = %receipt.transaction_hash,
+            network = %network,
+            "ERC-8004 proof of payment omitted: the receipt names no block"
+        );
+        return None;
+    };
+    // The verifier requires the timestamp of that block, to the second. The
+    // facilitator's clock (what this used to send) almost never matches it.
+    let timestamp = proof_block_timestamp(rpc, receipt, block_number, network).await?;
 
     let proof = ProofOfPayment::new(
         TransactionHash::Evm(receipt.transaction_hash.0),
@@ -1855,6 +1881,74 @@ fn create_proof_of_payment(
     );
 
     Some(proof)
+}
+
+/// The timestamp of `block_number`, the block that mined `receipt`.
+///
+/// Read from the receipt's own logs when the node puts `blockTimestamp` on
+/// them, which costs nothing. Measured on 2026-09-15 on the public RPCs of Base,
+/// Base Sepolia, Optimism, Arbitrum, Ethereum, Polygon, Celo, BSC, Unichain,
+/// Monad and HyperEVM, where it always equalled the block header. No node put
+/// the field on the receipt itself.
+///
+/// Otherwise one `eth_getBlockByNumber`, bounded by
+/// [`PROOF_BLOCK_READ_TIMEOUT`]. Avalanche's public RPC omits the field, and the
+/// premium endpoints production uses could not be measured. `None`, with a
+/// warning, when that read fails, finds no block, or runs out of time.
+async fn proof_block_timestamp<R: Provider>(
+    rpc: &R,
+    receipt: &TransactionReceipt,
+    block_number: u64,
+    network: Network,
+) -> Option<u64> {
+    let from_logs = receipt
+        .inner
+        .logs()
+        .iter()
+        .filter(|log| log.block_number == Some(block_number))
+        .find_map(|log| log.block_timestamp);
+    if from_logs.is_some() {
+        return from_logs;
+    }
+
+    let read = tokio::time::timeout(
+        PROOF_BLOCK_READ_TIMEOUT,
+        rpc.get_block_by_number(block_number.into()).into_future(),
+    )
+    .await;
+    match read {
+        Ok(Ok(Some(block))) => Some(block.header.timestamp),
+        Ok(Ok(None)) => {
+            tracing::warn!(
+                tx = %receipt.transaction_hash,
+                block = block_number,
+                network = %network,
+                "ERC-8004 proof of payment omitted: the node did not return the block"
+            );
+            None
+        }
+        Ok(Err(e)) => {
+            // Scrubbed: alloy transport errors embed the RPC URL, key included.
+            tracing::warn!(
+                tx = %receipt.transaction_hash,
+                block = block_number,
+                network = %network,
+                error = %crate::redact::scrub_urls(&e.to_string()),
+                "ERC-8004 proof of payment omitted: the block read failed"
+            );
+            None
+        }
+        Err(_) => {
+            tracing::warn!(
+                tx = %receipt.transaction_hash,
+                block = block_number,
+                network = %network,
+                timeout_ms = PROOF_BLOCK_READ_TIMEOUT.as_millis() as u64,
+                "ERC-8004 proof of payment omitted: the block read timed out"
+            );
+            None
+        }
+    }
 }
 
 /// A prepared call to `transferWithAuthorization` (ERC-3009) including all derived fields.
@@ -4192,6 +4286,477 @@ mod settlement_unconfirmed_tests {
             "returned in {elapsed:?}, faster than the 1s receipt wait -- this failed on \
              transport before the timeout ever ran, so the fixture is not exercising the \
              timeout path it claims to",
+        );
+    }
+}
+
+/// The ERC-8004 proof of payment a settle emits, end to end.
+///
+/// A proof is only worth emitting if `verify_payment_facts` -- the check behind
+/// every rating that carries one -- accepts it, and it is optional: producing it
+/// may never cost the settle its answer, nor hold it open without a bound. Until
+/// 2.29.6 the proof carried the facilitator's clock while the verifier requires
+/// the block's timestamp to the second, so the facilitator's own proofs failed
+/// with `proof_timestamp_mismatch`.
+///
+/// Each test drives the real `Facilitator::settle` of an `EvmProvider` against a
+/// local JSON-RPC mock and hands the proof to the verifier over the same mock
+/// chain. The chain height is frozen below the payment's block, so the receipt
+/// watcher's heartbeat never asks for that block: every read of it the mock
+/// counts belongs to the proof.
+#[cfg(test)]
+mod proof_of_payment_tests {
+    use super::*;
+    use crate::erc8004::proof::{unix_now_secs, verify_payment_facts, ProofRejection};
+    use alloy::primitives::keccak256;
+    use alloy::signers::local::PrivateKeySigner;
+    use alloy::signers::SignerSync;
+    use axum::{extract::State, routing::post, Json as AxumJson, Router};
+    use serde_json::{json, Value};
+    use std::time::Duration;
+
+    /// The block the mock mines the payment in.
+    const BLOCK: u64 = 0x10_0000;
+    /// What `eth_blockNumber` answers: below [`BLOCK`], and never moving.
+    const TIP: u64 = BLOCK - 10;
+    /// The hash `eth_sendRawTransaction` hands back, and the one the receipt
+    /// carries.
+    const TX: [u8; 32] = [0x5e; 32];
+    const BLOCK_HASH: [u8; 32] = [0xbb; 32];
+    const PAYEE: Address = address!("0x2222222222222222222222222222222222222222");
+    const AMOUNT: u64 = 1_000_000;
+    /// The payment is seconds old; the window only has to cover that.
+    const MAX_AGE_SECS: u64 = 900;
+
+    /// How the node answers `eth_getBlockByNumber` for [`BLOCK`].
+    #[derive(Clone, Copy)]
+    enum BlockRead {
+        Serve,
+        /// A JSON-RPC error.
+        Fail,
+        /// `null`, as a load-balanced node behind the one that served the
+        /// receipt answers.
+        Missing,
+        /// No answer for a minute.
+        Hang,
+    }
+
+    #[derive(Clone)]
+    struct MockChain {
+        payer: Address,
+        token: Address,
+        /// Thirty seconds in the past, so it cannot coincide with the
+        /// facilitator's clock.
+        block_timestamp: u64,
+        /// Whether the receipt's logs carry `blockTimestamp`, as most public
+        /// nodes do and Avalanche's does not.
+        logs_carry_timestamp: bool,
+        block_read: BlockRead,
+        /// Reads of [`BLOCK`], answered or not.
+        block_reads: Arc<AtomicUsize>,
+    }
+
+    fn base_usdc() -> Address {
+        USDCDeployment::by_network(Network::Base)
+            .expect("Base has a USDC deployment")
+            .address()
+            .try_into()
+            .expect("Base USDC is an EVM address")
+    }
+
+    /// `eth_getTransactionReceipt` for the payment: one `Transfer` of [`AMOUNT`]
+    /// from `payer` to [`PAYEE`] in `token`, mined in `block`.
+    fn receipt_json(
+        payer: Address,
+        token: Address,
+        block: Option<u64>,
+        log_timestamp: Option<u64>,
+    ) -> Value {
+        let block_number = block.map(|n| format!("{n:#x}"));
+        let mut log = json!({
+            "address": token,
+            "topics": [
+                keccak256("Transfer(address,address,uint256)"),
+                payer.into_word(),
+                PAYEE.into_word(),
+            ],
+            "data": format!("0x{}", hex::encode(U256::from(AMOUNT).to_be_bytes::<32>())),
+            "blockNumber": block_number,
+            "blockHash": format!("0x{}", hex::encode(BLOCK_HASH)),
+            "transactionHash": format!("0x{}", hex::encode(TX)),
+            "transactionIndex": "0x0",
+            "logIndex": "0x0",
+            "removed": false
+        });
+        if let Some(ts) = log_timestamp {
+            log["blockTimestamp"] = json!(format!("{ts:#x}"));
+        }
+        json!({
+            "transactionHash": format!("0x{}", hex::encode(TX)),
+            "transactionIndex": "0x0",
+            "blockHash": format!("0x{}", hex::encode(BLOCK_HASH)),
+            "blockNumber": block_number,
+            "from": address!("0x0000000000000000000000000000000000000001"),
+            "to": token,
+            "cumulativeGasUsed": "0x5208",
+            "gasUsed": "0x5208",
+            "contractAddress": null,
+            "logsBloom": format!("0x{}", "0".repeat(512)),
+            "status": "0x1",
+            "type": "0x0",
+            "effectiveGasPrice": "0x3b9aca00",
+            "logs": [log]
+        })
+    }
+
+    /// `eth_getBlockByNumber`, trimmed to what alloy needs to deserialise.
+    fn block_json(number: u64, timestamp: u64) -> Value {
+        let zero32 = format!("0x{}", hex::encode([0u8; 32]));
+        json!({
+            "hash": format!("0x{}", hex::encode(BLOCK_HASH)),
+            "parentHash": zero32,
+            "sha3Uncles": zero32,
+            "miner": format!("0x{}", hex::encode([0u8; 20])),
+            "stateRoot": zero32,
+            "transactionsRoot": zero32,
+            "receiptsRoot": zero32,
+            "logsBloom": format!("0x{}", "0".repeat(512)),
+            "difficulty": "0x0",
+            "number": format!("{number:#x}"),
+            "gasLimit": "0x1c9c380",
+            "gasUsed": "0x5208",
+            "timestamp": format!("{timestamp:#x}"),
+            "extraData": "0x",
+            "mixHash": zero32,
+            "nonce": "0x0000000000000000",
+            "baseFeePerGas": "0x1",
+            "totalDifficulty": "0x0",
+            "size": "0x220",
+            "transactions": [],
+            "uncles": []
+        })
+    }
+
+    async fn answer(chain: &MockChain, req: &Value) -> Value {
+        let id = req.get("id").cloned().unwrap_or(json!(1));
+        let result = match req["method"].as_str().unwrap_or_default() {
+            "eth_chainId" => json!("0x2105"),
+            "eth_getTransactionCount" => json!("0x0"),
+            "eth_gasPrice" => json!("0x3b9aca00"),
+            "eth_estimateGas" => json!("0x5208"),
+            // `balanceOf`, the only contract read a settle makes.
+            "eth_call" => json!(format!(
+                "0x{}",
+                hex::encode(U256::from(AMOUNT * 10).to_be_bytes::<32>())
+            )),
+            "eth_sendRawTransaction" => json!(format!("0x{}", hex::encode(TX))),
+            "eth_blockNumber" => json!(format!("{TIP:#x}")),
+            "eth_getTransactionReceipt" => receipt_json(
+                chain.payer,
+                chain.token,
+                Some(BLOCK),
+                chain.logs_carry_timestamp.then_some(chain.block_timestamp),
+            ),
+            "eth_getBlockByNumber" => {
+                let number = req["params"][0]
+                    .as_str()
+                    .and_then(|n| u64::from_str_radix(n.trim_start_matches("0x"), 16).ok())
+                    .unwrap_or_default();
+                if number != BLOCK {
+                    // The heartbeat, reading at the tip.
+                    block_json(number, chain.block_timestamp)
+                } else {
+                    chain.block_reads.fetch_add(1, Ordering::SeqCst);
+                    match chain.block_read {
+                        BlockRead::Serve => block_json(BLOCK, chain.block_timestamp),
+                        BlockRead::Missing => Value::Null,
+                        BlockRead::Fail => {
+                            return json!({
+                                "jsonrpc": "2.0",
+                                "id": id,
+                                "error": {"code": -32603, "message": "internal error"},
+                            });
+                        }
+                        BlockRead::Hang => {
+                            tokio::time::sleep(Duration::from_secs(60)).await;
+                            block_json(BLOCK, chain.block_timestamp)
+                        }
+                    }
+                }
+            }
+            _ => Value::Null,
+        };
+        json!({"jsonrpc": "2.0", "id": id, "result": result})
+    }
+
+    async fn rpc(
+        State(chain): State<MockChain>,
+        AxumJson(body): AxumJson<Value>,
+    ) -> AxumJson<Value> {
+        AxumJson(match &body {
+            Value::Array(reqs) => {
+                let mut out = Vec::with_capacity(reqs.len());
+                for req in reqs {
+                    out.push(answer(&chain, req).await);
+                }
+                Value::Array(out)
+            }
+            req => answer(&chain, req).await,
+        })
+    }
+
+    async fn spawn_rpc(chain: MockChain) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = Router::new().route("/", post(rpc)).with_state(chain);
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{addr}/")
+    }
+
+    /// A settle of [`AMOUNT`] to [`PAYEE`] in `token`, authorised by `payer`,
+    /// carrying the `8004-reputation` extension when `wants_proof`.
+    fn settle_request(
+        payer: &PrivateKeySigner,
+        token: Address,
+        wants_proof: bool,
+    ) -> SettleRequest {
+        let valid_before = unix_now_secs() + 600;
+        let nonce = [0x42u8; 32];
+        let (name, version) = find_known_eip712_metadata(Network::Base, &token)
+            .expect("Base USDC is in the static EIP-712 table");
+        let domain = eip712_domain! {
+            name: name,
+            version: version,
+            chain_id: 8453,
+            verifying_contract: token,
+        };
+        let authorization = TransferWithAuthorization {
+            from: payer.address(),
+            to: PAYEE,
+            value: U256::from(AMOUNT),
+            validAfter: U256::ZERO,
+            validBefore: U256::from(valid_before),
+            nonce: FixedBytes(nonce),
+        };
+        let signature = payer
+            .sign_hash_sync(&authorization.eip712_signing_hash(&domain))
+            .expect("signs");
+        let mut extra = serde_json::Map::new();
+        if wants_proof {
+            extra.insert(crate::erc8004::EXTENSION_ID.to_string(), json!({}));
+        }
+        serde_json::from_value(json!({
+            "x402Version": 1,
+            "paymentPayload": {
+                "x402Version": 1,
+                "scheme": "exact",
+                "network": "base",
+                "payload": {
+                    "signature": format!("0x{}", hex::encode(signature.as_bytes())),
+                    "authorization": {
+                        "from": payer.address(),
+                        "to": PAYEE,
+                        "value": AMOUNT.to_string(),
+                        "validAfter": "0",
+                        "validBefore": valid_before.to_string(),
+                        "nonce": format!("0x{}", hex::encode(nonce)),
+                    }
+                }
+            },
+            "paymentRequirements": {
+                "scheme": "exact",
+                "network": "base",
+                "maxAmountRequired": AMOUNT.to_string(),
+                "resource": "https://example.com/paid",
+                "description": "",
+                "mimeType": "application/json",
+                "payTo": PAYEE,
+                "maxTimeoutSeconds": 60,
+                "asset": token,
+                "extra": extra,
+            }
+        }))
+        .expect("settle request parses")
+    }
+
+    struct Settled {
+        response: Result<SettleResponse, FacilitatorLocalError>,
+        elapsed: Duration,
+        /// Reads of [`BLOCK`] made by the settle.
+        block_reads: usize,
+        block_timestamp: u64,
+        /// The mock, still serving, for the verifier.
+        url: String,
+    }
+
+    async fn settle(
+        block_read: BlockRead,
+        logs_carry_timestamp: bool,
+        wants_proof: bool,
+    ) -> Settled {
+        let payer = PrivateKeySigner::random();
+        let chain = MockChain {
+            payer: payer.address(),
+            token: base_usdc(),
+            block_timestamp: unix_now_secs() - 30,
+            logs_carry_timestamp,
+            block_read,
+            block_reads: Arc::default(),
+        };
+        let url = spawn_rpc(chain.clone()).await;
+        // `eip1559 = false`: pricing is one `eth_gasPrice`, not a fee history.
+        let facilitator = EvmProvider::try_new(
+            EthereumWallet::from(PrivateKeySigner::random()),
+            &url,
+            false,
+            Network::Base,
+        )
+        .await
+        .expect("provider");
+        let request = settle_request(&payer, chain.token, wants_proof);
+
+        let started = std::time::Instant::now();
+        let response = facilitator.settle(&request).await;
+        Settled {
+            response,
+            elapsed: started.elapsed(),
+            block_reads: chain.block_reads.load(Ordering::SeqCst),
+            block_timestamp: chain.block_timestamp,
+            url,
+        }
+    }
+
+    /// The response of a settle whose transfer the chain confirmed, which has
+    /// to be a success whatever became of the proof.
+    fn confirmed(settled: &Settled) -> &SettleResponse {
+        let response = settled.response.as_ref().unwrap_or_else(|e| {
+            panic!("the transfer is confirmed on chain, so the settle must succeed; got {e:?}")
+        });
+        assert!(response.success, "confirmed transfer reported as failed");
+        assert!(
+            matches!(response.transaction, Some(TransactionHash::Evm(tx)) if tx == TX),
+            "the response lost the transaction hash: {:?}",
+            response.transaction,
+        );
+        response
+    }
+
+    async fn verify(url: &str, proof: &ProofOfPayment) -> Result<(), ProofRejection> {
+        let rpc = ProviderBuilder::new().connect_http(url.parse().expect("mock url"));
+        verify_payment_facts(&rpc, Network::Base, proof, MAX_AGE_SECS)
+            .await
+            .map(|_| ())
+    }
+
+    /// The round trip the defect broke. The receipt's logs carry no
+    /// `blockTimestamp`, so the proof needs the block itself.
+    #[tokio::test]
+    async fn the_proof_a_settle_emits_passes_the_proof_verifier() {
+        let settled = settle(BlockRead::Serve, false, true).await;
+        let proof = confirmed(&settled)
+            .proof_of_payment
+            .clone()
+            .expect("the settle asked for a proof and the chain answered every read");
+
+        assert_eq!(
+            verify(&settled.url, &proof).await,
+            Ok(()),
+            "the facilitator's own proof must pass the verifier behind /feedback",
+        );
+        assert_eq!(proof.block_number, BLOCK);
+        assert_eq!(proof.timestamp, settled.block_timestamp);
+        assert_eq!(settled.block_reads, 1, "one block read per proof");
+    }
+
+    /// Most nodes put `blockTimestamp` on every log of a receipt, and then the
+    /// block is not read at all.
+    #[tokio::test]
+    async fn a_receipt_whose_logs_carry_the_block_timestamp_costs_no_block_read() {
+        let settled = settle(BlockRead::Serve, true, true).await;
+        let proof = confirmed(&settled)
+            .proof_of_payment
+            .clone()
+            .expect("the receipt carried everything the proof needs");
+
+        assert_eq!(verify(&settled.url, &proof).await, Ok(()));
+        assert_eq!(
+            settled.block_reads, 0,
+            "the receipt already had the timestamp"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_settle_that_asks_for_no_proof_reads_no_block() {
+        let settled = settle(BlockRead::Serve, false, false).await;
+        assert!(confirmed(&settled).proof_of_payment.is_none());
+        assert_eq!(settled.block_reads, 0);
+    }
+
+    /// A proof the verifier is bound to reject is worse than none: without one
+    /// a rating takes the provisional path instead of carrying a failure.
+    #[tokio::test]
+    async fn a_block_read_that_fails_settles_without_a_proof() {
+        let settled = settle(BlockRead::Fail, false, true).await;
+        assert!(confirmed(&settled).proof_of_payment.is_none());
+        assert_eq!(settled.block_reads, 1, "a failed read is not retried");
+    }
+
+    #[tokio::test]
+    async fn a_node_without_the_block_settles_without_a_proof() {
+        let settled = settle(BlockRead::Missing, false, true).await;
+        assert!(confirmed(&settled).proof_of_payment.is_none());
+        assert_eq!(settled.block_reads, 1, "a missing block is not polled for");
+    }
+
+    /// No proof, rather than one naming block 0. The node would serve any
+    /// block, so only the missing number can stop the proof.
+    #[tokio::test]
+    async fn a_receipt_without_a_block_number_yields_no_proof() {
+        let payer = PrivateKeySigner::random();
+        let token = base_usdc();
+        let receipt: TransactionReceipt =
+            serde_json::from_value(receipt_json(payer.address(), token, None, None))
+                .expect("receipt parses");
+        let request = settle_request(&payer, token, true);
+        let node = alloy::providers::mock::Asserter::new();
+        node.push_success(&block_json(0, unix_now_secs() - 30));
+        let rpc = ProviderBuilder::new().connect_mocked_client(node);
+
+        let proof = create_proof_of_payment(
+            &rpc,
+            &receipt,
+            &request.payment_requirements,
+            Network::Base,
+            MixedAddress::Evm(payer.address().into()),
+            MixedAddress::Evm(PAYEE.into()),
+            TokenAmount::from(U256::from(AMOUNT)),
+            MixedAddress::Evm(token.into()),
+        )
+        .await;
+
+        assert!(
+            proof.is_none(),
+            "got a proof for a receipt with no block: {proof:?}"
+        );
+    }
+
+    /// `elapsed >= bound` is asserted so that a read failing instantly cannot
+    /// pass for the timeout.
+    #[tokio::test]
+    async fn a_block_read_that_hangs_holds_the_settle_no_longer_than_its_bound() {
+        let settled = settle(BlockRead::Hang, false, true).await;
+        assert!(confirmed(&settled).proof_of_payment.is_none());
+        assert!(
+            settled.elapsed >= PROOF_BLOCK_READ_TIMEOUT,
+            "returned in {:?}, before the bound: the timeout was never exercised",
+            settled.elapsed,
+        );
+        assert!(
+            settled.elapsed < PROOF_BLOCK_READ_TIMEOUT + Duration::from_secs(5),
+            "the settle waited {:?} on a proof it does not need",
+            settled.elapsed,
         );
     }
 }

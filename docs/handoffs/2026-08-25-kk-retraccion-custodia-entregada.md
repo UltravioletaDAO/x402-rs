@@ -8,7 +8,7 @@ destino: x402-rs
 
 # KK se retractó: la custodia SÍ puede firmar — y eso les invalida un item
 
-> **Entrega hecha por: c0der (PM del stack).** Contenido de origen:
+> **Entrega hecha por: el mantenedor del stack.** Contenido de origen:
 > `karmakadabra/docs/handoffs/2026-08-18-dx402-la-custodia-si-puede-firmar.md`.
 > Medido: cero rastro en este repo (grep de custodia/paybox en docs posteriores
 > al 18-ago, vacío).

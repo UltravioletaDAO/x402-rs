@@ -33,7 +33,7 @@ commit -S -s`). Disclosure de IA obligatoria. Sin nombre de producto en el spec.
 **Files (3):** `specs/extensions/durable-evidence.md` (= `12-SPEC-v0.3-foundation.md`
 verbatim), `docs/extensions/durable-evidence.mdx` (la página que el índice enlaza —
 cada extensión mergeada tiene una), y una fila en `docs/extensions/overview.mdx`.
-La rama ya está preparada en local (`scratchpad/x402-upstream`, rama
+La rama ya está preparada en local (un clon temporal de `x402-upstream`, no versionado; rama
 `spec/durable-evidence`, commit firmado GPG + DCO) sobre `upstream/main` del
 2026-09-04; falta sólo pushearla al fork y abrir el PR.
 

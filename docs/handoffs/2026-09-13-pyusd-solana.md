@@ -153,14 +153,14 @@ macOS, rust 1.98.1, mismos comandos que `.github/workflows/ci.yaml` (job `test`)
 Condiciones del spec cumplidas: el mint de devnet verifico on-chain y el fee payer
 de devnet `6xNPewUdKRbEZDReQdpyfNUdgNg8QRc8Mt263T5GZSRv` tenia 4.96 SOL.
 
-Preparacion (todo devnet, wallets descartables en el scratchpad del worker):
+Preparacion (todo devnet, wallets descartables en un directorio temporal, no versionado):
 
 - Pagador `DZFwWaE1Vz9Yes5TVv8qezCRwYR5VrK2Zu1GvaCuapF8`: 100 PYUSD del faucet de
   Paxos (`POST https://api.sandbox.paxos.com/v2/treasury/faucet/transfers`, sin captcha).
 - El airdrop publico de SOL de devnet respondio 429, asi que la renta de la ATA del
   payee salio del fee payer de devnet: 0.01 SOL `6xNPew -> DZFw`, tx
   `5Sx3dGZgj986WjMmF9qXdKH4Sj9wtTijs9cF3PbLxXe91pYNFZF3G3Qxi2sBd6zyafHk2eRnWUYU6qgTo3FoU6gi`
-  (ver `PREGUNTA-c0der.md` §2 sobre la clave).
+  (la pregunta sobre la clave quedo planteada al mantenedor, fuera de git).
 - ATA PYUSD del payee `38aongSEWXENBnmbQ7MRUYbSMTx8GJsaeJhDcQsL3MYS` =
   `APFxpjXPTHYqbvQvNAMFw4rY3eb8gWETptqxHTztZKJF`, tx
   `5TvQ1cXq3gAiwQM5Z4UTZU513yYaHmhH7PoKUjvAtP4FvTeFrF9raiEYTKuGmCBpaMp7Pzywk3fx83RMFKNaAsXc`.
@@ -211,10 +211,10 @@ Dos cosas que aparecieron en el camino, preexistentes y ajenas a PYUSD (no las t
 
 ### (c) mainnet
 
-No movi fondos. Pendiente para c0der con el dueno despues del release: ver
-`PREGUNTA-c0der.md` §1 (comando exacto).
+No movi fondos. Pendiente para el mantenedor con el dueno despues del release: el
+comando exacto quedo en una nota fuera de git.
 
-## Para c0der
+## Para el mantenedor
 
 Tras el release (merge a main = deploy):
 
@@ -222,7 +222,7 @@ Tras el release (merge a main = deploy):
 2. `curl -s https://facilitator.ultravioletadao.xyz/.well-known/x402 | jq '.x402.networks[] | select(.name=="solana") | .tokens'` -> `["USDC","AUSD","PYUSD"]`.
 3. Landing: la tarjeta Solana (pestana mainnet) muestra el icono PYUSD junto a USDC y AUSD; la de Solana Devnet (testnet) USDC y PYUSD.
 4. `/supported` **no cambia**: para `solana` / `solana:5eykt4Us…` sigue trayendo solo `extra.feePayer` (no enumera assets en SVM; `tokens: None` es un TODO preexistente en `SolanaProvider::supported`). `POST /accepts` tampoco lista PYUSD en Solana: `post_accepts` copia el `extra` de `/supported` por (scheme, network), asi que en SVM solo agrega `feePayer`. Preexistente: la nota del manifiesto ("Read them live from POST /accepts (extra.tokens) or GET /supported") no se cumple para SVM; hoy el manifiesto es el unico lugar publico donde un integrador ve que PYUSD se acepta en Solana.
-5. Settle de prueba en mainnet con 0.01 PYUSD: `PREGUNTA-c0der.md` §1.
+5. Settle de prueba en mainnet con 0.01 PYUSD: comando en la nota fuera de git.
 6. Refutador: la guarda vive en `src/chain/solana.rs` (`transfer_fee_upper_bound`, `verify_mint_charges_no_transfer_fee`, paso 6 de `verify_transfer`).
 
 ## Lo que NO hice

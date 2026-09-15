@@ -1,10 +1,10 @@
 # Sinergias con "Keep the Change" (Commonware) — 3.1 x402-rs — el facilitador
 
-> Depositado por c0der el 2026-09-02. Fuente: `c0der/docs/plans/commonware-clearing-que-adoptar.md`
+> Depositado por el mantenedor el 2026-09-02. Fuente: un documento interno, fuera de este repo
 > (análisis de los 15 proyectos x402 del stack: 66 sinergias propuestas, 40 sostenidas por un refutador
 > que abrió cada `archivo:línea`; las descartadas y su motivo están en la sección 4 del documento fuente).
 > Post original: <https://commonware.xyz/blogs/clearing> (Patrick O'Grady, 2026-08-19). Esta carpeta
-> `docs/sinergias/` es donde c0der deja lo que otros análisis encuentren para este proyecto.
+> `docs/sinergias/` es donde el mantenedor deja lo que otros análisis encuentren para este proyecto.
 
 ## Principios transversales que aplican a todo el stack (títulos; el detalle está en la fuente, sección 2)
 
@@ -39,8 +39,8 @@
    (`src/transaction_store.rs:81-111`) no tiene campo `errorReason` y `FacilitatorErrorReason`
    (`src/types.rs:1499-1518`) no tiene variante de nonce gastado.
 2. **A/T:** `docs/plans/batch-settlement/` está **UNTRACKED** (`git status`:
-   `?? docs/plans/batch-settlement/`) — un worker en worktree nuevo **no lo verá**. Es la
-   trampa 1 de `uvd-orca-worker`.
+   `?? docs/plans/batch-settlement/`) — un worker en worktree nuevo **no lo verá**. Es una
+   trampa conocida de los worktrees nuevos.
 3. **Salida unilateral:** no es una contradicción. `SkaleBase` lista **tres** operadores
    (`addresses.rs:411-415`, el de `:414` es *"EM operator v2 (fixed OrCondition, OR release
    payer|facilitator)"*) y Base **dos** (test en `:489`): un `StaticAddressCondition` en uno

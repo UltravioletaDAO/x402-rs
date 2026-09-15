@@ -66,8 +66,8 @@ entorno. El proceso local logueo un intento de liberar el lease contra la tabla
 de produccion. No lo gano (el `ConditionalCheckFailed` dice que no era suyo),
 pero pudo haberlo ganado, y entonces los settles EVM de produccion se habrian
 ruteado a `127.0.0.1`. **Toda corrida local de esta rama fue con
-`ENABLE_WRITER_LEASE=false` y credenciales AWS falsas.** La receta esta en
-`scratchpad/run.sh` y deberia entrar al handoff original.
+`ENABLE_WRITER_LEASE=false` y credenciales AWS falsas.** La receta estaba en un
+script del directorio temporal de la sesion, no versionado, y deberia entrar al handoff original.
 
 **4. `/discovery/stats`: un solo agregador ES el catalogo.** payai aporta
 **23.152 de 24.182 recursos (95,7%)** y Base carga el **99,4%**. El 89% del
@@ -85,7 +85,7 @@ advertencias del propio endpoint impresas **tal cual**.
 Levantar el binario **aislado de produccion** (ver punto 3 de arriba):
 
 ```bash
-cd /mnt/c/Users/lxhxr/orca/workspaces/x402-rs/x4-paginas
+cd <worktree>
 cp -n config/blacklist.json.example config/blacklist.json
 rustup run stable cargo build --features solana,near,stellar,algorand,sui,xrpl
 HOST=127.0.0.1 PORT=8402 RUST_LOG=warn SIGNER_TYPE=private-key \
@@ -247,31 +247,16 @@ esta rama y borrar codigo muerto ajeno no es de este encargo.
    que "las operaciones que ERROR no se registran". Las dos frases no pueden ser
    las dos ciertas del mismo modo; la pagina imprime el caveat tal cual y no
    intenta reconciliarlo. **Vale una investigacion aparte.**
-4. **El worker no pudo mandar su `worker_done`.** Ver la seccion 9.
+4. El resumen de cierre vive en este handoff.
 
 ---
 
-## 9. El CLI de Orca no corre desde este WSL
+## 9. Nota de entorno
 
-`orca.exe`, `git.exe` y `cmd.exe` fallan los tres con
-`cannot execute binary file: Exec format error`: no existe
-`/proc/sys/fs/binfmt_misc/WSLInterop`, o sea que **la interoperabilidad con
-binarios de Windows esta apagada en esta distro**. No hay un `orca` nativo de
-Linux ni un demonio local escuchando (`ss -ltn` no muestra ninguno), y el
-`orca.cmd` es solo un lanzador del `.exe`.
-
-Asi que el mensaje de cierre queda escrito acá para que lo despache quien pueda
-correrlo desde Windows:
-
-```
-orca orchestration send --from term_208054d2-ab85-4982-907e-8c1ae020f0e7 \
-  --dispatch-capability dcap_21Dq7vHi_TyEmXfX7lOvXbANX5Hb-DtufvbJiHnTU6Y \
-  --type worker_done --subject "Las 8 paginas del mapa, listas y sin pushear" \
-  --body "Los cuatro fases del encargo estan completas en 10 commits sobre 1c4c33d9: el corte 0 (MCP en la landing, una sola clave de idioma con ingles por defecto, dos tests de i18n verificados por mutacion, y el verificador canonico cableado al CI leyendo tambien el espanol), la pagina /mcp que convive con el servidor MCP en la misma ruta, /networks generado del /supported vivo, y el hub con /x402, /dx402, /erc8004, /integrar y la explicacion de los numeros del Bazar. Midiendo salieron cinco cosas que no estaban en el encargo y cambiaron el diseno: /supported no vincula el nombre v1 con el CAIP-2 (49 entradas CAIP-2 sin tokens, asi que la columna de pareo se saco en vez de adivinarla), escrow y upto se anuncian SOLO bajo CAIP-2 (un cliente que lea solo las v1 concluye que no hay escrow), el binario local se metia en la eleccion del writer lease de PRODUCCION con la receta documentada, payai aporta el 95,7% del catalogo del Bazar, y /api/stats publica mas settles fallidos (5.030) que exitosos (2.793). Queda: una pasada de CSS muerto en la landing, y entender por que /api/stats publica 5.030 fallas mientras su propio caveat dice que las operaciones que erroran no se registran. 760 tests verdes, clippy sin warnings nuevos, git limpio, cero push." \
-  --task-id task_0ec3a5508d0b --dispatch-id ctx_93ff4263f329 --outcome succeeded \
-  --files-modified "src/handlers.rs,src/mcp.rs,static/index.html,static/mcp.html,static/mcp.md,static/networks.html,static/x402.html,static/dx402.html,static/erc8004.html,static/integrar.html,static/bazaar.html,static/stats.html,static/events-viewer.html,static/sitemap.xml,static/llms.txt,static/llms-full.txt,static/index.md,static/.well-known/api-catalog,static/.well-known/agent-skills/index.json,scripts/verify_landing_canonical.py,.github/workflows/ci.yaml" \
-  --report-path "docs/handoffs/2026-09-02-paginas-listo.md"
-```
+`git.exe` y `cmd.exe` fallan con `cannot execute binary file: Exec format error`: no
+existe `/proc/sys/fs/binfmt_misc/WSLInterop`, o sea que **la interoperabilidad con
+binarios de Windows esta apagada en esta distro**. El resumen de cierre queda en este
+handoff.
 
 ---
 

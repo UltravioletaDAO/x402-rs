@@ -19,7 +19,7 @@ See `04-curation-tiers.md` §6 for ready-to-run payloads. Summary:
 2. Register first-party REST endpoints: `api.402milly.xyz/purchase` (terms verified), `api.execution.market/api/v1/tasks` (confirm terms with EM first).
 3. `__bazaar_debug__` delisting waits for WS-C admin DELETE (no exposed unregister today); it is in the manifest `suppressed[]` list as a backstop.
 4. File external-side fixes: MeshRelay `/turnstile` meta tag 404; 402milly wrong chain IDs (998/1301) + v1-style 402 response + missing non-EVM rails in its bazaar entry.
-5. **Commit the audit tooling to the repo before WS-A** (completeness #5 — the discovery-sweep data + scripts currently live in an ephemeral session scratchpad and will vanish):
+5. **Commit the audit tooling to the repo before WS-A** (completeness #5 — the discovery-sweep data + scripts currently live in an ephemeral session directory and will vanish):
    - `scripts/bazaar_audit.py` — paginate `/discovery/resources` at limit=100 → full snapshot; run the static quality analysis + the single-pass GET/POST health probe (methodology in `01` header). Doubles as the post-deploy re-audit tool for every verification gate in §6.
    - `tests/fixtures/bazaar/payai-page.json` — a captured real payai response page (with its junk: `monopoly://`, empty-accepts, 404-prone URLs) so WS-A's integration test (`02` §4) is runnable offline by a fresh engineer.
 

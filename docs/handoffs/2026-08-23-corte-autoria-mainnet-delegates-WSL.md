@@ -116,7 +116,7 @@ mismo deployer, salt e init code aterriza en la misma dirección en las dos.
 Verificado por separado en cada cadena; hay un test que lo fija para que nadie lo
 "corrija" después.
 
-Script usado (efímero, en scratchpad, no commiteado): hace las 4 lecturas por RPC
+Script usado (efímero, en un directorio temporal de la sesion, no commiteado): hace las 4 lecturas por RPC
 en paralelo. Repetirlo es ~30 s si alguien duda.
 
 > **Nota de método:** los RPC públicos devuelven **403 sin `User-Agent`**. El

@@ -35,7 +35,7 @@ lo vio.
 
 ---
 
-## Para c0der
+## Para el mantenedor
 
 ### 1. Las tres hipotesis, contestadas con medicion
 

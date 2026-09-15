@@ -114,7 +114,7 @@ Tres resueltos acá, uno en backlog.
   `wiremock` como dev-dependency y eso toca `Cargo.lock` en un PR que toca
   dinero.
 
-## Para c0der
+## Para el mantenedor
 
 ### Decisiones de la sección 14 tomadas acá
 

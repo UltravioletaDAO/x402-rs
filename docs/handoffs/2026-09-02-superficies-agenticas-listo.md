@@ -19,7 +19,7 @@ se disparan **despues** del deploy.
 
 ## 2. La tabla local
 
-Corrida con el propio `scripts/agentic_check.py` de c0der (mismo criterio, mismo
+Corrida con el propio `agentic_check.py`, el verificador de superficies agenticas (fuera de este repo) (mismo criterio, mismo
 codigo: codigo HTTP + content-type + cuerpo distinto de la raiz), apuntado a
 `http://127.0.0.1:8402`:
 
@@ -71,11 +71,11 @@ codigo: codigo HTTP + content-type + cuerpo distinto de la raiz), apuntado a
 #    produccion antes de arrancar. La clave de firma es efimera, de un solo
 #    uso, sin fondos y nunca se escribe a disco: solo hace falta para que
 #    ProviderCache::from_env() no aborte.
-cd /mnt/c/Users/lxhxr/orca/workspaces/x402-rs/x4-agentic
+cd <worktree>
 PORT=8402 ./scripts/run-local.sh &
 
-# 2) el checker de c0der contra el local (no tiene flag --url; se le inyecta el nodo)
-cd /mnt/z/ultravioleta/dao/c0der
+# 2) el verificador de superficies agenticas contra el local (no tiene flag --url; se le inyecta el nodo)
+cd <checkout del verificador, fuera de este repo>
 PYTHONUTF8=1 python3 - <<'PY'
 import importlib.util
 spec = importlib.util.spec_from_file_location("ac", "scripts/agentic_check.py")
@@ -176,7 +176,7 @@ c51add11 feat(agentic): los artefactos JSON de descubrimiento en /.well-known
 
 ---
 
-## 5. Los checks que NO se pueden ganar con verdad, y que hay que decidir en c0der
+## 5. Los checks que NO se pueden ganar con verdad, y que hay que decidir en el registro del verificador
 
 ### `mcp-server-card` (peso 3) — hace falta un `excluye` en el registro
 
@@ -186,7 +186,7 @@ exactamente el fallo que el propio `agentic-sites.toml` documenta de meshrelay
 ("publica la suya y el endpoint que anuncia da 404 en GET y 401 en POST"). No se
 fabrico.
 
-**Lo que hay que decidir en c0der** — una de estas dos, ninguna la puede tomar esta
+**Lo que hay que decidir en el registro del verificador** — una de estas dos, ninguna la puede tomar esta
 rama:
 
 1. Agregar `excluye = ["facilitator"]` al bloque `[[sitio]]` de `mcp-server-card`
@@ -202,7 +202,7 @@ El check solo pide 200 + `application/json` + cuerpo distinto de la raiz, asi qu
 un documento honesto lo pasa. Se publico uno con `authorization_servers: []` y un
 `x-note` que explica que el servicio **no autentica llamadores**, con la misma forma
 que el de execution-market. Sirve: un agente con OAuth descubre en un GET que aca
-no hay nada que negociar, en vez de intentar y fallar. Si a c0der le parece que un
+no hay nada que negociar, en vez de intentar y fallar. Si al mantenedor le parece que un
 RFC 9728 degenerado no deberia contar, el cambio va en el `aplica_a` del TOML.
 
 ### `x402-discovery` — se publico y es honesto
@@ -269,7 +269,7 @@ for p in /llms.txt /llms-full.txt /robots.txt /sitemap.xml /index.md /skill.md \
        https://facilitator.ultravioletadao.xyz$p)"
 done
 
-cd /mnt/z/ultravioleta/dao/c0der
+cd <checkout del verificador, fuera de este repo>
 PYTHONUTF8=1 python3 scripts/agentic_check.py --project facilitator
 # esperado: 26/35 antes de disparar los escaneos, 32/35 despues
 ```
@@ -295,14 +295,12 @@ que el reporte existe en su cache, el check pasa a leerlo y los 6 puntos entran.
 
 1. **`git push` de la rama y merge a `main`** — un merge despliega a produccion.
 2. **Los dos escaneos** (`is-agentic`, `ora.ai`), despues del deploy.
-3. **La decision sobre `mcp-server-card`** en `c0der/config/agentic-sites.toml`.
+3. **La decision sobre `mcp-server-card`** en `agentic-sites.toml` (registro del verificador, fuera de este repo).
    Sin ella el techo es 91.4%, no 100%.
 
-## 8. Nota operativa: el CLI de Orca no corre desde WSL
+## 8. Nota operativa
 
-Los tres binarios (`orca`, `orca.exe`, `orca.cmd` en
-`/mnt/c/Users/lxhxr/AppData/Local/Programs/orca/resources/bin/`) fallan con
-`cannot execute binary file: Exec format error`, y `cmd.exe` tambien: la
-interoperabilidad Windows esta desactivada en esta instancia de WSL
-(Ubuntu-24.04). Por eso el mensaje al buzon del Run no se pudo enviar desde aca y
-el resultado vive en este handoff.
+Los binarios de Windows (`cmd.exe` incluido) fallan con
+`cannot execute binary file: Exec format error`: la interoperabilidad Windows esta
+desactivada en esta instancia de WSL (Ubuntu-24.04). El resultado vive en este
+handoff.

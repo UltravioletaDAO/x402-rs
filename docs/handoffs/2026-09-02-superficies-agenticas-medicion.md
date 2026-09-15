@@ -1,7 +1,7 @@
 # Facilitador x402: medicion inicial de superficies agenticas
 
 **Fecha:** 2026-09-02
-**Rama:** `0xultravioleta/x4-agentic` (worktree `/mnt/c/Users/lxhxr/orca/workspaces/x402-rs/x4-agentic`)
+**Rama:** `0xultravioleta/x4-agentic` (worktree `<worktree>`)
 **Base:** `aad5c4c6` (origin/main al 2026-09-01 23:29 EDT)
 **Release desplegado:** `2.9.0` (`curl -s https://facilitator.ultravioletadao.xyz/version` -> `{"version":"2.9.0"}`, y `VERSION` local dice lo mismo)
 
@@ -12,17 +12,17 @@ Este documento es la FASE 0 del encargo "de 0 a lo mas cerca de 100 en
 
 ## 1. El criterio, y de donde sale
 
-El registro de superficies vive fuera de este repo, en c0der:
+El registro de superficies vive fuera de este repo:
 
-- `Z:/ultravioleta/dao/c0der/config/agentic-sites.toml` — el DATO: 24 bloques
+- `config/agentic-sites.toml` — el DATO: 24 bloques
   `[[sitio]]` con `id`, `tipo`, `que_mide`, `check`, `peso`, `aplica_a`, `estado`.
-- `Z:/ultravioleta/dao/c0der/scripts/agentic_check.py` — el verificador. Solo
+- `scripts/agentic_check.py` — el verificador. Solo
   hace `GET`/`HEAD` sin credenciales.
 
 Comando (desde WSL):
 
 ```bash
-cd /mnt/z/ultravioleta/dao/c0der
+cd <checkout del verificador, fuera de este repo>
 PYTHONUTF8=1 python3 scripts/agentic_check.py --project facilitator
 ```
 
@@ -45,7 +45,7 @@ El facilitador esta declarado en los dos perfiles del TOML (`cobran` y
 
 ## 2. La medicion: 0 de 35 puntos (0.0%)
 
-`data/agentic.json` de c0der, corrida `2026-09-02T07:11:11Z`:
+`data/agentic.json` del verificador, corrida `2026-09-02T07:11:11Z`:
 
 | # | sitio | peso | ruta / url | HTTP | content-type | motivo |
 |---|-------|------|------------|------|--------------|--------|
@@ -149,7 +149,7 @@ Todos medidos hoy contra produccion y contra el codigo de esta rama:
   disparando los dos escaneos.
 - Techo de esta rama, medible en local: **26 de 29 puntos de superficie**.
 - Techo despues del deploy + los dos escaneos: **32 de 35 (91.4%)**, y el 100%
-  requiere una decision en c0der sobre `mcp-server-card` (un `excluye` para
+  requiere una decision en el registro del verificador sobre `mcp-server-card` (un `excluye` para
   `facilitator`, o un `aplica_a` distinto).
 
 ## 6. Bloqueo de deploy conocido (no es de esta rama)

@@ -1,6 +1,6 @@
 # Handoff — pre-commit anti-llaves versionado en x402-rs
 
-**Fecha:** 2026-09-14 · **Rama:** `0xultravioleta/x4-hook-llaves` · **Worker:** Orca `x4-hook-llaves`
+**Fecha:** 2026-09-14 · **Rama:** `0xultravioleta/x4-hook-llaves` · **Worker:** `x4-hook-llaves`
 
 > Directiva de INC-2026-03-30: dos wallets drenadas por private keys
 > hardcodeadas en repos publicos. `meshrelay`, `execution-market` (#273) y

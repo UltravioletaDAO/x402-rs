@@ -1,8 +1,8 @@
 # 2026-09-05 — `ESCROW_LIFECYCLE_AUTH`: de `off` a `log` en producción, la medición, y el veredicto sobre `enforce`
 
-**Encargo:** c0der master-4, 2026-09-05, segundo intento (el primero nunca llegó a un worker:
+**Encargo:** 2026-09-05, segundo intento (el primero nunca llegó a un worker:
 la sesión ya había cerrado y el texto se ejecutó como comando de PowerShell).
-**Worker:** Orca `task_256125fcbe05`, rama `0xultravioleta/x4-enforce`, corrido desde WSL.
+**Worker:** rama `0xultravioleta/x4-enforce`, corrido desde WSL.
 **Decisión del dueño que gobierna:** *"PR, desplegar y encender YA"* — leída como la decisión de
 camino (firma obligatoria), no como la orden de cortar a Execution Market a ciegas.
 **Reglas seguidas:** cero `settle` / `release` / `refundInEscrow` contra producción; cero valores de
@@ -13,23 +13,20 @@ recurso autorizado; el apply de los access logs del ALB NO se hizo.
 vivo). **`enforce` NO se enciende todavía:** ningún llamador firma — Execution Market en HEAD
 `aec2eb69` no manda `lifecycleAuth` y el SDK de Python tampoco lo implementa —, así que hoy
 `enforce` rechazaría el 100 % del tráfico real (2 953 release/refund de 22 pagadores en 17 días de
-logs) y EM trata ese 4xx como permanente. Primero firma el SDK, después EM; eso lo despacha c0der.
+logs) y EM trata ese 4xx como permanente. Primero firma el SDK, después EM; eso lo coordina el mantenedor.
 
 ---
 
 ## Fase 0 — arranque en WSL
 
 - `.git` del worktree apuntaba a `Z:/…/.git/worktrees/x4-enforce`; reescrito a
-  `/mnt/z/ultravioleta/dao/x402-rs/.git/worktrees/x4-enforce`. El registro del dueño
-  (`.git/worktrees/x4-enforce/gitdir` → `C:/Users/lxhxr/orca/...`) no se tocó.
+  `<repo>/.git/worktrees/x4-enforce`. El registro del dueño
+  (`.git/worktrees/x4-enforce/gitdir` → ruta Windows del worktree) no se tocó.
 - `git config core.autocrlf true`. Después de eso `git status` solo lista `contracts`, `target` y
   `tests/crossmint-smart-wallet/node_modules` sin trackear (artefactos del worktree).
 - Base: `origin/main` = `7a63f29d`, que ya contiene PR #21 (`f33bc50b`, el módulo
   `lifecycle_auth`). Prod respondía `{"version":"2.14.0"}` y `GET /settle` →
   `"escrowLifecycleAuth":"off"` antes de tocar nada.
-
-Nota operativa: `orca orchestration send` SÍ llega desde este shell (a diferencia del worker
-anterior): heartbeats y `worker_done` enviados.
 
 ---
 
@@ -146,7 +143,7 @@ Y en la ventana con logs el campo ni existía (PR #21 se desplegó el 2026-09-05
 última orden es del 09-04). Conclusión que no depende de la ventana: **hoy 100 % de las órdenes
 llegan sin firma → verdict `missing`; con `enforce`, 100 % rechazadas.**
 
-### La consulta para seguir midiendo (para c0der, cuando la ventana esté completa)
+### La consulta para seguir midiendo (para el mantenedor, cuando la ventana esté completa)
 
 ```
 # Logs Insights, /ecs/facilitator-production, desde 2026-09-06T00:41:14Z
@@ -174,7 +171,7 @@ permanente (`payment_dispatcher.py:2606-2611`), un corte del rail de dinero, no 
 El agujero sondeado el 2026-08-30 no produjo daño (2 tx minadas contra un escrow inexistente,
 costo: gas); una semana más de eso es más barato que un corte de EM.
 
-Orden para llegar a `enforce` (upstream-first, lo despacha c0der, no este worker):
+Orden para llegar a `enforce` (upstream-first, lo coordina el mantenedor, no este worker):
 
 1. **SDK Python** `uvd-x402-sdk`: `_settle_via_facilitator` firma `LifecycleOrder` EIP-712 con la
    llave/wallet que ya tiene (`advanced_escrow.py:592-650`). Dominio y struct en
@@ -235,7 +232,7 @@ configurada en el bucket. Sin esto, la próxima sonda tampoco tendrá origen.
 
 ---
 
-## Para c0der
+## Para el mantenedor
 
 - **Estado del modo:** `log` en producción desde `2026-09-06T00:41:14Z`, verificado con
   `curl -s https://facilitator.ultravioletadao.xyz/settle | jq .escrowLifecycleAuth`. Imagen
@@ -266,6 +263,6 @@ solo de ramas `0xultravioleta/x4-enforce` y `0xultravioleta/x4-alb-access-logs`;
 Ventana `2026-09-06T00:41:14Z` → `2026-09-06T01:03:09Z` (21 min): **0** `escrow lifecycle order`, **0**
 `Processing escrow scheme settlement (release|refundInEscrow)`. Modo en vivo al
 cierre: `log`. CI de PR #23: `Build & test` pass, deploy saltado (es PR, no `main`). La ventana
-sigue abierta; la completa c0der con la consulta de la fase 2.
+sigue abierta; la completa el mantenedor con la consulta de la fase 2.
 
 PRs: #23 (`log`, mergeable) y #24 (access logs del ALB, draft, merge = apply).

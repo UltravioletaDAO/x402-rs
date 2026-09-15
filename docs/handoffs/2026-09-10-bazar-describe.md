@@ -13,7 +13,7 @@ Two halves. This change is the first one: describe.net is now a curated
 `first_party` entry in the manifest and it is named on the bazaar page next to
 the other three. The second half — the resources existing in
 `GET /discovery/resources` at all — is not ours and is not done; see
-[Para c0der](#para-c0der).
+[Para el mantenedor](#para-el-mantenedor).
 
 ## What changed
 
@@ -139,7 +139,7 @@ Full CI gate run locally, green: `cargo fmt --all -- --check`,
 `cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl -- --test-threads=1`
 (1746 passed, 0 failed) and the axum/reqwest/compliance suite (71 passed).
 
-## Para c0der
+## Para el mantenedor
 
 **Lo que se agrego.** `config/bazaar_curation.json` tiene a describe.net como
 cuarta entrada `first_party`, con tres prefijos sobre `api.describe.net`

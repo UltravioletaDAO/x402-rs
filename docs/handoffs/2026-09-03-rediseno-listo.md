@@ -1,10 +1,10 @@
 ---
 titulo: Rediseño del sitio del facilitador — implementado
 fecha: 2026-09-03
-autor: worker de Orca (claude-opus-5, effort xhigh) en x4-rediseno
+autor: worker (claude-opus-5, effort xhigh) en x4-rediseno
 estado: implementado, probado, SIN pushear
 rama: 0xultravioleta/x4-rediseno (desde origin/main 72c64076)
-spec: /mnt/z/ultravioleta/dao/c0der/docs/plans/facilitador-rediseno.md
+spec: documento interno de planificación, fuera de este repo
 tags:
   - type/handoff
   - domain/frontend
@@ -22,7 +22,7 @@ tags:
 > seis cierran con su verificación pegada abajo.
 >
 > **RIESGO:** nada está desplegado. `git push` sobre `main` **es** un despliegue
-> a producción; el push lo hace c0der, no este worker.
+> a producción; el push lo hace el mantenedor, no este worker.
 
 ## 1. Los siete commits
 
@@ -86,7 +86,7 @@ líneas de endpoints que vivían en la portada aterrizaron donde se explican, y
 
 ```
 ############ LOS OCHO COMANDOS DE LA SECCION 10
-# corridos en WSL, en /mnt/c/Users/lxhxr/orca/workspaces/x402-rs/x4-rediseno
+# corridos en WSL, en el worktree x4-rediseno
 # 2026-09-03T07:18:57Z | HEAD 29b2fcc6
 
 === (1) la hoja pide la fuente en la ruta que el binario sirve   -> 2
@@ -310,12 +310,12 @@ corrigiéndose a sí misma o un detalle que el papel no podía ver.
 | 4 | **La línea base de clippy no se recompiló** | Verifiqué que ningún warning apunta a las líneas que agregué. Comparar el total contra `72c64076` costaba una recompilación completa |
 | 5 | **`/events/live` se queda con cero `h2`** | Es un visor de una sola cosa. El tope de la spec es `<= 9`, no `>= 1` |
 | 6 | **Sui no aparece en la Tabla A con sus tokens** | La spec la da como `— (feePayer)`, y así quedó. Si alguna vez liquida una stablecoin, la fila cambia |
-| 7 | **No se corrigió la nómina §1.7 de c0der** (§9.3 de la spec) | Vive en `c0der`, y este worker no escribe ahí. La corrección: hoy fallan **0 de 39** filas de `/networks`, no "la mitad"; el defecto real es que no había suelo |
+| 7 | **No se corrigió la nómina §1.7 del plan** (§9.3 de la spec) | Vive en un documento interno fuera de este repo, y este worker no escribe ahí. La corrección: hoy fallan **0 de 39** filas de `/networks`, no "la mitad"; el defecto real es que no había suelo |
 
 ## 9. Lo que hay que saber antes de tocar esto
 
-- **La cabecera se genera, no se tipea.** El generador quedó en el scratchpad de
-  la sesión, no en el repo: si hay que cambiarla, se cambia en las diez y el test
+- **La cabecera se genera, no se tipea.** El generador quedó en el directorio temporal de
+  la sesión, no versionado ni en el repo: si hay que cambiarla, se cambia en las diez y el test
   `las_diez_cabeceras_son_la_misma` avisa si quedó a medias. Vale la pena
   moverlo a `scripts/` la próxima vez que se toque.
 - **`uv.css` va en 32.074 B contra el techo de 40.960.** Quedan ~8,8 KB. El
@@ -327,7 +327,7 @@ corrigiéndose a sí misma o un detalle que el papel no podía ver.
   symlinks; un `git stash -u` los aplana a archivos de texto con la ruta adentro
   y `cargo` deja de compilar. Pasó una vez y se restauró con `ln -s`.
 - **El `.git` del worktree apunta a una ruta de Windows.** Reescrito a
-  `gitdir: /mnt/z/ultravioleta/dao/x402-rs/.git/worktrees/x4-rediseno` para que
+  `gitdir: <repo>/.git/worktrees/x4-rediseno` para que
   el git de WSL funcione. Todo git de esta sesión corrió con
   `-c core.autocrlf=true`: el árbol está en CRLF y sin esa bandera cada commit
   habría reescrito 176.834 líneas.

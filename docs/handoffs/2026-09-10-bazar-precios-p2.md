@@ -144,7 +144,7 @@ reimportar una página idéntica. Eso es el `content_fingerprint` de P1 haciendo
 que dije que haría cuando avisé que 2.21.2 seguía escribiendo un snapshot por
 ciclo.
 
-## Para c0der
+## Para el mantenedor
 
 **Decisiones de la sección 14, tomadas acá.** Cada una con la suposición más
 reversible:

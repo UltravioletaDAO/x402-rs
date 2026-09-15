@@ -151,7 +151,7 @@ discovery_store::tests::publishing_a_snapshot_reads_the_version_not_the_catalog
 discovery_store::tests::the_snapshot_is_written_compact
 ```
 
-## Para c0der
+## Para el mantenedor
 
 **Las dos preguntas que hiciste, contestadas derecho.**
 

@@ -122,7 +122,7 @@ Si el `taskkill` no lo mata, ahí sí el reinicio es el único camino.
 ### Después
 
 - **Compactar el VHDX**: ocupa 82,84 GB y adentro se usan bastante menos. El
-  script está en `C:\Users\lxhxr\compactar-ahora.ps1` (admin). **No usar
+  script es `compactar-ahora.ps1`, local en la máquina del operador (admin). **No usar
   `--set-sparse`**: Microsoft lo deshabilitó por riesgo de corrupción y esta
   máquina ya tiene errores de NTFS.
 - **`C:` al 6% libre.** Se liberaron ~36 GB (target de Rust, caché de npm,
@@ -134,7 +134,7 @@ Si el `taskkill` no lo mata, ahí sí el reinicio es el único camino.
   desmontado de WSL a propósito.
 - **`em-redis` fue destruido** (contenedor y volumen). Su AOF estaba corrupto
   **desde el 17 de agosto**, no por estos crashes. Backup de 25,62 MB en
-  `C:\Users\lxhxr\redis-backup`. Cuando Execution Market lo necesite, se recrea.
+  un directorio local de la máquina del operador (`redis-backup`). Cuando Execution Market lo necesite, se recrea.
 
 ## ARCHIVOS SIN COMMITEAR AL CERRAR
 

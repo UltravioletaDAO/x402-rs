@@ -10,7 +10,7 @@ status: active
 
 # La base Debian del facilitador venció y se llevó el despliegue con ella
 
-**Versión:** 2.17.0 · **Detectado por:** c0der, 2026-09-10 04:28Z, tras dos
+**Versión:** 2.17.0 · **Detectado por:** el mantenedor, 2026-09-10 04:28Z, tras dos
 despliegues fallidos seguidos del merge de `#28`.
 
 `2.17.0` estaba en `main` desde las 04:07:42Z y no llegaba a producción, que seguía
@@ -158,7 +158,7 @@ solo se puede leer contra el despliegue.
   devuelve solo las dos líneas del `Dockerfile`.
 - `docs/CHANGELOG.md`: no lo toqué, ya venía atrasado respecto del release.
 
-## Para c0der
+## Para el mantenedor
 
 **Camino elegido:** opción 1, subir la base — pero en **las dos** etapas
 (`rust:bullseye` → `rust:bookworm` y `debian:bullseye-slim` → `debian:bookworm-slim`).

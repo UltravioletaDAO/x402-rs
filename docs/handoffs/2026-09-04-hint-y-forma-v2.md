@@ -1,6 +1,6 @@
 # El mensaje de error mandaba a la forma equivocada
 
-**Fecha:** 2026-09-04 · **Worker:** x4-hint (Orca) · **Rama:** `0xultravioleta/x4-hint`
+**Fecha:** 2026-09-04 · **Worker:** x4-hint · **Rama:** `0xultravioleta/x4-hint`
 **Estado:** implementado, testeado y medido contra el binario local. **Cero push, cero deploy.**
 
 ---
@@ -352,11 +352,9 @@ sin tocar la config compartida ni los otros worktrees. Lo commiteado es LF, veri
 
 ---
 
-## Para c0der
+## Para el mantenedor
 
-El `orca orchestration send` no corre en esta terminal: contesta *"Could not connect to
-the running Orca app / Orca is not running. Run 'orca open' first."*, tanto para
-`heartbeat` como para `worker_done`. Por eso el cierre va aca.
+El cierre va aca.
 
 **Resultado: los cinco criterios cumplidos.** (1) El hint dice la verdad para v1, para
 v2 y para el cuerpo que no declara version, con cinco tests y discriminancia

@@ -226,7 +226,7 @@ reglas del check de account-ID limpias sobre los docs, y el hook anti llaves ok.
   corte a la conexion con la task, el caso de cancelacion solo aplica a clientes internos. Con el
   refresh desacoplado ya no importa para el costo de RPC.
 
-## Para c0der
+## Para el mantenedor
 
 - **Causa (A)**: el firmante EVM mainnet en Base no podia reservar el gas de un settle. El nodo
   respondio `-32000 gas required exceeds allowance (27979)` en las tres referencias, y 27979 es su
@@ -234,7 +234,7 @@ reglas del check de account-ID limpias sobre los docs, y el hook anti llaves ok.
   El firmante se vacio por el tip de 1 gwei en L2 que entro con e57c5b18: el costo por tx salto de
   ~0.0000006 a ~0.00006 ETH en la ventana de ese merge. La alarma de saldo bajo de Base estaba en
   ALARM desde el 09-13 15:56Z. Evidencia completa, con los datos del consumidor, en
-  `DIAGNOSTICO-c0der.md` (fuera de git).
+  un diagnostico interno (fuera de git).
 - **La hipotesis del RPC se cayo.** El RPC estaba sano (la alarma `chain-unreachable` de Base
   seguia en OK) y el error no era de transporte.
 - **Semaforo**: salidas arriba, con el binario de esta rama rebasada sobre #57.

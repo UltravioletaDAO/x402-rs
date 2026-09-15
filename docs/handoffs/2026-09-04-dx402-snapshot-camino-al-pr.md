@@ -38,7 +38,7 @@ issue está abierto; el PR está a un comando, esperando reacción de maintainer
 ## Cómo abrir el PR (cuando haya go)
 
 ```bash
-cd <clon de x402-foundation/x402 con remote fork=0xultravioleta/x402>   # hoy: scratchpad/x402-upstream
+cd <clon de x402-foundation/x402 con remote fork=0xultravioleta/x402>   # hoy: un clon local efímero, no versionado
 git fetch origin main && git rebase origin/main spec/durable-evidence   # por si upstream se movió
 git push --force fork spec/durable-evidence
 gh pr create --repo x402-foundation/x402 --head 0xultravioleta:spec/durable-evidence \
@@ -46,7 +46,7 @@ gh pr create --repo x402-foundation/x402 --head 0xultravioleta:spec/durable-evid
   --body-file <cuerpo del §2 del doc 13, con Closes #3371>
 ```
 
-El clon en `scratchpad/` es efímero; si desapareció, `git clone` de
+El clon local es efímero; si desapareció, `git clone` de
 `x402-foundation/x402`, `git fetch fork spec/durable-evidence` desde
 `https://github.com/0xultravioleta/x402.git` y seguir.
 

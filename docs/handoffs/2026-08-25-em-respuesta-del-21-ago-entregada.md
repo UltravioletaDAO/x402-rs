@@ -8,7 +8,7 @@ destino: x402-rs
 
 # Lo que su doc de WSL lista como pendiente fue contestado el 21-ago
 
-> **Entrega hecha por: c0der (PM del stack).** Contenido de origen:
+> **Entrega hecha por: el mantenedor del stack.** Contenido de origen:
 > `execution-market/docs/handoffs/2026-08-21-respuesta-al-facilitador.md`.
 > Medido: su propio `2026-08-22-continuar-desde-wsl-alertas-y-performance.md`
 > (§9, líneas 410-423) lista como pendiente **exactamente lo que ese doc

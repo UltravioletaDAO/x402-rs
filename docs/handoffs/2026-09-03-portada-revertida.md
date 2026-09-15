@@ -158,7 +158,7 @@ Los dos nuevos viven en `/integrar` -- la pagina del que integra, no la portada
 **Ningun README esta vencido.** Los dos muestran ruta y precio juntos: el de
 Python alrededor de `:246` (Flask) y `:283` (FastAPI), el de TypeScript en
 `:78-140` con `app.get('/api/premium', paywall, ...)`. El defecto estaba en la
-portada, no en ellos. No hay nada que anotarle a c0der por este lado.
+portada, no en ellos. No hay nada que anotarle al mantenedor por este lado.
 
 Se sumo una linea sobre el precio, porque los dos SDK lo dicen distinto: entero
 on-chain en TypeScript (`50000`), dolares en Python (`0.05`). Equivocarse ahi

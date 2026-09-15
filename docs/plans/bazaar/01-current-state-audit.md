@@ -126,4 +126,4 @@ WS-A implemented cascade (templates kept): 26,233 → −2,889 junk → 23,344 �
 
 ## 7. Raw artifacts
 
-Scratchpad (session-local, regenerate via the audit script when needed): full snapshot `bazaar-items.json` (26,233 items), `probe-results.csv` (url, source, http_code, class), `analysis.json`, stratified sample `probe-urls.tsv`. The audit methodology is reproducible: paginate `/discovery/resources` at limit=100, then single-pass GET probe with the parameters at the top of this document.
+Temporary session directory (session-local, not versioned; regenerate via the audit script when needed): full snapshot `bazaar-items.json` (26,233 items), `probe-results.csv` (url, source, http_code, class), `analysis.json`, stratified sample `probe-urls.tsv`. The audit methodology is reproducible: paginate `/discovery/resources` at limit=100, then single-pass GET probe with the parameters at the top of this document.

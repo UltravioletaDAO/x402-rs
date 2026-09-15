@@ -308,7 +308,7 @@ Dos sitios mas que quedaron afuera, con motivo:
 ## 6. Como reproducir
 
 ```bash
-cd /mnt/c/Users/lxhxr/orca/workspaces/x402-rs/x4-hash
+cd <worktree>   # x4-hash
 
 # El worktree lo creo el git de Windows: sin esto, git status muestra cientos
 # de archivos modificados y no sirve para nada.
@@ -328,7 +328,7 @@ varias veces mas lenta. `scripts/build_llms_full.sh` corrio tal cual esta vez
 
 ---
 
-## Para c0der
+## Para el mantenedor
 
 **Que hice.** Tres commits en `0xultravioleta/x4-hash`. `495230bf` es el
 cambio entero -- la variante `SettlementUnconfirmed`, el `502` con

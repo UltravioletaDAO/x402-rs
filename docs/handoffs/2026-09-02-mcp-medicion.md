@@ -4,7 +4,7 @@
 **Rama:** `0xultravioleta/x4-mcp`, desde `0a7989fe` (merge del PR #8)
 **Fase:** 0 de 4 — medir. Nada del servidor MCP esta escrito todavia.
 **Encargo:** exponer `/mcp` (Streamable HTTP) con `verify` / `settle` / `supported` /
-`accepts` y publicar la server-card, para que el check `mcp-server-card` de c0der
+`accepts` y publicar la server-card, para que el check `mcp-server-card` del verificador de superficies agenticas
 deje de estar excluido con el motivo "no tiene servidor MCP".
 
 ---
@@ -150,16 +150,14 @@ router interno no lleva capa propia, y el request de afuera ya pago su token.
   resuelve y `git.exe` **no se puede ejecutar** (no hay `WSLInterop` en
   `/proc/sys/fs/binfmt_misc`, "Exec format error"). Se arregla apuntando ese
   archivo a la ruta WSL del mismo gitdir:
-  `gitdir: /mnt/z/ultravioleta/dao/x402-rs/.git/worktrees/x4-mcp`.
+  `gitdir: <repo>/.git/worktrees/x4-mcp`.
 - El checkout viene con CRLF y el git de WSL lo ve como 384 archivos modificados.
   Con `core.autocrlf=true` quedan 0. Se pasa por entorno para no escribir en el
   config comun (que vive en el checkout del dueno):
   `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.autocrlf GIT_CONFIG_VALUE_0=true`.
 - `target/` es un symlink al target del checkout del dueno (111 GB, cache caliente
   de rustc 1.97.0 linux-gnu). Por eso un check completo son ~2 minutos y no ~40.
-- **El CLI de orca no corre desde esta shell**: solo hay `orca.exe`/`orca.cmd` y
-  la interop de Windows esta apagada. Los heartbeats y el `worker_done` de este
-  worker no pudieron enviarse por CLI; el estado queda en los handoffs.
+- El estado de la tarea queda en los handoffs.
 
 ---
 
@@ -168,5 +166,5 @@ router interno no lleva capa propia, y el request de afuera ya pago su token.
 Fase 1: `src/mcp.rs` con las cuatro herramientas sobre el router REST, `/mcp`
 bajo el governor de verify/settle, la server-card, y los tests. Fase 2: docs y
 sincronizacion (`llms-full.txt`, sha256 del indice de skills, OpenAPI). Fase 3:
-verificacion en local con los cinco curl y el checker de c0der. Fase 4: handoff
+verificacion en local con los cinco curl y el verificador de superficies agenticas. Fase 4: handoff
 de cierre.

@@ -27,7 +27,7 @@ en el store ANTES de transmitir, asi que todo grupo que llego a cadena por este 
 registrado. El TTL (`algorand_ttl_seconds`) cubre la ventana de validez + 1 h; pasada la ventana,
 `verify_payment_group` ya lo rechaza por `TransactionExpired`. algod no ofrece busqueda por txid en
 el ledger sin indexer (`/v2/transactions/pending/{txid}` solo ve lo confirmado hace muy poco), asi
-que no se agrego una segunda lectura en cadena (decision de c0der, opcion (a)).
+que no se agrego una segunda lectura en cadena (decision de la revision, opcion (a)).
 
 - **Produccion usa DynamoDB**: `NONCE_STORE_TABLE_NAME` = `aws_dynamodb_table.nonce_store` =
   `facilitator-nonces` (`terraform/environments/production/main.tf:949`).
@@ -42,7 +42,7 @@ El runtime ejecuta un delegate action solo si su nonce supera el de la access ke
 ejecutarlo sube la key a ese nonce. El hash de la tx del relayer no existe hasta el settle; el
 nonce de la key si. Por eso no hay lectura por hash.
 
-**Finality `optimistic`** (decision de c0der): ve una liquidacion recien aterrizada ~2 bloques
+**Finality `optimistic`** (decision de la revision): ve una liquidacion recien aterrizada ~2 bloques
 antes que `final`. **Costo**: si un reorg raro revierte el bloque optimista que subio el nonce,
 el verify rechaza un pago que seguia siendo valido y el comprador tiene que firmar de nuevo.
 
@@ -55,7 +55,7 @@ abre uno solo, con `request_timeout`, y lo comparte entre `check_inputs_current`
 `request_timeout` por defecto del SDK (60 s, `SuiClientBuilder::default`) a 10 s
 (`RPC_REQUEST_TIMEOUT_SECS`).
 
-### Sui: un RPC atrasado no es replay (ronda 2, decision de c0der)
+### Sui: un RPC atrasado no es replay (ronda 2, decision de la revision)
 
 El cliente arma el PTB contra su propio RPC; el del facilitador puede ir detras. La ejecucion
 solo mueve un objeto hacia adelante, asi que:
@@ -77,7 +77,7 @@ RPC atrasado, a cambio de no frenar en verify ese caso. Ronda 1 rechazaba la ver
 
 ## 2. Que ve un cliente
 
-Paridad literal con Stellar (decision de c0der, opcion (a)): el rechazo por replay sale por
+Paridad literal con Stellar (decision de la revision, opcion (a)): el rechazo por replay sale por
 `FacilitatorLocalError::Other`, que `handlers.rs` responde **HTTP 400
 `{"error":"internal_error (ref: <uuid>)"}`** — el mismo cuerpo que Stellar con un nonce usado. El
 detalle ("... already used ...") queda solo en el log del servidor bajo esa ref.
@@ -106,17 +106,17 @@ comprador, que firma de nuevo), y no puede distinguir "ya usado" de otro 400 opa
 ## 3. Latencia agregada al verify
 
 Una llamada mas por red. Conexion HTTPS persistente (como la de los providers), 1 llamada de
-calentamiento + 20 medidas, desde la Mac mini el 2026-09-14
-(`scratchpad/latency.py`, no versionado):
+calentamiento + 20 medidas, desde una maquina local el 2026-09-14
+(un script local no versionado):
 
 | Red | Llamada nueva | Endpoint medido | mediana | p90 | max | Referencia: llamada que el verify ya hacia |
 |---|---|---|---|---|---|---|
-| Algorand | DynamoDB `GetItem` (clave inexistente, `ProjectionExpression=expires_at`) | `facilitator-nonces`, Mac -> us-east-2 | 48 ms | 94 ms | 135 ms | `GET /v2/status` algonode: 100 ms mediana |
+| Algorand | DynamoDB `GetItem` (clave inexistente, `ProjectionExpression=expires_at`) | `facilitator-nonces`, local -> us-east-2 | 48 ms | 94 ms | 135 ms | `GET /v2/status` algonode: 100 ms mediana |
 | NEAR | `view_access_key` optimistic | `free.rpc.fastnear.com` | 60 ms | 93 ms | 139 ms | ninguna: antes el verify de NEAR no hacia RPC |
 | Sui | `sui_multiGetObjects` (2 ids) | `sui-rpc.publicnode.com` | 53 ms | 58 ms | 127 ms | `suix_getCoins` publicnode: 52 ms mediana |
 
 Notas honestas:
-- Desde ECS en us-east-2 el `GetItem` deberia ser menor que desde la Mac; el verify de Stellar ya
+- Desde ECS en us-east-2 el `GetItem` deberia ser menor que desde la maquina local; el verify de Stellar ya
   paga esa misma lectura.
 - El RPC de NEAR de produccion es el premium del secreto `facilitator-rpc-mainnet:near`, no medible
   desde aca. `rpc.mainnet.near.org` (publico) tardo ~3,1 s por llamada en frio, 6 de 6: si algun
@@ -133,7 +133,7 @@ algod `GET /v2/status`; NEAR JSON-RPC `query/view_access_key`; Sui `rpc.discover
 Algorand usa un `NonceStore` con guion, instalado como store global del modulo.
 
 Rojo: el modulo copiado tal cual sobre un `git archive fcc26a3c`
-(`scratchpad/graft.py`, no versionado), `cargo test --locked -p x402-rs --features
+(con un script local no versionado), `cargo test --locked -p x402-rs --features
 solana,near,stellar,algorand,sui,xrpl --lib replay_verify -- --test-threads=1`.
 
 | Test | fcc26a3c | rama |
@@ -218,9 +218,9 @@ Ver la tabla del PR (mismos comandos que el job `test` de `ci.yaml`, mas fmt y c
 
 | # | Fila |
 |---|---|
-| B1 | Veredicto con nombre (p. ej. 200 `isValid:false`, `invalidReason: "nonce_already_used"`) para Stellar, Algorand, NEAR y Sui en vez del 400 `internal_error` opaco; cambia el cable de Stellar y el mapeo de `handlers.rs` (opcion (b) de c0der). |
+| B1 | Veredicto con nombre (p. ej. 200 `isValid:false`, `invalidReason: "nonce_already_used"`) para Stellar, Algorand, NEAR y Sui en vez del 400 `internal_error` opaco; cambia el cable de Stellar y el mapeo de `handlers.rs` (opcion (b) de la revision). |
 | B2 | Las fallas de RPC del camino de verify en NEAR/Sui salen 400 `contract_call_failed` no reintentable salvo que el texto matchee transporte; clasificarlas como `upstream_rpc_unavailable` (502 + `Retry-After`). |
-| B3 | Algorand: segunda senal en cadena (`GET /v2/transactions/pending/{txid}`) si algun despliegue corre con store en memoria (opcion (b) de c0der). |
+| B3 | Algorand: segunda senal en cadena (`GET /v2/transactions/pending/{txid}`) si algun despliegue corre con store en memoria (opcion (b) de la revision). |
 | B4 | NEAR: `verify` no compara `max_block_height` del delegate action contra la altura actual. |
 | B5 | NEAR: `settle` registra al receptor (`storage_deposit`, lo paga el facilitador) antes de saber si el runtime va a aceptar el delegate action; podria correr la misma lectura de nonce antes. |
 | B6 | Sui: el cliente de `settle` (balance y `execute_transaction_block`) sigue con el `request_timeout` por defecto del SDK (60 s). |

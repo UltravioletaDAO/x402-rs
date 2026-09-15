@@ -528,7 +528,7 @@ Los numeros que sostienen eso:
 
 ---
 
-## Para c0der
+## Para el mantenedor
 
 1. **Hay una regresion viva en produccion desde las 13:03 EDT de hoy**: las tres
    tasks al 100 % de su vCPU, 1,6 GiB de memoria (80 % del limite, subiendo) y el

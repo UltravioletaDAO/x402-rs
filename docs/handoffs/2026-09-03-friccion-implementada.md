@@ -334,7 +334,7 @@ codigo; (2) `SettleResponse.error_reason` usa el MISMO enum y tiene el mismo pro
 ## 7. Como reproducir todo esto
 
 ```bash
-cd /mnt/c/Users/lxhxr/orca/workspaces/x402-rs/x4-implementa
+cd <worktree>   # x4-implementa
 
 # el binario, aislado de produccion (sin esto se pelea por el writer lease REAL)
 cp -n config/blacklist.json.example config/blacklist.json
@@ -363,7 +363,7 @@ curl -s -w '\nHTTP %{http_code}\n' -H "$X" -H 'Content-Type: application/json' \
 
 **Notas de entorno (WSL, worktree en `/mnt/c`):**
 - El `.git` del worktree venia con una ruta Windows y el git de WSL no lo abria. Se
-  reescribio a `gitdir: /mnt/z/ultravioleta/dao/x402-rs/.git/worktrees/x4-implementa`.
+  reescribio a `gitdir: <repo>/.git/worktrees/x4-implementa`.
 - **Todo el worktree esta con CRLF y el indice con LF**, asi que `git status` muestra
   407 archivos sucios. Todos los comandos de git de esta sesion corrieron con
   `git -c core.autocrlf=input`, que deja el arbol limpio y no cambia nada de lo
@@ -376,10 +376,9 @@ curl -s -w '\nHTTP %{http_code}\n' -H "$X" -H 'Content-Type: application/json' \
 
 ---
 
-## Para c0der
+## Para el mantenedor
 
-`orca orchestration` no salio en toda la sesion ("Could not connect to the running Orca
-app / Orca is not running"), asi que el cierre va aca, como pide el despacho.
+El cierre va aca, como pide el encargo.
 
 **Que quedo.** Los cuatro items VALE LA PENA del plan estan implementados en
 `0xultravioleta/x4-implementa`, en cinco commits, en el orden que el plan los numera y

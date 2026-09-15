@@ -1,6 +1,6 @@
 # 2026-09-13 — escrow `log`→`enforce` (medido, NO movido: el bloqueo son llaves y roles), estimate-antes-del-nonce en los 5 escritores ERC-8004, `invalid_asset` con nombre y `base-mainnet`
 
-**Worker:** Orca x4-escrow-enforce (despachado por c0der, spec `SPEC-c0der.txt`, 2026-09-13 16:29Z; ronda 2 `RONDA2-c0der.txt`, 20:xxZ), macOS.
+**Worker:** x4-escrow-enforce (spec del 2026-09-13 16:29Z; ronda 2, 20:xxZ), macOS.
 **Rama:** `0xultravioleta/x4-escrow-enforce`, rebaseada sobre `origin/main` = `c2346897` (PR #48 PYUSD).
 **Versión:** `VERSION` 2.27.0 → **2.28.0**; entrada en `docs/CHANGELOG.md`.
 **Base medida en producción:** `/version` = `2.26.0`, `GET /settle` → `escrowLifecycleAuth = "log"` (2026-09-13 ~16:45Z).
@@ -45,7 +45,7 @@ Por operador (direcciones de contrato públicas, abreviadas):
 
 **Órdenes no son escrows.** Contando escrows distintos por (operador, red, payer, receiver)
 entre las 1624 órdenes de mainnet sin firma: **298** (285 con `release`, 17 con
-`refundInEscrow`). El refutador de c0der contó **303** (286 / 17); la diferencia es de clave,
+`refundInEscrow`). El refutador de la revisión contó **303** (286 / 17); la diferencia es de clave,
 porque el log no trae `salt` ni monto y ninguna de las dos cuentas identifica el escrow
 exacto. El grueso de los refunds es reintento: las 892 `refundInEscrow` de polygon caen sobre
 **un solo par (payer, receiver)**, entre `2026-09-08T22:09Z` y `2026-09-10T18:32Z` (primera y
@@ -72,7 +72,7 @@ de 1625 movimientos" como decía la ronda 1.
 - **El SDK Python también firma** (`uvd-x402-sdk-python` `origin/main`): `build_lifecycle_auth`
   en `src/uvd_x402_sdk/escrow_signing.py:770`, llamado desde `advanced_escrow.py:1023-1038`;
   entró con `5a7007c` (0.78.0, 2026-09-05). (El spec de ronda 2 citaba `84e20ae`, que está en
-  `main` pero es un commit de `orca.yaml`.)
+  `main` pero es un commit de configuración de herramientas, ajeno al SDK.)
 
 **Error de la ronda 1, dicho claro:** medí sobre los checkouts locales sin `git fetch`. EM
 local estaba en `main` = `10800a5c`, que NO contiene `dff9af68`; el SDK local estaba en la
@@ -229,7 +229,7 @@ imagen con `VERSION`, hace `terraform apply` acotado a task definition + service
 autoscaling (`:541-547`), espera `aws ecs wait services-stable` (`:643-645`) y verifica
 `/health` (`:650-659`). **Mergear es desplegar.** Nada de este PR toca `terraform/`.
 
-## Para c0der
+## Para el mantenedor
 
 - **No hice [126]** y no se debe hacer todavía. El bloqueo no es código en otro repo: EM y
   el SDK ya firman. Es **qué llave con rol usa EM** (decisión del dueño) y encender
@@ -245,8 +245,8 @@ autoscaling (`:541-547`), espera `aws ecs wait services-stable` (`:643-645`) y v
   `require_writer_lease` envuelve `/register`, `/feedback`, `/feedback/response` y el resto
   del router ERC-8004 (`src/handlers.rs:1828`) y `/feedback/revoke` (`:1790`). Queda un
   residual P2 (abajo).
-- **El reporte del refutador** (`REFUTACION-x4-49.md`) está en una ruta de Windows que esta
-  Mac no ve; trabajé con lo que cita `RONDA2-c0der.txt` y verifiqué cada archivo:línea contra
+- **El reporte del refutador** (fuera de git) está en una ruta que esta
+  máquina no ve; trabajé con lo que cita el spec de la ronda 2 y verifiqué cada archivo:línea contra
   los `origin/main` de EM y del SDK.
 - Worktree: `contracts/` untracked es previo a este worker; no lo toqué ni lo stageé.
 
@@ -272,4 +272,4 @@ SDK solo `git fetch` + lectura de `origin/main`, sin tocar sus working trees. Ni
 leído ni impreso. `terraform/` sin tocar. Ronda 1: un push; ronda 2: un push
 (`--force-with-lease`, por el rebase), de la rama `0xultravioleta/x4-escrow-enforce`.
 
-LISTO PARA c0der 59e8d45b — ronda 2: código hasta `59e8d45b` (test discriminante) sobre `1940d3fd` (estimate antes del nonce + `invalid_asset`) y `1cc55158` (`base-mainnet`), rebaseado sobre `c2346897`; este handoff y `docs/CHANGELOG.md` van en el commit siguiente, cuyo SHA (head del push) está en el cuerpo del PR #49.
+Listo para revisión: 59e8d45b — ronda 2: código hasta `59e8d45b` (test discriminante) sobre `1940d3fd` (estimate antes del nonce + `invalid_asset`) y `1cc55158` (`base-mainnet`), rebaseado sobre `c2346897`; este handoff y `docs/CHANGELOG.md` van en el commit siguiente, cuyo SHA (head del push) está en el cuerpo del PR #49.

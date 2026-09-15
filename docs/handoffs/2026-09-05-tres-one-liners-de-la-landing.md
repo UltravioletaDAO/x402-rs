@@ -1,4 +1,4 @@
-# Handoff: las tres filas del facilitador que c0der reabrio, hechas
+# Handoff: las tres filas del facilitador que la revision reabrio, hechas
 
 > Fecha: 2026-09-05
 > Rama: `0xultravioleta/x4-landing` (parte de `origin/main` = `f33bc50b`)
@@ -7,7 +7,7 @@
 
 ## Por que existe este handoff
 
-Un worker de c0der (PR #4 de c0der, 2026-09-05) barrio el backlog del
+Una revision del backlog (2026-09-05) barrio el backlog del
 facilitador y encontro que dos filas cerradas la noche anterior estaban **mal
 cerradas**:
 
@@ -178,13 +178,13 @@ estaba en `2.14.0`. Sin rediseno: tres injertos quirurgicos.
 les saque el sufijo «(committed, not yet deployed)» a `2.11.0` y `2.12.0`.
 Produccion sirve `2.14.0`, asi que ya estan desplegadas; dejarlo habria dejado
 el archivo diciendo que dos versiones anteriores a las que yo agrego siguen sin
-desplegar. Son cuatro palabras y las causa mi propia edicion. Si c0der lo
+desplegar. Son cuatro palabras y las causa mi propia edicion. Si el mantenedor lo
 prefiere afuera, se revierte solo.
 
 ## Lo que NO se hizo, y por que
 
 - **Cero deploy, cero merge.** Un merge a `main` de x402-rs ES un release. La
-  rama esta pusheada y el PR abierto; el merge lo decide c0der.
+  rama esta pusheada y el PR abierto; el merge lo decide el mantenedor.
 - **El orden no monotono del CHANGELOG** (`2.0.0` en `:262` **antes** de `2.1.0`
   en `:329`) sigue ahi. El `cierra:` de la fila no lo pide, y reordenar el
   archivo es un diff mecanico grande con riesgo de perder contenido. Queda como
@@ -196,7 +196,7 @@ prefiere afuera, se revierte solo.
   plegado, no un agujero. Inventarle una entrada propia habria sido duplicar.
 - **i18n**: solo la clave que hacia falta (`hero.baseUrl`), en los dos idiomas.
 
-## Para c0der
+## Para el mantenedor
 
 Las tres filas viven en **tu** `docs/planning/BACKLOG.md` (lineas 65, 66 y 71 en
 `origin/master` al 2026-09-05). No las edite -- es tu repo y tiene sesiones

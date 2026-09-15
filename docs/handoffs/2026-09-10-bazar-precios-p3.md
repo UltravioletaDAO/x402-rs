@@ -227,7 +227,7 @@ no sabemos leer" (con sus nombres de esquema) y "mandó ofertas pagables". La
 primera sigue terminando en `NoSuitablePaymentMethod`, la segunda en
 `no-readable-offer`.
 
-## Para c0der
+## Para el mantenedor
 
 ### El contrato para los SDK
 

@@ -11,8 +11,8 @@ status: active
 
 # La superficie humana: SEO, i18n, compresión, límite de tasa y el changelog que sí existía
 
-**Versión:** 2.29.0 · **Worker:** Orca `x4-superficie-humana`, despachado por c0der
-(master-4) el 2026-09-13 · **Base:** `origin/main` = `331d31d4` (#49, 2.28.0, sobre #48 2.27.0)
+**Versión:** 2.29.0 · **Worker:** `x4-superficie-humana`, encargado
+el 2026-09-13 · **Base:** `origin/main` = `331d31d4` (#49, 2.28.0, sobre #48 2.27.0)
 
 Diez filas chicas de la misma superficie. Cuatro de ellas traían la evidencia del
 triage equivocada; están marcadas abajo y no se ejecutaron a ciegas.
@@ -154,7 +154,7 @@ cubeta para las nueve) y `main.rs` monta esa versión.
 - **Tamaño:** es generoso a propósito, porque un NAT de oficina pone muchos lectores
   detrás de una IP.
 
-La fila de origen (c0der `BACKLOG.md:237`) pedía otra cosa: *mostrarle a un humano* los
+La fila de origen (backlog interno, fuera de este repo) pedía otra cosa: *mostrarle a un humano* los
 límites que ya están publicados para máquinas. Respuesta P1-C: el governor queda, y la
 publicación va como fila P2.
 
@@ -185,16 +185,16 @@ después contra el código restaurado:
 
 Las primeras dos filas se corrieron antes del rebase y las otras cinco después, siempre
 contra el mismo código de test. **VERDE** con el código restaurado: los 7 están en la
-corrida completa de pre-CI de abajo. El script está en el scratchpad del worker, no en el
+corrida completa de pre-CI de abajo. El script está en un directorio temporal de la sesión, no en el
 repo, y restaura desde copias. Una trampa que conviene saber: la primera corrida "verde"
 salió roja porque `shutil.copy2` preserva el mtime, y cargo no recompiló el
 `include_str!` restaurado. Se repitió después de un `touch`.
 
 ## Pre-CI
 
-Sobre el código rebaseado (`331d31d4` + estos dos commits), en la Mac del worker, con
+Sobre el código rebaseado (`331d31d4` + estos dos commits), en la máquina local, con
 `CARGO_BUILD_JOBS=1` y `--test-threads=1`. Hubo que partirlo en pasos porque el sistema
-mató tres corridas largas por falta de memoria (ver "Para c0der"). CI no corre clippy.
+mató tres corridas largas por falta de memoria (ver "Para el mantenedor"). CI no corre clippy.
 
 | Paso | Comando | Resultado |
 |---|---|---|
@@ -248,7 +248,7 @@ No hay cambio de terraform ni de secretos.
 - **`src/handlers.rs`:** lo tocaban #49 y este PR, y se mezcló sin conflicto. Los tests
   corrieron sobre el resultado.
 
-## Para c0der
+## Para el mantenedor
 
 **Lo que NO hice, y por qué:**
 
@@ -262,11 +262,11 @@ No hay cambio de terraform ni de secretos.
   producción está arriba.
 - **Tareas de otros PRs:** la entrada 2.27.0 (#48) del CHANGELOG le corresponde a ese PR.
 
-**La memoria de la Mac:** el pre-CI murió dos veces por falta de memoria. Al revisar,
+**La memoria de la máquina local:** el pre-CI murió dos veces por falta de memoria. Al revisar,
 había un proceso `python -` (PID 21220, 8,9 GB de RSS, huérfano de `launchd`, 3 días
-vivo) cuyo `cwd` es `~/orca/workspaces/x402-rs/x4-precios-p0`, el worktree de otro
+vivo) cuyo `cwd` es el worktree `x4-precios-p0` de otro
 worker ya mergeado (#35). No lo maté porque no es mío. Probablemente sea la causa de
-los OOM de todos los workers que compilan x402-rs en esa Mac.
+los OOM de todos los workers que compilan x402-rs en esa máquina.
 
 **Falsedades del SPEC, para el próximo triage:**
 
@@ -296,6 +296,6 @@ los OOM de todos los workers que compilan x402-rs en esa Mac.
 
 ---
 
-LISTO PARA c0der — commits de código `3b334a31` (feat, 2.29.0) y `9399bb88` (archivo del plan
+Listo para revisión: commits de código `3b334a31` (feat, 2.29.0) y `9399bb88` (archivo del plan
 de monetización), sobre `331d31d4`. El head del único push es el commit de este handoff,
 inmediatamente encima de `9399bb88`; su SHA exacto está en la descripción del PR.

@@ -10,7 +10,7 @@ origen: execution-market
 destino: x402-rs
 aliases:
   - El struct v4 ya está cerrado
-  - Entrega pendiente detectada por c0der
+  - Entrega pendiente detectada por el mantenedor
 related-files:
   - docs/handoffs/2026-08-24-respuesta-a-execution-market-v3-y-eip712.md
   - src/erc8004/relay.rs
@@ -18,7 +18,7 @@ related-files:
 
 # Lo que pidieron para desbloquearse ya está escrito. No había llegado acá.
 
-> **Entrega hecha por:** c0der (PM del stack) — **no** por el equipo de Execution Market.
+> **Entrega hecha por:** el mantenedor del stack — **no** por el equipo de Execution Market.
 > **Contenido de origen:** `execution-market/docs/handoffs/2026-08-24-facilitador-struct-v4-cerrado.md`,
 > commiteado allá en `cffd50f0` (2026-08-24 21:30).
 > **Por qué existe esta nota:** medido el 2026-08-24, ese archivo vive sólo en el
@@ -132,4 +132,4 @@ escrita y commiteada desde las 21:30.
 El patrón propuesto para evitarlo está en
 `control-plane/04-patterns/handoff-entre-proyectos.md`: el handoff se escribe en
 `<repo-destino>/docs/handoffs/`, y un `accepted` que no aparece en el backlog del
-destino es una entrega perdida —una verificación que c0der puede correr sola.
+destino es una entrega perdida —una verificación que el mantenedor puede correr solo.

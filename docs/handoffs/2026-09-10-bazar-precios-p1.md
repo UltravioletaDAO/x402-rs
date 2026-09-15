@@ -318,7 +318,7 @@ Dos cosas que se corrigieron al pasar:
   `enforce_capacity` se quedó con una sola línea. Sin efecto en el comportamiento;
   se devolvió cada bloque a su función al resolver, que es donde tocaba.
 
-## Para c0der
+## Para el mantenedor
 
 **Qué cambió.** `src/discovery_terms.rs` (nuevo): el overlay de términos
 observados, la escalera de procedencia y `assess_freshness`. `types_v2.rs`:

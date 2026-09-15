@@ -2,7 +2,7 @@
 
 **Fecha:** 2026-09-02
 **Rama:** `0xultravioleta/x4-paginas`, desde `origin/main` = `1c4c33d9` (verificado con `git log -1`)
-**Worktree:** `/mnt/c/Users/lxhxr/orca/workspaces/x402-rs/x4-paginas` (WSL)
+**Worktree:** `<worktree>` (WSL)
 **Alcance:** medir y planear. Ni una linea de `static/` o de `src/` cambia en este commit.
 
 ---
@@ -14,7 +14,7 @@
 respondia `fatal: not a git repository` a todo. Reescrito a la ruta POSIX:
 
 ```
-gitdir: /mnt/z/ultravioleta/dao/x402-rs/.git/worktrees/x4-paginas
+gitdir: <repo>/.git/worktrees/x4-paginas
 ```
 
 **2) El checkout esta en CRLF y el repositorio en LF.** Con la configuracion
@@ -30,13 +30,11 @@ git -c core.autocrlf=true status --short   # 3 lineas, todas untracked (contract
 `git -c core.autocrlf=true`.** Sin eso, un `git add static/index.html` mete
 243 KB de CRLF al repositorio y el diff deja de ser legible. No se cambia la
 config: `git config` escribe en `.git/config` del repo comun, que vive en
-`/mnt/z/ultravioleta/dao/x402-rs` y es del dueno.
+el checkout principal y es del dueno.
 
-**3) No hay interop de Windows desde este WSL.** `orca.exe`, `git.exe` y
-`cmd.exe` fallan los tres con `cannot execute binary file: Exec format error`
-(no existe `/proc/sys/fs/binfmt_misc/WSLInterop`). El CLI de Orca **no se puede
-ejecutar desde esta terminal**, asi que el `worker_done` de esta tarea queda
-escrito literal al final del handoff de cierre para que lo despache quien pueda.
+**3) No hay interop de Windows desde este WSL.** `git.exe` y `cmd.exe` fallan
+con `cannot execute binary file: Exec format error` (no existe
+`/proc/sys/fs/binfmt_misc/WSLInterop`).
 
 ---
 

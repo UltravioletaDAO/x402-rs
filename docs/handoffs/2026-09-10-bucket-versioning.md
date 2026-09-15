@@ -4,7 +4,7 @@ Fecha: 2026-09-10
 Rama: `0xultravioleta/x4-bucket-versioning`
 Origen: auditoria Astra 6 del 2026-09-09, seccion 6 (A3), "puerto de escape"
 
-## Para c0der
+## Para el mantenedor
 
 ### Que se creo
 
@@ -43,7 +43,7 @@ Va **ultimo a proposito**. Configura un bucket que no tiene nada que ver con la 
 imagen ya se aplico, el rollout ya espero y `/health` ya contesto. Si este paso falla, no
 puede saltearse el veredicto del rollout.
 
-### El permiso IAM: declarado aca, aplicado a mano por c0der
+### El permiso IAM: declarado aca, aplicado a mano por el operador
 
 Simulado contra la identidad viva el 2026-09-10, no supuesto:
 
@@ -89,14 +89,14 @@ ni leer ni escribir un byte del catalogo. Es un permiso de configuracion de buck
 objetos. Las dos lecturas ya las da el `ReadOnlyAccess` adjunto y estan igual en el
 statement, para que se sostenga solo si ese adjunto alguna vez desaparece.
 
-**Secuencia acordada con c0der (2 pushes, cero rerun):**
+**Secuencia acordada con el operador (2 pushes, cero rerun):**
 
 1. **Push 1 -- hecho.** El statement esta declarado. `aws_iam_policy.cicd_infra` no esta
    -- ni debe estar -- en ninguna lista de targets, porque si CI pudiera aplicarlo, CI
    podria darse permisos y `DenyPrivilegeEscalation` seria decorativo. Asi que el drift gate
    de este push **sale rojo**, con una unica fila: `aws_iam_policy.cicd_infra`. Eso es el
    gate diciendo la verdad, no una rotura.
-2. **c0der aplica a mano**, fuera de banda, desde esta rama y con credenciales humanas:
+2. **El operador aplica a mano**, fuera de banda, desde esta rama y con credenciales humanas:
    `terraform apply -target=aws_iam_policy.cicd_infra`. Es el humano que la cabecera de ese
    archivo pide.
 3. **Push 2.** Con el statement ya vivo, el plan de ese recurso sale vacio y el gate queda

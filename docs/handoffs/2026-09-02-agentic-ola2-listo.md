@@ -4,8 +4,8 @@
 **Rama:** `0xultravioleta/x4-ola2` — 8 commits sobre `a2508ca8` (= `main` con los PR #7 a #10)
 **Estado:** codigo listo, **sin pushear**. El deploy queda descrito abajo, no ejecutado.
 **Encargo:** las brechas de protocolo de `is-agentic` (72/100) y `ora.ai` (61/100),
-medidas el 2026-09-02 08:57 EDT. Reporte de origen:
-`c0der/docs/reports/2026-09-02-facilitador-escaneos-y-drift.md`, secciones 2 y 3.
+medidas el 2026-09-02 08:57 EDT. Reporte de origen: un reporte interno de escaneos y
+drift del facilitador (fuera de este repo), secciones 2 y 3.
 **Alcance:** solo protocolo y servidor. **No se toco el diseno ni el contenido de la
 landing** (`index.html`, `bazaar.html`, `stats.html`, `events-viewer.html`).
 
@@ -283,7 +283,7 @@ y debajo va la corrida real de hoy.
 ### Fuera por decision del dueno: el rediseno de la landing
 
 Estos checks son de `index.html` y de paginas nuevas. El dueno esta decidiendo aparte
-si redisena la landing (c0der escribe ese plan), asi que **no se toco nada de eso**:
+si redisena la landing (ese plan se escribe aparte), asi que **no se toco nada de eso**:
 
 | Check | Escaner | Que pide |
 |---|---|---|
@@ -416,7 +416,7 @@ rustup run stable cargo fmt -p x402-rs -- --check
 ```
 
 Los escaneos de terceros (`npx is-agentic`, `npx @ora-ai/ax@0.5 audit`) **no** se
-corrieron: los corre c0der despues del deploy, por la cuota de ora.ai.
+corrieron: los corre el mantenedor despues del deploy, por la cuota de ora.ai.
 
 ---
 
@@ -443,23 +443,12 @@ al momento de mergear.
 
 ---
 
-## 9. Nota de entorno: el CLI de Orca no corre en esta terminal
+## 9. Nota de entorno: git en el worktree
 
-El mensaje al buzon del run **no se pudo mandar desde aca**. La interoperabilidad de
-WSL con binarios de Windows esta apagada en esta terminal:
-
-```
-$ /mnt/c/Users/lxhxr/AppData/Local/Programs/orca/resources/bin/orca ...
-cannot execute binary file: Exec format error
-$ ls /proc/sys/fs/binfmt_misc/WSLInterop
-No such file or directory
-```
-
-`resources/bin/` solo tiene `orca.exe` y `orca.cmd`; `orca.cmd` delega en el `.exe` y no
-hay entrypoint de node, asi que no hay camino nativo. Mismo motivo por el que `git.exe`
-no corria — eso se resolvio reescribiendo el gitfile del worktree a
-`/mnt/z/ultravioleta/dao/x402-rs/.git/worktrees/x4-ola2`, con OK del dueno, y el `git`
-de WSL trabaja normal desde entonces (con `-c core.autocrlf=true`, porque el checkout es
-de Windows y sin eso 388 archivos aparecen modificados por CRLF).
-
-El resumen va igual en el `worker_done`.
+La interoperabilidad de WSL con binarios de Windows estaba apagada en esta terminal
+(`cannot execute binary file: Exec format error`; no existe
+`/proc/sys/fs/binfmt_misc/WSLInterop`), asi que `git.exe` no corria. Se resolvio
+reescribiendo el gitfile del worktree a la ruta WSL del mismo gitdir
+(`<repo>/.git/worktrees/x4-ola2`), con OK del dueno, y el `git` de WSL trabaja normal
+desde entonces (con `-c core.autocrlf=true`, porque el checkout es de Windows y sin eso
+388 archivos aparecen modificados por CRLF).

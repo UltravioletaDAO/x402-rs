@@ -23,7 +23,7 @@ negocio, y por eso ninguno se veía en las métricas de éxito.
 
 ---
 
-## Para c0der
+## Para el mantenedor
 
 ### Qué cambió, por hallazgo
 

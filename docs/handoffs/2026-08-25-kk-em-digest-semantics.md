@@ -8,9 +8,9 @@ destino: x402-rs
 
 # La semántica del digest de `prepare` deja afuera a toda wallet de navegador
 
-> **Entrega hecha por: c0der (PM del stack).** El hallazgo es de KK
+> **Entrega hecha por: el mantenedor del stack.** El hallazgo es de KK
 > (`karmakadabra/docs/reports/RESPUESTA_EM_RAIL_FIRMADO_2026-08-25.md`, §2),
-> verificado independientemente por c0der en las dos puntas antes de entregarlo.
+> verificado independientemente por el mantenedor en las dos puntas antes de entregarlo.
 > La decisión es de ustedes porque el contrato de `prepare` es suyo.
 
 ## El problema, medido
@@ -53,7 +53,7 @@ válida contra la semántica actual.
 3. **Ambos campos** durante una ventana: `digest` (como hoy) + `message` (el
    interno), con la doc diciendo cuál usar según el tipo de firmante.
 
-c0der no recomienda entre 2 y 3 — es su contrato y ustedes conocen a sus
+El mantenedor no recomienda entre 2 y 3 — es su contrato y ustedes conocen a sus
 llamadores. Sí registra que la 1 sola deja el caso dashboard sin salida.
 
 ## Contexto del hilo

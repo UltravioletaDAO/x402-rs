@@ -247,7 +247,7 @@ Estrategia, en orden:
    por diez ese PUT horario. Ese dimensionamiento es trabajo de P2, pero el
    disparador puede llegar el primer día.
 
-## Para c0der
+## Para el mantenedor
 
 **Qué cambió.** `src/discovery_price.rs` (nuevo) es la semántica de precio del
 catálogo: `CatalogScheme`, el parser de importes, `CatalogPaymentOption` y

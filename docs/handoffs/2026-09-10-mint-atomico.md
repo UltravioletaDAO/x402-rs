@@ -30,7 +30,7 @@ antes de mandar** para que un pagador vacío sea un error con nombre y no un
 
 ---
 
-## Para c0der
+## Para el mantenedor
 
 ### 1. El trazo real, antes de tocar nada
 
@@ -400,7 +400,7 @@ Los cuatro assets, para que los tengan a mano al verificar:
 | `kk-0xjokker` (`BXPKpV6f…`) | `4xQguonkrykFNxmzkNMieZ66ZQmr4ACU4HzqrHYEoHpy`, `RfkykvJAAR5Dfzwxzt76w34QxLpXxBrtzm89e9G7goK` |
 
 **Nada de esto corrió contra mainnet.** El comando de arriba es para que lo corran
-ustedes, o nosotros cuando c0der lo pida.
+ustedes, o nosotros cuando el mantenedor lo pida.
 
 ### Lo que este cambio *no* arregla
 

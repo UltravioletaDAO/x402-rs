@@ -1,0 +1,230 @@
+{
+  "checked_at_utc": "2026-09-16T17:23:19.908802+00:00",
+  "commit": "5a7acfca414137c16ac14cf9516eaa81071870c2",
+  "version": "2.31.0",
+  "pull_request": "https://github.com/UltravioletaDAO/x402-rs/pull/62",
+  "workflow": "https://github.com/UltravioletaDAO/x402-rs/actions/runs/35126105947",
+  "facilitator": "https://facilitator.ultravioletadao.xyz",
+  "accepted": true,
+  "canaries": [
+    {
+      "canary_passed": true,
+      "network": "arc-testnet",
+      "transaction": "0x243f3ebb20f5afac0913f11890378eceb52af008c56c2b7c4b38dc2758359c8a",
+      "x402_version": 1,
+      "usdc_atomic_units_received": 1,
+      "gas_usdc": "0.002189575",
+      "replay_http": 400,
+      "replay_success": null
+    },
+    {
+      "canary_passed": true,
+      "network": "arc-testnet",
+      "transaction": "0xb57895281e25a15468d0b77a51850f3817a24db91261452fae521796a385be66",
+      "x402_version": 2,
+      "usdc_atomic_units_received": 1,
+      "gas_usdc": "0.002190075",
+      "replay_http": 400,
+      "replay_success": null
+    },
+    {
+      "canary_passed": true,
+      "network": "arc",
+      "transaction": "0xe661af1a632b7f4fc4d536fb6234c3b2563860068b8a68755aad82467e075488",
+      "x402_version": 1,
+      "usdc_atomic_units_received": 1,
+      "gas_usdc": "0.002223086263543937",
+      "replay_http": 400,
+      "replay_success": null
+    },
+    {
+      "canary_passed": true,
+      "network": "arc",
+      "transaction": "0x15f7519fc68d676ca420456fd44c13233bca33a2a51fca2988b862208f482787",
+      "x402_version": 2,
+      "usdc_atomic_units_received": 1,
+      "gas_usdc": "0.00221274595031982",
+      "replay_http": 400,
+      "replay_success": null
+    }
+  ],
+  "ecs": {
+    "image_tag": "2.31.0-5a7acfc",
+    "running": 2,
+    "desired": 2,
+    "rollout": "COMPLETED",
+    "task_revision": 434
+  },
+  "health": {
+    "status": "healthy"
+  },
+  "arc_supported": [
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "arc",
+      "networkAliases": [
+        "arc",
+        "eip155:5042"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc",
+            "address": "0x3600000000000000000000000000000000000000",
+            "decimals": 6
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "arc-testnet",
+      "networkAliases": [
+        "arc-testnet",
+        "eip155:5042002"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc",
+            "address": "0x3600000000000000000000000000000000000000",
+            "decimals": 6
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "eip155:5042",
+      "networkAliases": [
+        "arc",
+        "eip155:5042"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc",
+            "address": "0x3600000000000000000000000000000000000000",
+            "decimals": 6
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "eip155:5042002",
+      "networkAliases": [
+        "arc-testnet",
+        "eip155:5042002"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc",
+            "address": "0x3600000000000000000000000000000000000000",
+            "decimals": 6
+          }
+        ]
+      }
+    }
+  ],
+  "arc_readiness": [
+    {
+      "network": "arc",
+      "mainnet": true,
+      "status": "ok",
+      "rpc": "ok",
+      "signers": [
+        {
+          "index": 0,
+          "status": "ok",
+          "gasOk": true,
+          "settlesRemaining": 2877
+        }
+      ]
+    },
+    {
+      "network": "arc-testnet",
+      "mainnet": false,
+      "status": "ok",
+      "rpc": "ok",
+      "signers": [
+        {
+          "index": 0,
+          "status": "ok",
+          "gasOk": true,
+          "settlesRemaining": 3417
+        }
+      ]
+    }
+  ],
+  "other_readiness_issues": [
+    {
+      "network": "ethereum",
+      "mainnet": true,
+      "status": "degraded",
+      "reason": "signer_gas_low",
+      "rpc": "ok",
+      "signers": [
+        {
+          "index": 0,
+          "status": "degraded",
+          "gasOk": true,
+          "settlesRemaining": 12
+        }
+      ]
+    },
+    {
+      "network": "polygon-amoy",
+      "mainnet": false,
+      "status": "down",
+      "reason": "signer_gas_critical",
+      "rpc": "ok",
+      "signers": [
+        {
+          "index": 0,
+          "status": "down",
+          "gasOk": false,
+          "settlesRemaining": 7
+        }
+      ]
+    }
+  ],
+  "balances": {
+    "arc-mainnet": "19.9380",
+    "arc-testnet": "19.9950"
+  },
+  "alarms": [
+    {
+      "AlarmName": "facilitator-chain-balance-low-arc-mainnet",
+      "StateValue": "OK",
+      "MetricName": "ChainNativeBalance",
+      "Threshold": 0.1,
+      "Dimensions": [
+        {
+          "Name": "Chain",
+          "Value": "arc-mainnet"
+        }
+      ],
+      "TreatMissingData": "missing"
+    },
+    {
+      "AlarmName": "facilitator-chain-unreachable-arc-mainnet",
+      "StateValue": "OK",
+      "MetricName": "ChainRpcHealthy",
+      "Threshold": 1.0,
+      "Dimensions": [
+        {
+          "Name": "Chain",
+          "Value": "arc-mainnet"
+        }
+      ],
+      "TreatMissingData": "breaching"
+    }
+  ],
+  "completed_at_utc": "2026-09-16T17:24:06.381442+00:00"
+}

@@ -87,7 +87,7 @@ the existing targeted CI deployment. Preserve nonce/hash evidence and reconcile
 pending transactions first. Disabling a network does not cancel broadcasts.
 Never use a full Terraform apply or `-refresh=false` to force activation.
 
-## Evidence and remaining launch gate
+## Validation evidence
 
 - Full facilitator suite: 2,446 tests passed, plus ignored live RPC checks run
   explicitly for both networks. Clippy passed with existing repository warnings.
@@ -103,8 +103,23 @@ Never use a full Terraform apply or `-refresh=false` to force activation.
   gas 0.002252606134343883 USDC; v2/CAIP-2 also passed: [receipt](https://explorer.arc.io/tx/0x5b66c97e80ca7773ba919a0052b79d4ec3db193419a1c355f33d0f5e4c62636d),
   gas 0.001804750735987521 USDC. Each delivered one atomic USDC unit and
   rejected replay without a second debit. Evidence is in `docs/reports/*candidate-canary.jsonl`.
-- Production configuration enables both networks. Public rollout acceptance
-  must be recorded after deployment; isolated receipts alone are not public acceptance.
+- Production rollout and public acceptance completed **2026-09-16 17:24 UTC**:
+  version **2.31.0**, image `2.31.0-5a7acfc`, ECS task revision 434, two healthy
+  tasks. Both Arc networks advertise `exact` under v1 names and v2 CAIP-2 IDs;
+  readiness is `ok`, balances are present and both mainnet alarms are `OK`.
+- Four payments through the **public facilitator** passed (one atomic USDC each),
+  including receipt, Transfer emitter, recipient balance and replay checks:
+
+  | Network | v1 receipt | v2 receipt |
+  |---|---|---|
+  | Mainnet | [Confirmed](https://explorer.arc.io/tx/0xe661af1a632b7f4fc4d536fb6234c3b2563860068b8a68755aad82467e075488) | [Confirmed](https://explorer.arc.io/tx/0x15f7519fc68d676ca420456fd44c13233bca33a2a51fca2988b862208f482787) |
+  | Testnet | [Confirmed](https://explorer.testnet.arc.io/tx/0x243f3ebb20f5afac0913f11890378eceb52af008c56c2b7c4b38dc2758359c8a) | [Confirmed](https://explorer.testnet.arc.io/tx/0xb57895281e25a15468d0b77a51850f3817a24db91261452fae521796a385be66) |
+
+  [Production acceptance record](../reports/2026-09-16-arc-production-acceptance.json)
+  includes fees, replay outcomes and the deployed configuration.
+  [Release CI](https://github.com/UltravioletaDAO/x402-rs/actions/runs/35126105947)
+  passed all jobs. Existing Ethereum/Polygon Amoy readiness issues are separate
+  from this Arc acceptance and remain recorded in the evidence.
 
 No Arc Gateway, EURC, USYC, `upto`, escrow, ERC-8004 writes, EIP-6492 or contract
 wallet support is claimed. The universal validator address has no code on

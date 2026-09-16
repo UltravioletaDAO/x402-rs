@@ -107,8 +107,20 @@ const VALIDATOR_ADDRESS: alloy::primitives::Address =
 /// Only 6492 is gated. `StructuredSignature::EIP1271` covers plain EOA
 /// signatures too and never touches this contract, so an ordinary EOA payment
 /// -- the whole of the first launch on Arc -- is unaffected.
+///
+/// **The default arm is fail-OPEN, so adding a network is not a no-op here.**
+/// A new chain falls into `_ => true` and is thereby asserted to carry the
+/// validator, without anyone having looked. Run
+/// `eth_getCode(VALIDATOR_ADDRESS)` against the new chain and give it an
+/// explicit arm when the answer is empty; letting it default is a claim about
+/// a contract nobody checked.
+// `matches!` would say the same thing in one line and hide the default arm.
+// The arm is the point: it is fail-open, and a reader adding a network has to
+// see it.
+#[allow(clippy::match_like_matches_macro)]
 const fn has_eip6492_validator(network: Network) -> bool {
     match network {
+        // eth_getCode -> 0 bytes, 2026-09-16, block 62,335,077.
         Network::ArcTestnet => false,
         _ => true,
     }
@@ -119,19 +131,48 @@ const fn has_eip6492_validator(network: Network) -> bool {
 ///
 /// A verdict on the request, not a transport failure: same input, same answer,
 /// no RPC involved.
+///
+/// # Why this reads the raw bytes, and why it is called from where it is
+///
+/// It used to take the parsed [`SignedMessage`] and run in `verify` and
+/// `settle` just after `SignedMessage::extract`. **That made it unreachable.**
+/// Both endpoints call [`assert_valid_payment`] first, and that enforces a
+/// signature of exactly 65 bytes; an EIP-6492 envelope is an ABI tuple plus a
+/// 32-byte magic suffix and is never 65 bytes, so it was refused as
+/// `invalid_signature_length` long before this could speak. Two mutants that
+/// deleted those two call sites survived the whole suite for the simplest
+/// possible reason: the lines did nothing.
+///
+/// So it now takes the bytes and runs inside `assert_valid_payment`, one call
+/// site instead of two, ahead of the length rule. The predicate is the same one
+/// `TryFrom<Vec<u8>> for StructuredSignature` uses -- the trailing magic -- and
+/// deliberately does not decode the envelope: a malformed 6492 body is the
+/// normal path's business, not this one's.
 fn assert_signature_scheme_supported(
     network: Network,
-    signed_message: &SignedMessage,
+    payer: EvmAddress,
+    signature: &EvmSignature,
 ) -> Result<(), FacilitatorLocalError> {
-    if matches!(
-        signed_message.signature,
-        StructuredSignature::EIP6492 { .. }
-    ) && !has_eip6492_validator(network)
-    {
+    let bytes = &signature.0;
+    let is_eip6492 = bytes.len() >= 32 && bytes[bytes.len() - 32..] == EIP6492_MAGIC_SUFFIX;
+    if is_eip6492 && !has_eip6492_validator(network) {
         return Err(FacilitatorLocalError::InvalidSignature(
-            signed_message.address.into(),
+            payer.into(),
             format!(
-                "EIP-6492 signatures are not supported on {network}: the universal                  signature validator is not deployed there. Sign from a deployed                  account (EOA or an already-deployed EIP-1271 wallet)."
+                // `concat!`, not a `\`-continued literal: a continuation whose
+                // backslash is lost leaves its indentation INSIDE the string,
+                // and the reader of a 400 sees a run of spaces mid-sentence.
+                // That is what shipped here, twice, at eighteen spaces each.
+                // `no_double_spaces_in_the_eip6492_refusal` pins it.
+                // `network` is passed, not captured: implicit capture does not
+                // reach through `concat!`.
+                concat!(
+                    "EIP-6492 signatures are not supported on {}: ",
+                    "the universal signature validator is not deployed there. ",
+                    "Sign from a deployed account (EOA or an already-deployed ",
+                    "EIP-1271 wallet)."
+                ),
+                network
             ),
         ));
     }
@@ -1446,7 +1487,6 @@ where
             assert_valid_payment(self.inner(), self.chain(), payload, requirements).await?;
 
         let signed_message = SignedMessage::extract(&payment, &eip712_domain)?;
-        assert_signature_scheme_supported(self.chain().network, &signed_message)?;
         let payer = signed_message.address;
         let hash = signed_message.hash;
         match signed_message.signature {
@@ -1610,9 +1650,6 @@ where
             assert_valid_payment(self.inner(), self.chain(), payload, requirements).await?;
 
         let signed_message = SignedMessage::extract(&payment, &eip712_domain)?;
-        // Also on settle, not only on verify: nothing forces a caller to verify
-        // first, and this is the path that would broadcast the factory call.
-        assert_signature_scheme_supported(self.chain().network, &signed_message)?;
         let payer = signed_message.address;
         let transaction_receipt_fut = match signed_message.signature {
             StructuredSignature::EIP6492 {
@@ -2504,6 +2541,13 @@ async fn assert_valid_payment<P: Provider>(
     //
     // Big-endian byte comparison matches numeric comparison, so we compare
     // the raw `s` bytes against the constant directly.
+    //
+    // BEFORE that rule, the chain's signature schemes, because the 65-byte rule
+    // would otherwise answer for them. An EIP-6492 envelope is never 65 bytes,
+    // so on a chain with no validator it would come back as "wrong length" --
+    // true, and useless: the caller goes looking for a malformed signature
+    // instead of reading that the scheme is not served there.
+    assert_signature_scheme_supported(chain.network, payer, &payment_payload.signature)?;
     {
         let sig_bytes = &payment_payload.signature.0;
         if sig_bytes.len() != 65 {
@@ -4540,7 +4584,7 @@ mod arc_testnet_tests {
     /// A 6492-wrapped signature as it arrives on the wire: the ABI-encoded
     /// `(factory, factoryCalldata, innerSig)` tuple followed by the magic
     /// suffix.
-    fn wire_eip6492_signature() -> Vec<u8> {
+    pub(super) fn wire_eip6492_signature() -> Vec<u8> {
         let mut bytes = DynSolValue::Tuple(vec![
             DynSolValue::Address(address!("0x00000000000000000000000000000000000f4c70")),
             DynSolValue::Bytes(vec![0xde, 0xad, 0xbe, 0xef]),
@@ -4551,34 +4595,39 @@ mod arc_testnet_tests {
         bytes
     }
 
-    fn signed_message_with(signature: StructuredSignature) -> SignedMessage {
-        SignedMessage {
-            address: address!("0x1111111111111111111111111111111111111111"),
-            hash: FixedBytes([0x22; 32]),
-            signature,
-        }
+    /// Any address; the gate does not look at it, it only reports it.
+    const SOME_PAYER: Address = address!("0x1111111111111111111111111111111111111111");
+
+    fn gate(network: Network, signature: Vec<u8>) -> Result<(), FacilitatorLocalError> {
+        assert_signature_scheme_supported(network, EvmAddress(SOME_PAYER), &EvmSignature(signature))
     }
 
     /// The universal signature validator has no code on Arc (measured: 0
     /// bytes). Calling it anyway does not refuse the signature -- an
     /// `eth_call` to an address with no code returns empty data, and the
     /// caller gets a decode failure that reads like a broken token. The
-    /// refusal has to happen before the call, and it has to be the same
-    /// refusal every time.
+    /// refusal has to happen before the VALIDATOR call, and it has to be the
+    /// same refusal every time.
+    ///
+    /// Not before any RPC call: `assert_valid_payment` reads the payer's
+    /// balance and resolves the EIP-712 domain, so the endpoint has already
+    /// spoken to the node by the time this decides. What the gate is early
+    /// relative to is the validator -- and, since it moved, the 65-byte rule.
     #[test]
-    fn eip6492_is_refused_on_arc_before_any_rpc_call() {
+    fn eip6492_is_refused_on_arc_before_the_validator_call() {
         assert!(!has_eip6492_validator(Network::ArcTestnet));
 
-        let parsed = StructuredSignature::try_from(wire_eip6492_signature())
-            .expect("a magic-suffixed signature decodes");
+        let wire = wire_eip6492_signature();
         assert!(
-            matches!(parsed, StructuredSignature::EIP6492 { .. }),
+            matches!(
+                StructuredSignature::try_from(wire.clone()),
+                Ok(StructuredSignature::EIP6492 { .. })
+            ),
             "premise: the wire bytes really are read as 6492"
         );
 
-        let error =
-            assert_signature_scheme_supported(Network::ArcTestnet, &signed_message_with(parsed))
-                .expect_err("Arc must refuse a counterfactual signature");
+        let error = gate(Network::ArcTestnet, wire)
+            .expect_err("Arc must refuse a counterfactual signature");
         match error {
             FacilitatorLocalError::InvalidSignature(_, message) => {
                 assert!(
@@ -4590,15 +4639,61 @@ mod arc_testnet_tests {
         }
     }
 
+    /// The gate has to speak BEFORE the 65-byte rule, and this is the fact that
+    /// makes it reachable at all.
+    ///
+    /// An EIP-6492 envelope is never 65 bytes. While the gate sat after
+    /// `SignedMessage::extract`, `assert_valid_payment` had already refused the
+    /// envelope as `invalid_signature_length` and the gate never ran -- which
+    /// is why deleting it from both endpoints changed no test. If the ordering
+    /// is ever swapped back, this fails.
+    #[test]
+    fn the_gate_speaks_before_the_sixty_five_byte_rule() {
+        let wire = wire_eip6492_signature();
+        assert_ne!(wire.len(), 65, "premise: a 6492 envelope is not 65 bytes");
+        let message = gate(Network::ArcTestnet, wire)
+            .expect_err("Arc refuses it")
+            .to_string();
+        assert!(
+            !message.contains("invalid_signature_length"),
+            "the length rule answered first, so the gate is unreachable again: {message}"
+        );
+    }
+
+    /// The refusal is read by a person holding a 400, so it has to read like a
+    /// sentence.
+    ///
+    /// It shipped with two runs of EIGHTEEN spaces in the middle of it: the
+    /// indentation of a `\`-continued literal whose backslash was lost on the
+    /// way into the file. The compiler is happy either way and every assertion
+    /// about the message used `contains`, so nothing noticed. This is the
+    /// cheapest check that would have.
+    #[test]
+    fn no_double_spaces_in_the_eip6492_refusal() {
+        let error = gate(Network::ArcTestnet, wire_eip6492_signature())
+            .expect_err("Arc refuses a counterfactual signature");
+        let message = error.to_string();
+        assert!(
+            !message.contains("  "),
+            "the refusal carries a run of spaces, so a continuation was eaten: {message:?}"
+        );
+        // And it is still the whole sentence, not a fragment that happens to
+        // have no double space in it.
+        assert!(message.ends_with("EIP-1271 wallet)."), "{message:?}");
+        assert!(
+            message.contains("the universal signature validator"),
+            "{message:?}"
+        );
+    }
+
     /// Only 6492 is gated, and only on Arc. An ordinary EOA payment -- which
     /// is the whole of the first launch here -- travels the EIP-1271 branch
     /// and must be untouched; so must every other chain's 6492 support.
     #[test]
     fn the_gate_closes_on_nothing_else() {
-        let eoa = signed_message_with(StructuredSignature::EIP1271(vec![0x33; 65].into()));
-        assert!(assert_signature_scheme_supported(Network::ArcTestnet, &eoa).is_ok());
+        // A plain 65-byte EOA signature, on the chain that has no validator.
+        assert!(gate(Network::ArcTestnet, vec![0x33; 65]).is_ok());
 
-        let counterfactual = StructuredSignature::try_from(wire_eip6492_signature()).unwrap();
         for network in Network::variants() {
             if *network == Network::ArcTestnet {
                 continue;
@@ -4608,11 +4703,8 @@ mod arc_testnet_tests {
                 "{network} lost its 6492 support without a measurement saying so"
             );
         }
-        assert!(assert_signature_scheme_supported(
-            Network::Base,
-            &signed_message_with(counterfactual)
-        )
-        .is_ok());
+        // And the same counterfactual envelope passes the gate everywhere else.
+        assert!(gate(Network::Base, wire_eip6492_signature()).is_ok());
     }
 
     /// Circle Gateway announces the SAME `scheme` and the SAME network
@@ -4912,37 +5004,23 @@ mod arc_node_fixtures {
         format!("http://{addr}/")
     }
 
-    /// A signed 0.01 USDC payment on Arc, built the way a client must build it:
-    /// explicit contract, explicit amount, explicit domain.
-    fn settle_request(payer: &PrivateKeySigner, to: Address) -> SettleRequest {
+    /// The wire body of a 0.01 USDC payment on Arc, built the way a client must
+    /// build it: explicit contract, explicit amount, explicit domain.
+    ///
+    /// `signature` is a parameter rather than something this builds, so the
+    /// same body can carry the payer's real EIP-712 signature or a
+    /// counterfactual EIP-6492 envelope. `/verify` and `/settle` take the same
+    /// shape, so both requests come from here and cannot drift apart.
+    fn request_json(payer: &PrivateKeySigner, to: Address, signature: Vec<u8>) -> Value {
         let valid_before = unix_now_secs() + 300;
-        let (name, version) = find_known_eip712_metadata(Network::ArcTestnet, &arc_usdc())
-            .expect("Arc USDC is in the static table");
-        let domain = eip712_domain! {
-            name: name,
-            version: version,
-            chain_id: 5042002_u64,
-            verifying_contract: arc_usdc(),
-        };
-        let authorization = TransferWithAuthorization {
-            from: payer.address(),
-            to,
-            value: U256::from(AMOUNT),
-            validAfter: U256::ZERO,
-            validBefore: U256::from(valid_before),
-            nonce: FixedBytes([0x42; 32]),
-        };
-        let signature = payer
-            .sign_hash_sync(&authorization.eip712_signing_hash(&domain))
-            .expect("signs");
-        serde_json::from_value(json!({
+        json!({
             "x402Version": 1,
             "paymentPayload": {
                 "x402Version": 1,
                 "scheme": "exact",
                 "network": "arc-testnet",
                 "payload": {
-                    "signature": format!("0x{}", hex::encode(signature.as_bytes())),
+                    "signature": format!("0x{}", hex::encode(&signature)),
                     "authorization": {
                         "from": payer.address(),
                         "to": to,
@@ -4965,8 +5043,73 @@ mod arc_node_fixtures {
                 "asset": arc_usdc(),
                 "extra": {"name": "USDC", "version": "2"},
             }
-        }))
+        })
+    }
+
+    /// The payer's real EIP-712 signature over that body, under Arc's USDC
+    /// domain.
+    fn eip712_signature(payer: &PrivateKeySigner, body: &Value) -> Vec<u8> {
+        let (name, version) = find_known_eip712_metadata(Network::ArcTestnet, &arc_usdc())
+            .expect("Arc USDC is in the static table");
+        let domain = eip712_domain! {
+            name: name,
+            version: version,
+            chain_id: 5042002_u64,
+            verifying_contract: arc_usdc(),
+        };
+        let authorization = &body["paymentPayload"]["payload"]["authorization"];
+        let valid_before: u64 = authorization["validBefore"]
+            .as_str()
+            .and_then(|s| s.parse().ok())
+            .expect("validBefore is a decimal string");
+        let to: Address = authorization["to"]
+            .as_str()
+            .and_then(|s| s.parse().ok())
+            .expect("to is an address");
+        let transfer = TransferWithAuthorization {
+            from: payer.address(),
+            to,
+            value: U256::from(AMOUNT),
+            validAfter: U256::ZERO,
+            validBefore: U256::from(valid_before),
+            nonce: FixedBytes([0x42; 32]),
+        };
+        payer
+            .sign_hash_sync(&transfer.eip712_signing_hash(&domain))
+            .expect("signs")
+            .as_bytes()
+            .to_vec()
+    }
+
+    /// A correctly signed payment, as `/settle` receives it.
+    fn settle_request(payer: &PrivateKeySigner, to: Address) -> SettleRequest {
+        let mut body = request_json(payer, to, Vec::new());
+        let signature = eip712_signature(payer, &body);
+        body["paymentPayload"]["payload"]["signature"] =
+            json!(format!("0x{}", hex::encode(signature)));
+        serde_json::from_value(body).expect("the settle request parses")
+    }
+
+    /// The same payment carrying a COUNTERFACTUAL EIP-6492 envelope instead of
+    /// an EOA signature, as `/settle` receives it.
+    fn settle_request_6492(payer: &PrivateKeySigner, to: Address) -> SettleRequest {
+        serde_json::from_value(request_json(
+            payer,
+            to,
+            super::arc_testnet_tests::wire_eip6492_signature(),
+        ))
         .expect("the settle request parses")
+    }
+
+    /// Ditto, as `/verify` receives it. Same body: the two endpoints take the
+    /// same shape, and the gate has to be on both.
+    fn verify_request_6492(payer: &PrivateKeySigner, to: Address) -> VerifyRequest {
+        serde_json::from_value(request_json(
+            payer,
+            to,
+            super::arc_testnet_tests::wire_eip6492_signature(),
+        ))
+        .expect("the verify request parses")
     }
 
     struct Fixture {
@@ -5100,6 +5243,77 @@ mod arc_node_fixtures {
             ),
         }
         assert_eq!(f.broadcasts.load(Ordering::SeqCst), 1);
+    }
+
+    /// The EIP-6492 gate, through `/settle` rather than through the helper.
+    ///
+    /// The unit test one module up calls `assert_signature_scheme_supported`
+    /// directly, so it stays green with the gate DELETED from the endpoint --
+    /// which is exactly the mutant that survived the whole suite. This one goes
+    /// through the real `Facilitator::settle`, so removing the call there turns
+    /// it red.
+    ///
+    /// Asserting the VARIANT is the load-bearing part. Without the gate the
+    /// settle still fails -- it walks into the counterfactual path and the node
+    /// gives it nothing to decode -- but it fails as `ContractCall`, blaming
+    /// the chain for a facilitator-side gap. `is_err()` would not tell the two
+    /// apart.
+    #[tokio::test]
+    async fn settle_refuses_a_counterfactual_signature_and_sends_nothing() {
+        let payer = PrivateKeySigner::random();
+        let f = fixture(Receipt::Confirmed, Estimate::Ok, payer.address()).await;
+        let error = f
+            .provider
+            .settle(&settle_request_6492(&payer, PAYEE))
+            .await
+            .expect_err("Arc must refuse a counterfactual signature on settle");
+        match error {
+            FacilitatorLocalError::InvalidSignature(_, ref message) => {
+                assert!(
+                    message.contains("EIP-6492") && message.contains("arc-testnet"),
+                    "the refusal must name the scheme and the chain: {message}"
+                );
+            }
+            other => panic!(
+                "settle must refuse this as an invalid signature, not as a \
+                 contract failure; got {other:?}"
+            ),
+        }
+        assert_eq!(
+            f.broadcasts.load(Ordering::SeqCst),
+            0,
+            "a signature we cannot validate must never reach the wire"
+        );
+    }
+
+    /// The same gate on `/verify`, which is its own mutant: the two call sites
+    /// are independent and deleting either one alone left the suite green.
+    #[tokio::test]
+    async fn verify_refuses_a_counterfactual_signature_and_sends_nothing() {
+        let payer = PrivateKeySigner::random();
+        let f = fixture(Receipt::Confirmed, Estimate::Ok, payer.address()).await;
+        let error = f
+            .provider
+            .verify(&verify_request_6492(&payer, PAYEE))
+            .await
+            .expect_err("Arc must refuse a counterfactual signature on verify");
+        match error {
+            FacilitatorLocalError::InvalidSignature(_, ref message) => {
+                assert!(
+                    message.contains("EIP-6492") && message.contains("arc-testnet"),
+                    "the refusal must name the scheme and the chain: {message}"
+                );
+            }
+            other => panic!(
+                "verify must refuse this as an invalid signature, not as a \
+                 contract failure; got {other:?}"
+            ),
+        }
+        assert_eq!(
+            f.broadcasts.load(Ordering::SeqCst),
+            0,
+            "verify never broadcasts, and must not start here"
+        );
     }
 
     /// Circle's genesis blocked address, reached in estimation. Nothing may go

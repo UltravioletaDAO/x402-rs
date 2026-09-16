@@ -162,7 +162,7 @@
       "tokens": ["usdc"],
       "explorer": "https://testnet.arcscan.app",
       "facilitatorWallet": "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8",
-      "_note": "USDC is the native gas token and carries two precisions over one balance: 18 native, 6 through the ERC-20 interface (floor(native / 10^12)). Do not add eth_getBalance and balanceOf as separate funds. The wallet above held zero of both on 2026-09-16 and must be funded from https://faucet.circle.com before any end-to-end payment. There is no Arc mainnet entry: Circle publishes testnet addresses only."
+      "_note": "NOT SERVED YET. This entry describes the chain, not a live capability: the facilitator only instantiates Arc when RPC_URL_ARC_TESTNET is configured, and until then GET /supported does not list it. Ask /supported, not this file, before routing a payment. USDC is the native gas token and carries two precisions over one balance: 18 native, 6 through the ERC-20 interface (floor(native / 10^12)). Do not add eth_getBalance and balanceOf as separate funds. The wallet above held zero of both on 2026-09-16 and must be funded from https://faucet.circle.com before any end-to-end payment. There is no Arc mainnet entry: Circle publishes testnet addresses only."
     }
   },
 

@@ -99,6 +99,45 @@ x402-rs is the core Rust implementation of the x402 payment protocol. Key integr
 
 ---
 
+### 9. Decide the fate of EIP-6492: resurrect it or stop advertising it
+
+**Priority**: P1
+**Status**: [ ] Not started
+**Location**: `src/chain/evm.rs` (`assert_valid_payment`, `SignedMessage::extract`)
+
+EIP-6492 (counterfactual smart-wallet signatures) is **unreachable on all 40
+networks**, not just on the one that has no validator deployed. `assert_valid_payment`
+rejects any signature that is not exactly 65 bytes, and it runs before
+`SignedMessage::extract`; a 6492 envelope is an ABI tuple plus a 32-byte magic
+suffix and never measures 65. So the whole `StructuredSignature::EIP6492` branch
+in `verify` and `settle` -- the validator multicall, the counterfactual deploy,
+the atomic factory-plus-transfer path -- cannot be entered by any request. A
+payer who sends one gets `invalid_signature_length`, which points them at their
+signature instead of at the truth.
+
+Measured 2026-09-16: two mutants deleting the Arc 6492 guard from both endpoints
+survived the entire 2,426-test suite, because the lines they deleted could never
+run.
+
+Two ways out, and the choice is a product decision, not a refactor:
+
+- **Resurrect**: move the 65-byte rule (and the EIP-2 low-`s` check it guards,
+  which only makes sense for a raw `r||s||v`) into the `EIP1271` arm, where the
+  signature really is 65 bytes. Then 6492 reaches the validator and the existing
+  branch means something. Needs a positive end-to-end test against a real
+  counterfactual wallet before it can be believed.
+- **Retire**: drop the branch and say plainly that only EOA and deployed
+  EIP-1271 wallets are served. Cheaper, honest, and reversible.
+
+Either way the service should stop implying a capability it cannot deliver
+anywhere. Until it is decided, the Arc guard stays: it is the only thing that
+turns a call to an undeployed contract into a verdict.
+
+**Why**: a documented capability that cannot be exercised is worse than an
+absent one -- it sends integrators debugging their own correct code.
+
+---
+
 ## P2 (Medium Priority - This Quarter)
 
 ### 7. Research Layer 1 vs Layer 2 priority

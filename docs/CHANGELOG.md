@@ -1,5 +1,78 @@
 # Changelog
 
+## [2.30.0] - 2026-09-16
+
+### Added
+
+- **Arc testnet (`arc-testnet`, `eip155:5042002`), Circle's EVM chain where
+  USDC is the native gas token, joins the existing EVM provider with `exact`
+  and direct EIP-3009 authorizations. It ships OFF.** The facilitator only
+  builds a provider for a network whose RPC URL is configured, and `/supported`
+  lists the providers it built, so without `RPC_URL_ARC_TESTNET` Arc is present
+  in the enum, in all four copies of `variants()`, in the token tables and in
+  the asset allow-list while being served by nothing. Turning it on is a
+  deployment change.
+  - Measured against the chain on 2026-09-16, pinned to block 62,335,077:
+    `eth_chainId` = `0x4cef52`; USDC `0x3600...0000` with `decimals()` = 6,
+    `name()` = `USDC`, `version()` = `2`, and a `DOMAIN_SEPARATOR()` equal to
+    what those three fields plus the chain id recompute to locally. The static
+    entry is named `USDC_ARC_TESTNET` on purpose: `scripts/stablecoin_matrix.py`
+    classifies by substring of the static's name, so `USDC_ARC` would have
+    counted this testnet among the mainnets with nothing objecting.
+  - USDC carries two precisions over ONE balance -- 18 native, 6 through the
+    ERC-20 interface, the second being `floor(native / 10^12)`. A payment moves
+    the 6-decimal units. Never add `eth_getBalance` and `balanceOf` as separate
+    funds.
+  - No Arc mainnet: Circle still publishes testnet addresses only. EURC is
+    deliberately absent -- not writing its static is what keeps it out, with no
+    flag to get wrong. `upto`, escrow and ERC-8004 exclude Arc on their own.
+- **A fee floor of Arc's own**: `min_max_fee` and `fallback_base_fee` at 20
+  gwei, the documented minimum `maxFeePerGas` and the base fee the chain has
+  held at every reading. The generic arm cannot price it -- `min_max_fee = 0`
+  contributes no floor, and its 2 gwei fallback yields 4.001 gwei, a fifth of
+  what the chain accepts, and a refused transaction holds a nonce nothing can
+  replace. `min_priority` deliberately stays at the generic 1 mwei: Circle
+  permits a zero tip and the node quotes zero, so what Arc needs is the cap, not
+  the tip.
+
+### Fixed
+
+- **EIP-6492 signatures are now refused deterministically where the universal
+  signature validator is not deployed, and the guard finally runs.** It was
+  added after `SignedMessage::extract`, which made it unreachable:
+  `assert_valid_payment` runs first on both endpoints and requires a signature
+  of exactly 65 bytes, and a 6492 envelope -- an ABI tuple plus a 32-byte magic
+  suffix -- never measures 65. Two mutants deleting the guard from `verify` and
+  from `settle` survived the entire suite because those lines could not run.
+  The guard now reads the raw bytes and runs inside `assert_valid_payment`
+  ahead of the length rule: one call site instead of two, covered by tests that
+  go through `Facilitator::verify` and `Facilitator::settle` and assert the
+  error variant rather than merely that it failed.
+  - Measured on Arc testnet: `eth_getCode` of
+    `0xdAcD51A54883eb67D95FAEb2BBfdC4a9a6BD2a3B` is **0 bytes**. Calling it
+    anyway does not refuse the signature -- an `eth_call` to an address with no
+    code returns empty data, the multicall fails to decode, and the caller gets
+    `Invalid contract call`, which blames the token contract for a
+    facilitator-side gap. On `/settle` the same absence would submit a factory
+    call that could not have been validated.
+  - Reversible: Arachnid's CREATE2 factory IS deployed on Arc (69 bytes), so
+    the validator can be replayed to its usual address. That is a separate
+    change and owes its own evidence.
+  - Nothing changes off Arc: every other network has the validator, the guard
+    lets it through, and the 65-byte rule answers as before.
+- **The refusal message no longer carries two runs of eighteen spaces.** They
+  were the indentation of a `\`-continued literal whose backslash was lost;
+  the compiler accepts either and every assertion used `contains`, so nothing
+  noticed. Rewritten with `concat!` and pinned by a test.
+
+### Known
+
+- EIP-6492 is unreachable on **all** networks for the same reason, so the
+  service advertises a capability it cannot exercise anywhere. Tracked in
+  `docs/TODO.md` (#9): either move the 65-byte rule into the `EIP1271` arm
+  where the signature really is 65 bytes, or retire the branch and say plainly
+  that only EOA and deployed EIP-1271 wallets are served.
+
 ## [2.29.6] - 2026-09-15
 
 ### Fixed

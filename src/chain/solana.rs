@@ -184,6 +184,7 @@ impl TryFrom<Network> for SolanaChain {
             Network::Scroll => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::Robinhood => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::RobinhoodTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
+            Network::ArcTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::Near => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::NearTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::Stellar => Err(FacilitatorLocalError::UnsupportedNetwork(None)),

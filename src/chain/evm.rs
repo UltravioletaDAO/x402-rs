@@ -83,6 +83,102 @@ sol! {
 const VALIDATOR_ADDRESS: alloy::primitives::Address =
     address!("0xdAcD51A54883eb67D95FAEb2BBfdC4a9a6BD2a3B");
 
+/// Is [`VALIDATOR_ADDRESS`] deployed on this chain?
+///
+/// "If absent on a target chain, verification will fail" is true but describes
+/// the WRONG failure. An `eth_call` to an address with no code returns empty
+/// data, so the 6492 branch does not refuse the signature: the multicall's
+/// decode fails and the caller gets `Invalid contract call`, a message that
+/// blames the token contract for a facilitator-side gap and reads differently
+/// depending on which of the two multicall shapes ran. Worse on `/settle`,
+/// where the same absence makes the counterfactual path submit a factory call
+/// that cannot have been validated.
+///
+/// So the question is asked BEFORE the call, and the answer is a verdict.
+///
+/// Measured on Arc testnet 2026-09-16 at block 62,335,077:
+/// `eth_getCode(0xdAcD51A54883eb67D95FAEb2BBfdC4a9a6BD2a3B)` = **0 bytes**.
+/// This is not permanent -- Arachnid's CREATE2 factory
+/// (`0x4e59b44847b379578588920cA78FbF26c0B4956C`) IS deployed there, 69 bytes,
+/// so the validator can be replayed to its usual address. Deploying it is a
+/// separate, reviewable change; deleting this arm without that deployment is
+/// not.
+///
+/// Only 6492 is gated. `StructuredSignature::EIP1271` covers plain EOA
+/// signatures too and never touches this contract, so an ordinary EOA payment
+/// -- the whole of the first launch on Arc -- is unaffected.
+///
+/// **The default arm is fail-OPEN, so adding a network is not a no-op here.**
+/// A new chain falls into `_ => true` and is thereby asserted to carry the
+/// validator, without anyone having looked. Run
+/// `eth_getCode(VALIDATOR_ADDRESS)` against the new chain and give it an
+/// explicit arm when the answer is empty; letting it default is a claim about
+/// a contract nobody checked.
+// `matches!` would say the same thing in one line and hide the default arm.
+// The arm is the point: it is fail-open, and a reader adding a network has to
+// see it.
+#[allow(clippy::match_like_matches_macro)]
+const fn has_eip6492_validator(network: Network) -> bool {
+    match network {
+        // eth_getCode -> 0 bytes, 2026-09-16, block 62,335,077.
+        Network::ArcTestnet => false,
+        _ => true,
+    }
+}
+
+/// Refuse a counterfactual smart-wallet (EIP-6492) signature on a chain where
+/// the validator that would check it is not deployed.
+///
+/// A verdict on the request, not a transport failure: same input, same answer,
+/// no RPC involved.
+///
+/// # Why this reads the raw bytes, and why it is called from where it is
+///
+/// It used to take the parsed [`SignedMessage`] and run in `verify` and
+/// `settle` just after `SignedMessage::extract`. **That made it unreachable.**
+/// Both endpoints call [`assert_valid_payment`] first, and that enforces a
+/// signature of exactly 65 bytes; an EIP-6492 envelope is an ABI tuple plus a
+/// 32-byte magic suffix and is never 65 bytes, so it was refused as
+/// `invalid_signature_length` long before this could speak. Two mutants that
+/// deleted those two call sites survived the whole suite for the simplest
+/// possible reason: the lines did nothing.
+///
+/// So it now takes the bytes and runs inside `assert_valid_payment`, one call
+/// site instead of two, ahead of the length rule. The predicate is the same one
+/// `TryFrom<Vec<u8>> for StructuredSignature` uses -- the trailing magic -- and
+/// deliberately does not decode the envelope: a malformed 6492 body is the
+/// normal path's business, not this one's.
+fn assert_signature_scheme_supported(
+    network: Network,
+    payer: EvmAddress,
+    signature: &EvmSignature,
+) -> Result<(), FacilitatorLocalError> {
+    let bytes = &signature.0;
+    let is_eip6492 = bytes.len() >= 32 && bytes[bytes.len() - 32..] == EIP6492_MAGIC_SUFFIX;
+    if is_eip6492 && !has_eip6492_validator(network) {
+        return Err(FacilitatorLocalError::InvalidSignature(
+            payer.into(),
+            format!(
+                // `concat!`, not a `\`-continued literal: a continuation whose
+                // backslash is lost leaves its indentation INSIDE the string,
+                // and the reader of a 400 sees a run of spaces mid-sentence.
+                // That is what shipped here, twice, at eighteen spaces each.
+                // `no_double_spaces_in_the_eip6492_refusal` pins it.
+                // `network` is passed, not captured: implicit capture does not
+                // reach through `concat!`.
+                concat!(
+                    "EIP-6492 signatures are not supported on {}: ",
+                    "the universal signature validator is not deployed there. ",
+                    "Sign from a deployed account (EOA or an already-deployed ",
+                    "EIP-1271 wallet)."
+                ),
+                network
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// Why [`send_call_estimated`] did not hand back a pending transaction.
 #[derive(Debug)]
 pub enum EstimatedSendError {
@@ -231,6 +327,11 @@ impl TryFrom<Network> for EvmChain {
             Network::Scroll => Ok(EvmChain::new(value, 534352)),
             Network::Robinhood => Ok(EvmChain::new(value, 4663)),
             Network::RobinhoodTestnet => Ok(EvmChain::new(value, 46630)),
+            // `eth_chainId` answered 0x4cef52 = 5042002 on 2026-09-16 at block
+            // 62,335,077. The chain id is what the EIP-712 domain commits to,
+            // so a wrong one here does not mis-route a payment -- it makes
+            // every signature recover a different address.
+            Network::ArcTestnet => Ok(EvmChain::new(value, 5042002)),
             Network::Near => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::NearTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::Stellar => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
@@ -339,6 +440,33 @@ pub(crate) const fn eip1559_fee_floor(network: Network) -> Eip1559Floor {
             min_priority: 30 * GWEI,
             min_max_fee: 1000 * GWEI,
             fallback_base_fee: 250 * GWEI,
+        },
+        // Arc's documented MINIMUM `maxFeePerGas` is 20 gwei, and the chain
+        // sits exactly on it: base fee, `eth_gasPrice` and every sample of
+        // `eth_feeHistory` all read 20 gwei (measured 2026-09-15 16:20Z and
+        // again 2026-09-16 03:02Z at block 62,335,077).
+        //
+        // The generic arm below cannot price that. Its `min_max_fee` is 0, so
+        // it contributes no floor at all, and its `fallback_base_fee` of 2 gwei
+        // -- what a failed `eth_feeHistory` read falls back to -- yields
+        // `2 * 2 + 0.001 = 4.001` gwei, a FIFTH of the minimum the chain will
+        // accept. That transaction is refused, and a refused settle holds a
+        // nonce that nothing else can replace.
+        //
+        // `min_priority` deliberately stays at the generic 1 mwei. Circle
+        // permits a zero tip and `eth_maxPriorityFeePerGas` returns 0, so there
+        // is nothing measured here to justify more; the 1 gwei tip that the
+        // Ethereum arm carries drained the mainnet signer in four days when it
+        // was copied to chains that had not earned it (see below). What Arc
+        // needs is the CAP, not the tip.
+        //
+        // Cost of the floor: the guide's ~65,000 gas for an EIP-3009 transfer
+        // at 20 gwei is 0.0013 USDC, which is also what gas costs on this chain
+        // -- USDC is the native token.
+        Network::ArcTestnet => Eip1559Floor {
+            min_priority: 1_000_000,
+            min_max_fee: 20 * GWEI,
+            fallback_base_fee: 20 * GWEI,
         },
         // A 1 mwei tip floor, not 1 gwei and not 0.
         //
@@ -1306,6 +1434,9 @@ impl FromEnvByNetworkBuild for EvmProvider {
             Network::Scroll => true,     // Scroll zkEVM supports EIP-1559
             Network::Robinhood => true,  // Arbitrum Orbit: type-2 txs accepted (tips no-op, FCFS)
             Network::RobinhoodTestnet => true,
+            // Arc prices type-2 transactions: the latest block carries a
+            // baseFeePerGas (20 gwei, measured) and `eth_feeHistory` answers.
+            Network::ArcTestnet => true,
             Network::Near => false,           // NEAR is not an EVM chain
             Network::NearTestnet => false,    // NEAR is not an EVM chain
             Network::Stellar => false,        // Stellar is not an EVM chain
@@ -2410,6 +2541,13 @@ async fn assert_valid_payment<P: Provider>(
     //
     // Big-endian byte comparison matches numeric comparison, so we compare
     // the raw `s` bytes against the constant directly.
+    //
+    // BEFORE that rule, the chain's signature schemes, because the 65-byte rule
+    // would otherwise answer for them. An EIP-6492 envelope is never 65 bytes,
+    // so on a chain with no validator it would come back as "wrong length" --
+    // true, and useless: the caller goes looking for a malformed signature
+    // instead of reading that the scheme is not served there.
+    assert_signature_scheme_supported(chain.network, payer, &payment_payload.signature)?;
     {
         let sig_bytes = &payment_payload.signature.0;
         if sig_bytes.len() != 65 {
@@ -4286,6 +4424,1009 @@ mod settlement_unconfirmed_tests {
             "returned in {elapsed:?}, faster than the 1s receipt wait -- this failed on \
              transport before the timeout ever ran, so the fixture is not exercising the \
              timeout path it claims to",
+        );
+    }
+}
+
+/// Arc testnet (Circle), the parts that are decided WITHOUT an RPC.
+///
+/// Every constant here was read off the chain on 2026-09-16 at block
+/// 62,335,077 through `https://rpc.testnet.arc.io`, and re-read from the
+/// 2026-09-15 snapshot in the research evidence. A test that only compares our
+/// table to itself proves nothing -- the domain separator below is the one
+/// value that ties the address, the name, the version and the chain id to what
+/// the contract actually answers.
+#[cfg(test)]
+mod arc_testnet_tests {
+    use super::*;
+    use alloy::dyn_abi::DynSolValue;
+    use alloy::signers::local::PrivateKeySigner;
+    use alloy::signers::SignerSync;
+
+    /// `DOMAIN_SEPARATOR()` as the Arc USDC proxy returned it.
+    const ARC_USDC_DOMAIN_SEPARATOR: [u8; 32] =
+        hex!("361191522483d32a83e70ae7183b4b9629442c13a78bc9921d6f707911c8c6b0");
+    /// Arc's documented minimum `maxFeePerGas`, and the base fee the chain has
+    /// held at every reading.
+    const ARC_MIN_MAX_FEE: u128 = 20 * GWEI;
+    /// geth includes no tip below this, and it is what the generic arm gives
+    /// every chain that has not measured its own.
+    const ONE_MWEI: u128 = 1_000_000;
+
+    fn arc_usdc() -> Address {
+        USDCDeployment::by_network(Network::ArcTestnet)
+            .expect("Arc testnet has a USDC deployment")
+            .address()
+            .try_into()
+            .expect("Arc USDC is an EVM address")
+    }
+
+    fn arc_chain_id() -> u64 {
+        EvmChain::try_from(Network::ArcTestnet)
+            .expect("Arc is an EVM chain")
+            .chain_id
+    }
+
+    /// The four fields a payer's signature commits to, checked against the one
+    /// number the contract publishes. Change the address, the name, the
+    /// version or the chain id and this stops matching -- which is the same
+    /// moment every Arc signature would stop recovering its signer.
+    #[test]
+    fn arc_usdc_domain_separator_is_the_one_the_contract_publishes() {
+        let (name, version) = find_known_eip712_metadata(Network::ArcTestnet, &arc_usdc())
+            .expect("Arc USDC is in the static EIP-712 table");
+        let domain = eip712_domain! {
+            name: name,
+            version: version,
+            chain_id: arc_chain_id(),
+            verifying_contract: arc_usdc(),
+        };
+        assert_eq!(
+            domain.separator().0,
+            ARC_USDC_DOMAIN_SEPARATOR,
+            "the domain we build no longer matches DOMAIN_SEPARATOR() on Arc"
+        );
+
+        // Control: the same token under another chain's id is a different
+        // domain. Without this the assertion above could be satisfied by a
+        // chain id that is ignored.
+        let wrong_chain = eip712_domain! {
+            name: "USDC",
+            version: "2",
+            chain_id: 8453_u64,
+            verifying_contract: arc_usdc(),
+        };
+        assert_ne!(wrong_chain.separator().0, ARC_USDC_DOMAIN_SEPARATOR);
+    }
+
+    /// The whole reason Arc has a fee floor of its own.
+    ///
+    /// Delete [`eip1559_fee_floor`]'s Arc arm and this test fails twice over:
+    /// the generic arm carries `min_max_fee = 0`, so there is no floor at all,
+    /// and its `fallback_base_fee` of 2 gwei prices a transaction at 4.001
+    /// gwei -- a fifth of the minimum Arc accepts.
+    #[test]
+    fn a_settle_on_arc_is_priced_above_the_chains_documented_minimum() {
+        let floor = eip1559_fee_floor(Network::ArcTestnet);
+        assert!(
+            floor.min_max_fee >= ARC_MIN_MAX_FEE,
+            "Arc refuses a maxFeePerGas below 20 gwei; this floor offers {}",
+            floor.min_max_fee
+        );
+        assert!(
+            floor.fallback_base_fee >= ARC_MIN_MAX_FEE,
+            "the base fee assumed when eth_feeHistory fails is {}, below the \
+             minimum the chain accepts",
+            floor.fallback_base_fee
+        );
+
+        // The node quotes a zero tip on Arc (`eth_maxPriorityFeePerGas` = 0x0),
+        // so the tip contributes nothing and the cap has to come from the floor.
+        let (priority, max_fee) = compute_eip1559_fees(20 * GWEI, 0, floor);
+        assert!(max_fee >= ARC_MIN_MAX_FEE, "priced at {max_fee} wei");
+        assert_eq!(priority, ONE_MWEI);
+
+        // And the path a failed fee read takes: `quote_eip1559_fees` falls back
+        // to `fallback_base_fee`, and the send path's error branch sets
+        // `min_max_fee` directly. Both have to clear the minimum.
+        let (_, from_fallback) = compute_eip1559_fees(floor.fallback_base_fee, 0, floor);
+        assert!(
+            from_fallback >= ARC_MIN_MAX_FEE,
+            "a failed fee read prices Arc at {from_fallback} wei"
+        );
+        assert!(
+            floor.min_max_fee > 0,
+            "the send path only applies a floor on a failed read when \
+             min_max_fee > 0; at zero it hands the pricing back to the default \
+             estimator, which is what leaves Arc underpriced"
+        );
+    }
+
+    /// Arc ships OFF, and this is the whole mechanism.
+    ///
+    /// `ProviderCache::from_env` walks `Network::variants()` and keeps only the
+    /// networks that answered with a provider; `/supported` then iterates that
+    /// map. With `RPC_URL_ARC_TESTNET` unset there is no provider, so Arc
+    /// appears in the enum, in `variants()`, in the token tables and in the
+    /// asset allow-list while being served by nothing -- and `/supported`
+    /// never names it. Turning Arc on is a separate change, in the deployment's
+    /// configuration, not in this code.
+    #[tokio::test]
+    async fn arc_is_served_by_nothing_until_its_rpc_url_is_configured() {
+        assert_eq!(
+            from_env::rpc_env_name_from_network(Network::ArcTestnet),
+            "RPC_URL_ARC_TESTNET"
+        );
+        std::env::remove_var("RPC_URL_ARC_TESTNET");
+        let provider = EvmProvider::from_env(Network::ArcTestnet)
+            .await
+            .expect("an unconfigured network is not an error");
+        assert!(
+            provider.is_none(),
+            "Arc built a provider with no RPC URL configured; it would then be \
+             advertised by /supported the moment this ships"
+        );
+    }
+
+    /// Arc raises the CAP, not the tip. Circle permits a zero tip and the node
+    /// quotes zero; there is nothing measured here to justify more, and a tip
+    /// floor copied from a chain that earned it is what drained the mainnet
+    /// signer in four days.
+    #[test]
+    fn arc_keeps_the_generic_one_mwei_tip() {
+        assert_eq!(
+            eip1559_fee_floor(Network::ArcTestnet).min_priority,
+            ONE_MWEI,
+            "a tip floor above 1 mwei has to be measured for the chain it is on"
+        );
+    }
+
+    /// A 6492-wrapped signature as it arrives on the wire: the ABI-encoded
+    /// `(factory, factoryCalldata, innerSig)` tuple followed by the magic
+    /// suffix.
+    pub(super) fn wire_eip6492_signature() -> Vec<u8> {
+        let mut bytes = DynSolValue::Tuple(vec![
+            DynSolValue::Address(address!("0x00000000000000000000000000000000000f4c70")),
+            DynSolValue::Bytes(vec![0xde, 0xad, 0xbe, 0xef]),
+            DynSolValue::Bytes(vec![0x11; 65]),
+        ])
+        .abi_encode_params();
+        bytes.extend_from_slice(&EIP6492_MAGIC_SUFFIX);
+        bytes
+    }
+
+    /// Any address; the gate does not look at it, it only reports it.
+    const SOME_PAYER: Address = address!("0x1111111111111111111111111111111111111111");
+
+    fn gate(network: Network, signature: Vec<u8>) -> Result<(), FacilitatorLocalError> {
+        assert_signature_scheme_supported(network, EvmAddress(SOME_PAYER), &EvmSignature(signature))
+    }
+
+    /// The universal signature validator has no code on Arc (measured: 0
+    /// bytes). Calling it anyway does not refuse the signature -- an
+    /// `eth_call` to an address with no code returns empty data, and the
+    /// caller gets a decode failure that reads like a broken token. The
+    /// refusal has to happen before the VALIDATOR call, and it has to be the
+    /// same refusal every time.
+    ///
+    /// And on Arc it IS before every `eth_call` the payment makes, which the
+    /// name understates. Measured on this tree: the gate sits at the top of
+    /// `assert_valid_payment`'s signature checks and `assert_enough_balance`
+    /// comes after it, while `assert_domain` resolves Arc USDC out of the
+    /// static table and never reaches the node. Point the fixture's node at a
+    /// mock that errors on EVERY `eth_call` and the four payment tests fail
+    /// while both 6492 tests stay green -- the refusal needs nothing from the
+    /// chain.
+    ///
+    /// The name still says "validator" because that is the guarantee the gate
+    /// owes on every chain: on one whose token is NOT in the static table,
+    /// `assert_domain` would fall back to an on-chain `name()`/`version()`
+    /// read before this runs.
+    #[test]
+    fn eip6492_is_refused_on_arc_before_the_validator_call() {
+        assert!(!has_eip6492_validator(Network::ArcTestnet));
+
+        let wire = wire_eip6492_signature();
+        assert!(
+            matches!(
+                StructuredSignature::try_from(wire.clone()),
+                Ok(StructuredSignature::EIP6492 { .. })
+            ),
+            "premise: the wire bytes really are read as 6492"
+        );
+
+        let error = gate(Network::ArcTestnet, wire)
+            .expect_err("Arc must refuse a counterfactual signature");
+        match error {
+            FacilitatorLocalError::InvalidSignature(_, message) => {
+                assert!(
+                    message.contains("EIP-6492") && message.contains("arc-testnet"),
+                    "the refusal must name the scheme and the chain: {message}"
+                );
+            }
+            other => panic!("expected an invalid-signature verdict, got {other:?}"),
+        }
+    }
+
+    /// The premise behind the ordering, not the ordering itself.
+    ///
+    /// An EIP-6492 envelope is never 65 bytes, so whichever of the two checks
+    /// runs first is the one that answers. While the gate sat after
+    /// `SignedMessage::extract`, the length rule had already refused the
+    /// envelope as `invalid_signature_length` and the gate never ran -- which
+    /// is why deleting it from both endpoints changed no test.
+    ///
+    /// **This test cannot catch a reorder**, and saying otherwise would be
+    /// worse than not testing it: it calls the gate as a free function, so the
+    /// order of the two checks inside `assert_valid_payment` is invisible from
+    /// here. The reorder is caught where it is observable, by the
+    /// `invalid_signature_length` assertion inside
+    /// `settle_refuses_a_counterfactual_signature_and_sends_nothing` and its
+    /// `verify` twin, which go through the endpoints. What is pinned here is
+    /// the premise those two rest on: that the envelope is not 65 bytes, and
+    /// that the gate alone refuses it without mentioning length.
+    #[test]
+    fn the_gate_speaks_before_the_sixty_five_byte_rule() {
+        let wire = wire_eip6492_signature();
+        assert_ne!(wire.len(), 65, "premise: a 6492 envelope is not 65 bytes");
+        let message = gate(Network::ArcTestnet, wire)
+            .expect_err("Arc refuses it")
+            .to_string();
+        assert!(
+            !message.contains("invalid_signature_length"),
+            "the length rule answered first, so the gate is unreachable again: {message}"
+        );
+    }
+
+    /// The refusal is read by a person holding a 400, so it has to read like a
+    /// sentence.
+    ///
+    /// It shipped with two runs of EIGHTEEN spaces in the middle of it: the
+    /// indentation of a `\`-continued literal whose backslash was lost on the
+    /// way into the file. The compiler is happy either way and every assertion
+    /// about the message used `contains`, so nothing noticed. This is the
+    /// cheapest check that would have.
+    #[test]
+    fn no_double_spaces_in_the_eip6492_refusal() {
+        let error = gate(Network::ArcTestnet, wire_eip6492_signature())
+            .expect_err("Arc refuses a counterfactual signature");
+        let message = error.to_string();
+        assert!(
+            !message.contains("  "),
+            "the refusal carries a run of spaces, so a continuation was eaten: {message:?}"
+        );
+        // And it is still the whole sentence, not a fragment that happens to
+        // have no double space in it.
+        assert!(message.ends_with("EIP-1271 wallet)."), "{message:?}");
+        assert!(
+            message.contains("the universal signature validator"),
+            "{message:?}"
+        );
+    }
+
+    /// Only 6492 is gated, and only on Arc. An ordinary EOA payment -- which
+    /// is the whole of the first launch here -- travels the EIP-1271 branch
+    /// and must be untouched; so must every other chain's 6492 support.
+    #[test]
+    fn the_gate_closes_on_nothing_else() {
+        // A plain 65-byte EOA signature, on the chain that has no validator.
+        assert!(gate(Network::ArcTestnet, vec![0x33; 65]).is_ok());
+
+        for network in Network::variants() {
+            if *network == Network::ArcTestnet {
+                continue;
+            }
+            assert!(
+                has_eip6492_validator(*network),
+                "{network} lost its 6492 support without a measurement saying so"
+            );
+        }
+        // And the same counterfactual envelope passes the gate everywhere else.
+        assert!(gate(Network::Base, wire_eip6492_signature()).is_ok());
+    }
+
+    /// Circle Gateway announces the SAME `scheme` and the SAME network
+    /// (`exact`, `eip155:5042002`) while signing against a different domain:
+    /// `GatewayWalletBatched` version 1, verified by the Gateway Wallet
+    /// contract rather than by USDC. `scheme + network` is therefore not
+    /// enough to decide two authorizations are interchangeable.
+    ///
+    /// Three independent things refuse it, and the test pins all three,
+    /// because any one of them alone is a single point of failure.
+    #[test]
+    fn a_gateway_authorization_cannot_pass_as_a_direct_arc_payment() {
+        let payer = PrivateKeySigner::random();
+        let authorization = TransferWithAuthorization {
+            from: payer.address(),
+            to: address!("0x2222222222222222222222222222222222222222"),
+            value: U256::from(10_000u64),
+            validAfter: U256::ZERO,
+            validBefore: U256::from(u64::MAX),
+            nonce: FixedBytes([0x42; 32]),
+        };
+
+        let gateway_wallet = address!("0x0077777d7eba4688bdef3e311b846f25870a19b9");
+        let gateway_domain = eip712_domain! {
+            name: "GatewayWalletBatched",
+            version: "1",
+            chain_id: arc_chain_id(),
+            verifying_contract: gateway_wallet,
+        };
+        let (name, version) = find_known_eip712_metadata(Network::ArcTestnet, &arc_usdc())
+            .expect("Arc USDC is in the static table");
+        let direct_domain = eip712_domain! {
+            name: name,
+            version: version,
+            chain_id: arc_chain_id(),
+            verifying_contract: arc_usdc(),
+        };
+
+        // 1. The digests are different, so the signature the payer produced for
+        //    Gateway recovers somebody else against our domain. The signature
+        //    stays the authority; nothing in `extra` can move it.
+        let gateway_digest = authorization.eip712_signing_hash(&gateway_domain);
+        let direct_digest = authorization.eip712_signing_hash(&direct_domain);
+        assert_ne!(gateway_digest, direct_digest);
+
+        let signature = payer.sign_hash_sync(&gateway_digest).expect("signs");
+        assert_eq!(
+            signature.recover_address_from_prehash(&gateway_digest).ok(),
+            Some(payer.address()),
+            "premise: the signature is valid for the domain it was made for"
+        );
+        assert_ne!(
+            signature.recover_address_from_prehash(&direct_digest).ok(),
+            Some(payer.address()),
+            "a Gateway authorization must not recover its payer under the USDC \
+             domain -- if it did, a batched authorization would settle here as \
+             a direct transfer"
+        );
+
+        // 2. The static table wins over anything the client sends, so naming
+        //    Gateway's domain in `extra` does not make the digest move.
+        assert_eq!(
+            find_known_eip712_metadata(Network::ArcTestnet, &arc_usdc()),
+            Some(("USDC".to_string(), "2".to_string()))
+        );
+
+        // 3. And the Gateway Wallet is not an asset this network accepts, which
+        //    is checked before the RPC layer is touched at all.
+        assert!(!crate::network::is_supported_asset(
+            Network::ArcTestnet,
+            &gateway_wallet.into()
+        ));
+    }
+}
+
+/// Arc testnet against a node, with the node's answers pinned to what the real
+/// one gives.
+///
+/// The four shapes a settle can end in -- a confirmed receipt, a receipt that
+/// reverted, a receipt that never arrives, and a revert caught in estimation --
+/// plus Arc's own wrinkle: a USDC movement emits TWO `Transfer` logs, the
+/// ERC-20 one from the token and a native one, in 18 decimals, from the system
+/// emitter.
+///
+/// `eth_chainId`, `baseFeePerGas`, `eth_maxPriorityFeePerGas` and the
+/// `Blocked address` revert string are the values Arc returned on 2026-09-16 at
+/// block 62,335,077, not invented ones.
+#[cfg(test)]
+mod arc_node_fixtures {
+    use super::*;
+    use crate::erc8004::proof::{unix_now_secs, verify_payment_facts, ProofRejection};
+    use alloy::network::EthereumWallet;
+    use alloy::primitives::keccak256;
+    use alloy::providers::ProviderBuilder;
+    use alloy::signers::local::PrivateKeySigner;
+    use alloy::signers::SignerSync;
+    use axum::{extract::State, routing::post, Json as AxumJson, Router};
+    use serde_json::{json, Value};
+
+    /// `eth_chainId` on Arc testnet.
+    const ARC_CHAIN_ID_HEX: &str = "0x4cef52";
+    /// The base fee Arc has held at every reading: 20 gwei.
+    const ARC_BASE_FEE_HEX: &str = "0x4a817c800";
+    /// Circle seeds a BLOCKED address at genesis -- index 1 of Foundry's public
+    /// test mnemonic -- and every value transfer to or from it reverts. An
+    /// end-to-end test that reaches for the usual Anvil accounts out of habit
+    /// lands on it and reads like a bug of ours.
+    const BLOCKED_ADDRESS: Address = address!("0x70997970C51812dc3A010C7d01b50e0d17dc79C8");
+    /// The revert the chain answers for that address, verbatim.
+    const BLOCKED_REVERT: &str = "execution reverted: Blocked address";
+    /// Arc's system emitter for native USDC movements. Its `Transfer` carries
+    /// 18 decimals for the same payment the token reports in 6.
+    const SYSTEM_EMITTER: Address = address!("0xffffFFFfFFffffffffffffffFfFFFfffFFFfFFfE");
+
+    const BLOCK: u64 = 0x3b7_2865;
+    const TIP: u64 = BLOCK - 10;
+    const TX: [u8; 32] = [0xa7; 32];
+    const BLOCK_HASH: [u8; 32] = [0xbc; 32];
+    const PAYEE: Address = address!("0x2222222222222222222222222222222222222222");
+    /// 0.01 USDC in the 6-decimal ERC-20 view.
+    const AMOUNT: u64 = 10_000;
+    /// The same payment as the native balance sees it: 18 decimals.
+    const NATIVE_AMOUNT: u128 = AMOUNT as u128 * 1_000_000_000_000;
+
+    #[derive(Clone, Copy, PartialEq)]
+    enum Receipt {
+        Confirmed,
+        Reverted,
+        /// The node never has it, as after a broadcast we lose track of.
+        Never,
+    }
+
+    #[derive(Clone, Copy, PartialEq)]
+    enum Estimate {
+        Ok,
+        /// `eth_estimateGas` reverts, which is what a payment to or from the
+        /// blocked address does.
+        BlockedAddress,
+    }
+
+    #[derive(Clone)]
+    struct ArcNode {
+        payer: Address,
+        receipt: Receipt,
+        estimate: Estimate,
+        /// Frozen at fixture time. A proof's timestamp has to equal the
+        /// block's to the second, so the node and the test have to read the
+        /// same number -- not two calls to the clock a second apart.
+        block_timestamp: u64,
+        /// Broadcasts the node was asked to make.
+        broadcasts: Arc<AtomicUsize>,
+    }
+
+    fn arc_usdc() -> Address {
+        USDCDeployment::by_network(Network::ArcTestnet)
+            .expect("Arc has a USDC deployment")
+            .address()
+            .try_into()
+            .expect("an EVM address")
+    }
+
+    /// One `Transfer` log. `emitter` is what tells the token's event from the
+    /// chain's own: the topic is identical in both.
+    fn transfer_log(emitter: Address, from: Address, to: Address, value: U256) -> Value {
+        json!({
+            "address": emitter,
+            "topics": [
+                keccak256("Transfer(address,address,uint256)"),
+                from.into_word(),
+                to.into_word(),
+            ],
+            "data": format!("0x{}", hex::encode(value.to_be_bytes::<32>())),
+            "blockNumber": format!("{BLOCK:#x}"),
+            "blockHash": format!("0x{}", hex::encode(BLOCK_HASH)),
+            "transactionHash": format!("0x{}", hex::encode(TX)),
+            "transactionIndex": "0x0",
+            "logIndex": "0x0",
+            "removed": false
+        })
+    }
+
+    fn receipt_json(payer: Address, status: &str) -> Value {
+        json!({
+            "transactionHash": format!("0x{}", hex::encode(TX)),
+            "transactionIndex": "0x0",
+            "blockHash": format!("0x{}", hex::encode(BLOCK_HASH)),
+            "blockNumber": format!("{BLOCK:#x}"),
+            "from": address!("0x0000000000000000000000000000000000000001"),
+            "to": arc_usdc(),
+            "cumulativeGasUsed": "0xfde8",
+            "gasUsed": "0xfde8",
+            "contractAddress": null,
+            "logsBloom": format!("0x{}", "0".repeat(512)),
+            "status": status,
+            "type": "0x2",
+            "effectiveGasPrice": ARC_BASE_FEE_HEX,
+            // BOTH logs, the way Arc emits them.
+            "logs": [
+                transfer_log(arc_usdc(), payer, PAYEE, U256::from(AMOUNT)),
+                transfer_log(SYSTEM_EMITTER, payer, PAYEE, U256::from(NATIVE_AMOUNT)),
+            ]
+        })
+    }
+
+    fn block_json(number: u64, timestamp: u64) -> Value {
+        let zero32 = format!("0x{}", hex::encode([0u8; 32]));
+        json!({
+            "hash": format!("0x{}", hex::encode(BLOCK_HASH)),
+            "parentHash": zero32,
+            "sha3Uncles": zero32,
+            "miner": format!("0x{}", hex::encode([0u8; 20])),
+            "stateRoot": zero32,
+            "transactionsRoot": zero32,
+            "receiptsRoot": zero32,
+            "logsBloom": format!("0x{}", "0".repeat(512)),
+            "difficulty": "0x0",
+            "number": format!("{number:#x}"),
+            "gasLimit": "0x1c9c380",
+            "gasUsed": "0x16de71",
+            "timestamp": format!("{timestamp:#x}"),
+            "extraData": "0x",
+            "mixHash": zero32,
+            "nonce": "0x0000000000000000",
+            "baseFeePerGas": ARC_BASE_FEE_HEX,
+            "totalDifficulty": "0x0",
+            "size": "0x220",
+            "transactions": [],
+            "uncles": []
+        })
+    }
+
+    fn answer(node: &ArcNode, req: &Value) -> Value {
+        let id = req.get("id").cloned().unwrap_or(json!(1));
+        let error = |message: &str| {
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": {"code": 3, "message": message},
+            })
+        };
+        let result = match req["method"].as_str().unwrap_or_default() {
+            "eth_chainId" => json!(ARC_CHAIN_ID_HEX),
+            "eth_getTransactionCount" => json!("0x0"),
+            // Arc quotes a zero tip; the floor is what has to carry the cap.
+            "eth_maxPriorityFeePerGas" => json!("0x0"),
+            "eth_feeHistory" => json!({
+                "oldestBlock": format!("{TIP:#x}"),
+                "baseFeePerGas": [ARC_BASE_FEE_HEX, ARC_BASE_FEE_HEX],
+                "gasUsedRatio": [0.5],
+                "reward": [["0x0"]],
+            }),
+            "eth_estimateGas" => match node.estimate {
+                Estimate::Ok => json!("0xfde8"),
+                Estimate::BlockedAddress => return error(BLOCKED_REVERT),
+            },
+            // `balanceOf`, the only contract read a settle makes.
+            "eth_call" => json!(format!(
+                "0x{}",
+                hex::encode(U256::from(AMOUNT * 100).to_be_bytes::<32>())
+            )),
+            "eth_sendRawTransaction" => {
+                node.broadcasts.fetch_add(1, Ordering::SeqCst);
+                json!(format!("0x{}", hex::encode(TX)))
+            }
+            "eth_blockNumber" => json!(format!("{TIP:#x}")),
+            "eth_getTransactionReceipt" => match node.receipt {
+                Receipt::Confirmed => receipt_json(node.payer, "0x1"),
+                Receipt::Reverted => receipt_json(node.payer, "0x0"),
+                Receipt::Never => Value::Null,
+            },
+            "eth_getBlockByNumber" => {
+                let number = req["params"][0]
+                    .as_str()
+                    .and_then(|n| u64::from_str_radix(n.trim_start_matches("0x"), 16).ok())
+                    .unwrap_or(TIP);
+                block_json(number, node.block_timestamp)
+            }
+            _ => Value::Null,
+        };
+        json!({"jsonrpc": "2.0", "id": id, "result": result})
+    }
+
+    async fn rpc(State(node): State<ArcNode>, AxumJson(body): AxumJson<Value>) -> AxumJson<Value> {
+        AxumJson(match &body {
+            Value::Array(reqs) => Value::Array(reqs.iter().map(|r| answer(&node, r)).collect()),
+            req => answer(&node, req),
+        })
+    }
+
+    async fn spawn(node: ArcNode) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = Router::new().route("/", post(rpc)).with_state(node);
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{addr}/")
+    }
+
+    /// The wire body of a 0.01 USDC payment on Arc, built the way a client must
+    /// build it: explicit contract, explicit amount, explicit domain.
+    ///
+    /// `signature` is a parameter rather than something this builds, so the
+    /// same body can carry the payer's real EIP-712 signature or a
+    /// counterfactual EIP-6492 envelope. `/verify` and `/settle` take the same
+    /// shape, so both requests come from here and cannot drift apart.
+    fn request_json(payer: &PrivateKeySigner, to: Address, signature: Vec<u8>) -> Value {
+        let valid_before = unix_now_secs() + 300;
+        json!({
+            "x402Version": 1,
+            "paymentPayload": {
+                "x402Version": 1,
+                "scheme": "exact",
+                "network": "arc-testnet",
+                "payload": {
+                    "signature": format!("0x{}", hex::encode(&signature)),
+                    "authorization": {
+                        "from": payer.address(),
+                        "to": to,
+                        "value": AMOUNT.to_string(),
+                        "validAfter": "0",
+                        "validBefore": valid_before.to_string(),
+                        "nonce": format!("0x{}", hex::encode([0x42u8; 32])),
+                    }
+                }
+            },
+            "paymentRequirements": {
+                "scheme": "exact",
+                "network": "arc-testnet",
+                "maxAmountRequired": AMOUNT.to_string(),
+                "resource": "https://example.com/paid",
+                "description": "",
+                "mimeType": "application/json",
+                "payTo": to,
+                "maxTimeoutSeconds": 300,
+                "asset": arc_usdc(),
+                "extra": {"name": "USDC", "version": "2"},
+            }
+        })
+    }
+
+    /// The payer's real EIP-712 signature over that body, under Arc's USDC
+    /// domain.
+    fn eip712_signature(payer: &PrivateKeySigner, body: &Value) -> Vec<u8> {
+        let (name, version) = find_known_eip712_metadata(Network::ArcTestnet, &arc_usdc())
+            .expect("Arc USDC is in the static table");
+        let domain = eip712_domain! {
+            name: name,
+            version: version,
+            chain_id: 5042002_u64,
+            verifying_contract: arc_usdc(),
+        };
+        let authorization = &body["paymentPayload"]["payload"]["authorization"];
+        let valid_before: u64 = authorization["validBefore"]
+            .as_str()
+            .and_then(|s| s.parse().ok())
+            .expect("validBefore is a decimal string");
+        let to: Address = authorization["to"]
+            .as_str()
+            .and_then(|s| s.parse().ok())
+            .expect("to is an address");
+        let transfer = TransferWithAuthorization {
+            from: payer.address(),
+            to,
+            value: U256::from(AMOUNT),
+            validAfter: U256::ZERO,
+            validBefore: U256::from(valid_before),
+            nonce: FixedBytes([0x42; 32]),
+        };
+        payer
+            .sign_hash_sync(&transfer.eip712_signing_hash(&domain))
+            .expect("signs")
+            .as_bytes()
+            .to_vec()
+    }
+
+    /// A correctly signed payment, as `/settle` receives it.
+    fn settle_request(payer: &PrivateKeySigner, to: Address) -> SettleRequest {
+        let mut body = request_json(payer, to, Vec::new());
+        let signature = eip712_signature(payer, &body);
+        body["paymentPayload"]["payload"]["signature"] =
+            json!(format!("0x{}", hex::encode(signature)));
+        serde_json::from_value(body).expect("the settle request parses")
+    }
+
+    /// The same payment carrying a COUNTERFACTUAL EIP-6492 envelope instead of
+    /// an EOA signature, as `/settle` receives it.
+    fn settle_request_6492(payer: &PrivateKeySigner, to: Address) -> SettleRequest {
+        serde_json::from_value(request_json(
+            payer,
+            to,
+            super::arc_testnet_tests::wire_eip6492_signature(),
+        ))
+        .expect("the settle request parses")
+    }
+
+    /// Ditto, as `/verify` receives it. Same body: the two endpoints take the
+    /// same shape, and the gate has to be on both.
+    fn verify_request_6492(payer: &PrivateKeySigner, to: Address) -> VerifyRequest {
+        serde_json::from_value(request_json(
+            payer,
+            to,
+            super::arc_testnet_tests::wire_eip6492_signature(),
+        ))
+        .expect("the verify request parses")
+    }
+
+    struct Fixture {
+        provider: EvmProvider,
+        broadcasts: Arc<AtomicUsize>,
+        url: String,
+        block_timestamp: u64,
+    }
+
+    async fn fixture(receipt: Receipt, estimate: Estimate, payer: Address) -> Fixture {
+        let broadcasts = Arc::new(AtomicUsize::new(0));
+        let block_timestamp = unix_now_secs() - 5;
+        let url = spawn(ArcNode {
+            payer,
+            receipt,
+            estimate,
+            block_timestamp,
+            broadcasts: broadcasts.clone(),
+        })
+        .await;
+        // `eip1559 = true`, as Arc is configured: the pricing under test is the
+        // fee-history negotiation, not a legacy `eth_gasPrice`.
+        let provider = EvmProvider::try_new(
+            EthereumWallet::from(PrivateKeySigner::random()),
+            &url,
+            true,
+            Network::ArcTestnet,
+        )
+        .await
+        .expect("provider");
+        Fixture {
+            provider,
+            broadcasts,
+            url,
+            block_timestamp,
+        }
+    }
+
+    /// The node quotes 20 gwei base and a zero tip. The cap the facilitator
+    /// sets is what the node reserves against the signer's balance, and it has
+    /// to clear Arc's minimum.
+    #[tokio::test]
+    async fn arc_prices_a_transaction_off_the_nodes_own_numbers() {
+        let f = fixture(Receipt::Confirmed, Estimate::Ok, Address::ZERO).await;
+        let quote = f.provider.quote_eip1559_fees().await.expect("quote");
+        assert_eq!(quote.base_fee, 20 * GWEI);
+        assert_eq!(
+            quote.priority, 1_000_000,
+            "the node quoted zero; 1 mwei is the floor"
+        );
+        assert_eq!(quote.max_fee, 2 * 20 * GWEI + 1_000_000);
+        assert!(
+            quote.max_fee >= 20 * GWEI,
+            "below Arc's minimum maxFeePerGas"
+        );
+        assert_eq!(
+            f.provider.quote_fee_cap().await.expect("cap"),
+            quote.max_fee
+        );
+    }
+
+    /// The ordinary path: a confirmed receipt is a successful settle, and the
+    /// hash it reports is the one the node handed back.
+    #[tokio::test]
+    async fn a_confirmed_receipt_settles() {
+        let payer = PrivateKeySigner::random();
+        let f = fixture(Receipt::Confirmed, Estimate::Ok, payer.address()).await;
+        let response = f
+            .provider
+            .settle(&settle_request(&payer, PAYEE))
+            .await
+            .expect("the settle reaches a verdict");
+        assert!(response.success);
+        assert_eq!(response.network, Network::ArcTestnet);
+        assert_eq!(
+            response.transaction,
+            Some(TransactionHash::Evm(TX)),
+            "the response must carry the hash the node returned"
+        );
+        assert_eq!(f.broadcasts.load(Ordering::SeqCst), 1);
+    }
+
+    /// A mined transaction is not a successful one.
+    ///
+    /// Arc finalises on inclusion, so a transfer the token reverted still comes
+    /// back with a real receipt and a real hash. The send path refuses it
+    /// before `settle` reaches `receipt.status()`, and the refusal carries the
+    /// hash and the chain -- the caller has to be able to look up what actually
+    /// happened, and must never be told a reverted transfer settled.
+    #[tokio::test]
+    async fn a_reverted_receipt_is_refused_and_names_its_transaction() {
+        let payer = PrivateKeySigner::random();
+        let f = fixture(Receipt::Reverted, Estimate::Ok, payer.address()).await;
+        let error = f
+            .provider
+            .settle(&settle_request(&payer, PAYEE))
+            .await
+            .expect_err("a reverted transaction is not a settlement");
+        let message = format!("{error}");
+        assert!(
+            matches!(error, FacilitatorLocalError::ContractCall(_)),
+            "expected a contract-call refusal, got {error:?}"
+        );
+        assert!(
+            message.contains(&hex::encode(TX)) && message.contains("arc-testnet"),
+            "the refusal must name the transaction and the chain: {message}"
+        );
+        assert_eq!(f.broadcasts.load(Ordering::SeqCst), 1);
+    }
+
+    /// Arc confirms on inclusion, but the reply to a broadcast is not a receipt.
+    /// When the receipt never arrives the settle must report the hash rather
+    /// than either success or a plain failure: a caller told "failed" retries,
+    /// and a retry of a payment that did land is a second debit.
+    #[tokio::test]
+    async fn a_settle_whose_receipt_never_arrives_reports_its_hash() {
+        let payer = PrivateKeySigner::random();
+        let f = fixture(Receipt::Never, Estimate::Ok, payer.address()).await;
+        std::env::set_var("TX_RECEIPT_TIMEOUT_SECS", "1");
+        let result = f.provider.settle(&settle_request(&payer, PAYEE)).await;
+        std::env::remove_var("TX_RECEIPT_TIMEOUT_SECS");
+
+        match result {
+            Err(FacilitatorLocalError::SettlementUnconfirmed(tx, network)) => {
+                assert_eq!(tx, TransactionHash::Evm(TX));
+                assert_eq!(network, Network::ArcTestnet);
+            }
+            other => panic!(
+                "a broadcast with no receipt must report SettlementUnconfirmed with its \
+                 hash; got {other:?}"
+            ),
+        }
+        assert_eq!(f.broadcasts.load(Ordering::SeqCst), 1);
+    }
+
+    /// The EIP-6492 gate, through `/settle` rather than through the helper.
+    ///
+    /// The unit test one module up calls `assert_signature_scheme_supported`
+    /// directly, so it stays green with the gate DELETED from the endpoint --
+    /// which is exactly the mutant that survived the whole suite. This one goes
+    /// through the real `Facilitator::settle`, so removing the call there turns
+    /// it red.
+    ///
+    /// Asserting the VARIANT is the load-bearing part. Without the gate the
+    /// settle still fails -- it walks into the counterfactual path and the node
+    /// gives it nothing to decode -- but it fails as `ContractCall`, blaming
+    /// the chain for a facilitator-side gap. `is_err()` would not tell the two
+    /// apart.
+    #[tokio::test]
+    async fn settle_refuses_a_counterfactual_signature_and_sends_nothing() {
+        let payer = PrivateKeySigner::random();
+        let f = fixture(Receipt::Confirmed, Estimate::Ok, payer.address()).await;
+        let error = f
+            .provider
+            .settle(&settle_request_6492(&payer, PAYEE))
+            .await
+            .expect_err("Arc must refuse a counterfactual signature on settle");
+        match error {
+            FacilitatorLocalError::InvalidSignature(_, ref message) => {
+                assert!(
+                    message.contains("EIP-6492") && message.contains("arc-testnet"),
+                    "the refusal must name the scheme and the chain: {message}"
+                );
+                // THE ORDERING, pinned where it is observable. The gate has to
+                // run ahead of `assert_valid_payment`'s 65-byte rule; a 6492
+                // envelope is never 65 bytes, so whichever check runs first
+                // answers. Put the gate back after it -- where it sat, and
+                // where it was unreachable -- and this is the assertion that
+                // goes red, naming the reason.
+                assert!(
+                    !message.contains("invalid_signature_length"),
+                    "the 65-byte rule answered first, so the gate is unreachable \
+                     again and only its position changed: {message}"
+                );
+            }
+            other => panic!(
+                "settle must refuse this as an invalid signature, not as a \
+                 contract failure; got {other:?}"
+            ),
+        }
+        assert_eq!(
+            f.broadcasts.load(Ordering::SeqCst),
+            0,
+            "a signature we cannot validate must never reach the wire"
+        );
+    }
+
+    /// The same gate on `/verify`, which is its own mutant: the two call sites
+    /// are independent and deleting either one alone left the suite green.
+    #[tokio::test]
+    async fn verify_refuses_a_counterfactual_signature_and_sends_nothing() {
+        let payer = PrivateKeySigner::random();
+        let f = fixture(Receipt::Confirmed, Estimate::Ok, payer.address()).await;
+        let error = f
+            .provider
+            .verify(&verify_request_6492(&payer, PAYEE))
+            .await
+            .expect_err("Arc must refuse a counterfactual signature on verify");
+        match error {
+            FacilitatorLocalError::InvalidSignature(_, ref message) => {
+                assert!(
+                    message.contains("EIP-6492") && message.contains("arc-testnet"),
+                    "the refusal must name the scheme and the chain: {message}"
+                );
+                // THE ORDERING, pinned where it is observable. The gate has to
+                // run ahead of `assert_valid_payment`'s 65-byte rule; a 6492
+                // envelope is never 65 bytes, so whichever check runs first
+                // answers. Put the gate back after it -- where it sat, and
+                // where it was unreachable -- and this is the assertion that
+                // goes red, naming the reason.
+                assert!(
+                    !message.contains("invalid_signature_length"),
+                    "the 65-byte rule answered first, so the gate is unreachable \
+                     again and only its position changed: {message}"
+                );
+            }
+            other => panic!(
+                "verify must refuse this as an invalid signature, not as a \
+                 contract failure; got {other:?}"
+            ),
+        }
+        assert_eq!(
+            f.broadcasts.load(Ordering::SeqCst),
+            0,
+            "verify never broadcasts, and must not start here"
+        );
+    }
+
+    /// Circle's genesis blocked address, reached in estimation. Nothing may go
+    /// on the wire: a broadcast here would burn a nonce on a transaction that
+    /// cannot be mined, and every settle behind it waits.
+    #[tokio::test]
+    async fn a_transfer_the_chain_refuses_never_reaches_the_wire() {
+        let payer = PrivateKeySigner::random();
+        let f = fixture(
+            Receipt::Confirmed,
+            Estimate::BlockedAddress,
+            payer.address(),
+        )
+        .await;
+        let error = f
+            .provider
+            .settle(&settle_request(&payer, BLOCKED_ADDRESS))
+            .await
+            .expect_err("a transfer to a blocked address cannot settle");
+        assert!(
+            format!("{error}").contains("Blocked address"),
+            "the chain's own reason must survive to the caller: {error}"
+        );
+        assert_eq!(
+            f.broadcasts.load(Ordering::SeqCst),
+            0,
+            "gas estimation reverted, so no nonce was reserved and nothing was sent"
+        );
+    }
+
+    /// Arc's double event, and the reason the receipt reader keys on the log's
+    /// EMITTER rather than on the `Transfer` topic.
+    ///
+    /// The same payment appears twice in one receipt: 10,000 units from the
+    /// token, and 10,000,000,000,000,000 from the chain's system emitter. Both
+    /// carry the identical topic and the identical `from`/`to`. A reader that
+    /// matched on the topic would see the 18-decimal figure as a transfer of
+    /// ten billion USDC.
+    #[tokio::test]
+    async fn the_native_system_event_is_not_read_as_the_payment() {
+        let payer = PrivateKeySigner::random();
+        let f = fixture(Receipt::Confirmed, Estimate::Ok, payer.address()).await;
+        let rpc = ProviderBuilder::new().connect(&f.url).await.expect("rpc");
+
+        let proof = |amount: u128| {
+            ProofOfPayment::new(
+                TransactionHash::Evm(TX),
+                BLOCK,
+                Network::ArcTestnet,
+                MixedAddress::from(payer.address()),
+                MixedAddress::from(PAYEE),
+                TokenAmount::from(amount),
+                MixedAddress::from(arc_usdc()),
+                f.block_timestamp,
+            )
+        };
+
+        // The ERC-20 amount, from the token's own log: accepted.
+        let facts = verify_payment_facts(&rpc, Network::ArcTestnet, &proof(AMOUNT as u128), 900)
+            .await
+            .expect("the token's own Transfer proves the payment");
+        assert_eq!(facts.payer, payer.address());
+        assert_eq!(facts.payee, PAYEE);
+        assert_eq!(facts.token, arc_usdc());
+
+        // The native 18-decimal amount, which only the system emitter reports:
+        // refused, because that log is not the token's.
+        let rejection = verify_payment_facts(&rpc, Network::ArcTestnet, &proof(NATIVE_AMOUNT), 900)
+            .await
+            .expect_err("the system emitter's event is not the token's");
+        assert!(
+            matches!(rejection, ProofRejection::TransferNotFound),
+            "expected the native event to be ignored, got {rejection:?}"
         );
     }
 }

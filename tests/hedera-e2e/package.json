@@ -1,0 +1,15 @@
+{
+  "name": "x402-hedera-e2e-vectors",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Offline generator of Hedera exact-scheme payment vectors for the x402-rs phase-0 spike. No network, no funds, no mainnet.",
+  "scripts": {
+    "generate": "node generate-vectors.mjs"
+  },
+  "dependencies": {
+    "@hiero-ledger/proto": "2.31.0",
+    "@hiero-ledger/sdk": "2.85.0",
+    "@x402/hedera": "2.26.0"
+  }
+}

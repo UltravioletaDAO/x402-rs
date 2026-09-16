@@ -1,0 +1,30 @@
+# Isolated phase-0 spike. Deliberately NOT a member of the x402-rs workspace:
+# the empty `[workspace]` table below makes this directory its own workspace
+# root, so the facilitator's Cargo.lock and dependency tree are untouched by
+# anything measured here. Nothing in this crate ships to production.
+[package]
+name = "hedera-spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+# Pinned with `=` on purpose: the whole point of the spike is to answer whether
+# the PUBLISHED crate works. 0.45.0 is the highest version on the registry
+# (measured 2026-09-16); the v0.46.0 tag exists on GitHub and is not published.
+hiero-sdk = "=0.45.0"
+# Raw protobuf access, at the exact version hiero-sdk 0.45.0 resolves, so the
+# generated types are the same ones the SDK uses. Needed because the SDK's
+# public API does not expose the per-node bodyBytes/sigPairs that this
+# experiment has to compare byte for byte.
+hiero-sdk-proto = "=0.22.0"
+prost = "0.13"
+anyhow = "1"
+base64 = "0.22"
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+time = "0.3"

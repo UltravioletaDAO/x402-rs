@@ -1,0 +1,264 @@
+=== 01-hbar-ed25519-official-client (7 variants)
+    HBAR transfer built by @x402/hedera's own client signer against Client.forTestnet(): the exact shape a real payer emits, including whatever node set the SDK chose.
+    cross-SDK bodies match ......... PASS
+    facilitator policy ............. PASS
+    AnyTransaction::from_bytes ..... PASS
+    downcast to TransferTransaction  PASS
+    node ids the SDK reports ....... 7
+    payer signature over all bodies  PASS
+    to_bytes round trip identical .. PASS
+    bodies intact after co-sign .... PASS
+    prior signatures intact ........ PASS
+    co-signature on every variant .. PASS
+    co-signature verifies .......... PASS
+
+=== 02-hbar-ed25519-multinode (4 variants)
+    HBAR transfer frozen over four consensus nodes and signed by an Ed25519 sender. Reproducible byte for byte.
+    cross-SDK bodies match ......... PASS
+    facilitator policy ............. PASS
+    AnyTransaction::from_bytes ..... PASS
+    downcast to TransferTransaction  PASS
+    node ids the SDK reports ....... 4
+    payer signature over all bodies  PASS
+    to_bytes round trip identical .. PASS
+    bodies intact after co-sign .... PASS
+    prior signatures intact ........ PASS
+    co-signature on every variant .. PASS
+    co-signature verifies .......... PASS
+
+=== 03-hts-usdc-ecdsa-multinode (3 variants)
+    HTS transfer of testnet USDC (0.0.429274, 6 decimals) signed by an ECDSA secp256k1 sender, frozen over three nodes.
+    cross-SDK bodies match ......... PASS
+    facilitator policy ............. PASS
+    AnyTransaction::from_bytes ..... PASS
+    downcast to TransferTransaction  PASS
+    node ids the SDK reports ....... 3
+    payer signature over all bodies  PASS
+    to_bytes round trip identical .. PASS
+    bodies intact after co-sign .... PASS
+    prior signatures intact ........ PASS
+    co-signature on every variant .. PASS
+    co-signature verifies .......... PASS
+
+=== 04-hbar-threshold-2of3 (2 variants)
+    Sender account governed by a 2-of-3 threshold key (Ed25519, Ed25519, ECDSA). Signed by key 1 and key 3 only: a correct verifier must accept, and must not require the missing key.
+    cross-SDK bodies match ......... PASS
+    facilitator policy ............. PASS
+    AnyTransaction::from_bytes ..... PASS
+    downcast to TransferTransaction  PASS
+    node ids the SDK reports ....... 2
+    payer signature over all bodies  PASS
+    to_bytes round trip identical .. PASS
+    bodies intact after co-sign .... PASS
+    prior signatures intact ........ PASS
+    co-signature on every variant .. PASS
+    co-signature verifies .......... PASS
+
+=== 05-hbar-keylist-all (3 variants)
+    Sender account governed by a plain KeyList with no threshold, so every member must sign. Both members do.
+    cross-SDK bodies match ......... PASS
+    facilitator policy ............. PASS
+    AnyTransaction::from_bytes ..... PASS
+    downcast to TransferTransaction  PASS
+    node ids the SDK reports ....... 3
+    payer signature over all bodies  PASS
+    to_bytes round trip identical .. PASS
+    bodies intact after co-sign .... PASS
+    prior signatures intact ........ PASS
+    co-signature on every variant .. PASS
+    co-signature verifies .......... PASS
+
+=== 06-adversarial-second-variant-repointed (3 variants)
+    Variant 0 and 2 pay payTo; variant 1 pays an attacker account and carries a VALID sender signature over that body. A facilitator that inspects only the first body and then co-signs the whole list hands the attacker a submittable transaction.
+    cross-SDK bodies match ......... PASS
+    facilitator policy ............. FAIL  (variant 1 moves different value)
+    AnyTransaction::from_bytes ..... FAIL  (failed to create a SDK type from a protobuf response: transaction parts unexpectedly unequal)
+    downcast to TransferTransaction  n/a 
+    payer signature over all bodies  n/a 
+    to_bytes round trip identical .. n/a 
+    bodies intact after co-sign .... n/a 
+    prior signatures intact ........ n/a 
+    co-signature on every variant .. n/a 
+    co-signature verifies .......... n/a 
+    adversarial: divergent_body_valid_signature -- not every variant expresses the same intent
+
+=== 07-adversarial-second-variant-stale-signature (3 variants)
+    Variant 1's amount is inflated 1000x and the sender signature is left over the original body, so it no longer verifies against the bytes it accompanies.
+    cross-SDK bodies match ......... PASS
+    facilitator policy ............. FAIL  (variant 1 moves different value)
+    AnyTransaction::from_bytes ..... FAIL  (failed to create a SDK type from a protobuf response: transaction parts unexpectedly unequal)
+    downcast to TransferTransaction  n/a 
+    payer signature over all bodies  n/a 
+    to_bytes round trip identical .. n/a 
+    bodies intact after co-sign .... n/a 
+    prior signatures intact ........ n/a 
+    co-signature on every variant .. n/a 
+    co-signature verifies .......... n/a 
+    adversarial: divergent_body_invalid_signature -- variant 1 carries a signature over different bytes
+
+=== 08-adversarial-wrong-signer (1 variants)
+    Well-formed single-variant HBAR transfer signed by a key that does not control the debited account.
+    cross-SDK bodies match ......... PASS
+    facilitator policy ............. PASS
+    AnyTransaction::from_bytes ..... PASS
+    downcast to TransferTransaction  PASS
+    node ids the SDK reports ....... 1
+    payer signature over all bodies  FAIL  (sender: failed to verify a signature: signer not in transaction)
+    to_bytes round trip identical .. PASS
+    bodies intact after co-sign .... PASS
+    prior signatures intact ........ PASS
+    co-signature on every variant .. PASS
+    co-signature verifies .......... PASS
+    adversarial: signature_from_unrelated_key -- the debited account did not authorize this body
+
+=== 09-adversarial-second-variant-other-transaction-id (3 variants)
+    Variant 1 is identical except for its transactionId, and is correctly signed over that body. The list therefore contains two DIFFERENT payments that the sender authorized.
+    cross-SDK bodies match ......... PASS
+    facilitator policy ............. FAIL  (variant 1 carries a different transaction id (Some("0.0.3003@1757900777.000000000") vs Some("0.0.3003@1757900000.000000000")))
+    AnyTransaction::from_bytes ..... FAIL  (failed to create a SDK type from a protobuf response: chunks in non chunkable transaction)
+    downcast to TransferTransaction  n/a 
+    payer signature over all bodies  n/a 
+    to_bytes round trip identical .. n/a 
+    bodies intact after co-sign .... n/a 
+    prior signatures intact ........ n/a 
+    co-signature on every variant .. n/a 
+    co-signature verifies .......... n/a 
+    adversarial: divergent_transaction_id -- one payload must mean exactly one payment
+
+=== 10-adversarial-empty-pubkey-prefix (2 variants)
+    Variant 0 carries a sigPair whose pubKeyPrefix is empty, which is a prefix of every public key, and whose signature is 64 zero bytes.
+    cross-SDK bodies match ......... PASS
+    facilitator policy ............. FAIL  (variant 0: signature with an empty public key prefix)
+    AnyTransaction::from_bytes ..... FAIL  (failed to create a SDK type from a protobuf response: Transaction has mismatched signatures)
+    downcast to TransferTransaction  n/a 
+    payer signature over all bodies  n/a 
+    to_bytes round trip identical .. n/a 
+    bodies intact after co-sign .... n/a 
+    prior signatures intact ........ n/a 
+    co-signature on every variant .. n/a 
+    co-signature verifies .......... n/a 
+    adversarial: empty_public_key_prefix -- an empty prefix matches every key and can suppress the co-signature
+
+=== 11-adversarial-is-approval-debit (2 variants)
+    Every variant debits the sender with isApproval=true: an allowance spend, not the sender paying. Signatures are valid over these bodies.
+    cross-SDK bodies match ......... PASS
+    facilitator policy ............. FAIL  (variant 0: isApproval on 0.0.1001)
+    AnyTransaction::from_bytes ..... PASS
+    downcast to TransferTransaction  PASS
+    node ids the SDK reports ....... 2
+    payer signature over all bodies  PASS
+    to_bytes round trip identical .. PASS
+    bodies intact after co-sign .... PASS
+    prior signatures intact ........ PASS
+    co-signature on every variant .. PASS
+    co-signature verifies .......... PASS
+    protobuf fields the SDK getters cannot express:
+      - variant 0: isApproval on 0.0.1001
+      - variant 1: isApproval on 0.0.1001
+    adversarial: approved_allowance_debit -- plan 7.3 point 4 rejects isApproved transfers
+
+=== 12-adversarial-nft-rider (2 variants)
+    A USDC transfer that also moves an NFT to a third account in the same body.
+    cross-SDK bodies match ......... PASS
+    facilitator policy ............. FAIL  (variant 0: 1 NFT transfer(s) of 0.0.777777)
+    AnyTransaction::from_bytes ..... PASS
+    downcast to TransferTransaction  PASS
+    node ids the SDK reports ....... 2
+    payer signature over all bodies  PASS
+    to_bytes round trip identical .. PASS
+    bodies intact after co-sign .... PASS
+    prior signatures intact ........ PASS
+    co-signature on every variant .. PASS
+    co-signature verifies .......... PASS
+    protobuf fields the SDK getters cannot express:
+      - variant 0: 1 NFT transfer(s) of 0.0.777777
+      - variant 1: 1 NFT transfer(s) of 0.0.777777
+    adversarial: nft_rider -- plan 7.3 point 4 rejects NFT transfers
+
+=== 13-adversarial-allowance-hook (2 variants)
+    Every variant attaches a preTxAllowanceHook to the sender's debit, so a contract runs before the transfer.
+    cross-SDK bodies match ......... PASS
+    facilitator policy ............. FAIL  (variant 0: preTxAllowanceHook on 0.0.1001)
+    AnyTransaction::from_bytes ..... PASS
+    downcast to TransferTransaction  PASS
+    node ids the SDK reports ....... 2
+    payer signature over all bodies  PASS
+    to_bytes round trip identical .. PASS
+    bodies intact after co-sign .... PASS
+    prior signatures intact ........ PASS
+    co-signature on every variant .. PASS
+    co-signature verifies .......... PASS
+    protobuf fields the SDK getters cannot express:
+      - variant 0: preTxAllowanceHook on 0.0.1001
+      - variant 1: preTxAllowanceHook on 0.0.1001
+    adversarial: allowance_hook -- plan 7.3 point 4 rejects hooks
+
+=== 14-adversarial-duplicate-node (3 variants)
+    Variants 0 and 1 both name node 0.0.3, correctly signed. Two submittable copies of the same payment aimed at one node.
+    cross-SDK bodies match ......... PASS
+    facilitator policy ............. FAIL  (node 0.0.3 appears in more than one variant)
+    AnyTransaction::from_bytes ..... PASS
+    downcast to TransferTransaction  PASS
+    node ids the SDK reports ....... 3
+    payer signature over all bodies  PASS
+    to_bytes round trip identical .. PASS
+    bodies intact after co-sign .... PASS
+    prior signatures intact ........ PASS
+    co-signature on every variant .. PASS
+    co-signature verifies .......... PASS
+    adversarial: duplicate_node_account_id -- one variant per node, and only nodes of the configured network
+
+=== 15-adversarial-fee-payer-debited (2 variants)
+    payTo still receives the full amount, but 40% of it comes out of the facilitator's own sponsoring account.
+    cross-SDK bodies match ......... PASS
+    facilitator policy ............. FAIL  (3 transfer entries, expected exactly 2)
+    AnyTransaction::from_bytes ..... PASS
+    downcast to TransferTransaction  PASS
+    node ids the SDK reports ....... 2
+    payer signature over all bodies  PASS
+    to_bytes round trip identical .. PASS
+    bodies intact after co-sign .... PASS
+    prior signatures intact ........ PASS
+    co-signature on every variant .. PASS
+    co-signature verifies .......... PASS
+    adversarial: sponsor_debited -- plan 7.3 point 6 rejects every negative entry for the sponsor
+
+15 vectors: 11 co-signed with bodies intact, 11 verified co-signatures, 4 refused at decode
+
+--- cargo test --offline
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test policy_accepts_every_legitimate_payload ... ok
+test policy_rejects_the_empty_prefix_list_without_help_from_the_sdk ... ok
+test a_signature_from_an_unrelated_key_fails_verification ... ok
+test co_signing_leaves_every_body_byte_for_byte_intact ... ok
+test published_crate_decodes_a_real_official_client_payload ... ok
+test payer_signatures_verify_for_ed25519_ecdsa_keylist_and_threshold ... ok
+test policy_is_not_vacuously_strict ... ok
+test aggregated_getters_cannot_express_is_approval_or_hooks ... ok
+test decode_then_encode_without_signing_is_the_same_bytes ... ok
+test sdk_co_signs_payloads_that_only_our_policy_rejects ... ok
+test vectors_are_present ... ok
+test rust_reads_exactly_what_typescript_wrote ... ok
+test sdk_refuses_lists_whose_variants_disagree ... ok
+test threshold_passes_with_the_quorum_and_no_more ... ok
+test both_sdks_derive_the_same_keys_from_the_same_labels ... ok
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+--- node reference-verify.mjs  (@x402/hedera 2.26.0, el facilitador de referencia, sobre los mismos vectores)
+01-hbar-ed25519-official-client                      ACCEPTS  payer=0.0.1001
+02-hbar-ed25519-multinode                            ACCEPTS  payer=0.0.1001
+03-hts-usdc-ecdsa-multinode                          ACCEPTS  payer=0.0.1001
+04-hbar-threshold-2of3                               ACCEPTS  payer=0.0.1001
+05-hbar-keylist-all                                  ACCEPTS  payer=0.0.1001
+06-adversarial-second-variant-repointed              refuses  invalid_exact_hedera_payload_transaction_could_not_be_decoded
+07-adversarial-second-variant-stale-signature        refuses  invalid_exact_hedera_payload_transaction_could_not_be_decoded
+08-adversarial-wrong-signer                          ACCEPTS  payer=0.0.1001   <- artefact of the stubbed signature check, not a finding
+09-adversarial-second-variant-other-transaction-id   refuses  invalid_exact_hedera_payload_transaction_could_not_be_decoded
+10-adversarial-empty-pubkey-prefix                   refuses  invalid_exact_hedera_payload_transaction_could_not_be_decoded
+11-adversarial-is-approval-debit                     ACCEPTS  payer=0.0.1001
+12-adversarial-nft-rider                             ACCEPTS  payer=0.0.1001
+13-adversarial-allowance-hook                        ACCEPTS  payer=0.0.1001
+14-adversarial-duplicate-node                        refuses  invalid_exact_hedera_payload_transaction_could_not_be_decoded
+15-adversarial-fee-payer-debited                     refuses  invalid_exact_hedera_payload_fee_payer_transferring_hbar

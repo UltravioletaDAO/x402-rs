@@ -1,0 +1,169 @@
+{
+  "name": "14-adversarial-duplicate-node",
+  "description": "Variants 0 and 1 both name node 0.0.3, correctly signed. Two submittable copies of the same payment aimed at one node.",
+  "generatedAt": "2026-09-16T03:16:47.405Z",
+  "generator": {
+    "@hiero-ledger/sdk": "2.85.0",
+    "@hiero-ledger/proto": "2.31.0",
+    "@x402/hedera": "2.26.0",
+    "via": "@hiero-ledger/proto hand-rewrite of variant 1",
+    "reproducible": true
+  },
+  "x402Version": 2,
+  "scheme": "exact",
+  "network": "hedera:testnet",
+  "paymentRequirements": {
+    "scheme": "exact",
+    "network": "hedera:testnet",
+    "asset": "0.0.0",
+    "amount": "1000000",
+    "payTo": "0.0.2002",
+    "maxTimeoutSeconds": 60,
+    "resource": "https://example.test/resource",
+    "description": "phase-0 spike vector",
+    "mimeType": "application/json",
+    "extra": {
+      "feePayer": "0.0.3003"
+    }
+  },
+  "keys": {
+    "sender": {
+      "label": "x402-rs/hedera-spike/v1/ed25519/sender",
+      "type": "ED25519",
+      "publicKeyDer": "302a300506032b6570032100a09a20c95a921ff555853320ef53fabf5bdad32ac9f89408fb5ff22021eef1ae",
+      "publicKeyRaw": "a09a20c95a921ff555853320ef53fabf5bdad32ac9f89408fb5ff22021eef1ae"
+    },
+    "facilitator": {
+      "label": "x402-rs/hedera-spike/v1/ed25519/facilitator",
+      "type": "ED25519",
+      "publicKeyDer": "302a300506032b6570032100d14e4fbf235eeed0693d7140ac8fae8632393f314eb55aef4a303e70038f4bcf",
+      "publicKeyRaw": "d14e4fbf235eeed0693d7140ac8fae8632393f314eb55aef4a303e70038f4bcf"
+    }
+  },
+  "payload": {
+    "transaction": "Cr0BKroBClAKFQoICODZncYGEAASBwgAEAAYuxcYABIGCAAQABgDGIDC1y8iAgh4MgByJAoiCg8KBwgAEAAY6QcQ/4h6GAAKDwoHCAAQABjSDxCAiXoYABJmCmQKIKCaIMlakh/1VYUzIO9T+r9b2tMqyfiUCPtf8iAh7vGuGkDPlXGIMhsX957DjhXSOWUmqCZr13EqZTouqxpTvnLtW55Q5ApcyvGGh30G/cg5VrEsp+/Q6EZ3ez6x3CrAnwsMCr0BKroBClAKFQoICODZncYGEAASBwgAEAAYuxcYABIGCAAQABgDGIDC1y8iAgh4MgByJAoiCg8KBwgAEAAY6QcQ/4h6GAAKDwoHCAAQABjSDxCAiXoYABJmCmQKIKCaIMlakh/1VYUzIO9T+r9b2tMqyfiUCPtf8iAh7vGuGkDPlXGIMhsX957DjhXSOWUmqCZr13EqZTouqxpTvnLtW55Q5ApcyvGGh30G/cg5VrEsp+/Q6EZ3ez6x3CrAnwsMCr0BKroBClAKFQoICODZncYGEAASBwgAEAAYuxcYABIGCAAQABgFGIDC1y8iAgh4MgByJAoiCg8KBwgAEAAY6QcQ/4h6GAAKDwoHCAAQABjSDxCAiXoYABJmCmQKIKCaIMlakh/1VYUzIO9T+r9b2tMqyfiUCPtf8iAh7vGuGkCE0R/I+XC5//dlblu4pyR22LqtjHm3rLhHPE/uoWqXRKCS1l1oVh7GTkLIXuByhVKAqZuKs7l08Nmeu+4jWYID"
+  },
+  "expected": {
+    "senderAccountId": "0.0.1001",
+    "payTo": "0.0.2002",
+    "feePayer": "0.0.3003",
+    "asset": "0.0.0",
+    "amount": "1000000",
+    "senderSignsEveryVariant": true,
+    "signaturesPerVariantBeforeCoSign": 1,
+    "divergentVariantIndex": 1,
+    "variantCount": 3,
+    "variants": [
+      {
+        "index": 0,
+        "bodySha256": "0d3a8f485ddfb721bda33d1d33f67a7cc481b3a88f59c42d3649ddecdd718aee",
+        "bodyLength": 80,
+        "nodeAccountId": "0.0.3",
+        "transactionId": "0.0.3003@1757900000.000000000",
+        "transactionFee": "100000000",
+        "validDurationSeconds": "120",
+        "memo": "",
+        "bodyDataCase": "cryptoTransfer",
+        "transfers": {
+          "hbar": [
+            {
+              "account": "0.0.1001",
+              "amount": "-1000000",
+              "isApproval": false,
+              "hook": null
+            },
+            {
+              "account": "0.0.2002",
+              "amount": "1000000",
+              "isApproval": false,
+              "hook": null
+            }
+          ],
+          "tokens": []
+        },
+        "signatures": [
+          {
+            "publicKeyPrefixHex": "a09a20c95a921ff555853320ef53fabf5bdad32ac9f89408fb5ff22021eef1ae",
+            "algorithm": "ed25519",
+            "signatureHex": "cf957188321b17f79ec38e15d2396526a8266bd7712a653a2eab1a53be72ed5b9e50e40a5ccaf186877d06fdc83956b12ca7efd0e846777b3eb1dc2ac09f0b0c"
+          }
+        ]
+      },
+      {
+        "index": 1,
+        "bodySha256": "0d3a8f485ddfb721bda33d1d33f67a7cc481b3a88f59c42d3649ddecdd718aee",
+        "bodyLength": 80,
+        "nodeAccountId": "0.0.3",
+        "transactionId": "0.0.3003@1757900000.000000000",
+        "transactionFee": "100000000",
+        "validDurationSeconds": "120",
+        "memo": "",
+        "bodyDataCase": "cryptoTransfer",
+        "transfers": {
+          "hbar": [
+            {
+              "account": "0.0.1001",
+              "amount": "-1000000",
+              "isApproval": false,
+              "hook": null
+            },
+            {
+              "account": "0.0.2002",
+              "amount": "1000000",
+              "isApproval": false,
+              "hook": null
+            }
+          ],
+          "tokens": []
+        },
+        "signatures": [
+          {
+            "publicKeyPrefixHex": "a09a20c95a921ff555853320ef53fabf5bdad32ac9f89408fb5ff22021eef1ae",
+            "algorithm": "ed25519",
+            "signatureHex": "cf957188321b17f79ec38e15d2396526a8266bd7712a653a2eab1a53be72ed5b9e50e40a5ccaf186877d06fdc83956b12ca7efd0e846777b3eb1dc2ac09f0b0c"
+          }
+        ]
+      },
+      {
+        "index": 2,
+        "bodySha256": "30bbeec423b0fb160abe2b97705c3261afd0f33402b55f46cf0142b6b1efd103",
+        "bodyLength": 80,
+        "nodeAccountId": "0.0.5",
+        "transactionId": "0.0.3003@1757900000.000000000",
+        "transactionFee": "100000000",
+        "validDurationSeconds": "120",
+        "memo": "",
+        "bodyDataCase": "cryptoTransfer",
+        "transfers": {
+          "hbar": [
+            {
+              "account": "0.0.1001",
+              "amount": "-1000000",
+              "isApproval": false,
+              "hook": null
+            },
+            {
+              "account": "0.0.2002",
+              "amount": "1000000",
+              "isApproval": false,
+              "hook": null
+            }
+          ],
+          "tokens": []
+        },
+        "signatures": [
+          {
+            "publicKeyPrefixHex": "a09a20c95a921ff555853320ef53fabf5bdad32ac9f89408fb5ff22021eef1ae",
+            "algorithm": "ed25519",
+            "signatureHex": "84d11fc8f970b9fff7656e5bb8a72476d8baad8c79b7acb8473c4feea16a9744a092d65d68561ec64e42c85ee072855280a99b8ab3b974f0d99ebbee23598203"
+          }
+        ]
+      }
+    ]
+  },
+  "facilitatorMustCoSign": false,
+  "adversarial": {
+    "kind": "duplicate_node_account_id",
+    "mustBeRejectedBecause": "one variant per node, and only nodes of the configured network"
+  }
+}

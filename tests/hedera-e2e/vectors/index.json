@@ -1,0 +1,91 @@
+{
+  "generatedAt": "2026-09-16T03:16:47.412Z",
+  "versions": {
+    "@hiero-ledger/sdk": "2.85.0",
+    "@hiero-ledger/proto": "2.31.0",
+    "@x402/hedera": "2.26.0"
+  },
+  "accounts": {
+    "sender": "0.0.1001",
+    "payTo": "0.0.2002",
+    "feePayer": "0.0.3003",
+    "usdcTestnet": "0.0.429274"
+  },
+  "vectors": [
+    {
+      "name": "01-hbar-ed25519-official-client",
+      "variants": 7,
+      "path": "vectors/01-hbar-ed25519-official-client.json"
+    },
+    {
+      "name": "02-hbar-ed25519-multinode",
+      "variants": 4,
+      "path": "vectors/02-hbar-ed25519-multinode.json"
+    },
+    {
+      "name": "03-hts-usdc-ecdsa-multinode",
+      "variants": 3,
+      "path": "vectors/03-hts-usdc-ecdsa-multinode.json"
+    },
+    {
+      "name": "04-hbar-threshold-2of3",
+      "variants": 2,
+      "path": "vectors/04-hbar-threshold-2of3.json"
+    },
+    {
+      "name": "05-hbar-keylist-all",
+      "variants": 3,
+      "path": "vectors/05-hbar-keylist-all.json"
+    },
+    {
+      "name": "06-adversarial-second-variant-repointed",
+      "variants": 3,
+      "path": "vectors/06-adversarial-second-variant-repointed.json"
+    },
+    {
+      "name": "07-adversarial-second-variant-stale-signature",
+      "variants": 3,
+      "path": "vectors/07-adversarial-second-variant-stale-signature.json"
+    },
+    {
+      "name": "08-adversarial-wrong-signer",
+      "variants": 1,
+      "path": "vectors/08-adversarial-wrong-signer.json"
+    },
+    {
+      "name": "09-adversarial-second-variant-other-transaction-id",
+      "variants": 3,
+      "path": "vectors/09-adversarial-second-variant-other-transaction-id.json"
+    },
+    {
+      "name": "10-adversarial-empty-pubkey-prefix",
+      "variants": 2,
+      "path": "vectors/10-adversarial-empty-pubkey-prefix.json"
+    },
+    {
+      "name": "11-adversarial-is-approval-debit",
+      "variants": 2,
+      "path": "vectors/11-adversarial-is-approval-debit.json"
+    },
+    {
+      "name": "12-adversarial-nft-rider",
+      "variants": 2,
+      "path": "vectors/12-adversarial-nft-rider.json"
+    },
+    {
+      "name": "13-adversarial-allowance-hook",
+      "variants": 2,
+      "path": "vectors/13-adversarial-allowance-hook.json"
+    },
+    {
+      "name": "14-adversarial-duplicate-node",
+      "variants": 3,
+      "path": "vectors/14-adversarial-duplicate-node.json"
+    },
+    {
+      "name": "15-adversarial-fee-payer-debited",
+      "variants": 2,
+      "path": "vectors/15-adversarial-fee-payer-debited.json"
+    }
+  ]
+}

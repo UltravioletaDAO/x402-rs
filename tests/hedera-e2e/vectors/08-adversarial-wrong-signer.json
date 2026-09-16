@@ -1,0 +1,104 @@
+{
+  "name": "08-adversarial-wrong-signer",
+  "description": "Well-formed single-variant HBAR transfer signed by a key that does not control the debited account.",
+  "generatedAt": "2026-09-16T03:16:47.361Z",
+  "generator": {
+    "@hiero-ledger/sdk": "2.85.0",
+    "@hiero-ledger/proto": "2.31.0",
+    "@x402/hedera": "2.26.0",
+    "via": "@hiero-ledger/sdk TransferTransaction.freeze()",
+    "reproducible": true
+  },
+  "x402Version": 2,
+  "scheme": "exact",
+  "network": "hedera:testnet",
+  "paymentRequirements": {
+    "scheme": "exact",
+    "network": "hedera:testnet",
+    "asset": "0.0.0",
+    "amount": "1000000",
+    "payTo": "0.0.2002",
+    "maxTimeoutSeconds": 60,
+    "resource": "https://example.test/resource",
+    "description": "phase-0 spike vector",
+    "mimeType": "application/json",
+    "extra": {
+      "feePayer": "0.0.3003"
+    }
+  },
+  "keys": {
+    "sender": {
+      "label": "x402-rs/hedera-spike/v1/ed25519/sender",
+      "type": "ED25519",
+      "publicKeyDer": "302a300506032b6570032100a09a20c95a921ff555853320ef53fabf5bdad32ac9f89408fb5ff22021eef1ae",
+      "publicKeyRaw": "a09a20c95a921ff555853320ef53fabf5bdad32ac9f89408fb5ff22021eef1ae"
+    },
+    "actualSigner": {
+      "label": "x402-rs/hedera-spike/v1/ed25519/outsider",
+      "type": "ED25519",
+      "publicKeyDer": "302a300506032b6570032100bd3aab008b345cd61971bd0dab7b25bbba2246fdabd2d796ec2fd5661013e7dd",
+      "publicKeyRaw": "bd3aab008b345cd61971bd0dab7b25bbba2246fdabd2d796ec2fd5661013e7dd"
+    },
+    "facilitator": {
+      "label": "x402-rs/hedera-spike/v1/ed25519/facilitator",
+      "type": "ED25519",
+      "publicKeyDer": "302a300506032b6570032100d14e4fbf235eeed0693d7140ac8fae8632393f314eb55aef4a303e70038f4bcf",
+      "publicKeyRaw": "d14e4fbf235eeed0693d7140ac8fae8632393f314eb55aef4a303e70038f4bcf"
+    }
+  },
+  "payload": {
+    "transaction": "Cr0BKroBClAKFQoICODZncYGEAASBwgAEAAYuxcYABIGCAAQABgDGIDC1y8iAgh4MgByJAoiCg8KBwgAEAAY6QcQ/4h6GAAKDwoHCAAQABjSDxCAiXoYABJmCmQKIL06qwCLNFzWGXG9Dat7Jbu6Ikb9q9LXluwv1WYQE+fdGkBPvFP+7aH9G2bVOxKA6ppJVQNWG0I6S+ZCqCRNpva70ZUurQqhHb5xmydzzy66uMq4Cw/9KOti/O5PTkR9trcL"
+  },
+  "expected": {
+    "senderAccountId": "0.0.1001",
+    "payTo": "0.0.2002",
+    "feePayer": "0.0.3003",
+    "asset": "0.0.0",
+    "amount": "1000000",
+    "senderSignsEveryVariant": false,
+    "signaturesPerVariantBeforeCoSign": 1,
+    "variantCount": 1,
+    "variants": [
+      {
+        "index": 0,
+        "bodySha256": "0d3a8f485ddfb721bda33d1d33f67a7cc481b3a88f59c42d3649ddecdd718aee",
+        "bodyLength": 80,
+        "nodeAccountId": "0.0.3",
+        "transactionId": "0.0.3003@1757900000.000000000",
+        "transactionFee": "100000000",
+        "validDurationSeconds": "120",
+        "memo": "",
+        "bodyDataCase": "cryptoTransfer",
+        "transfers": {
+          "hbar": [
+            {
+              "account": "0.0.1001",
+              "amount": "-1000000",
+              "isApproval": false,
+              "hook": null
+            },
+            {
+              "account": "0.0.2002",
+              "amount": "1000000",
+              "isApproval": false,
+              "hook": null
+            }
+          ],
+          "tokens": []
+        },
+        "signatures": [
+          {
+            "publicKeyPrefixHex": "bd3aab008b345cd61971bd0dab7b25bbba2246fdabd2d796ec2fd5661013e7dd",
+            "algorithm": "ed25519",
+            "signatureHex": "4fbc53feeda1fd1b66d53b1280ea9a495503561b423a4be642a8244da6f6bbd1952ead0aa11dbe719b2773cf2ebab8cab80b0ffd28eb62fcee4f4e447db6b70b"
+          }
+        ]
+      }
+    ]
+  },
+  "facilitatorMustCoSign": false,
+  "adversarial": {
+    "kind": "signature_from_unrelated_key",
+    "mustBeRejectedBecause": "the debited account did not authorize this body"
+  }
+}

@@ -14,9 +14,10 @@
 - Independent Terraform activation flags, native-USDC balance monitoring,
   mainnet reserve/RPC alarms, conditional wallet cards, and an operator canary
   checking receipt, exact token delivery and replay rejection.
-- Testnet enabled in deployment configuration after a real one-micro-USDC
-  canary (gas 0.002814575 USDC) passed against an isolated candidate. Mainnet
-  activation remains off until its signer is funded and its canary passes.
+- Both networks enabled in deployment configuration after real one-micro-USDC
+  v1 and v2 canaries passed against an isolated candidate. Each checks the
+  receipt, exact recipient balance delta and replay without a second debit.
+  Mainnet gas measured 0.002252606134343883 / 0.001804750735987521 USDC (v1/v2).
 
 
 ## [2.30.0] - 2026-09-16

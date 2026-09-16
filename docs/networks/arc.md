@@ -59,6 +59,8 @@ python scripts/arc_canary.py --network arc
 python scripts/arc_canary.py --network arc-testnet --facilitator http://127.0.0.1:18402 --execute
 # After rollout, test the PUBLIC route (same check for --network arc):
 python scripts/arc_canary.py --network arc-testnet --execute
+# The v2 envelope and CAIP-2 identifier, also without a proprietary SDK:
+python scripts/arc_canary.py --network arc-testnet --x402-version 2 --execute
 ```
 
 Requires `eth-account`, `eth-utils`, and `boto3` for execution. Execution reads
@@ -76,7 +78,7 @@ If settle is uncertain, reconcile that nonce/hash on the selected chain;
 **do not create another authorization to retry an uncertain payment**.
 
 Release checks: correct `/version`; expected `exact` network in `/supported`;
-Arc's entry healthy in `/ready`; public canary receipt; balances Lambda reports
+Arc's entry healthy in `/health/ready`; public canary receipt; balances Lambda reports
 native USDC for the same wallet; mainnet alarms and delivery channel present.
 Inspect Arc readiness separately from unrelated existing chain degradation.
 
@@ -94,10 +96,15 @@ Never use a full Terraform apply or `-refresh=false` to force activation.
 - Isolated testnet canary: [confirmed transfer](https://explorer.testnet.arc.io/tx/0x0f6aa81bdc52669fe4bde349d26b68e6270c563c26ef2639b469c22127fc2e39),
   one atomic USDC unit received, 0.002814575 USDC gas; replay HTTP 400, no second
   debit. Raw public evidence: `docs/reports/2026-09-16-arc-testnet-canary.jsonl`.
-- Production configuration enables testnet. Public rollout acceptance must be
-  recorded after deployment; the isolated receipt alone is not public acceptance.
-- Mainnet code and read-only RPC/domain checks pass. The signer had zero USDC
-  at verification; funding, real canary and activation remain required.
+- Isolated testnet v2/CAIP-2 canary also passed: [confirmed transfer](https://explorer.testnet.arc.io/tx/0x139489c10866a42139f82dd44f91fb25cca23715d4023d0b10164d77723d67f5),
+  gas 0.002189775 USDC; replay HTTP 400 without another debit.
+- Mainnet signer funding confirmed by [receipt](https://explorer.arc.io/tx/0x4479f7ea0212c35b94389aca1f2cd790d309c22710098b4ed3528a31e6a4e31b).
+- Isolated mainnet v1 canary passed: [receipt](https://explorer.arc.io/tx/0x2246ad72a2a00a5ea19f54d32effff32ee8cea7a58c5e0cf0740244216dc92f4),
+  gas 0.002252606134343883 USDC; v2/CAIP-2 also passed: [receipt](https://explorer.arc.io/tx/0x5b66c97e80ca7773ba919a0052b79d4ec3db193419a1c355f33d0f5e4c62636d),
+  gas 0.001804750735987521 USDC. Each delivered one atomic USDC unit and
+  rejected replay without a second debit. Evidence is in `docs/reports/*candidate-canary.jsonl`.
+- Production configuration enables both networks. Public rollout acceptance
+  must be recorded after deployment; isolated receipts alone are not public acceptance.
 
 No Arc Gateway, EURC, USYC, `upto`, escrow, ERC-8004 writes, EIP-6492 or contract
 wallet support is claimed. The universal validator address has no code on

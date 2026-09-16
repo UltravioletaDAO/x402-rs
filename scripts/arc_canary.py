@@ -58,7 +58,7 @@ def domain_separator(chain_id):
     ).hex()
 
 
-def payment(network, chain_id, payer, recipient, key, nonce):
+def payment(network, chain_id, payer, recipient, key, nonce, protocol=1):
     now = int(time.time())
     auth = {"from": payer, "to": recipient, "value": 1, "validAfter": now - 10,
             "validBefore": now + 120, "nonce": nonce}
@@ -77,7 +77,7 @@ def payment(network, chain_id, payer, recipient, key, nonce):
     }
     signature = Account.sign_message(encode_typed_data(full_message=typed), key).signature
     wire = {k: str(v) if isinstance(v, int) else v for k, v in auth.items()}
-    return {
+    body = {
         "x402Version": 1,
         "paymentPayload": {"x402Version": 1, "scheme": "exact", "network": network,
                            "payload": {"signature": "0x" + signature.hex(), "authorization": wire}},
@@ -86,6 +86,18 @@ def payment(network, chain_id, payer, recipient, key, nonce):
                                 "mimeType": "application/json", "payTo": recipient, "maxTimeoutSeconds": 120,
                                 "asset": USDC, "extra": {"name": "USDC", "version": "2"}},
     }
+    if protocol == 2:
+        requirements = body["paymentRequirements"]
+        body = {
+            "x402Version": 2,
+            "paymentPayload": {"x402Version": 2, "payload": body["paymentPayload"]["payload"]},
+            "resource": {"url": requirements["resource"], "description": requirements["description"],
+                         "mimeType": requirements["mimeType"]},
+            "accepted": {"scheme": "exact", "network": f"eip155:{chain_id}", "amount": "1",
+                         "payTo": recipient, "maxTimeoutSeconds": 120, "asset": USDC,
+                         "extra": requirements["extra"]},
+        }
+    return body
 
 
 def main():
@@ -93,6 +105,7 @@ def main():
     parser.add_argument("--network", choices=NETWORKS, required=True)
     parser.add_argument("--facilitator", default="https://facilitator.ultravioletadao.xyz")
     parser.add_argument("--execute", action="store_true", help="Transfer one micro-USDC to our other EVM wallet, plus gas")
+    parser.add_argument("--x402-version", type=int, choices=(1, 2), default=1)
     args = parser.parse_args()
     chain_id, url, category = NETWORKS[args.network]
     config = json.loads((Path(__file__).resolve().parents[1] / "config/supported_tokens.json").read_text(encoding="utf-8"))
@@ -114,7 +127,7 @@ def main():
     print(json.dumps({"network": args.network, "chain_id": chain_id, "block": int(block["number"], 16),
                       "domain_matches": True, "payer": payer, "recipient": recipient,
                       "native_usdc": str(Decimal(native) / Decimal(10**18)), "served": served,
-                      "execute": args.execute}), flush=True)
+                      "execute": args.execute, "x402_version": args.x402_version}), flush=True)
     if not args.execute:
         return
     if not served or native < 10**17:
@@ -129,7 +142,7 @@ def main():
     if Account.from_key(key).address.lower() != payer.lower():
         raise RuntimeError("Configured signer differs from the documented canary wallet")
     nonce = "0x" + secrets.token_hex(32)
-    body = payment(args.network, chain_id, payer, recipient, key, nonce)
+    body = payment(args.network, chain_id, payer, recipient, key, nonce, args.x402_version)
     del key, raw
     base = args.facilitator.rstrip("/")
     status, verified = request(base + "/verify", body)
@@ -160,6 +173,7 @@ def main():
         raise RuntimeError("Recipient balance changed after replay")
     cost = Decimal(int(receipt["gasUsed"], 16) * int(receipt["effectiveGasPrice"], 16)) / Decimal(10**18)
     print(json.dumps({"canary_passed": True, "network": args.network, "transaction": tx,
+                      "x402_version": args.x402_version,
                       "usdc_atomic_units_received": 1, "gas_usdc": str(cost),
                       "replay_http": replay_status, "replay_success": replay.get("success")}), flush=True)
 

@@ -39,7 +39,7 @@ Includes [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) on-chain reputation
 
 Arc has separate RPC and deployment switches. A running instance serves a network
 only when it appears in [`/supported`](https://facilitator.ultravioletadao.xyz/supported).
-See [Arc operations, canaries and activation](docs/networks/arc.md). USDC is also
+See [Arc operations, canaries and activation](docs/networks/arc.md). Python SDK 0.84.0 and TypeScript SDK 2.92.0 include both Arc networks. USDC is also
 the gas token: native and ERC-20 amounts are two precisions of the same balance.
 The existing network tables below exclude these opt-in additions.
 

@@ -28,7 +28,16 @@ Includes [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) on-chain reputation
 
 ## Supported Networks
 
-> **Note**: Network counts may be outdated. Verify with: `curl -s https://facilitator.ultravioletadao.xyz/supported | jq '[.kinds[].network] | unique | map(select(contains("testnet") or contains("sepolia") or contains("devnet") or contains("fuji") or contains("amoy") or contains("alfajores") | not)) | length'`
+> **Note**: Network counts may be outdated. `GET /supported` is the source of truth. It lists every network twice, under its v1 name and its CAIP-2 id, so count the v1 names only (21 mainnets and 18 testnets on 2026-09-16):
+>
+> ```bash
+> # mainnets
+> curl -s https://facilitator.ultravioletadao.xyz/supported | jq -r '[.kinds[].network] | unique | .[]' | grep -v ':' | grep -vcE 'testnet|sepolia|devnet|fuji|amoy'
+> # the same mainnet count, checked against the landing page
+> python scripts/verify_landing_canonical.py
+> ```
+>
+> A filter that does not drop the CAIP-2 ids first counts identifier strings, not networks: CAIP-2 ids carry no "testnet" or "sepolia" in them, so it returns 55.
 
 ### Mainnets (21)
 
@@ -40,10 +49,10 @@ Includes [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) on-chain reputation
 | **Optimism** | 10 | USDC | [optimistic.etherscan.io](https://optimistic.etherscan.io) |
 | **Polygon** | 137 | USDC | [polygonscan.com](https://polygonscan.com) |
 | **Avalanche** | 43114 | USDC | [snowtrace.io](https://snowtrace.io) |
-| **Celo** | 42220 | cUSD | [celoscan.io](https://celoscan.io) |
+| **Celo** | 42220 | USDC | [celoscan.io](https://celoscan.io) |
 | **HyperEVM** | 999 | USDC | [hyperliquid.xyz](https://hyperliquid.xyz) |
 | **Unichain** | 130 | USDC | [uniscan.xyz](https://uniscan.xyz) |
-| **Monad** | 10143 | MON | [monad.xyz](https://monad.xyz) |
+| **Monad** | 143 | USDC | [monad.xyz](https://monad.xyz) |
 | **BSC** | 56 | USDC | [bscscan.com](https://bscscan.com) |
 | **SKALE Base** | 1187947933 | USDC.e | [skale-base-explorer](https://skale-base-explorer.skalenodes.com) |
 | **Scroll** | 534352 | USDC | [scrollscan.com](https://scrollscan.com) |
@@ -76,8 +85,16 @@ Includes [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) on-chain reputation
 | Stellar Testnet | - | [friendbot](https://friendbot.stellar.org) |
 | Algorand Testnet | - | [dispenser.testnet.aws.algodev.network](https://dispenser.testnet.aws.algodev.network) |
 | Sui Testnet | - | [suifaucet.com](https://suifaucet.com) |
-| Monad Testnet | 10143 | [monad.xyz](https://monad.xyz) |
+| XRPL Testnet | - | - |
 | Robinhood Chain Testnet | 46630 | [faucet.testnet.chain.robinhood.com](https://faucet.testnet.chain.robinhood.com) |
+
+### In the code, not served yet
+
+Not counted above, and not payable on the production facilitator until `/supported` lists it. Each has a usage guide that says exactly what works, what does not, and how to check.
+
+| Network | Chain ID | Status | Usage guide |
+|---------|----------|--------|-------------|
+| Arc Testnet (Circle) — `arc-testnet` / `eip155:5042002` | 5042002 | switched off; USDC is the gas token, and amounts are 6 decimals, not 18 | [docs/networks/arc.md](docs/networks/arc.md) |
 
 ### Supported Stablecoins
 
@@ -141,7 +158,8 @@ cargo run --release --features solana,near,stellar,algorand
 # Test
 curl http://localhost:8080/health
 curl http://localhost:8080/supported | jq '.kinds | length'
-# => 121 (networks listed across v1 and v2/CAIP-2 formats)
+# => one entry per scheme, per network, per spelling (v1 name and CAIP-2), so it
+#    moves with every network and scheme: 150 on production on 2026-09-16
 ```
 
 ### Docker
@@ -638,6 +656,7 @@ When bumping the version, adding endpoints, or adding networks, update **all** o
 | `VERSION` | the release version — never `Cargo.toml`, which holds a frozen `0.0.0` placeholder |
 | `src/openapi.rs` | endpoint docs, network lists (the version is patched at runtime from `VERSION`) |
 | `README.md` | Version badge, network tables, API endpoint table, ERC-8004 network count |
+| `docs/networks/<network>.md` | The integrator's usage guide for a network: identifiers, asset and decimals, signing domain, what does not work. Same sections as [`docs/networks/arc.md`](docs/networks/arc.md) |
 | `static/index.html` | Network cards, stats, ERC-8004 showcase badges, i18n strings (EN/ES) |
 | `docs/CHANGELOG.md` | New version entry |
 | `src/erc8004/mod.rs` | `supported_networks()` when adding ERC-8004 networks |

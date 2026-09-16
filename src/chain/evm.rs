@@ -4609,10 +4609,19 @@ mod arc_testnet_tests {
     /// refusal has to happen before the VALIDATOR call, and it has to be the
     /// same refusal every time.
     ///
-    /// Not before any RPC call: `assert_valid_payment` reads the payer's
-    /// balance and resolves the EIP-712 domain, so the endpoint has already
-    /// spoken to the node by the time this decides. What the gate is early
-    /// relative to is the validator -- and, since it moved, the 65-byte rule.
+    /// And on Arc it IS before every `eth_call` the payment makes, which the
+    /// name understates. Measured on this tree: the gate sits at the top of
+    /// `assert_valid_payment`'s signature checks and `assert_enough_balance`
+    /// comes after it, while `assert_domain` resolves Arc USDC out of the
+    /// static table and never reaches the node. Point the fixture's node at a
+    /// mock that errors on EVERY `eth_call` and the four payment tests fail
+    /// while both 6492 tests stay green -- the refusal needs nothing from the
+    /// chain.
+    ///
+    /// The name still says "validator" because that is the guarantee the gate
+    /// owes on every chain: on one whose token is NOT in the static table,
+    /// `assert_domain` would fall back to an on-chain `name()`/`version()`
+    /// read before this runs.
     #[test]
     fn eip6492_is_refused_on_arc_before_the_validator_call() {
         assert!(!has_eip6492_validator(Network::ArcTestnet));
@@ -4639,14 +4648,23 @@ mod arc_testnet_tests {
         }
     }
 
-    /// The gate has to speak BEFORE the 65-byte rule, and this is the fact that
-    /// makes it reachable at all.
+    /// The premise behind the ordering, not the ordering itself.
     ///
-    /// An EIP-6492 envelope is never 65 bytes. While the gate sat after
-    /// `SignedMessage::extract`, `assert_valid_payment` had already refused the
+    /// An EIP-6492 envelope is never 65 bytes, so whichever of the two checks
+    /// runs first is the one that answers. While the gate sat after
+    /// `SignedMessage::extract`, the length rule had already refused the
     /// envelope as `invalid_signature_length` and the gate never ran -- which
-    /// is why deleting it from both endpoints changed no test. If the ordering
-    /// is ever swapped back, this fails.
+    /// is why deleting it from both endpoints changed no test.
+    ///
+    /// **This test cannot catch a reorder**, and saying otherwise would be
+    /// worse than not testing it: it calls the gate as a free function, so the
+    /// order of the two checks inside `assert_valid_payment` is invisible from
+    /// here. The reorder is caught where it is observable, by the
+    /// `invalid_signature_length` assertion inside
+    /// `settle_refuses_a_counterfactual_signature_and_sends_nothing` and its
+    /// `verify` twin, which go through the endpoints. What is pinned here is
+    /// the premise those two rest on: that the envelope is not 65 bytes, and
+    /// that the gate alone refuses it without mentioning length.
     #[test]
     fn the_gate_speaks_before_the_sixty_five_byte_rule() {
         let wire = wire_eip6492_signature();
@@ -5273,6 +5291,17 @@ mod arc_node_fixtures {
                     message.contains("EIP-6492") && message.contains("arc-testnet"),
                     "the refusal must name the scheme and the chain: {message}"
                 );
+                // THE ORDERING, pinned where it is observable. The gate has to
+                // run ahead of `assert_valid_payment`'s 65-byte rule; a 6492
+                // envelope is never 65 bytes, so whichever check runs first
+                // answers. Put the gate back after it -- where it sat, and
+                // where it was unreachable -- and this is the assertion that
+                // goes red, naming the reason.
+                assert!(
+                    !message.contains("invalid_signature_length"),
+                    "the 65-byte rule answered first, so the gate is unreachable \
+                     again and only its position changed: {message}"
+                );
             }
             other => panic!(
                 "settle must refuse this as an invalid signature, not as a \
@@ -5302,6 +5331,17 @@ mod arc_node_fixtures {
                 assert!(
                     message.contains("EIP-6492") && message.contains("arc-testnet"),
                     "the refusal must name the scheme and the chain: {message}"
+                );
+                // THE ORDERING, pinned where it is observable. The gate has to
+                // run ahead of `assert_valid_payment`'s 65-byte rule; a 6492
+                // envelope is never 65 bytes, so whichever check runs first
+                // answers. Put the gate back after it -- where it sat, and
+                // where it was unreachable -- and this is the assertion that
+                // goes red, naming the reason.
+                assert!(
+                    !message.contains("invalid_signature_length"),
+                    "the 65-byte rule answered first, so the gate is unreachable \
+                     again and only its position changed: {message}"
                 );
             }
             other => panic!(

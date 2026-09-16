@@ -2,7 +2,9 @@
 
 Scope: direct `exact` USDC payments with EIP-3009 authorizations signed by an
 EOA. Both x402 v1 names and v2 CAIP-2 identifiers resolve to distinct networks.
-SDK publication is a separate, deferred task.
+Python `uvd-x402-sdk` **0.84.0** and TypeScript `uvd-x402-sdk` **2.92.0**
+include both Arc networks. See the [Python Arc guide](https://github.com/UltravioletaDAO/uvd-x402-sdk-python/blob/main/docs/networks/arc.md)
+and [TypeScript Arc guide](https://github.com/UltravioletaDAO/uvd-x402-sdk-typescript/blob/main/docs/networks/arc.md).
 
 | Parameter | Mainnet | Testnet |
 |---|---|---|
@@ -124,3 +126,18 @@ Never use a full Terraform apply or `-refresh=false` to force activation.
 No Arc Gateway, EURC, USYC, `upto`, escrow, ERC-8004 writes, EIP-6492 or contract
 wallet support is claimed. The universal validator address has no code on
 either Arc network. Signatures from the other network fail before broadcast.
+
+## SDK acceptance (2026-09-16)
+
+The Python and TypeScript SDKs each completed four additional controlled payments
+through the public facilitator: mainnet/testnet, x402 v1/v2. Every receipt succeeded,
+credited exactly one atomic USDC unit, and replay produced no second credit.
+These payments exercised the SDK signing, header encoding, verify and settle paths.
+TypeScript used an injected EIP-1193 signer in Node, not a browser-wallet UI.
+
+- [Python 0.84.0 receipt evidence](https://github.com/UltravioletaDAO/uvd-x402-sdk-python/blob/v0.84.0/docs/reports/2026-09-16-arc-sdk-acceptance.json)
+- [TypeScript 2.92.0 receipt evidence](https://github.com/UltravioletaDAO/uvd-x402-sdk-typescript/blob/v2.92.0/docs/reports/2026-09-16-arc-sdk-acceptance.json)
+
+Install with `pip install "uvd-x402-sdk[signer]>=0.84.0"` or
+`npm install uvd-x402-sdk@^2.92.0`. Network names are `arc` and `arc-testnet`;
+the v2 identifiers remain `eip155:5042` and `eip155:5042002`.

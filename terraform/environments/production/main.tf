@@ -1182,7 +1182,7 @@ resource "aws_ecs_task_definition" "facilitator" {
           name  = "TRANSACTIONS_TTL_DAYS"
           value = "90"
         }
-        ], var.enable_dx402 ? [
+        ], local.arc_rpc_environment, var.enable_dx402 ? [
         # ============================================================
         # DX402 -- durable-evidence extension
         # ============================================================

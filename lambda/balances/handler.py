@@ -130,7 +130,7 @@ def get_network_configs() -> dict[str, dict]:
         else:
             print(f"No private RPC for {network_key}, will use public")
 
-    return {
+    configs = {
         # EVM Mainnets - with private RPC priority
         "avalanche-mainnet": {
             "rpcs": [
@@ -408,6 +408,17 @@ def get_network_configs() -> dict[str, dict]:
         },
     }
 
+    # One native USDC balance (18 decimals). Its ERC-20 balance is a view of
+    # the same funds, not a second balance to add. Monitor only enabled networks.
+    for name, env, address, chain_id in (
+        ("arc-mainnet", "RPC_URL_ARC", MAINNET_ADDRESS, 5042),
+        ("arc-testnet", "RPC_URL_ARC_TESTNET", TESTNET_ADDRESS, 5042002),
+    ):
+        rpc = os.environ.get(env)
+        if rpc:
+            configs[name] = {"rpcs": [rpc], "address": address, "type": "evm", "chain_id": chain_id}
+    return configs
+
 
 def fetch_json(url: str, data: bytes | None = None, timeout: float = 10) -> dict:
     """Make an HTTP request and return JSON response.
@@ -433,6 +444,12 @@ def fetch_evm_balance(network: str, config: dict) -> tuple[str, str | None]:
 
     for rpc_url in rpcs:
         try:
+            if "chain_id" in config:
+                identity = fetch_json(rpc_url, json.dumps({
+                    "jsonrpc": "2.0", "method": "eth_chainId", "params": [], "id": 1,
+                }).encode())
+                if int(identity.get("result", "0x0"), 16) != config["chain_id"]:
+                    continue
             payload = json.dumps({
                 "jsonrpc": "2.0",
                 "method": "eth_getBalance",

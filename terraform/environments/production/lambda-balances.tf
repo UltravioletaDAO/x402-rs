@@ -94,23 +94,23 @@ resource "aws_lambda_function" "balances" {
   memory_size      = 256
 
   environment {
-    variables = {
+    variables = merge({
       # Public RPC URLs (no API keys)
-      RPC_URL_BASE       = "https://mainnet.base.org"
-      RPC_URL_AVALANCHE  = "https://avalanche-c-chain-rpc.publicnode.com"
-      RPC_URL_CELO       = "https://celo-rpc.quickapi.com"
-      RPC_URL_HYPEREVM   = "https://rpc.hyperliquid.xyz/evm"
-      RPC_URL_POLYGON    = "https://polygon.drpc.org"
-      RPC_URL_OPTIMISM   = "https://mainnet.optimism.io"
-      RPC_URL_ETHEREUM   = "https://ethereum-rpc.publicnode.com"
-      RPC_URL_ARBITRUM   = "https://arb1.arbitrum.io/rpc"
-      RPC_URL_UNICHAIN   = "https://unichain-rpc.publicnode.com"
-      RPC_URL_MONAD      = "https://rpc.monad.xyz"
-      RPC_URL_BSC        = "https://bsc-dataseed.binance.org"
-      RPC_URL_SUI        = "https://sui-rpc.publicnode.com" # fullnode.mainnet.sui.io dropped JSON-RPC; keep in sync with main.tf
+      RPC_URL_BASE      = "https://mainnet.base.org"
+      RPC_URL_AVALANCHE = "https://avalanche-c-chain-rpc.publicnode.com"
+      RPC_URL_CELO      = "https://celo-rpc.quickapi.com"
+      RPC_URL_HYPEREVM  = "https://rpc.hyperliquid.xyz/evm"
+      RPC_URL_POLYGON   = "https://polygon.drpc.org"
+      RPC_URL_OPTIMISM  = "https://mainnet.optimism.io"
+      RPC_URL_ETHEREUM  = "https://ethereum-rpc.publicnode.com"
+      RPC_URL_ARBITRUM  = "https://arb1.arbitrum.io/rpc"
+      RPC_URL_UNICHAIN  = "https://unichain-rpc.publicnode.com"
+      RPC_URL_MONAD     = "https://rpc.monad.xyz"
+      RPC_URL_BSC       = "https://bsc-dataseed.binance.org"
+      RPC_URL_SUI       = "https://sui-rpc.publicnode.com" # fullnode.mainnet.sui.io dropped JSON-RPC; keep in sync with main.tf
       # Private RPC URLs (with API keys) - override via Secrets Manager
       # RPC_URL_SOLANA will be set from secretsmanager
-    }
+    }, { for item in local.arc_rpc_environment : item.name => item.value })
   }
 
   tags = {

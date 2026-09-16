@@ -28,7 +28,20 @@ Includes [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) on-chain reputation
 
 ## Supported Networks
 
-> **Note**: Network counts may be outdated. Verify with: `curl -s https://facilitator.ultravioletadao.xyz/supported | jq '[.kinds[].network] | unique | map(select(contains("testnet") or contains("sepolia") or contains("devnet") or contains("fuji") or contains("amoy") or contains("alfajores") | not)) | length'`
+> **Live availability**: Run `python scripts/verify_landing_canonical.py` and inspect `/supported`. Counting identifier strings counts aliases as networks.
+
+### Arc (independently enabled)
+
+| Network | Chain ID / CAIP-2 | Payment token | Explorer |
+|---------|------------------|---------------|----------|
+| Arc mainnet | 5042 / `eip155:5042` | USDC, direct `exact`, EOA | [explorer.arc.io](https://explorer.arc.io) |
+| Arc testnet | 5042002 / `eip155:5042002` | USDC, direct `exact`, EOA | [explorer.testnet.arc.io](https://explorer.testnet.arc.io) |
+
+Arc has separate RPC and deployment switches. A running instance serves a network
+only when it appears in [`/supported`](https://facilitator.ultravioletadao.xyz/supported).
+See [Arc operations, canaries and activation](docs/networks/arc.md). USDC is also
+the gas token: native and ERC-20 amounts are two precisions of the same balance.
+The existing network tables below exclude these opt-in additions.
 
 ### Mainnets (21)
 
@@ -111,6 +124,7 @@ Includes [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) on-chain reputation
 | Unichain | Y | - | - | - | - | - |
 | Scroll | Y | - | - | - | - | - |
 | Robinhood Chain | - | - | - | - | - | Y |
+| Arc (when enabled) | Y | - | - | - | - | - |
 | SKALE Base | Y | - | - | - | - | - |
 | Solana | Y | Y | - | - | Y | - |
 | Sui | Y | Y | - | - | - | - |

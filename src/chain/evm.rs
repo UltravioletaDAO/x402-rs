@@ -120,8 +120,8 @@ const VALIDATOR_ADDRESS: alloy::primitives::Address =
 #[allow(clippy::match_like_matches_macro)]
 const fn has_eip6492_validator(network: Network) -> bool {
     match network {
-        // eth_getCode -> 0 bytes, 2026-09-16, block 62,335,077.
-        Network::ArcTestnet => false,
+        // eth_getCode -> 0 bytes on both Arc networks, measured 2026-09-16.
+        Network::Arc | Network::ArcTestnet => false,
         _ => true,
     }
 }
@@ -169,8 +169,7 @@ fn assert_signature_scheme_supported(
                 concat!(
                     "EIP-6492 signatures are not supported on {}: ",
                     "the universal signature validator is not deployed there. ",
-                    "Sign from a deployed account (EOA or an already-deployed ",
-                    "EIP-1271 wallet)."
+                    "Use an EOA signature for this network and USDC domain."
                 ),
                 network
             ),
@@ -331,6 +330,7 @@ impl TryFrom<Network> for EvmChain {
             // 62,335,077. The chain id is what the EIP-712 domain commits to,
             // so a wrong one here does not mis-route a payment -- it makes
             // every signature recover a different address.
+            Network::Arc => Ok(EvmChain::new(value, 5042)),
             Network::ArcTestnet => Ok(EvmChain::new(value, 5042002)),
             Network::Near => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::NearTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
@@ -463,7 +463,7 @@ pub(crate) const fn eip1559_fee_floor(network: Network) -> Eip1559Floor {
         // Cost of the floor: the guide's ~65,000 gas for an EIP-3009 transfer
         // at 20 gwei is 0.0013 USDC, which is also what gas costs on this chain
         // -- USDC is the native token.
-        Network::ArcTestnet => Eip1559Floor {
+        Network::Arc | Network::ArcTestnet => Eip1559Floor {
             min_priority: 1_000_000,
             min_max_fee: 20 * GWEI,
             fallback_base_fee: 20 * GWEI,
@@ -593,6 +593,7 @@ impl EvmProvider {
         // own `reqwest::Client`s, coordinated over IRC 2026-08-28) rather than a
         // second definition here -- "CONFIGURACION CENTRALIZADA" in CLAUDE.md.
         let http_client = reqwest::Client::builder()
+            .user_agent("uvd-x402-facilitator")
             .timeout(crate::chain::rpc_http_timeout())
             .connect_timeout(crate::chain::rpc_http_connect_timeout())
             .build()
@@ -632,6 +633,25 @@ impl EvmProvider {
             .filler(filler)
             .wallet(wallet)
             .connect_client(client);
+
+        // Arc's domain uses our configured chain ID, while the transaction filler
+        // queries the RPC. Refuse a swapped mainnet/testnet endpoint at startup.
+        // Bound the entire probe (including retry backoff) and do not leak a
+        // credential-bearing RPC URL through transport errors.
+        if matches!(network, Network::Arc | Network::ArcTestnet) {
+            let actual =
+                tokio::time::timeout(crate::chain::rpc_http_timeout(), inner.get_chain_id())
+                    .await
+                    .map_err(|_| format!("RPC chain identity probe timed out for {network}"))?
+                    .map_err(|_| format!("RPC chain identity probe failed for {network}"))?;
+            if actual != chain.chain_id {
+                return Err(format!(
+                    "RPC chain ID mismatch for {network}: expected {}, got {actual}",
+                    chain.chain_id
+                )
+                .into());
+            }
+        }
 
         tracing::info!(network=%network, rpc=%crate::redact::rpc_url(rpc_url), signers=?signer_addresses, "Initialized provider");
 
@@ -1436,7 +1456,7 @@ impl FromEnvByNetworkBuild for EvmProvider {
             Network::RobinhoodTestnet => true,
             // Arc prices type-2 transactions: the latest block carries a
             // baseFeePerGas (20 gwei, measured) and `eth_feeHistory` answers.
-            Network::ArcTestnet => true,
+            Network::Arc | Network::ArcTestnet => true,
             Network::Near => false,           // NEAR is not an EVM chain
             Network::NearTestnet => false,    // NEAR is not an EVM chain
             Network::Stellar => false,        // Stellar is not an EVM chain
@@ -2598,6 +2618,24 @@ async fn assert_valid_payment<P: Provider>(
         nonce: payment_payload.authorization.nonce,
         signature: payment_payload.signature.clone(),
     };
+
+    // Arc's initial payment rail supports EOA authorizations only. Recover the
+    // signer locally under this chain's USDC domain, before any gas estimate or
+    // broadcast. A permissive/misconfigured RPC must not turn a signature for
+    // the other Arc network into a sponsored transaction. Other chains keep
+    // their existing contract-wallet verification paths.
+    if matches!(chain.network, Network::Arc | Network::ArcTestnet) {
+        let signed = SignedMessage::extract(&payment, &domain)?;
+        let recovered = alloy::primitives::Signature::try_from(payment.signature.0.as_slice())
+            .ok()
+            .and_then(|signature| signature.recover_address_from_prehash(&signed.hash).ok());
+        if recovered != Some(signed.address) {
+            return Err(FacilitatorLocalError::InvalidSignature(
+                payer.into(),
+                "Arc requires an EOA signature for this network's USDC domain".into(),
+            ));
+        }
+    }
 
     Ok((contract, payment, domain))
 }
@@ -4697,7 +4735,7 @@ mod arc_testnet_tests {
         );
         // And it is still the whole sentence, not a fragment that happens to
         // have no double space in it.
-        assert!(message.ends_with("EIP-1271 wallet)."), "{message:?}");
+        assert!(message.ends_with("USDC domain."), "{message:?}");
         assert!(
             message.contains("the universal signature validator"),
             "{message:?}"
@@ -4713,7 +4751,7 @@ mod arc_testnet_tests {
         assert!(gate(Network::ArcTestnet, vec![0x33; 65]).is_ok());
 
         for network in Network::variants() {
-            if *network == Network::ArcTestnet {
+            if matches!(network, Network::Arc | Network::ArcTestnet) {
                 continue;
             }
             assert!(
@@ -4823,7 +4861,6 @@ mod arc_node_fixtures {
     use serde_json::{json, Value};
 
     /// `eth_chainId` on Arc testnet.
-    const ARC_CHAIN_ID_HEX: &str = "0x4cef52";
     /// The base fee Arc has held at every reading: 20 gwei.
     const ARC_BASE_FEE_HEX: &str = "0x4a817c800";
     /// Circle seeds a BLOCKED address at genesis -- index 1 of Foundry's public
@@ -4865,6 +4902,7 @@ mod arc_node_fixtures {
 
     #[derive(Clone)]
     struct ArcNode {
+        chain_id: u64,
         payer: Address,
         receipt: Receipt,
         estimate: Estimate,
@@ -4964,7 +5002,8 @@ mod arc_node_fixtures {
             })
         };
         let result = match req["method"].as_str().unwrap_or_default() {
-            "eth_chainId" => json!(ARC_CHAIN_ID_HEX),
+            "eth_chainId" => json!(format!("{:#x}", node.chain_id)),
+            "eth_getCode" => json!("0x"),
             "eth_getTransactionCount" => json!("0x0"),
             // Arc quotes a zero tip; the floor is what has to carry the cap.
             "eth_maxPriorityFeePerGas" => json!("0x0"),
@@ -5067,12 +5106,17 @@ mod arc_node_fixtures {
     /// The payer's real EIP-712 signature over that body, under Arc's USDC
     /// domain.
     fn eip712_signature(payer: &PrivateKeySigner, body: &Value) -> Vec<u8> {
-        let (name, version) = find_known_eip712_metadata(Network::ArcTestnet, &arc_usdc())
+        let network: Network = body["paymentRequirements"]["network"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        let (name, version) = find_known_eip712_metadata(network, &arc_usdc())
             .expect("Arc USDC is in the static table");
         let domain = eip712_domain! {
             name: name,
             version: version,
-            chain_id: 5042002_u64,
+            chain_id: EvmChain::try_from(network).unwrap().chain_id,
             verifying_contract: arc_usdc(),
         };
         let authorization = &body["paymentPayload"]["payload"]["authorization"];
@@ -5138,9 +5182,19 @@ mod arc_node_fixtures {
     }
 
     async fn fixture(receipt: Receipt, estimate: Estimate, payer: Address) -> Fixture {
+        fixture_for(Network::ArcTestnet, receipt, estimate, payer).await
+    }
+
+    async fn fixture_for(
+        network: Network,
+        receipt: Receipt,
+        estimate: Estimate,
+        payer: Address,
+    ) -> Fixture {
         let broadcasts = Arc::new(AtomicUsize::new(0));
         let block_timestamp = unix_now_secs() - 5;
         let url = spawn(ArcNode {
+            chain_id: EvmChain::try_from(network).unwrap().chain_id,
             payer,
             receipt,
             estimate,
@@ -5154,7 +5208,7 @@ mod arc_node_fixtures {
             EthereumWallet::from(PrivateKeySigner::random()),
             &url,
             true,
-            Network::ArcTestnet,
+            network,
         )
         .await
         .expect("provider");
@@ -5428,6 +5482,171 @@ mod arc_node_fixtures {
             matches!(rejection, ProofRejection::TransferNotFound),
             "expected the native event to be ignored, got {rejection:?}"
         );
+    }
+    fn mainnet_body(payer: &PrivateKeySigner, signature: Vec<u8>) -> Value {
+        let mut body = request_json(payer, PAYEE, signature);
+        body["paymentPayload"]["network"] = json!("arc");
+        body["paymentRequirements"]["network"] = json!("arc");
+        body
+    }
+
+    #[test]
+    fn arc_mainnet_domain_matches_the_live_contract_and_differs_from_testnet() {
+        let chain = EvmChain::try_from(Network::Arc).unwrap();
+        assert_eq!(chain.chain_id, 5042);
+        let (name, version) = find_known_eip712_metadata(Network::Arc, &arc_usdc()).unwrap();
+        let domain = eip712_domain! {
+            name: name,
+            version: version,
+            chain_id: chain.chain_id,
+            verifying_contract: arc_usdc(),
+        };
+        // rpc.mainnet.arc.io, block 21183711, 2026-09-16. Public domain hash.
+        assert_eq!(
+            hex::encode(domain.separator()),
+            "940506929bba468048a19b567f4f0d534714bc06604b5c3017e5d16785ccdf84"
+        );
+        let testnet = eip712_domain! {
+            name: "USDC", version: "2", chain_id: 5042002_u64, verifying_contract: arc_usdc(),
+        };
+        assert_ne!(domain.separator(), testnet.separator());
+        assert!(!has_eip6492_validator(Network::Arc));
+        assert_eq!(eip1559_fee_floor(Network::Arc).min_max_fee, 20 * GWEI);
+    }
+
+    #[tokio::test]
+    async fn arc_mainnet_settles_with_its_own_domain() {
+        let payer = PrivateKeySigner::random();
+        let f = fixture_for(
+            Network::Arc,
+            Receipt::Confirmed,
+            Estimate::Ok,
+            payer.address(),
+        )
+        .await;
+        let mut body = mainnet_body(&payer, Vec::new());
+        body["paymentPayload"]["payload"]["signature"] = json!(format!(
+            "0x{}",
+            hex::encode(eip712_signature(&payer, &body))
+        ));
+        let req: SettleRequest = serde_json::from_value(body).unwrap();
+        let response = f.provider.settle(&req).await.expect("mainnet settles");
+        assert!(response.success);
+        assert_eq!(response.network, Network::Arc);
+        assert_eq!(response.transaction, Some(TransactionHash::Evm(TX)));
+        assert_eq!(f.broadcasts.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn arc_mainnet_rejects_a_testnet_signature_without_broadcasting() {
+        let payer = PrivateKeySigner::random();
+        let f = fixture_for(
+            Network::Arc,
+            Receipt::Confirmed,
+            Estimate::Ok,
+            payer.address(),
+        )
+        .await;
+        let wrong_signature = eip712_signature(&payer, &request_json(&payer, PAYEE, Vec::new()));
+        let req: SettleRequest =
+            serde_json::from_value(mainnet_body(&payer, wrong_signature)).unwrap();
+        let error = f
+            .provider
+            .settle(&req)
+            .await
+            .expect_err("testnet domain is not mainnet");
+        assert!(
+            matches!(error, FacilitatorLocalError::InvalidSignature(_, _)),
+            "{error:?}"
+        );
+        assert_eq!(f.broadcasts.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn arc_mainnet_refuses_6492_in_verify_and_settle_without_broadcasting() {
+        let payer = PrivateKeySigner::random();
+        let f = fixture_for(
+            Network::Arc,
+            Receipt::Confirmed,
+            Estimate::Ok,
+            payer.address(),
+        )
+        .await;
+        let body = mainnet_body(&payer, super::arc_testnet_tests::wire_eip6492_signature());
+        let verify: VerifyRequest = serde_json::from_value(body.clone()).unwrap();
+        let settle: SettleRequest = serde_json::from_value(body).unwrap();
+        for error in [
+            f.provider.verify(&verify).await.unwrap_err(),
+            f.provider.settle(&settle).await.unwrap_err(),
+        ] {
+            match error {
+                FacilitatorLocalError::InvalidSignature(_, message) => {
+                    assert!(message.contains("EIP-6492"), "{message}");
+                    assert!(!message.contains("invalid_signature_length"), "{message}");
+                }
+                other => panic!("wrong refusal: {other:?}"),
+            }
+        }
+        assert_eq!(f.broadcasts.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn arc_refuses_swapped_rpc_networks_before_building_a_provider() {
+        for (network, wrong_id) in [(Network::Arc, 5042002), (Network::ArcTestnet, 5042)] {
+            let broadcasts = Arc::new(AtomicUsize::new(0));
+            let url = spawn(ArcNode {
+                chain_id: wrong_id,
+                payer: Address::ZERO,
+                receipt: Receipt::Confirmed,
+                estimate: Estimate::Ok,
+                block_timestamp: unix_now_secs(),
+                broadcasts: broadcasts.clone(),
+            })
+            .await;
+            let error = EvmProvider::try_new(
+                EthereumWallet::from(PrivateKeySigner::random()),
+                &url,
+                true,
+                network,
+            )
+            .await
+            .err()
+            .expect("wrong chain ID must prevent startup");
+            assert!(
+                error.to_string().contains("RPC chain ID mismatch"),
+                "{error}"
+            );
+            assert!(error.to_string().contains(&wrong_id.to_string()), "{error}");
+            assert_eq!(broadcasts.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn arc_mainnet_stays_disabled_without_its_own_rpc() {
+        std::env::remove_var("RPC_URL_ARC");
+        assert_eq!(
+            from_env::rpc_env_name_from_network(Network::Arc),
+            "RPC_URL_ARC"
+        );
+        assert!(EvmProvider::from_env(Network::Arc).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    #[ignore = "Read-only live RPC check, run explicitly before activation"]
+    async fn arc_live_rpc_identity_with_the_production_transport() {
+        for (network, url) in [
+            (Network::Arc, "https://rpc.mainnet.arc.io"),
+            (Network::ArcTestnet, "https://rpc.testnet.arc.io"),
+        ] {
+            EvmProvider::try_new(
+                EthereumWallet::from(PrivateKeySigner::random()),
+                url,
+                true,
+                network,
+            )
+            .await
+            .unwrap_or_else(|e| panic!("{network}: {e}"));
+        }
     }
 }
 

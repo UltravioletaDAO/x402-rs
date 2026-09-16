@@ -113,3 +113,7 @@ ecr_repository_name = "facilitator"
 
 # Observability stack (Grafana + Prometheus + Tempo) -- off is $0/month
 enable_observability = false
+
+# Arc: testnet canary passed on 2026-09-16; mainnet waits for signer funding.
+arc_testnet_enabled = true
+arc_mainnet_enabled = false

@@ -1,0 +1,4 @@
+{"network": "arc-testnet", "chain_id": 5042002, "block": 62433431, "domain_matches": true, "payer": "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8", "recipient": "0x103040545AC5031A11E8C03dd11324C7333a13C7", "native_usdc": "20", "served": true, "execute": true}
+{"settle_requested": true, "network": "arc-testnet", "nonce": "0x97811677a286f3574e0d2f50f1cbf8cd4269dbeec52409ab09f6ec5ed177f106"}
+{"http": 200, "success": true, "transaction": "0x0f6aa81bdc52669fe4bde349d26b68e6270c563c26ef2639b469c22127fc2e39"}
+{"canary_passed": true, "network": "arc-testnet", "transaction": "0x0f6aa81bdc52669fe4bde349d26b68e6270c563c26ef2639b469c22127fc2e39", "usdc_atomic_units_received": 1, "gas_usdc": "0.002814575", "replay_http": 400, "replay_success": null}

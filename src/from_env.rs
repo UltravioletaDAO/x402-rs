@@ -102,6 +102,15 @@ pub const ENV_RPC_SCROLL: &str = "RPC_URL_SCROLL";
 pub const ENV_RPC_ROBINHOOD: &str = "RPC_URL_ROBINHOOD";
 pub const ENV_RPC_ROBINHOOD_TESTNET: &str = "RPC_URL_ROBINHOOD_TESTNET";
 
+// Arc testnet RPC URL (Circle; USDC is the native gas token).
+//
+// This variable is the network's on/off switch. `EvmProvider::from_env`
+// returns `Ok(None)` when it is unset, so Arc is present in the enum, in
+// `variants()` and in the token tables while being served by nothing -- which
+// is deliberately how it ships. There is no `ENV_RPC_ARC` counterpart: Circle
+// has not published mainnet.
+pub const ENV_RPC_ARC_TESTNET: &str = "RPC_URL_ARC_TESTNET";
+
 // Sui wallet private key environment variables
 #[cfg(feature = "sui")]
 pub const ENV_SUI_PRIVATE_KEY: &str = "SUI_PRIVATE_KEY";
@@ -160,6 +169,7 @@ pub fn rpc_env_name_from_network(network: Network) -> &'static str {
         Network::Scroll => ENV_RPC_SCROLL,
         Network::Robinhood => ENV_RPC_ROBINHOOD,
         Network::RobinhoodTestnet => ENV_RPC_ROBINHOOD_TESTNET,
+        Network::ArcTestnet => ENV_RPC_ARC_TESTNET,
     }
 }
 

@@ -1,6 +1,6 @@
 {
   "_comment": "Source of truth for all supported networks, tokens, and facilitator wallet addresses. MUST be updated when adding new chains or stablecoins. Wallet addresses sourced from lambda/balances/handler.py.",
-  "_lastUpdated": "2026-07-20",
+  "_lastUpdated": "2026-09-16",
   "_version": "1.50.0",
 
   "evm_mainnets": {
@@ -156,6 +156,13 @@
       "tokens": ["usdg"],
       "explorer": "https://explorer.testnet.chain.robinhood.com",
       "facilitatorWallet": "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8"
+    },
+    "arc-testnet": {
+      "chainId": 5042002,
+      "tokens": ["usdc"],
+      "explorer": "https://testnet.arcscan.app",
+      "facilitatorWallet": "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8",
+      "_note": "USDC is the native gas token and carries two precisions over one balance: 18 native, 6 through the ERC-20 interface (floor(native / 10^12)). Do not add eth_getBalance and balanceOf as separate funds. The wallet above held zero of both on 2026-09-16 and must be funded from https://faucet.circle.com before any end-to-end payment. There is no Arc mainnet entry: Circle publishes testnet addresses only."
     }
   },
 
@@ -368,9 +375,9 @@
   },
 
   "summary": {
-    "total_networks": 39,
+    "total_networks": 40,
     "evm_mainnets": 14,
-    "evm_testnets": 11,
+    "evm_testnets": 12,
     "svm_networks": 4,
     "sui_networks": 2,
     "near_networks": 2,

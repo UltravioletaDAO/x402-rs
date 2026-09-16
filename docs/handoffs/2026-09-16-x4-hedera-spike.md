@@ -150,23 +150,49 @@ leer protobuf con `hiero-sdk-proto`, que es una dependencia declarada y fijada, 
 no delegarse en los getters. `rust-spike/src/policy.rs` es la prueba de que las
 reglas 2, 4, 5 y 6 de la §7.3 del plan se expresan sobre los bytes que llegan.
 
-**Y el facilitador de referencia tiene el mismo punto ciego.** Corrida sobre los
-mismos vectores, `@x402/hedera 2.26.0` **acepta** 11, 12 y 13. Su
-`inspectHederaTransaction` lee `transaction.hbarTransfers` /
-`transaction.tokenTransfers`, que son los getters agregados del SDK de
-TypeScript. La firma del pagador y el preflight se sustituyeron por `ok` para
-correr sin red: no es un favor, el pagador firmó esos cuerpos de verdad y el
-preflight sólo recibe `{payer, payTo, asset, amount, network}` — nunca ve la
-transacción, así que no podría haber atrapado ni el NFT ni el hook. **No copiar
-la inspección de la referencia.**
+**Y el mismo punto ciego no es sólo nuestro.** La implementación de referencia
+inspecciona la transacción a través de los getters agregados de su propio SDK,
+igual que haría un puerto literal a Rust. Corrida sobre estos quince vectores,
+tres de los que nuestra política rechaza pasan su verificación.
+
+**Severidad e impacto, que es lo que corresponde escribir aquí.** El defecto es
+de *validación*, no de criptografía: no rompe firmas, no expone claves y no
+permite gastar sin la autorización del pagador. Lo que sí permite es que un
+pagador autorice, en el mismo cuerpo que paga, algo que el facilitador no quería
+patrocinar, y que el facilitador lo firme y lo presente creyendo que patrocina un
+pago simple. El coste recae sobre el patrocinador (comisión de red gastada en una
+operación que no aprobó) y sobre la cuenta del pagador (valor que sale además del
+pago). Alcance: cualquier facilitador que derive su inspección de los getters
+agregados. **Para nosotros el impacto es cero**: nada de esto está desplegado,
+Hedera no figura en nuestro `/supported`, y la política de la fase 2 nace
+rechazándolo con test.
+
+**El detalle de cómo se construye cada payload no se escribe en este handoff, a
+propósito.** Vive en los vectores y en los nombres de los tests, que es donde la
+fase 2 lo necesita. Los identificadores son `11-adversarial-is-approval-debit`,
+`12-adversarial-nft-rider` y `13-adversarial-allowance-hook`.
+
+**Divulgación: pendiente de decisión, y no se hizo nada.** No se abrió ningún
+issue aguas arriba, no se contactó a nadie y no se publicó ningún vector fuera de
+esta rama, que no se mergea. Publicar es irreversible y afecta a servicios de
+terceros que hoy están vivos, uno de ellos en mainnet. **Advertencia para quien
+tome esa decisión: esta rama está empujada a un repositorio público**, así que lo
+que hay aquí es legible sin necesidad de una PR; la elección real no es «publicar
+o no», es «señalarlo activamente o no» y, si se decide retirarlo, hace falta
+reescribir la rama, no sólo dejar de hablar de ello.
+
+La conclusión de ingeniería que sí es nuestra y se queda: **no copiar una
+inspección basada en getters agregados.** Leer protobuf.
 
 ### Una divergencia entre los dos SDK, medida
 
-El vector **14** (dos variantes nombrando el nodo `0.0.3`) lo **rechaza**
-`Transaction.fromBytes` de TypeScript y lo **acepta** `AnyTransaction::from_bytes`
-de Rust, que además reporta tres node ids con uno repetido. Es una diferencia
-real de comportamiento entre las dos implementaciones sobre los mismos bytes: la
-deduplicación de nodos es nuestra, no del SDK.
+El vector **14** (dos variantes nombrando el mismo nodo de consenso) lo
+**rechaza** `Transaction.fromBytes` de TypeScript y lo **acepta**
+`AnyTransaction::from_bytes` de Rust, que además reporta tres node ids con uno
+repetido. Es una diferencia real de comportamiento entre las dos implementaciones
+sobre los mismos bytes. **Nuestra política deduplica nodos por su cuenta y no
+depende del SDK**, con su test; reportar la divergencia aguas arriba cuelga de la
+misma decisión de divulgación de arriba y tampoco se hizo.
 
 ## Trampas del SDK que la fase 2 debe respetar
 

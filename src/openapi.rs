@@ -32,7 +32,7 @@ The x402 facilitator enables gasless micropayments across multiple blockchain ne
 ## Supported Networks
 
 ### EVM Chains (Mainnet)
-Ethereum, Base, Polygon, Optimism, Avalanche, Arbitrum, Celo, HyperEVM, Unichain, Monad, Scroll, Robinhood Chain (settles Paxos USDG - no native USDC), BSC, SKALE Base
+Ethereum, Base, Polygon, Optimism, Avalanche, Arbitrum, Celo, HyperEVM, Unichain, Monad, Scroll, Robinhood Chain (settles Paxos USDG - no native USDC), BSC, SKALE Base, Arc (`arc` / `eip155:5042`, USDC exact EOA payments; served only where `RPC_URL_ARC` is configured; check `/supported`)
 
 ### EVM Chains (Testnet)
 Ethereum Sepolia, Base Sepolia, Polygon Amoy, Optimism Sepolia, Avalanche Fuji, Arbitrum Sepolia, Celo Sepolia, HyperEVM Testnet, Unichain Sepolia, SKALE Base Sepolia, Monad Testnet, Robinhood Chain Testnet, Arc Testnet (`arc-testnet` / `eip155:5042002`, Circle — USDC is the native gas token; served only where `RPC_URL_ARC_TESTNET` is configured, so check `/supported` rather than this list)

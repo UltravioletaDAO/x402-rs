@@ -565,7 +565,7 @@ jobs:
           # `github.event.before`, so the compare fails and the Lambda is applied. Use it to
           # resync the Lambda when it drifted from main (which is how it was first fixed).
           if files=$(gh api "repos/${{ github.repository }}/compare/${{ github.event.before }}...${{ github.sha }}" --jq '.files[].filename' 2>/dev/null); then
-            if printf '%s\n' "$files" | grep -qE '^(lambda/balances/|terraform/environments/production/lambda-balances\.tf$)'; then
+            if printf '%s\n' "$files" | grep -qE '^(lambda/balances/|terraform/environments/production/(lambda-balances\.tf|arc\.tf|production\.auto\.tfvars)$)'; then
               echo "Balances Lambda sources changed; applying."
             else
               echo "No balances Lambda changes in this push; skipping."
@@ -596,7 +596,7 @@ jobs:
             # alerts-solana-mint.tf -- those alarms only ever got applied when some
             # OTHER observability file happened to change in the same push. A gate
             # that skips the file you just added is worse than no gate.
-            if printf '%s\n' "$files" | grep -qE '^terraform/environments/production/(alerts.*\.tf|cloudwatch-.*\.tf|variables\.tf)$'; then
+            if printf '%s\n' "$files" | grep -qE '^terraform/environments/production/(alerts.*\.tf|cloudwatch-.*\.tf|variables\.tf|arc\.tf|production\.auto\.tfvars)$'; then
               echo "Observability config changed; applying."
             else
               echo "No observability changes in this push; skipping."

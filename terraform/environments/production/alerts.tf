@@ -124,7 +124,7 @@ locals {
   # min_native is a FLOOR, not a target: roughly the cost of ~100 escrow
   # settlements on that chain at the gas prices measured 2026-08-20. Celo's is
   # the one that matters most -- it is the chain that actually ran dry.
-  monitored_chains = {
+  monitored_chains = merge({
     "celo-mainnet"      = { min_native = 12.0 }   # ~0.1134/settle at 202 gwei
     "ethereum-mainnet"  = { min_native = 0.0035 } # L1; refill well before this
     "arbitrum-mainnet"  = { min_native = 0.0025 } # L1 data fee not in gasPrice
@@ -139,7 +139,9 @@ locals {
     "near-mainnet"      = { min_native = 1.0 }
     "algorand-mainnet"  = { min_native = 5.0 }
     "xrpl-mainnet"      = { min_native = 5.0 }
-  }
+    }, var.arc_mainnet_enabled ? {
+    "arc-mainnet" = { min_native = var.arc_minimum_gas_usdc }
+  } : {})
 }
 
 # A chain we cannot read at all. This is the alarm that would have caught Sui.

@@ -8,7 +8,7 @@ sources and fails (exit 1) if the landing page drifts from them.
 
 Canonical sources
 -----------------
-  * Payment networks  -> GET /supported (the live facilitator)         [21 mainnets]
+  * Payment networks  -> GET /supported (the live facilitator)         [22 mainnets]
   * Escrow networks   -> src/payment_operator/addresses.rs             [9 mainnets]
   * ERC-8004 networks -> src/erc8004/mod.rs (supported_networks)       [11 mainnets / 20 total]
 
@@ -303,8 +303,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--url", default=DEFAULT_URL, help="facilitator base URL")
     ap.add_argument("--supported-file", help="read /supported JSON from a file instead of HTTP")
-    ap.add_argument("--expect-mainnets", type=int, default=21,
-                    help="expected canonical mainnet payment-network count (default 21)")
+    ap.add_argument("--expect-mainnets", type=int, default=22,
+                    help="expected canonical mainnet payment-network count (default 22)")
     ap.add_argument("--offline", action="store_true",
                     help="skip GET /supported (the only producer that needs the network) "
                          "and check everything else, including the EN/ES cross-check")

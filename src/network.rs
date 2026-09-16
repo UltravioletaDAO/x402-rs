@@ -151,6 +151,10 @@ pub enum Network {
     /// Robinhood Chain testnet (chain ID 46630) - settles to Ethereum Sepolia.
     #[serde(rename = "robinhood-testnet")]
     RobinhoodTestnet,
+    /// Arc mainnet by Circle (chain ID 5042). USDC pays gas at 18 decimals;
+    /// payments use its ERC-20 interface at 6 decimals over the same balance.
+    #[serde(rename = "arc")]
+    Arc,
     /// Arc testnet by Circle (chain ID 5042002).
     ///
     /// USDC is the NATIVE gas token here, and it carries two precisions over
@@ -160,9 +164,7 @@ pub enum Network {
     /// 13,489,266 through `balanceOf`. Never add `eth_getBalance` and
     /// `balanceOf` as if they were separate funds.
     ///
-    /// No mainnet variant: Circle still publishes testnet addresses only, and
-    /// mainnet parameters are not to be inferred from the node repository's
-    /// genesis files.
+    /// Mainnet is a separate network, with its own chain ID and signing domain.
     #[serde(rename = "arc-testnet")]
     ArcTestnet,
 }
@@ -218,6 +220,7 @@ impl Display for Network {
             Network::Scroll => write!(f, "scroll"),
             Network::Robinhood => write!(f, "robinhood"),
             Network::RobinhoodTestnet => write!(f, "robinhood-testnet"),
+            Network::Arc => write!(f, "arc"),
             Network::ArcTestnet => write!(f, "arc-testnet"),
         }
     }
@@ -281,9 +284,8 @@ impl FromStr for Network {
             "scroll" | "scroll-mainnet" => Ok(Network::Scroll),
             "robinhood" | "robinhood-mainnet" | "robinhood-chain" => Ok(Network::Robinhood),
             "robinhood-testnet" => Ok(Network::RobinhoodTestnet),
-            // Deliberately NOT aliased to "arc": that name belongs to a mainnet
-            // Circle has not published, and squatting it would let a caller
-            // reach a testnet by a mainnet name.
+            // Distinct names: a mainnet request must never resolve to testnet.
+            "arc" => Ok(Network::Arc),
             "arc-testnet" => Ok(Network::ArcTestnet),
             _ => Err(NetworkParseError(s.to_string())),
         }
@@ -355,7 +357,7 @@ impl From<Network> for NetworkFamily {
             Network::Scroll => NetworkFamily::Evm,
             Network::Robinhood => NetworkFamily::Evm,
             Network::RobinhoodTestnet => NetworkFamily::Evm,
-            Network::ArcTestnet => NetworkFamily::Evm,
+            Network::Arc | Network::ArcTestnet => NetworkFamily::Evm,
         }
     }
 }
@@ -406,6 +408,7 @@ impl Network {
             Network::Scroll,
             Network::Robinhood,
             Network::RobinhoodTestnet,
+            Network::Arc,
             Network::ArcTestnet,
         ]
     }
@@ -453,6 +456,7 @@ impl Network {
             Network::Scroll,
             Network::Robinhood,
             Network::RobinhoodTestnet,
+            Network::Arc,
             Network::ArcTestnet,
         ]
     }
@@ -500,6 +504,7 @@ impl Network {
             Network::Scroll,
             Network::Robinhood,
             Network::RobinhoodTestnet,
+            Network::Arc,
             Network::ArcTestnet,
         ]
     }
@@ -545,6 +550,7 @@ impl Network {
             Network::Scroll,
             Network::Robinhood,
             Network::RobinhoodTestnet,
+            Network::Arc,
             Network::ArcTestnet,
         ]
     }
@@ -661,6 +667,7 @@ impl Network {
             Network::RobinhoodTestnet => "eip155:46630".to_string(),
             // Arc - eip155:{chain_id}. `eth_chainId` answered 0x4cef52 on
             // 2026-09-16 at block 62,335,077.
+            Network::Arc => "eip155:5042".to_string(),
             Network::ArcTestnet => "eip155:5042002".to_string(),
         }
     }
@@ -730,6 +737,7 @@ impl Network {
             "eip155:4663" => Some(Network::Robinhood),
             "eip155:46630" => Some(Network::RobinhoodTestnet),
             // Arc
+            "eip155:5042" => Some(Network::Arc),
             "eip155:5042002" => Some(Network::ArcTestnet),
             _ => None,
         }
@@ -1477,6 +1485,21 @@ static USDC_SCROLL: Lazy<USDCDeployment> = Lazy::new(|| {
     })
 });
 
+/// Arc mainnet USDC: ERC-20 precision is 6; native gas precision is 18.
+static USDC_ARC: Lazy<USDCDeployment> = Lazy::new(|| {
+    USDCDeployment(TokenDeployment {
+        asset: TokenAsset {
+            address: address!("0x3600000000000000000000000000000000000000").into(),
+            network: Network::Arc,
+        },
+        decimals: 6,
+        eip712: Some(TokenDeploymentEip712 {
+            name: "USDC".into(),
+            version: "2".into(),
+        }),
+    })
+});
+
 /// Lazily initialized known USDC deployment on Arc testnet as [`USDCDeployment`].
 ///
 /// USDC is Arc's NATIVE gas token and is reached through this ERC-20 interface
@@ -1596,6 +1619,7 @@ impl USDCDeployment {
             // USDG is the settlement stablecoin there (see USDGDeployment).
             Network::Robinhood => None,
             Network::RobinhoodTestnet => None,
+            Network::Arc => Some(&USDC_ARC),
             Network::ArcTestnet => Some(&USDC_ARC_TESTNET),
         }
     }
@@ -3024,13 +3048,30 @@ mod arc_testnet_identity_tests {
         assert_eq!(resolve_network("arc-testnet"), Some(Network::ArcTestnet));
     }
 
-    /// `arc` names a mainnet Circle has not published. Resolving it to the
-    /// testnet would let a caller reach a testnet by a mainnet name -- and a
-    /// caller who believes they are on mainnet does not check twice.
+    /// Mainnet must resolve independently of testnet, under both protocol names.
     #[test]
-    fn plain_arc_names_no_network() {
-        assert!(Network::from_str("arc").is_err());
-        assert_eq!(resolve_network("arc"), None);
+    fn arc_mainnet_is_distinct_from_testnet() {
+        assert_eq!(Network::from_str("arc").unwrap(), Network::Arc);
+        assert_eq!(resolve_network("arc"), Some(Network::Arc));
+        assert_eq!(Network::Arc.to_string(), "arc");
+        assert_eq!(Network::Arc.to_caip2(), "eip155:5042");
+        assert_eq!(resolve_network("eip155:5042"), Some(Network::Arc));
+        assert!(Network::Arc.is_mainnet());
+        assert!(!Network::Arc.is_testnet());
+        assert!(Network::variants().contains(&Network::Arc));
+        let usdc = USDCDeployment::by_network(Network::Arc).unwrap();
+        assert_eq!(usdc.decimals, 6);
+        assert_eq!(usdc.asset.network, Network::Arc);
+        assert_eq!(
+            usdc.address(),
+            USDCDeployment::by_network(Network::ArcTestnet)
+                .unwrap()
+                .address()
+        );
+        assert_eq!(
+            supported_tokens_for_network(Network::Arc),
+            vec![TokenType::Usdc]
+        );
         assert_eq!(resolve_network("arc-mainnet"), None);
         assert_eq!(Network::from_caip2("eip155:5042001"), None);
     }

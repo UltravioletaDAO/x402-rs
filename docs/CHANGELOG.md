@@ -1,5 +1,25 @@
 # Changelog
 
+## [2.31.0] - 2026-09-16
+
+### Added
+
+- Arc mainnet (`arc`, `eip155:5042`), independently enabled from Arc testnet
+  (`arc-testnet`, `eip155:5042002`). Both use USDC `0x3600...0000`, ERC-20
+  decimals 6, and EIP-712 `USDC` / `2`. Official mainnet parameters are now
+  available; this supersedes the mainnet availability note in 2.30.0.
+- Arc RPC identity validation at startup, local EOA signature recovery before
+  verification/settlement, and tests rejecting signatures from the other Arc
+  network. EIP-6492 remains unsupported on both networks.
+- Independent Terraform activation flags, native-USDC balance monitoring,
+  mainnet reserve/RPC alarms, conditional wallet cards, and an operator canary
+  checking receipt, exact token delivery and replay rejection.
+- Both networks enabled in deployment configuration after real one-micro-USDC
+  v1 and v2 canaries passed against an isolated candidate. Each checks the
+  receipt, exact recipient balance delta and replay without a second debit.
+  Mainnet gas measured 0.002252606134343883 / 0.001804750735987521 USDC (v1/v2).
+
+
 ## [2.30.0] - 2026-09-16
 
 ### Added

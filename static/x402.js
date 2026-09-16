@@ -12,6 +12,8 @@
 // Los dos casos van al monograma. La diferencia es documental y la revisa un test.
 // ---------------------------------------------------------------------------
 const ICONO_DE_RED = {
+  // No invented logo: Arc uses the existing text fallback.
+  "arc": null, "arc-testnet": null, "eip155:5042": null, "eip155:5042002": null,
   "algorand": "algorand", "algorand-testnet": "algorand", "algorand:mainnet": "algorand", "algorand:testnet": "algorand",
   "arbitrum": "arbitrum", "arbitrum-sepolia": "arbitrum", "eip155:42161": "arbitrum", "eip155:421614": "arbitrum",
   "avalanche": "avalanche", "avalanche-fuji": "avalanche", "eip155:43113": "avalanche", "eip155:43114": "avalanche",

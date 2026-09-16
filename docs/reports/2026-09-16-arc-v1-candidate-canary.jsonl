@@ -1,0 +1,4 @@
+{"network": "arc", "chain_id": 5042, "block": 21189773, "domain_matches": true, "payer": "0x103040545AC5031A11E8C03dd11324C7333a13C7", "recipient": "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8", "native_usdc": "19.9420482", "served": true, "execute": true, "x402_version": 1}
+{"settle_requested": true, "network": "arc", "nonce": "0x234fb58b96085e2880b50eefcf7d7bb74c463c91e12c1dba525d8eb52c2fe7c2"}
+{"http": 200, "success": true, "transaction": "0x2246ad72a2a00a5ea19f54d32effff32ee8cea7a58c5e0cf0740244216dc92f4"}
+{"canary_passed": true, "network": "arc", "transaction": "0x2246ad72a2a00a5ea19f54d32effff32ee8cea7a58c5e0cf0740244216dc92f4", "x402_version": 1, "usdc_atomic_units_received": 1, "gas_usdc": "0.002252606134343883", "replay_http": 400, "replay_success": null}

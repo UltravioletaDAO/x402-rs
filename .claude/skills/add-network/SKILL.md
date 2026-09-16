@@ -48,22 +48,19 @@ User: "add facilitator scroll"
          ▼
 ┌─────────────────────────────────┐
 │ 4. IMPLEMENTATION               │
-│    - src/network.rs             │
-│    - src/from_env.rs            │
-│    - src/chain/evm.rs           │
-│    - src/handlers.rs            │
-│    - static/index.html          │
-│    - .env.example               │
-│    - config/supported_tokens.json│
+│    17 files, always. See the    │
+│    inventory near the end of    │
+│    this file - it is measured,  │
+│    not a summary.               │
 └─────────────────────────────────┘
          │
          ▼
 ┌─────────────────────────────────┐
-│ 5. DEPLOY (if auto-deploy)      │
-│    - cargo build                │
-│    - docker build & push        │
-│    - ECS update                 │
-│    - Verification               │
+│ 5. SHIP (if auto-deploy)        │
+│    - bump VERSION               │
+│    - stage per file, commit     │
+│    - push to main -> CI deploys │
+│    - Verify /supported          │
 └─────────────────────────────────┘
 ```
 
@@ -245,11 +242,37 @@ Scroll,
 ScrollSepolia,
 ```
 
-**Add to ALL `variants()` arrays** (there are 4):
-1. `variants()` - all networks
-2. `mainnet_variants()` - mainnet only
-3. `testnet_variants()` - testnet only
-4. `evm_variants()` - EVM networks
+**Add to all FOUR copies of `variants()`.**
+
+They are four copies of the SAME function, not four different functions.
+`mainnet_variants()`, `testnet_variants()` and `evm_variants()` DO NOT EXIST
+anywhere in this repository:
+
+```bash
+grep -rn -e mainnet_variants -e testnet_variants -e evm_variants src/ crates/ examples/
+# 0 hits (measured 2026-09-16 on dc109511)
+```
+
+What exists is one `Network::variants()` written out four times, each behind a
+different `algorand` / `sui` feature combination:
+
+| `#[cfg(...)]` above it | line | entries |
+|---|---|---|
+| `all(feature = "algorand", feature = "sui")` | `src/network.rs:346` | 39 |
+| `all(feature = "algorand", not(feature = "sui"))` | `src/network.rs:394` | 37 |
+| `all(not(feature = "algorand"), feature = "sui")` | `src/network.rs:440` | 37 |
+| `all(not(feature = "algorand"), not(feature = "sui"))` | `src/network.rs:486` | 35 |
+
+An EVM network belongs in **all four**. Only the first is compiled by the
+production feature set, so the build stays green while the other three are wrong,
+and the next person who builds without `--features sui` silently loses your chain.
+
+**Nothing checks this.** `variants()` returns an array, not a `match`, so the
+compiler cannot warn about a missing entry -- unlike `NetworkFamily`
+(`src/network.rs:288`) and `to_caip2()` (`:576`), which are exhaustive and refuse
+to compile. See [Closure criterion](#closure-criterion-supported-never-it-compiles)
+at the end of this file: three networks that sit in the enum and in zero of the
+four copies have been shipping, unserved, for months.
 
 **Add Display impl:**
 
@@ -258,19 +281,38 @@ Self::Scroll => "Scroll",
 Self::ScrollSepolia => "Scroll Sepolia",
 ```
 
-**Add FromStr impl:**
+**Add FromStr impl** (`src/network.rs:216`). It ends in
+`_ => Err(NetworkParseError(...))` (`src/network.rs:269`), so a missing arm
+compiles fine and only fails at runtime, on a client that named your chain:
 
 ```rust
 "scroll" => Ok(Self::Scroll),
 "scroll-sepolia" => Ok(Self::ScrollSepolia),
 ```
 
-**Add to_caip2():**
+**Add `to_caip2()`** (`src/network.rs:576`). This one IS exhaustive -- no `_` arm
+-- so the compiler names the network you skipped:
 
 ```rust
 Self::Scroll => "eip155:534352".to_string(),
 Self::ScrollSepolia => "eip155:534351".to_string(),
 ```
+
+**Add to `from_caip2()`** (`src/network.rs:643`), a *separate* hand-written match
+that ends in `_ => None` (`src/network.rs:704`). Skip it and `eip155:534352`
+resolves to nothing while `"scroll"` works -- the exact split a v2 client hits and
+a v1 client never does:
+
+```rust
+"eip155:534352" => Some(Network::Scroll),
+"eip155:534351" => Some(Network::ScrollSepolia),
+```
+
+Those three sites -- the four `variants()` copies, `FromStr` and `from_caip2` --
+are the ONLY per-network sites in `src/network.rs` the compiler does not enforce.
+`Display`, `NetworkFamily` and `to_caip2` are exhaustive matches and break the
+build if you skip them. The compiler-silent three are where a network goes
+missing.
 
 **Add NetworkFamily mapping:**
 
@@ -354,6 +396,36 @@ Network::ScrollSepolia => true,
 ```
 
 **IMPORTANT:** Some chains like SKALE don't support EIP-1559. Set to `false` for those.
+
+**Decide the EIP-1559 fee floor** -- `eip1559_fee_floor()`, `src/chain/evm.rs:329`.
+
+It is a `match` with a catch-all `_` arm, so a new chain silently inherits the
+default (`min_priority` 1 mwei, `min_max_fee` 0, `fallback_base_fee` 2 gwei) and
+the compiler says nothing. That default is deliberate and right for most L2s, but
+it is a decision you are making by omission, so make it on purpose:
+
+- Explicit arms today: `Ethereum | EthereumSepolia` (1 gwei tip, 5 gwei cap) and
+  `Polygon | PolygonAmoy` (30 gwei tip, 1000 gwei cap).
+- Add an arm only if the chain's nodes refuse the default. Measure
+  `eth_maxPriorityFeePerGas` and the recent base fee before writing a number.
+- Do NOT copy the Ethereum arm "to be safe". A 1 gwei floor copied onto the L2
+  branch on 2026-09-10 made a Base settle cost 0.0001038 ETH instead of
+  ~0.0000006 ETH, drained the mainnet signer in four days and refused every Base
+  settle until 2.29.4. The comment above the `_` arm carries the full account.
+- Zero is not safe either: geth/op-geth mine no tip below 1 mwei, so a zero floor
+  yields a transaction that is never mined while it holds a nonce.
+
+### 3.3b Optional per-network lists (`escrow`, `upto`)
+
+Neither is automatic and neither is required. A new network gets `exact` for free;
+these two are opt-in lists and joining them is a separate decision:
+
+| Scheme | List | Extra work |
+|---|---|---|
+| `escrow` / `commerce` | `ESCROW_NETWORKS`, `src/payment_operator/addresses.rs:185` | Needs a deployed PaymentOperator + escrow + token collector for that chain. The test at `addresses.rs:452` asserts `ESCROW_NETWORKS.len() == 11` -- bump it or the suite goes red. Also bumps the `x402r.networksTitle` count on the landing (EN **and** ES). |
+| `upto` | `UPTO_DEPLOYED_NETWORKS`, `src/upto/types.rs:60` | Only after the Permit2 proxy CREATE2 deployment has actually been replayed there. Verify with `eth_getCode` against **two** independent RPCs first: a wrong entry reports settlement success while moving zero tokens, which is exactly what shipped once. |
+
+If the network joins neither, change neither file.
 
 ### 3.4 Update src/chain/solana.rs
 
@@ -492,7 +564,17 @@ spec until it is added here — this is a required step, not optional.
 
 - Add the new network's serde name (e.g. `"scroll"`) to the `Network` enum /
   examples in `src/openapi.rs`. Keep it consistent with `src/network.rs`.
-- Do NOT edit the version — it auto-syncs from `Cargo.toml` via `env!("CARGO_PKG_VERSION")`.
+- Do NOT edit the version in `src/openapi.rs`. It is patched at runtime from the
+  `VERSION` file via `FACILITATOR_VERSION` (`src/version.rs`). It does **not**
+  come from `Cargo.toml`: `Cargo.toml:3` is a frozen `0.0.0` placeholder and must
+  stay untouched, because the Docker dependency layer is keyed on that file.
+- `src/openapi.rs` also hardcodes network lists and counts in prose, plus the
+  escrow and `upto` lists. Line numbers drift, so find them rather than trusting a
+  list: `grep -n 'Scroll\|scroll\|mainnets\|networks (' src/openapi.rs`. On
+  `dc109511` that is `:35` (the EVM mainnet roll-call), `:59` and `:175` (the
+  ERC-8004 counts), `:822` (upto), `:826` (escrow) and `:1691` / `:1750` (the
+  per-endpoint EVM lists). A new network is invisible in `/docs` until each one is
+  edited.
 - Verify after deploy:
   `curl -s https://facilitator.ultravioletadao.xyz/api-docs/openapi.json | jq '.paths,.components.schemas.Network'`
 
@@ -504,19 +586,98 @@ for escrow; `src/erc8004/mod.rs` for ERC-8004. NEVER hardcode a number that
 disagrees with these.
 
 - The landing computes the live payment-network count from `/supported` in the
-  browser (`[data-live-count="payment-mainnets"]`); also update the hardcoded
-  fallback string (`data-i18n="sdk.networks"`, both EN and ES) so they agree.
+  browser (`[data-live-count="payment-mainnets"]`). There is no longer a typed
+  `N mainnets` fallback string on that page -- the guard reports
+  `typed 'N mainnets' : not typed on this page` (measured 2026-09-16). Do not go
+  looking for `data-i18n="sdk.networks"`; it is gone. Leave it gone.
+- The balance wall on `/` is still hand-written: 39 `class="network-badge ..."`
+  cards in `static/index.html`, one per served network, confirmed live
+  (`curl -s https://facilitator.ultravioletadao.xyz/ | grep -c 'class="network-badge'`
+  -> 39). Adding a network means adding two cards there (mainnet + testnet).
+- `/networks` is NOT hand-written: `static/networks.html` builds its whole table
+  from `GET /supported`. Do not add a row there. What it DOES need is one entry
+  per name in `ICONO_DE_RED`, `static/x402.js:14` -- four keys per network (v1
+  mainnet, v1 testnet, CAIP-2 mainnet, CAIP-2 testnet). Without them the chip
+  falls back to a monogram, which is the deliberate behaviour for a network with
+  no PNG, so nothing warns you.
 - If the network gains escrow or ERC-8004, update those grids AND their
   "Escrow Deployed on N Networks" / "Deployed on N Networks" headings + the
-  ERC-8004 stat card (`id="ovr-erc8004-networks"`), EN + ES.
+  ERC-8004 stat card (`id="ovr-erc8004-networks"`), EN + ES. These ARE typed and
+  the guard treats a mismatch as an error, not a note.
 - After building, run the canonical check and resolve any drift it reports:
-  `python scripts/verify_landing_canonical.py`
-  (It fails the build if the landing disagrees with /supported, escrow, or ERC-8004.)
+  ```bash
+  python scripts/verify_landing_canonical.py            # reads live /supported
+  python scripts/verify_landing_canonical.py --offline  # what CI runs
+  ```
+  CI runs the `--offline` form in the `Build & test` job, so a drift here goes red
+  before the deploy job starts.
+- **Bump `--expect-mainnets`.** Its default lives in the script itself
+  (`scripts/verify_landing_canonical.py:306`, currently `21`). A new mainnet makes
+  `/supported` disagree with it. The docstring header (`:11`) carries the same
+  number and is prose -- update both.
+
+### 3.11b `src/caip2.rs` -- usually NOT edited
+
+Measured, against the claim that an alta touches it: a new **EVM** chain needs no
+change in `src/caip2.rs`. The file is generic over `eip155:<chain-id>`
+(`Caip2NetworkId::eip155`, `src/caip2.rs:175`) and carries no per-network table;
+its diff in the last full alta (`7dbe194e`) was pure `rustfmt`. The per-network
+CAIP-2 work lives in `to_caip2()` / `from_caip2()` in `src/network.rs` (§3.1).
+
+`src/caip2.rs` only needs editing for a new **family** -- a namespace that is not
+already one of `eip155`, `solana`, `near`, `stellar`, `xrpl`, `algorand`, `sui`
+(`Namespace`, `src/caip2.rs:52`). That is a different, much larger job than adding
+a chain.
 
 ### 3.12 Update lambda/balances/handler.py
 
 Add the network to `get_network_configs()` (RPC list + facilitator wallet) so the
 landing balance cards render. Copy the wallet address from this file — NEVER from memory.
+
+### 3.13 Give the CONTAINER the RPC URL (Terraform)
+
+**This is the step that decides whether the network appears in `/supported` at
+all**, and it is the one most often skipped, because everything else compiles and
+passes without it.
+
+`src/from_env.rs` only declares the variable NAME. `.env.example` only documents
+it for local runs. Production reads the ECS task definition, which is generated by
+Terraform. Declared in `from_env.rs` alone, the container never receives the URL,
+`NetworkProvider::from_env` returns `None`, and the network is quietly absent from
+`/supported` with a clean build behind it.
+
+- **Public / free RPC** -> `terraform/environments/production/main.tf`, in the
+  task definition's `environment` block. This is where every recent alta put it:
+
+  ```hcl
+  {
+    name  = "RPC_URL_SCROLL"
+    value = "https://rpc.scroll.io"
+  },
+  {
+    name  = "RPC_URL_SCROLL_SEPOLIA"
+    value = "https://sepolia-rpc.scroll.io"
+  },
+  ```
+
+- **RPC URL carrying an API key** -> NEVER in `environment`. Add the key to the
+  `facilitator-rpc-mainnet` / `facilitator-rpc-testnet` secret and reference it
+  from the `secrets` block, wired in
+  `terraform/environments/production/secrets.tf`. Task definitions are plaintext
+  and their history is retained, so a key put there is exposed even after
+  rotation.
+
+Both testnet and mainnet need an entry. After the deploy, the fastest proof is
+`/supported` itself, not the logs.
+
+### 3.14 `VERSION` and `docs/CHANGELOG.md`
+
+- `VERSION` (repo root) -- bump it, see Phase 5.1. Nothing ships without it: CI
+  fails the run outright if the file is empty, and the image tag and
+  `FACILITATOR_VERSION` both come from it. `Cargo.toml` stays untouched.
+- `docs/CHANGELOG.md` -- add the release entry. It is the only written record:
+  releases stopped being git-tagged at `v2.0.2`, so a chain added without a
+  CHANGELOG line has no date attached to it anywhere.
 
 ---
 
@@ -529,59 +690,123 @@ cargo build --release
 # Check for errors
 cargo clippy --all-targets
 
+# The gate CI actually runs. A red run here blocks the production deploy, and
+# --test-threads=1 is not optional: parallel runs hang on CI runners.
+cargo test --locked -p x402-rs \
+  --features solana,near,stellar,algorand,sui,xrpl -- --test-threads=1
+
 # Run locally
 cargo run --release
 
-# Verify network appears
+# Verify network appears -- THIS is the check that matters, not the build
 curl http://localhost:8080/supported | jq '[.kinds[].network] | map(select(contains("scroll")))'
 ```
+
+**A green build proves nothing about `/supported`.** If that last command returns
+`[]`, the network is not served, however clean the compile was. See
+[Closure criterion](#closure-criterion-supported-never-it-compiles).
 
 ---
 
 ## Phase 5: Deploy
 
-### If prerequisites met and user approves auto-deploy:
+**There is no manual deploy. Pushing to `main` IS the deploy.**
 
-Use `/ship` skill which handles:
-1. Version bump
-2. Commit
-3. Docker build
-4. ECR push
-5. ECS deploy
-6. Verification
+`.github/workflows/ci.yaml` tests, builds the image, pushes it to ECR and
+`terraform apply -auto-approve`s it onto ECS, then waits for the rollout and
+checks `/health`. A merge is a release. The `docker build` / `aws ecs
+update-service` sequence this section used to describe is not how anything has
+shipped for a long time, and `aws ecs update-service --force-new-deployment` on
+its own re-runs the CURRENT task definition -- it does not move the image.
 
-### Manual deploy steps:
+### 5.1 Bump `VERSION`
+
+The release version lives in the `VERSION` file at the repo root, **not** in
+`Cargo.toml` (`Cargo.toml:3` is a frozen `0.0.0` placeholder; touching it makes
+every deploy recompile the whole dependency tree). Bump from what is DEPLOYED,
+not from whatever is local:
 
 ```bash
-# 1. Version bump
-# Edit Cargo.toml version
+curl -s https://facilitator.ultravioletadao.xyz/version   # e.g. {"version":"2.29.6"}
+echo "2.30.0" > VERSION                                   # a network add is a minor bump
+```
 
-# 2. Commit
-git add -A && git commit -m "feat: add {Network} mainnet and testnet support"
+### 5.2 Stage per file, never `git add -A`
 
-# 3. Build
-cargo build --release
+`git add -A` is forbidden in this repository. `.unused/` and untracked scratch
+files live beside the tree, and the 2026-05-19 security audit recorded a wallet
+rotation script that writes a freshly generated key into the repo root, where one
+`git add -A` would publish it (`docs/reports/2026-05-19-security-audit.md`). Name
+every path:
 
-# 4. Docker build and push
-./scripts/build-and-push.sh vX.Y.Z
+```bash
+git add src/network.rs src/from_env.rs src/chain/evm.rs src/chain/solana.rs
+git add src/handlers.rs src/openapi.rs
+git add static/index.html static/x402.js static/{network}.png
+git add config/supported_tokens.json lambda/balances/handler.py
+git add terraform/environments/production/main.tf
+git add scripts/verify_landing_canonical.py .env.example README.md
+git add VERSION docs/CHANGELOG.md
 
-# 5. Update task definition (if using premium RPC)
-# Add to AWS Secrets Manager if needed
+git status --short          # read it; anything unexpected staged is a stop
+git diff --cached --stat    # and this
+git commit -m "feat(network): add {Network} mainnet and testnet ({mainnet-id}/{testnet-id})"
+```
 
-# 6. Deploy
-aws ecs update-service --cluster facilitator-production \
-  --service facilitator-production --force-new-deployment --region us-east-2
+Run `git config core.hooksPath .githooks` once per clone: the pre-commit hook
+refuses a staged diff that adds `0x` + 64 hex.
 
-# 7. Verify
-curl https://facilitator.ultravioletadao.xyz/version
-curl https://facilitator.ultravioletadao.xyz/supported | jq '[.kinds[].network] | map(select(contains("scroll")))'
+### 5.3 Push and let CI ship it
+
+```bash
+git push origin main
+```
+
+What CI then does, in order (`.github/workflows/ci.yaml`):
+
+1. `test` -- clippy + the full feature-set test suite. Red here blocks everything.
+2. `preflight` -- emits `deploy=true` when the AWS repo secrets are present.
+3. drift gate -- read-only `terraform plan`, never applies.
+4. `deploy` -- image tag is `$(cat VERSION)-$(git rev-parse --short HEAD)`, built
+   with `--build-arg FACILITATOR_VERSION=$(cat VERSION)`, pushed to ECR, then a
+   **targeted** `terraform apply` on the ECS task definition + service +
+   autoscaling with `-var image_tag=...`. Never a full apply.
+5. waits for the rollout, then polls `/health`.
+
+Two consequences worth knowing:
+
+- The workflow has a `paths` filter. `.claude/**`, `docs/**` and `guides/**` are
+  NOT in it, so a documentation-only commit never triggers CI and never deploys.
+  Every file in the alta inventory except those three trees IS in it.
+- A failed deploy leaves `main` ahead of production. Compare
+  `curl -s https://facilitator.ultravioletadao.xyz/version` with `git log -1`
+  before assuming your commit is live.
+
+Releases are **not** git-tagged any more -- `git tag` stops at `v2.0.2` while
+`VERSION` is well past it. Do not add a tag to "finish" a release.
+
+### 5.4 Verify against production
+
+```bash
+curl -s https://facilitator.ultravioletadao.xyz/version
+curl -s https://facilitator.ultravioletadao.xyz/supported \
+  | jq '[.kinds[].network] | map(select(startswith("scroll")))'
+curl -sI https://facilitator.ultravioletadao.xyz/scroll.png | head -1
+python scripts/verify_landing_canonical.py
 ```
 
 ---
 
 ## Automatic Deployment Decision
 
-**Deploy automatically when ALL conditions are met:**
+**Read this first: "deploy" here means `git push origin main`.** There is no
+separate deploy button. CI builds the image and rolls production on that push, so
+an automatic deploy is an automatic production release. The repository rule is
+that the model does not compile or deploy on its own initiative: make the change,
+say it is ready, and let the person push. "Automatic" below means *do not stop to
+re-ask about each prerequisite*, not *ship without being asked*.
+
+**Proceed without further questions when ALL conditions are met:**
 - Logo exists in `static/`
 - Mainnet wallet balance > 0.001 ETH equivalent
 - Testnet wallet balance > 0
@@ -599,9 +824,19 @@ curl https://facilitator.ultravioletadao.xyz/supported | jq '[.kinds[].network] 
 ## Troubleshooting
 
 ### "Network not in /supported"
-- Check RPC environment variable is set
-- Check wallet is funded
-- Check `variants()` arrays include new network
+
+In order of how often it is the cause:
+
+1. **The container never got the RPC URL.** Declaring `ENV_RPC_*` in
+   `src/from_env.rs` does nothing on its own -- the value comes from the ECS task
+   definition, generated by `terraform/environments/production/main.tf` (or
+   `secrets.tf` for a URL with an API key). See §3.13.
+2. **The network is missing from one or more of the four `variants()` copies**
+   (`src/network.rs:346`, `:394`, `:440`, `:486`). Nothing warns about this; see
+   the closure criterion above. Check all four, not the first one.
+3. RPC unreachable from the task, or the endpoint rejects the facilitator's calls.
+4. The deploy did not actually land -- compare
+   `curl -s https://facilitator.ultravioletadao.xyz/version` against `git log -1`.
 
 ### "Logo 404"
 - Verify file exists: `ls static/{network}.png`
@@ -621,22 +856,111 @@ curl https://facilitator.ultravioletadao.xyz/supported | jq '[.kinds[].network] 
 
 ---
 
-## File Changes Summary
+## File inventory (measured, not estimated)
 
-| File | Changes |
-|------|---------|
-| `src/network.rs` | Enum, Display, FromStr, CAIP-2, NetworkFamily, USDC deployments (~80 lines) |
-| `src/from_env.rs` | RPC constants, match arms (~6 lines) |
-| `src/chain/evm.rs` | Chain IDs, EIP-1559 flags (~4 lines) |
-| `src/chain/solana.rs` | Exclusions (~2 lines) |
-| `src/handlers.rs` | Logo handler, route (~12 lines) |
-| `static/index.html` | CSS, cards, balance config, TOKEN_SUPPORT (~60 lines) |
-| `static/{network}.png` | Logo file (1 file) |
-| `.env.example` | RPC URLs (~2 lines) |
-| `README.md` | Network counts, tables (~10 lines) |
-| `config/supported_tokens.json` | New network entry with chainId, tokens, explorer, wallet (~5 lines) |
+Derived from `7dbe194e` -- Robinhood Chain, 2026-07-20, the last full network
+alta: **24 files, 689 insertions, 216 deletions**
+(`git show --stat 7dbe194e`). Five of those 24 were not alta work and are
+excluded below: `src/caip2.rs`, `src/chain/xrpl.rs`, `src/facilitator_local.rs`
+and `examples/x402-reqwest-example/src/main.rs` were whole-file `rustfmt` with
+zero mentions of the new chain (`git show 7dbe194e -- examples/... | grep -ci
+robinhood` -> 0), and `src/upto/permit2.rs` was an unrelated security fix riding
+along.
 
-**Total: ~180 lines + 1 logo file**
+Two files have joined the list since: `VERSION` (did not exist at `7dbe194e`;
+`git cat-file -e 7dbe194e:VERSION` fails) and `static/x402.js`.
+
+### Always -- 17 files
+
+| # | File | What | Compiler catches an omission? |
+|---|------|------|---|
+| 1 | `src/network.rs` | enum + serde rename, `Display`, `FromStr`, `to_caip2`, `from_caip2`, `NetworkFamily`, **4x `variants()`**, token deployment, `usdc_deployments()` (~226 lines in the measured alta) | Partly. `variants()` x4, `FromStr` and `from_caip2` are NOT enforced |
+| 2 | `src/from_env.rs` | `ENV_RPC_*` consts + `rpc_env_name_from_network()` | yes (match) |
+| 3 | `src/chain/evm.rs` | `TryFrom<Network> for EvmChain` chain id, EIP-1559 flag; `eip1559_fee_floor` arm only if needed | chain id yes; fee floor NO (`_` arm) |
+| 4 | `src/chain/solana.rs` | `UnsupportedNetwork` exclusion arms | yes (match) |
+| 5 | `src/handlers.rs` | logo handler + `.route("/{network}.png", ...)` | no |
+| 6 | `src/openapi.rs` | network prose and lists -- find them with `grep -n 'Scroll\|scroll\|mainnets\|networks (' src/openapi.rs` | no |
+| 7 | `static/{network}.png` | logo, flat in `static/` (no `static/images/`) | build fails -- `include_bytes!` |
+| 8 | `static/index.html` | 2 cards (mainnet + testnet) + CSS + balance config | no |
+| 9 | `static/x402.js` | `ICONO_DE_RED` (`:14`), 4 keys: v1 mainnet, v1 testnet, both CAIP-2 | no -- falls back to a monogram, silently |
+| 10 | `config/supported_tokens.json` | chainId, tokens, explorer, facilitatorWallet | no |
+| 11 | `lambda/balances/handler.py` | `get_network_configs()`: RPC + wallet | no |
+| 12 | `terraform/environments/production/main.tf` | `RPC_URL_*` in the task definition `environment` | no -- **and this is what keeps it out of `/supported`** |
+| 13 | `scripts/verify_landing_canonical.py` | `--expect-mainnets` default (`:306`) + the docstring count (`:11`) | the guard itself, in CI |
+| 14 | `.env.example` | both RPC URLs | no |
+| 15 | `README.md` | network counts + tables | no |
+| 16 | `VERSION` | the release bump | CI fails if empty |
+| 17 | `docs/CHANGELOG.md` | the release entry | no |
+
+### Conditional -- up to 7 more
+
+| File | Only when |
+|------|-----------|
+| `terraform/environments/production/secrets.tf` | the mainnet RPC carries an API key |
+| `src/types.rs` | the chain settles a stablecoin with no `TokenType` yet |
+| `scripts/stablecoin_matrix.py` | same -- add the symbol to the allow-list |
+| `static/{token}.png` + `ICONO_DE_TOKEN` in `static/x402.js` | same |
+| `src/upto/types.rs` | the Permit2 proxy is genuinely deployed there (verify with `eth_getCode` on two RPCs) |
+| `src/payment_operator/addresses.rs` | the chain joins escrow -- also bump the `len() == 11` test at `:452` |
+| `src/erc8004/mod.rs` | the chain joins ERC-8004 -- also the landing stat card, EN + ES |
+
+**Not** in the inventory, against a common assumption: `src/caip2.rs` (generic
+over `eip155:<id>`, see §3.11b) and `static/networks.html` (generated from
+`/supported`).
+
+**Total: 17 files always, up to 24 with the conditional ones. ~500-700 changed
+lines plus 1-2 PNGs, AWS config and wallet funding.**
+
+---
+
+## Closure criterion: `/supported`, never "it compiles"
+
+An alta is finished when the network answers on `GET /supported`. Nothing else
+counts -- not a green `cargo build`, not a green test suite, not a successful
+deploy.
+
+```bash
+curl -s https://facilitator.ultravioletadao.xyz/supported \
+  | jq '[.kinds[].network] | map(select(startswith("scroll")))'
+# [] means NOT DONE, whatever else is green
+```
+
+### The proof: three networks that compile and are served nowhere
+
+`Sei`, `SeiTestnet` and `XdcMainnet` are declared in the `Network` enum
+(42 variants) and wired into every compiler-enforced site -- `Display`
+(`src/network.rs:161`, `:174`, `:175`), `FromStr` (`:223`, `:236`, `:237`),
+`to_caip2`, `from_caip2`, `NetworkFamily` (`:293`, `:306`, `:307`). They
+serialize, they parse, both spellings resolve.
+
+They are in **zero of the four `variants()` copies**. Measured on `dc109511`:
+
+| | count |
+|---|---|
+| `Network` enum variants | 42 |
+| union of the four `variants()` copies | 39 |
+| in the enum, in no copy | 3 -- `Sei`, `SeiTestnet`, `XdcMainnet` |
+| distinct v1 names in live `/supported` | 39 |
+| the union vs live `/supported` | identical, name for name |
+
+That last row is the whole point: `ProviderCache::from_env` iterates
+`Network::variants()` (`src/provider_cache.rs:113`) and `/supported` walks the
+provider map (`src/facilitator_local.rs:289`). A variant outside `variants()` gets
+no provider and is advertised nowhere -- no error, no warning, no failing test.
+
+Reproduce it:
+
+```bash
+curl -s https://facilitator.ultravioletadao.xyz/supported \
+  | jq -r '[.kinds[].network]|unique|.[]' | grep -v ':' | wc -l   # 39
+curl -s https://facilitator.ultravioletadao.xyz/supported \
+  | jq -r '[.kinds[].network]|unique|.[]' | grep -iE 'sei|xdc'    # nothing
+```
+
+Note `/supported` lists each chain twice -- once by v1 name, once by CAIP-2 alias
+-- so an unfiltered `length` counts identifier strings, not networks. Filter out
+`:` for a v1-name count, and use `python scripts/verify_landing_canonical.py` for
+the canonical mainnet count.
 
 ---
 
@@ -651,10 +975,12 @@ Claude: [Checks prerequisites]
   - Logo: static/scroll.png EXISTS
   - Mainnet: 0.05 ETH FUNDED
   - Testnet: 0.1 ETH FUNDED
-Claude: All prerequisites met! Implementing and deploying...
-[Implements all changes]
-[Calls /ship skill]
-Claude: Scroll deployed! Verified at https://facilitator.ultravioletadao.xyz/supported
+Claude: All prerequisites met. Implementing the 17 files...
+[Implements all changes, bumps VERSION, stages per file, commits]
+Claude: Committed. Pushing to main deploys to production - your call.
+User: push it
+[Push; CI builds, applies to ECS, waits for the rollout]
+Claude: Live. /supported lists scroll + scroll-sepolia; /version reports 2.30.0.
 ```
 
 ### Example 2: New chain (missing logo)

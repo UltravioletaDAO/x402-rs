@@ -26,3 +26,7 @@ The earlier failed run `35241072014` caught two untranslated HBAR balance labels
 ## Scope retained
 
 Receipt issuance and durable purchase idempotency remain in the [master plan](../plans/facilitator-receipts-master-plan.md), not implemented by this frontend fix. Paid EURC acceptance on Arc is still pending by user instruction. This follow-up submits no payments, swaps or settlements.
+
+## Production closure
+
+Facilitator **2.35.1** is deployed and publicly verified. [Release evidence](../reports/2026-09-17-frontend-capabilities-release.json) records the passing PR/deployment runs, local validation and public acceptance. The live catalog includes XRPL USDC/RLUSD on both ledgers, native token metadata, Arc EURC, and the BSC/Sui corrections. Production browser checks cover filters, keyboard, EN/ES and mobile. HBAR `/verify` now returns `invalid_asset` on both Hedera ledgers. No new payments, swaps or settlements were submitted.

@@ -120,7 +120,7 @@ consensus, exact principal and the persisted signed-transaction hash.
 
 ## USDC-only policy acceptance (2026-09-17)
 
-The public negative check also found an error-reporting defect in 2.35.0: an unsupported HBAR offer returns HTTP 400 with `internal_error`, instead of the typed `invalid_asset` verdict. No payment is authorized. The capability/frontend follow-up corrects this classification; the acceptance report preserves the observed response.
+The public negative check also found an error-reporting defect in 2.35.0: an unsupported HBAR offer returns HTTP 400 with `internal_error`, instead of the typed `invalid_asset` verdict. No payment is authorized. Facilitator **2.35.1** corrects this classification to `invalid_asset` on both ledgers; see the [public acceptance](../reports/2026-09-17-frontend-capabilities-production.json). The 2.35.0 acceptance report preserves its original observed response.
 
 Facilitator **2.35.0**, Python **0.87.0** and TypeScript **2.95.0** are published and verified. Both Hedera ledgers advertise native USDC only; public HBAR verification requests are refused. Browser checks confirm a single USDC badge, a separately labelled HBAR fee balance, native wallet IDs and desktop/mobile layout. Swagger, agent documents and the OG image match the policy.
 

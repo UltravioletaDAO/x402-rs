@@ -1,0 +1,303 @@
+{
+  "checkedAt": "2026-09-17T17:15:56.030419+00:00",
+  "version": {
+    "version": "2.35.1"
+  },
+  "newTransactions": 0,
+  "settleCalls": 0,
+  "checks": [
+    "Live payment metadata for 19 affected ledgers, including Stellar decimals and BSC/Sui exclusions",
+    "Public asset bytes match release",
+    "XRPL/Arc/Hedera badges on both ledgers",
+    "USDC/EURC/RLUSD filters",
+    "Keyboard selection",
+    "Selection persists across tabs",
+    "Empty result and clear",
+    "EN/ES labels and result counts",
+    "32px visible logos",
+    "Desktop/mobile layout",
+    "Networks table metadata and XRPL testnet"
+  ],
+  "supported": [
+    {
+      "network": "hedera:testnet",
+      "x402Version": 2,
+      "scheme": "exact",
+      "tokens": [
+        {
+          "token": "usdc",
+          "decimals": 6
+        }
+      ]
+    },
+    {
+      "network": "near",
+      "x402Version": 1,
+      "scheme": "exact",
+      "tokens": [
+        {
+          "token": "usdc",
+          "decimals": 6
+        }
+      ]
+    },
+    {
+      "network": "fogo-testnet",
+      "x402Version": 1,
+      "scheme": "exact",
+      "tokens": [
+        {
+          "token": "usdc",
+          "decimals": 6
+        }
+      ]
+    },
+    {
+      "network": "sui",
+      "x402Version": 1,
+      "scheme": "exact",
+      "tokens": [
+        {
+          "token": "usdc",
+          "decimals": 6
+        }
+      ]
+    },
+    {
+      "network": "arc-testnet",
+      "x402Version": 1,
+      "scheme": "exact",
+      "tokens": [
+        {
+          "token": "usdc",
+          "decimals": 6
+        },
+        {
+          "token": "eurc",
+          "decimals": 6
+        }
+      ]
+    },
+    {
+      "network": "stellar-testnet",
+      "x402Version": 1,
+      "scheme": "exact",
+      "tokens": [
+        {
+          "token": "usdc",
+          "decimals": 7
+        }
+      ]
+    },
+    {
+      "network": "stellar",
+      "x402Version": 1,
+      "scheme": "exact",
+      "tokens": [
+        {
+          "token": "usdc",
+          "decimals": 7
+        }
+      ]
+    },
+    {
+      "network": "solana-devnet",
+      "x402Version": 1,
+      "scheme": "exact",
+      "tokens": [
+        {
+          "token": "usdc",
+          "decimals": 6
+        },
+        {
+          "token": "pyusd",
+          "decimals": 6
+        }
+      ]
+    },
+    {
+      "network": "bsc",
+      "x402Version": 1,
+      "scheme": "exact",
+      "tokens": [
+        {
+          "token": "ausd",
+          "decimals": 6
+        }
+      ]
+    },
+    {
+      "network": "fogo",
+      "x402Version": 1,
+      "scheme": "exact",
+      "tokens": [
+        {
+          "token": "usdc",
+          "decimals": 6
+        }
+      ]
+    },
+    {
+      "network": "near-testnet",
+      "x402Version": 1,
+      "scheme": "exact",
+      "tokens": [
+        {
+          "token": "usdc",
+          "decimals": 6
+        }
+      ]
+    },
+    {
+      "network": "xrpl",
+      "x402Version": 1,
+      "scheme": "exact",
+      "tokens": [
+        {
+          "token": "usdc",
+          "decimals": 6
+        },
+        {
+          "token": "rlusd",
+          "decimals": 6
+        },
+        {
+          "token": "xrp",
+          "decimals": 6
+        }
+      ]
+    },
+    {
+      "network": "arc",
+      "x402Version": 1,
+      "scheme": "exact",
+      "tokens": [
+        {
+          "token": "usdc",
+          "decimals": 6
+        },
+        {
+          "token": "eurc",
+          "decimals": 6
+        }
+      ]
+    },
+    {
+      "network": "xrpl-testnet",
+      "x402Version": 1,
+      "scheme": "exact",
+      "tokens": [
+        {
+          "token": "usdc",
+          "decimals": 6
+        },
+        {
+          "token": "rlusd",
+          "decimals": 6
+        },
+        {
+          "token": "xrp",
+          "decimals": 6
+        }
+      ]
+    },
+    {
+      "network": "hedera:mainnet",
+      "x402Version": 2,
+      "scheme": "exact",
+      "tokens": [
+        {
+          "token": "usdc",
+          "decimals": 6
+        }
+      ]
+    },
+    {
+      "network": "solana",
+      "x402Version": 1,
+      "scheme": "exact",
+      "tokens": [
+        {
+          "token": "usdc",
+          "decimals": 6
+        },
+        {
+          "token": "ausd",
+          "decimals": 6
+        },
+        {
+          "token": "pyusd",
+          "decimals": 6
+        }
+      ]
+    },
+    {
+      "network": "algorand-testnet",
+      "x402Version": 1,
+      "scheme": "exact",
+      "tokens": [
+        {
+          "token": "usdc",
+          "decimals": 6
+        }
+      ]
+    },
+    {
+      "network": "sui-testnet",
+      "x402Version": 1,
+      "scheme": "exact",
+      "tokens": [
+        {
+          "token": "usdc",
+          "decimals": 6
+        }
+      ]
+    },
+    {
+      "network": "algorand",
+      "x402Version": 1,
+      "scheme": "exact",
+      "tokens": [
+        {
+          "token": "usdc",
+          "decimals": 6
+        }
+      ]
+    }
+  ],
+  "assetHashes": {
+    "index.html": "2a2d0d17da78781792fa603f2cc50ac1beb324180d300f992509ad709fe50e77",
+    "x402.js": "9d828c456d37bf81c5d2b93b08649b7d906909e83c87472dad5ddba4288bf3f0",
+    "networks.html": "77701ebd64f2fce3e322d2bd4afc558ce6cdda751420bf7f5f69bd1819786f57"
+  },
+  "hederaNegativeVerify": [
+    {
+      "network": "hedera:testnet",
+      "httpStatus": 200,
+      "response": {
+        "isValid": false,
+        "invalidReason": "invalid_asset"
+      }
+    },
+    {
+      "network": "hedera:mainnet",
+      "httpStatus": 200,
+      "response": {
+        "isValid": false,
+        "invalidReason": "invalid_asset"
+      }
+    }
+  ],
+  "hederaWallets": [
+    {
+      "network": "hedera:testnet",
+      "account": "0.0.10576385"
+    },
+    {
+      "network": "hedera:mainnet",
+      "account": "0.0.10868300"
+    }
+  ],
+  "xrplGasBalance": "23.1620",
+  "pageErrors": []
+}

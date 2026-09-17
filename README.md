@@ -28,7 +28,14 @@ Includes [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) on-chain reputation
 
 ## Supported Networks
 
-> **Live availability**: Run `python scripts/verify_landing_canonical.py` and inspect `/supported`. Counting identifier strings counts aliases as networks.
+> **Live availability**: Run `python scripts/verify_landing_canonical.py` and inspect `/supported`. Counting identifier strings counts aliases as networks — most networks appear twice, under a v1 name and a CAIP-2 id, and one network can carry several schemes. Drop the CAIP-2 ids before counting:
+>
+> ```bash
+> # mainnets that have a v1 name (22 on 2026-09-17; Hedera has none, so it is not in this count)
+> curl -s https://facilitator.ultravioletadao.xyz/supported | jq -r '[.kinds[].network] | unique | .[]' | grep -v ':' | grep -vcE 'testnet|sepolia|devnet|fuji|amoy'
+> ```
+>
+> The two tables below listed exactly what `/supported` served on 2026-09-17: 23 mainnets and 20 testnets, Arc and Hedera included.
 
 ### Arc (independently enabled)
 
@@ -39,9 +46,12 @@ Includes [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) on-chain reputation
 
 Arc has separate RPC and deployment switches. A running instance serves a network
 only when it appears in [`/supported`](https://facilitator.ultravioletadao.xyz/supported).
-See [Arc operations, canaries and activation](docs/networks/arc.md). Python SDK 0.84.0 and TypeScript SDK 2.92.0 include both Arc networks. USDC is also
+Integrators start at [Arc: getting paid in USDC](docs/networks/arc.md); operators want
+[Arc operations, canaries and activation](docs/networks/arc-operations.md).
+Python SDK 0.84.0 and TypeScript SDK 2.92.0 include both Arc networks. USDC is also
 the gas token: native and ERC-20 amounts are two precisions of the same balance.
-See [native Hedera operations and public receipts](docs/guides/hedera-native.md).
+Integrators start at [Hedera: getting paid in HBAR or HTS tokens](docs/networks/hedera.md);
+operators want [native Hedera operations and public receipts](docs/guides/hedera-native.md).
 Both network tables include Arc and native Hedera; runtime availability remains `/supported`.
 
 ### Arc and Hedera payment identifiers
@@ -79,10 +89,10 @@ durable-evidence and other unsupported extensions.
 | **Optimism** | 10 | USDC | [optimistic.etherscan.io](https://optimistic.etherscan.io) |
 | **Polygon** | 137 | USDC | [polygonscan.com](https://polygonscan.com) |
 | **Avalanche** | 43114 | USDC | [snowtrace.io](https://snowtrace.io) |
-| **Celo** | 42220 | cUSD | [celoscan.io](https://celoscan.io) |
+| **Celo** | 42220 | USDC, USDT | [celoscan.io](https://celoscan.io) |
 | **HyperEVM** | 999 | USDC | [hyperliquid.xyz](https://hyperliquid.xyz) |
 | **Unichain** | 130 | USDC | [uniscan.xyz](https://uniscan.xyz) |
-| **Monad** | 10143 | MON | [monad.xyz](https://monad.xyz) |
+| **Monad** | 143 | USDC, AUSD, USDT | [monad.xyz](https://monad.xyz) |
 | **BSC** | 56 | USDC | [bscscan.com](https://bscscan.com) |
 | **SKALE Base** | 1187947933 | USDC.e | [skale-base-explorer](https://skale-base-explorer.skalenodes.com) |
 | **Scroll** | 534352 | USDC | [scrollscan.com](https://scrollscan.com) |
@@ -107,7 +117,7 @@ durable-evidence and other unsupported extensions.
 | Optimism Sepolia | 11155420 | [faucet.circle.com](https://faucet.circle.com) |
 | Polygon Amoy | 80002 | [faucet.polygon.technology](https://faucet.polygon.technology) |
 | Avalanche Fuji | 43113 | [faucet.avax.network](https://faucet.avax.network) |
-| Celo Alfajores | 44787 | [faucet.celo.org](https://faucet.celo.org) |
+| Celo Sepolia | 44787 (`celo-sepolia`) | [faucet.celo.org](https://faucet.celo.org) |
 | HyperEVM Testnet | 333 | - |
 | Unichain Sepolia | 1301 | - |
 | SKALE Base Sepolia | 324705682 | [base-sepolia-faucet.skale.space](http://base-sepolia-faucet.skale.space) |
@@ -117,7 +127,7 @@ durable-evidence and other unsupported extensions.
 | Stellar Testnet | - | [friendbot](https://friendbot.stellar.org) |
 | Algorand Testnet | - | [dispenser.testnet.aws.algodev.network](https://dispenser.testnet.aws.algodev.network) |
 | Sui Testnet | - | [suifaucet.com](https://suifaucet.com) |
-| Monad Testnet | 10143 | [monad.xyz](https://monad.xyz) |
+| XRPL Testnet | `xrpl-testnet` / `xrpl:1` | - |
 | Robinhood Chain Testnet | 46630 | [faucet.testnet.chain.robinhood.com](https://faucet.testnet.chain.robinhood.com) |
 
 ### Supported Stablecoins
@@ -153,8 +163,8 @@ durable-evidence and other unsupported extensions.
 | Unichain | Y | - | - | - | - | - |
 | Scroll | Y | - | - | - | - | - |
 | Robinhood Chain | - | - | - | - | - | Y |
-| Arc (when enabled) | Y | - | - | - | - | - |
-| Hedera (when enabled) | Y | - | - | - | - | - |
+| Arc (mainnet + testnet) | Y | - | - | - | - | - |
+| Hedera (mainnet + testnet) | Y | - | - | - | - | - |
 | SKALE Base | Y | - | - | - | - | - |
 | Solana | Y | Y | - | - | Y | - |
 | Sui | Y | Y | - | - | - | - |
@@ -164,6 +174,11 @@ durable-evidence and other unsupported extensions.
 | Algorand | Y | - | - | - | - | - |
 | XRPL | Y | - | - | - | - | - |
 
+> **Arc and Hedera note**: both are served on mainnet *and* testnet as of
+> 2026-09-17 03:08Z. Each network still has its own independent activation
+> switch, so a self-hosted instance may serve neither — `/supported` is what
+> decides. Hedera's HBAR is native and not a stablecoin, so it is not a column here.
+>
 > **XRPL note**: In addition to USDC (issued token), XRPL also supports **RLUSD** (issued token) and **native XRP**. These are not EIP-3009 tokens, so they are not tracked by `scripts/stablecoin_matrix.py` (which only enumerates EIP-3009 stablecoins). See `docs/plans/xrpl-native-x402-integration-plan.md`.
 
 ---
@@ -682,6 +697,7 @@ When bumping the version, adding endpoints, or adding networks, update **all** o
 | `VERSION` | the release version — never `Cargo.toml`, which holds a frozen `0.0.0` placeholder |
 | `src/openapi.rs` | endpoint docs, network lists (the version is patched at runtime from `VERSION`) |
 | `README.md` | Version badge, network tables, API endpoint table, ERC-8004 network count |
+| `docs/networks/<network>.md` | The integrator's usage guide: identifiers, asset and decimals, what the buyer signs, what does not work. Same sections as [`docs/networks/arc.md`](docs/networks/arc.md). Operator runbooks go beside it as `<network>-operations.md` or under `docs/guides/` |
 | `static/index.html` | Network cards, stats, ERC-8004 showcase badges, i18n strings (EN/ES) |
 | `docs/CHANGELOG.md` | New version entry |
 | `src/erc8004/mod.rs` | `supported_networks()` when adding ERC-8004 networks |
@@ -716,4 +732,6 @@ Apache 2.0
 
 ## Native Hedera
 
-Native Hedera `exact` payments use x402 v2, HBAR and allowlisted HTS fungible tokens. Networks are enabled independently and reported by `/supported`; mainnet requires its own funded signer and release canaries. See [configuration, merchant requirements, recovery and validation status](docs/guides/hedera-native.md).
+Native Hedera `exact` payments use x402 v2, HBAR and allowlisted HTS fungible tokens. Networks are enabled independently and reported by `/supported`; mainnet requires its own funded signer and release canaries. Hedera is **v2-only** and has no v1 network name, accounts are numeric entity ids (`0.0.1234`, never a `0x` address or an alias), and the EVM chain ids 295/296 are not this payment rail.
+
+Integrators start at [Hedera: getting paid in HBAR or HTS tokens](docs/networks/hedera.md); operators want [configuration, merchant requirements, recovery and validation status](docs/guides/hedera-native.md). The `extra.feePayer` differs per network — read it from `/supported`, never carry one across.

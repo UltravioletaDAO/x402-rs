@@ -1,143 +1,328 @@
-# Arc facilitator operations
+# Arc (Circle) — getting paid in USDC on Arc through this facilitator
 
-Scope: direct `exact` USDC payments with EIP-3009 authorizations signed by an
-EOA. Both x402 v1 names and v2 CAIP-2 identifiers resolve to distinct networks.
-Python `uvd-x402-sdk` **0.84.0** and TypeScript `uvd-x402-sdk` **2.92.0**
-include both Arc networks. See the [Python Arc guide](https://github.com/UltravioletaDAO/uvd-x402-sdk-python/blob/main/docs/networks/arc.md)
-and [TypeScript Arc guide](https://github.com/UltravioletaDAO/uvd-x402-sdk-typescript/blob/main/docs/networks/arc.md).
+> **Status on 2026-09-17: live on mainnet and on testnet.** `GET /supported` lists
+> both `arc` / `eip155:5042` and `arc-testnet` / `eip155:5042002`, each with `exact`
+> and USDC at 6 decimals. Measured against `https://facilitator.ultravioletadao.xyz`
+> at `/version` **2.33.0**.
+> [Check it yourself](#1-is-it-live) every time: `/supported` is the only list that is
+> true today, and this page is not.
 
-| Parameter | Mainnet | Testnet |
+This is the integrator's page: what to put in a 402, what the buyer signs, what comes
+back, and what does not work. Running a facilitator that serves Arc — activation
+switches, funding, canaries, rollback and the acceptance evidence — is
+[Arc facilitator operations](arc-operations.md).
+
+Everything here was read from the chain or from this repository's source, and says
+when. Where something is documented by Circle but has not been measured here, the page
+says so.
+
+---
+
+## At a glance
+
+| | Arc mainnet | Arc testnet |
 |---|---|---|
-| v1 network | `arc` | `arc-testnet` |
-| Chain ID / v2 network | 5042 / `eip155:5042` | 5042002 / `eip155:5042002` |
-| RPC | `https://rpc.mainnet.arc.io` | `https://rpc.testnet.arc.io` |
-| Explorer | `https://explorer.arc.io` | `https://explorer.testnet.arc.io` |
-| RPC variable | `RPC_URL_ARC` | `RPC_URL_ARC_TESTNET` |
-| Activation variable | `arc_mainnet_enabled` | `arc_testnet_enabled` |
-| Signer | `EVM_PRIVATE_KEY_MAINNET` | `EVM_PRIVATE_KEY_TESTNET` |
-| Facilitator wallet | `0x103040545AC5031A11E8C03dd11324C7333a13C7` | `0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8` |
+| Network, x402 v1 name | `arc` | `arc-testnet` |
+| Network, x402 v2 (CAIP-2) | `eip155:5042` | `eip155:5042002` |
+| Chain id | `5042` (`0x13b2`) | `5042002` (`0x4cef52`) |
+| Family | EVM | EVM |
+| Scheme | `exact` only — an EIP-3009 `transferWithAuthorization` | same |
+| Asset | USDC `0x3600000000000000000000000000000000000000`, **6 decimals** | same address, **6 decimals** |
+| EIP-712 domain | `name` = `USDC`, `version` = `2` | `name` = `USDC`, `version` = `2` |
+| Domain separator | `0x940506…ccdf84` | `0x361191…11c8c6b0` |
+| Gas | paid by the facilitator, **in USDC**. The buyer signs and pays nothing else | same |
+| Facilitator fee | none | none |
+| Wallets | an EOA (a plain key) signs; see [what does not work](#6-what-does-not-work-today) for contract wallets | same |
 
-USDC is `0x3600000000000000000000000000000000000000` on both networks.
-EIP-712 name/version are `USDC` / `2`. ERC-20 amounts use **6 decimals**;
-native gas amounts use **18 decimals**. They are views of **one balance**.
-Never sum `eth_getBalance` and `balanceOf` as separate funds.
+Both networks carry the same USDC address and the same EIP-712 `name`/`version`. **The
+chain id is the only thing that separates the two domains**, so a signature made for
+one network cannot verify on the other — which is the intended behaviour, not a bug.
 
-Verified against the official RPCs on 2026-09-16, at mainnet block 21,183,711
-and testnet block 62,428,890. The domain separators, also recomputed locally:
+---
 
-```text
-mainnet 0x940506929bba468048a19b567f4f0d534714bc06604b5c3017e5d16785ccdf84
-testnet 0x361191522483d32a83e70ae7183b4b9629442c13a78bc9921d6f707911c8c6b0
-```
-
-Sources: [RPC endpoints](https://docs.arc.io/arc/references/rpc-endpoints),
-[contract addresses](https://docs.arc.io/arc/references/contract-addresses),
-[connection parameters](https://docs.arc.io/arc/references/connect-to-arc),
-[gas and fees](https://docs.arc.io/arc/references/gas-and-fees).
-Mainnet parameters were published after the original testnet implementation;
-the historical 2.30.0 changelog's mainnet availability note is superseded.
-
-## Activation and funding
-
-Both switches default to false. Production values live in
-`terraform/environments/production/production.auto.tfvars`; the same switch
-supplies the ECS and balances Lambda RPC. Enabling mainnet also installs RPC
-and low-reserve alarms. The initial reserve threshold is 0.1 native USDC.
-The landing page shows an Arc wallet only when `/supported` advertises it.
-
-Fund the wallet **on the selected Arc network**, initially with 1 USDC for
-mainnet (testnet funding comes from [Circle's faucet](https://faucet.circle.com)).
-Amounts on Ethereum, Base or Arc testnet do not fund Arc mainnet. The canary
-requires 0.1 USDC and refuses a gas quote above 50 gwei. Revisit the reserve
-against actual traffic; it is not a capacity guarantee.
-
-First run the read-only preflight, then an isolated candidate with the intended
-RPC and signer, then enable that network through the normal CI release:
+## 1. Is it live?
 
 ```bash
-python scripts/arc_canary.py --network arc-testnet
-python scripts/arc_canary.py --network arc
-# Explicitly spends 0.000001 USDC plus gas, between our two EVM wallets:
-python scripts/arc_canary.py --network arc-testnet --facilitator http://127.0.0.1:18402 --execute
-# After rollout, test the PUBLIC route (same check for --network arc):
-python scripts/arc_canary.py --network arc-testnet --execute
-# The v2 envelope and CAIP-2 identifier, also without a proprietary SDK:
-python scripts/arc_canary.py --network arc-testnet --x402-version 2 --execute
+curl -s https://facilitator.ultravioletadao.xyz/supported \
+  | jq -c '[.kinds[] | select(.network | startswith("arc")) | {x402Version, scheme, network, networkAliases}]'
 ```
 
-Requires `eth-account`, `eth-utils`, and `boto3` for execution. Execution reads
-the matching `facilitator-evm-{mainnet,testnet}-private-key` AWS secret in
-`us-east-2` into memory and asserts its address. Do not put keys in CLI arguments
-or committed files. An isolated server needs the same blacklist provisioning
-as Docker plus OFAC enabled; CI Docker builds default the local blacklist to
-`[]` when absent. Keep local candidates out of the production writer election.
+On 2026-09-17 that prints two entries, one per network:
 
-The canary validates chain identity, fresh block, USDC domain and decimals,
-`/supported`, `/verify`, `/settle`, a successful receipt, the exact token
-Transfer log and recipient delta, then replay without another debit. It logs
-the authorization nonce before sending and the resulting transaction hash.
-If settle is uncertain, reconcile that nonce/hash on the selected chain;
-**do not create another authorization to retry an uncertain payment**.
+```json
+[{"x402Version":1,"scheme":"exact","network":"arc-testnet","networkAliases":["arc-testnet","eip155:5042002"]},
+ {"x402Version":1,"scheme":"exact","network":"arc","networkAliases":["arc","eip155:5042"]}]
+```
 
-Release checks: correct `/version`; expected `exact` network in `/supported`;
-Arc's entry healthy in `/health/ready`; public canary receipt; balances Lambda reports
-native USDC for the same wallet; mainnet alarms and delivery channel present.
-Inspect Arc readiness separately from unrelated existing chain degradation.
+Each carries `extra.tokens` naming USDC at `0x3600…0000` with `decimals: 6`. An empty
+`[]` means the deployment you are talking to does not serve Arc — stop there, because
+nothing on this page works against it. A release that contains Arc with the network
+switched off refuses it as an unknown network; a release that predates Arc answers
+HTTP `400` `Invalid CAIP-2 format: eip155:5042` because the binary does not know the
+chain at all.
 
-Rollback: disable only the affected `arc_*_enabled` flag and release it through
-the existing targeted CI deployment. Preserve nonce/hash evidence and reconcile
-pending transactions first. Disabling a network does not cancel broadcasts.
-Never use a full Terraform apply or `-refresh=false` to force activation.
+Readiness for the mainnet signer is separate from `/supported`:
 
-## Validation evidence
+```bash
+curl -s 'https://facilitator.ultravioletadao.xyz/health/ready?network=arc' | jq -c '.networks'
+```
 
-- Full facilitator suite: 2,446 tests passed, plus ignored live RPC checks run
-  explicitly for both networks. Clippy passed with existing repository warnings.
-- Balance monitor tests cover independent switches, chain ID mismatch and one
-  native balance. Terraform validation and landing canonical checks passed.
-- Isolated testnet canary: [confirmed transfer](https://explorer.testnet.arc.io/tx/0x0f6aa81bdc52669fe4bde349d26b68e6270c563c26ef2639b469c22127fc2e39),
-  one atomic USDC unit received, 0.002814575 USDC gas; replay HTTP 400, no second
-  debit. Raw public evidence: `docs/reports/2026-09-16-arc-testnet-canary.jsonl`.
-- Isolated testnet v2/CAIP-2 canary also passed: [confirmed transfer](https://explorer.testnet.arc.io/tx/0x139489c10866a42139f82dd44f91fb25cca23715d4023d0b10164d77723d67f5),
-  gas 0.002189775 USDC; replay HTTP 400 without another debit.
-- Mainnet signer funding confirmed by [receipt](https://explorer.arc.io/tx/0x4479f7ea0212c35b94389aca1f2cd790d309c22710098b4ed3528a31e6a4e31b).
-- Isolated mainnet v1 canary passed: [receipt](https://explorer.arc.io/tx/0x2246ad72a2a00a5ea19f54d32effff32ee8cea7a58c5e0cf0740244216dc92f4),
-  gas 0.002252606134343883 USDC; v2/CAIP-2 also passed: [receipt](https://explorer.arc.io/tx/0x5b66c97e80ca7773ba919a0052b79d4ec3db193419a1c355f33d0f5e4c62636d),
-  gas 0.001804750735987521 USDC. Each delivered one atomic USDC unit and
-  rejected replay without a second debit. Evidence is in `docs/reports/*candidate-canary.jsonl`.
-- Production rollout and public acceptance completed **2026-09-16 17:24 UTC**:
-  version **2.31.0**, image `2.31.0-5a7acfc`, ECS task revision 434, two healthy
-  tasks. Both Arc networks advertise `exact` under v1 names and v2 CAIP-2 IDs;
-  readiness is `ok`, balances are present and both mainnet alarms are `OK`.
-- Four payments through the **public facilitator** passed (one atomic USDC each),
-  including receipt, Transfer emitter, recipient balance and replay checks:
+Measured 2026-09-17: `status: "ok"`, `rpc: "ok"`, the signer's `gasOk: true`.
 
-  | Network | v1 receipt | v2 receipt |
-  |---|---|---|
-  | Mainnet | [Confirmed](https://explorer.arc.io/tx/0xe661af1a632b7f4fc4d536fb6234c3b2563860068b8a68755aad82467e075488) | [Confirmed](https://explorer.arc.io/tx/0x15f7519fc68d676ca420456fd44c13233bca33a2a51fca2988b862208f482787) |
-  | Testnet | [Confirmed](https://explorer.testnet.arc.io/tx/0x243f3ebb20f5afac0913f11890378eceb52af008c56c2b7c4b38dc2758359c8a) | [Confirmed](https://explorer.testnet.arc.io/tx/0xb57895281e25a15468d0b77a51850f3817a24db91261452fae521796a385be66) |
+## 2. The asset, and the trap in its decimals
 
-  [Production acceptance record](../reports/2026-09-16-arc-production-acceptance.json)
-  includes fees, replay outcomes and the deployed configuration.
-  [Release CI](https://github.com/UltravioletaDAO/x402-rs/actions/runs/35126105947)
-  passed all jobs. Existing Ethereum/Polygon Amoy readiness issues are separate
-  from this Arc acceptance and remain recorded in the evidence.
+**On Arc, USDC is the native gas token and an ERC-20 at the same time, over one
+balance.** The native balance has **18** decimals. The ERC-20 interface at
+`0x3600000000000000000000000000000000000000` shows the same money with **6**,
+truncated: `balanceOf = floor(native_balance / 10^12)`.
 
-No Arc Gateway, EURC, USYC, `upto`, escrow, ERC-8004 writes, EIP-6492 or contract
-wallet support is claimed. The universal validator address has no code on
-either Arc network. Signatures from the other network fail before broadcast.
+**Every amount x402 carries on Arc is in the 6-decimal view.** `accepted.amount`
+(v2), `maxAmountRequired` (v1) and `authorization.value` are all ERC-20 units:
 
-## SDK acceptance (2026-09-16)
+| Price | Right (6 decimals) | Wrong (18 decimals) |
+|---|---|---|
+| 0.01 USDC | `"10000"` | `"10000000000000000"` |
+| 1 USDC | `"1000000"` | `"1000000000000000000"` |
 
-The Python and TypeScript SDKs each completed four additional controlled payments
-through the public facilitator: mainnet/testnet, x402 v1/v2. Every receipt succeeded,
-credited exactly one atomic USDC unit, and replay produced no second credit.
-These payments exercised the SDK signing, header encoding, verify and settle paths.
-TypeScript used an injected EIP-1193 signer in Node, not a browser-wallet UI.
+**An 18 where a 6 belongs asks for 10^12 times the price** — a trillion. At best the
+payment fails for funds; at worst a buyer signs an authorization for a trillion
+times what they meant to pay. EIP-3009 moves exactly the signed `value`; nothing
+downstream rescales it. This is the single most expensive mistake available on Arc,
+and it is available on mainnet now, with real money.
 
-- [Python 0.84.0 receipt evidence](https://github.com/UltravioletaDAO/uvd-x402-sdk-python/blob/v0.84.0/docs/reports/2026-09-16-arc-sdk-acceptance.json)
-- [TypeScript 2.92.0 receipt evidence](https://github.com/UltravioletaDAO/uvd-x402-sdk-typescript/blob/v2.92.0/docs/reports/2026-09-16-arc-sdk-acceptance.json)
+The same trap in the other direction, for anyone reading balances:
 
-Install with `pip install "uvd-x402-sdk[signer]>=0.84.0"` or
-`npm install uvd-x402-sdk@^2.92.0`. Network names are `arc` and `arc-testnet`;
-the v2 identifiers remain `eip155:5042` and `eip155:5042002`.
+- `eth_getBalance` (18 decimals) and `balanceOf` (6) are **the same money**. Never add
+  them together, and never format one with the other's decimals.
+- A remainder smaller than one micro-USDC stays in the native balance and does not
+  show through `balanceOf`.
+- Measured on one account: `eth_getBalance` = 13,489,266,029,671,387,940 wei,
+  `balanceOf` = 13,489,266 — exactly `floor(native / 10^12)`.
+- Circle's own gas-and-fees page used `parseUnits("1", 6)` for a *native* transfer when
+  it was read on 2026-09-15. Native amounts are 18 decimals; do not copy that line.
+
+## 3. What the seller puts in the 402
+
+Upstream's EVM package (`@x402/evm`, `defaultAssets.ts`, reviewed at commit
+`6b930273` on 2026-09-15) has **no entry for Arc**, so a shorthand price such as
+`"$0.01"` cannot find USDC there. Name the asset, the amount and the domain
+explicitly.
+
+x402 v2 requirements for 0.01 USDC on **mainnet**:
+
+```json
+{
+  "scheme": "exact",
+  "network": "eip155:5042",
+  "asset": "0x3600000000000000000000000000000000000000",
+  "amount": "10000",
+  "payTo": "<the seller's EVM address>",
+  "maxTimeoutSeconds": 300,
+  "extra": {
+    "name": "USDC",
+    "version": "2"
+  }
+}
+```
+
+For testnet, the same body with `"network": "eip155:5042002"`.
+
+- In a v2 body `accepted.network` **must** be the CAIP-2 form; `arc` and `arc-testnet`
+  are the spellings for v1 bodies. Mixing them is an HTTP `400 invalid_request_body`,
+  not a payment failure.
+- `maxTimeoutSeconds: 300` is a choice, not an Arc requirement.
+- `extra.name` / `extra.version` are for the **buyer's** wallet, which needs them to
+  build the digest. The facilitator does not trust them: Arc USDC is in its static
+  domain table, and that table wins over whatever `extra` says.
+
+## 4. What the buyer signs
+
+A standard EIP-3009 `TransferWithAuthorization`, over this domain:
+
+| Domain field | Mainnet | Testnet |
+|---|---|---|
+| `name` | `USDC` | `USDC` |
+| `version` | `2` | `2` |
+| `chainId` | `5042` | `5042002` |
+| `verifyingContract` | `0x3600000000000000000000000000000000000000` | same |
+
+Those hash to the two separators abbreviated in the table at the top. The full
+32-byte values are written once each, in `ARC_USDC_DOMAIN_SEPARATOR` in
+`src/chain/evm.rs` and in [Arc facilitator operations](arc-operations.md) — compare
+against those, or re-read `DOMAIN_SEPARATOR()` yourself. Both were read from the
+contract's `DOMAIN_SEPARATOR()` **and** recomputed locally from the four fields above;
+the two match. Re-measured 2026-09-17 at mainnet block 21,259,527 and testnet block
+62,505,464, and a test fails if the contract stops publishing them.
+
+If your wallet produces a different separator, the signature will not verify — the
+usual cause is a wrong chain id, and with two networks on the same USDC address that
+is now the easy mistake to make.
+
+The contract is a proxy, so these values can change under the same address. If you pin
+them too, re-read them when something stops verifying.
+
+The `/verify` body in the v2 shape, with `payload` abbreviated. A runnable body with
+well-formed placeholders, written for Base, is the v2 example in
+[`/skill.md`](https://facilitator.ultravioletadao.xyz/skill.md) §3; the Arc body is
+that one with the `accepted` below and `authorization.value` set to the same amount.
+
+```json
+{
+  "x402Version": 2,
+  "paymentPayload": {
+    "x402Version": 2,
+    "payload": {
+      "signature": "0x…",
+      "authorization": {
+        "from": "<buyer>",
+        "to": "<seller, the same address as payTo>",
+        "value": "10000",
+        "validAfter": "<unix seconds, as a string>",
+        "validBefore": "<unix seconds, as a string>",
+        "nonce": "0x… (32 bytes)"
+      }
+    }
+  },
+  "resource": {
+    "url": "https://example.com/protected",
+    "description": "One API call",
+    "mimeType": "application/json"
+  },
+  "accepted": {
+    "scheme": "exact",
+    "network": "eip155:5042",
+    "amount": "10000",
+    "payTo": "<seller, the same address as authorization.to>",
+    "maxTimeoutSeconds": 300,
+    "asset": "0x3600000000000000000000000000000000000000",
+    "extra": { "name": "USDC", "version": "2" }
+  }
+}
+```
+
+`authorization.value` and `accepted.amount` are the same 6-decimal number. The general
+rules for that envelope — which fields are strings, what moved between v1 and v2 —
+are in the same §3.
+
+## 5. What the facilitator does, and what comes back
+
+1. `POST /verify` checks the signature against the domain above, the amount, the
+   recipient, the time window and the payer's balance. It does not send anything.
+2. `POST /settle` submits `transferWithAuthorization` from the facilitator's own
+   account, with `value = 0` in the transaction: the payment leaves
+   `authorization.from`, and the facilitator pays the gas in USDC. No approval, no
+   deposit, no bridge.
+3. A settle answers with the transaction hash once there is a receipt. Arc is final
+   on inclusion, but a submitted transaction is not yet a receipt. If the receipt does
+   not arrive in time the answer is HTTP `502` with
+   `{"error": "settlement_unconfirmed", "transaction": "0x…", "paymentId": "…", "retryable": false}`
+   and deliberately no `Retry-After` (`src/handlers.rs`): the transaction may well be
+   mined. Look the hash up before doing anything else, and **do not ask the buyer to
+   sign again** — a fresh authorization for a payment that did land is a second debit.
+
+For anyone verifying a settlement from its receipt: Circle documents that a native
+USDC movement can also log a `Transfer` from the system emitter
+`0xffffFFFfFFffffffffffffffFfFFFfffFFFfFFfE`, in **18** decimals, next to the token
+contract's own `Transfer` in 6 — same topic, same `from` and `to`, same payment.
+Identify the event by **the address that emitted it**, not by its topic, or 0.01 USDC
+reads as ten billion. The facilitator's receipt reader filters by emitter, and a
+fixture carrying both events holds it there.
+
+## 6. What does not work today
+
+Said plainly, so nobody builds on it. Every row re-measured on 2026-09-17, on **both**
+Arc networks unless stated.
+
+| | Status | Why |
+|---|---|---|
+| **EURC** | not accepted | On testnet the contract exists (`0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a`, 1,798 bytes, `name` `EURC`, `version` `2`, 6 decimals) but is not registered here; on **mainnet that address has no code at all** (0 bytes). Arc's asset allow-list holds USDC only, and a test pins it (`arc_accepts_its_usdc_and_nothing_else`), so an EURC payment is refused. EURC is euros: when it comes, a dollar price will not convert 1:1 |
+| **EIP-6492** (a counterfactual smart wallet, not deployed yet) | refused | The universal signature validator the facilitator calls, `0xdAcD51A54883eb67D95FAEb2BBfdC4a9a6BD2a3B`, has **no code on either Arc network** (0 bytes, mainnet and testnet). `/verify` answers `isValid: false` with `invalid_signature`, and `/settle` sends nothing. That token is the same one a bad signature gets; the explanation is only in the server log |
+| **Already-deployed EIP-1271 wallets** | not proven | The code path does not use the missing validator, but no positive payment from a contract wallet has been measured on Arc. Treat it as unsupported until one is |
+| **Circle Gateway / Nanopayments authorizations** | refused | Gateway also advertises `exact` on Arc, but its buyers sign against a different domain (`GatewayWalletBatched`, version `1`) and it settles in batches. Those signatures are not USDC transfer authorizations and do not verify here; they belong to Circle Gateway. For this facilitator, sign the USDC domain above |
+| **`upto`, `escrow` / `commerce`, ERC-8004** | not on Arc | `/supported` lists `exact` and only `exact` for both Arc networks, and neither `UPTO_DEPLOYED_NETWORKS` (`src/upto/types.rs`) nor `supported_networks()` (`src/erc8004/mod.rs`) names Arc. A network being served for `exact` does not enable anything else |
+| **USYC** | not accepted | Listed by Circle on Arc, not registered here, and not a plain stablecoin: its authorization, units and eligibility have not been analysed |
+
+**EIP-6492 has a path; it has not been walked.** The deterministic CREATE2 factory
+(`0x4e59b44847b379578588920cA78FbF26c0B4956C`) **is** deployed on both Arc networks
+(69 bytes each, 2026-09-17), which is what would let the validator be placed at its
+usual address. That is a separate change, and it will be announced when a real
+EIP-6492 payment has settled — not when the contract is merely deployed.
+
+## 7. Testing on Arc testnet
+
+| | |
+|---|---|
+| Public RPC | `https://rpc.testnet.arc.io` (mainnet: `https://rpc.mainnet.arc.io`) |
+| Explorer | `https://explorer.testnet.arc.io` (mainnet: `https://explorer.arc.io`) |
+| Faucet (USDC for gas **and** for paying) | `https://faucet.circle.com` |
+| Fees | EIP-1559. Circle documents a minimum `maxFeePerGas` of 20 gwei; `eth_gasPrice` answered 25 gwei on 2026-09-17 |
+
+`https://testnet.arcscan.app` still answers, but with an HTTP `301` to
+`https://explorer.testnet.arc.io/` — use the canonical host.
+
+Two things that look like our bug and are not:
+
+- **Arc blocks `0x70997970C51812dc3A010C7d01b50e0d17dc79C8` from genesis** — account #1
+  of the public Foundry/Anvil test mnemonic. A USDC transfer to it reverts with
+  `execution reverted: Blocked address`. Do not test with the default Anvil accounts.
+- A generic Anvil fork does not reproduce Arc's native-USDC rules. Test against the
+  testnet, or Circle's Arc Foundry tooling.
+
+Testnet USDC comes from Circle's faucet and is free. **Mainnet Arc is real money and
+the facilitator is live on it** — price a smoke test at one atomic unit (`"1"`), the
+way the canary does.
+
+## 8. Running your own facilitator with Arc
+
+Each Arc network is served only where its own RPC variable is set, and each has its own
+deployment switch:
+
+```bash
+RPC_URL_ARC=https://rpc.mainnet.arc.io
+RPC_URL_ARC_TESTNET=https://rpc.testnet.arc.io
+```
+
+The signers are the ordinary EVM ones — `EVM_PRIVATE_KEY_MAINNET` for `arc`,
+`EVM_PRIVATE_KEY_TESTNET` for `arc-testnet`. A signer pays Arc gas **in USDC**; there
+is no ETH on Arc, so it needs USDC on that exact network before it can settle
+anything. Balances on Ethereum, Base or Arc testnet do not fund Arc mainnet.
+
+Nothing checks that the URL you configure is really the Arc network you named it. The
+EIP-712 domain is built from the facilitator's table with chain id 5042 or 5042002,
+while the transaction goes to whatever chain the RPC answers for. Point either one at
+the wrong chain and every settle fails there, and the failure looks like a problem with
+the payment rather than with the configuration. Check with `eth_chainId` — expect
+`0x13b2` for mainnet and `0x4cef52` for testnet — before you switch it on.
+
+Activation switches, funding thresholds, the canary script, the release checklist and
+rollback are in [Arc facilitator operations](arc-operations.md).
+
+---
+
+## Sources
+
+Measured for this page on **2026-09-17** against `https://rpc.mainnet.arc.io` (block
+21,259,527) and `https://rpc.testnet.arc.io` (block 62,505,464): `eth_chainId` on both;
+USDC `decimals()`, `name()`, `version()` and `DOMAIN_SEPARATOR()` on both, each
+recomputed locally and matching; `eth_getCode` on the EIP-6492 validator (0 bytes on
+both), the CREATE2 factory (69 bytes on both) and EURC (0 bytes on mainnet, 1,798 on
+testnet); `eth_gasPrice` on testnet. `/supported`, `/version` and
+`/health/ready?network=arc` were read from the production facilitator the same day.
+The explorer hosts were probed for their HTTP status. The blocked genesis address and
+the two-precision balance were measured on 2026-09-16 at testnet block 62,335,077.
+
+Circle's documentation, not re-measured here: the 18 native decimals, the 20 gwei
+minimum, finality on inclusion, and the list of contract addresses —
+[connect to Arc](https://docs.arc.io/arc/references/connect-to-arc.md),
+[contract addresses](https://docs.arc.io/arc/references/contract-addresses.md),
+[stablecoin native model](https://docs.arc.io/arc/concepts/stablecoin-native-model.md),
+[gas and fees](https://docs.arc.io/arc/references/gas-and-fees.md),
+[USDC system events](https://docs.arc.io/arc/references/usdc-system-events.md),
+[EIP-3009 relayer](https://docs.arc.io/integrate/relayers-and-paymasters/eip-3009-relayer.md),
+[Nanopayments and x402](https://developers.circle.com/gateway/nanopayments/concepts/x402).
+
+x402 reference: [`@x402/evm` at `6b930273`](https://github.com/x402-foundation/x402/tree/6b9302737f16eea7de90b3bf617c045cef23e032/typescript/packages/mechanisms/evm).
+
+Operations, activation and the acceptance evidence for both networks:
+[Arc facilitator operations](arc-operations.md). The other network documented this
+way is [Hedera](hedera.md).

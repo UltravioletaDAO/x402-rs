@@ -161,3 +161,11 @@ and live USDC acceptance are recorded separately in the release evidence.
 
 Protocol reference: x402 v2 and offer-and-receipt at upstream commit
 `c8c71f244c0d45a6a4fd990a96c69aa34781cd05`.
+
+
+Published and chain-verified: facilitator 2.36.1, Python 0.88.0 and TypeScript
+2.96.0. The [release evidence](reports/2026-09-17-facilitator-receipts-release.md)
+contains eight USDC payments (both SDKs, both Arc and Hedera networks), signed
+receipts, independent chain checks and same-authorization recovery after a
+merchant HTTP 500. A ninth attempt was quota-blocked; its unchanged `unknown`
+receipt remains recoverable with both SDKs. EURC live settlement is still deferred.

@@ -1122,7 +1122,7 @@ impl Facilitator for AlgorandProvider {
             network_aliases: None,
             extra: Some(SupportedPaymentKindExtra {
                 fee_payer: Some(self.signer_address()),
-                tokens: None,
+                tokens: Some(crate::network::exact_payment_tokens(self.network())),
                 escrow: None,
             }),
         }];

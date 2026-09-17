@@ -2392,6 +2392,29 @@ pub fn supported_tokens_for_network(network: Network) -> Vec<TokenType> {
         .collect()
 }
 
+/// Discovery for the exact-payment providers backed by this registry.
+/// A deployment alone is insufficient: EVM requires ERC-3009, and the native
+/// NEAR/Stellar/Algorand/Sui implementations currently accept USDC only.
+/// XRPL and Hedera publish their own provider-specific metadata.
+pub fn exact_payment_tokens(network: Network) -> Vec<crate::types::SupportedTokenInfo> {
+    supported_tokens_for_network(network)
+        .into_iter()
+        .filter_map(|token| {
+            let deployment = get_token_deployment(network, token)?;
+            let supported = match NetworkFamily::from(network) {
+                NetworkFamily::Evm => deployment.eip712.is_some(),
+                NetworkFamily::Solana => true,
+                _ => token == TokenType::Usdc,
+            };
+            supported.then(|| crate::types::SupportedTokenInfo {
+                token,
+                address: deployment.address(),
+                decimals: deployment.decimals,
+            })
+        })
+        .collect()
+}
+
 /// Get all supported networks for a given token type.
 ///
 /// # Example
@@ -2470,6 +2493,34 @@ pub fn is_supported_asset(network: Network, asset: &MixedAddress) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exact_discovery_reports_payment_capabilities_not_every_deployment() {
+        let names = |network| exact_payment_tokens(network).into_iter().map(|t| t.token).collect::<Vec<_>>();
+        assert_eq!(names(Network::Bsc), vec![TokenType::Ausd]);
+        // Keep the deployment for address/decimal lookup, even though ERC-3009
+        // payments are unavailable. Discovery must not advertise that path.
+        assert_eq!(get_token_deployment(Network::Bsc, TokenType::Usdc).unwrap().decimals, 18);
+        for network in [Network::Arc, Network::ArcTestnet] {
+            assert_eq!(names(network), vec![TokenType::Usdc, TokenType::Eurc]);
+        }
+        assert_eq!(names(Network::Solana), vec![TokenType::Usdc, TokenType::Ausd, TokenType::Pyusd]);
+        assert_eq!(names(Network::SolanaDevnet), vec![TokenType::Usdc, TokenType::Pyusd]);
+        for network in [Network::Near, Network::NearTestnet, Network::Fogo, Network::FogoTestnet, Network::Stellar, Network::StellarTestnet] {
+            assert_eq!(names(network), vec![TokenType::Usdc]);
+            let t = &exact_payment_tokens(network)[0];
+            assert_eq!(t.address, get_token_deployment(network, TokenType::Usdc).unwrap().address());
+        }
+        assert_eq!(exact_payment_tokens(Network::Stellar)[0].decimals, 7);
+        #[cfg(feature = "sui")]
+        for network in [Network::Sui, Network::SuiTestnet] {
+            assert_eq!(names(network), vec![TokenType::Usdc]);
+        }
+        #[cfg(feature = "algorand")]
+        for network in [Network::Algorand, Network::AlgorandTestnet] {
+            assert_eq!(names(network), vec![TokenType::Usdc]);
+        }
+    }
     use crate::types::EvmAddress;
     use alloy::primitives::address;
 

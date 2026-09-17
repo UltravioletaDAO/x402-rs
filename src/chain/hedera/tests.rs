@@ -165,8 +165,8 @@ async fn usdc_only_policy_rejects_new_hbar_but_preserves_historical_receipts() {
     };
     let request = serde_json::from_value::<crate::types_v2::VerifyRequestEnvelope>(envelope())
         .unwrap().to_v1().unwrap();
-    assert!(provider.verify(&request).await.unwrap_err().to_string().contains("USDC only"));
-    assert!(provider.settle(&request).await.unwrap_err().to_string().contains("USDC only"));
+    assert!(matches!(provider.verify(&request).await.unwrap_err(), FacilitatorLocalError::UnsupportedAsset(_, Network::HederaTestnet, _)));
+    assert!(matches!(provider.settle(&request).await.unwrap_err(), FacilitatorLocalError::UnsupportedAsset(_, Network::HederaTestnet, _)));
     let supported = provider.supported().await.unwrap();
     let tokens = supported.kinds[0].extra.as_ref().unwrap().tokens.as_ref().unwrap();
     assert_eq!(tokens.len(), 1);

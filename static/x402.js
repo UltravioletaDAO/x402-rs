@@ -12,9 +12,8 @@
 // Los dos casos van al monograma. La diferencia es documental y la revisa un test.
 // ---------------------------------------------------------------------------
 const ICONO_DE_RED = {
-  // No invented logo: Arc uses the existing text fallback.
-  "arc": null, "arc-testnet": null, "eip155:5042": null, "eip155:5042002": null,
-  "hedera:mainnet": null, "hedera:testnet": null,
+  "arc": "arc", "arc-testnet": "arc", "eip155:5042": "arc", "eip155:5042002": "arc",
+  "hedera:mainnet": "hedera", "hedera:testnet": "hedera",
   "algorand": "algorand", "algorand-testnet": "algorand", "algorand:mainnet": "algorand", "algorand:testnet": "algorand",
   "arbitrum": "arbitrum", "arbitrum-sepolia": "arbitrum", "eip155:42161": "arbitrum", "eip155:421614": "arbitrum",
   "avalanche": "avalanche", "avalanche-fuji": "avalanche", "eip155:43113": "avalanche", "eip155:43114": "avalanche",
@@ -82,12 +81,11 @@ function chip(rotulo, ico, extra){
 
 function chipRed(nombre, extra){ return chip(nombre, ICONO_DE_RED[nombre], extra); }
 
-// Los 6 que tienen PNG servido, mas los que /supported publica y no tienen
-// archivo. rlusd y xrp no se inventan.
+// Token images actually served by the facilitator.
 const ICONO_DE_TOKEN = {
   usdc: "usdc", usdt: "usdt", eurc: "eurc",
   ausd: "ausd", pyusd: "pyusd", usdg: "usdg",
-  rlusd: null, xrp: null, hbar: null, hts: null
+  rlusd: "rlusd", xrp: null, hbar: null, hts: null
 };
 
 // Un token sin PNG NO saca monograma: "US" seria el mismo para usdc, usdt y
@@ -96,4 +94,62 @@ const ICONO_DE_TOKEN = {
 function chipToken(sim, extra){
   const k = String(sim || "").toLowerCase();
   return ICONO_DE_TOKEN[k] ? chip(sim, ICONO_DE_TOKEN[k], extra) : "";
+}
+
+// Merge only aliases the facilitator declares. This also retains v2-only
+// networks; dropping every identifier containing ':' loses real capabilities.
+function supportedCatalog(data) {
+  if (!data || !Array.isArray(data.kinds)) throw new Error('Invalid supported catalog');
+  const kinds = data.kinds.filter(k => k && typeof k.network === 'string' && typeof k.scheme === 'string');
+  const parents = new Map();
+  const find = n => {
+    if (!parents.has(n)) parents.set(n, n);
+    if (parents.get(n) !== n) parents.set(n, find(parents.get(n)));
+    return parents.get(n);
+  };
+  const aliasesOf = k => [k.network, ...(Array.isArray(k.networkAliases) ? k.networkAliases.filter(n => typeof n === 'string') : [])];
+  kinds.forEach(k => aliasesOf(k).forEach(n => parents.set(find(n), find(k.network))));
+  const groups = new Map();
+  kinds.forEach(k => {
+    const id = find(k.network);
+    if (!groups.has(id)) groups.set(id, {aliases: new Set(), schemes: new Set(), tokens: new Set(), kinds: []});
+    const row = groups.get(id);
+    aliasesOf(k).forEach(n => row.aliases.add(n));
+    row.schemes.add(k.scheme);
+    row.kinds.push(k);
+    (Array.isArray(k.extra?.tokens) ? k.extra.tokens : []).forEach(t => {
+      if (typeof t?.token === 'string') row.tokens.add(t.token.toLowerCase());
+    });
+  });
+  return [...groups.values()].map(row => {
+    const aliases = [...row.aliases].sort();
+    row.name = aliases.find(n => !n.includes(':')) || aliases[0];
+    row.testnet = aliases.some(n => /(testnet|sepolia|devnet|fuji|amoy|alfajores|holesky|baklava)/i.test(n));
+    return row;
+  }).sort((a, b) => Number(a.testnet) - Number(b.testnet) || a.name.localeCompare(b.name));
+}
+
+// Only presentation identities belong here. Payment tokens come from /supported.
+function landingNetworkName(key = '') {
+  const names = {
+    'ethereum-testnet': 'ethereum-sepolia', 'base-testnet': 'base-sepolia',
+    'avalanche-testnet': 'avalanche-fuji', 'polygon-testnet': 'polygon-amoy',
+    'arbitrum-testnet': 'arbitrum-sepolia', 'optimism-testnet': 'optimism-sepolia',
+    'celo-testnet': 'celo-sepolia', 'unichain-testnet': 'unichain-sepolia',
+    'skale-mainnet': 'skale-base', 'skale-testnet': 'skale-base-sepolia',
+    'hedera-mainnet': 'hedera:mainnet', 'hedera-testnet': 'hedera:testnet'
+  };
+  return names[key] || key.replace(/-mainnet$/, '');
+}
+
+function stablecoinsForCard(row) {
+  if (!row) return null;
+  const exact = row.kinds.filter(k => k.scheme === 'exact');
+  if (!exact.some(k => Array.isArray(k.extra?.tokens))) return null;
+  return [...new Set(exact.flatMap(k => Array.isArray(k.extra?.tokens) ? k.extra.tokens : [])
+    .map(t => String(t?.token).toLowerCase()).filter(t => Object.hasOwn(ICONO_DE_TOKEN, t) && ICONO_DE_TOKEN[t]))].sort();
+}
+
+function matchesStablecoinFilter(row, token) {
+  return Boolean(row?.schemes.has('exact') && (!token || stablecoinsForCard(row)?.includes(token)));
 }

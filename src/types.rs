@@ -2354,7 +2354,7 @@ pub struct SupportedTokenInfo {
     pub token: TokenType,
     /// Contract address on this network
     pub address: MixedAddress,
-    /// Token decimals (6 for all supported stablecoins)
+    /// Decimals of this deployment (for example, Stellar USDC uses 7).
     pub decimals: u8,
 }
 

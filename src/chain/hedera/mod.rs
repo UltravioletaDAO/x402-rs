@@ -93,6 +93,20 @@ impl NetworkProviderOps for HederaProvider {
     }
 }
 impl HederaProvider {
+    fn inspect_admission(&self, request: &VerifyRequest) -> std::result::Result<(Decoded, Intent), FacilitatorLocalError> {
+        let requirements = &request.payment_requirements;
+        if requirements.network == self.config.network {
+            if let Ok(asset) = requirements.asset.to_string().parse::<EntityId>() {
+                if !self.config.assets.contains_key(&asset) {
+                    return Err(FacilitatorLocalError::UnsupportedAsset(
+                        None, self.config.network, asset.to_string(),
+                    ));
+                }
+            }
+        }
+        self.inspect(request, true).map_err(error)
+    }
+
     fn inspect(&self, request: &VerifyRequest, check_time: bool) -> Result<(Decoded, Intent)> {
         if request.x402_version != X402Version::V2
             || request.payment_payload.x402_version != X402Version::V2
@@ -379,7 +393,7 @@ impl Facilitator for HederaProvider {
         if !self.config.admissions {
             return Err(error("new Hedera admissions are disabled"));
         }
-        let (decoded, intent) = self.inspect(request, true).map_err(error)?;
+        let (decoded, intent) = self.inspect_admission(request)?;
         if self
             .store
             .read(&self.record_key(&intent))
@@ -417,7 +431,7 @@ impl Facilitator for HederaProvider {
             if !self.config.admissions {
                 return Err(error("new Hedera admissions are disabled"));
             }
-            self.inspect(request, true).map_err(error)?;
+            self.inspect_admission(request)?;
             self.mirror
                 .preflight(&decoded, &intent, &self.config)
                 .await
@@ -446,7 +460,7 @@ impl Facilitator for HederaProvider {
                 return self.confirmed(&key, record, status).await;
             }
         } else {
-            self.inspect(request, true).map_err(error)?;
+            self.inspect_admission(request)?;
             self.mirror
                 .preflight(&decoded, &intent, &self.config)
                 .await

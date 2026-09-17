@@ -48,7 +48,7 @@ use crate::erc8004::{Erc8004Extension, ProofOfPayment};
 use crate::facilitator::Facilitator;
 use crate::from_env;
 use crate::network::{
-    get_token_deployment, supported_tokens_for_network, AUSDDeployment, EURCDeployment, Network,
+    exact_payment_tokens, AUSDDeployment, EURCDeployment, Network,
     PYUSDDeployment, USDCDeployment, USDGDeployment, USDTDeployment,
 };
 use crate::timestamp::UnixTimestamp;
@@ -1922,16 +1922,7 @@ where
         let network = self.chain().network();
 
         // Build list of supported tokens for this network
-        let tokens: Vec<SupportedTokenInfo> = supported_tokens_for_network(network)
-            .into_iter()
-            .filter_map(|token_type| {
-                get_token_deployment(network, token_type).map(|deployment| SupportedTokenInfo {
-                    token: token_type,
-                    address: deployment.address(),
-                    decimals: deployment.decimals,
-                })
-            })
-            .collect();
+        let tokens: Vec<SupportedTokenInfo> = exact_payment_tokens(network);
 
         let extra = if tokens.is_empty() {
             None

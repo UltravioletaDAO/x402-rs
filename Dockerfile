@@ -23,6 +23,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     libssl-dev \
     protobuf-compiler \
+    libprotobuf-dev \
  && rm -rf /var/lib/apt/lists/*
 
 # ---------------------------------------------------------------------------

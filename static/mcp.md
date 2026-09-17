@@ -200,3 +200,20 @@ not on the failure.
 - Networks and schemes right now: `/supported`
 - LLM context: `/llms.txt`, `/llms-full.txt`
 - Source: <https://github.com/UltravioletaDAO/x402-rs>
+
+## Portable facilitator receipts (Arc and Hedera)
+
+Arc exact USDC/EURC and native Hedera USDC return `receipt` alongside verify/settle.
+Discover `/supported.facilitatorReceipts`, `/receipts`,
+`/schemas/facilitator-receipt-v1.json` and `/.well-known/receipt-keys.json`.
+For private lookup, persist a purchase context and send `X-UVD-Purchase` (base64
+JSON: purchaseId, secret accessToken, method, url, bodySha256). The merchant must
+validate it against the actual request. Query `/receipts/{receiptId}` with
+`Authorization: Bearer <accessToken>`. Never log the context or create a fresh
+signature after uncertainty. An unknown receipt means poll/replay the original
+authorization, not a new payment. Receipt confirmation does not prove delivery.
+Python `fetch_with_receipt` and TypeScript `fetchWithReceipt` return the original
+HTTP response plus receipt/payment state. Supply trusted issuer keys for offline
+signature verification. Live EURC acceptance remains pending. Other networks
+retain their existing responses. Full contract:
+https://github.com/UltravioletaDAO/x402-rs/blob/main/docs/facilitator-receipts.md

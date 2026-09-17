@@ -116,6 +116,13 @@ where
         .route("/verify", get(get_verify_info))
         .route("/verify", post(post_verify::<A>))
         .route("/settle", get(get_settle_info))
+        .route("/receipts/{id}", get(crate::receipts::get::<A>))
+        .route("/.well-known/receipt-keys.json", get(crate::receipts::keys))
+        .route("/receipts", get(|| async { Json(crate::receipts::capability()) }))
+        .route("/schemas/facilitator-receipt-v1.json", get(|| async {
+            ([("content-type", "application/schema+json")],
+             include_str!("../static/schemas/facilitator-receipt-v1.json"))
+        }))
         .merge(settle)
 }
 
@@ -3453,7 +3460,9 @@ where
                 }
             }
             let v2_response = supported.to_v2(extensions, signers);
-            (StatusCode::OK, Json(json!(v2_response))).into_response()
+            let mut value = json!(v2_response);
+            value["facilitatorReceipts"] = crate::receipts::capability();
+            (StatusCode::OK, Json(value)).into_response()
         }
         Err(error) => error.into_response(),
     }
@@ -3779,6 +3788,23 @@ where
 /// is extracted from the base64-decoded header value instead of the request body.
 #[instrument(skip_all, fields(network = tracing::field::Empty))]
 pub async fn post_verify<A>(
+    State(facilitator): State<A>,
+    event_bus: Extension<Arc<crate::events::EventBus>>,
+    tx_store: Extension<Arc<dyn crate::transaction_store::TransactionStore>>,
+    headers: HeaderMap,
+    raw_body: Bytes,
+) -> Response
+where A: Facilitator + HasProviderMap, A::Error: IntoResponse,
+      A::Map: ProviderMap<Value = NetworkProvider>,
+{
+    let context_headers = headers.clone();
+    let context_body = raw_body.clone();
+    crate::receipts::verify(&context_headers, &context_body, async move {
+        post_verify_inner(State(facilitator), event_bus, tx_store, headers, raw_body).await.into_response()
+    }).await
+}
+
+async fn post_verify_inner<A>(
     State(facilitator): State<A>,
     Extension(event_bus): Extension<Arc<crate::events::EventBus>>,
     Extension(tx_store): Extension<Arc<dyn crate::transaction_store::TransactionStore>>,
@@ -4545,6 +4571,30 @@ fn log_settle_deserialization_error(body_str: &str, e: &serde_json::Error) {
 /// in the Bazaar discovery registry.
 #[instrument(skip_all, fields(network = tracing::field::Empty))]
 pub async fn post_settle<A>(
+    State(facilitator): State<A>,
+    discovery_registry: Extension<Arc<DiscoveryRegistry>>,
+    event_bus: Extension<Arc<crate::events::EventBus>>,
+    tx_store: Extension<Arc<dyn crate::transaction_store::TransactionStore>>,
+    headers: HeaderMap,
+    raw_body: Bytes,
+) -> Response
+where A: Facilitator + HasProviderMap + Clone + Send + Sync,
+      A::Error: IntoResponse, A::Map: ProviderMap<Value = NetworkProvider>,
+{
+    let inner_facilitator = facilitator.clone();
+    let context_headers = headers.clone();
+    let context_body = raw_body.clone();
+    fn send_future<F: std::future::Future + Send>(future: F) -> F { future }
+    send_future(crate::receipts::settle(&facilitator, &context_headers, &context_body, async move {
+        let mut headers = headers;
+        // Receipt admissions own their durable cache. Do not let the legacy
+        // 24-hour cache short-circuit, overwrite or expire their reservations.
+        if crate::receipts::active() { headers.remove("idempotency-key"); }
+        post_settle_inner(State(inner_facilitator), discovery_registry, event_bus, tx_store, headers, raw_body).await.into_response()
+    })).await
+}
+
+async fn post_settle_inner<A>(
     State(facilitator): State<A>,
     Extension(discovery_registry): Extension<Arc<DiscoveryRegistry>>,
     Extension(event_bus): Extension<Arc<crate::events::EventBus>>,

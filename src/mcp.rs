@@ -516,7 +516,10 @@ pub fn tools() -> Vec<Tool> {
              broadcasts the payer's authorization as a blockchain transaction, and \
              nothing in this facilitator or any chain can undo a confirmed transfer. \
              Call x402_verify first, and only call this when the payment is meant to \
-             execute now. Equivalent to POST /settle.",
+             execute now. Equivalent to POST /settle. Arc exact and native Hedera USDC \
+             return a portable receipt with payment state and settlement ID; unknown \
+             never authorizes a fresh signature. Preserve the original authorization. \
+             Receipt confirmation is separate from merchant delivery.",
             schema(settle_input_schema()),
         )
         .annotate(
@@ -581,6 +584,7 @@ impl FacilitatorMcp {
             header::HeaderName::from_static("x-forwarded-for"),
             header::HeaderName::from_static("x-real-ip"),
             header::HeaderName::from_static("forwarded"),
+            header::HeaderName::from_static("x-uvd-purchase"),
         ] {
             if let Some(value) = outer.and_then(|h| h.get(&name)) {
                 builder = builder.header(name, value.clone());

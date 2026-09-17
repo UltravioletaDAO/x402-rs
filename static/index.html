@@ -3532,10 +3532,6 @@
         // This centralizes RPC calls and hides private API keys from the frontend
         // Falls back to direct public RPC calls if API fails or returns null
 
-        // Configuration - set RANDOM_NETWORKS=true in URL params to randomize
-        const urlParams = new URLSearchParams(window.location.search);
-        const RANDOM_NETWORKS = urlParams.get('random') === 'true' || urlParams.get('random') === '1';
-
         // Wallet addresses for fallback
         const WALLET_MAINNET = '0x103040545AC5031A11E8C03dd11324C7333a13C7';
         const WALLET_TESTNET = '0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8';
@@ -3918,10 +3914,9 @@
                 .replace('{shown}', shown).replace('{total}', total).replace('{token}', window.__stablecoinFilter.toUpperCase());
         }
 
-        // Shuffle network cards if random mode is enabled
+        // One fresh permutation per page load. Filtering, tabs and language
+        // changes keep this order so cards stay put during an interaction.
         function shuffleNetworkCards() {
-            if (!RANDOM_NETWORKS) return;
-
             // Find mainnet and testnet containers
             const mainnetTab = document.getElementById('mainnet-tab');
             const testnetTab = document.getElementById('testnet-tab');
@@ -3944,7 +3939,6 @@
                     cards.forEach(card => grid.appendChild(card));
                 });
             });
-            console.log('Network cards shuffled (random mode ON)');
         }
 
         document.querySelectorAll('[data-token-filter]').forEach(button => {

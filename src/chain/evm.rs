@@ -1100,7 +1100,17 @@ impl EvmProvider {
             };
 
             // Send transaction
-            let send_outcome = self.inner.send_transaction(txr).await;
+            let send_outcome = if crate::receipts::active() {
+                use alloy::eips::Encodable2718;
+                let filled = self.inner.fill(txr).await.map_err(|_| FacilitatorLocalError::ContractCall("receipt transaction preparation failed".into()))?;
+                let envelope = filled.as_envelope().ok_or_else(|| FacilitatorLocalError::ContractCall("receipt transaction was not signed".into()))?;
+                let signed = envelope.encoded_2718();
+                let hash = alloy::primitives::keccak256(&signed).to_string();
+                crate::receipts::prepared_evm(hash, signed.clone()).await.map_err(FacilitatorLocalError::ContractCall)?;
+                self.inner.send_raw_transaction(&signed).await
+            } else {
+                self.inner.send_transaction(txr).await
+            };
 
             // The permit is released as soon as the broadcast resolves, NOT
             // after the receipt: the receipt wait is up to 900s on Ethereum and

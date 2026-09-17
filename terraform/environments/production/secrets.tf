@@ -189,6 +189,7 @@ locals {
 
   # Admin credential ARNs that need IAM permissions
   admin_secret_arns = concat(
+    [data.aws_secretsmanager_secret.facilitator_receipt_key.arn],
     [data.aws_secretsmanager_secret.erc8004_admin_token.arn],
     var.enable_dx402 ? [data.aws_secretsmanager_secret.dx402_signing_key[0].arn] : [],
     var.enable_dx402 ? [data.aws_secretsmanager_secret.dx402_admin_token[0].arn] : [],
@@ -403,6 +404,7 @@ locals {
 
   # Combined secrets array for task definition
   all_task_secrets = concat(
+    local.receipt_secrets,
     local.hedera_secrets,
     local.wallet_secrets,
     local.mainnet_rpc_secrets,

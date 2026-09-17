@@ -1,0 +1,157 @@
+{
+  "checkedAt": "2026-09-17T19:20:52.819739+00:00",
+  "status": "local-preflight-passed-not-yet-deployed",
+  "versions": {
+    "facilitator": "2.36.0",
+    "python": "0.88.0",
+    "typescript": "2.96.0"
+  },
+  "rustTestRuns": [
+    {
+      "passed": 1190,
+      "failed": 0,
+      "ignored": 6
+    },
+    {
+      "passed": 1240,
+      "failed": 0,
+      "ignored": 6
+    },
+    {
+      "passed": 6,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "passed": 23,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "passed": 6,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "passed": 9,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "passed": 15,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 11
+    },
+    {
+      "passed": 31,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "passed": 14,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "passed": 43,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "passed": 7,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "passed": 5,
+      "failed": 0,
+      "ignored": 7
+    },
+    {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 2
+    },
+    {
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0
+    }
+  ],
+  "rustPassed": 2604,
+  "receiptFocusedIncludingDynamoDBLocal": 11,
+  "pythonPassed": 1236,
+  "typescriptPassed": 771,
+  "terraformUncoveredChanges": [],
+  "realEURCPayments": "deferred-by-user",
+  "newLivePayments": 0,
+  "v2ReceiptRegressionPassed": true,
+  "frontendNodeTestsPassed": 8,
+  "browser": {
+    "checkedAt": "2026-09-17T19:15:48.462815+00:00",
+    "mode": "offline browser fixtures; no payment/RPC calls",
+    "checks": [
+      "Random order changes on refresh and survives filtering/language changes",
+      "USDC and EURC exact network sets",
+      "RLUSD keyboard filter and persistence across tabs",
+      "Empty testnet result",
+      "Clear and toggle filter",
+      "32px visible logo frames in filters and cards",
+      "All affected stablecoin badges",
+      "Numeric zero balance",
+      "23 mainnet cards",
+      "EN/ES badges",
+      "Desktop/mobile overflow",
+      "XRPL testnet tab",
+      "Hedera wallet ID",
+      "Networks table tokens and icons",
+      "Networks table XRPL testnet",
+      "Networks mobile overflow",
+      "CAIP-2-only catalog retains alias-linked cards",
+      "Catalog/balance outage degrades without invented assets or stuck Hedera balance"
+    ],
+    "pageErrors": []
+  },
+  "publishedSDKs": {
+    "python": "https://github.com/UltravioletaDAO/uvd-x402-sdk-python/actions/runs/35263357713",
+    "typescript": "https://github.com/UltravioletaDAO/uvd-x402-sdk-typescript/actions/runs/35263366381"
+  },
+  "fullPreflightSourceCommit": "843e2cf657c5126d0ef40843ccfeb38d4d0e6bff",
+  "compatibilityFollowup": {
+    "checkedAt": "2026-09-17T19:36:18.692819+00:00",
+    "receiptTestsPassed": 13,
+    "allProductionFeaturesCargoCheck": "passed",
+    "legacyCacheReplay": "passed-before-consumed-nonce-verification",
+    "reservedNamespaceProtection": "passed-for-legacy-and-unsupported-requests"
+  }
+}

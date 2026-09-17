@@ -107,9 +107,13 @@ receipt key explicitly advertise HTTPS provenance and return `proof: null`.
 Receipt rows and aliases use a new `receipt:*` namespace in the existing
 idempotency table. A DynamoDB transaction conditionally reserves the record,
 authorization, purchase capability and optional scoped Idempotency-Key together.
+Caller-supplied Idempotency-Key values beginning with `receipt:` are rejected
+across all networks, preventing legacy cache writes from replacing receipt rows.
 Signature verification happens before admission. Revision updates use CAS.
 There is **no TTL on these rows**: legacy cache expiry cannot admit another
-payment. Existing legacy cache records are not migrated or treated as receipts.
+payment. Existing legacy cache hits are replayed before checking a consumed
+nonce, preserving their original success/conflict semantics. They are not
+fabricated into portable receipts, and their previous retention policy remains.
 
 Arc saves the exact signed transaction and hash before broadcast. A POST retry
 can rebroadcast only those bytes under the writer lease, while the authorization

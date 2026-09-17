@@ -40,6 +40,8 @@ static SERVICE: OnceCell<Arc<Service>> = OnceCell::new();
 tokio::task_local! { static ACTIVE: Arc<tokio::sync::Mutex<Record>>; }
 #[cfg(test)]
 tokio::task_local! { static TEST_SERVICE: Arc<Service>; }
+#[cfg(test)]
+tokio::task_local! { static TEST_LEGACY_RECORD: crate::idempotency_store::IdempotencyRecord; }
 fn service() -> Option<Arc<Service>> {
     #[cfg(test)]
     if let Ok(service) = TEST_SERVICE.try_with(Arc::clone) {
@@ -620,6 +622,57 @@ fn same_request(a: &Record, b: &Record) -> bool {
         && a.token_hash == b.token_hash
 }
 
+fn legacy_response(
+    record: crate::idempotency_store::IdempotencyRecord,
+    request_hash: &str,
+) -> Response {
+    if record.request_hash != request_hash {
+        return failure("idempotency_key_conflict", StatusCode::CONFLICT);
+    }
+    // Preserve responses created before portable receipts existed. Rechecking
+    // their consumed nonce would turn a paid retry into a false rejection.
+    let Ok(result) = serde_json::from_str::<crate::types::SettleResponse>(&record.response_json)
+    else {
+        return failure("idempotency_cache_corrupt", StatusCode::SERVICE_UNAVAILABLE);
+    };
+    let mut response = (StatusCode::OK, Json(result)).into_response();
+    response
+        .headers_mut()
+        .insert("idempotent-replayed", HeaderValue::from_static("true"));
+    response
+        .headers_mut()
+        .insert("cache-control", HeaderValue::from_static("no-store"));
+    response
+}
+
+async fn legacy_replay(headers: &HeaderMap, raw: &Bytes) -> Option<Response> {
+    let key = headers.get("idempotency-key")?.to_str().ok()?.trim();
+    if key.is_empty() {
+        return None;
+    }
+    let decoded;
+    let bytes = if let Some(encoded) = headers.get("payment-signature") {
+        decoded = STANDARD.decode(encoded.as_bytes()).ok()?;
+        decoded.as_slice()
+    } else {
+        raw.as_ref()
+    };
+    let request_hash = crate::idempotency_store::hash_request_body(bytes);
+    #[cfg(test)]
+    if let Ok(record) = TEST_LEGACY_RECORD.try_with(Clone::clone) {
+        assert_eq!(record.idempotency_key, key);
+        return Some(legacy_response(record, &request_hash));
+    }
+    match crate::idempotency_store::lookup_record(key.to_owned()).await {
+        Ok(Some(record)) => Some(legacy_response(record, &request_hash)),
+        Ok(None) => None,
+        Err(_) => Some(failure(
+            "idempotency_cache_unavailable",
+            StatusCode::SERVICE_UNAVAILABLE,
+        )),
+    }
+}
+
 /// The closure is invoked only by the owner of an atomic admission. Existing
 /// rows, including an abandoned reservation, NEVER invoke it again.
 pub async fn settle<A, F>(facilitator: &A, headers: &HeaderMap, raw: &Bytes, call: F) -> Response
@@ -629,6 +682,15 @@ where
     A::Map: ProviderMap<Value = NetworkProvider>,
     F: Future<Output = Response>,
 {
+    // The legacy cache accepts caller-chosen table keys. Protect receipt rows
+    // even on unsupported chains or instances without receipt initialization.
+    if headers
+        .get("idempotency-key")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|key| key.trim().starts_with("receipt:"))
+    {
+        return failure("reserved_idempotency_key", StatusCode::BAD_REQUEST);
+    }
     let Some(service) = service() else {
         return if headers.contains_key("x-uvd-purchase") {
             failure("receipt_store_unavailable", StatusCode::SERVICE_UNAVAILABLE)
@@ -675,6 +737,9 @@ where
         }
         Err(_) => return failure("receipt_store_unavailable", StatusCode::SERVICE_UNAVAILABLE),
         _ => {}
+    }
+    if let Some(replay) = legacy_replay(headers, raw).await {
+        return replay;
     }
     // Verify before claiming a nonce: an invalid signature cannot squat another
     // payer's authorization. This is read-only and cannot move principal.

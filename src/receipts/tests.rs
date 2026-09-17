@@ -51,6 +51,49 @@ fn service_fixture() -> Arc<Service> {
         signing_key: Some(SigningKey::from_bytes(&[7; 32])),
     })
 }
+
+#[tokio::test]
+async fn pre_receipt_cache_preserves_success_and_conflict_without_a_fabricated_receipt() {
+    let old = crate::idempotency_store::IdempotencyRecord {
+        idempotency_key: "before-upgrade".into(),
+        request_hash: "original-body".into(),
+        response_json: serde_json::to_string(&value(success()).await).unwrap(),
+        expires_at: now() + 60,
+    };
+    let replay = legacy_response(old.clone(), "original-body");
+    assert_eq!(replay.status(), StatusCode::OK);
+    assert_eq!(replay.headers()["idempotent-replayed"], "true");
+    let cached = value(replay).await;
+    assert_eq!(cached["success"], true);
+    assert!(cached.get("receipt").is_none());
+    let mut migrated = old.clone();
+    migrated.request_hash = crate::idempotency_store::hash_request_body(&body(1));
+    let mut h = headers();
+    h.insert(
+        "idempotency-key",
+        HeaderValue::from_static("before-upgrade"),
+    );
+    TEST_SERVICE
+        .scope(
+            service_fixture(),
+            TEST_LEGACY_RECORD.scope(migrated, async {
+                let replay = settle(&MockFacilitator { invalid: true }, &h, &body(1), async {
+                    panic!("old payment broadcast again")
+                })
+                .await;
+                assert_eq!(
+                    value(replay).await["success"],
+                    true,
+                    "consumed nonce must not override cached success"
+                );
+            }),
+        )
+        .await;
+    assert_eq!(
+        legacy_response(old, "changed-body").status(),
+        StatusCode::CONFLICT
+    );
+}
 pub(super) fn fixture_record() -> Record {
     initial(
         &parse_request(&headers(), &body(1)).unwrap(),
@@ -519,6 +562,26 @@ async fn lookup_requires_the_private_capability_and_verify_recovers_consumed_non
 }
 
 struct BrokenStore;
+
+#[tokio::test]
+async fn user_idempotency_keys_cannot_overwrite_receipt_rows_via_legacy_chains() {
+    for key in [
+        "receipt:v1:an-id",
+        "receipt:auth:v1:an-id",
+        " receipt:purchase:v1:an-id ",
+    ] {
+        let mut h = HeaderMap::new();
+        h.insert("idempotency-key", HeaderValue::from_str(key).unwrap());
+        let denied = settle(
+            &MockFacilitator { invalid: false },
+            &h,
+            &Bytes::from_static(b"{}"),
+            async { panic!("reserved key reached legacy writer") },
+        )
+        .await;
+        assert_eq!(denied.status(), StatusCode::BAD_REQUEST);
+    }
+}
 #[async_trait::async_trait]
 impl store::Store for BrokenStore {
     async fn get(&self, _: &str) -> Result<Option<Record>> {

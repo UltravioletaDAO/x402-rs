@@ -145,5 +145,13 @@
   "publishedSDKs": {
     "python": "https://github.com/UltravioletaDAO/uvd-x402-sdk-python/actions/runs/35263357713",
     "typescript": "https://github.com/UltravioletaDAO/uvd-x402-sdk-typescript/actions/runs/35263366381"
+  },
+  "fullPreflightSourceCommit": "843e2cf657c5126d0ef40843ccfeb38d4d0e6bff",
+  "compatibilityFollowup": {
+    "checkedAt": "2026-09-17T19:36:18.692819+00:00",
+    "receiptTestsPassed": 13,
+    "allProductionFeaturesCargoCheck": "passed",
+    "legacyCacheReplay": "passed-before-consumed-nonce-verification",
+    "reservedNamespaceProtection": "passed-for-legacy-and-unsupported-requests"
   }
 }

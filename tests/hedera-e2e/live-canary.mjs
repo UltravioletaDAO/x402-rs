@@ -47,7 +47,17 @@ const server = createServer(async (req, res) => {
 });
 await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
 try {
-  const signer = createClientHederaSigner(config.payer, PrivateKey.fromStringDer(config.privateKey), { network: config.network });
+  // The JS SDK's bundled mainnet address book can contain retired nodes.
+  // Freeze the official client against a current node obtained over HTTPS;
+  // the facilitator independently checks its own network's allowed node IDs.
+  const mirror = config.network === "hedera:mainnet" ? "https://mainnet-public.mirrornode.hedera.com" : "https://testnet.mirrornode.hedera.com";
+  const nodesResponse = await fetch(`${mirror}/api/v1/network/nodes?node.id=0`);
+  assert(nodesResponse.ok);
+  const nodes = await nodesResponse.json();
+  const node = nodes.nodes.find(n => n.node_account_id === "0.0.3");
+  const endpoint = node?.service_endpoints.find(e => e.port === 50211 && /^(\d{1,3}\.){3}\d{1,3}$/.test(e.ip_address_v4));
+  assert(endpoint, "current consensus node 0.0.3 is unavailable");
+  const signer = createClientHederaSigner(config.payer, PrivateKey.fromStringDer(config.privateKey), { network: config.network, nodeUrl: `${endpoint.ip_address_v4}:50211` });
   delete config.privateKey;
   const client = new x402HTTPClient(new x402Client().register(config.network, new ExactHederaScheme(signer)).setSpendControls({ allowedAssets: [{ network: config.network, asset: config.asset, maxAmountPerPayment: config.amount }] }));
   const url = `http://127.0.0.1:${server.address().port}/paid`;

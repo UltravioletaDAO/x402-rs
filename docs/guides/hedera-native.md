@@ -81,6 +81,21 @@ Hedera testnet is now live at `https://facilitator.ultravioletadao.xyz` (initial
 
 Both completed the official client flow, preserved the transaction on retry, rejected replay verification, and have immutable confirmed storage records. Independent receipt reconciliation verified the exact payer/payee principal, sponsor-only consensus fees, and the SHA-384 hash of the persisted signed bytes. The final-code crash-recovery test also passed for `0.0.10576385@1789608851.534483569` after an injected terminal-write outage.
 
-Mainnet provisioning is complete: the dedicated fee payer `0.0.10868300` was funded with 30 HBAR, and test buyer `0.0.10868301` and recipient `0.0.10868302` are associated with native USDC `0.0.456858`. Production configuration enables mainnet with a conservative 10-HBAR daily reserved-fee budget. Confirm rollout via `/supported`; public mainnet HBAR/USDC acceptance payments are still required. The bootstrap account `0.0.10868282` is not the facilitator signer. The project's own SDK signing support is a separate follow-up after facilitator completion.
+Hedera mainnet is publicly deployed and verified since **2.33.0**. The dedicated fee payer is **`0.0.10868300`**, buyer **`0.0.10868301`**, and merchant **`0.0.10868302`**. The bootstrap **`0.0.10868282`** is a setup account, not the facilitator signer. Testnet uses fee payer **`0.0.10576385`**, buyer **`0.0.10576386`**, merchant **`0.0.10576387`**.
+
+[Mainnet acceptance evidence](../reports/2026-09-16-hedera-mainnet-public-canaries.json) records both public payments:
+
+| Asset | Amount | Native transaction |
+| --- | --- | --- |
+| HBAR | 0.0001 HBAR | [0.0.10868300@1789613986.642051223](https://hashscan.io/mainnet/transaction/0.0.10868300-1789613986-642051223) |
+| USDC | 0.001 USDC | [0.0.10868300@1789614004.016143440](https://hashscan.io/mainnet/transaction/0.0.10868300-1789614004-016143440) |
+
+Both completed HTTP 402 → official client signature → public verify/settle → HTTP 200. Retries returned the original ID, replay verification was rejected, DynamoDB records are confirmed, and independent SHA-384 reconciliation matched persisted signed bytes to successful Mirror receipts. The sponsor paid only consensus fees; the buyer paid exactly the advertised principal.
+
+The official JavaScript client's bundled mainnet address book includes retired nodes. The canary resolves current node `0.0.3` from the trusted network's HTTPS Mirror address book before freezing; the facilitator still checks every signed node variant and rejects unknown/duplicate nodes. A failure during `/verify` created no payment or quota charge. This is documented in the harness rather than weakening verification.
+
+See the [complete transaction log](../reports/2026-09-16-hedera-transaction-ledger.md) for funding, account creation, token associations, the bounded HBAR/USDC swap and every observed payment, including recovery tests. Receipts contain public evidence only; keys and co-signed transaction bytes are excluded.
+
+Both networks use a conservative **10-HBAR daily reserved-fee budget**. At a 1-HBAR maximum signed fee this permits ten new settlements per network per UTC day, even though actual fees are smaller. Increase that budget deliberately before a higher-volume launch. HBAR and USDC facilitator acceptance is complete; native signing in the project's Python and TypeScript SDKs is being completed separately. Arc support is already released in Python 0.84.0 and TypeScript 2.92.0.
 
 See [the original integration plan](../plans/hedera-native-x402-integration-plan.md) and [test harness instructions](../../tests/hedera-e2e/README.md).

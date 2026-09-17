@@ -2,7 +2,7 @@
   "implementation": "native exact x402 v2",
   "local_canary_receipts": "2026-09-16-hedera-testnet-canaries.json",
   "production_deployed": true,
-  "mainnet_funded": false,
+  "mainnet_funded": true,
   "offline_provider_tests": 9,
   "facilitator_full_suite": "passed library, binary, integrations and doctests; see PR CI for final counts",
   "dynamodb_concurrency_and_quota_test": "passed against dedicated table; 12 simultaneous requests, one owner/quota charge; stale takeover cannot erase concurrently persisted signed bytes",
@@ -63,7 +63,7 @@
   "mirror_hash_binding_read_only_test": "passed with real stored USDC signed bytes; unrelated receipt rejected",
   "balance_monitor_tests": 5,
   "notes": [
-    "Mainnet requires separate funded account and canaries.",
+    "Mainnet and testnet HBAR/USDC public acceptance confirmed; own native SDK releases in progress.",
     "Testnet live tests use dedicated accounts and native HBAR fees.",
     "JSON receipts here contain no private keys or signed transaction payloads."
   ],
@@ -187,5 +187,7 @@
       "valid_start_timestamp": "1789608851.534483569"
     },
     "duration_seconds": 125.09
-  }
+  },
+  "mainnet_public_acceptance": "2026-09-16-hedera-mainnet-public-canaries.json",
+  "transaction_ledger": "2026-09-16-hedera-transaction-ledger.json"
 }

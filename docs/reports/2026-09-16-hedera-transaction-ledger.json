@@ -1,0 +1,2072 @@
+{
+  "checked_at": "2026-09-17T03:04:03.924354+00:00",
+  "note": "Observed external funding is explicitly distinguished from agent-submitted setup, swap and settlement. Includes child receipts and failures; contains no keys or signed payloads.",
+  "transactions": [
+    {
+      "network": "hedera:mainnet",
+      "transaction_id": "0.0.10231006-1789611039-483533706",
+      "operation": "CRYPTOTRANSFER",
+      "status": "SUCCESS",
+      "agent_initiated": false,
+      "charged_fee_tinybars": 136011,
+      "sources": [
+        "2026-09-16-hedera-mainnet-topup.json",
+        "Mirror account history"
+      ],
+      "explorer": "https://hashscan.io/mainnet/transaction/0.0.10231006-1789611039-483533706",
+      "receipts": [
+        {
+          "batch_key": null,
+          "bytes": null,
+          "charged_tx_fee": 136011,
+          "consensus_timestamp": "1789611047.215350104",
+          "entity_id": null,
+          "high_volume": false,
+          "high_volume_pricing_multiplier": 0,
+          "max_fee": "100000000",
+          "max_custom_fees": [],
+          "memo_base64": "",
+          "name": "CRYPTOTRANSFER",
+          "nft_transfers": [],
+          "node": "0.0.33",
+          "nonce": 0,
+          "parent_consensus_timestamp": null,
+          "result": "SUCCESS",
+          "scheduled": false,
+          "staking_reward_transfers": [],
+          "token_transfers": [],
+          "transaction_hash": "+zdvtJFPXAfJm/I7kxbnK/VU3S1HzRTffx8/+LXmRxpMiD39DpMcEKWxcutAUkyv",
+          "transaction_id": "0.0.10231006-1789611039-483533706",
+          "transfers": [
+            {
+              "account": "0.0.802",
+              "amount": 136011,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10231006",
+              "amount": -136012,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10868282",
+              "amount": 1,
+              "is_approval": false
+            }
+          ],
+          "valid_duration_seconds": "120",
+          "valid_start_timestamp": "1789611039.483533706"
+        }
+      ]
+    },
+    {
+      "network": "hedera:mainnet",
+      "transaction_id": "0.0.10231006-1789611253-599393457",
+      "operation": "CRYPTOTRANSFER",
+      "status": "SUCCESS",
+      "agent_initiated": false,
+      "charged_fee_tinybars": 136011,
+      "sources": [
+        "Mirror account history"
+      ],
+      "explorer": "https://hashscan.io/mainnet/transaction/0.0.10231006-1789611253-599393457",
+      "receipts": [
+        {
+          "batch_key": null,
+          "bytes": null,
+          "charged_tx_fee": 136011,
+          "consensus_timestamp": "1789611261.017715104",
+          "entity_id": null,
+          "high_volume": false,
+          "high_volume_pricing_multiplier": 0,
+          "max_fee": "100000000",
+          "max_custom_fees": [],
+          "memo_base64": "",
+          "name": "CRYPTOTRANSFER",
+          "nft_transfers": [],
+          "node": "0.0.40",
+          "nonce": 0,
+          "parent_consensus_timestamp": null,
+          "result": "SUCCESS",
+          "scheduled": false,
+          "staking_reward_transfers": [],
+          "token_transfers": [],
+          "transaction_hash": "n20+ZZNlU77+pDXkT03tmDHY+qdaJk89itLT/40uuPorMamDp77A2P+7XH+EhO9G",
+          "transaction_id": "0.0.10231006-1789611253-599393457",
+          "transfers": [
+            {
+              "account": "0.0.802",
+              "amount": 136011,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10231006",
+              "amount": -136012,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10868300",
+              "amount": 1,
+              "is_approval": false
+            }
+          ],
+          "valid_duration_seconds": "120",
+          "valid_start_timestamp": "1789611253.599393457"
+        }
+      ]
+    },
+    {
+      "network": "hedera:mainnet",
+      "transaction_id": "0.0.10231006-1789611256-314615261",
+      "operation": "CRYPTOTRANSFER",
+      "status": "SUCCESS",
+      "agent_initiated": false,
+      "charged_fee_tinybars": 136011,
+      "sources": [
+        "Mirror account history"
+      ],
+      "explorer": "https://hashscan.io/mainnet/transaction/0.0.10231006-1789611256-314615261",
+      "receipts": [
+        {
+          "batch_key": null,
+          "bytes": null,
+          "charged_tx_fee": 136011,
+          "consensus_timestamp": "1789611261.345549104",
+          "entity_id": null,
+          "high_volume": false,
+          "high_volume_pricing_multiplier": 0,
+          "max_fee": "100000000",
+          "max_custom_fees": [],
+          "memo_base64": "",
+          "name": "CRYPTOTRANSFER",
+          "nft_transfers": [],
+          "node": "0.0.20",
+          "nonce": 0,
+          "parent_consensus_timestamp": null,
+          "result": "SUCCESS",
+          "scheduled": false,
+          "staking_reward_transfers": [],
+          "token_transfers": [],
+          "transaction_hash": "vdWdAUIPpAMTLKGafuaJHc738CbQeku5/e6Dp2XJZXjcDcuszBwfjuOT5cbgxYOt",
+          "transaction_id": "0.0.10231006-1789611256-314615261",
+          "transfers": [
+            {
+              "account": "0.0.802",
+              "amount": 136011,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10231006",
+              "amount": -136012,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10868282",
+              "amount": 1,
+              "is_approval": false
+            }
+          ],
+          "valid_duration_seconds": "120",
+          "valid_start_timestamp": "1789611256.314615261"
+        }
+      ]
+    },
+    {
+      "network": "hedera:testnet",
+      "transaction_id": "0.0.10576385-1789601394-393565693",
+      "operation": "TOKENASSOCIATE",
+      "status": "SUCCESS",
+      "agent_initiated": true,
+      "charged_fee_tinybars": 64207719,
+      "sources": [
+        "2026-09-16-hedera-testnet-usdc-associations.jsonl",
+        "Mirror account history"
+      ],
+      "explorer": "https://hashscan.io/testnet/transaction/0.0.10576385-1789601394-393565693",
+      "receipts": [
+        {
+          "batch_key": null,
+          "bytes": null,
+          "charged_tx_fee": 64207719,
+          "consensus_timestamp": "1789601401.509203929",
+          "entity_id": "0.0.10576387",
+          "high_volume": false,
+          "high_volume_pricing_multiplier": 0,
+          "max_fee": "100000000",
+          "max_custom_fees": [],
+          "memo_base64": "",
+          "name": "TOKENASSOCIATE",
+          "nft_transfers": [],
+          "node": "0.0.7",
+          "nonce": 0,
+          "parent_consensus_timestamp": null,
+          "result": "SUCCESS",
+          "scheduled": false,
+          "staking_reward_transfers": [],
+          "token_transfers": [],
+          "transaction_hash": "3DrvsxWGjB274+cYJAOkfX8/vGlNgcI0AoTDsQr3MfSRDMeBv1N2A2j2Ylf0ACd3",
+          "transaction_id": "0.0.10576385-1789601394-393565693",
+          "transfers": [
+            {
+              "account": "0.0.802",
+              "amount": 64207719,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10576385",
+              "amount": -64207719,
+              "is_approval": false
+            }
+          ],
+          "valid_duration_seconds": "120",
+          "valid_start_timestamp": "1789601394.393565693"
+        }
+      ]
+    },
+    {
+      "network": "hedera:testnet",
+      "transaction_id": "0.0.10576385-1789601396-620842915",
+      "operation": "TOKENASSOCIATE",
+      "status": "SUCCESS",
+      "agent_initiated": true,
+      "charged_fee_tinybars": 64207719,
+      "sources": [
+        "2026-09-16-hedera-testnet-usdc-associations.jsonl",
+        "Mirror account history"
+      ],
+      "explorer": "https://hashscan.io/testnet/transaction/0.0.10576385-1789601396-620842915",
+      "receipts": [
+        {
+          "batch_key": null,
+          "bytes": null,
+          "charged_tx_fee": 64207719,
+          "consensus_timestamp": "1789601400.175966104",
+          "entity_id": "0.0.10576386",
+          "high_volume": false,
+          "high_volume_pricing_multiplier": 0,
+          "max_fee": "100000000",
+          "max_custom_fees": [],
+          "memo_base64": "",
+          "name": "TOKENASSOCIATE",
+          "nft_transfers": [],
+          "node": "0.0.9",
+          "nonce": 0,
+          "parent_consensus_timestamp": null,
+          "result": "SUCCESS",
+          "scheduled": false,
+          "staking_reward_transfers": [],
+          "token_transfers": [],
+          "transaction_hash": "55gVGHqvi8ogyieFUKbzxTEspf+9RtIA6nY50vgToQ9nS181iNn8T7boHPwKFfnz",
+          "transaction_id": "0.0.10576385-1789601396-620842915",
+          "transfers": [
+            {
+              "account": "0.0.802",
+              "amount": 64207719,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10576385",
+              "amount": -64207719,
+              "is_approval": false
+            }
+          ],
+          "valid_duration_seconds": "120",
+          "valid_start_timestamp": "1789601396.620842915"
+        }
+      ]
+    },
+    {
+      "network": "hedera:testnet",
+      "transaction_id": "0.0.10576385-1789602861-163262387",
+      "operation": "CRYPTOTRANSFER",
+      "status": "SUCCESS",
+      "agent_initiated": true,
+      "charged_fee_tinybars": 256317,
+      "sources": [
+        "Mirror account history"
+      ],
+      "explorer": "https://hashscan.io/testnet/transaction/0.0.10576385-1789602861-163262387",
+      "receipts": [
+        {
+          "batch_key": null,
+          "bytes": null,
+          "charged_tx_fee": 256317,
+          "consensus_timestamp": "1789602869.116608196",
+          "entity_id": null,
+          "high_volume": false,
+          "high_volume_pricing_multiplier": 0,
+          "max_fee": "100000000",
+          "max_custom_fees": [],
+          "memo_base64": "",
+          "name": "CRYPTOTRANSFER",
+          "nft_transfers": [],
+          "node": "0.0.7",
+          "nonce": 0,
+          "parent_consensus_timestamp": null,
+          "result": "SUCCESS",
+          "scheduled": false,
+          "staking_reward_transfers": [],
+          "token_transfers": [],
+          "transaction_hash": "bI2dE3V8Mw7dlAxFmA8axiMNS4oY4jSVp3lCZrOu4ukMJ0v3rF9HLtN68+H9XPBR",
+          "transaction_id": "0.0.10576385-1789602861-163262387",
+          "transfers": [
+            {
+              "account": "0.0.802",
+              "amount": 256317,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10576385",
+              "amount": -256317,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10576386",
+              "amount": -10000,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10576387",
+              "amount": 10000,
+              "is_approval": false
+            }
+          ],
+          "valid_duration_seconds": "120",
+          "valid_start_timestamp": "1789602861.163262387"
+        }
+      ]
+    },
+    {
+      "network": "hedera:testnet",
+      "transaction_id": "0.0.10576385-1789603064-182136857",
+      "operation": "CRYPTOTRANSFER",
+      "status": "SUCCESS",
+      "agent_initiated": true,
+      "charged_fee_tinybars": 256317,
+      "sources": [
+        "2026-09-16-hedera-local-canaries-verified.json",
+        "2026-09-16-hedera-local-canaries.jsonl",
+        "2026-09-16-hedera-status.json",
+        "2026-09-16-hedera-testnet-canaries.json",
+        "Mirror account history"
+      ],
+      "explorer": "https://hashscan.io/testnet/transaction/0.0.10576385-1789603064-182136857",
+      "receipts": [
+        {
+          "batch_key": null,
+          "bytes": null,
+          "charged_tx_fee": 256317,
+          "consensus_timestamp": "1789603068.381033337",
+          "entity_id": null,
+          "high_volume": false,
+          "high_volume_pricing_multiplier": 0,
+          "max_fee": "100000000",
+          "max_custom_fees": [],
+          "memo_base64": "",
+          "name": "CRYPTOTRANSFER",
+          "nft_transfers": [],
+          "node": "0.0.4",
+          "nonce": 0,
+          "parent_consensus_timestamp": null,
+          "result": "SUCCESS",
+          "scheduled": false,
+          "staking_reward_transfers": [],
+          "token_transfers": [],
+          "transaction_hash": "kGIooHcHdQivNQdpTo0S4XlSFhV9ADxpFGjPwN5yZ5yhkgGmRNP2fwgtXIKSVhYc",
+          "transaction_id": "0.0.10576385-1789603064-182136857",
+          "transfers": [
+            {
+              "account": "0.0.802",
+              "amount": 256317,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10576385",
+              "amount": -256317,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10576386",
+              "amount": -10000,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10576387",
+              "amount": 10000,
+              "is_approval": false
+            }
+          ],
+          "valid_duration_seconds": "120",
+          "valid_start_timestamp": "1789603064.182136857"
+        }
+      ]
+    },
+    {
+      "network": "hedera:testnet",
+      "transaction_id": "0.0.10576385-1789603066-663879859",
+      "operation": "CRYPTOTRANSFER",
+      "status": "SUCCESS",
+      "agent_initiated": true,
+      "charged_fee_tinybars": 1409749,
+      "sources": [
+        "2026-09-16-hedera-local-canaries-verified.json",
+        "2026-09-16-hedera-local-canaries.jsonl",
+        "2026-09-16-hedera-status.json",
+        "2026-09-16-hedera-testnet-canaries.json",
+        "Mirror account history"
+      ],
+      "explorer": "https://hashscan.io/testnet/transaction/0.0.10576385-1789603066-663879859",
+      "receipts": [
+        {
+          "batch_key": null,
+          "bytes": null,
+          "charged_tx_fee": 1409749,
+          "consensus_timestamp": "1789603072.174316101",
+          "entity_id": null,
+          "high_volume": false,
+          "high_volume_pricing_multiplier": 0,
+          "max_fee": "100000000",
+          "max_custom_fees": [],
+          "memo_base64": "",
+          "name": "CRYPTOTRANSFER",
+          "nft_transfers": [],
+          "node": "0.0.3",
+          "nonce": 0,
+          "parent_consensus_timestamp": null,
+          "result": "SUCCESS",
+          "scheduled": false,
+          "staking_reward_transfers": [],
+          "token_transfers": [
+            {
+              "token_id": "0.0.429274",
+              "account": "0.0.10576386",
+              "amount": -1000,
+              "is_approval": false
+            },
+            {
+              "token_id": "0.0.429274",
+              "account": "0.0.10576387",
+              "amount": 1000,
+              "is_approval": false
+            }
+          ],
+          "transaction_hash": "7fNZLOHa+0RkeZISuxne6ftloH/psXxKUGUGTEibVn5XWB9CPuwzdfgnv8sQKXxR",
+          "transaction_id": "0.0.10576385-1789603066-663879859",
+          "transfers": [
+            {
+              "account": "0.0.802",
+              "amount": 1409749,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10576385",
+              "amount": -1409749,
+              "is_approval": false
+            }
+          ],
+          "valid_duration_seconds": "120",
+          "valid_start_timestamp": "1789603066.663879859"
+        }
+      ]
+    },
+    {
+      "network": "hedera:testnet",
+      "transaction_id": "0.0.10576385-1789603067-331865180",
+      "operation": "CRYPTOTRANSFER",
+      "status": "SUCCESS",
+      "agent_initiated": true,
+      "charged_fee_tinybars": 1409749,
+      "sources": [
+        "2026-09-16-hedera-local-canaries-verified.json",
+        "2026-09-16-hedera-local-canaries.jsonl",
+        "2026-09-16-hedera-status.json",
+        "2026-09-16-hedera-testnet-canaries.json",
+        "Mirror account history"
+      ],
+      "explorer": "https://hashscan.io/testnet/transaction/0.0.10576385-1789603067-331865180",
+      "receipts": [
+        {
+          "batch_key": null,
+          "bytes": null,
+          "charged_tx_fee": 1409749,
+          "consensus_timestamp": "1789603075.787008496",
+          "entity_id": null,
+          "high_volume": false,
+          "high_volume_pricing_multiplier": 0,
+          "max_fee": "100000000",
+          "max_custom_fees": [],
+          "memo_base64": "",
+          "name": "CRYPTOTRANSFER",
+          "nft_transfers": [],
+          "node": "0.0.9",
+          "nonce": 0,
+          "parent_consensus_timestamp": null,
+          "result": "SUCCESS",
+          "scheduled": false,
+          "staking_reward_transfers": [],
+          "token_transfers": [
+            {
+              "token_id": "0.0.10576738",
+              "account": "0.0.10576386",
+              "amount": -1000,
+              "is_approval": false
+            },
+            {
+              "token_id": "0.0.10576738",
+              "account": "0.0.10576387",
+              "amount": 1000,
+              "is_approval": false
+            }
+          ],
+          "transaction_hash": "Qz2nTjbqtdSRVoOZ8Q2vmOQz95G2WC2E8DBzAqdCl/yuUVQTB0H2ZTz24HcQ/LhA",
+          "transaction_id": "0.0.10576385-1789603067-331865180",
+          "transfers": [
+            {
+              "account": "0.0.802",
+              "amount": 1409749,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10576385",
+              "amount": -1409749,
+              "is_approval": false
+            }
+          ],
+          "valid_duration_seconds": "120",
+          "valid_start_timestamp": "1789603067.331865180"
+        }
+      ]
+    },
+    {
+      "network": "hedera:testnet",
+      "transaction_id": "0.0.10576385-1789603383-342495891",
+      "operation": "CRYPTOTRANSFER",
+      "status": "SUCCESS",
+      "agent_initiated": true,
+      "charged_fee_tinybars": 256317,
+      "sources": [
+        "2026-09-16-hedera-validation.json",
+        "Mirror account history"
+      ],
+      "explorer": "https://hashscan.io/testnet/transaction/0.0.10576385-1789603383-342495891",
+      "receipts": [
+        {
+          "batch_key": null,
+          "bytes": null,
+          "charged_tx_fee": 256317,
+          "consensus_timestamp": "1789603403.290575556",
+          "entity_id": null,
+          "high_volume": false,
+          "high_volume_pricing_multiplier": 0,
+          "max_fee": "100000000",
+          "max_custom_fees": [],
+          "memo_base64": "",
+          "name": "CRYPTOTRANSFER",
+          "nft_transfers": [],
+          "node": "0.0.7",
+          "nonce": 0,
+          "parent_consensus_timestamp": null,
+          "result": "SUCCESS",
+          "scheduled": false,
+          "staking_reward_transfers": [],
+          "token_transfers": [],
+          "transaction_hash": "i1yNBEGVHGV5lgpcjku9Dqeegt2rmWV5V34dvUZgYgx4T3CwaSBcutWRcgqMI1Wi",
+          "transaction_id": "0.0.10576385-1789603383-342495891",
+          "transfers": [
+            {
+              "account": "0.0.802",
+              "amount": 256317,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10576385",
+              "amount": -256317,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10576386",
+              "amount": -10000,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10576387",
+              "amount": 10000,
+              "is_approval": false
+            }
+          ],
+          "valid_duration_seconds": "120",
+          "valid_start_timestamp": "1789603383.342495891"
+        }
+      ]
+    },
+    {
+      "network": "hedera:testnet",
+      "transaction_id": "0.0.10576385-1789604566-023406789",
+      "operation": "CRYPTOTRANSFER",
+      "status": "SUCCESS",
+      "agent_initiated": true,
+      "charged_fee_tinybars": 1409749,
+      "sources": [
+        "2026-09-16-hedera-local-canaries.jsonl",
+        "2026-09-16-hedera-status.json",
+        "2026-09-16-hedera-validation.json",
+        "Mirror account history"
+      ],
+      "explorer": "https://hashscan.io/testnet/transaction/0.0.10576385-1789604566-023406789",
+      "receipts": [
+        {
+          "batch_key": null,
+          "bytes": null,
+          "charged_tx_fee": 1409749,
+          "consensus_timestamp": "1789604574.021081621",
+          "entity_id": null,
+          "high_volume": false,
+          "high_volume_pricing_multiplier": 0,
+          "max_fee": "100000000",
+          "max_custom_fees": [],
+          "memo_base64": "",
+          "name": "CRYPTOTRANSFER",
+          "nft_transfers": [],
+          "node": "0.0.7",
+          "nonce": 0,
+          "parent_consensus_timestamp": null,
+          "result": "SUCCESS",
+          "scheduled": false,
+          "staking_reward_transfers": [],
+          "token_transfers": [
+            {
+              "token_id": "0.0.429274",
+              "account": "0.0.10576386",
+              "amount": -1000,
+              "is_approval": false
+            },
+            {
+              "token_id": "0.0.429274",
+              "account": "0.0.10576387",
+              "amount": 1000,
+              "is_approval": false
+            }
+          ],
+          "transaction_hash": "0J4R3ygd0/0yrdLWKb9kAaFaOuxsC9vEEvggy2HbgifVM8u5fkAbySv6I/itYbZf",
+          "transaction_id": "0.0.10576385-1789604566-023406789",
+          "transfers": [
+            {
+              "account": "0.0.802",
+              "amount": 1409749,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10576385",
+              "amount": -1409749,
+              "is_approval": false
+            }
+          ],
+          "valid_duration_seconds": "120",
+          "valid_start_timestamp": "1789604566.023406789"
+        }
+      ]
+    },
+    {
+      "network": "hedera:testnet",
+      "transaction_id": "0.0.10576385-1789608851-534483569",
+      "operation": "CRYPTOTRANSFER",
+      "status": "SUCCESS",
+      "agent_initiated": true,
+      "charged_fee_tinybars": 256317,
+      "sources": [
+        "2026-09-16-hedera-final-recovery.json",
+        "2026-09-16-hedera-validation.json",
+        "Mirror account history"
+      ],
+      "explorer": "https://hashscan.io/testnet/transaction/0.0.10576385-1789608851-534483569",
+      "receipts": [
+        {
+          "batch_key": null,
+          "bytes": null,
+          "charged_tx_fee": 256317,
+          "consensus_timestamp": "1789608873.832815104",
+          "entity_id": null,
+          "high_volume": false,
+          "high_volume_pricing_multiplier": 0,
+          "max_fee": "100000000",
+          "max_custom_fees": [],
+          "memo_base64": "",
+          "name": "CRYPTOTRANSFER",
+          "nft_transfers": [],
+          "node": "0.0.9",
+          "nonce": 0,
+          "parent_consensus_timestamp": null,
+          "result": "SUCCESS",
+          "scheduled": false,
+          "staking_reward_transfers": [],
+          "token_transfers": [],
+          "transaction_hash": "HxFuRx1sv3YwOODSlFPwC/pTQTA+ZQJE5RVOFcCJ4P5yn6xH2XkL2uXgWBn2DYXk",
+          "transaction_id": "0.0.10576385-1789608851-534483569",
+          "transfers": [
+            {
+              "account": "0.0.802",
+              "amount": 256317,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10576385",
+              "amount": -256317,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10576386",
+              "amount": -10000,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10576387",
+              "amount": 10000,
+              "is_approval": false
+            }
+          ],
+          "valid_duration_seconds": "120",
+          "valid_start_timestamp": "1789608851.534483569"
+        }
+      ]
+    },
+    {
+      "network": "hedera:testnet",
+      "transaction_id": "0.0.10576385-1789609544-527025786",
+      "operation": "CRYPTOTRANSFER",
+      "status": "SUCCESS",
+      "agent_initiated": true,
+      "charged_fee_tinybars": 256317,
+      "sources": [
+        "2026-09-16-hedera-public-canaries-verified.json",
+        "2026-09-16-hedera-public-canaries.json",
+        "2026-09-16-hedera-public-canaries.jsonl",
+        "2026-09-16-hedera-status.json",
+        "Mirror account history"
+      ],
+      "explorer": "https://hashscan.io/testnet/transaction/0.0.10576385-1789609544-527025786",
+      "receipts": [
+        {
+          "batch_key": null,
+          "bytes": null,
+          "charged_tx_fee": 256317,
+          "consensus_timestamp": "1789609548.294414104",
+          "entity_id": null,
+          "high_volume": false,
+          "high_volume_pricing_multiplier": 0,
+          "max_fee": "100000000",
+          "max_custom_fees": [],
+          "memo_base64": "",
+          "name": "CRYPTOTRANSFER",
+          "nft_transfers": [],
+          "node": "0.0.9",
+          "nonce": 0,
+          "parent_consensus_timestamp": null,
+          "result": "SUCCESS",
+          "scheduled": false,
+          "staking_reward_transfers": [],
+          "token_transfers": [],
+          "transaction_hash": "gSSOPwG5M+ftTokB/Myo/8yMIusDbG/cB+j04EVxx/brymkwkYt6uQg6ikzKGaRr",
+          "transaction_id": "0.0.10576385-1789609544-527025786",
+          "transfers": [
+            {
+              "account": "0.0.802",
+              "amount": 256317,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10576385",
+              "amount": -256317,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10576386",
+              "amount": -10000,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10576387",
+              "amount": 10000,
+              "is_approval": false
+            }
+          ],
+          "valid_duration_seconds": "120",
+          "valid_start_timestamp": "1789609544.527025786"
+        }
+      ]
+    },
+    {
+      "network": "hedera:testnet",
+      "transaction_id": "0.0.10576385-1789609553-483480778",
+      "operation": "CRYPTOTRANSFER",
+      "status": "SUCCESS",
+      "agent_initiated": true,
+      "charged_fee_tinybars": 1409749,
+      "sources": [
+        "2026-09-16-hedera-public-canaries-verified.json",
+        "2026-09-16-hedera-public-canaries.json",
+        "2026-09-16-hedera-public-canaries.jsonl",
+        "2026-09-16-hedera-status.json",
+        "Mirror account history"
+      ],
+      "explorer": "https://hashscan.io/testnet/transaction/0.0.10576385-1789609553-483480778",
+      "receipts": [
+        {
+          "batch_key": null,
+          "bytes": null,
+          "charged_tx_fee": 1409749,
+          "consensus_timestamp": "1789609562.306043104",
+          "entity_id": null,
+          "high_volume": false,
+          "high_volume_pricing_multiplier": 0,
+          "max_fee": "100000000",
+          "max_custom_fees": [],
+          "memo_base64": "",
+          "name": "CRYPTOTRANSFER",
+          "nft_transfers": [],
+          "node": "0.0.4",
+          "nonce": 0,
+          "parent_consensus_timestamp": null,
+          "result": "SUCCESS",
+          "scheduled": false,
+          "staking_reward_transfers": [],
+          "token_transfers": [
+            {
+              "token_id": "0.0.429274",
+              "account": "0.0.10576386",
+              "amount": -1000,
+              "is_approval": false
+            },
+            {
+              "token_id": "0.0.429274",
+              "account": "0.0.10576387",
+              "amount": 1000,
+              "is_approval": false
+            }
+          ],
+          "transaction_hash": "7KS2kMkvfJc+m81iNjhdnk7CAN7G5YgTy59obl/H53N6ZKGHdGhJTHqCapiSgei4",
+          "transaction_id": "0.0.10576385-1789609553-483480778",
+          "transfers": [
+            {
+              "account": "0.0.802",
+              "amount": 1409749,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10576385",
+              "amount": -1409749,
+              "is_approval": false
+            }
+          ],
+          "valid_duration_seconds": "120",
+          "valid_start_timestamp": "1789609553.483480778"
+        }
+      ]
+    },
+    {
+      "network": "hedera:mainnet",
+      "transaction_id": "0.0.10868270-1789610858-792925761",
+      "operation": "CRYPTOTRANSFER",
+      "status": "SUCCESS",
+      "agent_initiated": false,
+      "charged_fee_tinybars": 136011,
+      "sources": [
+        "2026-09-16-hedera-mainnet-bootstrap-funding.json",
+        "2026-09-16-hedera-mainnet-topup.json",
+        "Mirror account history"
+      ],
+      "explorer": "https://hashscan.io/mainnet/transaction/0.0.10868270-1789610858-792925761",
+      "receipts": [
+        {
+          "batch_key": null,
+          "bytes": null,
+          "charged_tx_fee": 68005929,
+          "consensus_timestamp": "1789610870.788167580",
+          "entity_id": "0.0.10868282",
+          "high_volume": false,
+          "high_volume_pricing_multiplier": 0,
+          "max_fee": "0",
+          "max_custom_fees": [],
+          "memo_base64": "",
+          "name": "CRYPTOCREATEACCOUNT",
+          "nft_transfers": [],
+          "node": null,
+          "nonce": 1,
+          "parent_consensus_timestamp": null,
+          "result": "SUCCESS",
+          "scheduled": false,
+          "staking_reward_transfers": [],
+          "token_transfers": [],
+          "transaction_hash": "hrEHaJO+xs1RRQwHz1UVLRsbdLkd6PKcR+1qUo0Tp+APMK0m3hubdaSKLs9rJg6m",
+          "transaction_id": "0.0.10868270-1789610858-792925761",
+          "transfers": [
+            {
+              "account": "0.0.802",
+              "amount": 68005929,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10868270",
+              "amount": -68005929,
+              "is_approval": false
+            }
+          ],
+          "valid_duration_seconds": null,
+          "valid_start_timestamp": "1789610858.792925761"
+        },
+        {
+          "batch_key": null,
+          "bytes": null,
+          "charged_tx_fee": 136011,
+          "consensus_timestamp": "1789610870.788167581",
+          "entity_id": null,
+          "high_volume": false,
+          "high_volume_pricing_multiplier": 0,
+          "max_fee": "100000000",
+          "max_custom_fees": [],
+          "memo_base64": "",
+          "name": "CRYPTOTRANSFER",
+          "nft_transfers": [],
+          "node": "0.0.24",
+          "nonce": 0,
+          "parent_consensus_timestamp": null,
+          "result": "SUCCESS",
+          "scheduled": false,
+          "staking_reward_transfers": [],
+          "token_transfers": [],
+          "transaction_hash": "BDB3zUeSBes4No0/K2ktvuflAecDq9eY5SutCqAa7jG5z91qiX8SWAj4rPXj97W5",
+          "transaction_id": "0.0.10868270-1789610858-792925761",
+          "transfers": [
+            {
+              "account": "0.0.802",
+              "amount": 136011,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10868270",
+              "amount": -50136011,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10868282",
+              "amount": 50000000,
+              "is_approval": false
+            }
+          ],
+          "valid_duration_seconds": "120",
+          "valid_start_timestamp": "1789610858.792925761"
+        }
+      ]
+    },
+    {
+      "network": "hedera:mainnet",
+      "transaction_id": "0.0.10868270-1789610996-994069541",
+      "operation": "CRYPTOTRANSFER",
+      "status": "SUCCESS",
+      "agent_initiated": false,
+      "charged_fee_tinybars": 136011,
+      "sources": [
+        "2026-09-16-hedera-mainnet-topup.json",
+        "Mirror account history"
+      ],
+      "explorer": "https://hashscan.io/mainnet/transaction/0.0.10868270-1789610996-994069541",
+      "receipts": [
+        {
+          "batch_key": null,
+          "bytes": null,
+          "charged_tx_fee": 136011,
+          "consensus_timestamp": "1789611040.395205104",
+          "entity_id": null,
+          "high_volume": false,
+          "high_volume_pricing_multiplier": 0,
+          "max_fee": "100000000",
+          "max_custom_fees": [],
+          "memo_base64": "",
+          "name": "CRYPTOTRANSFER",
+          "nft_transfers": [],
+          "node": "0.0.25",
+          "nonce": 0,
+          "parent_consensus_timestamp": null,
+          "result": "SUCCESS",
+          "scheduled": false,
+          "staking_reward_transfers": [],
+          "token_transfers": [],
+          "transaction_hash": "T/HfE0G8xhJbmZBHFR+0ab+j5dE98w2Cg6pNP7LK1j2KZoszq1ABkiGZAWatz3qs",
+          "transaction_id": "0.0.10868270-1789610996-994069541",
+          "transfers": [
+            {
+              "account": "0.0.802",
+              "amount": 136011,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10868270",
+              "amount": -3836596045,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10868282",
+              "amount": 3836460034,
+              "is_approval": false
+            }
+          ],
+          "valid_duration_seconds": "120",
+          "valid_start_timestamp": "1789610996.994069541"
+        }
+      ]
+    },
+    {
+      "network": "hedera:mainnet",
+      "transaction_id": "0.0.10868282-1789611247-839125036",
+      "operation": "CRYPTOCREATEACCOUNT",
+      "status": "SUCCESS",
+      "agent_initiated": true,
+      "charged_fee_tinybars": 68005929,
+      "sources": [
+        "2026-09-16-hedera-mainnet-account-creation.jsonl",
+        "Mirror account history"
+      ],
+      "explorer": "https://hashscan.io/mainnet/transaction/0.0.10868282-1789611247-839125036",
+      "receipts": [
+        {
+          "batch_key": null,
+          "bytes": null,
+          "charged_tx_fee": 0,
+          "consensus_timestamp": "1789611256.325923487",
+          "entity_id": "0.0.10868282",
+          "high_volume": false,
+          "high_volume_pricing_multiplier": 0,
+          "max_fee": "0",
+          "max_custom_fees": [],
+          "memo_base64": "",
+          "name": "CRYPTOUPDATEACCOUNT",
+          "nft_transfers": [],
+          "node": null,
+          "nonce": 1,
+          "parent_consensus_timestamp": null,
+          "result": "SUCCESS",
+          "scheduled": false,
+          "staking_reward_transfers": [],
+          "token_transfers": [],
+          "transaction_hash": "QfHkQWiGvGm1JsBvu0n/LrzowZr/+oV7L2lkT6L//QYH5tWh/hiGXa7dxNT0OQS4",
+          "transaction_id": "0.0.10868282-1789611247-839125036",
+          "transfers": [],
+          "valid_duration_seconds": null,
+          "valid_start_timestamp": "1789611247.839125036"
+        },
+        {
+          "batch_key": null,
+          "bytes": null,
+          "charged_tx_fee": 68005929,
+          "consensus_timestamp": "1789611256.325923488",
+          "entity_id": "0.0.10868300",
+          "high_volume": false,
+          "high_volume_pricing_multiplier": 0,
+          "max_fee": "100000000",
+          "max_custom_fees": [],
+          "memo_base64": "",
+          "name": "CRYPTOCREATEACCOUNT",
+          "nft_transfers": [],
+          "node": "0.0.38",
+          "nonce": 0,
+          "parent_consensus_timestamp": null,
+          "result": "SUCCESS",
+          "scheduled": false,
+          "staking_reward_transfers": [],
+          "token_transfers": [],
+          "transaction_hash": "wNHeDt37b0f4BZohp5I5FNCI1hMFnNNPfrvmXflTRTQtOxOs6F5pAZJtdGvP628x",
+          "transaction_id": "0.0.10868282-1789611247-839125036",
+          "transfers": [
+            {
+              "account": "0.0.802",
+              "amount": 68005929,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10868282",
+              "amount": -3068005929,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10868300",
+              "amount": 3000000000,
+              "is_approval": false
+            }
+          ],
+          "valid_duration_seconds": "120",
+          "valid_start_timestamp": "1789611247.839125036"
+        }
+      ]
+    },
+    {
+      "network": "hedera:mainnet",
+      "transaction_id": "0.0.10868282-1789611253-642507506",
+      "operation": "CRYPTOCREATEACCOUNT",
+      "status": "SUCCESS",
+      "agent_initiated": true,
+      "charged_fee_tinybars": 68005929,
+      "sources": [
+        "2026-09-16-hedera-mainnet-account-creation.jsonl",
+        "Mirror account history"
+      ],
+      "explorer": "https://hashscan.io/mainnet/transaction/0.0.10868282-1789611253-642507506",
+      "receipts": [
+        {
+          "batch_key": null,
+          "bytes": null,
+          "charged_tx_fee": 68005929,
+          "consensus_timestamp": "1789611258.693998777",
+          "entity_id": "0.0.10868301",
+          "high_volume": false,
+          "high_volume_pricing_multiplier": 0,
+          "max_fee": "100000000",
+          "max_custom_fees": [],
+          "memo_base64": "",
+          "name": "CRYPTOCREATEACCOUNT",
+          "nft_transfers": [],
+          "node": "0.0.13",
+          "nonce": 0,
+          "parent_consensus_timestamp": null,
+          "result": "SUCCESS",
+          "scheduled": false,
+          "staking_reward_transfers": [],
+          "token_transfers": [],
+          "transaction_hash": "mEWRWg8tZT8tj33IYUaESiESKyVu9GhnwYk9boPUqZ85/3feB+O1EjzaDwIHjMqy",
+          "transaction_id": "0.0.10868282-1789611253-642507506",
+          "transfers": [
+            {
+              "account": "0.0.802",
+              "amount": 68005929,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10868282",
+              "amount": -118005929,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10868301",
+              "amount": 50000000,
+              "is_approval": false
+            }
+          ],
+          "valid_duration_seconds": "120",
+          "valid_start_timestamp": "1789611253.642507506"
+        }
+      ]
+    },
+    {
+      "network": "hedera:mainnet",
+      "transaction_id": "0.0.10868282-1789611258-322502377",
+      "operation": "CRYPTOCREATEACCOUNT",
+      "status": "SUCCESS",
+      "agent_initiated": true,
+      "charged_fee_tinybars": 68005929,
+      "sources": [
+        "2026-09-16-hedera-mainnet-account-creation.jsonl",
+        "Mirror account history"
+      ],
+      "explorer": "https://hashscan.io/mainnet/transaction/0.0.10868282-1789611258-322502377",
+      "receipts": [
+        {
+          "batch_key": null,
+          "bytes": null,
+          "charged_tx_fee": 68005929,
+          "consensus_timestamp": "1789611263.758032104",
+          "entity_id": "0.0.10868302",
+          "high_volume": false,
+          "high_volume_pricing_multiplier": 0,
+          "max_fee": "100000000",
+          "max_custom_fees": [],
+          "memo_base64": "",
+          "name": "CRYPTOCREATEACCOUNT",
+          "nft_transfers": [],
+          "node": "0.0.9",
+          "nonce": 0,
+          "parent_consensus_timestamp": null,
+          "result": "SUCCESS",
+          "scheduled": false,
+          "staking_reward_transfers": [],
+          "token_transfers": [],
+          "transaction_hash": "nQzdErLePPU9JQCCmEl22R6BgZXgMbyCP9fezzWv93tiRLXYDFlCfm2n079WHgKQ",
+          "transaction_id": "0.0.10868282-1789611258-322502377",
+          "transfers": [
+            {
+              "account": "0.0.802",
+              "amount": 68005929,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10868282",
+              "amount": -78005929,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10868302",
+              "amount": 10000000,
+              "is_approval": false
+            }
+          ],
+          "valid_duration_seconds": "120",
+          "valid_start_timestamp": "1789611258.322502377"
+        }
+      ]
+    },
+    {
+      "network": "hedera:mainnet",
+      "transaction_id": "0.0.10868282-1789613793-242236127",
+      "operation": "CONTRACTCALL",
+      "status": "SUCCESS",
+      "agent_initiated": true,
+      "charged_fee_tinybars": 17672510,
+      "sources": [
+        "2026-09-16-hedera-mainnet-usdc-swap-verified.json",
+        "2026-09-16-hedera-mainnet-usdc-swap.jsonl",
+        "Mirror account history"
+      ],
+      "explorer": "https://hashscan.io/mainnet/transaction/0.0.10868282-1789613793-242236127",
+      "receipts": [
+        {
+          "batch_key": null,
+          "bytes": null,
+          "charged_tx_fee": 17672510,
+          "consensus_timestamp": "1789613800.749414786",
+          "entity_id": "0.0.3045981",
+          "high_volume": false,
+          "high_volume_pricing_multiplier": 0,
+          "max_fee": "100000000",
+          "max_custom_fees": [],
+          "memo_base64": "",
+          "name": "CONTRACTCALL",
+          "nft_transfers": [],
+          "node": "0.0.3",
+          "nonce": 0,
+          "parent_consensus_timestamp": null,
+          "result": "SUCCESS",
+          "scheduled": false,
+          "staking_reward_transfers": [],
+          "token_transfers": [],
+          "transaction_hash": "wqY5BamyW3utAaaTCSUZMCTaulwWun9l6Z7cz4dcnJHdSGNkktg14yK4cUrD2+WK",
+          "transaction_id": "0.0.10868282-1789613793-242236127",
+          "transfers": [
+            {
+              "account": "0.0.802",
+              "amount": 17672510,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.1456985",
+              "amount": 135504344,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10868282",
+              "amount": -153176854,
+              "is_approval": false
+            }
+          ],
+          "valid_duration_seconds": "180",
+          "valid_start_timestamp": "1789613793.242236127"
+        },
+        {
+          "batch_key": null,
+          "bytes": null,
+          "charged_tx_fee": 0,
+          "consensus_timestamp": "1789613800.749414787",
+          "entity_id": "0.0.1456986",
+          "high_volume": false,
+          "high_volume_pricing_multiplier": 0,
+          "max_fee": "0",
+          "max_custom_fees": [],
+          "memo_base64": "",
+          "name": "TOKENMINT",
+          "nft_transfers": [],
+          "node": null,
+          "nonce": 1,
+          "parent_consensus_timestamp": "1789613800.749414786",
+          "result": "SUCCESS",
+          "scheduled": false,
+          "staking_reward_transfers": [],
+          "token_transfers": [
+            {
+              "token_id": "0.0.1456986",
+              "account": "0.0.1456985",
+              "amount": 135504344,
+              "is_approval": false
+            }
+          ],
+          "transaction_hash": "jG2NqRK1LnTGbLIB7Oi+1nAKOf7hAC1Icl4/ZPgi4zjIQM3uR36qgziJGrMp/QfG",
+          "transaction_id": "0.0.10868282-1789613793-242236127",
+          "transfers": [],
+          "valid_duration_seconds": null,
+          "valid_start_timestamp": "1789613793.242236127"
+        },
+        {
+          "batch_key": null,
+          "bytes": null,
+          "charged_tx_fee": 0,
+          "consensus_timestamp": "1789613800.749414788",
+          "entity_id": null,
+          "high_volume": false,
+          "high_volume_pricing_multiplier": 0,
+          "max_fee": "0",
+          "max_custom_fees": [],
+          "memo_base64": "",
+          "name": "CRYPTOTRANSFER",
+          "nft_transfers": [],
+          "node": null,
+          "nonce": 2,
+          "parent_consensus_timestamp": "1789613800.749414786",
+          "result": "SUCCESS",
+          "scheduled": false,
+          "staking_reward_transfers": [],
+          "token_transfers": [
+            {
+              "token_id": "0.0.1456986",
+              "account": "0.0.1456985",
+              "amount": -135504344,
+              "is_approval": false
+            },
+            {
+              "token_id": "0.0.1456986",
+              "account": "0.0.1462797",
+              "amount": 135504344,
+              "is_approval": false
+            }
+          ],
+          "transaction_hash": "YbxOtfm4a7DqQVLE/v0XCiHYYp51+HunryRCPbkS9EJnZWJ+yDy6e7HAqEzMcAlS",
+          "transaction_id": "0.0.10868282-1789613793-242236127",
+          "transfers": [],
+          "valid_duration_seconds": null,
+          "valid_start_timestamp": "1789613793.242236127"
+        },
+        {
+          "batch_key": null,
+          "bytes": null,
+          "charged_tx_fee": 0,
+          "consensus_timestamp": "1789613800.749414789",
+          "entity_id": null,
+          "high_volume": false,
+          "high_volume_pricing_multiplier": 0,
+          "max_fee": "0",
+          "max_custom_fees": [],
+          "memo_base64": "",
+          "name": "CRYPTOTRANSFER",
+          "nft_transfers": [],
+          "node": null,
+          "nonce": 3,
+          "parent_consensus_timestamp": "1789613800.749414786",
+          "result": "SUCCESS",
+          "scheduled": false,
+          "staking_reward_transfers": [],
+          "token_transfers": [
+            {
+              "token_id": "0.0.456858",
+              "account": "0.0.1462797",
+              "amount": -100000,
+              "is_approval": false
+            },
+            {
+              "token_id": "0.0.456858",
+              "account": "0.0.10868301",
+              "amount": 100000,
+              "is_approval": false
+            }
+          ],
+          "transaction_hash": "GGbpjtRQFY2jy+WGqLSfdM+MCgsygoj7WzgrBEVyXZYWzwPEBdXaGY6fiZ85Bbji",
+          "transaction_id": "0.0.10868282-1789613793-242236127",
+          "transfers": [],
+          "valid_duration_seconds": null,
+          "valid_start_timestamp": "1789613793.242236127"
+        },
+        {
+          "batch_key": null,
+          "bytes": null,
+          "charged_tx_fee": 0,
+          "consensus_timestamp": "1789613800.749414790",
+          "entity_id": "0.0.359",
+          "high_volume": false,
+          "high_volume_pricing_multiplier": 0,
+          "max_fee": "0",
+          "max_custom_fees": [],
+          "memo_base64": "",
+          "name": "CONTRACTCALL",
+          "nft_transfers": [],
+          "node": null,
+          "nonce": 4,
+          "parent_consensus_timestamp": "1789613800.749414786",
+          "result": "SUCCESS",
+          "scheduled": false,
+          "staking_reward_transfers": [],
+          "token_transfers": [],
+          "transaction_hash": "xNxKJGo4/020idIb8YxT7u/XXsTANqkQEGKTcJlRwqO+CMAKXAb+h3zBDvdmV4B+",
+          "transaction_id": "0.0.10868282-1789613793-242236127",
+          "transfers": [],
+          "valid_duration_seconds": null,
+          "valid_start_timestamp": "1789613793.242236127"
+        },
+        {
+          "batch_key": null,
+          "bytes": null,
+          "charged_tx_fee": 0,
+          "consensus_timestamp": "1789613800.749414791",
+          "entity_id": "0.0.359",
+          "high_volume": false,
+          "high_volume_pricing_multiplier": 0,
+          "max_fee": "0",
+          "max_custom_fees": [],
+          "memo_base64": "",
+          "name": "CONTRACTCALL",
+          "nft_transfers": [],
+          "node": null,
+          "nonce": 5,
+          "parent_consensus_timestamp": "1789613800.749414786",
+          "result": "SUCCESS",
+          "scheduled": false,
+          "staking_reward_transfers": [],
+          "token_transfers": [],
+          "transaction_hash": "CyxosRNZu9ox0Il5S1ok4kqKVRNAxxKObDQwPT0qpg5JdgBznenAJlrpTL1L8wlL",
+          "transaction_id": "0.0.10868282-1789613793-242236127",
+          "transfers": [],
+          "valid_duration_seconds": null,
+          "valid_start_timestamp": "1789613793.242236127"
+        }
+      ]
+    },
+    {
+      "network": "hedera:mainnet",
+      "transaction_id": "0.0.10868300-1789611321-793960187",
+      "operation": "TOKENASSOCIATE",
+      "status": "SUCCESS",
+      "agent_initiated": true,
+      "charged_fee_tinybars": 68141941,
+      "sources": [
+        "2026-09-16-hedera-mainnet-usdc-associations.jsonl",
+        "Mirror account history"
+      ],
+      "explorer": "https://hashscan.io/mainnet/transaction/0.0.10868300-1789611321-793960187",
+      "receipts": [
+        {
+          "batch_key": null,
+          "bytes": null,
+          "charged_tx_fee": 68141941,
+          "consensus_timestamp": "1789611327.392143104",
+          "entity_id": "0.0.10868301",
+          "high_volume": false,
+          "high_volume_pricing_multiplier": 0,
+          "max_fee": "100000000",
+          "max_custom_fees": [],
+          "memo_base64": "",
+          "name": "TOKENASSOCIATE",
+          "nft_transfers": [],
+          "node": "0.0.15",
+          "nonce": 0,
+          "parent_consensus_timestamp": null,
+          "result": "SUCCESS",
+          "scheduled": false,
+          "staking_reward_transfers": [],
+          "token_transfers": [],
+          "transaction_hash": "PhD5yWvTBa+mz3gJJrmcGB/KehDl/xXoNQf46uzp+b/l+7+zipDufH/8i/6+U158",
+          "transaction_id": "0.0.10868300-1789611321-793960187",
+          "transfers": [
+            {
+              "account": "0.0.802",
+              "amount": 68141941,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10868300",
+              "amount": -68141941,
+              "is_approval": false
+            }
+          ],
+          "valid_duration_seconds": "120",
+          "valid_start_timestamp": "1789611321.793960187"
+        }
+      ]
+    },
+    {
+      "network": "hedera:mainnet",
+      "transaction_id": "0.0.10868300-1789611324-530241915",
+      "operation": "TOKENASSOCIATE",
+      "status": "SUCCESS",
+      "agent_initiated": true,
+      "charged_fee_tinybars": 68141941,
+      "sources": [
+        "2026-09-16-hedera-mainnet-usdc-associations.jsonl",
+        "Mirror account history"
+      ],
+      "explorer": "https://hashscan.io/mainnet/transaction/0.0.10868300-1789611324-530241915",
+      "receipts": [
+        {
+          "batch_key": null,
+          "bytes": null,
+          "charged_tx_fee": 68141941,
+          "consensus_timestamp": "1789611332.621931205",
+          "entity_id": "0.0.10868302",
+          "high_volume": false,
+          "high_volume_pricing_multiplier": 0,
+          "max_fee": "100000000",
+          "max_custom_fees": [],
+          "memo_base64": "",
+          "name": "TOKENASSOCIATE",
+          "nft_transfers": [],
+          "node": "0.0.35",
+          "nonce": 0,
+          "parent_consensus_timestamp": null,
+          "result": "SUCCESS",
+          "scheduled": false,
+          "staking_reward_transfers": [],
+          "token_transfers": [],
+          "transaction_hash": "eDekOnkeVLEvxvD7z5dlnGN47nSAMNREno8gl+nUQ1dL1p3OyhVW5niNIFt2l9/H",
+          "transaction_id": "0.0.10868300-1789611324-530241915",
+          "transfers": [
+            {
+              "account": "0.0.802",
+              "amount": 68141941,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10868300",
+              "amount": -68141941,
+              "is_approval": false
+            }
+          ],
+          "valid_duration_seconds": "120",
+          "valid_start_timestamp": "1789611324.530241915"
+        }
+      ]
+    },
+    {
+      "network": "hedera:mainnet",
+      "transaction_id": "0.0.10868300-1789613986-642051223",
+      "operation": "CRYPTOTRANSFER",
+      "status": "SUCCESS",
+      "agent_initiated": true,
+      "charged_fee_tinybars": 272023,
+      "sources": [
+        "2026-09-16-hedera-mainnet-public-canaries.json",
+        "2026-09-16-hedera-mainnet-public-canaries.jsonl",
+        "Mirror account history"
+      ],
+      "explorer": "https://hashscan.io/mainnet/transaction/0.0.10868300-1789613986-642051223",
+      "receipts": [
+        {
+          "batch_key": null,
+          "bytes": null,
+          "charged_tx_fee": 272023,
+          "consensus_timestamp": "1789613991.698336104",
+          "entity_id": null,
+          "high_volume": false,
+          "high_volume_pricing_multiplier": 0,
+          "max_fee": "100000000",
+          "max_custom_fees": [],
+          "memo_base64": "",
+          "name": "CRYPTOTRANSFER",
+          "nft_transfers": [],
+          "node": "0.0.3",
+          "nonce": 0,
+          "parent_consensus_timestamp": null,
+          "result": "SUCCESS",
+          "scheduled": false,
+          "staking_reward_transfers": [],
+          "token_transfers": [],
+          "transaction_hash": "bm7vzILYqaCVXaTp81eJgFzdv4FPj7LIjMij6l+z2/rAm/5ry/2UKPt4HPeTFeFt",
+          "transaction_id": "0.0.10868300-1789613986-642051223",
+          "transfers": [
+            {
+              "account": "0.0.802",
+              "amount": 272023,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10868300",
+              "amount": -272023,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10868301",
+              "amount": -10000,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10868302",
+              "amount": 10000,
+              "is_approval": false
+            }
+          ],
+          "valid_duration_seconds": "120",
+          "valid_start_timestamp": "1789613986.642051223"
+        }
+      ]
+    },
+    {
+      "network": "hedera:mainnet",
+      "transaction_id": "0.0.10868300-1789614004-016143440",
+      "operation": "CRYPTOTRANSFER",
+      "status": "SUCCESS",
+      "agent_initiated": true,
+      "charged_fee_tinybars": 1488410,
+      "sources": [
+        "2026-09-16-hedera-mainnet-public-canaries.json",
+        "2026-09-16-hedera-mainnet-public-canaries.jsonl",
+        "Mirror account history"
+      ],
+      "explorer": "https://hashscan.io/mainnet/transaction/0.0.10868300-1789614004-016143440",
+      "receipts": [
+        {
+          "batch_key": null,
+          "bytes": null,
+          "charged_tx_fee": 1488410,
+          "consensus_timestamp": "1789614010.037511104",
+          "entity_id": null,
+          "high_volume": false,
+          "high_volume_pricing_multiplier": 0,
+          "max_fee": "100000000",
+          "max_custom_fees": [],
+          "memo_base64": "",
+          "name": "CRYPTOTRANSFER",
+          "nft_transfers": [],
+          "node": "0.0.3",
+          "nonce": 0,
+          "parent_consensus_timestamp": null,
+          "result": "SUCCESS",
+          "scheduled": false,
+          "staking_reward_transfers": [],
+          "token_transfers": [
+            {
+              "token_id": "0.0.456858",
+              "account": "0.0.10868301",
+              "amount": -1000,
+              "is_approval": false
+            },
+            {
+              "token_id": "0.0.456858",
+              "account": "0.0.10868302",
+              "amount": 1000,
+              "is_approval": false
+            }
+          ],
+          "transaction_hash": "39qOe8td0FXW0WkWcZd/biP63U3nb0OmSsYgrZ4q5CK4K5VoISwGTV1c+PlQhCc8",
+          "transaction_id": "0.0.10868300-1789614004-016143440",
+          "transfers": [
+            {
+              "account": "0.0.802",
+              "amount": 1488410,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10868300",
+              "amount": -1488410,
+              "is_approval": false
+            }
+          ],
+          "valid_duration_seconds": "120",
+          "valid_start_timestamp": "1789614004.016143440"
+        }
+      ]
+    },
+    {
+      "network": "hedera:testnet",
+      "transaction_id": "0.0.11920-1789602603-279916745",
+      "operation": "CRYPTOTRANSFER",
+      "status": "SUCCESS",
+      "agent_initiated": false,
+      "charged_fee_tinybars": 1281590,
+      "sources": [
+        "Mirror account history"
+      ],
+      "explorer": "https://hashscan.io/testnet/transaction/0.0.11920-1789602603-279916745",
+      "receipts": [
+        {
+          "batch_key": null,
+          "bytes": null,
+          "charged_tx_fee": 1281590,
+          "consensus_timestamp": "1789602606.644104526",
+          "entity_id": null,
+          "high_volume": false,
+          "high_volume_pricing_multiplier": 0,
+          "max_fee": "15940140",
+          "max_custom_fees": [],
+          "memo_base64": "",
+          "name": "CRYPTOTRANSFER",
+          "nft_transfers": [],
+          "node": "0.0.3",
+          "nonce": 0,
+          "parent_consensus_timestamp": null,
+          "result": "SUCCESS",
+          "scheduled": false,
+          "staking_reward_transfers": [],
+          "token_transfers": [
+            {
+              "token_id": "0.0.429274",
+              "account": "0.0.11920",
+              "amount": -20000000,
+              "is_approval": false
+            },
+            {
+              "token_id": "0.0.429274",
+              "account": "0.0.10576386",
+              "amount": 20000000,
+              "is_approval": false
+            }
+          ],
+          "transaction_hash": "cKuIO1GwrzcDBYP5t48meT+BLao35qGBzZwDaRiv64OMS31bfwtm0t/wS40gh/mI",
+          "transaction_id": "0.0.11920-1789602603-279916745",
+          "transfers": [
+            {
+              "account": "0.0.802",
+              "amount": 1281590,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.11920",
+              "amount": -1281590,
+              "is_approval": false
+            }
+          ],
+          "valid_duration_seconds": "180",
+          "valid_start_timestamp": "1789602603.279916745"
+        }
+      ]
+    },
+    {
+      "network": "hedera:testnet",
+      "transaction_id": "0.0.8511157-1789601002-134584547",
+      "operation": "CRYPTOCREATEACCOUNT",
+      "status": "SUCCESS",
+      "agent_initiated": true,
+      "charged_fee_tinybars": 64079560,
+      "sources": [
+        "2026-09-16-hedera-facilitator-public-keys.json",
+        "2026-09-16-hedera-testnet-account-creation.jsonl",
+        "Mirror account history"
+      ],
+      "explorer": "https://hashscan.io/testnet/transaction/0.0.8511157-1789601002-134584547",
+      "receipts": [
+        {
+          "batch_key": null,
+          "bytes": null,
+          "charged_tx_fee": 64079560,
+          "consensus_timestamp": "1789601008.869100734",
+          "entity_id": "0.0.10576385",
+          "high_volume": false,
+          "high_volume_pricing_multiplier": 0,
+          "max_fee": "100000000",
+          "max_custom_fees": [],
+          "memo_base64": "",
+          "name": "CRYPTOCREATEACCOUNT",
+          "nft_transfers": [],
+          "node": "0.0.7",
+          "nonce": 0,
+          "parent_consensus_timestamp": null,
+          "result": "SUCCESS",
+          "scheduled": false,
+          "staking_reward_transfers": [],
+          "token_transfers": [],
+          "transaction_hash": "xkIyCs4zJVzJ1ygR7QiZtN1z65cL0hpeQg4/AgrNr0icw/ucdGsvFtqYiVG/5I0w",
+          "transaction_id": "0.0.8511157-1789601002-134584547",
+          "transfers": [
+            {
+              "account": "0.0.802",
+              "amount": 64079560,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.8511157",
+              "amount": -364079560,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10576385",
+              "amount": 300000000,
+              "is_approval": false
+            }
+          ],
+          "valid_duration_seconds": "120",
+          "valid_start_timestamp": "1789601002.134584547"
+        }
+      ]
+    },
+    {
+      "network": "hedera:testnet",
+      "transaction_id": "0.0.8511157-1789601005-128855449",
+      "operation": "CRYPTOCREATEACCOUNT",
+      "status": "SUCCESS",
+      "agent_initiated": true,
+      "charged_fee_tinybars": 64079560,
+      "sources": [
+        "2026-09-16-hedera-testnet-account-creation.jsonl",
+        "Mirror account history"
+      ],
+      "explorer": "https://hashscan.io/testnet/transaction/0.0.8511157-1789601005-128855449",
+      "receipts": [
+        {
+          "batch_key": null,
+          "bytes": null,
+          "charged_tx_fee": 64079560,
+          "consensus_timestamp": "1789601009.816011784",
+          "entity_id": "0.0.10576386",
+          "high_volume": false,
+          "high_volume_pricing_multiplier": 0,
+          "max_fee": "100000000",
+          "max_custom_fees": [],
+          "memo_base64": "",
+          "name": "CRYPTOCREATEACCOUNT",
+          "nft_transfers": [],
+          "node": "0.0.4",
+          "nonce": 0,
+          "parent_consensus_timestamp": null,
+          "result": "SUCCESS",
+          "scheduled": false,
+          "staking_reward_transfers": [],
+          "token_transfers": [],
+          "transaction_hash": "ARHdEOsWR9SBiI1/ejTCPN4+lY0581O9UbWUYbFngG9HLAIt2vZNzhl1zT9bYFIq",
+          "transaction_id": "0.0.8511157-1789601005-128855449",
+          "transfers": [
+            {
+              "account": "0.0.802",
+              "amount": 64079560,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.8511157",
+              "amount": -164079560,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10576386",
+              "amount": 100000000,
+              "is_approval": false
+            }
+          ],
+          "valid_duration_seconds": "120",
+          "valid_start_timestamp": "1789601005.128855449"
+        }
+      ]
+    },
+    {
+      "network": "hedera:testnet",
+      "transaction_id": "0.0.8511157-1789601005-508869330",
+      "operation": "CRYPTOCREATEACCOUNT",
+      "status": "SUCCESS",
+      "agent_initiated": true,
+      "charged_fee_tinybars": 64079560,
+      "sources": [
+        "2026-09-16-hedera-testnet-account-creation.jsonl",
+        "Mirror account history"
+      ],
+      "explorer": "https://hashscan.io/testnet/transaction/0.0.8511157-1789601005-508869330",
+      "receipts": [
+        {
+          "batch_key": null,
+          "bytes": null,
+          "charged_tx_fee": 64079560,
+          "consensus_timestamp": "1789601010.595965104",
+          "entity_id": "0.0.10576387",
+          "high_volume": false,
+          "high_volume_pricing_multiplier": 0,
+          "max_fee": "100000000",
+          "max_custom_fees": [],
+          "memo_base64": "",
+          "name": "CRYPTOCREATEACCOUNT",
+          "nft_transfers": [],
+          "node": "0.0.9",
+          "nonce": 0,
+          "parent_consensus_timestamp": null,
+          "result": "SUCCESS",
+          "scheduled": false,
+          "staking_reward_transfers": [],
+          "token_transfers": [],
+          "transaction_hash": "WRE2Q1p6EhEGVy9wC8m8AkZMD9IcN3ZnUboAzF9R1JBzJVUShUSBeVxq4yDyAloq",
+          "transaction_id": "0.0.8511157-1789601005-508869330",
+          "transfers": [
+            {
+              "account": "0.0.802",
+              "amount": 64079560,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.8511157",
+              "amount": -74079560,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10576387",
+              "amount": 10000000,
+              "is_approval": false
+            }
+          ],
+          "valid_duration_seconds": "120",
+          "valid_start_timestamp": "1789601005.508869330"
+        }
+      ]
+    },
+    {
+      "network": "hedera:testnet",
+      "transaction_id": "0.0.8511157-1789602996-824544319",
+      "operation": "TOKENCREATION",
+      "status": "SUCCESS",
+      "agent_initiated": true,
+      "charged_fee_tinybars": 1281719381,
+      "sources": [
+        "2026-09-16-hedera-testnet-ft.jsonl",
+        "Mirror account history"
+      ],
+      "explorer": "https://hashscan.io/testnet/transaction/0.0.8511157-1789602996-824544319",
+      "receipts": [
+        {
+          "batch_key": null,
+          "bytes": null,
+          "charged_tx_fee": 1281719381,
+          "consensus_timestamp": "1789603002.679853104",
+          "entity_id": "0.0.10576738",
+          "high_volume": false,
+          "high_volume_pricing_multiplier": 0,
+          "max_fee": "2000000000",
+          "max_custom_fees": [],
+          "memo_base64": "",
+          "name": "TOKENCREATION",
+          "nft_transfers": [],
+          "node": "0.0.5",
+          "nonce": 0,
+          "parent_consensus_timestamp": null,
+          "result": "SUCCESS",
+          "scheduled": false,
+          "staking_reward_transfers": [],
+          "token_transfers": [
+            {
+              "token_id": "0.0.10576738",
+              "account": "0.0.10576386",
+              "amount": 10000,
+              "is_approval": false
+            }
+          ],
+          "transaction_hash": "0yiC75DEDAx0YEHmpWFeHhQj8J7xs7lEQaIBQi4AMrgh1ZXcXhaNJk7eee/83zb9",
+          "transaction_id": "0.0.8511157-1789602996-824544319",
+          "transfers": [
+            {
+              "account": "0.0.802",
+              "amount": 1281719381,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.8511157",
+              "amount": -1281719381,
+              "is_approval": false
+            }
+          ],
+          "valid_duration_seconds": "120",
+          "valid_start_timestamp": "1789602996.824544319"
+        }
+      ]
+    },
+    {
+      "network": "hedera:testnet",
+      "transaction_id": "0.0.8511157-1789602997-437960427",
+      "operation": "TOKENASSOCIATE",
+      "status": "SUCCESS",
+      "agent_initiated": true,
+      "charged_fee_tinybars": 64207719,
+      "sources": [
+        "2026-09-16-hedera-testnet-ft.jsonl"
+      ],
+      "explorer": "https://hashscan.io/testnet/transaction/0.0.8511157-1789602997-437960427",
+      "receipts": [
+        {
+          "batch_key": null,
+          "bytes": null,
+          "charged_tx_fee": 64207719,
+          "consensus_timestamp": "1789603003.456610150",
+          "entity_id": "0.0.10576387",
+          "high_volume": false,
+          "high_volume_pricing_multiplier": 0,
+          "max_fee": "100000000",
+          "max_custom_fees": [],
+          "memo_base64": "",
+          "name": "TOKENASSOCIATE",
+          "nft_transfers": [],
+          "node": "0.0.9",
+          "nonce": 0,
+          "parent_consensus_timestamp": null,
+          "result": "SUCCESS",
+          "scheduled": false,
+          "staking_reward_transfers": [],
+          "token_transfers": [],
+          "transaction_hash": "sqsBIwEBvIXtntz3c7d5z6yZ792xNole4rgNfuNAcIfkYHSy9GCr8bJ/Fg6DGjzB",
+          "transaction_id": "0.0.8511157-1789602997-437960427",
+          "transfers": [
+            {
+              "account": "0.0.802",
+              "amount": 64207719,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.8511157",
+              "amount": -64207719,
+              "is_approval": false
+            }
+          ],
+          "valid_duration_seconds": "120",
+          "valid_start_timestamp": "1789602997.437960427"
+        }
+      ]
+    },
+    {
+      "network": "hedera:testnet",
+      "transaction_id": "0.0.8511157-1789604666-286038316",
+      "operation": "CRYPTOTRANSFER",
+      "status": "SUCCESS",
+      "agent_initiated": true,
+      "charged_fee_tinybars": 128158,
+      "sources": [
+        "2026-09-16-hedera-testnet-topup.jsonl",
+        "Mirror account history"
+      ],
+      "explorer": "https://hashscan.io/testnet/transaction/0.0.8511157-1789604666-286038316",
+      "receipts": [
+        {
+          "batch_key": null,
+          "bytes": null,
+          "charged_tx_fee": 128158,
+          "consensus_timestamp": "1789604671.041319852",
+          "entity_id": null,
+          "high_volume": false,
+          "high_volume_pricing_multiplier": 0,
+          "max_fee": "100000000",
+          "max_custom_fees": [],
+          "memo_base64": "",
+          "name": "CRYPTOTRANSFER",
+          "nft_transfers": [],
+          "node": "0.0.7",
+          "nonce": 0,
+          "parent_consensus_timestamp": null,
+          "result": "SUCCESS",
+          "scheduled": false,
+          "staking_reward_transfers": [],
+          "token_transfers": [],
+          "transaction_hash": "pswfIxlpBDijOYyRl1T5vBcJHDOqQZ4OGHUsUCWRz5xj2Vt1eNM8NMB1I4uhqLIy",
+          "transaction_id": "0.0.8511157-1789604666-286038316",
+          "transfers": [
+            {
+              "account": "0.0.802",
+              "amount": 128158,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.8511157",
+              "amount": -2000128158,
+              "is_approval": false
+            },
+            {
+              "account": "0.0.10576385",
+              "amount": 2000000000,
+              "is_approval": false
+            }
+          ],
+          "valid_duration_seconds": "120",
+          "valid_start_timestamp": "1789604666.286038316"
+        }
+      ]
+    }
+  ]
+}

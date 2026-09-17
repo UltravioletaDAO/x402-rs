@@ -117,3 +117,11 @@ checks, eight production `/verify` preflights and eight actual payments from
 published packages. The preflights were read-only; they are not listed as
 on-chain payments. Each actual payment is bound to independently checked Mirror
 consensus, exact principal and the persisted signed-transaction hash.
+
+## USDC-only policy acceptance (2026-09-17)
+
+The public negative check also found an error-reporting defect in 2.35.0: an unsupported HBAR offer returns HTTP 400 with `internal_error`, instead of the typed `invalid_asset` verdict. No payment is authorized. The capability/frontend follow-up corrects this classification; the acceptance report preserves the observed response.
+
+Facilitator **2.35.0**, Python **0.87.0** and TypeScript **2.95.0** are published and verified. Both Hedera ledgers advertise native USDC only; public HBAR verification requests are refused. Browser checks confirm a single USDC badge, a separately labelled HBAR fee balance, native wallet IDs and desktop/mobile layout. Swagger, agent documents and the OG image match the policy.
+
+[Release evidence](../reports/2026-09-17-hedera-usdc-only-release.json) links the public checks and clean package installations. This release performed no new payments or swaps. Earlier HBAR payment receipts remain historical evidence; new HBAR payment offers are unsupported. Arc USDC/EURC remains available and funded EURC acceptance is still pending.

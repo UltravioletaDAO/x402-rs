@@ -170,7 +170,7 @@ Despliegue gradual por capacidad, empezando por testnet. Validar `/supported`, `
 - [x] Distinguir recibo de liquidación, recibo de entrega y prueba DX402/ERC-8004.
 - [x] Registrar decisión USDC-only para Hedera y preservar pagos históricos.
 - [x] Escribir este plan maestro y matriz de aceptación.
-- [ ] Publicar/verificar F0 y registrar las versiones/evidencia.
+- [x] Publicar/verificar F0: facilitador 2.35.0, Python 0.87.0 y TypeScript 2.95.0. [Evidencia](../reports/2026-09-17-hedera-usdc-only-release.json).
 - [ ] Completar F1: ADR, esquema, contrato de transporte y vectores.
 - [ ] Completar F2–F3: persistencia, emisión, consulta y propagación.
 - [ ] Completar F4: APIs y paridad de ambos SDK.

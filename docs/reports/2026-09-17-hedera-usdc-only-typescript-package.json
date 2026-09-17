@@ -1,0 +1,26 @@
+{
+  "checkedAt": "2026-09-17T15:46:41.276Z",
+  "package": "uvd-x402-sdk",
+  "version": "2.95.0",
+  "source": "fresh npm installation",
+  "offlineOnly": true,
+  "newTransactions": 0,
+  "ledgers": [
+    {
+      "network": "hedera:mainnet",
+      "asset": "0.0.456858",
+      "amountAtomic": "1000",
+      "variantsVerified": 3,
+      "noHbarPrincipal": true,
+      "unsupportedAssetsRejected": true
+    },
+    {
+      "network": "hedera:testnet",
+      "asset": "0.0.429274",
+      "amountAtomic": "1000",
+      "variantsVerified": 3,
+      "noHbarPrincipal": true,
+      "unsupportedAssetsRejected": true
+    }
+  ]
+}

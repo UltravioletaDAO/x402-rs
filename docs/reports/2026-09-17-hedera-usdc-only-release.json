@@ -1,0 +1,31 @@
+{
+  "checkedAt": "2026-09-17T16:22:53.856817+00:00",
+  "facilitatorVersion": "2.35.0",
+  "pythonVersion": "0.87.0",
+  "typescriptVersion": "2.95.0",
+  "facilitatorCommit": "05be32a314f84dea2f2a76e639a1540200c75cf4",
+  "pythonCommit": "4a6b198cd32228bd7950845c34419fb13e2358c7",
+  "typescriptCommit": "194c5e0399d97841535adfbf15a69af25b81a4f7",
+  "newTransactions": 0,
+  "receiptImplementation": "planned, not shipped",
+  "eurcFundedPayments": "pending by user instruction",
+  "validation": {
+    "pythonTests": 1225,
+    "typescriptTests": 761,
+    "facilitatorAllFeatures": "passed",
+    "workspaceAndDoctests": "passed",
+    "typescriptTypecheckLintBuild": "passed",
+    "cleanPublishedInstalls": "passed"
+  },
+  "workflows": {
+    "facilitatorPullRequest": 35241848392,
+    "facilitatorDeployment": 35242889639,
+    "pythonPublish": 35241593728,
+    "typescriptPublish": 35241602746
+  },
+  "evidence": [
+    "2026-09-17-hedera-usdc-only-acceptance.json",
+    "2026-09-17-hedera-usdc-only-python-package.json",
+    "2026-09-17-hedera-usdc-only-typescript-package.json"
+  ]
+}

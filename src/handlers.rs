@@ -1149,6 +1149,8 @@ where
         .route("/skale.png", get(get_skale_logo))
         .route("/scroll.png", get(get_scroll_logo))
         .route("/robinhood.png", get(get_robinhood_logo))
+        .route("/arc.png", get(get_arc_logo))
+        .route("/hedera.png", get(get_hedera_logo))
         .route("/usdc.png", get(get_usdc_logo))
         .route("/usdt.png", get(get_usdt_logo))
         .route("/eurc.png", get(get_eurc_logo))
@@ -3317,6 +3319,24 @@ pub async fn get_robinhood_logo() -> impl IntoResponse {
         StatusCode::OK,
         [("content-type", "image/png")],
         bytes.as_slice(),
+    )
+}
+
+/// `GET /arc.png`: Returns Arc's supplied network logo.
+pub async fn get_arc_logo() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [("content-type", "image/png")],
+        include_bytes!("../static/arc.png").as_slice(),
+    )
+}
+
+/// `GET /hedera.png`: Returns Hedera's supplied network logo.
+pub async fn get_hedera_logo() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [("content-type", "image/png")],
+        include_bytes!("../static/hedera.png").as_slice(),
     )
 }
 

@@ -468,6 +468,24 @@
             box-shadow: 0 8px 24px rgba(204, 255, 0, 0.3);
         }
 
+        .network-badge.arc {
+            border-color: #8593b0;
+            box-shadow: 0 0 20px rgba(133, 147, 176, 0.2);
+        }
+
+        .network-badge.arc:hover {
+            box-shadow: 0 8px 24px rgba(133, 147, 176, 0.3);
+        }
+
+        .network-badge.hedera {
+            border-color: #e5e7eb;
+            box-shadow: 0 0 20px rgba(229, 231, 235, 0.15);
+        }
+
+        .network-badge.hedera:hover {
+            box-shadow: 0 8px 24px rgba(229, 231, 235, 0.25);
+        }
+
         .network-badge.zama {
             border-color: #ffcc00;
             box-shadow: 0 0 20px rgba(255, 204, 0, 0.2);
@@ -919,6 +937,10 @@
             height: 20px;
             border-radius: 50%;
             object-fit: contain;
+        }
+
+        .token-pill.hbar {
+            border-color: rgba(229, 231, 235, 0.3);
         }
 
         .token-pill.usdc {
@@ -1518,23 +1540,22 @@
                             <div style="font-size: 0.7rem; color: var(--text-muted);">ETH Balance</div>
                             <div data-tokens="robinhood-mainnet"></div>
                         </div>
-                        <div class="network-badge" data-native-network="hedera:mainnet"
-                            style="display: none; padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%;">
+                        <div class="network-badge hedera" data-native-network="hedera:mainnet"
+                            style="display: none; padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <span aria-hidden="true" style="font-size: 1.6rem; font-weight: 700;">H</span>
+                                <img src="/hedera.png" alt="Hedera" style="width: 32px; height: 32px; object-fit: contain; border-radius: 50%;">
                                 <span style="font-weight: 700;">Hedera</span>
                             </div>
                             <div class="balance-amount" data-balance="hedera-mainnet"
                                 style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">Loading...</div>
                             <div style="font-size: 0.7rem; color: var(--text-muted);">HBAR Balance</div>
-                            <div data-native-tokens style="font-size: 0.8rem;"></div>
-                            <a data-native-account target="_blank" rel="noopener" style="font-size: 0.8rem;"></a>
+                            <div data-native-tokens></div>
                         </div>
                         <div class="network-badge arc" data-arc-network="arc" data-arc-caip="eip155:5042"
                             style="display: none; padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://explorer.arc.io/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank', 'noopener')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <span aria-hidden="true" style="font-size: 1.6rem; font-weight: 700;">A</span>
+                                <img src="/arc.png" alt="Arc" style="width: 32px; height: 32px; object-fit: contain; border-radius: 50%;">
                                 <span style="font-weight: 700;">Arc</span>
                             </div>
                             <div class="balance-amount" data-balance="arc-mainnet"
@@ -1804,7 +1825,7 @@
                             style="display: none; padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://explorer.testnet.arc.io/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank', 'noopener')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <span aria-hidden="true" style="font-size: 1.6rem; font-weight: 700;">A</span>
+                                <img src="/arc.png" alt="Arc" style="width: 32px; height: 32px; object-fit: contain; border-radius: 50%;">
                                 <span style="font-weight: 700;">Arc Testnet</span>
                             </div>
                             <div class="balance-amount" data-balance="arc-testnet"
@@ -1812,17 +1833,16 @@
                             <div style="font-size: 0.7rem; color: var(--text-muted);">USDC Balance</div>
                             <div data-tokens="arc-testnet"></div>
                         </div>
-                        <div class="network-badge" data-native-network="hedera:testnet"
-                            style="display: none; padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%;">
+                        <div class="network-badge hedera" data-native-network="hedera:testnet"
+                            style="display: none; padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <span aria-hidden="true" style="font-size: 1.6rem; font-weight: 700;">H</span>
+                                <img src="/hedera.png" alt="Hedera" style="width: 32px; height: 32px; object-fit: contain; border-radius: 50%;">
                                 <span style="font-weight: 700;">Hedera Testnet</span>
                             </div>
                             <div class="balance-amount" data-balance="hedera-testnet"
                                 style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">Loading...</div>
                             <div style="font-size: 0.7rem; color: var(--text-muted);">HBAR Balance</div>
-                            <div data-native-tokens style="font-size: 0.8rem;"></div>
-                            <a data-native-account target="_blank" rel="noopener" style="font-size: 0.8rem;"></a>
+                            <div data-native-tokens></div>
                         </div>
                         <!-- Zama FHE Special Card -->
                         <div class="network-badge zama"
@@ -2015,6 +2035,34 @@
                                 style="font-family: 'JetBrains Mono', monospace; color: var(--accent); text-decoration: none; transition: opacity 0.2s;"
                                 onmouseover="this.style.opacity='0.7'"
                                 onmouseout="this.style.opacity='1'">rGhTioKAFHe75KgVnQtacRiKFuPv28Wbwk</a>
+                        </div>
+                    </div>
+
+                    <!-- Divider -->
+                    <div style="height: 1px; background: rgba(255,255,255,0.05); margin: 0.25rem 0;"></div>
+
+                    <!-- Hedera Wallets -->
+                    <div id="hedera-wallets" style="display: flex; flex-direction: column; gap: 0.5rem;">
+                        <div style="text-align: center; font-size: 0.75rem; color: var(--accent); font-weight: 600; margin-bottom: 0.25rem;">
+                            Hedera Wallets
+                        </div>
+                        <div style="text-align: center; font-size: 0.7rem; color: var(--text-muted);">
+                            <span style="font-weight: 600;">Mainnet:</span> <a
+                                data-native-account="hedera:mainnet"
+                                href="https://hashscan.io/mainnet/account/0.0.10868300"
+                                target="_blank" rel="noopener"
+                                style="font-family: 'JetBrains Mono', monospace; color: var(--accent); text-decoration: none; transition: opacity 0.2s;"
+                                onmouseover="this.style.opacity='0.7'"
+                                onmouseout="this.style.opacity='1'">0.0.10868300</a>
+                        </div>
+                        <div style="text-align: center; font-size: 0.7rem; color: var(--text-muted);">
+                            <span style="font-weight: 600;">Testnet:</span> <a
+                                data-native-account="hedera:testnet"
+                                href="https://hashscan.io/testnet/account/0.0.10576385"
+                                target="_blank" rel="noopener"
+                                style="font-family: 'JetBrains Mono', monospace; color: var(--accent); text-decoration: none; transition: opacity 0.2s;"
+                                onmouseover="this.style.opacity='0.7'"
+                                onmouseout="this.style.opacity='1'">0.0.10576385</a>
                         </div>
                     </div>
 
@@ -3348,10 +3396,12 @@
                     const account = kind?.extra?.feePayer;
                     if (!kind || typeof account !== 'string' || !/^0\.0\.[1-9][0-9]*$/.test(account)) { card.style.display = 'none'; return; }
                     card.style.display = 'flex';
-                    card.querySelector('[data-native-tokens]').textContent = (kind.extra.tokens || []).map(t => String(t.token).toUpperCase()).join(' · ');
-                    const link = card.querySelector('[data-native-account]');
-                    link.textContent = account;
-                    link.href = 'https://hashscan.io/' + (kind.network === 'hedera:mainnet' ? 'mainnet' : 'testnet') + '/account/' + account;
+                    renderTokenSupport(card.querySelector('[data-native-tokens]'),
+                        (kind.extra.tokens || []).map(t => String(t.token).toLowerCase()), 'Supported Assets');
+                    const accountUrl = 'https://hashscan.io/' + (kind.network === 'hedera:mainnet' ? 'mainnet' : 'testnet') + '/account/' + account;
+                    card.onclick = () => window.open(accountUrl, '_blank', 'noopener');
+                    const link = document.querySelector('[data-native-account="' + kind.network + '"]');
+                    if (link) { link.textContent = account; link.href = accountUrl; }
                 });
                 const n = countSupportedMainnets(d);
                 if (n > 0) {
@@ -3800,6 +3850,7 @@
         };
 
         const TOKEN_INFO = {
+            'hbar': { name: 'HBAR', decimals: 8, logo: '/hedera.png' },
             'usdc': { name: 'USDC', decimals: 6, logo: '/usdc.png' },
             'eurc': { name: 'EURC', decimals: 6, logo: '/eurc.png' },
             'ausd': { name: 'AUSD', decimals: 6, logo: '/ausd.png' },
@@ -3808,24 +3859,24 @@
             'usdg': { name: 'USDG', decimals: 6, logo: '/usdg.png' },
         };
 
-        // Display supported tokens for each network card
+        // Shared token badges; native HBAR is an asset, not a stablecoin.
+        function renderTokenSupport(container, tokens, label = 'Supported Stablecoins') {
+            const supported = tokens.filter(token => TOKEN_INFO[token]);
+            if (!supported.length) { container.replaceChildren(); return; }
+            const badgesHtml = supported.map(token => {
+                const info = TOKEN_INFO[token];
+                return `<span class="token-pill ${token}" title="${info.name}"><img src="${info.logo}" alt="${info.name}"></span>`;
+            }).join('');
+            container.innerHTML = `
+                <div class="tokens-label">${label}</div>
+                <div class="token-badges">${badgesHtml}</div>
+            `;
+        }
+
+        // Display supported tokens for each network card.
         function displayTokenSupport() {
-            // Find all elements with data-tokens attribute
             document.querySelectorAll('[data-tokens]').forEach(container => {
-                const network = container.getAttribute('data-tokens');
-                const tokens = TOKEN_SUPPORT[network] || [];
-
-                if (tokens.length > 0) {
-                    const badgesHtml = tokens.map(token => {
-                        const info = TOKEN_INFO[token];
-                        return `<span class="token-pill ${token}" title="${info.name}"><img src="${info.logo}" alt="${info.name}"></span>`;
-                    }).join('');
-
-                    container.innerHTML = `
-                        <div class="tokens-label">Supported Stablecoins</div>
-                        <div class="token-badges">${badgesHtml}</div>
-                    `;
-                }
+                renderTokenSupport(container, TOKEN_SUPPORT[container.getAttribute('data-tokens')] || []);
             });
         }
 

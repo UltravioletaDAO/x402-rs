@@ -55,6 +55,12 @@ HEDERA_SETTLEMENT_TIMEOUT_SECS=45
 
 Use the corresponding `_MAINNET` settings to enable mainnet. Both Terraform enable flags default to false; the mainnet daily budget defaults to zero and must be explicitly set. Private keys and IDs are injected from dedicated AWS Secrets Manager JSON fields only for enabled networks. No native operator is installed on the Rust SDK client: all sponsor signatures are applied explicitly to inspected payment bytes.
 
+The Ultravioleta production overrides in `production.auto.tfvars` reserve up to
+12 HBAR per UTC day on testnet and 10 HBAR on mainnet as of release 2.36.1. Quotas
+charge the signed maximum fee, not the actual fee spent, and are not automatically
+refunded. The extra two testnet reservations complete the portable-receipt
+acceptance matrix after earlier tests exhausted the 10 HBAR ceiling.
+
 The quota is shared by all replicas and charges the **maximum signed transaction fee**, once per admitted transaction, against a UTC-day budget. It is deliberately conservative and is not refunded when actual fees are lower. With the example 10-HBAR budget and a 1-HBAR signed fee, at most ten new payments can be admitted per UTC day. Choose an operational budget deliberately; this example is a canary budget, not a throughput promise.
 
 ## Recovery and operation

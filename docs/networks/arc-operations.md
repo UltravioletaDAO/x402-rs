@@ -1,5 +1,10 @@
 # Arc facilitator operations
 
+This page is for whoever **runs** a facilitator on Arc: activation switches, funding,
+the canary, the release checklist, rollback and the acceptance evidence. Whoever is
+**integrating** — building a 402, signing an authorization, reading a settlement —
+wants [Arc: getting paid in USDC on Arc](arc.md) instead.
+
 Scope: direct `exact` USDC payments with EIP-3009 authorizations signed by an
 EOA. Both x402 v1 names and v2 CAIP-2 identifiers resolve to distinct networks.
 Python `uvd-x402-sdk` **0.84.0** and TypeScript `uvd-x402-sdk` **2.92.0**

@@ -82,16 +82,21 @@ facilitator just did, and what it costs (nothing — the seller keeps the paymen
 
 ## Coverage
 
-- **21 mainnet payment networks** and 18 testnets — 39 network identifiers in all.
-  Mainnets: algorand, arbitrum, avalanche, base, bsc, celo, ethereum, fogo, hyperevm,
-  monad, near, optimism, polygon, robinhood, scroll, skale-base, solana, stellar, sui,
-  unichain, xrpl.
-- **7 chain families**: EVM, SVM (Solana and Fogo), NEAR, Stellar, Sui, Algorand, XRPL.
-- **6 stablecoins**: USDC, USDT, EURC, AUSD, PYUSD, USDG.
-- **5 payment schemes**: `exact`, `upto` (Permit2 metered), `escrow` and `commerce`
-  (x402r two-phase lock/release), `fhe-transfer` (experimental).
-- **Extensions advertised in `/supported`**: `bazaar`, `durable-evidence`.
-- Every number above is answerable live from `/supported`; do not cache it.
+- **Network families:** EVM (including Arc), SVM (Solana/Fogo), NEAR, Stellar,
+  Sui, Algorand, XRPL and native Hedera. Query `/supported` for enabled networks.
+- **Arc:** `arc` / `eip155:5042`, `arc-testnet` / `eip155:5042002`; direct EOA
+  USDC `exact`, v1/v2. USDC has 6 payment decimals and domain `USDC` / `2`.
+- **Hedera:** `hedera:mainnet`, `hedera:testnet`; native `CryptoTransfer`,
+  `exact`, v2 only. HBAR `0.0.0` has 8 decimals; USDC mainnet `0.0.456858`
+  and testnet `0.0.429274` have 6. Read the network-specific `extra.feePayer`.
+  Current sponsor IDs: mainnet `0.0.10868300`, testnet `0.0.10576385`.
+- **Assets:** USDC, USDT, EURC, AUSD, PYUSD, USDG, RLUSD, native XRP and HBAR;
+  each network publishes its own supported subset. HBAR is not USD-denominated.
+- **Schemes:** `exact`, `upto`, `escrow`, `commerce`, `fhe-transfer`; availability
+  is per network. Arc and Hedera additions support `exact` only.
+- **Extensions:** read `/supported` and the network guide; global extension
+  discovery does not enable escrow or ERC-8004 on Hedera/Arc. Native Hedera
+  rejects durable-evidence and other unsupported extensions.
 
 ## Machine-readable resources
 
@@ -191,13 +196,13 @@ Source: https://github.com/UltravioletaDAO/x402-rs (fork of https://github.com/x
 
 This is the x402 payment facilitator Ultravioleta DAO runs: your endpoint answers 402,
 the caller signs a stablecoin authorization, and we put it on chain and pay the network
-fee — 0% facilitator fee, on 21 mainnets across 7 chain families.
+fee — 0% facilitator fee, including Arc and native Hedera mainnet/testnet.
 
 This host is a **facilitator**, not a paid API. It charges nothing for its own routes;
 the money that moves is the buyer's payment going to the seller.
 
-- **Networks:** 21 mainnets + 18 testnets (39 identifiers) across 7 chain families
-- **Stablecoins:** USDC, USDT, EURC, AUSD, PYUSD, USDG, RLUSD — plus native XRP on XRPL.
+- **Networks:** EVM (including Arc), SVM, NEAR, Stellar, Sui, Algorand, XRPL and native Hedera. Availability is read from `/supported`.
+- **Stablecoins:** USDC, USDT, EURC, AUSD, PYUSD, USDG, RLUSD — plus native XRP on XRPL and HBAR on Hedera.
   `GET /supported` is the only list that is true today; this one is a snapshot.
 - **Schemes:** `exact`, `upto`, `escrow`, `commerce`, `fhe-transfer`
 - **Release:** `GET /version`
@@ -205,13 +210,36 @@ the money that moves is the buyer's payment going to the seller.
   The HTML landing page at `/` and the other human pages carry English and Spanish
   at the same URL, switched by their EN/ES selector; there is no `/es/` path.
 
+## Arc and native Hedera
+
+| Network | Payment identifier | Asset | Facilitator fee payer |
+| --- | --- | --- | --- |
+| Arc mainnet | `arc` / `eip155:5042` | USDC (6 decimals) | `0x103040545AC5031A11E8C03dd11324C7333a13C7` |
+| Arc testnet | `arc-testnet` / `eip155:5042002` | USDC (6 decimals) | `0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8` |
+| Hedera mainnet | `hedera:mainnet` | HBAR `0.0.0` (8 decimals), USDC `0.0.456858` (6) | `0.0.10868300` |
+| Hedera testnet | `hedera:testnet` | HBAR `0.0.0` (8 decimals), USDC `0.0.429274` (6) | `0.0.10576385` |
+
+Discover availability and the current network-specific `extra.feePayer` from
+`/supported`. These are facilitator accounts, not merchant destinations. Set
+`payTo` to the seller's own account. Arc supports direct EOA `exact` payments in
+x402 v1/v2; its ERC-20 USDC address is `0x3600000000000000000000000000000000000000`,
+with EIP-712 domain `USDC` / `2`. Its 18-decimal gas view is the same balance;
+payment amounts use 6 decimals.
+
+Hedera supports native `CryptoTransfer`, `exact`, **x402 v2 only**. It uses numeric
+accounts and native token IDs, not EVM chain IDs 295/296. Buyer and recipient must
+be associated with USDC. The sponsor pays HBAR fees without contributing payment
+principal. HBAR amounts are tinybars, never USD amounts. Neither addition enables
+escrow, `upto`, Gateway or ERC-8004 on that network. Native Hedera also rejects
+durable-evidence and other unsupported extensions.
+
 ## API
 
 Base URL: `https://facilitator.ultravioletadao.xyz/`
 
 - `POST /verify` — validate a payment authorization without settling it
-- `POST /settle` — settle a verified authorization on-chain, returns the tx hash
-- `GET /supported` — every (scheme, network) pair accepted, in v1 and CAIP-2 form
+- `POST /settle` — settle a verified authorization on-chain, returns the transaction hash or native Hedera transaction ID
+- `GET /supported` — every (scheme, network) pair accepted, with its supported protocol version and identifiers (Hedera is v2 only)
 - `POST /accepts` — negotiate payment requirements (Faremeter-compatible)
 - `POST /mcp` — MCP server (Streamable HTTP, stateless): `x402_supported`,
   `x402_accepts`, `x402_verify`, `x402_settle`, over the same handlers
@@ -275,7 +303,7 @@ x402 is HTTP 402 Payment Required, made operational:
 
 1. You call a seller's paid route.
 2. It answers `402` with a list of acceptable payment requirements.
-3. You sign a stablecoin transfer authorization — EIP-3009 `transferWithAuthorization`
+3. You sign a token transfer authorization — EIP-3009 `transferWithAuthorization`
    on EVM, the equivalent primitive on each other chain family. You pay no gas.
 4. The seller (or you, on its behalf) hands that authorization to a **facilitator**.
 5. The facilitator verifies the signature and submits the transfer on-chain.
@@ -303,26 +331,89 @@ Returns every `(scheme, network)` pair the facilitator will accept:
 }
 ```
 
-Three things to know before you parse it:
+Read each row's `x402Version`, `scheme`, `network`, `networkAliases` and `extra`.
+Networks can have legacy names and CAIP-2 aliases; rows also repeat by scheme.
+Do not count aliases as distinct networks. **Hedera has no v1 entry**: native
+payments use `hedera:mainnet` or `hedera:testnet` with x402 v2 only. Arc publishes
+both its legacy names and `eip155:5042` / `eip155:5042002`.
 
-- **Every network is listed twice** — once by its v1 name (`base`) and once by its
-  CAIP-2 identifier (`eip155:8453`). They are the same network. Counting rows gives
-  you roughly double the real number; deduplicate on the network before you count.
-- The v1 name is the exact serde name from the source. Use `avalanche-fuji`, not
-  `fuji`, and not `avalanche-fuji:43113`.
-- Every scheme -- `exact`, `escrow`, `commerce`, `upto` -- is published under both
-  forms, and each row also carries `networkAliases` listing every spelling of its own
-  chain. Match on whichever form you find; you never have to translate one into the
-  other yourself. (`escrow`, `commerce` and `upto` used to be CAIP-2 only. If the
-  deployment you are talking to still shows them that way, its `/supported` predates
-  this change -- read `networkAliases`, and if that key is absent too, fall back to
-  matching on the CAIP-2 identifier.)
+The supported chain families are EVM, SVM, NEAR, Stellar, Sui, Algorand, XRPL and
+Hedera. Tokens and schemes vary by network; query `/supported` rather than
+assuming a global scheme or extension applies to each network.
 
-As of this writing the facilitator serves **21 mainnets and 18 testnets** across seven
-chain families (EVM, SVM, NEAR, Stellar, Sui, Algorand, XRPL), six stablecoins (USDC,
-USDT, EURC, AUSD, PYUSD, USDG) and five schemes (`exact`, `upto`, `escrow`,
-`commerce`, `fhe-transfer`). **Do not hardcode those numbers** — `/supported` is the
-source of truth and it changes.
+---
+
+## Arc and native Hedera
+
+| Network | Payment identifier | Asset | Facilitator fee payer |
+| --- | --- | --- | --- |
+| Arc mainnet | `arc` / `eip155:5042` | USDC (6 decimals) | `0x103040545AC5031A11E8C03dd11324C7333a13C7` |
+| Arc testnet | `arc-testnet` / `eip155:5042002` | USDC (6 decimals) | `0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8` |
+| Hedera mainnet | `hedera:mainnet` | HBAR `0.0.0` (8 decimals), USDC `0.0.456858` (6) | `0.0.10868300` |
+| Hedera testnet | `hedera:testnet` | HBAR `0.0.0` (8 decimals), USDC `0.0.429274` (6) | `0.0.10576385` |
+
+Discover availability and the current network-specific `extra.feePayer` from
+`/supported`. These are facilitator accounts, not merchant destinations. Set
+`payTo` to the seller's own account. Arc supports direct EOA `exact` payments in
+x402 v1/v2; its ERC-20 USDC address is `0x3600000000000000000000000000000000000000`,
+with EIP-712 domain `USDC` / `2`. Its 18-decimal gas view is the same balance;
+payment amounts use 6 decimals.
+
+Hedera supports native `CryptoTransfer`, `exact`, **x402 v2 only**. It uses numeric
+accounts and native token IDs, not EVM chain IDs 295/296. Buyer and recipient must
+be associated with USDC. The sponsor pays HBAR fees without contributing payment
+principal. HBAR amounts are tinybars, never USD amounts. Neither addition enables
+escrow, `upto`, Gateway or ERC-8004 on that network. Native Hedera also rejects
+durable-evidence and other unsupported extensions.
+
+**Native Hedera v2 request:**
+```json
+{
+  "x402Version": 2,
+  "paymentPayload": {
+    "x402Version": 2,
+    "resource": {
+      "url": "https://example.com/protected",
+      "description": "One API call",
+      "mimeType": "application/json"
+    },
+    "accepted": {
+      "scheme": "exact",
+      "network": "hedera:testnet",
+      "asset": "0.0.429274",
+      "amount": "1000",
+      "payTo": "0.0.10576387",
+      "maxTimeoutSeconds": 180,
+      "extra": {
+        "feePayer": "0.0.10576385"
+      }
+    },
+    "payload": {
+      "transaction": "BASE64_BUYER_SIGNED_TRANSACTION_LIST"
+    }
+  },
+  "paymentRequirements": {
+    "scheme": "exact",
+    "network": "hedera:testnet",
+    "asset": "0.0.429274",
+    "amount": "1000",
+    "payTo": "0.0.10576387",
+    "maxTimeoutSeconds": 180,
+    "extra": {
+      "feePayer": "0.0.10576385"
+    }
+  }
+}
+```
+
+The base64 value is a placeholder for the buyer-signed protobuf TransactionList;
+build it with the Hedera client. The inner `accepted` and outer
+`paymentRequirements` must match exactly. The generic EVM convenience rule about
+omitting inner `accepted` does not apply to native Hedera. Unknown requirements,
+extra fields and unsupported extensions are rejected. The buyer signs every frozen
+node variant; the facilitator adds its signature only after inspection. Retry the
+same payload and transaction ID after uncertainty. A successful settlement returns
+a native ID such as `0.0.10576385@1789609553.483480778`; it is not an EVM hash.
 
 ---
 

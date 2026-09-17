@@ -21,7 +21,7 @@ cannot disagree about anything.
 
 What is being offered is settlement, not information. This service verifies an
 x402 payment authorization against the chain it names and then broadcasts it,
-paying the gas out of its own wallet, on seven chain families. The buyer signs;
+paying the gas out of its own wallet, including Arc and native Hedera. The buyer signs;
 the buyer never holds native tokens for gas.
 
 Four things this server is **not**:
@@ -103,7 +103,7 @@ x402_supported()            <- can you settle THIS scheme on THIS network?
 x402_accepts(accepts)       <- narrow the seller's 402 offer to what this
       |                        facilitator settles, enriched with feePayer,
       |                        token list and escrow addresses. moves nothing.
-      |     the buyer signs an EIP-3009 authorization for one of them
+      |     the buyer signs the network-native payment for one offer
 x402_verify(payload, reqs)  <- would this settle? signature, nonce, amount,
       |                        timestamps, token and network. SUBMITS NOTHING.
 x402_settle(payload, reqs)  <- broadcast. real funds. irreversible.
@@ -131,10 +131,12 @@ curl -sS https://facilitator.ultravioletadao.xyz/mcp \
         "name":"x402_supported","arguments":{}}}'
 ```
 
-`result.content[0].text` is the exact body of `GET /supported`: every
-`(scheme, network)` pair, each network spelled twice — the x402 v1 name
-(`"base"`) and the CAIP-2 form (`"eip155:8453"`) — with the token list for each.
-Both spellings are accepted everywhere a network is named.
+`result.content[0].text` is the exact body of `GET /supported`: enabled
+`(version, scheme, network)` capabilities, aliases and network-specific fee payers.
+Arc supports direct EOA USDC `exact` v1/v2 on `arc` / `eip155:5042` and
+`arc-testnet` / `eip155:5042002`. Native Hedera uses `hedera:mainnet` and
+`hedera:testnet`, v2/exact only, with HBAR and native USDC. Follow `/skill.md`
+for the matching native envelope; legacy spellings are not universal.
 
 ### x402_settle
 

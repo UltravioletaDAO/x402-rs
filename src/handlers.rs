@@ -1117,6 +1117,7 @@ where
         // /blacklist lives in secondary_read_routes() so it can carry its own
         // rate limit -- see that function for why.
         .route("/logo.png", get(get_logo))
+        .route("/og-arc-hedera.png", get(get_network_social_card))
         .route("/favicon.ico", get(get_favicon))
         // The visual system and its two fonts. These live here and NOT in
         // `agentic_routes()`: `the_table_covers_every_route` parses that
@@ -3075,6 +3076,18 @@ pub async fn get_logo() -> impl IntoResponse {
         StatusCode::OK,
         [("content-type", "image/png")],
         bytes.as_slice(),
+    )
+}
+
+/// Social preview generated from the versioned Arc/Hedera SVG source.
+pub async fn get_network_social_card() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [
+            ("content-type", "image/png"),
+            ("cache-control", "public, max-age=3600"),
+        ],
+        include_bytes!("../static/og-arc-hedera.png").as_slice(),
     )
 }
 

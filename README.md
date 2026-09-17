@@ -41,12 +41,38 @@ Arc has separate RPC and deployment switches. A running instance serves a networ
 only when it appears in [`/supported`](https://facilitator.ultravioletadao.xyz/supported).
 See [Arc operations, canaries and activation](docs/networks/arc.md). Python SDK 0.84.0 and TypeScript SDK 2.92.0 include both Arc networks. USDC is also
 the gas token: native and ERC-20 amounts are two precisions of the same balance.
-The existing network tables below exclude these opt-in additions.
+See [native Hedera operations and public receipts](docs/guides/hedera-native.md).
+Both network tables include Arc and native Hedera; runtime availability remains `/supported`.
 
-### Mainnets (21)
+### Arc and Hedera payment identifiers
+
+| Network | Payment identifier | Asset | Facilitator fee payer |
+| --- | --- | --- | --- |
+| Arc mainnet | `arc` / `eip155:5042` | USDC (6 decimals) | `0x103040545AC5031A11E8C03dd11324C7333a13C7` |
+| Arc testnet | `arc-testnet` / `eip155:5042002` | USDC (6 decimals) | `0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8` |
+| Hedera mainnet | `hedera:mainnet` | HBAR `0.0.0` (8 decimals), USDC `0.0.456858` (6) | `0.0.10868300` |
+| Hedera testnet | `hedera:testnet` | HBAR `0.0.0` (8 decimals), USDC `0.0.429274` (6) | `0.0.10576385` |
+
+Discover availability and the current network-specific `extra.feePayer` from
+`/supported`. These are facilitator accounts, not merchant destinations. Set
+`payTo` to the seller's own account. Arc supports direct EOA `exact` payments in
+x402 v1/v2; its ERC-20 USDC address is `0x3600000000000000000000000000000000000000`,
+with EIP-712 domain `USDC` / `2`. Its 18-decimal gas view is the same balance;
+payment amounts use 6 decimals.
+
+Hedera supports native `CryptoTransfer`, `exact`, **x402 v2 only**. It uses numeric
+accounts and native token IDs, not EVM chain IDs 295/296. Buyer and recipient must
+be associated with USDC. The sponsor pays HBAR fees without contributing payment
+principal. HBAR amounts are tinybars, never USD amounts. Neither addition enables
+escrow, `upto`, Gateway or ERC-8004 on that network. Native Hedera also rejects
+durable-evidence and other unsupported extensions.
+
+### Mainnets
 
 | Network | Chain ID | Token | Explorer |
 |---------|----------|-------|----------|
+| **Arc** | 5042 | USDC | [explorer.arc.io](https://explorer.arc.io) |
+| **Hedera** | `hedera:mainnet` (native) | HBAR, USDC | [hashscan.io/mainnet](https://hashscan.io/mainnet) |
 | **Ethereum** | 1 | USDC | [etherscan.io](https://etherscan.io) |
 | **Base** | 8453 | USDC | [basescan.org](https://basescan.org) |
 | **Arbitrum** | 42161 | USDC | [arbiscan.io](https://arbiscan.io) |
@@ -69,10 +95,12 @@ The existing network tables below exclude these opt-in additions.
 | **Algorand** | - | USDC | [allo.info](https://allo.info) |
 | **XRPL** | - | XRP, USDC, RLUSD | [livenet.xrpl.org](https://livenet.xrpl.org) |
 
-### Testnets (18)
+### Testnets
 
 | Network | Chain ID | Faucet |
 |---------|----------|--------|
+| Arc Testnet | 5042002 | [faucet.circle.com](https://faucet.circle.com) |
+| Hedera Testnet | `hedera:testnet` (native) | [faucet.circle.com](https://faucet.circle.com) (USDC) |
 | Ethereum Sepolia | 11155111 | [faucet.circle.com](https://faucet.circle.com) |
 | Base Sepolia | 84532 | [faucet.circle.com](https://faucet.circle.com) |
 | Arbitrum Sepolia | 421614 | [faucet.circle.com](https://faucet.circle.com) |
@@ -106,6 +134,7 @@ The existing network tables below exclude these opt-in additions.
 | **USDG** | Robinhood Chain (Paxos Global Dollar, EIP-712 domain "Global Dollar" v1) |
 | **RLUSD** | XRPL |
 | **XRP** | XRPL (native) |
+| **HBAR** | Hedera (native, 8 decimals; not a stablecoin) |
 
 **Full Matrix:**
 
@@ -125,6 +154,7 @@ The existing network tables below exclude these opt-in additions.
 | Scroll | Y | - | - | - | - | - |
 | Robinhood Chain | - | - | - | - | - | Y |
 | Arc (when enabled) | Y | - | - | - | - | - |
+| Hedera (when enabled) | Y | - | - | - | - | - |
 | SKALE Base | Y | - | - | - | - | - |
 | Solana | Y | Y | - | - | Y | - |
 | Sui | Y | Y | - | - | - | - |
@@ -155,7 +185,7 @@ cargo run --release --features solana,near,stellar,algorand
 # Test
 curl http://localhost:8080/health
 curl http://localhost:8080/supported | jq '.kinds | length'
-# => 121 (networks listed across v1 and v2/CAIP-2 formats)
+# Output is live; aliases and multiple schemes are not distinct networks.
 ```
 
 ### Docker
@@ -341,7 +371,7 @@ No registration, no key exchange, no extra round trip.
 | **Private** | encrypted to the payer — not the facilitator, not the storage backend, not us |
 | **Coupled** | derived from the payment itself |
 
-Payer-key availability across all seven network families:
+Payer-key availability for the network families with durable-evidence support (native Hedera rejects this extension):
 
 | Family | Curve | Source |
 |---|---|---|

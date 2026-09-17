@@ -27,7 +27,7 @@ Ultravioleta DAO x402 Payment Facilitator - Gasless micropayments for the agenti
 
 ## Overview
 
-The x402 facilitator enables gasless micropayments across multiple blockchain networks using the HTTP 402 Payment Required protocol. It acts as a settlement intermediary, verifying EIP-3009/EIP-712 payment authorizations and submitting them on-chain.
+The x402 facilitator enables gasless micropayments across multiple blockchain networks using the HTTP 402 Payment Required protocol. It acts as a settlement intermediary, verifying each network's signed payment authorization and submitting it on-chain: EIP-3009/EIP-712 on EVM, native CryptoTransfer on Hedera, and the corresponding native primitive on other families.
 
 ## Supported Networks
 
@@ -40,13 +40,16 @@ Ethereum Sepolia, Base Sepolia, Polygon Amoy, Optimism Sepolia, Avalanche Fuji, 
 ### SVM Chains (Solana Virtual Machine)
 - **Solana**: Mainnet (`solana`) and Devnet (`solana-devnet`)
 - **Fogo**: Mainnet (`fogo`) and Testnet (`fogo-testnet`)
-- **XRPL (XRP Ledger)**: Mainnet (`xrpl`) and Testnet (`xrpl-testnet`) — native XRP, pre-signed Payment transaction blobs; not the EVM `xrpl-evm` sidechain
 
 ### Other Non-EVM Chains
+- **XRPL (XRP Ledger)**: Mainnet (`xrpl`) and Testnet (`xrpl-testnet`) — native XRP, pre-signed Payment transaction blobs; not the EVM `xrpl-evm` sidechain
 - **NEAR Protocol**: Mainnet (`near`) and Testnet (`near-testnet`)
 - **Stellar/Soroban**: Mainnet (`stellar`) and Testnet (`stellar-testnet`)
 - **Algorand**: Mainnet (`algorand`) and Testnet (`algorand-testnet`)
 - **Sui**: Mainnet (`sui`) and Testnet (`sui-testnet`)
+- **Hedera**: Native mainnet (`hedera:mainnet`) and testnet (`hedera:testnet`), x402 v2/exact only. HBAR `0.0.0` (8 decimals); USDC `0.0.456858` mainnet / `0.0.429274` testnet (6 decimals). Discover the network-specific `extra.feePayer` from `/supported`. Current sponsor IDs: mainnet `0.0.10868300`, testnet `0.0.10576385`. Native account/token IDs are not EVM chain IDs 295/296.
+
+Arc uses USDC `0x3600000000000000000000000000000000000000` with 6 payment decimals and EIP-712 domain `USDC` / `2`. Its gas view uses 18 decimals of the same balance. Arc and native Hedera additions enable exact payments only; they do not add escrow, upto, Gateway or ERC-8004 support. Native Hedera also rejects durable-evidence and unsupported extensions.
 
 ## Core Endpoints
 
@@ -286,10 +289,10 @@ Verifies an x402 payment authorization without settling it on-chain.
 
 **Checks performed:**
 - Payload structure validation
-- EIP-712 signature verification
+- Network-specific signature verification (EIP-712 on EVM; native buyer signatures on Hedera)
 - Nonce validity
 - Amount matching
-- Timestamp validity (validAfter/validBefore)
+- Network-specific validity windows (validAfter/validBefore on EVM; native transaction validity on Hedera)
 - Token and network support
 
 **Request body:**
@@ -407,6 +410,57 @@ optional and derived from the outer pair when absent; sending it still works
 unchanged.
 
 `POST /settle` takes exactly this body, in either version.
+
+**Native Hedera v2 request:**
+```json
+{
+  "x402Version": 2,
+  "paymentPayload": {
+    "x402Version": 2,
+    "resource": {
+      "url": "https://example.com/protected",
+      "description": "One API call",
+      "mimeType": "application/json"
+    },
+    "accepted": {
+      "scheme": "exact",
+      "network": "hedera:testnet",
+      "asset": "0.0.429274",
+      "amount": "1000",
+      "payTo": "0.0.10576387",
+      "maxTimeoutSeconds": 180,
+      "extra": {
+        "feePayer": "0.0.10576385"
+      }
+    },
+    "payload": {
+      "transaction": "BASE64_BUYER_SIGNED_TRANSACTION_LIST"
+    }
+  },
+  "paymentRequirements": {
+    "scheme": "exact",
+    "network": "hedera:testnet",
+    "asset": "0.0.429274",
+    "amount": "1000",
+    "payTo": "0.0.10576387",
+    "maxTimeoutSeconds": 180,
+    "extra": {
+      "feePayer": "0.0.10576385"
+    }
+  }
+}
+```
+
+The base64 value is a placeholder for the buyer-signed protobuf TransactionList;
+build it with the Hedera client. The inner `accepted` and outer
+`paymentRequirements` must match exactly. The generic EVM convenience rule about
+omitting inner `accepted` does not apply to native Hedera. Unknown requirements,
+extra fields and unsupported extensions are rejected. The buyer signs every frozen
+node variant; the facilitator adds its signature only after inspection. Retry the
+same payload and transaction ID after uncertainty. A successful settlement returns
+a native ID such as `0.0.10576385@1789609553.483480778`; it is not an EVM hash.
+
+
 "#,
     request_body(content = Object, description = "x402 verify request"),
     responses(
@@ -3312,6 +3366,21 @@ mod tests {
             doc["info"]["version"],
             crate::version::facilitator_version()
         );
+    }
+
+    #[test]
+    #[cfg(feature = "hedera")]
+    fn documented_native_hedera_request_matches_manual_and_native_wire() {
+        let spec = ApiDoc::openapi();
+        let description = spec.paths.paths["/verify"].post.as_ref().unwrap()
+            .description.as_deref().unwrap();
+        let api: serde_json::Value = serde_json::from_str(&json_block_after(
+            description, "**Native Hedera v2 request:**")).unwrap();
+        let manual: serde_json::Value = serde_json::from_str(&json_block_after(
+            include_str!("../static/skill.md"), "**Native Hedera v2 request:**")).unwrap();
+        assert_eq!(api, manual);
+        let request: crate::types_v2::VerifyRequestEnvelope = serde_json::from_value(api).unwrap();
+        assert!(matches!(request, crate::types_v2::VerifyRequestEnvelope::Hedera(_)));
     }
 
     /// Every agentic-discovery surface the router serves is in the spec.

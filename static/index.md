@@ -2,13 +2,13 @@
 
 This is the x402 payment facilitator Ultravioleta DAO runs: your endpoint answers 402,
 the caller signs a stablecoin authorization, and we put it on chain and pay the network
-fee — 0% facilitator fee, on 21 mainnets across 7 chain families.
+fee — 0% facilitator fee, including Arc and native Hedera mainnet/testnet.
 
 This host is a **facilitator**, not a paid API. It charges nothing for its own routes;
 the money that moves is the buyer's payment going to the seller.
 
-- **Networks:** 21 mainnets + 18 testnets (39 identifiers) across 7 chain families
-- **Stablecoins:** USDC, USDT, EURC, AUSD, PYUSD, USDG, RLUSD — plus native XRP on XRPL.
+- **Networks:** EVM (including Arc), SVM, NEAR, Stellar, Sui, Algorand, XRPL and native Hedera. Availability is read from `/supported`.
+- **Stablecoins:** USDC, USDT, EURC, AUSD, PYUSD, USDG, RLUSD — plus native XRP on XRPL and HBAR on Hedera.
   `GET /supported` is the only list that is true today; this one is a snapshot.
 - **Schemes:** `exact`, `upto`, `escrow`, `commerce`, `fhe-transfer`
 - **Release:** `GET /version`
@@ -16,13 +16,36 @@ the money that moves is the buyer's payment going to the seller.
   The HTML landing page at `/` and the other human pages carry English and Spanish
   at the same URL, switched by their EN/ES selector; there is no `/es/` path.
 
+## Arc and native Hedera
+
+| Network | Payment identifier | Asset | Facilitator fee payer |
+| --- | --- | --- | --- |
+| Arc mainnet | `arc` / `eip155:5042` | USDC (6 decimals) | `0x103040545AC5031A11E8C03dd11324C7333a13C7` |
+| Arc testnet | `arc-testnet` / `eip155:5042002` | USDC (6 decimals) | `0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8` |
+| Hedera mainnet | `hedera:mainnet` | HBAR `0.0.0` (8 decimals), USDC `0.0.456858` (6) | `0.0.10868300` |
+| Hedera testnet | `hedera:testnet` | HBAR `0.0.0` (8 decimals), USDC `0.0.429274` (6) | `0.0.10576385` |
+
+Discover availability and the current network-specific `extra.feePayer` from
+`/supported`. These are facilitator accounts, not merchant destinations. Set
+`payTo` to the seller's own account. Arc supports direct EOA `exact` payments in
+x402 v1/v2; its ERC-20 USDC address is `0x3600000000000000000000000000000000000000`,
+with EIP-712 domain `USDC` / `2`. Its 18-decimal gas view is the same balance;
+payment amounts use 6 decimals.
+
+Hedera supports native `CryptoTransfer`, `exact`, **x402 v2 only**. It uses numeric
+accounts and native token IDs, not EVM chain IDs 295/296. Buyer and recipient must
+be associated with USDC. The sponsor pays HBAR fees without contributing payment
+principal. HBAR amounts are tinybars, never USD amounts. Neither addition enables
+escrow, `upto`, Gateway or ERC-8004 on that network. Native Hedera also rejects
+durable-evidence and other unsupported extensions.
+
 ## API
 
 Base URL: `https://facilitator.ultravioletadao.xyz/`
 
 - `POST /verify` — validate a payment authorization without settling it
-- `POST /settle` — settle a verified authorization on-chain, returns the tx hash
-- `GET /supported` — every (scheme, network) pair accepted, in v1 and CAIP-2 form
+- `POST /settle` — settle a verified authorization on-chain, returns the transaction hash or native Hedera transaction ID
+- `GET /supported` — every (scheme, network) pair accepted, with its supported protocol version and identifiers (Hedera is v2 only)
 - `POST /accepts` — negotiate payment requirements (Faremeter-compatible)
 - `POST /mcp` — MCP server (Streamable HTTP, stateless): `x402_supported`,
   `x402_accepts`, `x402_verify`, `x402_settle`, over the same handlers

@@ -75,16 +75,21 @@ facilitator just did, and what it costs (nothing — the seller keeps the paymen
 
 ## Coverage
 
-- **21 mainnet payment networks** and 18 testnets — 39 network identifiers in all.
-  Mainnets: algorand, arbitrum, avalanche, base, bsc, celo, ethereum, fogo, hyperevm,
-  monad, near, optimism, polygon, robinhood, scroll, skale-base, solana, stellar, sui,
-  unichain, xrpl.
-- **7 chain families**: EVM, SVM (Solana and Fogo), NEAR, Stellar, Sui, Algorand, XRPL.
-- **6 stablecoins**: USDC, USDT, EURC, AUSD, PYUSD, USDG.
-- **5 payment schemes**: `exact`, `upto` (Permit2 metered), `escrow` and `commerce`
-  (x402r two-phase lock/release), `fhe-transfer` (experimental).
-- **Extensions advertised in `/supported`**: `bazaar`, `durable-evidence`.
-- Every number above is answerable live from `/supported`; do not cache it.
+- **Network families:** EVM (including Arc), SVM (Solana/Fogo), NEAR, Stellar,
+  Sui, Algorand, XRPL and native Hedera. Query `/supported` for enabled networks.
+- **Arc:** `arc` / `eip155:5042`, `arc-testnet` / `eip155:5042002`; direct EOA
+  USDC `exact`, v1/v2. USDC has 6 payment decimals and domain `USDC` / `2`.
+- **Hedera:** `hedera:mainnet`, `hedera:testnet`; native `CryptoTransfer`,
+  `exact`, v2 only. HBAR `0.0.0` has 8 decimals; USDC mainnet `0.0.456858`
+  and testnet `0.0.429274` have 6. Read the network-specific `extra.feePayer`.
+  Current sponsor IDs: mainnet `0.0.10868300`, testnet `0.0.10576385`.
+- **Assets:** USDC, USDT, EURC, AUSD, PYUSD, USDG, RLUSD, native XRP and HBAR;
+  each network publishes its own supported subset. HBAR is not USD-denominated.
+- **Schemes:** `exact`, `upto`, `escrow`, `commerce`, `fhe-transfer`; availability
+  is per network. Arc and Hedera additions support `exact` only.
+- **Extensions:** read `/supported` and the network guide; global extension
+  discovery does not enable escrow or ERC-8004 on Hedera/Arc. Native Hedera
+  rejects durable-evidence and other unsupported extensions.
 
 ## Machine-readable resources
 

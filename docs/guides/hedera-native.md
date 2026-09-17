@@ -81,6 +81,6 @@ Hedera testnet is now live at `https://facilitator.ultravioletadao.xyz` (initial
 
 Both completed the official client flow, preserved the transaction on retry, rejected replay verification, and have immutable confirmed storage records. Independent receipt reconciliation verified the exact payer/payee principal, sponsor-only consensus fees, and the SHA-384 hash of the persisted signed bytes. The final-code crash-recovery test also passed for `0.0.10576385@1789608851.534483569` after an injected terminal-write outage.
 
-Mainnet remains disabled. Its account creation, funding, associations and public HBAR/USDC acceptance payments are still required. The project's own SDK signing support is a separate follow-up after facilitator completion.
+Mainnet provisioning is complete: the dedicated fee payer `0.0.10868300` was funded with 30 HBAR, and test buyer `0.0.10868301` and recipient `0.0.10868302` are associated with native USDC `0.0.456858`. Production configuration enables mainnet with a conservative 10-HBAR daily reserved-fee budget. Confirm rollout via `/supported`; public mainnet HBAR/USDC acceptance payments are still required. The bootstrap account `0.0.10868282` is not the facilitator signer. The project's own SDK signing support is a separate follow-up after facilitator completion.
 
 See [the original integration plan](../plans/hedera-native-x402-integration-plan.md) and [test harness instructions](../../tests/hedera-e2e/README.md).

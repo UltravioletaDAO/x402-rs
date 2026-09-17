@@ -120,6 +120,8 @@ arc_mainnet_enabled = true
 
 # Native Hedera rollout: only testnet has funded, validated accounts and canaries.
 hedera_enabled_testnet               = true
-hedera_enabled_mainnet               = false
+hedera_enabled_mainnet               = true
 hedera_account_id_testnet            = "0.0.10576385"
+hedera_account_id_mainnet            = "0.0.10868300"
 hedera_daily_budget_tinybars_testnet = 1000000000
+hedera_daily_budget_tinybars_mainnet = 1000000000

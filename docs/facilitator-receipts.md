@@ -66,6 +66,9 @@ order handling; the facilitator prevents duplicate admission of payment.
 `GET /receipts/{receiptId}` with `Authorization: Bearer <accessToken>` returns the
 latest receipt and performs read-only chain reconciliation. Missing or incorrect
 capabilities get 404. Receipt IDs and tokens never appear in a public listing.
+An authorized lookup returns HTTP 200 even when the payment is unknown or its
+original POST returned an error. Inspect the signed `status`; HTTP 200 here
+means the receipt was retrieved, not that the payment succeeded.
 Without context, receipts still protect authorization replay, but private lookup
 is unavailable: resend the original settlement request to retrieve its receipt.
 
@@ -101,6 +104,21 @@ The dedicated secret `facilitator-receipt-signing-key` injects
 wallet. Archive old trusted public keys before rotation; the live JWK endpoint
 currently advertises the current key only. Self-hosted deployments without a
 receipt key explicitly advertise HTTPS provenance and return `proof: null`.
+
+Before the first production deployment, provision the secret **and** apply the
+matching execution-role `secrets-access` policy with authorized operator
+credentials. The GitHub deploy identity explicitly cannot call `iam:PutRolePolicy`.
+A successful Terraform plan does not prove permission to apply an IAM change.
+The receipt rollout initially hit this restriction after ECS had already been
+updated; adding the single planned secret grant and rerunning only the failed
+deploy job recovered it. Keep the GitHub identity's restriction in place.
+For future secret additions, confirm that the execution role can read every
+newly referenced secret before starting the image deployment.
+Run `python scripts/check_receipt_deploy_permissions.py` with operator
+credentials before publishing. This read-only check simulates the execution
+role's access to the receipt key and the task role's access to receipt storage;
+it does not read private key material. Review the full Terraform plan too,
+because the helper does not cover unrelated infrastructure changes.
 
 ## Durable admission and recovery
 

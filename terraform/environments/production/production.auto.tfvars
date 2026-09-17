@@ -118,10 +118,12 @@ enable_observability = false
 arc_testnet_enabled = true
 arc_mainnet_enabled = true
 
-# Native Hedera rollout: only testnet has funded, validated accounts and canaries.
-hedera_enabled_testnet               = true
-hedera_enabled_mainnet               = true
-hedera_account_id_testnet            = "0.0.10576385"
-hedera_account_id_mainnet            = "0.0.10868300"
-hedera_daily_budget_tinybars_testnet = 1000000000
+# Native Hedera: both ledgers have funded accounts and verified USDC canaries.
+hedera_enabled_testnet    = true
+hedera_enabled_mainnet    = true
+hedera_account_id_testnet = "0.0.10576385"
+hedera_account_id_mainnet = "0.0.10868300"
+# Quota reserves the maximum signed fee, not the actual network fee.
+# Testnet has two additional reservations for portable-receipt acceptance.
+hedera_daily_budget_tinybars_testnet = 1200000000
 hedera_daily_budget_tinybars_mainnet = 1000000000

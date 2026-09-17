@@ -400,6 +400,58 @@ async fn unknown_survives_restart_and_has_no_refusal_or_second_send() {
 }
 
 #[tokio::test]
+async fn private_lookup_returns_unknown_receipts_after_a_payment_http_error() {
+    for status in [StatusCode::BAD_REQUEST, StatusCode::BAD_GATEWAY] {
+        TEST_SERVICE
+            .scope(service_fixture(), async {
+                let failed = settle(
+                    &MockFacilitator { invalid: false },
+                    &headers(),
+                    &body(1),
+                    async {
+                        (status, Json(json!({"error":"sponsor_storage_unavailable"})))
+                            .into_response()
+                    },
+                )
+                .await;
+                assert_eq!(failed.status(), status);
+                let original = value(failed).await;
+                assert_eq!(original["receipt"]["status"], "unknown");
+                let id = original["receipt"]["receiptId"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned();
+                let mut h = HeaderMap::new();
+                h.insert(
+                    "authorization",
+                    HeaderValue::from_str(&format!("Bearer {}", "ab".repeat(32))).unwrap(),
+                );
+                let found = get(State(MockFacilitator { invalid: false }), Path(id), h).await;
+                assert_eq!(found.status(), StatusCode::OK);
+                assert_eq!(found.headers()["cache-control"], "no-store");
+                assert_eq!(
+                    value(found).await["receipt"],
+                    original["receipt"],
+                    "lookup must preserve the signed receipt"
+                );
+                let retry = settle(
+                    &MockFacilitator { invalid: false },
+                    &headers(),
+                    &body(1),
+                    async { panic!("lookup must not enable a second payment") },
+                )
+                .await;
+                assert_eq!(
+                    retry.status(),
+                    status,
+                    "POST keeps its original HTTP result"
+                );
+            })
+            .await;
+    }
+}
+
+#[tokio::test]
 async fn invalid_signature_cannot_reserve_someone_elses_authorization() {
     let service = service_fixture();
     TEST_SERVICE

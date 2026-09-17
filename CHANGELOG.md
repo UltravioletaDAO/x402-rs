@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.36.1] - 2026-09-17
+
+- Return HTTP 200 for authorized receipt lookups even when the original payment returned an HTTP error; preserve its signed status and the original POST response.
+- Raise the Hedera testnet daily reservation ceiling to 12 HBAR for the expanded acceptance matrix; retain the mainnet ceiling of 10 HBAR.
+- Document the required execution-role secret grant before deploying a new receipt signing key.
+
 ## [2.36.0] - 2026-09-17
 
 - Add portable signed facilitator receipts for Arc exact USDC/EURC and Hedera USDC, including both mainnet and testnet.

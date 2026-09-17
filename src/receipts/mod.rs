@@ -997,7 +997,11 @@ where
         Err(_) => return failure("receipt_store_unavailable", StatusCode::SERVICE_UNAVAILABLE),
     };
     reconcile(&service, &facilitator, &mut record).await;
-    response(&record, true)
+    // The lookup succeeded even if the original payment request failed.
+    // Keep that payment state in the signed receipt, not the GET status.
+    let mut found = response(&record, true);
+    *found.status_mut() = StatusCode::OK;
+    found
 }
 
 #[cfg(test)]

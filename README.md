@@ -41,12 +41,12 @@ Includes [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) on-chain reputation
 
 | Network | Chain ID / CAIP-2 | Payment token | Explorer |
 |---------|------------------|---------------|----------|
-| Arc mainnet | 5042 / `eip155:5042` | USDC, direct `exact`, EOA | [explorer.arc.io](https://explorer.arc.io) |
-| Arc testnet | 5042002 / `eip155:5042002` | USDC, direct `exact`, EOA | [explorer.testnet.arc.io](https://explorer.testnet.arc.io) |
+| Arc mainnet | 5042 / `eip155:5042` | USDC/EURC, direct `exact`, EOA | [explorer.arc.io](https://explorer.arc.io) |
+| Arc testnet | 5042002 / `eip155:5042002` | USDC/EURC, direct `exact`, EOA | [explorer.testnet.arc.io](https://explorer.testnet.arc.io) |
 
 Arc has separate RPC and deployment switches. A running instance serves a network
 only when it appears in [`/supported`](https://facilitator.ultravioletadao.xyz/supported).
-Integrators start at [Arc: getting paid in USDC](docs/networks/arc.md); operators want
+Integrators start at [Arc: getting paid in USDC and EURC](docs/networks/arc.md); operators want
 [Arc operations, canaries and activation](docs/networks/arc-operations.md).
 Python SDK 0.84.0 and TypeScript SDK 2.92.0 include both Arc networks. USDC is also
 the gas token: native and ERC-20 amounts are two precisions of the same balance.
@@ -58,8 +58,8 @@ Both network tables include Arc and native Hedera; runtime availability remains 
 
 | Network | Payment identifier | Asset | Facilitator fee payer |
 | --- | --- | --- | --- |
-| Arc mainnet | `arc` / `eip155:5042` | USDC (6 decimals) | `0x103040545AC5031A11E8C03dd11324C7333a13C7` |
-| Arc testnet | `arc-testnet` / `eip155:5042002` | USDC (6 decimals) | `0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8` |
+| Arc mainnet | `arc` / `eip155:5042` | USDC/EURC (6 decimals) | `0x103040545AC5031A11E8C03dd11324C7333a13C7` |
+| Arc testnet | `arc-testnet` / `eip155:5042002` | USDC/EURC (6 decimals) | `0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8` |
 | Hedera mainnet | `hedera:mainnet` | HBAR `0.0.0` (8 decimals), USDC `0.0.456858` (6) | `0.0.10868300` |
 | Hedera testnet | `hedera:testnet` | HBAR `0.0.0` (8 decimals), USDC `0.0.429274` (6) | `0.0.10576385` |
 
@@ -81,7 +81,7 @@ durable-evidence and other unsupported extensions.
 
 | Network | Chain ID | Token | Explorer |
 |---------|----------|-------|----------|
-| **Arc** | 5042 | USDC | [explorer.arc.io](https://explorer.arc.io) |
+| **Arc** | 5042 | USDC, EURC | [explorer.arc.io](https://explorer.arc.io) |
 | **Hedera** | `hedera:mainnet` (native) | HBAR, USDC | [hashscan.io/mainnet](https://hashscan.io/mainnet) |
 | **Ethereum** | 1 | USDC | [etherscan.io](https://etherscan.io) |
 | **Base** | 8453 | USDC | [basescan.org](https://basescan.org) |
@@ -138,7 +138,7 @@ durable-evidence and other unsupported extensions.
 |-------|----------|
 | **USDC** | All payment networks except Robinhood Chain (no Circle USDC there) |
 | **AUSD** | Ethereum, Polygon, Arbitrum, Avalanche, Monad, BSC, Solana, Sui |
-| **EURC** | Ethereum, Base, Avalanche |
+| **EURC** | Ethereum, Base, Avalanche, Arc mainnet/testnet |
 | **USDT** | Arbitrum, Celo, Optimism, Monad |
 | **PYUSD** | Ethereum, Solana (Token-2022) |
 | **USDG** | Robinhood Chain (Paxos Global Dollar, EIP-712 domain "Global Dollar" v1) |
@@ -163,7 +163,7 @@ durable-evidence and other unsupported extensions.
 | Unichain | Y | - | - | - | - | - |
 | Scroll | Y | - | - | - | - | - |
 | Robinhood Chain | - | - | - | - | - | Y |
-| Arc (mainnet + testnet) | Y | - | - | - | - | - |
+| Arc (mainnet + testnet) | Y | - | Y | - | - | - |
 | Hedera (mainnet + testnet) | Y | - | - | - | - | - |
 | SKALE Base | Y | - | - | - | - | - |
 | Solana | Y | Y | - | - | Y | - |

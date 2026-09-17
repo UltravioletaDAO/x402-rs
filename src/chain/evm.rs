@@ -3630,6 +3630,29 @@ mod tests {
     /// geth's default miner does not include a tip below 1 mwei.
     const ONE_MWEI: u128 = 1_000_000;
 
+    #[test]
+    fn arc_eurc_domains_match_independent_rpc_measurements() {
+        // Public DOMAIN_SEPARATOR() values, measured on 2026-09-17.
+        for (network, token, separator) in [
+            (Network::Arc, address!("bEf5f6d51CB62b58e6A8f77868681825C6fe21c1"),
+             "25fe3beaae16ef5c1cb9757c6efc1bf33f81ecd4c7dae191320372013b7d2175"),
+            (Network::ArcTestnet, address!("89B50855Aa3bE2F677cD6303Cec089B5F319D72a"),
+             "649ec6b0634bd74f28684781d2c9ae49dff14ba3d5f9bb5d70c1e1f0e1ebf160"),
+        ] {
+            let deployment = crate::network::EURCDeployment::by_network(network).unwrap();
+            assert_eq!(deployment.decimals, 6);
+            assert_eq!(deployment.address(), MixedAddress::from(token));
+            let (name, version) = find_known_eip712_metadata(network, &token).unwrap();
+            assert_eq!((name.as_str(), version.as_str()), ("EURC", "2"));
+            let domain = eip712_domain! {
+                name: name, version: version,
+                chain_id: EvmChain::try_from(network).unwrap().chain_id,
+                verifying_contract: token,
+            };
+            assert_eq!(hex::encode(domain.separator()), separator);
+        }
+    }
+
     /// hyperevm and arbitrum quote a zero tip outright, and when
     /// `eth_maxPriorityFeePerGas` fails the send path falls back to
     /// `floor.min_priority`. Neither may put a zero-tip transaction on the wire:

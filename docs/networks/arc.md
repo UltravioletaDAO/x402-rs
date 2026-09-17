@@ -1,4 +1,4 @@
-# Arc (Circle) — getting paid in USDC on Arc through this facilitator
+# Arc (Circle) — getting paid in USDC and EURC on Arc through this facilitator
 
 > **Status on 2026-09-17: live on mainnet and on testnet.** `GET /supported` lists
 > both `arc` / `eip155:5042` and `arc-testnet` / `eip155:5042002`, each with `exact`
@@ -17,6 +17,30 @@ when. Where something is documented by Circle but has not been measured here, th
 says so.
 
 ---
+
+## EURC: prices in euros
+
+EURC is registered for direct EOA `exact` payments in x402 v1/v2. Circle publishes
+different contracts for each network:
+
+| Network | EURC contract | Payment decimals | EIP-712 name / version |
+|---|---|---|---|
+| Arc mainnet | `0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1` | 6 | `EURC` / `2` |
+| Arc testnet | `0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a` | 6 | `EURC` / `2` |
+
+**0.01 EURC is 10000 atomic units and is a euro price.** No USD/EUR exchange rate
+is applied. EURC has its own balance; the facilitator still pays gas in **USDC**.
+Select the EURC address explicitly and keep USDC as the default dollar asset.
+Do not pass a dollar quote into the EURC signing path.
+
+Contract metadata and EIP-712 domain separators were checked through both live
+RPCs on 2026-09-17. Offline signatures and network/token isolation are tested.
+**Funded EURC verify/settle acceptance remains pending on both networks**, as
+requested by the operator. Existing Arc payment receipts below are **USDC only**;
+they do not prove EURC settlement. No EURC payment hashes are claimed.
+[Assessment](../reports/2026-09-17-arc-eurc-assessment.json).
+[Official Circle contract list](https://developers.circle.com/stablecoins/eurc-contract-addresses).
+
 
 ## At a glance
 
@@ -235,7 +259,7 @@ Arc networks unless stated.
 
 | | Status | Why |
 |---|---|---|
-| **EURC** | not accepted | On testnet the contract exists (`0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a`, 1,798 bytes, `name` `EURC`, `version` `2`, 6 decimals) but is not registered here; on **mainnet that address has no code at all** (0 bytes). Arc's asset allow-list holds USDC only, and a test pins it (`arc_accepts_its_usdc_and_nothing_else`), so an EURC payment is refused. EURC is euros: when it comes, a dollar price will not convert 1:1 |
+| **EURC** | registered, live payment acceptance pending | Separate mainnet/testnet contracts, six decimals, `EURC` / `2`. See the EURC section above; euro quotes require explicit token units. |
 | **EIP-6492** (a counterfactual smart wallet, not deployed yet) | refused | The universal signature validator the facilitator calls, `0xdAcD51A54883eb67D95FAEb2BBfdC4a9a6BD2a3B`, has **no code on either Arc network** (0 bytes, mainnet and testnet). `/verify` answers `isValid: false` with `invalid_signature`, and `/settle` sends nothing. That token is the same one a bad signature gets; the explanation is only in the server log |
 | **Already-deployed EIP-1271 wallets** | not proven | The code path does not use the missing validator, but no positive payment from a contract wallet has been measured on Arc. Treat it as unsupported until one is |
 | **Circle Gateway / Nanopayments authorizations** | refused | Gateway also advertises `exact` on Arc, but its buyers sign against a different domain (`GatewayWalletBatched`, version `1`) and it settles in batches. Those signatures are not USDC transfer authorizations and do not verify here; they belong to Circle Gateway. For this facilitator, sign the USDC domain above |
@@ -305,8 +329,9 @@ Measured for this page on **2026-09-17** against `https://rpc.mainnet.arc.io` (b
 21,259,527) and `https://rpc.testnet.arc.io` (block 62,505,464): `eth_chainId` on both;
 USDC `decimals()`, `name()`, `version()` and `DOMAIN_SEPARATOR()` on both, each
 recomputed locally and matching; `eth_getCode` on the EIP-6492 validator (0 bytes on
-both), the CREATE2 factory (69 bytes on both) and EURC (0 bytes on mainnet, 1,798 on
-testnet); `eth_gasPrice` on testnet. `/supported`, `/version` and
+both) and the CREATE2 factory (69 bytes on both). The original EURC check used
+the testnet address on mainnet; the official mainnet address differs. The EURC
+assessment linked above corrects this and verifies 1,798 bytes on each network; `eth_gasPrice` on testnet. `/supported`, `/version` and
 `/health/ready?network=arc` were read from the production facilitator the same day.
 The explorer hosts were probed for their HTTP status. The blocked genesis address and
 the two-precision balance were measured on 2026-09-16 at testnet block 62,335,077.

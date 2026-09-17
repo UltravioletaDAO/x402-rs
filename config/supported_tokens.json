@@ -1,15 +1,15 @@
 {
   "_comment": "Source of truth for all supported networks, tokens, and facilitator wallet addresses. MUST be updated when adding new chains or stablecoins. Wallet addresses sourced from lambda/balances/handler.py.",
-  "_lastUpdated": "2026-09-16",
-  "_version": "1.51.0",
+  "_lastUpdated": "2026-09-17",
+  "_version": "1.52.0",
 
   "evm_mainnets": {
     "arc": {
       "chainId": 5042,
-      "tokens": ["usdc"],
+      "tokens": ["usdc", "eurc"],
       "explorer": "https://explorer.arc.io",
       "facilitatorWallet": "0x103040545AC5031A11E8C03dd11324C7333a13C7",
-      "_note": "Configured only when RPC_URL_ARC is set. Check /supported for availability. USDC exact EOA payments, with 6 ERC-20 decimals and 18 native gas decimals over one balance. Mainnet and testnet signatures are not interchangeable."
+      "_note": "Configured only when RPC_URL_ARC is set. Check /supported for availability. USDC/EURC exact EOA payments, with 6 ERC-20 decimals and 18 native gas decimals over one balance. Mainnet and testnet signatures are not interchangeable."
     },
     "ethereum": {
       "chainId": 1,
@@ -166,10 +166,10 @@
     },
     "arc-testnet": {
       "chainId": 5042002,
-      "tokens": ["usdc"],
+      "tokens": ["usdc", "eurc"],
       "explorer": "https://explorer.testnet.arc.io",
       "facilitatorWallet": "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8",
-      "_note": "Configured only when RPC_URL_ARC_TESTNET is set. Check /supported for live availability. Direct USDC EIP-3009 with EOA signatures; no Gateway or EIP-6492. Native gas uses 18 decimals and ERC-20 payments use 6 over one shared balance. Do not sum them."
+      "_note": "Configured only when RPC_URL_ARC_TESTNET is set. Check /supported for live availability. Direct USDC/EURC EIP-3009 with EOA signatures; no Gateway or EIP-6492. Native gas uses 18 decimals and ERC-20 payments use 6 over one shared balance. Do not sum them. EURC has its own six-decimal balance in euros; gas remains USDC."
     }
   },
 

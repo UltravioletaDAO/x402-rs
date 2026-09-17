@@ -65,8 +65,8 @@ assuming a global scheme or extension applies to each network.
 
 | Network | Payment identifier | Asset | Facilitator fee payer |
 | --- | --- | --- | --- |
-| Arc mainnet | `arc` / `eip155:5042` | USDC (6 decimals) | `0x103040545AC5031A11E8C03dd11324C7333a13C7` |
-| Arc testnet | `arc-testnet` / `eip155:5042002` | USDC (6 decimals) | `0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8` |
+| Arc mainnet | `arc` / `eip155:5042` | USDC/EURC (6 decimals) | `0x103040545AC5031A11E8C03dd11324C7333a13C7` |
+| Arc testnet | `arc-testnet` / `eip155:5042002` | USDC/EURC (6 decimals) | `0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8` |
 | Hedera mainnet | `hedera:mainnet` | HBAR `0.0.0` (8 decimals), USDC `0.0.456858` (6) | `0.0.10868300` |
 | Hedera testnet | `hedera:testnet` | HBAR `0.0.0` (8 decimals), USDC `0.0.429274` (6) | `0.0.10576385` |
 
@@ -502,7 +502,7 @@ wrong domain produces a signature that verifies against nothing.
 | Token | Usual name | Exceptions |
 |---|---|---|
 | USDC | `"USD Coin"` — including Base **mainnet** | `"USDC"` on Celo, HyperEVM, Unichain, Monad and most `-sepolia`/`-testnet` variants (Base Sepolia is `"USDC"`) |
-| EURC | `"Euro Coin"` (Ethereum, Avalanche) | `"EURC"` on Base |
+| EURC | `"Euro Coin"` (Ethereum, Avalanche) | `"EURC"` on Base and Arc |
 
 The name can **flip between a chain's mainnet and its testnet** (HyperEVM mainnet is
 `"USDC"`, HyperEVM testnet is `"USD Coin"`), and bridged variants differ again
@@ -885,3 +885,10 @@ everything else.
 
 Source: https://github.com/UltravioletaDAO/x402-rs
 Operator: Ultravioleta DAO — https://ultravioletadao.xyz
+
+## Arc EURC amounts
+
+EURC mainnet is `0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1`; testnet is
+`0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a`. Both use six decimals and
+EIP-712 `EURC` / `2`. One EURC is one euro, not one dollar; no automatic FX
+conversion is performed. Gas stays USDC. Funded EURC payments remain pending.

@@ -80,6 +80,7 @@ mod fhe_proxy;
 mod from_env;
 mod handlers;
 mod idempotency_store;
+mod receipts;
 mod json_depth;
 mod lease;
 mod mcp;
@@ -525,6 +526,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Idempotency-Key cache initialized"
     );
     idempotency_store::set_global_idempotency_store(idempotency_store);
+    receipts::init().await.expect("receipt service configuration must be valid");
 
     let max_body_bytes = std::env::var("MAX_REQUEST_BODY_BYTES")
         .ok()
@@ -904,7 +906,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             cors::CorsLayer::new()
                 .allow_origin(cors::Any)
                 .allow_methods([Method::GET, Method::POST])
-                .allow_headers(cors::Any),
+                .allow_headers(cors::Any)
+                .expose_headers(["idempotent-replayed", "payment-response", "x-payment-response"].map(axum::http::HeaderName::from_static)),
         )
         // Body limit MUST be the last layer applied so it wraps everything below.
         // 64 KiB ceiling on POST bodies — caps memory blow-up from oversized JSON.

@@ -734,3 +734,12 @@ Apache 2.0
 Native Hedera `exact` payments use x402 v2 and native USDC only. HBAR is reserved for sponsor network fees. Networks are enabled independently and reported by `/supported`; mainnet requires its own funded signer and release canaries. Hedera is **v2-only** and has no v1 network name, accounts are numeric entity ids (`0.0.1234`, never a `0x` address or an alias), and the EVM chain ids 295/296 are not this payment rail.
 
 Integrators start at [Hedera: getting paid in native USDC](docs/networks/hedera.md); operators want [configuration, merchant requirements, recovery and validation status](docs/guides/hedera-native.md). The `extra.feePayer` differs per network — read it from `/supported`, never carry one across.
+
+## Portable facilitator receipts
+
+Arc mainnet/testnet exact USDC/EURC and native Hedera USDC v2 support additive
+facilitator receipts: network, asset, atomic amount, payTo, request hash,
+settlement ID, status and refusal reason. Persist purchase context before sending
+the authorization and reuse it after uncertainty. Payment confirmation does not
+prove merchant delivery. See [the receipt guide](docs/facilitator-receipts.md).
+Live EURC acceptance remains pending.

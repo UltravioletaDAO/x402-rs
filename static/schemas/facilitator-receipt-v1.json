@@ -1,0 +1,203 @@
+{
+  "additionalProperties": true,
+  "properties": {
+    "schemaVersion": {
+      "title": "Schemaversion",
+      "type": "integer",
+      "const": 1
+    },
+    "receiptId": {
+      "title": "Receiptid",
+      "type": "string"
+    },
+    "revision": {
+      "title": "Revision",
+      "type": "integer"
+    },
+    "issuer": {
+      "title": "Issuer",
+      "type": "string"
+    },
+    "issuedAt": {
+      "title": "Issuedat",
+      "type": "integer"
+    },
+    "operation": {
+      "title": "Operation",
+      "type": "string"
+    },
+    "purchaseId": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Purchaseid"
+    },
+    "network": {
+      "title": "Network",
+      "type": "string"
+    },
+    "scheme": {
+      "title": "Scheme",
+      "type": "string"
+    },
+    "x402Version": {
+      "title": "X402Version",
+      "type": "integer"
+    },
+    "asset": {
+      "title": "Asset",
+      "type": "string"
+    },
+    "amount": {
+      "title": "Amount",
+      "type": "string",
+      "pattern": "^[0-9]+$"
+    },
+    "decimals": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Decimals"
+    },
+    "payTo": {
+      "title": "Payto",
+      "type": "string"
+    },
+    "payer": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Payer"
+    },
+    "requestHash": {
+      "title": "Requesthash",
+      "type": "string"
+    },
+    "requestHashVersion": {
+      "title": "Requesthashversion",
+      "type": "string"
+    },
+    "request": {
+      "additionalProperties": true,
+      "title": "Request",
+      "type": "object"
+    },
+    "paymentRequestHash": {
+      "title": "Paymentrequesthash",
+      "type": "string"
+    },
+    "authorizationId": {
+      "title": "Authorizationid",
+      "type": "string"
+    },
+    "status": {
+      "title": "Status",
+      "type": "string",
+      "enum": [
+        "verified",
+        "pending",
+        "confirmed",
+        "rejected",
+        "unknown"
+      ]
+    },
+    "settlement": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Settlement"
+    },
+    "refusalReason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Refusalreason"
+    },
+    "diagnosticCode": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Diagnosticcode"
+    },
+    "retry": {
+      "additionalProperties": true,
+      "title": "Retry",
+      "type": "object"
+    },
+    "proof": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Proof"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "receiptId",
+    "revision",
+    "issuer",
+    "issuedAt",
+    "operation",
+    "network",
+    "scheme",
+    "x402Version",
+    "asset",
+    "amount",
+    "payTo",
+    "requestHash",
+    "requestHashVersion",
+    "request",
+    "paymentRequestHash",
+    "authorizationId",
+    "status",
+    "retry"
+  ],
+  "title": "FacilitatorReceipt",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://facilitator.ultravioletadao.xyz/schemas/facilitator-receipt-v1.json"
+}

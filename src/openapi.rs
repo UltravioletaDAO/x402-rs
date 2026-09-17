@@ -3091,6 +3091,7 @@ async fn path_mcp_get() {}
 pub fn swagger_routes() -> Router {
     let mut api_doc = ApiDoc::openapi();
     api_doc.info.version = crate::version::facilitator_version().to_string();
+    crate::receipts::document_api(&mut api_doc);
 
     // `/openapi.json` is an ALIAS for the document Swagger UI already serves at
     // `/api-docs/openapi.json`. Two reasons it exists, and neither is cosmetic:

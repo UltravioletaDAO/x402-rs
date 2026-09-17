@@ -1,0 +1,118 @@
+{
+  "checkedAt": "2026-09-17T19:03:35.245840+00:00",
+  "status": "local-preflight-passed-not-yet-deployed",
+  "versions": {
+    "facilitator": "2.36.0",
+    "python": "0.88.0",
+    "typescript": "2.96.0"
+  },
+  "rustTestRuns": [
+    {
+      "passed": 1189,
+      "failed": 0,
+      "ignored": 6
+    },
+    {
+      "passed": 1239,
+      "failed": 0,
+      "ignored": 6
+    },
+    {
+      "passed": 6,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "passed": 23,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "passed": 6,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "passed": 9,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "passed": 15,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 11
+    },
+    {
+      "passed": 31,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "passed": 14,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "passed": 43,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "passed": 7,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "passed": 5,
+      "failed": 0,
+      "ignored": 7
+    },
+    {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 2
+    },
+    {
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0
+    }
+  ],
+  "rustPassed": 2602,
+  "receiptFocusedIncludingDynamoDBLocal": 11,
+  "pythonPassed": 1236,
+  "typescriptPassed": 771,
+  "terraformUncoveredChanges": [],
+  "realEURCPayments": "deferred-by-user",
+  "newLivePayments": 0
+}

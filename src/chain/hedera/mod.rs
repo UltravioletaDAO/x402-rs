@@ -93,6 +93,16 @@ impl NetworkProviderOps for HederaProvider {
     }
 }
 impl HederaProvider {
+    /// Read-only recovery for the portable receipt. Reuses the native durable
+    /// intent and HTTPS mirror verification; never co-signs or submits.
+    pub async fn receipt_evidence(&self, transaction_id: &str) -> Option<bool> {
+        let key = format!("{}#{transaction_id}", self.config.network.to_caip2());
+        let record = self.store.read(&key).await.ok()??;
+        if record.state == State::Confirmed { return Some(true); }
+        if record.state == State::Failed { return Some(false); }
+        self.resolve(&record, Duration::from_secs(3)).await.map(|r| r.0)
+    }
+
     fn inspect_admission(&self, request: &VerifyRequest) -> std::result::Result<(Decoded, Intent), FacilitatorLocalError> {
         let requirements = &request.payment_requirements;
         if requirements.network == self.config.network {
@@ -419,6 +429,10 @@ impl Facilitator for HederaProvider {
         request: &SettleRequest,
     ) -> std::result::Result<SettleResponse, Self::Error> {
         let (decoded, intent) = self.inspect(request, false).map_err(error)?;
+        // Link the portable receipt BEFORE native recovery can see a reserved
+        // or co-signed transaction. A crash between the two stores remains
+        // reconcilable by this immutable native transaction ID.
+        crate::receipts::prepared_hedera(&intent.transaction_id).await.map_err(error)?;
         let key = self.record_key(&intent);
         if let Some(existing) = self.store.read(&key).await.map_err(error)? {
             if existing.intent.fingerprint != intent.fingerprint {

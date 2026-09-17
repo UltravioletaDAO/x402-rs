@@ -1,6 +1,6 @@
 # Plan maestro: recibos del facilitador y reintentos de compra
 
-Fecha: 2026-09-17. Estado: diseño propuesto, implementación de recibos pendiente.
+Fecha: 2026-09-17. Estado: primera implementación en validación local; publicación y aceptación en producción pendientes.
 
 ## Objetivo y decisión de producto
 
@@ -187,3 +187,25 @@ Referencias upstream contrastadas el 2026-09-17; commit `c8c71f244c0d45a6a4fd990
 - [Guía Hedera y política vigente](../guides/hedera-native.md), [Arc](../networks/arc.md).
 - [Plan previo de recibos de entrega/escrow](receipt-gated-release-plan.md); objetivo distinto, no se sustituye.
 - [Evidencia histórica Hedera](../reports/2026-09-16-hedera-transaction-ledger.md).
+
+## Avance de implementación — 2026-09-17
+
+El contrato definitivo de esta primera entrega está en [facilitator-receipts.md](../facilitator-receipts.md).
+Ese documento prevalece sobre las propuestas de diseño anteriores: dominio
+`uvd-x402-request-v1`, canonicalización restringida a claves ASCII/números seguros,
+alcance de compra por capacidad secreta, JWS Ed25519 y consulta privada Bearer.
+
+- F0 publicado: Hedera USDC exclusivo en facilitador y ambos SDK.
+- F1 implementado: esquema público y seis vectores firmados compartidos Rust/Python/TS.
+- F2 implementado: reserva transaccional DynamoDB sin TTL, CAS y persistencia previa al envío; validación local de concurrencia, reinicio y fallos.
+- F3 implementado: respuesta aditiva, JWS, consulta privada, propagación FastAPI/Express/Hono y helpers para otros frameworks.
+- F4 implementado: contexto persistible y fetch con recibo en ambos SDK, verificación de firma y conservación de errores.
+- F5 parcial: vectores/pruebas offline; aceptación USDC con estas versiones aún pendiente. EURC real diferido por el usuario.
+- F6 pendiente: preflight completo, publicación y aceptación en producción.
+- F7 pendiente: demás redes/esquemas; no se anuncia cobertura global.
+
+Limitaciones conservadoras: las reservas abandonadas antes de preparar transacción
+requieren investigación; no hay monitor continuo de reorgs ni archivo automático
+de recibos. La rotación requiere conservar claves públicas anteriores. El recibo
+no implementa entrega exactamente una vez del merchant. El comprador Python
+usa la API síncrona existente; la propagación FastAPI sí es asíncrona.

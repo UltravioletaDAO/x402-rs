@@ -168,7 +168,10 @@ pub fn parse_request(headers: &HeaderMap, raw: &Bytes) -> Option<VerifyRequest> 
         raw.as_ref()
     };
     let envelope: VerifyRequestEnvelope = serde_json::from_slice(bytes).ok()?;
-    let request = envelope.to_v1().ok()?;
+    let mut request = envelope.to_v1().ok()?;
+    // to_v1 normalizes the processing envelope, including its version field.
+    // A receipt must attest the protocol version actually received.
+    request.x402_version = envelope.version();
     (supported(request.network()) && request.payment_requirements.scheme == Scheme::Exact)
         .then_some(request)
 }

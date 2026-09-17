@@ -70,3 +70,24 @@ test('single stablecoin filter follows exact capabilities and excludes absent ne
   assert.equal(evaluate('supportedCatalog(fixture).filter(r=>matchesStablecoinFilter(r,null)).length'),2);
   assert.equal(evaluate('matchesStablecoinFilter(undefined,null)'),false);
 });
+
+test('landing shuffles each grid once on load without an opt-in URL', () => {
+  const html=fs.readFileSync(path.join(root,'static/index.html'),'utf8');
+  assert(!html.includes('RANDOM_NETWORKS'));
+  assert.equal((html.match(/^\s*shuffleNetworkCards\(\);/gm)||[]).length,1);
+  const start=html.indexOf('function shuffleNetworkCards()');
+  const end=html.indexOf("document.querySelectorAll('[data-token-filter]')",start);
+  const code=html.slice(start,end);
+  function render(random) {
+    const orders=[['a','b','c','d'],['e','f','g']];
+    const grids=orders.map(cards=>({querySelectorAll:()=>[...cards],appendChild:card=>{cards.splice(cards.indexOf(card),1);cards.push(card);}}));
+    const document={getElementById:id=>({querySelectorAll:()=>[grids[id==='mainnet-tab'?0:1]]})};
+    vm.runInNewContext(`${code};shuffleNetworkCards()`,{document,Math:{random,floor:Math.floor}});
+    return orders;
+  }
+  const original=[['a','b','c','d'],['e','f','g']];
+  const first=render(()=>0), second=render(()=>0.999);
+  assert.notDeepEqual(first,second);
+  assert.deepEqual(first.map(cards=>[...cards].sort()),original);
+  assert.deepEqual(second.map(cards=>[...cards].sort()),original);
+});

@@ -187,6 +187,46 @@ fn success() -> Response {
 }
 
 #[tokio::test]
+async fn arc_v2_receipt_keeps_the_wire_version_after_internal_normalization() {
+    let v1: Value = serde_json::from_slice(&body(1)).unwrap();
+    let r = &v1["paymentRequirements"];
+    let v2 = Bytes::from(serde_json::to_vec(&json!({
+        "x402Version":2,
+        "paymentPayload":{"x402Version":2,"payload":v1["paymentPayload"]["payload"]},
+        "resource":{"url":r["resource"],"description":r["description"],"mimeType":r["mimeType"]},
+        "accepted":{"network":"eip155:5042002","scheme":"exact","asset":r["asset"],
+            "amount":r["maxAmountRequired"],"payTo":r["payTo"],"maxTimeoutSeconds":180,"extra":r["extra"]}
+    })).unwrap());
+    TEST_SERVICE
+        .scope(service_fixture(), async {
+            let output = value(
+                settle(
+                    &MockFacilitator { invalid: false },
+                    &headers(),
+                    &v2,
+                    async { success() },
+                )
+                .await,
+            )
+            .await;
+            assert_eq!(output["receipt"]["x402Version"], 2);
+            assert_eq!(output["receipt"]["status"], "confirmed");
+            let replay = value(
+                settle(
+                    &MockFacilitator { invalid: false },
+                    &headers(),
+                    &v2,
+                    async { panic!("second settlement") },
+                )
+                .await,
+            )
+            .await;
+            assert_eq!(output["receipt"], replay["receipt"]);
+        })
+        .await;
+}
+
+#[tokio::test]
 async fn concurrent_replicas_reserve_one_payment_and_replay_the_same_receipt() {
     let service = service_fixture();
     let sends = Arc::new(AtomicUsize::new(0));

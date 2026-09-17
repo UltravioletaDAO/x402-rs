@@ -1,0 +1,23 @@
+{
+  "checkedAt": "2026-09-17T17:16:19.274142+00:00",
+  "version": "2.35.1",
+  "sourceCommit": "f8a1518bd01480fc441eab8e9de0bb07a450a717",
+  "deploymentCommit": "5b4768fe6ce4bb8742aa10fa759017a8be8c0a61",
+  "pullRequest": 79,
+  "pullRequestCi": 35248466723,
+  "deployment": {
+    "conclusion": "success",
+    "headSha": "5b4768fe6ce4bb8742aa10fa759017a8be8c0a61",
+    "status": "completed",
+    "url": "https://github.com/UltravioletaDAO/x402-rs/actions/runs/35249417731"
+  },
+  "localEvidence": "2026-09-17-frontend-local-validation.json",
+  "publicEvidence": "2026-09-17-frontend-capabilities-production.json",
+  "newTransactions": 0,
+  "receiptImplementation": "planned, not shipped",
+  "arcEurcFundedAcceptance": "pending by user instruction",
+  "sdkReleasesRetained": {
+    "python": "0.87.0",
+    "typescript": "2.95.0"
+  }
+}

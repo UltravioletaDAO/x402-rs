@@ -1,0 +1,36 @@
+{
+  "sdk": "python",
+  "version": "0.86.0",
+  "source": "PyPI, fresh isolated venv",
+  "offline_signatures": [
+    {
+      "network": "arc",
+      "protocol": 1,
+      "atomic_amount": "1",
+      "signature_recovered": true,
+      "domain_matches_rpc": true
+    },
+    {
+      "network": "arc",
+      "protocol": 2,
+      "atomic_amount": "1",
+      "signature_recovered": true,
+      "domain_matches_rpc": true
+    },
+    {
+      "network": "arc-testnet",
+      "protocol": 1,
+      "atomic_amount": "1",
+      "signature_recovered": true,
+      "domain_matches_rpc": true
+    },
+    {
+      "network": "arc-testnet",
+      "protocol": 2,
+      "atomic_amount": "1",
+      "signature_recovered": true,
+      "domain_matches_rpc": true
+    }
+  ],
+  "funded_payments": "pending; none executed"
+}

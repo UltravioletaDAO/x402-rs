@@ -1,0 +1,64 @@
+{
+  "checked_at": "2026-09-17T04:28:21.310344+00:00",
+  "version": {
+    "version": "2.33.2"
+  },
+  "arc_png_sha256": "6136a4b825337e07fb1d521c71651cb8d68761698fa38caab8a9bb848d06ebdc",
+  "hedera_png_sha256": "d6f51e34685868d062b46f22d07ad5cf6506cbd2fe72e6aad1ff4fb51e4d44c6",
+  "desktop": {
+    "cards": [
+      {
+        "network": "hedera:mainnet",
+        "logo": "/hedera.png",
+        "loaded": true,
+        "tokens": [
+          "HBAR",
+          "USDC"
+        ],
+        "accountLinks": 0
+      },
+      {
+        "network": "arc",
+        "logo": "/arc.png",
+        "loaded": true,
+        "tokens": [
+          "USDC"
+        ],
+        "accountLinks": 0
+      },
+      {
+        "network": "arc-testnet",
+        "logo": "/arc.png",
+        "loaded": true,
+        "tokens": [
+          "USDC"
+        ],
+        "accountLinks": 0
+      },
+      {
+        "network": "hedera:testnet",
+        "logo": "/hedera.png",
+        "loaded": true,
+        "tokens": [
+          "HBAR",
+          "USDC"
+        ],
+        "accountLinks": 0
+      }
+    ],
+    "wallets": [
+      {
+        "text": "0.0.10868300",
+        "href": "https://hashscan.io/mainnet/account/0.0.10868300"
+      },
+      {
+        "text": "0.0.10576385",
+        "href": "https://hashscan.io/testnet/account/0.0.10576385"
+      }
+    ]
+  },
+  "mobile": {
+    "width": 390,
+    "scrollWidth": 390
+  }
+}

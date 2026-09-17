@@ -351,3 +351,26 @@ x402 reference: [`@x402/evm` at `6b930273`](https://github.com/x402-foundation/x
 Operations, activation and the acceptance evidence for both networks:
 [Arc facilitator operations](arc-operations.md). The other network documented this
 way is [Hedera](hedera.md).
+
+## EURC production and package verification (2026-09-17)
+
+Facilitator **2.34.0** publishes USDC/EURC for both Arc networks and x402 v1/v2.
+[Deployment](https://github.com/UltravioletaDAO/x402-rs/actions/runs/35182691614).
+[Public discovery, OpenAPI, agent documents and OG verification](../reports/2026-09-17-arc-eurc-public-web.json).
+The landing also uses the supplied Arc/Hedera logos and puts both native Hedera
+accounts in the wallet section; the supplied image bytes match production.
+
+Python **0.86.0** and TypeScript **2.94.0** were published, installed cleanly and
+checked through eight offline EURC signatures (two networks × two versions ×
+two SDKs). [Package integrity](../reports/2026-09-17-arc-eurc-published-integrity.json).
+Python: 1,222 tests; TypeScript: 762 tests plus typecheck/lint/build; 430 existing
+cross-language checks passed.
+
+Read-only RPC simulations reach the EURC transfer entrypoint and reject unfunded
+signers. The public facilitator likewise rejects eight unfunded authorizations
+with the expected balance error using the published Python and TypeScript packages.
+[Python verification](../reports/2026-09-17-arc-eurc-public-verification.json),
+[TypeScript verification](../reports/2026-09-17-arc-eurc-typescript-public-verification.json).
+**No EURC settlements were executed. Funded payment acceptance remains pending
+on both networks by operator instruction.** The existing USDC receipts retain
+their original scope.

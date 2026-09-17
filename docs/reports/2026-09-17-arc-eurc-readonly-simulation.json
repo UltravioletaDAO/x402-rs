@@ -1,0 +1,24 @@
+{
+  "checked_at": "2026-09-17T04:30:55.321965+00:00",
+  "simulations": [
+    {
+      "network": "arc",
+      "method": "eth_call",
+      "broadcast": false,
+      "signature_domain": "EURC/2",
+      "entrypoint": "transferWithAuthorization(...,bytes)",
+      "outcome": "expected rejection for unfunded ephemeral signer",
+      "reason": "ERC20: transfer amount exceeds balance"
+    },
+    {
+      "network": "arc-testnet",
+      "method": "eth_call",
+      "broadcast": false,
+      "signature_domain": "EURC/2",
+      "entrypoint": "transferWithAuthorization(...,bytes)",
+      "outcome": "expected rejection for unfunded ephemeral signer",
+      "reason": "ERC20: transfer amount exceeds balance"
+    }
+  ],
+  "payments_executed": 0
+}

@@ -1,0 +1,167 @@
+{
+  "checked_at": "2026-09-17T05:01:16.134609+00:00",
+  "version": "2.34.0",
+  "supported_kinds": [
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "arc-testnet",
+      "networkAliases": [
+        "arc-testnet",
+        "eip155:5042002"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc",
+            "address": "0x3600000000000000000000000000000000000000",
+            "decimals": 6
+          },
+          {
+            "token": "eurc",
+            "address": "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a",
+            "decimals": 6
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "arc",
+      "networkAliases": [
+        "arc",
+        "eip155:5042"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc",
+            "address": "0x3600000000000000000000000000000000000000",
+            "decimals": 6
+          },
+          {
+            "token": "eurc",
+            "address": "0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1",
+            "decimals": 6
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "eip155:5042002",
+      "networkAliases": [
+        "arc-testnet",
+        "eip155:5042002"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc",
+            "address": "0x3600000000000000000000000000000000000000",
+            "decimals": 6
+          },
+          {
+            "token": "eurc",
+            "address": "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a",
+            "decimals": 6
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "eip155:5042",
+      "networkAliases": [
+        "arc",
+        "eip155:5042"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc",
+            "address": "0x3600000000000000000000000000000000000000",
+            "decimals": 6
+          },
+          {
+            "token": "eurc",
+            "address": "0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1",
+            "decimals": 6
+          }
+        ]
+      }
+    }
+  ],
+  "openapi_eurc_contracts_and_pricing": true,
+  "documents": [
+    {
+      "path": "/skill.md",
+      "eurc_and_pending_acceptance_present": true
+    },
+    {
+      "path": "/llms.txt",
+      "eurc_and_pending_acceptance_present": true
+    },
+    {
+      "path": "/llms-full.txt",
+      "eurc_and_pending_acceptance_present": true
+    }
+  ],
+  "pages": [
+    {
+      "path": "/",
+      "http": 200,
+      "updated_og": true
+    },
+    {
+      "path": "/networks",
+      "http": 200,
+      "updated_og": true
+    },
+    {
+      "path": "/integrar",
+      "http": 200,
+      "updated_og": true
+    },
+    {
+      "path": "/mcp",
+      "http": 200,
+      "updated_og": true
+    },
+    {
+      "path": "/x402",
+      "http": 200,
+      "updated_og": true
+    },
+    {
+      "path": "/bazaar",
+      "http": 200,
+      "updated_og": true
+    },
+    {
+      "path": "/dx402",
+      "http": 200,
+      "updated_og": true
+    },
+    {
+      "path": "/erc8004",
+      "http": 200,
+      "updated_og": true
+    },
+    {
+      "path": "/stats",
+      "http": 200,
+      "updated_og": true
+    },
+    {
+      "path": "/events/live",
+      "http": 200,
+      "updated_og": true
+    }
+  ],
+  "og_png_sha256": "ddde1a3bfcc5e245c9a9db2357d8a3984940bf31e2800da71a7a3bf407f2bbde",
+  "live_eurc_payments": "pending by operator instruction; no EURC settlements executed"
+}

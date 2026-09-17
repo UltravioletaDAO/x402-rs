@@ -1,0 +1,230 @@
+{
+  "checked_at": "2026-09-17T03:39:56.489947+00:00",
+  "facilitator_version": "2.33.1",
+  "mainnet_enabled": true,
+  "testnet_enabled": true,
+  "deployed": true,
+  "sdk_releases": {
+    "python": "0.85.0",
+    "typescript": "2.93.0"
+  },
+  "native_accounts": {
+    "mainnet": {
+      "feePayer": "0.0.10868300",
+      "buyer": "0.0.10868301",
+      "merchant": "0.0.10868302"
+    },
+    "testnet": {
+      "feePayer": "0.0.10576385",
+      "buyer": "0.0.10576386",
+      "merchant": "0.0.10576387"
+    }
+  },
+  "supported_kinds": [
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "hedera:mainnet",
+      "networkAliases": [
+        "hedera:mainnet"
+      ],
+      "extra": {
+        "feePayer": "0.0.10868300",
+        "tokens": [
+          {
+            "token": "hbar",
+            "address": "0.0.0",
+            "decimals": 8
+          },
+          {
+            "token": "usdc",
+            "address": "0.0.456858",
+            "decimals": 6
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "hedera:testnet",
+      "networkAliases": [
+        "hedera:testnet"
+      ],
+      "extra": {
+        "feePayer": "0.0.10576385",
+        "tokens": [
+          {
+            "token": "hbar",
+            "address": "0.0.0",
+            "decimals": 8
+          },
+          {
+            "token": "usdc",
+            "address": "0.0.429274",
+            "decimals": 6
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "arc",
+      "networkAliases": [
+        "arc",
+        "eip155:5042"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc",
+            "address": "0x3600000000000000000000000000000000000000",
+            "decimals": 6
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "arc-testnet",
+      "networkAliases": [
+        "arc-testnet",
+        "eip155:5042002"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc",
+            "address": "0x3600000000000000000000000000000000000000",
+            "decimals": 6
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "eip155:5042",
+      "networkAliases": [
+        "arc",
+        "eip155:5042"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc",
+            "address": "0x3600000000000000000000000000000000000000",
+            "decimals": 6
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "eip155:5042002",
+      "networkAliases": [
+        "arc-testnet",
+        "eip155:5042002"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc",
+            "address": "0x3600000000000000000000000000000000000000",
+            "decimals": 6
+          }
+        ]
+      }
+    }
+  ],
+  "readiness_scope": [
+    {
+      "network": "arc",
+      "mainnet": true,
+      "status": "ok",
+      "rpc": "ok",
+      "signers": [
+        {
+          "index": 0,
+          "status": "ok",
+          "gasOk": true,
+          "settlesRemaining": 3829
+        }
+      ]
+    },
+    {
+      "network": "arc-testnet",
+      "mainnet": false,
+      "status": "ok",
+      "rpc": "ok",
+      "signers": [
+        {
+          "index": 0,
+          "status": "ok",
+          "gasOk": true,
+          "settlesRemaining": 3415
+        }
+      ]
+    },
+    {
+      "network": "hedera",
+      "mainnet": true,
+      "status": "degraded",
+      "reason": "signer_gas_low",
+      "rpc": "ok",
+      "signers": [
+        {
+          "index": 0,
+          "status": "degraded",
+          "gasOk": true,
+          "settlesRemaining": 28
+        }
+      ]
+    },
+    {
+      "network": "hedera-testnet",
+      "mainnet": false,
+      "status": "degraded",
+      "reason": "signer_gas_low",
+      "rpc": "ok",
+      "signers": [
+        {
+          "index": 0,
+          "status": "degraded",
+          "gasOk": true,
+          "settlesRemaining": 21
+        }
+      ]
+    }
+  ],
+  "global_readiness": "degraded",
+  "daily_admission_quota": {
+    "hedera:testnet": {
+      "day_utc": 20713,
+      "reserved_max_fee_tinybars": 900000000,
+      "daily_limit_tinybars": 1000000000,
+      "new_default_payments_remaining": 1
+    },
+    "hedera:mainnet": {
+      "day_utc": 20713,
+      "reserved_max_fee_tinybars": 600000000,
+      "daily_limit_tinybars": 1000000000,
+      "new_default_payments_remaining": 4
+    }
+  },
+  "official_client_public_payments": 4,
+  "published_sdk_public_payments": 8,
+  "archived_transactions": 39,
+  "sdk_acceptance": "2026-09-16-hedera-sdk-release-acceptance.json",
+  "web_acceptance": "2026-09-16-arc-hedera-public-web-acceptance.json",
+  "transaction_ledger": "2026-09-16-hedera-transaction-ledger.json",
+  "operating_limits": [
+    "10 new default payments per ledger per UTC day with the current 10-HBAR reserved-max-fee budget",
+    "Native Hedera is v2/exact only; no escrow, upto or extensions",
+    "Hedera gas checks pass but warn below 100 maximum-fee settlements; high-volume production requires deliberate budget and gas provisioning",
+    "Unrelated global readiness degradation is not a failure of Arc or Hedera settlement"
+  ]
+}

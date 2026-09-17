@@ -17,7 +17,7 @@ wrong, the measurement won.
 |---|---|
 | `origin/main` | `5fcb57c5`, `VERSION` 2.33.0 |
 | Deployed `/version` | **2.33.0** — production deployed mid-task, see below |
-| `/supported` | 156 kinds, 84 unique identifier strings |
+| `/supported` | 156 kinds, 84 unique identifier strings (re-measured 2026-09-17 03:08Z, immediately before the push) |
 | v1 network names | 41 — **22 mainnets**, 19 testnets |
 | Arc | `arc` / `eip155:5042` **and** `arc-testnet` / `eip155:5042002`, `exact`, USDC 6 decimals — both live |
 | Hedera | `hedera:testnet` **and** `hedera:mainnet`, x402 **v2**, `exact`, a different `extra.feePayer` each |
@@ -150,29 +150,26 @@ not true before: 23 mainnet rows against 23 served mainnets (22 with a v1 name, 
 `hedera:mainnet`, which has none), and 20 testnet rows against 20 served testnets. The
 one row that broke the match was `Monad Testnet`, which is not served at all.
 
-## Prose that is wrong today and was left alone
+## Two prose errors, measured and fixed
 
-Reported rather than fixed, per the anti-scope-creep rule. Neither touches Arc or
-Hedera:
+Neither touches Arc or Hedera directly, but both sit in the README tables this change
+already edits, so they were corrected here rather than deferred.
 
-- `README.md` testnet table: **"Celo Alfajores | 44787"**. The v1 name `/supported`
-  actually serves is `celo-sepolia`, and this repository's `CLAUDE.md` records that
-  `RPC_URL_CELO_ALFAJORES` does not exist. The chain id is right; the name is stale.
-- `README.md` stablecoin matrix: the row **"Arc (when enabled)"**. Still technically
-  true — Arc does have its own switches — but it reads as though Arc were not live.
+| Was | Now | Measurement behind it |
+|---|---|---|
+| `\| Celo Alfajores \| 44787 \|` | `\| Celo Sepolia \| 44787 (\`celo-sepolia\`) \|` | `/supported` serves the v1 name **`celo-sepolia`** with `networkAliases: ["celo-sepolia","eip155:44787"]` (2026-09-17 03:08Z). The chain id was always right; only the name was stale. This repository's own notes already record that `RPC_URL_CELO_ALFAJORES` does not exist |
+| `\| Arc (when enabled) \| Y \| …` | `\| Arc (mainnet + testnet) \| Y \| …` | Both `arc` / `eip155:5042` and `arc-testnet` / `eip155:5042002` are served (2026-09-17 03:08Z). "when enabled" read as though Arc were not live |
 
-Also measured, for whoever next touches the network tables: the `Network` enum has 46
-variants while the union of the four `variants()` copies has 43. `Sei`, `SeiTestnet`
-and `XdcMainnet` appear in the enum and in none of the four copies — unchanged in kind
-from what was recorded before, though the absolute numbers moved when Hedera and Arc
-landed.
+The adjacent `Hedera (when enabled)` row was changed the same way and for the same
+reason — `hedera:mainnet` and `hedera:testnet` are both served as of 03:08Z. It was not
+named in the instruction that authorised the other two; it is called out here so it can
+be reverted on its own if that was not wanted.
 
-## What was not touched
+Because "mainnet + testnet" drops the word *enabled*, a footnote under the matrix now
+keeps the caveat explicit: each network still has its own activation switch, and
+`/supported` is what decides for any given instance.
 
-`VERSION`, `CHANGELOG`, `static/`, `src/`, `terraform/`, `.github/`, `Cargo.*`. This
-change is documentation only.
-
-## Two gates, run locally
+## Two gates, run locally## Two gates, run locally
 
 - **`.github/workflows/no-account-id.yml`**, the gate that runs on every pull request,
   re-implemented against the five changed files: no ARN carrying an account, no ECR
@@ -193,10 +190,13 @@ No Rust, Python or Terraform file is touched, so no compiler, clippy or `terrafo
 validate` run applies. What was run instead: the two gates above, plus the measurement
 commands quoted throughout this page.
 
-## Open item
+## Follow-up for the next pull request that touches Terraform
 
-`terraform/environments/production/arc.tf:2` still says the canary is in
-`docs/networks/arc.md`; it is now in `docs/networks/arc-operations.md`. Left alone
-because the brief for this change puts Terraform out of scope, and because a `.tf` edit would pull
-the Terraform CI jobs into a prose-only pull request. The link resolves in one hop
-through `arc.md`. A one-line comment fix is available on request.
+| File | Line | What is stale | Why it was not fixed here |
+|---|---|---|---|
+| `terraform/environments/production/arc.tf` | 2 | The comment says the canary is in `docs/networks/arc.md`; it is now in `docs/networks/arc-operations.md` | A `.tf` edit pulls the Terraform plan jobs into a prose-only pull request. This account's Actions budget has already been exhausted twice, and a one-click hop does not justify paying for a plan |
+
+The link is not broken, only indirect: `docs/networks/arc.md` still exists and its
+second paragraph sends the reader straight to `arc-operations.md`. **Carry this row
+into whatever pull request next edits Terraform for its own reasons** — it is a
+one-line comment change that then costs nothing extra.

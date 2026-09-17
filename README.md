@@ -117,7 +117,7 @@ durable-evidence and other unsupported extensions.
 | Optimism Sepolia | 11155420 | [faucet.circle.com](https://faucet.circle.com) |
 | Polygon Amoy | 80002 | [faucet.polygon.technology](https://faucet.polygon.technology) |
 | Avalanche Fuji | 43113 | [faucet.avax.network](https://faucet.avax.network) |
-| Celo Alfajores | 44787 | [faucet.celo.org](https://faucet.celo.org) |
+| Celo Sepolia | 44787 (`celo-sepolia`) | [faucet.celo.org](https://faucet.celo.org) |
 | HyperEVM Testnet | 333 | - |
 | Unichain Sepolia | 1301 | - |
 | SKALE Base Sepolia | 324705682 | [base-sepolia-faucet.skale.space](http://base-sepolia-faucet.skale.space) |
@@ -163,8 +163,8 @@ durable-evidence and other unsupported extensions.
 | Unichain | Y | - | - | - | - | - |
 | Scroll | Y | - | - | - | - | - |
 | Robinhood Chain | - | - | - | - | - | Y |
-| Arc (when enabled) | Y | - | - | - | - | - |
-| Hedera (when enabled) | Y | - | - | - | - | - |
+| Arc (mainnet + testnet) | Y | - | - | - | - | - |
+| Hedera (mainnet + testnet) | Y | - | - | - | - | - |
 | SKALE Base | Y | - | - | - | - | - |
 | Solana | Y | Y | - | - | Y | - |
 | Sui | Y | Y | - | - | - | - |
@@ -174,6 +174,11 @@ durable-evidence and other unsupported extensions.
 | Algorand | Y | - | - | - | - | - |
 | XRPL | Y | - | - | - | - | - |
 
+> **Arc and Hedera note**: both are served on mainnet *and* testnet as of
+> 2026-09-17 03:08Z. Each network still has its own independent activation
+> switch, so a self-hosted instance may serve neither — `/supported` is what
+> decides. Hedera's HBAR is native and not a stablecoin, so it is not a column here.
+>
 > **XRPL note**: In addition to USDC (issued token), XRPL also supports **RLUSD** (issued token) and **native XRP**. These are not EIP-3009 tokens, so they are not tracked by `scripts/stablecoin_matrix.py` (which only enumerates EIP-3009 stablecoins). See `docs/plans/xrpl-native-x402-integration-plan.md`.
 
 ---

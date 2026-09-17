@@ -1,9 +1,11 @@
 # Hedera — getting paid in HBAR or HTS tokens through this facilitator
 
-> **Status on 2026-09-17: both networks are live.** `GET /supported` lists
-> `hedera:mainnet` and `hedera:testnet`, each under x402 **v2** with scheme `exact`.
-> Measured against `https://facilitator.ultravioletadao.xyz` at `/version` **2.33.0**;
-> mainnet arrived with that release, hours after testnet.
+> **Status, measured 2026-09-17 03:08Z: both networks are live.** `GET /supported`
+> lists `hedera:mainnet` and `hedera:testnet`, each under x402 **v2** with scheme
+> `exact`, in a response carrying 156 kinds across 84 identifiers. Measured against
+> `https://facilitator.ultravioletadao.xyz` at `/version` **2.33.0**; mainnet arrived
+> with that release, hours after testnet, and an earlier reading the same day still
+> showed testnet alone.
 > [Check it yourself](#1-is-it-live) every time: `/supported` is the only list that is
 > true today, and this page is not.
 
@@ -36,7 +38,7 @@ payer would end up funding that creation.
 
 | | Hedera testnet | Hedera mainnet |
 |---|---|---|
-| Served on the production facilitator | **yes**, 2026-09-17 | **yes**, 2026-09-17 |
+| Served on the production facilitator | **yes**, 2026-09-17 03:08Z | **yes**, 2026-09-17 03:08Z |
 | Network, x402 v2 (CAIP-2) | `hedera:testnet` | `hedera:mainnet` |
 | Network, x402 v1 name | **none.** Hedera is v2-only: `Network::supports_v1()` is false for it (`src/network.rs`), and `/supported` publishes `networkAliases: ["hedera:testnet"]` with no v1 spelling | none |
 | Chain id | none — not an EVM network | none |
@@ -60,7 +62,7 @@ curl -s https://facilitator.ultravioletadao.xyz/supported \
   | jq -c '[.kinds[] | select(.network | startswith("hedera")) | {x402Version, scheme, network, feePayer: .extra.feePayer}]'
 ```
 
-On 2026-09-17, at `/version` 2.33.0, that prints two entries:
+On 2026-09-17 at 03:08Z, at `/version` 2.33.0, that prints two entries:
 
 ```json
 [{"x402Version":2,"scheme":"exact","network":"hedera:testnet","feePayer":"0.0.10576385"},
@@ -217,7 +219,7 @@ A native transaction id renders on HashScan with dashes rather than `@` and `.`:
 
 | | Status | Why |
 |---|---|---|
-| **Sustained throughput** | budgeted, not open | Both networks read `degraded` / `signer_gas_low` on 2026-09-17, with 28 settles remaining on mainnet and 21 on testnet. See the budget note below |
+| **Sustained throughput** | budgeted, not open | Both networks read `degraded` / `signer_gas_low` on 2026-09-17, with 28 settles remaining on mainnet and 21 on testnet. Re-read `/health/ready` before sizing anything against it. See the budget note below |
 | **x402 v1 on Hedera** | refused | Hedera is v2-only by construction (`supports_v1()` is false), and the settle path answers `only x402 v2 is supported` |
 | **Hedera through its EVM layer** (`eip155:295` / `eip155:296`) | not available, not the payment path | Removed from this facilitator on 2026-05-30. The Hedera rail is the native `exact` scheme above |
 | **Account aliases** (EVM address or public key) as `payTo`, payer or fee payer | refused | A canonical numeric entity id is required; an alias transfer can create an account at the sponsor's expense |

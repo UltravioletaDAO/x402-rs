@@ -1,0 +1,49 @@
+{
+  "checked_at": "2026-09-17T05:02:41.748Z",
+  "sdk": "typescript",
+  "version": "2.94.0",
+  "read_only_verification": [
+    {
+      "network": "arc",
+      "protocol": 1,
+      "response": {
+        "isValid": false,
+        "invalidReason": "insufficient_funds",
+        "payer": "0xBCF218030C5dd5F964cC3d7039DB338Dacb0772f"
+      },
+      "settle_called": false
+    },
+    {
+      "network": "arc",
+      "protocol": 2,
+      "response": {
+        "isValid": false,
+        "invalidReason": "insufficient_funds",
+        "payer": "0xb81E41D8d904456D2c8ad6D669bBfb8C058e6431"
+      },
+      "settle_called": false
+    },
+    {
+      "network": "arc-testnet",
+      "protocol": 1,
+      "response": {
+        "isValid": false,
+        "invalidReason": "insufficient_funds",
+        "payer": "0xC34cb5D649Ee2128db9cb420CB48395789210a73"
+      },
+      "settle_called": false
+    },
+    {
+      "network": "arc-testnet",
+      "protocol": 2,
+      "response": {
+        "isValid": false,
+        "invalidReason": "insufficient_funds",
+        "payer": "0x448971E5c7b87e309A67cfDf5Da655c142936895"
+      },
+      "settle_called": false
+    }
+  ],
+  "payments_executed": 0,
+  "funded_payments": "pending"
+}

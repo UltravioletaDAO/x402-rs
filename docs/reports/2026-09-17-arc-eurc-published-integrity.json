@@ -1,0 +1,16 @@
+{
+  "checked_at": "2026-09-17T04:31:35.918399+00:00",
+  "python": {
+    "version": "0.86.0",
+    "wheel_sha256": "131a6ce4d8da2907fc02109d16f4627ca55474aa5ce9896f2391cb37774c926f",
+    "modules_matching_tested_source_and_clean_install": 46,
+    "source": "https://files.pythonhosted.org/packages/6c/20/9ca05f0d7c9f93aad657c7050e9e959d8b22c744a94587f50cb7861c1d5b/uvd_x402_sdk-0.86.0-py3-none-any.whl"
+  },
+  "typescript": {
+    "version": "2.94.0",
+    "tarball_integrity": "sha512-+qaFNuvMI9F7tAwp5if3D8R25fuqoGsgfYVwSytbNDPnlWsVAQ/QPkLa2muaSzo7qL9uOZBVzi21/AnqFvXWfQ==",
+    "installed_dist_files_matching_registry_tarball": 102,
+    "source": "https://registry.npmjs.org/uvd-x402-sdk/-/uvd-x402-sdk-2.94.0.tgz"
+  },
+  "funded_eurc_payments": "pending; none executed"
+}

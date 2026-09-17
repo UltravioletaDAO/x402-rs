@@ -123,8 +123,11 @@ impl HederaProvider {
         }
         let asset: EntityId = r.asset.to_string().parse()?;
         let pay_to: EntityId = r.pay_to.to_string().parse()?;
-        if !self.config.assets.contains_key(&asset) {
-            return Err("unsupported HTS asset".into());
+        // With time checks off we only decode an intent to look up its durable
+        // record. This preserves historical HBAR receipts. Every new admission
+        // and every new co-signature goes through inspect(..., true).
+        if check_time && !self.config.assets.contains_key(&asset) {
+            return Err("unsupported asset: Hedera payments support native USDC only; HBAR is for network fees".into());
         }
         let amount = r
             .max_amount_required

@@ -1,13 +1,14 @@
 # Native Hedera payments
 
+**Current payment policy (2026-09-17, facilitator 2.35.0): native USDC only on both Hedera ledgers. HBAR is retained exclusively for sponsor network fees. New HBAR and custom HTS payment offers are rejected. Historical HBAR receipts and transaction records remain valid evidence of earlier releases.**
+
 Hedera uses native `CryptoTransfer`, `exact`, and x402 v2. The network identifiers are `hedera:testnet` and `hedera:mainnet`. EVM chain IDs 295/296 and EIP-3009 are not this payment rail.
 
 | Asset | Testnet | Mainnet | Decimals |
 | --- | --- | --- | --- |
-| HBAR | `0.0.0` | `0.0.0` | 8 |
 | Native USDC | `0.0.429274` | `0.0.456858` | 6 |
 
-Additional fungible HTS tokens require an explicit `token-id:decimals` allowlist and matching Mirror metadata. NFTs, allowances, hooks, scheduled/batch transactions, custom token fees, escrow, upto, DX402 and ERC-8004 extensions are rejected before sponsorship.
+Only the network's native USDC token is admitted; additional-token configuration is disabled. NFTs, allowances, hooks, scheduled/batch transactions, custom token fees, escrow, upto, DX402 and ERC-8004 extensions are rejected before sponsorship.
 
 ## Merchant and client
 
@@ -25,7 +26,7 @@ Use the live `/supported` response to discover enabled networks and their **netw
 }
 ```
 
-Replace the placeholders with real account IDs. `amount` is an integer string: `1000` is **0.001 USDC**, while `10000` tinybars is **0.0001 HBAR**. HBAR volume is never USD volume.
+Replace the placeholders with real account IDs. `amount` is an integer string: `1000` is **0.001 USDC**. HBAR is only the sponsor fee currency, not a payment option.
 
 The official `@x402/hedera@2.26.0` client produces `{transaction: base64}`. Submit the v2 payload with its `accepted` requirements and identical outer `paymentRequirements`. Its default transaction duration is 120 seconds; merchant `maxTimeoutSeconds` must accommodate that (180 in the example). Every frozen node variant is inspected. Unknown protobuf operations and fields are rejected; valid explicit protobuf defaults emitted by the JavaScript SDK are accepted.
 
@@ -33,7 +34,7 @@ On success, `payer` is the buyer, `network` uses the native CAIP-2 identifier, a
 
 Retries return the original settlement. Merchants must make fulfillment idempotent using that transaction ID so a repeated HTTP request does not deliver the same purchase twice.
 
-HBAR is not a default USD asset in the official client. Add an explicit, bounded `spendControls.allowedAssets` entry for HBAR or a custom FT; do not disable spend controls globally. See [live-canary.mjs](../../tests/hedera-e2e/live-canary.mjs) for the official `x402Client` + `x402HTTPClient` handshake.
+Use native USDC with the official client. HBAR and custom HTS offers are not admitted; retain spend controls. See [live-canary.mjs](../../tests/hedera-e2e/live-canary.mjs) for the official `x402Client` + `x402HTTPClient` handshake.
 
 ## Configuration
 
@@ -48,7 +49,7 @@ HEDERA_SETTLEMENT_TABLE_NAME=facilitator-hedera-settlements
 HEDERA_MAX_TRANSACTION_FEE_TINYBARS=100000000
 HEDERA_SETTLEMENT_TIMEOUT_SECS=45
 # Optional, per network:
-HEDERA_ADDITIONAL_TOKENS_TESTNET=0.0.YOUR_FT:4
+# Additional token overrides are disabled; only native USDC is admitted.
 # HEDERA_MIRROR_URL_TESTNET=https://testnet.mirrornode.hedera.com/
 ```
 
@@ -96,22 +97,22 @@ The official JavaScript client's bundled mainnet address book includes retired n
 
 See the [complete transaction log](../reports/2026-09-16-hedera-transaction-ledger.md) for funding, account creation, token associations, the bounded HBAR/USDC swap and every observed payment, including recovery tests. Receipts contain public evidence only; keys and co-signed transaction bytes are excluded.
 
-Both networks use a conservative **10-HBAR daily reserved-fee budget**. At a 1-HBAR maximum signed fee this permits ten new settlements per network per UTC day, even though actual fees are smaller. Increase that budget deliberately before a higher-volume launch. HBAR and USDC facilitator acceptance is complete. Python **0.85.0** and TypeScript **2.93.0** are published and independently tested from clean PyPI/npm installs. [Eight SDK payment receipts](../reports/2026-09-16-hedera-sdk-release-acceptance.json) cover both assets on both networks. Arc remains supported. [Public web acceptance](../reports/2026-09-16-arc-hedera-public-web-acceptance.json) verifies landing account IDs, networks, OpenAPI and all ten OG surfaces.
+Both networks use a conservative **10-HBAR daily reserved-fee budget**. At a 1-HBAR maximum signed fee this permits ten new settlements per network per UTC day, even though actual fees are smaller. Increase that budget deliberately before a higher-volume launch. Historical HBAR and USDC acceptance was completed in 2.33.1; current payments accept USDC only. Python **0.85.0** and TypeScript **2.93.0** are published and independently tested from clean PyPI/npm installs. [Eight SDK payment receipts](../reports/2026-09-16-hedera-sdk-release-acceptance.json) cover both assets on both networks. Arc remains supported. [Public web acceptance](../reports/2026-09-16-arc-hedera-public-web-acceptance.json) verifies landing account IDs, networks, OpenAPI and all ten OG surfaces.
 
 See [the original integration plan](../plans/hedera-native-x402-integration-plan.md) and [test harness instructions](../../tests/hedera-e2e/README.md).
 
 
 ## Project SDKs
 
-- [Python native Hedera guide](https://github.com/UltravioletaDAO/uvd-x402-sdk-python/blob/main/docs/networks/hedera.md): `pip install 'uvd-x402-sdk[hedera]==0.85.0'`, Python 3.10+ for signing; registry/builders remain available on 3.9.
-- [TypeScript native Hedera guide](https://github.com/UltravioletaDAO/uvd-x402-sdk-typescript/blob/main/docs/networks/hedera.md): `npm install uvd-x402-sdk@2.93.0 @hiero-ledger/sdk@2.85.0`; server-side `HederaProvider`, not a HashPack browser connector.
+- [Python native Hedera guide](https://github.com/UltravioletaDAO/uvd-x402-sdk-python/blob/main/docs/networks/hedera.md): `pip install 'uvd-x402-sdk[hedera]==0.87.0'`, Python 3.10+ for signing; registry/builders remain available on 3.9.
+- [TypeScript native Hedera guide](https://github.com/UltravioletaDAO/uvd-x402-sdk-typescript/blob/main/docs/networks/hedera.md): `npm install uvd-x402-sdk@2.95.0 @hiero-ledger/sdk@2.85.0`; server-side `HederaProvider`, not a HashPack browser connector.
 
-Both implement ledger-bound offline DER signing, atomic HBAR/USDC requirements,
+Both implement ledger-bound offline DER signing, atomic USDC requirements,
 the full accepted echo and HTTP 402 buyer retries. Merchant helpers compare the
 buyer's offer with the server's own requirements. USD merchant pricing accepts
-native USDC only; HBAR uses explicitly denominated atomic amounts.
+native USDC only; HBAR payment requests are rejected before signing.
 
-Release validation: 1,218 Python tests, 758 TypeScript tests, 430 cross-language
+Historical 0.85.0/2.93.0 release validation: 1,218 Python tests, 758 TypeScript tests, 430 cross-language
 checks, eight production `/verify` preflights and eight actual payments from
 published packages. The preflights were read-only; they are not listed as
 on-chain payments. Each actual payment is bound to independently checked Mirror

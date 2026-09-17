@@ -18,7 +18,7 @@
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://facilitator.ultravioletadao.xyz/">
     <meta property="og:title" content="Ultravioleta DAO x402 Facilitator">
-    <meta property="og:description" content="Gasless x402 payments, including Arc USDC/EURC and native Hedera HBAR/USDC on mainnet and testnet.">
+    <meta property="og:description" content="Gasless x402 payments, including Arc USDC/EURC and native Hedera USDC on mainnet and testnet.">
     <meta property="og:image" content="https://facilitator.ultravioletadao.xyz/og-arc-hedera.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
@@ -1201,7 +1201,7 @@
                     <span class="gradient-text" data-i18n="hero.title">Gasless Micropayments for the Agentic
                         Economy</span>
                 </h2>
-                <p class="hero-description" data-i18n="hero.description">Enable AI agents to pay over x402 without network fees, including USDC/EURC on Arc and native HBAR/USDC on Hedera.</p>
+                <p class="hero-description" data-i18n="hero.description">Enable AI agents to pay over x402 without network fees, including USDC/EURC on Arc and native USDC on Hedera.</p>
 
                 <p style="font-size: 0.95rem; color: var(--text-muted); max-width: 700px; margin: 0 auto 1.5rem;" data-i18n-html="hero.baseUrl">Base URL <code style="color: var(--accent); background: rgba(0,212,255,0.1); padding: 0.2rem 0.5rem; border-radius: 4px; word-break: break-all;">https://facilitator.ultravioletadao.xyz</code> · 0% fee · no key, no account</p>
 
@@ -1548,7 +1548,7 @@
                             </div>
                             <div class="balance-amount" data-balance="hedera-mainnet"
                                 style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">Loading...</div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">HBAR Balance</div>
+                            <div style="font-size: 0.7rem; color: var(--text-muted);" data-i18n="hedera.gasBalance">HBAR Balance (network fees)</div>
                             <div data-native-tokens></div>
                         </div>
                         <div class="network-badge arc" data-arc-network="arc" data-arc-caip="eip155:5042"
@@ -1841,7 +1841,7 @@
                             </div>
                             <div class="balance-amount" data-balance="hedera-testnet"
                                 style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">Loading...</div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">HBAR Balance</div>
+                            <div style="font-size: 0.7rem; color: var(--text-muted);" data-i18n="hedera.gasBalance">HBAR Balance (network fees)</div>
                             <div data-native-tokens></div>
                         </div>
                         <!-- Zama FHE Special Card -->
@@ -3000,7 +3000,8 @@
                 "bazaar.cta": "Explore the Bazaar",
                 "header.subtitle": "Payment infrastructure for autonomous agents",
                 "hero.title": "Payment infrastructure for autonomous agents",
-                "hero.description": "Enable AI agents to pay over x402 without network fees, including USDC/EURC on Arc and native HBAR/USDC on Hedera.",
+                "hero.description": "Enable AI agents to pay over x402 without network fees, including USDC/EURC on Arc and native USDC on Hedera.",
+                "hedera.gasBalance": "HBAR Balance (network fees)",
                 "hero.stablecoins": "7 Stablecoins Supported",
                 "hero.baseUrl": "Base URL <code style='color: var(--accent); background: rgba(0,212,255,0.1); padding: 0.2rem 0.5rem; border-radius: 4px; word-break: break-all;'>https://facilitator.ultravioletadao.xyz</code> · 0% fee · no key, no account",
                 "status": "Service Online",
@@ -3169,7 +3170,8 @@
                 "bazaar.cta": "Explorar el Bazar",
                 "header.subtitle": "Infraestructura de pagos para agentes autónomos",
                 "hero.title": "Infraestructura de pagos para agentes autónomos",
-                "hero.description": "Permite que los agentes IA paguen por x402 sin comisiones de red, incluyendo USDC/EURC en Arc y HBAR/USDC nativos en Hedera.",
+                "hero.description": "Permite que los agentes IA paguen por x402 sin comisiones de red, incluyendo USDC/EURC en Arc y USDC nativo en Hedera.",
+                "hedera.gasBalance": "Saldo HBAR (comisiones de red)",
                 "hero.stablecoins": "7 Stablecoins Soportadas",
                 "hero.baseUrl": "URL base <code style='color: var(--accent); background: rgba(0,212,255,0.1); padding: 0.2rem 0.5rem; border-radius: 4px; word-break: break-all;'>https://facilitator.ultravioletadao.xyz</code> · 0% de comisión · sin key, sin cuenta",
                 "status": "Servicio en Línea",
@@ -3397,7 +3399,7 @@
                     if (!kind || typeof account !== 'string' || !/^0\.0\.[1-9][0-9]*$/.test(account)) { card.style.display = 'none'; return; }
                     card.style.display = 'flex';
                     renderTokenSupport(card.querySelector('[data-native-tokens]'),
-                        (kind.extra.tokens || []).map(t => String(t.token).toLowerCase()), 'Supported Assets');
+                        (kind.extra.tokens || []).map(t => String(t.token).toLowerCase()).filter(t => t === 'usdc'));
                     const accountUrl = 'https://hashscan.io/' + (kind.network === 'hedera:mainnet' ? 'mainnet' : 'testnet') + '/account/' + account;
                     card.onclick = () => window.open(accountUrl, '_blank', 'noopener');
                     const link = document.querySelector('[data-native-account="' + kind.network + '"]');
@@ -3850,7 +3852,6 @@
         };
 
         const TOKEN_INFO = {
-            'hbar': { name: 'HBAR', decimals: 8, logo: '/hedera.png' },
             'usdc': { name: 'USDC', decimals: 6, logo: '/usdc.png' },
             'eurc': { name: 'EURC', decimals: 6, logo: '/eurc.png' },
             'ausd': { name: 'AUSD', decimals: 6, logo: '/ausd.png' },
@@ -3859,7 +3860,7 @@
             'usdg': { name: 'USDG', decimals: 6, logo: '/usdg.png' },
         };
 
-        // Shared token badges; native HBAR is an asset, not a stablecoin.
+        // Shared stablecoin badges. Native gas balances are displayed separately.
         function renderTokenSupport(container, tokens, label = 'Supported Stablecoins') {
             const supported = tokens.filter(token => TOKEN_INFO[token]);
             if (!supported.length) { container.replaceChildren(); return; }

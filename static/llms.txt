@@ -80,11 +80,11 @@ facilitator just did, and what it costs (nothing — the seller keeps the paymen
 - **Arc:** `arc` / `eip155:5042`, `arc-testnet` / `eip155:5042002`; direct EOA
   USDC/EURC `exact`, v1/v2. EURC prices in euros (6 decimals, domain `EURC` / `2`); gas remains USDC. Live EURC payment acceptance is pending. USDC has 6 payment decimals and domain `USDC` / `2`.
 - **Hedera:** `hedera:mainnet`, `hedera:testnet`; native `CryptoTransfer`,
-  `exact`, v2 only. HBAR `0.0.0` has 8 decimals; USDC mainnet `0.0.456858`
+  `exact`, v2 only. USDC only: mainnet `0.0.456858`
   and testnet `0.0.429274` have 6. Read the network-specific `extra.feePayer`.
   Current sponsor IDs: mainnet `0.0.10868300`, testnet `0.0.10576385`.
-- **Assets:** USDC, USDT, EURC, AUSD, PYUSD, USDG, RLUSD, native XRP and HBAR;
-  each network publishes its own supported subset. HBAR is not USD-denominated.
+- **Assets:** USDC, USDT, EURC, AUSD, PYUSD, USDG, RLUSD, native XRP;
+  each network publishes its own supported subset. Hedera HBAR is reserved for sponsor network fees.
 - **Schemes:** `exact`, `upto`, `escrow`, `commerce`, `fhe-transfer`; availability
   is per network. Arc and Hedera additions support `exact` only.
 - **Extensions:** read `/supported` and the network guide; global extension

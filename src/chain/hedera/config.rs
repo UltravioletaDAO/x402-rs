@@ -17,6 +17,13 @@ pub struct Config {
     pub admissions: bool,
 }
 impl Config {
+    pub fn payment_assets(network: Network, additional: Option<&str>) -> Result<BTreeMap<EntityId, u8>> {
+        if additional.is_some_and(|s| !s.trim().is_empty()) {
+            return Err("Hedera payments support native USDC only; additional tokens are disabled".into());
+        }
+        let usdc = if network.is_testnet() { "0.0.429274" } else { "0.0.456858" };
+        Ok(BTreeMap::from([(usdc.parse()?, 6)]))
+    }
     pub fn from_env(network: Network) -> Result<Option<Self>> {
         if !network.is_hedera() {
             return Err("not a Hedera network".into());
@@ -77,27 +84,10 @@ impl Config {
         {
             return Err("Hedera Mirror URL must be an HTTPS origin without credentials".into());
         }
-        let usdc = if network.is_testnet() {
-            "0.0.429274"
-        } else {
-            "0.0.456858"
-        };
-        let mut assets = BTreeMap::from([("0.0.0".parse()?, 8), (usdc.parse()?, 6)]);
-        // Additional HTS FTs require an explicit decimals assertion, validated
-        // against fresh token metadata on every payment: 0.0.1234:4,...
-        if let Ok(extra) = std::env::var(format!("HEDERA_ADDITIONAL_TOKENS_{suffix}")) {
-            for item in extra.split(',').filter(|v| !v.is_empty()) {
-                let (id, decimals) = item
-                    .split_once(':')
-                    .ok_or("HTS config must be token-id:decimals")?;
-                let id = id.parse::<EntityId>()?;
-                let decimals = decimals.parse::<u8>().map_err(|_| "invalid HTS decimals")?;
-                if assets.contains_key(&id) || decimals > 18 {
-                    return Err("duplicate token or unsupported decimals".into());
-                }
-                assets.insert(id, decimals);
-            }
-        }
+        // Product policy: native USDC is the only payment asset. HBAR funds
+        // sponsor fees; it must not be re-enabled through the old FT override.
+        let extra = std::env::var(format!("HEDERA_ADDITIONAL_TOKENS_{suffix}")).ok();
+        let assets = Self::payment_assets(network, extra.as_deref())?;
         let number = |name: &str, fallback: u64| -> Result<u64> {
             std::env::var(name).map_or(Ok(fallback), |v| {
                 v.parse().map_err(|_| format!("invalid {name}"))

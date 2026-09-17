@@ -135,7 +135,7 @@ curl -sS https://facilitator.ultravioletadao.xyz/mcp \
 `(version, scheme, network)` capabilities, aliases and network-specific fee payers.
 Arc supports direct EOA USDC `exact` v1/v2 on `arc` / `eip155:5042` and
 `arc-testnet` / `eip155:5042002`. Native Hedera uses `hedera:mainnet` and
-`hedera:testnet`, v2/exact only, with HBAR and native USDC. Follow `/skill.md`
+`hedera:testnet`, v2/exact only, with native USDC only; HBAR is for sponsor network fees. Follow `/skill.md`
 for the matching native envelope; legacy spellings are not universal.
 
 ### x402_settle

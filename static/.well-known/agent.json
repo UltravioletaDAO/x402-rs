@@ -1,7 +1,7 @@
 {
   "name": "Ultravioleta DAO x402 Facilitator",
   "version": "1.0.0",
-  "description": "x402 payment facilitator operated by Ultravioleta DAO. Verifies x402 payment authorizations (EIP-3009 and the equivalent primitive on each non-EVM family) and settles them on-chain, so payers spend no gas. Serves 21 mainnet payment networks and 18 testnets across seven chain families, six stablecoins and five payment schemes. It charges no fee and never answers HTTP 402: it is the settlement layer other x402 services point at. Also serves ERC-8004 Trustless Agents identity and reputation, and the Bazaar catalog of x402-priced resources.",
+  "description": "x402 payment facilitator operated by Ultravioleta DAO. Verifies and settles signed payments with sponsored network fees, including Arc USDC mainnet/testnet and native Hedera HBAR/USDC mainnet/testnet. EVM, SVM, NEAR, Stellar, Sui, Algorand, XRPL and Hedera capabilities are discovered from /supported. Hedera uses x402 v2/exact only; Arc uses direct EOA exact v1/v2. No facilitator fee. ERC-8004 identity/reputation and Bazaar discovery have their own network scopes.",
   "url": "https://facilitator.ultravioletadao.xyz/",
   "preferredTransport": "HTTP+JSON",
   "additionalInterfaces": [
@@ -29,12 +29,12 @@
     {
       "id": "x402-verification",
       "name": "Verify x402 payment authorizations",
-      "description": "Validate a signed payment authorization against its payment requirements without touching the chain: signature, EIP-712 domain, nonce, amount and validity window."
+      "description": "Validate network-specific signatures, amounts, accounts/tokens and validity windows without submitting a transfer. Native Hedera inspects buyer-signed CryptoTransfer bytes and HTS account eligibility."
     },
     {
       "id": "x402-settlement",
       "name": "Settle x402 payments on-chain",
-      "description": "Submit a verified authorization on-chain and return the transaction hash. The facilitator pays the gas."
+      "description": "Submit a verified authorization and return the transaction hash or native Hedera transaction ID. The facilitator pays network fees."
     },
     {
       "id": "erc8004-identity-reputation",
@@ -71,7 +71,7 @@
     {
       "id": "settle-payment",
       "name": "Settle a payment on-chain",
-      "description": "POST /settle. Re-verifies, then submits transferWithAuthorization (or the scheme's equivalent) and returns {\"success\": true, \"transaction\": \"0x...\"}. Supports the exact, upto, escrow, commerce and fhe-transfer schemes.",
+      "description": "POST /settle re-verifies and submits the network-native transfer. Read success and transaction in the response; Hedera returns account@seconds.nanoseconds. Arc/Hedera support exact only; other schemes depend on the advertised network.",
       "tags": [
         "x402",
         "settle",
@@ -91,7 +91,7 @@
     {
       "id": "list-supported",
       "name": "List supported networks and schemes",
-      "description": "GET /supported. Every (scheme, network) pair accepted, each network listed twice: once by its v1 name and once by its CAIP-2 identifier.",
+      "description": "GET /supported returns the enabled (version, scheme, network) capabilities and network-specific fee payers. Legacy/CAIP-2 aliases may coexist; Hedera is native v2 only.",
       "tags": [
         "x402",
         "discovery",

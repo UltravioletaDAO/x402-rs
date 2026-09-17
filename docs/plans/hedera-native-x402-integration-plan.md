@@ -4,14 +4,14 @@ tags:
   - type/backlog
   - domain/hedera
   - priority/p0
-status: facilitator-mainnet-testnet-publicly-verified-sdk-in-progress
+status: facilitator-and-sdks-mainnet-testnet-published-verified
 ---
 
 # Hedera nativo en el facilitador: investigación y plan de ejecución
 
 **Fecha:** 2026-09-15.
 **Prioridad:** P0 del facilitador, asignada por el usuario el 2026-09-15.
-**Estado actualizado 2026-09-16:** proveedor nativo publicado en testnet y mainnet; canarios públicos HBAR/USDC confirmados en ambas redes, con reconciliación de importes, firmas persistidas y comisiones. Recuperación real aprobada en testnet. SDK propios en implementación. [Guía y evidencia actual](../guides/hedera-native.md).
+**Estado actualizado 2026-09-16:** proveedor nativo publicado en testnet y mainnet; canarios públicos HBAR/USDC confirmados en ambas redes, con reconciliación de importes, firmas persistidas y comisiones. Recuperación real aprobada en testnet. SDK Python 0.85.0 y TypeScript 2.93.0 publicados; ocho pagos reales adicionales desde instalaciones limpias verificados. Landing, Swagger, descubrimiento y OG publicados en 2.33.1. [Guía y evidencia actual](../guides/hedera-native.md).
 **Base local:** `dc109511`, rama `0xultravioleta/hedera`.
 **Objetivo:** verificar y liquidar pagos x402 con HBAR y tokens fungibles de Hedera Token Service (HTS), primero en testnet y después en mainnet, desde nuestro facilitador Rust.
 

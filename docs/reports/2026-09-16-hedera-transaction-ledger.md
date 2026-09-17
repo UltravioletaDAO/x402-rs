@@ -14,37 +14,45 @@ The table includes external incoming transfers for reconciliation. They were not
 
 | Network | Submitted by | Operation | Result | Fee (HBAR) | Native transaction |
 | --- | --- | --- | --- | --- | --- |
-| hedera:testnet | agent | CRYPTOCREATEACCOUNT | SUCCESS | 0.64079560 | [0.0.8511157-1789601002-134584547](https://hashscan.io/testnet/transaction/0.0.8511157-1789601002-134584547) |
-| hedera:testnet | agent | CRYPTOCREATEACCOUNT | SUCCESS | 0.64079560 | [0.0.8511157-1789601005-128855449](https://hashscan.io/testnet/transaction/0.0.8511157-1789601005-128855449) |
-| hedera:testnet | agent | CRYPTOCREATEACCOUNT | SUCCESS | 0.64079560 | [0.0.8511157-1789601005-508869330](https://hashscan.io/testnet/transaction/0.0.8511157-1789601005-508869330) |
+| hedera:mainnet | external | CRYPTOTRANSFER | SUCCESS | 0.00136011 | [0.0.10231006-1789611039-483533706](https://hashscan.io/mainnet/transaction/0.0.10231006-1789611039-483533706) |
+| hedera:mainnet | external | CRYPTOTRANSFER | SUCCESS | 0.00136011 | [0.0.10231006-1789611253-599393457](https://hashscan.io/mainnet/transaction/0.0.10231006-1789611253-599393457) |
+| hedera:mainnet | external | CRYPTOTRANSFER | SUCCESS | 0.00136011 | [0.0.10231006-1789611256-314615261](https://hashscan.io/mainnet/transaction/0.0.10231006-1789611256-314615261) |
 | hedera:testnet | agent | TOKENASSOCIATE | SUCCESS | 0.64207719 | [0.0.10576385-1789601394-393565693](https://hashscan.io/testnet/transaction/0.0.10576385-1789601394-393565693) |
 | hedera:testnet | agent | TOKENASSOCIATE | SUCCESS | 0.64207719 | [0.0.10576385-1789601396-620842915](https://hashscan.io/testnet/transaction/0.0.10576385-1789601396-620842915) |
-| hedera:testnet | external | CRYPTOTRANSFER | SUCCESS | 0.01281590 | [0.0.11920-1789602603-279916745](https://hashscan.io/testnet/transaction/0.0.11920-1789602603-279916745) |
 | hedera:testnet | agent | CRYPTOTRANSFER | SUCCESS | 0.00256317 | [0.0.10576385-1789602861-163262387](https://hashscan.io/testnet/transaction/0.0.10576385-1789602861-163262387) |
-| hedera:testnet | agent | TOKENCREATION | SUCCESS | 12.81719381 | [0.0.8511157-1789602996-824544319](https://hashscan.io/testnet/transaction/0.0.8511157-1789602996-824544319) |
-| hedera:testnet | agent | TOKENASSOCIATE | SUCCESS | 0.64207719 | [0.0.8511157-1789602997-437960427](https://hashscan.io/testnet/transaction/0.0.8511157-1789602997-437960427) |
 | hedera:testnet | agent | CRYPTOTRANSFER | SUCCESS | 0.00256317 | [0.0.10576385-1789603064-182136857](https://hashscan.io/testnet/transaction/0.0.10576385-1789603064-182136857) |
 | hedera:testnet | agent | CRYPTOTRANSFER | SUCCESS | 0.01409749 | [0.0.10576385-1789603066-663879859](https://hashscan.io/testnet/transaction/0.0.10576385-1789603066-663879859) |
 | hedera:testnet | agent | CRYPTOTRANSFER | SUCCESS | 0.01409749 | [0.0.10576385-1789603067-331865180](https://hashscan.io/testnet/transaction/0.0.10576385-1789603067-331865180) |
 | hedera:testnet | agent | CRYPTOTRANSFER | SUCCESS | 0.00256317 | [0.0.10576385-1789603383-342495891](https://hashscan.io/testnet/transaction/0.0.10576385-1789603383-342495891) |
 | hedera:testnet | agent | CRYPTOTRANSFER | SUCCESS | 0.01409749 | [0.0.10576385-1789604566-023406789](https://hashscan.io/testnet/transaction/0.0.10576385-1789604566-023406789) |
-| hedera:testnet | agent | CRYPTOTRANSFER | SUCCESS | 0.00128158 | [0.0.8511157-1789604666-286038316](https://hashscan.io/testnet/transaction/0.0.8511157-1789604666-286038316) |
 | hedera:testnet | agent | CRYPTOTRANSFER | SUCCESS | 0.00256317 | [0.0.10576385-1789608851-534483569](https://hashscan.io/testnet/transaction/0.0.10576385-1789608851-534483569) |
 | hedera:testnet | agent | CRYPTOTRANSFER | SUCCESS | 0.00256317 | [0.0.10576385-1789609544-527025786](https://hashscan.io/testnet/transaction/0.0.10576385-1789609544-527025786) |
 | hedera:testnet | agent | CRYPTOTRANSFER | SUCCESS | 0.01409749 | [0.0.10576385-1789609553-483480778](https://hashscan.io/testnet/transaction/0.0.10576385-1789609553-483480778) |
+| hedera:testnet | agent | CRYPTOTRANSFER | SUCCESS | 0.00256317 | [0.0.10576385-1789615925-575858592](https://hashscan.io/testnet/transaction/0.0.10576385-1789615925-575858592) |
+| hedera:testnet | agent | CRYPTOTRANSFER | SUCCESS | 0.01409749 | [0.0.10576385-1789615927-959461450](https://hashscan.io/testnet/transaction/0.0.10576385-1789615927-959461450) |
+| hedera:testnet | agent | CRYPTOTRANSFER | SUCCESS | 0.00256317 | [0.0.10576385-1789616332-766069461](https://hashscan.io/testnet/transaction/0.0.10576385-1789616332-766069461) |
+| hedera:testnet | agent | CRYPTOTRANSFER | SUCCESS | 0.01409749 | [0.0.10576385-1789616340-344298883](https://hashscan.io/testnet/transaction/0.0.10576385-1789616340-344298883) |
 | hedera:mainnet | external | CRYPTOTRANSFER | SUCCESS | 0.00136011 | [0.0.10868270-1789610858-792925761](https://hashscan.io/mainnet/transaction/0.0.10868270-1789610858-792925761) |
 | hedera:mainnet | external | CRYPTOTRANSFER | SUCCESS | 0.00136011 | [0.0.10868270-1789610996-994069541](https://hashscan.io/mainnet/transaction/0.0.10868270-1789610996-994069541) |
-| hedera:mainnet | external | CRYPTOTRANSFER | SUCCESS | 0.00136011 | [0.0.10231006-1789611039-483533706](https://hashscan.io/mainnet/transaction/0.0.10231006-1789611039-483533706) |
 | hedera:mainnet | agent | CRYPTOCREATEACCOUNT | SUCCESS | 0.68005929 | [0.0.10868282-1789611247-839125036](https://hashscan.io/mainnet/transaction/0.0.10868282-1789611247-839125036) |
-| hedera:mainnet | external | CRYPTOTRANSFER | SUCCESS | 0.00136011 | [0.0.10231006-1789611253-599393457](https://hashscan.io/mainnet/transaction/0.0.10231006-1789611253-599393457) |
 | hedera:mainnet | agent | CRYPTOCREATEACCOUNT | SUCCESS | 0.68005929 | [0.0.10868282-1789611253-642507506](https://hashscan.io/mainnet/transaction/0.0.10868282-1789611253-642507506) |
-| hedera:mainnet | external | CRYPTOTRANSFER | SUCCESS | 0.00136011 | [0.0.10231006-1789611256-314615261](https://hashscan.io/mainnet/transaction/0.0.10231006-1789611256-314615261) |
 | hedera:mainnet | agent | CRYPTOCREATEACCOUNT | SUCCESS | 0.68005929 | [0.0.10868282-1789611258-322502377](https://hashscan.io/mainnet/transaction/0.0.10868282-1789611258-322502377) |
+| hedera:mainnet | agent | CONTRACTCALL | SUCCESS | 0.17672510 | [0.0.10868282-1789613793-242236127](https://hashscan.io/mainnet/transaction/0.0.10868282-1789613793-242236127) |
 | hedera:mainnet | agent | TOKENASSOCIATE | SUCCESS | 0.68141941 | [0.0.10868300-1789611321-793960187](https://hashscan.io/mainnet/transaction/0.0.10868300-1789611321-793960187) |
 | hedera:mainnet | agent | TOKENASSOCIATE | SUCCESS | 0.68141941 | [0.0.10868300-1789611324-530241915](https://hashscan.io/mainnet/transaction/0.0.10868300-1789611324-530241915) |
-| hedera:mainnet | agent | CONTRACTCALL | SUCCESS | 0.17672510 | [0.0.10868282-1789613793-242236127](https://hashscan.io/mainnet/transaction/0.0.10868282-1789613793-242236127) |
 | hedera:mainnet | agent | CRYPTOTRANSFER | SUCCESS | 0.00272023 | [0.0.10868300-1789613986-642051223](https://hashscan.io/mainnet/transaction/0.0.10868300-1789613986-642051223) |
 | hedera:mainnet | agent | CRYPTOTRANSFER | SUCCESS | 0.01488410 | [0.0.10868300-1789614004-016143440](https://hashscan.io/mainnet/transaction/0.0.10868300-1789614004-016143440) |
+| hedera:mainnet | agent | CRYPTOTRANSFER | SUCCESS | 0.00270620 | [0.0.10868300-1789615932-848571062](https://hashscan.io/mainnet/transaction/0.0.10868300-1789615932-848571062) |
+| hedera:mainnet | agent | CRYPTOTRANSFER | SUCCESS | 0.01488410 | [0.0.10868300-1789615940-729380369](https://hashscan.io/mainnet/transaction/0.0.10868300-1789615940-729380369) |
+| hedera:mainnet | agent | CRYPTOTRANSFER | SUCCESS | 0.00270620 | [0.0.10868300-1789616347-593990900](https://hashscan.io/mainnet/transaction/0.0.10868300-1789616347-593990900) |
+| hedera:mainnet | agent | CRYPTOTRANSFER | SUCCESS | 0.01488410 | [0.0.10868300-1789616352-772381121](https://hashscan.io/mainnet/transaction/0.0.10868300-1789616352-772381121) |
+| hedera:testnet | external | CRYPTOTRANSFER | SUCCESS | 0.01281590 | [0.0.11920-1789602603-279916745](https://hashscan.io/testnet/transaction/0.0.11920-1789602603-279916745) |
+| hedera:testnet | agent | CRYPTOCREATEACCOUNT | SUCCESS | 0.64079560 | [0.0.8511157-1789601002-134584547](https://hashscan.io/testnet/transaction/0.0.8511157-1789601002-134584547) |
+| hedera:testnet | agent | CRYPTOCREATEACCOUNT | SUCCESS | 0.64079560 | [0.0.8511157-1789601005-128855449](https://hashscan.io/testnet/transaction/0.0.8511157-1789601005-128855449) |
+| hedera:testnet | agent | CRYPTOCREATEACCOUNT | SUCCESS | 0.64079560 | [0.0.8511157-1789601005-508869330](https://hashscan.io/testnet/transaction/0.0.8511157-1789601005-508869330) |
+| hedera:testnet | agent | TOKENCREATION | SUCCESS | 12.81719381 | [0.0.8511157-1789602996-824544319](https://hashscan.io/testnet/transaction/0.0.8511157-1789602996-824544319) |
+| hedera:testnet | agent | TOKENASSOCIATE | SUCCESS | 0.64207719 | [0.0.8511157-1789602997-437960427](https://hashscan.io/testnet/transaction/0.0.8511157-1789602997-437960427) |
+| hedera:testnet | agent | CRYPTOTRANSFER | SUCCESS | 0.00128158 | [0.0.8511157-1789604666-286038316](https://hashscan.io/testnet/transaction/0.0.8511157-1789604666-286038316) |
 
 ## Acceptance and limits
 
@@ -53,3 +61,8 @@ The table includes external incoming transfers for reconciliation. They were not
 - Current native throughput budget: ten newly admitted 1-HBAR-max-fee payments per network per UTC day. This is conservative sponsor exposure accounting, not actual consumed gas.
 - Native rail: x402 v2/exact only. HBAR uses eight decimals; native USDC six. No native escrow, upto, NFT, allowance, custom-fee token or DX402 extension support is claimed.
 - [Arc evidence and integration details](../networks/arc.md) remain separate: direct EOA exact v1/v2 on `eip155:5042` and `eip155:5042002`.
+
+
+## Published SDK acceptance
+
+[Eight additional native payments](2026-09-16-hedera-sdk-release-acceptance.json): Python 0.85.0 and TypeScript 2.93.0, HBAR + USDC on each ledger. Each completed HTTP 402 → public verify/settle → HTTP 200; retry kept the original transaction and replay verification was rejected. Independent Mirror receipts reconcile principal, sponsor fees and the persisted SHA-384 hash.

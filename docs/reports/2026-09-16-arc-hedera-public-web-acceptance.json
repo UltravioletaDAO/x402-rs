@@ -1,0 +1,202 @@
+{
+  "checked_at": "2026-09-17T03:30:15.479415+00:00",
+  "version": {
+    "version": "2.33.1"
+  },
+  "deployment": "https://github.com/UltravioletaDAO/x402-rs/actions/runs/35176295911",
+  "supported_kinds": [
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "arc-testnet",
+      "networkAliases": [
+        "arc-testnet",
+        "eip155:5042002"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc",
+            "address": "0x3600000000000000000000000000000000000000",
+            "decimals": 6
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "hedera:mainnet",
+      "networkAliases": [
+        "hedera:mainnet"
+      ],
+      "extra": {
+        "feePayer": "0.0.10868300",
+        "tokens": [
+          {
+            "token": "hbar",
+            "address": "0.0.0",
+            "decimals": 8
+          },
+          {
+            "token": "usdc",
+            "address": "0.0.456858",
+            "decimals": 6
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "hedera:testnet",
+      "networkAliases": [
+        "hedera:testnet"
+      ],
+      "extra": {
+        "feePayer": "0.0.10576385",
+        "tokens": [
+          {
+            "token": "hbar",
+            "address": "0.0.0",
+            "decimals": 8
+          },
+          {
+            "token": "usdc",
+            "address": "0.0.429274",
+            "decimals": 6
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "arc",
+      "networkAliases": [
+        "arc",
+        "eip155:5042"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc",
+            "address": "0x3600000000000000000000000000000000000000",
+            "decimals": 6
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "eip155:5042002",
+      "networkAliases": [
+        "arc-testnet",
+        "eip155:5042002"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc",
+            "address": "0x3600000000000000000000000000000000000000",
+            "decimals": 6
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "eip155:5042",
+      "networkAliases": [
+        "arc",
+        "eip155:5042"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc",
+            "address": "0x3600000000000000000000000000000000000000",
+            "decimals": 6
+          }
+        ]
+      }
+    }
+  ],
+  "pages": [
+    {
+      "path": "/",
+      "status": 200,
+      "arc_hedera_og": true
+    },
+    {
+      "path": "/networks",
+      "status": 200,
+      "arc_hedera_og": true
+    },
+    {
+      "path": "/integrar",
+      "status": 200,
+      "arc_hedera_og": true
+    },
+    {
+      "path": "/mcp",
+      "status": 200,
+      "arc_hedera_og": true
+    },
+    {
+      "path": "/x402",
+      "status": 200,
+      "arc_hedera_og": true
+    },
+    {
+      "path": "/bazaar",
+      "status": 200,
+      "arc_hedera_og": true
+    },
+    {
+      "path": "/dx402",
+      "status": 200,
+      "arc_hedera_og": true
+    },
+    {
+      "path": "/erc8004",
+      "status": 200,
+      "arc_hedera_og": true
+    },
+    {
+      "path": "/stats",
+      "status": 200,
+      "arc_hedera_og": true
+    },
+    {
+      "path": "/events/live",
+      "status": 200,
+      "arc_hedera_og": true
+    }
+  ],
+  "openapi_native_hedera": true,
+  "og": {
+    "status": 200,
+    "type": "image/png",
+    "bytes": 268293,
+    "sha256": "de9f65f5ff165456b394944125c7eddd9b86eb2872725c24b93222aa80cb0f9c"
+  },
+  "browser_checks": {
+    "landing_native_account_links": [
+      "https://hashscan.io/mainnet/account/0.0.10868300",
+      "https://hashscan.io/testnet/account/0.0.10576385"
+    ],
+    "runtime_family_table": "8 families; Hedera mainnet=1 testnet=1 HBAR/USDC exact",
+    "mainnet_filter": [
+      "arc",
+      "hedera:mainnet"
+    ],
+    "testnet_filter": [
+      "arc-testnet",
+      "hedera:testnet"
+    ],
+    "network_response_interception": false
+  }
+}

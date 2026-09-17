@@ -96,6 +96,23 @@ The official JavaScript client's bundled mainnet address book includes retired n
 
 See the [complete transaction log](../reports/2026-09-16-hedera-transaction-ledger.md) for funding, account creation, token associations, the bounded HBAR/USDC swap and every observed payment, including recovery tests. Receipts contain public evidence only; keys and co-signed transaction bytes are excluded.
 
-Both networks use a conservative **10-HBAR daily reserved-fee budget**. At a 1-HBAR maximum signed fee this permits ten new settlements per network per UTC day, even though actual fees are smaller. Increase that budget deliberately before a higher-volume launch. HBAR and USDC facilitator acceptance is complete; native signing in the project's Python and TypeScript SDKs is being completed separately. Arc support is already released in Python 0.84.0 and TypeScript 2.92.0.
+Both networks use a conservative **10-HBAR daily reserved-fee budget**. At a 1-HBAR maximum signed fee this permits ten new settlements per network per UTC day, even though actual fees are smaller. Increase that budget deliberately before a higher-volume launch. HBAR and USDC facilitator acceptance is complete. Python **0.85.0** and TypeScript **2.93.0** are published and independently tested from clean PyPI/npm installs. [Eight SDK payment receipts](../reports/2026-09-16-hedera-sdk-release-acceptance.json) cover both assets on both networks. Arc remains supported. [Public web acceptance](../reports/2026-09-16-arc-hedera-public-web-acceptance.json) verifies landing account IDs, networks, OpenAPI and all ten OG surfaces.
 
 See [the original integration plan](../plans/hedera-native-x402-integration-plan.md) and [test harness instructions](../../tests/hedera-e2e/README.md).
+
+
+## Project SDKs
+
+- [Python native Hedera guide](https://github.com/UltravioletaDAO/uvd-x402-sdk-python/blob/main/docs/networks/hedera.md): `pip install 'uvd-x402-sdk[hedera]==0.85.0'`, Python 3.10+ for signing; registry/builders remain available on 3.9.
+- [TypeScript native Hedera guide](https://github.com/UltravioletaDAO/uvd-x402-sdk-typescript/blob/main/docs/networks/hedera.md): `npm install uvd-x402-sdk@2.93.0 @hiero-ledger/sdk@2.85.0`; server-side `HederaProvider`, not a HashPack browser connector.
+
+Both implement ledger-bound offline DER signing, atomic HBAR/USDC requirements,
+the full accepted echo and HTTP 402 buyer retries. Merchant helpers compare the
+buyer's offer with the server's own requirements. USD merchant pricing accepts
+native USDC only; HBAR uses explicitly denominated atomic amounts.
+
+Release validation: 1,218 Python tests, 758 TypeScript tests, 430 cross-language
+checks, eight production `/verify` preflights and eight actual payments from
+published packages. The preflights were read-only; they are not listed as
+on-chain payments. Each actual payment is bound to independently checked Mirror
+consensus, exact principal and the persisted signed-transaction hash.

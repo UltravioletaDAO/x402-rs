@@ -72,6 +72,15 @@ Initial deployment prerequisites were applied from reviewed Terraform 1.9.8 plan
 
 [Testnet evidence](../reports/2026-09-16-hedera-testnet-canaries.json) records three confirmed native payments through the complete Rust server running locally: HBAR, USDC, and a four-decimal HTS fixture. Each completed HTTP 402 → signed official-client payment → verify/settle → HTTP 200, returned the same transaction on retry, and rejected replay verification. Mirror movements reconcile the exact principal and the sponsor-only fees.
 
-This evidence is **local-server processing on the real testnet**. It does not establish deployment at the public facilitator URL or mainnet readiness. Mainnet account creation, funding, native HBAR/USDC canaries and public production validation remain required. The project's own SDK signing support is a separate follow-up after facilitator completion.
+Hedera testnet is now live at `https://facilitator.ultravioletadao.xyz` (initial deployment 2.32.0). [Public acceptance evidence](../reports/2026-09-16-hedera-public-canaries.json) records these additional payments through that HTTPS endpoint:
+
+| Asset | Amount | Native transaction |
+| --- | --- | --- |
+| HBAR | 0.0001 HBAR | [0.0.10576385@1789609544.527025786](https://hashscan.io/testnet/transaction/0.0.10576385-1789609544-527025786) |
+| USDC | 0.001 USDC | [0.0.10576385@1789609553.483480778](https://hashscan.io/testnet/transaction/0.0.10576385-1789609553-483480778) |
+
+Both completed the official client flow, preserved the transaction on retry, rejected replay verification, and have immutable confirmed storage records. Independent receipt reconciliation verified the exact payer/payee principal, sponsor-only consensus fees, and the SHA-384 hash of the persisted signed bytes. The final-code crash-recovery test also passed for `0.0.10576385@1789608851.534483569` after an injected terminal-write outage.
+
+Mainnet remains disabled. Its account creation, funding, associations and public HBAR/USDC acceptance payments are still required. The project's own SDK signing support is a separate follow-up after facilitator completion.
 
 See [the original integration plan](../plans/hedera-native-x402-integration-plan.md) and [test harness instructions](../../tests/hedera-e2e/README.md).

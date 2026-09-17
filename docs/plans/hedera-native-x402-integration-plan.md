@@ -4,14 +4,14 @@ tags:
   - type/backlog
   - domain/hedera
   - priority/p0
-status: testnet-implemented-mainnet-awaiting-funding
+status: testnet-publicly-verified-mainnet-awaiting-funding
 ---
 
 # Hedera nativo en el facilitador: investigación y plan de ejecución
 
 **Fecha:** 2026-09-15.
 **Prioridad:** P0 del facilitador, asignada por el usuario el 2026-09-15.
-**Estado actualizado 2026-09-16:** proveedor nativo implementado; canarios locales HBAR/USDC/FT y recuperación real aprobados en testnet. Despliegue público en preparación; mainnet pendiente de cuentas y fondeo. [Guía y evidencia actual](../guides/hedera-native.md).
+**Estado actualizado 2026-09-16:** proveedor nativo publicado; canarios públicos HBAR/USDC y recuperación real aprobados en testnet. Mainnet permanece deshabilitado y pendiente de cuentas/fondeo. [Guía y evidencia actual](../guides/hedera-native.md).
 **Base local:** `dc109511`, rama `0xultravioleta/hedera`.
 **Objetivo:** verificar y liquidar pagos x402 con HBAR y tokens fungibles de Hedera Token Service (HTS), primero en testnet y después en mainnet, desde nuestro facilitador Rust.
 

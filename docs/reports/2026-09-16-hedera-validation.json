@@ -1,7 +1,7 @@
 {
   "implementation": "native exact x402 v2",
   "local_canary_receipts": "2026-09-16-hedera-testnet-canaries.json",
-  "production_deployed": false,
+  "production_deployed": true,
   "mainnet_funded": false,
   "offline_provider_tests": 9,
   "facilitator_full_suite": "passed library, binary, integrations and doctests; see PR CI for final counts",
@@ -124,5 +124,68 @@
       "valid_duration_seconds": "120",
       "valid_start_timestamp": "1789604566.023406789"
     }
+  },
+  "public_canary_receipts": "2026-09-16-hedera-public-canaries.json",
+  "initial_public_version": "2.32.0",
+  "deployment_run": "https://github.com/UltravioletaDAO/x402-rs/actions/runs/35168851675",
+  "final_code_receipt_persistence_failure": {
+    "kind": "final-code-crash-recovery",
+    "transaction": "0.0.10576385@1789608851.534483569",
+    "network": "hedera:testnet",
+    "asset": "0.0.0",
+    "amount": "10000",
+    "post_consensus_persistence_failure": true,
+    "https_signed_hash_binding": true,
+    "stale_takeover_protection": true,
+    "same_signed_bytes_and_transaction_id": true,
+    "result": "passed",
+    "mirror": {
+      "batch_key": null,
+      "bytes": null,
+      "charged_tx_fee": 256317,
+      "consensus_timestamp": "1789608873.832815104",
+      "entity_id": null,
+      "high_volume": false,
+      "high_volume_pricing_multiplier": 0,
+      "max_fee": "100000000",
+      "max_custom_fees": [],
+      "memo_base64": "",
+      "name": "CRYPTOTRANSFER",
+      "nft_transfers": [],
+      "node": "0.0.9",
+      "nonce": 0,
+      "parent_consensus_timestamp": null,
+      "result": "SUCCESS",
+      "scheduled": false,
+      "staking_reward_transfers": [],
+      "token_transfers": [],
+      "transaction_hash": "HxFuRx1sv3YwOODSlFPwC/pTQTA+ZQJE5RVOFcCJ4P5yn6xH2XkL2uXgWBn2DYXk",
+      "transaction_id": "0.0.10576385-1789608851-534483569",
+      "transfers": [
+        {
+          "account": "0.0.802",
+          "amount": 256317,
+          "is_approval": false
+        },
+        {
+          "account": "0.0.10576385",
+          "amount": -256317,
+          "is_approval": false
+        },
+        {
+          "account": "0.0.10576386",
+          "amount": -10000,
+          "is_approval": false
+        },
+        {
+          "account": "0.0.10576387",
+          "amount": 10000,
+          "is_approval": false
+        }
+      ],
+      "valid_duration_seconds": "120",
+      "valid_start_timestamp": "1789608851.534483569"
+    },
+    "duration_seconds": 125.09
   }
 }

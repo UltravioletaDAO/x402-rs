@@ -1,0 +1,169 @@
+{
+  "checked_at": "2026-09-17T01:48:24.124446+00:00",
+  "facilitator": "https://facilitator.ultravioletadao.xyz",
+  "version": "2.32.0",
+  "merge_commit": "a0ee2f38f50261ecc59c7493c32dde2933457c56",
+  "deployment_run": "https://github.com/UltravioletaDAO/x402-rs/actions/runs/35168851675",
+  "mainnet_enabled": false,
+  "payments": [
+    {
+      "canary": {
+        "kind": "x402-native-canary",
+        "at": "2026-09-17T01:45:51.600Z",
+        "facilitator": "https://facilitator.ultravioletadao.xyz",
+        "network": "hedera:testnet",
+        "asset": "0.0.0",
+        "amount": "10000",
+        "payer": "0.0.10576386",
+        "payTo": "0.0.10576387",
+        "feePayer": "0.0.10576385",
+        "sdk": "@x402/hedera@2.26.0",
+        "challengeStatus": 402,
+        "paidStatus": 200,
+        "settlement": {
+          "success": true,
+          "payer": "0.0.10576386",
+          "transaction": "0.0.10576385@1789609544.527025786",
+          "transactionHash": "0.0.10576385@1789609544.527025786",
+          "transaction_hash": "0.0.10576385@1789609544.527025786",
+          "network": "hedera:testnet"
+        },
+        "retrySameTransaction": true,
+        "replayRejected": true
+      },
+      "mirror": {
+        "batch_key": null,
+        "bytes": null,
+        "charged_tx_fee": 256317,
+        "consensus_timestamp": "1789609548.294414104",
+        "entity_id": null,
+        "high_volume": false,
+        "high_volume_pricing_multiplier": 0,
+        "max_fee": "100000000",
+        "max_custom_fees": [],
+        "memo_base64": "",
+        "name": "CRYPTOTRANSFER",
+        "nft_transfers": [],
+        "node": "0.0.9",
+        "nonce": 0,
+        "parent_consensus_timestamp": null,
+        "result": "SUCCESS",
+        "scheduled": false,
+        "staking_reward_transfers": [],
+        "token_transfers": [],
+        "transaction_hash": "gSSOPwG5M+ftTokB/Myo/8yMIusDbG/cB+j04EVxx/brymkwkYt6uQg6ikzKGaRr",
+        "transaction_id": "0.0.10576385-1789609544-527025786",
+        "transfers": [
+          {
+            "account": "0.0.802",
+            "amount": 256317,
+            "is_approval": false
+          },
+          {
+            "account": "0.0.10576385",
+            "amount": -256317,
+            "is_approval": false
+          },
+          {
+            "account": "0.0.10576386",
+            "amount": -10000,
+            "is_approval": false
+          },
+          {
+            "account": "0.0.10576387",
+            "amount": 10000,
+            "is_approval": false
+          }
+        ],
+        "valid_duration_seconds": "120",
+        "valid_start_timestamp": "1789609544.527025786"
+      },
+      "explorer": "https://hashscan.io/testnet/transaction/0.0.10576385-1789609544-527025786",
+      "dynamodb_status": "confirmed",
+      "persisted_signed_hash_matches_mirror": true,
+      "principal_reconciled": true,
+      "sponsor_paid_only_consensus_fee": true
+    },
+    {
+      "canary": {
+        "kind": "x402-native-canary",
+        "at": "2026-09-17T01:46:05.382Z",
+        "facilitator": "https://facilitator.ultravioletadao.xyz",
+        "network": "hedera:testnet",
+        "asset": "0.0.429274",
+        "amount": "1000",
+        "payer": "0.0.10576386",
+        "payTo": "0.0.10576387",
+        "feePayer": "0.0.10576385",
+        "sdk": "@x402/hedera@2.26.0",
+        "challengeStatus": 402,
+        "paidStatus": 200,
+        "settlement": {
+          "success": true,
+          "payer": "0.0.10576386",
+          "transaction": "0.0.10576385@1789609553.483480778",
+          "transactionHash": "0.0.10576385@1789609553.483480778",
+          "transaction_hash": "0.0.10576385@1789609553.483480778",
+          "network": "hedera:testnet"
+        },
+        "retrySameTransaction": true,
+        "replayRejected": true
+      },
+      "mirror": {
+        "batch_key": null,
+        "bytes": null,
+        "charged_tx_fee": 1409749,
+        "consensus_timestamp": "1789609562.306043104",
+        "entity_id": null,
+        "high_volume": false,
+        "high_volume_pricing_multiplier": 0,
+        "max_fee": "100000000",
+        "max_custom_fees": [],
+        "memo_base64": "",
+        "name": "CRYPTOTRANSFER",
+        "nft_transfers": [],
+        "node": "0.0.4",
+        "nonce": 0,
+        "parent_consensus_timestamp": null,
+        "result": "SUCCESS",
+        "scheduled": false,
+        "staking_reward_transfers": [],
+        "token_transfers": [
+          {
+            "token_id": "0.0.429274",
+            "account": "0.0.10576386",
+            "amount": -1000,
+            "is_approval": false
+          },
+          {
+            "token_id": "0.0.429274",
+            "account": "0.0.10576387",
+            "amount": 1000,
+            "is_approval": false
+          }
+        ],
+        "transaction_hash": "7KS2kMkvfJc+m81iNjhdnk7CAN7G5YgTy59obl/H53N6ZKGHdGhJTHqCapiSgei4",
+        "transaction_id": "0.0.10576385-1789609553-483480778",
+        "transfers": [
+          {
+            "account": "0.0.802",
+            "amount": 1409749,
+            "is_approval": false
+          },
+          {
+            "account": "0.0.10576385",
+            "amount": -1409749,
+            "is_approval": false
+          }
+        ],
+        "valid_duration_seconds": "120",
+        "valid_start_timestamp": "1789609553.483480778"
+      },
+      "explorer": "https://hashscan.io/testnet/transaction/0.0.10576385-1789609553-483480778",
+      "dynamodb_status": "confirmed",
+      "persisted_signed_hash_matches_mirror": true,
+      "principal_reconciled": true,
+      "sponsor_paid_only_consensus_fee": true
+    }
+  ]
+}

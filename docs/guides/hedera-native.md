@@ -8,7 +8,7 @@ Hedera uses native `CryptoTransfer`, `exact`, and x402 v2. The network identifie
 | --- | --- | --- | --- |
 | Native USDC | `0.0.429274` | `0.0.456858` | 6 |
 
-Additional fungible HTS tokens require an explicit `token-id:decimals` allowlist and matching Mirror metadata. NFTs, allowances, hooks, scheduled/batch transactions, custom token fees, escrow, upto, DX402 and ERC-8004 extensions are rejected before sponsorship.
+Only the network's native USDC token is admitted; additional-token configuration is disabled. NFTs, allowances, hooks, scheduled/batch transactions, custom token fees, escrow, upto, DX402 and ERC-8004 extensions are rejected before sponsorship.
 
 ## Merchant and client
 
@@ -104,15 +104,15 @@ See [the original integration plan](../plans/hedera-native-x402-integration-plan
 
 ## Project SDKs
 
-- [Python native Hedera guide](https://github.com/UltravioletaDAO/uvd-x402-sdk-python/blob/main/docs/networks/hedera.md): `pip install 'uvd-x402-sdk[hedera]==0.85.0'`, Python 3.10+ for signing; registry/builders remain available on 3.9.
-- [TypeScript native Hedera guide](https://github.com/UltravioletaDAO/uvd-x402-sdk-typescript/blob/main/docs/networks/hedera.md): `npm install uvd-x402-sdk@2.93.0 @hiero-ledger/sdk@2.85.0`; server-side `HederaProvider`, not a HashPack browser connector.
+- [Python native Hedera guide](https://github.com/UltravioletaDAO/uvd-x402-sdk-python/blob/main/docs/networks/hedera.md): `pip install 'uvd-x402-sdk[hedera]==0.87.0'`, Python 3.10+ for signing; registry/builders remain available on 3.9.
+- [TypeScript native Hedera guide](https://github.com/UltravioletaDAO/uvd-x402-sdk-typescript/blob/main/docs/networks/hedera.md): `npm install uvd-x402-sdk@2.95.0 @hiero-ledger/sdk@2.85.0`; server-side `HederaProvider`, not a HashPack browser connector.
 
 Both implement ledger-bound offline DER signing, atomic USDC requirements,
 the full accepted echo and HTTP 402 buyer retries. Merchant helpers compare the
 buyer's offer with the server's own requirements. USD merchant pricing accepts
 native USDC only; HBAR payment requests are rejected before signing.
 
-Release validation: 1,218 Python tests, 758 TypeScript tests, 430 cross-language
+Historical 0.85.0/2.93.0 release validation: 1,218 Python tests, 758 TypeScript tests, 430 cross-language
 checks, eight production `/verify` preflights and eight actual payments from
 published packages. The preflights were read-only; they are not listed as
 on-chain payments. Each actual payment is bound to independently checked Mirror

@@ -117,20 +117,17 @@ the facilitator re-reads it on every payment rather than trusting a cached copy.
 
 The traps:
 
-- **HBAR and USDC have different decimals under the same account.** `"1000000"` is
-  1 USDC but only 0.01 HBAR. An amount written for the wrong asset is off by a factor
-  of 100 in one direction or the other.
-- **HBAR is not a dollar.** A price in USD needs a conversion to HBAR; nothing here
-  does it implicitly, and HBAR volume is never USD volume.
+- **USDC principal and HBAR fees use different units.** USDC has six decimals;
+  sponsor fees use eight-decimal tinybars. HBAR is not accepted as payment and
+  fee spending is never counted as USDC payment volume.
 - **One asset per payment.** A transfer moving more than one token is refused
   (`multiple assets unsupported`).
 - **The payee must already hold the association.** An HTS token has to be associated
   by both buyer and recipient, with KYC granted and freeze/pause clear, before the
   transfer can succeed.
-- **Additional HTS tokens are opt-in and must declare their decimals.** An operator
-  adds them as `token-id:decimals` pairs, which the facilitator then checks against
-  fresh Mirror metadata on every payment. An asset not on that list is refused
-  (`unsupported HTS asset`). NFTs are refused outright.
+- **Only native USDC is admitted.** Additional-token environment overrides are
+  disabled. HBAR, custom HTS tokens and USDC from the other ledger are refused
+  before new sponsorship. NFTs are refused outright.
 
 ## 3. What the seller puts in the 402
 
@@ -176,8 +173,8 @@ The buyer:
 ```
 
 The tested client is `@x402/hedera` **2.26.0** with `@hiero-ledger/sdk` 2.85.0
-(`tests/hedera-e2e/package.json`). Native USDC is the only admitted asset in this deployment; do not add HBAR or custom FT entries
-rather than disabling spend controls.
+(`tests/hedera-e2e/package.json`). Native USDC is the only admitted asset in this
+deployment. Retain spend controls and do not add HBAR or custom FT entries.
 
 Every frozen node variant in the submitted bytes is inspected, not just the first.
 What the facilitator refuses inside the transaction, each with a vector in
@@ -234,7 +231,7 @@ A native transaction id renders on HashScan with dashes rather than `@` and `.`:
 | **Hedera through its EVM layer** (`eip155:295` / `eip155:296`) | not available, not the payment path | Removed from this facilitator on 2026-05-30. The Hedera rail is the native `exact` scheme above |
 | **Account aliases** (EVM address or public key) as `payTo`, payer or fee payer | refused | A canonical numeric entity id is required; an alias transfer can create an account at the sponsor's expense |
 | **NFTs, allowances, hooks, scheduled and batch transactions, custom token fees** | refused before sponsorship | Each has an adversarial vector. A payee must receive exactly `amount` |
-| **HTS tokens outside the allowlist** | refused | `unsupported HTS asset`. Extra fungible tokens need an explicit `token-id:decimals` entry from the operator and matching Mirror metadata |
+| **HBAR and tokens other than this ledger's native USDC** | refused for new payments | Native USDC only; additional-token configuration is disabled. Historical settlement lookup remains available. |
 | **`upto`, `escrow` / `commerce`, ERC-8004, DX402** | not on Hedera | `/supported` lists `exact` and only `exact`; neither `UPTO_DEPLOYED_NETWORKS` (`src/upto/types.rs`) nor `supported_networks()` (`src/erc8004/mod.rs`) names a Hedera network |
 
 **Throughput is budgeted, not unlimited.** Admission charges the *maximum signed*

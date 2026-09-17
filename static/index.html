@@ -18,7 +18,7 @@
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://facilitator.ultravioletadao.xyz/">
     <meta property="og:title" content="Ultravioleta DAO x402 Facilitator">
-    <meta property="og:description" content="Gasless x402 payments, including Arc USDC and native Hedera HBAR/USDC on mainnet and testnet.">
+    <meta property="og:description" content="Gasless x402 payments, including Arc USDC/EURC and native Hedera HBAR/USDC on mainnet and testnet.">
     <meta property="og:image" content="https://facilitator.ultravioletadao.xyz/og-arc-hedera.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
@@ -1201,7 +1201,7 @@
                     <span class="gradient-text" data-i18n="hero.title">Gasless Micropayments for the Agentic
                         Economy</span>
                 </h2>
-                <p class="hero-description" data-i18n="hero.description">Enable AI agents to pay over x402 without network fees, including USDC on Arc and native HBAR/USDC on Hedera.</p>
+                <p class="hero-description" data-i18n="hero.description">Enable AI agents to pay over x402 without network fees, including USDC/EURC on Arc and native HBAR/USDC on Hedera.</p>
 
                 <p style="font-size: 0.95rem; color: var(--text-muted); max-width: 700px; margin: 0 auto 1.5rem;" data-i18n-html="hero.baseUrl">Base URL <code style="color: var(--accent); background: rgba(0,212,255,0.1); padding: 0.2rem 0.5rem; border-radius: 4px; word-break: break-all;">https://facilitator.ultravioletadao.xyz</code> · 0% fee · no key, no account</p>
 
@@ -2157,7 +2157,7 @@
                 <div class="feature-card">
                     <span class="feature-icon">⚡</span>
                     <h3 data-i18n="features.gasless.title">Gasless Transactions</h3>
-                    <p data-i18n="features.gasless.description">The buyer signs the payment; the facilitator pays network fees. Arc uses USDC authorizations, and Hedera uses native CryptoTransfer.</p>
+                    <p data-i18n="features.gasless.description">The buyer signs the payment; the facilitator pays network fees. Arc uses USDC/EURC authorizations, and Hedera uses native CryptoTransfer.</p>
                 </div>
                 <div class="feature-card">
                     <span class="feature-icon">🔐</span>
@@ -3000,7 +3000,7 @@
                 "bazaar.cta": "Explore the Bazaar",
                 "header.subtitle": "Payment infrastructure for autonomous agents",
                 "hero.title": "Payment infrastructure for autonomous agents",
-                "hero.description": "Enable AI agents to pay over x402 without network fees, including USDC on Arc and native HBAR/USDC on Hedera.",
+                "hero.description": "Enable AI agents to pay over x402 without network fees, including USDC/EURC on Arc and native HBAR/USDC on Hedera.",
                 "hero.stablecoins": "7 Stablecoins Supported",
                 "hero.baseUrl": "Base URL <code style='color: var(--accent); background: rgba(0,212,255,0.1); padding: 0.2rem 0.5rem; border-radius: 4px; word-break: break-all;'>https://facilitator.ultravioletadao.xyz</code> · 0% fee · no key, no account",
                 "status": "Service Online",
@@ -3009,7 +3009,7 @@
                 "stats.trustless": "Trustless Verification",
                 "stats.erc8004": "ERC-8004 Networks",
                 "features.gasless.title": "Gasless Transactions",
-                "features.gasless.description": "The buyer signs the payment; the facilitator pays network fees. Arc uses USDC authorizations, and Hedera uses native CryptoTransfer.",
+                "features.gasless.description": "The buyer signs the payment; the facilitator pays network fees. Arc uses USDC/EURC authorizations, and Hedera uses native CryptoTransfer.",
                 "features.trustless.title": "Trustless by Design",
                 "features.trustless.description": "EIP-712 signature verification ensures cryptographically valid payments before on-chain execution.",
                 "features.instant.title": "Instant Settlement",
@@ -3169,7 +3169,7 @@
                 "bazaar.cta": "Explorar el Bazar",
                 "header.subtitle": "Infraestructura de pagos para agentes autónomos",
                 "hero.title": "Infraestructura de pagos para agentes autónomos",
-                "hero.description": "Permite que los agentes IA paguen por x402 sin comisiones de red, incluyendo USDC en Arc y HBAR/USDC nativos en Hedera.",
+                "hero.description": "Permite que los agentes IA paguen por x402 sin comisiones de red, incluyendo USDC/EURC en Arc y HBAR/USDC nativos en Hedera.",
                 "hero.stablecoins": "7 Stablecoins Soportadas",
                 "hero.baseUrl": "URL base <code style='color: var(--accent); background: rgba(0,212,255,0.1); padding: 0.2rem 0.5rem; border-radius: 4px; word-break: break-all;'>https://facilitator.ultravioletadao.xyz</code> · 0% de comisión · sin key, sin cuenta",
                 "status": "Servicio en Línea",
@@ -3178,7 +3178,7 @@
                 "stats.trustless": "Verificaci\u00f3n Sin Confianza",
                 "stats.erc8004": "Redes ERC-8004",
                 "features.gasless.title": "Transacciones Sin Gas",
-                "features.gasless.description": "El comprador firma el pago y el facilitador paga las comisiones de red. Arc usa autorizaciones USDC y Hedera usa CryptoTransfer nativo.",
+                "features.gasless.description": "El comprador firma el pago y el facilitador paga las comisiones de red. Arc usa autorizaciones USDC/EURC y Hedera usa CryptoTransfer nativo.",
                 "features.trustless.title": "Sin Confianza por Diseño",
                 "features.trustless.description": "La verificación de firmas EIP-712 asegura pagos criptográficamente válidos antes de la ejecución en cadena.",
                 "features.instant.title": "Liquidación Instantánea",
@@ -3845,8 +3845,8 @@
             'scroll-mainnet': ['usdc'],
             'robinhood-mainnet': ['usdg'],
             'robinhood-testnet': ['usdg'],
-            'arc-mainnet': ['usdc'],
-            'arc-testnet': ['usdc'],
+            'arc-mainnet': ['usdc', 'eurc'],
+            'arc-testnet': ['usdc', 'eurc'],
         };
 
         const TOKEN_INFO = {

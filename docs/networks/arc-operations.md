@@ -3,7 +3,7 @@
 This page is for whoever **runs** a facilitator on Arc: activation switches, funding,
 the canary, the release checklist, rollback and the acceptance evidence. Whoever is
 **integrating** — building a 402, signing an authorization, reading a settlement —
-wants [Arc: getting paid in USDC on Arc](arc.md) instead.
+wants [Arc: getting paid in USDC and EURC on Arc](arc.md) instead.
 
 Scope: direct `exact` USDC payments with EIP-3009 authorizations signed by an
 EOA. Both x402 v1 names and v2 CAIP-2 identifiers resolve to distinct networks.
@@ -150,3 +150,10 @@ TypeScript used an injected EIP-1193 signer in Node, not a browser-wallet UI.
 Install with `pip install "uvd-x402-sdk[signer]>=0.84.0"` or
 `npm install uvd-x402-sdk@^2.92.0`. Network names are `arc` and `arc-testnet`;
 the v2 identifiers remain `eip155:5042` and `eip155:5042002`.
+
+## EURC activation and acceptance
+
+EURC is registered alongside USDC in 2.34.0 for both Arc networks. No new RPC or
+key is required; gas remains USDC. See [contracts and euro pricing](arc.md#eurc-prices-in-euros).
+Funded EURC acceptance is pending by operator decision. USDC receipts above are
+unchanged and are not EURC proof. Python 0.86.0 and TypeScript 2.94.0 add EURC.

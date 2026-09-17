@@ -1732,6 +1732,36 @@ static EURC_AVALANCHE: Lazy<EURCDeployment> = Lazy::new(|| {
     })
 });
 
+/// Circle EURC on Arc mainnet. Amounts are euros with six decimals; gas is USDC.
+static EURC_ARC: Lazy<EURCDeployment> = Lazy::new(|| {
+    EURCDeployment(TokenDeployment {
+        asset: TokenAsset {
+            address: address!("0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1").into(),
+            network: Network::Arc,
+        },
+        decimals: 6,
+        eip712: Some(TokenDeploymentEip712 {
+            name: "EURC".into(),
+            version: "2".into(),
+        }),
+    })
+});
+
+/// Circle EURC on Arc testnet, independently checked against its on-chain domain.
+static EURC_ARC_TESTNET: Lazy<EURCDeployment> = Lazy::new(|| {
+    EURCDeployment(TokenDeployment {
+        asset: TokenAsset {
+            address: address!("0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a").into(),
+            network: Network::ArcTestnet,
+        },
+        decimals: 6,
+        eip712: Some(TokenDeploymentEip712 {
+            name: "EURC".into(),
+            version: "2".into(),
+        }),
+    })
+});
+
 /// A known EURC (Euro Coin) deployment as a wrapper around [`TokenDeployment`].
 #[derive(Clone, Debug)]
 pub struct EURCDeployment(pub TokenDeployment);
@@ -1759,13 +1789,15 @@ impl EURCDeployment {
             Network::Ethereum => Some(&EURC_ETHEREUM),
             Network::Base => Some(&EURC_BASE),
             Network::Avalanche => Some(&EURC_AVALANCHE),
+            Network::Arc => Some(&EURC_ARC),
+            Network::ArcTestnet => Some(&EURC_ARC_TESTNET),
             _ => None,
         }
     }
 
     /// Return all networks where EURC is deployed.
     pub fn supported_networks() -> &'static [Network] {
-        &[Network::Ethereum, Network::Base, Network::Avalanche]
+        &[Network::Ethereum, Network::Base, Network::Avalanche, Network::Arc, Network::ArcTestnet]
     }
 }
 
@@ -2527,7 +2559,9 @@ mod tests {
         assert!(networks.contains(&Network::Ethereum));
         assert!(networks.contains(&Network::Base));
         assert!(networks.contains(&Network::Avalanche));
-        assert_eq!(networks.len(), 3);
+        assert!(networks.contains(&Network::Arc));
+        assert!(networks.contains(&Network::ArcTestnet));
+        assert_eq!(networks.len(), 5);
     }
 
     #[test]
@@ -2908,10 +2942,12 @@ mod tests {
     #[test]
     fn test_supported_networks_for_eurc() {
         let networks = supported_networks_for_token(TokenType::Eurc);
-        assert_eq!(networks.len(), 3);
+        assert_eq!(networks.len(), 5);
         assert!(networks.contains(&Network::Ethereum));
         assert!(networks.contains(&Network::Base));
         assert!(networks.contains(&Network::Avalanche));
+        assert!(networks.contains(&Network::Arc));
+        assert!(networks.contains(&Network::ArcTestnet));
     }
 
     #[test]
@@ -3132,7 +3168,7 @@ mod arc_testnet_identity_tests {
         );
         assert_eq!(
             supported_tokens_for_network(Network::Arc),
-            vec![TokenType::Usdc]
+            vec![TokenType::Usdc, TokenType::Eurc]
         );
         assert_eq!(resolve_network("arc-mainnet"), None);
         assert_eq!(Network::from_caip2("eip155:5042001"), None);
@@ -3175,11 +3211,11 @@ mod arc_testnet_identity_tests {
     }
 
     /// The asset allow-list is checked before any RPC call, so this is what
-    /// refuses an `asset` that is not Arc USDC -- including Circle Gateway's
+    /// refuses an `asset` that is not a registered Arc token -- including Circle Gateway's
     /// own `verifyingContract`, which announces the same `exact` scheme on the
     /// same `eip155:5042002` while signing against a different domain.
     #[test]
-    fn arc_accepts_its_usdc_and_nothing_else() {
+    fn arc_accepts_registered_usdc_and_eurc_but_not_gateway() {
         let usdc: MixedAddress = address!("0x3600000000000000000000000000000000000000").into();
         assert!(is_supported_asset(Network::ArcTestnet, &usdc));
 
@@ -3187,15 +3223,13 @@ mod arc_testnet_identity_tests {
         let gateway: MixedAddress = address!("0x0077777d7eba4688bdef3e311b846f25870a19b9").into();
         assert!(!is_supported_asset(Network::ArcTestnet, &gateway));
 
-        // EURC exists on Arc and is deliberately NOT registered: it is euros,
-        // and it has not passed an end-to-end test here. Absence of the static
-        // entry is what keeps it out -- there is no flag to get wrong.
+        // Euro settlement is distinct from the USDC gas balance.
         let eurc: MixedAddress = address!("0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a").into();
-        assert!(!is_supported_asset(Network::ArcTestnet, &eurc));
+        assert!(is_supported_asset(Network::ArcTestnet, &eurc));
         assert_eq!(
             supported_tokens_for_network(Network::ArcTestnet),
-            vec![TokenType::Usdc],
-            "Arc announces USDC and only USDC"
+            vec![TokenType::Usdc, TokenType::Eurc],
+            "Arc announces USDC and EURC"
         );
     }
 }

@@ -600,10 +600,10 @@ function render(){
   }).join('');
 }
 
-document.querySelectorAll('.filters button[data-filter]').forEach(b => {
+document.querySelectorAll('#live button[data-filter]').forEach(b => {
   b.addEventListener('click', () => {
     FILTER = b.getAttribute('data-filter');
-    document.querySelectorAll('.filters button[data-filter]').forEach(x =>
+    document.querySelectorAll('#live button[data-filter]').forEach(x =>
       x.setAttribute('aria-pressed', String(x === b)));
     render();
     fetchWalletBalances();

@@ -5,7 +5,7 @@
   "mainnet_funded": false,
   "offline_provider_tests": 9,
   "facilitator_full_suite": "passed library, binary, integrations and doctests; see PR CI for final counts",
-  "dynamodb_concurrency_and_quota_test": "passed against dedicated table; 12 simultaneous requests, one owner/quota charge",
+  "dynamodb_concurrency_and_quota_test": "passed against dedicated table; 12 simultaneous requests, one owner/quota charge; stale takeover cannot erase concurrently persisted signed bytes",
   "receipt_persistence_failure": {
     "status": "passed",
     "native_transaction": "0.0.10576385@1789603383.342495891",

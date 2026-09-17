@@ -131,6 +131,9 @@ impl DynamoStore {
         if record.terminal() || record.lease_until >= at {
             return Ok(record);
         }
+        // The previous owner may finish persisting signed bytes after our read.
+        // Compare the complete snapshot so takeover cannot erase that progress.
+        let previous = serde_json::to_string(&record).map_err(|_| "record serialization failed")?;
         record.owner = owner.into();
         record.lease_until = at + LEASE_SECONDS;
         let outcome = bounded(
@@ -139,10 +142,12 @@ impl DynamoStore {
                 .table_name(&self.table)
                 .set_item(Some(Self::item(key, &record)?))
                 .condition_expression(
-                    "#lease < :now AND fingerprint = :fp AND #status <> :ok AND #status <> :failed",
+                    "#lease < :now AND fingerprint = :fp AND #status <> :ok AND #status <> :failed AND #data = :previous",
                 )
                 .expression_attribute_names("#lease", "lease")
                 .expression_attribute_names("#status", "status")
+                .expression_attribute_names("#data", "data")
+                .expression_attribute_values(":previous", A::S(previous))
                 .expression_attribute_values(":now", A::N(at.to_string()))
                 .expression_attribute_values(":fp", A::S(record.intent.fingerprint.clone()))
                 .expression_attribute_values(":ok", A::S("confirmed".into()))
@@ -378,12 +383,29 @@ mod tests {
             .reserve(&key, &network, &second, "conflict", 10)
             .await
             .is_err());
-        record.signed = Some("immutable-persisted-signed-bytes".into());
-        record.state = State::Prepared;
         record.lease_until = now() - 1;
         store.save(&key, &record).await.unwrap();
+        let stale = record.clone();
+        record.signed = Some("immutable-persisted-signed-bytes".into());
+        record.state = State::Prepared;
+        store.save(&key, &record).await.unwrap();
+        record.state = State::Submitted;
+        store.save(&key, &record).await.unwrap();
+        let raced = store
+            .claim(&key, stale, "stale-reader", now())
+            .await
+            .unwrap();
+        assert_eq!(
+            raced.owner, record.owner,
+            "a stale snapshot must not take ownership"
+        );
+        assert_eq!(raced.state, State::Submitted);
+        assert_eq!(
+            raced.signed, record.signed,
+            "takeover must never erase persisted bytes"
+        );
         // A fresh client represents a new process after the old one died
-        // between persistence and submission.
+        // after persisting submission, with the latest snapshot intact.
         let restarted = DynamoStore::new(table.clone()).await;
         let mut resumed = restarted
             .reserve(&key, &network, &intent, "restarted", 10)

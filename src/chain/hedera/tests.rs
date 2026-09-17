@@ -129,6 +129,74 @@ fn envelope() -> Value {
     let requirements = json!({"scheme":"exact", "network":"hedera:testnet", "asset":"0.0.0", "amount":"1000000", "payTo":"0.0.2002", "maxTimeoutSeconds":180,"extra":{"feePayer":"0.0.3003"}});
     json!({"x402Version":2,"paymentPayload":{"x402Version":2,"accepted":requirements,"payload":fixture["payload"]},"paymentRequirements":requirements})
 }
+
+struct ReadOnlyPolicyStore(Option<Record>);
+#[async_trait::async_trait]
+impl Store for ReadOnlyPolicyStore {
+    async fn read(&self, _: &str) -> Result<Option<Record>> { Ok(self.0.clone()) }
+    async fn reserve(&self, _: &str, _: &str, _: &Intent, _: &str, _: u64) -> Result<Record> {
+        panic!("a retired payment asset must not reserve sponsor fees")
+    }
+    async fn save(&self, _: &str, _: &Record) -> Result<()> { panic!("must not write") }
+    async fn pending(&self, _: &str) -> Result<Vec<(String, Record)>> { Ok(vec![]) }
+    async fn health(&self) -> Result<()> { Ok(()) }
+}
+
+#[tokio::test]
+async fn usdc_only_policy_rejects_new_hbar_but_preserves_historical_receipts() {
+    let network = Network::HederaTestnet;
+    let config = Config {
+        network,
+        account: "0.0.3003".parse().unwrap(),
+        key: hiero_sdk::PrivateKey::from_bytes_ed25519(&[7; 32]).unwrap(),
+        mirror: "https://testnet.mirrornode.hedera.com/".parse().unwrap(),
+        assets: Config::payment_assets(network, None).unwrap(),
+        max_fee: 100_000_000,
+        daily_budget: 1_000_000_000,
+        settle_timeout: Duration::from_secs(5),
+        table: "unused".into(),
+        admissions: true,
+    };
+    let mut provider = HederaProvider {
+        client: config.client(),
+        mirror: Mirror::new(config.mirror.clone()).unwrap(),
+        config,
+        store: Arc::new(ReadOnlyPolicyStore(None)),
+    };
+    let request = serde_json::from_value::<crate::types_v2::VerifyRequestEnvelope>(envelope())
+        .unwrap().to_v1().unwrap();
+    assert!(provider.verify(&request).await.unwrap_err().to_string().contains("USDC only"));
+    assert!(provider.settle(&request).await.unwrap_err().to_string().contains("USDC only"));
+    let supported = provider.supported().await.unwrap();
+    let tokens = supported.kinds[0].extra.as_ref().unwrap().tokens.as_ref().unwrap();
+    assert_eq!(tokens.len(), 1);
+    assert_eq!(tokens[0].address.to_string(), "0.0.429274");
+    assert_eq!(tokens[0].decimals, 6);
+
+    // An already-confirmed HBAR payment returns its original receipt without
+    // reserving, co-signing or broadcasting another transaction.
+    let (_, intent) = provider.inspect(&request, false).unwrap();
+    let transaction_id = intent.transaction_id.clone();
+    provider.store = Arc::new(ReadOnlyPolicyStore(Some(Record {
+        intent, owner: "historical".into(), lease_until: 0,
+        state: State::Confirmed, signed: None, consensus_status: Some("SUCCESS".into()),
+    })));
+    let response = provider.settle(&request).await.unwrap();
+    assert!(response.success);
+    assert_eq!(response.transaction.unwrap().to_string(), transaction_id);
+}
+
+#[test]
+fn both_ledgers_allow_only_native_usdc_and_refuse_old_token_overrides() {
+    for (network, usdc) in [(Network::Hedera, "0.0.456858"), (Network::HederaTestnet, "0.0.429274")] {
+        let assets = Config::payment_assets(network, None).unwrap();
+        assert_eq!(assets.len(), 1);
+        assert_eq!(assets.get(&usdc.parse().unwrap()), Some(&6));
+        for extra in ["0.0.0:8", "0.0.1234:4", "0.0.456858:6"] {
+            assert!(Config::payment_assets(network, Some(extra)).is_err());
+        }
+    }
+}
 #[test]
 fn standard_http_envelope_uses_native_types_and_retains_v2() {
     let parsed: crate::types_v2::VerifyRequestEnvelope =

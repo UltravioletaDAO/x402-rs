@@ -67,8 +67,8 @@ assuming a global scheme or extension applies to each network.
 | --- | --- | --- | --- |
 | Arc mainnet | `arc` / `eip155:5042` | USDC/EURC (6 decimals) | `0x103040545AC5031A11E8C03dd11324C7333a13C7` |
 | Arc testnet | `arc-testnet` / `eip155:5042002` | USDC/EURC (6 decimals) | `0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8` |
-| Hedera mainnet | `hedera:mainnet` | HBAR `0.0.0` (8 decimals), USDC `0.0.456858` (6) | `0.0.10868300` |
-| Hedera testnet | `hedera:testnet` | HBAR `0.0.0` (8 decimals), USDC `0.0.429274` (6) | `0.0.10576385` |
+| Hedera mainnet | `hedera:mainnet` | USDC `0.0.456858` (6) | `0.0.10868300` |
+| Hedera testnet | `hedera:testnet` | USDC `0.0.429274` (6) | `0.0.10576385` |
 
 Discover availability and the current network-specific `extra.feePayer` from
 `/supported`. These are facilitator accounts, not merchant destinations. Set
@@ -80,7 +80,7 @@ payment amounts use 6 decimals.
 Hedera supports native `CryptoTransfer`, `exact`, **x402 v2 only**. It uses numeric
 accounts and native token IDs, not EVM chain IDs 295/296. Buyer and recipient must
 be associated with USDC. The sponsor pays HBAR fees without contributing payment
-principal. HBAR amounts are tinybars, never USD amounts. Neither addition enables
+principal. HBAR is not accepted as payment; new HBAR offers are rejected. Neither addition enables
 escrow, `upto`, Gateway or ERC-8004 on that network. Native Hedera also rejects
 durable-evidence and other unsupported extensions.
 

@@ -13,7 +13,7 @@ family summary and native wallet links derive enabled state from that response.
 - Arc mainnet: `arc` / `eip155:5042`; testnet: `arc-testnet` / `eip155:5042002`.
   Direct EOA USDC exact payments, x402 v1/v2. USDC payments use 6 decimals.
 - Native Hedera: `hedera:mainnet` / `hedera:testnet`, x402 v2/exact only.
-  HBAR `0.0.0` uses 8 decimals; USDC `0.0.456858` / `0.0.429274` uses 6.
+  HBAR funds sponsor fees only; payment USDC `0.0.456858` / `0.0.429274` uses 6.
   Sponsor IDs currently mainnet `0.0.10868300`, testnet `0.0.10576385`.
   Keep displayed IDs bound to the advertised fee payer, never the bootstrap account.
 

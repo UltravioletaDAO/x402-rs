@@ -50,7 +50,7 @@ Integrators start at [Arc: getting paid in USDC and EURC](docs/networks/arc.md);
 [Arc operations, canaries and activation](docs/networks/arc-operations.md).
 Python SDK 0.84.0 and TypeScript SDK 2.92.0 include both Arc networks. USDC is also
 the gas token: native and ERC-20 amounts are two precisions of the same balance.
-Integrators start at [Hedera: getting paid in HBAR or HTS tokens](docs/networks/hedera.md);
+Integrators start at [Hedera: getting paid in native USDC](docs/networks/hedera.md);
 operators want [native Hedera operations and public receipts](docs/guides/hedera-native.md).
 Both network tables include Arc and native Hedera; runtime availability remains `/supported`.
 
@@ -60,8 +60,8 @@ Both network tables include Arc and native Hedera; runtime availability remains 
 | --- | --- | --- | --- |
 | Arc mainnet | `arc` / `eip155:5042` | USDC/EURC (6 decimals) | `0x103040545AC5031A11E8C03dd11324C7333a13C7` |
 | Arc testnet | `arc-testnet` / `eip155:5042002` | USDC/EURC (6 decimals) | `0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8` |
-| Hedera mainnet | `hedera:mainnet` | HBAR `0.0.0` (8 decimals), USDC `0.0.456858` (6) | `0.0.10868300` |
-| Hedera testnet | `hedera:testnet` | HBAR `0.0.0` (8 decimals), USDC `0.0.429274` (6) | `0.0.10576385` |
+| Hedera mainnet | `hedera:mainnet` | USDC `0.0.456858` (6) | `0.0.10868300` |
+| Hedera testnet | `hedera:testnet` | USDC `0.0.429274` (6) | `0.0.10576385` |
 
 Discover availability and the current network-specific `extra.feePayer` from
 `/supported`. These are facilitator accounts, not merchant destinations. Set
@@ -73,7 +73,7 @@ payment amounts use 6 decimals.
 Hedera supports native `CryptoTransfer`, `exact`, **x402 v2 only**. It uses numeric
 accounts and native token IDs, not EVM chain IDs 295/296. Buyer and recipient must
 be associated with USDC. The sponsor pays HBAR fees without contributing payment
-principal. HBAR amounts are tinybars, never USD amounts. Neither addition enables
+principal. HBAR is used only for network fees; payments accept native USDC only. Neither addition enables
 escrow, `upto`, Gateway or ERC-8004 on that network. Native Hedera also rejects
 durable-evidence and other unsupported extensions.
 
@@ -82,7 +82,7 @@ durable-evidence and other unsupported extensions.
 | Network | Chain ID | Token | Explorer |
 |---------|----------|-------|----------|
 | **Arc** | 5042 | USDC, EURC | [explorer.arc.io](https://explorer.arc.io) |
-| **Hedera** | `hedera:mainnet` (native) | HBAR, USDC | [hashscan.io/mainnet](https://hashscan.io/mainnet) |
+| **Hedera** | `hedera:mainnet` (native) | USDC | [hashscan.io/mainnet](https://hashscan.io/mainnet) |
 | **Ethereum** | 1 | USDC | [etherscan.io](https://etherscan.io) |
 | **Base** | 8453 | USDC | [basescan.org](https://basescan.org) |
 | **Arbitrum** | 42161 | USDC | [arbiscan.io](https://arbiscan.io) |
@@ -144,7 +144,6 @@ durable-evidence and other unsupported extensions.
 | **USDG** | Robinhood Chain (Paxos Global Dollar, EIP-712 domain "Global Dollar" v1) |
 | **RLUSD** | XRPL |
 | **XRP** | XRPL (native) |
-| **HBAR** | Hedera (native, 8 decimals; not a stablecoin) |
 
 **Full Matrix:**
 
@@ -177,7 +176,7 @@ durable-evidence and other unsupported extensions.
 > **Arc and Hedera note**: both are served on mainnet *and* testnet as of
 > 2026-09-17 03:08Z. Each network still has its own independent activation
 > switch, so a self-hosted instance may serve neither — `/supported` is what
-> decides. Hedera's HBAR is native and not a stablecoin, so it is not a column here.
+> decides. Hedera accepts native USDC; HBAR pays sponsor network fees only.
 >
 > **XRPL note**: In addition to USDC (issued token), XRPL also supports **RLUSD** (issued token) and **native XRP**. These are not EIP-3009 tokens, so they are not tracked by `scripts/stablecoin_matrix.py` (which only enumerates EIP-3009 stablecoins). See `docs/plans/xrpl-native-x402-integration-plan.md`.
 
@@ -732,6 +731,6 @@ Apache 2.0
 
 ## Native Hedera
 
-Native Hedera `exact` payments use x402 v2, HBAR and allowlisted HTS fungible tokens. Networks are enabled independently and reported by `/supported`; mainnet requires its own funded signer and release canaries. Hedera is **v2-only** and has no v1 network name, accounts are numeric entity ids (`0.0.1234`, never a `0x` address or an alias), and the EVM chain ids 295/296 are not this payment rail.
+Native Hedera `exact` payments use x402 v2 and native USDC only. HBAR is reserved for sponsor network fees. Networks are enabled independently and reported by `/supported`; mainnet requires its own funded signer and release canaries. Hedera is **v2-only** and has no v1 network name, accounts are numeric entity ids (`0.0.1234`, never a `0x` address or an alias), and the EVM chain ids 295/296 are not this payment rail.
 
-Integrators start at [Hedera: getting paid in HBAR or HTS tokens](docs/networks/hedera.md); operators want [configuration, merchant requirements, recovery and validation status](docs/guides/hedera-native.md). The `extra.feePayer` differs per network — read it from `/supported`, never carry one across.
+Integrators start at [Hedera: getting paid in native USDC](docs/networks/hedera.md); operators want [configuration, merchant requirements, recovery and validation status](docs/guides/hedera-native.md). The `extra.feePayer` differs per network — read it from `/supported`, never carry one across.

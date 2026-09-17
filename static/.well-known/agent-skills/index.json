@@ -5,7 +5,7 @@
       "type": "skill-md",
       "description": "Verify and settle x402 payments through the Ultravioleta DAO facilitator: the verify/settle contract, how to read /supported, the exact/upto/escrow/commerce schemes, the per-chain EIP-712 domain-name trap, which failures mean retry, and the MCP server at POST /mcp that exposes the same four calls as tools.",
       "url": "https://facilitator.ultravioletadao.xyz/skill.md",
-      "digest": "sha256:1763a49cb030dd2450baf50cd789e44736e3fee256e6ef2d398f26778f38bb60"
+      "digest": "sha256:4583efd3102bb8cbd0555a4dfc777e7b007543b39ca3431eef31924659e4603d"
     }
   ]
 }

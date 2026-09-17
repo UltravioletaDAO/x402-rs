@@ -1,4 +1,6 @@
-# Hedera — getting paid in HBAR or HTS tokens through this facilitator
+# Hedera — getting paid in native USDC through this facilitator
+
+**Current payment policy (2026-09-17, facilitator 2.35.0): native USDC only on both Hedera ledgers. HBAR is retained exclusively for sponsor network fees. New HBAR and custom HTS payment offers are rejected. Historical HBAR receipts and transaction records remain valid evidence of earlier releases.**
 
 > **Status, verified 2026-09-17 03:39Z: both networks are live.** `GET /supported`
 > lists `hedera:mainnet` and `hedera:testnet`, each under x402 **v2** with scheme
@@ -15,7 +17,7 @@ feature, the environment variables, the daily budget, the settlement store, reco
 after an uncertain outcome and the rollout evidence — is
 [Native Hedera payments](../guides/hedera-native.md).
 
-**Project SDKs are published and verified:** Python **0.85.0** and TypeScript
+**Historical SDK payment evidence:** Python **0.85.0** and TypeScript
 **2.93.0** each completed HBAR and USDC payments on both ledgers from clean
 PyPI/npm installs. [Eight payment receipts](../reports/2026-09-16-hedera-sdk-release-acceptance.json)
 include exact principal, sponsor fees, idempotency and persisted signed-hash
@@ -52,7 +54,7 @@ payer would end up funding that creation.
 | Chain id | none — not an EVM network | none |
 | Family | Hedera (native `CryptoTransfer`) | same |
 | Scheme | `exact` only — a partially signed `TransferTransaction` | `exact` |
-| Assets | HBAR `0.0.0` (8 decimals) and native USDC `0.0.429274` (6) | HBAR `0.0.0` (8) and native USDC `0.0.456858` (6) |
+| Assets | Native USDC `0.0.429274` (6) | Native USDC `0.0.456858` (6) |
 | Fee payer (`extra.feePayer`) | `0.0.10576385` | `0.0.10868300` — **a different account**; both published in `/supported` |
 | Gas | paid by the fee payer, in HBAR. The buyer signs and pays nothing else | same |
 | Facilitator fee | none — the sponsor pays consensus fees only | same |
@@ -77,7 +79,7 @@ On 2026-09-17 at 03:08Z, at `/version` 2.33.0, that prints two entries:
  {"x402Version":2,"scheme":"exact","network":"hedera:mainnet","feePayer":"0.0.10868300"}]
 ```
 
-Each carries `extra.tokens`: `0.0.0` at 8 decimals, and USDC at 6 — `0.0.429274` on
+Each carries `extra.tokens`: USDC only, at 6 decimals — `0.0.429274` on
 testnet, `0.0.456858` on mainnet.
 
 **Mainnet arrived the same day as testnet, and the fee payers are different accounts.**
@@ -106,7 +108,6 @@ Amounts are integer strings in the asset's own smallest unit:
 
 | Asset | Testnet id | Mainnet id | Decimals | Smallest unit |
 |---|---|---|---|---|
-| HBAR | `0.0.0` | `0.0.0` | 8 | tinybar — 1 HBAR = `"100000000"` |
 | Native USDC (HTS) | `0.0.429274` | `0.0.456858` | 6 | 1 USDC = `"1000000"` |
 
 Both USDC ids were re-read from the public Mirror Node on 2026-09-17: each answers
@@ -175,8 +176,7 @@ The buyer:
 ```
 
 The tested client is `@x402/hedera` **2.26.0** with `@hiero-ledger/sdk` 2.85.0
-(`tests/hedera-e2e/package.json`). HBAR is not a default USD asset in that client:
-add an explicit, bounded `spendControls.allowedAssets` entry for HBAR or a custom FT
+(`tests/hedera-e2e/package.json`). Native USDC is the only admitted asset in this deployment; do not add HBAR or custom FT entries
 rather than disabling spend controls.
 
 Every frozen node variant in the submitted bytes is inspected, not just the first.

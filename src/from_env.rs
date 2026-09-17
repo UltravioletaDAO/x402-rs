@@ -144,6 +144,10 @@ pub fn rpc_env_name_from_network(network: Network) -> &'static str {
         Network::Bsc => ENV_RPC_BSC,
         Network::Near => ENV_RPC_NEAR,
         Network::NearTestnet => ENV_RPC_NEAR_TESTNET,
+        #[cfg(feature = "hedera")]
+        Network::Hedera => "HEDERA_MIRROR_URL_MAINNET",
+        #[cfg(feature = "hedera")]
+        Network::HederaTestnet => "HEDERA_MIRROR_URL_TESTNET",
         Network::Stellar => ENV_RPC_STELLAR,
         Network::StellarTestnet => ENV_RPC_STELLAR_TESTNET,
         #[cfg(feature = "xrpl")]

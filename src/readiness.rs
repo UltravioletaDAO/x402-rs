@@ -31,7 +31,7 @@
 //!    that can only say "fine" is the one we already had.
 //! 4. **It is not for load balancers.** See the first paragraph.
 //!
-//! Only EVM chains are probed today. Every other configured family is listed
+//! EVM and native Hedera chains are probed. Every other configured family is listed
 //! under `unchecked` rather than folded into a green answer.
 
 use std::collections::HashMap;
@@ -419,6 +419,24 @@ where
                             Some(NetworkProvider::Evm(evm)) => Some(probe_evm(evm, &config).await),
                             _ => None,
                         }
+                    });
+                }
+                #[cfg(feature = "hedera")]
+                NetworkProvider::Hedera(hedera) => {
+                    let provider = hedera.clone();
+                    let config = self.config;
+                    probes.spawn(async move {
+                        let network = provider.network();
+                        let report = match tokio::time::timeout(config.probe_timeout, provider.health()).await {
+                            Ok(Ok(remaining)) => {
+                                let status = if remaining < config.min_settles { Status::Down }
+                                    else if remaining < config.warn_settles { Status::Degraded } else { Status::Ok };
+                                graded_network(network, vec![SignerReport { index: 0, status, gas_ok: status != Status::Down, settles_remaining: Some(remaining) }])
+                            }
+                            Ok(Err(_)) => unreachable_network(network, false),
+                            Err(_) => unreachable_network(network, true),
+                        };
+                        Some(report)
                     });
                 }
                 other => unchecked.push(other.network().to_string()),

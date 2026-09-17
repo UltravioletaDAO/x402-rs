@@ -109,6 +109,12 @@ pub enum Network {
     #[cfg(feature = "xrpl")]
     #[serde(rename = "xrpl")]
     Xrpl,
+    #[cfg(feature = "hedera")]
+    #[serde(rename = "hedera:mainnet", alias = "hedera")]
+    Hedera,
+    #[cfg(feature = "hedera")]
+    #[serde(rename = "hedera:testnet", alias = "hedera-testnet")]
+    HederaTestnet,
     /// XRP Ledger testnet (native XRPL family; NOT the EVM `xrpl-evm` chain).
     #[cfg(feature = "xrpl")]
     #[serde(rename = "xrpl-testnet")]
@@ -200,6 +206,10 @@ impl Display for Network {
             Network::Near => write!(f, "near"),
             Network::NearTestnet => write!(f, "near-testnet"),
             Network::Stellar => write!(f, "stellar"),
+            #[cfg(feature = "hedera")]
+            Network::Hedera => write!(f, "hedera"),
+            #[cfg(feature = "hedera")]
+            Network::HederaTestnet => write!(f, "hedera-testnet"),
             Network::StellarTestnet => write!(f, "stellar-testnet"),
             #[cfg(feature = "xrpl")]
             Network::Xrpl => write!(f, "xrpl"),
@@ -264,6 +274,10 @@ impl FromStr for Network {
             "near" => Ok(Network::Near),
             "near-testnet" => Ok(Network::NearTestnet),
             "stellar" => Ok(Network::Stellar),
+            #[cfg(feature = "hedera")]
+            "hedera" | "hedera-mainnet" => Ok(Network::Hedera),
+            #[cfg(feature = "hedera")]
+            "hedera-testnet" => Ok(Network::HederaTestnet),
             "stellar-testnet" => Ok(Network::StellarTestnet),
             #[cfg(feature = "xrpl")]
             "xrpl" | "xrpl-mainnet" => Ok(Network::Xrpl),
@@ -298,6 +312,8 @@ pub enum NetworkFamily {
     Solana,
     Near,
     Stellar,
+    #[cfg(feature = "hedera")]
+    Hedera,
     #[cfg(feature = "xrpl")]
     Xrpl,
     #[cfg(feature = "algorand")]
@@ -337,6 +353,8 @@ impl From<Network> for NetworkFamily {
             Network::Near => NetworkFamily::Near,
             Network::NearTestnet => NetworkFamily::Near,
             Network::Stellar => NetworkFamily::Stellar,
+            #[cfg(feature = "hedera")]
+            Network::Hedera | Network::HederaTestnet => NetworkFamily::Hedera,
             Network::StellarTestnet => NetworkFamily::Stellar,
             #[cfg(feature = "xrpl")]
             Network::Xrpl => NetworkFamily::Xrpl,
@@ -363,6 +381,15 @@ impl From<Network> for NetworkFamily {
 }
 
 impl Network {
+    pub fn is_hedera(&self) -> bool {
+        #[cfg(feature = "hedera")]
+        { matches!(self, Self::Hedera | Self::HederaTestnet) }
+        #[cfg(not(feature = "hedera"))]
+        { false }
+    }
+
+    pub fn supports_v1(&self) -> bool { !self.is_hedera() }
+
     /// Return all known [`Network`] variants.
     #[cfg(all(feature = "algorand", feature = "sui"))]
     pub fn variants() -> &'static [Network] {
@@ -392,6 +419,10 @@ impl Network {
             Network::Near,
             Network::NearTestnet,
             Network::Stellar,
+            #[cfg(feature = "hedera")]
+            Network::Hedera,
+            #[cfg(feature = "hedera")]
+            Network::HederaTestnet,
             Network::StellarTestnet,
             #[cfg(feature = "xrpl")]
             Network::Xrpl,
@@ -442,6 +473,10 @@ impl Network {
             Network::Near,
             Network::NearTestnet,
             Network::Stellar,
+            #[cfg(feature = "hedera")]
+            Network::Hedera,
+            #[cfg(feature = "hedera")]
+            Network::HederaTestnet,
             Network::StellarTestnet,
             #[cfg(feature = "xrpl")]
             Network::Xrpl,
@@ -490,6 +525,10 @@ impl Network {
             Network::Near,
             Network::NearTestnet,
             Network::Stellar,
+            #[cfg(feature = "hedera")]
+            Network::Hedera,
+            #[cfg(feature = "hedera")]
+            Network::HederaTestnet,
             Network::StellarTestnet,
             #[cfg(feature = "xrpl")]
             Network::Xrpl,
@@ -538,6 +577,10 @@ impl Network {
             Network::Near,
             Network::NearTestnet,
             Network::Stellar,
+            #[cfg(feature = "hedera")]
+            Network::Hedera,
+            #[cfg(feature = "hedera")]
+            Network::HederaTestnet,
             Network::StellarTestnet,
             #[cfg(feature = "xrpl")]
             Network::Xrpl,
@@ -557,6 +600,8 @@ impl Network {
 
     /// Returns true if this network is a testnet environment.
     pub fn is_testnet(&self) -> bool {
+        #[cfg(feature = "hedera")]
+        if self.is_hedera() { return matches!(self, Network::HederaTestnet); }
         #[cfg(feature = "algorand")]
         if matches!(self, Network::AlgorandTestnet) {
             return true;
@@ -638,6 +683,10 @@ impl Network {
             Network::NearTestnet => "near:testnet".to_string(),
             // Stellar - stellar:{network_name}
             Network::Stellar => "stellar:pubnet".to_string(),
+            #[cfg(feature = "hedera")]
+            Network::Hedera => "hedera:mainnet".to_string(),
+            #[cfg(feature = "hedera")]
+            Network::HederaTestnet => "hedera:testnet".to_string(),
             Network::StellarTestnet => "stellar:testnet".to_string(),
             // XRPL - xrpl:{network_id} (mainnet NetworkID=0, testnet NetworkID=1)
             #[cfg(feature = "xrpl")]
@@ -709,6 +758,10 @@ impl Network {
             "near:testnet" => Some(Network::NearTestnet),
             // Stellar
             "stellar:pubnet" => Some(Network::Stellar),
+            #[cfg(feature = "hedera")]
+            "hedera:mainnet" => Some(Network::Hedera),
+            #[cfg(feature = "hedera")]
+            "hedera:testnet" => Some(Network::HederaTestnet),
             "stellar:testnet" => Some(Network::StellarTestnet),
             // XRPL (xrpl:0 mainnet, xrpl:1 testnet)
             #[cfg(feature = "xrpl")]
@@ -1597,6 +1650,10 @@ impl USDCDeployment {
             Network::Near => Some(&USDC_NEAR),
             Network::NearTestnet => Some(&USDC_NEAR_TESTNET),
             Network::Stellar => Some(&USDC_STELLAR),
+            #[cfg(feature = "hedera")]
+            Network::Hedera => Some(&USDC_HEDERA),
+            #[cfg(feature = "hedera")]
+            Network::HederaTestnet => Some(&USDC_HEDERA_TESTNET),
             Network::StellarTestnet => Some(&USDC_STELLAR_TESTNET),
             #[cfg(feature = "xrpl")]
             Network::Xrpl => Some(&USDC_XRPL),
@@ -2240,7 +2297,7 @@ pub fn get_token_deployment(network: Network, token_type: TokenType) -> Option<T
         TokenType::Usdt => USDTDeployment::by_network(network).map(|d| d.0.clone()),
         TokenType::Usdg => USDGDeployment::by_network(network).map(|d| d.0.clone()),
         // XRPL-only tokens: no EVM deployment registry.
-        TokenType::Rlusd | TokenType::Xrp => None,
+        TokenType::Rlusd | TokenType::Xrp | TokenType::Hbar | TokenType::Hts => None,
     }
 }
 
@@ -2258,6 +2315,11 @@ pub fn get_token_deployment(network: Network, token_type: TokenType) -> Option<T
 /// Returns `None` when the asset is not one we have registered, so a caller can
 /// say "unknown" instead of guessing 6 and being confidently wrong.
 pub fn decimals_for_asset(network: Network, asset: &str) -> Option<u8> {
+    if network.is_hedera() && asset == "0.0.0" { return Some(8); }
+    #[cfg(feature = "hedera")]
+    if network.is_hedera() {
+        if let Some(decimals) = crate::chain::hedera::asset_decimals(network, asset) { return Some(decimals); }
+    }
     let needle = asset.trim().to_ascii_lowercase();
     TokenType::all().iter().find_map(|token_type| {
         let deployment = get_token_deployment(network, *token_type)?;
@@ -2323,7 +2385,7 @@ pub fn supported_networks_for_token(token_type: TokenType) -> Vec<Network> {
         TokenType::Usdt => USDTDeployment::supported_networks().to_vec(),
         TokenType::Usdg => USDGDeployment::supported_networks().to_vec(),
         // XRPL-only tokens: surfaced by the XrplProvider::supported() method.
-        TokenType::Rlusd | TokenType::Xrp => vec![],
+        TokenType::Rlusd | TokenType::Xrp | TokenType::Hbar | TokenType::Hts => vec![],
     }
 }
 
@@ -3137,3 +3199,9 @@ mod arc_testnet_identity_tests {
         );
     }
 }
+
+#[cfg(feature = "hedera")]
+static USDC_HEDERA: Lazy<USDCDeployment> = Lazy::new(|| USDCDeployment(TokenDeployment { asset: TokenAsset { address: MixedAddress::Hedera("0.0.456858".parse().unwrap()), network: Network::Hedera }, decimals: 6, eip712: None }));
+
+#[cfg(feature = "hedera")]
+static USDC_HEDERA_TESTNET: Lazy<USDCDeployment> = Lazy::new(|| USDCDeployment(TokenDeployment { asset: TokenAsset { address: MixedAddress::Hedera("0.0.429274".parse().unwrap()), network: Network::HederaTestnet }, decimals: 6, eip712: None }));

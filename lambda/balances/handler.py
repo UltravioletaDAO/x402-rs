@@ -417,6 +417,13 @@ def get_network_configs() -> dict[str, dict]:
         rpc = os.environ.get(env)
         if rpc:
             configs[name] = {"rpcs": [rpc], "address": address, "type": "evm", "chain_id": chain_id}
+    for suffix, name, mirror in (
+        ("TESTNET", "hedera-testnet", "https://testnet.mirrornode.hedera.com"),
+        ("MAINNET", "hedera-mainnet", "https://mainnet-public.mirrornode.hedera.com"),
+    ):
+        account = os.environ.get(f"HEDERA_ACCOUNT_ID_{suffix}")
+        if account:
+            configs[name] = {"address": account, "mirror": mirror, "type": "hedera"}
     return configs
 
 
@@ -610,6 +617,24 @@ def fetch_xrpl_balance(network: str, config: dict) -> tuple[str, str | None]:
     return network, None
 
 
+def fetch_hedera_balance(network: str, config: dict) -> tuple[str, str | None]:
+    """Native HBAR: numeric account ID, Mirror tinybars, exactly 8 decimals."""
+    import re
+    from decimal import Decimal
+    account = config["address"]
+    if not re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.[1-9][0-9]*", account):
+        return network, None
+    try:
+        data = fetch_json(f"{config['mirror']}/api/v1/accounts/{account}?transactions=false", timeout=8)
+        balance = data.get("balance", {}).get("balance")
+        if data.get("account") != account or data.get("deleted") is not False or type(balance) is not int or balance < 0:
+            return network, None
+        return network, f"{Decimal(balance) / Decimal(100000000):.8f}"
+    except Exception:
+        print(f"Native Hedera balance unavailable: {network}")
+        return network, None
+
+
 def fetch_all_balances() -> dict[str, str | None]:
     """Fetch balances for all networks concurrently."""
     global _cache, _cache_timestamp
@@ -641,6 +666,8 @@ def fetch_all_balances() -> dict[str, str | None]:
                 futures.append(executor.submit(fetch_stellar_balance, network, config))
             elif network_type == "algorand":
                 futures.append(executor.submit(fetch_algorand_balance, network, config))
+            elif network_type == "hedera":
+                futures.append(executor.submit(fetch_hedera_balance, network, config))
             elif network_type == "xrpl":
                 futures.append(executor.submit(fetch_xrpl_balance, network, config))
 

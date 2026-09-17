@@ -610,6 +610,8 @@ pub fn token_symbol(t: TokenType) -> &'static str {
         TokenType::Usdg => "USDG",
         TokenType::Rlusd => "RLUSD",
         TokenType::Xrp => "XRP",
+        TokenType::Hbar => "HBAR",
+        TokenType::Hts => "HTS",
     }
 }
 

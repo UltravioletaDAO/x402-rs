@@ -1516,6 +1516,18 @@
                             <div style="font-size: 0.7rem; color: var(--text-muted);">ETH Balance</div>
                             <div data-tokens="robinhood-mainnet"></div>
                         </div>
+                        <div class="network-badge" data-native-network="hedera:mainnet"
+                            style="display: none; padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%;">
+                            <div style="display: flex; align-items: center; gap: 0.75rem;">
+                                <span aria-hidden="true" style="font-size: 1.6rem; font-weight: 700;">H</span>
+                                <span style="font-weight: 700;">Hedera</span>
+                            </div>
+                            <div class="balance-amount" data-balance="hedera-mainnet"
+                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">Loading...</div>
+                            <div style="font-size: 0.7rem; color: var(--text-muted);">HBAR Balance</div>
+                            <div data-native-tokens style="font-size: 0.8rem;"></div>
+                            <a data-native-account target="_blank" rel="noopener" style="font-size: 0.8rem;"></a>
+                        </div>
                         <div class="network-badge arc" data-arc-network="arc" data-arc-caip="eip155:5042"
                             style="display: none; padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://explorer.arc.io/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank', 'noopener')">
@@ -1797,6 +1809,18 @@
                                 style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">Loading...</div>
                             <div style="font-size: 0.7rem; color: var(--text-muted);">USDC Balance</div>
                             <div data-tokens="arc-testnet"></div>
+                        </div>
+                        <div class="network-badge" data-native-network="hedera:testnet"
+                            style="display: none; padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%;">
+                            <div style="display: flex; align-items: center; gap: 0.75rem;">
+                                <span aria-hidden="true" style="font-size: 1.6rem; font-weight: 700;">H</span>
+                                <span style="font-weight: 700;">Hedera Testnet</span>
+                            </div>
+                            <div class="balance-amount" data-balance="hedera-testnet"
+                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">Loading...</div>
+                            <div style="font-size: 0.7rem; color: var(--text-muted);">HBAR Balance</div>
+                            <div data-native-tokens style="font-size: 0.8rem;"></div>
+                            <a data-native-account target="_blank" rel="noopener" style="font-size: 0.8rem;"></a>
                         </div>
                         <!-- Zama FHE Special Card -->
                         <div class="network-badge zama"
@@ -3287,6 +3311,7 @@
                 (data.kinds || []).forEach(k => {
                     const n = k && k.network;
                     if (typeof n !== 'string') return;
+                    if (n === 'hedera:mainnet') { seen.hedera = 1; return; }
                     if (n.indexOf(':') >= 0) return;            // skip CAIP-2 aliases (eip155:, solana:, xrpl:, ...)
                     if (CANONICAL_TESTNET_RE.test(n)) return;   // skip testnets
                     seen[n.replace(/-mainnet$/, '')] = 1;
@@ -3318,6 +3343,16 @@
                 const served = new Set((d.kinds || []).filter(k => k.scheme === 'exact').map(k => k.network));
                 document.querySelectorAll('[data-arc-network]').forEach(card => {
                     card.style.display = served.has(card.dataset.arcNetwork) || served.has(card.dataset.arcCaip) ? 'flex' : 'none';
+                });
+                document.querySelectorAll('[data-native-network]').forEach(card => {
+                    const kind = (d.kinds || []).find(k => k.x402Version === 2 && k.scheme === 'exact' && k.network === card.dataset.nativeNetwork);
+                    const account = kind?.extra?.feePayer;
+                    if (!kind || typeof account !== 'string' || !/^0\.0\.[1-9][0-9]*$/.test(account)) { card.style.display = 'none'; return; }
+                    card.style.display = 'flex';
+                    card.querySelector('[data-native-tokens]').textContent = (kind.extra.tokens || []).map(t => String(t.token).toUpperCase()).join(' · ');
+                    const link = card.querySelector('[data-native-account]');
+                    link.textContent = account;
+                    link.href = 'https://hashscan.io/' + (kind.network === 'hedera:mainnet' ? 'mainnet' : 'testnet') + '/account/' + account;
                 });
                 const n = countSupportedMainnets(d);
                 if (n > 0) {

@@ -189,6 +189,8 @@ impl TryFrom<Network> for SolanaChain {
             }
             Network::Near => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::NearTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
+            #[cfg(feature = "hedera")]
+            Network::Hedera | Network::HederaTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::Stellar => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::StellarTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             #[cfg(feature = "xrpl")]
@@ -246,6 +248,8 @@ impl TryFrom<MixedAddress> for SolanaAddress {
             MixedAddress::Xrpl(_) => Err(FacilitatorLocalError::InvalidAddress(
                 "expected Solana address".to_string(),
             )),
+            #[cfg(feature = "hedera")]
+            MixedAddress::Hedera(_) => Err(FacilitatorLocalError::InvalidAddress("expected Solana address".into())),
             MixedAddress::Solana(pubkey) => Ok(Self { pubkey }),
         }
     }
@@ -1188,6 +1192,8 @@ impl SolanaProvider {
 
         // Assert valid payment START
         let payment_payload = match &payload.payload {
+            #[cfg(feature = "hedera")]
+            ExactPaymentPayload::Hedera(_) => return Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             ExactPaymentPayload::Evm(..) => {
                 return Err(FacilitatorLocalError::UnsupportedNetwork(None));
             }

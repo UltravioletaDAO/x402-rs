@@ -683,3 +683,7 @@ Apache 2.0
 ---
 
 **Built by [Ultravioleta DAO](https://ultravioletadao.xyz)**
+
+## Native Hedera
+
+Native Hedera `exact` payments use x402 v2, HBAR and allowlisted HTS fungible tokens. Networks are enabled independently and reported by `/supported`; mainnet requires its own funded signer and release canaries. See [configuration, merchant requirements, recovery and validation status](docs/guides/hedera-native.md).

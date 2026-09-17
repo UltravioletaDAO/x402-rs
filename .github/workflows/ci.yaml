@@ -108,7 +108,7 @@ env:
   ECR_REPOSITORY_NAME: facilitator
   ECS_CLUSTER: facilitator-production
   ECS_SERVICE: facilitator-production
-  CARGO_FEATURES: solana,near,stellar,algorand,sui,xrpl
+  CARGO_FEATURES: solana,near,stellar,algorand,sui,xrpl,hedera
 
 concurrency:
   group: cicd-${{ github.ref }}
@@ -133,7 +133,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install build dependencies
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends pkg-config libssl-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends pkg-config libssl-dev protobuf-compiler libprotobuf-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # The landing page states network counts in three places -- the English
@@ -147,6 +147,10 @@ jobs:
       # ERC-8004 and the whole EN/ES cross-check -- runs from the repository.
       - name: Landing page matches its canonical sources (offline)
         run: python3 scripts/verify_landing_canonical.py --offline
+      - name: Native balance monitor unit tests
+        run: |
+          python3 -m pip install boto3
+          python3 -m unittest discover -s tests/scripts -p 'test_*balances.py'
       - name: Build (all production features)
         run: cargo build --locked --features ${{ env.CARGO_FEATURES }}
       # --test-threads=1: tests are fast (compile dominates), and running them
@@ -539,6 +543,9 @@ jobs:
           # day, unapplied, while CPU/memory (which don't fire for an I/O-bound service) were
           # the only live policies and the service never scaled during a 3x traffic spike.
           terraform apply -input=false -auto-approve \
+            -target=aws_dynamodb_table.hedera_settlements \
+            -target=aws_iam_role_policy.hedera_settlement_access \
+            -target=aws_iam_role_policy.secrets_access \
             -target=aws_ecs_task_definition.facilitator \
             -target=aws_ecs_service.facilitator \
             -target=aws_appautoscaling_target.ecs_target \
@@ -565,7 +572,7 @@ jobs:
           # `github.event.before`, so the compare fails and the Lambda is applied. Use it to
           # resync the Lambda when it drifted from main (which is how it was first fixed).
           if files=$(gh api "repos/${{ github.repository }}/compare/${{ github.event.before }}...${{ github.sha }}" --jq '.files[].filename' 2>/dev/null); then
-            if printf '%s\n' "$files" | grep -qE '^(lambda/balances/|terraform/environments/production/(lambda-balances\.tf|arc\.tf|production\.auto\.tfvars)$)'; then
+            if printf '%s\n' "$files" | grep -qE '^(lambda/balances/|terraform/environments/production/(lambda-balances\.tf|arc\.tf|hedera\.tf|production\.auto\.tfvars)$)'; then
               echo "Balances Lambda sources changed; applying."
             else
               echo "No balances Lambda changes in this push; skipping."
@@ -596,7 +603,7 @@ jobs:
             # alerts-solana-mint.tf -- those alarms only ever got applied when some
             # OTHER observability file happened to change in the same push. A gate
             # that skips the file you just added is worse than no gate.
-            if printf '%s\n' "$files" | grep -qE '^terraform/environments/production/(alerts.*\.tf|cloudwatch-.*\.tf|variables\.tf|arc\.tf|production\.auto\.tfvars)$'; then
+            if printf '%s\n' "$files" | grep -qE '^terraform/environments/production/(alerts.*\.tf|cloudwatch-.*\.tf|variables\.tf|arc\.tf|hedera\.tf|production\.auto\.tfvars)$'; then
               echo "Observability config changed; applying."
             else
               echo "No observability changes in this push; skipping."

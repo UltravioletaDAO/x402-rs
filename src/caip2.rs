@@ -32,6 +32,8 @@ pub enum Namespace {
     /// Stellar network.
     /// Reference is the network name ("pubnet" or "testnet").
     Stellar,
+    #[cfg(feature = "hedera")]
+    Hedera,
     /// Fogo blockchain (SVM-based, custom namespace).
     /// Reference is the network name ("mainnet" or "testnet").
     Fogo,
@@ -53,6 +55,8 @@ impl Display for Namespace {
             Namespace::Solana => write!(f, "solana"),
             Namespace::Near => write!(f, "near"),
             Namespace::Stellar => write!(f, "stellar"),
+            #[cfg(feature = "hedera")]
+            Namespace::Hedera => write!(f, "hedera"),
             Namespace::Fogo => write!(f, "fogo"),
             #[cfg(feature = "sui")]
             Namespace::Sui => write!(f, "sui"),
@@ -71,6 +75,8 @@ impl FromStr for Namespace {
             "solana" => Ok(Namespace::Solana),
             "near" => Ok(Namespace::Near),
             "stellar" => Ok(Namespace::Stellar),
+            #[cfg(feature = "hedera")]
+            "hedera" => Ok(Namespace::Hedera),
             "fogo" => Ok(Namespace::Fogo),
             #[cfg(feature = "sui")]
             "sui" => Ok(Namespace::Sui),
@@ -117,6 +123,10 @@ impl Caip2NetworkId {
                 }) {
                     return Err(Caip2ParseError::InvalidGenesisHash(reference));
                 }
+            }
+            #[cfg(feature = "hedera")]
+            Namespace::Hedera => {
+                if reference != "mainnet" && reference != "testnet" { return Err(Caip2ParseError::InvalidNetworkName { namespace: "hedera".into(), reference }); }
             }
             Namespace::Near => {
                 if reference != "mainnet" && reference != "testnet" {

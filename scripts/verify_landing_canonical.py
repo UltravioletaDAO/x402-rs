@@ -101,6 +101,9 @@ def supported_mainnet_chains(data: dict) -> set[str]:
         net = kind.get("network")
         if not isinstance(net, str):
             continue
+        if net == "hedera:mainnet":  # native v2-only, has no v1 alias
+            chains.add("hedera")
+            continue
         if ":" in net:           # skip CAIP-2 aliases
             continue
         if is_testnet(net):      # skip testnets
@@ -378,8 +381,12 @@ def main() -> int:
     if land["erc8004_stat"] is not None and land["erc8004_stat"] not in (len(erc_all), len(erc_main)):
         errors.append(f"landing ERC-8004 stat card = {land['erc8004_stat']} "
                       f"but source has {len(erc_all)} total / {len(erc_main)} mainnet")
-    if land["hedera_refs"] != 0:
-        errors.append(f"landing still has {land['hedera_refs']} 'hedera' reference(s)")
+    html = (REPO / "static" / "index.html").read_text(encoding="utf-8")
+    for network in ("hedera:mainnet", "hedera:testnet"):
+        if not re.search(r'data-native-network="' + re.escape(network) + r'"\s+style="display: none;', html):
+            errors.append(f"{network} card must stay hidden until /supported enables it")
+    if re.search(r'eip155:(295|296)(?:[^0-9]|$)', html):
+        errors.append("Hedera must use native v2 identifiers, not EVM 295/296")
     if claims["upstream_links"]:
         errors.append(f"landing has {claims['upstream_links']} link(s) to {UPSTREAM_REPO}: "
                       f"a person who clicks through does not reach the code that runs")

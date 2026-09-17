@@ -21,6 +21,10 @@ use crate::types::{
 #[cfg(feature = "algorand")]
 pub mod algorand;
 pub mod evm;
+#[cfg(feature = "hedera")]
+pub mod hedera;
+#[cfg(feature = "hedera")]
+use hedera::HederaProvider;
 pub mod failure;
 pub mod near;
 pub mod solana;
@@ -80,6 +84,8 @@ pub enum NetworkProvider {
     Solana(SolanaProvider),
     Near(NearProvider),
     Stellar(StellarProvider),
+    #[cfg(feature = "hedera")]
+    Hedera(HederaProvider),
     #[cfg(feature = "xrpl")]
     Xrpl(XrplProvider),
     #[cfg(feature = "algorand")]
@@ -110,6 +116,8 @@ impl FromEnvByNetworkBuild for NetworkProvider {
                 let provider = NearProvider::from_env(network).await?;
                 provider.map(NetworkProvider::Near)
             }
+            #[cfg(feature = "hedera")]
+            NetworkFamily::Hedera => HederaProvider::from_env(network).await?.map(NetworkProvider::Hedera),
             NetworkFamily::Stellar => {
                 let provider = StellarProvider::from_env(network).await?;
                 provider.map(NetworkProvider::Stellar)
@@ -146,6 +154,8 @@ impl NetworkProviderOps for NetworkProvider {
             NetworkProvider::Solana(provider) => provider.signer_address(),
             NetworkProvider::Near(provider) => provider.signer_address(),
             NetworkProvider::Stellar(provider) => provider.signer_address(),
+            #[cfg(feature = "hedera")]
+            NetworkProvider::Hedera(provider) => provider.signer_address(),
             #[cfg(feature = "xrpl")]
             NetworkProvider::Xrpl(provider) => provider.signer_address(),
             #[cfg(feature = "algorand")]
@@ -161,6 +171,8 @@ impl NetworkProviderOps for NetworkProvider {
             NetworkProvider::Solana(provider) => provider.network(),
             NetworkProvider::Near(provider) => provider.network(),
             NetworkProvider::Stellar(provider) => provider.network(),
+            #[cfg(feature = "hedera")]
+            NetworkProvider::Hedera(provider) => provider.network(),
             #[cfg(feature = "xrpl")]
             NetworkProvider::Xrpl(provider) => provider.network(),
             #[cfg(feature = "algorand")]
@@ -180,6 +192,8 @@ impl Facilitator for NetworkProvider {
             NetworkProvider::Solana(provider) => provider.verify(request).await,
             NetworkProvider::Near(provider) => provider.verify(request).await,
             NetworkProvider::Stellar(provider) => provider.verify(request).await,
+            #[cfg(feature = "hedera")]
+            NetworkProvider::Hedera(provider) => provider.verify(request).await,
             #[cfg(feature = "xrpl")]
             NetworkProvider::Xrpl(provider) => provider.verify(request).await,
             #[cfg(feature = "algorand")]
@@ -195,6 +209,8 @@ impl Facilitator for NetworkProvider {
             NetworkProvider::Solana(provider) => provider.settle(request).await,
             NetworkProvider::Near(provider) => provider.settle(request).await,
             NetworkProvider::Stellar(provider) => provider.settle(request).await,
+            #[cfg(feature = "hedera")]
+            NetworkProvider::Hedera(provider) => provider.settle(request).await,
             #[cfg(feature = "xrpl")]
             NetworkProvider::Xrpl(provider) => provider.settle(request).await,
             #[cfg(feature = "algorand")]
@@ -210,6 +226,8 @@ impl Facilitator for NetworkProvider {
             NetworkProvider::Solana(provider) => provider.supported().await,
             NetworkProvider::Near(provider) => provider.supported().await,
             NetworkProvider::Stellar(provider) => provider.supported().await,
+            #[cfg(feature = "hedera")]
+            NetworkProvider::Hedera(provider) => provider.supported().await,
             #[cfg(feature = "xrpl")]
             NetworkProvider::Xrpl(provider) => provider.supported().await,
             #[cfg(feature = "algorand")]

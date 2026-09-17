@@ -334,6 +334,8 @@ impl TryFrom<Network> for EvmChain {
             Network::ArcTestnet => Ok(EvmChain::new(value, 5042002)),
             Network::Near => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::NearTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
+            #[cfg(feature = "hedera")]
+            Network::Hedera | Network::HederaTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::Stellar => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::StellarTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             #[cfg(feature = "xrpl")]
@@ -1459,6 +1461,8 @@ impl FromEnvByNetworkBuild for EvmProvider {
             Network::Arc | Network::ArcTestnet => true,
             Network::Near => false,           // NEAR is not an EVM chain
             Network::NearTestnet => false,    // NEAR is not an EVM chain
+            #[cfg(feature = "hedera")]
+            Network::Hedera | Network::HederaTestnet => false,
             Network::Stellar => false,        // Stellar is not an EVM chain
             Network::StellarTestnet => false, // Stellar is not an EVM chain
             #[cfg(feature = "xrpl")]
@@ -2461,6 +2465,8 @@ async fn assert_valid_payment<P: Provider>(
     requirements: &PaymentRequirements,
 ) -> Result<(USDC::USDCInstance<P>, ExactEvmPayment, Eip712Domain), FacilitatorLocalError> {
     let payment_payload = match &payload.payload {
+            #[cfg(feature = "hedera")]
+            ExactPaymentPayload::Hedera(_) => return Err(FacilitatorLocalError::UnsupportedNetwork(None)),
         ExactPaymentPayload::Evm(payload) => payload,
         ExactPaymentPayload::Solana(_) => {
             return Err(FacilitatorLocalError::UnsupportedNetwork(None));

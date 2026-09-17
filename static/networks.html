@@ -55,7 +55,7 @@
 <div class="card">
 <div class="v" id="c-mainnets">—</div>
 <div class="k" data-i18n="c.mainnets">payment mainnets</div>
-<div class="src" data-i18n="c.mainnetsSrc">distinct v1 names, testnets excluded</div>
+<div class="src" data-i18n="c.mainnetsSrc">distinct enabled networks, testnets excluded</div>
 </div>
 <div class="card">
 <div class="v" id="c-testnets">—</div>
@@ -166,7 +166,7 @@
 <details class="product-detail" id="caip2-section">
 <summary><h2 data-i18n="h.caip2">Network identifiers: CAIP-2</h2>
 </summary>
-<div class="detail-content"><p data-i18n="caip2.p1">Every network here also answers to a CAIP-2 identifier, and both spellings work everywhere a network is named. They are <em>not</em> shown next to each other, and that is a deliberate refusal rather than an omission: <code>/supported</code> publishes the two spellings as separate entries with no field linking them, and for most chains it publishes no token list under the CAIP-2 form either — measured on 2026-09-02, 49 of the CAIP-2 entries carry no <code>tokens</code>. Pairing them from the page would mean guessing, and a wrong chain id printed next to the right network is worse than no chain id at all. The list below is verbatim from the endpoint.</p><div class="scroll" id="caip2"><span class="muted" data-i18n="loading">loading…</span></div></div></details>
+<div class="detail-content"><p data-i18n="caip2.p1">Use the network identifier returned by <code>/supported</code>. Hedera uses x402 v2 with <code>hedera:mainnet</code> or <code>hedera:testnet</code>, when enabled. Other networks may publish both legacy names and CAIP-2 identifiers. The list below shows the identifiers currently advertised by this facilitator.</p><div class="scroll" id="caip2"><span class="muted" data-i18n="loading">loading…</span></div></div></details>
 <details class="product-detail" id="reading">
 <summary><h2 data-i18n="h.reading">Understand the network data</h2>
 </summary>
@@ -347,7 +347,7 @@ const I18N = {
     "meta.description": "Every network and scheme this x402 facilitator settles, read live from GET /supported: the payment schemes, the stablecoins on each chain, and the facilitator's own gas balance.",
     "lead": "Explore supported chains, payment schemes, and assets. Live capabilities come from the facilitator’s supported endpoint.",
     "c.mainnets": "payment mainnets",
-    "c.mainnetsSrc": "distinct v1 names, testnets excluded",
+    "c.mainnetsSrc": "distinct enabled networks, testnets excluded",
     "c.testnets": "testnets",
     "c.testnetsSrc": "sepolia · fuji · amoy · devnet · …",
     "c.ids": "network identifiers",
@@ -360,7 +360,7 @@ const I18N = {
     "th.network": "network",
     "th.schemes": "schemes",
     "h.caip2": "Network identifiers: CAIP-2",
-    "caip2.p1": "Every network here also answers to a CAIP-2 identifier, and both spellings work everywhere a network is named. They are <em>not</em> shown next to each other, and that is a deliberate refusal rather than an omission: <code>/supported</code> publishes the two spellings as separate entries with no field linking them, and for most chains it publishes no token list under the CAIP-2 form either — measured on 2026-09-02, 49 of the CAIP-2 entries carry no <code>tokens</code>. Pairing them from the page would mean guessing, and a wrong chain id printed next to the right network is worse than no chain id at all. The list below is verbatim from the endpoint.",
+    "caip2.p1": "Use the network identifier returned by <code>/supported</code>. Hedera uses x402 v2 with <code>hedera:mainnet</code> or <code>hedera:testnet</code>, when enabled. Other networks may publish both legacy names and CAIP-2 identifiers. The list below shows the identifiers currently advertised by this facilitator.",
     "th.tokens": "tokens",
     "th.balance": "facilitator gas balance",
     "loading": "loading…",
@@ -422,7 +422,7 @@ const I18N = {
     "meta.description": "Cada red y esquema que liquida este facilitador x402, leídos en vivo de GET /supported: los esquemas de pago, las stablecoins de cada cadena y el saldo de gas del propio facilitador.",
     "lead": "Explora las cadenas, los esquemas de pago y los activos compatibles. Las capacidades se consultan en el endpoint del facilitador.",
     "c.mainnets": "mainnets de pago",
-    "c.mainnetsSrc": "nombres v1 distintos, sin testnets",
+    "c.mainnetsSrc": "redes habilitadas distintas, sin testnets",
     "c.testnets": "testnets",
     "c.testnetsSrc": "sepolia · fuji · amoy · devnet · …",
     "c.ids": "identificadores de red",
@@ -435,7 +435,7 @@ const I18N = {
     "th.network": "red",
     "th.schemes": "esquemas",
     "h.caip2": "Identificadores de red: CAIP-2",
-    "caip2.p1": "Toda red de acá contesta también a un identificador CAIP-2, y las dos formas funcionan en todos lados donde se nombre una red. <em>No</em> se muestran una al lado de la otra, y eso es una negativa deliberada y no una omisión: <code>/supported</code> publica las dos formas como entradas separadas sin ningún campo que las vincule, y para casi todas las cadenas tampoco publica la lista de tokens bajo la forma CAIP-2 — medido el 2026-09-02, 49 de las entradas CAIP-2 no traen <code>tokens</code>. Emparejarlas desde la página sería adivinar, y un chain id equivocado al lado de la red correcta es peor que ningún chain id. La lista de abajo sale del endpoint tal cual.",
+    "caip2.p1": "Usa el identificador de red que devuelve <code>/supported</code>. Hedera usa x402 v2 con <code>hedera:mainnet</code> o <code>hedera:testnet</code>, cuando está habilitada. Otras redes pueden publicar nombres anteriores e identificadores CAIP-2. La lista de abajo muestra los identificadores que anuncia actualmente este facilitador.",
     "th.tokens": "tokens",
     "th.balance": "saldo de gas del facilitador",
     "loading": "cargando…",
@@ -505,12 +505,14 @@ function ingest(data){
   const by = new Map();
   const kinds = (data && data.kinds) || [];
 
-  // Pass 1: the plain v1 names are the rows. CAIP-2 aliases are collected
+  // Native Hedera has no v1 form: retain its advertised v2 identifier as a row.
+  // Other plain v1 names are the rows. CAIP-2 aliases are collected
   // separately -- they are the same network under another spelling, and a row
   // per spelling would double every count on the page.
   for (const k of kinds) {
     const n = k && k.network;
-    if (typeof n !== 'string' || n.indexOf(':') >= 0) continue;
+    if (typeof n !== 'string' || (n.indexOf(':') >= 0 && !/^hedera:(mainnet|testnet)$/.test(n))) continue;
+    if (n.startsWith('hedera:') && k.x402Version !== 2) continue;
     const name = n.replace(/-mainnet$/, '');
     if (!by.has(name)) by.set(name, { name, schemes:new Set(), tokens:new Set(), testnet:TESTNET_RE.test(name) });
     const row = by.get(name);
@@ -542,6 +544,24 @@ function ingest(data){
   pisarVivo('payment-testnets', testnets);
   document.getElementById('c-ids').textContent = ids;
   document.getElementById('c-schemes').textContent = schemes;
+  renderNativeWallets(kinds);
+}
+
+function renderNativeWallets(kinds){
+  document.querySelectorAll('#wallets [data-native-wallet]').forEach(row => row.remove());
+  const tbody = document.querySelector('#wallets tbody');
+  const seen = new Set();
+  for (const kind of kinds) {
+    if (!kind || kind.x402Version !== 2 || !/^hedera:(mainnet|testnet)$/.test(kind.network)) continue;
+    const account = kind.extra && kind.extra.feePayer;
+    if (typeof account !== 'string' || !/^\d+\.\d+\.[1-9]\d*$/.test(account) || seen.has(kind.network)) continue;
+    seen.add(kind.network);
+    const testnet = kind.network === 'hedera:testnet';
+    const row = document.createElement('tr');
+    row.dataset.nativeWallet = kind.network;
+    row.innerHTML = `<td>Hedera</td><td>${testnet ? 'Testnet' : 'Mainnet'}</td><td class="addr"><a href="https://hashscan.io/${testnet ? 'testnet' : 'mainnet'}/account/${account}" rel="noopener">${esc(account)}</a></td>`;
+    tbody.appendChild(row);
+  }
 }
 
 // The balances API spells a network `<stem>-mainnet` / `<stem>-testnet`, which
@@ -554,6 +574,7 @@ function ingest(data){
 // right network would be worse than no balance at all.
 let BALANCE_KEYS = new Set();
 function balanceKey(row){
+  if (/^hedera:(mainnet|testnet)$/.test(row.name)) return row.name.replace(':', '-');
   const stem = row.name.replace(/-(sepolia|testnet|devnet|fuji|amoy|alfajores|holesky|baklava)$/i, '');
   const suffix = row.testnet ? 'testnet' : 'mainnet';
   const candidates = [`${stem}-${suffix}`, row.name, `${stem.split('-')[0]}-${suffix}`];

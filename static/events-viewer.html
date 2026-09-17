@@ -247,6 +247,16 @@ const EXPLORER={
 };
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const short=s=>!s?'—':s.length>16?s.slice(0,8)+'…'+s.slice(-6):s;
+function transactionUrl(network, tx){
+  if (!tx) return null;
+  const hedera = /^(hedera:mainnet|hedera)$/.test(network) ? 'mainnet'
+    : /^(hedera:testnet|hedera-testnet)$/.test(network) ? 'testnet' : null;
+  if (hedera) {
+    const id = /^(\d+\.\d+\.\d+)@(\d+)\.(\d{9})$/.exec(tx);
+    return id ? `https://hashscan.io/${hedera}/transaction/${id[1]}-${id[2]}-${id[3]}` : null;
+  }
+  return Object.hasOwn(EXPLORER, network) ? `${EXPLORER[network]}/tx/${encodeURIComponent(tx)}` : null;
+}
 // Host + path, dropping the scheme: the host is what identifies the seller at a
 // glance and "https://" wastes a third of the column on every row.
 const shortUrl=u=>{
@@ -277,8 +287,9 @@ function render(kind,data,rawLine){
 
   raw.textContent = rawLine + "\n" + raw.textContent;
 
-  const link = data.tx && EXPLORER[data.network]
-    ? `<a href="${EXPLORER[data.network]}/tx/${esc(data.tx)}" target="_blank" rel="noopener">${esc(short(data.tx))}</a>`
+  const txUrl = transactionUrl(data.network, data.tx);
+  const link = txUrl
+    ? `<a href="${esc(txUrl)}" target="_blank" rel="noopener">${esc(short(data.tx))}</a>`
     : esc(short(data.tx));
   const tr=document.createElement('tr');
   if(kind==='settle') tr.className='settle';

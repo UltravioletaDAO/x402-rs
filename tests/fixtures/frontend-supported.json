@@ -1,0 +1,1293 @@
+{
+  "fixtureNote": "Offline UI fixture: advertised aliases captured on 2026-09-17; provider token metadata is applied in verify_frontend_browser.py. No transaction data.",
+  "kinds": [
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "bsc",
+      "networkAliases": [
+        "bsc",
+        "eip155:56"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          },
+          {
+            "token": "ausd"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "solana",
+      "networkAliases": [
+        "solana",
+        "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"
+      ]
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "stellar",
+      "networkAliases": [
+        "stellar",
+        "stellar:pubnet"
+      ]
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "unichain",
+      "networkAliases": [
+        "unichain",
+        "eip155:130"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "xrpl-testnet",
+      "networkAliases": [
+        "xrpl-testnet",
+        "xrpl:1"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          },
+          {
+            "token": "rlusd"
+          },
+          {
+            "token": "xrp"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "scroll",
+      "networkAliases": [
+        "scroll",
+        "eip155:534352"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "robinhood-testnet",
+      "networkAliases": [
+        "robinhood-testnet",
+        "eip155:46630"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdg"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "xrpl",
+      "networkAliases": [
+        "xrpl",
+        "xrpl:0"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          },
+          {
+            "token": "rlusd"
+          },
+          {
+            "token": "xrp"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "ethereum",
+      "networkAliases": [
+        "ethereum",
+        "eip155:1"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          },
+          {
+            "token": "eurc"
+          },
+          {
+            "token": "ausd"
+          },
+          {
+            "token": "pyusd"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "monad",
+      "networkAliases": [
+        "monad",
+        "eip155:143"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          },
+          {
+            "token": "ausd"
+          },
+          {
+            "token": "usdt"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "polygon-amoy",
+      "networkAliases": [
+        "polygon-amoy",
+        "eip155:80002"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "celo-sepolia",
+      "networkAliases": [
+        "celo-sepolia",
+        "eip155:44787"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "hyperevm-testnet",
+      "networkAliases": [
+        "hyperevm-testnet",
+        "eip155:333"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "solana-devnet",
+      "networkAliases": [
+        "solana-devnet",
+        "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"
+      ]
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "robinhood",
+      "networkAliases": [
+        "robinhood",
+        "eip155:4663"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdg"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "skale-base",
+      "networkAliases": [
+        "skale-base",
+        "eip155:1187947933"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "algorand",
+      "networkAliases": [
+        "algorand",
+        "algorand:mainnet"
+      ]
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "near-testnet",
+      "networkAliases": [
+        "near-testnet",
+        "near:testnet"
+      ]
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "celo",
+      "networkAliases": [
+        "celo",
+        "eip155:42220"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          },
+          {
+            "token": "usdt"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "arc",
+      "networkAliases": [
+        "arc",
+        "eip155:5042"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          },
+          {
+            "token": "eurc"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "base-sepolia",
+      "networkAliases": [
+        "base-sepolia",
+        "eip155:84532"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "near",
+      "networkAliases": [
+        "near",
+        "near:mainnet"
+      ]
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "optimism",
+      "networkAliases": [
+        "optimism",
+        "eip155:10"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          },
+          {
+            "token": "usdt"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "arbitrum",
+      "networkAliases": [
+        "arbitrum",
+        "eip155:42161"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          },
+          {
+            "token": "ausd"
+          },
+          {
+            "token": "usdt"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "hedera:testnet",
+      "networkAliases": [
+        "hedera:testnet"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "hbar"
+          },
+          {
+            "token": "usdc"
+          }
+        ],
+        "feePayer": "0.0.10576385"
+      }
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "stellar-testnet",
+      "networkAliases": [
+        "stellar-testnet",
+        "stellar:testnet"
+      ]
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "arc-testnet",
+      "networkAliases": [
+        "arc-testnet",
+        "eip155:5042002"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          },
+          {
+            "token": "eurc"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "arbitrum-sepolia",
+      "networkAliases": [
+        "arbitrum-sepolia",
+        "eip155:421614"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "avalanche-fuji",
+      "networkAliases": [
+        "avalanche-fuji",
+        "eip155:43113"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "optimism-sepolia",
+      "networkAliases": [
+        "optimism-sepolia",
+        "eip155:11155420"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "skale-base-sepolia",
+      "networkAliases": [
+        "skale-base-sepolia",
+        "eip155:324705682"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "unichain-sepolia",
+      "networkAliases": [
+        "unichain-sepolia",
+        "eip155:1301"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "avalanche",
+      "networkAliases": [
+        "avalanche",
+        "eip155:43114"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          },
+          {
+            "token": "eurc"
+          },
+          {
+            "token": "ausd"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "hyperevm",
+      "networkAliases": [
+        "hyperevm",
+        "eip155:999"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "hedera:mainnet",
+      "networkAliases": [
+        "hedera:mainnet"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "hbar"
+          },
+          {
+            "token": "usdc"
+          }
+        ],
+        "feePayer": "0.0.10868300"
+      }
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "fogo-testnet",
+      "networkAliases": [
+        "fogo-testnet",
+        "fogo:testnet"
+      ]
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "base",
+      "networkAliases": [
+        "base",
+        "eip155:8453"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          },
+          {
+            "token": "eurc"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "polygon",
+      "networkAliases": [
+        "polygon",
+        "eip155:137"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          },
+          {
+            "token": "ausd"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "fogo",
+      "networkAliases": [
+        "fogo",
+        "fogo:mainnet"
+      ]
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "algorand-testnet",
+      "networkAliases": [
+        "algorand-testnet",
+        "algorand:testnet"
+      ]
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "sui",
+      "networkAliases": [
+        "sui",
+        "sui:mainnet"
+      ]
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "sui-testnet",
+      "networkAliases": [
+        "sui-testnet",
+        "sui:testnet"
+      ]
+    },
+    {
+      "x402Version": 1,
+      "scheme": "fhe-transfer",
+      "network": "ethereum-sepolia",
+      "networkAliases": [
+        "ethereum-sepolia",
+        "eip155:11155111"
+      ]
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "eip155:56",
+      "networkAliases": [
+        "bsc",
+        "eip155:56"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          },
+          {
+            "token": "ausd"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+      "networkAliases": [
+        "solana",
+        "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"
+      ]
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "stellar:pubnet",
+      "networkAliases": [
+        "stellar",
+        "stellar:pubnet"
+      ]
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "eip155:130",
+      "networkAliases": [
+        "unichain",
+        "eip155:130"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "xrpl:1",
+      "networkAliases": [
+        "xrpl-testnet",
+        "xrpl:1"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          },
+          {
+            "token": "rlusd"
+          },
+          {
+            "token": "xrp"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "eip155:534352",
+      "networkAliases": [
+        "scroll",
+        "eip155:534352"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "eip155:46630",
+      "networkAliases": [
+        "robinhood-testnet",
+        "eip155:46630"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdg"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "xrpl:0",
+      "networkAliases": [
+        "xrpl",
+        "xrpl:0"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          },
+          {
+            "token": "rlusd"
+          },
+          {
+            "token": "xrp"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "eip155:1",
+      "networkAliases": [
+        "ethereum",
+        "eip155:1"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          },
+          {
+            "token": "eurc"
+          },
+          {
+            "token": "ausd"
+          },
+          {
+            "token": "pyusd"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "eip155:143",
+      "networkAliases": [
+        "monad",
+        "eip155:143"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          },
+          {
+            "token": "ausd"
+          },
+          {
+            "token": "usdt"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "eip155:80002",
+      "networkAliases": [
+        "polygon-amoy",
+        "eip155:80002"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "eip155:44787",
+      "networkAliases": [
+        "celo-sepolia",
+        "eip155:44787"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "eip155:333",
+      "networkAliases": [
+        "hyperevm-testnet",
+        "eip155:333"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+      "networkAliases": [
+        "solana-devnet",
+        "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"
+      ]
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "eip155:4663",
+      "networkAliases": [
+        "robinhood",
+        "eip155:4663"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdg"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "eip155:1187947933",
+      "networkAliases": [
+        "skale-base",
+        "eip155:1187947933"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "algorand:mainnet",
+      "networkAliases": [
+        "algorand",
+        "algorand:mainnet"
+      ]
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "near:testnet",
+      "networkAliases": [
+        "near-testnet",
+        "near:testnet"
+      ]
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "eip155:42220",
+      "networkAliases": [
+        "celo",
+        "eip155:42220"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          },
+          {
+            "token": "usdt"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "eip155:5042",
+      "networkAliases": [
+        "arc",
+        "eip155:5042"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          },
+          {
+            "token": "eurc"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "eip155:84532",
+      "networkAliases": [
+        "base-sepolia",
+        "eip155:84532"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "near:mainnet",
+      "networkAliases": [
+        "near",
+        "near:mainnet"
+      ]
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "eip155:10",
+      "networkAliases": [
+        "optimism",
+        "eip155:10"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          },
+          {
+            "token": "usdt"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "eip155:42161",
+      "networkAliases": [
+        "arbitrum",
+        "eip155:42161"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          },
+          {
+            "token": "ausd"
+          },
+          {
+            "token": "usdt"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "stellar:testnet",
+      "networkAliases": [
+        "stellar-testnet",
+        "stellar:testnet"
+      ]
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "eip155:5042002",
+      "networkAliases": [
+        "arc-testnet",
+        "eip155:5042002"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          },
+          {
+            "token": "eurc"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "eip155:421614",
+      "networkAliases": [
+        "arbitrum-sepolia",
+        "eip155:421614"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "eip155:43113",
+      "networkAliases": [
+        "avalanche-fuji",
+        "eip155:43113"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "eip155:11155420",
+      "networkAliases": [
+        "optimism-sepolia",
+        "eip155:11155420"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "eip155:324705682",
+      "networkAliases": [
+        "skale-base-sepolia",
+        "eip155:324705682"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "eip155:1301",
+      "networkAliases": [
+        "unichain-sepolia",
+        "eip155:1301"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "eip155:43114",
+      "networkAliases": [
+        "avalanche",
+        "eip155:43114"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          },
+          {
+            "token": "eurc"
+          },
+          {
+            "token": "ausd"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "eip155:999",
+      "networkAliases": [
+        "hyperevm",
+        "eip155:999"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "fogo:testnet",
+      "networkAliases": [
+        "fogo-testnet",
+        "fogo:testnet"
+      ]
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "eip155:8453",
+      "networkAliases": [
+        "base",
+        "eip155:8453"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          },
+          {
+            "token": "eurc"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "eip155:137",
+      "networkAliases": [
+        "polygon",
+        "eip155:137"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc"
+          },
+          {
+            "token": "ausd"
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "fogo:mainnet",
+      "networkAliases": [
+        "fogo",
+        "fogo:mainnet"
+      ]
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "algorand:testnet",
+      "networkAliases": [
+        "algorand-testnet",
+        "algorand:testnet"
+      ]
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "sui:mainnet",
+      "networkAliases": [
+        "sui",
+        "sui:mainnet"
+      ]
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "sui:testnet",
+      "networkAliases": [
+        "sui-testnet",
+        "sui:testnet"
+      ]
+    },
+    {
+      "x402Version": 2,
+      "scheme": "fhe-transfer",
+      "network": "eip155:11155111",
+      "networkAliases": [
+        "ethereum-sepolia",
+        "eip155:11155111"
+      ]
+    }
+  ]
+}

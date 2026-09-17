@@ -932,14 +932,49 @@
             cursor: pointer;
         }
 
-        .token-pill img {
-            width: 20px;
-            height: 20px;
-            border-radius: 50%;
-            object-fit: contain;
+        /* The six 96px assets contain 12px transparent margins; RLUSD does
+           not. Crop that padding with CSS so every visible logo is 32px. */
+        .token-logo {
+            width: 32px; height: 32px; flex: 0 0 32px;
+            display: inline-flex; align-items: center; justify-content: center;
+            overflow: hidden; border-radius: 50%;
         }
+        .token-logo img {
+            width: 42.6667px; height: 42.6667px; max-width: none;
+            flex-shrink: 0; object-fit: contain;
+        }
+        .token-logo[data-token="rlusd"] img { width: 32px; height: 32px; }
+        .stablecoin-bar {
+            display: flex; flex-wrap: wrap; align-items: center; justify-content: center;
+            gap: 1rem; margin-bottom: 1.25rem; padding: 1rem;
+            background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px;
+        }
+        .stablecoin-heading {
+            font-size: 0.7rem; color: var(--text-muted); font-weight: 600;
+            text-transform: uppercase; letter-spacing: 0.08em;
+        }
+        .stablecoin-filters { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 0.5rem; }
+        .stablecoin-filter {
+            display: inline-flex; align-items: center; justify-content: center;
+            min-width: 48px; min-height: 48px; padding: 6px; border-radius: 12px;
+            border: 1px solid transparent; background: transparent; color: var(--text-muted);
+            font: inherit; cursor: pointer; transition: background 0.15s, border-color 0.15s;
+        }
+        .stablecoin-filter:hover:not(:disabled) {
+            background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.25);
+        }
+        .stablecoin-filter[aria-pressed="true"] {
+            background: rgba(77,190,245,0.18); border-color: var(--accent); color: var(--text-primary);
+        }
+        .stablecoin-filter:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+        .stablecoin-filter:disabled { cursor: default; opacity: 0.4; }
+        .filter-all { padding-inline: 12px; font-size: 0.8rem; }
+        .filter-status { color: var(--text-muted); font-size: 0.8rem; text-align: center; min-height: 1.4em; margin: 0.5rem 0 1rem; }
+        .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 
-        .token-pill.hbar {
+        .tokens-note { text-align: center; color: var(--text-muted); font-size: 0.8rem; margin: 1rem 0; }
+
+        .token-pill.rlusd {
             border-color: rgba(229, 231, 235, 0.3);
         }
 
@@ -978,19 +1013,6 @@
             margin-top: 0.25rem;
             text-transform: uppercase;
             letter-spacing: 0.05em;
-        }
-
-        .stablecoin-icon {
-            width: 24px;
-            height: 24px;
-            border-radius: 50%;
-            object-fit: contain;
-            transition: transform 0.2s ease;
-            cursor: pointer;
-        }
-
-        .stablecoin-icon:hover {
-            transform: scale(1.2);
         }
 
         /* ---------------------------------------------------------------
@@ -1205,25 +1227,30 @@
 
                 <p style="font-size: 0.95rem; color: var(--text-muted); max-width: 700px; margin: 0 auto 1.5rem;" data-i18n-html="hero.baseUrl">Base URL <code style="color: var(--accent); background: rgba(0,212,255,0.1); padding: 0.2rem 0.5rem; border-radius: 4px; word-break: break-all;">https://facilitator.ultravioletadao.xyz</code> · 0% fee · no key, no account</p>
 
-                <!-- Supported Stablecoins Bar -->
-                <div style="display: flex; align-items: center; justify-content: center; gap: 1.5rem; margin-bottom: 2rem; padding: 1rem 2rem; background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px;">
-                    <span style="font-size: 0.7rem; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em;" data-i18n="hero.stablecoins">7 Stablecoins Supported</span>
-                    <div style="display: flex; gap: 0.75rem; align-items: center;">
-                        <img src="/usdc.png" alt="USDC" title="USDC" class="stablecoin-icon" style="width: 28px; height: 28px;">
-                        <img src="/usdt.png" alt="USDT" title="USDT" class="stablecoin-icon" style="width: 28px; height: 28px;">
-                        <img src="/eurc.png" alt="EURC" title="EURC" class="stablecoin-icon" style="width: 28px; height: 28px;">
-                        <img src="/ausd.png" alt="AUSD" title="AUSD" class="stablecoin-icon" style="width: 28px; height: 28px;">
-                        <img src="/pyusd.png" alt="PYUSD" title="PYUSD" class="stablecoin-icon" style="width: 28px; height: 28px;">
-                        <img src="/usdg.png" alt="USDG" title="USDG" class="stablecoin-icon" style="width: 28px; height: 28px;">
-                        <img src="/rlusd.png" alt="RLUSD" title="RLUSD (XRPL)" class="stablecoin-icon" style="width: 28px; height: 28px;">
+                <!-- Stablecoin filters use the same live capabilities as the cards. -->
+                <div class="stablecoin-bar">
+                    <span class="stablecoin-heading" data-stablecoin-count data-i18n="hero.stablecoins">7 Stablecoins Supported</span>
+                    <div class="stablecoin-filters" role="group" aria-labelledby="stablecoin-filter-label">
+                        <span id="stablecoin-filter-label" class="sr-only" data-i18n="filters.label">Filter networks by stablecoin</span>
+                        <button type="button" class="stablecoin-filter filter-all" data-token-filter="" aria-pressed="true" data-i18n="filters.all">All</button>
+                        <button type="button" class="stablecoin-filter" data-token-filter="usdc" aria-label="USDC" title="USDC" aria-pressed="false" disabled><span class="token-logo" data-token="usdc"><img src="/usdc.png" alt="USDC"></span></button>
+                        <button type="button" class="stablecoin-filter" data-token-filter="usdt" aria-label="USDT" title="USDT" aria-pressed="false" disabled><span class="token-logo" data-token="usdt"><img src="/usdt.png" alt="USDT"></span></button>
+                        <button type="button" class="stablecoin-filter" data-token-filter="eurc" aria-label="EURC" title="EURC" aria-pressed="false" disabled><span class="token-logo" data-token="eurc"><img src="/eurc.png" alt="EURC"></span></button>
+                        <button type="button" class="stablecoin-filter" data-token-filter="ausd" aria-label="AUSD" title="AUSD" aria-pressed="false" disabled><span class="token-logo" data-token="ausd"><img src="/ausd.png" alt="AUSD"></span></button>
+                        <button type="button" class="stablecoin-filter" data-token-filter="pyusd" aria-label="PYUSD" title="PYUSD" aria-pressed="false" disabled><span class="token-logo" data-token="pyusd"><img src="/pyusd.png" alt="PYUSD"></span></button>
+                        <button type="button" class="stablecoin-filter" data-token-filter="usdg" aria-label="USDG" title="USDG" aria-pressed="false" disabled><span class="token-logo" data-token="usdg"><img src="/usdg.png" alt="USDG"></span></button>
+                        <button type="button" class="stablecoin-filter" data-token-filter="rlusd" aria-label="RLUSD" title="RLUSD" aria-pressed="false" disabled><span class="token-logo" data-token="rlusd"><img src="/rlusd.png" alt="RLUSD"></span></button>
                     </div>
                 </div>
 
+                <p class="tokens-note" data-i18n="balances.explanation">Balances fund the facilitator’s network fees. Badges show stablecoins accepted for exact payments.</p>
                 <!-- Network Tabs -->
                 <div class="tabs-container">
-                    <button class="tab-button active" onclick="switchTab('mainnet')">Mainnets</button>
-                    <button class="tab-button" onclick="switchTab('testnet')">Testnets</button>
+                    <button class="tab-button active" onclick="switchTab('mainnet', this)">Mainnets</button>
+                    <button class="tab-button" onclick="switchTab('testnet', this)">Testnets</button>
                 </div>
+
+                <p id="stablecoin-filter-status" class="filter-status" role="status" aria-live="polite"></p>
 
                 <!-- Mainnets Tab -->
                 <div id="mainnet-tab" class="tab-content active">
@@ -1549,7 +1576,7 @@
                             <div class="balance-amount" data-balance="hedera-mainnet"
                                 style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">Loading...</div>
                             <div style="font-size: 0.7rem; color: var(--text-muted);" data-i18n="hedera.gasBalance">HBAR Balance (network fees)</div>
-                            <div data-native-tokens></div>
+                            <div data-native-tokens data-tokens="hedera-mainnet"></div>
                         </div>
                         <div class="network-badge arc" data-arc-network="arc" data-arc-caip="eip155:5042"
                             style="display: none; padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
@@ -1833,6 +1860,21 @@
                             <div style="font-size: 0.7rem; color: var(--text-muted);">USDC Balance</div>
                             <div data-tokens="arc-testnet"></div>
                         </div>
+                        <div class="network-badge xrpl"
+                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
+                            onclick="window.open('https://testnet.xrpl.org/accounts/rGhTioKAFHe75KgVnQtacRiKFuPv28Wbwk', '_blank')">
+                            <div style="display: flex; align-items: center; gap: 0.75rem;">
+                                <img src="/xrpl.png" alt="XRPL"
+                                    style="width: 32px; height: 32px; object-fit: contain;">
+                                <span style="font-weight: 700;">XRPL</span>
+                            </div>
+                            <div class="balance-amount" data-balance="xrpl-testnet"
+                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
+                                Loading...
+                            </div>
+                            <div style="font-size: 0.7rem; color: var(--text-muted);" data-i18n="balances.xrpBalance">XRP Balance</div>
+                            <div data-tokens="xrpl-testnet"></div>
+                        </div>
                         <div class="network-badge hedera" data-native-network="hedera:testnet"
                             style="display: none; padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
@@ -1842,10 +1884,10 @@
                             <div class="balance-amount" data-balance="hedera-testnet"
                                 style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">Loading...</div>
                             <div style="font-size: 0.7rem; color: var(--text-muted);" data-i18n="hedera.gasBalance">HBAR Balance (network fees)</div>
-                            <div data-native-tokens></div>
+                            <div data-native-tokens data-tokens="hedera-testnet"></div>
                         </div>
                         <!-- Zama FHE Special Card -->
-                        <div class="network-badge zama"
+                        <div class="network-badge zama" data-capability-network="ethereum-sepolia" data-capability-scheme="fhe-transfer"
                             style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://zama-facilitator.ultravioletadao.xyz', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
@@ -2945,6 +2987,7 @@
 </footer>
     </div>
 
+    <script src="/x402.js?v=20260917"></script>
     <script>
         const translations = {
             en: {
@@ -3002,6 +3045,17 @@
                 "hero.title": "Payment infrastructure for autonomous agents",
                 "hero.description": "Enable AI agents to pay over x402 without network fees, including USDC/EURC on Arc and native USDC on Hedera.",
                 "hedera.gasBalance": "HBAR Balance (network fees)",
+                "tokens.label": "Supported Stablecoins",
+                "filters.label": "Filter networks by stablecoin",
+                "filters.all": "All",
+                "filters.summary": "{shown} of {total} networks · {token}",
+                "filters.empty": "No networks support {token} in this environment.",
+
+                "tokens.loading": "Loading assets…",
+                "tokens.unavailable": "Assets unavailable",
+                "tokens.empty": "No stablecoins advertised",
+                "balances.explanation": "Balances fund the facilitator’s network fees. Badges show stablecoins accepted for exact payments.",
+
                 "hero.stablecoins": "7 Stablecoins Supported",
                 "hero.baseUrl": "Base URL <code style='color: var(--accent); background: rgba(0,212,255,0.1); padding: 0.2rem 0.5rem; border-radius: 4px; word-break: break-all;'>https://facilitator.ultravioletadao.xyz</code> · 0% fee · no key, no account",
                 "status": "Service Online",
@@ -3172,6 +3226,17 @@
                 "hero.title": "Infraestructura de pagos para agentes autónomos",
                 "hero.description": "Permite que los agentes IA paguen por x402 sin comisiones de red, incluyendo USDC/EURC en Arc y USDC nativo en Hedera.",
                 "hedera.gasBalance": "Saldo HBAR (comisiones de red)",
+                "tokens.label": "Monedas estables admitidas",
+                "filters.label": "Filtrar redes por moneda estable",
+                "filters.all": "Todas",
+                "filters.summary": "{shown} de {total} redes · {token}",
+                "filters.empty": "Ninguna red admite {token} en este entorno.",
+
+                "tokens.loading": "Cargando activos…",
+                "tokens.unavailable": "Activos no disponibles",
+                "tokens.empty": "No se anuncian monedas estables",
+                "balances.explanation": "Los saldos financian las comisiones de red del facilitador. Los iconos muestran las monedas estables admitidas para pagos exactos.",
+
                 "hero.stablecoins": "7 Stablecoins Soportadas",
                 "hero.baseUrl": "URL base <code style='color: var(--accent); background: rgba(0,212,255,0.1); padding: 0.2rem 0.5rem; border-radius: 4px; word-break: break-all;'>https://facilitator.ultravioletadao.xyz</code> · 0% de comisión · sin key, sin cuenta",
                 "status": "Servicio en Línea",
@@ -3344,6 +3409,7 @@
             // survives EN/ES language switches. The translation strings carry a
             // "21" fallback; this overwrites it with the real number on-chain.
             applyCanonicalCounts();
+            displayTokenSupport();
         }
 
         // ====================================================================
@@ -3353,23 +3419,11 @@
         // /supported and rewrite every [data-live-count="payment-mainnets"] node.
         // scripts/verify_landing_canonical.py enforces the same numbers at build.
         // ====================================================================
-        const CANONICAL_TESTNET_RE = /(testnet|sepolia|devnet|fuji|amoy|alfajores|holesky|baklava)/i;
         function countSupportedMainnets(data) {
-            try {
-                const seen = {};
-                (data.kinds || []).forEach(k => {
-                    const n = k && k.network;
-                    if (typeof n !== 'string') return;
-                    if (n === 'hedera:mainnet') { seen.hedera = 1; return; }
-                    if (n.indexOf(':') >= 0) return;            // skip CAIP-2 aliases (eip155:, solana:, xrpl:, ...)
-                    if (CANONICAL_TESTNET_RE.test(n)) return;   // skip testnets
-                    seen[n.replace(/-mainnet$/, '')] = 1;
-                });
-                return Object.keys(seen).length;
-            } catch (e) { return 0; }
+            return supportedCatalog(data).filter(r => !r.testnet && r.schemes.has('exact')).length;
         }
         function applyCanonicalCounts() {
-            if (!window.__paymentMainnets) return;
+            if (typeof window.__paymentMainnets !== 'number') return;
             document.querySelectorAll('[data-live-count="payment-mainnets"]').forEach(el => {
                 el.textContent = el.textContent.replace(/\d+/, window.__paymentMainnets);
             });
@@ -3388,32 +3442,28 @@
         })();
 
         (function loadCanonicalCounts() {
-            fetch('/supported').then(r => r.json()).then(d => {
-                const served = new Set((d.kinds || []).filter(k => k.scheme === 'exact').map(k => k.network));
-                document.querySelectorAll('[data-arc-network]').forEach(card => {
-                    card.style.display = served.has(card.dataset.arcNetwork) || served.has(card.dataset.arcCaip) ? 'flex' : 'none';
-                });
+            fetch('/supported').then(r => {
+                if (!r.ok) throw new Error('Supported catalog unavailable');
+                return r.json();
+            }).then(d => {
+                window.__supportedCatalog = supportedCatalog(d);
+                window.__catalogState = 'ready';
+                window.__paymentMainnets = countSupportedMainnets(d);
+                applyCanonicalCounts();
+                displayTokenSupport();
                 document.querySelectorAll('[data-native-network]').forEach(card => {
-                    const kind = (d.kinds || []).find(k => k.x402Version === 2 && k.scheme === 'exact' && k.network === card.dataset.nativeNetwork);
+                    const kind = d.kinds.find(k => k.x402Version === 2 && k.scheme === 'exact' && k.network === card.dataset.nativeNetwork);
                     const account = kind?.extra?.feePayer;
-                    if (!kind || typeof account !== 'string' || !/^0\.0\.[1-9][0-9]*$/.test(account)) { card.style.display = 'none'; return; }
-                    card.style.display = 'flex';
-                    renderTokenSupport(card.querySelector('[data-native-tokens]'),
-                        (kind.extra.tokens || []).map(t => String(t.token).toLowerCase()).filter(t => t === 'usdc'));
+                    if (typeof account !== 'string' || !/^0\.0\.[1-9][0-9]*$/.test(account)) return;
                     const accountUrl = 'https://hashscan.io/' + (kind.network === 'hedera:mainnet' ? 'mainnet' : 'testnet') + '/account/' + account;
                     card.onclick = () => window.open(accountUrl, '_blank', 'noopener');
                     const link = document.querySelector('[data-native-account="' + kind.network + '"]');
                     if (link) { link.textContent = account; link.href = accountUrl; }
                 });
-                const n = countSupportedMainnets(d);
-                if (n > 0) {
-                    window.__paymentMainnets = n;
-                    applyCanonicalCounts();
-                    if (n !== 22) {
-                        console.warn('[canonical] /supported reports ' + n + ' mainnet payment networks, not 22. This page no longer types that number anywhere -- it shows the grid -- so nothing here is wrong yet; the pages that DO type it are the ones to check. Run scripts/verify_landing_canonical.py.');
-                    }
-                }
-            }).catch(() => { /* keep the hardcoded fallback on network error */ });
+            }).catch(() => {
+                window.__catalogState = 'unavailable';
+                displayTokenSupport();
+            });
         })();
 
         // Curated Bazaar counters. Served from the facilitator's own 60s-cached
@@ -3542,6 +3592,7 @@
             'algorand-mainnet': { api: 'https://mainnet-api.algonode.cloud/v2/accounts/' + ALGORAND_MAINNET, addr: ALGORAND_MAINNET, type: 'algorand' },
             'algorand-testnet': { api: 'https://testnet-api.algonode.cloud/v2/accounts/' + ALGORAND_TESTNET, addr: ALGORAND_TESTNET, type: 'algorand' },
             // XRPL native (XRP Ledger). xrplcluster.com allows browser CORS; s1.ripple.com is the fallback.
+            'xrpl-testnet': { rpcs: ['https://s.altnet.rippletest.net:51234/'], addr: 'rGhTioKAFHe75KgVnQtacRiKFuPv28Wbwk', type: 'xrpl' },
             'xrpl-mainnet': { rpcs: ['https://xrplcluster.com/', 'https://s1.ripple.com:51234/'], addr: 'rfADKkVXBNqK3z72tVSS3LVzAR3psYkonp', type: 'xrpl' },
         };
 
@@ -3735,7 +3786,7 @@
                     const balanceEl = document.querySelector(`[data-balance="${network}"]`);
                     if (balanceEl) {
                         handled.add(network);
-                        if (balance && balance !== 'null') {
+                        if (balance !== null && balance !== undefined && balance !== 'null' && balance !== '') {
                             balanceEl.textContent = balance;
                         } else {
                             failedNetworks.push(network);
@@ -3766,7 +3817,7 @@
                     if (network && PUBLIC_RPCS[network]) {
                         failedNetworks.push(network);
                         el.textContent = '...';
-                    } else if (el.textContent === '...') {
+                    } else {
                         el.textContent = 'N/A';
                     }
                 });
@@ -3787,98 +3838,84 @@
         }
 
         // Tab switching function (global scope for onclick attributes)
-        window.switchTab = function (tab) {
+        window.switchTab = function (tab, button) {
             // Update button states
             document.querySelectorAll('.tab-button').forEach(btn => {
                 btn.classList.remove('active');
             });
-            event.target.classList.add('active');
+            button?.classList.add('active');
 
             // Update content visibility
             document.querySelectorAll('.tab-content').forEach(content => {
                 content.classList.remove('active');
             });
             document.getElementById(tab + '-tab').classList.add('active');
+            updateStablecoinFilters();
         };
 
         // Fetch balances once on page load (no timer - balances cached by backend)
         fetchWalletBalances();
 
-        // Token support configuration per network (based on EIP-3009 verification)
-        // See docs/STABLECOIN_EXPANSION_PLAN.md for verification details
-        const TOKEN_SUPPORT = {
-            // Mainnets
-            'ethereum-mainnet': ['usdc', 'eurc', 'ausd', 'pyusd'],
-            'base-mainnet': ['usdc', 'eurc'],
-            'avalanche-mainnet': ['usdc', 'eurc', 'ausd'],
-            'polygon-mainnet': ['usdc', 'ausd'],
-            'arbitrum-mainnet': ['usdc', 'ausd', 'usdt'],
-            'optimism-mainnet': ['usdc', 'usdt'],
-            'celo-mainnet': ['usdc', 'usdt'],
-            'hyperevm-mainnet': ['usdc'],
-            'unichain-mainnet': ['usdc'],
-            'monad-mainnet': ['usdc', 'ausd', 'usdt'],
-            'bsc-mainnet': ['ausd'],
-            // Testnets (USDC only for now)
-            'ethereum-testnet': ['usdc'],
-            'base-testnet': ['usdc'],
-            'avalanche-testnet': ['usdc'],
-            'polygon-testnet': ['usdc'],
-            'arbitrum-testnet': ['usdc'],
-            'optimism-testnet': ['usdc'],
-            'celo-testnet': ['usdc'],
-            'unichain-testnet': ['usdc'],
-            'hyperevm-testnet': ['usdc'],
-            // Non-EVM (Solana/Fogo/NEAR/Stellar use different standards)
-            'solana-mainnet': ['usdc', 'ausd', 'pyusd'],
-            'solana-devnet': ['usdc', 'pyusd'],
-            'fogo-mainnet': ['usdc'],
-            'fogo-testnet': ['usdc'],
-            'near-mainnet': ['usdc'],
-            'near-testnet': ['usdc'],
-            'stellar-mainnet': ['usdc'],
-            'stellar-testnet': ['usdc'],
-            'algorand-mainnet': ['usdc'],
-            'algorand-testnet': ['usdc'],
-            'sui-mainnet': ['usdc', 'ausd'],
-            'sui-testnet': ['usdc'],
-            'skale-mainnet': ['usdc'],
-            'skale-testnet': ['usdc'],
-            'scroll-mainnet': ['usdc'],
-            'robinhood-mainnet': ['usdg'],
-            'robinhood-testnet': ['usdg'],
-            'arc-mainnet': ['usdc', 'eurc'],
-            'arc-testnet': ['usdc', 'eurc'],
-        };
-
-        const TOKEN_INFO = {
-            'usdc': { name: 'USDC', decimals: 6, logo: '/usdc.png' },
-            'eurc': { name: 'EURC', decimals: 6, logo: '/eurc.png' },
-            'ausd': { name: 'AUSD', decimals: 6, logo: '/ausd.png' },
-            'pyusd': { name: 'PYUSD', decimals: 6, logo: '/pyusd.png' },
-            'usdt': { name: 'USDT', decimals: 6, logo: '/usdt.png' },
-            'usdg': { name: 'USDG', decimals: 6, logo: '/usdg.png' },
-        };
-
-        // Shared stablecoin badges. Native gas balances are displayed separately.
-        function renderTokenSupport(container, tokens, label = 'Supported Stablecoins') {
-            const supported = tokens.filter(token => TOKEN_INFO[token]);
-            if (!supported.length) { container.replaceChildren(); return; }
-            const badgesHtml = supported.map(token => {
-                const info = TOKEN_INFO[token];
-                return `<span class="token-pill ${token}" title="${info.name}"><img src="${info.logo}" alt="${info.name}"></span>`;
-            }).join('');
-            container.innerHTML = `
-                <div class="tokens-label">${label}</div>
-                <div class="token-badges">${badgesHtml}</div>
-            `;
+        // Capability badges are always derived from the running facilitator.
+        function displayTokenSupport() {
+            const tr = key => translations[currentLang]?.[key] || translations.en[key];
+            document.querySelectorAll('[data-tokens]').forEach(container => {
+                const row = window.__supportedCatalog?.find(r => r.aliases.has(landingNetworkName(container.dataset.tokens)));
+                const card = container.closest('.network-badge');
+                if (window.__catalogState === 'ready') card.style.display = matchesStablecoinFilter(row, window.__stablecoinFilter) ? 'flex' : 'none';
+                const tokens = stablecoinsForCard(row);
+                const label = document.createElement('div');
+                label.className = 'tokens-label';
+                label.textContent = tr(tokens === null ? (window.__catalogState ? 'tokens.unavailable' : 'tokens.loading') : tokens.length ? 'tokens.label' : 'tokens.empty');
+                container.replaceChildren(label);
+                if (!tokens?.length) return;
+                const badges = document.createElement('div');
+                badges.className = 'token-badges';
+                tokens.forEach(token => {
+                    const badge = document.createElement('span');
+                    badge.className = 'token-pill ' + token;
+                    badge.title = token.toUpperCase();
+                    const img = document.createElement('img');
+                    img.src = '/' + ICONO_DE_TOKEN[token] + '.png';
+                    img.alt = token.toUpperCase();
+                    // An unavailable image must still identify the payment asset.
+                    img.onerror = () => { badge.textContent = token.toUpperCase(); };
+                    const logo = document.createElement('span');
+                    logo.className = 'token-logo';
+                    logo.dataset.token = token;
+                    logo.append(img);
+                    badge.append(logo);
+                    badges.append(badge);
+                });
+                container.append(badges);
+            });
+            document.querySelectorAll('[data-capability-scheme]').forEach(card => {
+                const enabled = window.__supportedCatalog?.some(r => r.aliases.has(card.dataset.capabilityNetwork) && r.schemes.has(card.dataset.capabilityScheme));
+                card.style.display = enabled && !window.__stablecoinFilter ? 'flex' : 'none';
+            });
+            updateStablecoinFilters();
         }
 
-        // Display supported tokens for each network card.
-        function displayTokenSupport() {
-            document.querySelectorAll('[data-tokens]').forEach(container => {
-                renderTokenSupport(container, TOKEN_SUPPORT[container.getAttribute('data-tokens')] || []);
+        function updateStablecoinFilters() {
+            const tr = key => translations[currentLang]?.[key] || translations.en[key];
+            const available = new Set((window.__supportedCatalog || []).flatMap(r => stablecoinsForCard(r) || []));
+            document.querySelectorAll('[data-token-filter]').forEach(button => {
+                const token = button.dataset.tokenFilter;
+                button.setAttribute('aria-pressed', String((window.__stablecoinFilter || '') === token));
+                button.disabled = Boolean(token && (window.__catalogState !== 'ready' || !available.has(token)));
             });
+            const heading = document.querySelector('[data-stablecoin-count]');
+            heading.textContent = window.__catalogState === 'ready' ? tr('hero.stablecoins').replace(/\d+/, available.size) : tr(window.__catalogState ? 'tokens.unavailable' : 'tokens.loading');
+            const status = document.getElementById('stablecoin-filter-status');
+            if (!window.__stablecoinFilter || window.__catalogState !== 'ready') { status.textContent = ''; return; }
+            const cards = [...document.querySelectorAll('.tab-content.active .network-badge')].filter(card => card.querySelector('[data-tokens]'));
+            const total = cards.filter(card => {
+                const key = card.querySelector('[data-tokens]')?.dataset.tokens;
+                return window.__supportedCatalog.some(r => r.aliases.has(landingNetworkName(key)) && r.schemes.has('exact'));
+            }).length;
+            const shown = cards.filter(card => card.style.display !== 'none').length;
+            status.textContent = tr(shown ? 'filters.summary' : 'filters.empty')
+                .replace('{shown}', shown).replace('{total}', total).replace('{token}', window.__stablecoinFilter.toUpperCase());
         }
 
         // Shuffle network cards if random mode is enabled
@@ -3892,7 +3929,7 @@
             [mainnetTab, testnetTab].forEach(tab => {
                 if (!tab) return;
                 // Find the grid container (first child with display flex and flex-wrap)
-                const grids = tab.querySelectorAll('div[style*="flex-wrap"]');
+                const grids = tab.querySelectorAll('.networks');
                 grids.forEach(grid => {
                     const cards = Array.from(grid.querySelectorAll('.network-badge'));
                     if (cards.length < 2) return;
@@ -3909,6 +3946,14 @@
             });
             console.log('Network cards shuffled (random mode ON)');
         }
+
+        document.querySelectorAll('[data-token-filter]').forEach(button => {
+            button.addEventListener('click', () => {
+                const token = button.dataset.tokenFilter;
+                window.__stablecoinFilter = token && token !== window.__stablecoinFilter ? token : null;
+                displayTokenSupport();
+            });
+        });
 
         // Initialize on page load
         shuffleNetworkCards();

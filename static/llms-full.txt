@@ -214,8 +214,8 @@ the money that moves is the buyer's payment going to the seller.
 
 | Network | Payment identifier | Asset | Facilitator fee payer |
 | --- | --- | --- | --- |
-| Arc mainnet | `arc` / `eip155:5042` | USDC (6 decimals) | `0x103040545AC5031A11E8C03dd11324C7333a13C7` |
-| Arc testnet | `arc-testnet` / `eip155:5042002` | USDC (6 decimals) | `0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8` |
+| Arc mainnet | `arc` / `eip155:5042` | USDC/EURC (6 decimals) | `0x103040545AC5031A11E8C03dd11324C7333a13C7` |
+| Arc testnet | `arc-testnet` / `eip155:5042002` | USDC/EURC (6 decimals) | `0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8` |
 | Hedera mainnet | `hedera:mainnet` | USDC `0.0.456858` (6) | `0.0.10868300` |
 | Hedera testnet | `hedera:testnet` | USDC `0.0.429274` (6) | `0.0.10576385` |
 

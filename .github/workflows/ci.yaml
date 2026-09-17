@@ -147,6 +147,8 @@ jobs:
       # ERC-8004 and the whole EN/ES cross-check -- runs from the repository.
       - name: Landing page matches its canonical sources (offline)
         run: python3 scripts/verify_landing_canonical.py --offline
+      - name: Frontend capability and icon regressions
+        run: node --test tests/frontend-capabilities.test.cjs
       - name: Native balance monitor unit tests
         run: |
           python3 -m pip install boto3

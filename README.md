@@ -93,7 +93,7 @@ durable-evidence and other unsupported extensions.
 | **HyperEVM** | 999 | USDC | [hyperliquid.xyz](https://hyperliquid.xyz) |
 | **Unichain** | 130 | USDC | [uniscan.xyz](https://uniscan.xyz) |
 | **Monad** | 143 | USDC, AUSD, USDT | [monad.xyz](https://monad.xyz) |
-| **BSC** | 56 | USDC | [bscscan.com](https://bscscan.com) |
+| **BSC** | 56 | AUSD | [bscscan.com](https://bscscan.com) |
 | **SKALE Base** | 1187947933 | USDC.e | [skale-base-explorer](https://skale-base-explorer.skalenodes.com) |
 | **Scroll** | 534352 | USDC | [scrollscan.com](https://scrollscan.com) |
 | **Robinhood Chain** | 4663 | USDG | [robinhoodchain.blockscout.com](https://robinhoodchain.blockscout.com) |
@@ -132,12 +132,12 @@ durable-evidence and other unsupported extensions.
 
 ### Supported Stablecoins
 
-> **Note**: Run `python scripts/stablecoin_matrix.py` for the authoritative stablecoin support matrix.
+> **Note**: Use `GET /supported` for payment capabilities on the running facilitator. `python scripts/stablecoin_matrix.py` inventories registered deployments, including assets that a payment provider cannot process.
 
 | Token | Networks |
 |-------|----------|
-| **USDC** | All payment networks except Robinhood Chain (no Circle USDC there) |
-| **AUSD** | Ethereum, Polygon, Arbitrum, Avalanche, Monad, BSC, Solana, Sui |
+| **USDC** | All payment networks except Robinhood Chain and BSC (BSC USDC lacks ERC-3009) |
+| **AUSD** | Ethereum, Polygon, Arbitrum, Avalanche, Monad, BSC, Solana |
 | **EURC** | Ethereum, Base, Avalanche, Arc mainnet/testnet |
 | **USDT** | Arbitrum, Celo, Optimism, Monad |
 | **PYUSD** | Ethereum, Solana (Token-2022) |
@@ -145,33 +145,33 @@ durable-evidence and other unsupported extensions.
 | **RLUSD** | XRPL |
 | **XRP** | XRPL (native) |
 
-**Full Matrix:**
+**Exact payment stablecoins:**
 
-| Network | USDC | AUSD | EURC | USDT | PYUSD | USDG |
-|---------|:----:|:----:|:----:|:----:|:-----:|:----:|
-| Ethereum | Y | Y | Y | - | Y | - |
-| Base | Y | - | Y | - | - | - |
-| Arbitrum | Y | Y | - | Y | - | - |
-| Optimism | Y | - | - | Y | - | - |
-| Polygon | Y | Y | - | - | - | - |
-| Avalanche | Y | Y | Y | - | - | - |
-| Celo | Y | - | - | Y | - | - |
-| BSC | Y | Y | - | - | - | - |
-| Monad | Y | Y | - | Y | - | - |
-| HyperEVM | Y | - | - | - | - | - |
-| Unichain | Y | - | - | - | - | - |
-| Scroll | Y | - | - | - | - | - |
-| Robinhood Chain | - | - | - | - | - | Y |
-| Arc (mainnet + testnet) | Y | - | Y | - | - | - |
-| Hedera (mainnet + testnet) | Y | - | - | - | - | - |
-| SKALE Base | Y | - | - | - | - | - |
-| Solana | Y | Y | - | - | Y | - |
-| Sui | Y | Y | - | - | - | - |
-| Fogo | Y | - | - | - | - | - |
-| NEAR | Y | - | - | - | - | - |
-| Stellar | Y | - | - | - | - | - |
-| Algorand | Y | - | - | - | - | - |
-| XRPL | Y | - | - | - | - | - |
+| Network | USDC | AUSD | EURC | USDT | PYUSD | USDG | RLUSD |
+|---------|:----:|:----:|:----:|:----:|:-----:|:----:|:-----:|
+| Ethereum | Y | Y | Y | - | Y | - | - |
+| Base | Y | - | Y | - | - | - | - |
+| Arbitrum | Y | Y | - | Y | - | - | - |
+| Optimism | Y | - | - | Y | - | - | - |
+| Polygon | Y | Y | - | - | - | - | - |
+| Avalanche | Y | Y | Y | - | - | - | - |
+| Celo | Y | - | - | Y | - | - | - |
+| BSC | - | Y | - | - | - | - | - |
+| Monad | Y | Y | - | Y | - | - | - |
+| HyperEVM | Y | - | - | - | - | - | - |
+| Unichain | Y | - | - | - | - | - | - |
+| Scroll | Y | - | - | - | - | - | - |
+| Robinhood Chain | - | - | - | - | - | Y | - |
+| Arc (mainnet + testnet) | Y | - | Y | - | - | - | - |
+| Hedera (mainnet + testnet) | Y | - | - | - | - | - | - |
+| SKALE Base | Y | - | - | - | - | - | - |
+| Solana | Y | Y | - | - | Y | - | - |
+| Sui | Y | - | - | - | - | - | - |
+| Fogo | Y | - | - | - | - | - | - |
+| NEAR | Y | - | - | - | - | - | - |
+| Stellar | Y | - | - | - | - | - | - |
+| Algorand | Y | - | - | - | - | - | - |
+| XRPL | Y | - | - | - | - | - | Y |
 
 > **Arc and Hedera note**: both are served on mainnet *and* testnet as of
 > 2026-09-17 03:08Z. Each network still has its own independent activation

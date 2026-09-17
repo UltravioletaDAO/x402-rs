@@ -60,8 +60,9 @@ def parse_network_rs():
 def print_matrix(matrix, stablecoins, networks):
     """Print human-readable matrix."""
     print("=" * 80)
-    print("STABLECOIN SUPPORT MATRIX (Mainnets Only)")
+    print("REGISTERED STABLECOIN DEPLOYMENTS (Mainnets Only)")
     print("Generated from: src/network.rs")
+    print("Deployment inventory only; current payment capabilities: GET /supported")
     print("=" * 80)
     print()
 

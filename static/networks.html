@@ -18,7 +18,7 @@
 <meta name="twitter:image" content="https://facilitator.ultravioletadao.xyz/og-arc-hedera.png">
 <link rel="icon" href="/favicon.ico">
 <link rel="stylesheet" href="/uv.css?v=20260909">
-<script src="/x402.js" defer></script>
+<script src="/x402.js?v=20260917"></script>
 </head>
 <body data-page="networks" class="product-page">
 
@@ -448,35 +448,10 @@ let NETWORKS = [];   // [{name, caip2, schemes:Set, tokens:Set, testnet}]
 let FILTER = 'mainnet';
 
 function ingest(data){
-  const by = new Map();
-  const kinds = (data && data.kinds) || [];
-
-  // Native Hedera has no v1 form: retain its advertised v2 identifier as a row.
-  // Other plain v1 names are the rows. CAIP-2 aliases are collected
-  // separately -- they are the same network under another spelling, and a row
-  // per spelling would double every count on the page.
-  for (const k of kinds) {
-    const n = k && k.network;
-    if (typeof n !== 'string' || (n.indexOf(':') >= 0 && !/^hedera:(mainnet|testnet)$/.test(n))) continue;
-    if (n.startsWith('hedera:') && k.x402Version !== 2) continue;
-    const name = n.replace(/-mainnet$/, '');
-    if (!by.has(name)) by.set(name, { name, schemes:new Set(), tokens:new Set(), testnet:TESTNET_RE.test(name) });
-    const row = by.get(name);
-    if (k.scheme) row.schemes.add(k.scheme);
-    for (const tk of ((k.extra && k.extra.tokens) || [])) if (tk && tk.token) row.tokens.add(tk.token);
-  }
-
-  // Pass 2: the CAIP-2 identifiers, listed and NOT paired. /supported gives no
-  // field tying an alias to its v1 name, and 49 of the alias entries carry no
-  // token list to match on either (measured 2026-09-02), so any pairing done
-  // here would be a guess dressed as data.
-  const aliases = [...new Set(kinds.map(k => k && k.network)
-    .filter(n => typeof n === 'string' && n.indexOf(':') >= 0))].sort();
-  document.getElementById('caip2').innerHTML =
-    aliases.map(a => `<span class="tag">${esc(a)}</span>`).join('');
-
-  NETWORKS = [...by.values()].sort((a, b) =>
-    (a.testnet - b.testnet) || a.name.localeCompare(b.name));
+  const kinds = data.kinds;
+  NETWORKS = supportedCatalog(data);
+  const aliases = [...new Set(NETWORKS.flatMap(r => [...r.aliases]).filter(n => n.includes(':')))].sort();
+  document.getElementById('caip2').innerHTML = aliases.map(a => `<span class="tag">${esc(a)}</span>`).join('');
 
   const mainnets = NETWORKS.filter(r => !r.testnet).length;
   const testnets = NETWORKS.length - mainnets;
@@ -553,7 +528,7 @@ function render(){
   document.getElementById('rowcount').textContent = `${rows.length} ${t('rows')}`;
   tbody.innerHTML = rows.map(r => {
     const schemes = [...r.schemes].sort().map(s => `<span class="tag">${esc(s)}</span>`).join('');
-    const tokens = [...r.tokens].sort().map(s => `<span class="tag">${esc(s.toUpperCase())}</span>`).join('')
+    const tokens = [...r.tokens].sort().map(s => `<span class="tag">${chipToken(s, 'chip-red--linea')}${esc(s.toUpperCase())}</span>`).join('')
       || '<span class="muted">—</span>';
     const key = balanceKey(r);
     return `<tr>
@@ -579,7 +554,7 @@ document.querySelectorAll('#live button[data-filter]').forEach(b => {
 // carries. A failure of the second must not empty the table, so it is caught
 // on its own and degrades to "no balances published".
 Promise.all([
-  fetch('/supported').then(r => r.json()),
+  fetch('/supported').then(r => { if (!r.ok) throw new Error('Supported catalog unavailable'); return r.json(); }),
   fetch('/api/balances').then(r => r.ok ? r.json() : null).catch(() => null),
 ])
   .then(([supported, balances]) => {
@@ -664,6 +639,7 @@ const PUBLIC_RPCS = {
     'algorand-testnet': { api: 'https://testnet-api.algonode.cloud/v2/accounts/' + ALGORAND_TESTNET, addr: ALGORAND_TESTNET, type: 'algorand' },
     // XRPL native (XRP Ledger). xrplcluster.com allows browser CORS; s1.ripple.com is the fallback.
     'xrpl-mainnet': { rpcs: ['https://xrplcluster.com/', 'https://s1.ripple.com:51234/'], addr: 'rfADKkVXBNqK3z72tVSS3LVzAR3psYkonp', type: 'xrpl' },
+    'xrpl-testnet': { rpcs: ['https://s.altnet.rippletest.net:51234/'], addr: 'rGhTioKAFHe75KgVnQtacRiKFuPv28Wbwk', type: 'xrpl' },
 };
 
 // Fallback: fetch EVM balance with multi-RPC retry support
@@ -856,7 +832,7 @@ async function fetchWalletBalances() {
             const balanceEl = document.querySelector(`[data-balance="${network}"]`);
             if (balanceEl) {
                 handled.add(network);
-                if (balance && balance !== 'null') {
+                if (balance !== null && balance !== undefined && balance !== 'null' && balance !== '') {
                     balanceEl.textContent = balance;
                 } else {
                     failedNetworks.push(network);
@@ -887,7 +863,7 @@ async function fetchWalletBalances() {
             if (network && PUBLIC_RPCS[network]) {
                 failedNetworks.push(network);
                 el.textContent = '...';
-            } else if (el.textContent === '...') {
+            } else {
                 el.textContent = 'N/A';
             }
         });

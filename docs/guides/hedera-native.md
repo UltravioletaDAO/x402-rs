@@ -31,6 +31,8 @@ The official `@x402/hedera@2.26.0` client produces `{transaction: base64}`. Subm
 
 On success, `payer` is the buyer, `network` uses the native CAIP-2 identifier, and `transaction` is the original native transaction ID (`0.0.account@seconds.nanoseconds`). Native IDs are not EVM transaction hashes.
 
+Retries return the original settlement. Merchants must make fulfillment idempotent using that transaction ID so a repeated HTTP request does not deliver the same purchase twice.
+
 HBAR is not a default USD asset in the official client. Add an explicit, bounded `spendControls.allowedAssets` entry for HBAR or a custom FT; do not disable spend controls globally. See [live-canary.mjs](../../tests/hedera-e2e/live-canary.mjs) for the official `x402Client` + `x402HTTPClient` handshake.
 
 ## Configuration
@@ -63,6 +65,8 @@ After an uncertain response, reconcile/retry **the same payload and transaction 
 Set `HEDERA_ADMISSIONS_ENABLED_TESTNET=false` (or `_MAINNET=false`) to stop new admissions and hide that network from discovery while recovery remains active. Do not disable the provider entirely while unresolved transactions need recovery.
 
 `/health/ready` includes native Hedera: storage, Mirror account/key/balance, and a bounded native consensus connectivity check. Consensus v0.77 removed `cryptoGetBalance`; the implementation uses free `AccountInfoQuery.get_cost` with explicit node IDs. Receipt queries also use explicit nodes to avoid the published Rust SDK's obsolete balance-based automatic ping. No paid balance query is used. ECS egress permits the native SDK consensus port TCP 50211 only when a Hedera network is enabled. The balance Lambda uses native numeric account IDs and converts tinybars with eight decimals.
+
+Initial deployment prerequisites were applied from reviewed Terraform 1.9.8 plans with operator credentials: settlement storage, scoped task-role access, execution-role access to the two dedicated secrets, and outbound TCP 50211. CI cannot elevate its own IAM permissions or edit security-group rules. Future changes to those protected resources require the same operator procedure before deploying; ordinary Hedera mainnet activation reuses the two secret grants and consensus egress already provisioned.
 
 ## Validation and rollout status
 

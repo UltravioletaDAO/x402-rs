@@ -14,6 +14,7 @@
 const ICONO_DE_RED = {
   // No invented logo: Arc uses the existing text fallback.
   "arc": null, "arc-testnet": null, "eip155:5042": null, "eip155:5042002": null,
+  "hedera:mainnet": null, "hedera:testnet": null,
   "algorand": "algorand", "algorand-testnet": "algorand", "algorand:mainnet": "algorand", "algorand:testnet": "algorand",
   "arbitrum": "arbitrum", "arbitrum-sepolia": "arbitrum", "eip155:42161": "arbitrum", "eip155:421614": "arbitrum",
   "avalanche": "avalanche", "avalanche-fuji": "avalanche", "eip155:43113": "avalanche", "eip155:43114": "avalanche",
@@ -44,7 +45,7 @@ const ICONO_DE_RED = {
 // namespace CAIP-2: es lo unico legible de un identificador desconocido sin adivinar.
 const MONO_FAMILIA = {
   "eip155": "EV", "solana": "SO", "near": "NE", "stellar": "ST",
-  "xrpl": "XR", "fogo": "FO", "algorand": "AL", "sui": "SU"
+  "xrpl": "XR", "fogo": "FO", "algorand": "AL", "sui": "SU", "hedera": "HE"
 };
 
 function monogramaDeRed(nombre){
@@ -86,7 +87,7 @@ function chipRed(nombre, extra){ return chip(nombre, ICONO_DE_RED[nombre], extra
 const ICONO_DE_TOKEN = {
   usdc: "usdc", usdt: "usdt", eurc: "eurc",
   ausd: "ausd", pyusd: "pyusd", usdg: "usdg",
-  rlusd: null, xrp: null
+  rlusd: null, xrp: null, hbar: null, hts: null
 };
 
 // Un token sin PNG NO saca monograma: "US" seria el mismo para usdc, usdt y

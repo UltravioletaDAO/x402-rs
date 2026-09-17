@@ -11,6 +11,10 @@ Python `uvd-x402-sdk` **0.84.0** and TypeScript `uvd-x402-sdk` **2.92.0**
 include both Arc networks. See the [Python Arc guide](https://github.com/UltravioletaDAO/uvd-x402-sdk-python/blob/main/docs/networks/arc.md)
 and [TypeScript Arc guide](https://github.com/UltravioletaDAO/uvd-x402-sdk-typescript/blob/main/docs/networks/arc.md).
 
+Current releases **Python 0.85.0** and **TypeScript 2.93.0** retain these Arc
+capabilities and add [native Hedera payments](hedera.md). The Arc receipts below
+identify the exact earlier versions used for that acceptance run.
+
 | Parameter | Mainnet | Testnet |
 |---|---|---|
 | v1 network | `arc` | `arc-testnet` |

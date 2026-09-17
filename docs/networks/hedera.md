@@ -1,10 +1,10 @@
 # Hedera — getting paid in HBAR or HTS tokens through this facilitator
 
-> **Status, measured 2026-09-17 03:08Z: both networks are live.** `GET /supported`
+> **Status, verified 2026-09-17 03:39Z: both networks are live.** `GET /supported`
 > lists `hedera:mainnet` and `hedera:testnet`, each under x402 **v2** with scheme
 > `exact`, in a response carrying 156 kinds across 84 identifiers. Measured against
-> `https://facilitator.ultravioletadao.xyz` at `/version` **2.33.0**; mainnet arrived
-> with that release, hours after testnet, and an earlier reading the same day still
+> `https://facilitator.ultravioletadao.xyz` at `/version` **2.33.1**; mainnet arrived
+> with 2.33.0, hours after testnet, and an earlier reading the same day still
 > showed testnet alone.
 > [Check it yourself](#1-is-it-live) every time: `/supported` is the only list that is
 > true today, and this page is not.
@@ -14,6 +14,14 @@ back, and what does not work. Running a facilitator that serves Hedera — the c
 feature, the environment variables, the daily budget, the settlement store, recovery
 after an uncertain outcome and the rollout evidence — is
 [Native Hedera payments](../guides/hedera-native.md).
+
+**Project SDKs are published and verified:** Python **0.85.0** and TypeScript
+**2.93.0** each completed HBAR and USDC payments on both ledgers from clean
+PyPI/npm installs. [Eight payment receipts](../reports/2026-09-16-hedera-sdk-release-acceptance.json)
+include exact principal, sponsor fees, idempotency and persisted signed-hash
+confirmation. See the [Python guide](https://github.com/UltravioletaDAO/uvd-x402-sdk-python/blob/main/docs/networks/hedera.md)
+and [TypeScript guide](https://github.com/UltravioletaDAO/uvd-x402-sdk-typescript/blob/main/docs/networks/hedera.md)
+for buyer signing and merchant helpers; both retain Arc support.
 
 **Hedera is not EVM, and nothing from [the Arc page](arc.md) carries over by analogy.**
 A Hedera x402 payment is not an EIP-3009 authorization: there is no EIP-712 domain, no
@@ -86,9 +94,11 @@ curl -s https://facilitator.ultravioletadao.xyz/health/ready \
 
 Measured 2026-09-17: both Hedera networks answered `status: "degraded"` with
 `reason: "signer_gas_low"` — `rpc: "ok"` and `gasOk: true`, but only 28 settles
-remaining on mainnet and 21 on testnet. That is the conservative canary budget
-described in [section 6](#6-what-does-not-work-today), not an outage. Treat the Hedera
-rail as low-throughput until that number grows.
+remaining on mainnet and 21 on testnet. This estimates balance headroom at the
+maximum signed fee, separately from the daily admission quota. The configured
+10-HBAR daily reserved-fee budget permits **10 new default payments per ledger
+per UTC day**, even when balance could support more. See [current quota evidence](../reports/2026-09-16-hedera-status.json)
+and [section 6](#6-what-does-not-work-today) before sizing production traffic.
 
 ## 2. The asset, and the trap in its units
 

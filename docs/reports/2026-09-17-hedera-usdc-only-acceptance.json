@@ -1,0 +1,179 @@
+{
+  "checkedAt": "2026-09-17T16:22:33.119618+00:00",
+  "version": {
+    "version": "2.35.0"
+  },
+  "newTransactions": 0,
+  "settleCalls": 0,
+  "supportedHedera": [
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "hedera:testnet",
+      "networkAliases": [
+        "hedera:testnet"
+      ],
+      "extra": {
+        "feePayer": "0.0.10576385",
+        "tokens": [
+          {
+            "token": "usdc",
+            "address": "0.0.429274",
+            "decimals": 6
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "hedera:mainnet",
+      "networkAliases": [
+        "hedera:mainnet"
+      ],
+      "extra": {
+        "feePayer": "0.0.10868300",
+        "tokens": [
+          {
+            "token": "usdc",
+            "address": "0.0.456858",
+            "decimals": 6
+          }
+        ]
+      }
+    }
+  ],
+  "arcRetained": [
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "arc",
+      "networkAliases": [
+        "arc",
+        "eip155:5042"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc",
+            "address": "0x3600000000000000000000000000000000000000",
+            "decimals": 6
+          },
+          {
+            "token": "eurc",
+            "address": "0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1",
+            "decimals": 6
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 1,
+      "scheme": "exact",
+      "network": "arc-testnet",
+      "networkAliases": [
+        "arc-testnet",
+        "eip155:5042002"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc",
+            "address": "0x3600000000000000000000000000000000000000",
+            "decimals": 6
+          },
+          {
+            "token": "eurc",
+            "address": "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a",
+            "decimals": 6
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "eip155:5042",
+      "networkAliases": [
+        "arc",
+        "eip155:5042"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc",
+            "address": "0x3600000000000000000000000000000000000000",
+            "decimals": 6
+          },
+          {
+            "token": "eurc",
+            "address": "0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1",
+            "decimals": 6
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "eip155:5042002",
+      "networkAliases": [
+        "arc-testnet",
+        "eip155:5042002"
+      ],
+      "extra": {
+        "tokens": [
+          {
+            "token": "usdc",
+            "address": "0x3600000000000000000000000000000000000000",
+            "decimals": 6
+          },
+          {
+            "token": "eurc",
+            "address": "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a",
+            "decimals": 6
+          }
+        ]
+      }
+    }
+  ],
+  "negativeVerify": [
+    {
+      "network": "hedera:testnet",
+      "httpStatus": 400,
+      "response": {
+        "error": "internal_error (ref: f7658406-4b84-45bb-bc31-76ba1369bf79)"
+      }
+    },
+    {
+      "network": "hedera:mainnet",
+      "httpStatus": 400,
+      "response": {
+        "error": "internal_error (ref: d6dedd47-880f-49de-b244-dfb8668b2869)"
+      }
+    }
+  ],
+  "knownIssue": "HBAR refusal is incorrectly surfaced as internal_error in 2.35.0; typed invalid_asset correction is in the frontend follow-up.",
+  "ogSha256": "2191064cccdb86065a67549460516e6b3e572ede38504436db2e88a3afa9473b",
+  "cards": [
+    {
+      "network": "hedera:mainnet",
+      "tokens": [
+        "USDC"
+      ],
+      "text": "Hedera\nLoading...\nHBAR Balance (network fees)\nSUPPORTED STABLECOINS"
+    },
+    {
+      "network": "hedera:testnet",
+      "tokens": [
+        "USDC"
+      ],
+      "text": "\n                            \n                                \n                                Hedera Testnet\n                            \n                            Loading...\n                            HBAR Balance (network fees)\n                            \n                Supported Stablecoins\n                \n            \n                        "
+    }
+  ],
+  "wallets": [
+    "0.0.10868300",
+    "0.0.10576385"
+  ],
+  "desktopMobileLayout": "passed"
+}

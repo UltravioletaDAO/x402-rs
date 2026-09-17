@@ -1,6 +1,6 @@
 # Plan maestro: recibos del facilitador y reintentos de compra
 
-Fecha: 2026-09-17. Estado: primera implementación en validación local; publicación y aceptación en producción pendientes.
+Fecha: 2026-09-17. Estado: primera entrega publicada en facilitador 2.36.1, Python 0.88.0 y TypeScript 2.96.0; ocho pagos USDC verificados. EURC real diferido.
 
 ## Objetivo y decisión de producto
 
@@ -8,9 +8,9 @@ Cada operación de pago debe devolver un recibo estructurado junto al resultado 
 
 Origen: comentario de Axiom compartido por el usuario: incluir `chain`, `asset`, `amount`, `payTo`, `request hash`, `settlement id` y `refusal reason` junto a la llamada del SDK. El usuario solicitó este plan y corrigió además el alcance de Hedera: **pagos exclusivamente en USDC; HBAR solo para comisiones del patrocinador**.
 
-Entregables separados: la retirada de HBAR se publica primero. Este documento planifica los recibos; no afirma que ya estén implementados ni que la prueba de pago demuestre entrega del servicio.
+La retirada de HBAR se publicó primero. Las secciones de diseño siguientes conservan el plan original; el contrato definitivo y el cierre de esta entrega figuran al final. La prueba de pago no demuestra entrega del servicio.
 
-## 1. Estado comprobado en el código
+## 1. Estado inicial comprobado en el código
 
 Base inspeccionada: facilitador 2.34.0 (`4143a128`), Python 0.86.0 (`ae2ad1c`), TypeScript 2.94.0 (`4ffb5c8`).
 
@@ -171,10 +171,10 @@ Despliegue gradual por capacidad, empezando por testnet. Validar `/supported`, `
 - [x] Registrar decisión USDC-only para Hedera y preservar pagos históricos.
 - [x] Escribir este plan maestro y matriz de aceptación.
 - [x] Publicar/verificar F0: facilitador 2.35.0, Python 0.87.0 y TypeScript 2.95.0. [Evidencia](../reports/2026-09-17-hedera-usdc-only-release.json).
-- [ ] Completar F1: ADR, esquema, contrato de transporte y vectores.
-- [ ] Completar F2–F3: persistencia, emisión, consulta y propagación.
-- [ ] Completar F4: APIs y paridad de ambos SDK.
-- [ ] Completar F5–F6: aceptación por red, publicación y evidencia.
+- [x] Completar F1: ADR, esquema, contrato de transporte y vectores.
+- [x] Completar F2–F3: persistencia, emisión, consulta y propagación.
+- [x] Completar F4: APIs y paridad de ambos SDK.
+- [x] Completar F5–F6 para esta entrega: ocho pagos USDC, publicación, consulta y evidencia. EURC real queda expresamente diferido.
 - [ ] Completar F7 antes de anunciar recibos en todas las redes/esquemas.
 - [ ] Pagos reales EURC: pendientes por instrucción del usuario; sin ejecución automática.
 
@@ -200,8 +200,8 @@ alcance de compra por capacidad secreta, JWS Ed25519 y consulta privada Bearer.
 - F2 implementado: reserva transaccional DynamoDB sin TTL, CAS y persistencia previa al envío; validación local de concurrencia, reinicio y fallos.
 - F3 implementado: respuesta aditiva, JWS, consulta privada, propagación FastAPI/Express/Hono y helpers para otros frameworks.
 - F4 implementado: contexto persistible y fetch con recibo en ambos SDK, verificación de firma y conservación de errores.
-- F5 parcial: vectores/pruebas offline; aceptación USDC con estas versiones aún pendiente. EURC real diferido por el usuario.
-- F6 pendiente: preflight completo, publicación y aceptación en producción.
+- F5 cerrado para esta entrega: ocho pagos de 0,001 USDC, ambos SDK en las cuatro redes, recibos firmados y reintentos sin una segunda transacción. Nueve firmas exportadas verificadas por ambos paquetes publicados. La matriz completa de protocolos no se ejecutó en cadena; EURC real sigue diferido.
+- F6 publicado: facilitador 2.36.1 (PR #81 y #82), Python 0.88.0 y TypeScript 2.96.0. Instalaciones limpias, CI, dos réplicas sanas, consulta privada y grid público verificados. [Snapshot y transacciones](../reports/2026-09-17-facilitator-receipts-release.md).
 - F7 pendiente: demás redes/esquemas; no se anuncia cobertura global.
 
 Limitaciones conservadoras: las reservas abandonadas antes de preparar transacción
@@ -209,3 +209,12 @@ requieren investigación; no hay monitor continuo de reorgs ni archivo automáti
 de recibos. La rotación requiere conservar claves públicas anteriores. El recibo
 no implementa entrega exactamente una vez del merchant. El comprador Python
 usa la API síncrona existente; la propagación FastAPI sí es asíncrona.
+
+## Seguimiento operativo
+
+- [x] Consulta privada HTTP 200 para recibos existentes tras errores de pago 400/502; conserva firma y resultado original de POST.
+- [x] Verificar el intento testnet bloqueado por cuota, sin reemplazo automático de autorización; conservarlo junto a los ocho pagos.
+- [x] Ajuste de cuota Hedera deliberado: testnet 12 HBAR/día, mainnet 10 HBAR/día, contados por tarifa máxima reservada.
+- [x] Grid aleatorio por recarga publicado después de los SDK; filtros, idioma y pestañas conservan el orden de la sesión.
+- [x] Revisar permisos efectivos de clave de recibos y almacén antes de futuros despliegues mediante el script de operador.
+- [ ] Mejorar tolerancia del arranque a fallos transitorios de la consulta de consenso Hedera, manteniendo comprobaciones de clave, saldo y almacenamiento. La consulta de cinco segundos hizo fallar réplicas y vencer la espera del primer intento de despliegue 2.36.1; el segundo intento terminó aprobado.

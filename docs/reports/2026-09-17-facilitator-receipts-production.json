@@ -1,0 +1,337 @@
+{
+  "description": "Eight real USDC purchases via the public facilitator. Each purchase replayed with the same authorization; first merchant response deliberately HTTP 500. Signed JWS payloads contain the original full receipts. EVM hash hex excludes the conventional 0x prefix. No private contexts or signing keys are included.",
+  "issuer": "https://facilitator.ultravioletadao.xyz",
+  "publicKeys": {
+    "keys": [
+      {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "use": "sig",
+        "alg": "EdDSA",
+        "kid": "5ebb0cb66d3b5ccf441b3c003b3ac381bf76d70e276fd1904d6a17ed711cd31e",
+        "x": "_AJ_Ev6f2L1JtsOm5_2mZhdqP1_wJuk7q1SVncnwOGs"
+      }
+    ]
+  },
+  "versions": {
+    "facilitator": "2.36.1",
+    "python": "0.88.0",
+    "typescript": "2.96.0"
+  },
+  "newPayments": 8,
+  "purchaseAttempts": 9,
+  "totalUSDCPrincipal": "0.008",
+  "EURC": "real payments deferred by user",
+  "payments": [
+    {
+      "sdk": "python",
+      "version": "0.88.0",
+      "facilitatorVersion": "2.36.0",
+      "network": "arc",
+      "asset": "0x3600000000000000000000000000000000000000",
+      "amount": "1000",
+      "payer": "0x103040545AC5031A11E8C03dd11324C7333a13C7",
+      "payTo": "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8",
+      "receiptId": "118edd96-7e4b-4331-b950-e5c8794ef810",
+      "requestHash": "3f8881bdc7c5bdde77ae19a4406281e4b22fb6b60b36ef72eb0fa6f8eb1ab217",
+      "signedReceiptJws": "eyJhbGciOiJFZERTQSIsImtpZCI6IjVlYmIwY2I2NmQzYjVjY2Y0NDFiM2MwMDNiM2FjMzgxYmY3NmQ3MGUyNzZmZDE5MDRkNmExN2VkNzExY2QzMWUiLCJ0eXAiOiJ1dmQtZmFjaWxpdGF0b3ItcmVjZWlwdCtqd3MifQ.eyJhbW91bnQiOiIxMDAwIiwiYXNzZXQiOiIweDM2MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAiLCJhdXRob3JpemF0aW9uSWQiOiI3Njk0MzRhYmRiM2VhOTA4NjM2N2I4N2U0Y2NjOTAxZjE0Yzc4ODZmZjNiMDJlNTZhN2Q4ODkwODJiYTI2NmIwIiwiZGVjaW1hbHMiOjYsImRpYWdub3N0aWNDb2RlIjpudWxsLCJpc3N1ZWRBdCI6MTc4OTY3NjE4MSwiaXNzdWVyIjoiaHR0cHM6Ly9mYWNpbGl0YXRvci51bHRyYXZpb2xldGFkYW8ueHl6IiwibmV0d29yayI6ImVpcDE1NTo1MDQyIiwib3BlcmF0aW9uIjoic2V0dGxlIiwicGF5VG8iOiIweDM0MDMzMDQxYTU5NDRiOGYxMGY4ZTRkODQ5NmJmYjg0ZjFhMjkzYTgiLCJwYXllciI6IjB4MTAzMDQwNTQ1QUM1MDMxQTExRThDMDNkZDExMzI0QzczMzNhMTNDNyIsInBheW1lbnRSZXF1ZXN0SGFzaCI6ImUxMzdkYjI3OWYwNWE5NzgyYzA0Y2NkMTY1ZTM3NjkyYjU3YWFlNWRjY2MwNjkyZGE0MDI4MDQ0YTM3MzFjN2UiLCJwcm9vZiI6bnVsbCwicHVyY2hhc2VJZCI6IjRkNDUxZDQ1LWUwODEtNGRmOC05YmM2LWFmOTM3ZGQ1MGFmMiIsInJlY2VpcHRJZCI6IjExOGVkZDk2LTdlNGItNDMzMS1iOTUwLWU1Yzg3OTRlZjgxMCIsInJlZnVzYWxSZWFzb24iOm51bGwsInJlcXVlc3QiOnsiYW1vdW50IjoiMTAwMCIsImFzc2V0IjoiMHgzNjAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwIiwiYm9keVNoYTI1NiI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJtZXRob2QiOiJHRVQiLCJuZXR3b3JrIjoiZWlwMTU1OjUwNDIiLCJwYXlUbyI6IjB4MzQwMzMwNDFhNTk0NGI4ZjEwZjhlNGQ4NDk2YmZiODRmMWEyOTNhOCIsInB1cmNoYXNlSWQiOiI0ZDQ1MWQ0NS1lMDgxLTRkZjgtOWJjNi1hZjkzN2RkNTBhZjIiLCJzY2hlbWUiOiJleGFjdCIsInVybCI6Imh0dHA6Ly8xMjcuMC4wLjE6NjA1NzEvcGFpZCJ9LCJyZXF1ZXN0SGFzaCI6IjNmODg4MWJkYzdjNWJkZGU3N2FlMTlhNDQwNjI4MWU0YjIyZmI2YjYwYjM2ZWY3MmViMGZhNmY4ZWIxYWIyMTciLCJyZXF1ZXN0SGFzaFZlcnNpb24iOiJ1dmQteDQwMi1yZXF1ZXN0LXYxIiwicmV0cnkiOnsiYWN0aW9uIjoibm9uZSJ9LCJyZXZpc2lvbiI6Mywic2NoZW1hVmVyc2lvbiI6MSwic2NoZW1lIjoiZXhhY3QiLCJzZXR0bGVtZW50Ijp7ImlkIjoiMHg1NTkwN2E0ZDRjNjFkOTk3MDRjZTFhNmE0YWMzOTk1NDU3ZWVjMGQwN2VmMTE2MTQzMTg1M2Y1MTlkZmFjYjU3IiwiaWRUeXBlIjoiZXZtLXRyYW5zYWN0aW9uLWhhc2giLCJwYXltZW50SWQiOiIweGVhNThkYWJkM2ZkYzgyOWRjMWUxMTk0ODA3N2EwMjU3MWNlZDMzZjQ2MzA2MDM0MzZlNWJiNTE2NDAzYmU5MmEifSwic3RhdHVzIjoiY29uZmlybWVkIiwieDQwMlZlcnNpb24iOjF9.itSOKcAal9n2EH5mKHxBtQmAV4IXBbvIFNXyKTK5NaJUNWtlFJGMfC5W5Gmh38sc2m16uEwbHyn0uA1hy-9oBw",
+      "sameAuthorization": true,
+      "httpStatuses": [
+        500,
+        200
+      ],
+      "proofVerified": true,
+      "chain": {
+        "networkId": "eip155:5042",
+        "transactionHashHex": "55907a4d4c61d99704ce1a6a4ac3995457eec0d07ef1161431853f519dfacb57",
+        "blockNumber": 21383041,
+        "gasUsed": 87535,
+        "status": "success",
+        "matchingUSDCTransfers": 1
+      }
+    },
+    {
+      "sdk": "python",
+      "version": "0.88.0",
+      "facilitatorVersion": "2.36.0",
+      "network": "arc-testnet",
+      "asset": "0x3600000000000000000000000000000000000000",
+      "amount": "1000",
+      "payer": "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8",
+      "payTo": "0x103040545AC5031A11E8C03dd11324C7333a13C7",
+      "receiptId": "d216cd54-0f7c-41bb-9af4-2b52df06db3c",
+      "requestHash": "cc109f05b2f62b05cbd9e33e62a5d4c6491701d66882cf3856a6029ea5db5584",
+      "signedReceiptJws": "eyJhbGciOiJFZERTQSIsImtpZCI6IjVlYmIwY2I2NmQzYjVjY2Y0NDFiM2MwMDNiM2FjMzgxYmY3NmQ3MGUyNzZmZDE5MDRkNmExN2VkNzExY2QzMWUiLCJ0eXAiOiJ1dmQtZmFjaWxpdGF0b3ItcmVjZWlwdCtqd3MifQ.eyJhbW91bnQiOiIxMDAwIiwiYXNzZXQiOiIweDM2MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAiLCJhdXRob3JpemF0aW9uSWQiOiIwOGQyNmE3NjI0NTU5MjY3MDJhNjhhMGJiMGUxMTNiZDUyMDk3Zjc3ZDQ0MTZmYzk3NGY4NTVlMzlhZjk2Y2U0IiwiZGVjaW1hbHMiOjYsImRpYWdub3N0aWNDb2RlIjpudWxsLCJpc3N1ZWRBdCI6MTc4OTY3NTg0NCwiaXNzdWVyIjoiaHR0cHM6Ly9mYWNpbGl0YXRvci51bHRyYXZpb2xldGFkYW8ueHl6IiwibmV0d29yayI6ImVpcDE1NTo1MDQyMDAyIiwib3BlcmF0aW9uIjoic2V0dGxlIiwicGF5VG8iOiIweDEwMzA0MDU0NWFjNTAzMWExMWU4YzAzZGQxMTMyNGM3MzMzYTEzYzciLCJwYXllciI6IjB4MzQwMzMwNDFhNTk0NEI4RjEwZjhFNEQ4NDk2QmZiODRmMUEyOTNBOCIsInBheW1lbnRSZXF1ZXN0SGFzaCI6Ijc4NWU1NzI2OTdjOTM3MzUyZjM2MTQ2YTA3ODI5M2QyOWZkNjJmMDhiYmJlMzZjYWM4NzdjMDRmMmQxMmFkZDkiLCJwcm9vZiI6bnVsbCwicHVyY2hhc2VJZCI6ImM5YzYzNDQ2LTNkOWItNDk2Yi1hNjhkLWJiN2ZlMzc5MThkNyIsInJlY2VpcHRJZCI6ImQyMTZjZDU0LTBmN2MtNDFiYi05YWY0LTJiNTJkZjA2ZGIzYyIsInJlZnVzYWxSZWFzb24iOm51bGwsInJlcXVlc3QiOnsiYW1vdW50IjoiMTAwMCIsImFzc2V0IjoiMHgzNjAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwIiwiYm9keVNoYTI1NiI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJtZXRob2QiOiJHRVQiLCJuZXR3b3JrIjoiZWlwMTU1OjUwNDIwMDIiLCJwYXlUbyI6IjB4MTAzMDQwNTQ1YWM1MDMxYTExZThjMDNkZDExMzI0YzczMzNhMTNjNyIsInB1cmNoYXNlSWQiOiJjOWM2MzQ0Ni0zZDliLTQ5NmItYTY4ZC1iYjdmZTM3OTE4ZDciLCJzY2hlbWUiOiJleGFjdCIsInVybCI6Imh0dHA6Ly8xMjcuMC4wLjE6NTY1MTYvcGFpZCJ9LCJyZXF1ZXN0SGFzaCI6ImNjMTA5ZjA1YjJmNjJiMDVjYmQ5ZTMzZTYyYTVkNGM2NDkxNzAxZDY2ODgyY2YzODU2YTYwMjllYTVkYjU1ODQiLCJyZXF1ZXN0SGFzaFZlcnNpb24iOiJ1dmQteDQwMi1yZXF1ZXN0LXYxIiwicmV0cnkiOnsiYWN0aW9uIjoibm9uZSJ9LCJyZXZpc2lvbiI6Mywic2NoZW1hVmVyc2lvbiI6MSwic2NoZW1lIjoiZXhhY3QiLCJzZXR0bGVtZW50Ijp7ImlkIjoiMHg1NzdiYzVlZTIyYjYzYmQ3ZWUyNDU0MDViYWRhYTVmNTY1N2U2MjYwYWJkNjJmZjdlZWNkYTIzMjZiMzJiNTcyIiwiaWRUeXBlIjoiZXZtLXRyYW5zYWN0aW9uLWhhc2giLCJwYXltZW50SWQiOiIweDA3OTc2MTY2MzE2ODdkNjM0YjIwOTU3YTRmN2FkZjY2NGEyODI1MmYzNWUxOTA4Mjg0MjY4YjZhMGRhMGU4NWUifSwic3RhdHVzIjoiY29uZmlybWVkIiwieDQwMlZlcnNpb24iOjF9.lmgm4AINRVFncz9g6VrnXs4EPmBaYyisfYbKaKLHyhrJytsVHHi80c5iylnmEroDq6wFPdhHRJF8fUnkTSrvDw",
+      "sameAuthorization": true,
+      "httpStatuses": [
+        500,
+        200
+      ],
+      "proofVerified": true,
+      "chain": {
+        "networkId": "eip155:5042002",
+        "transactionHashHex": "577bc5ee22b63bd7ee245405badaa5f5657e6260abd62ff7eecda2326b32b572",
+        "blockNumber": 62624932,
+        "gasUsed": 87567,
+        "status": "success",
+        "matchingUSDCTransfers": 1
+      }
+    },
+    {
+      "sdk": "python",
+      "version": "0.88.0",
+      "facilitatorVersion": "2.36.0",
+      "network": "hedera:mainnet",
+      "asset": "0.0.456858",
+      "amount": "1000",
+      "payer": "0.0.10868301",
+      "payTo": "0.0.10868302",
+      "receiptId": "9590359a-550c-4564-86e0-c104043a9494",
+      "requestHash": "632ba350946ef00bf0ad75e3509ee7d6b73ced55733f9639bf7c47bfc71fc1c8",
+      "signedReceiptJws": "eyJhbGciOiJFZERTQSIsImtpZCI6IjVlYmIwY2I2NmQzYjVjY2Y0NDFiM2MwMDNiM2FjMzgxYmY3NmQ3MGUyNzZmZDE5MDRkNmExN2VkNzExY2QzMWUiLCJ0eXAiOiJ1dmQtZmFjaWxpdGF0b3ItcmVjZWlwdCtqd3MifQ.eyJhbW91bnQiOiIxMDAwIiwiYXNzZXQiOiIwLjAuNDU2ODU4IiwiYXV0aG9yaXphdGlvbklkIjoiZTZkNDI5NTZmYzFkZGM3YzkzMWY3YWEyM2Q1MzAzMWIzNzliN2ZjMmIzOTBlZDI5ZTAyZTMzMDMwYzUxMDU3MyIsImRlY2ltYWxzIjo2LCJkaWFnbm9zdGljQ29kZSI6bnVsbCwiaXNzdWVkQXQiOjE3ODk2NzYyMTgsImlzc3VlciI6Imh0dHBzOi8vZmFjaWxpdGF0b3IudWx0cmF2aW9sZXRhZGFvLnh5eiIsIm5ldHdvcmsiOiJoZWRlcmE6bWFpbm5ldCIsIm9wZXJhdGlvbiI6InNldHRsZSIsInBheVRvIjoiMC4wLjEwODY4MzAyIiwicGF5ZXIiOiIwLjAuMTA4NjgzMDEiLCJwYXltZW50UmVxdWVzdEhhc2giOiJlZGM4Zjc4NzE0ZWMwYjhiZDFiNTU0M2U0NGM1Njk2ODk5NWJhNjdmYWUyMTE3NWMxODFkNGNjNjYzZWMzNDVkIiwicHJvb2YiOm51bGwsInB1cmNoYXNlSWQiOiIwYjA3MTU2MS01Nzk0LTRkMzgtODgyOC0xMzdmYTQ3ZTYzZmYiLCJyZWNlaXB0SWQiOiI5NTkwMzU5YS01NTBjLTQ1NjQtODZlMC1jMTA0MDQzYTk0OTQiLCJyZWZ1c2FsUmVhc29uIjpudWxsLCJyZXF1ZXN0Ijp7ImFtb3VudCI6IjEwMDAiLCJhc3NldCI6IjAuMC40NTY4NTgiLCJib2R5U2hhMjU2IjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsIm1ldGhvZCI6IkdFVCIsIm5ldHdvcmsiOiJoZWRlcmE6bWFpbm5ldCIsInBheVRvIjoiMC4wLjEwODY4MzAyIiwicHVyY2hhc2VJZCI6IjBiMDcxNTYxLTU3OTQtNGQzOC04ODI4LTEzN2ZhNDdlNjNmZiIsInNjaGVtZSI6ImV4YWN0IiwidXJsIjoiaHR0cDovLzEyNy4wLjAuMTo2MDkzNi9wYWlkIn0sInJlcXVlc3RIYXNoIjoiNjMyYmEzNTA5NDZlZjAwYmYwYWQ3NWUzNTA5ZWU3ZDZiNzNjZWQ1NTczM2Y5NjM5YmY3YzQ3YmZjNzFmYzFjOCIsInJlcXVlc3RIYXNoVmVyc2lvbiI6InV2ZC14NDAyLXJlcXVlc3QtdjEiLCJyZXRyeSI6eyJhY3Rpb24iOiJub25lIn0sInJldmlzaW9uIjozLCJzY2hlbWFWZXJzaW9uIjoxLCJzY2hlbWUiOiJleGFjdCIsInNldHRsZW1lbnQiOnsiaWQiOiIwLjAuMTA4NjgzMDBAMTc4OTY3NjIwNi41MDM2NzQyNjgiLCJpZFR5cGUiOiJoZWRlcmEtdHJhbnNhY3Rpb24taWQiLCJwYXltZW50SWQiOiIweGVkNzc4M2E2Y2M0ZmM5NDZhYjU2MmI5MGFlNzk2MjdmMjMzNmQ1YTNjZjFmNjcyZDMzNmM0ZjVhMjBkZWI0ZGMifSwic3RhdHVzIjoiY29uZmlybWVkIiwieDQwMlZlcnNpb24iOjJ9.EqnlU_n9gpEOQziMBzBr38FnO1xr4dwVC3laQ316BKvxmqO4k8GiFst_mYTfMf-LxJhFs-9d5hwNYEwibdsYBQ",
+      "sameAuthorization": true,
+      "httpStatuses": [
+        500,
+        200
+      ],
+      "proofVerified": true,
+      "chain": {
+        "networkId": "hedera:mainnet",
+        "transactionId": "0.0.10868300@1789676206.503674268",
+        "consensusTimestamp": "1789676213.630147104",
+        "transactionHashBase64": "QDtDd0KXSnY/ZIMSZTz3h2QFOBMQmPxa93ZJg2BzvfIvXzp5lUzGLh+gxBcuQUfV",
+        "status": "success",
+        "matchingUSDCTransfers": 1
+      }
+    },
+    {
+      "sdk": "python",
+      "version": "0.88.0",
+      "facilitatorVersion": "2.36.0",
+      "network": "hedera:testnet",
+      "asset": "0.0.429274",
+      "amount": "1000",
+      "payer": "0.0.10576386",
+      "payTo": "0.0.10576387",
+      "receiptId": "5638a009-5f09-47ae-ad5c-0e3ed8827590",
+      "requestHash": "0aaf9eaef180c41c54e39169307ad359c012371bf245e14a30cb28c67cfd44b9",
+      "signedReceiptJws": "eyJhbGciOiJFZERTQSIsImtpZCI6IjVlYmIwY2I2NmQzYjVjY2Y0NDFiM2MwMDNiM2FjMzgxYmY3NmQ3MGUyNzZmZDE5MDRkNmExN2VkNzExY2QzMWUiLCJ0eXAiOiJ1dmQtZmFjaWxpdGF0b3ItcmVjZWlwdCtqd3MifQ.eyJhbW91bnQiOiIxMDAwIiwiYXNzZXQiOiIwLjAuNDI5Mjc0IiwiYXV0aG9yaXphdGlvbklkIjoiMDA3ZTA4NzE3M2M0MGE2NGIwZjc1NzdiMzY1Y2E5ZjRiNmY5YTk2NjViMzQzM2E2NDkwYWQwYTk0YjViMmY2OCIsImRlY2ltYWxzIjo2LCJkaWFnbm9zdGljQ29kZSI6bnVsbCwiaXNzdWVkQXQiOjE3ODk2NzU4NzIsImlzc3VlciI6Imh0dHBzOi8vZmFjaWxpdGF0b3IudWx0cmF2aW9sZXRhZGFvLnh5eiIsIm5ldHdvcmsiOiJoZWRlcmE6dGVzdG5ldCIsIm9wZXJhdGlvbiI6InNldHRsZSIsInBheVRvIjoiMC4wLjEwNTc2Mzg3IiwicGF5ZXIiOiIwLjAuMTA1NzYzODYiLCJwYXltZW50UmVxdWVzdEhhc2giOiJjMDZiZjVjODJkZGRkMTMyOGI4NTgwNWE1YTg4ZWZmNGM3YTRjMTc4ZDYzMmUyMTNjNzE4Njc1YWU3Zjk2MmQ4IiwicHJvb2YiOm51bGwsInB1cmNoYXNlSWQiOiI4ZjMyNzQ5ZC04OGQ5LTRhMDMtYmYwMS02YzA2OGE1NWI2OTkiLCJyZWNlaXB0SWQiOiI1NjM4YTAwOS01ZjA5LTQ3YWUtYWQ1Yy0wZTNlZDg4Mjc1OTAiLCJyZWZ1c2FsUmVhc29uIjpudWxsLCJyZXF1ZXN0Ijp7ImFtb3VudCI6IjEwMDAiLCJhc3NldCI6IjAuMC40MjkyNzQiLCJib2R5U2hhMjU2IjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsIm1ldGhvZCI6IkdFVCIsIm5ldHdvcmsiOiJoZWRlcmE6dGVzdG5ldCIsInBheVRvIjoiMC4wLjEwNTc2Mzg3IiwicHVyY2hhc2VJZCI6IjhmMzI3NDlkLTg4ZDktNGEwMy1iZjAxLTZjMDY4YTU1YjY5OSIsInNjaGVtZSI6ImV4YWN0IiwidXJsIjoiaHR0cDovLzEyNy4wLjAuMTo1Njg5OS9wYWlkIn0sInJlcXVlc3RIYXNoIjoiMGFhZjllYWVmMTgwYzQxYzU0ZTM5MTY5MzA3YWQzNTljMDEyMzcxYmYyNDVlMTRhMzBjYjI4YzY3Y2ZkNDRiOSIsInJlcXVlc3RIYXNoVmVyc2lvbiI6InV2ZC14NDAyLXJlcXVlc3QtdjEiLCJyZXRyeSI6eyJhY3Rpb24iOiJub25lIn0sInJldmlzaW9uIjozLCJzY2hlbWFWZXJzaW9uIjoxLCJzY2hlbWUiOiJleGFjdCIsInNldHRsZW1lbnQiOnsiaWQiOiIwLjAuMTA1NzYzODVAMTc4OTY3NTg2My42OTIyMDA4OTkiLCJpZFR5cGUiOiJoZWRlcmEtdHJhbnNhY3Rpb24taWQiLCJwYXltZW50SWQiOiIweDA1MTliZmFmOTE1YjFjNzA0M2Y0MjM3MTc2MGI1MWQwN2IyNzEwYTdlMWY3YWI1YmIzNmMzMDc3OTQyNDUyYmEifSwic3RhdHVzIjoiY29uZmlybWVkIiwieDQwMlZlcnNpb24iOjJ9.S0sVUGHNiIQibov7TKUwuGH8ailGzcPSnG2AaU3m8GFrx5CBGuhCUZzbUI8neeXjnx5Mf2LfWm7nZzg7zaJzCw",
+      "sameAuthorization": true,
+      "httpStatuses": [
+        500,
+        200
+      ],
+      "proofVerified": true,
+      "chain": {
+        "networkId": "hedera:testnet",
+        "transactionId": "0.0.10576385@1789675863.692200899",
+        "consensusTimestamp": "1789675869.393357000",
+        "transactionHashBase64": "d1B2pmVpPPvi4lSOTYs/6zr+ikDrwdlv6oAlvIBhgOXdCsRNwMCMKAumfIK2fDRy",
+        "status": "success",
+        "matchingUSDCTransfers": 1
+      }
+    },
+    {
+      "sdk": "typescript",
+      "version": "2.96.0",
+      "facilitatorVersion": "2.36.0",
+      "network": "arc",
+      "asset": "0x3600000000000000000000000000000000000000",
+      "amount": "1000",
+      "payer": "0x103040545AC5031A11E8C03dd11324C7333a13C7",
+      "payTo": "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8",
+      "receiptId": "61b3f832-6308-40b2-86ea-83046b25fcc5",
+      "requestHash": "2fb0a3826873554f08fa250fc78dac02033201793168eeed3a47d4e8d2debb0d",
+      "signedReceiptJws": "eyJhbGciOiJFZERTQSIsImtpZCI6IjVlYmIwY2I2NmQzYjVjY2Y0NDFiM2MwMDNiM2FjMzgxYmY3NmQ3MGUyNzZmZDE5MDRkNmExN2VkNzExY2QzMWUiLCJ0eXAiOiJ1dmQtZmFjaWxpdGF0b3ItcmVjZWlwdCtqd3MifQ.eyJhbW91bnQiOiIxMDAwIiwiYXNzZXQiOiIweDM2MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAiLCJhdXRob3JpemF0aW9uSWQiOiIzZjBlMmM3YTUwNTdkYWFiMWI2ZDg2YjBmMTM3ODUyMDNkOTk4Y2QzNDgyMDYxNWNmZDEzOWIwZWJiMWZkMDkwIiwiZGVjaW1hbHMiOjYsImRpYWdub3N0aWNDb2RlIjpudWxsLCJpc3N1ZWRBdCI6MTc4OTY3NjI0MSwiaXNzdWVyIjoiaHR0cHM6Ly9mYWNpbGl0YXRvci51bHRyYXZpb2xldGFkYW8ueHl6IiwibmV0d29yayI6ImVpcDE1NTo1MDQyIiwib3BlcmF0aW9uIjoic2V0dGxlIiwicGF5VG8iOiIweDM0MDMzMDQxYTU5NDRiOGYxMGY4ZTRkODQ5NmJmYjg0ZjFhMjkzYTgiLCJwYXllciI6IjB4MTAzMDQwNTQ1QUM1MDMxQTExRThDMDNkZDExMzI0QzczMzNhMTNDNyIsInBheW1lbnRSZXF1ZXN0SGFzaCI6IjFhNzBmZjNiOWQ0ZDRlOWM1ZTdjZTYyZTc3MTRiNzM1Y2IwYTkzMjgyNTA2YzlhNGIwN2M2ODgwNDM0N2IwYjkiLCJwcm9vZiI6bnVsbCwicHVyY2hhc2VJZCI6IjQ1YzBjYWRkMTRjM2U0Mzg3YTk3M2RjYmViYjA5MTE0IiwicmVjZWlwdElkIjoiNjFiM2Y4MzItNjMwOC00MGIyLTg2ZWEtODMwNDZiMjVmY2M1IiwicmVmdXNhbFJlYXNvbiI6bnVsbCwicmVxdWVzdCI6eyJhbW91bnQiOiIxMDAwIiwiYXNzZXQiOiIweDM2MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAiLCJib2R5U2hhMjU2IjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsIm1ldGhvZCI6IkdFVCIsIm5ldHdvcmsiOiJlaXAxNTU6NTA0MiIsInBheVRvIjoiMHgzNDAzMzA0MWE1OTQ0YjhmMTBmOGU0ZDg0OTZiZmI4NGYxYTI5M2E4IiwicHVyY2hhc2VJZCI6IjQ1YzBjYWRkMTRjM2U0Mzg3YTk3M2RjYmViYjA5MTE0Iiwic2NoZW1lIjoiZXhhY3QiLCJ1cmwiOiJodHRwOi8vMTI3LjAuMC4xOjYxMTg2L3BhaWQifSwicmVxdWVzdEhhc2giOiIyZmIwYTM4MjY4NzM1NTRmMDhmYTI1MGZjNzhkYWMwMjAzMzIwMTc5MzE2OGVlZWQzYTQ3ZDRlOGQyZGViYjBkIiwicmVxdWVzdEhhc2hWZXJzaW9uIjoidXZkLXg0MDItcmVxdWVzdC12MSIsInJldHJ5Ijp7ImFjdGlvbiI6Im5vbmUifSwicmV2aXNpb24iOjMsInNjaGVtYVZlcnNpb24iOjEsInNjaGVtZSI6ImV4YWN0Iiwic2V0dGxlbWVudCI6eyJpZCI6IjB4NWU2NTA4YjQ4ZDI3MDlhMmY5NzY1MGIxYjM0OWYxM2JlMzViNjNkYWZlNTZkODUwMzY1MTJmMTY3OGE0YTY2YiIsImlkVHlwZSI6ImV2bS10cmFuc2FjdGlvbi1oYXNoIiwicGF5bWVudElkIjoiMHhhYWM1NDQwNDBkYTFiZTZiNjI2MzQ3YTJhZGVhMmE2ZGQ4OTU5YjAwMzZlMzUyODQxMzQ1OGYyY2Q3ZDZjOGIzIn0sInN0YXR1cyI6ImNvbmZpcm1lZCIsIng0MDJWZXJzaW9uIjoyfQ.-QuqHHo0bqkVJsmKlZglfIRA3JTYDIGIMkzt2kPsxEDvezywtqyrRCnqe6MAQ8JAx5k-UAaiFMZ1uQzcOcjoBQ",
+      "sameAuthorization": true,
+      "httpStatuses": [
+        500,
+        200
+      ],
+      "proofVerified": true,
+      "chain": {
+        "networkId": "eip155:5042",
+        "transactionHashHex": "5e6508b48d2709a2f97650b1b349f13be35b63dafe56d85036512f1678a4a66b",
+        "blockNumber": 21383159,
+        "gasUsed": 87567,
+        "status": "success",
+        "matchingUSDCTransfers": 1
+      }
+    },
+    {
+      "sdk": "typescript",
+      "version": "2.96.0",
+      "facilitatorVersion": "2.36.0",
+      "network": "arc-testnet",
+      "asset": "0x3600000000000000000000000000000000000000",
+      "amount": "1000",
+      "payer": "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8",
+      "payTo": "0x103040545AC5031A11E8C03dd11324C7333a13C7",
+      "receiptId": "ff6aca09-0585-470a-a307-ef19c2f63f70",
+      "requestHash": "8c012d17f706e8233f877bbe414a352fe03503b7a088bed6a78f14b80799cc7e",
+      "signedReceiptJws": "eyJhbGciOiJFZERTQSIsImtpZCI6IjVlYmIwY2I2NmQzYjVjY2Y0NDFiM2MwMDNiM2FjMzgxYmY3NmQ3MGUyNzZmZDE5MDRkNmExN2VkNzExY2QzMWUiLCJ0eXAiOiJ1dmQtZmFjaWxpdGF0b3ItcmVjZWlwdCtqd3MifQ.eyJhbW91bnQiOiIxMDAwIiwiYXNzZXQiOiIweDM2MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAiLCJhdXRob3JpemF0aW9uSWQiOiI4NTljZmEwMjYyM2RmNzcwZTk0ZDYyY2MzYTdlNmExZTdkY2Q5MzVkN2VjNmJlOGQ1Y2I2ZWVhMThiNzRlMDYyIiwiZGVjaW1hbHMiOjYsImRpYWdub3N0aWNDb2RlIjpudWxsLCJpc3N1ZWRBdCI6MTc4OTY3NTg5NiwiaXNzdWVyIjoiaHR0cHM6Ly9mYWNpbGl0YXRvci51bHRyYXZpb2xldGFkYW8ueHl6IiwibmV0d29yayI6ImVpcDE1NTo1MDQyMDAyIiwib3BlcmF0aW9uIjoic2V0dGxlIiwicGF5VG8iOiIweDEwMzA0MDU0NWFjNTAzMWExMWU4YzAzZGQxMTMyNGM3MzMzYTEzYzciLCJwYXllciI6IjB4MzQwMzMwNDFhNTk0NEI4RjEwZjhFNEQ4NDk2QmZiODRmMUEyOTNBOCIsInBheW1lbnRSZXF1ZXN0SGFzaCI6ImM1YzAyY2VkMTYyOTgzYTE3MjUzYjdjZDdiZmJkODNkN2RjZTAxNmQ5OGI5ZDcyMjJhMWZkYjIyYzc1OTk3NGYiLCJwcm9vZiI6bnVsbCwicHVyY2hhc2VJZCI6IjE5MGMwZWU0YzgyMzY1YTk4NTY5YTNlNTcyMTYxNjFkIiwicmVjZWlwdElkIjoiZmY2YWNhMDktMDU4NS00NzBhLWEzMDctZWYxOWMyZjYzZjcwIiwicmVmdXNhbFJlYXNvbiI6bnVsbCwicmVxdWVzdCI6eyJhbW91bnQiOiIxMDAwIiwiYXNzZXQiOiIweDM2MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAiLCJib2R5U2hhMjU2IjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsIm1ldGhvZCI6IkdFVCIsIm5ldHdvcmsiOiJlaXAxNTU6NTA0MjAwMiIsInBheVRvIjoiMHgxMDMwNDA1NDVhYzUwMzFhMTFlOGMwM2RkMTEzMjRjNzMzM2ExM2M3IiwicHVyY2hhc2VJZCI6IjE5MGMwZWU0YzgyMzY1YTk4NTY5YTNlNTcyMTYxNjFkIiwic2NoZW1lIjoiZXhhY3QiLCJ1cmwiOiJodHRwOi8vMTI3LjAuMC4xOjU3MDUyL3BhaWQifSwicmVxdWVzdEhhc2giOiI4YzAxMmQxN2Y3MDZlODIzM2Y4NzdiYmU0MTRhMzUyZmUwMzUwM2I3YTA4OGJlZDZhNzhmMTRiODA3OTljYzdlIiwicmVxdWVzdEhhc2hWZXJzaW9uIjoidXZkLXg0MDItcmVxdWVzdC12MSIsInJldHJ5Ijp7ImFjdGlvbiI6Im5vbmUifSwicmV2aXNpb24iOjMsInNjaGVtYVZlcnNpb24iOjEsInNjaGVtZSI6ImV4YWN0Iiwic2V0dGxlbWVudCI6eyJpZCI6IjB4MzZkYWExZjJmZTFkYzNjZTNkZmJjMzcxNWViOGRlMzFjNTNlZmVjNGRhNjM3OWViYWQ1MGU5MTMxMDAyNDMyMSIsImlkVHlwZSI6ImV2bS10cmFuc2FjdGlvbi1oYXNoIiwicGF5bWVudElkIjoiMHg0MDg1ODQ3NDJjNzQ4Y2QxMTg2ZjU2NjI2M2RiNGIzZmU4M2IwOTMyOThmZTkyMzYyYzcyYjUwZmEwOGU1NDYwIn0sInN0YXR1cyI6ImNvbmZpcm1lZCIsIng0MDJWZXJzaW9uIjoyfQ.9Pu9Rx793jJs7U2JcFnj8UKXmfSIa2CrOJEq1_Yzb4RG82JSDgPU6pk5NUpBi5ZaLnorbwz0q1DakVQyw18LBg",
+      "sameAuthorization": true,
+      "httpStatuses": [
+        500,
+        200
+      ],
+      "proofVerified": true,
+      "chain": {
+        "networkId": "eip155:5042002",
+        "transactionHashHex": "36daa1f2fe1dc3ce3dfbc3715eb8de31c53efec4da6379ebad50e91310024321",
+        "blockNumber": 62625034,
+        "gasUsed": 87547,
+        "status": "success",
+        "matchingUSDCTransfers": 1
+      }
+    },
+    {
+      "sdk": "typescript",
+      "version": "2.96.0",
+      "facilitatorVersion": "2.36.0",
+      "network": "hedera:mainnet",
+      "asset": "0.0.456858",
+      "amount": "1000",
+      "payer": "0.0.10868301",
+      "payTo": "0.0.10868302",
+      "receiptId": "89a1b3bc-87fe-4309-83d5-4cb91903c6b2",
+      "requestHash": "9dadf18e4adfe4e021c7345f8302cb1477d9f8818fe0280c4c7e0b4344f429cd",
+      "signedReceiptJws": "eyJhbGciOiJFZERTQSIsImtpZCI6IjVlYmIwY2I2NmQzYjVjY2Y0NDFiM2MwMDNiM2FjMzgxYmY3NmQ3MGUyNzZmZDE5MDRkNmExN2VkNzExY2QzMWUiLCJ0eXAiOiJ1dmQtZmFjaWxpdGF0b3ItcmVjZWlwdCtqd3MifQ.eyJhbW91bnQiOiIxMDAwIiwiYXNzZXQiOiIwLjAuNDU2ODU4IiwiYXV0aG9yaXphdGlvbklkIjoiMjk2ODcwNjdiMGM3NzM0ZjM4MWNhNmFiNjFjN2FiNjE1NWRhZDQyYzUxYjM5NDNhYzg0OGI1NjZjZWU2NDMzOCIsImRlY2ltYWxzIjo2LCJkaWFnbm9zdGljQ29kZSI6bnVsbCwiaXNzdWVkQXQiOjE3ODk2NzYyNzIsImlzc3VlciI6Imh0dHBzOi8vZmFjaWxpdGF0b3IudWx0cmF2aW9sZXRhZGFvLnh5eiIsIm5ldHdvcmsiOiJoZWRlcmE6bWFpbm5ldCIsIm9wZXJhdGlvbiI6InNldHRsZSIsInBheVRvIjoiMC4wLjEwODY4MzAyIiwicGF5ZXIiOiIwLjAuMTA4NjgzMDEiLCJwYXltZW50UmVxdWVzdEhhc2giOiIwZDE0OWM3OTYxZTUyOGUxMzQ0OGFjNzIwODI0YjNjYzc3YmRjYjNkZjJmNTU1MzE5ZDVhYzRkYTIzNDhkZjMyIiwicHJvb2YiOm51bGwsInB1cmNoYXNlSWQiOiIxOThiZGY3NjEwNjk4ZGYxNzY4OGI5MjU0MDI3ZGJmZSIsInJlY2VpcHRJZCI6Ijg5YTFiM2JjLTg3ZmUtNDMwOS04M2Q1LTRjYjkxOTAzYzZiMiIsInJlZnVzYWxSZWFzb24iOm51bGwsInJlcXVlc3QiOnsiYW1vdW50IjoiMTAwMCIsImFzc2V0IjoiMC4wLjQ1Njg1OCIsImJvZHlTaGEyNTYiOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1IiwibWV0aG9kIjoiR0VUIiwibmV0d29yayI6ImhlZGVyYTptYWlubmV0IiwicGF5VG8iOiIwLjAuMTA4NjgzMDIiLCJwdXJjaGFzZUlkIjoiMTk4YmRmNzYxMDY5OGRmMTc2ODhiOTI1NDAyN2RiZmUiLCJzY2hlbWUiOiJleGFjdCIsInVybCI6Imh0dHA6Ly8xMjcuMC4wLjE6NjE1MTkvcGFpZCJ9LCJyZXF1ZXN0SGFzaCI6IjlkYWRmMThlNGFkZmU0ZTAyMWM3MzQ1ZjgzMDJjYjE0NzdkOWY4ODE4ZmUwMjgwYzRjN2UwYjQzNDRmNDI5Y2QiLCJyZXF1ZXN0SGFzaFZlcnNpb24iOiJ1dmQteDQwMi1yZXF1ZXN0LXYxIiwicmV0cnkiOnsiYWN0aW9uIjoibm9uZSJ9LCJyZXZpc2lvbiI6Mywic2NoZW1hVmVyc2lvbiI6MSwic2NoZW1lIjoiZXhhY3QiLCJzZXR0bGVtZW50Ijp7ImlkIjoiMC4wLjEwODY4MzAwQDE3ODk2NzYyNjAuNjE1NjA4NDEzIiwiaWRUeXBlIjoiaGVkZXJhLXRyYW5zYWN0aW9uLWlkIiwicGF5bWVudElkIjoiMHg4ZDkxYzBjZTllNzA1YWQxMTMxNjI3ZTI3NGY4ODMwODhjODhiNjE4YjIwZDRjMmQ0M2E5NDRmYmFlM2Q0MzIwIn0sInN0YXR1cyI6ImNvbmZpcm1lZCIsIng0MDJWZXJzaW9uIjoyfQ.nxSu42_Yk_IcNsdKZwmYX_3q1PxyDOrFEpgQDrJ27m-vXMLZRRTvKQ9I0w7_wSGsuNjOTJ53ysVcOwZ8nsaeCA",
+      "sameAuthorization": true,
+      "httpStatuses": [
+        500,
+        200
+      ],
+      "proofVerified": true,
+      "chain": {
+        "networkId": "hedera:mainnet",
+        "transactionId": "0.0.10868300@1789676260.615608413",
+        "consensusTimestamp": "1789676268.623077104",
+        "transactionHashBase64": "Kspl/ujU7PZmcY3jdn2lPg6VYipvEdIJ0OVJvrWZvrG/SRk4R9puwScHGhElExDS",
+        "status": "success",
+        "matchingUSDCTransfers": 1
+      }
+    },
+    {
+      "sdk": "typescript",
+      "version": "2.96.0",
+      "facilitatorVersion": "2.36.1",
+      "network": "hedera:testnet",
+      "asset": "0.0.429274",
+      "amount": "1000",
+      "payer": "0.0.10576386",
+      "payTo": "0.0.10576387",
+      "receiptId": "504d4f45-6a53-48ab-b823-e88763fecbdf",
+      "requestHash": "7ad4e59ea9c92e1b59146a43c5387d8a35059bb2d1c3c712666aaa52f9286bf2",
+      "signedReceiptJws": "eyJhbGciOiJFZERTQSIsImtpZCI6IjVlYmIwY2I2NmQzYjVjY2Y0NDFiM2MwMDNiM2FjMzgxYmY3NmQ3MGUyNzZmZDE5MDRkNmExN2VkNzExY2QzMWUiLCJ0eXAiOiJ1dmQtZmFjaWxpdGF0b3ItcmVjZWlwdCtqd3MifQ.eyJhbW91bnQiOiIxMDAwIiwiYXNzZXQiOiIwLjAuNDI5Mjc0IiwiYXV0aG9yaXphdGlvbklkIjoiNTM2ZDg2M2ExNGU4YmE1YmQzNjY4MDdmMmMxNmRlMDZiMzUxMjQ0NDQzNzVhZmFmYWY1NGFiMTQ0ZmFjZTQyNSIsImRlY2ltYWxzIjo2LCJkaWFnbm9zdGljQ29kZSI6bnVsbCwiaXNzdWVkQXQiOjE3ODk2Nzk5MTYsImlzc3VlciI6Imh0dHBzOi8vZmFjaWxpdGF0b3IudWx0cmF2aW9sZXRhZGFvLnh5eiIsIm5ldHdvcmsiOiJoZWRlcmE6dGVzdG5ldCIsIm9wZXJhdGlvbiI6InNldHRsZSIsInBheVRvIjoiMC4wLjEwNTc2Mzg3IiwicGF5ZXIiOiIwLjAuMTA1NzYzODYiLCJwYXltZW50UmVxdWVzdEhhc2giOiJlYzEwZjJmMTcyMzYyNjcwZTZlNGZjNjE1YzZjNTc4YjMzNmJlNDU1NDk4Mzk4ZTZmZGM4NjAxMGRjOTNlNGIwIiwicHJvb2YiOm51bGwsInB1cmNoYXNlSWQiOiJjOWMxMjAyYjYyYzRiOTliYzNlZmExZGY0ZjVkOTAwNCIsInJlY2VpcHRJZCI6IjUwNGQ0ZjQ1LTZhNTMtNDhhYi1iODIzLWU4ODc2M2ZlY2JkZiIsInJlZnVzYWxSZWFzb24iOm51bGwsInJlcXVlc3QiOnsiYW1vdW50IjoiMTAwMCIsImFzc2V0IjoiMC4wLjQyOTI3NCIsImJvZHlTaGEyNTYiOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1IiwibWV0aG9kIjoiR0VUIiwibmV0d29yayI6ImhlZGVyYTp0ZXN0bmV0IiwicGF5VG8iOiIwLjAuMTA1NzYzODciLCJwdXJjaGFzZUlkIjoiYzljMTIwMmI2MmM0Yjk5YmMzZWZhMWRmNGY1ZDkwMDQiLCJzY2hlbWUiOiJleGFjdCIsInVybCI6Imh0dHA6Ly8xMjcuMC4wLjE6NjI2OTUvcGFpZCJ9LCJyZXF1ZXN0SGFzaCI6IjdhZDRlNTllYTljOTJlMWI1OTE0NmE0M2M1Mzg3ZDhhMzUwNTliYjJkMWMzYzcxMjY2NmFhYTUyZjkyODZiZjIiLCJyZXF1ZXN0SGFzaFZlcnNpb24iOiJ1dmQteDQwMi1yZXF1ZXN0LXYxIiwicmV0cnkiOnsiYWN0aW9uIjoibm9uZSJ9LCJyZXZpc2lvbiI6Mywic2NoZW1hVmVyc2lvbiI6MSwic2NoZW1lIjoiZXhhY3QiLCJzZXR0bGVtZW50Ijp7ImlkIjoiMC4wLjEwNTc2Mzg1QDE3ODk2Nzk5MDYuMTQ2MzI4NjEyIiwiaWRUeXBlIjoiaGVkZXJhLXRyYW5zYWN0aW9uLWlkIiwicGF5bWVudElkIjoiMHg2YzE2MDVkZjhkZGFmZjc1MjI5YTcxNDdiYjhkYjlmNmEyZDFjZTgxMTQ3YTdhOWVmZGQyYTNkY2I2MzE1NWEzIn0sInN0YXR1cyI6ImNvbmZpcm1lZCIsIng0MDJWZXJzaW9uIjoyfQ.iLI-F52U6QuQvyvKj2EqzkiU1wMZrFIeqVf6yFX-Tlkcx8Gq8t4ESFxTmWaTBO2VzpelHCMFo7wuwteQyMN4BQ",
+      "sameAuthorization": true,
+      "httpStatuses": [
+        500,
+        200
+      ],
+      "proofVerified": true,
+      "chain": {
+        "networkId": "hedera:testnet",
+        "transactionId": "0.0.10576385@1789679906.146328612",
+        "consensusTimestamp": "1789679913.362069104",
+        "transactionHashBase64": "HO6PMwLKnp+qXPnW5f1WnUjSL7YGdePYep4F6LL+7JMjEQOw/wwwtSS7/CtkbCOA",
+        "status": "success",
+        "matchingUSDCTransfers": 1
+      }
+    }
+  ],
+  "quotaBlockedAttempt": {
+    "checkedAt": "2026-09-17T20:19:13.134488+00:00",
+    "network": "hedera:testnet",
+    "sdk": "typescript",
+    "version": "2.96.0",
+    "transactionId": "0.0.10576385@1789675908.996271085",
+    "validStart": 1789675908,
+    "duration": 180,
+    "maxFeeTinybars": "100000000",
+    "receiptId": "53edcbc4-4302-47ad-9f18-25318c6ca902",
+    "receiptStatus": "unknown",
+    "signedReceiptJws": "eyJhbGciOiJFZERTQSIsImtpZCI6IjVlYmIwY2I2NmQzYjVjY2Y0NDFiM2MwMDNiM2FjMzgxYmY3NmQ3MGUyNzZmZDE5MDRkNmExN2VkNzExY2QzMWUiLCJ0eXAiOiJ1dmQtZmFjaWxpdGF0b3ItcmVjZWlwdCtqd3MifQ.eyJhbW91bnQiOiIxMDAwIiwiYXNzZXQiOiIwLjAuNDI5Mjc0IiwiYXV0aG9yaXphdGlvbklkIjoiYjVhY2ZmM2U4NTIwYmY1OGVmOWNlNjc4YzI2MzA3NTM5MmE2Y2M4ZGZlNmIyOTQ3ZGIyMjY1MWFhN2I2MTM5MiIsImRlY2ltYWxzIjo2LCJkaWFnbm9zdGljQ29kZSI6ImludGVybmFsX2Vycm9yIChyZWY6IDYxYjcxMjY5LTNkY2ItNDZlMy05ZDhiLWIxMTdhODliNzU5ZSkiLCJpc3N1ZWRBdCI6MTc4OTY3NTkxMywiaXNzdWVyIjoiaHR0cHM6Ly9mYWNpbGl0YXRvci51bHRyYXZpb2xldGFkYW8ueHl6IiwibmV0d29yayI6ImhlZGVyYTp0ZXN0bmV0Iiwib3BlcmF0aW9uIjoic2V0dGxlIiwicGF5VG8iOiIwLjAuMTA1NzYzODciLCJwYXllciI6IjAuMC4xMDU3NjM4NiIsInBheW1lbnRSZXF1ZXN0SGFzaCI6IjJiN2VmODkxYWIwNGUwNTFmYTQ1YzVkZjg3NTAwN2M0OTEyZjEzNWZmNzdiMWU1ZGVkMjY3MzA5NTY2OWU2NTgiLCJwcm9vZiI6bnVsbCwicHVyY2hhc2VJZCI6Ijc0ZjcyNzFkNTRhZjZlOGMyZTZiNjQzZTIwZmQyMGE4IiwicmVjZWlwdElkIjoiNTNlZGNiYzQtNDMwMi00N2FkLTlmMTgtMjUzMThjNmNhOTAyIiwicmVmdXNhbFJlYXNvbiI6bnVsbCwicmVxdWVzdCI6eyJhbW91bnQiOiIxMDAwIiwiYXNzZXQiOiIwLjAuNDI5Mjc0IiwiYm9keVNoYTI1NiI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJtZXRob2QiOiJHRVQiLCJuZXR3b3JrIjoiaGVkZXJhOnRlc3RuZXQiLCJwYXlUbyI6IjAuMC4xMDU3NjM4NyIsInB1cmNoYXNlSWQiOiI3NGY3MjcxZDU0YWY2ZThjMmU2YjY0M2UyMGZkMjBhOCIsInNjaGVtZSI6ImV4YWN0IiwidXJsIjoiaHR0cDovLzEyNy4wLjAuMTo1NzM4MS9wYWlkIn0sInJlcXVlc3RIYXNoIjoiOTNkYjk4MWQwYWEzZjkyMDhlZWQ4NGU1MGUzY2NhM2I3MjkzYmVhNzcxNmJhNzE3ZjU4OGFmNjNmNWNiNTc1MiIsInJlcXVlc3RIYXNoVmVyc2lvbiI6InV2ZC14NDAyLXJlcXVlc3QtdjEiLCJyZXRyeSI6eyJhY3Rpb24iOiJwb2xsIn0sInJldmlzaW9uIjozLCJzY2hlbWFWZXJzaW9uIjoxLCJzY2hlbWUiOiJleGFjdCIsInNldHRsZW1lbnQiOnsiaWQiOiIwLjAuMTA1NzYzODVAMTc4OTY3NTkwOC45OTYyNzEwODUiLCJpZFR5cGUiOiJoZWRlcmEtdHJhbnNhY3Rpb24taWQiLCJwYXltZW50SWQiOm51bGx9LCJzdGF0dXMiOiJ1bmtub3duIiwieDQwMlZlcnNpb24iOjJ9.ppu1p7VqVuIa67aTAvl1PGE4_FNCQNUQkvktSUAjpiwjaKzDMRvM8KdWC9fhChcSc0yRJPUyODeg9Nz91mb5Dw",
+    "authorizationExpired": true,
+    "nativeReservationAbsent": true,
+    "mirrorHttpStatus": 404,
+    "knownNewTransfers": 0,
+    "diagnosis": "Daily maximum-fee reservation budget was exhausted at 1000000000 tinybars; no native reservation or co-signing occurred.",
+    "resolution": "Keep this attempt and its capability unchanged. The operator may start a separate bounded acceptance purchase after increasing the testnet quota; this is not an automatic retry or replacement authorization.",
+    "lookupRecoveredInVersion": "2.36.1",
+    "lookupValidation": {
+      "pythonLookup": true,
+      "typescriptLookup": true,
+      "status": "unknown",
+      "proofVerified": true,
+      "receiptUnmodified": true,
+      "newPayments": 0,
+      "wrongCapabilityHttpStatus": 404
+    }
+  },
+  "exportedReceiptVerification": {
+    "pythonVersion": "0.88.0",
+    "typescriptVersion": "2.96.0",
+    "validSignatures": 9,
+    "source": "published packages installed from PyPI and npm"
+  },
+  "readiness": {
+    "checkedAt": "2026-09-17T21:17:09.582715+00:00",
+    "version": {
+      "version": "2.36.1"
+    },
+    "receipts": {
+      "schemaVersion": 1,
+      "available": true,
+      "networks": [
+        "eip155:5042",
+        "eip155:5042002",
+        "hedera:mainnet",
+        "hedera:testnet"
+      ],
+      "schemes": [
+        "exact"
+      ],
+      "contextHeader": "X-UVD-Purchase",
+      "lookup": "/receipts/{receiptId}",
+      "proof": "jws-ed25519",
+      "keys": "/.well-known/receipt-keys.json"
+    },
+    "publicKeys": {
+      "keys": [
+        {
+          "kty": "OKP",
+          "crv": "Ed25519",
+          "use": "sig",
+          "alg": "EdDSA",
+          "kid": "5ebb0cb66d3b5ccf441b3c003b3ac381bf76d70e276fd1904d6a17ed711cd31e",
+          "x": "_AJ_Ev6f2L1JtsOm5_2mZhdqP1_wJuk7q1SVncnwOGs"
+        }
+      ]
+    },
+    "openapiReceiptPaths": true,
+    "jsonSchema": true,
+    "randomGridDefault": true,
+    "unauthenticatedLookupDenied": true,
+    "hederaUSDCOnly": true,
+    "newPayments": 0
+  },
+  "deployment": {
+    "sourceCommit": "3582a8a6463f430b8cdc3ef035d948e00569f59b",
+    "pullRequest": 82,
+    "pipeline": "https://github.com/UltravioletaDAO/x402-rs/actions/runs/35273196108",
+    "attempt": 2,
+    "conclusion": "success",
+    "checkedAt": "2026-09-17T21:19:42.021424+00:00",
+    "version": "2.36.1",
+    "deployments": [
+      {
+        "status": "PRIMARY",
+        "runningCount": 2,
+        "pendingCount": 0,
+        "failedTasks": 0,
+        "rolloutState": "COMPLETED"
+      }
+    ]
+  }
+}

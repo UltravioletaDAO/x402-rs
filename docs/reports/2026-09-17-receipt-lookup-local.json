@@ -1,0 +1,126 @@
+{
+  "checkedAt": "2026-09-17T20:42:14.809560+00:00",
+  "sourceCommit": "945ffe7add8525a811cb7f98bd269254d4531d45",
+  "version": "2.36.1",
+  "status": "local-preflight-passed",
+  "rustPassed": 2610,
+  "rustTestRuns": [
+    {
+      "passed": 1193,
+      "failed": 0,
+      "ignored": 6
+    },
+    {
+      "passed": 1243,
+      "failed": 0,
+      "ignored": 6
+    },
+    {
+      "passed": 6,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "passed": 23,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "passed": 6,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "passed": 9,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "passed": 15,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 11
+    },
+    {
+      "passed": 31,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "passed": 14,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "passed": 43,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "passed": 7,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "passed": 5,
+      "failed": 0,
+      "ignored": 7
+    },
+    {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 2
+    },
+    {
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0
+    }
+  ],
+  "frontendTestsPassed": 8,
+  "balanceMonitorTestsPassed": 5,
+  "lookupRegression": "original HTTP 400/502 -> private GET 200; identical signed receipt; original POST status and replay protection retained",
+  "terraformChanges": [
+    "aws_ecs_service.facilitator",
+    "aws_ecs_task_definition.facilitator",
+    "aws_lambda_function.balances"
+  ],
+  "iamPolicyChanges": 0,
+  "receiptKeyAndStorePermissions": "allowed",
+  "deployLambdaPermissions": "allowed",
+  "securityHooks": "passed",
+  "hederaDailyMaximumFeeReservationTinybars": {
+    "testnet": 1200000000,
+    "mainnet": 1000000000
+  },
+  "newOnChainPaymentsFromThisPreflight": 0
+}

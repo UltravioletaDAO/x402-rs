@@ -1,0 +1,128 @@
+{
+  "implementation": "native exact x402 v2",
+  "local_canary_receipts": "2026-09-16-hedera-testnet-canaries.json",
+  "production_deployed": false,
+  "mainnet_funded": false,
+  "offline_provider_tests": 9,
+  "facilitator_full_suite": "passed library, binary, integrations and doctests; see PR CI for final counts",
+  "dynamodb_concurrency_and_quota_test": "passed against dedicated table; 12 simultaneous requests, one owner/quota charge",
+  "receipt_persistence_failure": {
+    "status": "passed",
+    "native_transaction": "0.0.10576385@1789603383.342495891",
+    "duration_seconds": 125.57,
+    "original_signed_bytes_preserved": true,
+    "background_recovery_after_restart": true,
+    "mirror": {
+      "batch_key": null,
+      "bytes": null,
+      "charged_tx_fee": 256317,
+      "consensus_timestamp": "1789603403.290575556",
+      "entity_id": null,
+      "high_volume": false,
+      "high_volume_pricing_multiplier": 0,
+      "max_fee": "100000000",
+      "max_custom_fees": [],
+      "memo_base64": "",
+      "name": "CRYPTOTRANSFER",
+      "nft_transfers": [],
+      "node": "0.0.7",
+      "nonce": 0,
+      "parent_consensus_timestamp": null,
+      "result": "SUCCESS",
+      "scheduled": false,
+      "staking_reward_transfers": [],
+      "token_transfers": [],
+      "transaction_hash": "i1yNBEGVHGV5lgpcjku9Dqeegt2rmWV5V34dvUZgYgx4T3CwaSBcutWRcgqMI1Wi",
+      "transaction_id": "0.0.10576385-1789603383-342495891",
+      "transfers": [
+        {
+          "account": "0.0.802",
+          "amount": 256317,
+          "is_approval": false
+        },
+        {
+          "account": "0.0.10576385",
+          "amount": -256317,
+          "is_approval": false
+        },
+        {
+          "account": "0.0.10576386",
+          "amount": -10000,
+          "is_approval": false
+        },
+        {
+          "account": "0.0.10576387",
+          "amount": 10000,
+          "is_approval": false
+        }
+      ],
+      "valid_duration_seconds": "120",
+      "valid_start_timestamp": "1789603383.342495891"
+    }
+  },
+  "mirror_hash_binding_read_only_test": "passed with real stored USDC signed bytes; unrelated receipt rejected",
+  "balance_monitor_tests": 5,
+  "notes": [
+    "Mainnet requires separate funded account and canaries.",
+    "Testnet live tests use dedicated accounts and native HBAR fees.",
+    "JSON receipts here contain no private keys or signed transaction payloads."
+  ],
+  "final_usdc_https_hash_bound_canary": {
+    "status": "passed",
+    "native_transaction": "0.0.10576385@1789604566.023406789",
+    "amount": "1000",
+    "asset": "0.0.429274",
+    "retry_same_transaction": true,
+    "replay_rejected": true,
+    "mirror": {
+      "batch_key": null,
+      "bytes": null,
+      "charged_tx_fee": 1409749,
+      "consensus_timestamp": "1789604574.021081621",
+      "entity_id": null,
+      "high_volume": false,
+      "high_volume_pricing_multiplier": 0,
+      "max_fee": "100000000",
+      "max_custom_fees": [],
+      "memo_base64": "",
+      "name": "CRYPTOTRANSFER",
+      "nft_transfers": [],
+      "node": "0.0.7",
+      "nonce": 0,
+      "parent_consensus_timestamp": null,
+      "result": "SUCCESS",
+      "scheduled": false,
+      "staking_reward_transfers": [],
+      "token_transfers": [
+        {
+          "token_id": "0.0.429274",
+          "account": "0.0.10576386",
+          "amount": -1000,
+          "is_approval": false
+        },
+        {
+          "token_id": "0.0.429274",
+          "account": "0.0.10576387",
+          "amount": 1000,
+          "is_approval": false
+        }
+      ],
+      "transaction_hash": "0J4R3ygd0/0yrdLWKb9kAaFaOuxsC9vEEvggy2HbgifVM8u5fkAbySv6I/itYbZf",
+      "transaction_id": "0.0.10576385-1789604566-023406789",
+      "transfers": [
+        {
+          "account": "0.0.802",
+          "amount": 1409749,
+          "is_approval": false
+        },
+        {
+          "account": "0.0.10576385",
+          "amount": -1409749,
+          "is_approval": false
+        }
+      ],
+      "valid_duration_seconds": "120",
+      "valid_start_timestamp": "1789604566.023406789"
+    }
+  }
+}

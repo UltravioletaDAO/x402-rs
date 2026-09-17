@@ -169,6 +169,8 @@ data "aws_secretsmanager_secret" "rpc_testnet" {
 locals {
   # All wallet secret ARNs that need IAM permissions
   wallet_secret_arns = [
+    data.aws_secretsmanager_secret.hedera_testnet.arn,
+    data.aws_secretsmanager_secret.hedera_mainnet.arn,
     data.aws_secretsmanager_secret.evm_mainnet_private_key.arn,
     data.aws_secretsmanager_secret.evm_testnet_private_key.arn,
     data.aws_secretsmanager_secret.evm_private_key_legacy.arn,
@@ -401,6 +403,7 @@ locals {
 
   # Combined secrets array for task definition
   all_task_secrets = concat(
+    local.hedera_secrets,
     local.wallet_secrets,
     local.mainnet_rpc_secrets,
     local.testnet_rpc_secrets,

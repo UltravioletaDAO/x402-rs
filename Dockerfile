@@ -22,6 +22,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     libssl-dev \
+    protobuf-compiler \
  && rm -rf /var/lib/apt/lists/*
 
 # ---------------------------------------------------------------------------
@@ -64,7 +65,7 @@ RUN set -eux; \
     echo 'fn main() {}' > examples/x402-axum-example/src/main.rs; \
     echo 'fn main() {}' > examples/x402-reqwest-example/src/main.rs
 
-RUN cargo build --release --features solana,near,stellar,algorand,sui,xrpl
+RUN cargo build --release --features solana,near,stellar,algorand,sui,xrpl,hedera
 
 # ---------------------------------------------------------------------------
 # Real build
@@ -84,7 +85,7 @@ RUN [ -f config/blacklist.json ] || printf '[]\n' > config/blacklist.json
 # local crates to rebuild; dependencies are untouched and stay cached.
 RUN find src crates examples -name '*.rs' -exec touch {} +
 
-RUN cargo build --release --features solana,near,stellar,algorand,sui,xrpl
+RUN cargo build --release --features solana,near,stellar,algorand,sui,xrpl,hedera
 
 # Fail here rather than ship a stub: the landing page is only inside the binary
 # if static/ was compiled in, which the stub build cannot do.

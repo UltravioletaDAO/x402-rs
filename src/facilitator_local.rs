@@ -41,6 +41,7 @@ use crate::network::resolve_network;
 /// forms by their token-and-scheme signature and got 24 of 39 right, which
 /// means it could print the wrong chain id beside the right network.
 fn network_aliases_of(network: Network) -> Vec<String> {
+    if !network.supports_v1() { return vec![network.to_caip2()]; }
     vec![network.to_string(), network.to_caip2()]
 }
 
@@ -50,6 +51,7 @@ fn network_aliases_of(network: Network) -> Vec<String> {
 /// The x402 version tracks the naming form, exactly as it always has for
 /// `exact`: a v1 chain name goes out as x402 v1, a CAIP-2 id as x402 v2.
 fn network_form_counterpart(kind: &SupportedPaymentKind) -> Option<SupportedPaymentKind> {
+    if !resolve_network(&kind.network)?.supports_v1() { return None; }
     let (x402_version, network) = match Network::from_str(&kind.network) {
         Ok(network) => (X402Version::V2, network.to_caip2()),
         Err(_) => (
@@ -452,6 +454,19 @@ where
         use crate::types::{ExactPaymentPayload, MixedAddress};
 
         match payload {
+            #[cfg(feature = "hedera")]
+            ExactPaymentPayload::Hedera(payload) => {
+                let decoded = crate::chain::hedera::codec::Decoded::from_base64(&payload.transaction)
+                    .map_err(FacilitatorLocalError::DecodingError)?;
+                let (payer, payee, amount, currency) = decoded.screening_parties().map_err(FacilitatorLocalError::DecodingError)?;
+                let context = TransactionContext { amount: amount.to_string(), currency, network: network.to_caip2(), transaction_id: None };
+                let result = self.compliance_checker.screen_payment(&payer.to_string(), &payee.to_string(), &context).await
+                    .map_err(|_| FacilitatorLocalError::Other("Hedera compliance unavailable".into()))?;
+                match result.decision {
+                    ScreeningDecision::Clear => Ok(()),
+                    ScreeningDecision::Block { reason } | ScreeningDecision::Review { reason } => Err(FacilitatorLocalError::BlockedAddress(crate::types::MixedAddress::Hedera(payer), reason)),
+                }
+            }
             ExactPaymentPayload::Evm(evm_payload) => {
                 // Extract payer and payee addresses
                 let (payer, payee) = EvmExtractor::extract_addresses(

@@ -117,3 +117,9 @@ enable_observability = false
 # Arc: real v1/v2 canaries and replay checks passed on both networks, 2026-09-16.
 arc_testnet_enabled = true
 arc_mainnet_enabled = true
+
+# Native Hedera rollout: only testnet has funded, validated accounts and canaries.
+hedera_enabled_testnet               = true
+hedera_enabled_mainnet               = false
+hedera_account_id_testnet            = "0.0.10576385"
+hedera_daily_budget_tinybars_testnet = 1000000000

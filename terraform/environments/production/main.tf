@@ -265,6 +265,17 @@ resource "aws_security_group" "ecs_tasks" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  dynamic "egress" {
+    for_each = var.hedera_enabled_testnet || var.hedera_enabled_mainnet ? [1] : []
+    content {
+      description = "Native Hedera consensus gRPC (signed transfers, receipt queries)"
+      from_port   = 50211
+      to_port     = 50211
+      protocol    = "tcp"
+      cidr_blocks = ["0.0.0.0/0"]
+    }
+  }
+
   # The outbound half of the writer-lease forward. The ingress rule above is not
   # enough on its own: egress here is deliberately not 0.0.0.0/0, so without
   # this the forwarding connection is dropped on the way OUT and the caller sees
@@ -868,7 +879,7 @@ resource "aws_ecs_task_definition" "facilitator" {
         }
       ]
 
-      environment = concat([
+      environment = concat(local.hedera_environment, [
         {
           name = "RUST_LOG"
           # `evm=debug` is deliberate and load-bearing, not leftover verbosity.

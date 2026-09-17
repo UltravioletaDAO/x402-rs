@@ -171,6 +171,10 @@ pub enum TokenType {
     /// Native XRP on the XRP Ledger (6 decimals, integer drops). XRPL-only.
     #[serde(rename = "xrp")]
     Xrp,
+    #[serde(rename = "hbar")]
+    Hbar,
+    #[serde(rename = "hts")]
+    Hts,
 }
 
 impl TokenType {
@@ -194,6 +198,8 @@ impl TokenType {
     #[must_use]
     pub const fn decimals(&self) -> u8 {
         match self {
+            TokenType::Hbar => 8,
+            TokenType::Hts => 0,
             TokenType::Usdc => 6,
             TokenType::Eurc => 6,
             TokenType::Ausd => 6,
@@ -209,6 +215,8 @@ impl TokenType {
     #[must_use]
     pub const fn symbol(&self) -> &'static str {
         match self {
+            TokenType::Hbar => "HBAR",
+            TokenType::Hts => "HTS",
             TokenType::Usdc => "USDC",
             TokenType::Eurc => "EURC",
             TokenType::Ausd => "AUSD",
@@ -224,6 +232,8 @@ impl TokenType {
     #[must_use]
     pub const fn display_name(&self) -> &'static str {
         match self {
+            TokenType::Hbar => "Hedera",
+            TokenType::Hts => "HTS",
             TokenType::Usdc => "USD Coin",
             TokenType::Eurc => "Euro Coin",
             TokenType::Ausd => "Agora USD",
@@ -239,6 +249,8 @@ impl TokenType {
     #[must_use]
     pub const fn currency_symbol(&self) -> &'static str {
         match self {
+            TokenType::Hbar => "HBAR",
+            TokenType::Hts => "HTS",
             TokenType::Usdc => "$",
             TokenType::Eurc => "EUR", // Euro symbol
             TokenType::Ausd => "$",
@@ -254,6 +266,8 @@ impl TokenType {
     #[must_use]
     pub const fn is_fiat_backed(&self) -> bool {
         match self {
+            TokenType::Hbar => false,
+            TokenType::Hts => false,
             TokenType::Usdc => true,
             TokenType::Eurc => true,
             TokenType::Ausd => true,
@@ -285,6 +299,8 @@ impl TokenType {
     #[must_use]
     pub const fn eip712_name(&self) -> &'static str {
         match self {
+            TokenType::Hbar => "",
+            TokenType::Hts => "",
             TokenType::Usdc => "USD Coin",
             TokenType::Eurc => "Euro Coin",
             TokenType::Ausd => "AUSD",
@@ -309,6 +325,8 @@ impl TokenType {
     #[must_use]
     pub const fn eip712_version(&self) -> &'static str {
         match self {
+            TokenType::Hbar => "",
+            TokenType::Hts => "",
             TokenType::Usdc => "2",
             TokenType::Eurc => "2",
             TokenType::Ausd => "1",
@@ -352,6 +370,8 @@ impl FromStr for TokenType {
             "usdg" => Ok(TokenType::Usdg),
             "rlusd" => Ok(TokenType::Rlusd),
             "xrp" => Ok(TokenType::Xrp),
+            "hbar" => Ok(TokenType::Hbar),
+            "hts" => Ok(TokenType::Hts),
             _ => Err(TokenTypeParseError(s.to_string())),
         }
     }
@@ -673,6 +693,9 @@ pub struct ExactSuiPayload {
 pub enum ExactPaymentPayload {
     Evm(ExactEvmPayload),
     Solana(ExactSolanaPayload),
+    #[cfg(feature = "hedera")]
+    #[serde(skip_deserializing)]
+    Hedera(crate::chain::hedera::wire::ExactHederaPayload),
     Near(ExactNearPayload),
     Stellar(ExactStellarPayload),
     #[cfg(feature = "xrpl")]
@@ -1051,6 +1074,8 @@ pub enum MixedAddress {
     Solana(Pubkey),
     /// NEAR Protocol account ID (e.g., "alice.near" or implicit hex account)
     Near(String),
+    #[cfg(feature = "hedera")]
+    Hedera(crate::chain::hedera::id::EntityId),
     /// Stellar contract ID (C...) or account ID (G...)
     Stellar(String),
     /// XRPL classic account address (r...)
@@ -1100,6 +1125,8 @@ impl TryFrom<MixedAddress> for alloy::primitives::Address {
             MixedAddress::Offchain(_) => Err(MixedAddressError::NotEvmAddress),
             MixedAddress::Solana(_) => Err(MixedAddressError::NotEvmAddress),
             MixedAddress::Near(_) => Err(MixedAddressError::NotEvmAddress),
+            #[cfg(feature = "hedera")]
+            MixedAddress::Hedera(_) => Err(MixedAddressError::NotEvmAddress),
             MixedAddress::Stellar(_) => Err(MixedAddressError::NotEvmAddress),
             #[cfg(feature = "xrpl")]
             MixedAddress::Xrpl(_) => Err(MixedAddressError::NotEvmAddress),
@@ -1133,6 +1160,8 @@ impl TryInto<EvmAddress> for MixedAddress {
             MixedAddress::Offchain(_) => Err(MixedAddressError::NotEvmAddress),
             MixedAddress::Solana(_) => Err(MixedAddressError::NotEvmAddress),
             MixedAddress::Near(_) => Err(MixedAddressError::NotEvmAddress),
+            #[cfg(feature = "hedera")]
+            MixedAddress::Hedera(_) => Err(MixedAddressError::NotEvmAddress),
             MixedAddress::Algorand(_) => Err(MixedAddressError::NotEvmAddress),
             MixedAddress::Stellar(_) => Err(MixedAddressError::NotEvmAddress),
             #[cfg(feature = "xrpl")]
@@ -1150,6 +1179,8 @@ impl Display for MixedAddress {
             MixedAddress::Offchain(address) => write!(f, "{address}"),
             MixedAddress::Solana(pubkey) => write!(f, "{pubkey}"),
             MixedAddress::Near(account_id) => write!(f, "{account_id}"),
+            #[cfg(feature = "hedera")]
+            MixedAddress::Hedera(account_id) => write!(f, "{account_id}"),
             MixedAddress::Stellar(address) => write!(f, "{address}"),
             #[cfg(feature = "xrpl")]
             MixedAddress::Xrpl(address) => write!(f, "{address}"),
@@ -1252,6 +1283,8 @@ impl Serialize for MixedAddress {
             MixedAddress::Offchain(s) => serializer.serialize_str(s),
             MixedAddress::Solana(pubkey) => serializer.serialize_str(pubkey.to_string().as_str()),
             MixedAddress::Near(account_id) => serializer.serialize_str(account_id),
+            #[cfg(feature = "hedera")]
+            MixedAddress::Hedera(account_id) => serializer.collect_str(account_id),
             MixedAddress::Stellar(address) => serializer.serialize_str(address),
             #[cfg(feature = "xrpl")]
             MixedAddress::Xrpl(address) => serializer.serialize_str(address),
@@ -1282,6 +1315,8 @@ pub enum TransactionHash {
     Xrpl([u8; 32]),
     /// A 52-character Algorand transaction ID, encoded as base32.
     Algorand(String),
+    #[cfg(feature = "hedera")]
+    Hedera(String),
     /// Sui transaction digest (base58-encoded 32 bytes).
     #[cfg(feature = "sui")]
     Sui(String),
@@ -1294,6 +1329,8 @@ impl<'de> Deserialize<'de> for TransactionHash {
         static EVM_TX_HASH_REGEX: Lazy<Regex> =
             Lazy::new(|| Regex::new(r"^0x[0-9a-fA-F]{64}$").expect("invalid regex"));
 
+        #[cfg(feature = "hedera")]
+        if crate::chain::hedera::id::valid_transaction_id(&s) { return Ok(TransactionHash::Hedera(s)); }
         // EVM: 0x-prefixed, 32 bytes hex
         if EVM_TX_HASH_REGEX.is_match(&s) {
             let bytes = hex::decode(s.trim_start_matches("0x"))
@@ -1357,6 +1394,8 @@ impl<'de> Deserialize<'de> for TransactionHash {
 impl Serialize for TransactionHash {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
+            #[cfg(feature = "hedera")]
+            TransactionHash::Hedera(id) => serializer.serialize_str(id),
             TransactionHash::Evm(bytes) => {
                 let hex_string = format!("0x{}", hex::encode(bytes));
                 serializer.serialize_str(&hex_string)
@@ -1394,6 +1433,8 @@ impl Serialize for TransactionHash {
 impl Display for TransactionHash {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
+            #[cfg(feature = "hedera")]
+            TransactionHash::Hedera(id) => write!(f, "{id}"),
             TransactionHash::Evm(bytes) => {
                 write!(f, "0x{}", hex::encode(bytes))
             }

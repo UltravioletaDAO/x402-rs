@@ -141,6 +141,8 @@ locals {
     "xrpl-mainnet"      = { min_native = 5.0 }
     }, var.arc_mainnet_enabled ? {
     "arc-mainnet" = { min_native = var.arc_minimum_gas_usdc }
+    } : {}, var.hedera_enabled_mainnet ? {
+    "hedera-mainnet" = { min_native = 10.0 }
   } : {})
 }
 

@@ -1,0 +1,145 @@
+{
+  "name": "15-adversarial-fee-payer-debited",
+  "description": "payTo still receives the full amount, but 40% of it comes out of the facilitator's own sponsoring account.",
+  "generatedAt": "2026-09-16T03:16:47.412Z",
+  "generator": {
+    "@hiero-ledger/sdk": "2.85.0",
+    "@hiero-ledger/proto": "2.31.0",
+    "@x402/hedera": "2.26.0",
+    "via": "@hiero-ledger/proto rewrite of every variant",
+    "reproducible": true
+  },
+  "x402Version": 2,
+  "scheme": "exact",
+  "network": "hedera:testnet",
+  "paymentRequirements": {
+    "scheme": "exact",
+    "network": "hedera:testnet",
+    "asset": "0.0.0",
+    "amount": "1000000",
+    "payTo": "0.0.2002",
+    "maxTimeoutSeconds": 60,
+    "resource": "https://example.test/resource",
+    "description": "phase-0 spike vector",
+    "mimeType": "application/json",
+    "extra": {
+      "feePayer": "0.0.3003"
+    }
+  },
+  "keys": {
+    "sender": {
+      "label": "x402-rs/hedera-spike/v1/ed25519/sender",
+      "type": "ED25519",
+      "publicKeyDer": "302a300506032b6570032100a09a20c95a921ff555853320ef53fabf5bdad32ac9f89408fb5ff22021eef1ae",
+      "publicKeyRaw": "a09a20c95a921ff555853320ef53fabf5bdad32ac9f89408fb5ff22021eef1ae"
+    },
+    "facilitator": {
+      "label": "x402-rs/hedera-spike/v1/ed25519/facilitator",
+      "type": "ED25519",
+      "publicKeyDer": "302a300506032b6570032100d14e4fbf235eeed0693d7140ac8fae8632393f314eb55aef4a303e70038f4bcf",
+      "publicKeyRaw": "d14e4fbf235eeed0693d7140ac8fae8632393f314eb55aef4a303e70038f4bcf"
+    }
+  },
+  "payload": {
+    "transaction": "Cs4BKssBCmEKFQoICODZncYGEAASBwgAEAAYuxcYABIGCAAQABgDGIDC1y8iAgh4MgByNQozCg8KBwgAEAAY6QcQ/55JGAAKDwoHCAAQABjSDxCAiXoYAAoPCgcIABAAGLsXEP/pMBgAEmYKZAogoJogyVqSH/VVhTMg71P6v1va0yrJ+JQI+1/yICHu8a4aQIFIQ6ZdFdCkHFGhY2/Y662ZJdIfzknDMmETxRdueOpIAAecGp5bMbR5GTq8Oi93+/YWMpxA1Sf6NPqk81DvFQ8KzgEqywEKYQoVCggI4NmdxgYQABIHCAAQABi7FxgAEgYIABAAGAQYgMLXLyICCHgyAHI1CjMKDwoHCAAQABjpBxD/nkkYAAoPCgcIABAAGNIPEICJehgACg8KBwgAEAAYuxcQ/+kwGAASZgpkCiCgmiDJWpIf9VWFMyDvU/q/W9rTKsn4lAj7X/IgIe7xrhpAyZZ+KgjRwfni5wPDnMfNWurmDlmHMjpY3m2+Xkpny5bW1MV9wtN5ufv3SKH4kszFMwuIItoRF3H4UfQIP7zAAA=="
+  },
+  "expected": {
+    "senderAccountId": "0.0.1001",
+    "payTo": "0.0.2002",
+    "feePayer": "0.0.3003",
+    "asset": "0.0.0",
+    "amount": "1000000",
+    "senderSignsEveryVariant": true,
+    "signaturesPerVariantBeforeCoSign": 1,
+    "variantCount": 2,
+    "variants": [
+      {
+        "index": 0,
+        "bodySha256": "4ef5f4d30bcafaadc64b37fa04424c0947d47de500d5b8a0655acaa018b9f93f",
+        "bodyLength": 97,
+        "nodeAccountId": "0.0.3",
+        "transactionId": "0.0.3003@1757900000.000000000",
+        "transactionFee": "100000000",
+        "validDurationSeconds": "120",
+        "memo": "",
+        "bodyDataCase": "cryptoTransfer",
+        "transfers": {
+          "hbar": [
+            {
+              "account": "0.0.1001",
+              "amount": "-600000",
+              "isApproval": false,
+              "hook": null
+            },
+            {
+              "account": "0.0.2002",
+              "amount": "1000000",
+              "isApproval": false,
+              "hook": null
+            },
+            {
+              "account": "0.0.3003",
+              "amount": "-400000",
+              "isApproval": false,
+              "hook": null
+            }
+          ],
+          "tokens": []
+        },
+        "signatures": [
+          {
+            "publicKeyPrefixHex": "a09a20c95a921ff555853320ef53fabf5bdad32ac9f89408fb5ff22021eef1ae",
+            "algorithm": "ed25519",
+            "signatureHex": "814843a65d15d0a41c51a1636fd8ebad9925d21fce49c3326113c5176e78ea4800079c1a9e5b31b479193abc3a2f77fbf616329c40d527fa34faa4f350ef150f"
+          }
+        ]
+      },
+      {
+        "index": 1,
+        "bodySha256": "98c279138208ed3af09ebf361db25ad7a6db651a3f8f1a49929ebf4da640b105",
+        "bodyLength": 97,
+        "nodeAccountId": "0.0.4",
+        "transactionId": "0.0.3003@1757900000.000000000",
+        "transactionFee": "100000000",
+        "validDurationSeconds": "120",
+        "memo": "",
+        "bodyDataCase": "cryptoTransfer",
+        "transfers": {
+          "hbar": [
+            {
+              "account": "0.0.1001",
+              "amount": "-600000",
+              "isApproval": false,
+              "hook": null
+            },
+            {
+              "account": "0.0.2002",
+              "amount": "1000000",
+              "isApproval": false,
+              "hook": null
+            },
+            {
+              "account": "0.0.3003",
+              "amount": "-400000",
+              "isApproval": false,
+              "hook": null
+            }
+          ],
+          "tokens": []
+        },
+        "signatures": [
+          {
+            "publicKeyPrefixHex": "a09a20c95a921ff555853320ef53fabf5bdad32ac9f89408fb5ff22021eef1ae",
+            "algorithm": "ed25519",
+            "signatureHex": "c9967e2a08d1c1f9e2e703c39cc7cd5aeae60e5987323a58de6dbe5e4a67cb96d6d4c57dc2d379b9fbf748a1f892ccc5330b8822da111771f851f4083fbcc000"
+          }
+        ]
+      }
+    ]
+  },
+  "facilitatorMustCoSign": false,
+  "adversarial": {
+    "kind": "sponsor_debited",
+    "mustBeRejectedBecause": "plan 7.3 point 6 rejects every negative entry for the sponsor"
+  }
+}

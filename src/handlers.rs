@@ -3390,7 +3390,7 @@ pub async fn get_rlusd_logo() -> impl IntoResponse {
 /// Returns v2 format response with:
 /// - `kinds`: List of supported payment schemes/networks (both v1 and CAIP-2 formats)
 /// - `extensions`: List of supported extensions (includes "bazaar" for discovery API)
-/// - `signers`: Map of namespace to facilitator signer addresses (currently empty, reserved for future use)
+/// - `signers`: Network-scoped fee payer addresses for native Hedera
 #[instrument(skip_all)]
 pub async fn get_supported<A>(State(facilitator): State<A>) -> impl IntoResponse
 where
@@ -3410,9 +3410,15 @@ where
             if crate::dx402::Dx402Config::from_env().is_serviceable() {
                 extensions.push(crate::dx402::EXTENSION_KEY.to_string());
             }
-            // Signers map is empty for now - will be populated in future version
-            // when we add a method to get signer addresses from the facilitator
-            let signers: HashMap<String, Vec<String>> = HashMap::new();
+            // Native Hedera uses a separate fee payer on each network.
+            let mut signers: HashMap<String, Vec<String>> = HashMap::new();
+            for kind in &supported.kinds {
+                if kind.network.starts_with("hedera:") {
+                    if let Some(payer) = kind.extra.as_ref().and_then(|e| e.fee_payer.as_ref()) {
+                        signers.entry(kind.network.clone()).or_default().push(payer.to_string());
+                    }
+                }
+            }
             let v2_response = supported.to_v2(extensions, signers);
             (StatusCode::OK, Json(json!(v2_response))).into_response()
         }
@@ -4074,6 +4080,8 @@ where
     // Extract version and convert to v1 request for processing
     let version = envelope.version();
     let format_name = match &envelope {
+        #[cfg(feature = "hedera")]
+        VerifyRequestEnvelope::Hedera(_) => "hedera-v2",
         VerifyRequestEnvelope::V1(_) => "v1",
         VerifyRequestEnvelope::V2(req) => {
             debug!(
@@ -5088,6 +5096,8 @@ where
     // Extract version and convert to v1 request for processing
     let version = envelope.version();
     let format_name = match &envelope {
+        #[cfg(feature = "hedera")]
+        SettleRequestEnvelope::Hedera(_) => "hedera-v2",
         SettleRequestEnvelope::V1(_) => "v1",
         SettleRequestEnvelope::V2(req) => {
             debug!(
@@ -5154,6 +5164,8 @@ where
 
     // Log the authorization details based on payload type
     match &body.payment_payload.payload {
+        #[cfg(feature = "hedera")]
+        crate::types::ExactPaymentPayload::Hedera(_) => debug!("native Hedera payload"),
         crate::types::ExactPaymentPayload::Evm(evm_payload) => {
             debug!("  - payload type: EVM");
             debug!(

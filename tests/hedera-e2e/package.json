@@ -1,0 +1,16 @@
+{
+  "name": "x402-hedera-e2e-vectors",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Official-client vectors and bounded native Hedera facilitator canaries",
+  "scripts": {
+    "generate": "node generate-vectors.mjs"
+  },
+  "dependencies": {
+    "@hiero-ledger/proto": "2.31.0",
+    "@hiero-ledger/sdk": "2.85.0",
+    "@x402/hedera": "2.26.0",
+    "@x402/core": "2.26.0"
+  }
+}

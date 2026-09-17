@@ -110,7 +110,7 @@ resource "aws_lambda_function" "balances" {
       RPC_URL_SUI       = "https://sui-rpc.publicnode.com" # fullnode.mainnet.sui.io dropped JSON-RPC; keep in sync with main.tf
       # Private RPC URLs (with API keys) - override via Secrets Manager
       # RPC_URL_SOLANA will be set from secretsmanager
-    }, { for item in local.arc_rpc_environment : item.name => item.value })
+    }, { for item in local.arc_rpc_environment : item.name => item.value }, local.hedera_balance_environment)
   }
 
   tags = {

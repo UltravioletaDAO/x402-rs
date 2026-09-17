@@ -1,0 +1,133 @@
+{
+  "name": "13-adversarial-allowance-hook",
+  "description": "Every variant attaches a preTxAllowanceHook to the sender's debit, so a contract runs before the transfer.",
+  "generatedAt": "2026-09-16T03:16:47.397Z",
+  "generator": {
+    "@hiero-ledger/sdk": "2.85.0",
+    "@hiero-ledger/proto": "2.31.0",
+    "@x402/hedera": "2.26.0",
+    "via": "@hiero-ledger/proto rewrite of every variant",
+    "reproducible": true
+  },
+  "x402Version": 2,
+  "scheme": "exact",
+  "network": "hedera:testnet",
+  "paymentRequirements": {
+    "scheme": "exact",
+    "network": "hedera:testnet",
+    "asset": "0.0.0",
+    "amount": "1000000",
+    "payTo": "0.0.2002",
+    "maxTimeoutSeconds": 60,
+    "resource": "https://example.test/resource",
+    "description": "phase-0 spike vector",
+    "mimeType": "application/json",
+    "extra": {
+      "feePayer": "0.0.3003"
+    }
+  },
+  "keys": {
+    "sender": {
+      "label": "x402-rs/hedera-spike/v1/ed25519/sender",
+      "type": "ED25519",
+      "publicKeyDer": "302a300506032b6570032100a09a20c95a921ff555853320ef53fabf5bdad32ac9f89408fb5ff22021eef1ae",
+      "publicKeyRaw": "a09a20c95a921ff555853320ef53fabf5bdad32ac9f89408fb5ff22021eef1ae"
+    },
+    "facilitator": {
+      "label": "x402-rs/hedera-spike/v1/ed25519/facilitator",
+      "type": "ED25519",
+      "publicKeyDer": "302a300506032b6570032100d14e4fbf235eeed0693d7140ac8fae8632393f314eb55aef4a303e70038f4bcf",
+      "publicKeyRaw": "d14e4fbf235eeed0693d7140ac8fae8632393f314eb55aef4a303e70038f4bcf"
+    }
+  },
+  "payload": {
+    "transaction": "CsEBKr4BClQKFQoICODZncYGEAASBwgAEAAYuxcYABIGCAAQABgDGIDC1y8iAgh4MgByKAomChMKBwgAEAAY6QcQ/4h6GAAiAggHCg8KBwgAEAAY0g8QgIl6GAASZgpkCiCgmiDJWpIf9VWFMyDvU/q/W9rTKsn4lAj7X/IgIe7xrhpAoPOAzrzlwozIbSpn4NAXNFM5xwpTrI0o+0XUQNOnU/fWXAlkm0gERbwO3ia2g8udxvtMW/DmNz/UGShca/VwCQrBASq+AQpUChUKCAjg2Z3GBhAAEgcIABAAGLsXGAASBggAEAAYBBiAwtcvIgIIeDIAcigKJgoTCgcIABAAGOkHEP+IehgAIgIIBwoPCgcIABAAGNIPEICJehgAEmYKZAogoJogyVqSH/VVhTMg71P6v1va0yrJ+JQI+1/yICHu8a4aQFlzs5tUkYdMfKqqRuy82rSxPOuXNampYeWe+9sn4xmUt4JDzdOHNZeWHc/qd+rIKZ8pX6DsJhMmldvk34yMwg0="
+  },
+  "expected": {
+    "senderAccountId": "0.0.1001",
+    "payTo": "0.0.2002",
+    "feePayer": "0.0.3003",
+    "asset": "0.0.0",
+    "amount": "1000000",
+    "senderSignsEveryVariant": true,
+    "signaturesPerVariantBeforeCoSign": 1,
+    "variantCount": 2,
+    "variants": [
+      {
+        "index": 0,
+        "bodySha256": "09331bbaf42068789ce8104748203638d0ca8140c8698ef9004a56f59d708fa5",
+        "bodyLength": 84,
+        "nodeAccountId": "0.0.3",
+        "transactionId": "0.0.3003@1757900000.000000000",
+        "transactionFee": "100000000",
+        "validDurationSeconds": "120",
+        "memo": "",
+        "bodyDataCase": "cryptoTransfer",
+        "transfers": {
+          "hbar": [
+            {
+              "account": "0.0.1001",
+              "amount": "-1000000",
+              "isApproval": false,
+              "hook": "preTxAllowanceHook"
+            },
+            {
+              "account": "0.0.2002",
+              "amount": "1000000",
+              "isApproval": false,
+              "hook": null
+            }
+          ],
+          "tokens": []
+        },
+        "signatures": [
+          {
+            "publicKeyPrefixHex": "a09a20c95a921ff555853320ef53fabf5bdad32ac9f89408fb5ff22021eef1ae",
+            "algorithm": "ed25519",
+            "signatureHex": "a0f380cebce5c28cc86d2a67e0d017345339c70a53ac8d28fb45d440d3a753f7d65c09649b480445bc0ede26b683cb9dc6fb4c5bf0e6373fd419285c6bf57009"
+          }
+        ]
+      },
+      {
+        "index": 1,
+        "bodySha256": "671bcb856d03553603d3012d7dc16569e4e322c6b89c54978be09c7cd47b889f",
+        "bodyLength": 84,
+        "nodeAccountId": "0.0.4",
+        "transactionId": "0.0.3003@1757900000.000000000",
+        "transactionFee": "100000000",
+        "validDurationSeconds": "120",
+        "memo": "",
+        "bodyDataCase": "cryptoTransfer",
+        "transfers": {
+          "hbar": [
+            {
+              "account": "0.0.1001",
+              "amount": "-1000000",
+              "isApproval": false,
+              "hook": "preTxAllowanceHook"
+            },
+            {
+              "account": "0.0.2002",
+              "amount": "1000000",
+              "isApproval": false,
+              "hook": null
+            }
+          ],
+          "tokens": []
+        },
+        "signatures": [
+          {
+            "publicKeyPrefixHex": "a09a20c95a921ff555853320ef53fabf5bdad32ac9f89408fb5ff22021eef1ae",
+            "algorithm": "ed25519",
+            "signatureHex": "5973b39b5491874c7caaaa46ecbcdab4b13ceb9735a9a961e59efbdb27e31994b78243cdd3873597961dcfea77eac8299f295fa0ec26132695dbe4df8c8cc20d"
+          }
+        ]
+      }
+    ]
+  },
+  "facilitatorMustCoSign": false,
+  "adversarial": {
+    "kind": "allowance_hook",
+    "mustBeRejectedBecause": "plan 7.3 point 4 rejects hooks"
+  }
+}

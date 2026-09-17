@@ -1,0 +1,133 @@
+{
+  "name": "11-adversarial-is-approval-debit",
+  "description": "Every variant debits the sender with isApproval=true: an allowance spend, not the sender paying. Signatures are valid over these bodies.",
+  "generatedAt": "2026-09-16T03:16:47.381Z",
+  "generator": {
+    "@hiero-ledger/sdk": "2.85.0",
+    "@hiero-ledger/proto": "2.31.0",
+    "@x402/hedera": "2.26.0",
+    "via": "@hiero-ledger/proto rewrite of every variant",
+    "reproducible": true
+  },
+  "x402Version": 2,
+  "scheme": "exact",
+  "network": "hedera:testnet",
+  "paymentRequirements": {
+    "scheme": "exact",
+    "network": "hedera:testnet",
+    "asset": "0.0.0",
+    "amount": "1000000",
+    "payTo": "0.0.2002",
+    "maxTimeoutSeconds": 60,
+    "resource": "https://example.test/resource",
+    "description": "phase-0 spike vector",
+    "mimeType": "application/json",
+    "extra": {
+      "feePayer": "0.0.3003"
+    }
+  },
+  "keys": {
+    "sender": {
+      "label": "x402-rs/hedera-spike/v1/ed25519/sender",
+      "type": "ED25519",
+      "publicKeyDer": "302a300506032b6570032100a09a20c95a921ff555853320ef53fabf5bdad32ac9f89408fb5ff22021eef1ae",
+      "publicKeyRaw": "a09a20c95a921ff555853320ef53fabf5bdad32ac9f89408fb5ff22021eef1ae"
+    },
+    "facilitator": {
+      "label": "x402-rs/hedera-spike/v1/ed25519/facilitator",
+      "type": "ED25519",
+      "publicKeyDer": "302a300506032b6570032100d14e4fbf235eeed0693d7140ac8fae8632393f314eb55aef4a303e70038f4bcf",
+      "publicKeyRaw": "d14e4fbf235eeed0693d7140ac8fae8632393f314eb55aef4a303e70038f4bcf"
+    }
+  },
+  "payload": {
+    "transaction": "Cr0BKroBClAKFQoICODZncYGEAASBwgAEAAYuxcYABIGCAAQABgDGIDC1y8iAgh4MgByJAoiCg8KBwgAEAAY6QcQ/4h6GAEKDwoHCAAQABjSDxCAiXoYABJmCmQKIKCaIMlakh/1VYUzIO9T+r9b2tMqyfiUCPtf8iAh7vGuGkB/h3jjkfK1ppX8CnBxxEWc9TeUoKWtBNyi83jkpTNLMmFd6RZb32aqZqvjKuK+MIVOemxCqHIrJLIjqOPYrpsNCr0BKroBClAKFQoICODZncYGEAASBwgAEAAYuxcYABIGCAAQABgEGIDC1y8iAgh4MgByJAoiCg8KBwgAEAAY6QcQ/4h6GAEKDwoHCAAQABjSDxCAiXoYABJmCmQKIKCaIMlakh/1VYUzIO9T+r9b2tMqyfiUCPtf8iAh7vGuGkC2y21uHIV9nGHxXUp9b64gA1bFKmy11ie4QjiyRGzpAUlhQNnfmtGap5TgUv4ObrgcxYuomISZD0UERRn23D4M"
+  },
+  "expected": {
+    "senderAccountId": "0.0.1001",
+    "payTo": "0.0.2002",
+    "feePayer": "0.0.3003",
+    "asset": "0.0.0",
+    "amount": "1000000",
+    "senderSignsEveryVariant": true,
+    "signaturesPerVariantBeforeCoSign": 1,
+    "variantCount": 2,
+    "variants": [
+      {
+        "index": 0,
+        "bodySha256": "b18485b82ee91e4f2c40049709c49db1f9256676deafbda2106de9aff2117f10",
+        "bodyLength": 80,
+        "nodeAccountId": "0.0.3",
+        "transactionId": "0.0.3003@1757900000.000000000",
+        "transactionFee": "100000000",
+        "validDurationSeconds": "120",
+        "memo": "",
+        "bodyDataCase": "cryptoTransfer",
+        "transfers": {
+          "hbar": [
+            {
+              "account": "0.0.1001",
+              "amount": "-1000000",
+              "isApproval": true,
+              "hook": null
+            },
+            {
+              "account": "0.0.2002",
+              "amount": "1000000",
+              "isApproval": false,
+              "hook": null
+            }
+          ],
+          "tokens": []
+        },
+        "signatures": [
+          {
+            "publicKeyPrefixHex": "a09a20c95a921ff555853320ef53fabf5bdad32ac9f89408fb5ff22021eef1ae",
+            "algorithm": "ed25519",
+            "signatureHex": "7f8778e391f2b5a695fc0a7071c4459cf53794a0a5ad04dca2f378e4a5334b32615de9165bdf66aa66abe32ae2be30854e7a6c42a8722b24b223a8e3d8ae9b0d"
+          }
+        ]
+      },
+      {
+        "index": 1,
+        "bodySha256": "fd500383dd4ad859e2411b34691159e83ee7d43f4e015c6358772ee24f1cff34",
+        "bodyLength": 80,
+        "nodeAccountId": "0.0.4",
+        "transactionId": "0.0.3003@1757900000.000000000",
+        "transactionFee": "100000000",
+        "validDurationSeconds": "120",
+        "memo": "",
+        "bodyDataCase": "cryptoTransfer",
+        "transfers": {
+          "hbar": [
+            {
+              "account": "0.0.1001",
+              "amount": "-1000000",
+              "isApproval": true,
+              "hook": null
+            },
+            {
+              "account": "0.0.2002",
+              "amount": "1000000",
+              "isApproval": false,
+              "hook": null
+            }
+          ],
+          "tokens": []
+        },
+        "signatures": [
+          {
+            "publicKeyPrefixHex": "a09a20c95a921ff555853320ef53fabf5bdad32ac9f89408fb5ff22021eef1ae",
+            "algorithm": "ed25519",
+            "signatureHex": "b6cb6d6e1c857d9c61f15d4a7d6fae200356c52a6cb5d627b84238b2446ce901496140d9df9ad19aa794e052fe0e6eb81cc58ba89884990f45044519f6dc3e0c"
+          }
+        ]
+      }
+    ]
+  },
+  "facilitatorMustCoSign": false,
+  "adversarial": {
+    "kind": "approved_allowance_debit",
+    "mustBeRejectedBecause": "plan 7.3 point 4 rejects isApproved transfers"
+  }
+}

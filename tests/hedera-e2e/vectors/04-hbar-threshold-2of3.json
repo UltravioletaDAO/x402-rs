@@ -1,0 +1,163 @@
+{
+  "name": "04-hbar-threshold-2of3",
+  "description": "Sender account governed by a 2-of-3 threshold key (Ed25519, Ed25519, ECDSA). Signed by key 1 and key 3 only: a correct verifier must accept, and must not require the missing key.",
+  "generatedAt": "2026-09-16T03:16:47.333Z",
+  "generator": {
+    "@hiero-ledger/sdk": "2.85.0",
+    "@hiero-ledger/proto": "2.31.0",
+    "@x402/hedera": "2.26.0",
+    "via": "@hiero-ledger/sdk TransferTransaction.freeze()",
+    "reproducible": true
+  },
+  "x402Version": 2,
+  "scheme": "exact",
+  "network": "hedera:testnet",
+  "paymentRequirements": {
+    "scheme": "exact",
+    "network": "hedera:testnet",
+    "asset": "0.0.0",
+    "amount": "2500000",
+    "payTo": "0.0.2002",
+    "maxTimeoutSeconds": 60,
+    "resource": "https://example.test/resource",
+    "description": "phase-0 spike vector",
+    "mimeType": "application/json",
+    "extra": {
+      "feePayer": "0.0.3003"
+    }
+  },
+  "keys": {
+    "senderAccountKey": {
+      "type": "THRESHOLD",
+      "threshold": 2,
+      "protobufHex": "2a710802126d0a2212203530853d2e0ccda92385d2e6d8860954c84fceb21702a8041573af0b9cf43a180a22122089742deafbff890598e7adc4f5d5d01fbec354ece9693b7af8805cb5f65a670f0a233a2102a39d10ba193068ff4f7e3337ba2548adf563682a3d3c01e4f4987f9aa5106fbb",
+      "members": [
+        {
+          "label": "x402-rs/hedera-spike/v1/ed25519/threshold-1",
+          "type": "ED25519",
+          "publicKeyDer": "302a300506032b65700321003530853d2e0ccda92385d2e6d8860954c84fceb21702a8041573af0b9cf43a18",
+          "publicKeyRaw": "3530853d2e0ccda92385d2e6d8860954c84fceb21702a8041573af0b9cf43a18"
+        },
+        {
+          "label": "x402-rs/hedera-spike/v1/ed25519/threshold-2",
+          "type": "ED25519",
+          "publicKeyDer": "302a300506032b657003210089742deafbff890598e7adc4f5d5d01fbec354ece9693b7af8805cb5f65a670f",
+          "publicKeyRaw": "89742deafbff890598e7adc4f5d5d01fbec354ece9693b7af8805cb5f65a670f"
+        },
+        {
+          "label": "x402-rs/hedera-spike/v1/ecdsa/threshold-3",
+          "type": "ECDSA_SECP256K1",
+          "publicKeyDer": "302d300706052b8104000a03220002a39d10ba193068ff4f7e3337ba2548adf563682a3d3c01e4f4987f9aa5106fbb",
+          "publicKeyRaw": "02a39d10ba193068ff4f7e3337ba2548adf563682a3d3c01e4f4987f9aa5106fbb"
+        }
+      ],
+      "signedBy": [
+        "x402-rs/hedera-spike/v1/ed25519/threshold-1",
+        "x402-rs/hedera-spike/v1/ecdsa/threshold-3"
+      ]
+    },
+    "facilitator": {
+      "label": "x402-rs/hedera-spike/v1/ed25519/facilitator",
+      "type": "ED25519",
+      "publicKeyDer": "302a300506032b6570032100d14e4fbf235eeed0693d7140ac8fae8632393f314eb55aef4a303e70038f4bcf",
+      "publicKeyRaw": "d14e4fbf235eeed0693d7140ac8fae8632393f314eb55aef4a303e70038f4bcf"
+    }
+  },
+  "payload": {
+    "transaction": "CqcCKqQCClIKFQoICODZncYGEAASBwgAEAAYuxcYABIGCAAQABgDGIDC1y8iAgh4MgByJgokChAKBwgAEAAY6QcQv5axAhgAChAKBwgAEAAY0g8QwJaxAhgAEs0BCmQKIDUwhT0uDM2pI4XS5tiGCVTIT86yFwKoBBVzrwuc9DoYGkDRcF+qG+49gsfCSqv+3Ll/S2nKh8pGI/GY6HUQaglByf4tAZFbiJcZXoAW7b8p7/7teq772vUNEdGa1msgm4QNCmUKIQKjnRC6GTBo/09+Mze6JUit9WNoKj08AeT0mH+apRBvuzJAigKJaxv4NsLsXS/EQnz+vIDz76K81EYd1TCVXk34qMdHGLcrAF/uS9z2OwCwblVF5316h3oy7mG9wRl4kb1EMAqnAiqkAgpSChUKCAjg2Z3GBhAAEgcIABAAGLsXGAASBggAEAAYBBiAwtcvIgIIeDIAciYKJAoQCgcIABAAGOkHEL+WsQIYAAoQCgcIABAAGNIPEMCWsQIYABLNAQpkCiA1MIU9LgzNqSOF0ubYhglUyE/OshcCqAQVc68LnPQ6GBpA4fpW4rGIhR/rIm9EWTTfaxa6ROjkSnLDr6ITqocYTI7r+90m4ko7b+Tuvw7vkOuTMvIvD5hNUI6KFnsZCbbWCgplCiECo50QuhkwaP9PfjM3uiVIrfVjaCo9PAHk9Jh/mqUQb7syQPSYxvorYKUotBEa5yb4YZhWIJEmc9CxzhGXFANtq0X9QSMhbpfbzfXkLFkY4I1Zg3wHxMZvihQXbyPa/c2kQCA="
+  },
+  "expected": {
+    "senderAccountId": "0.0.1001",
+    "payTo": "0.0.2002",
+    "feePayer": "0.0.3003",
+    "asset": "0.0.0",
+    "amount": "2500000",
+    "senderSignsEveryVariant": true,
+    "signaturesPerVariantBeforeCoSign": 2,
+    "variantCount": 2,
+    "variants": [
+      {
+        "index": 0,
+        "bodySha256": "f2f743a231aa59e700c7e13b7ebc7fdcf7805f2ff4e647ddd15d2188c7ce17e9",
+        "bodyLength": 82,
+        "nodeAccountId": "0.0.3",
+        "transactionId": "0.0.3003@1757900000.000000000",
+        "transactionFee": "100000000",
+        "validDurationSeconds": "120",
+        "memo": "",
+        "bodyDataCase": "cryptoTransfer",
+        "transfers": {
+          "hbar": [
+            {
+              "account": "0.0.1001",
+              "amount": "-2500000",
+              "isApproval": false,
+              "hook": null
+            },
+            {
+              "account": "0.0.2002",
+              "amount": "2500000",
+              "isApproval": false,
+              "hook": null
+            }
+          ],
+          "tokens": []
+        },
+        "signatures": [
+          {
+            "publicKeyPrefixHex": "3530853d2e0ccda92385d2e6d8860954c84fceb21702a8041573af0b9cf43a18",
+            "algorithm": "ed25519",
+            "signatureHex": "d1705faa1bee3d82c7c24aabfedcb97f4b69ca87ca4623f198e875106a0941c9fe2d01915b8897195e8016edbf29effeed7aaefbdaf50d11d19ad66b209b840d"
+          },
+          {
+            "publicKeyPrefixHex": "02a39d10ba193068ff4f7e3337ba2548adf563682a3d3c01e4f4987f9aa5106fbb",
+            "algorithm": "ecdsa_secp256k1",
+            "signatureHex": "8a02896b1bf836c2ec5d2fc4427cfebc80f3efa2bcd4461dd530955e4df8a8c74718b72b005fee4bdcf63b00b06e5545e77d7a877a32ee61bdc1197891bd4430"
+          }
+        ]
+      },
+      {
+        "index": 1,
+        "bodySha256": "011bb7c90ee9555e299105239090cb5feed467d90424fe10f72709de865957fc",
+        "bodyLength": 82,
+        "nodeAccountId": "0.0.4",
+        "transactionId": "0.0.3003@1757900000.000000000",
+        "transactionFee": "100000000",
+        "validDurationSeconds": "120",
+        "memo": "",
+        "bodyDataCase": "cryptoTransfer",
+        "transfers": {
+          "hbar": [
+            {
+              "account": "0.0.1001",
+              "amount": "-2500000",
+              "isApproval": false,
+              "hook": null
+            },
+            {
+              "account": "0.0.2002",
+              "amount": "2500000",
+              "isApproval": false,
+              "hook": null
+            }
+          ],
+          "tokens": []
+        },
+        "signatures": [
+          {
+            "publicKeyPrefixHex": "3530853d2e0ccda92385d2e6d8860954c84fceb21702a8041573af0b9cf43a18",
+            "algorithm": "ed25519",
+            "signatureHex": "e1fa56e2b188851feb226f445934df6b16ba44e8e44a72c3afa213aa87184c8eebfbdd26e24a3b6fe4eebf0eef90eb9332f22f0f984d508e8a167b1909b6d60a"
+          },
+          {
+            "publicKeyPrefixHex": "02a39d10ba193068ff4f7e3337ba2548adf563682a3d3c01e4f4987f9aa5106fbb",
+            "algorithm": "ecdsa_secp256k1",
+            "signatureHex": "f498c6fa2b60a528b4111ae726f861985620912673d0b1ce119714036dab45fd4123216e97dbcdf5e42c5918e08d59837c07c4c66f8a14176f23dafdcda44020"
+          }
+        ]
+      }
+    ]
+  },
+  "facilitatorMustCoSign": true,
+  "adversarial": null
+}

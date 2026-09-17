@@ -1,0 +1,174 @@
+{
+  "research_date": "2026-09-15",
+  "repository_head": "dc10951130ac9f724f4872c060d4048e77d75d5f",
+  "x402_reference_commit": "6b9302737f16eea7de90b3bf617c045cef23e032",
+  "spec_history": [
+    {
+      "commit": "ae26f5e1f362bef93d1fa37a76d45384befbc71f",
+      "date": "2026-02-06",
+      "pull_request": "https://github.com/x402-foundation/x402/pull/792"
+    },
+    {
+      "commit": "d00e38818fafe1499ad369ab65e0dca84e1cca23",
+      "date": "2026-07-03",
+      "pull_request": "https://github.com/x402-foundation/x402/pull/2707"
+    }
+  ],
+  "supported_probes": [
+    {
+      "url": "https://x402.org/facilitator/supported",
+      "observed_at_utc": "2026-09-15T15:34:37.660506+00:00",
+      "http_status": 200,
+      "hedera_kinds": [
+        {
+          "x402Version": 2,
+          "scheme": "exact",
+          "network": "hedera:testnet",
+          "extra": {
+            "feePayer": "0.0.9185802"
+          }
+        }
+      ],
+      "hedera_signers": {
+        "hedera:*": [
+          "0.0.9185802"
+        ]
+      },
+      "note": "Capability advertisement only; no verify or settle call was made."
+    },
+    {
+      "url": "https://api.blocky402.com/supported",
+      "observed_at_utc": "2026-09-15T15:34:37.959013+00:00",
+      "http_status": 200,
+      "hedera_kinds": [
+        {
+          "x402Version": 2,
+          "scheme": "exact",
+          "network": "hedera:mainnet",
+          "extra": {
+            "feePayer": "0.0.10571514"
+          }
+        }
+      ],
+      "hedera_signers": {
+        "hedera:*": [
+          "0.0.10571514"
+        ]
+      },
+      "note": "Capability advertisement only; no verify or settle call was made."
+    },
+    {
+      "url": "https://api.testnet.blocky402.com/supported",
+      "observed_at_utc": "2026-09-15T15:34:37.925690+00:00",
+      "http_status": 200,
+      "hedera_kinds": [
+        {
+          "x402Version": 2,
+          "scheme": "exact",
+          "network": "hedera:testnet",
+          "extra": {
+            "feePayer": "0.0.7162784"
+          }
+        }
+      ],
+      "hedera_signers": {
+        "hedera:*": [
+          "0.0.7162784"
+        ]
+      },
+      "note": "Capability advertisement only; no verify or settle call was made."
+    },
+    {
+      "url": "https://facilitator.ultravioletadao.xyz/supported",
+      "observed_at_utc": "2026-09-15T15:34:37.559551+00:00",
+      "http_status": 200,
+      "hedera_kinds": [],
+      "hedera_signers": {},
+      "note": "Capability advertisement only; no verify or settle call was made."
+    }
+  ],
+  "token_probes": [
+    {
+      "url": "https://mainnet-public.mirrornode.hedera.com/api/v1/tokens/0.0.456858",
+      "observed_at_utc": "2026-09-15T15:34:37.514528+00:00",
+      "http_status": 200,
+      "token_id": "0.0.456858",
+      "type": "FUNGIBLE_COMMON",
+      "decimals": "6",
+      "symbol": "USDC",
+      "deleted": false,
+      "custom_fees": {
+        "created_timestamp": "1632175205.445296000",
+        "fixed_fees": [],
+        "fractional_fees": []
+      }
+    },
+    {
+      "url": "https://testnet.mirrornode.hedera.com/api/v1/tokens/0.0.429274",
+      "observed_at_utc": "2026-09-15T15:34:37.747813+00:00",
+      "http_status": 200,
+      "token_id": "0.0.429274",
+      "type": "FUNGIBLE_COMMON",
+      "decimals": "6",
+      "symbol": "USDC",
+      "deleted": false,
+      "custom_fees": {
+        "created_timestamp": "1706825561.156945003",
+        "fixed_fees": [],
+        "fractional_fees": []
+      }
+    }
+  ],
+  "rust_crates": [
+    {
+      "registry_url": "https://crates.io/api/v1/crates/hiero-sdk",
+      "observed_at_utc": "2026-09-15T15:34:37.531547+00:00",
+      "name": "hiero-sdk",
+      "max_stable_version": "0.45.0",
+      "updated_at": "2026-04-30T11:55:19.560994Z",
+      "repository": "https://github.com/hiero-ledger/hiero-sdk-rust"
+    },
+    {
+      "registry_url": "https://crates.io/api/v1/crates/hedera",
+      "observed_at_utc": "2026-09-15T15:34:37.592549+00:00",
+      "name": "hedera",
+      "max_stable_version": "0.43.0",
+      "updated_at": "2026-01-08T14:06:17.738460Z",
+      "repository": "https://github.com/hiero-ledger/hiero-sdk-rust"
+    }
+  ],
+  "npm_package": {
+    "registry_url": "https://registry.npmjs.org/@x402%2fhedera/latest",
+    "observed_at_utc": "2026-09-15T15:34:37.540546+00:00",
+    "name": "@x402/hedera",
+    "version": "2.25.0",
+    "dependencies": {
+      "@x402/core": "~2.25.0",
+      "@hiero-ledger/sdk": "2.85.0",
+      "@hiero-ledger/proto": "2.31.0"
+    }
+  },
+  "sdk_github_tags": [
+    {
+      "tag": "v0.45.0",
+      "commit": "390a06e9e620a334f62fd1cfdece23a44889f449"
+    },
+    {
+      "tag": "v0.46.0",
+      "commit": "3b0696e842ba43b07f2a926eaffde71a723f05c4"
+    }
+  ],
+  "unavailable_sources": [
+    {
+      "url": "https://github.com/blockydevs/blocky402",
+      "status": 404,
+      "note": "Linked from public site; code availability was not established."
+    }
+  ],
+  "limits": [
+    "Read-only HTTP probes; no payment signed or broadcast.",
+    "No local provider implemented or compiled.",
+    "No cross-SDK binary compatibility experiment executed.",
+    "No operational secrets read."
+  ]
+}

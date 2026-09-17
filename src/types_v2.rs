@@ -758,6 +758,8 @@ impl VerifyRequestV2 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum VerifyRequestEnvelope {
+    #[cfg(feature = "hedera")]
+    Hedera(crate::chain::hedera::wire::HederaRequest),
     /// x402r nested format (Ali's SDK) - paymentPayload.payload.authorization
     /// MUST be first to try parsing nested format before standard v2
     X402rNested(VerifyRequestX402rNested),
@@ -779,6 +781,8 @@ impl VerifyRequestEnvelope {
     /// Extract the protocol version
     pub fn version(&self) -> X402Version {
         match self {
+            #[cfg(feature = "hedera")]
+            VerifyRequestEnvelope::Hedera(_) => X402Version::V2,
             VerifyRequestEnvelope::V1(_) => X402Version::V1,
             VerifyRequestEnvelope::V2(_) => X402Version::V2,
             VerifyRequestEnvelope::X402r(_) => X402Version::V2,
@@ -790,6 +794,8 @@ impl VerifyRequestEnvelope {
     /// Get the network as a v1 Network enum
     pub fn network_v1(&self) -> Result<Network, NetworkParseError> {
         match self {
+            #[cfg(feature = "hedera")]
+            VerifyRequestEnvelope::Hedera(req) => Ok(req.request.network()),
             VerifyRequestEnvelope::V1(req) => Ok(req.network()),
             VerifyRequestEnvelope::V2(req) => Network::from_caip2(&req.network().to_string())
                 .ok_or_else(|| NetworkParseError::InvalidCaip2(req.network().to_string())),
@@ -807,6 +813,8 @@ impl VerifyRequestEnvelope {
     /// Convert to v1 VerifyRequest for processing
     pub fn to_v1(&self) -> Result<VerifyRequest, NetworkParseError> {
         match self {
+            #[cfg(feature = "hedera")]
+            VerifyRequestEnvelope::Hedera(req) => Ok(req.request.clone()),
             VerifyRequestEnvelope::V1(req) => Ok(req.clone()),
             VerifyRequestEnvelope::V2(req) => req.to_v1(),
             VerifyRequestEnvelope::X402r(req) => req.to_v1(),
@@ -880,8 +888,8 @@ impl SupportedPaymentKindsResponseV2 {
         let mut kinds = Vec::new();
         let mut signers = HashMap::new();
 
-        // Generate v1 entries (for backward compatibility)
-        for network in networks {
+        // Generate v1 entries only for networks implementing that protocol.
+        for network in networks.iter().filter(|n| n.supports_v1()) {
             kinds.push(SupportedPaymentKindV2 {
                 x402_version: 1,
                 scheme: Scheme::Exact,

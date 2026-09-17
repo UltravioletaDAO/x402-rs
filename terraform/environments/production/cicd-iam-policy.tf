@@ -82,6 +82,7 @@ resource "aws_iam_policy" "cicd_infra" {
         "Resource" : [
           "arn:aws:dynamodb:us-east-2:${data.aws_caller_identity.current.account_id}:table/facilitator_transactions",
           "arn:aws:dynamodb:us-east-2:${data.aws_caller_identity.current.account_id}:table/facilitator-nonces",
+          "arn:aws:dynamodb:us-east-2:${data.aws_caller_identity.current.account_id}:table/facilitator-hedera-settlements",
           "arn:aws:dynamodb:us-east-2:${data.aws_caller_identity.current.account_id}:table/idempotency_records"
         ]
       },

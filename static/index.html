@@ -18,8 +18,13 @@
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://facilitator.ultravioletadao.xyz/">
     <meta property="og:title" content="Ultravioleta DAO x402 Facilitator">
-    <meta property="og:description" content="Gasless x402 verify and settle on seven chain families. No fee, no account, no API key.">
-    <meta property="og:image" content="https://facilitator.ultravioletadao.xyz/logo.png">
+    <meta property="og:description" content="Gasless x402 payments, including Arc USDC and native Hedera HBAR/USDC on mainnet and testnet.">
+    <meta property="og:image" content="https://facilitator.ultravioletadao.xyz/og-arc-hedera.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Ultravioleta x402 payments — Arc and native Hedera, mainnet and testnet">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://facilitator.ultravioletadao.xyz/og-arc-hedera.png">
     <link rel="canonical" href="https://facilitator.ultravioletadao.xyz/">
     <link rel="icon" href="/favicon.ico" type="image/x-icon">
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -1174,10 +1179,7 @@
                     <span class="gradient-text" data-i18n="hero.title">Gasless Micropayments for the Agentic
                         Economy</span>
                 </h2>
-                <p class="hero-description" data-i18n="hero.description">
-                    Enable AI agents to transact autonomously without gas fees. Built on x402 protocol with EIP-3009
-                    meta-transactions.
-                </p>
+                <p class="hero-description" data-i18n="hero.description">Enable AI agents to pay over x402 without network fees, including USDC on Arc and native HBAR/USDC on Hedera.</p>
 
                 <p style="font-size: 0.95rem; color: var(--text-muted); max-width: 700px; margin: 0 auto 1.5rem;" data-i18n-html="hero.baseUrl">Base URL <code style="color: var(--accent); background: rgba(0,212,255,0.1); padding: 0.2rem 0.5rem; border-radius: 4px; word-break: break-all;">https://facilitator.ultravioletadao.xyz</code> · 0% fee · no key, no account</p>
 
@@ -2107,10 +2109,7 @@
                 <div class="feature-card">
                     <span class="feature-icon">⚡</span>
                     <h3 data-i18n="features.gasless.title">Gasless Transactions</h3>
-                    <p data-i18n="features.gasless.description">
-                        Agents never need AVAX or ETH for gas. The facilitator executes transferWithAuthorization via
-                        EIP-3009.
-                    </p>
+                    <p data-i18n="features.gasless.description">The buyer signs the payment; the facilitator pays network fees. Arc uses USDC authorizations, and Hedera uses native CryptoTransfer.</p>
                 </div>
                 <div class="feature-card">
                     <span class="feature-icon">🔐</span>
@@ -2600,7 +2599,7 @@
                     <div class="endpoint">
                         <span class="method post">POST</span>
                         <span class="endpoint-path">/settle</span>
-                        <span class="endpoint-desc" data-i18n="endpoints.settle">Execute payment on-chain via EIP-3009</span>
+                        <span class="endpoint-desc" data-i18n="endpoints.settle">Submit the signed payment on its native network</span>
                     </div>
                     <div class="endpoint">
                         <span class="method post">POST</span>
@@ -2953,7 +2952,7 @@
                 "bazaar.cta": "Explore the Bazaar",
                 "header.subtitle": "Payment infrastructure for autonomous agents",
                 "hero.title": "Payment infrastructure for autonomous agents",
-                "hero.description": "Enable AI agents to transact autonomously without gas fees. Built on x402 protocol with EIP-3009 meta-transactions.",
+                "hero.description": "Enable AI agents to pay over x402 without network fees, including USDC on Arc and native HBAR/USDC on Hedera.",
                 "hero.stablecoins": "7 Stablecoins Supported",
                 "hero.baseUrl": "Base URL <code style='color: var(--accent); background: rgba(0,212,255,0.1); padding: 0.2rem 0.5rem; border-radius: 4px; word-break: break-all;'>https://facilitator.ultravioletadao.xyz</code> · 0% fee · no key, no account",
                 "status": "Service Online",
@@ -2962,7 +2961,7 @@
                 "stats.trustless": "Trustless Verification",
                 "stats.erc8004": "ERC-8004 Networks",
                 "features.gasless.title": "Gasless Transactions",
-                "features.gasless.description": "Agents never need AVAX or ETH for gas. The facilitator executes transferWithAuthorization via EIP-3009.",
+                "features.gasless.description": "The buyer signs the payment; the facilitator pays network fees. Arc uses USDC authorizations, and Hedera uses native CryptoTransfer.",
                 "features.trustless.title": "Trustless by Design",
                 "features.trustless.description": "EIP-712 signature verification ensures cryptographically valid payments before on-chain execution.",
                 "features.instant.title": "Instant Settlement",
@@ -3050,7 +3049,7 @@
                 "endpoints.verifySchema": "Get verification request schema",
                 "endpoints.verify": "Verify payment signature and requirements",
                 "endpoints.settleSchema": "Get settlement request schema",
-                "endpoints.settle": "Execute payment on-chain via EIP-3009",
+                "endpoints.settle": "Submit the signed payment on its native network",
                 "endpoints.accepts": "Negotiate and enrich payment requirements (Faremeter middleware)",
                 "endpoints.group.erc8004": "ERC-8004 Reputation (Trustless Agents)",
                 "endpoints.feedbackSchema": "Feedback submission schema and supported networks",
@@ -3122,7 +3121,7 @@
                 "bazaar.cta": "Explorar el Bazar",
                 "header.subtitle": "Infraestructura de pagos para agentes autónomos",
                 "hero.title": "Infraestructura de pagos para agentes autónomos",
-                "hero.description": "Permite que los agentes IA transaccionen de forma autónoma sin comisiones de gas. Construido sobre el protocolo x402 con meta-transacciones EIP-3009.",
+                "hero.description": "Permite que los agentes IA paguen por x402 sin comisiones de red, incluyendo USDC en Arc y HBAR/USDC nativos en Hedera.",
                 "hero.stablecoins": "7 Stablecoins Soportadas",
                 "hero.baseUrl": "URL base <code style='color: var(--accent); background: rgba(0,212,255,0.1); padding: 0.2rem 0.5rem; border-radius: 4px; word-break: break-all;'>https://facilitator.ultravioletadao.xyz</code> · 0% de comisión · sin key, sin cuenta",
                 "status": "Servicio en Línea",
@@ -3131,7 +3130,7 @@
                 "stats.trustless": "Verificaci\u00f3n Sin Confianza",
                 "stats.erc8004": "Redes ERC-8004",
                 "features.gasless.title": "Transacciones Sin Gas",
-                "features.gasless.description": "Los agentes nunca necesitan AVAX o ETH para gas. El facilitador ejecuta transferWithAuthorization vía EIP-3009.",
+                "features.gasless.description": "El comprador firma el pago y el facilitador paga las comisiones de red. Arc usa autorizaciones USDC y Hedera usa CryptoTransfer nativo.",
                 "features.trustless.title": "Sin Confianza por Diseño",
                 "features.trustless.description": "La verificación de firmas EIP-712 asegura pagos criptográficamente válidos antes de la ejecución en cadena.",
                 "features.instant.title": "Liquidación Instantánea",
@@ -3219,7 +3218,7 @@
                 "endpoints.verifySchema": "Obtener esquema de solicitud de verificación",
                 "endpoints.verify": "Verificar firma de pago y requisitos",
                 "endpoints.settleSchema": "Obtener esquema de solicitud de liquidación",
-                "endpoints.settle": "Ejecutar pago en cadena vía EIP-3009",
+                "endpoints.settle": "Enviar el pago firmado a su red nativa",
                 "endpoints.accepts": "Negociar y enriquecer requisitos de pago (middleware Faremeter)",
                 "endpoints.group.erc8004": "ERC-8004 Reputacion (Agentes Sin Confianza)",
                 "endpoints.feedbackSchema": "Esquema de envio de feedback y redes soportadas",

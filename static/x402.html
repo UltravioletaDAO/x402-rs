@@ -10,7 +10,12 @@
 <link rel="canonical" href="https://facilitator.ultravioletadao.xyz/x402">
 <meta property="og:title" content="x402 facilitator · verify and settle">
 <meta property="og:description" content="Two calls, gasless for the buyer, 0% fee. Escrow and upto included, and both counters published with their caveat.">
-<meta property="og:image" content="https://facilitator.ultravioletadao.xyz/logo.png">
+<meta property="og:image" content="https://facilitator.ultravioletadao.xyz/og-arc-hedera.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Ultravioleta x402 payments — Arc and native Hedera, mainnet and testnet">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://facilitator.ultravioletadao.xyz/og-arc-hedera.png">
 <link rel="icon" href="/favicon.ico">
 <link rel="stylesheet" href="/uv.css?v=20260909">
 </head>
@@ -92,7 +97,7 @@
 <tr>
 <td><code>POST</code></td>
 <td><code>/settle</code></td>
-<td data-i18n="endpoints.settle">Execute payment on-chain via EIP-3009</td>
+<td data-i18n="endpoints.settle">Submit the signed payment on its native network</td>
 <td data-i18n="money.settle">yes, irreversibly</td>
 </tr>
 <tr>
@@ -237,7 +242,7 @@ const I18N = {
     "endpoints.mcpPost": "MCP server (Streamable HTTP, stateless): the same four calls as tools",
     "endpoints.paymentOperatorNote": "Advanced escrow with authorize/charge/release/refund flows. Funds held in TokenStore until capture.",
     "endpoints.paymentOperatorSettle": "Settle via AuthCaptureEscrow when scheme=\"escrow\"",
-    "endpoints.settle": "Execute payment on-chain via EIP-3009",
+    "endpoints.settle": "Submit the signed payment on its native network",
     "endpoints.settleSchema": "Get settlement request schema",
     "endpoints.uptoNote": "Client authorizes max amount via Permit2 signature. Server settles for actual usage (<= max). If usage is $0, no on-chain transaction is submitted.",
     "endpoints.uptoSettle": "Settle for actual usage amount via x402UptoPermit2Proxy",
@@ -339,7 +344,7 @@ const I18N = {
     "endpoints.mcpPost": "Servidor MCP (Streamable HTTP, sin estado): las mismas cuatro llamadas como herramientas",
     "endpoints.paymentOperatorNote": "Escrow avanzado con flujos authorize/charge/release/refund. Fondos retenidos en TokenStore hasta captura.",
     "endpoints.paymentOperatorSettle": "Liquidar via AuthCaptureEscrow cuando scheme=\"escrow\"",
-    "endpoints.settle": "Ejecutar pago en cadena vía EIP-3009",
+    "endpoints.settle": "Enviar el pago firmado a su red nativa",
     "endpoints.settleSchema": "Obtener esquema de solicitud de liquidación",
     "endpoints.uptoNote": "El cliente autoriza monto maximo via firma Permit2. El servidor liquida por uso real (<= max). Si el uso es $0, no se envia transaccion on-chain.",
     "endpoints.uptoSettle": "Liquidar por monto de uso real via x402UptoPermit2Proxy",

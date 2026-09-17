@@ -10,7 +10,12 @@
 <link rel="canonical" href="https://facilitator.ultravioletadao.xyz/networks">
 <meta property="og:title" content="x402 facilitator · networks">
 <meta property="og:description" content="Every network and scheme this facilitator settles, read live from GET /supported. No number on this page is typed by hand.">
-<meta property="og:image" content="https://facilitator.ultravioletadao.xyz/logo.png">
+<meta property="og:image" content="https://facilitator.ultravioletadao.xyz/og-arc-hedera.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Ultravioleta x402 payments — Arc and native Hedera, mainnet and testnet">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://facilitator.ultravioletadao.xyz/og-arc-hedera.png">
 <link rel="icon" href="/favicon.ico">
 <link rel="stylesheet" href="/uv.css?v=20260909">
 <script src="/x402.js" defer></script>
@@ -65,7 +70,7 @@
 <div class="card">
 <div class="v" id="c-ids">—</div>
 <div class="k" data-i18n="c.ids">network identifiers</div>
-<div class="src" data-i18n="c.idsSrc">each chain answers to two: v1 name and CAIP-2</div>
+<div class="src" data-i18n="c.idsSrc">advertised identifiers; Hedera is native v2 only</div>
 </div>
 <div class="card">
 <div class="v" id="c-schemes">—</div>
@@ -74,73 +79,16 @@
 </div>
 </div>
 <section class="content-section" id="familias"><h2 data-i18n="h.familias">Coverage by chain family</h2>
-<p class="muted" data-i18n="familias.p">A summary of the live table below, as it stood on 2026-09-03. If the two ever disagree, the live table is right: it is read from <code>/supported</code> and this one is not.</p><div class="scroll">
+<p class="muted" data-i18n="familias.p">Counts, assets and schemes below are derived from the live <code>/supported</code> response, including Arc and native Hedera. A family can have different capabilities on each network.</p><div class="scroll">
 <table>
 <thead><tr>
 <th data-i18n="fa.th.family">Chain family</th>
 <th class="num" data-i18n="fa.th.main">Mainnets</th>
 <th class="num" data-i18n="fa.th.test">Testnets</th>
-<th data-i18n="fa.th.tokens">Stablecoins settled</th>
+<th data-i18n="fa.th.tokens">Assets advertised</th>
 <th data-i18n="fa.th.schemes">Schemes</th>
 </tr></thead>
-<tbody>
-<tr>
-<td><span class="chip-row"><span class="chip-red chip-red--tabla"><b>ET</b><img alt="" height="96" src="/ethereum.png" width="96"/></span>EVM</span></td>
-<td class="num">14</td>
-<td class="num">12</td>
-<td>USDC, USDT, EURC, AUSD, PYUSD, USDG</td>
-<td>exact, upto, escrow, commerce, fhe-transfer</td>
-</tr>
-<tr>
-<td><span class="chip-row"><span class="chip-red chip-red--tabla"><b>SO</b><img alt="" height="96" src="/solana.png" width="96"/></span>Solana / SVM</span></td>
-<td class="num">2</td>
-<td class="num">2</td>
-<td>— (feePayer)</td>
-<td>exact</td>
-</tr>
-<tr>
-<td><span class="chip-row"><span class="chip-red chip-red--tabla"><b>XR</b><img alt="" height="96" src="/xrpl.png" width="96"/></span>XRPL</span></td>
-<td class="num">1</td>
-<td class="num">1</td>
-<td>USDC, RLUSD, XRP</td>
-<td>exact</td>
-</tr>
-<tr>
-<td><span class="chip-row"><span class="chip-red chip-red--tabla"><b>ST</b><img alt="" height="96" src="/stellar.png" width="96"/></span>Stellar</span></td>
-<td class="num">1</td>
-<td class="num">1</td>
-<td>— (feePayer)</td>
-<td>exact</td>
-</tr>
-<tr>
-<td><span class="chip-row"><span class="chip-red chip-red--tabla"><b>NE</b><img alt="" height="96" src="/near.png" width="96"/></span>NEAR</span></td>
-<td class="num">1</td>
-<td class="num">1</td>
-<td>— (feePayer)</td>
-<td>exact</td>
-</tr>
-<tr>
-<td><span class="chip-row"><span class="chip-red chip-red--tabla"><b>SU</b><img alt="" height="96" src="/sui.png" width="96"/></span>Sui</span></td>
-<td class="num">1</td>
-<td class="num">1</td>
-<td>— (feePayer)</td>
-<td>exact</td>
-</tr>
-<tr>
-<td><span class="chip-row"><span class="chip-red chip-red--tabla"><b>AL</b><img alt="" height="96" src="/algorand.png" width="96"/></span>Algorand</span></td>
-<td class="num">1</td>
-<td class="num">1</td>
-<td>— (feePayer)</td>
-<td>exact</td>
-</tr>
-<tr>
-<td><b data-i18n="fa.total">total</b></td>
-<td class="num" data-live-count="payment-mainnets"><b>21</b></td>
-<td class="num" data-live-count="payment-testnets"><b>18</b></td>
-<td><b data-i18n="fa.tokens7">7 stablecoins + native XRP</b></td>
-<td><b>5</b></td>
-</tr>
-</tbody>
+<tbody id="family-rows"><tr><td colspan="5" class="muted" data-i18n="loading">loading…</td></tr></tbody>
 </table>
 </div></section>
 <section class="content-section" id="live"><h2 data-i18n="h.live">Supported networks, live</h2>
@@ -315,10 +263,9 @@ const I18N = {
     "fa.th.main": "Mainnets",
     "fa.th.schemes": "Schemes",
     "fa.th.test": "Testnets",
-    "fa.th.tokens": "Stablecoins settled",
-    "fa.tokens7": "7 stablecoins + native XRP",
+    "fa.th.tokens": "Assets advertised",
     "fa.total": "total",
-    "familias.p": "A summary of the live table below, as it stood on 2026-09-03. If the two ever disagree, the live table is right: it is read from <code>/supported</code> and this one is not.",
+    "familias.p": "Counts, assets and schemes below are derived from the live <code>/supported</code> response, including Arc and native Hedera. A family can have different capabilities on each network.",
     "h.familias": "Coverage by chain family",
     "h.live": "Supported networks, live",
     "h.wallets": "Gas funding and facilitator wallets",
@@ -351,7 +298,7 @@ const I18N = {
     "c.testnets": "testnets",
     "c.testnetsSrc": "sepolia · fuji · amoy · devnet · …",
     "c.ids": "network identifiers",
-    "c.idsSrc": "each chain answers to two: v1 name and CAIP-2",
+    "c.idsSrc": "advertised identifiers; Hedera is native v2 only",
     "c.schemes": "payment schemes",
     "c.schemesSrc": "not every scheme is on every chain",
     "f.mainnets": "mainnets",
@@ -390,10 +337,9 @@ const I18N = {
     "fa.th.main": "Mainnets",
     "fa.th.schemes": "Esquemas",
     "fa.th.test": "Testnets",
-    "fa.th.tokens": "Stablecoins que liquida",
-    "fa.tokens7": "7 stablecoins + XRP nativo",
+    "fa.th.tokens": "Activos anunciados",
     "fa.total": "total",
-    "familias.p": "Un resumen de la tabla viva de abajo, tal como estaba el 2026-09-03. Si alguna vez discrepan, la tabla viva tiene razón: esa se lee de <code>/supported</code> y ésta no.",
+    "familias.p": "Los conteos, activos y esquemas se derivan de <code>/supported</code>, incluyendo Arc y Hedera nativo. Cada red de una familia puede tener capacidades distintas.",
     "h.familias": "Cobertura por familia de cadenas",
     "h.live": "Redes compatibles en vivo",
     "h.wallets": "Fondos para gas y wallets del facilitador",
@@ -426,7 +372,7 @@ const I18N = {
     "c.testnets": "testnets",
     "c.testnetsSrc": "sepolia · fuji · amoy · devnet · …",
     "c.ids": "identificadores de red",
-    "c.idsSrc": "cada cadena contesta a dos: nombre v1 y CAIP-2",
+    "c.idsSrc": "identificadores anunciados; Hedera usa solo v2 nativo",
     "c.schemes": "esquemas de pago",
     "c.schemesSrc": "no todos los esquemas están en todas las cadenas",
     "f.mainnets": "mainnets",
@@ -545,6 +491,25 @@ function ingest(data){
   document.getElementById('c-ids').textContent = ids;
   document.getElementById('c-schemes').textContent = schemes;
   renderNativeWallets(kinds);
+  renderFamilies(NETWORKS);
+}
+
+function renderFamilies(networks){
+  const families = new Map();
+  for (const network of networks) {
+    const name = network.name;
+    const family = name.startsWith('hedera:') ? 'Hedera' : /^(solana|fogo)/.test(name) ? 'Solana / SVM'
+      : /^near/.test(name) ? 'NEAR' : /^stellar/.test(name) ? 'Stellar'
+      : /^algorand/.test(name) ? 'Algorand' : /^sui/.test(name) ? 'Sui'
+      : /^xrpl/.test(name) ? 'XRPL' : 'EVM';
+    if (!families.has(family)) families.set(family, {mainnet:0,testnet:0,tokens:new Set(),schemes:new Set()});
+    const group = families.get(family);
+    group[network.testnet ? 'testnet' : 'mainnet'] += 1;
+    network.tokens.forEach(token => group.tokens.add(token.toUpperCase()));
+    network.schemes.forEach(scheme => group.schemes.add(scheme));
+  }
+  document.getElementById('family-rows').innerHTML = [...families].map(([family,group]) =>
+    `<tr><td>${esc(family)}</td><td class="num">${group.mainnet}</td><td class="num">${group.testnet}</td><td>${esc([...group.tokens].sort().join(', ') || '—')}</td><td>${esc([...group.schemes].sort().join(', '))}</td></tr>`).join('');
 }
 
 function renderNativeWallets(kinds){

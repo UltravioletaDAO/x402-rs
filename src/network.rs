@@ -2942,10 +2942,12 @@ mod tests {
     #[test]
     fn test_supported_networks_for_eurc() {
         let networks = supported_networks_for_token(TokenType::Eurc);
-        assert_eq!(networks.len(), 3);
+        assert_eq!(networks.len(), 5);
         assert!(networks.contains(&Network::Ethereum));
         assert!(networks.contains(&Network::Base));
         assert!(networks.contains(&Network::Avalanche));
+        assert!(networks.contains(&Network::Arc));
+        assert!(networks.contains(&Network::ArcTestnet));
     }
 
     #[test]

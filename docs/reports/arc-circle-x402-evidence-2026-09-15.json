@@ -1,0 +1,1025 @@
+{
+  "schema_version": 1,
+  "research_date": "2026-09-15",
+  "repository_base": "dc109511",
+  "priority": "P0",
+  "scope": "Research and implementation plan only. Public HTTP GET and unsigned JSON-RPC read calls; no valid payment signatures, broadcasts, funding, or deployment.",
+  "network": {
+    "name": "Arc Testnet",
+    "caip2": "eip155:5042002",
+    "chain_id": 5042002,
+    "rpc": "https://rpc.testnet.arc.io",
+    "native_currency": {
+      "symbol": "USDC",
+      "decimals": 18
+    },
+    "explorer": "https://testnet.arcscan.app",
+    "mainnet_status": "Official contract-addresses documentation lists testnet only; mainnet addresses not yet available."
+  },
+  "rpc_snapshot": {
+    "observed_at_utc": "2026-09-15T16:20:12.642300+00:00",
+    "block_number": 62258917,
+    "block_hash": "0xdbbf8c6cc80fdeec92e86c797eeed0fab61980a689508bb659981040244099cb",
+    "block_time_utc": "2026-09-15T16:20:11+00:00",
+    "gas_price_native_base_units": 20000000000,
+    "priority_fee_native_base_units": 0,
+    "consistency": "Calls use latest independently; the block snapshot does not pin all calls to one block.",
+    "probes": [
+      {
+        "label": "chain_id",
+        "method": "eth_chainId",
+        "params": [],
+        "http_status": 200,
+        "response": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "result": "0x4cef52"
+        }
+      },
+      {
+        "label": "latest_block",
+        "method": "eth_getBlockByNumber",
+        "params": [
+          "latest",
+          false
+        ],
+        "http_status": 200,
+        "response": {
+          "result": {
+            "number": "0x3b5fee5",
+            "hash": "0xdbbf8c6cc80fdeec92e86c797eeed0fab61980a689508bb659981040244099cb",
+            "timestamp": "0x6aa9703b",
+            "baseFeePerGas": "0x4a817c800",
+            "gasLimit": "0x1c9c380",
+            "gasUsed": "0x5fef28"
+          },
+          "transaction_count": 18
+        }
+      },
+      {
+        "label": "gas_price",
+        "method": "eth_gasPrice",
+        "params": [],
+        "http_status": 200,
+        "response": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "result": "0x4a817c800"
+        }
+      },
+      {
+        "label": "priority_fee",
+        "method": "eth_maxPriorityFeePerGas",
+        "params": [],
+        "http_status": 200,
+        "response": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "result": "0x0"
+        }
+      },
+      {
+        "label": "fee_history",
+        "method": "eth_feeHistory",
+        "params": [
+          "0x5",
+          "latest",
+          [
+            25,
+            50,
+            75
+          ]
+        ],
+        "http_status": 200,
+        "response": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "result": {
+            "baseFeePerGas": [
+              "0x4a817c800",
+              "0x4a817c800",
+              "0x4a817c800",
+              "0x4a817c800",
+              "0x4a817c800",
+              "0x4a817c800"
+            ],
+            "gasUsedRatio": [
+              0.1201076,
+              0.10537926666666667,
+              0.06905926666666666,
+              0.0615679,
+              0.20957146666666668
+            ],
+            "baseFeePerBlobGas": [
+              "0x1",
+              "0x1",
+              "0x1",
+              "0x1",
+              "0x1",
+              "0x1"
+            ],
+            "blobGasUsedRatio": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "oldestBlock": "0x3b5fee1",
+            "reward": [
+              [
+                "0x0",
+                "0x1",
+                "0x77359400"
+              ],
+              [
+                "0x0",
+                "0x1",
+                "0x59682f00"
+              ],
+              [
+                "0x1",
+                "0x1",
+                "0x12a05f200"
+              ],
+              [
+                "0x0",
+                "0x0",
+                "0x12a05f200"
+              ],
+              [
+                "0x0",
+                "0x0",
+                "0x17d78400"
+              ]
+            ]
+          }
+        }
+      },
+      {
+        "label": "usdc_name",
+        "method": "eth_call",
+        "params": [
+          {
+            "to": "0x3600000000000000000000000000000000000000",
+            "data": "0x06fdde03"
+          },
+          "latest"
+        ],
+        "http_status": 200,
+        "response": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "result": "0x000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000045553444300000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "label": "usdc_symbol",
+        "method": "eth_call",
+        "params": [
+          {
+            "to": "0x3600000000000000000000000000000000000000",
+            "data": "0x95d89b41"
+          },
+          "latest"
+        ],
+        "http_status": 200,
+        "response": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "result": "0x000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000045553444300000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "label": "usdc_decimals",
+        "method": "eth_call",
+        "params": [
+          {
+            "to": "0x3600000000000000000000000000000000000000",
+            "data": "0x313ce567"
+          },
+          "latest"
+        ],
+        "http_status": 200,
+        "response": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "result": "0x0000000000000000000000000000000000000000000000000000000000000006"
+        }
+      },
+      {
+        "label": "usdc_version",
+        "method": "eth_call",
+        "params": [
+          {
+            "to": "0x3600000000000000000000000000000000000000",
+            "data": "0x54fd4d50"
+          },
+          "latest"
+        ],
+        "http_status": 200,
+        "response": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "result": "0x000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000013200000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "label": "usdc_domain_separator",
+        "method": "eth_call",
+        "params": [
+          {
+            "to": "0x3600000000000000000000000000000000000000",
+            "data": "0x3644e515"
+          },
+          "latest"
+        ],
+        "http_status": 200,
+        "response": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "result": "0x361191522483d32a83e70ae7183b4b9629442c13a78bc9921d6f707911c8c6b0"
+        }
+      },
+      {
+        "label": "usdc_code",
+        "method": "eth_getCode",
+        "params": [
+          "0x3600000000000000000000000000000000000000",
+          "latest"
+        ],
+        "http_status": 200,
+        "response": {
+          "code_present": true,
+          "runtime_byte_length": 1798,
+          "runtime_sha256": "d06405421b354a12b2f03fcc8aac4b324f274aed5b8ecc5fd62d8fa119067154"
+        }
+      },
+      {
+        "label": "usdc_authorization_state",
+        "method": "eth_call",
+        "params": [
+          {
+            "to": "0x3600000000000000000000000000000000000000",
+            "data": "0xe94a010200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "latest"
+        ],
+        "http_status": 200,
+        "response": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "result": "0x0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "label": "eurc_name",
+        "method": "eth_call",
+        "params": [
+          {
+            "to": "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a",
+            "data": "0x06fdde03"
+          },
+          "latest"
+        ],
+        "http_status": 200,
+        "response": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "result": "0x000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000044555524300000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "label": "eurc_symbol",
+        "method": "eth_call",
+        "params": [
+          {
+            "to": "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a",
+            "data": "0x95d89b41"
+          },
+          "latest"
+        ],
+        "http_status": 200,
+        "response": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "result": "0x000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000044555524300000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "label": "eurc_decimals",
+        "method": "eth_call",
+        "params": [
+          {
+            "to": "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a",
+            "data": "0x313ce567"
+          },
+          "latest"
+        ],
+        "http_status": 200,
+        "response": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "result": "0x0000000000000000000000000000000000000000000000000000000000000006"
+        }
+      },
+      {
+        "label": "eurc_version",
+        "method": "eth_call",
+        "params": [
+          {
+            "to": "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a",
+            "data": "0x54fd4d50"
+          },
+          "latest"
+        ],
+        "http_status": 200,
+        "response": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "result": "0x000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000013200000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "label": "eurc_domain_separator",
+        "method": "eth_call",
+        "params": [
+          {
+            "to": "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a",
+            "data": "0x3644e515"
+          },
+          "latest"
+        ],
+        "http_status": 200,
+        "response": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "result": "0x649ec6b0634bd74f28684781d2c9ae49dff14ba3d5f9bb5d70c1e1f0e1ebf160"
+        }
+      },
+      {
+        "label": "eurc_code",
+        "method": "eth_getCode",
+        "params": [
+          "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a",
+          "latest"
+        ],
+        "http_status": 200,
+        "response": {
+          "code_present": true,
+          "runtime_byte_length": 1798,
+          "runtime_sha256": "971d3ebaa21004c98d41e2a98a24287e9b5bffa23cb93b64c4f5a71d119058a1"
+        }
+      },
+      {
+        "label": "eurc_authorization_state",
+        "method": "eth_call",
+        "params": [
+          {
+            "to": "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a",
+            "data": "0xe94a010200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "latest"
+        ],
+        "http_status": 200,
+        "response": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "result": "0x0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "label": "universal_validator_code",
+        "method": "eth_getCode",
+        "params": [
+          "0xdAcD51A54883eb67D95FAEb2BBfdC4a9a6BD2a3B",
+          "latest"
+        ],
+        "http_status": 200,
+        "response": {
+          "code_present": false,
+          "runtime_byte_length": 0,
+          "runtime_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      {
+        "label": "permit2_code",
+        "method": "eth_getCode",
+        "params": [
+          "0x000000000022D473030F116dDEE9F6B43aC78BA3",
+          "latest"
+        ],
+        "http_status": 200,
+        "response": {
+          "code_present": true,
+          "runtime_byte_length": 9152,
+          "runtime_sha256": "8775d18e0c793683f09d5168ac059ec39e884d692216d4d63e3881444cc01616"
+        }
+      }
+    ]
+  },
+  "token_domains": [
+    {
+      "asset": "usdc",
+      "name": "USDC",
+      "version": "2",
+      "computed_domain_separator": "0x361191522483d32a83e70ae7183b4b9629442c13a78bc9921d6f707911c8c6b0",
+      "onchain_domain_separator": "0x361191522483d32a83e70ae7183b4b9629442c13a78bc9921d6f707911c8c6b0",
+      "matches": true
+    },
+    {
+      "asset": "eurc",
+      "name": "EURC",
+      "version": "2",
+      "computed_domain_separator": "0x649ec6b0634bd74f28684781d2c9ae49dff14ba3d5f9bb5d70c1e1f0e1ebf160",
+      "onchain_domain_separator": "0x649ec6b0634bd74f28684781d2c9ae49dff14ba3d5f9bb5d70c1e1f0e1ebf160",
+      "matches": true
+    }
+  ],
+  "compatibility_probes": {
+    "session_started_at_utc": "2026-09-15T16:23:03.294323+00:00",
+    "retry_date_utc": "2026-09-15",
+    "rpc": "https://rpc.testnet.arc.io",
+    "retry_note": "Initial compatibility requests received HTTP 403. Requests with User-Agent x402-arc-research succeeded at HTTP level; those responses are retained below. Per-retry timestamps were not recorded.",
+    "probes": [
+      {
+        "label": "usdc_bytes",
+        "method": "eth_call",
+        "params": [
+          {
+            "to": "0x3600000000000000000000000000000000000000",
+            "data": "0xcf0929950000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006aa97293000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000e00000000000000000000000000000000000000000000000000000000000000041000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "latest"
+        ],
+        "http_status": 200,
+        "response": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "error": {
+            "code": 3,
+            "message": "execution reverted: ECRecover: invalid signature 'v' value",
+            "data": "0x08c379a00000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000002645435265636f7665723a20696e76616c6964207369676e6174757265202776272076616c75650000000000000000000000000000000000000000000000000000"
+          }
+        }
+      },
+      {
+        "label": "usdc_vrs",
+        "method": "eth_call",
+        "params": [
+          {
+            "to": "0x3600000000000000000000000000000000000000",
+            "data": "0xe3ee160e0000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006aa972930000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001b00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "latest"
+        ],
+        "http_status": 200,
+        "response": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "error": {
+            "code": 3,
+            "message": "execution reverted: ECRecover: invalid signature",
+            "data": "0x08c379a00000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000001c45435265636f7665723a20696e76616c6964207369676e617475726500000000"
+          }
+        }
+      },
+      {
+        "label": "eurc_bytes",
+        "method": "eth_call",
+        "params": [
+          {
+            "to": "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a",
+            "data": "0xcf0929950000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006aa97293000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000e00000000000000000000000000000000000000000000000000000000000000041000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "latest"
+        ],
+        "http_status": 200,
+        "response": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "error": {
+            "data": "0x08c379a00000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000002645435265636f7665723a20696e76616c6964207369676e6174757265202776272076616c75650000000000000000000000000000000000000000000000000000",
+            "code": 3,
+            "message": "execution reverted: ECRecover: invalid signature 'v' value"
+          }
+        }
+      },
+      {
+        "label": "eurc_vrs",
+        "method": "eth_call",
+        "params": [
+          {
+            "to": "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a",
+            "data": "0xe3ee160e0000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006aa972930000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001b00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "latest"
+        ],
+        "http_status": 200,
+        "response": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "error": {
+            "code": 3,
+            "message": "execution reverted: ECRecover: invalid signature",
+            "data": "0x08c379a00000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000001c45435265636f7665723a20696e76616c6964207369676e617475726500000000"
+          }
+        }
+      },
+      {
+        "label": "facilitator_native_balance",
+        "method": "eth_getBalance",
+        "params": [
+          "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8",
+          "latest"
+        ],
+        "http_status": 200,
+        "response": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "result": "0x0"
+        }
+      },
+      {
+        "label": "facilitator_erc20_balance",
+        "method": "eth_call",
+        "params": [
+          {
+            "to": "0x3600000000000000000000000000000000000000",
+            "data": "0x70a0823100000000000000000000000034033041a5944b8f10f8e4d8496bfb84f1a293a8"
+          },
+          "latest"
+        ],
+        "http_status": 200,
+        "response": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "result": "0x0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "label": "multicall3_code",
+        "method": "eth_getCode",
+        "params": [
+          "0xcA11bde05977b3631167028862bE2a173976CA11",
+          "latest"
+        ],
+        "http_status": 200,
+        "response": {
+          "code_present": true,
+          "runtime_byte_length": 3808,
+          "runtime_sha256": "2756d7c52baee85cacb504f6ee1df7aad6809ac8d94a4a111d76991f90d36d6e"
+        }
+      }
+    ]
+  },
+  "facilitator_capabilities": [
+    {
+      "url": "https://gateway-api-testnet.circle.com/v1/x402/supported",
+      "observed_at_utc": "2026-09-15T16:22:27.605093+00:00",
+      "http_status": 200,
+      "kind_count": 12,
+      "arc_kinds": [
+        {
+          "x402Version": 2,
+          "scheme": "exact",
+          "network": "eip155:5042002",
+          "extra": {
+            "name": "GatewayWalletBatched",
+            "version": "1",
+            "verifyingContract": "0x0077777d7eba4688bdef3e311b846f25870a19b9",
+            "minValiditySeconds": 604800,
+            "assets": [
+              {
+                "symbol": "USDC",
+                "address": "0x3600000000000000000000000000000000000000",
+                "decimals": 6
+              }
+            ]
+          }
+        }
+      ],
+      "scope": "Snapshot of advertised capabilities; not an exhaustive facilitator census or a payment test."
+    },
+    {
+      "url": "https://gateway-api.circle.com/v1/x402/supported",
+      "observed_at_utc": "2026-09-15T16:22:27.566553+00:00",
+      "http_status": 200,
+      "kind_count": 11,
+      "arc_kinds": [],
+      "scope": "Snapshot of advertised capabilities; not an exhaustive facilitator census or a payment test."
+    },
+    {
+      "url": "https://x402.org/facilitator/supported",
+      "observed_at_utc": "2026-09-15T16:22:27.723189+00:00",
+      "http_status": 200,
+      "kind_count": 11,
+      "arc_kinds": [],
+      "scope": "Snapshot of advertised capabilities; not an exhaustive facilitator census or a payment test."
+    },
+    {
+      "url": "https://facilitator.ultravioletadao.xyz/supported",
+      "observed_at_utc": "2026-09-15T16:22:27.694547+00:00",
+      "http_status": 200,
+      "kind_count": 150,
+      "arc_kinds": [],
+      "scope": "Snapshot of advertised capabilities; not an exhaustive facilitator census or a payment test."
+    }
+  ],
+  "packages": [
+    {
+      "url": "https://registry.npmjs.org/@circle-fin%2fx402-batching/latest",
+      "observed_at_utc": "2026-09-15T16:22:27.662361+00:00",
+      "http_status": 200,
+      "name": "@circle-fin/x402-batching",
+      "version": "3.4.0",
+      "dependencies": {},
+      "peerDependencies": {
+        "viem": "^2.0.0",
+        "@x402/evm": "^2.3.0",
+        "@x402/core": "^2.3.0"
+      },
+      "integrity": "sha512-oUwIX8ltS3Tto9Ac23/7ISeVmYQLLxy14/8EopSchBF7K4wNGwzIwlQG5CMJ7iprxy/Br1ipcsW41qBy5h6/EQ=="
+    },
+    {
+      "url": "https://registry.npmjs.org/@x402%2fevm/latest",
+      "observed_at_utc": "2026-09-15T16:22:27.653360+00:00",
+      "http_status": 200,
+      "name": "@x402/evm",
+      "version": "2.25.0",
+      "dependencies": {
+        "zod": "^3.24.2",
+        "viem": "^2.48.11",
+        "@x402/core": "~2.25.0"
+      },
+      "peerDependencies": {},
+      "integrity": "sha512-EmnL4MyGW8weEUlq0qC1uJUeoBmtp9GWGwyPl+qkC0CYItRHn748puhYAxK8GsrofscQrt63HsFCB0Gp3iEROA=="
+    }
+  ],
+  "upstream": {
+    "arc_node_commit": "2a3e8ab10c0ac97bf1a2628a325eb98d4a468b1a",
+    "x402_commit": "6b9302737f16eea7de90b3bf617c045cef23e032",
+    "native_token_artifact": {
+      "contract_name": "NativeFiatTokenV2_2",
+      "source_name": "contracts/v2/NativeFiatTokenV2_2.sol",
+      "selected_abi": [
+        {
+          "inputs": [],
+          "name": "DOMAIN_SEPARATOR",
+          "outputs": [
+            {
+              "internalType": "bytes32",
+              "name": "",
+              "type": "bytes32"
+            }
+          ],
+          "stateMutability": "view",
+          "type": "function"
+        },
+        {
+          "inputs": [
+            {
+              "internalType": "address",
+              "name": "authorizer",
+              "type": "address"
+            },
+            {
+              "internalType": "bytes32",
+              "name": "nonce",
+              "type": "bytes32"
+            }
+          ],
+          "name": "authorizationState",
+          "outputs": [
+            {
+              "internalType": "bool",
+              "name": "",
+              "type": "bool"
+            }
+          ],
+          "stateMutability": "view",
+          "type": "function"
+        },
+        {
+          "inputs": [
+            {
+              "internalType": "address",
+              "name": "from",
+              "type": "address"
+            },
+            {
+              "internalType": "address",
+              "name": "to",
+              "type": "address"
+            },
+            {
+              "internalType": "uint256",
+              "name": "value",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "validAfter",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "validBefore",
+              "type": "uint256"
+            },
+            {
+              "internalType": "bytes32",
+              "name": "nonce",
+              "type": "bytes32"
+            },
+            {
+              "internalType": "bytes",
+              "name": "signature",
+              "type": "bytes"
+            }
+          ],
+          "name": "receiveWithAuthorization",
+          "outputs": [],
+          "stateMutability": "nonpayable",
+          "type": "function"
+        },
+        {
+          "inputs": [
+            {
+              "internalType": "address",
+              "name": "from",
+              "type": "address"
+            },
+            {
+              "internalType": "address",
+              "name": "to",
+              "type": "address"
+            },
+            {
+              "internalType": "uint256",
+              "name": "value",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "validAfter",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "validBefore",
+              "type": "uint256"
+            },
+            {
+              "internalType": "bytes32",
+              "name": "nonce",
+              "type": "bytes32"
+            },
+            {
+              "internalType": "uint8",
+              "name": "v",
+              "type": "uint8"
+            },
+            {
+              "internalType": "bytes32",
+              "name": "r",
+              "type": "bytes32"
+            },
+            {
+              "internalType": "bytes32",
+              "name": "s",
+              "type": "bytes32"
+            }
+          ],
+          "name": "receiveWithAuthorization",
+          "outputs": [],
+          "stateMutability": "nonpayable",
+          "type": "function"
+        },
+        {
+          "inputs": [
+            {
+              "internalType": "address",
+              "name": "from",
+              "type": "address"
+            },
+            {
+              "internalType": "address",
+              "name": "to",
+              "type": "address"
+            },
+            {
+              "internalType": "uint256",
+              "name": "value",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "validAfter",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "validBefore",
+              "type": "uint256"
+            },
+            {
+              "internalType": "bytes32",
+              "name": "nonce",
+              "type": "bytes32"
+            },
+            {
+              "internalType": "bytes",
+              "name": "signature",
+              "type": "bytes"
+            }
+          ],
+          "name": "transferWithAuthorization",
+          "outputs": [],
+          "stateMutability": "nonpayable",
+          "type": "function"
+        },
+        {
+          "inputs": [
+            {
+              "internalType": "address",
+              "name": "from",
+              "type": "address"
+            },
+            {
+              "internalType": "address",
+              "name": "to",
+              "type": "address"
+            },
+            {
+              "internalType": "uint256",
+              "name": "value",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "validAfter",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "validBefore",
+              "type": "uint256"
+            },
+            {
+              "internalType": "bytes32",
+              "name": "nonce",
+              "type": "bytes32"
+            },
+            {
+              "internalType": "uint8",
+              "name": "v",
+              "type": "uint8"
+            },
+            {
+              "internalType": "bytes32",
+              "name": "r",
+              "type": "bytes32"
+            },
+            {
+              "internalType": "bytes32",
+              "name": "s",
+              "type": "bytes32"
+            }
+          ],
+          "name": "transferWithAuthorization",
+          "outputs": [],
+          "stateMutability": "nonpayable",
+          "type": "function"
+        }
+      ]
+    },
+    "x402_default_asset_observation": "No Arc chain 5042002 or USDC 0x3600... entry in the reviewed defaultAssets.ts; explicit AssetAmount with domain metadata is needed for the test fixture."
+  },
+  "sources": [
+    {
+      "url": "https://docs.arc.io/arc/references/connect-to-arc.md",
+      "retrieved_date_utc": "2026-09-15",
+      "sha256": "6db2b85a82c528b154f269fa9ae9207b387fac7404381905d2f919e77188be91",
+      "byte_length": 19525
+    },
+    {
+      "url": "https://docs.arc.io/arc/references/contract-addresses.md",
+      "retrieved_date_utc": "2026-09-15",
+      "sha256": "56c02a4f13cdcd2268ee2806b3fc5d6c04a329be259b7dc164bd84d3b5250360",
+      "byte_length": 14984
+    },
+    {
+      "url": "https://docs.arc.io/arc/references/evm-differences.md",
+      "retrieved_date_utc": "2026-09-15",
+      "sha256": "6974c8c36c893d5e2cc23b2b8b9ac2d19aa9784405b61768d49cb145e8c80ab4",
+      "byte_length": 12206
+    },
+    {
+      "url": "https://docs.arc.io/arc/references/gas-and-fees.md",
+      "retrieved_date_utc": "2026-09-15",
+      "sha256": "162186febe95caecdced3bd545ed5c35ef2c4edcacec0d9a225f323fe0ec1e39",
+      "byte_length": 7130
+    },
+    {
+      "url": "https://docs.arc.io/arc/concepts/stablecoin-native-model.md",
+      "retrieved_date_utc": "2026-09-15",
+      "sha256": "11bb93939fc7ef5dc5d9105f9f04c3608ed7c4e14102704f824dbd84970baf34",
+      "byte_length": 6772
+    },
+    {
+      "url": "https://docs.arc.io/arc/references/usdc-system-events.md",
+      "retrieved_date_utc": "2026-09-15",
+      "sha256": "ab26dea31ecdf6b1eebeb8281d7069cbe94c3bbab59e8af71947ab9af95aab6e",
+      "byte_length": 7440
+    },
+    {
+      "url": "https://docs.arc.io/integrate/relayers-and-paymasters.md",
+      "retrieved_date_utc": "2026-09-15",
+      "sha256": "9dc8facd4ad453c5fcb3db3a3a7c3a08b9fea79ed3558e71875410fd3a7cc085",
+      "byte_length": 4581
+    },
+    {
+      "url": "https://docs.arc.io/integrate/relayers-and-paymasters/eip-3009-relayer.md",
+      "retrieved_date_utc": "2026-09-15",
+      "sha256": "cb3a515da53ed5ca2ed70eff2a3bfd13abf1724f3490615e1d1e9f11ff58fe99",
+      "byte_length": 6916
+    },
+    {
+      "url": "https://developers.circle.com/gateway/nanopayments/concepts/x402.md",
+      "retrieved_date_utc": "2026-09-15",
+      "sha256": "c2bc6b8b60c3965929cead7f29e5d4488221cfa14d46e9490a03f6c6aaad9052",
+      "byte_length": 6474
+    },
+    {
+      "url": "https://developers.circle.com/gateway/nanopayments/concepts/batched-settlement.md",
+      "retrieved_date_utc": "2026-09-15",
+      "sha256": "64a60d36df7e3aa3136db70a83d8924e79e1ab86397a92f6dc66a4b349e3891f",
+      "byte_length": 6456
+    },
+    {
+      "url": "https://developers.circle.com/gateway/nanopayments/supported-networks.md",
+      "retrieved_date_utc": "2026-09-15",
+      "sha256": "c719de2e6613bb9866a83284df0d41f72b9d2a3e7b61da6e0cfff9ed0ccf2302",
+      "byte_length": 2258
+    },
+    {
+      "url": "https://developers.circle.com/gateway/nanopayments/quickstarts/seller.md",
+      "retrieved_date_utc": "2026-09-15",
+      "sha256": "095061a733212594c67e0119b6a71e3ca1c212df597fd7cf5b84570c12ab3c61",
+      "byte_length": 7550
+    },
+    {
+      "url": "https://developers.circle.com/gateway/nanopayments/quickstarts/buyer.md",
+      "retrieved_date_utc": "2026-09-15",
+      "sha256": "0206bbee643ed1dcfa005fd154d37ef9ba7b9e69975dbb3a963b8d9b99e1ee2e",
+      "byte_length": 22518
+    },
+    {
+      "url": "https://raw.githubusercontent.com/wevm/viem/main/src/chains/definitions/arcTestnet.ts",
+      "retrieved_date_utc": "2026-09-15",
+      "sha256": "51943dcb714263e1f3684d189d704c695e6a14f12794114815f528e8711137ba",
+      "byte_length": 881
+    },
+    {
+      "url": "https://raw.githubusercontent.com/circlefin/arc-node/2a3e8ab10c0ac97bf1a2628a325eb98d4a468b1a/assets/artifacts/stablecoin-contracts/NativeFiatTokenV2_2.json",
+      "retrieved_date_utc": "2026-09-15",
+      "sha256": "a2e22e759c1e6cdb2127b639729bb960e0ec606e131c5345933601b583107e43",
+      "byte_length": 125372
+    },
+    {
+      "url": "https://raw.githubusercontent.com/circlefin/arc-node/2a3e8ab10c0ac97bf1a2628a325eb98d4a468b1a/tests/localdev/NativeFiatToken.test.ts",
+      "retrieved_date_utc": "2026-09-15",
+      "sha256": "fbb22a3bea6c3da7ec6bff9af326e12ec3744369c7d0b06a7750bf87ed97965b",
+      "byte_length": 105151
+    },
+    {
+      "url": "https://raw.githubusercontent.com/circlefin/arc-node/2a3e8ab10c0ac97bf1a2628a325eb98d4a468b1a/assets/testnet/genesis.config.ts",
+      "retrieved_date_utc": "2026-09-15",
+      "sha256": "274222211ae09b7088381d17c8f5672684b90b736e34c1aa325365f741390389",
+      "byte_length": 5687
+    },
+    {
+      "url": "https://raw.githubusercontent.com/x402-foundation/x402/6b9302737f16eea7de90b3bf617c045cef23e032/typescript/packages/mechanisms/evm/src/defaultAssets.ts",
+      "retrieved_date_utc": "2026-09-15",
+      "sha256": "26f92e9b51d4314a2fb7a101277a1bd92f06bfaa55f53e4f082a2beb04657f24",
+      "byte_length": 16744
+    },
+    {
+      "url": "https://raw.githubusercontent.com/x402-foundation/x402/6b9302737f16eea7de90b3bf617c045cef23e032/typescript/packages/mechanisms/evm/src/exact/server/scheme.ts",
+      "retrieved_date_utc": "2026-09-15",
+      "sha256": "cea5140935d3ff58efff69f14ae3b05b03b0c818fbccb6486d07d2ef1afdb670",
+      "byte_length": 5974
+    }
+  ],
+  "limitations": [
+    "Reverts with invalid signatures show that both EIP-3009 overloads reach signature validation. They are not successful transfer tests or proof of end-to-end x402 interoperability.",
+    "DOMAIN_SEPARATOR values were recomputed locally for name, version, chain ID, and token address; equality confirms those domain inputs at the observed state.",
+    "USDC and EURC eth_getCode results are proxy runtime code. Code presence and published ABI alone do not establish full wallet-signature compatibility.",
+    "The universal validator address used by the current EIP-6492 path has no code. This does not block ordinary EOA authorizations, which use a different path.",
+    "The public facilitator testnet address had zero native and ERC-20 USDC balance. A funded test fixture is required for future settlement tests.",
+    "Native and ERC-20 USDC expose one balance at different precision; ERC-20 balance is the native balance divided by 10^12 with integer truncation.",
+    "Circle Gateway Arc exact uses GatewayWalletBatched v1 and pending batched settlement; it is a different payment method from direct token EIP-3009 despite sharing scheme and network.",
+    "Documentation and endpoint capabilities can change; refresh deployment data and dependencies before implementing or launching mainnet."
+  ]
+}

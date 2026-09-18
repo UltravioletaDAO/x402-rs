@@ -1,20 +1,18 @@
 ---
-
-> **Corrección de alcance, 2026-09-17:** se retira HBAR como activo de pago. El producto admite exclusivamente USDC nativo en Hedera mainnet/testnet; HBAR queda para comisiones. Las secciones HBAR/HTS de este plan describen el alcance histórico, no la política vigente. Véase [plan maestro de recibos](facilitator-receipts-master-plan.md).
 date: 2026-09-15
 tags:
   - type/backlog
   - domain/hedera
   - priority/p0
-status: facilitator-and-sdks-mainnet-testnet-published-verified
+status: ready-to-build
 ---
 
 # Hedera nativo en el facilitador: investigación y plan de ejecución
 
-**Fecha:** 2026-09-15.
-**Prioridad:** P0 del facilitador, asignada por el usuario el 2026-09-15.
-**Estado actualizado 2026-09-16:** proveedor nativo publicado en testnet y mainnet; canarios públicos HBAR/USDC confirmados en ambas redes, con reconciliación de importes, firmas persistidas y comisiones. Recuperación real aprobada en testnet. SDK Python 0.85.0 y TypeScript 2.93.0 publicados; ocho pagos reales adicionales desde instalaciones limpias verificados. Landing, Swagger, descubrimiento y OG publicados en 2.33.1. [Guía y evidencia actual](../guides/hedera-native.md).
-**Base local:** `dc109511`, rama `0xultravioleta/hedera`.
+**Fecha:** 2026-09-15.  
+**Prioridad:** P0 del facilitador, asignada por el usuario el 2026-09-15.  
+**Estado:** listo para implementar; investigación terminada. Seguimiento en [el backlog del facilitador](../TODO.md).  
+**Base local:** `dc109511`, rama `0xultravioleta/hedera`.  
 **Objetivo:** verificar y liquidar pagos x402 con HBAR y tokens fungibles de Hedera Token Service (HTS), primero en testnet y después en mainnet, desde nuestro facilitador Rust.
 
 ## 1. Decisión recomendada
@@ -23,7 +21,7 @@ Implementar el esquema oficial **`exact` de x402 v2**, con las redes **`hedera:t
 
 El primer lanzamiento incluirá HBAR, USDC nativo y otros HTS fungibles configurados explícitamente, inicialmente sin comisiones personalizadas. Esto permite pagos reales en Hedera con el cliente oficial `@x402/hedera`, sin desarrollar un protocolo propio. La referencia normativa es la [especificación oficial](https://github.com/x402-foundation/x402/blob/6b9302737f16eea7de90b3bf617c045cef23e032/specs/schemes/exact/scheme_exact_hedera.md).
 
-El plan y la [evidencia de consultas públicas](../reports/hedera-native-x402-evidence-2026-09-15.json) se redactaron el 2026-09-15. Las fases originales se conservan abajo como criterios de aceptación; el estado actual y los comprobantes están en la [guía operativa](../guides/hedera-native.md).
+El entregable de esta sesión es este plan y la [evidencia de consultas públicas](../reports/hedera-native-x402-evidence-2026-09-15.json). Las fases siguientes describen trabajo futuro; no se ha compilado un proveedor, firmado pagos ni desplegado cambios.
 
 ## 2. Qué ocurrió con el soporte anterior
 

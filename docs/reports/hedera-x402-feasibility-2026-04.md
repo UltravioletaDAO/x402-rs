@@ -1,5 +1,7 @@
 # Hedera x402 Feasibility Report — April 2026
 
+> **Actualización 2026-09-15:** informe histórico centrado en EIP-3009. Sus conclusiones negativas sobre USDC no se aplican al esquema `exact` nativo de Hedera. Ver la investigación y el [plan vigente para HBAR/HTS](../plans/hedera-native-x402-integration-plan.md); la ruta USDT0 EVM no es un requisito para esa integración.
+
 **Date**: April 4, 2026
 **Purpose**: Determine if x402 EIP-3009 payments are now feasible on Hedera
 **Previous research**: `docs/reports/hedera-integration-analysis.md` (pre-deployment)

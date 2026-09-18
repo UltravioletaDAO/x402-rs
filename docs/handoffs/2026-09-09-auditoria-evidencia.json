@@ -1,0 +1,700 @@
+{
+  "scope": {
+    "project": "facilitator-production",
+    "region": "us-east-2",
+    "source_commit": "9893c48f",
+    "read_only_aws_audit": true,
+    "currency": "USD",
+    "cost_exclusions": "Unattributed/shared services, taxes, credits/commitment reconciliation and on-chain gas. Resource-tag spend is a partial total, not the whole account or project invoice."
+  },
+  "inventory": {
+    "at": "2026-09-10 03:36:53.377265+00:00",
+    "running": 3,
+    "desired": 3,
+    "task_revision": 403,
+    "cpu": "1024",
+    "memory": "2048",
+    "runtime": null,
+    "launchType": "FARGATE",
+    "capacity": null,
+    "containers": [
+      {
+        "name": "facilitator",
+        "image_tag": "2.16.0-9893c48",
+        "cpu": 0,
+        "memory": null,
+        "essential": true,
+        "env": {
+          "RUST_LOG": "info"
+        },
+        "log_group": "/ecs/facilitator-production"
+      }
+    ],
+    "tasks": [
+      {
+        "startedAt": "2026-09-09 11:50:10.318000-04:00",
+        "az": "us-east-2b",
+        "cpu": "1024",
+        "memory": "2048",
+        "status": "RUNNING"
+      },
+      {
+        "startedAt": "2026-09-07 22:36:08.827000-04:00",
+        "az": "us-east-2b",
+        "cpu": "1024",
+        "memory": "2048",
+        "status": "RUNNING"
+      },
+      {
+        "startedAt": "2026-09-07 22:36:05.884000-04:00",
+        "az": "us-east-2a",
+        "cpu": "1024",
+        "memory": "2048",
+        "status": "RUNNING"
+      }
+    ],
+    "cluster_settings": [
+      {
+        "name": "containerInsights",
+        "value": "enabled"
+      }
+    ]
+  },
+  "runtime_flag_overrides": {},
+  "ecs_cost_allocation": {
+    "propagateTags": "NONE",
+    "enableECSManagedTags": false
+  },
+  "cloudwatch_7d": {
+    "start": "2026-09-03 03:36:53.377265+00:00",
+    "end": "2026-09-10 03:36:53.377265+00:00",
+    "period_seconds": 600,
+    "metrics": {
+      "CPUUtilization": {
+        "buckets": 1008,
+        "fields": {
+          "Average": {
+            "mean_of_10m_buckets": 1.253008811624812,
+            "median_of_10m_buckets": 1.2282920920083091,
+            "max_bucket": 5.602770210135107
+          },
+          "Maximum": {
+            "mean_of_10m_buckets": 7.03923065864688,
+            "median_of_10m_buckets": 6.006408080458641,
+            "max_bucket": 58.518906593322754
+          }
+        }
+      },
+      "MemoryUtilization": {
+        "buckets": 1008,
+        "fields": {
+          "Average": {
+            "mean_of_10m_buckets": 13.775225897135483,
+            "median_of_10m_buckets": 13.320176866319445,
+            "max_bucket": 18.41227213541666
+          },
+          "Maximum": {
+            "mean_of_10m_buckets": 14.982386997767858,
+            "median_of_10m_buckets": 14.6728515625,
+            "max_bucket": 19.3359375
+          }
+        }
+      },
+      "RunningTaskCount": {
+        "buckets": 1008,
+        "fields": {
+          "Average": {
+            "mean_of_10m_buckets": 2.861904761904762,
+            "median_of_10m_buckets": 3.0,
+            "max_bucket": 3.3
+          },
+          "Maximum": {
+            "mean_of_10m_buckets": 2.9057539682539684,
+            "median_of_10m_buckets": 3.0,
+            "max_bucket": 6.0
+          }
+        }
+      },
+      "CpuUtilized": {
+        "buckets": 1008,
+        "fields": {
+          "Average": {
+            "mean_of_10m_buckets": 12.832084658671562,
+            "median_of_10m_buckets": 12.577711022165087,
+            "max_bucket": 57.3723669517835
+          },
+          "Maximum": {
+            "mean_of_10m_buckets": 33.370893063884246,
+            "median_of_10m_buckets": 28.148804469108583,
+            "max_bucket": 297.0029150390625
+          }
+        }
+      },
+      "MemoryUtilized": {
+        "buckets": 1008,
+        "fields": {
+          "Average": {
+            "mean_of_10m_buckets": 282.06546573377705,
+            "median_of_10m_buckets": 272.7166666666667,
+            "max_bucket": 377.0
+          },
+          "Maximum": {
+            "mean_of_10m_buckets": 306.5,
+            "median_of_10m_buckets": 300.5,
+            "max_bucket": 392.0
+          }
+        }
+      },
+      "CpuReserved": {
+        "buckets": 1008,
+        "fields": {
+          "Average": {
+            "mean_of_10m_buckets": 1024.0,
+            "median_of_10m_buckets": 1024.0,
+            "max_bucket": 1024.0
+          },
+          "Maximum": {
+            "mean_of_10m_buckets": 1024.0,
+            "median_of_10m_buckets": 1024.0,
+            "max_bucket": 1024.0
+          }
+        }
+      },
+      "MemoryReserved": {
+        "buckets": 1008,
+        "fields": {
+          "Average": {
+            "mean_of_10m_buckets": 2048.0,
+            "median_of_10m_buckets": 2048.0,
+            "max_bucket": 2048.0
+          },
+          "Maximum": {
+            "mean_of_10m_buckets": 2048.0,
+            "median_of_10m_buckets": 2048.0,
+            "max_bucket": 2048.0
+          }
+        }
+      },
+      "reads_RequestCount": {
+        "buckets": 1008,
+        "fields": {
+          "Sum": {
+            "mean_of_10m_buckets": 238.19742063492063,
+            "median_of_10m_buckets": 146.0,
+            "max_bucket": 5377.0,
+            "sum": 240103.0
+          }
+        }
+      },
+      "reads_HTTPCode_Target_2XX_Count": {
+        "buckets": 1008,
+        "fields": {
+          "Sum": {
+            "mean_of_10m_buckets": 166.04265873015873,
+            "median_of_10m_buckets": 139.5,
+            "max_bucket": 2642.0,
+            "sum": 167371.0
+          }
+        }
+      },
+      "reads_HTTPCode_Target_4XX_Count": {
+        "buckets": 698,
+        "fields": {
+          "Sum": {
+            "mean_of_10m_buckets": 104.05300859598854,
+            "median_of_10m_buckets": 3.0,
+            "max_bucket": 5182.0,
+            "sum": 72629.0
+          }
+        }
+      },
+      "reads_HTTPCode_Target_5XX_Count": {
+        "buckets": 31,
+        "fields": {
+          "Sum": {
+            "mean_of_10m_buckets": 1.0,
+            "median_of_10m_buckets": 1.0,
+            "max_bucket": 1.0,
+            "sum": 31.0
+          }
+        }
+      },
+      "reads_latency": {
+        "buckets": 1008,
+        "fields": {
+          "Average": {
+            "mean_of_10m_buckets": 0.03349317295133287,
+            "median_of_10m_buckets": 0.0334152610479798,
+            "max_bucket": 0.1669928681318681
+          },
+          "Maximum": {
+            "mean_of_10m_buckets": 0.5177871468253968,
+            "median_of_10m_buckets": 0.274,
+            "max_bucket": 10.00309
+          }
+        }
+      },
+      "reads_latency_percentiles": {
+        "buckets": 1008,
+        "fields": {
+          "p50": {
+            "mean_of_10m_buckets": 0.01003600215517151,
+            "median_of_10m_buckets": 0.0012203170569103704,
+            "max_bucket": 0.05463191821368821
+          },
+          "p95": {
+            "mean_of_10m_buckets": 0.1291459680991719,
+            "median_of_10m_buckets": 0.12343279430432166,
+            "max_bucket": 1.1482048935984943
+          },
+          "p99": {
+            "mean_of_10m_buckets": 0.27481120105434176,
+            "median_of_10m_buckets": 0.21682168977361918,
+            "max_bucket": 4.2458979520827524
+          }
+        }
+      },
+      "reads_requests_per_target": {
+        "buckets": 1008,
+        "fields": {
+          "Sum": {
+            "mean_of_10m_buckets": 84.22321037896826,
+            "median_of_10m_buckets": 52.416665,
+            "max_bucket": 2099.3333290000005,
+            "sum": 84896.99606200008
+          }
+        }
+      },
+      "writes_RequestCount": {
+        "buckets": 1008,
+        "fields": {
+          "Sum": {
+            "mean_of_10m_buckets": 14.37797619047619,
+            "median_of_10m_buckets": 1.0,
+            "max_bucket": 289.0,
+            "sum": 14493.0
+          }
+        }
+      },
+      "writes_HTTPCode_Target_2XX_Count": {
+        "buckets": 367,
+        "fields": {
+          "Sum": {
+            "mean_of_10m_buckets": 10.212534059945504,
+            "median_of_10m_buckets": 6.0,
+            "max_bucket": 78.0,
+            "sum": 3748.0
+          }
+        }
+      },
+      "writes_HTTPCode_Target_4XX_Count": {
+        "buckets": 115,
+        "fields": {
+          "Sum": {
+            "mean_of_10m_buckets": 17.956521739130434,
+            "median_of_10m_buckets": 2.0,
+            "max_bucket": 280.0,
+            "sum": 2065.0
+          }
+        }
+      },
+      "writes_HTTPCode_Target_5XX_Count": {
+        "buckets": 386,
+        "fields": {
+          "Sum": {
+            "mean_of_10m_buckets": 22.15284974093264,
+            "median_of_10m_buckets": 15.0,
+            "max_bucket": 96.0,
+            "sum": 8551.0
+          }
+        }
+      },
+      "writes_latency": {
+        "buckets": 519,
+        "fields": {
+          "Average": {
+            "mean_of_10m_buckets": 2.6400727445175245,
+            "median_of_10m_buckets": 0.6507742258064515,
+            "max_bucket": 30.461665666666665
+          },
+          "Maximum": {
+            "mean_of_10m_buckets": 7.80039872061657,
+            "median_of_10m_buckets": 7.233184,
+            "max_bucket": 42.431685
+          }
+        }
+      },
+      "writes_latency_percentiles": {
+        "buckets": 519,
+        "fields": {
+          "p50": {
+            "mean_of_10m_buckets": 2.007455348642141,
+            "median_of_10m_buckets": 0.1478125920937829,
+            "max_bucket": 30.476454159069874
+          },
+          "p95": {
+            "mean_of_10m_buckets": 5.888244775842569,
+            "median_of_10m_buckets": 6.782984284503801,
+            "max_bucket": 41.48975217707184
+          },
+          "p99": {
+            "mean_of_10m_buckets": 7.696968715304271,
+            "median_of_10m_buckets": 7.161079160277467,
+            "max_bucket": 42.22310713095729
+          }
+        }
+      },
+      "writes_requests_per_target": {
+        "buckets": 1008,
+        "fields": {
+          "Sum": {
+            "mean_of_10m_buckets": 4.951949384920635,
+            "median_of_10m_buckets": 0.333333,
+            "max_bucket": 144.5,
+            "sum": 4991.564979999997
+          }
+        }
+      }
+    }
+  },
+  "cost_explorer_name_prefix_facilitator": [
+    {
+      "period": {
+        "Start": "2026-08-01",
+        "End": "2026-09-01"
+      },
+      "estimated": false,
+      "total": 72.74417266209997,
+      "items": [
+        {
+          "service": "Amazon DynamoDB",
+          "usage": "USE2-WriteRequestUnits",
+          "usd": 0.3950575
+        },
+        {
+          "service": "Amazon EC2 Container Registry (ECR)",
+          "usage": "USE2-TimedStorage-ByteHrs",
+          "usd": 0.0306093504
+        },
+        {
+          "service": "EC2 - Other",
+          "usage": "USE2-DataTransfer-Regional-Bytes",
+          "usd": 0.6205883763
+        },
+        {
+          "service": "EC2 - Other",
+          "usage": "USE2-NatGateway-Bytes",
+          "usd": 8.7524259215
+        },
+        {
+          "service": "EC2 - Other",
+          "usage": "USE2-NatGateway-Hours",
+          "usd": 33.48
+        },
+        {
+          "service": "EC2 - Other",
+          "usage": "USE2-USW2-AWS-Out-Bytes",
+          "usd": 0.0351320898
+        },
+        {
+          "service": "Amazon Elastic Compute Cloud - Compute",
+          "usage": "USE2-DataTransfer-Out-Bytes",
+          "usd": 4.189236089
+        },
+        {
+          "service": "Amazon Elastic Load Balancing",
+          "usage": "USE2-APE2-AWS-Out-Bytes",
+          "usd": 0.1215631534
+        },
+        {
+          "service": "Amazon Elastic Load Balancing",
+          "usage": "USE2-CAN1-AWS-Out-Bytes",
+          "usd": 0.0380519744
+        },
+        {
+          "service": "Amazon Elastic Load Balancing",
+          "usage": "USE2-DataTransfer-Out-Bytes",
+          "usd": 0.3837463637
+        },
+        {
+          "service": "Amazon Elastic Load Balancing",
+          "usage": "USE2-DataTransfer-Regional-Bytes",
+          "usd": 0.0192821185
+        },
+        {
+          "service": "Amazon Elastic Load Balancing",
+          "usage": "USE2-LCUUsage",
+          "usd": 0.1921757295
+        },
+        {
+          "service": "Amazon Elastic Load Balancing",
+          "usage": "USE2-LoadBalancerUsage",
+          "usd": 16.74
+        },
+        {
+          "service": "Amazon Virtual Private Cloud",
+          "usage": "USE2-VpcEndpoint-Hours",
+          "usd": 7.44
+        },
+        {
+          "service": "AmazonCloudWatch",
+          "usage": "USE2-DataProcessing-Bytes",
+          "usd": 0.2972487579
+        }
+      ]
+    },
+    {
+      "period": {
+        "Start": "2026-09-01",
+        "End": "2026-09-10"
+      },
+      "estimated": true,
+      "total": 25.1531892407,
+      "items": [
+        {
+          "service": "Amazon DynamoDB",
+          "usage": "USE2-ReadRequestUnits",
+          "usd": 0.0239844375
+        },
+        {
+          "service": "Amazon DynamoDB",
+          "usage": "USE2-WriteRequestUnits",
+          "usd": 0.28170125
+        },
+        {
+          "service": "Amazon EC2 Container Registry (ECR)",
+          "usage": "USE2-TimedStorage-ByteHrs",
+          "usd": 0.0088426832
+        },
+        {
+          "service": "EC2 - Other",
+          "usage": "USE2-DataTransfer-Regional-Bytes",
+          "usd": 0.8200762251
+        },
+        {
+          "service": "EC2 - Other",
+          "usage": "USE2-NatGateway-Bytes",
+          "usd": 6.0365128704
+        },
+        {
+          "service": "EC2 - Other",
+          "usage": "USE2-NatGateway-Hours",
+          "usd": 9.315
+        },
+        {
+          "service": "EC2 - Other",
+          "usage": "USE2-USW2-AWS-Out-Bytes",
+          "usd": 0.0435527979
+        },
+        {
+          "service": "Amazon Elastic Compute Cloud - Compute",
+          "usage": "USE2-DataTransfer-Out-Bytes",
+          "usd": 1.4111621468
+        },
+        {
+          "service": "Amazon Elastic Load Balancing",
+          "usage": "USE2-APE2-AWS-Out-Bytes",
+          "usd": 0.0267514609
+        },
+        {
+          "service": "Amazon Elastic Load Balancing",
+          "usage": "USE2-CAN1-AWS-Out-Bytes",
+          "usd": 0.0139411241
+        },
+        {
+          "service": "Amazon Elastic Load Balancing",
+          "usage": "USE2-DataTransfer-Out-Bytes",
+          "usd": 0.2851420264
+        },
+        {
+          "service": "Amazon Elastic Load Balancing",
+          "usage": "USE2-DataTransfer-Regional-Bytes",
+          "usd": 0.0066516323
+        },
+        {
+          "service": "Amazon Elastic Load Balancing",
+          "usage": "USE2-LCUUsage",
+          "usd": 0.0609675789
+        },
+        {
+          "service": "Amazon Elastic Load Balancing",
+          "usage": "USE2-LoadBalancerUsage",
+          "usd": 4.6575
+        },
+        {
+          "service": "Amazon Simple Storage Service",
+          "usage": "USE2-Requests-Tier1",
+          "usd": 0.010515
+        },
+        {
+          "service": "Amazon Virtual Private Cloud",
+          "usage": "USE2-VpcEndpoint-Hours",
+          "usd": 2.08
+        },
+        {
+          "service": "AmazonCloudWatch",
+          "usage": "USE2-DataProcessing-Bytes",
+          "usd": 0.063588472
+        }
+      ]
+    }
+  ],
+  "price_list_us_east_2": [
+    {
+      "usage": "USE2-Fargate-vCPU-Hours:perCPU",
+      "prices": [
+        {
+          "unit": "hours",
+          "usd": "0.0404800000"
+        }
+      ]
+    },
+    {
+      "usage": "USE2-Fargate-GB-Hours",
+      "prices": [
+        {
+          "unit": "hours",
+          "usd": "0.0044450000"
+        }
+      ]
+    },
+    {
+      "usage": "USE2-Fargate-ARM-vCPU-Hours:perCPU",
+      "prices": [
+        {
+          "unit": "hours",
+          "usd": "0.0323800000"
+        }
+      ]
+    },
+    {
+      "usage": "USE2-Fargate-ARM-GB-Hours",
+      "prices": [
+        {
+          "unit": "hours",
+          "usd": "0.0035600000"
+        }
+      ]
+    }
+  ],
+  "compute_scenarios_730_hours": [
+    {
+      "name": "Current x86 3 x 1 vCPU / 2 GiB",
+      "monthly_usd": 108.12030000000001
+    },
+    {
+      "name": "x86 2 x 1 vCPU / 2 GiB, conditional on load test",
+      "monthly_usd": 72.0802
+    },
+    {
+      "name": "x86 3 x 0.5 vCPU / 1 GiB, conditional on load test",
+      "monthly_usd": 54.06015000000001
+    },
+    {
+      "name": "ARM 3 x 1 vCPU / 2 GiB, conditional on build and load test",
+      "monthly_usd": 86.505
+    }
+  ],
+  "app_log_24h": {
+    "end_utc_approx": "2026-09-10T03:42:00Z",
+    "rows": [
+      {
+        "route": "/health",
+        "status": "200",
+        "requests": "26360",
+        "avg_ms": "0.002693",
+        "p95_ms": "0",
+        "max_ms": "11"
+      },
+      {
+        "route": "/discovery/resources",
+        "status": "200",
+        "requests": "10304",
+        "avg_ms": "61.9619",
+        "p95_ms": "137.9012",
+        "max_ms": "535"
+      },
+      {
+        "route": "/settle",
+        "status": "502",
+        "requests": "3749",
+        "avg_ms": "145.937",
+        "p95_ms": "267.7906",
+        "max_ms": "713"
+      },
+      {
+        "route": "/supported",
+        "status": "200",
+        "requests": "2058",
+        "avg_ms": "1.1822",
+        "p95_ms": "1",
+        "max_ms": "51"
+      },
+      {
+        "route": "/settle",
+        "status": "200",
+        "requests": "892",
+        "avg_ms": "5178.6491",
+        "p95_ms": "7277.5858",
+        "max_ms": "14203"
+      },
+      {
+        "route": "/dx402/stats",
+        "status": "200",
+        "requests": "745",
+        "avg_ms": "28.8685",
+        "p95_ms": "40",
+        "max_ms": "81"
+      },
+      {
+        "route": "/feedback",
+        "status": "500",
+        "requests": "275",
+        "avg_ms": "260.1236",
+        "p95_ms": "1278.4758",
+        "max_ms": "1529"
+      },
+      {
+        "route": "/dx402/anchor",
+        "status": "201",
+        "requests": "255",
+        "avg_ms": "620.898",
+        "p95_ms": "1297.7878",
+        "max_ms": "2916"
+      },
+      {
+        "route": "/feedback",
+        "status": "200",
+        "requests": "150",
+        "avg_ms": "7832.42",
+        "p95_ms": "21226.7895",
+        "max_ms": "42135"
+      },
+      {
+        "route": "/register",
+        "status": "500",
+        "requests": "64",
+        "avg_ms": "1243.2344",
+        "p95_ms": "10166",
+        "max_ms": "11707"
+      },
+      {
+        "route": "/register",
+        "status": "200",
+        "requests": "42",
+        "avg_ms": "25716.2143",
+        "p95_ms": "32789",
+        "max_ms": "42430"
+      }
+    ],
+    "warning": "App logs can include both forwarding and writer hops. Do not interpret these rows as unique payments or replace ALB request counts."
+  },
+  "escrow_error_24h": {
+    "end_utc_approx": "2026-09-10T03:58:33Z",
+    "matching_handler_error_events": 2238,
+    "events_containing_insufficient_funds": 2232,
+    "sample_reason": "insufficient funds for gas * price + value; queued cost leaves less headroom than the next transaction requires",
+    "chain_identified": false,
+    "warning": "Substring 429 in numeric balances is not HTTP 429; it was excluded from conclusions."
+  }
+}

@@ -119,3 +119,9 @@ tmpclaude-*
 
 # pre-commit: local sensitive list -- see .githooks/README.md
 .githooks/*.local
+
+# orca.yaml lo escribe Orca (el plano de control) en cada repo donde abre un
+# worktree: es archivo de la herramienta, no del proyecto. Aparecia untracked en
+# 9 repos del stack a la vez (medido 2026-09-18), asi que ensuciaba el
+# `git status` de todos ellos sin describir nada.
+orca.yaml

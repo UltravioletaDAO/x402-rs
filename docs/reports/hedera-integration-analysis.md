@@ -1,5 +1,7 @@
 # Hedera Integration Analysis for x402-rs Facilitator
 
+> **Actualización 2026-09-15:** informe histórico. La conclusión sobre la ausencia de un esquema upstream ya no debe usarse: `exact` nativo para HBAR/HTS se integró el 2026-02-06. Ver la investigación y el [plan vigente de integración nativa](../plans/hedera-native-x402-integration-plan.md).
+
 **Date**: 2026-04-03
 **Context**: ETHGlobal Cannes 2026 — Hedera "$6K AI & Agentic Payments" prize
 **Status**: Research complete — actionable paths identified

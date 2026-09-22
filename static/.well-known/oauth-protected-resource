@@ -19,7 +19,7 @@
     }
   ],
   "x-rate-limits": {
-    "unit": "per client IP (X-Forwarded-For / X-Real-IP / Forwarded, then peer)",
+    "unit": "per client IP (the last X-Forwarded-For entry, appended by the load balancer; else the peer address)",
     "on_exceeded": 429,
     "buckets": [
       {

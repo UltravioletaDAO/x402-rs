@@ -561,29 +561,24 @@ impl FacilitatorMcp {
             builder = builder.header(header::CONTENT_TYPE, "application/json");
         }
         // Carry the caller's IP forward. Not cosmetic, and not for THIS hop:
-        // the inner router has no `GovernorLayer`, so nothing here reads these.
-        // They matter one hop further on. `settle_writer_gate` forwards an EVM
+        // the inner router has no `GovernorLayer`, so nothing here reads it.
+        // It matters one hop further on. `settle_writer_gate` forwards an EVM
         // settle to the task holding the writer lease over a direct
         // task-to-task TCP connection (`forward_to_writer`), which never
-        // touches the ALB that would add these headers. On the other side
-        // `/settle` sits behind `SmartIpKeyExtractor`, whose chain is
-        // X-Forwarded-For -> X-Real-IP -> Forwarded -> ConnectInfo -> peer
-        // addr; the last two read extensions nobody inserts, because the binary
-        // serves with plain `axum::serve` and not
-        // `into_make_service_with_connect_info`. A synthetic request built with
-        // only a content-type therefore reaches the holder with no key at all
-        // and comes back 500 "Unable To Extract Key!", which the tool would
-        // hand to a model as an isError it cannot act on. With more than one
-        // ECS task that is most EVM settles over MCP, on legitimate traffic.
+        // touches the ALB that would add the header. On the other side
+        // `/settle` sits behind `ClientIpKeyExtractor` (src/client_ip.rs),
+        // which keys on the last X-Forwarded-For entry and, only without the
+        // header, on the TCP peer -- there the forwarding task, not the
+        // client. A synthetic request built with only a content-type would
+        // therefore charge every MCP settle one task forwards to a single
+        // bucket, and legitimate callers would 429 each other. With more than
+        // one ECS task that is most EVM settles over MCP.
         //
         // Copying the header verbatim is also the faithful choice: the holder
-        // then charges the token to the same IP a forwarded `POST /settle`
-        // would. Whether that IP can be spoofed is a property this service
-        // already has on every route -- parity is the goal, not a new policy.
+        // then charges the token to the same client a forwarded `POST /settle`
+        // would.
         for name in [
             header::HeaderName::from_static("x-forwarded-for"),
-            header::HeaderName::from_static("x-real-ip"),
-            header::HeaderName::from_static("forwarded"),
             header::HeaderName::from_static("x-uvd-purchase"),
         ] {
             if let Some(value) = outer.and_then(|h| h.get(&name)) {
@@ -1712,12 +1707,13 @@ mod tests {
     /// This is the hop nothing covered before, and the one that was broken.
     /// `settle_writer_gate` hands an EVM settle to the task holding the writer
     /// lease over a direct TCP connection that never touches the ALB, and on
-    /// the far side `/settle` sits behind `SmartIpKeyExtractor`. A synthetic
-    /// request built with only a content-type arrives there with no key at all,
-    /// and `tower_governor` answers 500 "Unable To Extract Key!" -- which the
-    /// tool would return to a model as an isError it can do nothing about. With
+    /// the far side `/settle` is metered per client by `ClientIpKeyExtractor`.
+    /// A synthetic request built with only a content-type arrives there with
+    /// no client address, so the holder keys it on the forwarding task: one
+    /// bucket shared by every MCP settle that task forwards (before the server
+    /// carried `ConnectInfo`, a 500 "Unable To Extract Key!" instead). With
     /// two ECS tasks and one holder that is most EVM settles over MCP, on
-    /// ordinary traffic and with no attacker.
+    /// ordinary traffic.
     ///
     /// So this stands up a real listener, points the lease holder at it, and
     /// asserts on what actually arrived. The previous gate test stopped at
@@ -1780,7 +1776,7 @@ mod tests {
         assert_eq!(
             forwarded, "203.0.113.42",
             "the forwarded settle carries no client IP; the holder's rate limiter \
-             answers 500 \"Unable To Extract Key!\" to this"
+             would key it on the forwarding task"
         );
         // And the holder's answer came back to the tool, not a lease 503.
         let text = tool_text(&answer);

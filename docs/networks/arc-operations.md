@@ -155,5 +155,5 @@ the v2 identifiers remain `eip155:5042` and `eip155:5042002`.
 
 EURC is registered alongside USDC in 2.34.0 for both Arc networks. No new RPC or
 key is required; gas remains USDC. See [contracts and euro pricing](arc.md#eurc-prices-in-euros).
-Funded EURC acceptance is pending by operator decision. USDC receipts above are
+Funded EURC acceptance on Arc mainnet was proven on 2026-09-22 (tx `0xd9de3864e11698cf730664147ac383acb763279056ac091bab57cfd3bf536128`); Arc testnet is still pending. USDC receipts above are
 unchanged and are not EURC proof. Python 0.86.0 and TypeScript 2.94.0 add EURC.

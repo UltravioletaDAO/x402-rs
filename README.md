@@ -742,4 +742,4 @@ facilitator receipts: network, asset, atomic amount, payTo, request hash,
 settlement ID, status and refusal reason. Persist purchase context before sending
 the authorization and reuse it after uncertainty. Payment confirmation does not
 prove merchant delivery. See [the receipt guide](docs/facilitator-receipts.md).
-Live EURC acceptance remains pending.
+Live EURC acceptance was proven on Arc mainnet on 2026-09-22 (tx `0xd9de3864e11698cf730664147ac383acb763279056ac091bab57cfd3bf536128`); Arc testnet is still pending.

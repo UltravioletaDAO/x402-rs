@@ -97,6 +97,8 @@ signature after uncertainty. An unknown receipt means poll/replay the original
 authorization, not a new payment. Receipt confirmation does not prove delivery.
 Python `fetch_with_receipt` and TypeScript `fetchWithReceipt` return the original
 HTTP response plus receipt/payment state. Supply trusted issuer keys for offline
-signature verification. Live EURC acceptance remains pending. Other networks
+signature verification. Live EURC acceptance was proven on Arc mainnet on
+2026-09-22 (x402 v2, receipt `confirmed`, tx 0xd9de3864e11698cf730664147ac383acb763279056ac091bab57cfd3bf536128);
+Arc testnet is still pending. Other networks
 retain their existing responses. Full contract:
 https://github.com/UltravioletaDAO/x402-rs/blob/main/docs/facilitator-receipts.md

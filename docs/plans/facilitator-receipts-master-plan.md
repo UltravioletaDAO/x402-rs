@@ -2,6 +2,8 @@
 
 Fecha: 2026-09-17. Estado: primera entrega publicada en facilitador 2.36.1, Python 0.88.0 y TypeScript 2.96.0; ocho pagos USDC verificados. EURC real diferido.
 
+> **Actualización 2026-09-22:** EURC en Arc mainnet ya se probó con un pago real de 0,01 EURC (x402 v2 `exact`, recibo `confirmed`, tx [`0xd9de3864…6128`](https://explorer.arc.io/tx/0xd9de3864e11698cf730664147ac383acb763279056ac091bab57cfd3bf536128), bloque 22114558). Arc testnet sigue pendiente. La frase original queda como registro de su fecha.
+
 ## Objetivo y decisión de producto
 
 Cada operación de pago debe devolver un recibo estructurado junto al resultado de la llamada, conservable por el comprador y verificable sin un dashboard. Debe identificar red, activo, importe, destinatario, solicitud, liquidación y causa de rechazo. El facilitador y los SDK Python/TypeScript compartirán el mismo contrato y los mismos vectores de prueba.
@@ -154,6 +156,8 @@ Dependencias: F0 es independiente. F1 precede F2/F3/F4; F2 precede cualquier gar
 | Consulta sin autorización y cruce de comercios | No filtrar datos de compra ni permitir colisiones entre namespaces. |
 | Reintento de HBAR confirmado antes de F0 | Devolver referencia histórica, sin nueva firma ni nueva reserva. |
 
+> **Actualización 2026-09-22:** EURC en Arc mainnet ya se probó con un pago real de 0,01 EURC (x402 v2 `exact`, recibo `confirmed`, tx [`0xd9de3864…6128`](https://explorer.arc.io/tx/0xd9de3864e11698cf730664147ac383acb763279056ac091bab57cfd3bf536128), bloque 22114558). Arc testnet sigue pendiente. La frase original queda como registro de su fecha.
+
 Las pruebas reales guardarán versión, red, activo, importe, destinatario, IDs, recibo emitido, consulta independiente y cambio de saldo. Excluir claves y autorizaciones reutilizables. Mantener separados `offline`, `verify-only`, `eth_call` y `settled-on-chain`.
 
 ## 11. Publicación y operación
@@ -177,6 +181,7 @@ Despliegue gradual por capacidad, empezando por testnet. Validar `/supported`, `
 - [x] Completar F5–F6 para esta entrega: ocho pagos USDC, publicación, consulta y evidencia. EURC real queda expresamente diferido.
 - [ ] Completar F7 antes de anunciar recibos en todas las redes/esquemas.
 - [ ] Pagos reales EURC: pendientes por instrucción del usuario; sin ejecución automática.
+  > **Actualización 2026-09-22:** EURC en Arc mainnet ya se probó con un pago real de 0,01 EURC (x402 v2 `exact`, recibo `confirmed`, tx [`0xd9de3864…6128`](https://explorer.arc.io/tx/0xd9de3864e11698cf730664147ac383acb763279056ac091bab57cfd3bf536128), bloque 22114558). Arc testnet sigue pendiente. La frase original queda como registro de su fecha.
 
 ## Referencias
 

@@ -1,7 +1,7 @@
 //! A per-network daily limit on the ERC-8004 writes that send a transaction.
 //!
-//! Each task counts, per network and per UTC day, the writes that reached the
-//! point of broadcasting a transaction. Once a network's count reaches its
+//! Writes are counted per network and per UTC day, once they reach the point
+//! of broadcasting a transaction. Once a network's count reaches its
 //! limit, further writes to that network are answered 429 with a
 //! `Retry-After` that runs to 00:00 UTC, before any work is done and without
 //! touching the chain. The count starts over at 00:00 UTC.
@@ -9,9 +9,10 @@
 //! # What counts
 //!
 //! A write takes a slot when it arrives ([`enforce`]) and keeps it only if a
-//! transaction actually went out: the send primitives call [`mark_sent`] at
-//! the moment they broadcast (`chain::evm::send_call_estimated`,
-//! `EvmProvider::send_transaction_from`, and the ERC-8004 Solana senders). A
+//! transaction actually went out: the send primitives call [`mark_sent`]
+//! before they broadcast (`chain::evm::send_call_estimated`,
+//! `EvmProvider::send_transaction_from`, and the ERC-8004 Solana senders, which
+//! call [`unmark_sent`] when the RPC refuses the transaction in preflight). A
 //! write refused before that -- a malformed body, a failed check, a gas
 //! estimate that reverts, a Solana preflight that fails -- gives its slot back
 //! when it finishes, so the limit counts transactions, not requests.
@@ -29,9 +30,6 @@
 //! A variable overrides the built-in value for that network. `0` refuses every
 //! write on the network; a value that does not parse is ignored with a warning.
 //! `ENABLE_ERC8004_WRITES=false` remains the switch that turns every write off.
-//!
-//! The counters live in memory, one set per task: a task that starts, or that
-//! takes over the writer lease, starts from zero.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -62,11 +60,13 @@ pub const DEFAULT_DAILY_WRITE_CAP: u32 = 1000;
 
 /// Built-in limits that differ from [`DEFAULT_DAILY_WRITE_CAP`]. Every value,
 /// like the default, is several times the busiest day of write traffic
-/// measured on that network; `arc` has none yet and starts low.
+/// measured on that network; `arc` and `arc-testnet` have none yet and start
+/// low.
 const BUILT_IN_DAILY_WRITE_CAPS: &[(Network, u32)] = &[
     (Network::Ethereum, 100),
     (Network::Solana, 150),
-    (Network::Arc, 300),
+    (Network::Arc, 100),
+    (Network::ArcTestnet, 100),
 ];
 
 const SECONDS_PER_DAY: u64 = 86_400;
@@ -149,6 +149,7 @@ impl DailyWriteCap {
     }
 
     /// Writes counted for `network` today, reserved ones included.
+    #[cfg(test)]
     pub fn used_today(&self, network: &Network) -> u32 {
         let today = (self.now)() / SECONDS_PER_DAY;
         let counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
@@ -220,6 +221,19 @@ impl Drop for Slot {
 /// the send primitives.
 pub fn mark_sent() {
     let _ = SLOT.try_with(|slot| slot.sent.store(true, Ordering::Release));
+}
+
+/// Undo [`mark_sent`] for a send that turned out not to broadcast. A no-op
+/// outside a capped write.
+pub fn unmark_sent() {
+    let _ = SLOT.try_with(|slot| slot.sent.store(false, Ordering::Release));
+}
+
+/// Whether the write being served has already broadcast a transaction. False
+/// outside a capped write.
+pub fn is_marked_sent() -> bool {
+    SLOT.try_with(|slot| slot.sent.load(Ordering::Acquire))
+        .unwrap_or(false)
 }
 
 /// The slot of the write being served, to hand to work that outlives it.
@@ -575,7 +589,8 @@ mod tests {
         }
         let built_in = DailyWriteCap::from_env();
         assert_eq!(built_in.limit(&Network::Base), DEFAULT_DAILY_WRITE_CAP);
-        assert_eq!(built_in.limit(&Network::Arc), 300);
+        assert_eq!(built_in.limit(&Network::Arc), 100);
+        assert_eq!(built_in.limit(&Network::ArcTestnet), 100);
         assert_eq!(built_in.limit(&Network::Ethereum), 100);
         assert_eq!(built_in.limit(&Network::Solana), 150);
 

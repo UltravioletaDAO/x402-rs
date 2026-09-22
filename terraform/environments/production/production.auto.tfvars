@@ -118,6 +118,10 @@ enable_observability = false
 arc_testnet_enabled = true
 arc_mainnet_enabled = true
 
+# Low-balance alert for the Arc mainnet signer, in native USDC (it pays Arc gas).
+# Replaces the 0.1 placeholder: room to refill well before settles run short.
+arc_minimum_gas_usdc = 5
+
 # Native Hedera: both ledgers have funded accounts and verified USDC canaries.
 hedera_enabled_testnet    = true
 hedera_enabled_mainnet    = true

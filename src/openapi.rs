@@ -3465,8 +3465,8 @@ mod tests {
         );
 
         // The rest of the description must not deny what this section states.
-        // One sentence did until 2.37.0: the Arc/Hedera paragraph said those
-        // additions "do not add ... ERC-8004 support".
+        // One sentence did until 2.37.0: the Arc/Hedera paragraph listed
+        // ERC-8004 among what those additions do not add.
         for sentence in description.split(". ") {
             let denies = ["do not", "does not", "nor ", "not on Arc"]
                 .iter()

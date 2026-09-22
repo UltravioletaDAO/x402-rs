@@ -1,5 +1,9 @@
 # Changelog
 
+## [Unreleased]
+
+- Docs: EURC on Arc mainnet is no longer described as pending. A funded 0.01 EURC x402 v2 payment was verified and settled on 2026-09-22 (tx `0xd9de3864e11698cf730664147ac383acb763279056ac091bab57cfd3bf536128`); Arc testnet funded acceptance remains pending.
+
 ## [2.36.1] - 2026-09-17
 
 - Return HTTP 200 for authorized receipt lookups even when the original payment returned an HTTP error; preserve its signed status and the original POST response.

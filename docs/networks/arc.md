@@ -35,9 +35,14 @@ Do not pass a dollar quote into the EURC signing path.
 
 Contract metadata and EIP-712 domain separators were checked through both live
 RPCs on 2026-09-17. Offline signatures and network/token isolation are tested.
-**Funded EURC verify/settle acceptance remains pending on both networks**, as
-requested by the operator. Existing Arc payment receipts below are **USDC only**;
-they do not prove EURC settlement. No EURC payment hashes are claimed.
+**Arc mainnet: funded EURC verify/settle accepted on 2026-09-22.** A real
+0.01 EURC payment (10000 atomic units, a euro price) signed with the published
+Python SDK over x402 v2 `exact` returned `isValid=true`, then `success=true` with
+a `confirmed` receipt: tx [`0xd9de3864…6128`](https://explorer.arc.io/tx/0xd9de3864e11698cf730664147ac383acb763279056ac091bab57cfd3bf536128), block 22114558, status `0x1`, payer balance
+71040 → 61040 units. A control payment on Base settled as well
+(tx `0x92ec4687c920576e81a50757097b082b44b99537c4954ea9de703d11f1d7730e`). The SDK
+refuses a USD price with the EURC asset. **Arc testnet funded acceptance is still
+pending.** The older Arc receipts below are USDC only.
 [Assessment](../reports/2026-09-17-arc-eurc-assessment.json).
 [Official Circle contract list](https://developers.circle.com/stablecoins/eurc-contract-addresses).
 
@@ -259,7 +264,7 @@ Arc networks unless stated.
 
 | | Status | Why |
 |---|---|---|
-| **EURC** | registered, live payment acceptance pending | Separate mainnet/testnet contracts, six decimals, `EURC` / `2`. See the EURC section above; euro quotes require explicit token units. |
+| **EURC** | registered; live payment accepted on Arc mainnet (2026-09-22), testnet pending | Separate mainnet/testnet contracts, six decimals, `EURC` / `2`. See the EURC section above; euro quotes require explicit token units. |
 | **EIP-6492** (a counterfactual smart wallet, not deployed yet) | refused | The universal signature validator the facilitator calls, `0xdAcD51A54883eb67D95FAEb2BBfdC4a9a6BD2a3B`, has **no code on either Arc network** (0 bytes, mainnet and testnet). `/verify` answers `isValid: false` with `invalid_signature`, and `/settle` sends nothing. That token is the same one a bad signature gets; the explanation is only in the server log |
 | **Already-deployed EIP-1271 wallets** | not proven | The code path does not use the missing validator, but no positive payment from a contract wallet has been measured on Arc. Treat it as unsupported until one is |
 | **Circle Gateway / Nanopayments authorizations** | refused | Gateway also advertises `exact` on Arc, but its buyers sign against a different domain (`GatewayWalletBatched`, version `1`) and it settles in batches. Those signatures are not USDC transfer authorizations and do not verify here; they belong to Circle Gateway. For this facilitator, sign the USDC domain above |
@@ -374,3 +379,7 @@ with the expected balance error using the published Python and TypeScript packag
 **No EURC settlements were executed. Funded payment acceptance remains pending
 on both networks by operator instruction.** The existing USDC receipts retain
 their original scope.
+
+> **Update 2026-09-22:** the first funded EURC payment settled on Arc mainnet;
+> see [EURC: prices in euros](#eurc-prices-in-euros). The paragraph above is the
+> 2026-09-17 record and stays as written.

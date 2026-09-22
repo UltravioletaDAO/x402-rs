@@ -27,6 +27,8 @@ The earlier failed run `35241072014` caught two untranslated HBAR balance labels
 
 Receipt issuance and durable purchase idempotency remain in the [master plan](../plans/facilitator-receipts-master-plan.md), not implemented by this frontend fix. Paid EURC acceptance on Arc is still pending by user instruction. This follow-up submits no payments, swaps or settlements.
 
+> **Update 2026-09-22:** paid EURC acceptance on Arc mainnet was proven with a real 0.01 EURC x402 v2 payment (tx [`0xd9de3864…6128`](https://explorer.arc.io/tx/0xd9de3864e11698cf730664147ac383acb763279056ac091bab57cfd3bf536128), block 22114558). Arc testnet is still pending. The sentence above is the record of its date.
+
 ## Production closure
 
 Facilitator **2.35.1** is deployed and publicly verified. [Release evidence](../reports/2026-09-17-frontend-capabilities-release.json) records the passing PR/deployment runs, local validation and public acceptance. The live catalog includes XRPL USDC/RLUSD on both ledgers, native token metadata, Arc EURC, and the BSC/Sui corrections. Production browser checks cover filters, keyboard, EN/ES and mobile. HBAR `/verify` now returns `invalid_asset` on both Hedera ledgers. No new payments, swaps or settlements were submitted.

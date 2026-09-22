@@ -156,7 +156,8 @@ private lookup, storage outages and lost responses; an explicit local DynamoDB
 test exercises transaction/CAS behavior using two store clients. SDK tests cover
 signature tampering, request binding, restart without a new signature, and a
 confirmed receipt alongside a merchant HTTP 500. These fixtures are not payments.
-Live EURC payment acceptance remains deferred by user instruction. Publication
+Live EURC acceptance was proven on Arc mainnet on 2026-09-22 with a `confirmed` x402 v2
+receipt (tx `0xd9de3864e11698cf730664147ac383acb763279056ac091bab57cfd3bf536128`); Arc testnet is still pending. Publication
 and live USDC acceptance are recorded separately in the release evidence.
 
 Protocol reference: x402 v2 and offer-and-receipt at upstream commit
@@ -169,3 +170,7 @@ contains eight USDC payments (both SDKs, both Arc and Hedera networks), signed
 receipts, independent chain checks and same-authorization recovery after a
 merchant HTTP 500. A ninth attempt was quota-blocked; its unchanged `unknown`
 receipt remains recoverable with both SDKs. EURC live settlement is still deferred.
+
+> **Update 2026-09-22:** a live EURC payment settled on Arc mainnet (tx
+> `0xd9de3864e11698cf730664147ac383acb763279056ac091bab57cfd3bf536128`, block 22114558). The paragraph above is the
+> 2026-09-17 campaign record.

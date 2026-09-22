@@ -2074,9 +2074,30 @@ where
         .layer(axum::middleware::from_fn(require_writer_lease))
         .layer(axum::middleware::from_fn(require_erc8004_admin));
 
-    Router::new()
+    // The writes that send a transaction, under the per-network daily limit
+    // (`erc8004::daily_cap`). Inside the writer-lease gate, so only the task
+    // that sends counts: a forwarded write is counted once, by the holder.
+    let sends = Router::new()
         .route("/register", post(post_register::<A>))
         .route("/feedback", post(post_feedback::<A>))
+        .route(
+            "/feedback/evm/submit",
+            post(post_submit_relay_feedback::<A>),
+        )
+        .route(
+            "/feedback/solana/submit",
+            post(post_submit_solana_feedback::<A>),
+        )
+        .route("/feedback/response", post(post_append_response::<A>))
+        .route(
+            "/feedback/response/evm/submit",
+            post(post_submit_relay_response::<A>),
+        )
+        .layer(axum::middleware::from_fn(
+            crate::erc8004::daily_cap::enforce,
+        ));
+
+    Router::new()
         // Real authorship on SVM: the rater signs as `client`, we only pay.
         // `prepare` writes nothing, but it carries the same lease and rate limit
         // as `submit` because a prepared transaction is useless if `submit`
@@ -2086,26 +2107,14 @@ where
             post(post_prepare_relay_feedback::<A>),
         )
         .route(
-            "/feedback/evm/submit",
-            post(post_submit_relay_feedback::<A>),
-        )
-        .route(
             "/feedback/solana/prepare",
             post(post_prepare_solana_feedback::<A>),
         )
         .route(
-            "/feedback/solana/submit",
-            post(post_submit_solana_feedback::<A>),
-        )
-        .route("/feedback/response", post(post_append_response::<A>))
-        .route(
             "/feedback/response/evm/prepare",
             post(post_prepare_relay_response::<A>),
         )
-        .route(
-            "/feedback/response/evm/submit",
-            post(post_submit_relay_response::<A>),
-        )
+        .merge(sends)
         // Applied here, not at the call sites, and not in main.rs: the gate
         // travels with the routes it protects. Merged AFTER this layer so the
         // revoke router keeps its own stack instead of being wrapped twice.
@@ -10589,11 +10598,14 @@ where
         let uri = request.agent_uri.clone();
         let meta = request.metadata.clone();
         let recip = request.recipient.clone();
-        tokio::spawn(async move {
+        // The mint happens after this response, so its place in the daily
+        // write count goes with it.
+        let slot = crate::erc8004::daily_cap::current();
+        tokio::spawn(crate::erc8004::daily_cap::scope(slot, async move {
             let (_status, resp) =
                 run_evm_registration(fac, network, uri, meta, recip, Some(jid.clone())).await;
             register_jobs::finalize_from_response(&jid, &resp);
-        });
+        }));
         return accepted_response(&job_id);
     }
 
@@ -18403,6 +18415,14 @@ mod erc8004_write_rate_tests {
                 StatusCode::TOO_MANY_REQUESTS,
                 "{path} was served past the shared budget"
             );
+            // One token every 12s: the refusal names that period, less the
+            // moments the burst took (tower_governor truncates to seconds).
+            let wait: u64 = refused.headers()["retry-after"]
+                .to_str()
+                .unwrap()
+                .parse()
+                .unwrap();
+            assert!((11..=12).contains(&wait), "{path}: retry-after {wait}");
         }
         let other = post_from(&router, "/feedback", "203.0.113.51").await;
         assert_eq!(other.status(), StatusCode::OK);

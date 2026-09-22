@@ -73,6 +73,10 @@ Exceeding it returns **429**, never 401 or 403.
 | ERC-8004 writes (`POST /register`, `POST /feedback`, `POST /feedback/*`) | 1 token every 12s | 30 |
 | Bazaar reads (`/discovery/resources`, `/discovery/stats`) | 1 token every 200ms | 120 |
 
+ERC-8004 writes that send a transaction are also limited per network per UTC day.
+Past that limit they return **429** with code `erc8004_daily_write_limit` and a
+`Retry-After` that runs to 00:00 UTC; other networks are not affected.
+
 A `429` is a back-off signal, not a rejection of your request's contents. Retry with
 the delay the limiter implies; do not re-sign the payment.
 

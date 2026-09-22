@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.36.4] - 2026-09-22
+
+- ERC-8004 writes that send a transaction (`/register`, `/feedback` and the `/feedback/*` submits) are limited per network per UTC day, counted per task. Past the limit a write answers 429 with code `erc8004_daily_write_limit` and a `Retry-After` that runs to 00:00 UTC, without touching the chain. A write only keeps its place in the count if a transaction was broadcast. Limits: `ERC8004_DAILY_WRITE_CAP` for every network and `ERC8004_DAILY_WRITE_CAP_<NETWORK>` for one; `ENABLE_ERC8004_WRITES` still turns every write off.
+- A test pins the period of the ERC-8004 write rate limit.
+
 ## [2.36.3] - 2026-09-22
 
 - The ERC-8004 write routes (`/register`, `/feedback` and `/feedback/*`) draw on a per-IP budget of their own: 1 token every 12s, burst 30. `/discovery/register` and the bazar admin routes keep theirs (1 token every 12s, burst 250).

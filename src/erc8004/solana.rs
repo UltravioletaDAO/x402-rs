@@ -1141,9 +1141,7 @@ pub async fn cosign_and_send(
     let blockhash = tx.message.recent_blockhash;
     tx.try_partial_sign(&[fee_payer], blockhash)
         .map_err(|e| SolanaErc8004Error::InvalidInput(format!("co-sign failed: {}", e)))?;
-    rpc_client
-        .send_and_confirm_transaction(&tx)
-        .await
+    keep_slot_unless_preflight_failed(rpc_client.send_and_confirm_transaction(&tx).await)
         .map_err(|e| SolanaErc8004Error::RpcError(format!("Transaction failed: {}", e)))
 }
 
@@ -1446,6 +1444,30 @@ pub fn build_set_metadata_pda_ix(
 // Transaction Helpers
 // ============================================================================
 
+/// Keep the ERC-8004 daily-count slot of the write being served
+/// (`erc8004::daily_cap`) unless the RPC refused the transaction in preflight
+/// simulation, in which case nothing was broadcast.
+fn keep_slot_unless_preflight_failed(
+    result: solana_client::client_error::Result<solana_sdk::signature::Signature>,
+) -> solana_client::client_error::Result<solana_sdk::signature::Signature> {
+    use solana_client::client_error::ClientErrorKind;
+    use solana_client::rpc_request::{RpcError, RpcResponseErrorData};
+    let preflight_failed = matches!(
+        &result,
+        Err(e) if matches!(
+            e.kind(),
+            ClientErrorKind::RpcError(RpcError::RpcResponseError {
+                data: RpcResponseErrorData::SendTransactionPreflightFailure(_),
+                ..
+            })
+        )
+    );
+    if !preflight_failed {
+        crate::erc8004::daily_cap::mark_sent();
+    }
+    result
+}
+
 /// Build, sign, send, and confirm a single-instruction transaction.
 ///
 /// The facilitator keypair is used as both the fee payer and signer.
@@ -1466,9 +1488,7 @@ pub async fn send_erc8004_transaction(
         recent_blockhash,
     );
 
-    rpc_client
-        .send_and_confirm_transaction(&tx)
-        .await
+    keep_slot_unless_preflight_failed(rpc_client.send_and_confirm_transaction(&tx).await)
         .map_err(|e| SolanaErc8004Error::RpcError(format!("Transaction failed: {}", e)))
 }
 
@@ -1493,9 +1513,7 @@ pub async fn send_erc8004_transaction_with_signers(
         recent_blockhash,
     );
 
-    rpc_client
-        .send_and_confirm_transaction(&tx)
-        .await
+    keep_slot_unless_preflight_failed(rpc_client.send_and_confirm_transaction(&tx).await)
         .map_err(|e| SolanaErc8004Error::RpcError(format!("Transaction failed: {}", e)))
 }
 
@@ -1522,6 +1540,45 @@ fn borsh_write_string(buf: &mut Vec<u8>, s: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A transaction the RPC refused in preflight simulation was never
+    /// broadcast, so the write gives its daily-count slot back; any other
+    /// outcome, success or not, keeps it.
+    #[tokio::test]
+    async fn only_a_preflight_refusal_gives_the_daily_slot_back() {
+        use crate::erc8004::daily_cap::{scope, DailyWriteCap};
+        use solana_client::client_error::{ClientError, ClientErrorKind};
+        use solana_client::rpc_request::{RpcError, RpcResponseErrorData};
+        use solana_sdk::signature::Signature;
+        use std::sync::Arc;
+
+        let preflight: ClientError = ClientErrorKind::RpcError(RpcError::RpcResponseError {
+            code: -32002,
+            message: "Transaction simulation failed".into(),
+            data: RpcResponseErrorData::SendTransactionPreflightFailure(
+                serde_json::from_value(serde_json::json!({})).unwrap(),
+            ),
+        })
+        .into();
+        let dropped: ClientError = ClientErrorKind::Custom("connection reset".into()).into();
+        for (outcome, kept) in [
+            (Err(preflight), 0),
+            (Err(dropped), 1),
+            (Ok(Signature::default()), 1),
+        ] {
+            let cap = Arc::new(DailyWriteCap::new(
+                10,
+                Default::default(),
+                Box::new(|| 1_700_000_000),
+            ));
+            let slot = cap.reserve(Network::Solana).unwrap();
+            scope(Some(Arc::new(slot)), async {
+                let _ = keep_slot_unless_preflight_failed(outcome);
+            })
+            .await;
+            assert_eq!(cap.used_today(&Network::Solana), kept);
+        }
+    }
 
     #[test]
     fn test_program_ids() {

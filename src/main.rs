@@ -735,10 +735,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .error_handler(handlers::rate_limit_error),
         );
 
-    // ERC-8004 write kill-switch (audit 02): set ENABLE_ERC8004_WRITES=false to disable the
-    // gasless reputation/identity write surface entirely (closes the forgery vector). Defaults
-    // to ON to preserve existing behavior for operators actively using ERC-8004 writes. When ON,
-    // the writes sit behind a governor of their own (`handlers::erc8004_write_routes_governed`).
+    // ERC-8004 write switch: ENABLE_ERC8004_WRITES=false leaves every ERC-8004 write route
+    // (/register, /feedback and /feedback/*) unmounted. Defaults to ON. When ON, the writes sit
+    // behind a governor of their own (`handlers::erc8004_write_routes_governed`) and the ones that
+    // send a transaction behind a per-network daily limit (`erc8004::daily_cap`).
     let erc8004_writes_enabled = std::env::var("ENABLE_ERC8004_WRITES")
         .map(|v| !(v.eq_ignore_ascii_case("false") || v == "0"))
         .unwrap_or(true);
@@ -787,6 +787,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ),
         );
     if erc8004_writes_enabled {
+        // Read the daily write limits now, so they are logged at startup
+        // rather than on the first write.
+        let _ = erc8004::daily_cap::global();
         let erc8004_writes = handlers::erc8004_write_routes_governed().with_state(axum_state);
         http_endpoints = http_endpoints.merge(erc8004_writes);
     }

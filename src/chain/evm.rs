@@ -228,7 +228,10 @@ where
 {
     let call = call.block(BlockId::latest());
     match call.estimate_gas().await {
-        Ok(gas) => call.gas(gas).send().await.map_err(EstimatedSendError::Send),
+        Ok(gas) => {
+            crate::erc8004::daily_cap::mark_sent();
+            call.gas(gas).send().await.map_err(EstimatedSendError::Send)
+        }
         Err(e) => {
             let msg = format!("{e:?}");
             if crate::handlers::is_execution_revert(&msg) {
@@ -244,6 +247,7 @@ where
                 error = %msg,
                 "Gas estimation unavailable, falling back to filler"
             );
+            crate::erc8004::daily_cap::mark_sent();
             call.send().await.map_err(EstimatedSendError::Send)
         }
     }
@@ -1099,7 +1103,10 @@ impl EvmProvider {
                 }
             };
 
-            // Send transaction
+            // Send transaction. An ERC-8004 write that got this far keeps its
+            // place in the daily count (`erc8004::daily_cap`); the reverting
+            // estimate above returned before it.
+            crate::erc8004::daily_cap::mark_sent();
             let send_outcome = if crate::receipts::active() {
                 use alloy::eips::Encodable2718;
                 let filled = self.inner.fill(txr).await.map_err(|_| FacilitatorLocalError::ContractCall("receipt transaction preparation failed".into()))?;

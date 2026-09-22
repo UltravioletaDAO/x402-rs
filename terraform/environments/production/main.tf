@@ -434,6 +434,11 @@ resource "aws_lb" "main" {
   enable_http2               = true
   idle_timeout               = var.alb_idle_timeout
 
+  # The per-IP rate limiter keys on the entry the load balancer appends to
+  # X-Forwarded-For (src/client_ip.rs). "append" is the default and the value
+  # this load balancer already runs with; it is declared so that it stays one.
+  xff_header_processing_mode = "append"
+
   # Bucket referenced by NAME (local.alb_access_logs_bucket_name, a plain
   # string in alb-access-logs.tf), never by resource attribute. That is a
   # deliberate choice, not an oversight -- see var.alb_access_logs_enabled for

@@ -576,13 +576,15 @@ impl FacilitatorMcp {
         //
         // Copying the header verbatim is also the faithful choice: the holder
         // then charges the token to the same client a forwarded `POST /settle`
-        // would.
+        // would. Every line of it, not the first: the holder keys on the
+        // shape of the header, and several lines are keyed differently from
+        // one.
         for name in [
             header::HeaderName::from_static("x-forwarded-for"),
             header::HeaderName::from_static("x-uvd-purchase"),
         ] {
-            if let Some(value) = outer.and_then(|h| h.get(&name)) {
-                builder = builder.header(name, value.clone());
+            for value in outer.into_iter().flat_map(|h| h.get_all(&name)) {
+                builder = builder.header(&name, value.clone());
             }
         }
         // The one header a tool may set, and only because `post_settle` reads
@@ -980,14 +982,23 @@ mod tests {
         body: Value,
         client_ip: Option<&str>,
     ) -> (StatusCode, String, Value) {
+        rpc_from_lines(mcp, body, client_ip.as_slice()).await
+    }
+
+    /// Same, with one `X-Forwarded-For` header line per entry of `xff`.
+    async fn rpc_from_lines(
+        mcp: &Router,
+        body: Value,
+        xff: &[&str],
+    ) -> (StatusCode, String, Value) {
         let mut builder = HttpRequest::builder()
             .method(Method::POST)
             .uri("/mcp")
             .header(header::HOST, "127.0.0.1")
             .header(header::CONTENT_TYPE, "application/json")
             .header(header::ACCEPT, "application/json, text/event-stream");
-        if let Some(ip) = client_ip {
-            builder = builder.header("x-forwarded-for", ip);
+        for line in xff {
+            builder = builder.header("x-forwarded-for", *line);
         }
         let request = builder
             .body(Body::from(serde_json::to_vec(&body).unwrap()))
@@ -1720,6 +1731,47 @@ mod tests {
     /// `holder_unknown` and never reached `forward_to_writer` at all.
     #[tokio::test]
     async fn a_forwarded_settle_carries_the_client_ip_to_the_lease_holder() {
+        let (path, headers, answer) = settle_through_a_recording_holder(&["203.0.113.42"]).await;
+        assert_eq!(path, "/settle", "the wrong route was forwarded");
+        let forwarded = headers
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        assert_eq!(
+            forwarded, "203.0.113.42",
+            "the forwarded settle carries no client IP; the holder's rate limiter \
+             would key it on the forwarding task"
+        );
+        // And the holder's answer came back to the tool, not a lease 503.
+        let text = tool_text(&answer);
+        assert!(
+            text.contains("0xdeadbeef"),
+            "the holder's response did not reach the caller: {text}"
+        );
+        assert_ne!(answer["result"]["isError"], true);
+    }
+
+    /// Every `X-Forwarded-For` line reaches the holder, in order -- not only
+    /// the first. The holder keys several lines differently from one, so a
+    /// copy that dropped lines would change the key on the far side.
+    #[tokio::test]
+    async fn every_forwarded_for_line_reaches_the_lease_holder() {
+        let lines = ["198.51.100.1", "198.51.100.2, 203.0.113.42"];
+        let (path, headers, _) = settle_through_a_recording_holder(&lines).await;
+        assert_eq!(path, "/settle");
+        let seen: Vec<&str> = headers
+            .get_all("x-forwarded-for")
+            .iter()
+            .map(|v| v.to_str().unwrap())
+            .collect();
+        assert_eq!(seen, lines);
+    }
+
+    /// Runs an `x402_settle` whose outer request carries `xff`, on a task that
+    /// does not hold the writer lease, against a local stand-in for the holder,
+    /// and returns the path and headers the holder received plus the answer.
+    async fn settle_through_a_recording_holder(xff: &[&str]) -> (String, HeaderMap, Value) {
         use std::sync::Mutex;
 
         // A stand-in for the task that holds the lease: records what it got.
@@ -1744,7 +1796,7 @@ mod tests {
         crate::writer_lease::set_writer_for_test(false);
         crate::writer_lease::set_holder_endpoint_for_test(Some(&format!("http://{addr}")));
 
-        let (_, _, answer) = rpc_from(
+        let (_, _, answer) = rpc_from_lines(
             &mcp,
             json!({
                 "jsonrpc": "2.0", "id": 9, "method": "tools/call",
@@ -1754,7 +1806,7 @@ mod tests {
                     "paymentRequirements": { "network": "base" }
                 }}
             }),
-            Some("203.0.113.42"),
+            xff,
         )
         .await;
 
@@ -1767,24 +1819,7 @@ mod tests {
             .unwrap()
             .clone()
             .expect("the settle never reached the holder -- forward_to_writer was not entered");
-        assert_eq!(path, "/settle", "the wrong route was forwarded");
-        let forwarded = headers
-            .get("x-forwarded-for")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or_default()
-            .to_string();
-        assert_eq!(
-            forwarded, "203.0.113.42",
-            "the forwarded settle carries no client IP; the holder's rate limiter \
-             would key it on the forwarding task"
-        );
-        // And the holder's answer came back to the tool, not a lease 503.
-        let text = tool_text(&answer);
-        assert!(
-            text.contains("0xdeadbeef"),
-            "the holder's response did not reach the caller: {text}"
-        );
-        assert_ne!(answer["result"]["isError"], true);
+        (path, headers, answer)
     }
 
     /// `idempotencyKey` travels as a header and leaves the body alone.

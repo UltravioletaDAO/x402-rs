@@ -40,6 +40,15 @@
       },
       {
         "routes": [
+          "POST /register",
+          "POST /feedback",
+          "POST /feedback/*"
+        ],
+        "sustained": "1 token / 12s",
+        "burst": 30
+      },
+      {
+        "routes": [
           "GET /discovery/resources",
           "GET /discovery/stats"
         ],

@@ -46,6 +46,9 @@ impl KeyExtractor for ClientIpKeyExtractor {
 
 /// The last entry of the one `X-Forwarded-For` line.
 ///
+/// An IPv6 address comes in square brackets, which is how the load balancer
+/// writes one when it appends it; `ip:port` and `[ipv6]:port` are accepted too.
+///
 /// `None` -- and so the peer -- in every case that is not exactly that:
 ///   * an entry that is not an address is not replaced by an earlier one;
 ///   * a request with SEVERAL `X-Forwarded-For` lines uses none of them. Which
@@ -58,7 +61,11 @@ fn appended_client_ip(headers: &HeaderMap) -> Option<IpAddr> {
         return None;
     }
     let entry = line.to_str().ok()?.rsplit(',').next()?.trim();
-    entry
+    let unbracketed = entry
+        .strip_prefix('[')
+        .and_then(|inner| inner.strip_suffix(']'))
+        .unwrap_or(entry);
+    unbracketed
         .parse::<IpAddr>()
         .ok()
         .or_else(|| entry.parse::<SocketAddr>().ok().map(|addr| addr.ip()))
@@ -182,6 +189,18 @@ mod tests {
         assert_eq!(v4, ip("203.0.113.7"));
         assert_eq!(v6, ip("2001:db8::1"));
         assert_eq!(bare_v6, ip("2001:db8::1"));
+    }
+
+    /// The bracketed form with no port, which is how the load balancer appends
+    /// an IPv6 address.
+    #[test]
+    fn a_bracketed_ipv6_without_a_port_is_the_key() {
+        let req = request(&["198.51.100.1, [2001:db8::1]"], Some(ALB_NODE));
+        assert_eq!(key(&req), ip("2001:db8::1"));
+        for unbalanced in ["198.51.100.1, [2001:db8::1", "198.51.100.1, 2001:db8::1]"] {
+            let req = request(&[unbalanced], Some(ALB_NODE));
+            assert_eq!(key(&req), ip("10.0.1.23"), "{unbalanced:?}");
+        }
     }
 
     // The same three properties through a governor production mounts, so the
@@ -320,9 +339,10 @@ mod tests {
                 builders += here;
             }
         }
-        // Six in `main()`, one in `handlers::human_page_routes_governed`. A
-        // floor, not an exact count: adding a governor must not fail this.
-        assert!(builders >= 7, "found only {builders} governor builders");
+        // Six in `main()`, and two in `handlers`: `human_page_routes_governed`
+        // and `erc8004_write_governed`. A floor, not an exact count: adding a
+        // governor must not fail this.
+        assert!(builders >= 8, "found only {builders} governor builders");
 
         let main = include_str!("main.rs");
         assert!(

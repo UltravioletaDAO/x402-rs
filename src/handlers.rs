@@ -2007,6 +2007,53 @@ async fn require_erc8004_admin(
     next.run(request).await
 }
 
+/// The ERC-8004 write budget: one token every 12s, burst 30, per client IP.
+///
+/// Its own bucket, no longer a share of `/discovery/register`'s. That one's
+/// burst of 250 is sized for the bazar's daily batch of registrations; the
+/// writes never needed it. Sized against thirty days of production write
+/// traffic, counted as if every write came from one address: at this burst the
+/// batches that succeeded are served in full save a single request, which its
+/// 429's `retry-after` covers. Bursts of 20 and 25 refused more of them.
+///
+/// One bucket per address for every route in [`erc8004_write_routes`]: a write
+/// that reaches a task without the writer lease is forwarded to the holder with
+/// its `X-Forwarded-For` intact, and is charged there too.
+const ERC8004_WRITE_PERIOD: std::time::Duration = std::time::Duration::from_secs(12);
+const ERC8004_WRITE_BURST: u32 = 30;
+
+/// [`erc8004_write_routes`] under their per-IP governor. `main.rs` mounts this,
+/// never the bare router.
+pub fn erc8004_write_routes_governed<A>() -> Router<A>
+where
+    A: Facilitator + HasProviderMap + Clone + Send + Sync + 'static,
+    A::Error: IntoResponse,
+    A::Map: ProviderMap<Value = NetworkProvider> + Sync,
+{
+    erc8004_write_governed(erc8004_write_routes::<A>())
+}
+
+/// `routes` under the ERC-8004 write budget.
+///
+/// Split from [`erc8004_write_routes_governed`] so a test can fire at the same
+/// layer over the same paths without a facilitator behind them: building a
+/// `Router<FacilitatorLocal>` needs a provider cache read from the environment.
+fn erc8004_write_governed<S>(routes: Router<S>) -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    let config = Arc::new(
+        tower_governor::governor::GovernorConfigBuilder::default()
+            .period(ERC8004_WRITE_PERIOD)
+            .burst_size(ERC8004_WRITE_BURST)
+            .key_extractor(crate::client_ip::ClientIpKeyExtractor)
+            .use_headers()
+            .finish()
+            .expect("ERC-8004 write governor config must be valid"),
+    );
+    routes.layer(tower_governor::GovernorLayer::new(config).error_handler(rate_limit_error))
+}
+
 pub fn erc8004_write_routes<A>() -> Router<A>
 where
     A: Facilitator + HasProviderMap + Clone + Send + Sync + 'static,
@@ -18271,6 +18318,139 @@ mod landing_mcp_tests {
         assert!(
             squeeze(INDEX_HTML).contains(&command),
             "the landing does not carry the connection command verbatim: {command:?}"
+        );
+    }
+}
+
+/// The ERC-8004 writes on a budget of their own, and the bazar on its own.
+#[cfg(test)]
+mod erc8004_write_rate_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    /// Every path [`erc8004_write_routes`] serves, read from its source so a
+    /// route added there is fired at here too. axum will not list a router's
+    /// paths, and the real router cannot be built without a facilitator.
+    fn write_paths() -> Vec<String> {
+        include_str!("handlers.rs")
+            .split("pub fn erc8004_write_routes<A>() -> Router<A>")
+            .nth(1)
+            .expect("`erc8004_write_routes` must exist")
+            .split("\n}")
+            .next()
+            .unwrap()
+            .split(".route(")
+            .skip(1)
+            .map(|rest| {
+                rest.trim_start()
+                    .trim_start_matches('"')
+                    .split('"')
+                    .next()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    /// The same paths under the same layer production mounts.
+    fn governed_writes(paths: &[String]) -> Router {
+        let mut router = Router::new();
+        for path in paths {
+            router = router.route(path, post(|| async { "written" }));
+        }
+        erc8004_write_governed(router)
+    }
+
+    async fn post_from(router: &Router, path: &str, ip: &str) -> Response {
+        let request = Request::builder()
+            .method("POST")
+            .uri(path)
+            .header("x-forwarded-for", ip)
+            .body(Body::empty())
+            .unwrap();
+        router.clone().oneshot(request).await.unwrap()
+    }
+
+    /// One address spends one bucket of 30 across every write route, the 31st
+    /// write is refused on each of them, and another address is untouched.
+    #[tokio::test]
+    async fn every_erc8004_write_draws_on_one_bucket_of_thirty() {
+        let paths = write_paths();
+        for expected in ["/register", "/feedback", "/feedback/revoke"] {
+            assert!(
+                paths.iter().any(|p| p == expected),
+                "{expected} not in {paths:?}"
+            );
+        }
+        assert!(
+            !paths.iter().any(|p| p.starts_with("/discovery")),
+            "a bazar route joined the ERC-8004 write budget: {paths:?}"
+        );
+
+        let router = governed_writes(&paths);
+        for n in 0..ERC8004_WRITE_BURST as usize {
+            let path = &paths[n % paths.len()];
+            let response = post_from(&router, path, "203.0.113.50").await;
+            assert_eq!(response.status(), StatusCode::OK, "write {n} to {path}");
+            assert_eq!(response.headers()["x-ratelimit-limit"], "30", "{path}");
+        }
+        for path in &paths {
+            let refused = post_from(&router, path, "203.0.113.50").await;
+            assert_eq!(
+                refused.status(),
+                StatusCode::TOO_MANY_REQUESTS,
+                "{path} was served past the shared budget"
+            );
+        }
+        let other = post_from(&router, "/feedback", "203.0.113.51").await;
+        assert_eq!(other.status(), StatusCode::OK);
+    }
+
+    /// `main.rs` mounts the governed write router, never the bare one, and the
+    /// bazar keeps its own budget: `discovery_register_config` still carries
+    /// 1 token every 12s with burst 250 and meters exactly the bazar's register
+    /// and admin routers. Read from source because those configs are locals of
+    /// `main()`.
+    #[test]
+    fn production_mounts_the_writes_and_the_bazar_on_separate_budgets() {
+        let main = include_str!("main.rs");
+        assert!(
+            main.contains("handlers::erc8004_write_routes_governed()"),
+            "main.rs does not mount the governed ERC-8004 write router"
+        );
+        assert!(
+            !main.contains("handlers::erc8004_write_routes()"),
+            "main.rs mounts the bare ERC-8004 write router"
+        );
+
+        let statement_after = |marker: &str| -> &str {
+            main.split(marker)
+                .nth(1)
+                .unwrap_or_else(|| panic!("`{marker}` must exist in main.rs"))
+                .split(';')
+                .next()
+                .unwrap()
+        };
+        let bazar = statement_after("let discovery_register_config");
+        assert!(
+            bazar.contains(".per_second(12)") && bazar.contains(".burst_size(250)"),
+            "the bazar register budget changed: {bazar}"
+        );
+        for router in [
+            "handlers::discovery_register_routes()",
+            "handlers::discovery_admin_routes()",
+        ] {
+            assert!(
+                statement_after(router).contains("discovery_register_config"),
+                "{router} left the bazar budget"
+            );
+        }
+        assert_eq!(
+            main.matches("&discovery_register_config").count(),
+            2,
+            "something other than the bazar's two routers draws on its budget"
         );
     }
 }

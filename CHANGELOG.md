@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.36.3] - 2026-09-22
+
+- The ERC-8004 write routes (`/register`, `/feedback` and `/feedback/*`) draw on a per-IP budget of their own: 1 token every 12s, burst 30. `/discovery/register` and the bazar admin routes keep theirs (1 token every 12s, burst 250).
+- The per-IP rate limiter accepts an IPv6 address in square brackets without a port, the form the load balancer appends.
+- The MCP server copies every `X-Forwarded-For` line onto the request it forwards, not only the first.
+- Terraform declares the load balancer's `xff_header_processing_mode = "append"`, the value it already runs with.
+
 ## [2.36.2] - 2026-09-22
 
 - Per-IP rate limits key on the client address the load balancer appends to `X-Forwarded-For` (the header's last entry), and on the TCP peer when the header is absent; `X-Real-IP` and `Forwarded` are no longer read. The server now carries `ConnectInfo`, so a direct connection without the header is keyed on its peer instead of answering 500 `rate_limit_key_unavailable`. A test fails if any governor in `src/` keys on anything else.

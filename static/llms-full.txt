@@ -1289,6 +1289,7 @@ Exceeding it returns **429**, never 401 or 403.
 |---|---|---|
 | `POST /verify`, `POST /settle`, `POST /mcp` | 1 token every 2s (about 30 req/min) | 30 |
 | `POST /discovery/register` | 1 token every 12s | 250 |
+| ERC-8004 writes (`POST /register`, `POST /feedback`, `POST /feedback/*`) | 1 token every 12s | 30 |
 | Bazaar reads (`/discovery/resources`, `/discovery/stats`) | 1 token every 200ms | 120 |
 
 A `429` is a back-off signal, not a rejection of your request's contents. Retry with

@@ -134,7 +134,7 @@ const ENV_IDENTITY_READ_BURST: &str = "IDENTITY_READ_RATE_BURST";
 
 /// One token every 500ms = ~120 req/min sustained, burst 60.
 ///
-/// Deliberately GENEROUS. `SmartIpKeyExtractor` buckets by client IP, and a
+/// Deliberately GENEROUS. The governor buckets by client IP, and a
 /// single integrator sending every one of its requests from one host lands
 /// entirely in one bucket -- a tight limit throttles that whole integrator at
 /// once. The observed sweep that motivated this (2026-08-29) ran ~21 req/min
@@ -338,7 +338,7 @@ pub fn human_page_routes_governed(per_ms: u64, burst: u32) -> Router {
         tower_governor::governor::GovernorConfigBuilder::default()
             .per_millisecond(per_ms)
             .burst_size(burst)
-            .key_extractor(tower_governor::key_extractor::SmartIpKeyExtractor)
+            .key_extractor(crate::client_ip::ClientIpKeyExtractor)
             .use_headers()
             .finish()
             .expect("human page governor config must be valid"),
@@ -583,10 +583,10 @@ pub fn rate_limit_error(error: tower_governor::GovernorError) -> Response<axum::
     } else {
         (
             "rate_limit_key_unavailable",
-            "The rate limiter could not identify the caller: no \
-             X-Forwarded-For, X-Real-IP or Forwarded header reached it. Behind \
-             the production load balancer one is always present; a direct \
-             connection to the service has to set it.",
+            "The rate limiter could not identify the caller: neither an \
+             X-Forwarded-For header nor a peer address reached it. Behind the \
+             production load balancer the header is always present, and a \
+             direct connection is keyed on its peer address.",
         )
     };
     let body = json!({
@@ -16504,8 +16504,9 @@ mod json_error_tests {
         assert_eq!(doc["code"], "rate_limited");
         assert!(doc["hint"].as_str().unwrap().contains("retry-after"));
 
-        // The 500 branch: it only fires on a direct connection, but an untyped
-        // 500 is the worst of the three to hand an agent.
+        // The 500 branch: it only fires on a request that reached the limiter
+        // with neither X-Forwarded-For nor a peer address, but an untyped 500
+        // is the worst of the three to hand an agent.
         let response = rate_limit_error(tower_governor::GovernorError::UnableToExtractKey);
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(

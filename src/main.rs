@@ -27,7 +27,6 @@ use dotenvy::dotenv;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tower_governor::governor::GovernorConfigBuilder;
-use tower_governor::key_extractor::SmartIpKeyExtractor;
 use tower_governor::GovernorLayer;
 use tower_http::cors;
 use tower_http::limit::RequestBodyLimitLayer;
@@ -44,6 +43,7 @@ use url::Url;
 /// needs more headroom — keep the floor at 16 KiB.
 const DEFAULT_MAX_REQUEST_BODY_BYTES: usize = 64 * 1024;
 
+use crate::client_ip::ClientIpKeyExtractor;
 use crate::facilitator::Facilitator;
 use crate::facilitator_local::FacilitatorLocal;
 use crate::provider_cache::ProviderCache;
@@ -57,6 +57,7 @@ use x402_compliance::ComplianceCheckerBuilder;
 mod blocklist;
 mod caip2;
 mod chain;
+mod client_ip;
 mod discovery;
 mod discovery_aggregator;
 mod discovery_attestation;
@@ -565,17 +566,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // to be useful. The numbers themselves do not change -- this is the same
     // GCRA state, reported rather than hidden.
     //
-    // SmartIpKeyExtractor reads X-Forwarded-For / X-Real-IP / Forwarded
-    // headers before falling back to the peer IP — required behind the ALB,
-    // where the peer IP is the ALB itself (so the default PeerIpKeyExtractor
-    // would either rate-limit ALL clients into one bucket or, without
-    // ConnectInfo wired up, fail with "Unable To Extract Key!" 500s on every
-    // request).
+    // Every governor keys on `ClientIpKeyExtractor` (src/client_ip.rs): the
+    // client address the ALB appends to X-Forwarded-For, and only without that
+    // header the TCP peer, which is why the server below is built with
+    // ConnectInfo. Behind the ALB the peer is always a load balancer node, so
+    // keying on it alone would put every client in one bucket.
     let verify_settle_config = Arc::new(
         GovernorConfigBuilder::default()
             .per_second(2)
             .burst_size(30)
-            .key_extractor(SmartIpKeyExtractor)
+            .key_extractor(ClientIpKeyExtractor)
             .use_headers()
             .finish()
             .expect("verify/settle governor config must be valid"),
@@ -609,7 +609,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         GovernorConfigBuilder::default()
             .per_second(12)
             .burst_size(250)
-            .key_extractor(SmartIpKeyExtractor)
+            .key_extractor(ClientIpKeyExtractor)
             .use_headers()
             .finish()
             .expect("discovery_register governor config must be valid"),
@@ -626,7 +626,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         GovernorConfigBuilder::default()
             .per_millisecond(200)
             .burst_size(120)
-            .key_extractor(SmartIpKeyExtractor)
+            .key_extractor(ClientIpKeyExtractor)
             .use_headers()
             .finish()
             .expect("discovery_read governor config must be valid"),
@@ -641,7 +641,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         GovernorConfigBuilder::default()
             .per_second(2)
             .burst_size(10)
-            .key_extractor(SmartIpKeyExtractor)
+            .key_extractor(ClientIpKeyExtractor)
             .use_headers()
             .finish()
             .expect("events governor config must be valid"),
@@ -663,7 +663,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         GovernorConfigBuilder::default()
             .per_millisecond(identity_read_per_ms)
             .burst_size(identity_read_burst)
-            .key_extractor(SmartIpKeyExtractor)
+            .key_extractor(ClientIpKeyExtractor)
             .use_headers()
             .finish()
             .expect("identity_read governor config must be valid"),
@@ -688,7 +688,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         GovernorConfigBuilder::default()
             .per_millisecond(secondary_read_per_ms)
             .burst_size(secondary_read_burst)
-            .key_extractor(SmartIpKeyExtractor)
+            .key_extractor(ClientIpKeyExtractor)
             .use_headers()
             .finish()
             .expect("secondary_read governor config must be valid"),
@@ -932,9 +932,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sig_down = SigDown::try_new()?;
     let axum_cancellation_token = sig_down.cancellation_token();
     let axum_graceful_shutdown = async move { axum_cancellation_token.cancelled().await };
-    axum::serve(listener, http_endpoints)
-        .with_graceful_shutdown(axum_graceful_shutdown)
-        .await?;
+    // With ConnectInfo so a request that carries no X-Forwarded-For -- a local
+    // run, a direct connection -- is keyed on its TCP peer by the rate limiter
+    // instead of being refused for want of a key.
+    axum::serve(
+        listener,
+        http_endpoints.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(axum_graceful_shutdown)
+    .await?;
 
     // Hand the write lease over explicitly instead of making the successor
     // wait out the TTL: during a rolling deploy the incoming task is already

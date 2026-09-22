@@ -61,8 +61,9 @@ the resulting authorization verified and settled. See `/skill.md` for that flow 
 
 ### Rate limits, per IP
 
-The facilitator applies a GCRA (token bucket) limit per client IP, taken from
-`X-Forwarded-For` / `X-Real-IP` / `Forwarded` before falling back to the peer address.
+The facilitator applies a GCRA (token bucket) limit per client IP: the address the
+load balancer appends to `X-Forwarded-For` (its last entry), or the peer address when
+that header is absent.
 Exceeding it returns **429**, never 401 or 403.
 
 | Route group | Sustained | Burst |

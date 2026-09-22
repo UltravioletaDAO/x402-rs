@@ -54,6 +54,7 @@
 //! - x402 Extension: `8004-reputation`
 
 mod abi;
+pub mod daily_cap;
 pub mod proof;
 pub mod register_jobs;
 pub mod relay;

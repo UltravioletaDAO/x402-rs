@@ -142,6 +142,11 @@ buckets, with one deliberate exception: `POST /mcp` shares the `/verify` and
 what `POST /settle` does. Free static routes (`/health`, `/supported`, the
 discovery documents) carry no limit and therefore no headers.
 
+The ERC-8004 writes that send a transaction (`POST /register`, `POST /feedback`
+and the `/feedback/*` submits) are also limited per network per UTC day. Past
+that limit they answer `429` with code `erc8004_daily_write_limit` and a
+`retry-after` that runs to 00:00 UTC; other networks are not affected.
+
 ## Content negotiation
 
 `GET /` answers `text/html` by default and `text/markdown` -- the bytes of

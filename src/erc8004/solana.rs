@@ -1141,7 +1141,8 @@ pub async fn cosign_and_send(
     let blockhash = tx.message.recent_blockhash;
     tx.try_partial_sign(&[fee_payer], blockhash)
         .map_err(|e| SolanaErc8004Error::InvalidInput(format!("co-sign failed: {}", e)))?;
-    keep_slot_unless_preflight_failed(rpc_client.send_and_confirm_transaction(&tx).await)
+    keep_slot_unless_preflight_failed(rpc_client.send_and_confirm_transaction(&tx))
+        .await
         .map_err(|e| SolanaErc8004Error::RpcError(format!("Transaction failed: {}", e)))
 }
 
@@ -1444,14 +1445,26 @@ pub fn build_set_metadata_pda_ix(
 // Transaction Helpers
 // ============================================================================
 
-/// Keep the ERC-8004 daily-count slot of the write being served
-/// (`erc8004::daily_cap`) unless the RPC refused the transaction in preflight
-/// simulation, in which case nothing was broadcast.
-fn keep_slot_unless_preflight_failed(
-    result: solana_client::client_error::Result<solana_sdk::signature::Signature>,
-) -> solana_client::client_error::Result<solana_sdk::signature::Signature> {
+/// Send a transaction, keeping the ERC-8004 daily-count slot of the write
+/// being served (`erc8004::daily_cap`).
+///
+/// The slot is marked BEFORE `send` is awaited, so a write dropped while its
+/// transaction confirms still counts. The mark is taken back only when the RPC
+/// refused the transaction in preflight simulation -- nothing was broadcast --
+/// and no earlier transaction of the same write had gone out.
+async fn keep_slot_unless_preflight_failed<F>(
+    send: F,
+) -> solana_client::client_error::Result<solana_sdk::signature::Signature>
+where
+    F: std::future::Future<
+        Output = solana_client::client_error::Result<solana_sdk::signature::Signature>,
+    >,
+{
     use solana_client::client_error::ClientErrorKind;
     use solana_client::rpc_request::{RpcError, RpcResponseErrorData};
+    let sent_before = crate::erc8004::daily_cap::is_marked_sent();
+    crate::erc8004::daily_cap::mark_sent();
+    let result = send.await;
     let preflight_failed = matches!(
         &result,
         Err(e) if matches!(
@@ -1462,8 +1475,8 @@ fn keep_slot_unless_preflight_failed(
             })
         )
     );
-    if !preflight_failed {
-        crate::erc8004::daily_cap::mark_sent();
+    if preflight_failed && !sent_before {
+        crate::erc8004::daily_cap::unmark_sent();
     }
     result
 }
@@ -1488,7 +1501,8 @@ pub async fn send_erc8004_transaction(
         recent_blockhash,
     );
 
-    keep_slot_unless_preflight_failed(rpc_client.send_and_confirm_transaction(&tx).await)
+    keep_slot_unless_preflight_failed(rpc_client.send_and_confirm_transaction(&tx))
+        .await
         .map_err(|e| SolanaErc8004Error::RpcError(format!("Transaction failed: {}", e)))
 }
 
@@ -1513,7 +1527,8 @@ pub async fn send_erc8004_transaction_with_signers(
         recent_blockhash,
     );
 
-    keep_slot_unless_preflight_failed(rpc_client.send_and_confirm_transaction(&tx).await)
+    keep_slot_unless_preflight_failed(rpc_client.send_and_confirm_transaction(&tx))
+        .await
         .map_err(|e| SolanaErc8004Error::RpcError(format!("Transaction failed: {}", e)))
 }
 
@@ -1542,8 +1557,10 @@ mod tests {
     use super::*;
 
     /// A transaction the RPC refused in preflight simulation was never
-    /// broadcast, so the write gives its daily-count slot back; any other
-    /// outcome, success or not, keeps it.
+    /// broadcast, so the write gives its daily-count slot back. Any other
+    /// outcome keeps it: a success, a failure after the send, a request
+    /// dropped while its transaction confirms, and a preflight refusal that
+    /// follows an earlier transaction of the same write.
     #[tokio::test]
     async fn only_a_preflight_refusal_gives_the_daily_slot_back() {
         use crate::erc8004::daily_cap::{scope, DailyWriteCap};
@@ -1552,32 +1569,66 @@ mod tests {
         use solana_sdk::signature::Signature;
         use std::sync::Arc;
 
-        let preflight: ClientError = ClientErrorKind::RpcError(RpcError::RpcResponseError {
-            code: -32002,
-            message: "Transaction simulation failed".into(),
-            data: RpcResponseErrorData::SendTransactionPreflightFailure(
-                serde_json::from_value(serde_json::json!({})).unwrap(),
-            ),
-        })
-        .into();
-        let dropped: ClientError = ClientErrorKind::Custom("connection reset".into()).into();
-        for (outcome, kept) in [
-            (Err(preflight), 0),
-            (Err(dropped), 1),
-            (Ok(Signature::default()), 1),
-        ] {
+        fn preflight() -> ClientError {
+            ClientErrorKind::RpcError(RpcError::RpcResponseError {
+                code: -32002,
+                message: "Transaction simulation failed".into(),
+                data: RpcResponseErrorData::SendTransactionPreflightFailure(
+                    serde_json::from_value(serde_json::json!({})).unwrap(),
+                ),
+            })
+            .into()
+        }
+        fn dropped() -> ClientError {
+            ClientErrorKind::Custom("connection reset".into()).into()
+        }
+        async fn used_after<F: std::future::Future>(work: impl FnOnce() -> F) -> u32 {
             let cap = Arc::new(DailyWriteCap::new(
                 10,
                 Default::default(),
                 Box::new(|| 1_700_000_000),
             ));
             let slot = cap.reserve(Network::Solana).unwrap();
-            scope(Some(Arc::new(slot)), async {
-                let _ = keep_slot_unless_preflight_failed(outcome);
-            })
-            .await;
-            assert_eq!(cap.used_today(&Network::Solana), kept);
+            scope(Some(Arc::new(slot)), work()).await;
+            cap.used_today(&Network::Solana)
         }
+
+        let refused = used_after(|| async {
+            let _ = keep_slot_unless_preflight_failed(async { Err(preflight()) }).await;
+        });
+        assert_eq!(refused.await, 0, "preflight refusal");
+
+        let failed = used_after(|| async {
+            let _ = keep_slot_unless_preflight_failed(async { Err(dropped()) }).await;
+        });
+        assert_eq!(failed.await, 1, "failure after the send");
+
+        let landed = used_after(|| async {
+            let _ = keep_slot_unless_preflight_failed(async { Ok(Signature::default()) }).await;
+        });
+        assert_eq!(landed.await, 1, "success");
+
+        // Dropped mid-confirmation: the send never resolves and the request
+        // gives up first.
+        let cancelled = used_after(|| async {
+            tokio::select! {
+                _ = keep_slot_unless_preflight_failed(std::future::pending()) => {
+                    unreachable!("a pending send cannot resolve")
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_millis(5)) => {}
+            }
+        });
+        assert_eq!(cancelled.await, 1, "dropped while confirming");
+
+        let second_refused = used_after(|| async {
+            let _ = keep_slot_unless_preflight_failed(async { Ok(Signature::default()) }).await;
+            let _ = keep_slot_unless_preflight_failed(async { Err(preflight()) }).await;
+        });
+        assert_eq!(
+            second_refused.await,
+            1,
+            "preflight refusal after a broadcast"
+        );
     }
 
     #[test]

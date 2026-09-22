@@ -10580,6 +10580,35 @@ where
         return (status, Json(resp)).into_response();
     }
 
+    // An EVM registration can only hand the agent to an EVM address. Checked
+    // here, before the in-flight lock and before either path mints, so a
+    // recipient of another family is refused with nothing written.
+    let evm_network = matches!(
+        crate::network::NetworkFamily::from(network),
+        crate::network::NetworkFamily::Evm
+    );
+    if let (true, Some(recipient)) = (evm_network, &request.recipient) {
+        if !matches!(recipient, MixedAddress::Evm(_)) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(RegisterAgentResponse {
+                    success: false,
+                    agent_id: None,
+                    transaction: None,
+                    transfer_transaction: None,
+                    owner: None,
+                    error: Some(format!(
+                        "Recipient must be an EVM address for ERC-8004 registration on {}",
+                        network
+                    )),
+                    network,
+                    mint: None,
+                }),
+            )
+                .into_response();
+        }
+    }
+
     // ── EVM registration: dispatch sync vs async (P1 pollable, P3 in-flight lock) ──
     let async_mode = wants_async(&headers);
     let key = register_jobs::inflight_key(&network, &request.agent_uri, &request.recipient);
@@ -18389,6 +18418,7 @@ mod erc8004_write_rate_tests {
     /// write is refused on each of them, and another address is untouched.
     #[tokio::test]
     async fn every_erc8004_write_draws_on_one_bucket_of_thirty() {
+        assert_eq!(ERC8004_WRITE_PERIOD, std::time::Duration::from_secs(12));
         let paths = write_paths();
         for expected in ["/register", "/feedback", "/feedback/revoke"] {
             assert!(
@@ -18471,6 +18501,111 @@ mod erc8004_write_rate_tests {
             main.matches("&discovery_register_config").count(),
             2,
             "something other than the bazar's two routers draws on its budget"
+        );
+    }
+}
+
+/// `/register` on an EVM network refuses a recipient of another family before
+/// anything is minted.
+#[cfg(test)]
+mod erc8004_register_recipient_tests {
+    use super::*;
+    use crate::network::Network;
+    use std::borrow::Borrow;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// No chain behind it, and a count of every lookup of one. `post_register`
+    /// looks once to route Solana; the EVM mint path cannot run without a
+    /// second lookup, so a count of one means it was never entered.
+    struct CountedProviders {
+        lookups: AtomicUsize,
+    }
+
+    impl ProviderMap for CountedProviders {
+        type Value = NetworkProvider;
+        fn by_network<N: Borrow<Network>>(&self, _network: N) -> Option<&Self::Value> {
+            self.lookups.fetch_add(1, Ordering::SeqCst);
+            None
+        }
+        fn values(&self) -> impl Iterator<Item = &Self::Value> + Send {
+            std::iter::empty()
+        }
+    }
+
+    #[derive(Clone)]
+    struct NoChain {
+        providers: Arc<CountedProviders>,
+    }
+
+    impl HasProviderMap for NoChain {
+        type Map = CountedProviders;
+        fn provider_map(&self) -> &Self::Map {
+            &self.providers
+        }
+    }
+
+    impl Facilitator for NoChain {
+        type Error = FacilitatorLocalError;
+        async fn verify(
+            &self,
+            _r: &crate::types::VerifyRequest,
+        ) -> Result<VerifyResponse, Self::Error> {
+            Err(FacilitatorLocalError::ContractCall("no chain here".into()))
+        }
+        async fn settle(&self, _r: &SettleRequest) -> Result<SettleResponse, Self::Error> {
+            Err(FacilitatorLocalError::ContractCall("no chain here".into()))
+        }
+        async fn supported(
+            &self,
+        ) -> Result<crate::types::SupportedPaymentKindsResponse, Self::Error> {
+            Ok(crate::types::SupportedPaymentKindsResponse { kinds: vec![] })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_non_evm_recipient_on_an_evm_network_is_refused_before_the_mint() {
+        let providers = Arc::new(CountedProviders {
+            lookups: AtomicUsize::new(0),
+        });
+        let body = serde_json::json!({
+            "x402Version": 1,
+            "network": "base",
+            "agentUri": "https://example.com/agent.json",
+            "recipient": solana_sdk::pubkey::Pubkey::new_unique().to_string(),
+        });
+        let response = post_register(
+            State(NoChain {
+                providers: Arc::clone(&providers),
+            }),
+            HeaderMap::new(),
+            Bytes::from(body.to_string()),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let doc: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(doc["success"], false);
+        assert!(
+            doc["agentId"].is_null() && doc["transaction"].is_null(),
+            "{doc}"
+        );
+        assert!(
+            doc["error"]
+                .as_str()
+                .unwrap()
+                .contains("Recipient must be an EVM address"),
+            "{doc}"
+        );
+        assert_eq!(
+            providers.lookups.load(Ordering::SeqCst),
+            1,
+            "the EVM registration path was entered"
         );
     }
 }

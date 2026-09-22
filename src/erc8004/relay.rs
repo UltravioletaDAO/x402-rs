@@ -150,6 +150,9 @@ pub const DEFAULT_RELAY_DEADLINE_SECS: u64 = 900;
 /// Scroll and SKALE Base are absent too: ERC-8004 is served there, but no
 /// delegate has been deployed on either (SKALE's EVM predates Shanghai, and
 /// Execution Market has since retired the chain entirely).
+///
+/// Arc and Arc testnet serve ERC-8004 as well, and are absent only because no
+/// delegate has been deployed there yet.
 fn delegate_address(network: &Network) -> Option<Address> {
     match network {
         // Mainnets -- Execution Market v4 deploys, verified on-chain 2026-08-25.
@@ -867,6 +870,8 @@ mod tests {
     ///
     /// Scroll and SKALE Base serve ERC-8004 but have no delegate deployed
     /// (SKALE's EVM predates Shanghai, so 7702 cannot land there at all).
+    /// Arc serves ERC-8004 with no delegate deployed yet; the entry arrives
+    /// with the deploy, and this list loses Arc in the same change.
     #[test]
     fn the_chains_without_a_delegate_claim_none() {
         for network in [
@@ -874,6 +879,8 @@ mod tests {
             Network::AvalancheFuji,
             Network::Scroll,
             Network::SkaleBase,
+            Network::Arc,
+            Network::ArcTestnet,
             Network::EthereumSepolia,
             Network::PolygonAmoy,
             Network::ArbitrumSepolia,

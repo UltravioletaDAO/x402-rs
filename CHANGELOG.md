@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.37.0] - 2026-09-22
+
+- ERC-8004 identity and reputation on Arc mainnet (`arc`) and Arc testnet (`arc-testnet`), using the canonical registries: identity `0x8004A169…a432`, reputation `0x8004BAa1…9b63` and validation `0x8004Cc84…AB58` on mainnet; `0x8004A818…BD9e`, `0x8004B663…8713` and `0x8004Cb1B…4272` on testnet. All six were read with `eth_getCode` against the RPCs the facilitator deploys (`rpc.mainnet.arc.io`, `rpc.testnet.arc.io`): 130-byte proxies whose EIP-1967 implementation is the one Base and Base Sepolia run, `getVersion()` = `2.0.0`, `ownerOf(1)` answered on both. The ERC-8004 set grows from 21 to 23 networks (13 mainnets + 10 testnets). Arc payments are unchanged: still `exact` only, with no `upto`, escrow or relayed (EIP-7702) feedback, because no feedback delegate is deployed on Arc yet.
+- `test_supported_networks_list` runs again. Its `#[test]` attribute had been duplicated onto the test above it, so it never ran and still asserted 20 networks while the list held 21.
+- The OpenAPI ERC-8004 prose names every network in the set, and a test now fails when a network is missing from it or the stated count drifts.
+
 ## [2.36.5] - 2026-09-22
 
 - The ERC-8004 Solana senders count a write against its network's daily limit before the transaction goes out, and give the place back only if the RPC refuses the transaction in preflight.

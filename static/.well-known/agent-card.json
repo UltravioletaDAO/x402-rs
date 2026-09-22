@@ -39,7 +39,7 @@
     {
       "id": "erc8004-identity-reputation",
       "name": "ERC-8004 Trustless Agents",
-      "description": "Read and write on-chain agent identity and reputation on 12 mainnets (21 networks including testnets)."
+      "description": "Read and write on-chain agent identity and reputation on 13 mainnets (23 networks including testnets)."
     },
     {
       "id": "mcp-tools",

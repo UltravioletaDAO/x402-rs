@@ -24,6 +24,7 @@
 //! - Avalanche C-Chain
 //! - Scroll
 //! - SKALE Base Mainnet (gasless L3)
+//! - Arc Mainnet (Circle; gas is paid in USDC)
 //!
 //! ## EVM Testnets
 //! - Ethereum Sepolia
@@ -34,6 +35,7 @@
 //! - Celo Sepolia
 //! - Avalanche Fuji
 //! - SKALE Base Sepolia
+//! - Arc Testnet
 //!
 //! ## Solana (QuantuLabs 8004-solana + ATOM Engine)
 //! - Solana Mainnet
@@ -87,8 +89,8 @@ pub struct Erc8004Contracts {
 /// Mainnet ValidationRegistry proxy, deployed after the identity/reputation pair.
 ///
 /// Verified live via `eth_getCode` on Ethereum, Base, Polygon, Arbitrum, Optimism,
-/// Celo, BSC, Monad, Avalanche and Scroll (2026-08-21). SKALE Base has no code at
-/// this address, so it stays `None` there.
+/// Celo, BSC, Monad, Avalanche and Scroll (2026-08-21), and on Arc (2026-09-22).
+/// SKALE Base has no code at this address, so it stays `None` there.
 const MAINNET_VALIDATION_REGISTRY: Address =
     alloy::primitives::address!("8004Cc8439f36fd5F9F049D9fF86523Df6dAAB58");
 
@@ -184,6 +186,16 @@ pub const SKALE_BASE_MAINNET_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
     validation_registry: None,
 };
 
+// Arc Mainnet (Circle, chain 5042) - the canonical registries; gas is paid in USDC.
+// Read on 2026-09-22 against rpc.mainnet.arc.io, the RPC the facilitator deploys:
+// all three are 130-byte proxies whose EIP-1967 implementation is the one Base
+// runs, and getVersion() answers 2.0.0 on each.
+pub const ARC_MAINNET_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
+    identity_registry: alloy::primitives::address!("8004A169FB4a3325136EB29fA0ceB6D2e539a432"),
+    reputation_registry: alloy::primitives::address!("8004BAa17C55a88189AE136b182e5fdA19dE9b63"),
+    validation_registry: Some(MAINNET_VALIDATION_REGISTRY),
+};
+
 // ============================================================================
 // Testnet Contracts - All use same testnet addresses
 // ============================================================================
@@ -249,6 +261,18 @@ pub const SKALE_BASE_SEPOLIA_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
     validation_registry: None,
 };
 
+// Arc Testnet (Circle, chain 5042002) - the canonical testnet registries.
+// Read on 2026-09-22 against rpc.testnet.arc.io: 130-byte proxies whose EIP-1967
+// implementation is the one Base Sepolia runs, getVersion() = 2.0.0, and the
+// validation registry is deployed too.
+pub const ARC_TESTNET_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
+    identity_registry: alloy::primitives::address!("8004A818BFB912233c491871b3d84c89A494BD9e"),
+    reputation_registry: alloy::primitives::address!("8004B663056A597Dffe9eCcC1965A193B7388713"),
+    validation_registry: Some(alloy::primitives::address!(
+        "8004Cb1BF31DAf7788923b405b754f57acEB4272"
+    )),
+};
+
 /// Get ERC-8004 contract addresses for a network
 pub fn get_contracts(network: &Network) -> Option<Erc8004Contracts> {
     match network {
@@ -264,6 +288,7 @@ pub fn get_contracts(network: &Network) -> Option<Erc8004Contracts> {
         Network::Avalanche => Some(AVALANCHE_MAINNET_CONTRACTS),
         Network::Scroll => Some(SCROLL_MAINNET_CONTRACTS),
         Network::SkaleBase => Some(SKALE_BASE_MAINNET_CONTRACTS),
+        Network::Arc => Some(ARC_MAINNET_CONTRACTS),
         // Testnets
         Network::EthereumSepolia => Some(ETHEREUM_SEPOLIA_CONTRACTS),
         Network::BaseSepolia => Some(BASE_SEPOLIA_CONTRACTS),
@@ -273,6 +298,7 @@ pub fn get_contracts(network: &Network) -> Option<Erc8004Contracts> {
         Network::CeloSepolia => Some(CELO_SEPOLIA_CONTRACTS),
         Network::AvalancheFuji => Some(AVALANCHE_FUJI_CONTRACTS),
         Network::SkaleBaseSepolia => Some(SKALE_BASE_SEPOLIA_CONTRACTS),
+        Network::ArcTestnet => Some(ARC_TESTNET_CONTRACTS),
         _ => None,
     }
 }
@@ -297,6 +323,7 @@ pub fn supported_networks() -> Vec<Network> {
         Network::Avalanche,
         Network::Scroll,
         Network::SkaleBase,
+        Network::Arc,
         // EVM Testnets
         Network::EthereumSepolia,
         Network::BaseSepolia,
@@ -306,6 +333,7 @@ pub fn supported_networks() -> Vec<Network> {
         Network::CeloSepolia,
         Network::AvalancheFuji,
         Network::SkaleBaseSepolia,
+        Network::ArcTestnet,
         // Solana (QuantuLabs 8004-solana + ATOM Engine)
         Network::Solana,
         Network::SolanaDevnet,
@@ -464,6 +492,27 @@ mod tests {
         );
     }
 
+    /// Arc runs the canonical registries on both networks, all three of them.
+    ///
+    /// Each address was read with `eth_getCode` against the RPC the facilitator
+    /// deploys for that network (2026-09-22): a proxy whose implementation is
+    /// the one Base and Base Sepolia run. Unlike SKALE Base, the validation
+    /// registry exists on both, so neither side may be `None`.
+    #[test]
+    fn arc_uses_the_canonical_registries_on_both_networks() {
+        for (network, canonical) in [
+            (Network::Arc, ETHEREUM_MAINNET_CONTRACTS),
+            (Network::ArcTestnet, ETHEREUM_SEPOLIA_CONTRACTS),
+        ] {
+            assert!(is_erc8004_supported(&network), "{network} must be served");
+            let contracts = get_contracts(&network).unwrap();
+            assert_eq!(contracts.identity_registry, canonical.identity_registry);
+            assert_eq!(contracts.reputation_registry, canonical.reputation_registry);
+            assert!(contracts.validation_registry.is_some());
+            assert_eq!(contracts.validation_registry, canonical.validation_registry);
+        }
+    }
+
     #[test]
     fn test_all_mainnets_use_deterministic_addresses() {
         let mainnet_networks = vec![
@@ -478,6 +527,7 @@ mod tests {
             Network::Avalanche,
             Network::Scroll,
             Network::SkaleBase,
+            Network::Arc,
         ];
 
         for network in mainnet_networks {
@@ -511,6 +561,7 @@ mod tests {
             Network::CeloSepolia,
             Network::AvalancheFuji,
             Network::SkaleBaseSepolia,
+            Network::ArcTestnet,
         ];
 
         for network in testnet_networks {
@@ -541,27 +592,33 @@ mod tests {
         assert!(get_contracts(&Network::HyperEvm).is_none());
     }
 
-    #[test]
     /// The count that `src/openapi.rs` states in prose, pinned here.
     ///
     /// That prose said "18 networks (10 mainnets + 8 testnets)" in four places
     /// while the real set was 20 -- it counted only the EVM half and dropped
     /// Solana. A number written in a doc string ages silently; this test is what
     /// makes it fail loudly instead. If it breaks, update `supported_networks()`
-    /// AND the four strings in `src/openapi.rs`.
+    /// AND the strings in `src/openapi.rs`, which
+    /// `the_erc8004_prose_names_every_supported_network` checks there.
     #[test]
     fn the_supported_network_count_matches_what_openapi_advertises() {
         let networks = supported_networks();
-        assert_eq!(networks.len(), 21, "openapi.rs advertises 21 networks");
+        assert_eq!(networks.len(), 23, "openapi.rs advertises 23 networks");
 
         let solana = networks
             .iter()
             .filter(|n| matches!(n, Network::Solana | Network::SolanaDevnet))
             .count();
         assert_eq!(solana, 2, "Solana mainnet + devnet are part of the count");
-        assert_eq!(networks.len() - solana, 19, "19 EVM networks");
+        assert_eq!(networks.len() - solana, 21, "21 EVM networks");
     }
 
+    /// Every network, by name, and nothing else.
+    ///
+    /// This test never ran until 2.37.0: its `#[test]` had been duplicated onto
+    /// the test above, and it went on asserting 20 while the list held 21.
+    /// Twenty-three distinct `contains` plus a length of 23 pin the exact set.
+    #[test]
     fn test_supported_networks_list() {
         let networks = supported_networks();
         // EVM Mainnets
@@ -589,8 +646,11 @@ mod tests {
         // SKALE
         assert!(networks.contains(&Network::SkaleBase));
         assert!(networks.contains(&Network::SkaleBaseSepolia));
-        // Total count: 16 EVM + 2 SKALE + 2 Solana = 20
-        assert_eq!(networks.len(), 20);
+        // Arc
+        assert!(networks.contains(&Network::Arc));
+        assert!(networks.contains(&Network::ArcTestnet));
+        // Total count: 17 EVM + 2 SKALE + 2 Arc + 2 Solana = 23
+        assert_eq!(networks.len(), 23);
     }
 
     #[test]
@@ -620,7 +680,10 @@ mod tests {
         // SKALE names
         assert!(names.contains(&"skale-base".to_string()));
         assert!(names.contains(&"skale-base-sepolia".to_string()));
-        assert_eq!(names.len(), 21);
+        // Arc names
+        assert!(names.contains(&"arc".to_string()));
+        assert!(names.contains(&"arc-testnet".to_string()));
+        assert_eq!(names.len(), 23);
     }
 
     #[test]

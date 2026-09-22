@@ -2151,7 +2151,7 @@
                     <div class="stat-label" data-i18n="stats.trustless">Trustless Verification</div>
                 </div>
                 <div class="stat-card" style="border-color: rgba(139, 92, 246, 0.3);">
-                    <div class="stat-value" id="ovr-erc8004-networks" style="background: linear-gradient(135deg, #8b5cf6, #06b6d4); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">21</div>
+                    <div class="stat-value" id="ovr-erc8004-networks" style="background: linear-gradient(135deg, #8b5cf6, #06b6d4); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">23</div>
                     <div class="stat-label" data-i18n="stats.erc8004">ERC-8004 Networks</div>
                 </div>
             </section>
@@ -2220,7 +2220,7 @@
                     <span class="feature-icon">🛡️</span>
                     <h3 data-i18n="features.reputation.title">On-Chain Reputation</h3>
                     <p data-i18n="features.reputation.description">
-                        ERC-8004 Trustless Agents with identity, reputation, and validation registries across 21 networks.
+                        ERC-8004 Trustless Agents with identity, reputation, and validation registries across 23 networks.
                     </p>
                 </div>
             </section>
@@ -2273,7 +2273,7 @@
 
                 <!-- Supported Networks Grid -->
                 <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 2rem;">
-                    <h4 style="font-size: 0.9rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 1.25rem; text-align: center;" data-i18n="erc8004.networksTitle">Deployed on 21 Networks</h4>
+                    <h4 style="font-size: 0.9rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 1.25rem; text-align: center;" data-i18n="erc8004.networksTitle">Deployed on 23 Networks</h4>
                     <div style="display: flex; flex-wrap: wrap; gap: 0.75rem; justify-content: center;">
                         <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(139, 92, 246, 0.08); border: 1px solid rgba(139, 92, 246, 0.2); border-radius: 8px;">
                             <img src="/ethereum.png" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
@@ -2319,13 +2319,17 @@
                             <img src="/skale.png" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
                             <span style="font-size: 0.85rem; font-weight: 500;">SKALE</span>
                         </div>
+                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(133, 147, 176, 0.08); border: 1px solid rgba(133, 147, 176, 0.25); border-radius: 8px;">
+                            <img src="/arc.png" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
+                            <span style="font-size: 0.85rem; font-weight: 500;">Arc</span>
+                        </div>
                         <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(153, 69, 255, 0.08); border: 1px solid rgba(153, 69, 255, 0.2); border-radius: 8px;">
                             <img src="/solana.png" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
                             <span style="font-size: 0.85rem; font-weight: 500;">Solana</span>
                             <a href="https://solana.com/agent-registry" target="_blank" style="font-size: 0.6rem; font-weight: 600; color: #9945FF; background: rgba(153, 69, 255, 0.12); border: 1px solid rgba(153, 69, 255, 0.3); border-radius: 10px; padding: 0.1rem 0.45rem; text-decoration: none; white-space: nowrap; line-height: 1.4; transition: all 0.2s;" onmouseover="this.style.background='rgba(153, 69, 255, 0.25)'" onmouseout="this.style.background='rgba(153, 69, 255, 0.12)'">Agent Registry</a>
                         </div>
                     </div>
-                    <p style="text-align: center; color: var(--text-muted); font-size: 0.75rem; margin-top: 1rem;" data-i18n="erc8004.create2Note">+ 9 testnets. Every EVM chain uses the same canonical registries from the erc-8004 reference deployment (CREATE2, identical addresses everywhere). Solana uses the QuantuLabs Agent Registry program.</p>
+                    <p style="text-align: center; color: var(--text-muted); font-size: 0.75rem; margin-top: 1rem;" data-i18n="erc8004.create2Note">+ 10 testnets. Every EVM chain uses the same canonical registries from the erc-8004 reference deployment (CREATE2, identical addresses everywhere). Solana uses the QuantuLabs Agent Registry program.</p>
                     <!-- Canonical ERC-8004 registry addresses (erc-8004/erc-8004-contracts) -->
                     <div style="max-width: 720px; margin: 1.25rem auto 0; padding: 1rem 1.25rem; background: rgba(139, 92, 246, 0.05); border: 1px solid rgba(139, 92, 246, 0.2); border-radius: 10px;">
                         <div style="font-size: 0.7rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.85rem; text-align: center;" data-i18n="erc8004.addressesTitle">Canonical registry addresses</div>
@@ -2337,7 +2341,7 @@
                             <div style="display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: baseline;"><span style="min-width: 170px; font-size: 0.72rem; font-weight: 600; color: #8b5cf6;" data-i18n="erc8004.addr.reputationTestnet">Reputation (testnet)</span><code style="font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; color: var(--text); word-break: break-all;">0x8004B663056A597Dffe9eCcC1965A193B7388713</code></div>
                             <div style="display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: baseline;"><span style="min-width: 170px; font-size: 0.72rem; font-weight: 600; color: #8b5cf6;" data-i18n="erc8004.addr.validationTestnet">Validation (testnet)</span><code style="font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; color: var(--text); word-break: break-all;">0x8004Cb1BF31DAf7788923b405b754f57acEB4272</code></div>
                         </div>
-                        <p style="font-size: 0.68rem; color: var(--text-muted); margin: 0.85rem 0 0 0; line-height: 1.5;" data-i18n="erc8004.addressesNote">Same addresses on Ethereum, Base, Polygon, Arbitrum, Optimism, Celo, BNB Chain, Monad, Avalanche and Scroll. SKALE Base carries Identity and Reputation only. Source: the erc-8004 reference deployment, not a chain-specific fork.</p>
+                        <p style="font-size: 0.68rem; color: var(--text-muted); margin: 0.85rem 0 0 0; line-height: 1.5;" data-i18n="erc8004.addressesNote">Same addresses on Ethereum, Base, Polygon, Arbitrum, Optimism, Celo, BNB Chain, Monad, Avalanche, Scroll and Arc. SKALE Base carries Identity and Reputation only. Source: the erc-8004 reference deployment, not a chain-specific fork.</p>
                     </div>
                     <div style="display: flex; flex-wrap: wrap; gap: 0.75rem; justify-content: center; margin-top: 1.25rem;">
                         <a href="https://eips.ethereum.org/EIPS/eip-8004" target="_blank"
@@ -2845,7 +2849,7 @@
                         <span class="endpoint-desc" data-i18n="endpoints.reputation">Query aggregated reputation summary with optional tag filtering</span>
                     </div>
                     <p style="color: var(--text-muted); font-size: 0.8rem; margin: 0.5rem 0 0 0; padding-left: 1rem;" data-i18n="endpoints.erc8004Note">
-                        21 networks: ethereum, base, polygon, arbitrum, optimism, celo, bsc, monad, avalanche, scroll, skale, solana + testnets. All mainnets use CREATE2 deterministic addresses.
+                        23 networks: ethereum, base, polygon, arbitrum, optimism, celo, bsc, monad, avalanche, scroll, skale, arc, solana + testnets. All mainnets use CREATE2 deterministic addresses.
                     </p>
                     <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem; padding-left: 1rem; flex-wrap: wrap;">
                         <a href="https://eips.ethereum.org/EIPS/eip-8004" target="_blank"
@@ -3070,7 +3074,7 @@
                 "features.instant.title": "Instant Settlement",
                 "features.instant.description": "Complete payment verification and on-chain settlement in ~2-3 seconds end-to-end.",
                 "features.reputation.title": "On-Chain Reputation",
-                "features.reputation.description": "ERC-8004 Trustless Agents with identity, reputation, and validation registries across 21 networks (EVM + Solana).",
+                "features.reputation.description": "ERC-8004 Trustless Agents with identity, reputation, and validation registries across 23 networks (EVM + Solana).",
                 "erc8004.badge": "ERC-8004 Standard",
                 "erc8004.title": "Trustless Agent Reputation",
                 "erc8004.description": "On-chain identity, reputation, and validation for AI agents. Rate service quality, verify agent identities, and build trust across the agentic economy \u2014 all verifiable on-chain through ERC-8004 registries.",
@@ -3080,8 +3084,8 @@
                 "erc8004.reputation.desc": "Submit, revoke, and query reputation feedback with proof-of-payment. Tags enable categorized ratings like uptime, quality, and response time.",
                 "erc8004.validation.title": "Validation Registry",
                 "erc8004.validation.desc": "Third-party validators can attest to agent capabilities. Validation results are stored on-chain for transparent trust verification.",
-                "erc8004.networksTitle": "Deployed on 21 Networks",
-                "erc8004.create2Note": "+ 9 testnets. Every EVM chain uses the same canonical registries from the erc-8004 reference deployment (CREATE2, identical addresses everywhere). Solana uses the QuantuLabs Agent Registry program.",
+                "erc8004.networksTitle": "Deployed on 23 Networks",
+                "erc8004.create2Note": "+ 10 testnets. Every EVM chain uses the same canonical registries from the erc-8004 reference deployment (CREATE2, identical addresses everywhere). Solana uses the QuantuLabs Agent Registry program.",
                 "erc8004.deploymentsLink": "All Deployments",
                 "erc8004.addressesTitle": "Canonical registry addresses",
                 "erc8004.addr.identityMainnet": "Identity (mainnet)",
@@ -3090,7 +3094,7 @@
                 "erc8004.addr.identityTestnet": "Identity (testnet)",
                 "erc8004.addr.reputationTestnet": "Reputation (testnet)",
                 "erc8004.addr.validationTestnet": "Validation (testnet)",
-                "erc8004.addressesNote": "Same addresses on Ethereum, Base, Polygon, Arbitrum, Optimism, Celo, BNB Chain, Monad, Avalanche and Scroll. SKALE Base carries Identity and Reputation only. Source: the erc-8004 reference deployment, not a chain-specific fork.",
+                "erc8004.addressesNote": "Same addresses on Ethereum, Base, Polygon, Arbitrum, Optimism, Celo, BNB Chain, Monad, Avalanche, Scroll and Arc. SKALE Base carries Identity and Reputation only. Source: the erc-8004 reference deployment, not a chain-specific fork.",
                 "upto.badge": "Upto Scheme (Permit2)",
                 "upto.title": "Usage-Based Payments",
                 "upto.description": "Authorize a maximum payment upfront, pay only for what you use. Built on Uniswap Permit2 for gasless variable-amount settlements across all EVM networks.",
@@ -3161,7 +3165,7 @@
                 "endpoints.feedbackResponse": "Append agent response to feedback",
                 "endpoints.reputation": "Query reputation summary for an agent",
                 "endpoints.identity": "Get agent identity from Identity Registry",
-                "endpoints.erc8004Note": "21 networks: ethereum, base, polygon, arbitrum, optimism, celo, bsc, monad, avalanche, scroll, skale, solana + testnets. CREATE2 (EVM) + Agent Registry program (Solana).",
+                "endpoints.erc8004Note": "23 networks: ethereum, base, polygon, arbitrum, optimism, celo, bsc, monad, avalanche, scroll, skale, arc, solana + testnets. CREATE2 (EVM) + Agent Registry program (Solana).",
                 "endpoints.blacklist": "OFAC sanctioned and blocked addresses",
                 "endpoints.discovery": "Discover registered paid APIs and services",
                 "endpoints.register": "Register a new paid endpoint in the Bazaar",
@@ -3251,7 +3255,7 @@
                 "features.instant.title": "Liquidación Instantánea",
                 "features.instant.description": "Verificaci\u00f3n y liquidaci\u00f3n completa de pagos en ~2-3 segundos de extremo a extremo.",
                 "features.reputation.title": "Reputaci\u00f3n On-Chain",
-                "features.reputation.description": "Agentes sin confianza ERC-8004 con registros de identidad, reputaci\u00f3n y validaci\u00f3n en 21 redes (EVM + Solana).",
+                "features.reputation.description": "Agentes sin confianza ERC-8004 con registros de identidad, reputaci\u00f3n y validaci\u00f3n en 23 redes (EVM + Solana).",
                 "erc8004.badge": "Est\u00e1ndar ERC-8004",
                 "erc8004.title": "Reputaci\u00f3n de Agentes Sin Confianza",
                 "erc8004.description": "Identidad, reputaci\u00f3n y validaci\u00f3n on-chain para agentes IA. Califica la calidad del servicio, verifica identidades de agentes y construye confianza en la econom\u00eda ag\u00e9ntica \u2014 todo verificable on-chain a trav\u00e9s de los registros ERC-8004.",
@@ -3261,8 +3265,8 @@
                 "erc8004.reputation.desc": "Env\u00eda, revoca y consulta feedback de reputaci\u00f3n con prueba de pago. Tags permiten calificaciones categorizadas como uptime, calidad y tiempo de respuesta.",
                 "erc8004.validation.title": "Registro de Validaci\u00f3n",
                 "erc8004.validation.desc": "Validadores externos pueden atestiguar las capacidades de un agente. Los resultados se almacenan on-chain para verificaci\u00f3n transparente de confianza.",
-                "erc8004.networksTitle": "Desplegado en 21 Redes",
-                "erc8004.create2Note": "+ 9 testnets. Todas las cadenas EVM usan los mismos registros can\u00f3nicos del despliegue de referencia erc-8004 (CREATE2, direcciones id\u00e9nticas en todas). Solana usa el programa Agent Registry de QuantuLabs.",
+                "erc8004.networksTitle": "Desplegado en 23 Redes",
+                "erc8004.create2Note": "+ 10 testnets. Todas las cadenas EVM usan los mismos registros can\u00f3nicos del despliegue de referencia erc-8004 (CREATE2, direcciones id\u00e9nticas en todas). Solana usa el programa Agent Registry de QuantuLabs.",
                 "erc8004.deploymentsLink": "Todos los despliegues",
                 "erc8004.addressesTitle": "Direcciones can\u00f3nicas de los registros",
                 "erc8004.addr.identityMainnet": "Identidad (mainnet)",
@@ -3271,7 +3275,7 @@
                 "erc8004.addr.identityTestnet": "Identidad (testnet)",
                 "erc8004.addr.reputationTestnet": "Reputaci\u00f3n (testnet)",
                 "erc8004.addr.validationTestnet": "Validaci\u00f3n (testnet)",
-                "erc8004.addressesNote": "Las mismas direcciones en Ethereum, Base, Polygon, Arbitrum, Optimism, Celo, BNB Chain, Monad, Avalanche y Scroll. SKALE Base solo tiene Identidad y Reputaci\u00f3n. Fuente: el despliegue de referencia erc-8004, no un fork espec\u00edfico de una cadena.",
+                "erc8004.addressesNote": "Las mismas direcciones en Ethereum, Base, Polygon, Arbitrum, Optimism, Celo, BNB Chain, Monad, Avalanche, Scroll y Arc. SKALE Base solo tiene Identidad y Reputaci\u00f3n. Fuente: el despliegue de referencia erc-8004, no un fork espec\u00edfico de una cadena.",
                 "upto.badge": "Esquema Upto (Permit2)",
                 "upto.title": "Pagos Basados en Uso",
                 "upto.description": "Autoriza un monto maximo por adelantado, paga solo lo que uses. Construido sobre Uniswap Permit2 para liquidaciones gasless de monto variable en todas las redes EVM.",
@@ -3342,7 +3346,7 @@
                 "endpoints.feedbackResponse": "Agregar respuesta del agente al feedback",
                 "endpoints.reputation": "Consultar resumen de reputacion de un agente",
                 "endpoints.identity": "Obtener identidad del agente del Identity Registry",
-                "endpoints.erc8004Note": "21 redes: ethereum, base, polygon, arbitrum, optimism, celo, bsc, monad, avalanche, scroll, skale, solana + testnets. CREATE2 (EVM) + programa Agent Registry (Solana).",
+                "endpoints.erc8004Note": "23 redes: ethereum, base, polygon, arbitrum, optimism, celo, bsc, monad, avalanche, scroll, skale, arc, solana + testnets. CREATE2 (EVM) + programa Agent Registry (Solana).",
                 "endpoints.blacklist": "Direcciones sancionadas por OFAC y bloqueadas",
                 "endpoints.discovery": "Descubrir APIs y servicios de pago registrados",
                 "endpoints.register": "Registrar un nuevo endpoint de pago en el Bazaar",

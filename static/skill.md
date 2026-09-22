@@ -81,7 +81,8 @@ Hedera supports native `CryptoTransfer`, `exact`, **x402 v2 only**. It uses nume
 accounts and native token IDs, not EVM chain IDs 295/296. Buyer and recipient must
 be associated with USDC. The sponsor pays HBAR fees without contributing payment
 principal. HBAR is not accepted as payment; new HBAR offers are rejected. Neither addition enables
-escrow, `upto`, Gateway or ERC-8004 on that network. Native Hedera also rejects
+escrow, `upto` or Gateway on that network; ERC-8004 is served on both Arc networks,
+not on Hedera. Native Hedera also rejects
 durable-evidence and other unsupported extensions.
 
 **Native Hedera v2 request:**
@@ -548,7 +549,7 @@ failures occurred".
 
 ## 8. Reputation and identity (ERC-8004)
 
-Live on 12 mainnets, 21 networks in total. See `/auth.md` for the authorship rules —
+Live on 13 mainnets, 23 networks in total. See `/auth.md` for the authorship rules —
 they are the part integrators get wrong.
 
 - `GET /identity/{network}/{agentId}` · `GET /identity/{network}/owner/{address}`

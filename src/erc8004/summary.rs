@@ -14,6 +14,11 @@
 //! half until the refusal is pinned to single clients, and the whole read stops
 //! after [`MAX_CALLS`]. The answer says what it covered ([`Coverage`]).
 //!
+//! That fallback costs ~30 `eth_call`s where the single read cost 2, on the
+//! network's shared RPC -- on Arc, its only public one, which limits by IP. So
+//! [`read_once`] runs at most one fallback per network at a time and answers a
+//! repeat of the same question from a [`CACHE_TTL`] cache.
+//!
 //! The registry returns an AVERAGE (`summaryValue` over `count` entries, at the
 //! decimals most entries use; on Arc testnet, entries of 95 and 80 answer 87),
 //! so groups
@@ -21,13 +26,16 @@
 //! truncated by the registry, so the combined value can differ from what a
 //! single call would have returned in its last digit; the coverage says so.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::future::Future;
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use alloy::primitives::{Address, I256, U256};
 use serde::{Deserialize, Serialize};
 
 use super::abi::IReputationRegistry::IReputationRegistryInstance;
+use crate::network::Network;
 
 /// Clients per `getSummary` call once the single call has failed.
 pub const CLIENTS_PER_CALL: usize = 100;
@@ -44,6 +52,12 @@ pub const CALLS_IN_FLIGHT: usize = 4;
 
 /// Parts a refused group is split into.
 pub const SPLIT_INTO: usize = 4;
+
+/// How long a fallback read answers the same question again.
+pub const CACHE_TTL: Duration = Duration::from_secs(60);
+
+/// Fallback reads the cache keeps; past this the expired go, then the oldest.
+pub const CACHE_ENTRIES: usize = 256;
 
 /// Unreadable clients named in the answer; the count is always complete.
 pub const MAX_LISTED_UNREADABLE: usize = 20;
@@ -89,6 +103,9 @@ pub struct Coverage {
     pub calls: usize,
     pub clients_per_call: usize,
     pub max_calls: usize,
+    /// When the registry was read, Unix seconds. A cached answer keeps it, so
+    /// its age is always visible.
+    pub read_at_unix: u64,
     pub note: String,
 }
 
@@ -215,9 +232,114 @@ where
             calls,
             clients_per_call: CLIENTS_PER_CALL,
             max_calls: MAX_CALLS,
+            read_at_unix: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
             note: NOTE.to_string(),
         },
     ))
+}
+
+/// The question a fallback read answers. `client_addresses` is the query
+/// parameter as given (empty: every client `getClients` names).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct FallbackKey {
+    pub network: Network,
+    pub agent_id: u64,
+    pub tag1: String,
+    pub tag2: String,
+    pub client_addresses: String,
+}
+
+struct Cached {
+    at: Instant,
+    answer: (Summary, Coverage),
+}
+
+static CACHE: LazyLock<Mutex<HashMap<FallbackKey, Cached>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+static GATES: LazyLock<Mutex<HashMap<Network, Arc<tokio::sync::Semaphore>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// A fallback answer to `key` read less than [`CACHE_TTL`] ago.
+pub fn cached(key: &FallbackKey) -> Option<(Summary, Coverage)> {
+    cached_within(key, CACHE_TTL)
+}
+
+fn cached_within(key: &FallbackKey, ttl: Duration) -> Option<(Summary, Coverage)> {
+    let cache = CACHE.lock().unwrap_or_else(|p| p.into_inner());
+    cache
+        .get(key)
+        .filter(|entry| entry.at.elapsed() < ttl)
+        .map(|entry| entry.answer.clone())
+}
+
+fn store(key: FallbackKey, answer: (Summary, Coverage), ttl: Duration) {
+    let mut cache = CACHE.lock().unwrap_or_else(|p| p.into_inner());
+    cache.insert(
+        key,
+        Cached {
+            at: Instant::now(),
+            answer,
+        },
+    );
+    if cache.len() > CACHE_ENTRIES {
+        cache.retain(|_, entry| entry.at.elapsed() < ttl);
+    }
+    while cache.len() > CACHE_ENTRIES {
+        let Some(oldest) = cache
+            .iter()
+            .min_by_key(|(_, entry)| entry.at)
+            .map(|(key, _)| key.clone())
+        else {
+            break;
+        };
+        cache.remove(&oldest);
+    }
+}
+
+/// Run `read` for `key` at most once per [`CACHE_TTL`], and one fallback read
+/// per network at a time. A caller that waited on the gate reads the cache
+/// its predecessor filled instead of reading the registry again. Only a
+/// successful read is cached.
+pub async fn read_once<F, Fut>(key: FallbackKey, read: F) -> Result<(Summary, Coverage), String>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<(Summary, Coverage), String>>,
+{
+    read_once_within(key, CACHE_TTL, read).await
+}
+
+async fn read_once_within<F, Fut>(
+    key: FallbackKey,
+    ttl: Duration,
+    read: F,
+) -> Result<(Summary, Coverage), String>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<(Summary, Coverage), String>>,
+{
+    let gate = {
+        let mut gates = GATES.lock().unwrap_or_else(|p| p.into_inner());
+        Arc::clone(
+            gates
+                .entry(key.network)
+                .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(1))),
+        )
+    };
+    let _permit = gate
+        .acquire_owned()
+        .await
+        .map_err(|e| format!("reputation read gate closed: {e}"))?;
+    if let Some(hit) = cached_within(&key, ttl) {
+        return Ok(hit);
+    }
+    let answer = read().await;
+    if let Ok(value) = &answer {
+        store(key, value.clone(), ttl);
+    }
+    answer
 }
 
 /// Group averages, turned back into a weighted sum at 18 decimals.
@@ -513,6 +635,105 @@ mod tests {
         assert!(coverage.calls <= MAX_CALLS);
     }
 
+    fn key(agent_id: u64) -> FallbackKey {
+        FallbackKey {
+            network: Network::ArcTestnet,
+            agent_id,
+            tag1: String::new(),
+            tag2: String::new(),
+            client_addresses: String::new(),
+        }
+    }
+
+    /// One fallback read over the double, counting every `getSummary` call.
+    async fn fallback(
+        registry: Arc<Registry>,
+        asked: Arc<AtomicUsize>,
+    ) -> Result<(Summary, Coverage), String> {
+        let clients: Vec<Address> = registry.entries.iter().map(|(a, ..)| *a).collect();
+        summarize_in_chunks(&clients, move |group| {
+            asked.fetch_add(1, Ordering::SeqCst);
+            let registry = Arc::clone(&registry);
+            async move { registry.summary(&group) }
+        })
+        .await
+    }
+
+    /// Two requests in a row for the same agent read the registry once: the
+    /// fallback costs 28 calls on agent 1's shape, and the repeat costs none.
+    /// (Refutation of PR #99: ~30 calls per request, uncached, on a public
+    /// route whose per-IP burst allows ~100 requests.)
+    #[tokio::test]
+    async fn two_requests_for_the_same_agent_make_one_read() {
+        let registry = Arc::new(agent_one(|_| 90));
+        let asked = Arc::new(AtomicUsize::new(0));
+        let first = read_once(key(9_000_001), || {
+            fallback(Arc::clone(&registry), Arc::clone(&asked))
+        })
+        .await
+        .unwrap();
+        assert_eq!(asked.load(Ordering::SeqCst), 28);
+        let second = read_once(key(9_000_001), || {
+            fallback(Arc::clone(&registry), Arc::clone(&asked))
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            asked.load(Ordering::SeqCst),
+            28,
+            "the repeat read the registry"
+        );
+        assert_eq!(first, second);
+        assert!(cached(&key(9_000_001)).is_some());
+    }
+
+    /// Two requests at the same moment: the second waits on the network's
+    /// gate and then reads the cache the first filled.
+    #[tokio::test]
+    async fn concurrent_requests_for_the_same_agent_make_one_read() {
+        let registry = Arc::new(agent_one(|_| 90));
+        let asked = Arc::new(AtomicUsize::new(0));
+        let spawn = || {
+            let (registry, asked) = (Arc::clone(&registry), Arc::clone(&asked));
+            tokio::spawn(
+                async move { read_once(key(9_000_002), || fallback(registry, asked)).await },
+            )
+        };
+        let (a, b) = (spawn(), spawn());
+        let (a, b) = (a.await.unwrap().unwrap(), b.await.unwrap().unwrap());
+        assert_eq!(a, b);
+        assert_eq!(asked.load(Ordering::SeqCst), 28, "one read, not two");
+    }
+
+    /// Past the TTL the registry is read again, and a failed read is never
+    /// cached: the next request tries for real.
+    #[tokio::test]
+    async fn an_expired_or_failed_read_is_read_again() {
+        let registry = Arc::new(agent_one(|_| 90));
+        let asked = Arc::new(AtomicUsize::new(0));
+        for _ in 0..2 {
+            read_once_within(key(9_000_003), Duration::ZERO, || {
+                fallback(Arc::clone(&registry), Arc::clone(&asked))
+            })
+            .await
+            .unwrap();
+        }
+        assert_eq!(asked.load(Ordering::SeqCst), 56);
+
+        let failures = Arc::new(AtomicUsize::new(0));
+        for _ in 0..2 {
+            let failures = Arc::clone(&failures);
+            let answer = read_once(key(9_000_004), || async move {
+                failures.fetch_add(1, Ordering::SeqCst);
+                Err::<(Summary, Coverage), String>("node unavailable".into())
+            })
+            .await;
+            assert!(answer.is_err());
+        }
+        assert_eq!(failures.load(Ordering::SeqCst), 2);
+        assert!(cached(&key(9_000_004)).is_none());
+    }
+
     /// `/docs` states the limits; this keeps the prose on the constants.
     #[test]
     fn the_documented_limits_are_these() {
@@ -527,6 +748,10 @@ mod tests {
         );
         assert!(openapi.contains(&format!(
             "up to {MAX_LISTED_UNREADABLE} `unreadableClients`"
+        )));
+        assert!(openapi.contains(&format!(
+            "cached for {} s per agent and query",
+            CACHE_TTL.as_secs()
         )));
     }
 

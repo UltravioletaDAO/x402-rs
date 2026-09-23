@@ -8841,6 +8841,20 @@ where
 
     let agent_id_u256 = alloy::primitives::U256::from(agent_id);
 
+    // An agent one registry call cannot summarize is read in groups, ~30
+    // calls. That answer is cached for a minute: a repeat of the question
+    // costs no RPC call at all, not even `getClients`.
+    let fallback_key = crate::erc8004::summary::FallbackKey {
+        network,
+        agent_id,
+        tag1: query.tag1.clone(),
+        tag2: query.tag2.clone(),
+        client_addresses: query.client_addresses.clone(),
+    };
+    if let Some((summary, coverage)) = crate::erc8004::summary::cached(&fallback_key) {
+        return chunked_reputation_response(agent_id, network, summary, coverage);
+    }
+
     // Resolve client addresses: parse from query param or auto-discover via getClients()
     let client_addresses: Vec<alloy::primitives::Address> = if query.client_addresses.is_empty() {
         // Auto-discover all clients who have given feedback to this agent
@@ -9003,12 +9017,16 @@ where
             // more than the registry can walk (Arc testnet agent 1, one client
             // with 77,447 entries). Read it in groups and say what was covered.
             // A transport failure is not retried: it would fail again per group.
-            use crate::erc8004::summary::{is_refusal, read_group, summarize_in_chunks};
+            // One such read per network at a time; a caller that waited reads
+            // the cache its predecessor filled.
+            use crate::erc8004::summary::{is_refusal, read_group, read_once, summarize_in_chunks};
             let fallback = if is_refusal(&e) {
-                summarize_in_chunks(&client_addresses, |group| {
-                    let registry = reputation_registry.clone();
-                    let (tag1, tag2) = (query.tag1.clone(), query.tag2.clone());
-                    async move { read_group(&registry, agent_id_u256, group, tag1, tag2).await }
+                read_once(fallback_key, || {
+                    summarize_in_chunks(&client_addresses, |group| {
+                        let registry = reputation_registry.clone();
+                        let (tag1, tag2) = (query.tag1.clone(), query.tag2.clone());
+                        async move { read_group(&registry, agent_id_u256, group, tag1, tag2).await }
+                    })
                 })
                 .await
             } else {
@@ -9027,21 +9045,7 @@ where
                         calls = coverage.calls,
                         "[WARN] reputation summary read in groups: one call over every client was refused"
                     );
-                    let response = ReputationResponse {
-                        agent_id,
-                        summary: ReputationSummary {
-                            agent_id,
-                            count: summary.count,
-                            summary_value: summary.value,
-                            summary_value_decimals: summary.decimals,
-                            network: network.clone(),
-                        },
-                        feedback: None,
-                        atom_stats: None,
-                        coverage: Some(coverage),
-                        network,
-                    };
-                    (StatusCode::OK, Json(response)).into_response()
+                    chunked_reputation_response(agent_id, network, summary, coverage)
                 }
                 Err(reason) => {
                     let correlation_id = uuid::Uuid::new_v4();
@@ -9064,6 +9068,30 @@ where
             }
         }
     }
+}
+
+/// A reputation summary combined from groups of clients, with what it covered.
+fn chunked_reputation_response(
+    agent_id: u64,
+    network: crate::network::Network,
+    summary: crate::erc8004::summary::Summary,
+    coverage: crate::erc8004::summary::Coverage,
+) -> Response {
+    let response = ReputationResponse {
+        agent_id,
+        summary: ReputationSummary {
+            agent_id,
+            count: summary.count,
+            summary_value: summary.value,
+            summary_value_decimals: summary.decimals,
+            network,
+        },
+        feedback: None,
+        atom_stats: None,
+        coverage: Some(coverage),
+        network,
+    };
+    (StatusCode::OK, Json(response)).into_response()
 }
 
 /// Path parameters for identity query

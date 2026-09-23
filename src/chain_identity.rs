@@ -27,8 +27,10 @@
 //! stopped the whole process, for every network, over one network's probe.
 //!
 //! Alert tokens, counted by the CloudWatch metric filter in
-//! `alerts-evm-chain-id.tf`: `evm_rpc_chain_id_mismatch` (any network) and
-//! `arc_rpc_chain_id_unverified` (Arc served without an answer).
+//! `alerts-network-startup.tf`: `evm_rpc_chain_id_mismatch` (any network) and
+//! `arc_rpc_chain_id_unverified` (Arc served without an answer). Native
+//! Hedera's startup health check follows the same rule and logs
+//! `hedera_health_failed_at_startup` (`src/chain/hedera/mod.rs`).
 
 use std::sync::Arc;
 use std::time::Duration;

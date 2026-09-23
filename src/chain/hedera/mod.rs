@@ -76,7 +76,21 @@ impl FromEnvByNetworkBuild for HederaProvider {
             mirror,
             store,
         };
-        provider.health().await?;
+        // A failed health check at startup leaves this ledger out of /supported
+        // and alerts; it never fails the build. Through 2.39.1 it was `?`, and
+        // `ProviderCache::from_env` turned that into `exit(1)` for every network.
+        // Recovery still starts: it only finishes payments admitted before the
+        // restart, retries on its own, and admits nothing new.
+        if let Err(reason) = provider.health().await {
+            tracing::error!(
+                %network,
+                reason = %crate::redact::scrub_urls(&reason),
+                "[FAIL] hedera_health_failed_at_startup: {network} is not served; \
+                 recovery of admitted payments still runs"
+            );
+            provider.start_recovery();
+            return Ok(None);
+        }
         if let Ok(mut registry) = ASSET_DECIMALS.write() {
             for (asset, decimals) in &provider.config.assets {
                 registry.insert((network, asset.to_string()), *decimals);

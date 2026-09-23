@@ -1,5 +1,7 @@
-# Alarm for an EVM RPC that answers for a different chain than the one the
-# facilitator signs for, or an Arc RPC served without having answered.
+# Alarm for a network whose startup probe did not pass: an EVM RPC that answers
+# for a different chain than the one the facilitator signs for, an Arc RPC served
+# without having answered, or a native Hedera ledger left out because its health
+# check failed at startup.
 #
 # Created by the pipeline: the two addresses below are in the `-target` list of
 # the "Deploy observability" step in .github/workflows/ci.yaml.
@@ -23,19 +25,22 @@
 #
 # Arc is admitted before it is served: a mismatch leaves Arc out of /supported
 # (same `evm_rpc_chain_id_mismatch` token), and an RPC that does not answer in
-# time serves Arc and logs `arc_rpc_chain_id_unverified`. Through 2.39.1 both
-# were an error that stopped the whole process at startup.
+# time serves Arc and logs `arc_rpc_chain_id_unverified`. Native Hedera that
+# fails its health check at startup is left out of /supported and logs
+# `hedera_health_failed_at_startup`; recovery of payments admitted before the
+# restart still runs. Through 2.39.1 all three were an error that stopped the
+# whole process, for every network, over one network's probe.
 #
 # Filter-pattern note: substrings, as in alerts-evm-stuck-tx.tf. This log
 # group is ANSI-coloured and the colour codes split key=value tokens, so the
 # match is on the message tokens, spelled without spaces; `?` makes it either.
-resource "aws_cloudwatch_log_metric_filter" "evm_rpc_chain_id" {
-  name           = "facilitator-evm-rpc-chain-id"
+resource "aws_cloudwatch_log_metric_filter" "network_startup_probe" {
+  name           = "facilitator-network-startup-probe"
   log_group_name = aws_cloudwatch_log_group.facilitator.name
-  pattern        = "?evm_rpc_chain_id_mismatch ?arc_rpc_chain_id_unverified"
+  pattern        = "?evm_rpc_chain_id_mismatch ?arc_rpc_chain_id_unverified ?hedera_health_failed_at_startup"
 
   metric_transformation {
-    name      = "EvmRpcChainIdAlert"
+    name      = "NetworkStartupProbeAlert"
     namespace = "Facilitator/ChainRail"
     value     = "1"
     unit      = "Count"
@@ -48,10 +53,10 @@ resource "aws_cloudwatch_log_metric_filter" "evm_rpc_chain_id" {
 # there is no blip to ride out, the RPC either answers for the chain or not.
 # The alarm returns to OK on the next quiet period, and fires again on the next
 # task start if nothing was fixed.
-resource "aws_cloudwatch_metric_alarm" "evm_rpc_chain_id" {
-  alarm_name          = "facilitator-${var.environment}-evm-rpc-chain-id"
-  namespace           = aws_cloudwatch_log_metric_filter.evm_rpc_chain_id.metric_transformation[0].namespace
-  metric_name         = aws_cloudwatch_log_metric_filter.evm_rpc_chain_id.metric_transformation[0].name
+resource "aws_cloudwatch_metric_alarm" "network_startup_probe" {
+  alarm_name          = "facilitator-${var.environment}-network-startup-probe"
+  namespace           = aws_cloudwatch_log_metric_filter.network_startup_probe.metric_transformation[0].namespace
+  metric_name         = aws_cloudwatch_log_metric_filter.network_startup_probe.metric_transformation[0].name
   statistic           = "Sum"
   period              = 300
   evaluation_periods  = 1
@@ -60,13 +65,13 @@ resource "aws_cloudwatch_metric_alarm" "evm_rpc_chain_id" {
   comparison_operator = "GreaterThanOrEqualToThreshold"
   treat_missing_data  = "notBreaching"
 
-  alarm_description = "An EVM RPC answered eth_chainId with a different chain than the facilitator signs for (log token evm_rpc_chain_id_mismatch, naming the network and both ids): Arc is then left out of /supported, any other network stays served and its payments fail on-chain until the RPC URL or the chain id in EvmChain::try_from is corrected. Or Arc is served without its RPC having answered eth_chainId at startup (arc_rpc_chain_id_unverified). Checked once per task start by src/chain_identity.rs."
+  alarm_description = "An EVM RPC answered eth_chainId with a different chain than the facilitator signs for (log token evm_rpc_chain_id_mismatch, naming the network and both ids): Arc is then left out of /supported, any other network stays served and its payments fail on-chain until the RPC URL or the chain id in EvmChain::try_from is corrected. Or Arc is served without its RPC having answered eth_chainId at startup (arc_rpc_chain_id_unverified). Or native Hedera failed its health check at startup and is not served (hedera_health_failed_at_startup; recovery of admitted payments still runs). Checked once per task start (src/chain_identity.rs, src/chain/hedera/mod.rs)."
 
   alarm_actions = [aws_sns_topic.alerts.arn]
   ok_actions    = [aws_sns_topic.alerts.arn]
 
   tags = {
-    Name        = "facilitator-${var.environment}-evm-rpc-chain-id"
+    Name        = "facilitator-${var.environment}-network-startup-probe"
     Environment = var.environment
   }
 }

@@ -3,7 +3,7 @@
   "serverInfo": {
     "name": "x402-facilitator",
     "title": "x402 Payment Facilitator",
-    "description": "Verify and settle x402 gasless stablecoin payments across EVM, Solana, NEAR, Stellar, Algorand, Sui and XRPL. Charges no fee, authenticates no caller: the payer's signature is the only authority.",
+    "description": "Verify and settle x402 gasless stablecoin payments across EVM, Solana, NEAR, Stellar, Algorand, Sui, XRPL and Hedera. Charges no fee, authenticates no caller: the payer's signature is the only authority.",
     "vendor": "Ultravioleta DAO",
     "homepage": "https://facilitator.ultravioletadao.xyz",
     "documentation": "https://facilitator.ultravioletadao.xyz/skill.md",

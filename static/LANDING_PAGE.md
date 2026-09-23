@@ -28,8 +28,8 @@ Keep those capability lists separate and derived from their own sources.
 - Regenerate `llms-full.txt` with `scripts/build_llms_full.sh`.
 - Link previews are network-agnostic: every page's `og:image` is `logo.png`, and a
   preview never singles out one network, token or team (a list of all of them is
-  fine). No page references `og-arc-hedera.svg`/`.png` any more; its Rust route
-  still serves the PNG.
+  fine). The Arc/Hedera card (`og-arc-hedera.png`/`.svg`) and its route were
+  retired in 2.39.2, once nothing referenced them.
 - Run `scripts/verify_landing_canonical.py --offline` and the affected Rust checks,
   then verify the deployed version, live discovery, real UI filter clicks and links.
 

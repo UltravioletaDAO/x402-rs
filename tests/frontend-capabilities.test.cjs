@@ -133,3 +133,80 @@ test('landing: the dot sits in the lower-left corner, does not move the card and
   assert(loader.includes("setAttribute('aria-label', health.label)"));
   assert(html.includes('<script src="/x402.js?v=20260923"></script>'),'a cached x402.js without cardHealth must not be served to this page');
 });
+
+// The owner's rule: a supported network never leaves the landing because of its
+// health. This runs the landing's own status loader over every real card, through
+// a degraded and a down network, an unreadable answer (429 body) and a failed
+// fetch, and counts the cards each time. Only the dot may come and go.
+test('landing: health never removes or hides a card; the dot follows degraded/down only', async () => {
+  const html=fs.readFileSync(path.join(root,'static/index.html'),'utf8');
+  const loader=html.slice(html.indexOf('(function loadNetworkStatus()'),html.indexOf('// Curated Bazaar counters.'));
+  const keys=[...html.matchAll(/data-tokens="([^"]+)"/g)].map(m=>m[1]);
+  assert(keys.length>=40 && keys.includes('hedera-mainnet') && keys.includes('ethereum-mainnet'));
+
+  const grid=[];
+  for (const key of keys) {
+    const card={key,style:{},children:[]};
+    card.container={dataset:{tokens:key},closest:sel=>sel==='.network-badge'?card:null};
+    card.querySelector=sel=>sel===':scope > .network-status'?card.children.find(c=>c.className==='network-status')||null:null;
+    card.append=el=>{el.parent=card;card.children.push(el);};
+    card.remove=()=>grid.splice(grid.indexOf(card),1);
+    grid.push(card);
+  }
+  const document={hidden:false,
+    querySelectorAll:sel=>sel==='.network-badge [data-tokens]'?grid.map(c=>c.container):[],
+    createElement:tag=>{const el={tag,attrs:{},title:'',className:''};
+      el.setAttribute=(k,v)=>{el.attrs[k]=String(v);};
+      el.remove=()=>el.parent.children.splice(el.parent.children.indexOf(el),1);
+      return el;}};
+  const ready={status:'down',networks:[
+    {network:'base',caip2:'eip155:8453',status:'ok'},
+    {network:'ethereum',caip2:'eip155:1',status:'degraded',reason:'signer_gas_low'},
+    {network:'hedera',caip2:'hedera:mainnet',status:'down',reason:'rpc_timeout'},
+  ]};
+  const answers=[
+    ()=>Promise.resolve({json:()=>Promise.resolve(ready)}),
+    ()=>Promise.resolve({json:()=>Promise.resolve({error:'rate_limited'})}),
+    ()=>Promise.reject(new Error('offline')),
+    ()=>Promise.resolve({json:()=>Promise.resolve(ready)}),
+  ];
+  let tick;
+  const sandbox={document,window:{},console,
+    fetch:()=>answers.shift()(),setInterval:fn=>{tick=fn;},
+    readinessIndex:context.readinessIndex,cardHealth:context.cardHealth,
+    translations:{en:{'netstatus.degraded':'degraded','netstatus.down':'down'},es:{'netstatus.degraded':'degradada','netstatus.down':'caída'}},
+    currentLang:'en'};
+  const settle=()=>new Promise(r=>setTimeout(r,5));
+  const dots=()=>Object.fromEntries(grid.filter(c=>c.children.length).map(c=>[c.key,c.children.map(d=>d.attrs['aria-label'])]));
+  const unchanged=()=>{
+    assert.equal(grid.length,keys.length,'a card left the grid');
+    assert.deepEqual(grid.map(c=>c.key),keys,'the grid changed order');
+    grid.forEach(c=>assert.deepEqual(c.style,{},`${c.key} was restyled`));
+  };
+
+  vm.runInNewContext(loader,sandbox);
+  await settle();
+  unchanged();
+  assert.deepEqual(dots(),{'ethereum-mainnet':['degraded: signer_gas_low'],'hedera-mainnet':['down: rpc_timeout']});
+  const dot=grid.find(c=>c.key==='hedera-mainnet').children[0];
+  assert.equal(dot.title,'down: rpc_timeout');
+  assert.equal(dot.attrs.role,'img');
+
+  for (const what of ['an unreadable answer','a failed fetch']) {
+    tick(); await settle();
+    unchanged();
+    assert.deepEqual(dots(),{},`${what} must clear the dots, never add one`);
+  }
+
+  tick(); await settle();
+  sandbox.currentLang='es';
+  sandbox.window.__repaintNetworkStatus();
+  unchanged();
+  assert.deepEqual(dots(),{'ethereum-mainnet':['degradada: signer_gas_low'],'hedera-mainnet':['caída: rpc_timeout']});
+  assert.equal(answers.length,0);
+});
+test('landing: the dot label is translated in both dictionaries', () => {
+  const html=fs.readFileSync(path.join(root,'static/index.html'),'utf8');
+  for (const key of ['netstatus.degraded','netstatus.down']) assert.equal(html.split(`"${key}":`).length-1,2,key);
+  assert(html.includes("window.__repaintNetworkStatus?.();"),'a language switch relabels the dots');
+});

@@ -84,6 +84,28 @@ pub fn reprobe_delay(attempt: u32) -> std::time::Duration {
     std::time::Duration::from_secs(if attempt == 0 { 30 } else { 60 })
 }
 
+/// Wait `delay(attempt)`, run `probe`, and repeat until it gives a verdict;
+/// return that verdict with the number of attempts it took. The loop behind
+/// both startup re-probes (`chain_identity`, native Hedera), with the delay as
+/// a parameter so a test can run it without waiting a minute.
+pub async fn reprobe<T, F, Fut>(
+    mut probe: F,
+    delay: impl Fn(u32) -> std::time::Duration,
+) -> (T, u32)
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Option<T>>,
+{
+    let mut attempt = 0;
+    loop {
+        tokio::time::sleep(delay(attempt)).await;
+        attempt += 1;
+        if let Some(verdict) = probe().await {
+            return (verdict, attempt);
+        }
+    }
+}
+
 fn env_secs_override(var: &str, default: u64) -> u64 {
     std::env::var(var)
         .ok()

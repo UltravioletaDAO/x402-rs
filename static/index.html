@@ -3086,6 +3086,8 @@
                 "tokens.loading": "Loading assets…",
                 "tokens.unavailable": "Assets unavailable",
                 "tokens.empty": "No stablecoins advertised",
+                "netstatus.degraded": "degraded",
+                "netstatus.down": "down",
                 "balances.explanation": "Balances fund the facilitator’s network fees. Badges show stablecoins accepted for exact payments.",
 
                 "hero.stablecoins": "7 Stablecoins Supported",
@@ -3267,6 +3269,8 @@
                 "tokens.loading": "Cargando activos…",
                 "tokens.unavailable": "Activos no disponibles",
                 "tokens.empty": "No se anuncian monedas estables",
+                "netstatus.degraded": "degradada",
+                "netstatus.down": "caída",
                 "balances.explanation": "Los saldos financian las comisiones de red del facilitador. Los iconos muestran las monedas estables admitidas para pagos exactos.",
 
                 "hero.stablecoins": "7 Stablecoins Soportadas",
@@ -3442,6 +3446,7 @@
             // "21" fallback; this overwrites it with the real number on-chain.
             applyCanonicalCounts();
             displayTokenSupport();
+            window.__repaintNetworkStatus?.();
         }
 
         // ====================================================================
@@ -3506,10 +3511,14 @@
         // read like a 200's. The route caches for 60 s, so polling at that
         // rate costs the chains nothing.
         (function loadNetworkStatus() {
+            let last = null;
             const paint = index => {
+                last = index;
+                const tr = key => translations[currentLang]?.[key] || translations.en[key];
+                const words = { degraded: tr('netstatus.degraded'), down: tr('netstatus.down') };
                 document.querySelectorAll('.network-badge [data-tokens]').forEach(container => {
                     const card = container.closest('.network-badge');
-                    const health = index ? cardHealth(index, container.dataset.tokens) : null;
+                    const health = index ? cardHealth(index, container.dataset.tokens, words) : null;
                     let dot = card.querySelector(':scope > .network-status');
                     if (!health) { dot?.remove(); return; }
                     if (!dot) {
@@ -3530,6 +3539,8 @@
                     .then(body => paint(readinessIndex(body)))
                     .catch(() => paint(null));
             };
+            // A language switch relabels the dots without asking the route again.
+            window.__repaintNetworkStatus = () => paint(last);
             refresh();
             setInterval(refresh, 60000);
         })();

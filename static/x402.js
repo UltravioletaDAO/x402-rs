@@ -170,9 +170,11 @@ function readinessIndex(body) {
 }
 
 // What a landing card shows for its chain: null while it is ok or unprobed,
-// otherwise the label of its dot ("degraded: signer_gas_low").
-function cardHealth(index, key) {
+// otherwise the label of its dot ("degraded: signer_gas_low"). `words` names
+// the state in the page's language; the reason is a token and stays as is.
+function cardHealth(index, key, words) {
   const entry = index?.get(landingNetworkName(key));
   if (!entry || (entry.status !== 'degraded' && entry.status !== 'down')) return null;
-  return {status: entry.status, label: entry.reason ? `${entry.status}: ${entry.reason}` : entry.status};
+  const state = words?.[entry.status] || entry.status;
+  return {status: entry.status, label: entry.reason ? `${state}: ${entry.reason}` : state};
 }

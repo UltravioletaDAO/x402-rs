@@ -472,35 +472,38 @@ impl HederaProvider {
         let provider = self.clone();
         tokio::spawn(async move {
             let network = provider.config.network;
-            let mut attempt = 0;
-            loop {
-                match provider.health().await {
-                    Ok(_) if attempt == 0 => return,
-                    Ok(_) => {
-                        tracing::info!(
-                            %network,
-                            attempt,
-                            "[OK] hedera_health_recovered: the ledger answers again"
-                        );
-                        return;
+            let Err(failure) = provider.health().await else {
+                return;
+            };
+            tracing::error!(
+                %network,
+                reason = failure.reason(),
+                detail = %crate::redact::scrub_urls(&failure.to_string()),
+                "[FAIL] hedera_health_failed_at_startup: {network} stays served; \
+                 /health/ready reports it and the check runs again until it passes"
+            );
+            let ((), attempts) = crate::chain::reprobe(
+                || async {
+                    match provider.health().await {
+                        Ok(_) => Some(()),
+                        Err(failure) => {
+                            tracing::debug!(
+                                %network,
+                                reason = failure.reason(),
+                                "Hedera health check still failing"
+                            );
+                            None
+                        }
                     }
-                    Err(failure) if attempt == 0 => tracing::error!(
-                        %network,
-                        reason = failure.reason(),
-                        detail = %crate::redact::scrub_urls(&failure.to_string()),
-                        "[FAIL] hedera_health_failed_at_startup: {network} stays served; \
-                         /health/ready reports it and the check runs again until it passes"
-                    ),
-                    Err(failure) => tracing::debug!(
-                        %network,
-                        attempt,
-                        reason = failure.reason(),
-                        "Hedera health check still failing"
-                    ),
-                }
-                tokio::time::sleep(crate::chain::reprobe_delay(attempt)).await;
-                attempt += 1;
-            }
+                },
+                crate::chain::reprobe_delay,
+            )
+            .await;
+            tracing::info!(
+                %network,
+                attempts,
+                "[OK] hedera_health_recovered: the ledger answers again"
+            );
         });
     }
 

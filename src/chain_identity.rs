@@ -131,7 +131,12 @@ pub fn spawn(providers: Arc<ProviderCache>) {
                             "[WARN] RPC chain id could not be read at startup; asked again"
                         );
                     }
-                    tokio::spawn(recheck(Arc::clone(&providers), network, timeout));
+                    let providers = Arc::clone(&providers);
+                    tokio::spawn(async move {
+                        if let Some(NetworkProvider::Evm(evm)) = providers.by_network(network) {
+                            recheck(evm, timeout, crate::chain::reprobe_delay).await;
+                        }
+                    });
                 }
                 Ok(None) => {}
                 Err(error) => tracing::warn!(?error, "[WARN] chain id check task failed"),
@@ -146,34 +151,37 @@ pub fn spawn(providers: Arc<ProviderCache>) {
     });
 }
 
-/// Ask one RPC that did not answer at startup again, every 30-60 s, until it
-/// gives a verdict, and log that verdict.
-async fn recheck(providers: Arc<ProviderCache>, network: Network, timeout: Duration) {
-    let Some(NetworkProvider::Evm(evm)) = providers.by_network(network) else {
-        return;
-    };
-    let mut attempt = 0;
-    loop {
-        tokio::time::sleep(crate::chain::reprobe_delay(attempt)).await;
-        attempt += 1;
-        match check(evm, timeout).await {
-            Verdict::Matches => {
-                tracing::info!(
-                    %network,
-                    attempt,
-                    "[OK] rpc_chain_id_verified: the RPC answers for the chain we sign for"
-                );
-                return;
+/// Ask an RPC that did not answer at startup again, after `delay(attempt)`
+/// each time (every 30-60 s in production), until it gives a verdict; log that
+/// verdict and return it with the attempts it took.
+async fn recheck(
+    evm: &EvmProvider,
+    timeout: Duration,
+    delay: impl Fn(u32) -> Duration,
+) -> (Verdict, u32) {
+    let network = evm.chain().network();
+    let (verdict, attempts) = crate::chain::reprobe(
+        || async {
+            match check(evm, timeout).await {
+                Verdict::Unverified => {
+                    tracing::debug!(%network, "RPC chain id still unanswered");
+                    None
+                }
+                verdict => Some(verdict),
             }
-            Verdict::Mismatch { expected, actual } => {
-                log_mismatch(network, expected, actual);
-                return;
-            }
-            Verdict::Unverified => {
-                tracing::debug!(%network, attempt, "RPC chain id still unanswered");
-            }
-        }
+        },
+        delay,
+    )
+    .await;
+    match verdict {
+        Verdict::Mismatch { expected, actual } => log_mismatch(network, expected, actual),
+        _ => tracing::info!(
+            %network,
+            attempts,
+            "[OK] rpc_chain_id_verified: the RPC answers for the chain we sign for"
+        ),
     }
+    (verdict, attempts)
 }
 
 #[cfg(test)]
@@ -247,6 +255,79 @@ mod tests {
             check(&base, Duration::from_secs(2)).await,
             Verdict::Unverified
         );
+    }
+
+    /// The loop itself: it keeps asking until the probe gives a verdict, and
+    /// waits the schedule's delay before each attempt. Without it, an RPC that
+    /// missed the startup check would never be judged.
+    #[tokio::test]
+    async fn the_reprobe_loop_asks_until_it_gets_a_verdict() {
+        let calls = std::sync::atomic::AtomicU32::new(0);
+        let delays = std::sync::Mutex::new(Vec::new());
+        let (verdict, attempts) = tokio::time::timeout(
+            Duration::from_secs(5),
+            crate::chain::reprobe(
+                || async {
+                    let n = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    (n == 3).then_some("answered")
+                },
+                |attempt| {
+                    delays.lock().unwrap().push(attempt);
+                    Duration::from_millis(1)
+                },
+            ),
+        )
+        .await
+        .expect("the loop stopped asking before it got a verdict");
+        assert_eq!((verdict, attempts), ("answered", 4));
+        assert_eq!(calls.into_inner(), 4);
+        assert_eq!(delays.into_inner().unwrap(), [0, 1, 2, 3]);
+    }
+
+    /// The EVM re-check end to end: an RPC that cannot answer `eth_chainId`
+    /// twice, then answers for the right chain, is judged on the third try; one
+    /// that then answers for another chain is judged a mismatch.
+    #[tokio::test]
+    async fn an_rpc_that_did_not_answer_at_startup_is_judged_when_it_does() {
+        for (answer, expected) in [
+            (8453u64, Verdict::Matches),
+            (
+                44787,
+                Verdict::Mismatch {
+                    expected: 8453,
+                    actual: 44787,
+                },
+            ),
+        ] {
+            let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+            let seen = Arc::clone(&calls);
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}/", listener.local_addr().unwrap());
+            let app = Router::new().route(
+                "/",
+                post(move |Json(req): Json<Value>| {
+                    let seen = Arc::clone(&seen);
+                    async move {
+                        // Twice an answer that is not a chain id, then a real one.
+                        let result = if seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2 {
+                            json!("not-a-chain-id")
+                        } else {
+                            json!(format!("{answer:#x}"))
+                        };
+                        Json(json!({"jsonrpc": "2.0", "id": req["id"], "result": result}))
+                    }
+                }),
+            );
+            tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let base = base_on(&url).await;
+            let (verdict, attempts) = tokio::time::timeout(
+                Duration::from_secs(10),
+                recheck(&base, Duration::from_secs(2), |_| Duration::from_millis(1)),
+            )
+            .await
+            .expect("the re-check stopped asking before it got a verdict");
+            assert_eq!((verdict, attempts), (expected, 3));
+        }
     }
 
     /// Bounded: never faster than every 30 s, never slower than every 60 s.

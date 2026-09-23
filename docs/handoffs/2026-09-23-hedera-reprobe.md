@@ -108,6 +108,18 @@ El fallo determinista de Hedera (llave ajena) se prueba sobre la respuesta del M
 sobre la calificación de readiness, no de punta a punta: exigiría un nodo de consenso gRPC que
 conteste, y no quise tráfico a la testnet real desde un test.
 
+## Ronda 2 (refutador: MERGEABLE CON RONDA, 0 P0/P1)
+
+| # | Hallazgo | Qué cambió | Cómo se prueba |
+|---|---|---|---|
+| P2-1 | `CHANGELOG.md`: la edición reemplazó el encabezado `## [2.39.3]`, así que las entradas de recibos (#100) quedaban publicadas como 2.39.4 | Se repone `## [2.39.3]` debajo de las entradas de 2.39.4 | el bloque 2.39.3 es idéntico byte a byte al de `3056181e` (`diff` de las dos secciones, vacío) |
+| P2-2 | "Ninguna tarjeta desaparece" no tenía test: cambiar `paint` por `card.remove()` dejaba 11/11 en verde | Test que ejecuta el cargador real de la portada (`loadNetworkStatus`, sacado de `index.html`) sobre un DOM falso con las 44 tarjetas reales. Pasa por una red degraded, una down, un 429 ilegible y un fetch que falla. En cada paso cuenta las tarjetas, verifica el orden y que ningún `style` se tocó, y que el punto aparezca solo en degraded/down | mutaciones en rojo: `card.remove()`, `card.style.display = 'none'`, fetch fallido que no limpia, idioma que no re-etiqueta |
+| P3 | El bucle de re-probe no tenía test: apagarlo dejaba 52/52 en verde | El bucle pasa a `crate::chain::reprobe(probe, delay)`, con el retardo como parámetro. Lo usan Hedera (`watch_startup_health`) y el re-check EVM (`recheck`, que ahora devuelve su veredicto). Dos tests: el bucle pregunta hasta tener veredicto y espera antes de cada intento (retardos 0,1,2,3), y un RPC que no contesta dos veces es juzgado al tercero (`Matches` o `Mismatch`) | mutaciones en rojo: el re-check se rinde con el primer silencio, el bucle no espera, el bucle da una sola vuelta. Los dos tests tienen tope de tiempo, así que un bucle colgado falla en segundos y no a los 35 min del job |
+| P3 | Etiqueta del punto solo en inglés | La portada es bilingüe: `netstatus.degraded` / `netstatus.down` en los dos diccionarios (`degradada`, `caída`); el motivo sigue siendo el token. Un cambio de idioma re-etiqueta los puntos sin volver a consultar la ruta | el test de P2-2 cambia a `es` y lee `degradada: signer_gas_low` / `caída: rpc_timeout` |
+
+Lo que queda sin test: que `from_env` de Hedera realmente lance `watch_startup_health`. Para
+probarlo haría falta que el health pasara, y eso exige un nodo de consenso gRPC.
+
 ## Para c0der
 
 - **Terraform**: solo cambia el texto (comentario y `alarm_description`) de

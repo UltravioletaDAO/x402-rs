@@ -63,7 +63,7 @@
 <tr>
 <td><code>POST /feedback/evm/prepare</code><br/><code>POST /feedback/evm/submit</code></td>
 <td data-i18n="au.evm">EIP-7702: the rater delegates their EOA to a feedback delegate and signs a digest; we send a type-4 transaction <em>to the rater's own address</em>, so the registry sees the rater as <code>msg.sender</code></td>
-<td data-i18n="au.evmWhere">only where a delegate is deployed <b>and verified on chain</b> — today <code>base-sepolia</code> alone. Mainnet waits on that deploy, and the table lives in the code rather than in this sentence</td>
+<td data-i18n="au.evmWhere">only where a delegate is deployed <b>and verified on chain</b> — today <code>base</code>, <code>ethereum</code>, <code>polygon</code>, <code>arbitrum</code>, <code>optimism</code>, <code>celo</code>, <code>bsc</code>, <code>monad</code>, <code>arc</code> and <code>base-sepolia</code>. Every other network answers 400, and the table lives in the code rather than in this sentence</td>
 </tr>
 <tr>
 <td><code>POST /feedback/solana/prepare</code><br/><code>POST /feedback/solana/submit</code></td>
@@ -269,7 +269,7 @@ const I18N = {
     "au.th.how": "how the rater stays the author",
     "au.th.where": "where",
     "au.evm": "EIP-7702: the rater delegates their EOA to a feedback delegate and signs a digest; we send a type-4 transaction <em>to the rater's own address</em>, so the registry sees the rater as <code>msg.sender</code>",
-    "au.evmWhere": "only where a delegate is deployed <b>and verified on chain</b> — today <code>base-sepolia</code> alone. Mainnet waits on that deploy, and the table lives in the code rather than in this sentence",
+    "au.evmWhere": "only where a delegate is deployed <b>and verified on chain</b> — today <code>base</code>, <code>ethereum</code>, <code>polygon</code>, <code>arbitrum</code>, <code>optimism</code>, <code>celo</code>, <code>bsc</code>, <code>monad</code>, <code>arc</code> and <code>base-sepolia</code>. Every other network answers 400, and the table lives in the code rather than in this sentence",
     "au.svm": "a partially-signed transaction: the rater signs as <code>client</code>, the facilitator stays fee payer only",
     "au.svmWhere": "<code>submit</code> refuses any transaction that is not byte-for-byte the one it built",
     "h.proof": "Payment evidence for feedback",
@@ -366,7 +366,7 @@ const I18N = {
     "au.th.how": "cómo el calificador sigue siendo el autor",
     "au.th.where": "dónde",
     "au.evm": "EIP-7702: el calificador delega su EOA a un delegado de feedback y firma un digest; nosotros mandamos una transacción tipo 4 <em>a la dirección del propio calificador</em>, así el registro lo ve a él como <code>msg.sender</code>",
-    "au.evmWhere": "solo donde hay un delegado desplegado <b>y verificado on-chain</b> — hoy únicamente <code>base-sepolia</code>. Mainnet espera ese deploy, y la tabla vive en el código y no en esta frase",
+    "au.evmWhere": "solo donde hay un delegado desplegado <b>y verificado on-chain</b> — hoy <code>base</code>, <code>ethereum</code>, <code>polygon</code>, <code>arbitrum</code>, <code>optimism</code>, <code>celo</code>, <code>bsc</code>, <code>monad</code>, <code>arc</code> y <code>base-sepolia</code>. Cualquier otra red contesta 400, y la tabla vive en el código y no en esta frase",
     "au.svm": "una transacción parcialmente firmada: el calificador firma como <code>client</code> y el facilitador queda solo como pagador de la comisión",
     "au.svmWhere": "<code>submit</code> rechaza cualquier transacción que no sea byte a byte la que él mismo armó",
     "h.proof": "Evidencia de pago de las reseñas",

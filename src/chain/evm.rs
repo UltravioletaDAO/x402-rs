@@ -1277,6 +1277,41 @@ impl EvmProvider {
                         ));
                     }
 
+                    // Under a receipt admission the bytes stored before this
+                    // send are the admission's only transaction
+                    // (`receipts::prepared_evm` refuses a second). A retry
+                    // would allocate and sign another nonce only to have it
+                    // refused, leaving a nonce nothing will ever broadcast for
+                    // the signer's next settle to queue behind.
+                    //
+                    // A node that says it already holds the bytes was answered
+                    // above. This one refused them on nonce grounds: this send
+                    // did not queue them, and nothing else is signed or sent.
+                    // The rail cannot tell whether the same bytes are held
+                    // elsewhere, so the receipt keeps them `unknown` and the
+                    // caller resends the same request; it is never invited to
+                    // sign a replacement.
+                    //
+                    // The signer's counter is left with no gap: the arms above
+                    // already make the next allocation ask the node, and a
+                    // refusal saying our nonce is AHEAD of the node (`too
+                    // high`, or a `gap` phrasing) also drops the high-water
+                    // mark, so that allocation takes the node's count as is
+                    // instead of waiting out `NONCE_TRUST_CHAIN_AFTER_DRIFT`.
+                    if is_nonce_error(&error_str) && crate::receipts::active() {
+                        if is_nonce_gap(&error_str) {
+                            self.nonce_manager.resync_to_chain(from_address).await;
+                        }
+                        tracing::warn!(
+                            %from_address,
+                            network = %self.chain.network,
+                            error = %crate::redact::scrub_urls(&error_str),
+                            "Nonce error under a receipt admission, not retrying: \
+                             the admission holds one prepared transaction"
+                        );
+                        return Err(FacilitatorLocalError::ContractCall(error_str));
+                    }
+
                     if is_nonce_error(&error_str) && attempt < MAX_NONCE_RETRIES {
                         // Safety check: if the confirmed TX count advanced, the
                         // "failed" TX was actually mined by a different RPC node.
@@ -1502,6 +1537,14 @@ pub(crate) fn is_mempool_full(error: &str) -> bool {
 pub(crate) fn is_nonce_too_high(error: &str) -> bool {
     let lower = error.to_lowercase();
     lower.contains("nonce") && lower.contains("too high")
+}
+
+/// A nonce refusal that says our nonce is ahead of the node's view, in the
+/// `too high` phrasing or a `gap` one. Only the receipt-admission path acts on
+/// the `gap` phrasing: outside an admission the retry loop keeps its own rules.
+fn is_nonce_gap(error: &str) -> bool {
+    let lower = error.to_lowercase();
+    is_nonce_too_high(&lower) || (lower.contains("nonce") && lower.contains("gap"))
 }
 
 /// Check if a transport error is a nonce-related error that can be retried.
@@ -4689,6 +4732,163 @@ mod settlement_unconfirmed_tests {
         assert!(sent.latched);
         assert!(sent.prepared.is_some(), "bytes are stored before the send");
         assert_eq!(sent.unsent, None, "a mark after the latch released a send");
+    }
+
+    /// A node with a transaction count, refusals queued for the next raw sends,
+    /// and a record of the nonce of every raw transaction it was sent.
+    #[derive(Default)]
+    struct NonceNode {
+        /// What `eth_getTransactionCount` answers, whatever the block tag.
+        count: u64,
+        /// Served in order to the next raw sends: the node's message, and the
+        /// count it reports from then on.
+        refusals: std::collections::VecDeque<(&'static str, u64)>,
+        sent: Vec<u64>,
+    }
+    type SharedNode = Arc<std::sync::Mutex<NonceNode>>;
+
+    async fn spawn_node(node: NonceNode) -> (String, SharedNode) {
+        use alloy::consensus::Transaction as _;
+        use alloy::eips::Decodable2718 as _;
+        use axum::extract::State;
+        async fn serve(
+            State(node): State<SharedNode>,
+            AxumJson(body): AxumJson<Value>,
+        ) -> AxumJson<Value> {
+            let one = |req: &Value| {
+                let id = req.get("id").cloned().unwrap_or(json!(1));
+                let method = req.get("method").and_then(Value::as_str).unwrap_or("");
+                let mut node = node.lock().unwrap();
+                let result = match method {
+                    "eth_getTransactionCount" => json!(format!("0x{:x}", node.count)),
+                    "eth_sendRawTransaction" => {
+                        let raw = req["params"][0].as_str().unwrap_or_default();
+                        let raw = hex::decode(raw.trim_start_matches("0x")).unwrap();
+                        let tx =
+                            alloy::consensus::TxEnvelope::decode_2718(&mut raw.as_slice()).unwrap();
+                        node.sent.push(tx.nonce());
+                        if let Some((message, count)) = node.refusals.pop_front() {
+                            node.count = count;
+                            return json!({"jsonrpc": "2.0", "id": id,
+                                "error": {"code": -32000, "message": message}});
+                        }
+                        json!(SUBMITTED_TX)
+                    }
+                    other => answer(other),
+                };
+                json!({"jsonrpc": "2.0", "id": id, "result": result})
+            };
+            AxumJson(match &body {
+                Value::Array(reqs) => Value::Array(reqs.iter().map(one).collect()),
+                req => one(req),
+            })
+        }
+        let node = Arc::new(std::sync::Mutex::new(node));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = Router::new()
+            .route("/", post(serve))
+            .with_state(node.clone());
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (format!("http://{addr}/"), node)
+    }
+
+    async fn base_provider(url: &str) -> EvmProvider {
+        EvmProvider::try_new(
+            EthereumWallet::from(PrivateKeySigner::random()),
+            url,
+            false,
+            Network::Base,
+        )
+        .await
+        .expect("provider")
+    }
+
+    /// Refused before it could queue, so the send ends at once and the nonce
+    /// it carried is all a test needs from it.
+    const PRE_BROADCAST_REFUSAL: &str = "insufficient funds for gas * price + value";
+
+    /// Under a receipt admission the bytes stored before the send are the
+    /// admission's only transaction. A node that refuses them on nonce grounds
+    /// ends the settle there: one broadcast, the node's own refusal as the
+    /// answer, the bytes kept, and no second nonce allocated or signed. The
+    /// node's count does not move, so outside an admission this is retried.
+    #[tokio::test]
+    async fn under_a_receipt_admission_a_nonce_refusal_signs_no_second_transaction() {
+        let (url, node) = spawn_node(NonceNode {
+            refusals: [("nonce too low: next nonce 5, tx nonce 0", 0)].into(),
+            ..Default::default()
+        })
+        .await;
+        let provider = base_provider(&url).await;
+
+        let refused = crate::receipts::with_test_admission(async {
+            provider.send_transaction(meta_transaction()).await
+        })
+        .await;
+
+        assert!(
+            matches!(&refused.output, Err(FacilitatorLocalError::ContractCall(e)) if is_nonce_error(e)),
+            "the node's own refusal is the answer: {:?}",
+            refused.output
+        );
+        assert_eq!(node.lock().unwrap().sent, [0]);
+        assert!(refused.latched);
+        assert!(refused.prepared.is_some(), "the stored transaction is kept");
+    }
+
+    /// After that refusal the signer's next settle, sent at once, carries the
+    /// nonce the node expects: nothing is left allocated in between. One case
+    /// per kind of refusal: the slot is taken (`too low`), and the node is
+    /// behind our counter (`too high`, and a `gap` phrasing).
+    #[tokio::test]
+    async fn after_a_nonce_refusal_under_admission_the_next_settle_takes_the_nodes_nonce() {
+        for (refusal, count_before, count_after) in [
+            ("nonce too low: next nonce 5, tx nonce 0", 0, 5),
+            ("nonce too high: tx nonce 3, state nonce 0", 3, 0),
+            ("nonce gap: tx nonce 3, account nonce 0", 3, 0),
+        ] {
+            let (url, node) = spawn_node(NonceNode {
+                count: count_before,
+                refusals: [(refusal, count_after), (PRE_BROADCAST_REFUSAL, count_after)].into(),
+                ..Default::default()
+            })
+            .await;
+            let provider = base_provider(&url).await;
+
+            for _ in 0..2 {
+                let settle = crate::receipts::with_test_admission(async {
+                    provider.send_transaction(meta_transaction()).await
+                })
+                .await;
+                assert!(settle.output.is_err(), "{refusal}: {:?}", settle.output);
+            }
+
+            assert_eq!(
+                node.lock().unwrap().sent,
+                [count_before, count_after],
+                "{refusal}: the next settle did not take the node's nonce"
+            );
+        }
+    }
+
+    /// Outside an admission a nonce refusal is still retried, as before.
+    #[tokio::test]
+    async fn outside_an_admission_a_nonce_refusal_is_still_retried() {
+        const TOO_LOW: &str = "nonce too low: next nonce 5, tx nonce 0";
+        let (url, node) = spawn_node(NonceNode {
+            refusals: [(TOO_LOW, 0), (TOO_LOW, 0), (TOO_LOW, 0)].into(),
+            ..Default::default()
+        })
+        .await;
+        let provider = base_provider(&url).await;
+
+        let result = provider.send_transaction(meta_transaction()).await;
+
+        assert!(result.is_err(), "{result:?}");
+        assert_eq!(node.lock().unwrap().sent.len(), 3);
     }
 
     /// The production wiring: `NetworkProvider` marks any EVM settle error.

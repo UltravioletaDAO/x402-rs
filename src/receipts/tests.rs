@@ -1112,6 +1112,74 @@ async fn the_binding_that_admitted_a_payment_recovers_its_lost_response() {
     }
 }
 
+/// A nonce refusal of the stored transaction on Base, as the EVM provider ends
+/// it under an admission (`chain::evm`: no second transaction). The answer is
+/// the node's `502 upstream_nonce_or_mempool` with the receipt `unknown` and
+/// naming the stored transaction, never a success or a verdict that invites a
+/// new signature. The purchase that admitted it gets the same answer and the
+/// stored receipt back without anything being sent again; another request for
+/// the same authorization is refused without the receipt.
+#[tokio::test]
+async fn a_nonce_refusal_under_admission_stays_unknown_and_is_resent_not_resigned() {
+    let stored = format!("0x{}", "33".repeat(32));
+    let body = body_on("base", BASE_USDC, 9);
+    TEST_SERVICE
+        .scope(service_fixture(), async {
+            let refused = settle(
+                &MockFacilitator { invalid: false },
+                &headers(),
+                &body,
+                async {
+                    prepared_evm(stored.clone(), vec![4, 5, 6]).await.unwrap();
+                    sending();
+                    crate::chain::FacilitatorLocalError::ContractCall(
+                        "ErrorResp(ErrorPayload { code: -32000, message: \"nonce too low: \
+                         next nonce 5, tx nonce 0\", data: None })"
+                            .into(),
+                    )
+                    .into_response()
+                },
+            )
+            .await;
+            assert_eq!(refused.status(), StatusCode::BAD_GATEWAY);
+            assert!(refused.headers().get("idempotent-replayed").is_none());
+            let first = value(refused).await;
+            assert!(
+                first["error"]
+                    .as_str()
+                    .is_some_and(|e| e.starts_with("upstream_nonce_or_mempool")),
+                "{first}"
+            );
+            assert_ne!(first["success"], true);
+            let receipt = &first["receipt"];
+            assert_eq!(receipt["network"], "eip155:8453");
+            assert_eq!(receipt["status"], "unknown");
+            assert_eq!(receipt["refusalReason"], Value::Null);
+            assert_eq!(receipt["settlement"]["id"], stored.as_str());
+            assert_eq!(receipt["retry"]["action"], "poll");
+
+            // The same purchase resent: verify reads the stored receipt, and
+            // settle replays the answer; `settle_again` panics on a send.
+            let verified = verify_again(&headers(), &body).await;
+            assert_eq!(verified["isValid"], true);
+            assert_eq!(verified["receipt"]["receiptId"], receipt["receiptId"]);
+            let again = settle_again(&headers(), &body).await;
+            assert_eq!(again.status(), StatusCode::BAD_GATEWAY);
+            assert_eq!(again.headers()["idempotent-replayed"], "true");
+            let again = value(again).await;
+            assert_eq!(again["receipt"]["receiptId"], receipt["receiptId"]);
+            assert_eq!(again["receipt"]["status"], "unknown");
+
+            // Without that purchase: refused, and the private receipt stays private.
+            let bare = settle_again(&HeaderMap::new(), &body).await;
+            assert_eq!(bare.status(), StatusCode::CONFLICT);
+            let bare = value(bare).await;
+            assert_eq!(bare["error"], "receipt_request_conflict");
+            assert!(bare.get("receipt").is_none());
+        })
+        .await;
+}
+
 #[tokio::test]
 async fn a_bare_resend_in_flight_is_refused_and_only_the_binding_gets_the_202() {
     for (network, body) in admitted_networks() {

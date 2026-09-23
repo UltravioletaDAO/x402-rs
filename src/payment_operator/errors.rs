@@ -55,6 +55,11 @@ pub enum OperatorError {
     #[error("Contract call failed: {0}")]
     ContractCall(String),
 
+    /// The operator transaction was broadcast and no verdict came back. It may
+    /// be mined, so the hash travels instead of being flattened into text.
+    #[error("Settlement unconfirmed: {0} on {1}")]
+    SettlementUnconfirmed(crate::types::TransactionHash, Network),
+
     #[error("JSON parsing error: {0}")]
     Json(#[from] serde_json::Error),
 

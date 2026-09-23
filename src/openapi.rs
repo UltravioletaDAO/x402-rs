@@ -605,7 +605,7 @@ deduplicate.
 }
 ```
 
-**Response when the transaction was broadcast and never confirmed** (`502`):
+**Response when the transaction may already be on chain** (`502`):
 ```json
 {
   "error": "settlement_unconfirmed",
@@ -615,35 +615,80 @@ deduplicate.
 }
 ```
 
-This is not a verdict. The transaction may be mined; the facilitator waited for a
-receipt and never got one. `retryable` is `false` and is load-bearing: retrying
-re-signs a **fresh** authorization for the same purchase, which is a new and
-perfectly valid payment that the token's own EIP-3009 nonce check cannot stop, so
-a retry here is how a buyer pays twice. Look the `transaction` up on chain
-instead. `paymentId` is derived exactly as on the success path, so a transaction
-later found confirmed carries the same identifier.
+This is not a verdict. The transaction was handed to the network, or may have
+been, and the facilitator never learned its fate: the receipt did not arrive,
+the node's answer to the send itself was lost (a timeout, a dropped connection,
+a gateway error), or the node said it already holds the transaction. It may be
+mined. `retryable` is `false` and is load-bearing: retrying re-signs a **fresh**
+authorization for the same purchase, which is a new and perfectly valid payment
+that the token's own EIP-3009 nonce check cannot stop, so a retry here is how a
+buyer pays twice. Look the `transaction` up on chain instead. `paymentId` is
+derived exactly as on the success path, so a transaction later found confirmed
+carries the same identifier.
+
+Every network family answers this way, with the hash in its own chain's
+encoding: EVM, Solana, NEAR, Stellar, Algorand, Sui, XRPL and native Hedera
+(where it is the transaction id). On Solana that includes the sweep of a
+settlement account (`settleSecretKey`), which answered `400
+contract_call_failed` until 2.39.6. Until 2.39.6 NEAR, Stellar, Algorand, Sui and
+XRPL reported a submission whose answer was lost as `200` with
+`success: false` and no transaction, which reads as "the payment did not
+happen".
 
 Do not collapse this with the other `502`, `upstream_rpc_unavailable`, which
 carries `Retry-After` and is a plain upstream failure. Branch on `error`.
+
+**The rule for every `/settle` failure.** An answer produced after the
+transaction may have left says so in its body: `"retryable": false`, no
+`Retry-After`, and `transaction` with its `paymentId` whenever the facilitator
+knows them. For a seller that means one thing: **do not ask the buyer to sign
+again.** Look the transaction up (on the receipt rail, poll the receipt) and
+deliver if it settled; only a transaction not found after that chain's finality
+window is gone, and only then is a new authorization safe. An answer that
+carries neither `retryable: false` nor a `transaction` was produced before
+anything was sent.
 
 **Why a chain write failed, as a token.** Since 2026-09-10 the `error` field on a
 failed write names the stage and reason rather than only saying "node or caller".
 The set is closed:
 
-| `error` | Status | `Retry-After` | What it means |
-|---|---|---|---|
-| `contract_call_failed` | 400 | — | The chain executed the call and rejected it, or the failure could not be classified. Fix the request. |
-| `facilitator_signer_unfunded` | **503** | ~300s | **The facilitator's own signer cannot cover gas on this network.** Nothing about the request is wrong. Until 2026-09-10 this was reported as `upstream_rpc_unavailable` with `Retry-After: 30`, because the node returns it under JSON-RPC code `-32000` like a genuine outage. A retry cannot help before an operator restores the signer's usable margin, so the hint is minutes and jittered. |
-| `upstream_nonce_or_mempool` | 502 | 30s | The node refused on nonce or mempool grounds and never queued the transaction. Safe to retry. |
-| `upstream_rate_limited` | 503 | 60s | The facilitator is being rate limited by this network's RPC provider. |
-| `upstream_rpc_unavailable` | 502 | 30s | The node could not answer. Unchanged. |
-| `broadcast_uncertain` | 502 | **none** | The transaction was handed to the network and no verdict was reached. Same rule as `settlement_unconfirmed`: do not retry, look it up. |
-| `receipt_pending` | 502 | **none** | Broadcast succeeded, the receipt has not arrived. Do not retry. |
-| `writer_lease_unavailable` | 503 | 5s | This facilitator task was not authorised to sign for the shared EVM signer at the moment it asked. Nothing about the request is wrong; another task can serve it within a lease interval. |
+| `error` | Status | `Retry-After` | Body | What it means for a seller |
+|---|---|---|---|---|
+| `settlement_unconfirmed` | 502 | **none** | `retryable: false`, `transaction`, `paymentId` | Sent, no verdict. **Do not ask for a new signature**: look the transaction up. |
+| `broadcast_uncertain` | 502 | **none** | `retryable: false` | The transaction may have been handed to the network and no hash can be named (the send was refused on nonce grounds after the signer's count moved). **Do not ask for a new signature**: check the payer's transfer on chain first. |
+| `receipt_pending` | 502 | **none** | `retryable: false` | Broadcast succeeded, the receipt has not arrived. **Do not ask for a new signature.** |
+| `contract_call_failed` | 400 | — | — | The chain executed the call and rejected it, or the failure could not be classified. Fix the request. |
+| `facilitator_signer_unfunded` | **503** | ~300s | — | **The facilitator's own signer cannot cover gas on this network.** Nothing about the request is wrong. Until 2026-09-10 this was reported as `upstream_rpc_unavailable` with `Retry-After: 30`, because the node returns it under JSON-RPC code `-32000` like a genuine outage. A retry cannot help before an operator restores the signer's usable margin, so the hint is minutes and jittered. |
+| `upstream_nonce_or_mempool` | 502 | 30s | — | The node refused on nonce or mempool grounds and never queued the transaction. Safe to resend the same request. |
+| `upstream_rate_limited` | 503 | 60s | — | The facilitator is being rate limited by this network's RPC provider. |
+| `upstream_rpc_unavailable` | 502 | 30s | — | The node could not answer before anything was sent. Unchanged. |
+| `writer_lease_unavailable` | 503 | 5s | — | This facilitator task was not authorised to sign for the shared EVM signer at the moment it asked. Nothing about the request is wrong; another task can serve it within a lease interval. |
 
-The absence of `Retry-After` is the signal, not the status code: two of these are
-`502` and must never be retried automatically. The escrow branch also carries an
-explicit `"retryable"` boolean in the body for the same reason.
+A task that is not the EVM signer forwards the settle to the one that is. When
+that hop fails before the signer received it, the answer is `503` with
+`reason: forward_failed` and `Retry-After: 5`: resend. When the signer may have
+received it (the hop timed out or dropped after sending, or its answer was
+lost), the answer is `502` with `reason: forward_unconfirmed`,
+`retryable: false` and no `Retry-After`: it may have been executed, so do not
+ask for a new signature.
+
+`upto`, `escrow` and the `refund` extension answer a transaction that may have
+left the same way: `502` with `success: false`, `retryable: false`, `error`
+(`settlement_unconfirmed` with `transaction` and `paymentId`, or
+`broadcast_uncertain`) and `errorReason`. Until 2.39.6 `upto` and `refund`
+answered `400` with the error text, and the escrow scheme answered without the
+hash. `fhe-transfer` settles on the FHE facilitator's side: its `502` carries
+`retryable: false` unless the request provably never reached it or it answered
+with a `4xx`.
+
+On the receipt rail (Arc and native Hedera), a failure answered after the send
+latched or its bytes were prepared carries `retryable: false`, no
+`Retry-After`, and the prepared `transaction` with its `paymentId`; so does
+`502 receipt_response_unreadable`, with the receipt. The `503` answers with
+`safeToRetry: true` sent nothing and are unchanged.
+
+The body is the signal, not the status code: three of these are `502` and must
+never be retried automatically, and each says so with `"retryable": false`.
 
 **Envelope shapes.** `/settle` and `/verify` share one parser, so both the x402
 v1 envelope (`paymentPayload` + `paymentRequirements`) and the x402 v2 envelope
@@ -661,7 +706,7 @@ accepted here on identical terms. Both are written out under `POST /verify`.
         ),
         (
             status = 502,
-            description = "`settlement_unconfirmed` / `broadcast_uncertain`: the transaction was                            broadcast and no receipt arrived, so it may be mined -- the body                            carries `retryable: false` and NO `Retry-After`. Also                            `upstream_rpc_unavailable` and `upstream_nonce_or_mempool`, which                            are retryable and carry `Retry-After`.",
+            description = "`settlement_unconfirmed` / `broadcast_uncertain` / `receipt_pending`: the                            transaction may already be on chain -- the body carries                            `retryable: false` (and `transaction` + `paymentId` when known) and                            there is NO `Retry-After`. Do not ask the buyer to sign again. Also                            `upstream_rpc_unavailable` and `upstream_nonce_or_mempool`, which                            were answered before anything was sent and carry `Retry-After`.",
             body = Object
         )
     )

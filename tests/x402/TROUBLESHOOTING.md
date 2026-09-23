@@ -158,6 +158,30 @@ Note there are two `502`s and they mean opposite things: this one, and
 `upstream_rpc_unavailable`, which carries `Retry-After` and IS retryable. Branch
 on `error`.
 
+Since 2.39.6 this answer also covers a send whose own answer was lost (a
+timeout, a dropped connection, a gateway error) and a node that says it already
+holds the transaction, on every network family. NEAR, Stellar, Algorand, Sui and
+XRPL used to answer that case `200 {"success": false}` with no transaction.
+
+---
+
+### Response: any `5xx` with `"retryable": false`
+
+**Meaning:** the transaction may already be on chain. The facilitator says so in
+the body whenever a failure happened after the transaction may have left:
+`broadcast_uncertain` and `receipt_pending` (no hash could be named),
+`settlement_unconfirmed` (hash in `transaction`), the `upto` / `escrow` /
+`refund` schemes' `502`, `reason: forward_unconfirmed` (the task that signs
+received the settle and its answer was lost), and the receipt rail's failures
+after its send latched (`receipt_response_unreadable` among them).
+
+**Do not sign again.** Look `transaction` up when it is there; when it is not,
+check the payer's transfer to `payTo` on chain. Only when nothing is found after
+the chain's finality window is a new authorization safe.
+
+A failure with neither `retryable: false` nor a `transaction` was produced
+before anything was sent, and keeps the answer it always had.
+
 ---
 
 ## 🧪 Test Your Payload

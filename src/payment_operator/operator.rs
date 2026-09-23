@@ -794,9 +794,7 @@ async fn execute_release(
         let receipt = provider
             .send_transaction_from(provider.pinned_signer(), meta_tx)
             .await
-            .map_err(|e| {
-                OperatorError::ContractCall(crate::redact::scrub_urls(&format!("{e:?}")))
-            })?;
+            .map_err(send_failure)?;
         Ok(receipt.transaction_hash)
     }
 }
@@ -869,10 +867,21 @@ async fn execute_refund_in_escrow(
         let receipt = provider
             .send_transaction_from(provider.pinned_signer(), meta_tx)
             .await
-            .map_err(|e| {
-                OperatorError::ContractCall(crate::redact::scrub_urls(&format!("{e:?}")))
-            })?;
+            .map_err(send_failure)?;
         Ok(receipt.transaction_hash)
+    }
+}
+
+/// An operator write that failed, keeping the hash of one that may be mined.
+///
+/// Every other failure is flattened into text, as before; an unconfirmed
+/// broadcast is the one whose hash the caller needs to look up.
+fn send_failure(error: crate::chain::FacilitatorLocalError) -> OperatorError {
+    match error {
+        crate::chain::FacilitatorLocalError::SettlementUnconfirmed(tx, network) => {
+            OperatorError::SettlementUnconfirmed(tx, network)
+        }
+        e => OperatorError::ContractCall(crate::redact::scrub_urls(&format!("{e:?}"))),
     }
 }
 
@@ -942,6 +951,11 @@ async fn send_operator_tx(
 
     let receipt = match outcome {
         Ok(receipt) => receipt,
+        // Nothing to diagnose about the target: the call was accepted and
+        // broadcast, and the hash is what the caller needs.
+        Err(e @ crate::chain::FacilitatorLocalError::SettlementUnconfirmed(..)) => {
+            return Err(send_failure(e));
+        }
         Err(e) => {
             // `target` is the MERCHANT-supplied operator address: it is deliberately
             // not validated (see `validate_addresses`), so a misconfigured merchant

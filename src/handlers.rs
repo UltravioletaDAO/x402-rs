@@ -1299,6 +1299,70 @@ fn failure_salt() -> u64 {
     COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
+/// The answer of an alternative `/settle` scheme -- `upto`, escrow, the
+/// `refund` extension -- whose transaction may already be on chain.
+///
+/// The same contract the exact path's `settlement_unconfirmed` keeps: `502`,
+/// `retryable: false`, no `Retry-After`, and the transaction with its
+/// `paymentId` whenever the scheme knows it. Those branches answered `400`
+/// with the error text until now, which a client reads as "fix the payment and
+/// pay again".
+fn unconfirmed_alt_settlement(
+    failure: crate::chain::failure::ChainFailure,
+    transaction: Option<(&crate::types::TransactionHash, crate::network::Network)>,
+) -> Response {
+    let mut body = json!({
+        "success": false,
+        "error": failure.category(),
+        "errorReason": failure.client_message(),
+        "retryable": false,
+    });
+    if let Some((tx, network)) = transaction {
+        let tx = tx.to_string();
+        body["error"] = json!("settlement_unconfirmed");
+        body["paymentId"] = json!(crate::dx402::payment_id(network, &tx));
+        body["transaction"] = json!(tx);
+    }
+    (StatusCode::BAD_GATEWAY, Json(body)).into_response()
+}
+
+/// The answer to an `fhe-transfer` settle the FHE facilitator did not complete.
+///
+/// It broadcasts on its own side, so a request it received and did not answer
+/// cleanly may have settled there, and the answer says `retryable: false`.
+fn fhe_settle_failure(error: &crate::fhe_proxy::FheProxyError) -> Response {
+    let mut body = json!({
+        "success": false,
+        "errorReason": format!("FHE facilitator error: {}", error)
+    });
+    if error.may_have_settled() {
+        body["retryable"] = json!(false);
+    }
+    (StatusCode::BAD_GATEWAY, Json(body)).into_response()
+}
+
+/// The answer, and its event category, when an alternative scheme's error says
+/// its transaction may be on chain; `None` for any other failure, which keeps
+/// the answer it had.
+///
+/// `typed` is the hash the scheme kept; `debug` is the error as text, for the
+/// failures that only survive as text (the nonce guard's "may have been
+/// mined").
+fn alt_scheme_unconfirmed(
+    typed: Option<(&crate::types::TransactionHash, crate::network::Network)>,
+    debug: &str,
+) -> Option<(Response, &'static str)> {
+    let failure = crate::chain::failure::ChainFailure::classify(debug);
+    if typed.is_none() && !failure.may_have_broadcast() {
+        return None;
+    }
+    let category = match typed {
+        Some(_) => "settlement_unconfirmed",
+        None => failure.category(),
+    };
+    Some((unconfirmed_alt_settlement(failure, typed), category))
+}
+
 /// Log a classified chain-write failure with the figures an operator needs.
 ///
 /// For a gas shortfall that means the USABLE margin, not the balance. The
@@ -1638,6 +1702,48 @@ fn writer_lease_unavailable(reason: &'static str) -> Response {
         .into_response()
 }
 
+/// Why a forwarded write failed, and whether the holder may have received it.
+#[derive(Debug)]
+struct ForwardFailure {
+    reason: String,
+    /// The request may have reached the holder, which then signs and
+    /// broadcasts: a timeout or a dropped connection after it was sent, or an
+    /// answer whose body was lost. Only a connection never made, or a request
+    /// never built, proves it did not.
+    delivered: bool,
+}
+
+impl ForwardFailure {
+    fn before_sending(reason: String) -> Self {
+        Self {
+            reason,
+            delivered: false,
+        }
+    }
+}
+
+/// The answer to a forwarded write that failed.
+///
+/// A write the holder never received is the lease's `503`: resending it is
+/// safe. One it may have received is not: the holder may already have
+/// broadcast it, so resending is a second transaction and the answer says so,
+/// without `Retry-After`.
+fn forward_failure_response(failure: &ForwardFailure) -> Response {
+    if !failure.delivered {
+        return writer_lease_unavailable("forward_failed");
+    }
+    (
+        StatusCode::BAD_GATEWAY,
+        Json(json!({
+            "error": "the EVM writer lease holder received this write and its answer was lost; \
+                      it may have been executed. Do not retry it: check the chain first.",
+            "reason": "forward_unconfirmed",
+            "retryable": false,
+        })),
+    )
+        .into_response()
+}
+
 /// Route writes through the single instance that holds the EVM writer lease.
 ///
 /// Every EVM write spends gas from the SAME shared EOA, and the nonce for it is
@@ -1707,14 +1813,15 @@ async fn require_writer_lease(
 
     match forward_to_writer(&holder, request).await {
         Ok(response) => response,
-        Err(reason) => {
+        Err(failure) => {
             warn!(
                 path = %path,
                 holder = %holder,
-                reason = %reason,
+                reason = %failure.reason,
+                delivered = failure.delivered,
                 "forwarding an EVM write to the lease holder failed"
             );
-            writer_lease_unavailable("forward_failed")
+            forward_failure_response(&failure)
         }
     }
 }
@@ -1873,9 +1980,9 @@ const FORWARD_LOG_EVERY: u64 = 100;
 async fn forward_to_writer(
     holder: &str,
     request: axum::extract::Request,
-) -> Result<Response, String> {
+) -> Result<Response, ForwardFailure> {
     forward_with(
-        writer_forward_client()?,
+        writer_forward_client().map_err(ForwardFailure::before_sending)?,
         writer_forward_timeout(),
         holder,
         request,
@@ -1894,7 +2001,7 @@ async fn forward_with(
     timeout: std::time::Duration,
     holder: &str,
     request: axum::extract::Request,
-) -> Result<Response, String> {
+) -> Result<Response, ForwardFailure> {
     use axum::body::Body;
 
     let (parts, body) = request.into_parts();
@@ -1911,7 +2018,9 @@ async fn forward_with(
     const MAX_FORWARD_BODY: usize = 1024 * 1024;
     let bytes = axum::body::to_bytes(body, MAX_FORWARD_BODY)
         .await
-        .map_err(|e| format!("could not buffer request body: {e}"))?;
+        .map_err(|e| {
+            ForwardFailure::before_sending(format!("could not buffer request body: {e}"))
+        })?;
 
     let mut headers = parts.headers.clone();
     // Hop-by-hop and length headers describe THIS connection, not the next one;
@@ -1940,7 +2049,10 @@ async fn forward_with(
         .body(bytes)
         .send()
         .await
-        .map_err(|e| format!("{e}"))?;
+        .map_err(|e| ForwardFailure {
+            delivered: !(e.is_connect() || e.is_builder()),
+            reason: format!("{e}"),
+        })?;
 
     let forwarded = FORWARDED_WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
     if forwarded % FORWARD_LOG_EVERY == 0 {
@@ -1963,10 +2075,11 @@ async fn forward_with(
         response_headers.remove(name);
     }
 
-    let payload = upstream
-        .bytes()
-        .await
-        .map_err(|e| format!("could not read holder response: {e}"))?;
+    let payload = upstream.bytes().await.map_err(|e| ForwardFailure {
+        reason: format!("could not read holder response: {e}"),
+        // The holder answered: its handler ran to the end.
+        delivered: true,
+    })?;
 
     let mut response = Response::new(Body::from(payload));
     *response.status_mut() = status;
@@ -4993,14 +5106,7 @@ where
                 Err(e) => {
                     error!(error = %e, "FHE settlement failed");
                     return Some(AltSchemeOutcome {
-                        response: (
-                            StatusCode::BAD_GATEWAY,
-                            Json(json!({
-                                "success": false,
-                                "errorReason": format!("FHE facilitator error: {}", e)
-                            })),
-                        )
-                            .into_response(),
+                        response: fhe_settle_failure(&e),
                         detail: detail(false, scheme, Some("fhe_error")),
                     });
                 }
@@ -5043,6 +5149,20 @@ where
                 }
                 Err(e) => {
                     error!(error = %e, "Upto settlement failed");
+                    let typed = match &e {
+                        crate::upto::UptoError::SettlementUnconfirmed(tx, network) => {
+                            Some((tx, *network))
+                        }
+                        _ => None,
+                    };
+                    if let Some((response, category)) =
+                        alt_scheme_unconfirmed(typed, &format!("{e:?}"))
+                    {
+                        return Some(AltSchemeOutcome {
+                            response,
+                            detail: detail(false, scheme, Some(category)),
+                        });
+                    }
                     return Some(AltSchemeOutcome {
                         response: (
                             StatusCode::BAD_REQUEST,
@@ -5116,6 +5236,19 @@ where
                         .map(canonical_network_name)
                         .unwrap_or_else(|| "unknown".to_string());
                     log_chain_failure(failure, Some(&network_label), &debug);
+                    let typed = match &e {
+                        crate::payment_operator::OperatorError::SettlementUnconfirmed(
+                            tx,
+                            network,
+                        ) => Some((tx, *network)),
+                        _ => None,
+                    };
+                    if let Some((response, category)) = alt_scheme_unconfirmed(typed, &debug) {
+                        return Some(AltSchemeOutcome {
+                            response,
+                            detail: detail(false, escrow_scheme, Some(category)),
+                        });
+                    }
                     let salt = failure_salt();
                     // A refused lifecycle order is neither a bad payload nor an
                     // outage: it is "you are not entitled to this". 403, so a
@@ -5226,6 +5359,20 @@ where
                     }
                     Err(e) => {
                         error!(error = %e, "Escrow settlement failed");
+                        let typed = match &e {
+                            crate::escrow::EscrowError::SettlementUnconfirmed(tx, network) => {
+                                Some((tx, *network))
+                            }
+                            _ => None,
+                        };
+                        if let Some((response, category)) =
+                            alt_scheme_unconfirmed(typed, &format!("{e:?}"))
+                        {
+                            return Some(AltSchemeOutcome {
+                                response,
+                                detail: detail(false, Some("refund"), Some(category)),
+                            });
+                        }
                         return Some(AltSchemeOutcome {
                             response: (
                                 StatusCode::BAD_REQUEST,
@@ -5813,13 +5960,17 @@ impl IntoResponse for FacilitatorLocalError {
                     | crate::chain::failure::Reason::Unclassified => "contract_call_failed",
                     _ => category,
                 };
-                let mut resp = (
-                    status,
-                    Json(ErrorResponse {
-                        error: format!("{token} (ref: {correlation_id})"),
-                    }),
-                )
-                    .into_response();
+                let error = format!("{token} (ref: {correlation_id})");
+                let mut resp = if failure.may_have_broadcast() {
+                    // Said in the body, not only by a missing `Retry-After`: a
+                    // 5xx with neither a hash nor `retryable: false` is read as
+                    // transient by clients, which resend it, and a resend of a
+                    // payment that did mine fails verification and ends with
+                    // the buyer signing a second one.
+                    (status, Json(json!({ "error": error, "retryable": false }))).into_response()
+                } else {
+                    (status, Json(ErrorResponse { error })).into_response()
+                };
                 if let Some(value) = retry_after {
                     resp.headers_mut().insert(header::RETRY_AFTER, value);
                 }
@@ -14748,6 +14899,57 @@ mod writer_forward_pool_tests {
         assert!(outcome.is_err());
     }
 
+    async fn json_of(response: Response) -> serde_json::Value {
+        let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .expect("body");
+        serde_json::from_slice(&bytes).expect("json")
+    }
+
+    /// The holder received the settle and never answered: it may have signed
+    /// and broadcast it. Resending is a second transaction, so the caller is
+    /// not told to retry.
+    #[tokio::test]
+    async fn a_write_the_holder_received_and_never_answered_is_not_retryable() {
+        let origin = spawn_origin(Reply {
+            hang: true,
+            ..Reply::default()
+        })
+        .await;
+        let failure = forward_with(
+            writer_forward_client().expect("shared client"),
+            Duration::from_millis(300),
+            &origin.url(),
+            settle_request("{}"),
+        )
+        .await
+        .expect_err("a holder that never answers is a failure");
+        assert_eq!(origin.requests(), 1, "the holder saw the write");
+        assert!(failure.delivered, "{failure:?}");
+
+        let response = forward_failure_response(&failure);
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert!(response.headers().get(header::RETRY_AFTER).is_none());
+        let body = json_of(response).await;
+        assert_eq!(body["retryable"], false);
+        assert_eq!(body["reason"], "forward_unconfirmed");
+    }
+
+    /// A holder that was never reached never received anything: the lease's
+    /// `503` and its `Retry-After` stand.
+    #[tokio::test]
+    async fn a_write_that_never_reached_the_holder_keeps_its_retry() {
+        let failure = forward_to_writer("http://127.0.0.1:1", settle_request("{}"))
+            .await
+            .expect_err("port 1 is closed");
+        assert!(!failure.delivered, "{failure:?}");
+
+        let response = forward_failure_response(&failure);
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers()[header::RETRY_AFTER], "5");
+        assert_eq!(json_of(response).await["reason"], "forward_failed");
+    }
+
     /// A pool must not leak one holder's connections to the next one. After a
     /// handover the writes go to a different address, and the client has to
     /// open a connection there rather than reuse the old holder's.
@@ -15619,6 +15821,232 @@ mod chain_failure_response_tests {
             let category = ChainFailure::classify(fixture).category();
             assert!(ALLOWED.contains(&category), "{category} from {fixture}");
         }
+    }
+}
+
+/// A `/settle` answer produced after the transaction may have left says so in
+/// the body: `retryable: false`, no `Retry-After`, and the transaction with
+/// its `paymentId` when the facilitator knows it. Answers produced before
+/// anything was sent keep the shape they had.
+///
+/// Clients read a 5xx carrying neither a hash nor `retryable: false` as
+/// transient and resend it; a resend of a payment that did mine fails
+/// verification and ends with the buyer signing a second one.
+#[cfg(test)]
+mod post_send_response_tests {
+    use super::*;
+    use crate::chain::failure::ChainFailure;
+    use crate::network::Network;
+    use crate::types::TransactionHash;
+
+    async fn answer(response: Response) -> (StatusCode, bool, serde_json::Value) {
+        let status = response.status();
+        let retry_after = response.headers().contains_key(header::RETRY_AFTER);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        (
+            status,
+            retry_after,
+            serde_json::from_slice(&bytes).expect("json"),
+        )
+    }
+
+    /// The nonce guard's two refusals to retry and a receipt that never came:
+    /// the exact arm the plain-`/settle` traffic reaches.
+    #[tokio::test]
+    async fn a_contract_call_past_the_broadcast_says_it_is_not_retryable() {
+        for (fixture, token) in [
+            (
+                "Nonce error but TX count advanced (7 -> 8), original TX may have been mined: nonce too low",
+                "broadcast_uncertain",
+            ),
+            (
+                "Nonce error and TX count could not be verified, original TX may have been mined: nonce too low",
+                "broadcast_uncertain",
+            ),
+            ("timed out waiting for receipt", "receipt_pending"),
+        ] {
+            let (status, retry_after, body) =
+                answer(FacilitatorLocalError::ContractCall(fixture.into()).into_response()).await;
+            assert_eq!(status, StatusCode::BAD_GATEWAY, "{fixture}");
+            assert!(!retry_after, "{fixture}");
+            assert_eq!(body["retryable"], false, "{fixture}");
+            assert!(
+                body["error"].as_str().unwrap().starts_with(token),
+                "{fixture}: {body}"
+            );
+        }
+    }
+
+    /// Before the send nothing changes: an outage keeps its `Retry-After` and
+    /// no `retryable` field, a revert keeps its `400`.
+    #[tokio::test]
+    async fn a_contract_call_before_the_send_keeps_its_answer() {
+        let (status, retry_after, body) = answer(
+            FacilitatorLocalError::ContractCall(
+                r#"ErrorResp(ErrorPayload { code: -32000, message: "header not found" })"#.into(),
+            )
+            .into_response(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert!(retry_after);
+        assert!(body.get("retryable").is_none(), "{body}");
+
+        let (status, _, body) = answer(
+            FacilitatorLocalError::ContractCall("execution reverted: invalid signature".into())
+                .into_response(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.get("retryable").is_none(), "{body}");
+    }
+
+    /// Every family that can now end unconfirmed answers the one contract.
+    #[tokio::test]
+    async fn an_unconfirmed_settlement_on_any_family_carries_hash_and_no_retry() {
+        let mut cases = vec![
+            (TransactionHash::Evm([0x11; 32]), Network::Base),
+            (TransactionHash::Solana([0x22; 64]), Network::Solana),
+            (TransactionHash::Near([0x33; 32]), Network::Near),
+            (TransactionHash::Stellar([0x44; 32]), Network::Stellar),
+        ];
+        #[cfg(feature = "xrpl")]
+        cases.push((TransactionHash::Xrpl([0x55; 32]), Network::Xrpl));
+        #[cfg(feature = "algorand")]
+        cases.push((TransactionHash::Algorand("A".repeat(52)), Network::Algorand));
+        #[cfg(feature = "sui")]
+        cases.push((
+            TransactionHash::Sui("11111111111111111111111111111111".into()),
+            Network::Sui,
+        ));
+        #[cfg(feature = "hedera")]
+        cases.push((
+            TransactionHash::Hedera("0.0.3003@1700000000.000000001".into()),
+            Network::HederaTestnet,
+        ));
+        for (tx, network) in cases {
+            let expected = tx.to_string();
+            let (status, retry_after, body) =
+                answer(FacilitatorLocalError::SettlementUnconfirmed(tx, network).into_response())
+                    .await;
+            assert_eq!(status, StatusCode::BAD_GATEWAY, "{network}");
+            assert!(!retry_after, "{network}");
+            assert_eq!(body["retryable"], false, "{network}");
+            assert_eq!(body["transaction"], expected, "{network}");
+            assert_eq!(
+                body["paymentId"],
+                crate::dx402::payment_id(network, &expected),
+                "{network}"
+            );
+        }
+    }
+
+    /// `upto`, the escrow scheme and the `refund` extension: a typed
+    /// unconfirmed send answers with its hash; the nonce guard's text, which
+    /// has none, still answers not retryable; any other failure keeps its own
+    /// answer.
+    #[tokio::test]
+    async fn an_alternative_scheme_past_the_broadcast_answers_like_the_exact_path() {
+        let tx = TransactionHash::Evm([0x66; 32]);
+        let upto = crate::upto::UptoError::SettlementUnconfirmed(tx.clone(), Network::Base);
+        let (response, category) =
+            alt_scheme_unconfirmed(Some((&tx, Network::Base)), &format!("{upto:?}"))
+                .expect("typed unconfirmed");
+        assert_eq!(category, "settlement_unconfirmed");
+        let (status, retry_after, body) = answer(response).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert!(!retry_after);
+        assert_eq!(body["success"], false);
+        assert_eq!(body["retryable"], false);
+        assert_eq!(body["error"], "settlement_unconfirmed");
+        assert_eq!(body["transaction"], tx.to_string());
+        assert_eq!(
+            body["paymentId"],
+            crate::dx402::payment_id(Network::Base, &tx.to_string())
+        );
+
+        let guard = crate::escrow::EscrowError::ContractCall(
+            "ContractCall(\"Nonce error and TX count could not be verified, original TX may have been mined\")"
+                .into(),
+        );
+        let (response, category) =
+            alt_scheme_unconfirmed(None, &format!("{guard:?}")).expect("uncertain text");
+        assert_eq!(category, "broadcast_uncertain");
+        let (status, _, body) = answer(response).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(body["retryable"], false);
+        assert!(body.get("transaction").is_none());
+
+        for before in [
+            "SettlementFailed(\"Invalid contract call: execution reverted: expired\")",
+            "SettlementFailed(\"Invalid contract call: header not found -32000\")",
+            "InvalidPayload(\"missing permit\")",
+        ] {
+            assert!(alt_scheme_unconfirmed(None, before).is_none(), "{before}");
+        }
+    }
+
+    /// The classifier and the helper agree on which reasons are past the
+    /// broadcast: exactly the two `retryable()` refuses for that reason alone.
+    #[test]
+    fn past_the_broadcast_is_exactly_the_two_uncertain_reasons() {
+        for (fixture, past) in [
+            ("may have been mined", true),
+            ("timed out waiting for receipt", true),
+            ("already known", true),
+            ("execution reverted", false),
+            ("txpool is full", false),
+            ("something entirely new", false),
+        ] {
+            assert_eq!(
+                ChainFailure::classify(fixture).may_have_broadcast(),
+                past,
+                "{fixture}"
+            );
+        }
+    }
+
+    /// The FHE facilitator settles on its own side: only a request that never
+    /// reached it, or one it refused, is known not to have settled.
+    #[tokio::test]
+    async fn an_fhe_settle_that_may_have_gone_through_is_not_retryable() {
+        use crate::fhe_proxy::FheProxyError;
+        assert!(FheProxyError::FacilitatorError {
+            status: 504,
+            body: String::new()
+        }
+        .may_have_settled());
+        assert!(FheProxyError::InvalidResponse("not json".into()).may_have_settled());
+        assert!(!FheProxyError::FacilitatorError {
+            status: 400,
+            body: "bad".into()
+        }
+        .may_have_settled());
+        assert!(!FheProxyError::Unavailable.may_have_settled());
+        let unreachable = reqwest::Client::new()
+            .post("http://127.0.0.1:1/settle")
+            .send()
+            .await
+            .expect_err("port 1 is closed");
+        assert!(!FheProxyError::HttpError(unreachable).may_have_settled());
+
+        let (status, retry_after, body) =
+            answer(fhe_settle_failure(&FheProxyError::FacilitatorError {
+                status: 504,
+                body: "gateway timeout".into(),
+            }))
+            .await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert!(!retry_after);
+        assert_eq!(body["retryable"], false);
+        let (_, _, refused) = answer(fhe_settle_failure(&FheProxyError::FacilitatorError {
+            status: 400,
+            body: "bad payload".into(),
+        }))
+        .await;
+        assert!(refused.get("retryable").is_none(), "{refused}");
     }
 }
 

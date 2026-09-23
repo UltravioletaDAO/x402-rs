@@ -375,6 +375,23 @@ successful `/settle` prints, so once you find the transaction confirmed you can
 tie the two together (and reach `/dx402/evidence/{paymentId}`). Before 2.14.0
 this branch answered `contract_call_failed (ref: <uuid>)` with no hash at all.
 
+Since 2.39.6 the same answer also covers a send whose own answer was lost (a
+timeout, a dropped connection, a gateway error) and a node that says it already
+holds the transaction, on every network family, each hash in its own chain's
+encoding. NEAR, Stellar, Algorand, Sui and XRPL used to report that case as
+`200` with `success: false` and no transaction.
+
+**The rule behind it: `retryable: false` means "do not sign again".** Every
+`/settle` failure produced after the transaction may have left carries
+`"retryable": false` and no `Retry-After`, plus `transaction` and `paymentId`
+when the facilitator knows them: `settlement_unconfirmed`,
+`broadcast_uncertain`, `receipt_pending`, the `upto` / `escrow` / `refund`
+schemes' `502`, a settle forwarded to the signing task whose answer was lost
+(`reason: forward_unconfirmed`), and the receipt rail's failures after its send
+latched. Look the transaction up and deliver if it settled; only one not found
+after the chain's finality window is gone. A failure with neither
+`retryable: false` nor a `transaction` was produced before anything was sent.
+
 **Send an `Idempotency-Key` and the retry is safe.** Choose one opaque string per
 intended purchase, keep it across retries and restarts, and send it as a header:
 
@@ -576,7 +593,8 @@ self-feedback.
 | `503` + `"retryable": true` | the lookup reached **no verdict** | retry; never persist this as "not registered" |
 | `503` on `/events` | subscriber cap reached | honour `Retry-After` |
 | `429` | per-IP rate limit (about 30 req/min on verify/settle) | back off; do not re-sign |
-| `502` + `"error": "settlement_unconfirmed"` | we broadcast the tx and never got a verdict | look up the `transaction` on chain; **never** retry (`retryable: false`) |
+| `502` + `"error": "settlement_unconfirmed"` | we sent the tx, or may have, and never got a verdict | look up the `transaction` on chain; **never** retry (`retryable: false`) |
+| any `5xx` + `"retryable": false` | the tx may already be on chain (`broadcast_uncertain`, `receipt_pending`, `forward_unconfirmed`, the alternative schemes, the receipt rail) | **never** sign again; look up `transaction` if present, else the payer's transfer |
 | `502` + `"error": "upstream_rpc_unavailable"` | the node could not answer | honour `Retry-After`; the two `502`s are different — branch on `error` |
 | timeout on `/settle` | unknown — the tx may have landed | check the chain before retrying |
 
@@ -896,9 +914,10 @@ conversion is performed. Gas stays USDC. A funded 0.01 EURC payment (10000
 atomic units) was verified and settled on Arc mainnet on 2026-09-22, tx
 0xd9de3864e11698cf730664147ac383acb763279056ac091bab57cfd3bf536128; funded testnet payments remain pending.
 
-## Portable facilitator receipts (Arc and Hedera)
+## Portable facilitator receipts (Arc, Base and Hedera)
 
-Arc exact USDC/EURC and native Hedera USDC return `receipt` alongside verify/settle.
+Arc and Base exact USDC/EURC and native Hedera USDC return `receipt` alongside
+verify/settle.
 Discover `/supported.facilitatorReceipts`, `/receipts`,
 `/schemas/facilitator-receipt-v1.json` and `/.well-known/receipt-keys.json`.
 For private lookup, persist a purchase context and send `X-UVD-Purchase` (base64
@@ -914,6 +933,9 @@ The original answer is replayed only with the `X-UVD-Purchase` or
 A `503` with `safeToRetry: true` and `Retry-After` sent nothing, and a receipt
 `rejected` with `refusalReason: reservation_abandoned` says the same: resend the
 same request after the delay; it is admitted again under the same receipt.
+A failure after the send latched or its bytes were prepared is the opposite: it
+carries `retryable: false`, no `Retry-After`, the prepared `transaction` and its
+`paymentId`; poll the receipt, never sign a replacement.
 Python `fetch_with_receipt` and TypeScript `fetchWithReceipt` return the original
 HTTP response plus receipt/payment state. Supply trusted issuer keys for offline
 signature verification. Live EURC acceptance was proven on Arc mainnet on
@@ -921,3 +943,7 @@ signature verification. Live EURC acceptance was proven on Arc mainnet on
 Arc testnet is still pending. Other networks
 retain their existing responses. Full contract:
 https://github.com/UltravioletaDAO/x402-rs/blob/main/docs/facilitator-receipts.md
+
+Receipts cover plain `exact` payments only. On Base, `upto`, `escrow`/`commerce`
+and the x402r `refund` extension keep their own settlement paths and carry no
+`receipt`.

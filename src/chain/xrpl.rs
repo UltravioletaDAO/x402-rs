@@ -122,6 +122,12 @@ pub enum XrplError {
     #[error("RPC error: {0}")]
     RpcError(String),
 
+    /// The request was sent and no readable answer came back. Same text as
+    /// [`Self::RpcError`]; kept apart because for `submit` it means rippled
+    /// may have accepted the transaction.
+    #[error("RPC error: {0}")]
+    RpcUnanswered(String),
+
     #[error(
         "transaction submission rejected by rippled: {engine_result} ({engine_result_message})"
     )]
@@ -947,7 +953,7 @@ impl XrplProvider {
     /// The rippled JSON-RPC wire format is:
     ///   request: `{ "method": "<cmd>", "params": [{ ...fields... }] }`
     ///   response: `{ "result": { ...fields... }, ... }`
-    async fn rpc_call(&self, method: &str, params: Value) -> Result<Value, FacilitatorLocalError> {
+    async fn rpc_call(&self, method: &str, params: Value) -> Result<Value, XrplError> {
         let (client, url) = self.reqwest_client();
         let body = json!({
             "method": method,
@@ -957,19 +963,23 @@ impl XrplProvider {
             // Strip the URL (which may contain an API key in the path) from
             // the reqwest error before emitting to logs / CloudWatch.
             let safe_url = crate::redact::rpc_url(&url);
-            FacilitatorLocalError::from(XrplError::RpcError(format!(
-                "{} (endpoint: {})",
-                e.without_url(),
-                safe_url
-            )))
+            // Only a connection never made or a request never built proves
+            // rippled did not receive it.
+            let never_sent = e.is_connect() || e.is_builder();
+            let detail = format!("{} (endpoint: {})", e.without_url(), safe_url);
+            if never_sent {
+                XrplError::RpcError(detail)
+            } else {
+                XrplError::RpcUnanswered(detail)
+            }
         })?;
         let json: Value = resp.json().await.map_err(|e| {
             let safe_url = crate::redact::rpc_url(&url);
-            FacilitatorLocalError::from(XrplError::RpcError(format!(
+            XrplError::RpcUnanswered(format!(
                 "response decode error: {} (endpoint: {})",
                 e.without_url(),
                 safe_url
-            )))
+            ))
         })?;
         // rippled wraps its response in a "result" object.
         Ok(json
@@ -994,7 +1004,31 @@ impl XrplProvider {
             "tx_blob": verification.signed_tx_blob,
             "fail_hard": false,
         });
-        let result_val = self.rpc_call("submit", submit_params).await?;
+        // The hash rippled will give this blob, known before it is sent: a
+        // submission whose answer is lost, or that rippled says it already
+        // applied, is reported under it instead of as a failure.
+        let blob_hash = signed_blob_hash(&verification.signed_tx_blob);
+        let unconfirmed = |why: &str| {
+            tracing::warn!(
+                tx_hash = ?blob_hash.map(hex::encode),
+                reason = %crate::redact::scrub_urls(why),
+                "XRPL submission outcome unknown; the payment may be applied"
+            );
+            match blob_hash {
+                Some(hash) => FacilitatorLocalError::SettlementUnconfirmed(
+                    TransactionHash::Xrpl(hash),
+                    self.network(),
+                ),
+                None => FacilitatorLocalError::ContractCall(format!(
+                    "XRPL submission may have been mined; its blob does not hash: {why}"
+                )),
+            }
+        };
+        let result_val = match self.rpc_call("submit", submit_params).await {
+            Ok(result) => result,
+            Err(XrplError::RpcUnanswered(detail)) => return Err(unconfirmed(&detail)),
+            Err(e) => return Err(e.into()),
+        };
 
         // Authoritative preliminary validation = rippled engine_result.
         //
@@ -1025,6 +1059,14 @@ impl XrplProvider {
             .unwrap_or("")
             .to_string();
 
+        // Two tef* codes are about THIS blob having been applied before (a
+        // resend after a lost answer): tefALREADY is this exact transaction,
+        // tefPAST_SEQ its sequence already used. Neither is a refusal of the
+        // payment, so neither may be reported as one.
+        if matches!(engine_result.as_str(), "tefALREADY" | "tefPAST_SEQ") {
+            return Err(unconfirmed(&engine_result));
+        }
+
         // Reject definitively on tem*, tef*, tel*, and tec*.
         if engine_result.starts_with("tem")
             || engine_result.starts_with("tef")
@@ -1040,16 +1082,21 @@ impl XrplProvider {
 
         // The tx hash is reported in tx_json.hash. Read it from the submit
         // result so we can poll for validation by hash.
-        let tx_hash_hex: String = result_val
+        let tx_hash_hex = result_val
             .get("tx_json")
             .and_then(|tx| tx.get("hash"))
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                FacilitatorLocalError::from(XrplError::RpcError(
-                    "submit result tx_json missing hash".to_string(),
-                ))
-            })?
-            .to_string();
+            .and_then(|v| v.as_str());
+        let tx_hash_hex = match tx_hash_hex {
+            Some(hash) => hash.to_string(),
+            // An `error` result is rippled refusing the request.
+            None if result_val.get("error").is_some() => {
+                return Err(
+                    XrplError::RpcError("submit result tx_json missing hash".to_string()).into(),
+                )
+            }
+            // No hash and no refusal: the submission may have been accepted.
+            None => return Err(unconfirmed("submit result tx_json missing hash")),
+        };
 
         tracing::info!(
             engine_result = %engine_result,
@@ -1174,6 +1221,72 @@ pub struct VerifyPaymentResult {
     pub signed_tx_blob: String,
 }
 
+/// The settle answer for a submitted blob.
+///
+/// Submitted-but-unvalidated is not a failed settlement. Reporting it as
+/// `success: false` with no transaction tells the caller the payment did not
+/// happen; it travels as an error so `IntoResponse` can answer `502
+/// settlement_unconfirmed` with the hash, or `502 broadcast_uncertain` for a
+/// blob that would not hash.
+fn settle_outcome(
+    submitted: Result<[u8; 32], FacilitatorLocalError>,
+    payer: MixedAddress,
+    network: Network,
+) -> Result<SettleResponse, FacilitatorLocalError> {
+    let tx_hash = match submitted {
+        Ok(hash) => {
+            tracing::info!(tx_hash = %hex::encode(hash), "XRPL settle: Transaction validated");
+            hash
+        }
+        Err(e @ FacilitatorLocalError::SettlementUnconfirmed(..)) => {
+            tracing::error!(error = %e, "XRPL settle: transaction submitted, never validated");
+            return Err(e);
+        }
+        Err(FacilitatorLocalError::ContractCall(message))
+            if crate::chain::failure::ChainFailure::classify(&message).may_have_broadcast() =>
+        {
+            tracing::error!(error = %message, "XRPL settle: submission outcome unknown");
+            return Err(FacilitatorLocalError::ContractCall(message));
+        }
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                error_debug = ?e,
+                "XRPL settle: Failed to submit/validate transaction"
+            );
+            return Ok(SettleResponse {
+                success: false,
+                error_reason: Some(FacilitatorErrorReason::UnexpectedSettleError),
+                payer,
+                transaction: None,
+                network,
+                proof_of_payment: None,
+                extensions: None,
+            });
+        }
+    };
+    Ok(SettleResponse {
+        success: true,
+        error_reason: None,
+        payer,
+        transaction: Some(TransactionHash::Xrpl(tx_hash)),
+        network,
+        proof_of_payment: None, // ERC-8004 not supported on XRPL
+        extensions: None,
+    })
+}
+
+/// The hash rippled gives a signed transaction: the first half of the
+/// SHA-512 of the `TXN\0` prefix followed by the signed blob.
+fn signed_blob_hash(blob_hex: &str) -> Option<[u8; 32]> {
+    use sha2::{Digest, Sha512};
+    let blob = hex::decode(blob_hex).ok()?;
+    let mut hasher = Sha512::new();
+    hasher.update([0x54, 0x58, 0x4E, 0x00]);
+    hasher.update(&blob);
+    hasher.finalize()[..32].try_into().ok()
+}
+
 /// Decode a 64-hex XRPL tx hash string into a 32-byte array.
 fn decode_tx_hash(hex_str: &str) -> Result<[u8; 32], FacilitatorLocalError> {
     let bytes = hex::decode(hex_str)
@@ -1275,59 +1388,8 @@ impl Facilitator for XrplProvider {
             "XRPL settle: Verification successful, submitting transaction"
         );
 
-        let tx_hash = match self.submit_and_confirm(&verification).await {
-            Ok(hash) => {
-                tracing::info!(
-                    tx_hash = %hex::encode(hash),
-                    "XRPL settle: Transaction validated"
-                );
-                hash
-            }
-            // Submitted-but-unvalidated is not a failed settlement. Reporting
-            // it as `success: false` with no transaction tells the caller the
-            // payment did not happen; it travels as an error so `IntoResponse`
-            // can answer `502 settlement_unconfirmed` with the hash.
-            Err(e @ FacilitatorLocalError::SettlementUnconfirmed(..)) => {
-                tracing::error!(
-                    error = %e,
-                    "XRPL settle: transaction submitted, never validated"
-                );
-                return Err(e);
-            }
-            Err(e) => {
-                tracing::error!(
-                    error = %e,
-                    error_debug = ?e,
-                    "XRPL settle: Failed to submit/validate transaction"
-                );
-                let response = SettleResponse {
-                    success: false,
-                    error_reason: Some(FacilitatorErrorReason::UnexpectedSettleError),
-                    payer: verification.payer.into(),
-                    transaction: None,
-                    network: self.network(),
-                    proof_of_payment: None,
-                    extensions: None,
-                };
-                return Ok(response);
-            }
-        };
-
-        let response = SettleResponse {
-            success: true,
-            error_reason: None,
-            payer: verification.payer.into(),
-            transaction: Some(TransactionHash::Xrpl(tx_hash)),
-            network: self.network(),
-            proof_of_payment: None, // ERC-8004 not supported on XRPL
-            extensions: None,
-        };
-        tracing::info!(
-            success = response.success,
-            tx_hash = ?response.transaction,
-            "XRPL settle: Returning success response"
-        );
-        Ok(response)
+        let submitted = self.submit_and_confirm(&verification).await;
+        settle_outcome(submitted, verification.payer.into(), self.network())
     }
 
     async fn supported(&self) -> Result<SupportedPaymentKindsResponse, Self::Error> {
@@ -1773,5 +1835,156 @@ mod tests {
             asset: MixedAddress::Xrpl(asset_str.to_string()),
             extra: None,
         }
+    }
+}
+
+/// A submission rippled may have applied keeps the blob's hash.
+#[cfg(test)]
+mod submission_outcome_tests {
+    use super::*;
+    use axum::{response::IntoResponse, routing::post, Json, Router};
+
+    /// The signed OfferCreate and hash from xrpl-rust's own `test_get_hash`
+    /// (`models/transactions/mod.rs`), an upstream vector rather than one
+    /// computed by the function under test.
+    #[test]
+    fn the_blob_hash_is_the_one_the_ledger_gives() {
+        let tx: xrpl::models::transactions::offer_create::OfferCreate = serde_json::from_str(
+            r#"{
+            "Account": "rLyttXLh7Ttca9CMUaD3exVoXY2fn2zwj3",
+            "Fee": "10",
+            "Flags": 0,
+            "LastLedgerSequence": 16409087,
+            "Sequence": 16409064,
+            "SigningPubKey": "ED93BFA583E83331E9DC498DE4558CE4861ACFAB9385EBBC43BC56A0D9845A1DF2",
+            "TakerGets": "13100000",
+            "TakerPays": {
+                "currency": "USD",
+                "issuer": "rLyttXLh7Ttca9CMUaD3exVoXY2fn2zwj3",
+                "value": "10"
+            },
+            "TransactionType": "OfferCreate",
+            "TxnSignature": "71135999783658A0CB4EBCF02E59ACD94C4D06D5BF909E05E6B97588155482BBA598535AD4728ACA1F90C4DE73FFC741B0A6AB87141BDA8BCC2F2DF9CD8C3703"
+        }"#,
+        )
+        .unwrap();
+        let blob = xrpl::core::binarycodec::encode(&tx).unwrap();
+        assert_eq!(
+            hex::encode_upper(signed_blob_hash(&blob).unwrap()),
+            "66F3D6158CAB6E53405F8C264DB39F07D8D0454433A63DDFB98218ED1BC99B60"
+        );
+        assert_eq!(signed_blob_hash("not hex"), None);
+    }
+
+    #[derive(Clone, Copy)]
+    enum Rippled {
+        LosesTheAnswer,
+        AlreadyApplied,
+        SequencePassed,
+        Malformed,
+        /// A result with neither `tx_json.hash` nor `error`.
+        NoHashNoError,
+        /// A result with no hash that carries rippled's own `error`.
+        RefusesTheRequest,
+    }
+
+    async fn submit_against(node: Rippled) -> Result<[u8; 32], FacilitatorLocalError> {
+        let app = Router::new().route(
+            "/",
+            post(move || async move {
+                let result = |engine: &str| {
+                    Json(serde_json::json!({"result": {"engine_result": engine,
+                        "engine_result_message": "fixture", "status": "success"}}))
+                    .into_response()
+                };
+                match node {
+                    Rippled::LosesTheAnswer => {
+                        (axum::http::StatusCode::BAD_GATEWAY, "upstream reset").into_response()
+                    }
+                    Rippled::AlreadyApplied => result("tefALREADY"),
+                    Rippled::SequencePassed => result("tefPAST_SEQ"),
+                    Rippled::Malformed => result("temBAD_AUTH"),
+                    Rippled::NoHashNoError => result("tesSUCCESS"),
+                    Rippled::RefusesTheRequest => Json(serde_json::json!({"result": {
+                        "error": "tooBusy", "status": "error"}}))
+                    .into_response(),
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let provider =
+            XrplProvider::try_new(None, Some(format!("http://{addr}/")), Network::Xrpl).unwrap();
+        provider
+            .submit_and_confirm(&VerifyPaymentResult {
+                payer: XrplAddress::new("rLyttXLh7Ttca9CMUaD3exVoXY2fn2zwj3".into()),
+                signed_tx_blob: "1200002280000000".into(),
+            })
+            .await
+    }
+
+    #[tokio::test]
+    async fn a_submission_rippled_may_have_applied_reports_the_blob_hash() {
+        let expected = signed_blob_hash("1200002280000000").unwrap();
+        for node in [
+            Rippled::LosesTheAnswer,
+            Rippled::AlreadyApplied,
+            Rippled::SequencePassed,
+            Rippled::NoHashNoError,
+        ] {
+            match submit_against(node).await {
+                Err(FacilitatorLocalError::SettlementUnconfirmed(tx, network)) => {
+                    assert_eq!(tx, TransactionHash::Xrpl(expected));
+                    assert_eq!(network, Network::Xrpl);
+                }
+                other => panic!("expected SettlementUnconfirmed, got {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_submission_rippled_refused_stays_a_refusal() {
+        match submit_against(Rippled::Malformed).await {
+            Err(FacilitatorLocalError::Other(message)) => {
+                assert!(message.contains("temBAD_AUTH"), "{message}");
+            }
+            other => panic!("expected the refusal, got {other:?}"),
+        }
+        match submit_against(Rippled::RefusesTheRequest).await {
+            Err(FacilitatorLocalError::Other(message)) => {
+                assert!(message.contains("missing hash"), "{message}");
+            }
+            other => panic!("expected the refusal, got {other:?}"),
+        }
+    }
+
+    /// The settle answer: both unconfirmed shapes are errors, never the
+    /// `200 success:false` that says nothing was paid.
+    #[test]
+    fn a_submission_with_no_verdict_is_not_a_failed_settlement() {
+        let payer = MixedAddress::Xrpl("rLyttXLh7Ttca9CMUaD3exVoXY2fn2zwj3".to_string());
+        let hash = [0x44u8; 32];
+        for unconfirmed in [
+            FacilitatorLocalError::SettlementUnconfirmed(
+                TransactionHash::Xrpl(hash),
+                Network::Xrpl,
+            ),
+            FacilitatorLocalError::ContractCall(
+                "XRPL submission may have been mined; its blob does not hash: x".into(),
+            ),
+        ] {
+            let result = settle_outcome(Err(unconfirmed), payer.clone(), Network::Xrpl);
+            assert!(result.is_err(), "{result:?}");
+        }
+        let refused = settle_outcome(
+            Err(XrplError::RpcError("refused".into()).into()),
+            payer.clone(),
+            Network::Xrpl,
+        )
+        .expect("a refusal is a settle verdict");
+        assert!(!refused.success);
+        let settled = settle_outcome(Ok(hash), payer, Network::Xrpl).unwrap();
+        assert_eq!(settled.transaction, Some(TransactionHash::Xrpl(hash)));
     }
 }

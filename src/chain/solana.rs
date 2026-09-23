@@ -1994,20 +1994,23 @@ impl SolanaProvider {
             recent_blockhash,
         );
 
-        // Submit
-        let tx_sig = self
-            .rpc_client
-            .send_and_confirm_transaction_with_spinner_and_config(
-                &tx,
+        // Submit through the same path as an exact settle. Once the sweep is
+        // handed over, a submission or status read that gets no answer is
+        // reported unconfirmed under the sweep's own signature, never as a
+        // refusal: the deposit has been marked used, so a caller told the
+        // sweep failed would ask the buyer for another one.
+        let tx_sig = TransactionInt::new(VersionedTransaction::from(tx))
+            .send_and_confirm(
+                &self.rpc_client,
                 CommitmentConfig::confirmed(),
-                RpcSendTransactionConfig {
-                    skip_preflight: false,
-                    ..Default::default()
-                },
+                self.network(),
             )
             .await
-            .map_err(|e| {
-                FacilitatorLocalError::ContractCall(format!("settlement account sweep failed: {e}"))
+            .map_err(|e| match e {
+                FacilitatorLocalError::ContractCall(e) => FacilitatorLocalError::ContractCall(
+                    format!("settlement account sweep failed: {e}"),
+                ),
+                e => e,
             })?;
 
         tracing::info!(
@@ -2273,6 +2276,53 @@ impl InstructionInt {
     }
 }
 
+/// Whether a failed `sendTransaction` may still have put the transaction on its
+/// way to a leader.
+///
+/// A node that answered with a JSON-RPC error refused it -- unless it says the
+/// transaction was already processed -- and so did an
+/// HTTP 4xx (a rate limit the client already retried, an auth failure). A
+/// connection never made, a request never built, a transaction that failed to
+/// serialize or to sign never left. Everything else -- a timeout, a dropped
+/// connection, a 5xx, an answer that does not parse, a signature back that is
+/// not ours -- can mean the RPC accepted it and the answer was lost.
+fn send_may_have_landed(error: &solana_client::client_error::ClientError) -> bool {
+    use solana_client::client_error::ClientErrorKind;
+    use solana_client::rpc_request::RpcError;
+    // A preflight that answers `AlreadyProcessed` is the Solana counterpart of
+    // EVM's `already known`: this exact transaction was seen before, which is
+    // not a refusal. It is read as "may have landed", never as a confirmed
+    // success. HYPOTHESIS: the variant is the SDK's own, but the RPC's exact
+    // wording was not measured against a live node; the text match
+    // ("already been processed", the variant's `Display`) covers an answer
+    // that carries no simulation data.
+    let already_processed = error.get_transaction_error()
+        == Some(solana_sdk::transaction::TransactionError::AlreadyProcessed)
+        || error
+            .to_string()
+            .to_ascii_lowercase()
+            .contains("already been processed");
+    if already_processed {
+        return true;
+    }
+    match error.kind() {
+        ClientErrorKind::RpcError(RpcError::RpcResponseError { .. }) => false,
+        ClientErrorKind::Reqwest(e) => {
+            !(e.is_connect()
+                || e.is_builder()
+                || e.status().is_some_and(|status| status.is_client_error()))
+        }
+        // Only `serialize_and_encode` raises these before the request.
+        ClientErrorKind::Custom(_)
+        | ClientErrorKind::SigningError(_)
+        | ClientErrorKind::TransactionError(_) => false,
+        ClientErrorKind::Io(_)
+        | ClientErrorKind::Middleware(_)
+        | ClientErrorKind::SerdeJson(_)
+        | ClientErrorKind::RpcError(_) => true,
+    }
+}
+
 pub struct TransactionInt {
     inner: VersionedTransaction,
 }
@@ -2373,6 +2423,20 @@ impl TransactionInt {
     }
 
     pub async fn send(&self, rpc_client: &RpcClient) -> Result<Signature, FacilitatorLocalError> {
+        self.submit(rpc_client)
+            .await
+            .map_err(|e| FacilitatorLocalError::ContractCall(format!("{e}")))
+    }
+
+    /// `sendTransaction`, with the client's own error kept so the caller can
+    /// tell a node's refusal from a submission whose outcome is unknown.
+    // The client's error type is its own; boxing it would only move the
+    // allocation to the one caller that inspects it.
+    #[allow(clippy::result_large_err)]
+    async fn submit(
+        &self,
+        rpc_client: &RpcClient,
+    ) -> solana_client::client_error::Result<Signature> {
         // Preflight is ON by default, and that is a deliberate reversal.
         //
         // With `skip_preflight: true` the RPC validates nothing -- not the
@@ -2406,7 +2470,6 @@ impl TransactionInt {
                 },
             )
             .await
-            .map_err(|e| FacilitatorLocalError::ContractCall(format!("{e}")))
     }
 
     pub async fn send_and_confirm(
@@ -2415,7 +2478,30 @@ impl TransactionInt {
         commitment_config: CommitmentConfig,
         network: Network,
     ) -> Result<Signature, FacilitatorLocalError> {
-        let tx_sig = self.send(rpc_client).await?;
+        // The id of this transaction is its first signature, known before it
+        // is sent. A submission that fails without the node refusing it may
+        // still reach a leader, so it is reported as unconfirmed under that id
+        // rather than as a failure the caller would retry.
+        let tx_sig = match self.submit(rpc_client).await {
+            Ok(tx_sig) => tx_sig,
+            Err(e) => {
+                let id = self.inner.signatures.first().copied();
+                return Err(match id.filter(|_| send_may_have_landed(&e)) {
+                    Some(id) => {
+                        tracing::warn!(
+                            tx_sig = %id,
+                            error = %crate::redact::scrub_urls(&e.to_string()),
+                            "Solana submission outcome unknown; the transaction may still land"
+                        );
+                        FacilitatorLocalError::SettlementUnconfirmed(
+                            TransactionHash::Solana(*id.as_array()),
+                            network,
+                        )
+                    }
+                    None => FacilitatorLocalError::ContractCall(format!("{e}")),
+                });
+            }
+        };
 
         // Timeout for confirmation - configurable via environment variable
         // Default: 30 seconds (Solana blocks are ~400ms, 30s = ~75 blocks)
@@ -2432,10 +2518,23 @@ impl TransactionInt {
 
         let confirmation_future = async {
             loop {
+                // The transaction was accepted: a status read that fails says
+                // nothing about its fate, so the signature travels with the
+                // error instead of a failure the caller would retry.
                 let confirmed = rpc_client
                     .confirm_transaction_with_commitment(&tx_sig, commitment_config)
                     .await
-                    .map_err(|e| FacilitatorLocalError::ContractCall(format!("{e}")))?;
+                    .map_err(|e| {
+                        tracing::warn!(
+                            tx_sig = %tx_sig,
+                            error = %crate::redact::scrub_urls(&e.to_string()),
+                            "Solana status read failed; the transaction may still confirm"
+                        );
+                        FacilitatorLocalError::SettlementUnconfirmed(
+                            TransactionHash::Solana(*tx_sig.as_array()),
+                            network,
+                        )
+                    })?;
                 if confirmed.value {
                     return Ok::<Signature, FacilitatorLocalError>(tx_sig);
                 }
@@ -3085,5 +3184,306 @@ mod tests {
         let delta = post.unwrap_or(0).saturating_sub(pre.unwrap_or(0));
         assert_eq!(delta, 0);
         assert_ne!(delta, required);
+    }
+}
+
+/// A submission whose outcome is unknown keeps its signature.
+///
+/// `sendTransaction` answered by a gateway error and a status read that fails
+/// after the RPC accepted the transaction both leave it able to land, so the
+/// error is `SettlementUnconfirmed` under the transaction's own signature. A
+/// node that refused it keeps the old error: nothing left.
+#[cfg(test)]
+mod submission_outcome_tests {
+    use super::*;
+    use axum::{extract::State, response::IntoResponse, routing::post, Json, Router};
+    use serde_json::{json, Value};
+    use solana_client::client_error::{ClientError, ClientErrorKind};
+    use solana_client::rpc_request::{RpcError, RpcResponseErrorData};
+    use solana_sdk::hash::Hash;
+    use solana_sdk::instruction::Instruction;
+    use solana_sdk::transaction::Transaction;
+
+    #[test]
+    fn only_a_refusal_proves_a_submission_never_left() {
+        let never_left: Vec<ClientError> = vec![
+            ClientErrorKind::RpcError(RpcError::RpcResponseError {
+                code: -32002,
+                message: "Transaction simulation failed: Blockhash not found".into(),
+                data: RpcResponseErrorData::Empty,
+            })
+            .into(),
+            ClientErrorKind::Custom("Serialization failed: io error".into()).into(),
+        ];
+        for error in never_left {
+            assert!(!send_may_have_landed(&error), "{error}");
+        }
+        let may_have_left: Vec<ClientError> = vec![
+            ClientErrorKind::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "timed out",
+            ))
+            .into(),
+            ClientErrorKind::RpcError(RpcError::RpcRequestError(
+                "RPC node returned mismatched signature".into(),
+            ))
+            .into(),
+            ClientErrorKind::RpcError(RpcError::ParseError("Signature".into())).into(),
+            ClientErrorKind::SerdeJson(serde_json::from_str::<u8>("x").unwrap_err()).into(),
+        ];
+        for error in may_have_left {
+            assert!(send_may_have_landed(&error), "{error}");
+        }
+    }
+
+    /// A preflight saying the transaction was already processed is not a
+    /// refusal: it may have landed. Read from the simulation's own error and,
+    /// with no simulation data, from the text.
+    #[test]
+    fn an_already_processed_preflight_may_have_landed() {
+        let simulation: solana_client::rpc_response::RpcSimulateTransactionResult =
+            serde_json::from_value(json!({"err": "AlreadyProcessed", "logs": []})).unwrap();
+        let with_data: ClientError = ClientErrorKind::RpcError(RpcError::RpcResponseError {
+            code: -32002,
+            message: "Transaction simulation failed".into(),
+            data: RpcResponseErrorData::SendTransactionPreflightFailure(simulation),
+        })
+        .into();
+        assert!(send_may_have_landed(&with_data));
+        let text_only: ClientError = ClientErrorKind::RpcError(RpcError::RpcResponseError {
+            code: -32002,
+            message: "Transaction simulation failed: This transaction has already been processed"
+                .into(),
+            data: RpcResponseErrorData::Empty,
+        })
+        .into();
+        assert!(send_may_have_landed(&text_only));
+    }
+
+    #[derive(Clone, Copy)]
+    enum Node {
+        RefusesTheSend,
+        LosesTheSendAnswer,
+        LosesTheStatus,
+    }
+
+    async fn rpc(
+        State((node, sig)): State<(Node, String)>,
+        Json(req): Json<Value>,
+    ) -> axum::response::Response {
+        let id = req["id"].clone();
+        let answer = |result: Value| Json(json!({"jsonrpc":"2.0","id":id,"result":result}));
+        match (req["method"].as_str().unwrap_or_default(), node) {
+            ("sendTransaction", Node::RefusesTheSend) => Json(json!({"jsonrpc":"2.0","id":id,
+                "error":{"code":-32002,"message":"Transaction simulation failed: Blockhash not found"}}))
+            .into_response(),
+            ("sendTransaction", Node::LosesTheSendAnswer) => {
+                (axum::http::StatusCode::BAD_GATEWAY, "upstream reset").into_response()
+            }
+            ("sendTransaction", Node::LosesTheStatus) => answer(json!(sig)).into_response(),
+            ("getSignatureStatuses", _) => {
+                (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "status backend down").into_response()
+            }
+            _ => answer(Value::Null).into_response(),
+        }
+    }
+
+    async fn submit_against(node: Node) -> (Result<Signature, FacilitatorLocalError>, Signature) {
+        let payer = Keypair::new();
+        let instruction = Instruction::new_with_bytes(Pubkey::new_unique(), &[], vec![]);
+        let tx = Transaction::new_signed_with_payer(
+            &[instruction],
+            Some(&payer.pubkey()),
+            &[&payer],
+            Hash::default(),
+        );
+        let tx = TransactionInt::new(VersionedTransaction::from(tx));
+        let sig = tx.inner.signatures[0];
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = Router::new()
+            .route("/", post(rpc))
+            .with_state((node, sig.to_string()));
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let client = RpcClient::new(format!("http://{addr}/"));
+        let result = tx
+            .send_and_confirm(&client, CommitmentConfig::confirmed(), Network::Solana)
+            .await;
+        (result, sig)
+    }
+
+    #[tokio::test]
+    async fn a_submission_whose_answer_is_lost_reports_its_signature() {
+        for node in [Node::LosesTheSendAnswer, Node::LosesTheStatus] {
+            let (result, sig) = submit_against(node).await;
+            match result {
+                Err(FacilitatorLocalError::SettlementUnconfirmed(tx, network)) => {
+                    assert_eq!(tx, TransactionHash::Solana(*sig.as_array()));
+                    assert_eq!(network, Network::Solana);
+                }
+                other => panic!("expected SettlementUnconfirmed under {sig}, got {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_submission_the_node_refused_keeps_its_old_error() {
+        let (result, _) = submit_against(Node::RefusesTheSend).await;
+        match result {
+            Err(FacilitatorLocalError::ContractCall(message)) => {
+                assert!(message.contains("Blockhash not found"), "{message}");
+            }
+            other => panic!("expected the refusal as ContractCall, got {other:?}"),
+        }
+    }
+}
+
+/// The settlement-account sweep is a send after which the deposit is already
+/// marked used: a sweep whose answer is lost, or that the node says it already
+/// processed, is unconfirmed under the sweep's own signature; a refusal keeps
+/// its error.
+#[cfg(test)]
+mod sweep_outcome_tests {
+    use super::*;
+    use axum::{extract::State, response::IntoResponse, routing::post, Json, Router};
+    use base64::Engine as _;
+    use serde_json::{json, Value};
+    use std::sync::{Arc as StdArc, Mutex as StdMutex};
+
+    #[derive(Clone, Copy)]
+    enum Node {
+        LosesTheSendAnswer,
+        AlreadyProcessed,
+        Refuses,
+    }
+
+    #[derive(Clone)]
+    struct Stub {
+        node: Node,
+        sent: StdArc<StdMutex<Vec<String>>>,
+    }
+
+    async fn rpc(State(stub): State<Stub>, Json(req): Json<Value>) -> axum::response::Response {
+        let id = req["id"].clone();
+        let answer = |result: Value| Json(json!({"jsonrpc":"2.0","id":id,"result":result}));
+        let refuse = |message: &str, data: Value| {
+            Json(json!({"jsonrpc":"2.0","id":req["id"],
+                "error":{"code":-32002,"message":message,"data":data}}))
+            .into_response()
+        };
+        match req["method"].as_str().unwrap_or_default() {
+            "getTokenAccountBalance" => answer(json!({"context":{"slot":1},
+                "value":{"amount":"1000","decimals":6,"uiAmount":0.001,"uiAmountString":"0.001"}}))
+            .into_response(),
+            "getLatestBlockhash" => answer(json!({"context":{"slot":1},
+                "value":{"blockhash":solana_sdk::hash::Hash::default().to_string(),"lastValidBlockHeight":100}}))
+            .into_response(),
+            "sendTransaction" => {
+                let raw = req["params"][0].as_str().unwrap_or_default().to_string();
+                stub.sent.lock().unwrap().push(raw);
+                match stub.node {
+                    Node::LosesTheSendAnswer => {
+                        (axum::http::StatusCode::BAD_GATEWAY, "upstream reset").into_response()
+                    }
+                    Node::AlreadyProcessed => refuse(
+                        "Transaction simulation failed: This transaction has already been processed",
+                        json!({"err":"AlreadyProcessed","logs":[]}),
+                    ),
+                    Node::Refuses => refuse(
+                        "Transaction simulation failed: Blockhash not found",
+                        json!({"err":"BlockhashNotFound","logs":[]}),
+                    ),
+                }
+            }
+            _ => answer(Value::Null).into_response(),
+        }
+    }
+
+    async fn sweep_against(
+        node: Node,
+    ) -> (Result<SettleResponse, FacilitatorLocalError>, Vec<String>) {
+        let sent = StdArc::new(StdMutex::new(Vec::new()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = Router::new().route("/", post(rpc)).with_state(Stub {
+            node,
+            sent: sent.clone(),
+        });
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let provider = SolanaProvider {
+            keypair: Arc::new(Keypair::new()),
+            chain: SolanaChain::try_from(Network::Solana).unwrap(),
+            rpc_client: Arc::new(RpcClient::new(format!("http://{addr}/"))),
+            max_compute_unit_limit: 400_000,
+            max_compute_unit_price: 1_000_000,
+        };
+        let settlement = Keypair::new();
+        let payload = crate::types::SettlementAccountPayload {
+            transaction_signature: Signature::default().to_string(),
+            settle_secret_key: Some(settlement.to_base58_string()),
+            settlement_rent_destination: None,
+        };
+        let requirements: PaymentRequirements = serde_json::from_value(json!({
+            "scheme":"exact","network":"solana","maxAmountRequired":"1000",
+            "resource":"https://merchant.example/data","description":"sweep fixture",
+            "mimeType":"application/json","payTo":Pubkey::new_unique().to_string(),
+            "maxTimeoutSeconds":60,"asset":Pubkey::new_unique().to_string()
+        }))
+        .unwrap();
+        let verification = SettlementAccountVerifyResult {
+            payer: SolanaAddress::from(Pubkey::new_unique()),
+            tx_signature: Signature::default(),
+        };
+        let secret = payload.settle_secret_key.clone().unwrap();
+        let result = provider
+            .sweep_settlement_account(&secret, &payload, &requirements, &verification)
+            .await;
+        let sent = sent.lock().unwrap().clone();
+        (result, sent)
+    }
+
+    /// The signature of the sweep the node was handed.
+    fn signature_of(raw: &str) -> Signature {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(raw)
+            .unwrap();
+        let tx: VersionedTransaction = bincode::deserialize(&bytes).unwrap();
+        tx.signatures[0]
+    }
+
+    #[tokio::test]
+    async fn a_sweep_that_may_have_landed_reports_its_signature() {
+        for node in [Node::LosesTheSendAnswer, Node::AlreadyProcessed] {
+            let (result, sent) = sweep_against(node).await;
+            assert_eq!(sent.len(), 1, "the sweep was sent again");
+            match result {
+                Err(FacilitatorLocalError::SettlementUnconfirmed(tx, network)) => {
+                    assert_eq!(
+                        tx,
+                        TransactionHash::Solana(*signature_of(&sent[0]).as_array())
+                    );
+                    assert_eq!(network, Network::Solana);
+                }
+                other => panic!("expected SettlementUnconfirmed, got {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_sweep_the_node_refused_keeps_its_error() {
+        let (result, _) = sweep_against(Node::Refuses).await;
+        match result {
+            Err(FacilitatorLocalError::ContractCall(message)) => {
+                assert!(
+                    message.starts_with("settlement account sweep failed"),
+                    "{message}"
+                );
+                assert!(message.contains("Blockhash not found"), "{message}");
+            }
+            other => panic!("expected the refusal, got {other:?}"),
+        }
     }
 }

@@ -1094,20 +1094,48 @@ impl EvmProvider {
             // place in the daily count (`erc8004::daily_cap`); the reverting
             // estimate above returned before it.
             crate::erc8004::daily_cap::mark_sent();
+            // The hash of the bytes handed to the node, set the moment they are.
+            // A send that fails after that may still have queued them, and then
+            // the caller gets this hash to look up instead of an invitation to
+            // retry.
+            let mut broadcast: Option<alloy::primitives::TxHash> = None;
             let send_outcome = if crate::receipts::active() {
                 use alloy::eips::Encodable2718;
                 let filled = self.inner.fill(txr).await.map_err(|_| FacilitatorLocalError::ContractCall("receipt transaction preparation failed".into()))?;
                 let envelope = filled.as_envelope().ok_or_else(|| FacilitatorLocalError::ContractCall("receipt transaction was not signed".into()))?;
                 let signed = envelope.encoded_2718();
-                let hash = alloy::primitives::keccak256(&signed).to_string();
-                crate::receipts::prepared_evm(hash, signed.clone()).await.map_err(FacilitatorLocalError::ContractCall)?;
+                let hash = alloy::primitives::keccak256(&signed);
+                crate::receipts::prepared_evm(hash.to_string(), signed.clone())
+                    .await
+                    .map_err(FacilitatorLocalError::ContractCall)?;
                 // Latched BEFORE the send: from here no failure can release the
                 // receipt admission, whatever the node answers.
                 crate::receipts::sending();
+                broadcast = Some(hash);
                 self.inner.send_raw_transaction(&signed).await
             } else {
+                use alloy::eips::Encodable2718;
                 crate::receipts::sending();
-                self.inner.send_transaction(txr).await
+                // Filled and signed here, then sent raw: what `send_transaction`
+                // does internally, split so that the hash exists before the
+                // bytes leave and a failed fill stays apart from a failed send.
+                // A fill that fails sent nothing and keeps the handling below; a
+                // send that fails may have queued the transaction.
+                match self.inner.fill(txr).await {
+                    Ok(filled) => match filled.as_envelope() {
+                        Some(envelope) => {
+                            let signed = envelope.encoded_2718();
+                            broadcast = Some(alloy::primitives::keccak256(&signed));
+                            self.inner.send_raw_transaction(&signed).await
+                        }
+                        None => {
+                            return Err(FacilitatorLocalError::ContractCall(
+                                "transaction was not signed".into(),
+                            ))
+                        }
+                    },
+                    Err(e) => Err(e),
+                }
             };
 
             // The permit is released as soon as the broadcast resolves, NOT
@@ -1229,6 +1257,61 @@ impl EvmProvider {
                         _ => self.nonce_manager.reset_nonce(from_address).await,
                     }
 
+                    // The bytes reached the transport and the node never said it
+                    // refused them: a timeout, a dropped connection, a gateway
+                    // error, an answer that would not parse, or the node saying
+                    // it already holds them. Any of those can end mined, so this
+                    // is not retried here and not advertised as retryable to the
+                    // caller, who gets the hash to look up instead.
+                    if let Some(hash) = broadcast.filter(|_| broadcast_may_have_queued(&e)) {
+                        tracing::error!(
+                            tx_hash = %hash,
+                            %from_address,
+                            network = %self.chain.network,
+                            error = %crate::redact::scrub_urls(&error_str),
+                            "Broadcast outcome unknown; the transaction may be in a mempool"
+                        );
+                        return Err(FacilitatorLocalError::SettlementUnconfirmed(
+                            TransactionHash::Evm(hash.0),
+                            self.chain.network,
+                        ));
+                    }
+
+                    // Under a receipt admission the bytes stored before this
+                    // send are the admission's only transaction
+                    // (`receipts::prepared_evm` refuses a second). A retry
+                    // would allocate and sign another nonce only to have it
+                    // refused, leaving a nonce nothing will ever broadcast for
+                    // the signer's next settle to queue behind.
+                    //
+                    // A node that says it already holds the bytes was answered
+                    // above. This one refused them on nonce grounds: this send
+                    // did not queue them, and nothing else is signed or sent.
+                    // The rail cannot tell whether the same bytes are held
+                    // elsewhere, so the receipt keeps them `unknown` and the
+                    // caller resends the same request; it is never invited to
+                    // sign a replacement.
+                    //
+                    // The signer's counter is left with no gap: the arms above
+                    // already make the next allocation ask the node, and a
+                    // refusal saying our nonce is AHEAD of the node (`too
+                    // high`, or a `gap` phrasing) also drops the high-water
+                    // mark, so that allocation takes the node's count as is
+                    // instead of waiting out `NONCE_TRUST_CHAIN_AFTER_DRIFT`.
+                    if is_nonce_error(&error_str) && crate::receipts::active() {
+                        if is_nonce_gap(&error_str) {
+                            self.nonce_manager.resync_to_chain(from_address).await;
+                        }
+                        tracing::warn!(
+                            %from_address,
+                            network = %self.chain.network,
+                            error = %crate::redact::scrub_urls(&error_str),
+                            "Nonce error under a receipt admission, not retrying: \
+                             the admission holds one prepared transaction"
+                        );
+                        return Err(FacilitatorLocalError::ContractCall(error_str));
+                    }
+
                     if is_nonce_error(&error_str) && attempt < MAX_NONCE_RETRIES {
                         // Safety check: if the confirmed TX count advanced, the
                         // "failed" TX was actually mined by a different RPC node.
@@ -1342,6 +1425,76 @@ pub(crate) fn is_pre_broadcast_rejection(error: &str) -> bool {
         || is_mempool_full(&lower)
 }
 
+/// Whether a node's refusal says it already holds this exact transaction.
+///
+/// geth and reth answer `already known`, and that one is measured. The other
+/// phrasings are a HYPOTHESIS from the clients' sources as remembered, not
+/// measured against a node of each: Nethermind `AlreadyKnown`, Besu and older
+/// geth `known transaction`, OpenEthereum `already imported`. Matching one that
+/// no node sends costs nothing; missing one that a node does send reports a
+/// transaction in its pool as a refusal. `unknown transaction` is not a match.
+pub(crate) fn node_already_holds(error: &str) -> bool {
+    let lower = error.to_ascii_lowercase();
+    lower.contains("already known")
+        || lower.contains("alreadyknown")
+        || lower.contains("already imported")
+        || lower
+            .match_indices("known transaction")
+            .any(|(at, _)| !lower[..at].ends_with("un"))
+}
+
+/// Whether a failed `eth_sendRawTransaction` may still have put the transaction
+/// in a mempool.
+///
+/// Only a node that answered and refused proves it did not: its JSON-RPC error
+/// is a verdict on the transaction -- except `already known`, which says the
+/// node holds it. A refusal can also arrive inside a non-2xx HTTP body or a
+/// body that is not a well-formed response, so both are read for one. What is
+/// left leaves the bytes possibly delivered: a timeout, a dropped connection,
+/// a gateway's 5xx, a null or unreadable answer, and retries the transport
+/// layer gave up on, since an earlier attempt may have got through. Refused
+/// before any node saw it: a connection never made, a request never built or
+/// serialized, and an HTTP 4xx without a JSON-RPC verdict (auth, rate limit).
+///
+/// Checked against [`is_pre_broadcast_rejection`] too, which decides on the
+/// same text whether the reserved nonce goes back: a transaction reported as
+/// possibly queued must never also have had its nonce handed back.
+pub(crate) fn broadcast_may_have_queued(error: &alloy::transports::TransportError) -> bool {
+    use alloy::transports::{RpcError, TransportErrorKind};
+
+    /// The `message` of a JSON-RPC error carried as text, bare or in an envelope.
+    fn verdict_in(text: &str) -> Option<String> {
+        let value: serde_json::Value = serde_json::from_str(text).ok()?;
+        let payload = value.get("error").unwrap_or(&value);
+        payload.get("code")?;
+        payload
+            .get("message")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+    }
+    let holds_it = node_already_holds;
+
+    let queued = match error {
+        RpcError::ErrorResp(payload) => holds_it(&payload.message),
+        RpcError::DeserError { text, .. } => verdict_in(text).is_none_or(|m| holds_it(&m)),
+        RpcError::Transport(TransportErrorKind::HttpError(http)) => match verdict_in(&http.body) {
+            Some(message) => holds_it(&message),
+            None => http.status >= 500,
+        },
+        RpcError::Transport(TransportErrorKind::Custom(inner)) => {
+            match inner.downcast_ref::<reqwest::Error>() {
+                Some(e) => !(e.is_connect() || e.is_builder()),
+                None => true,
+            }
+        }
+        RpcError::Transport(_) | RpcError::NullResp => true,
+        RpcError::SerError(_) | RpcError::UnsupportedFeature(_) | RpcError::LocalUsageError(_) => {
+            false
+        }
+    };
+    queued && !is_pre_broadcast_rejection(&format!("{error:?}"))
+}
+
 /// Whether the node refused the transaction because its own mempool has no
 /// room for it (geth's `txpool is full: already have N pending transactions
 /// in queue`).
@@ -1384,6 +1537,14 @@ pub(crate) fn is_mempool_full(error: &str) -> bool {
 pub(crate) fn is_nonce_too_high(error: &str) -> bool {
     let lower = error.to_lowercase();
     lower.contains("nonce") && lower.contains("too high")
+}
+
+/// A nonce refusal that says our nonce is ahead of the node's view, in the
+/// `too high` phrasing or a `gap` one. Only the receipt-admission path acts on
+/// the `gap` phrasing: outside an admission the retry loop keeps its own rules.
+fn is_nonce_gap(error: &str) -> bool {
+    let lower = error.to_lowercase();
+    is_nonce_too_high(&lower) || (lower.contains("nonce") && lower.contains("gap"))
 }
 
 /// Check if a transport error is a nonce-related error that can be retried.
@@ -4573,6 +4734,193 @@ mod settlement_unconfirmed_tests {
         assert_eq!(sent.unsent, None, "a mark after the latch released a send");
     }
 
+    /// A node with a transaction count, refusals queued for the next raw sends,
+    /// and a record of the nonce of every raw transaction it was sent.
+    #[derive(Default)]
+    struct NonceNode {
+        /// What `eth_getTransactionCount` answers, whatever the block tag.
+        count: u64,
+        /// Served in order to the next raw sends: the node's message, and the
+        /// count it reports from then on.
+        refusals: std::collections::VecDeque<(&'static str, u64)>,
+        sent: Vec<u64>,
+    }
+    type SharedNode = Arc<std::sync::Mutex<NonceNode>>;
+
+    async fn spawn_node(node: NonceNode) -> (String, SharedNode) {
+        use alloy::consensus::Transaction as _;
+        use alloy::eips::Decodable2718 as _;
+        use axum::extract::State;
+        async fn serve(
+            State(node): State<SharedNode>,
+            AxumJson(body): AxumJson<Value>,
+        ) -> AxumJson<Value> {
+            let one = |req: &Value| {
+                let id = req.get("id").cloned().unwrap_or(json!(1));
+                let method = req.get("method").and_then(Value::as_str).unwrap_or("");
+                let mut node = node.lock().unwrap();
+                let result = match method {
+                    "eth_getTransactionCount" => json!(format!("0x{:x}", node.count)),
+                    "eth_sendRawTransaction" => {
+                        let raw = req["params"][0].as_str().unwrap_or_default();
+                        let raw = hex::decode(raw.trim_start_matches("0x")).unwrap();
+                        let tx =
+                            alloy::consensus::TxEnvelope::decode_2718(&mut raw.as_slice()).unwrap();
+                        node.sent.push(tx.nonce());
+                        if let Some((message, count)) = node.refusals.pop_front() {
+                            node.count = count;
+                            return json!({"jsonrpc": "2.0", "id": id,
+                                "error": {"code": -32000, "message": message}});
+                        }
+                        json!(SUBMITTED_TX)
+                    }
+                    other => answer(other),
+                };
+                json!({"jsonrpc": "2.0", "id": id, "result": result})
+            };
+            AxumJson(match &body {
+                Value::Array(reqs) => Value::Array(reqs.iter().map(one).collect()),
+                req => one(req),
+            })
+        }
+        let node = Arc::new(std::sync::Mutex::new(node));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = Router::new()
+            .route("/", post(serve))
+            .with_state(node.clone());
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (format!("http://{addr}/"), node)
+    }
+
+    async fn base_provider(url: &str) -> EvmProvider {
+        EvmProvider::try_new(
+            EthereumWallet::from(PrivateKeySigner::random()),
+            url,
+            false,
+            Network::Base,
+        )
+        .await
+        .expect("provider")
+    }
+
+    /// Refused before it could queue, so the send ends at once and the nonce
+    /// it carried is all a test needs from it.
+    const PRE_BROADCAST_REFUSAL: &str = "insufficient funds for gas * price + value";
+
+    /// Under a receipt admission the bytes stored before the send are the
+    /// admission's only transaction. A node that refuses them on nonce grounds
+    /// ends the settle there: one broadcast, the node's own refusal as the
+    /// answer, the bytes kept, and no second nonce allocated or signed. The
+    /// node's count does not move, so outside an admission this is retried.
+    #[tokio::test]
+    async fn under_a_receipt_admission_a_nonce_refusal_signs_no_second_transaction() {
+        let (url, node) = spawn_node(NonceNode {
+            refusals: [("nonce too low: next nonce 5, tx nonce 0", 0)].into(),
+            ..Default::default()
+        })
+        .await;
+        let provider = base_provider(&url).await;
+
+        let refused = crate::receipts::with_test_admission(async {
+            provider.send_transaction(meta_transaction()).await
+        })
+        .await;
+
+        assert!(
+            matches!(&refused.output, Err(FacilitatorLocalError::ContractCall(e)) if is_nonce_error(e)),
+            "the node's own refusal is the answer: {:?}",
+            refused.output
+        );
+        assert_eq!(node.lock().unwrap().sent, [0]);
+        assert!(refused.latched);
+        assert!(refused.prepared.is_some(), "the stored transaction is kept");
+    }
+
+    /// A node that says it already holds the stored bytes is not a refusal: the
+    /// transaction may be in its mempool. Under an admission that answer comes
+    /// out as `SettlementUnconfirmed` with the stored hash, ahead of the nonce
+    /// guard, never as the node's nonce error.
+    #[tokio::test]
+    async fn under_a_receipt_admission_already_known_is_unconfirmed_not_a_refusal() {
+        let (url, node) = spawn_node(NonceNode {
+            refusals: [("already known", 0)].into(),
+            ..Default::default()
+        })
+        .await;
+        let provider = base_provider(&url).await;
+
+        let held = crate::receipts::with_test_admission(async {
+            provider.send_transaction(meta_transaction()).await
+        })
+        .await;
+
+        let prepared = held.prepared.as_ref().expect("the bytes are stored first");
+        let stored = prepared["transactionHash"].as_str().unwrap().to_owned();
+        match &held.output {
+            Err(FacilitatorLocalError::SettlementUnconfirmed(tx, network)) => {
+                assert_eq!(tx.to_string(), stored);
+                assert_eq!(*network, Network::Base);
+            }
+            other => panic!("expected SettlementUnconfirmed with the stored hash, got {other:?}"),
+        }
+        assert_eq!(node.lock().unwrap().sent, [0]);
+    }
+
+    /// After that refusal the signer's next settle, sent at once, carries the
+    /// nonce the node expects: nothing is left allocated in between. One case
+    /// per kind of refusal: the slot is taken (`too low`), and the node is
+    /// behind our counter (`too high`, and a `gap` phrasing).
+    #[tokio::test]
+    async fn after_a_nonce_refusal_under_admission_the_next_settle_takes_the_nodes_nonce() {
+        for (refusal, count_before, count_after) in [
+            ("nonce too low: next nonce 5, tx nonce 0", 0, 5),
+            ("nonce too high: tx nonce 3, state nonce 0", 3, 0),
+            ("nonce gap: tx nonce 3, account nonce 0", 3, 0),
+        ] {
+            let (url, node) = spawn_node(NonceNode {
+                count: count_before,
+                refusals: [(refusal, count_after), (PRE_BROADCAST_REFUSAL, count_after)].into(),
+                ..Default::default()
+            })
+            .await;
+            let provider = base_provider(&url).await;
+
+            for _ in 0..2 {
+                let settle = crate::receipts::with_test_admission(async {
+                    provider.send_transaction(meta_transaction()).await
+                })
+                .await;
+                assert!(settle.output.is_err(), "{refusal}: {:?}", settle.output);
+            }
+
+            assert_eq!(
+                node.lock().unwrap().sent,
+                [count_before, count_after],
+                "{refusal}: the next settle did not take the node's nonce"
+            );
+        }
+    }
+
+    /// Outside an admission a nonce refusal is still retried, as before.
+    #[tokio::test]
+    async fn outside_an_admission_a_nonce_refusal_is_still_retried() {
+        const TOO_LOW: &str = "nonce too low: next nonce 5, tx nonce 0";
+        let (url, node) = spawn_node(NonceNode {
+            refusals: [(TOO_LOW, 0), (TOO_LOW, 0), (TOO_LOW, 0)].into(),
+            ..Default::default()
+        })
+        .await;
+        let provider = base_provider(&url).await;
+
+        let result = provider.send_transaction(meta_transaction()).await;
+
+        assert!(result.is_err(), "{result:?}");
+        assert_eq!(node.lock().unwrap().sent.len(), 3);
+    }
+
     /// The production wiring: `NetworkProvider` marks any EVM settle error.
     #[tokio::test]
     async fn an_evm_settle_error_before_the_send_is_marked_unsent() {
@@ -4610,6 +4958,257 @@ mod settlement_unconfirmed_tests {
         assert!(settled.output.is_err());
         assert_eq!(settled.unsent, Some("evm_settle"));
         assert!(!settled.latched);
+    }
+}
+
+/// A send that fails AFTER the bytes reached the transport.
+///
+/// `settlement_unconfirmed_tests` covers a send the node accepted and never
+/// mined; this covers the node's answer to the send itself going missing or
+/// saying it already holds the transaction. Either can end mined, so the error
+/// is `SettlementUnconfirmed` carrying the hash of the exact bytes sent, and
+/// nothing is sent again. A node that answered and refused keeps the old
+/// handling: that transaction never queued.
+#[cfg(test)]
+mod broadcast_outcome_tests {
+    use super::*;
+    use alloy::network::EthereumWallet;
+    use alloy::signers::local::PrivateKeySigner;
+    use alloy::transports::{RpcError, TransportError, TransportErrorKind};
+    use axum::{extract::State, response::IntoResponse, routing::post, Json as AxumJson, Router};
+    use serde_json::{json, Value};
+    use std::sync::Mutex as StdMutex;
+
+    /// A JSON-RPC error the node answered with. Built through `deser_err`,
+    /// which is how alloy turns an error payload into `ErrorResp`.
+    fn node_said(message: &str) -> TransportError {
+        let payload = json!({"code": -32000, "message": message}).to_string();
+        let error =
+            TransportError::deser_err(serde_json::from_str::<u8>("x").unwrap_err(), payload);
+        assert!(matches!(error, RpcError::ErrorResp(_)), "{error:?}");
+        error
+    }
+
+    #[test]
+    fn only_a_node_verdict_proves_the_transaction_never_queued() {
+        let lost = serde_json::from_str::<u8>("x").unwrap_err();
+        let cases: Vec<(&str, TransportError, bool)> =
+            vec![
+            ("already known", node_said("already known"), true),
+            ("AlreadyKnown", node_said("AlreadyKnown"), true),
+            ("known transaction", node_said("known transaction: 0x00"), true),
+            (
+                "already imported",
+                node_said("Transaction with the same hash was already imported."),
+                true,
+            ),
+            ("unknown transaction", node_said("unknown transaction"), false),
+            ("nonce too low", node_said("nonce too low"), false),
+            (
+                "gas shortfall",
+                node_said("insufficient funds for gas * price + value"),
+                false,
+            ),
+            ("txpool full", node_said("txpool is full"), false),
+            (
+                "gateway 502",
+                TransportErrorKind::http_error(502, "bad gateway".into()),
+                true,
+            ),
+            (
+                "gateway 504",
+                TransportErrorKind::http_error(504, String::new()),
+                true,
+            ),
+            (
+                "rate limit 429",
+                TransportErrorKind::http_error(429, "Too Many Requests".into()),
+                false,
+            ),
+            (
+                "verdict inside a 500",
+                TransportErrorKind::http_error(
+                    500,
+                    r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"nonce too low"}}"#
+                        .into(),
+                ),
+                false,
+            ),
+            (
+                "already known inside a 500",
+                TransportErrorKind::http_error(
+                    500,
+                    r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"already known"}}"#
+                        .into(),
+                ),
+                true,
+            ),
+            (
+                "unreadable answer",
+                TransportError::deser_err(lost, "<html>upstream reset</html>"),
+                true,
+            ),
+            ("null answer", RpcError::NullResp, true),
+            (
+                "retries exhausted",
+                TransportErrorKind::custom_str("Max retries exceeded HTTP error 503"),
+                true,
+            ),
+            (
+                "never serialized",
+                RpcError::SerError(serde_json::from_str::<u8>("x").unwrap_err()),
+                false,
+            ),
+        ];
+        for (name, error, queued) in cases {
+            assert_eq!(
+                broadcast_may_have_queued(&error),
+                queued,
+                "{name}: {error:?}"
+            );
+        }
+    }
+
+    /// What the mock node does with `eth_sendRawTransaction`.
+    #[derive(Clone)]
+    enum SendRaw {
+        HttpStatus(u16),
+        NodeError(&'static str),
+    }
+
+    #[derive(Clone)]
+    struct Node {
+        send_raw: SendRaw,
+        sent: Arc<StdMutex<Vec<String>>>,
+    }
+
+    fn result(req: &Value, value: Value) -> Value {
+        json!({"jsonrpc":"2.0","id":req.get("id").cloned().unwrap_or(json!(1)),"result":value})
+    }
+
+    async fn rpc(
+        State(node): State<Node>,
+        AxumJson(body): AxumJson<Value>,
+    ) -> axum::response::Response {
+        let reqs = match &body {
+            Value::Array(reqs) => reqs.clone(),
+            req => vec![req.clone()],
+        };
+        let mut answers = Vec::new();
+        for req in &reqs {
+            let method = req.get("method").and_then(Value::as_str).unwrap_or("");
+            let answer = match method {
+                "eth_chainId" => result(req, json!("0x2105")),
+                "eth_getTransactionCount" => result(req, json!("0x0")),
+                "eth_gasPrice" | "eth_maxPriorityFeePerGas" => result(req, json!("0x3b9aca00")),
+                "eth_estimateGas" => result(req, json!("0x5208")),
+                "eth_sendRawTransaction" => {
+                    let raw = req["params"][0].as_str().unwrap_or_default().to_string();
+                    node.sent.lock().unwrap().push(raw);
+                    match node.send_raw {
+                        SendRaw::HttpStatus(code) => {
+                            return (
+                                axum::http::StatusCode::from_u16(code).unwrap(),
+                                "upstream connection reset",
+                            )
+                                .into_response()
+                        }
+                        SendRaw::NodeError(message) => json!({"jsonrpc":"2.0",
+                            "id":req.get("id").cloned().unwrap_or(json!(1)),
+                            "error":{"code":-32000,"message":message}}),
+                    }
+                }
+                _ => result(req, Value::Null),
+            };
+            answers.push(answer);
+        }
+        AxumJson(if body.is_array() {
+            Value::Array(answers)
+        } else {
+            answers.remove(0)
+        })
+        .into_response()
+    }
+
+    async fn provider_against(send_raw: SendRaw) -> (EvmProvider, Arc<StdMutex<Vec<String>>>) {
+        let sent = Arc::new(StdMutex::new(Vec::new()));
+        let node = Node {
+            send_raw,
+            sent: sent.clone(),
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let app = Router::new().route("/", post(rpc)).with_state(node);
+            axum::serve(listener, app).await.unwrap();
+        });
+        let provider = EvmProvider::try_new(
+            EthereumWallet::from(PrivateKeySigner::random()),
+            &format!("http://{addr}/"),
+            false,
+            Network::Base,
+        )
+        .await
+        .expect("provider");
+        (provider, sent)
+    }
+
+    fn meta_transaction() -> MetaTransaction {
+        MetaTransaction {
+            authorization_list: None,
+            to: address!("0000000000000000000000000000000000000001"),
+            calldata: Bytes::from_static(&[0u8; 4]),
+            confirmations: 1,
+        }
+    }
+
+    /// The hash of the raw transaction the node was handed, as its explorer
+    /// would print it.
+    fn hash_of(raw: &str) -> String {
+        let bytes = hex::decode(raw.trim_start_matches("0x")).expect("raw tx is hex");
+        alloy::primitives::keccak256(bytes).to_string()
+    }
+
+    #[tokio::test]
+    async fn a_send_whose_answer_is_lost_reports_the_hash_it_sent_and_sends_once() {
+        for send_raw in [
+            SendRaw::HttpStatus(502),
+            SendRaw::NodeError("already known"),
+        ] {
+            let (provider, sent) = provider_against(send_raw).await;
+            let result = provider.send_transaction(meta_transaction()).await;
+            let sent = sent.lock().unwrap().clone();
+            assert_eq!(
+                sent.len(),
+                1,
+                "sent again after a send that may have queued"
+            );
+            match result {
+                Err(FacilitatorLocalError::SettlementUnconfirmed(tx, network)) => {
+                    assert_eq!(tx.to_string(), hash_of(&sent[0]));
+                    assert_eq!(network, Network::Base);
+                }
+                other => panic!("expected SettlementUnconfirmed with the sent hash, got {other:?}"),
+            }
+        }
+    }
+
+    /// A node that refused keeps today's answer: it never queued the
+    /// transaction, so the caller may be told to retry.
+    #[tokio::test]
+    async fn a_send_the_node_refused_keeps_its_old_answer() {
+        let (provider, sent) = provider_against(SendRaw::NodeError(
+            "insufficient funds for gas * price + value",
+        ))
+        .await;
+        let result = provider.send_transaction(meta_transaction()).await;
+        assert_eq!(sent.lock().unwrap().len(), 1);
+        match result {
+            Err(FacilitatorLocalError::ContractCall(message)) => {
+                assert!(message.contains("insufficient funds"), "{message}");
+            }
+            other => panic!("expected the node's refusal as ContractCall, got {other:?}"),
+        }
     }
 }
 

@@ -85,9 +85,10 @@ escrow, `upto` or Gateway on that network; ERC-8004 is served on both Arc networ
 not on Hedera. Native Hedera also rejects
 durable-evidence and other unsupported extensions.
 
-## Portable facilitator receipts (Arc and Hedera)
+## Portable facilitator receipts (Arc, Base and Hedera)
 
-Arc exact USDC/EURC and native Hedera USDC return `receipt` alongside verify/settle.
+Arc and Base exact USDC/EURC and native Hedera USDC return `receipt` alongside
+verify/settle.
 Discover `/supported.facilitatorReceipts`, `/receipts`,
 `/schemas/facilitator-receipt-v1.json` and `/.well-known/receipt-keys.json`.
 For private lookup, persist a purchase context and send `X-UVD-Purchase` (base64
@@ -103,6 +104,9 @@ The original answer is replayed only with the `X-UVD-Purchase` or
 A `503` with `safeToRetry: true` and `Retry-After` sent nothing, and a receipt
 `rejected` with `refusalReason: reservation_abandoned` says the same: resend the
 same request after the delay; it is admitted again under the same receipt.
+A failure after the send latched or its bytes were prepared is the opposite: it
+carries `retryable: false`, no `Retry-After`, the prepared `transaction` and its
+`paymentId`; poll the receipt, never sign a replacement.
 Python `fetch_with_receipt` and TypeScript `fetchWithReceipt` return the original
 HTTP response plus receipt/payment state. Supply trusted issuer keys for offline
 signature verification. Live EURC acceptance was proven on Arc mainnet on
@@ -110,3 +114,7 @@ signature verification. Live EURC acceptance was proven on Arc mainnet on
 Arc testnet is still pending. Other networks
 retain their existing responses. Full contract:
 https://github.com/UltravioletaDAO/x402-rs/blob/main/docs/facilitator-receipts.md
+
+Receipts cover plain `exact` payments only. On Base, `upto`, `escrow`/`commerce`
+and the x402r `refund` extension keep their own settlement paths and carry no
+`receipt`.

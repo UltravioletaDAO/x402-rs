@@ -183,6 +183,9 @@ not on the failure.
   has either an argument here or no equivalent at all.
 - **An ambiguous settle is not a failed settle.** A timeout means the
   transaction may already be on its way. Retry with the same `idempotencyKey`.
+- **`retryable: false` means stop.** A settle failure whose body says
+  `"retryable": false` or names a `transaction` may already be on chain: do not
+  retry it and never sign a new authorization; look the transaction up.
 - **`isValid: false` is not always permanent.** A bad signature is; an
   unreachable RPC is not. Read `errorReason`.
 - **Do not hard-code a network count** from this document or any other.
@@ -201,9 +204,10 @@ not on the failure.
 - LLM context: `/llms.txt`, `/llms-full.txt`
 - Source: <https://github.com/UltravioletaDAO/x402-rs>
 
-## Portable facilitator receipts (Arc and Hedera)
+## Portable facilitator receipts (Arc, Base and Hedera)
 
-Arc exact USDC/EURC and native Hedera USDC return `receipt` alongside verify/settle.
+Arc and Base exact USDC/EURC and native Hedera USDC return `receipt` alongside
+verify/settle.
 Discover `/supported.facilitatorReceipts`, `/receipts`,
 `/schemas/facilitator-receipt-v1.json` and `/.well-known/receipt-keys.json`.
 For private lookup, persist a purchase context and send `X-UVD-Purchase` (base64
@@ -219,6 +223,9 @@ The original answer is replayed only with the `X-UVD-Purchase` or
 A `503` with `safeToRetry: true` and `Retry-After` sent nothing, and a receipt
 `rejected` with `refusalReason: reservation_abandoned` says the same: resend the
 same request after the delay; it is admitted again under the same receipt.
+A failure after the send latched or its bytes were prepared is the opposite: it
+carries `retryable: false`, no `Retry-After`, the prepared `transaction` and its
+`paymentId`; poll the receipt, never sign a replacement.
 Python `fetch_with_receipt` and TypeScript `fetchWithReceipt` return the original
 HTTP response plus receipt/payment state. Supply trusted issuer keys for offline
 signature verification. Live EURC acceptance was proven on Arc mainnet on
@@ -226,3 +233,7 @@ signature verification. Live EURC acceptance was proven on Arc mainnet on
 Arc testnet is still pending. Other networks
 retain their existing responses. Full contract:
 https://github.com/UltravioletaDAO/x402-rs/blob/main/docs/facilitator-receipts.md
+
+Receipts cover plain `exact` payments only. On Base, `upto`, `escrow`/`commerce`
+and the x402r `refund` extension keep their own settlement paths and carry no
+`receipt`.

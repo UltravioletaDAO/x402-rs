@@ -98,7 +98,7 @@ pub(super) fn fixture_record() -> Record {
     fixture_record_on("arc-testnet", ARC_USDC)
 }
 pub(super) fn base_fixture_record() -> Record {
-    TEST_CANDIDATE.sync_scope(Network::Base, || fixture_record_on("base", BASE_USDC))
+    fixture_record_on("base", BASE_USDC)
 }
 fn fixture_record_on(network: &str, asset: &str) -> Record {
     initial(
@@ -208,9 +208,8 @@ async fn persisted_transaction_is_recoverable_after_lost_response() {
 const ARC_USDC: &str = "0x3600000000000000000000000000000000000000";
 const BASE_USDC: &str = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
 const BASE_EURC: &str = "0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42";
-/// EVM networks driven through admission: the announced Arc networks and Base,
-/// the candidate. The v1 name a body carries, the CAIP-2 id its receipt must
-/// carry, and an exact asset on it.
+/// Every EVM network admitted through receipts: the v1 name a body carries,
+/// the CAIP-2 id its receipt must carry, and an exact asset on it.
 const EVM_RECEIPT_NETWORKS: [(&str, &str, &str); 3] = [
     ("arc", "eip155:5042", ARC_USDC),
     ("arc-testnet", "eip155:5042002", ARC_USDC),
@@ -305,29 +304,25 @@ async fn arc_v2_receipt_keeps_the_wire_version_after_internal_normalization() {
 #[tokio::test]
 async fn concurrent_replicas_reserve_one_payment_and_replay_the_same_receipt() {
     for (network, caip2, asset) in EVM_RECEIPT_NETWORKS {
-        let candidate = Network::from_caip2(caip2).unwrap();
         let service = service_fixture();
         let sends = Arc::new(AtomicUsize::new(0));
         let mut tasks = Vec::new();
         for _ in 0..20 {
             let service = service.clone();
             let sends = sends.clone();
-            tasks.push(tokio::spawn(TEST_CANDIDATE.scope(
-                candidate,
-                TEST_SERVICE.scope(service, async move {
-                    settle(
-                        &MockFacilitator { invalid: false },
-                        &headers(),
-                        &body_on(network, asset, 1),
-                        async {
-                            sends.fetch_add(1, Ordering::SeqCst);
-                            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-                            success_on(network)
-                        },
-                    )
-                    .await
-                }),
-            )));
+            tasks.push(tokio::spawn(TEST_SERVICE.scope(service, async move {
+                settle(
+                    &MockFacilitator { invalid: false },
+                    &headers(),
+                    &body_on(network, asset, 1),
+                    async {
+                        sends.fetch_add(1, Ordering::SeqCst);
+                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                        success_on(network)
+                    },
+                )
+                .await
+            })));
         }
         let mut receipt_id = None;
         for task in tasks {
@@ -340,19 +335,16 @@ async fn concurrent_replicas_reserve_one_payment_and_replay_the_same_receipt() {
             }
         }
         assert_eq!(sends.load(Ordering::SeqCst), 1, "{network}");
-        let replay = TEST_CANDIDATE
-            .scope(
-                candidate,
-                TEST_SERVICE.scope(service, async {
-                    settle(
-                        &MockFacilitator { invalid: false },
-                        &headers(),
-                        &body_on(network, asset, 1),
-                        async { panic!("second broadcast on {network}") },
-                    )
-                    .await
-                }),
-            )
+        let replay = TEST_SERVICE
+            .scope(service, async {
+                settle(
+                    &MockFacilitator { invalid: false },
+                    &headers(),
+                    &body_on(network, asset, 1),
+                    async { panic!("second broadcast on {network}") },
+                )
+                .await
+            })
             .await;
         assert_eq!(replay.headers()["idempotent-replayed"], "true", "{network}");
         let output = value(replay).await;
@@ -733,14 +725,6 @@ async fn no_storage_no_broadcast() {
 
 #[tokio::test]
 async fn base_escrow_and_refund_requests_keep_their_own_settlement_path() {
-    TEST_CANDIDATE
-        .scope(
-            Network::Base,
-            base_escrow_and_refund_stay_out_of_admission(),
-        )
-        .await;
-}
-async fn base_escrow_and_refund_stay_out_of_admission() {
     let exact: Value = serde_json::from_slice(&body_on("base", BASE_USDC, 1)).unwrap();
     assert!(parse_request(&HeaderMap::new(), &body_on("base", BASE_USDC, 1)).is_some());
     let mut refund = exact.clone();
@@ -823,27 +807,21 @@ fn capability_lists_exactly_the_supported_networks() {
     assert_eq!(listed, expected);
 }
 
-/// Base's exact path is ready and tested above, but it is announced on its
-/// own: until then a Base settle is untouched, with no receipt and no replay.
+/// Base is announced: a Base settle is admitted without any test override.
 #[tokio::test]
-async fn base_is_not_admitted_until_it_is_announced() {
-    assert!(!supported(Network::Base));
-    assert!(!capability()["networks"]
+async fn base_is_announced_and_admitted() {
+    assert!(supported(Network::Base));
+    assert!(capability()["networks"]
         .as_array()
         .unwrap()
         .contains(&json!("eip155:8453")));
-    let store = Arc::new(store::MemoryStore::default());
-    let service = Arc::new(Service {
-        store: store.clone(),
-        signing_key: Some(SigningKey::from_bytes(&[7; 32])),
-    });
     let sends = AtomicUsize::new(0);
     TEST_SERVICE
-        .scope(service, async {
-            for _ in 0..2 {
+        .scope(service_fixture(), async {
+            for attempt in 0..2 {
                 let settled = settle(
                     &MockFacilitator { invalid: false },
-                    &HeaderMap::new(),
+                    &keyed("base-announced"),
                     &body_on("base", BASE_USDC, 1),
                     async {
                         sends.fetch_add(1, Ordering::SeqCst);
@@ -851,13 +829,68 @@ async fn base_is_not_admitted_until_it_is_announced() {
                     },
                 )
                 .await;
-                assert!(settled.headers().get("idempotent-replayed").is_none());
-                assert!(value(settled).await.get("receipt").is_none());
+                assert_eq!(
+                    settled.headers().contains_key("idempotent-replayed"),
+                    attempt == 1
+                );
+                let output = value(settled).await;
+                assert_eq!(output["receipt"]["status"], "confirmed");
+                assert_eq!(output["receipt"]["network"], "eip155:8453");
             }
         })
         .await;
-    assert_eq!(sends.load(Ordering::SeqCst), 2);
-    assert!(store.0.lock().await.is_empty());
+    assert_eq!(sends.load(Ordering::SeqCst), 1);
+}
+
+/// Base's other admitted shapes: USDC in an x402 v2 body and EURC in a v1 body.
+/// Each is admitted once, replayed to its purchase, and its receipt attests
+/// the wire version, the lowercase asset and six decimals.
+#[tokio::test]
+async fn base_v2_usdc_and_v1_eurc_are_admitted() {
+    let v1: Value = serde_json::from_slice(&body_on("base", BASE_USDC, 41)).unwrap();
+    let r = &v1["paymentRequirements"];
+    let v2_usdc = Bytes::from(serde_json::to_vec(&json!({
+        "x402Version":2,
+        "paymentPayload":{"x402Version":2,"payload":v1["paymentPayload"]["payload"]},
+        "resource":{"url":r["resource"],"description":r["description"],"mimeType":r["mimeType"]},
+        "accepted":{"network":"eip155:8453","scheme":"exact","asset":r["asset"],
+            "amount":r["maxAmountRequired"],"payTo":r["payTo"],"maxTimeoutSeconds":180,"extra":r["extra"]}
+    })).unwrap());
+    let v1_eurc = body_on("base", BASE_EURC, 42);
+    for (label, body, version, asset) in [
+        ("v2 USDC", v2_usdc, 2, BASE_USDC),
+        ("v1 EURC", v1_eurc, 1, BASE_EURC),
+    ] {
+        let sends = AtomicUsize::new(0);
+        TEST_SERVICE
+            .scope(service_fixture(), async {
+                for attempt in 0..2 {
+                    let settled = settle(
+                        &MockFacilitator { invalid: false },
+                        &headers(),
+                        &body,
+                        async {
+                            sends.fetch_add(1, Ordering::SeqCst);
+                            success_on("base")
+                        },
+                    )
+                    .await;
+                    assert_eq!(
+                        settled.headers().contains_key("idempotent-replayed"),
+                        attempt == 1,
+                        "{label}"
+                    );
+                    let receipt = &value(settled).await["receipt"];
+                    assert_eq!(receipt["network"], "eip155:8453", "{label}");
+                    assert_eq!(receipt["x402Version"], version, "{label}");
+                    assert_eq!(receipt["asset"], asset.to_lowercase(), "{label}");
+                    assert_eq!(receipt["decimals"], 6, "{label}");
+                    assert_eq!(receipt["status"], "confirmed", "{label}");
+                }
+            })
+            .await;
+        assert_eq!(sends.load(Ordering::SeqCst), 1, "{label}");
+    }
 }
 
 /// The shared vectors are synthetic: fixed IDs, placeholder hashes and the
@@ -940,8 +973,7 @@ fn shared_vectors_are_synthetic_receipts_and_cover_base() {
 // The original answer goes back only to the binding that admitted the payment:
 // its X-UVD-Purchase capability or its Idempotency-Key. A bare resend of the
 // signed payment learns the outcome from the receipt but is never answered as
-// a (repeated) success. Every network in `supported()` is covered, plus Base as
-// the candidate.
+// a (repeated) success. Every network in `supported()` is covered.
 
 #[cfg(feature = "hedera")]
 fn hedera_body(network: &str, asset: &str) -> Bytes {
@@ -984,13 +1016,13 @@ fn admitted_networks() -> Vec<(&'static str, Bytes)> {
     cases
 }
 
-/// Runs `f` with the receipt service and `network` admitted (Base is only a
-/// candidate; the others are already in `supported()`).
+/// Runs `f` with the receipt service, on a network production admits.
 async fn admitted<F: Future>(network: &str, service: Arc<Service>, f: F) -> F::Output {
-    let network = Network::from_caip2(network).unwrap();
-    TEST_CANDIDATE
-        .scope(network, TEST_SERVICE.scope(service, f))
-        .await
+    assert!(
+        supported(Network::from_caip2(network).unwrap()),
+        "{network} is not admitted"
+    );
+    TEST_SERVICE.scope(service, f).await
 }
 
 fn keyed(key: &'static str) -> HeaderMap {
@@ -1129,6 +1161,82 @@ async fn the_binding_that_admitted_a_payment_recovers_its_lost_response() {
         })
         .await;
     }
+}
+
+/// A nonce refusal of the stored transaction on Base, as the EVM provider ends
+/// it under an admission (`chain::evm`: no second transaction). It is a failure
+/// after the send: the node's `502 upstream_nonce_or_mempool` with
+/// `retryable: false`, the stored transaction and no `Retry-After`, and the
+/// receipt `unknown`; never a success or a verdict that invites a new
+/// signature. The purchase that admitted it gets the same answer and the stored
+/// receipt back without anything being sent again; another request for the
+/// same authorization is refused without the receipt.
+#[tokio::test]
+async fn a_nonce_refusal_under_admission_stays_unknown_and_is_resent_not_resigned() {
+    let stored = format!("0x{}", "33".repeat(32));
+    let body = body_on("base", BASE_USDC, 9);
+    TEST_SERVICE
+        .scope(service_fixture(), async {
+            let refused = settle(
+                &MockFacilitator { invalid: false },
+                &headers(),
+                &body,
+                async {
+                    prepared_evm(stored.clone(), vec![4, 5, 6]).await.unwrap();
+                    sending();
+                    crate::chain::FacilitatorLocalError::ContractCall(
+                        "ErrorResp(ErrorPayload { code: -32000, message: \"nonce too low: \
+                         next nonce 5, tx nonce 0\", data: None })"
+                            .into(),
+                    )
+                    .into_response()
+                },
+            )
+            .await;
+            assert_eq!(refused.status(), StatusCode::BAD_GATEWAY);
+            assert!(refused.headers().get("idempotent-replayed").is_none());
+            assert!(refused.headers().get(RETRY_AFTER).is_none());
+            let first = value(refused).await;
+            assert!(
+                first["error"]
+                    .as_str()
+                    .is_some_and(|e| e.starts_with("upstream_nonce_or_mempool")),
+                "{first}"
+            );
+            assert_ne!(first["success"], true);
+            assert_eq!(first["retryable"], false);
+            assert_eq!(first["transaction"], stored.as_str());
+            assert!(first["paymentId"].is_string(), "{first}");
+            let receipt = &first["receipt"];
+            assert_eq!(receipt["network"], "eip155:8453");
+            assert_eq!(receipt["status"], "unknown");
+            assert_eq!(receipt["refusalReason"], Value::Null);
+            assert_eq!(receipt["settlement"]["id"], stored.as_str());
+            assert_eq!(receipt["retry"]["action"], "poll");
+
+            // The same purchase resent: verify reads the stored receipt, and
+            // settle replays the answer; `settle_again` panics on a send.
+            let verified = verify_again(&headers(), &body).await;
+            assert_eq!(verified["isValid"], true);
+            assert_eq!(verified["receipt"]["receiptId"], receipt["receiptId"]);
+            let again = settle_again(&headers(), &body).await;
+            assert_eq!(again.status(), StatusCode::BAD_GATEWAY);
+            assert_eq!(again.headers()["idempotent-replayed"], "true");
+            assert!(again.headers().get(RETRY_AFTER).is_none());
+            let again = value(again).await;
+            assert_eq!(again["retryable"], false);
+            assert_eq!(again["transaction"], stored.as_str());
+            assert_eq!(again["receipt"]["receiptId"], receipt["receiptId"]);
+            assert_eq!(again["receipt"]["status"], "unknown");
+
+            // Without that purchase: refused, and the private receipt stays private.
+            let bare = settle_again(&HeaderMap::new(), &body).await;
+            assert_eq!(bare.status(), StatusCode::CONFLICT);
+            let bare = value(bare).await;
+            assert_eq!(bare["error"], "receipt_request_conflict");
+            assert!(bare.get("receipt").is_none());
+        })
+        .await;
 }
 
 #[tokio::test]
@@ -2168,4 +2276,163 @@ async fn the_operator_command_releases_only_stranded_admissions_that_sent_nothin
     assert_eq!(named[0].action, "skip_not_found");
     assert_eq!(named[1].receipt_id, young);
     assert_eq!(named[1].action, "skip_signing_key_mismatch");
+}
+
+/// The EVM hash `prepared_evm` stores in these fixtures, and its `paymentId` on
+/// Arc testnet, where `body(..)` settles.
+fn prepared_hash() -> String {
+    format!("0x{}", "44".repeat(32))
+}
+fn prepared_payment_id() -> String {
+    crate::dx402::payment_id(Network::ArcTestnet, &prepared_hash())
+}
+
+/// A settlement that ran and whose answer cannot be read: once bytes were
+/// prepared, the transaction may be mined, so the answer is not retryable and
+/// names the transaction and the receipt. Before, it was `retryable: true`.
+#[tokio::test]
+async fn an_unreadable_answer_after_a_prepared_send_is_not_retryable() {
+    TEST_SERVICE
+        .scope(service_fixture(), async {
+            let answer = settle(
+                &MockFacilitator { invalid: false },
+                &headers(),
+                &body(1),
+                async {
+                    prepared_evm(prepared_hash(), vec![1, 2, 3]).await.unwrap();
+                    sending();
+                    (StatusCode::OK, "x".repeat(70_000)).into_response()
+                },
+            )
+            .await;
+            assert_eq!(answer.status(), StatusCode::BAD_GATEWAY);
+            assert!(answer.headers().get(RETRY_AFTER).is_none());
+            let answer = value(answer).await;
+            assert_eq!(answer["error"], "receipt_response_unreadable");
+            assert_eq!(answer["retryable"], false);
+            assert_eq!(answer["transaction"], prepared_hash());
+            assert_eq!(answer["paymentId"], prepared_payment_id());
+            assert_eq!(answer["receipt"]["settlement"]["id"], prepared_hash());
+        })
+        .await;
+}
+
+/// The same unreadable answer when nothing was sent keeps its old shape: the
+/// class this change touches starts at the send.
+#[tokio::test]
+async fn an_unreadable_answer_when_nothing_was_sent_is_unchanged() {
+    TEST_SERVICE
+        .scope(service_fixture(), async {
+            let answer = settle(
+                &MockFacilitator { invalid: false },
+                &headers(),
+                &body(1),
+                async { (StatusCode::OK, "x".repeat(70_000)).into_response() },
+            )
+            .await;
+            assert_eq!(answer.status(), StatusCode::BAD_GATEWAY);
+            let answer = value(answer).await;
+            assert_eq!(answer["error"], "receipt_response_unreadable");
+            assert_eq!(answer["retryable"], true);
+            assert!(answer.get("transaction").is_none());
+        })
+        .await;
+}
+
+/// A provider failure answered after the send latched, in the shape the exact
+/// path gives a node that dropped the connection: `502`, `Retry-After`, no
+/// hash. Under an admission the transaction may be mined, so the answer, and
+/// the one stored for a bound resend, says `retryable: false` and names it.
+#[tokio::test]
+async fn a_retryable_failure_after_the_send_is_answered_as_not_retryable() {
+    let service = service_fixture();
+    TEST_SERVICE
+        .scope(service.clone(), async {
+            let answer = settle(
+                &MockFacilitator { invalid: false },
+                &headers(),
+                &body(1),
+                async {
+                    prepared_evm(prepared_hash(), vec![1, 2, 3]).await.unwrap();
+                    sending();
+                    let mut lost = (
+                        StatusCode::BAD_GATEWAY,
+                        Json(json!({"error":"upstream_rpc_unavailable (ref: x)"})),
+                    )
+                        .into_response();
+                    lost.headers_mut()
+                        .insert(RETRY_AFTER, HeaderValue::from_static("30"));
+                    lost
+                },
+            )
+            .await;
+            assert_eq!(answer.status(), StatusCode::BAD_GATEWAY);
+            assert!(answer.headers().get(RETRY_AFTER).is_none());
+            let answer = value(answer).await;
+            assert_eq!(answer["retryable"], false);
+            assert_eq!(answer["transaction"], prepared_hash());
+            assert_eq!(answer["paymentId"], prepared_payment_id());
+            assert_eq!(answer["receipt"]["status"], "unknown");
+
+            let id = answer["receipt"]["receiptId"].as_str().unwrap();
+            let stored = service
+                .store
+                .get(&format!("receipt:v1:{id}"))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(stored.response["retryable"], false);
+            assert_eq!(stored.response["transaction"], prepared_hash());
+        })
+        .await;
+}
+
+/// The answer a provider already gave with the hash is kept as it was, and a
+/// failure before the send keeps its retry.
+#[tokio::test]
+async fn a_named_transaction_is_kept_and_a_failure_before_the_send_keeps_its_retry() {
+    TEST_SERVICE
+        .scope(service_fixture(), async {
+            let named = format!("0x{}", "55".repeat(32));
+            let answer = settle(
+                &MockFacilitator { invalid: false },
+                &headers(),
+                &body(1),
+                async {
+                    prepared_evm(prepared_hash(), vec![1, 2, 3]).await.unwrap();
+                    sending();
+                    (
+                        StatusCode::BAD_GATEWAY,
+                        Json(json!({"error":"settlement_unconfirmed","transaction":named,
+                            "paymentId":"from-the-provider","retryable":false})),
+                    )
+                        .into_response()
+                },
+            )
+            .await;
+            let answer = value(answer).await;
+            assert_eq!(answer["transaction"], named);
+            assert_eq!(answer["paymentId"], "from-the-provider");
+
+            let before = settle(
+                &MockFacilitator { invalid: false },
+                &purchase("cd"),
+                &body(2),
+                async {
+                    let mut lost = (
+                        StatusCode::BAD_GATEWAY,
+                        Json(json!({"error":"upstream_rpc_unavailable (ref: x)"})),
+                    )
+                        .into_response();
+                    lost.headers_mut()
+                        .insert(RETRY_AFTER, HeaderValue::from_static("30"));
+                    lost
+                },
+            )
+            .await;
+            assert_eq!(before.headers()[RETRY_AFTER], "30");
+            let before = value(before).await;
+            assert!(before.get("retryable").is_none(), "{before}");
+        })
+        .await;
 }

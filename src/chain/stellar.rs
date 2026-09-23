@@ -93,6 +93,13 @@ pub enum StellarError {
     #[error("RPC error: {0}")]
     RpcError(String),
 
+    /// The request was sent and no readable answer came back: a timeout, a
+    /// dropped connection, a body that does not decode, an envelope with no
+    /// result. Same text as [`Self::RpcError`]; kept apart because for
+    /// `sendTransaction` it means the transaction may have been accepted.
+    #[error("RPC error: {0}")]
+    RpcUnanswered(String),
+
     #[error("Missing credentials in authorization entry")]
     MissingCredentials,
 
@@ -531,12 +538,20 @@ impl StellarProvider {
             .json(&request)
             .send()
             .await
-            .map_err(|e| StellarError::RpcError(e.to_string()))?;
+            .map_err(|e| {
+                // Only a connection never made or a request never built
+                // proves the server did not receive it.
+                if e.is_connect() || e.is_builder() {
+                    StellarError::RpcError(e.to_string())
+                } else {
+                    StellarError::RpcUnanswered(e.to_string())
+                }
+            })?;
 
         let rpc_response: RpcResponse<R> = response
             .json()
             .await
-            .map_err(|e| StellarError::RpcError(e.to_string()))?;
+            .map_err(|e| StellarError::RpcUnanswered(e.to_string()))?;
 
         if let Some(error) = rpc_response.error {
             return Err(StellarError::RpcError(format!(
@@ -547,7 +562,7 @@ impl StellarProvider {
 
         rpc_response
             .result
-            .ok_or_else(|| StellarError::RpcError("Empty response".to_string()))
+            .ok_or_else(|| StellarError::RpcUnanswered("Empty response".to_string()))
     }
 
     /// Make an RPC request without params to Soroban RPC
@@ -568,12 +583,20 @@ impl StellarProvider {
             .json(&request)
             .send()
             .await
-            .map_err(|e| StellarError::RpcError(e.to_string()))?;
+            .map_err(|e| {
+                // Only a connection never made or a request never built
+                // proves the server did not receive it.
+                if e.is_connect() || e.is_builder() {
+                    StellarError::RpcError(e.to_string())
+                } else {
+                    StellarError::RpcUnanswered(e.to_string())
+                }
+            })?;
 
         let rpc_response: RpcResponse<R> = response
             .json()
             .await
-            .map_err(|e| StellarError::RpcError(e.to_string()))?;
+            .map_err(|e| StellarError::RpcUnanswered(e.to_string()))?;
 
         if let Some(error) = rpc_response.error {
             return Err(StellarError::RpcError(format!(
@@ -584,7 +607,7 @@ impl StellarProvider {
 
         rpc_response
             .result
-            .ok_or_else(|| StellarError::RpcError("Empty response".to_string()))
+            .ok_or_else(|| StellarError::RpcUnanswered("Empty response".to_string()))
     }
 
     /// Get the current ledger sequence number
@@ -1484,7 +1507,7 @@ impl StellarProvider {
         sequence: i64,
         fee: u32,
         soroban_data: SorobanTransactionData,
-    ) -> Result<String, StellarError> {
+    ) -> Result<(String, Vec<u8>), StellarError> {
         tracing::debug!(
             from = %verification.payer.address,
             to = %verification.to,
@@ -1545,7 +1568,7 @@ impl StellarProvider {
             "Built signed transaction envelope successfully"
         );
 
-        Ok(envelope_base64)
+        Ok((envelope_base64, tx_hash))
     }
 
     /// Build unsigned envelope for simulation (no signature needed)
@@ -1731,7 +1754,7 @@ impl StellarProvider {
 
         // Step 5: Build signed envelope with SorobanTransactionData
         tracing::info!("submit_transaction: Building signed envelope with Soroban data");
-        let signed_envelope = self
+        let (signed_envelope, envelope_hash) = self
             .build_signed_envelope(verification, next_sequence, final_fee_u32, soroban_data)
             .map_err(|e| {
                 tracing::error!(error = %e, "submit_transaction: Failed to build signed envelope");
@@ -1755,7 +1778,7 @@ impl StellarProvider {
             .await
             .map_err(|e| {
                 tracing::error!(error = %e, "submit_transaction: Send RPC failed");
-                FacilitatorLocalError::from(e)
+                self.send_failure(e, &envelope_hash)
             })?;
 
         if send_result.status == "ERROR" {
@@ -1872,6 +1895,17 @@ impl StellarProvider {
         Err(self.settlement_unconfirmed(hash))
     }
 
+    /// A `sendTransaction` that failed. When the request went out and its
+    /// answer did not come back, the RPC may have accepted the transaction, so
+    /// it is reported as unconfirmed under the hash we signed; any answer the
+    /// server gave (a JSON-RPC error) is a refusal and stays one.
+    fn send_failure(&self, error: StellarError, tx_hash: &[u8]) -> FacilitatorLocalError {
+        match error {
+            StellarError::RpcUnanswered(_) => self.settlement_unconfirmed(&hex::encode(tx_hash)),
+            error => error.into(),
+        }
+    }
+
     /// Build a [`FacilitatorLocalError::SettlementUnconfirmed`] for a hex tx
     /// hash we submitted and could not resolve.
     ///
@@ -1890,10 +1924,72 @@ impl StellarProvider {
                 self.network(),
             ),
             None => FacilitatorLocalError::ContractCall(format!(
-                "Stellar transaction submitted but unconfirmed, and its hash is not 32 bytes: {hash}"
+                "Stellar transaction submitted but unconfirmed, it may have been mined, \
+                 and its hash is not 32 bytes: {hash}"
             )),
         }
     }
+}
+
+/// The settle answer for a submitted transaction.
+///
+/// An unconfirmed settlement is not a failed one, so it must not be reported
+/// as `success: false` with no transaction -- that is the shape that tells a
+/// caller the payment did not happen. It travels as an error so `IntoResponse`
+/// can answer `502 settlement_unconfirmed` with the hash, or `502
+/// broadcast_uncertain` when the hash the RPC gave back will not decode.
+fn settle_outcome(
+    submitted: Result<[u8; 32], FacilitatorLocalError>,
+    payer: MixedAddress,
+    network: Network,
+) -> Result<SettleResponse, FacilitatorLocalError> {
+    let tx_hash = match submitted {
+        Ok(hash) => {
+            tracing::info!(
+                tx_hash = ?hex::encode(hash),
+                "Stellar settle: Transaction submitted successfully"
+            );
+            hash
+        }
+        Err(e @ FacilitatorLocalError::SettlementUnconfirmed(..)) => {
+            tracing::error!(
+                error = %e,
+                "Stellar settle: transaction submitted, never confirmed"
+            );
+            return Err(e);
+        }
+        Err(FacilitatorLocalError::ContractCall(message))
+            if crate::chain::failure::ChainFailure::classify(&message).may_have_broadcast() =>
+        {
+            tracing::error!(error = %message, "Stellar settle: transaction submitted, never confirmed");
+            return Err(FacilitatorLocalError::ContractCall(message));
+        }
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                error_debug = ?e,
+                "Stellar settle: Failed to submit transaction"
+            );
+            return Ok(SettleResponse {
+                success: false,
+                error_reason: Some(FacilitatorErrorReason::UnexpectedSettleError),
+                payer,
+                transaction: None,
+                network,
+                proof_of_payment: None,
+                extensions: None,
+            });
+        }
+    };
+    Ok(SettleResponse {
+        success: true,
+        error_reason: None,
+        payer,
+        transaction: Some(TransactionHash::Stellar(tx_hash)),
+        network,
+        proof_of_payment: None, // ERC-8004 not supported on Stellar
+        extensions: None,
+    })
 }
 
 /// Result of verifying a Stellar payment
@@ -1957,65 +2053,8 @@ impl Facilitator for StellarProvider {
         );
 
         // Submit the transaction
-        let tx_hash = match self.submit_transaction(&verification).await {
-            Ok(hash) => {
-                tracing::info!(
-                    tx_hash = ?hex::encode(&hash),
-                    "Stellar settle: Transaction submitted successfully"
-                );
-                hash
-            }
-            // An unconfirmed settlement is not a failed one, so it must not be
-            // reported as `success: false` with no transaction -- that is the
-            // shape that tells a caller the payment did not happen. It travels
-            // as an error so `IntoResponse` can answer `502
-            // settlement_unconfirmed` with the hash.
-            Err(e @ FacilitatorLocalError::SettlementUnconfirmed(..)) => {
-                tracing::error!(
-                    error = %e,
-                    "Stellar settle: transaction submitted, never confirmed"
-                );
-                return Err(e);
-            }
-            Err(e) => {
-                tracing::error!(
-                    error = %e,
-                    error_debug = ?e,
-                    "Stellar settle: Failed to submit transaction"
-                );
-                let response = SettleResponse {
-                    success: false,
-                    error_reason: Some(FacilitatorErrorReason::UnexpectedSettleError),
-                    payer: verification.payer.into(),
-                    transaction: None,
-                    network: self.network(),
-                    proof_of_payment: None,
-                    extensions: None,
-                };
-                tracing::info!(
-                    success = response.success,
-                    error_reason = ?response.error_reason,
-                    "Stellar settle: Returning failure response"
-                );
-                return Ok(response);
-            }
-        };
-
-        let response = SettleResponse {
-            success: true,
-            error_reason: None,
-            payer: verification.payer.into(),
-            transaction: Some(TransactionHash::Stellar(tx_hash)),
-            network: self.network(),
-            proof_of_payment: None, // ERC-8004 not supported on Stellar
-            extensions: None,
-        };
-        tracing::info!(
-            success = response.success,
-            tx_hash = ?response.transaction,
-            "Stellar settle: Returning success response"
-        );
-        Ok(response)
+        let submitted = self.submit_transaction(&verification).await;
+        settle_outcome(submitted, verification.payer.into(), self.network())
     }
 
     async fn supported(&self) -> Result<SupportedPaymentKindsResponse, Self::Error> {
@@ -2501,5 +2540,120 @@ mod tests {
             "expected InvalidInvocationType, got {:?}",
             err
         );
+    }
+}
+
+/// A `sendTransaction` whose answer was lost is unconfirmed, not failed.
+///
+/// `rpc_request` keeps a request that went out and got no readable answer
+/// apart from one the server refused or never received, and `send_failure`
+/// turns only the first into `SettlementUnconfirmed` under the hash we signed.
+#[cfg(test)]
+mod submission_outcome_tests {
+    use super::*;
+    use axum::{response::IntoResponse, routing::post, Json, Router};
+    use serde_json::{json, Value};
+
+    fn provider(rpc_url: String) -> StellarProvider {
+        let signing_key = SigningKey::from_bytes(&[0u8; 32]);
+        StellarProvider {
+            public_key: StellarPublicKey(signing_key.verifying_key().to_bytes()).to_string(),
+            signing_key: Arc::new(signing_key),
+            http_client: Arc::new(reqwest::Client::new()),
+            chain: StellarChain::try_from(Network::StellarTestnet).unwrap(),
+            rpc_url: Some(rpc_url),
+        }
+    }
+
+    async fn node(answer: fn() -> axum::response::Response) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = Router::new().route("/", post(move || async move { answer() }));
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        format!("http://{addr}/")
+    }
+
+    async fn send(rpc_url: String) -> StellarError {
+        provider(rpc_url)
+            .rpc_request::<_, Value>("sendTransaction", json!({"transaction": "AAAA"}))
+            .await
+            .expect_err("the fixture never accepts")
+    }
+
+    #[tokio::test]
+    async fn an_answer_lost_on_the_way_back_is_told_apart_from_a_refusal() {
+        let gateway =
+            node(|| (axum::http::StatusCode::BAD_GATEWAY, "upstream reset").into_response()).await;
+        assert!(matches!(
+            send(gateway).await,
+            StellarError::RpcUnanswered(_)
+        ));
+
+        let refused = node(|| {
+            Json(json!({"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"invalid transaction"}}))
+                .into_response()
+        })
+        .await;
+        assert!(matches!(send(refused).await, StellarError::RpcError(_)));
+
+        // Port 1 on loopback is closed: the request never left.
+        assert!(matches!(
+            send("http://127.0.0.1:1/".to_string()).await,
+            StellarError::RpcError(_)
+        ));
+    }
+
+    #[test]
+    fn only_a_lost_answer_is_reported_as_unconfirmed() {
+        let provider = provider("http://127.0.0.1:1/".to_string());
+        let hash = [0x33u8; 32];
+        match provider.send_failure(StellarError::RpcUnanswered("timed out".into()), &hash) {
+            FacilitatorLocalError::SettlementUnconfirmed(tx, network) => {
+                assert_eq!(tx, TransactionHash::Stellar(hash));
+                assert_eq!(network, Network::StellarTestnet);
+            }
+            other => panic!("expected SettlementUnconfirmed, got {other:?}"),
+        }
+        assert!(matches!(
+            provider.send_failure(StellarError::RpcError("RPC error -32602".into()), &hash),
+            FacilitatorLocalError::Other(_)
+        ));
+        // A hash the RPC gave back that will not decode still reads as a
+        // transaction that may be mined.
+        match provider.settlement_unconfirmed("not-hex") {
+            FacilitatorLocalError::ContractCall(message) => assert!(
+                crate::chain::failure::ChainFailure::classify(&message).may_have_broadcast(),
+                "{message}"
+            ),
+            other => panic!("expected the opaque fallback, got {other:?}"),
+        }
+    }
+
+    /// The settle answer: both unconfirmed shapes are errors, never the
+    /// `200 success:false` that says nothing was paid.
+    #[test]
+    fn a_submission_with_no_verdict_is_not_a_failed_settlement() {
+        let payer = MixedAddress::Stellar("GPAYER".to_string());
+        let provider = provider("http://127.0.0.1:1/".to_string());
+        let hash = [0x33u8; 32];
+        for unconfirmed in [
+            FacilitatorLocalError::SettlementUnconfirmed(
+                TransactionHash::Stellar(hash),
+                Network::StellarTestnet,
+            ),
+            provider.settlement_unconfirmed("not-hex"),
+        ] {
+            let result = settle_outcome(Err(unconfirmed), payer.clone(), Network::StellarTestnet);
+            assert!(result.is_err(), "{result:?}");
+        }
+        let refused = settle_outcome(
+            Err(StellarError::RpcError("RPC error -32602".into()).into()),
+            payer.clone(),
+            Network::StellarTestnet,
+        )
+        .expect("a refusal is a settle verdict");
+        assert!(!refused.success);
+        let settled = settle_outcome(Ok(hash), payer, Network::StellarTestnet).unwrap();
+        assert_eq!(settled.transaction, Some(TransactionHash::Stellar(hash)));
     }
 }

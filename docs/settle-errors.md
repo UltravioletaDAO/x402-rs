@@ -32,7 +32,8 @@ two mean "nothing was sent".
 
 | Answer | Where it comes from |
 |---|---|
-| `502` `settlement_unconfirmed` + `transaction` + `paymentId` | The transaction was sent and no verdict came back: the receipt or confirmation did not arrive, the node's answer to the send was lost (a timeout, a dropped connection, a gateway error, an answer that does not parse), or the node says it already holds the transaction. Every network family, with the hash in its own chain's encoding. |
+| `502` `settlement_unconfirmed` + `transaction` + `paymentId` | The transaction was sent and no verdict came back: the receipt or confirmation did not arrive, the node's answer to the send was lost (a timeout, a dropped connection, a gateway error, an answer that does not parse), or the node says it already holds or already processed the transaction. Every network family, with the hash in its own chain's encoding. |
+| `502` `settlement_unconfirmed` + the sweep's signature | Solana settlement account (`settleSecretKey`): the sweep of the deposit to `payTo` was sent and no verdict came back. The deposit is already recorded as used, so resending the same payload does not sweep again: look the sweep up. |
 | `502` `broadcast_uncertain (ref: …)` | EVM: the send was refused on nonce grounds after the signer's transaction count moved, or the count could not be read. No hash can be attributed to this payment. |
 | `502` `receipt_pending (ref: …)` | Broadcast succeeded and the receipt has not arrived, where no hash survives to be named. |
 | `502` `success: false`, `error: settlement_unconfirmed` or `broadcast_uncertain` | The `upto`, `escrow` and `refund` routes, same causes, same fields. |
@@ -70,6 +71,8 @@ two mean "nothing was sent".
   confirmation read with `contract_call_failed`, or with a retryable `502`/`503`.
 - `upto` and `refund` answered `400` with the error text; the escrow scheme
   answered without the hash.
+- The Solana settlement-account sweep answered `400 contract_call_failed`,
+  without `retryable` or its signature, whatever became of the sweep.
 - A forwarded settle whose answer was lost answered `503` with
   `Retry-After: 5`.
 - The receipt rail answered `receipt_response_unreadable` with

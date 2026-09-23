@@ -337,15 +337,17 @@ impl ChainFailure {
 /// and the two prose forms the nonce-retry guard produces when it declines to
 /// retry.
 ///
-/// `already known` is here too, ahead of the nonce phrasings it also belongs
-/// to: a node says it about the exact transaction it already holds in its
-/// pool (geth keys the check by hash), so it is the one refusal that proves the
-/// transaction queued rather than that it did not.
+/// `already known` and its variants are here too, ahead of the nonce
+/// phrasings `already known` also belongs to: a node says it about the exact
+/// transaction it already holds in its pool (geth keys the check by hash), so
+/// it is the one refusal that proves the transaction queued rather than that it
+/// did not. The list is `chain::evm::node_already_holds`, shared so the send
+/// path and this classifier cannot disagree.
 fn is_unconfirmed_broadcast(lower: &str) -> bool {
     lower.contains("settlementunconfirmed")
         || lower.contains("settlement_unconfirmed")
         || lower.contains("may have been mined")
-        || lower.contains("already known")
+        || crate::chain::evm::node_already_holds(lower)
 }
 
 /// Broadcast succeeded and the receipt has not arrived.
@@ -634,6 +636,23 @@ mod tests {
             assert!(!f.retryable(), "{fixture}");
             assert_eq!(f.retry_after_secs(0), None, "{fixture}");
         }
+        // The phrasings other clients are expected to use (see
+        // `node_already_holds`), and one that only looks like them.
+        for fixture in [
+            "AlreadyKnown",
+            "known transaction: 0x00",
+            "Transaction with the same hash was already imported.",
+        ] {
+            assert_eq!(
+                classify(fixture).reason,
+                Reason::BroadcastUncertain,
+                "{fixture}"
+            );
+        }
+        assert_ne!(
+            classify("unknown transaction").reason,
+            Reason::BroadcastUncertain
+        );
         // The other nonce refusals never queued, and stay retryable.
         let low = classify(r#"ErrorResp(ErrorPayload { code: -32000, message: "nonce too low" })"#);
         assert_eq!(low.reason, Reason::NonceOrMempool);

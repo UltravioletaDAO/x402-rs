@@ -889,6 +889,52 @@ impl FromEnvByNetworkBuild for SuiProvider {
     }
 }
 
+/// The settle answer for an executed sponsored transaction.
+///
+/// Executed with no verdict is not a failed settlement: reported as
+/// `success: false` with no transaction, it tells the caller the payment did
+/// not happen. It travels as an error so `IntoResponse` answers
+/// `502 settlement_unconfirmed` with the digest.
+fn settle_outcome(
+    submitted: Result<String, FacilitatorLocalError>,
+    payer: MixedAddress,
+    network: Network,
+) -> Result<SettleResponse, FacilitatorLocalError> {
+    match submitted {
+        Ok(digest) => {
+            info!(network = %network, payer = %payer, digest = %digest, "Sui payment settled successfully");
+            Ok(SettleResponse {
+                success: true,
+                error_reason: None,
+                payer,
+                transaction: Some(crate::types::TransactionHash::Sui(digest)),
+                network,
+                proof_of_payment: None, // ERC-8004 not supported on Sui yet
+                extensions: None,
+            })
+        }
+        Err(e @ FacilitatorLocalError::SettlementUnconfirmed(..)) => {
+            error!(network = %network, payer = %payer, error = %e, "Sui settlement unconfirmed");
+            Err(e)
+        }
+        Err(e) => {
+            error!(network = %network, payer = %payer, error = %e, "Sui settlement failed");
+            Ok(SettleResponse {
+                success: false,
+                error_reason: Some(crate::types::FacilitatorErrorReason::FreeForm(format!(
+                    "Settlement failed: {}",
+                    e
+                ))),
+                payer,
+                transaction: None,
+                network,
+                proof_of_payment: None,
+                extensions: None,
+            })
+        }
+    }
+}
+
 /// Whether a failed `sui_executeTransactionBlock` may still have executed.
 ///
 /// The server refused it when it answered with a JSON-RPC verdict on the
@@ -1020,58 +1066,10 @@ impl Facilitator for SuiProvider {
             .await?;
 
         // Submit the sponsored transaction
-        match self
+        let submitted = self
             .submit_sponsored_transaction(tx_data, signature, sender)
-            .await
-        {
-            Ok(digest) => {
-                info!(
-                    network = %self.network,
-                    payer = %payer,
-                    digest = %digest,
-                    "Sui payment settled successfully"
-                );
-
-                Ok(SettleResponse {
-                    success: true,
-                    error_reason: None,
-                    payer,
-                    transaction: Some(crate::types::TransactionHash::Sui(digest)),
-                    network: self.network,
-                    proof_of_payment: None, // ERC-8004 not supported on Sui yet
-                    extensions: None,
-                })
-            }
-            // Executed with no verdict is not a failed settlement: reported as
-            // `success: false` with no transaction, it tells the caller the
-            // payment did not happen. It travels as an error so `IntoResponse`
-            // answers `502 settlement_unconfirmed` with the digest.
-            Err(e @ FacilitatorLocalError::SettlementUnconfirmed(..)) => {
-                error!(network = %self.network, payer = %payer, error = %e, "Sui settlement unconfirmed");
-                Err(e)
-            }
-            Err(e) => {
-                error!(
-                    network = %self.network,
-                    payer = %payer,
-                    error = %e,
-                    "Sui settlement failed"
-                );
-
-                Ok(SettleResponse {
-                    success: false,
-                    error_reason: Some(crate::types::FacilitatorErrorReason::FreeForm(format!(
-                        "Settlement failed: {}",
-                        e
-                    ))),
-                    payer,
-                    transaction: None,
-                    network: self.network,
-                    proof_of_payment: None,
-                    extensions: None,
-                })
-            }
-        }
+            .await;
+        settle_outcome(submitted, payer, self.network)
     }
 
     async fn supported(&self) -> Result<SupportedPaymentKindsResponse, Self::Error> {
@@ -2000,6 +1998,41 @@ mod execution_outcome_tests {
                 other => panic!("expected SettlementUnconfirmed, got {other:?}"),
             }
         }
+    }
+
+    /// The settle answer: an execution with no verdict is an error carrying
+    /// the digest, never the `200 success:false` that says nothing was paid.
+    #[test]
+    fn an_execution_with_no_verdict_is_not_a_failed_settlement() {
+        let payer = MixedAddress::Sui(SuiAddress::ZERO.to_string());
+        let digest = "11111111111111111111111111111111".to_string();
+        match settle_outcome(
+            Err(FacilitatorLocalError::SettlementUnconfirmed(
+                crate::types::TransactionHash::Sui(digest.clone()),
+                Network::SuiTestnet,
+            )),
+            payer.clone(),
+            Network::SuiTestnet,
+        ) {
+            Err(FacilitatorLocalError::SettlementUnconfirmed(tx, _)) => {
+                assert_eq!(tx, crate::types::TransactionHash::Sui(digest.clone()))
+            }
+            other => panic!("expected the unconfirmed error, got {other:?}"),
+        }
+        let refused = settle_outcome(
+            Err(FacilitatorLocalError::Other("refused".into())),
+            payer.clone(),
+            Network::SuiTestnet,
+        )
+        .expect("a refusal is a settle verdict");
+        assert!(!refused.success);
+        assert!(refused.transaction.is_none());
+        let settled = settle_outcome(Ok(digest.clone()), payer, Network::SuiTestnet).unwrap();
+        assert!(settled.success);
+        assert_eq!(
+            settled.transaction,
+            Some(crate::types::TransactionHash::Sui(digest))
+        );
     }
 
     #[tokio::test]

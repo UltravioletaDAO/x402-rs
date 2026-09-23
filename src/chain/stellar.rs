@@ -1931,6 +1931,67 @@ impl StellarProvider {
     }
 }
 
+/// The settle answer for a submitted transaction.
+///
+/// An unconfirmed settlement is not a failed one, so it must not be reported
+/// as `success: false` with no transaction -- that is the shape that tells a
+/// caller the payment did not happen. It travels as an error so `IntoResponse`
+/// can answer `502 settlement_unconfirmed` with the hash, or `502
+/// broadcast_uncertain` when the hash the RPC gave back will not decode.
+fn settle_outcome(
+    submitted: Result<[u8; 32], FacilitatorLocalError>,
+    payer: MixedAddress,
+    network: Network,
+) -> Result<SettleResponse, FacilitatorLocalError> {
+    let tx_hash = match submitted {
+        Ok(hash) => {
+            tracing::info!(
+                tx_hash = ?hex::encode(hash),
+                "Stellar settle: Transaction submitted successfully"
+            );
+            hash
+        }
+        Err(e @ FacilitatorLocalError::SettlementUnconfirmed(..)) => {
+            tracing::error!(
+                error = %e,
+                "Stellar settle: transaction submitted, never confirmed"
+            );
+            return Err(e);
+        }
+        Err(FacilitatorLocalError::ContractCall(message))
+            if crate::chain::failure::ChainFailure::classify(&message).may_have_broadcast() =>
+        {
+            tracing::error!(error = %message, "Stellar settle: transaction submitted, never confirmed");
+            return Err(FacilitatorLocalError::ContractCall(message));
+        }
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                error_debug = ?e,
+                "Stellar settle: Failed to submit transaction"
+            );
+            return Ok(SettleResponse {
+                success: false,
+                error_reason: Some(FacilitatorErrorReason::UnexpectedSettleError),
+                payer,
+                transaction: None,
+                network,
+                proof_of_payment: None,
+                extensions: None,
+            });
+        }
+    };
+    Ok(SettleResponse {
+        success: true,
+        error_reason: None,
+        payer,
+        transaction: Some(TransactionHash::Stellar(tx_hash)),
+        network,
+        proof_of_payment: None, // ERC-8004 not supported on Stellar
+        extensions: None,
+    })
+}
+
 /// Result of verifying a Stellar payment
 pub struct VerifyPaymentResult {
     pub payer: StellarAddress,
@@ -1992,73 +2053,8 @@ impl Facilitator for StellarProvider {
         );
 
         // Submit the transaction
-        let tx_hash = match self.submit_transaction(&verification).await {
-            Ok(hash) => {
-                tracing::info!(
-                    tx_hash = ?hex::encode(&hash),
-                    "Stellar settle: Transaction submitted successfully"
-                );
-                hash
-            }
-            // An unconfirmed settlement is not a failed one, so it must not be
-            // reported as `success: false` with no transaction -- that is the
-            // shape that tells a caller the payment did not happen. It travels
-            // as an error so `IntoResponse` can answer `502
-            // settlement_unconfirmed` with the hash.
-            Err(e @ FacilitatorLocalError::SettlementUnconfirmed(..)) => {
-                tracing::error!(
-                    error = %e,
-                    "Stellar settle: transaction submitted, never confirmed"
-                );
-                return Err(e);
-            }
-            // The same outcome when the hash the RPC gave back will not decode:
-            // no hash to name, and still not a failure.
-            Err(FacilitatorLocalError::ContractCall(message))
-                if crate::chain::failure::ChainFailure::classify(&message).may_have_broadcast() =>
-            {
-                tracing::error!(error = %message, "Stellar settle: transaction submitted, never confirmed");
-                return Err(FacilitatorLocalError::ContractCall(message));
-            }
-            Err(e) => {
-                tracing::error!(
-                    error = %e,
-                    error_debug = ?e,
-                    "Stellar settle: Failed to submit transaction"
-                );
-                let response = SettleResponse {
-                    success: false,
-                    error_reason: Some(FacilitatorErrorReason::UnexpectedSettleError),
-                    payer: verification.payer.into(),
-                    transaction: None,
-                    network: self.network(),
-                    proof_of_payment: None,
-                    extensions: None,
-                };
-                tracing::info!(
-                    success = response.success,
-                    error_reason = ?response.error_reason,
-                    "Stellar settle: Returning failure response"
-                );
-                return Ok(response);
-            }
-        };
-
-        let response = SettleResponse {
-            success: true,
-            error_reason: None,
-            payer: verification.payer.into(),
-            transaction: Some(TransactionHash::Stellar(tx_hash)),
-            network: self.network(),
-            proof_of_payment: None, // ERC-8004 not supported on Stellar
-            extensions: None,
-        };
-        tracing::info!(
-            success = response.success,
-            tx_hash = ?response.transaction,
-            "Stellar settle: Returning success response"
-        );
-        Ok(response)
+        let submitted = self.submit_transaction(&verification).await;
+        settle_outcome(submitted, verification.payer.into(), self.network())
     }
 
     async fn supported(&self) -> Result<SupportedPaymentKindsResponse, Self::Error> {
@@ -2631,5 +2627,33 @@ mod submission_outcome_tests {
             ),
             other => panic!("expected the opaque fallback, got {other:?}"),
         }
+    }
+
+    /// The settle answer: both unconfirmed shapes are errors, never the
+    /// `200 success:false` that says nothing was paid.
+    #[test]
+    fn a_submission_with_no_verdict_is_not_a_failed_settlement() {
+        let payer = MixedAddress::Stellar("GPAYER".to_string());
+        let provider = provider("http://127.0.0.1:1/".to_string());
+        let hash = [0x33u8; 32];
+        for unconfirmed in [
+            FacilitatorLocalError::SettlementUnconfirmed(
+                TransactionHash::Stellar(hash),
+                Network::StellarTestnet,
+            ),
+            provider.settlement_unconfirmed("not-hex"),
+        ] {
+            let result = settle_outcome(Err(unconfirmed), payer.clone(), Network::StellarTestnet);
+            assert!(result.is_err(), "{result:?}");
+        }
+        let refused = settle_outcome(
+            Err(StellarError::RpcError("RPC error -32602".into()).into()),
+            payer.clone(),
+            Network::StellarTestnet,
+        )
+        .expect("a refusal is a settle verdict");
+        assert!(!refused.success);
+        let settled = settle_outcome(Ok(hash), payer, Network::StellarTestnet).unwrap();
+        assert_eq!(settled.transaction, Some(TransactionHash::Stellar(hash)));
     }
 }

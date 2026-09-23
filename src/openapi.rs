@@ -628,7 +628,9 @@ carries the same identifier.
 
 Every network family answers this way, with the hash in its own chain's
 encoding: EVM, Solana, NEAR, Stellar, Algorand, Sui, XRPL and native Hedera
-(where it is the transaction id). Until 2.39.6 NEAR, Stellar, Algorand, Sui and
+(where it is the transaction id). On Solana that includes the sweep of a
+settlement account (`settleSecretKey`), which answered `400
+contract_call_failed` until 2.39.6. Until 2.39.6 NEAR, Stellar, Algorand, Sui and
 XRPL reported a submission whose answer was lost as `200` with
 `success: false` and no transaction, which reads as "the payment did not
 happen".

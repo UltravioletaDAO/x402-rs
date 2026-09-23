@@ -781,6 +781,14 @@ impl NearProvider {
             "Submitting NEP-366 meta-transaction (relayer pays gas)"
         );
 
+        self.broadcast(signed_tx).await
+    }
+
+    /// `broadcast_tx_commit` of a signed meta-transaction, and its outcome.
+    async fn broadcast(
+        &self,
+        signed_tx: near_primitives::transaction::SignedTransaction,
+    ) -> Result<CryptoHash, FacilitatorLocalError> {
         // The hash exists before the transaction leaves. A submission that
         // fails without the node refusing it may still execute, and then the
         // caller gets this hash to look up rather than a failure to retry.
@@ -820,6 +828,46 @@ impl NearProvider {
         );
 
         Ok(response.transaction.hash)
+    }
+}
+
+/// The settle answer for a submitted meta-transaction.
+///
+/// Submitted with no verdict is not a failed settlement: reported as
+/// `success: false` with no transaction, it tells the caller the payment did
+/// not happen. It travels as an error so `IntoResponse` answers
+/// `502 settlement_unconfirmed` with the hash.
+fn settle_outcome(
+    submitted: Result<CryptoHash, FacilitatorLocalError>,
+    payer: MixedAddress,
+    network: Network,
+) -> Result<SettleResponse, FacilitatorLocalError> {
+    match submitted {
+        Ok(tx_hash) => Ok(SettleResponse {
+            success: true,
+            error_reason: None,
+            payer,
+            transaction: Some(TransactionHash::Near(tx_hash.0)),
+            network,
+            proof_of_payment: None, // ERC-8004 not supported on NEAR
+            extensions: None,
+        }),
+        Err(e @ FacilitatorLocalError::SettlementUnconfirmed(..)) => {
+            tracing::error!(error = %e, "NEAR settle: meta-transaction submitted, no verdict");
+            Err(e)
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to submit NEAR meta-transaction");
+            Ok(SettleResponse {
+                success: false,
+                error_reason: Some(FacilitatorErrorReason::UnexpectedSettleError),
+                payer,
+                transaction: None,
+                network,
+                proof_of_payment: None,
+                extensions: None,
+            })
+        }
     }
 }
 
@@ -938,45 +986,10 @@ impl Facilitator for NearProvider {
         }
 
         // Submit the meta-transaction (relayer pays gas!)
-        let tx_hash = match self
+        let submitted = self
             .submit_meta_transaction(verification.signed_delegate_action)
-            .await
-        {
-            Ok(hash) => hash,
-            // Submitted with no verdict is not a failed settlement: reported as
-            // `success: false` with no transaction, it tells the caller the
-            // payment did not happen. It travels as an error so `IntoResponse`
-            // answers `502 settlement_unconfirmed` with the hash.
-            Err(e @ FacilitatorLocalError::SettlementUnconfirmed(..)) => {
-                tracing::error!(error = %e, "NEAR settle: meta-transaction submitted, no verdict");
-                return Err(e);
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to submit NEAR meta-transaction");
-                return Ok(SettleResponse {
-                    success: false,
-                    error_reason: Some(FacilitatorErrorReason::UnexpectedSettleError),
-                    payer: verification.payer.into(),
-                    transaction: None,
-                    network: self.network(),
-                    proof_of_payment: None,
-                    extensions: None,
-                });
-            }
-        };
-
-        // Convert hash to TransactionHash::Near
-        let tx_hash_bytes: [u8; 32] = tx_hash.0;
-
-        Ok(SettleResponse {
-            success: true,
-            error_reason: None,
-            payer: verification.payer.into(),
-            transaction: Some(TransactionHash::Near(tx_hash_bytes)),
-            network: self.network(),
-            proof_of_payment: None, // ERC-8004 not supported on NEAR
-            extensions: None,
-        })
+            .await;
+        settle_outcome(submitted, verification.payer.into(), self.network())
     }
 
     async fn supported(&self) -> Result<SupportedPaymentKindsResponse, Self::Error> {
@@ -1423,6 +1436,92 @@ mod submission_outcome_tests {
         ];
         for error in &unknown {
             assert!(submission_may_have_landed(error), "{error:?}");
+        }
+    }
+
+    fn payer() -> MixedAddress {
+        MixedAddress::Near("payer.testnet".to_string())
+    }
+
+    /// The settle answer: a submission with no verdict is an error carrying
+    /// the hash, never the `200 success:false` that says nothing was paid.
+    #[test]
+    fn a_submission_with_no_verdict_is_not_a_failed_settlement() {
+        let hash = CryptoHash([7; 32]);
+        match settle_outcome(
+            Err(FacilitatorLocalError::SettlementUnconfirmed(
+                TransactionHash::Near(hash.0),
+                Network::NearTestnet,
+            )),
+            payer(),
+            Network::NearTestnet,
+        ) {
+            Err(FacilitatorLocalError::SettlementUnconfirmed(tx, _)) => {
+                assert_eq!(tx, TransactionHash::Near(hash.0))
+            }
+            other => panic!("expected the unconfirmed error, got {other:?}"),
+        }
+        let refused = settle_outcome(
+            Err(FacilitatorLocalError::ContractCall("refused".into())),
+            payer(),
+            Network::NearTestnet,
+        )
+        .expect("a refusal is a settle verdict");
+        assert!(!refused.success);
+        assert!(refused.transaction.is_none());
+        let settled = settle_outcome(Ok(hash), payer(), Network::NearTestnet).unwrap();
+        assert!(settled.success);
+        assert_eq!(settled.transaction, Some(TransactionHash::Near(hash.0)));
+    }
+
+    /// The predicate is wired to the real broadcast: a gateway error is
+    /// unconfirmed under the hash of the transaction sent, a provider refusal
+    /// is not.
+    #[tokio::test]
+    async fn the_broadcast_reports_a_lost_answer_under_its_hash() {
+        use axum::{response::IntoResponse, routing::post, Router};
+        use near_crypto::KeyType;
+        for (status, unconfirmed) in [
+            (axum::http::StatusCode::BAD_GATEWAY, true),
+            (axum::http::StatusCode::TOO_MANY_REQUESTS, false),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let app = Router::new().route(
+                "/",
+                post(move || async move { (status, "").into_response() }),
+            );
+            tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let provider = NearProvider::try_new(
+                SecretKey::from_seed(KeyType::ED25519, "relayer"),
+                "relayer.testnet".into(),
+                format!("http://{addr}/"),
+                Network::NearTestnet,
+            )
+            .unwrap();
+            let signed = Transaction::V0(TransactionV0 {
+                signer_id: provider.account_id.clone(),
+                public_key: provider.public_key(),
+                nonce: 1,
+                receiver_id: "payer.testnet".parse().unwrap(),
+                block_hash: CryptoHash::default(),
+                actions: vec![],
+            })
+            .sign(&provider.signer);
+            let expected = signed.get_hash();
+            match (provider.broadcast(signed).await, unconfirmed) {
+                (Err(FacilitatorLocalError::SettlementUnconfirmed(tx, network)), true) => {
+                    assert_eq!(tx, TransactionHash::Near(expected.0));
+                    assert_eq!(network, Network::NearTestnet);
+                }
+                (Err(FacilitatorLocalError::ContractCall(message)), false) => {
+                    assert!(
+                        message.starts_with("Failed to submit meta-transaction"),
+                        "{message}"
+                    )
+                }
+                (other, _) => panic!("{status}: unexpected {other:?}"),
+            }
         }
     }
 }

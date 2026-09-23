@@ -89,6 +89,67 @@ fn broadcast_may_have_landed(error: &algonaut::error::ServiceError) -> bool {
     }
 }
 
+/// The settle answer for a submitted group.
+///
+/// Broadcast-but-unconfirmed is not a failed settlement. Reporting it as
+/// `success: false` with no transaction tells the caller the payment did not
+/// happen; it travels as an error so `IntoResponse` can answer `502
+/// settlement_unconfirmed` with the id.
+fn settle_outcome(
+    submitted: Result<String, AlgorandError>,
+    payer: MixedAddress,
+    network: Network,
+) -> Result<SettleResponse, FacilitatorLocalError> {
+    match submitted {
+        Ok(tx_id) => {
+            tracing::info!(tx_id = %tx_id, "Algorand settle: Transaction submitted successfully");
+            Ok(SettleResponse {
+                success: true,
+                error_reason: None,
+                payer,
+                transaction: Some(TransactionHash::Algorand(tx_id)),
+                network,
+                proof_of_payment: None, // ERC-8004 not supported on Algorand
+                extensions: None,
+            })
+        }
+        Err(AlgorandError::TransactionNotConfirmed { tx_id, attempts }) => {
+            tracing::error!(
+                tx_id = %tx_id,
+                attempts = attempts,
+                "Algorand settle: transaction submitted, never confirmed"
+            );
+            Err(FacilitatorLocalError::SettlementUnconfirmed(
+                TransactionHash::Algorand(tx_id),
+                network,
+            ))
+        }
+        Err(AlgorandError::SubmissionUnconfirmed { tx_id, detail }) => {
+            tracing::error!(
+                tx_id = %tx_id,
+                error = %crate::redact::scrub_urls(&detail),
+                "Algorand settle: broadcast answer lost, the group may be committed"
+            );
+            Err(FacilitatorLocalError::SettlementUnconfirmed(
+                TransactionHash::Algorand(tx_id),
+                network,
+            ))
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "Algorand settle: Failed to submit transaction");
+            Ok(SettleResponse {
+                success: false,
+                error_reason: Some(FacilitatorErrorReason::UnexpectedSettleError),
+                payer,
+                transaction: None,
+                network,
+                proof_of_payment: None,
+                extensions: None,
+            })
+        }
+    }
+}
+
 /// A failed broadcast of the group whose first transaction is `first_id`.
 fn broadcast_error(error: algonaut::error::ServiceError, first_id: String) -> AlgorandError {
     if broadcast_may_have_landed(&error) {
@@ -799,17 +860,7 @@ impl AlgorandProvider {
             "Skipping simulation - algonaut broadcast handles encoding correctly"
         );
 
-        // Submit the atomic group. algod answers with the id of the group's
-        // first transaction, our fee transaction, which is known before the
-        // broadcast and is what an unanswered one is reported under.
-        let first_id = signed_group[0].transaction_id.clone();
-        let pending_tx = self
-            .algod
-            .broadcast_signed_transactions(&signed_group)
-            .await
-            .map_err(|e| broadcast_error(e, first_id))?;
-
-        let tx_id = pending_tx.tx_id;
+        let tx_id = self.broadcast(&signed_group).await?;
 
         tracing::info!(
             tx_id = %tx_id,
@@ -824,6 +875,22 @@ impl AlgorandProvider {
         // via check_and_mark_group_used(), stored in persistent DynamoDB
 
         Ok(tx_id)
+    }
+
+    /// Broadcast an atomic group. algod answers with the id of the group's
+    /// first transaction, our fee transaction, which is known before the
+    /// broadcast and is what an unanswered one is reported under.
+    async fn broadcast(&self, signed_group: &[SignedTransaction]) -> Result<String, AlgorandError> {
+        let first_id = signed_group
+            .first()
+            .map(|tx| tx.transaction_id.clone())
+            .ok_or_else(|| AlgorandError::InvalidAtomicGroup("empty group".to_string()))?;
+        let pending_tx = self
+            .algod
+            .broadcast_signed_transactions(signed_group)
+            .await
+            .map_err(|e| broadcast_error(e, first_id))?;
+        Ok(pending_tx.tx_id)
     }
 
     /// Wait for transaction confirmation
@@ -1098,67 +1165,8 @@ impl Facilitator for AlgorandProvider {
                 );
 
                 // Submit the transaction group
-                let tx_id = match self.submit_group(&verification, algorand_payload).await {
-                    Ok(id) => {
-                        tracing::info!(
-                            tx_id = %id,
-                            "Algorand settle: Transaction submitted successfully"
-                        );
-                        id
-                    }
-                    // Broadcast-but-unconfirmed is not a failed settlement.
-                    // Reporting it as `success: false` with no transaction
-                    // tells the caller the payment did not happen; it travels
-                    // as an error so `IntoResponse` can answer `502
-                    // settlement_unconfirmed` with the id.
-                    Err(AlgorandError::TransactionNotConfirmed { tx_id, attempts }) => {
-                        tracing::error!(
-                            tx_id = %tx_id,
-                            attempts = attempts,
-                            "Algorand settle: transaction submitted, never confirmed"
-                        );
-                        return Err(FacilitatorLocalError::SettlementUnconfirmed(
-                            TransactionHash::Algorand(tx_id),
-                            self.network(),
-                        ));
-                    }
-                    Err(AlgorandError::SubmissionUnconfirmed { tx_id, detail }) => {
-                        tracing::error!(
-                            tx_id = %tx_id,
-                            error = %crate::redact::scrub_urls(&detail),
-                            "Algorand settle: broadcast answer lost, the group may be committed"
-                        );
-                        return Err(FacilitatorLocalError::SettlementUnconfirmed(
-                            TransactionHash::Algorand(tx_id),
-                            self.network(),
-                        ));
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            error = %e,
-                            "Algorand settle: Failed to submit transaction"
-                        );
-                        return Ok(SettleResponse {
-                            success: false,
-                            error_reason: Some(FacilitatorErrorReason::UnexpectedSettleError),
-                            payer: verification.payer.into(),
-                            transaction: None,
-                            network: self.network(),
-                            proof_of_payment: None,
-                            extensions: None,
-                        });
-                    }
-                };
-
-                Ok(SettleResponse {
-                    success: true,
-                    error_reason: None,
-                    payer: verification.payer.into(),
-                    transaction: Some(TransactionHash::Algorand(tx_id)),
-                    network: self.network(),
-                    proof_of_payment: None, // ERC-8004 not supported on Algorand
-                    extensions: None,
-                })
+                let submitted = self.submit_group(&verification, algorand_payload).await;
+                settle_outcome(submitted, verification.payer.into(), self.network())
             }
             _ => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
         }
@@ -1527,6 +1535,107 @@ mod broadcast_outcome_tests {
             match broadcast_error(lost, id.clone()) {
                 AlgorandError::SubmissionUnconfirmed { tx_id, .. } => assert_eq!(tx_id, id),
                 other => panic!("expected SubmissionUnconfirmed, got {other:?}"),
+            }
+        }
+    }
+
+    /// The settle answer: a group submitted with no verdict is an error
+    /// carrying its id, never the `200 success:false` that says nothing was
+    /// paid.
+    #[test]
+    fn a_group_with_no_verdict_is_not_a_failed_settlement() {
+        let payer = MixedAddress::Algorand("PAYER".to_string());
+        let id = "A".repeat(52);
+        for unconfirmed in [
+            AlgorandError::SubmissionUnconfirmed {
+                tx_id: id.clone(),
+                detail: "timeout".into(),
+            },
+            AlgorandError::TransactionNotConfirmed {
+                tx_id: id.clone(),
+                attempts: 20,
+            },
+        ] {
+            match settle_outcome(Err(unconfirmed), payer.clone(), Network::AlgorandTestnet) {
+                Err(FacilitatorLocalError::SettlementUnconfirmed(tx, network)) => {
+                    assert_eq!(tx, TransactionHash::Algorand(id.clone()));
+                    assert_eq!(network, Network::AlgorandTestnet);
+                }
+                other => panic!("expected the unconfirmed error, got {other:?}"),
+            }
+        }
+        let refused = settle_outcome(
+            Err(AlgorandError::SubmissionFailed("rejected".into())),
+            payer.clone(),
+            Network::AlgorandTestnet,
+        )
+        .expect("a refusal is a settle verdict");
+        assert!(!refused.success);
+        assert!(refused.transaction.is_none());
+        let settled = settle_outcome(Ok(id.clone()), payer, Network::AlgorandTestnet).unwrap();
+        assert!(settled.success);
+        assert_eq!(settled.transaction, Some(TransactionHash::Algorand(id)));
+    }
+
+    /// The predicate is wired to the real broadcast: algod's gateway error is
+    /// unconfirmed under the group's first transaction id, a pool refusal is
+    /// a failed submission.
+    #[tokio::test]
+    async fn the_broadcast_reports_a_lost_answer_under_the_first_id() {
+        use algonaut::core::{MicroAlgos, Round, SuggestedTransactionParams};
+        use algonaut::crypto::HashDigest;
+        use algonaut::transaction::builder::TxnFee;
+        use algonaut::transaction::{Pay, TxnBuilder};
+        use axum::{response::IntoResponse, routing::post, Json, Router};
+
+        for (status, unconfirmed) in [
+            (axum::http::StatusCode::BAD_GATEWAY, true),
+            (axum::http::StatusCode::BAD_REQUEST, false),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let app = Router::new().route(
+                "/v2/transactions",
+                post(move || async move {
+                    (
+                        status,
+                        Json(serde_json::json!({"message": "TransactionPool.Remember: fixture"})),
+                    )
+                        .into_response()
+                }),
+            );
+            tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let facilitator = Account::generate();
+            let provider = AlgorandProvider::try_new(
+                facilitator.mnemonic(),
+                Some(format!("http://{addr}/")),
+                Network::AlgorandTestnet,
+            )
+            .unwrap();
+            let params = SuggestedTransactionParams {
+                genesis_id: "testnet-v1.0".to_string(),
+                genesis_hash: HashDigest([7u8; 32]),
+                consensus_version: "future".to_string(),
+                fee_per_byte: MicroAlgos(0),
+                min_fee: MicroAlgos(1_000),
+                first_valid: Round(1),
+                last_valid: Round(500),
+            };
+            let fee_tx = TxnBuilder::with_fee(
+                &params,
+                TxnFee::Fixed(MicroAlgos(1_000)),
+                Pay::new(facilitator.address(), facilitator.address(), MicroAlgos(0)).build(),
+            )
+            .build()
+            .unwrap();
+            let signed = facilitator.sign_transaction(fee_tx).unwrap();
+            let first_id = signed.transaction_id.clone();
+            match (provider.broadcast(&[signed]).await, unconfirmed) {
+                (Err(AlgorandError::SubmissionUnconfirmed { tx_id, .. }), true) => {
+                    assert_eq!(tx_id, first_id)
+                }
+                (Err(AlgorandError::SubmissionFailed(_)), false) => {}
+                (other, _) => panic!("{status}: unexpected {other:?}"),
             }
         }
     }

@@ -1390,6 +1390,24 @@ pub(crate) fn is_pre_broadcast_rejection(error: &str) -> bool {
         || is_mempool_full(&lower)
 }
 
+/// Whether a node's refusal says it already holds this exact transaction.
+///
+/// geth and reth answer `already known`, and that one is measured. The other
+/// phrasings are a HYPOTHESIS from the clients' sources as remembered, not
+/// measured against a node of each: Nethermind `AlreadyKnown`, Besu and older
+/// geth `known transaction`, OpenEthereum `already imported`. Matching one that
+/// no node sends costs nothing; missing one that a node does send reports a
+/// transaction in its pool as a refusal. `unknown transaction` is not a match.
+pub(crate) fn node_already_holds(error: &str) -> bool {
+    let lower = error.to_ascii_lowercase();
+    lower.contains("already known")
+        || lower.contains("alreadyknown")
+        || lower.contains("already imported")
+        || lower
+            .match_indices("known transaction")
+            .any(|(at, _)| !lower[..at].ends_with("un"))
+}
+
 /// Whether a failed `eth_sendRawTransaction` may still have put the transaction
 /// in a mempool.
 ///
@@ -1419,7 +1437,7 @@ pub(crate) fn broadcast_may_have_queued(error: &alloy::transports::TransportErro
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned)
     }
-    let holds_it = |message: &str| message.to_ascii_lowercase().contains("already known");
+    let holds_it = node_already_holds;
 
     let queued = match error {
         RpcError::ErrorResp(payload) => holds_it(&payload.message),
@@ -4744,8 +4762,17 @@ mod broadcast_outcome_tests {
     #[test]
     fn only_a_node_verdict_proves_the_transaction_never_queued() {
         let lost = serde_json::from_str::<u8>("x").unwrap_err();
-        let cases: Vec<(&str, TransportError, bool)> = vec![
+        let cases: Vec<(&str, TransportError, bool)> =
+            vec![
             ("already known", node_said("already known"), true),
+            ("AlreadyKnown", node_said("AlreadyKnown"), true),
+            ("known transaction", node_said("known transaction: 0x00"), true),
+            (
+                "already imported",
+                node_said("Transaction with the same hash was already imported."),
+                true,
+            ),
+            ("unknown transaction", node_said("unknown transaction"), false),
             ("nonce too low", node_said("nonce too low"), false),
             (
                 "gas shortfall",

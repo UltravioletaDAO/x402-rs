@@ -1221,6 +1221,61 @@ pub struct VerifyPaymentResult {
     pub signed_tx_blob: String,
 }
 
+/// The settle answer for a submitted blob.
+///
+/// Submitted-but-unvalidated is not a failed settlement. Reporting it as
+/// `success: false` with no transaction tells the caller the payment did not
+/// happen; it travels as an error so `IntoResponse` can answer `502
+/// settlement_unconfirmed` with the hash, or `502 broadcast_uncertain` for a
+/// blob that would not hash.
+fn settle_outcome(
+    submitted: Result<[u8; 32], FacilitatorLocalError>,
+    payer: MixedAddress,
+    network: Network,
+) -> Result<SettleResponse, FacilitatorLocalError> {
+    let tx_hash = match submitted {
+        Ok(hash) => {
+            tracing::info!(tx_hash = %hex::encode(hash), "XRPL settle: Transaction validated");
+            hash
+        }
+        Err(e @ FacilitatorLocalError::SettlementUnconfirmed(..)) => {
+            tracing::error!(error = %e, "XRPL settle: transaction submitted, never validated");
+            return Err(e);
+        }
+        Err(FacilitatorLocalError::ContractCall(message))
+            if crate::chain::failure::ChainFailure::classify(&message).may_have_broadcast() =>
+        {
+            tracing::error!(error = %message, "XRPL settle: submission outcome unknown");
+            return Err(FacilitatorLocalError::ContractCall(message));
+        }
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                error_debug = ?e,
+                "XRPL settle: Failed to submit/validate transaction"
+            );
+            return Ok(SettleResponse {
+                success: false,
+                error_reason: Some(FacilitatorErrorReason::UnexpectedSettleError),
+                payer,
+                transaction: None,
+                network,
+                proof_of_payment: None,
+                extensions: None,
+            });
+        }
+    };
+    Ok(SettleResponse {
+        success: true,
+        error_reason: None,
+        payer,
+        transaction: Some(TransactionHash::Xrpl(tx_hash)),
+        network,
+        proof_of_payment: None, // ERC-8004 not supported on XRPL
+        extensions: None,
+    })
+}
+
 /// The hash rippled gives a signed transaction: the first half of the
 /// SHA-512 of the `TXN\0` prefix followed by the signed blob.
 fn signed_blob_hash(blob_hex: &str) -> Option<[u8; 32]> {
@@ -1333,67 +1388,8 @@ impl Facilitator for XrplProvider {
             "XRPL settle: Verification successful, submitting transaction"
         );
 
-        let tx_hash = match self.submit_and_confirm(&verification).await {
-            Ok(hash) => {
-                tracing::info!(
-                    tx_hash = %hex::encode(hash),
-                    "XRPL settle: Transaction validated"
-                );
-                hash
-            }
-            // Submitted-but-unvalidated is not a failed settlement. Reporting
-            // it as `success: false` with no transaction tells the caller the
-            // payment did not happen; it travels as an error so `IntoResponse`
-            // can answer `502 settlement_unconfirmed` with the hash.
-            Err(e @ FacilitatorLocalError::SettlementUnconfirmed(..)) => {
-                tracing::error!(
-                    error = %e,
-                    "XRPL settle: transaction submitted, never validated"
-                );
-                return Err(e);
-            }
-            // The same outcome for a blob that would not hash: no hash to
-            // name, and still not a failure.
-            Err(FacilitatorLocalError::ContractCall(message))
-                if crate::chain::failure::ChainFailure::classify(&message).may_have_broadcast() =>
-            {
-                tracing::error!(error = %message, "XRPL settle: submission outcome unknown");
-                return Err(FacilitatorLocalError::ContractCall(message));
-            }
-            Err(e) => {
-                tracing::error!(
-                    error = %e,
-                    error_debug = ?e,
-                    "XRPL settle: Failed to submit/validate transaction"
-                );
-                let response = SettleResponse {
-                    success: false,
-                    error_reason: Some(FacilitatorErrorReason::UnexpectedSettleError),
-                    payer: verification.payer.into(),
-                    transaction: None,
-                    network: self.network(),
-                    proof_of_payment: None,
-                    extensions: None,
-                };
-                return Ok(response);
-            }
-        };
-
-        let response = SettleResponse {
-            success: true,
-            error_reason: None,
-            payer: verification.payer.into(),
-            transaction: Some(TransactionHash::Xrpl(tx_hash)),
-            network: self.network(),
-            proof_of_payment: None, // ERC-8004 not supported on XRPL
-            extensions: None,
-        };
-        tracing::info!(
-            success = response.success,
-            tx_hash = ?response.transaction,
-            "XRPL settle: Returning success response"
-        );
-        Ok(response)
+        let submitted = self.submit_and_confirm(&verification).await;
+        settle_outcome(submitted, verification.payer.into(), self.network())
     }
 
     async fn supported(&self) -> Result<SupportedPaymentKindsResponse, Self::Error> {
@@ -1886,6 +1882,10 @@ mod submission_outcome_tests {
         AlreadyApplied,
         SequencePassed,
         Malformed,
+        /// A result with neither `tx_json.hash` nor `error`.
+        NoHashNoError,
+        /// A result with no hash that carries rippled's own `error`.
+        RefusesTheRequest,
     }
 
     async fn submit_against(node: Rippled) -> Result<[u8; 32], FacilitatorLocalError> {
@@ -1904,6 +1904,10 @@ mod submission_outcome_tests {
                     Rippled::AlreadyApplied => result("tefALREADY"),
                     Rippled::SequencePassed => result("tefPAST_SEQ"),
                     Rippled::Malformed => result("temBAD_AUTH"),
+                    Rippled::NoHashNoError => result("tesSUCCESS"),
+                    Rippled::RefusesTheRequest => Json(serde_json::json!({"result": {
+                        "error": "tooBusy", "status": "error"}}))
+                    .into_response(),
                 }
             }),
         );
@@ -1927,6 +1931,7 @@ mod submission_outcome_tests {
             Rippled::LosesTheAnswer,
             Rippled::AlreadyApplied,
             Rippled::SequencePassed,
+            Rippled::NoHashNoError,
         ] {
             match submit_against(node).await {
                 Err(FacilitatorLocalError::SettlementUnconfirmed(tx, network)) => {
@@ -1946,5 +1951,40 @@ mod submission_outcome_tests {
             }
             other => panic!("expected the refusal, got {other:?}"),
         }
+        match submit_against(Rippled::RefusesTheRequest).await {
+            Err(FacilitatorLocalError::Other(message)) => {
+                assert!(message.contains("missing hash"), "{message}");
+            }
+            other => panic!("expected the refusal, got {other:?}"),
+        }
+    }
+
+    /// The settle answer: both unconfirmed shapes are errors, never the
+    /// `200 success:false` that says nothing was paid.
+    #[test]
+    fn a_submission_with_no_verdict_is_not_a_failed_settlement() {
+        let payer = MixedAddress::Xrpl("rLyttXLh7Ttca9CMUaD3exVoXY2fn2zwj3".to_string());
+        let hash = [0x44u8; 32];
+        for unconfirmed in [
+            FacilitatorLocalError::SettlementUnconfirmed(
+                TransactionHash::Xrpl(hash),
+                Network::Xrpl,
+            ),
+            FacilitatorLocalError::ContractCall(
+                "XRPL submission may have been mined; its blob does not hash: x".into(),
+            ),
+        ] {
+            let result = settle_outcome(Err(unconfirmed), payer.clone(), Network::Xrpl);
+            assert!(result.is_err(), "{result:?}");
+        }
+        let refused = settle_outcome(
+            Err(XrplError::RpcError("refused".into()).into()),
+            payer.clone(),
+            Network::Xrpl,
+        )
+        .expect("a refusal is a settle verdict");
+        assert!(!refused.success);
+        let settled = settle_outcome(Ok(hash), payer, Network::Xrpl).unwrap();
+        assert_eq!(settled.transaction, Some(TransactionHash::Xrpl(hash)));
     }
 }

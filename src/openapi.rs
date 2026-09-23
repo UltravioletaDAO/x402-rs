@@ -49,7 +49,7 @@ Ethereum Sepolia, Base Sepolia, Polygon Amoy, Optimism Sepolia, Avalanche Fuji, 
 - **Sui**: Mainnet (`sui`) and Testnet (`sui-testnet`)
 - **Hedera**: Native mainnet (`hedera:mainnet`) and testnet (`hedera:testnet`), x402 v2/exact only. HBAR is used only for sponsor network fees. Payments accept native USDC `0.0.456858` mainnet / `0.0.429274` testnet (6 decimals). Discover the network-specific `extra.feePayer` from `/supported`. Current sponsor IDs: mainnet `0.0.10868300`, testnet `0.0.10576385`. Native account/token IDs are not EVM chain IDs 295/296.
 
-Arc uses USDC `0x3600000000000000000000000000000000000000` with 6 payment decimals and EIP-712 domain `USDC` / `2`. Its gas view uses 18 decimals of the same balance. EURC is also supported: mainnet `0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1`, testnet `0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a`, 6 decimals, EIP-712 `EURC` / `2`. EURC amounts are euros, without automatic USD conversion. Gas remains USDC. EURC live payment acceptance was proven on Arc mainnet on 2026-09-22; Arc testnet is still pending. Arc and native Hedera additions enable exact payments only; they do not add escrow, upto, Gateway or ERC-8004 support. Native Hedera also rejects durable-evidence and unsupported extensions.
+Arc uses USDC `0x3600000000000000000000000000000000000000` with 6 payment decimals and EIP-712 domain `USDC` / `2`. Its gas view uses 18 decimals of the same balance. EURC is also supported: mainnet `0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1`, testnet `0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a`, 6 decimals, EIP-712 `EURC` / `2`. EURC amounts are euros, without automatic USD conversion. Gas remains USDC. EURC live payment acceptance was proven on Arc mainnet on 2026-09-22; Arc testnet is still pending. Arc and native Hedera additions enable exact payments only; they do not add escrow, upto or Gateway support. ERC-8004 identity and reputation are served on both Arc networks (not on Hedera). Native Hedera also rejects durable-evidence and unsupported extensions.
 
 ## Core Endpoints
 
@@ -59,9 +59,9 @@ Arc uses USDC `0x3600000000000000000000000000000000000000` with 6 payment decima
 
 ## ERC-8004 Reputation (Trustless Agents)
 
-The facilitator supports [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) for AI agent identity and reputation across **21 networks** (12 mainnets + 9 testnets), spanning both EVM and Solana.
+The facilitator supports [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) for AI agent identity and reputation across **23 networks** (13 mainnets + 10 testnets), spanning both EVM and Solana.
 
-**EVM networks:** `ethereum`, `base`, `polygon`, `arbitrum`, `optimism`, `celo`, `bsc`, `monad`, `avalanche`, `ethereum-sepolia`, `base-sepolia`, `polygon-amoy`, `arbitrum-sepolia`, `optimism-sepolia`, `celo-sepolia`, `avalanche-fuji`
+**EVM networks:** `ethereum`, `base`, `polygon`, `arbitrum`, `optimism`, `celo`, `bsc`, `monad`, `avalanche`, `scroll`, `skale-base`, `arc`, `ethereum-sepolia`, `base-sepolia`, `polygon-amoy`, `arbitrum-sepolia`, `optimism-sepolia`, `celo-sepolia`, `avalanche-fuji`, `skale-base-sepolia`, `arc-testnet`
 
 **Solana networks:** `solana`, `solana-devnet` (via [QuantuLabs 8004-solana](https://github.com/QuantuLabs/8004-solana) + [ATOM Engine](https://github.com/QuantuLabs/8004-atom))
 
@@ -180,7 +180,7 @@ constraint rather than as grounds for a `406`.
         (name = "Core", description = "Core x402 payment verification and settlement (exact, upto, escrow schemes)"),
         (name = "Escrow", description = "Gasless escrow lifecycle (authorize, release, refund, state query)"),
         (name = "Discovery", description = "Network and scheme discovery"),
-        (name = "ERC-8004", description = "AI Agent reputation and identity (ERC-8004 Trustless Agents) - 21 networks (EVM + Solana)"),
+        (name = "ERC-8004", description = "AI Agent reputation and identity (ERC-8004 Trustless Agents) - 23 networks (EVM + Solana)"),
         (name = "Bazaar", description = "Decentralized resource discovery registry"),
         (name = "Compliance", description = "OFAC compliance and sanctions screening"),
         (name = "Health", description = "Service health and status"),
@@ -1161,7 +1161,7 @@ async fn path_register_get() {}
     description = r#"
 Registers a new ERC-8004 agent on-chain. The facilitator pays all gas fees.
 
-**Supported networks:** 21 networks (EVM + Solana). EVM chains use ERC-721 NFTs, Solana uses Metaplex Core NFTs.
+**Supported networks:** 23 networks (EVM + Solana). EVM chains use ERC-721 NFTs, Solana uses Metaplex Core NFTs.
 
 **EVM request:**
 ```json
@@ -1327,7 +1327,7 @@ async fn path_feedback_get() {}
     description = r#"
 Submits on-chain reputation feedback for an AI agent via the ERC-8004 Reputation Registry (EVM) or Agent Registry with ATOM Engine CPI (Solana).
 
-**Supported networks:** 21 networks (EVM + Solana).
+**Supported networks:** 23 networks (EVM + Solana).
 
 **agentId format:** Numeric (42) for EVM, base58 Pubkey string for Solana. Both JSON numbers and strings are accepted.
 
@@ -1747,7 +1747,7 @@ async fn path_feedback_response() {}
     description = r#"
 Queries the reputation summary for an AI agent from the ERC-8004 Reputation Registry.
 
-**EVM networks:** ethereum, base, polygon, arbitrum, optimism, celo, bsc, monad, avalanche, scroll + testnets
+**EVM networks:** ethereum, base, polygon, arbitrum, optimism, celo, bsc, monad, avalanche, scroll, skale-base, arc + testnets
 
 **Solana networks:** solana, solana-devnet (reads from ATOM Engine for enriched reputation data)
 
@@ -1806,7 +1806,7 @@ async fn path_reputation() {}
     description = r#"
 Retrieves agent identity information from the ERC-8004 Identity Registry.
 
-**EVM networks:** ethereum, base, polygon, arbitrum, optimism, celo, bsc, monad, avalanche, scroll + testnets
+**EVM networks:** ethereum, base, polygon, arbitrum, optimism, celo, bsc, monad, avalanche, scroll, skale-base, arc + testnets
 
 **Solana networks:** solana, solana-devnet (reads AgentAccount PDA from 8004-solana program)
 
@@ -3421,5 +3421,82 @@ mod tests {
                  invisible in /docs and to every client generated from it"
             );
         }
+    }
+
+    /// The ERC-8004 prose in `/docs` names every network ERC-8004 is served
+    /// on, and states the real counts.
+    ///
+    /// All of it is typed by hand, and all of it had drifted: the count once
+    /// read 18 while the set held 20, and the EVM list stopped at `avalanche`
+    /// while `scroll`, `skale-base` and `skale-base-sepolia` were served.
+    /// Derived from `supported_networks()`, so a network added there without
+    /// touching this prose fails here.
+    #[test]
+    fn the_erc8004_prose_names_every_supported_network() {
+        let spec = ApiDoc::openapi();
+        let description = spec
+            .info
+            .description
+            .as_deref()
+            .expect("the spec must carry a description");
+        let section = description
+            .split("## ERC-8004 Reputation")
+            .nth(1)
+            .and_then(|rest| rest.split("### Endpoints").next())
+            .expect("the description must carry the ERC-8004 section");
+
+        let networks = crate::erc8004::supported_networks();
+        for network in &networks {
+            assert!(
+                section.contains(&format!("`{network}`")),
+                "`{network}` is served for ERC-8004 but the /docs prose does not name it"
+            );
+        }
+
+        let total = networks.len();
+        let mainnets = networks.iter().filter(|n| n.is_mainnet()).count();
+        let summary = format!(
+            "**{total} networks** ({mainnets} mainnets + {} testnets)",
+            total - mainnets
+        );
+        assert!(
+            section.contains(&summary),
+            "the ERC-8004 section must state {summary}"
+        );
+
+        // The rest of the description must not deny what this section states.
+        // One sentence did until 2.37.0: the Arc/Hedera paragraph listed
+        // ERC-8004 among what those additions do not add.
+        for sentence in description.split(". ") {
+            let denies = ["do not", "does not", "nor ", "not on Arc"]
+                .iter()
+                .any(|negation| sentence.contains(negation));
+            assert!(
+                !(denies && sentence.contains("ERC-8004") && sentence.contains("Arc")),
+                "the /docs description denies ERC-8004 on Arc: {sentence}"
+            );
+        }
+
+        // The same total, repeated in the tag and in endpoint descriptions.
+        let json = serde_json::to_string(&spec).expect("the spec serialises");
+        let stated = " networks (EVM + Solana)";
+        let mut seen = 0;
+        for (at, _) in json.match_indices(stated) {
+            let digits: String = json[..at]
+                .chars()
+                .rev()
+                .take_while(char::is_ascii_digit)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            assert_eq!(
+                digits,
+                total.to_string(),
+                "/docs states {digits}{stated}, but ERC-8004 is served on {total}"
+            );
+            seen += 1;
+        }
+        assert!(seen > 0, "no `N{stated}` left to check; update this test");
     }
 }

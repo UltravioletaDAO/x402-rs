@@ -100,8 +100,8 @@ self-service path that issues them. Treat those routes as absent.
 You do not need an identity to use the facilitator, but the stack it belongs to has
 one, and the facilitator serves it:
 
-- **ERC-8004 Trustless Agents** — on-chain agent identity and reputation, live on 12
-  mainnets (21 networks counting testnets). `GET /identity/{network}/{agentId}`,
+- **ERC-8004 Trustless Agents** — on-chain agent identity and reputation, live on 13
+  mainnets (23 networks counting testnets). `GET /identity/{network}/{agentId}`,
   `GET /identity/{network}/owner/{address}`, `GET /reputation/{network}/{agentId}`.
 - `POST /register` mints an agent identity. It spends gas, so it carries the tight
   write-route rate limit; pass `Prefer: respond-async` to get a `202` and a `jobId` you

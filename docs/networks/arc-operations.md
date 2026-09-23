@@ -135,6 +135,8 @@ Never use a full Terraform apply or `-refresh=false` to force activation.
 No Arc Gateway, EURC, USYC, `upto`, escrow, ERC-8004 writes, EIP-6492 or contract
 wallet support is claimed. The universal validator address has no code on
 either Arc network. Signatures from the other network fail before broadcast.
+(Update 2026-09-22: 2.37.0 serves ERC-8004 identity and reputation on both Arc
+networks. See the capability table in [arc.md](arc.md).)
 
 ## SDK acceptance (2026-09-16)
 

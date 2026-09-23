@@ -88,7 +88,8 @@ facilitator just did, and what it costs (nothing — the seller keeps the paymen
 - **Schemes:** `exact`, `upto`, `escrow`, `commerce`, `fhe-transfer`; availability
   is per network. Arc and Hedera additions support `exact` only.
 - **Extensions:** read `/supported` and the network guide; global extension
-  discovery does not enable escrow or ERC-8004 on Hedera/Arc. Native Hedera
+  discovery does not enable escrow on Hedera/Arc, nor ERC-8004 on Hedera.
+  ERC-8004 is served on both Arc networks. Native Hedera
   rejects durable-evidence and other unsupported extensions.
 
 ## Machine-readable resources
@@ -157,7 +158,7 @@ Base URL: `https://facilitator.ultravioletadao.xyz/`
   Off unless the operator enables it: when `durable-evidence` is absent from the
   `extensions` of `/supported`, these paths answer the generic 404
 - `GET  /identity/{network}/{agentId}` and `GET /reputation/{network}/{agentId}` —
-  ERC-8004 Trustless Agents, live on 12 mainnets and 21 networks in total
+  ERC-8004 Trustless Agents, live on 13 mainnets and 23 networks in total
 
 `/events`, `/transactions` and `/api/stats` are an index, not a ledger. Rows are
 written after settlement resolves and are dropped rather than allowed to block a

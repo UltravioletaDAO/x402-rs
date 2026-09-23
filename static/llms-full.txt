@@ -95,7 +95,8 @@ facilitator just did, and what it costs (nothing — the seller keeps the paymen
 - **Schemes:** `exact`, `upto`, `escrow`, `commerce`, `fhe-transfer`; availability
   is per network. Arc and Hedera additions support `exact` only.
 - **Extensions:** read `/supported` and the network guide; global extension
-  discovery does not enable escrow or ERC-8004 on Hedera/Arc. Native Hedera
+  discovery does not enable escrow on Hedera/Arc, nor ERC-8004 on Hedera.
+  ERC-8004 is served on both Arc networks. Native Hedera
   rejects durable-evidence and other unsupported extensions.
 
 ## Machine-readable resources
@@ -164,7 +165,7 @@ Base URL: `https://facilitator.ultravioletadao.xyz/`
   Off unless the operator enables it: when `durable-evidence` is absent from the
   `extensions` of `/supported`, these paths answer the generic 404
 - `GET  /identity/{network}/{agentId}` and `GET /reputation/{network}/{agentId}` —
-  ERC-8004 Trustless Agents, live on 12 mainnets and 21 networks in total
+  ERC-8004 Trustless Agents, live on 13 mainnets and 23 networks in total
 
 `/events`, `/transactions` and `/api/stats` are an index, not a ledger. Rows are
 written after settlement resolves and are dropped rather than allowed to block a
@@ -230,7 +231,8 @@ Hedera supports native `CryptoTransfer`, `exact`, **x402 v2 only**. It uses nume
 accounts and native token IDs, not EVM chain IDs 295/296. Buyer and recipient must
 be associated with USDC. The sponsor pays HBAR fees without contributing payment
 principal. HBAR is not accepted as payment; new HBAR offers are rejected. Neither addition enables
-escrow, `upto`, Gateway or ERC-8004 on that network. Native Hedera also rejects
+escrow, `upto` or Gateway on that network; ERC-8004 is served on both Arc networks,
+not on Hedera. Native Hedera also rejects
 durable-evidence and other unsupported extensions.
 
 ## API
@@ -382,7 +384,8 @@ Hedera supports native `CryptoTransfer`, `exact`, **x402 v2 only**. It uses nume
 accounts and native token IDs, not EVM chain IDs 295/296. Buyer and recipient must
 be associated with USDC. The sponsor pays HBAR fees without contributing payment
 principal. HBAR is not accepted as payment; new HBAR offers are rejected. Neither addition enables
-escrow, `upto`, Gateway or ERC-8004 on that network. Native Hedera also rejects
+escrow, `upto` or Gateway on that network; ERC-8004 is served on both Arc networks,
+not on Hedera. Native Hedera also rejects
 durable-evidence and other unsupported extensions.
 
 **Native Hedera v2 request:**
@@ -849,7 +852,7 @@ failures occurred".
 
 ## 8. Reputation and identity (ERC-8004)
 
-Live on 12 mainnets, 21 networks in total. See `/auth.md` for the authorship rules —
+Live on 13 mainnets, 23 networks in total. See `/auth.md` for the authorship rules —
 they are the part integrators get wrong.
 
 - `GET /identity/{network}/{agentId}` · `GET /identity/{network}/owner/{address}`
@@ -1319,8 +1322,8 @@ self-service path that issues them. Treat those routes as absent.
 You do not need an identity to use the facilitator, but the stack it belongs to has
 one, and the facilitator serves it:
 
-- **ERC-8004 Trustless Agents** — on-chain agent identity and reputation, live on 12
-  mainnets (21 networks counting testnets). `GET /identity/{network}/{agentId}`,
+- **ERC-8004 Trustless Agents** — on-chain agent identity and reputation, live on 13
+  mainnets (23 networks counting testnets). `GET /identity/{network}/{agentId}`,
   `GET /identity/{network}/owner/{address}`, `GET /reputation/{network}/{agentId}`.
 - `POST /register` mints an agent identity. It spends gas, so it carries the tight
   write-route rate limit; pass `Prefer: respond-async` to get a `202` and a `jobId` you

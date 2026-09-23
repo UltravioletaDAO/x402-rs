@@ -825,7 +825,7 @@ with them (spec v0.2 §18.1), never as a sixth hash.
 - `GET /identity/:network/owner/:address` - Resolve an agent by owner (EVM + SVM)
 - `GET /identity/:network/total-supply` - Registered agents
 
-The supported-network set is `supported_networks()` in `src/erc8004/mod.rs` (currently **20**: 11 mainnets + 9 testnets, Solana included) — read it there, never from a hardcoded count. `src/openapi.rs` still claims "18 networks (10 mainnets + 8 testnets)" in four places and is stale; fix it whenever the set changes.
+The supported-network set is `supported_networks()` in `src/erc8004/mod.rs` (currently **23**: 13 mainnets + 10 testnets, Solana and Arc included) — read it there, never from a hardcoded count. `src/openapi.rs` states that count and names every network in prose; `the_erc8004_prose_names_every_supported_network` (in `src/openapi.rs`) fails when either drifts, so change both together. The landing states it too, and `scripts/verify_landing_canonical.py --offline` (a CI step) checks those.
 
 **The owner lookup has no index behind it, and that shapes everything.** The
 registries expose no `owner -> agentId` mapping, are NOT `ERC721Enumerable`

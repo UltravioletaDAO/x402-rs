@@ -2,7 +2,7 @@
 
 This is the x402 payment facilitator Ultravioleta DAO runs: your endpoint answers 402,
 the caller signs a stablecoin authorization, and we put it on chain and pay the network
-fee — 0% facilitator fee, including Arc and native Hedera mainnet/testnet.
+fee — 0% facilitator fee.
 
 This host is a **facilitator**, not a paid API. It charges nothing for its own routes;
 the money that moves is the buyer's payment going to the seller.

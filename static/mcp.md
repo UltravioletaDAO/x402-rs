@@ -21,7 +21,7 @@ cannot disagree about anything.
 
 What is being offered is settlement, not information. This service verifies an
 x402 payment authorization against the chain it names and then broadcasts it,
-paying the gas out of its own wallet, including Arc and native Hedera. The buyer signs;
+paying the gas out of its own wallet. The buyer signs;
 the buyer never holds native tokens for gas.
 
 Four things this server is **not**:

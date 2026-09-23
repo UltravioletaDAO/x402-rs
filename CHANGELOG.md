@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.37.1] - 2026-09-22
+
+- Link previews are network-agnostic again. The landing's `og:description` goes back to its text from before #70 (83ac6d07), without the chain-family count: "Gasless x402 verify and settle. No fee, no account, no API key." Every page (`/`, `/x402`, `/dx402`, `/erc8004`, `/bazaar`, `/networks`, `/mcp`, `/integrar`, `/stats`, `/events/live`) goes back to `og:image` = `logo.png`, and loses the Arc/Hedera card's `og:image:width`, `og:image:height` and `og:image:alt` and the `twitter:card`/`twitter:image` tags that #70 added.
+- The facilitator's own description no longer singles out Arc or Hedera: the A2A agent card (`/.well-known/agent-card.json` and `/.well-known/agent.json`), the opening of `/index.md` (and so of `/llms-full.txt`), `/mcp.md` and the "What it is" paragraph of `/mcp`, in English and Spanish. Network lists and per-network instructions are unchanged.
+- No page references `og-arc-hedera.png`/`.svg` any more. The files stay, and the `/og-arc-hedera.png` route still serves the PNG.
+
 ## [2.37.0] - 2026-09-22
 
 - ERC-8004 identity and reputation on Arc mainnet (`arc`) and Arc testnet (`arc-testnet`), using the canonical registries: identity `0x8004A169…a432`, reputation `0x8004BAa1…9b63` and validation `0x8004Cc84…AB58` on mainnet; `0x8004A818…BD9e`, `0x8004B663…8713` and `0x8004Cb1B…4272` on testnet. All six were read with `eth_getCode` against the RPCs the facilitator deploys (`rpc.mainnet.arc.io`, `rpc.testnet.arc.io`): 130-byte proxies whose EIP-1967 implementation is the one Base and Base Sepolia run, `getVersion()` = `2.0.0`, `ownerOf(1)` answered on both. The ERC-8004 set grows from 21 to 23 networks (13 mainnets + 10 testnets). Arc payments are unchanged: still `exact` only, with no `upto`, escrow or relayed (EIP-7702) feedback, because no feedback delegate is deployed on Arc yet.

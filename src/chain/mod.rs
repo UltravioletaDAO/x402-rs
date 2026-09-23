@@ -72,6 +72,40 @@ pub fn rpc_http_connect_timeout() -> std::time::Duration {
     ))
 }
 
+/// How long a startup probe that did not pass waits before it runs again: 30 s
+/// after the first attempt, 60 s after every later one.
+///
+/// The re-probe only changes what the logs say. It never decides whether a
+/// network is served: a configured network is in `/supported` whatever its
+/// probes answer, and `/health/ready` measures its state on its own. Through
+/// 2.39.3 a native Hedera ledger whose probe timed out at startup was left out
+/// of `/supported` until the next deploy.
+pub fn reprobe_delay(attempt: u32) -> std::time::Duration {
+    std::time::Duration::from_secs(if attempt == 0 { 30 } else { 60 })
+}
+
+/// Wait `delay(attempt)`, run `probe`, and repeat until it gives a verdict;
+/// return that verdict with the number of attempts it took. The loop behind
+/// both startup re-probes (`chain_identity`, native Hedera), with the delay as
+/// a parameter so a test can run it without waiting a minute.
+pub async fn reprobe<T, F, Fut>(
+    mut probe: F,
+    delay: impl Fn(u32) -> std::time::Duration,
+) -> (T, u32)
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Option<T>>,
+{
+    let mut attempt = 0;
+    loop {
+        tokio::time::sleep(delay(attempt)).await;
+        attempt += 1;
+        if let Some(verdict) = probe().await {
+            return (verdict, attempt);
+        }
+    }
+}
+
 fn env_secs_override(var: &str, default: u64) -> u64 {
     std::env::var(var)
         .ok()

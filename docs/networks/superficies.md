@@ -24,8 +24,9 @@ constante o el test.
 
 | Superficie | Archivo | Cómo se produce | Compilada | Qué lo ataja |
 |---|---|---|---|---|
-| `/supported` | `src/facilitator_local.rs` (`supported()`) | **generada** del mapa de proveedores (red con RPC configurado) | código | es la fuente |
-| `/health/ready` | `src/readiness.rs` | **generada** del mapa de proveedores; sondea EVM y Hedera, el resto sale `unchecked` | código | tests de `readiness.rs` |
+| `/supported` | `src/facilitator_local.rs` (`supported()`) | **generada** del mapa de proveedores (red con RPC configurado); la salud de una red no la saca desde 2.39.4 | código | es la fuente; `a_ledger_failing_its_startup_health_is_still_served`, `from_env_serves_arc_whatever_its_rpc_answers_and_the_rest_up` |
+| `/health/ready` | `src/readiness.rs` | **generada** del mapa de proveedores; sondea EVM (con chain id) y Hedera, el resto sale `unchecked`; lista toda red configurada con estado, motivo y `caip2` (2.39.4) | código | tests de `readiness.rs` |
+| Portada, punto de estado por tarjeta | `static/index.html` + `cardHealth` en `static/x402.js` | **generado** de `/health/ready` (2.39.4): punto rojo si `degraded`/`down`, nada si `ok`, sin sondear o ilegible | sí | `tests/frontend-capabilities.test.cjs` («card health…») |
 | Catálogo del bazar | `/discovery/resources`, `/bazaar` | **generado** del registro; `settleable` consulta el mapa de proveedores desde 2.39.2 | código | `an_offer_on_a_network_nothing_serves_is_not_settleable` (`tests/bazaar_pricing.rs`) |
 | Página `/networks`, tabla principal y tabla por familia | `static/networks.html` | **generadas** desde `/supported` (la de familias era a mano el 2026-09-16); la regex que asigna familia es a mano y manda a EVM lo que no reconoce | sí | nada |
 | `/networks`, `PUBLIC_RPCS` | `static/networks.html` | **a mano**, 39 claves, sin Arc ni Hedera (hay respaldo detrás de `/api/balances`) | sí | nada |

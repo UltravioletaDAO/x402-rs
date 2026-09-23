@@ -1489,16 +1489,12 @@ impl FromEnvByNetworkBuild for EvmProvider {
             Network::SuiTestnet => false, // Sui is not an EVM chain
         };
         let provider = EvmProvider::try_new(wallet, &rpc_url, is_eip1559, network).await?;
-        // Arc's domain uses our configured chain ID, while the transaction filler
-        // queries the RPC: a swapped mainnet/testnet endpoint leaves Arc out of
-        // /supported, and one that does not answer in time is served and
-        // alerted. Never an `Err`: through 2.39.1 both were, and ProviderCache
-        // turned that into `exit(1)` for every network.
-        if matches!(network, Network::Arc | Network::ArcTestnet) {
-            return Ok(
-                crate::chain_identity::admit(provider, crate::chain::rpc_http_timeout()).await,
-            );
-        }
+        // Arc included: what the RPC answers never decides whether a configured
+        // network is served. `chain_identity::spawn` compares every EVM RPC's
+        // chain id in the background and alerts; `/health/ready` reports a
+        // mismatch as `down`. Through 2.39.1 an Arc mismatch was an `Err` that
+        // stopped the process, and through 2.39.3 it left Arc out of /supported
+        // until the next deploy.
         Ok(Some(provider))
     }
 }
@@ -5764,13 +5760,18 @@ mod arc_node_fixtures {
         (url, broadcasts)
     }
 
-    /// A swapped mainnet/testnet endpoint leaves that Arc network out of
-    /// /supported -- and only that network, and without an error: through
-    /// 2.39.1 this was an `Err`, which `ProviderCache::from_env` turned into
-    /// `exit(1)` for every network.
+    /// A swapped mainnet/testnet endpoint keeps that Arc network served, and
+    /// the check names both ids; `/health/ready` reports it `down` with
+    /// `rpc_chain_id_mismatch` (`src/readiness.rs`). Nothing is sent by the
+    /// check. Through 2.39.1 this was an `Err` that `ProviderCache::from_env`
+    /// turned into `exit(1)` for every network, and through 2.39.3 it left Arc
+    /// out of /supported until the next deploy.
     #[tokio::test]
-    async fn a_swapped_arc_rpc_leaves_arc_out_and_stops_nothing() {
-        for (network, wrong_id) in [(Network::Arc, 5042002), (Network::ArcTestnet, 5042)] {
+    async fn a_swapped_arc_rpc_is_reported_and_arc_stays_served() {
+        for (network, expected, wrong_id) in [
+            (Network::Arc, 5042, 5042002),
+            (Network::ArcTestnet, 5042002, 5042),
+        ] {
             let (url, broadcasts) = node_answering(wrong_id).await;
             let provider = EvmProvider::try_new(
                 EthereumWallet::from(PrivateKeySigner::random()),
@@ -5780,55 +5781,48 @@ mod arc_node_fixtures {
             )
             .await
             .expect("building a provider asks the RPC nothing");
+            assert_eq!(
+                crate::chain_identity::check(&provider, std::time::Duration::from_secs(5)).await,
+                crate::chain_identity::Verdict::Mismatch {
+                    expected,
+                    actual: wrong_id
+                },
+                "{network}"
+            );
+            let kinds = provider.supported().await.expect("supported").kinds;
             assert!(
-                crate::chain_identity::admit(provider, std::time::Duration::from_secs(5))
-                    .await
-                    .is_none(),
-                "{network}: an RPC answering {wrong_id} must not be served"
+                kinds.iter().any(|k| k.network == network.to_string()),
+                "{network}: an RPC answering {wrong_id} must not take it out of /supported"
             );
             assert_eq!(broadcasts.load(Ordering::SeqCst), 0);
         }
     }
 
-    /// An Arc RPC that does not answer in time is served, and alerted; it does
-    /// not stop the process either.
-    #[tokio::test]
-    async fn an_arc_rpc_that_does_not_answer_is_served_not_fatal() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}/", listener.local_addr().unwrap());
-        drop(listener);
-        let provider = EvmProvider::try_new(
-            EthereumWallet::from(PrivateKeySigner::random()),
-            &url,
-            true,
-            Network::Arc,
-        )
-        .await
-        .expect("building a provider asks the RPC nothing");
-        assert!(
-            crate::chain_identity::admit(provider, std::time::Duration::from_secs(2))
-                .await
-                .is_some(),
-            "an unanswered probe serves Arc and alerts"
-        );
-    }
-
     /// The whole startup path, as `ProviderCache::from_env` calls it: Arc on a
-    /// swapped RPC is `Ok(None)`, Base next to it is built, and neither is an
-    /// error. Sets and clears process env, so it relies on the suite's
-    /// `--test-threads=1`.
+    /// swapped RPC and Arc on an RPC that does not answer are both built and
+    /// served, Base next to them too, and none is an error. Sets and clears
+    /// process env, so it relies on the suite's `--test-threads=1`.
     #[tokio::test]
-    async fn from_env_leaves_a_swapped_arc_out_and_the_rest_up() {
+    async fn from_env_serves_arc_whatever_its_rpc_answers_and_the_rest_up() {
         let (arc_url, _) = node_answering(5042002).await;
         let (base_url, _) = node_answering(8453).await;
+        let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let arc_testnet_url = format!("http://{}/", silent.local_addr().unwrap());
+        drop(silent);
         let key = format!(
+            "0x{}",
+            alloy::hex::encode(PrivateKeySigner::random().to_bytes())
+        );
+        let testnet_key = format!(
             "0x{}",
             alloy::hex::encode(PrivateKeySigner::random().to_bytes())
         );
         let vars = [
             ("SIGNER_TYPE", "private-key".to_string()),
             ("EVM_PRIVATE_KEY_MAINNET", key),
+            ("EVM_PRIVATE_KEY_TESTNET", testnet_key),
             ("RPC_URL_ARC", arc_url),
+            ("RPC_URL_ARC_TESTNET", arc_testnet_url),
             ("RPC_URL_BASE", base_url),
         ];
         let previous: Vec<_> = vars
@@ -5840,6 +5834,7 @@ mod arc_node_fixtures {
         }
 
         let arc = EvmProvider::from_env(Network::Arc).await;
+        let arc_testnet = EvmProvider::from_env(Network::ArcTestnet).await;
         let base = EvmProvider::from_env(Network::Base).await;
 
         for (name, value) in previous {
@@ -5848,15 +5843,17 @@ mod arc_node_fixtures {
                 None => std::env::remove_var(name),
             }
         }
-        assert!(
-            matches!(arc, Ok(None)),
-            "Arc on a swapped RPC is left out, not an error"
-        );
-        assert!(
-            matches!(base, Ok(Some(_))),
-            "the other networks come up: {:?}",
-            base.err()
-        );
+        for (label, built) in [
+            ("Arc on a swapped RPC", arc),
+            ("Arc testnet on an RPC that does not answer", arc_testnet),
+            ("Base", base),
+        ] {
+            assert!(
+                matches!(built, Ok(Some(_))),
+                "{label} must be built and served: {:?}",
+                built.err()
+            );
+        }
     }
 
     #[tokio::test]

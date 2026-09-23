@@ -421,14 +421,16 @@ async fn live_mirror_matches_persisted_signed_hash() {
     );
 }
 
-/// A ledger that fails its health check at startup is left out of /supported:
-/// `Ok(None)` from the same call `ProviderCache::from_env` makes, never an
-/// `Err`, which that function turned into `exit(1)` for every network through
-/// 2.39.1. The Mirror Node here is a closed local port, so the check fails at
-/// once. Sets and clears process env, so it relies on the suite's
-/// `--test-threads=1`.
+/// A ledger that fails its health check at startup is still served: `Ok(Some)`
+/// from the same call `ProviderCache::from_env` makes, and `supported()` lists
+/// it. Through 2.39.1 the failure was an `Err`, which that function turned into
+/// `exit(1)` for every network; through 2.39.3 it was `Ok(None)`, which kept the
+/// ledger out of /supported until the next deploy (Hedera mainnet, 2026-09-23,
+/// after one consensus probe timed out). The Mirror Node here is a closed local
+/// port, so the check cannot pass. Sets and clears process env, so it relies on
+/// the suite's `--test-threads=1`.
 #[tokio::test]
-async fn a_ledger_failing_its_startup_health_is_left_out_not_fatal() {
+async fn a_ledger_failing_its_startup_health_is_still_served() {
     let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let mirror = format!("https://127.0.0.1:{}/", closed.local_addr().unwrap().port());
     drop(closed);
@@ -463,9 +465,111 @@ async fn a_ledger_failing_its_startup_health_is_left_out_not_fatal() {
             None => std::env::remove_var(name),
         }
     }
+    let provider = match built {
+        Ok(Some(provider)) => provider,
+        Ok(None) => panic!("a failed startup health check must not take Hedera out of /supported"),
+        Err(error) => panic!("a failed startup health check must not fail the build: {error}"),
+    };
+    let kinds = provider.supported().await.expect("supported").kinds;
+    assert_eq!(
+        kinds.iter().map(|k| k.network.as_str()).collect::<Vec<_>>(),
+        ["hedera:testnet"]
+    );
+}
+
+/// A closed local port: nothing listens there, so every connection is refused.
+fn closed_port() -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.local_addr().unwrap().port()
+}
+
+/// The consensus nodes on a local port, so the probe never leaves this machine.
+fn local_nodes(port: u16) -> std::collections::HashMap<String, hiero_sdk::AccountId> {
+    std::collections::HashMap::from([(
+        format!("127.0.0.1:{port}"),
+        hiero_sdk::AccountId::new(0, 0, 3),
+    )])
+}
+
+/// A Mirror Node that refuses the connection is `rpc_unreachable`; one that
+/// accepts it and never answers is cut by the caller's timeout, which
+/// `/health/ready` reports as `rpc_timeout` (`src/readiness.rs`).
+#[tokio::test]
+async fn an_unreachable_ledger_fails_its_health_with_a_bounded_reason() {
+    let mirror: url::Url = format!("https://127.0.0.1:{}/", closed_port())
+        .parse()
+        .unwrap();
+    let provider = HederaProvider::for_health_tests(
+        Network::HederaTestnet,
+        mirror,
+        local_nodes(closed_port()),
+    );
+    let failure = provider.health().await.expect_err("nothing answers");
+    assert_eq!(failure.reason(), "rpc_unreachable", "{failure}");
+
+    // Accepts connections and never answers: TLS and gRPC both wait.
+    let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = silent.local_addr().unwrap().port();
+    let mirror: url::Url = format!("https://127.0.0.1:{port}/").parse().unwrap();
+    let provider =
+        HederaProvider::for_health_tests(Network::HederaTestnet, mirror, local_nodes(port));
     assert!(
-        matches!(built, Ok(None)),
-        "a failed startup health check must leave Hedera out, not fail the build: {:?}",
-        built.err()
+        tokio::time::timeout(Duration::from_millis(300), provider.health())
+            .await
+            .is_err(),
+        "a Mirror Node that never answers holds the check until the caller's timeout"
+    );
+    drop(silent);
+}
+
+/// The deterministic half of the check: the ledger's own answer about the
+/// sponsor account. A key that is not ours is `signer_key_mismatch`; a balance
+/// below one max fee is zero settles, not a failure.
+#[test]
+fn the_sponsor_account_answer_is_graded_without_the_network() {
+    let key = hiero_sdk::PrivateKey::from_bytes_ed25519(&[7; 32]).unwrap();
+    let other = hiero_sdk::PrivateKey::from_bytes_ed25519(&[8; 32]).unwrap();
+    let account = |public: &hiero_sdk::PrivateKey, tinybars: u64| {
+        json!({
+            "account": "0.0.3003",
+            "deleted": false,
+            "key": {"_type": "ED25519", "key": hex::encode(public.public_key().to_bytes_raw())},
+            "balance": {"balance": tinybars},
+        })
+    };
+    let fee = DEFAULT_MAX_TRANSACTION_FEE_TINYBARS;
+    assert_eq!(
+        sponsor_settles(&account(&key, 250 * fee), &key, fee),
+        Ok(250)
+    );
+    assert_eq!(sponsor_settles(&account(&key, fee - 1), &key, fee), Ok(0));
+    let mismatch = sponsor_settles(&account(&other, 250 * fee), &key, fee).unwrap_err();
+    assert_eq!(mismatch, HealthFailure::SponsorKeyMismatch);
+    assert_eq!(mismatch.reason(), "signer_key_mismatch");
+    let threshold = json!({"account": "0.0.3003", "deleted": false, "balance": {"balance": fee},
+        "key": {"_type": "ProtobufEncoded", "key": hex::encode(pb::Key {
+            key: Some(pb::key::Key::KeyList(pb::KeyList { keys: vec![] })),
+        }.encode_to_vec())}});
+    assert_eq!(
+        sponsor_settles(&threshold, &key, fee),
+        Err(HealthFailure::SponsorKeyMismatch),
+        "a key this facilitator cannot sign for alone is not ours"
+    );
+}
+
+#[test]
+fn every_health_failure_has_a_bounded_reason() {
+    assert_eq!(HealthFailure::ConsensusTimeout.reason(), "rpc_timeout");
+    assert_eq!(
+        HealthFailure::Unreachable("x".into()).reason(),
+        "rpc_unreachable"
+    );
+    assert_eq!(
+        HealthFailure::StoreUnavailable("x".into()).reason(),
+        "store_unavailable"
+    );
+    assert_eq!(
+        HealthFailure::SponsorKeyMismatch.reason(),
+        "signer_key_mismatch"
     );
 }

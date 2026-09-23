@@ -30,9 +30,15 @@
 //!    not answer, or a signer is below [`ReadinessConfig::min_settles`]. A route
 //!    that can only say "fine" is the one we already had.
 //! 4. **It is not for load balancers.** See the first paragraph.
+//! 5. **It lists every configured network, whatever state it is in.** A network
+//!    is never taken out of `/supported` by its health: this route is where the
+//!    health goes. Until 2.39.3 a native Hedera ledger whose probe failed at
+//!    startup vanished from both, which hid the problem it was reporting.
 //!
-//! EVM and native Hedera chains are probed. Every other configured family is listed
-//! under `unchecked` rather than folded into a green answer.
+//! EVM and native Hedera chains are probed; an EVM RPC is also asked for its
+//! chain id on every refresh, so a wrong one reads `rpc_chain_id_mismatch`
+//! instead of green. Every other configured family is listed under `unchecked`
+//! rather than folded into a green answer.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -170,13 +176,18 @@ pub struct SignerReport {
 #[serde(rename_all = "camelCase")]
 pub struct NetworkReport {
     pub network: String,
+    /// The CAIP-2 id, so a caller holding either spelling finds the chain
+    /// (native Hedera appears in `/supported` under this one only).
+    pub caip2: String,
     pub mainnet: bool,
     pub status: Status,
     /// Bounded token, present unless `status` is `ok`: `rpc_unreachable`,
-    /// `rpc_timeout`, `signer_gas_critical`, `signer_gas_low`.
+    /// `rpc_timeout`, `rpc_chain_id_mismatch`, `signer_gas_critical`,
+    /// `signer_gas_low`, and for native Hedera also `signer_key_mismatch` and
+    /// `store_unavailable`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<&'static str>,
-    /// `ok`, `unreachable` or `timeout`.
+    /// `ok`, `unreachable`, `timeout` or `wrong_chain`.
     pub rpc: &'static str,
     pub signers: Vec<SignerReport>,
 }
@@ -221,6 +232,7 @@ fn graded_network(network: Network, signers: Vec<SignerReport>) -> NetworkReport
     };
     NetworkReport {
         network: network.to_string(),
+        caip2: network.to_caip2(),
         mainnet: network.is_mainnet(),
         status,
         reason,
@@ -229,18 +241,62 @@ fn graded_network(network: Network, signers: Vec<SignerReport>) -> NetworkReport
     }
 }
 
-fn unreachable_network(network: Network, timed_out: bool) -> NetworkReport {
+/// A chain this probe could not grade: `down`, for `reason`, with no signers.
+fn down_network(network: Network, reason: &'static str, rpc: &'static str) -> NetworkReport {
     NetworkReport {
         network: network.to_string(),
+        caip2: network.to_caip2(),
         mainnet: network.is_mainnet(),
         status: Status::Down,
-        reason: Some(if timed_out {
-            "rpc_timeout"
-        } else {
-            "rpc_unreachable"
-        }),
-        rpc: if timed_out { "timeout" } else { "unreachable" },
+        reason: Some(reason),
+        rpc,
         signers: Vec::new(),
+    }
+}
+
+fn unreachable_network(network: Network, timed_out: bool) -> NetworkReport {
+    if timed_out {
+        down_network(network, "rpc_timeout", "timeout")
+    } else {
+        down_network(network, "rpc_unreachable", "unreachable")
+    }
+}
+
+/// Grade a native Hedera ledger from its health check: settles the sponsor's
+/// HBAR still pays for, or why the check did not pass. `None` when it did not
+/// answer within the probe timeout.
+#[cfg(feature = "hedera")]
+pub fn hedera_report(
+    network: Network,
+    health: Option<Result<u64, crate::chain::hedera::HealthFailure>>,
+    config: &ReadinessConfig,
+) -> NetworkReport {
+    use crate::chain::hedera::HealthFailure;
+    match health {
+        Some(Ok(remaining)) => {
+            let status = if remaining < config.min_settles {
+                Status::Down
+            } else if remaining < config.warn_settles {
+                Status::Degraded
+            } else {
+                Status::Ok
+            };
+            graded_network(
+                network,
+                vec![SignerReport {
+                    index: 0,
+                    status,
+                    gas_ok: status != Status::Down,
+                    settles_remaining: Some(remaining),
+                }],
+            )
+        }
+        None | Some(Err(HealthFailure::ConsensusTimeout)) => unreachable_network(network, true),
+        Some(Err(failure @ HealthFailure::Unreachable(_))) => {
+            down_network(network, failure.reason(), "unreachable")
+        }
+        // The ledger answered; what it answered is the problem.
+        Some(Err(failure)) => down_network(network, failure.reason(), "ok"),
     }
 }
 
@@ -264,18 +320,24 @@ pub fn overall(networks: &[NetworkReport]) -> Status {
         .unwrap_or(Status::Degraded)
 }
 
-/// Read one EVM chain: the fee cap the send path would set, then every
-/// signer's balance, all inside one timeout.
+/// Read one EVM chain: the chain id its RPC answers for, then the fee cap the
+/// send path would set, then every signer's balance, all inside one timeout.
+/// A chain id that is not the declared one stops there: balances read on
+/// another chain say nothing about this one.
 async fn probe_evm(evm: &EvmProvider, config: &ReadinessConfig) -> NetworkReport {
     let network = evm.chain().network();
     let read = async {
+        let chain_id = evm.inner().get_chain_id().await?;
+        if chain_id != evm.chain().chain_id {
+            return Ok(Err(chain_id));
+        }
         let fee_cap = evm.quote_fee_cap().await?;
         let mut balances = Vec::with_capacity(evm.signer_addresses().len());
         for address in evm.signer_addresses() {
             let balance = evm.inner().get_balance(*address).await?;
             balances.push(balance.saturating_to::<u128>());
         }
-        Ok::<_, alloy::transports::TransportError>((fee_cap, balances))
+        Ok::<_, alloy::transports::TransportError>(Ok((fee_cap, balances)))
     };
     match tokio::time::timeout(config.probe_timeout, read).await {
         Err(_) => {
@@ -292,7 +354,16 @@ async fn probe_evm(evm: &EvmProvider, config: &ReadinessConfig) -> NetworkReport
             );
             unreachable_network(network, false)
         }
-        Ok(Ok((fee_cap, balances))) => {
+        Ok(Ok(Err(actual))) => {
+            tracing::warn!(
+                %network,
+                expected = evm.chain().chain_id,
+                actual,
+                "[WARN] readiness: the RPC answers for another chain"
+            );
+            down_network(network, "rpc_chain_id_mismatch", "wrong_chain")
+        }
+        Ok(Ok(Ok((fee_cap, balances)))) => {
             let signers: Vec<SignerReport> = balances
                 .into_iter()
                 .enumerate()
@@ -427,16 +498,19 @@ where
                     let config = self.config;
                     probes.spawn(async move {
                         let network = provider.network();
-                        let report = match tokio::time::timeout(config.probe_timeout, provider.health()).await {
-                            Ok(Ok(remaining)) => {
-                                let status = if remaining < config.min_settles { Status::Down }
-                                    else if remaining < config.warn_settles { Status::Degraded } else { Status::Ok };
-                                graded_network(network, vec![SignerReport { index: 0, status, gas_ok: status != Status::Down, settles_remaining: Some(remaining) }])
-                            }
-                            Ok(Err(_)) => unreachable_network(network, false),
-                            Err(_) => unreachable_network(network, true),
-                        };
-                        Some(report)
+                        let health = tokio::time::timeout(config.probe_timeout, provider.health())
+                            .await
+                            .ok();
+                        if let Some(Err(failure)) = &health {
+                            // Server-side only, and scrubbed, like the EVM probe.
+                            tracing::warn!(
+                                %network,
+                                reason = failure.reason(),
+                                detail = %crate::redact::scrub_urls(&failure.to_string()),
+                                "[WARN] readiness: the Hedera health check did not pass"
+                            );
+                        }
+                        Some(hedera_report(network, health, &config))
                     });
                 }
                 other => unchecked.push(other.network().to_string()),
@@ -589,7 +663,7 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request;
     use std::borrow::Borrow;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use tower::ServiceExt;
 
     /// The Base mainnet signer at 18:42Z on 2026-09-14, in wei.
@@ -658,19 +732,26 @@ mod tests {
         url: String,
         balance_wei: Arc<std::sync::Mutex<u128>>,
         calls: Arc<AtomicUsize>,
+        /// While set, every call hangs for a minute.
+        hang: Arc<AtomicBool>,
     }
 
     async fn mock_rpc(balance_wei: u128, hang: bool) -> MockRpc {
         let balance = Arc::new(std::sync::Mutex::new(balance_wei));
         let calls = Arc::new(AtomicUsize::new(0));
-        let (b, c) = (Arc::clone(&balance), Arc::clone(&calls));
+        let hanging = Arc::new(AtomicBool::new(hang));
+        let (b, c, h) = (
+            Arc::clone(&balance),
+            Arc::clone(&calls),
+            Arc::clone(&hanging),
+        );
         let app = Router::new().route(
             "/",
             axum::routing::post(move |Json(req): Json<serde_json::Value>| {
-                let (b, c) = (Arc::clone(&b), Arc::clone(&c));
+                let (b, c, h) = (Arc::clone(&b), Arc::clone(&c), Arc::clone(&h));
                 async move {
                     c.fetch_add(1, Ordering::SeqCst);
-                    if hang {
+                    if h.load(Ordering::SeqCst) {
                         tokio::time::sleep(Duration::from_secs(60)).await;
                     }
                     let result = match req["method"].as_str().unwrap_or_default() {
@@ -701,6 +782,7 @@ mod tests {
             url,
             balance_wei: balance,
             calls,
+            hang: hanging,
         }
     }
 
@@ -947,6 +1029,137 @@ mod tests {
 
         let (code, _, _) = get(&router, "/health/ready?network=not-a-chain").await;
         assert_eq!(code, StatusCode::BAD_REQUEST);
+    }
+
+    /// An RPC that answers for another chain is not green: its balances were
+    /// read on the wrong chain. Listed, `down`, with the reason, under both
+    /// spellings of the network. Arc here, whose mismatch until 2.39.3 took it
+    /// out of /supported and so out of this route too.
+    #[tokio::test]
+    async fn a_wrong_chain_id_is_listed_down_not_green() {
+        // The mock answers eth_chainId for Base (0x2105), not for Arc.
+        let rpc = mock_rpc(50_000_000_000_000_000, false).await;
+        let (router, _) = router_for(&[(Network::Arc, rpc.url.as_str())], config()).await;
+        let (code, body, _) = get(&router, "/health/ready").await;
+        assert_eq!(code, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        let arc = &body["networks"][0];
+        assert_eq!(arc["network"], "arc", "{body}");
+        assert_eq!(arc["caip2"], "eip155:5042", "{body}");
+        assert_eq!(arc["status"], "down", "{body}");
+        assert_eq!(arc["reason"], "rpc_chain_id_mismatch", "{body}");
+        assert_eq!(arc["rpc"], "wrong_chain", "{body}");
+        assert_eq!(arc["signers"], serde_json::json!([]), "{body}");
+    }
+
+    /// A probe that timed out is not a verdict for the life of the task: the
+    /// next refresh measures again, and the chain turns green on its own, with
+    /// no restart and no deploy.
+    #[tokio::test]
+    async fn a_chain_whose_probe_timed_out_turns_green_without_a_restart() {
+        let rpc = mock_rpc(50_000_000_000_000_000, true).await;
+        let config = ReadinessConfig {
+            probe_timeout: Duration::from_millis(300),
+            ..config()
+        };
+        let (router, _) = router_for(&[(Network::Base, rpc.url.as_str())], config).await;
+        let (code, body, _) = get(&router, "/health/ready").await;
+        assert_eq!(code, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        assert_eq!(
+            body["networks"][0]["network"], "base",
+            "listed while down: {body}"
+        );
+        assert_eq!(body["networks"][0]["reason"], "rpc_timeout");
+
+        rpc.hang.store(false, Ordering::SeqCst);
+        let (code, body, _) = get(&router, "/health/ready").await;
+        assert_eq!(code, StatusCode::OK, "{body}");
+        assert_eq!(body["networks"][0]["status"], "ok", "{body}");
+    }
+
+    /// Native Hedera's health check, graded: the reason is the ledger's, never
+    /// a generic `rpc_unreachable` for a key or a balance problem.
+    #[cfg(feature = "hedera")]
+    #[test]
+    fn a_hedera_health_answer_grades_with_its_own_reason() {
+        use crate::chain::hedera::HealthFailure;
+        let network = Network::Hedera;
+        let report = |health| hedera_report(network, health, &config());
+        let key = report(Some(Err(HealthFailure::SponsorKeyMismatch)));
+        assert_eq!(
+            (key.status, key.reason, key.rpc),
+            (Status::Down, Some("signer_key_mismatch"), "ok")
+        );
+        assert_eq!(key.network, "hedera");
+        assert_eq!(key.caip2, "hedera:mainnet");
+        let store = report(Some(Err(HealthFailure::StoreUnavailable("x".into()))));
+        assert_eq!(store.reason, Some("store_unavailable"));
+        let timeout = report(Some(Err(HealthFailure::ConsensusTimeout)));
+        assert_eq!(
+            (timeout.reason, timeout.rpc),
+            (Some("rpc_timeout"), "timeout")
+        );
+        let slow = report(None);
+        assert_eq!((slow.reason, slow.rpc), (Some("rpc_timeout"), "timeout"));
+        let gone = report(Some(Err(HealthFailure::Unreachable("x".into()))));
+        assert_eq!(
+            (gone.reason, gone.rpc),
+            (Some("rpc_unreachable"), "unreachable")
+        );
+        assert_eq!(report(Some(Ok(0))).reason, Some("signer_gas_critical"));
+        assert_eq!(report(Some(Ok(28))).reason, Some("signer_gas_low"));
+        assert_eq!(report(Some(Ok(500))).status, Status::Ok);
+    }
+
+    /// A native Hedera ledger whose health check fails is listed with its
+    /// state and reason -- refused connection or no answer in time -- and
+    /// scoped by its CAIP-2 id, the only spelling `/supported` gives it. Until
+    /// 2.39.3 a ledger that failed at startup was absent from this route.
+    #[cfg(feature = "hedera")]
+    #[tokio::test]
+    async fn a_hedera_ledger_that_fails_its_health_is_listed_with_its_reason() {
+        use crate::chain::hedera::HederaProvider;
+        let closed = || {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.local_addr().unwrap().port()
+        };
+        let nodes = |port: u16| {
+            HashMap::from([(
+                format!("127.0.0.1:{port}"),
+                hiero_sdk::AccountId::new(0, 0, 3),
+            )])
+        };
+        // Accepts connections and never answers: TLS and gRPC both wait.
+        let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let silent_port = silent.local_addr().unwrap().port();
+        for (port, reason) in [(closed(), "rpc_unreachable"), (silent_port, "rpc_timeout")] {
+            let mirror = format!("https://127.0.0.1:{port}/").parse().unwrap();
+            let provider =
+                HederaProvider::for_health_tests(Network::HederaTestnet, mirror, nodes(port));
+            let map = HashMap::from([(Network::HederaTestnet, NetworkProvider::Hedera(provider))]);
+            let config = ReadinessConfig {
+                probe_timeout: Duration::from_millis(500),
+                ..config()
+            };
+            let state = Arc::new(ReadinessState::new(Arc::new(Providers(map)), config));
+            let router = routes::<Providers>().with_state(state);
+
+            let (code, body, _) = get(&router, "/health/ready").await;
+            assert_eq!(
+                code,
+                StatusCode::OK,
+                "a testnet does not take the task down: {body}"
+            );
+            let ledger = &body["networks"][0];
+            assert_eq!(ledger["network"], "hedera-testnet", "{body}");
+            assert_eq!(ledger["caip2"], "hedera:testnet", "{body}");
+            assert_eq!(ledger["status"], "down", "{body}");
+            assert_eq!(ledger["reason"], reason, "{body}");
+
+            let (code, body, _) = get(&router, "/health/ready?network=hedera:testnet").await;
+            assert_eq!(code, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+            assert_eq!(body["networks"][0]["reason"], reason, "{body}");
+        }
+        drop(silent);
     }
 
     /// The low-balance alarm is the page for the moment this route turns a

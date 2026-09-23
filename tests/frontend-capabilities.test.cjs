@@ -91,3 +91,137 @@ test('landing shuffles each grid once on load without an opt-in URL', () => {
   assert.deepEqual(first.map(cards=>[...cards].sort()),original);
   assert.deepEqual(second.map(cards=>[...cards].sort()),original);
 });
+
+// The status dot on each landing card reads GET /health/ready. It shows only
+// what the route measured: nothing for ok, unprobed or unreadable, a label
+// naming state and reason otherwise.
+test('card health: a dot for down or non-gas degraded, or under 10 settles; none for signer_gas_low above it', () => {
+  const signers=(...n)=>n.map((settlesRemaining,index)=>({index,settlesRemaining}));
+  context.body={status:'down',networks:[
+    {network:'base',caip2:'eip155:8453',status:'ok',signers:signers(9070)},
+    // The owner's case: Ethereum mainnet with 24 settles left. No dot.
+    {network:'ethereum',caip2:'eip155:1',status:'degraded',reason:'signer_gas_low',signers:signers(24)},
+    {network:'arbitrum',caip2:'eip155:42161',status:'degraded',reason:'signer_gas_low'},
+    {network:'polygon',caip2:'eip155:137',status:'down',reason:'signer_gas_critical',signers:signers(9)},
+    {network:'arc',caip2:'eip155:5042',status:'down',reason:'rpc_chain_id_mismatch',signers:[]},
+    {network:'hedera',caip2:'hedera:mainnet',status:'down',reason:'rpc_timeout'},
+    {network:'avalanche',caip2:'eip155:43114',status:'degraded',reason:'startup_probe_failed'},
+    {network:'celo-sepolia',caip2:'eip155:11142220',status:'degraded'},
+    // A published reason of low gas, but one signer is under 10: the signer decides.
+    {network:'optimism',caip2:'eip155:10',status:'degraded',reason:'signer_gas_low',signers:signers(500,7)},
+    // Any `down` lights it, even with 10+ settles (HEALTH_READY_MIN_SETTLES raised to 20).
+    {network:'bsc',caip2:'eip155:56',status:'down',reason:'signer_gas_critical',signers:signers(15)},
+    {network:'scroll',caip2:'eip155:534352',status:'unknown-state',reason:'x'},
+  ],unchecked:['solana']};
+  const show=keys=>{context.keys=keys;return evaluate('keys.map(k=>cardHealth(readinessIndex(body),k))');};
+  assert.deepEqual(show(['base-mainnet','ethereum-mainnet','arbitrum-mainnet','solana-mainnet','scroll-mainnet','sui-testnet']),[null,null,null,null,null,null]);
+  assert.deepEqual(show(['polygon-mainnet','bsc-mainnet','arc-mainnet','avalanche-mainnet','celo-testnet','optimism-mainnet']),[
+    {status:'down',label:'down: signer_gas_critical'},
+    {status:'down',label:'down: signer_gas_critical'},
+    {status:'down',label:'down: rpc_chain_id_mismatch'},
+    {status:'degraded',label:'degraded: startup_probe_failed'},
+    {status:'degraded',label:'degraded'},
+    {status:'degraded',label:'degraded: signer_gas_low'},
+  ]);
+  // Native Hedera is only in /supported under its CAIP-2 id; the card finds it.
+  assert.deepEqual(show(['hedera-mainnet']),[{status:'down',label:'down: rpc_timeout'}]);
+});
+test('card health: an unreadable answer shows nothing, never a red dot for not knowing', () => {
+  for (const body of [null,'x',{status:'down',error:'probe_failed'},{error:'rate_limited'},{networks:'no'},{networks:[null,{network:'base'}]}]) {
+    context.body=body;
+    assert.equal(evaluate('JSON.stringify(cardHealth(readinessIndex(body),"base-mainnet"))'),'null',JSON.stringify(body));
+  }
+  assert.equal(evaluate('cardHealth(null,"base-mainnet")'),null);
+});
+test('landing: the dot sits in the lower-left corner, does not move the card and stops blinking on reduced motion', () => {
+  const html=fs.readFileSync(path.join(root,'static/index.html'),'utf8');
+  const rule=html.slice(html.indexOf('.network-status {'),html.indexOf('}',html.indexOf('.network-status {')));
+  for (const decl of ['position: absolute','left: 10px','bottom: 10px','animation: network-status-blink']) assert(rule.includes(decl),decl);
+  const reduced=html.slice(html.indexOf('@media (prefers-reduced-motion: reduce)'));
+  assert(/^@media \(prefers-reduced-motion: reduce\) \{\s*\.network-status \{\s*animation: none;/.test(reduced));
+  const loader=html.slice(html.indexOf('(function loadNetworkStatus()'),html.indexOf('// Curated Bazaar counters.'));
+  assert(loader.includes("fetch('/health/ready'"));
+  assert(loader.includes('.catch(() => paint(null))'),'a failed read clears the dots');
+  assert(loader.includes("setAttribute('aria-label', health.label)"));
+  assert(html.includes('<script src="/x402.js?v=20260923"></script>'),'a cached x402.js without cardHealth must not be served to this page');
+});
+
+// The owner's rule: a supported network never leaves the landing because of its
+// health. This runs the landing's own status loader over every real card, through
+// a degraded and a down network, an unreadable answer (429 body) and a failed
+// fetch, and counts the cards each time. Only the dot may come and go.
+test('landing: health never removes or hides a card; the dot follows the owner\'s rule', async () => {
+  const html=fs.readFileSync(path.join(root,'static/index.html'),'utf8');
+  const loader=html.slice(html.indexOf('(function loadNetworkStatus()'),html.indexOf('// Curated Bazaar counters.'));
+  const keys=[...html.matchAll(/data-tokens="([^"]+)"/g)].map(m=>m[1]);
+  assert(keys.length>=40 && keys.includes('hedera-mainnet') && keys.includes('ethereum-mainnet'));
+
+  const grid=[];
+  for (const key of keys) {
+    const card={key,style:{},children:[]};
+    card.container={dataset:{tokens:key},closest:sel=>sel==='.network-badge'?card:null};
+    card.querySelector=sel=>sel===':scope > .network-status'?card.children.find(c=>c.className==='network-status')||null:null;
+    card.append=el=>{el.parent=card;card.children.push(el);};
+    card.remove=()=>grid.splice(grid.indexOf(card),1);
+    grid.push(card);
+  }
+  const document={hidden:false,
+    querySelectorAll:sel=>sel==='.network-badge [data-tokens]'?grid.map(c=>c.container):[],
+    createElement:tag=>{const el={tag,attrs:{},title:'',className:''};
+      el.setAttribute=(k,v)=>{el.attrs[k]=String(v);};
+      el.remove=()=>el.parent.children.splice(el.parent.children.indexOf(el),1);
+      return el;}};
+  const ready={status:'down',networks:[
+    {network:'base',caip2:'eip155:8453',status:'ok',signers:[{index:0,settlesRemaining:9070}]},
+    // 24 settles: low for an operator, not a dot for a visitor.
+    {network:'ethereum',caip2:'eip155:1',status:'degraded',reason:'signer_gas_low',signers:[{index:0,settlesRemaining:24}]},
+    {network:'polygon',caip2:'eip155:137',status:'down',reason:'signer_gas_critical',signers:[{index:0,settlesRemaining:9}]},
+    {network:'avalanche',caip2:'eip155:43114',status:'degraded',reason:'startup_probe_failed',signers:[]},
+    {network:'hedera',caip2:'hedera:mainnet',status:'down',reason:'rpc_timeout',signers:[]},
+  ]};
+  const answers=[
+    ()=>Promise.resolve({json:()=>Promise.resolve(ready)}),
+    ()=>Promise.resolve({json:()=>Promise.resolve({error:'rate_limited'})}),
+    ()=>Promise.reject(new Error('offline')),
+    ()=>Promise.resolve({json:()=>Promise.resolve(ready)}),
+  ];
+  let tick;
+  const sandbox={document,window:{},console,
+    fetch:()=>answers.shift()(),setInterval:fn=>{tick=fn;},
+    readinessIndex:context.readinessIndex,cardHealth:context.cardHealth,
+    translations:{en:{'netstatus.degraded':'degraded','netstatus.down':'down'},es:{'netstatus.degraded':'degradada','netstatus.down':'caída'}},
+    currentLang:'en'};
+  const settle=()=>new Promise(r=>setTimeout(r,5));
+  const dots=()=>Object.fromEntries(grid.filter(c=>c.children.length).map(c=>[c.key,c.children.map(d=>d.attrs['aria-label'])]));
+  const unchanged=()=>{
+    assert.equal(grid.length,keys.length,'a card left the grid');
+    assert.deepEqual(grid.map(c=>c.key),keys,'the grid changed order');
+    grid.forEach(c=>assert.deepEqual(c.style,{},`${c.key} was restyled`));
+  };
+
+  vm.runInNewContext(loader,sandbox);
+  await settle();
+  unchanged();
+  assert.deepEqual(dots(),{'polygon-mainnet':['down: signer_gas_critical'],'avalanche-mainnet':['degraded: startup_probe_failed'],'hedera-mainnet':['down: rpc_timeout']});
+  const dot=grid.find(c=>c.key==='hedera-mainnet').children[0];
+  assert.equal(dot.title,'down: rpc_timeout');
+  assert.equal(dot.attrs.role,'img');
+
+  for (const what of ['an unreadable answer','a failed fetch']) {
+    tick(); await settle();
+    unchanged();
+    assert.deepEqual(dots(),{},`${what} must clear the dots, never add one`);
+  }
+
+  tick(); await settle();
+  sandbox.currentLang='es';
+  sandbox.window.__repaintNetworkStatus();
+  unchanged();
+  assert.deepEqual(dots(),{'polygon-mainnet':['caída: signer_gas_critical'],'avalanche-mainnet':['degradada: startup_probe_failed'],'hedera-mainnet':['caída: rpc_timeout']});
+  assert.equal(answers.length,0);
+});
+test('landing: the dot label is translated in both dictionaries', () => {
+  const html=fs.readFileSync(path.join(root,'static/index.html'),'utf8');
+  for (const key of ['netstatus.degraded','netstatus.down']) assert.equal(html.split(`"${key}":`).length-1,2,key);
+  assert(html.includes("window.__repaintNetworkStatus?.();"),'a language switch relabels the dots');
+});

@@ -153,3 +153,43 @@ function stablecoinsForCard(row) {
 function matchesStablecoinFilter(row, token) {
   return Boolean(row?.schemes.has('exact') && (!token || stablecoinsForCard(row)?.includes(token)));
 }
+
+// Chain health from GET /health/ready, keyed by both spellings of each chain:
+// native Hedera appears in /supported under its CAIP-2 id only. Each entry also
+// keeps the fewest settles any of its signers can still pay for. Null when the
+// body is not a readiness answer (a 429, `probe_failed`, garbage), because a
+// state nobody could read is shown as nothing, never as unhealthy.
+function readinessIndex(body) {
+  if (!body || !Array.isArray(body.networks)) return null;
+  const index = new Map();
+  body.networks.forEach(n => {
+    if (!n || typeof n.status !== 'string') return;
+    const settles = (Array.isArray(n.signers) ? n.signers : [])
+      .map(s => s?.settlesRemaining).filter(Number.isFinite);
+    const entry = {
+      status: n.status,
+      reason: typeof n.reason === 'string' ? n.reason : '',
+      fewestSettles: settles.length ? Math.min(...settles) : null,
+    };
+    [n.network, n.caip2].forEach(name => { if (typeof name === 'string') index.set(name, entry); });
+  });
+  return index;
+}
+
+// The owner's line for the landing's dot: fewer than 10 settles left. Above it a
+// thin signer (`degraded` / `signer_gas_low`) is an operator matter, not a
+// visitor's: /health/ready and the balance alarms still report it.
+const DOT_BELOW_SETTLES = 10;
+
+// What a landing card shows for its chain: null while it is ok, unprobed, or
+// only low on gas with 10 or more settles left; otherwise the label of its dot
+// ("down: signer_gas_critical"), with the reason /health/ready published.
+// `words` names the state in the page's language; the reason stays a token.
+function cardHealth(index, key, words) {
+  const entry = index?.get(landingNetworkName(key));
+  if (!entry || (entry.status !== 'degraded' && entry.status !== 'down')) return null;
+  const nearlyDry = entry.fewestSettles !== null && entry.fewestSettles < DOT_BELOW_SETTLES;
+  if (entry.status === 'degraded' && entry.reason === 'signer_gas_low' && !nearlyDry) return null;
+  const state = words?.[entry.status] || entry.status;
+  return {status: entry.status, label: entry.reason ? `${state}: ${entry.reason}` : state};
+}

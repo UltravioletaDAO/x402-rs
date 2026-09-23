@@ -2728,12 +2728,18 @@ async fn path_health() {}
 probes, and it never reports a chain problem (a load-balancer check that did would have ECS cycle \
 healthy tasks during a chain outage). This route is the operator's view.
 
-For every configured EVM chain it reads the fee cap the settle path would set and each signer's \
-native balance, and grades the signer by how many settles that balance still admits \
-(`balance / (130000 gas * fee cap)`): below `minSettles` is `down`, below `warnSettles` is \
-`degraded`. A chain whose RPC does not answer within the probe timeout is `down` with reason \
-`rpc_unreachable` or `rpc_timeout`. Non-EVM chains are listed under `unchecked`, never counted as \
-green.
+For every configured EVM chain it asks the RPC for its chain id, reads the fee cap the settle \
+path would set and each signer's native balance, and grades the signer by how many settles that \
+balance still admits (`balance / (130000 gas * fee cap)`): below `minSettles` is `down`, below \
+`warnSettles` is `degraded`. A chain whose RPC does not answer within the probe timeout is `down` \
+with reason `rpc_unreachable` or `rpc_timeout`; one whose RPC answers for another chain is `down` \
+with `rpc_chain_id_mismatch`. Native Hedera is graded from its sponsor account (one settle per max \
+transaction fee of HBAR) and can also read `signer_key_mismatch` or `store_unavailable`. Other \
+chains are listed under `unchecked`, never counted as green.
+
+**Every configured chain is listed, whatever its state**, under its v1 name (`network`) and its \
+CAIP-2 id (`caip2`). A chain's health never takes it out of `/supported`: this route is where the \
+health is reported.
 
 **Cached**: one probe per `ttlSecs` (default 60) per task, however often the route is called \
 and however its callers disconnect: the refresh runs in its own task, so a caller that hangs up \
@@ -2763,7 +2769,7 @@ warning and keeps the default.",
                 "thresholds": { "minSettles": 10, "warnSettles": 100, "settleGasBudget": 130000 },
                 "summary": { "ok": 1, "degraded": 0, "down": 0 },
                 "networks": [{
-                    "network": "base", "mainnet": true, "status": "ok", "rpc": "ok",
+                    "network": "base", "caip2": "eip155:8453", "mainnet": true, "status": "ok", "rpc": "ok",
                     "signers": [{ "index": 0, "status": "ok", "gasOk": true, "settlesRemaining": 380 }]
                 }],
                 "unchecked": ["solana"]
@@ -2773,7 +2779,7 @@ warning and keeps the default.",
             example = json!({
                 "status": "down",
                 "networks": [{
-                    "network": "base", "mainnet": true, "status": "down",
+                    "network": "base", "caip2": "eip155:8453", "mainnet": true, "status": "down",
                     "reason": "signer_gas_critical", "rpc": "ok",
                     "signers": [{ "index": 0, "status": "down", "gasOk": false, "settlesRemaining": 0 }]
                 }]
@@ -2781,7 +2787,7 @@ warning and keeps the default.",
         ),
         (status = 400, description = "`unknown_network`"),
         (status = 429, description = "Rate limited: same per-IP governor as the other on-chain reads"),
-        (status = 404, description = "`network_not_probed`: the chain is not configured, or is not EVM")
+        (status = 404, description = "`network_not_probed`: the chain is not configured, or is neither EVM nor native Hedera")
     )
 )]
 async fn path_health_ready() {}

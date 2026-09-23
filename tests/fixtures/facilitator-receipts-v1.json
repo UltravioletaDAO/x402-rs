@@ -294,6 +294,100 @@
           "jws": "eyJhbGciOiJFZERTQSIsImtpZCI6ImZlODEyYzEyZjNhYjRjZTZhYzVkYjY5YWMzNTJmOTA2Y2IxYjExZWY0M2ZiMzNlMjUyZWY3ZmY1NTIyNjM4ODkiLCJ0eXAiOiJ1dmQtZmFjaWxpdGF0b3ItcmVjZWlwdCtqd3MifQ.eyJhbW91bnQiOiIxMDAwIiwiYXNzZXQiOiIwLjAuNDI5Mjc0IiwiYXV0aG9yaXphdGlvbklkIjoiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYiIsImRlY2ltYWxzIjo2LCJkaWFnbm9zdGljQ29kZSI6bnVsbCwiaXNzdWVkQXQiOjE3MDAwMDAwMDAsImlzc3VlciI6Imh0dHBzOi8vZmFjaWxpdGF0b3IudWx0cmF2aW9sZXRhZGFvLnh5eiIsIm5ldHdvcmsiOiJoZWRlcmE6dGVzdG5ldCIsIm9wZXJhdGlvbiI6InZlcmlmeSIsInBheVRvIjoiMC4wLjIwMDIiLCJwYXllciI6IjAuMC4xMDAxIiwicGF5bWVudFJlcXVlc3RIYXNoIjoiYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYSIsInByb29mIjpudWxsLCJwdXJjaGFzZUlkIjoicHVyY2hhc2UtZml4dHVyZSIsInJlY2VpcHRJZCI6IjAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMSIsInJlZnVzYWxSZWFzb24iOm51bGwsInJlcXVlc3QiOnsiYW1vdW50IjoiMTAwMCIsImFzc2V0IjoiMC4wLjQyOTI3NCIsImJvZHlTaGEyNTYiOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1IiwibWV0aG9kIjoiR0VUIiwibmV0d29yayI6ImhlZGVyYTp0ZXN0bmV0IiwicGF5VG8iOiIwLjAuMjAwMiIsInB1cmNoYXNlSWQiOiJwdXJjaGFzZS1maXh0dXJlIiwic2NoZW1lIjoiZXhhY3QiLCJ1cmwiOiJodHRwczovL21lcmNoYW50LmV4YW1wbGUvZGF0YSJ9LCJyZXF1ZXN0SGFzaCI6IjVmMWU0MmY3NmFmM2RkYTBhZGQ3ZDJmNDgwZDc2NWQ2ZTM4YzRkNjUxYmJjNjhhYWQ2ZGMwYTNkZGFhZTgxMjkiLCJyZXF1ZXN0SGFzaFZlcnNpb24iOiJ1dmQteDQwMi1yZXF1ZXN0LXYxIiwicmV0cnkiOnsiYWN0aW9uIjoibm9uZSJ9LCJyZXZpc2lvbiI6MSwic2NoZW1hVmVyc2lvbiI6MSwic2NoZW1lIjoiZXhhY3QiLCJzZXR0bGVtZW50IjpudWxsLCJzdGF0dXMiOiJ2ZXJpZmllZCIsIng0MDJWZXJzaW9uIjoyfQ.JKMVQq-gHsE7jHLmKt6hR8NzOzsYWJM-1V0x12nGsoe4fdzANAs5xr_2uRspcb06E_SDa5dAabzIrW2u0wjQCA"
         }
       }
+    },
+    {
+      "network": "eip155:8453",
+      "symbol": "USDC",
+      "receipt": {
+        "schemaVersion": 1,
+        "receiptId": "00000000-0000-4000-8000-000000000001",
+        "revision": 1,
+        "issuer": "https://facilitator.ultravioletadao.xyz",
+        "issuedAt": 1700000000,
+        "operation": "verify",
+        "purchaseId": "purchase-fixture",
+        "network": "eip155:8453",
+        "scheme": "exact",
+        "x402Version": 2,
+        "asset": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        "amount": "1000",
+        "decimals": 6,
+        "payTo": "0x2222222222222222222222222222222222222222",
+        "payer": "0x1111111111111111111111111111111111111111",
+        "requestHash": "f35561ee7238cadf05827e582c6779930c3f9128b92a86107e69f105393c3146",
+        "requestHashVersion": "uvd-x402-request-v1",
+        "request": {
+          "purchaseId": "purchase-fixture",
+          "method": "GET",
+          "url": "https://merchant.example/data",
+          "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "network": "eip155:8453",
+          "scheme": "exact",
+          "asset": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+          "amount": "1000",
+          "payTo": "0x2222222222222222222222222222222222222222"
+        },
+        "paymentRequestHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "authorizationId": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "status": "verified",
+        "settlement": null,
+        "refusalReason": null,
+        "diagnosticCode": null,
+        "retry": {
+          "action": "none"
+        },
+        "proof": {
+          "type": "jws",
+          "jws": "eyJhbGciOiJFZERTQSIsImtpZCI6ImZlODEyYzEyZjNhYjRjZTZhYzVkYjY5YWMzNTJmOTA2Y2IxYjExZWY0M2ZiMzNlMjUyZWY3ZmY1NTIyNjM4ODkiLCJ0eXAiOiJ1dmQtZmFjaWxpdGF0b3ItcmVjZWlwdCtqd3MifQ.eyJhbW91bnQiOiIxMDAwIiwiYXNzZXQiOiIweDgzMzU4OWZjZDZlZGI2ZTA4ZjRjN2MzMmQ0ZjcxYjU0YmRhMDI5MTMiLCJhdXRob3JpemF0aW9uSWQiOiJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiIiwiZGVjaW1hbHMiOjYsImRpYWdub3N0aWNDb2RlIjpudWxsLCJpc3N1ZWRBdCI6MTcwMDAwMDAwMCwiaXNzdWVyIjoiaHR0cHM6Ly9mYWNpbGl0YXRvci51bHRyYXZpb2xldGFkYW8ueHl6IiwibmV0d29yayI6ImVpcDE1NTo4NDUzIiwib3BlcmF0aW9uIjoidmVyaWZ5IiwicGF5VG8iOiIweDIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIiLCJwYXllciI6IjB4MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMSIsInBheW1lbnRSZXF1ZXN0SGFzaCI6ImFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWEiLCJwcm9vZiI6bnVsbCwicHVyY2hhc2VJZCI6InB1cmNoYXNlLWZpeHR1cmUiLCJyZWNlaXB0SWQiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDEiLCJyZWZ1c2FsUmVhc29uIjpudWxsLCJyZXF1ZXN0Ijp7ImFtb3VudCI6IjEwMDAiLCJhc3NldCI6IjB4ODMzNTg5ZmNkNmVkYjZlMDhmNGM3YzMyZDRmNzFiNTRiZGEwMjkxMyIsImJvZHlTaGEyNTYiOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1IiwibWV0aG9kIjoiR0VUIiwibmV0d29yayI6ImVpcDE1NTo4NDUzIiwicGF5VG8iOiIweDIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIiLCJwdXJjaGFzZUlkIjoicHVyY2hhc2UtZml4dHVyZSIsInNjaGVtZSI6ImV4YWN0IiwidXJsIjoiaHR0cHM6Ly9tZXJjaGFudC5leGFtcGxlL2RhdGEifSwicmVxdWVzdEhhc2giOiJmMzU1NjFlZTcyMzhjYWRmMDU4MjdlNTgyYzY3Nzk5MzBjM2Y5MTI4YjkyYTg2MTA3ZTY5ZjEwNTM5M2MzMTQ2IiwicmVxdWVzdEhhc2hWZXJzaW9uIjoidXZkLXg0MDItcmVxdWVzdC12MSIsInJldHJ5Ijp7ImFjdGlvbiI6Im5vbmUifSwicmV2aXNpb24iOjEsInNjaGVtYVZlcnNpb24iOjEsInNjaGVtZSI6ImV4YWN0Iiwic2V0dGxlbWVudCI6bnVsbCwic3RhdHVzIjoidmVyaWZpZWQiLCJ4NDAyVmVyc2lvbiI6Mn0.aeEJv5UOWdYLg3RcIeKKTGuIYtuQUmJI2FTh5RFrQR5_W1AJEehG7TY73t5sW5StADZriXIY9xg-ib_5gX3LCw"
+        }
+      }
+    },
+    {
+      "network": "eip155:8453",
+      "symbol": "EURC",
+      "receipt": {
+        "schemaVersion": 1,
+        "receiptId": "00000000-0000-4000-8000-000000000001",
+        "revision": 1,
+        "issuer": "https://facilitator.ultravioletadao.xyz",
+        "issuedAt": 1700000000,
+        "operation": "verify",
+        "purchaseId": "purchase-fixture",
+        "network": "eip155:8453",
+        "scheme": "exact",
+        "x402Version": 2,
+        "asset": "0x60a3e35cc302bfa44cb288bc5a4f316fdb1adb42",
+        "amount": "1000",
+        "decimals": 6,
+        "payTo": "0x2222222222222222222222222222222222222222",
+        "payer": "0x1111111111111111111111111111111111111111",
+        "requestHash": "2e404be9b272964898bbcc225cb6ee45e325c2ad2ee18d85ef70706766ec55bf",
+        "requestHashVersion": "uvd-x402-request-v1",
+        "request": {
+          "purchaseId": "purchase-fixture",
+          "method": "GET",
+          "url": "https://merchant.example/data",
+          "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "network": "eip155:8453",
+          "scheme": "exact",
+          "asset": "0x60a3e35cc302bfa44cb288bc5a4f316fdb1adb42",
+          "amount": "1000",
+          "payTo": "0x2222222222222222222222222222222222222222"
+        },
+        "paymentRequestHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "authorizationId": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "status": "verified",
+        "settlement": null,
+        "refusalReason": null,
+        "diagnosticCode": null,
+        "retry": {
+          "action": "none"
+        },
+        "proof": {
+          "type": "jws",
+          "jws": "eyJhbGciOiJFZERTQSIsImtpZCI6ImZlODEyYzEyZjNhYjRjZTZhYzVkYjY5YWMzNTJmOTA2Y2IxYjExZWY0M2ZiMzNlMjUyZWY3ZmY1NTIyNjM4ODkiLCJ0eXAiOiJ1dmQtZmFjaWxpdGF0b3ItcmVjZWlwdCtqd3MifQ.eyJhbW91bnQiOiIxMDAwIiwiYXNzZXQiOiIweDYwYTNlMzVjYzMwMmJmYTQ0Y2IyODhiYzVhNGYzMTZmZGIxYWRiNDIiLCJhdXRob3JpemF0aW9uSWQiOiJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiIiwiZGVjaW1hbHMiOjYsImRpYWdub3N0aWNDb2RlIjpudWxsLCJpc3N1ZWRBdCI6MTcwMDAwMDAwMCwiaXNzdWVyIjoiaHR0cHM6Ly9mYWNpbGl0YXRvci51bHRyYXZpb2xldGFkYW8ueHl6IiwibmV0d29yayI6ImVpcDE1NTo4NDUzIiwib3BlcmF0aW9uIjoidmVyaWZ5IiwicGF5VG8iOiIweDIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIiLCJwYXllciI6IjB4MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMSIsInBheW1lbnRSZXF1ZXN0SGFzaCI6ImFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWEiLCJwcm9vZiI6bnVsbCwicHVyY2hhc2VJZCI6InB1cmNoYXNlLWZpeHR1cmUiLCJyZWNlaXB0SWQiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDEiLCJyZWZ1c2FsUmVhc29uIjpudWxsLCJyZXF1ZXN0Ijp7ImFtb3VudCI6IjEwMDAiLCJhc3NldCI6IjB4NjBhM2UzNWNjMzAyYmZhNDRjYjI4OGJjNWE0ZjMxNmZkYjFhZGI0MiIsImJvZHlTaGEyNTYiOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1IiwibWV0aG9kIjoiR0VUIiwibmV0d29yayI6ImVpcDE1NTo4NDUzIiwicGF5VG8iOiIweDIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIiLCJwdXJjaGFzZUlkIjoicHVyY2hhc2UtZml4dHVyZSIsInNjaGVtZSI6ImV4YWN0IiwidXJsIjoiaHR0cHM6Ly9tZXJjaGFudC5leGFtcGxlL2RhdGEifSwicmVxdWVzdEhhc2giOiIyZTQwNGJlOWIyNzI5NjQ4OThiYmNjMjI1Y2I2ZWU0NWUzMjVjMmFkMmVlMThkODVlZjcwNzA2NzY2ZWM1NWJmIiwicmVxdWVzdEhhc2hWZXJzaW9uIjoidXZkLXg0MDItcmVxdWVzdC12MSIsInJldHJ5Ijp7ImFjdGlvbiI6Im5vbmUifSwicmV2aXNpb24iOjEsInNjaGVtYVZlcnNpb24iOjEsInNjaGVtZSI6ImV4YWN0Iiwic2V0dGxlbWVudCI6bnVsbCwic3RhdHVzIjoidmVyaWZpZWQiLCJ4NDAyVmVyc2lvbiI6Mn0.SYV7WBHYMDV1pfaLLWYi1RjDebxYzrS_LIfw0ya6UEDcuU-zaEKs85CSoK3nKz4jqhFOCt3P0BhKypYDJnsJDA"
+        }
+      }
     }
   ]
 }

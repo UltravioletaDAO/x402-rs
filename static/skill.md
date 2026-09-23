@@ -907,6 +907,10 @@ validate it against the actual request. Query `/receipts/{receiptId}` with
 `Authorization: Bearer <accessToken>`. Never log the context or create a fresh
 signature after uncertainty. An unknown receipt means poll/replay the original
 authorization, not a new payment. Receipt confirmation does not prove delivery.
+The original answer is replayed only with the `X-UVD-Purchase` or
+`Idempotency-Key` that admitted the payment; a resend without it answers
+`409 authorization_already_settled` or `409 authorization_in_flight` (verify:
+`isValid: false` with the same reason), never a repeated success.
 Python `fetch_with_receipt` and TypeScript `fetchWithReceipt` return the original
 HTTP response plus receipt/payment state. Supply trusted issuer keys for offline
 signature verification. Live EURC acceptance was proven on Arc mainnet on

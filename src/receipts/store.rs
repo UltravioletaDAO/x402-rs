@@ -71,45 +71,43 @@ mod integration {
             client: client.clone(),
             table: table.clone(),
         });
-        let mut record = crate::receipts::tests::fixture_record();
-        let aliases = vec![
-            "receipt:auth:v1:local".to_string(),
-            "receipt:purchase:v1:local".to_string(),
+        let records = [
+            ("arc-testnet", crate::receipts::tests::fixture_record()),
+            ("base", crate::receipts::tests::base_fixture_record()),
         ];
-        let mut tasks = vec![];
-        for n in 0..20 {
-            let store = if n % 2 == 0 {
-                first.clone()
-            } else {
-                second.clone()
-            };
-            let record = record.clone();
-            let aliases = aliases.clone();
-            tasks.push(tokio::spawn(async move {
-                store.reserve(&record, &aliases).await.unwrap()
-            }));
+        for (network, mut record) in records {
+            let aliases = vec![
+                format!("receipt:auth:v1:local-{network}"),
+                format!("receipt:purchase:v1:local-{network}"),
+            ];
+            let mut tasks = vec![];
+            for n in 0..20 {
+                let store = if n % 2 == 0 {
+                    first.clone()
+                } else {
+                    second.clone()
+                };
+                let record = record.clone();
+                let aliases = aliases.clone();
+                tasks.push(tokio::spawn(async move {
+                    store.reserve(&record, &aliases).await.unwrap()
+                }));
+            }
+            let mut admitted = 0;
+            for task in tasks {
+                admitted += usize::from(task.await.unwrap());
+            }
+            assert_eq!(admitted, 1, "{network}");
+            record.receipt.revision += 1;
+            record.receipt.status = "pending".into();
+            assert!(first.save(&record, 1).await.unwrap(), "{network}");
+            assert!(!second.save(&record, 1).await.unwrap(), "{network}");
+            let stored = second.get(&aliases[1]).await.unwrap().unwrap();
+            assert_eq!(stored.receipt.status, "pending", "{network}");
+            assert_eq!(stored.receipt.network, record.receipt.network);
         }
-        let mut admitted = 0;
-        for task in tasks {
-            admitted += usize::from(task.await.unwrap());
-        }
-        assert_eq!(admitted, 1);
-        record.receipt.revision += 1;
-        record.receipt.status = "pending".into();
-        assert!(first.save(&record, 1).await.unwrap());
-        assert!(!second.save(&record, 1).await.unwrap());
-        assert_eq!(
-            second
-                .get(&aliases[1])
-                .await
-                .unwrap()
-                .unwrap()
-                .receipt
-                .status,
-            "pending"
-        );
         let rows = client.scan().table_name(&table).send().await.unwrap();
-        assert_eq!(rows.items().len(), 3);
+        assert_eq!(rows.items().len(), 6);
         for row in rows.items() {
             assert!(!row.contains_key("ttl") && !row.contains_key("expires_at"));
         }

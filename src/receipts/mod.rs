@@ -7,7 +7,7 @@ pub mod store;
 use crate::{
     chain::NetworkProvider,
     facilitator::Facilitator,
-    network::Network,
+    network::{Network, NetworkFamily},
     provider_cache::{HasProviderMap, ProviderMap},
     types::{ExactPaymentPayload, Scheme, VerifyRequest, VerifyResponse},
     types_v2::VerifyRequestEnvelope,
@@ -42,6 +42,9 @@ tokio::task_local! { static ACTIVE: Arc<tokio::sync::Mutex<Record>>; }
 tokio::task_local! { static TEST_SERVICE: Arc<Service>; }
 #[cfg(test)]
 tokio::task_local! { static TEST_LEGACY_RECORD: crate::idempotency_store::IdempotencyRecord; }
+// A network the tests drive through admission before it is announced.
+#[cfg(test)]
+tokio::task_local! { static TEST_CANDIDATE: Network; }
 fn service() -> Option<Arc<Service>> {
     #[cfg(test)]
     if let Ok(service) = TEST_SERVICE.try_with(Arc::clone) {
@@ -157,8 +160,32 @@ pub fn commitment(domain: &str, value: &Value) -> Result<String> {
     Ok(hash(format!("{domain}\n{}", canonical(value)?).as_bytes()))
 }
 
+/// Networks are announced one at a time: `capability()` lists exactly these.
+/// Base's exact path is exercised by the tests but not admitted yet.
 pub fn supported(network: Network) -> bool {
+    #[cfg(test)]
+    if TEST_CANDIDATE
+        .try_with(|candidate| *candidate == network)
+        .unwrap_or(false)
+    {
+        return true;
+    }
     matches!(network, Network::Arc | Network::ArcTestnet) || network.is_hedera()
+}
+
+/// `post_settle` hands these to their own settlement paths before the exact
+/// path runs: x402r escrow/commerce, the `refund` extension, upto and FHE.
+/// Their inner requirements can still read `exact`; they are never admitted.
+fn alternative_route(bytes: &[u8]) -> bool {
+    let Ok(value) = serde_json::from_slice::<Value>(bytes) else {
+        return true;
+    };
+    let payload = &value["paymentPayload"];
+    let not_exact = |scheme: &Value| scheme.as_str().is_some_and(|s| s != "exact");
+    not_exact(&value["scheme"])
+        || not_exact(&payload["scheme"])
+        || not_exact(&payload["accepted"]["scheme"])
+        || payload["extensions"].get("refund").is_some()
 }
 
 pub fn parse_request(headers: &HeaderMap, raw: &Bytes) -> Option<VerifyRequest> {
@@ -170,6 +197,9 @@ pub fn parse_request(headers: &HeaderMap, raw: &Bytes) -> Option<VerifyRequest> 
         raw.as_ref()
     };
     let envelope: VerifyRequestEnvelope = serde_json::from_slice(bytes).ok()?;
+    if alternative_route(bytes) {
+        return None;
+    }
     let mut request = envelope.to_v1().ok()?;
     // to_v1 normalizes the processing envelope, including its version field.
     // A receipt must attest the protocol version actually received.
@@ -251,7 +281,7 @@ fn initial(
     operation: &str,
 ) -> Result<Record> {
     let terms = &request.payment_requirements;
-    let evm = matches!(request.network(), Network::Arc | Network::ArcTestnet);
+    let evm = matches!(NetworkFamily::from(request.network()), NetworkFamily::Evm);
     let normalize = |s: String| if evm { s.to_lowercase() } else { s };
     let descriptor = json!({
         "purchaseId":context.map(|c| &c.purchase_id), "method":context.map(|c| &c.method),
@@ -400,8 +430,8 @@ pub fn document_api(api: &mut utoipa::openapi::OpenApi) {
         params.as_array_mut().unwrap().push(json!({"name":"X-UVD-Purchase","in":"header","required":false,"schema":{"type":"string"},"description":"Private purchase context; never log its accessToken or signed authorization."}));
         operation["responses"]["200"]["content"]["application/json"]["schema"] = json!({"type":"object","properties":{"receipt":{"$ref":"#/components/schemas/FacilitatorReceipt"}},"additionalProperties":true});
         if path == "/settle" {
-            operation["responses"]["202"] = json!({"description":"Reserved payment remains pending or unknown. Poll the private receipt or retry exactly the same authorization; no new payment is admitted."});
-            operation["responses"]["409"] = json!({"description":"Purchase, authorization or idempotency key conflicts with the original request. No replacement payment is admitted."});
+            operation["responses"]["202"] = json!({"description":"Reserved payment remains pending or unknown. Returned to the X-UVD-Purchase or Idempotency-Key that admitted it. Poll the private receipt or retry exactly the same request; no new payment is admitted."});
+            operation["responses"]["409"] = json!({"description":"Purchase, authorization or idempotency key conflicts with the original request, or the authorization was already admitted and this request lacks the X-UVD-Purchase or Idempotency-Key that admitted it: `authorization_already_settled` or `authorization_in_flight`, with the receipt when the payment has no purchase context. No replacement payment is admitted and no success is repeated."});
         }
     }
     for (path, summary) in [
@@ -574,13 +604,34 @@ pub async fn verify<F: Future<Output = Response>>(
         ))
         .await
     {
-        if same_request(&existing, &record) {
+        let same = same_request(&existing, &record);
+        let rejected = existing.receipt.status == "rejected";
+        let is_bound = if same && !rejected {
+            match bound(&service, &existing, headers).await {
+                Ok(is_bound) => is_bound,
+                // A store fault is no verdict, exactly as on /settle.
+                Err(_) => {
+                    return failure("receipt_store_unavailable", StatusCode::SERVICE_UNAVAILABLE)
+                }
+            }
+        } else {
+            false
+        };
+        if same && (rejected || is_bound) {
             // The authorization was already verified before durable admission.
             // Do not reject its consumed nonce and invite a fresh signature.
-            let rejected = existing.receipt.status == "rejected";
             let mut body = json!({"isValid":!rejected,"payer":existing.receipt.payer,"receipt":existing.receipt});
             if rejected {
                 body["invalidReason"] = json!(existing.receipt.refusal_reason);
+            }
+            return (StatusCode::OK, Json(body)).into_response();
+        }
+        if !rejected {
+            // Admitted for another purchase, or resent without the binding that
+            // admitted it: never valid again, and never simulated again.
+            let mut body = json!({"isValid":false,"invalidReason":admitted_reason(&existing),"payer":existing.receipt.payer});
+            if same && existing.token_hash.is_empty() {
+                body["receipt"] = serde_json::to_value(&existing.receipt).unwrap();
             }
             return (StatusCode::OK, Json(body)).into_response();
         }
@@ -598,22 +649,90 @@ fn aliases(record: &Record, headers: &HeaderMap) -> Vec<String> {
         // A self-declared merchantId or an enumerable order number never does.
         keys.push(format!("receipt:purchase:v1:{}", record.token_hash));
     }
-    if let Some(key) = headers.get("idempotency-key").filter(|key| !key.is_empty()) {
-        keys.push(format!(
-            "receipt:idem:v1:{}",
-            hash(
-                format!(
-                    "{}:{}:{}:{}",
-                    record.receipt.network,
-                    record.receipt.pay_to,
-                    record.receipt.payer.as_deref().unwrap_or_default(),
-                    hash(key.as_bytes())
-                )
-                .as_bytes()
-            )
-        ));
-    }
+    keys.extend(idempotency_alias(record, headers));
     keys
+}
+
+fn idempotency_alias(record: &Record, headers: &HeaderMap) -> Option<String> {
+    let key = headers
+        .get("idempotency-key")
+        .filter(|key| !key.is_empty())?;
+    Some(format!(
+        "receipt:idem:v1:{}",
+        hash(
+            format!(
+                "{}:{}:{}:{}",
+                record.receipt.network,
+                record.receipt.pay_to,
+                record.receipt.payer.as_deref().unwrap_or_default(),
+                hash(key.as_bytes())
+            )
+            .as_bytes()
+        )
+    ))
+}
+
+/// Whether a resend carries the purchase binding that admitted `existing`: its
+/// `X-UVD-Purchase` capability (already matched by `same_request`) or its
+/// Idempotency-Key. The signed payment alone proves possession of the payment,
+/// not of the purchase, so it never earns the original answer back.
+async fn bound(service: &Service, existing: &Record, headers: &HeaderMap) -> Result<bool> {
+    if !existing.token_hash.is_empty() {
+        return Ok(true);
+    }
+    let Some(key) = idempotency_alias(existing, headers) else {
+        return Ok(false);
+    };
+    Ok(service
+        .store
+        .get(&key)
+        .await?
+        .is_some_and(|r| r.receipt.receipt_id == existing.receipt.receipt_id))
+}
+
+fn admitted_reason(record: &Record) -> &'static str {
+    if record.receipt.status == "confirmed" {
+        "authorization_already_settled"
+    } else {
+        "authorization_in_flight"
+    }
+}
+
+/// A resend of an admitted authorization. Recovery material (reconciliation,
+/// rebroadcast of saved bytes) runs as before. The original answer, including
+/// a 202 in flight, goes only to the binding that admitted the payment. A bare
+/// resend learns the outcome from the receipt and is never answered as a
+/// repeated success.
+async fn replay<A: HasProviderMap>(
+    service: &Service,
+    facilitator: &A,
+    mut existing: Record,
+    headers: &HeaderMap,
+) -> Response
+where
+    A::Map: ProviderMap<Value = NetworkProvider>,
+{
+    reconcile(service, facilitator, &mut existing).await;
+    rebroadcast_prepared(facilitator, &existing).await;
+    if existing.receipt.status == "rejected" {
+        return response(&existing, true);
+    }
+    match bound(service, &existing, headers).await {
+        Ok(true) => response(&existing, true),
+        Ok(false) => {
+            let mut body = json!({"success":false,"error":admitted_reason(&existing),"retryable":false,"safeToReplay":false});
+            // Capability-scoped receipts stay private; `bound` admits those.
+            if existing.token_hash.is_empty() {
+                body["receipt"] = serde_json::to_value(&existing.receipt).unwrap();
+            }
+            let mut response = (StatusCode::CONFLICT, Json(body)).into_response();
+            response
+                .headers_mut()
+                .insert("cache-control", HeaderValue::from_static("no-store"));
+            response
+        }
+        Err(_) => failure("receipt_store_unavailable", StatusCode::SERVICE_UNAVAILABLE),
+    }
 }
 
 fn same_request(a: &Record, b: &Record) -> bool {
@@ -727,13 +846,11 @@ where
     // consumed its nonce and would now fail an otherwise valid signature check.
     let auth_key = format!("receipt:auth:v1:{}", candidate.receipt.authorization_id);
     match service.store.get(&auth_key).await {
-        Ok(Some(mut existing)) => {
+        Ok(Some(existing)) => {
             if !same_request(&existing, &candidate) {
                 return failure("receipt_request_conflict", StatusCode::CONFLICT);
             }
-            reconcile(&service, facilitator, &mut existing).await;
-            rebroadcast_prepared(facilitator, &existing).await;
-            return response(&existing, true);
+            return replay(&service, facilitator, existing, headers).await;
         }
         Err(_) => return failure("receipt_store_unavailable", StatusCode::SERVICE_UNAVAILABLE),
         _ => {}
@@ -769,13 +886,11 @@ where
         Ok(false) => {
             for key in &keys {
                 match service.store.get(key).await {
-                    Ok(Some(mut existing)) => {
+                    Ok(Some(existing)) => {
                         if !same_request(&existing, &candidate) {
                             return failure("receipt_request_conflict", StatusCode::CONFLICT);
                         }
-                        reconcile(&service, facilitator, &mut existing).await;
-                        rebroadcast_prepared(facilitator, &existing).await;
-                        return response(&existing, true);
+                        return replay(&service, facilitator, existing, headers).await;
                     }
                     Err(_) => {
                         return failure(

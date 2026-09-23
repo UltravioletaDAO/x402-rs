@@ -1,8 +1,9 @@
-# El logo de cada red, al menos tan grande como los de sus stablecoins — handoff 2026-09-23
+# El logo de cada red, al menos tan grande como los de sus stablecoins (2.39.5) — handoff 2026-09-23
 
-- **Rama**: `c0der/iconos-red`, apilada sobre `c0der/hedera-reprobe` (#101, `4e1a1bb0`). Sin PR
-  todavía: cuando #101 se mergee, `git rebase --onto origin/main c0der/hedera-reprobe c0der/iconos-red`,
-  CHANGELOG/VERSION 2.39.5 y recién ahí el PR.
+- **Rama**: `c0der/iconos-red`, rebaseada sobre `origin/main` `2309b6d2` (#101 mergeado, 2.39.4)
+  con `git rebase --onto origin/main 4e1a1bb0 c0der/iconos-red`. El árbol de `4e1a1bb0` y el de
+  `2309b6d2` son idénticos, así que el diff contra main es solo esta ronda. VERSION y CHANGELOG
+  2.39.5. #102 (`c0der/emitido-no-retryable`) va como 2.39.6.
 - **Pedido del dueño**: *"Los de los blockchains tienen que ser igual de grandes que los de los
   stablecoins, como mínimo"*.
 - **Alcance**: solo `static/index.html` (el logo junto al nombre, en las 43 tarjetas de
@@ -46,21 +47,31 @@ Los 43 `<img>` pasan de `style="width: 32px; height: 32px; object-fit: contain;"
 | 390 | Solana | 32 / 24 | 53,33 / **40** | 32 / 38,78 | 0 | 220,91 → 220,92 |
 | 390 | Hedera | 32 / 28,8 | 44,30 / **40** | 32 / 38,78 | 0 | 220,91 → 220,92 |
 | 390 | Ethereum | 32 / 24 | 53,33 / **40** | 32 / 38,78 | 0 | 220,91 → 220,92 |
+| 1440 | Avalanche Fuji (testnet) | 32 / 24 | 53,33 / **40** | 32 / 38,78 | 0 | 220,91 → 220,92 |
+| 390 | Avalanche Fuji (testnet) | 32 / 24 | 53,33 / **40** | 32 / 38,78 | 0 | 220,91 → 220,92 |
 
-## Capturas (1440 px, oscuro)
+Medido otra vez tras el rebase (2.39.4 servida desde `origin/main` contra esta rama): los
+mismos valores. El desfase de centro "antes" es -0,01 px (redondeo), "después" 0.
 
-Antes:
+## Capturas (1440 px)
 
-![Mainnets antes](assets/iconos-red-antes-mainnets-1440-oscuro.png)
-![Ethereum antes](assets/iconos-red-antes-tarjeta-ethereum.png)
+Antes (`origin/main`, 2.39.4) y después (esta rama), servidas en local con `/health/ready`
+todo en `ok` (sin puntos, para que no distraigan) y un `/supported` de producción leído a las
+13:48Z. El orden aleatorio de la grilla se fijó por red para que las dos se comparen tarjeta
+por tarjeta. Los saldos se ven como `—` a propósito.
 
-Después:
+| | Antes | Después |
+|---|---|---|
+| Mainnets, oscuro | ![](assets/iconos-red-antes-mainnets-1440-oscuro.png) | ![](assets/iconos-red-despues-mainnets-1440-oscuro.png) |
+| Testnets, oscuro | ![](assets/iconos-red-antes-testnets-1440-oscuro.png) | ![](assets/iconos-red-despues-testnets-1440-oscuro.png) |
+| Mainnets, claro | ![](assets/iconos-red-antes-mainnets-1440-claro.png) | ![](assets/iconos-red-despues-mainnets-1440-claro.png) |
+| Testnets, claro | ![](assets/iconos-red-antes-testnets-1440-claro.png) | ![](assets/iconos-red-despues-testnets-1440-claro.png) |
+| Tarjeta de Ethereum (logo junto a 4 stablecoins) | ![](assets/iconos-red-antes-tarjeta-ethereum.png) | ![](assets/iconos-red-despues-tarjeta-ethereum.png) |
 
-![Mainnets después](assets/iconos-red-despues-mainnets-1440-oscuro.png)
-![Ethereum después](assets/iconos-red-despues-tarjeta-ethereum.png)
-
-Servidas en local con `/health/ready` todo en `ok` (sin puntos, para que no distraigan) y un
-`/supported` de producción leído a las 13:48Z. Los saldos se ven como `—` a propósito.
+**La portada no tiene tema claro**: no declara `prefers-color-scheme` ni `data-theme`. Con
+`prefers-color-scheme: light` emulado se pinta igual que en oscuro (brillo medio 25,8 contra
+25,9 sobre 255; lo que difiere son píxeles del fondo animado). Las capturas "claro" están
+porque se pidieron, y muestran exactamente eso.
 
 ## Test
 
@@ -79,5 +90,4 @@ a stablecoin icon») calcula lo que pinta la página:
 Mutaciones, todas en rojo: `--glyph` a 32 px, quitar la excepción de Polygon, devolver una
 tarjeta a la caja fija de 32 px y quitarle la clase a una tarjeta.
 
-Suite local: x402-rs 2706 tests pasan y 0 fallan (los tests de Rust también leen
-`index.html`); frontend 14/14; `verify_landing_canonical --offline` OK.
+La verificación local de cada job de CI está en el body del PR.

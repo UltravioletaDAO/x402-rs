@@ -8889,6 +8889,7 @@ where
                         None
                     },
                     atom_stats: None,
+                    coverage: None,
                     network,
                 };
                 return (StatusCode::OK, Json(response)).into_response();
@@ -8931,6 +8932,7 @@ where
                 None
             },
             atom_stats: None,
+            coverage: None,
             network,
         };
         return (StatusCode::OK, Json(response)).into_response();
@@ -9003,27 +9005,76 @@ where
                 summary,
                 feedback: feedback_entries,
                 atom_stats: None, // EVM has no ATOM Engine
+                coverage: None,
                 network,
             };
 
             (StatusCode::OK, Json(response)).into_response()
         }
         Err(e) => {
-            let correlation_id = uuid::Uuid::new_v4();
-            error!(
-                %correlation_id,
-                network = %network,
-                agent_id = agent_id,
-                error = %e,
-                "Failed to query reputation"
-            );
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({
-                    "error": format!("reputation_query_failed (ref: {correlation_id})")
-                })),
-            )
-                .into_response()
+            // The node answered, and refused: one call over every client is
+            // more than the registry can walk (Arc testnet agent 1, one client
+            // with 77,447 entries). Read it in groups and say what was covered.
+            // A transport failure is not retried: it would fail again per group.
+            use crate::erc8004::summary::{is_refusal, read_group, summarize_in_chunks};
+            let fallback = if is_refusal(&e) {
+                summarize_in_chunks(&client_addresses, |group| {
+                    let registry = reputation_registry.clone();
+                    let (tag1, tag2) = (query.tag1.clone(), query.tag2.clone());
+                    async move { read_group(&registry, agent_id_u256, group, tag1, tag2).await }
+                })
+                .await
+            } else {
+                Err("not retried: the node could not be asked".to_string())
+            };
+
+            match fallback {
+                Ok((summary, coverage)) => {
+                    warn!(
+                        network = %network,
+                        agent_id = agent_id,
+                        clients_total = coverage.clients_total,
+                        clients_read = coverage.clients_read,
+                        clients_unreadable = coverage.clients_unreadable,
+                        clients_not_read = coverage.clients_not_read,
+                        calls = coverage.calls,
+                        "[WARN] reputation summary read in groups: one call over every client was refused"
+                    );
+                    let response = ReputationResponse {
+                        agent_id,
+                        summary: ReputationSummary {
+                            agent_id,
+                            count: summary.count,
+                            summary_value: summary.value,
+                            summary_value_decimals: summary.decimals,
+                            network: network.clone(),
+                        },
+                        feedback: None,
+                        atom_stats: None,
+                        coverage: Some(coverage),
+                        network,
+                    };
+                    (StatusCode::OK, Json(response)).into_response()
+                }
+                Err(reason) => {
+                    let correlation_id = uuid::Uuid::new_v4();
+                    error!(
+                        %correlation_id,
+                        network = %network,
+                        agent_id = agent_id,
+                        error = %crate::redact::scrub_urls(&e.to_string()),
+                        fallback = %reason,
+                        "Failed to query reputation"
+                    );
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({
+                            "error": format!("reputation_query_failed (ref: {correlation_id})")
+                        })),
+                    )
+                        .into_response()
+                }
+            }
         }
     }
 }

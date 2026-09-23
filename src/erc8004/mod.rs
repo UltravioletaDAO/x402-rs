@@ -63,6 +63,7 @@ pub mod relay;
 pub mod relay_v4;
 pub mod solana;
 pub mod solana_mint;
+pub mod summary;
 mod types;
 
 pub use abi::*;

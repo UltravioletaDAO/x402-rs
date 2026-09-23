@@ -617,6 +617,10 @@ pub struct ReputationResponse {
     /// ATOM Engine stats (Solana only, null for EVM networks)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub atom_stats: Option<AtomStatsResponse>,
+    /// Present only when the registry could not summarize every client in one
+    /// call and the summary was combined from several (EVM).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage: Option<super::summary::Coverage>,
     pub network: Network,
 }
 

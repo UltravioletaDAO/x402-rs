@@ -743,7 +743,7 @@ Integrators start at [Hedera: getting paid in native USDC](docs/networks/hedera.
 
 ## Portable facilitator receipts
 
-Arc mainnet/testnet exact USDC/EURC and native Hedera USDC v2 support additive
+Arc mainnet/testnet and Base exact USDC/EURC and native Hedera USDC v2 support additive
 facilitator receipts: network, asset, atomic amount, payTo, request hash,
 settlement ID, status and refusal reason. Persist purchase context before sending
 the authorization and reuse it after uncertainty. Payment confirmation does not

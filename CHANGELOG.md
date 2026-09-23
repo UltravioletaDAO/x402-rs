@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.40.0] - 2026-09-23
+
+- Durable facilitator receipts for Base: `exact` payments on `base` (`eip155:8453`, USDC and EURC, x402 v1 and v2) are admitted through the receipt service that Arc and native Hedera already use. `GET /receipts` and `/supported.facilitatorReceipts` list `eip155:8453`. Base Sepolia and every other network are unchanged. The before/after table for a Base `exact` caller is in `docs/facilitator-receipts.md`.
+- `docs/facilitator-receipts.md`: the Base table also covers requests carrying `X-UVD-Purchase`, the 24-hour Idempotency-Key cache, and admissions released before anything was sent (`reservation_abandoned`).
+- `/skill.md`, `/index.md`, `/mcp.md`, `/llms-full.txt` and the README name Base in the receipts section.
+
 ## [2.39.6] - 2026-09-23
 
 - `/settle`: every failure answered after the transaction may have left the facilitator says so in its body: `"retryable": false`, no `Retry-After`, and `transaction` with its `paymentId` whenever they are known. Failures answered before anything was sent keep their answers, including the receipt rail's `503` with `safeToRetry: true`. A client that read a `5xx` without either as transient resent it; for a payment that did mine, that resend fails verification and ends with the buyer signing a second authorization.

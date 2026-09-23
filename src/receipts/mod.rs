@@ -1,4 +1,4 @@
-//! Portable facilitator receipts for exact Arc and native Hedera payments.
+//! Portable facilitator receipts for exact Arc, Base and native Hedera payments.
 //! A receipt attests payment state, never merchant delivery. Admission is
 //! atomically reserved before the provider can broadcast. Uncertainty is sticky:
 //! only chain evidence can turn it into confirmation, never a new authorization.
@@ -50,9 +50,6 @@ tokio::task_local! { static ACTIVE: Arc<Admission>; }
 tokio::task_local! { static TEST_SERVICE: Arc<Service>; }
 #[cfg(test)]
 tokio::task_local! { static TEST_LEGACY_RECORD: crate::idempotency_store::IdempotencyRecord; }
-// A network the tests drive through admission before it is announced.
-#[cfg(test)]
-tokio::task_local! { static TEST_CANDIDATE: Network; }
 fn service() -> Option<Arc<Service>> {
     #[cfg(test)]
     if let Ok(service) = TEST_SERVICE.try_with(Arc::clone) {
@@ -211,16 +208,8 @@ pub fn commitment(domain: &str, value: &Value) -> Result<String> {
 }
 
 /// Networks are announced one at a time: `capability()` lists exactly these.
-/// Base's exact path is exercised by the tests but not admitted yet.
 pub fn supported(network: Network) -> bool {
-    #[cfg(test)]
-    if TEST_CANDIDATE
-        .try_with(|candidate| *candidate == network)
-        .unwrap_or(false)
-    {
-        return true;
-    }
-    matches!(network, Network::Arc | Network::ArcTestnet) || network.is_hedera()
+    matches!(network, Network::Arc | Network::ArcTestnet | Network::Base) || network.is_hedera()
 }
 
 /// `post_settle` hands these to their own settlement paths before the exact
@@ -456,7 +445,7 @@ pub async fn keys() -> Json<Value> {
 }
 
 pub fn capability() -> Value {
-    json!({"schemaVersion":1,"available":SERVICE.get().is_some(),"networks":["eip155:5042","eip155:5042002","hedera:mainnet","hedera:testnet"],
+    json!({"schemaVersion":1,"available":SERVICE.get().is_some(),"networks":["eip155:5042","eip155:5042002","hedera:mainnet","hedera:testnet","eip155:8453"],
         "schemes":["exact"],"contextHeader":"X-UVD-Purchase", "lookup":"/receipts/{receiptId}",
         "proof":if SERVICE.get().is_some_and(|s| s.signing_key.is_some()) {"jws-ed25519"} else {"https"},
         "keys":"/.well-known/receipt-keys.json"})
@@ -475,7 +464,7 @@ pub fn document_api(api: &mut utoipa::openapi::OpenApi) {
     for path in ["/verify", "/settle"] {
         let operation = &mut doc["paths"][path]["post"];
         let description = operation["description"].as_str().unwrap_or("").to_owned();
-        operation["description"] = json!(format!("{description}\n\nArc exact (USDC/EURC) and native Hedera USDC include an additive `receipt`: network, asset, atomic amount, payTo, requestHash, settlement ID, status and refusalReason. See /schemas/facilitator-receipt-v1.json. Send X-UVD-Purchase (base64 JSON with purchaseId, secret accessToken, method, url, bodySha256) for private lookup and restart-safe purchase retries. The merchant must validate the actual HTTP request. Preserve the same context and authorization after uncertainty; never sign a replacement. Payment confirmation does not prove merchant delivery. Other networks retain their existing responses."));
+        operation["description"] = json!(format!("{description}\n\nArc exact (USDC/EURC), Base exact (USDC/EURC) and native Hedera USDC include an additive `receipt`: network, asset, atomic amount, payTo, requestHash, settlement ID, status and refusalReason. See /schemas/facilitator-receipt-v1.json. Send X-UVD-Purchase (base64 JSON with purchaseId, secret accessToken, method, url, bodySha256) for private lookup and restart-safe purchase retries. The merchant must validate the actual HTTP request. Preserve the same context and authorization after uncertainty; never sign a replacement. Payment confirmation does not prove merchant delivery. Other networks retain their existing responses."));
         let params = operation
             .as_object_mut()
             .unwrap()

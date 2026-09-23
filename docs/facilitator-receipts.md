@@ -1,10 +1,11 @@
 # Portable facilitator receipts v1
 
-Arc exact USDC/EURC (mainnet and testnet, x402 v1/v2) and native Hedera USDC
-(mainnet and testnet, v2) return an additive `receipt` beside `/verify` and
-`/settle` results. Other networks keep their existing behavior. Networks are
-added one at a time; discover runtime availability in
-`/supported.facilitatorReceipts` or `GET /receipts`.
+Arc exact USDC/EURC (mainnet and testnet, x402 v1/v2), Base exact USDC/EURC
+(mainnet, x402 v1/v2, since 2.40.0) and native Hedera USDC (mainnet and testnet,
+v2) return an additive `receipt` beside `/verify` and `/settle` results. Other
+networks keep their existing behavior. Networks are added one at a time;
+discover runtime availability in `/supported.facilitatorReceipts` or
+`GET /receipts`.
 
 The receipt contains `network` (CAIP-2), `asset`, atomic-string `amount`,
 `decimals`, `payTo`, `payer`, `requestHash`, `authorizationId`,
@@ -168,9 +169,12 @@ payment. Existing legacy cache hits are replayed before checking a consumed
 nonce, preserving their original success/conflict semantics. They are not
 fabricated into portable receipts, and their previous retention policy remains.
 
-Arc saves the exact signed transaction and hash before broadcast. A POST retry
-can rebroadcast only those bytes under the writer lease, while the authorization
-is valid; it never signs a replacement or changes the nonce. Hedera links the
+EVM networks (Arc, Base) save the exact signed transaction and hash before
+broadcast. A POST retry can rebroadcast only those bytes under the writer lease,
+while the authorization is valid; it never signs a replacement or changes the
+nonce. An admission prepares one transaction: if the node refuses it on nonce
+grounds, no second transaction is signed for that admission, the receipt stays
+`unknown`, and later retries reconcile or rebroadcast the saved one. Hedera links the
 native ID before its existing store can persist co-signed bytes and recover them.
 Terminal receipt updates remove private EVM signed bytes. Native byte retention
 continues under the existing Hedera store policy.
@@ -266,11 +270,36 @@ requires retaining the previous public keys externally. An exact request
 conflicting with an existing purchase is refused with 409, without exposing
 that purchase's private receipt.
 
+## Base
+
+Since 2.40.0 plain `exact` payments on Base (`base` / `eip155:8453`, USDC and
+EURC, x402 v1 and v2) are admitted through receipts. Base Sepolia and the other
+EVM networks are unchanged; so are the Base requests that belong to other
+settlement paths (see above), which carry no `receipt`.
+
+What a Base `exact` caller observes compared with 2.39:
+
+| Situation | 2.39 | 2.40.0 |
+| --- | --- | --- |
+| Any verify/settle response | No `receipt` | Additive `receipt`, `Cache-Control: no-store`; all previous fields unchanged |
+| Request carrying `X-UVD-Purchase` | `/settle` answers `400 receipt_request_not_supported`; `/verify` ignores the header | Admitted; its receipt is private to that capability (`GET /receipts/{receiptId}`) |
+| Same authorization after it settled, with the Idempotency-Key or `X-UVD-Purchase` that admitted it | With the key, the cached 200 with `Idempotent-Replayed: true` for 24 hours; after that it runs again and fails on the consumed nonce | Original 200 replayed with `Idempotent-Replayed: true`; receipt rows do not expire |
+| Same authorization after it settled, without that binding | Runs again; fails on the consumed nonce | `409 authorization_already_settled` with the receipt; verify `isValid: false` |
+| Same authorization while its settlement runs | Second attempt runs | `202 settlement_in_progress` to the admitting binding; `409 authorization_in_flight` without it |
+| New signature, same `Idempotency-Key` | Runs, unless an earlier attempt succeeded in the last 24 hours (then `409 idempotency_key_conflict`) | `409 receipt_request_conflict` once the first one was admitted |
+| New signature, same `X-UVD-Purchase` | `400 receipt_request_not_supported` | `409 receipt_request_conflict` once the first one was admitted |
+| New signature without key or purchase context | New payment | New payment (unchanged) |
+| Settlement ends before anything is sent (writer lease moved, a read or gas estimate failed, signing or storing the bytes failed) | That failure's own answer | `503` with `Retry-After` and `safeToRetry: true`; receipt `rejected` with `refusalReason: reservation_abandoned`; the same request is admitted again under the same receipt |
+| Receipt storage unreachable | Settles without a key; `503 idempotency_store_unavailable` with one | `503 receipt_store_unavailable` with `Retry-After` and `safeToRetry: true`, with or without a key; nothing is sent |
+
+Idempotency-Key responses cached before the upgrade are still replayed for their
+remaining lifetime.
+
 ## Validation scope
 
 Shared offline signed vectors cover Arc USDC/EURC and Hedera USDC on both ledgers,
-plus Base USDC/EURC ahead of Base's admission; a Rust test rebuilds every vector
-from its synthetic inputs. `GET /receipts` remains the list of admitted networks.
+and Base USDC/EURC; a Rust test rebuilds every vector from its synthetic inputs.
+`GET /receipts` remains the list of admitted networks.
 Rust tests cover concurrent admission, restart, invalid signatures, conflicts,
 private lookup, storage outages and lost responses; replays with and without the
 admitting binding (settled, in flight, uncertain, concurrent) run on every
@@ -282,10 +311,9 @@ bytes, the send latch or a named transaction; an EVM test drives the real send
 path under an admission (lease lost: nothing sent or latched; sent: bytes stored
 first, then latched). Explicit local DynamoDB tests exercise transaction/CAS
 behavior, including readmission and a write resent with its token, using two
-store clients. The tests also
-drive Base's exact path through admission (concurrency, EVM address
-normalization, requests that belong to other settlement paths, DynamoDB) while
-production keeps Base out of it. SDK tests cover
+store clients. Base runs through the same admission as Arc (concurrency, EVM
+address normalization, requests that belong to other settlement paths,
+DynamoDB), and a test fails if Base leaves `GET /receipts` or admission. SDK tests cover
 signature tampering, request binding, restart without a new signature, and a
 confirmed receipt alongside a merchant HTTP 500. These fixtures are not payments.
 Live EURC acceptance was proven on Arc mainnet on 2026-09-22 with a `confirmed` x402 v2

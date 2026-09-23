@@ -98,7 +98,7 @@ pub(super) fn fixture_record() -> Record {
     fixture_record_on("arc-testnet", ARC_USDC)
 }
 pub(super) fn base_fixture_record() -> Record {
-    TEST_CANDIDATE.sync_scope(Network::Base, || fixture_record_on("base", BASE_USDC))
+    fixture_record_on("base", BASE_USDC)
 }
 fn fixture_record_on(network: &str, asset: &str) -> Record {
     initial(
@@ -208,9 +208,8 @@ async fn persisted_transaction_is_recoverable_after_lost_response() {
 const ARC_USDC: &str = "0x3600000000000000000000000000000000000000";
 const BASE_USDC: &str = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
 const BASE_EURC: &str = "0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42";
-/// EVM networks driven through admission: the announced Arc networks and Base,
-/// the candidate. The v1 name a body carries, the CAIP-2 id its receipt must
-/// carry, and an exact asset on it.
+/// Every EVM network admitted through receipts: the v1 name a body carries,
+/// the CAIP-2 id its receipt must carry, and an exact asset on it.
 const EVM_RECEIPT_NETWORKS: [(&str, &str, &str); 3] = [
     ("arc", "eip155:5042", ARC_USDC),
     ("arc-testnet", "eip155:5042002", ARC_USDC),
@@ -305,29 +304,25 @@ async fn arc_v2_receipt_keeps_the_wire_version_after_internal_normalization() {
 #[tokio::test]
 async fn concurrent_replicas_reserve_one_payment_and_replay_the_same_receipt() {
     for (network, caip2, asset) in EVM_RECEIPT_NETWORKS {
-        let candidate = Network::from_caip2(caip2).unwrap();
         let service = service_fixture();
         let sends = Arc::new(AtomicUsize::new(0));
         let mut tasks = Vec::new();
         for _ in 0..20 {
             let service = service.clone();
             let sends = sends.clone();
-            tasks.push(tokio::spawn(TEST_CANDIDATE.scope(
-                candidate,
-                TEST_SERVICE.scope(service, async move {
-                    settle(
-                        &MockFacilitator { invalid: false },
-                        &headers(),
-                        &body_on(network, asset, 1),
-                        async {
-                            sends.fetch_add(1, Ordering::SeqCst);
-                            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-                            success_on(network)
-                        },
-                    )
-                    .await
-                }),
-            )));
+            tasks.push(tokio::spawn(TEST_SERVICE.scope(service, async move {
+                settle(
+                    &MockFacilitator { invalid: false },
+                    &headers(),
+                    &body_on(network, asset, 1),
+                    async {
+                        sends.fetch_add(1, Ordering::SeqCst);
+                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                        success_on(network)
+                    },
+                )
+                .await
+            })));
         }
         let mut receipt_id = None;
         for task in tasks {
@@ -340,19 +335,16 @@ async fn concurrent_replicas_reserve_one_payment_and_replay_the_same_receipt() {
             }
         }
         assert_eq!(sends.load(Ordering::SeqCst), 1, "{network}");
-        let replay = TEST_CANDIDATE
-            .scope(
-                candidate,
-                TEST_SERVICE.scope(service, async {
-                    settle(
-                        &MockFacilitator { invalid: false },
-                        &headers(),
-                        &body_on(network, asset, 1),
-                        async { panic!("second broadcast on {network}") },
-                    )
-                    .await
-                }),
-            )
+        let replay = TEST_SERVICE
+            .scope(service, async {
+                settle(
+                    &MockFacilitator { invalid: false },
+                    &headers(),
+                    &body_on(network, asset, 1),
+                    async { panic!("second broadcast on {network}") },
+                )
+                .await
+            })
             .await;
         assert_eq!(replay.headers()["idempotent-replayed"], "true", "{network}");
         let output = value(replay).await;
@@ -733,14 +725,6 @@ async fn no_storage_no_broadcast() {
 
 #[tokio::test]
 async fn base_escrow_and_refund_requests_keep_their_own_settlement_path() {
-    TEST_CANDIDATE
-        .scope(
-            Network::Base,
-            base_escrow_and_refund_stay_out_of_admission(),
-        )
-        .await;
-}
-async fn base_escrow_and_refund_stay_out_of_admission() {
     let exact: Value = serde_json::from_slice(&body_on("base", BASE_USDC, 1)).unwrap();
     assert!(parse_request(&HeaderMap::new(), &body_on("base", BASE_USDC, 1)).is_some());
     let mut refund = exact.clone();
@@ -823,27 +807,21 @@ fn capability_lists_exactly_the_supported_networks() {
     assert_eq!(listed, expected);
 }
 
-/// Base's exact path is ready and tested above, but it is announced on its
-/// own: until then a Base settle is untouched, with no receipt and no replay.
+/// Base is announced: a Base settle is admitted without any test override.
 #[tokio::test]
-async fn base_is_not_admitted_until_it_is_announced() {
-    assert!(!supported(Network::Base));
-    assert!(!capability()["networks"]
+async fn base_is_announced_and_admitted() {
+    assert!(supported(Network::Base));
+    assert!(capability()["networks"]
         .as_array()
         .unwrap()
         .contains(&json!("eip155:8453")));
-    let store = Arc::new(store::MemoryStore::default());
-    let service = Arc::new(Service {
-        store: store.clone(),
-        signing_key: Some(SigningKey::from_bytes(&[7; 32])),
-    });
     let sends = AtomicUsize::new(0);
     TEST_SERVICE
-        .scope(service, async {
-            for _ in 0..2 {
+        .scope(service_fixture(), async {
+            for attempt in 0..2 {
                 let settled = settle(
                     &MockFacilitator { invalid: false },
-                    &HeaderMap::new(),
+                    &keyed("base-announced"),
                     &body_on("base", BASE_USDC, 1),
                     async {
                         sends.fetch_add(1, Ordering::SeqCst);
@@ -851,13 +829,17 @@ async fn base_is_not_admitted_until_it_is_announced() {
                     },
                 )
                 .await;
-                assert!(settled.headers().get("idempotent-replayed").is_none());
-                assert!(value(settled).await.get("receipt").is_none());
+                assert_eq!(
+                    settled.headers().contains_key("idempotent-replayed"),
+                    attempt == 1
+                );
+                let output = value(settled).await;
+                assert_eq!(output["receipt"]["status"], "confirmed");
+                assert_eq!(output["receipt"]["network"], "eip155:8453");
             }
         })
         .await;
-    assert_eq!(sends.load(Ordering::SeqCst), 2);
-    assert!(store.0.lock().await.is_empty());
+    assert_eq!(sends.load(Ordering::SeqCst), 1);
 }
 
 /// The shared vectors are synthetic: fixed IDs, placeholder hashes and the
@@ -940,8 +922,7 @@ fn shared_vectors_are_synthetic_receipts_and_cover_base() {
 // The original answer goes back only to the binding that admitted the payment:
 // its X-UVD-Purchase capability or its Idempotency-Key. A bare resend of the
 // signed payment learns the outcome from the receipt but is never answered as
-// a (repeated) success. Every network in `supported()` is covered, plus Base as
-// the candidate.
+// a (repeated) success. Every network in `supported()` is covered.
 
 #[cfg(feature = "hedera")]
 fn hedera_body(network: &str, asset: &str) -> Bytes {
@@ -984,13 +965,13 @@ fn admitted_networks() -> Vec<(&'static str, Bytes)> {
     cases
 }
 
-/// Runs `f` with the receipt service and `network` admitted (Base is only a
-/// candidate; the others are already in `supported()`).
+/// Runs `f` with the receipt service, on a network production admits.
 async fn admitted<F: Future>(network: &str, service: Arc<Service>, f: F) -> F::Output {
-    let network = Network::from_caip2(network).unwrap();
-    TEST_CANDIDATE
-        .scope(network, TEST_SERVICE.scope(service, f))
-        .await
+    assert!(
+        supported(Network::from_caip2(network).unwrap()),
+        "{network} is not admitted"
+    );
+    TEST_SERVICE.scope(service, f).await
 }
 
 fn keyed(key: &'static str) -> HeaderMap {

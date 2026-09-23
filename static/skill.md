@@ -914,9 +914,10 @@ conversion is performed. Gas stays USDC. A funded 0.01 EURC payment (10000
 atomic units) was verified and settled on Arc mainnet on 2026-09-22, tx
 0xd9de3864e11698cf730664147ac383acb763279056ac091bab57cfd3bf536128; funded testnet payments remain pending.
 
-## Portable facilitator receipts (Arc and Hedera)
+## Portable facilitator receipts (Arc, Base and Hedera)
 
-Arc exact USDC/EURC and native Hedera USDC return `receipt` alongside verify/settle.
+Arc and Base exact USDC/EURC and native Hedera USDC return `receipt` alongside
+verify/settle.
 Discover `/supported.facilitatorReceipts`, `/receipts`,
 `/schemas/facilitator-receipt-v1.json` and `/.well-known/receipt-keys.json`.
 For private lookup, persist a purchase context and send `X-UVD-Purchase` (base64
@@ -942,3 +943,7 @@ signature verification. Live EURC acceptance was proven on Arc mainnet on
 Arc testnet is still pending. Other networks
 retain their existing responses. Full contract:
 https://github.com/UltravioletaDAO/x402-rs/blob/main/docs/facilitator-receipts.md
+
+Receipts cover plain `exact` payments only. On Base, `upto`, `escrow`/`commerce`
+and the x402r `refund` extension keep their own settlement paths and carry no
+`receipt`.

@@ -58,6 +58,7 @@ use x402_compliance::ComplianceCheckerBuilder;
 mod blocklist;
 mod caip2;
 mod chain;
+mod chain_identity;
 mod client_ip;
 mod discovery;
 mod discovery_aggregator;
@@ -189,6 +190,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // symptom is visible from any of them, and a queue nobody is watching is
     // how a Polygon settle stayed broken for six days in September 2026.
     stuck_tx_monitor::spawn(Arc::clone(&provider_cache));
+
+    // Compare each EVM RPC's chain id with the one we sign for. An alert, never
+    // a refusal: through 2.39.0 two testnets carried the wrong declared id, and
+    // a refusal would have switched both off. Background, so startup waits on
+    // no RPC.
+    chain_identity::spawn(Arc::clone(&provider_cache));
 
     let facilitator = FacilitatorLocal::new(Arc::clone(&provider_cache), compliance_checker);
     let axum_state = Arc::new(facilitator);

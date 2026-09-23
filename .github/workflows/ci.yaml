@@ -647,7 +647,9 @@ jobs:
             -target=aws_cloudwatch_log_metric_filter.solana_mint_fee_payer_dry \
             -target=aws_cloudwatch_metric_alarm.solana_mint_fee_payer_dry \
             -target=aws_cloudwatch_log_metric_filter.evm_signer_transactions_stuck \
-            -target=aws_cloudwatch_metric_alarm.evm_signer_transactions_stuck
+            -target=aws_cloudwatch_metric_alarm.evm_signer_transactions_stuck \
+            -target=aws_cloudwatch_log_metric_filter.evm_rpc_chain_id \
+            -target=aws_cloudwatch_metric_alarm.evm_rpc_chain_id
 
       - name: Wait for ECS rollout to stabilize
         run: |

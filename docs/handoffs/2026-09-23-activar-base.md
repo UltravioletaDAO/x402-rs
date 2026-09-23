@@ -9,9 +9,16 @@ status: active
 
 # Base entra al riel de recibos del facilitador (2.40.0)
 
-**Base:** `afa3706d` (2.39.5, #103). **Rama:** `c0der/activar-base`. **Publica
-`2.40.0`**: minor, porque cambia la respuesta observable de `/verify` y `/settle`
-para los pagos `exact` en Base.
+**Base:** la rama de #102 (`c0der/emitido-no-retryable`, `b527a785`, 2.39.6), a su
+vez sobre #103 (2.39.5). **Rama:** `c0der/activar-base`. **Publica `2.40.0`**:
+minor, porque cambia la respuesta observable de `/verify` y `/settle` para los
+pagos `exact` en Base.
+
+**Un solo PR y un solo deploy.** #104 trae #102 entero (sus commits, tal cual) y
+encima los de Base. #102 se cierra como incluido. En el CHANGELOG, `[2.39.6]`
+queda debajo de `[2.40.0]`. Lo de #102 (qué cambia, sus tests, su sonda) está en
+`docs/handoffs/2026-09-23-emitido-no-retryable.md`. Este handoff cubre Base y la
+unión.
 
 ## Lo medido antes de tocar código (sólo lectura)
 
@@ -77,13 +84,17 @@ nonce del nodo en los tres casos (`too low` 0→5, `too high` 3→0, `gap` 3→0
 `a_nonce_refusal_under_admission_stays_unknown_and_is_resent_not_resigned`
 (`src/receipts/tests.rs`):
 
-- `502`, `Retry-After: 30`, `Cache-Control: no-store`, cuerpo
-  `{"error": "upstream_nonce_or_mempool (ref: …)", "receipt": {…}}` sin
-  `success` ni `retryable`; recibo `unknown`, `settlement.id` = la transacción
-  guardada, `retry.action: poll`;
+- es una falla después del envío, así que lleva la regla de #102 (sección
+  "Failures after the send" de `docs/facilitator-receipts.md`): `502`, sin
+  `Retry-After`, `Cache-Control: no-store`, cuerpo
+  `{"error": "upstream_nonce_or_mempool (ref: …)", "retryable": false,
+  "transaction": <la guardada>, "paymentId": …, "receipt": {…}}`; recibo
+  `unknown`, `settlement.id` = la transacción guardada, `retry.action: poll`.
+  Sin #102 debajo, el mismo `502` llevaba `Retry-After: 30` y no traía
+  `retryable`;
 - `/verify` con la misma compra → `isValid: true` con ese recibo, sin simular;
-- `/settle` con la misma compra → el mismo `502` con `Idempotent-Replayed: true`
-  y nada enviado;
+- `/settle` con la misma compra → el mismo `502` (mismo cuerpo, sin
+  `Retry-After`) con `Idempotent-Replayed: true`, y nada enviado;
 - sin esa compra → `409 receipt_request_conflict`, sin recibo.
 
 Medido con los SDKs publicados, instalados desde PyPI/npm en un directorio
@@ -92,10 +103,10 @@ sale de la máquina: en el arnés TS, ethers y `fetch` rechazan toda URL que no 
 127.0.0.1, y hubo 0 intentos). Tres llamadas: la compra y dos reanudaciones con el
 mismo contexto.
 
-| SDK | Vendedor | Comprador | Autorizaciones que vio el facilitador | ¿402? |
-|---|---|---|---|---|
-| Python 0.90.1 (mapeo de errores de `FastAPIX402`, `fetch_with_receipt`) | `503`, `Retry-After: 30`, recibo en `PAYMENT-RESPONSE` | `payment_state = unknown`, recibo `unknown`, `retry.action: poll` | 1 | no |
-| TypeScript 2.98.0 (`createPaymentMiddleware` en Express, `fetchWithReceipt`) | `503`, `Retry-After: 15`, recibo en `PAYMENT-RESPONSE` | `paymentState = unknown`, recibo `unknown` | 1 | no |
+| SDK | Vendedor con la respuesta de la unión (regla de #102) | Vendedor con la respuesta sin #102 | Comprador, en los dos casos | Autorizaciones que vio el facilitador | ¿402? |
+|---|---|---|---|---|---|
+| Python 0.90.1 (mapeo de errores de `FastAPIX402`, `fetch_with_receipt`) | `500` sin `Retry-After`, recibo en `PAYMENT-RESPONSE` | `503`, `Retry-After: 30`, recibo | `payment_state = unknown`, recibo `unknown`, `retry.action: poll` | 1 | no |
+| TypeScript 2.98.0 (`createPaymentMiddleware` en Express, `fetchWithReceipt`) | `500` sin `Retry-After`, recibo en `PAYMENT-RESPONSE` | `503`, `Retry-After: 15`, recibo | `paymentState = unknown`, recibo `unknown` | 1 | no |
 
 El `FastAPIX402` de 0.90.1 emite un 402 en formato propio, sin `accepts`, que el
 `fetch` del mismo SDK no lee (`NoAcceptablePaymentError`). El vendedor del arnés
@@ -103,18 +114,20 @@ usa por eso el desafío v2 de `payment_required_response_v2` y, para el pago, la
 mismas `_process_payment` y `_payment_error` del integrador. Es una fricción del
 SDK, ajena a este cambio.
 
-**c. Coherencia con #102** (`c0der/emitido-no-retryable`, 2.39.6, abierto). #102
-marca `retryable: false`, sin `Retry-After` y con `transaction`, toda falla del
-riel de recibos después del latch o con bytes preparados; este caso lo es. El
-código y la doc dicen lo mismo con otras palabras: el nodo rechazó los bytes,
-este envío no los encoló, pero el riel no sabe si están en otro lado, así que
-decide el recibo: reenviar la misma request o consultar el recibo, nunca firmar
-otra. Repetí la medición con el cuerpo en la forma de #102: los dos vendedores
-contestan `500` sin `Retry-After` en vez de `503`, y el comprador termina igual
-(`unknown`, 1 autorización, ningún 402). Si #102 entra antes que este push, se
-rebasea: su `evm.rs` hace fill + `send_raw_transaction` siempre y trata
-`already known` como `settlement_unconfirmed`, así que ese caso ya no llegaría a
-esta rama.
+**c. Coherencia con #102.** Los dos bloques quedan en `send_transaction_from`, el
+de #102 primero:
+
+- un envío cuya respuesta se pierde, o un nodo que dice que ya tiene los bytes
+  (`already known` y variantes), sale como `502 settlement_unconfirmed` con el
+  hash (#102);
+- un rechazo por nonce con veredicto (`too low`, `too high`, `gap`, `underpriced`)
+  cae en el guard de 2.40.0 y sale como falla después del envío, con
+  `retryable: false`.
+
+El código y la doc dicen lo mismo: el nodo rechazó los bytes y este envío no los
+encoló, pero el riel no sabe si están en otro lado, así que decide el recibo
+(reenviar la misma request o consultarlo, nunca firmar otra). El `warn!` del
+guard sanea el error con `redact::scrub_urls`, como los de #102.
 
 ### 3. Tests
 
@@ -139,7 +152,7 @@ esta rama.
 
 - `docs/facilitator-receipts.md`: Base en la intro, sección "Base" con la tabla
   antes/después, y el alcance de validación. La tabla se contrastó fila por fila
-  con el código de hoy (2.39.5 más este cambio):
+  con el código de la unión (2.39.6 más este cambio):
   - con el mismo `Idempotency-Key`, 2.39 SÍ repite el 200 cacheado durante 24 h
     (caché legacy), no "se vuelve a correr";
   - con `X-UVD-Purchase`, 2.39 contesta `400 receipt_request_not_supported` en
@@ -155,18 +168,27 @@ esta rama.
 - `/health/ready` y la portada no muestran recibos para ninguna red; Base aparece
   en las dos igual que Arc y Hedera (entrada por red en `/health/ready`, tarjeta en
   la grilla). Sin cambios ahí.
-- `VERSION` 2.39.5 → 2.40.0 y `CHANGELOG.md` (el de la raíz) `[2.40.0] - 2026-09-23`,
-  con 2.39.1 a 2.39.5 intactas debajo. La rama se rebaseó sobre #103 (2.39.5) antes
-  del push.
+- `VERSION` 2.39.6 (el de #102) → 2.40.0 y `CHANGELOG.md` (el de la raíz)
+  `[2.40.0] - 2026-09-23` arriba de `[2.39.6]` (de #102) y de `[2.39.5]`, con
+  todas las anteriores intactas debajo.
+
+**Ronda 2 (refutación del lado de Base: MERGEABLE, sin P0 ni P1).** Entraron:
+el test `base_v2_usdc_and_v1_eurc_are_admitted`; la tabla de Base dice cuándo el
+`409` trae el recibo (sólo si el pago no llevó `X-UVD-Purchase`; uno admitido con
+`X-UVD-Purchase` contesta `409 receipt_request_conflict` sin él); y la fila y el
+párrafo de nonce, el CHANGELOG y el test de recibos con la respuesta de #102. Van
+al backlog: cerrar en `reconcile` una admisión cuyos bytes ya no pueden minar
+(vivacidad), PITR y protección de borrado de la tabla de recibos, y una perilla
+por red.
 
 **No cambia:** `GET /receipts/{id}`, el store y su forma (sin migración), IAM, el
 riel legacy de `Idempotency-Key`, las redes sin recibos.
 
 ## Lo verificado
 
-Checkout con LF, macOS, Rust estable local. Código probado: `5684b6d0` (los dos
-commits de código ya rebaseados sobre #103); el tercer commit sólo agrega este
-handoff. Nada contra producción: ni `/verify`, ni `/settle`, ni RPC.
+Sobre la unión: los commits de #102 (`b527a785`) y encima los de Base. Checkout
+con LF, macOS, Rust estable local. Nada contra producción: ni `/verify`, ni
+`/settle`, ni RPC.
 
 | Job o paso | Comando | Resultado |
 |---|---|---|
@@ -175,46 +197,49 @@ handoff. Nada contra producción: ni `/verify`, ni `/settle`, ni RPC.
 | Build & test: frontend | `node --test tests/frontend-capabilities.test.cjs` | 14/14 pass |
 | Build & test: balances | `python3 -m unittest discover -s tests/scripts -p 'test_*balances.py'` | 5 tests, OK |
 | Build & test: build | `cargo build --locked --features solana,near,stellar,algorand,sui,xrpl,hedera` | exit 0 |
-| Build & test: x402-rs | `cargo test --locked -p x402-rs --features <las mismas> -- --test-threads=1` | exit 0, **2714 passed, 0 failed**, 31 ignored (11 suites) |
+| Build & test: x402-rs | `cargo test --locked -p x402-rs --features <las mismas> -- --test-threads=1` | exit 0, **2794 passed, 0 failed**, 31 ignored (11 suites; lib 1337, bin 1391) |
 | Build & test: crates | `cargo test --locked -p x402-axum -p x402-reqwest -p x402-compliance -- --test-threads=1` | exit 0, 109 passed, 0 failed, 9 ignored |
-| `no-account-id.yml` | sus cuatro expresiones, en Python, sobre todo archivo trackeado | OK |
-| Generados | `bash scripts/build_llms_full.sh` y `shasum -a 256` de `skill.md` | sin diferencias; digest igual al publicado |
-| fmt (CI no lo corre) | `rustfmt --emit stdout` por archivo, sólo los hunks agregados (main no está rustfmt-limpio) | limpio |
-| clippy (CI no lo corre) | `cargo clippy --locked -p x402-rs --features <las mismas> --all-targets` | exit 0; 0 avisos en líneas agregadas (332 preexistentes en `src/`, 2 en archivos tocados, fuera de los hunks) |
-| DynamoDB local (`#[ignore]`) | `DYNAMODB_LOCAL_URL=http://127.0.0.1:<puerto> cargo test … local_dynamodb -- --ignored` contra `amazon/dynamodb-local` | 3 passed, incluido el de admisión atómica con un registro de Base |
+| `no-account-id.yml` | sus cuatro expresiones, en Python, sobre todo archivo trackeado | OK (936 archivos, 414 docs) |
+| Generados | `bash scripts/build_llms_full.sh`; digest de `skill.md` | sin diferencias. No hay script para el digest: se calculó como lo exige `the_skills_index_digest_matches_skill_md` (sha256 de `skill.md` con LF) = `aa52026a…a059` |
+| fmt (CI no lo corre) | `rustfmt --emit stdout` por archivo, sólo los hunks agregados sobre #102 (main no está rustfmt-limpio) | limpio |
+| clippy (CI no lo corre) | `cargo clippy --locked -p x402-rs --features <las mismas> --all-targets` | exit 0; 0 avisos en líneas del PR (332 preexistentes en `src/`) |
+| DynamoDB local (`#[ignore]`) | `DYNAMODB_LOCAL_URL=http://127.0.0.1:<puerto> cargo test … local_dynamodb -- --ignored` contra `amazon/dynamodb-local` | 3 passed (medido sobre #103; esta unión no toca `store.rs`) |
 
-**Mutaciones** (aplicadas y revertidas; `src/` es idéntico antes y después del
-rebase):
+**Mutaciones sobre la unión** (aplicadas y revertidas, archivos restaurados
+idénticos):
 
-- sin el guard de nonce: 2 tests en rojo (el de un solo envío y el del siguiente
+- guard de nonce anulado: 2 tests en rojo (el de un solo envío y el del siguiente
   settle);
 - sin la resincronización por `gap`: el del siguiente settle en rojo;
-- Base fuera de `supported()`: 14 tests de recibos en rojo, entre ellos
-  `base_is_announced_and_admitted`, `capability_lists_exactly_the_supported_networks`,
-  los replays y el de rieles alternativos.
+- Base fuera de `supported()`: 15 tests de recibos en rojo, entre ellos
+  `base_is_announced_and_admitted`, `base_v2_usdc_and_v1_eurc_are_admitted`,
+  `capability_lists_exactly_the_supported_networks`, los replays y el de rieles
+  alternativos;
+- el guard delante del bloque de #102 (orden invertido): en rojo
+  `under_a_receipt_admission_already_known_is_unconfirmed_not_a_refusal`;
+- la regla de #102 anulada (`not_retryable` con `retryable: true`): 3 tests en
+  rojo, entre ellos el de rechazo por nonce de este PR.
 
 **SDKs** (condición b): la tabla de arriba, cuatro corridas (Python y TS, cada uno
-con el cuerpo de hoy y con la forma de #102), todas con 1 autorización y ningún
-402.
+con la respuesta de la unión y con la anterior a #102), todas con 1 autorización y
+ningún 402.
 
 ## Para c0der
 
 ### 1. Orden de despliegue
 
-1. **Antes del merge.** #103 (2.39.5) ya está debajo. Si #102 (2.39.6) entra
-   antes, esta rama se rebasea sobre `origin/main` y conserva `2.40.0` (`VERSION`,
-   y `[2.40.0]` arriba en `CHANGELOG.md`). Los dos tocan `src/chain/evm.rs`,
-   `src/receipts/` y `docs/facilitator-receipts.md`: hay que resolver a mano y
-   volver a correr la suite, y releer la condición (c) del punto 2.
-   Hay que esperar los checks del PR: `Build & test`, `No AWS account ID in the
-   repo` y el plan (drift gate).
+1. **Antes del merge.** #104 trae #102: se mergea sólo #104 y #102 se cierra como
+   incluido. Si hace falta revisar #102 por separado, sus commits están intactos
+   en la historia de esta rama. Hay que esperar los checks del PR: `Build & test`,
+   `No AWS account ID in the repo` y el plan (drift gate).
 2. **Nada de infraestructura.** No hay secreto, permiso IAM ni tabla nuevos. Base
    usa la misma tabla `idempotency_records`, con los mismos `GetItem`/`PutItem`
    que ya usan Arc y Hedera, y la misma clave de firma. Si se quiere confirmar,
    `python scripts/check_receipt_deploy_permissions.py` con credenciales de
    operador (sólo lectura).
-3. **Merge a `main`**, que es el release: CI construye, empuja la imagen y hace el
-   `terraform apply -target` sobre la task definition y el servicio.
+3. **Merge a `main`**, que es el release de los dos cambios: CI construye, empuja
+   la imagen y hace el `terraform apply -target` sobre la task definition y el
+   servicio. La sonda de #102 está en su handoff; la de Base, abajo.
 4. **Después del rollout**, `GET /version` tiene que dar `2.40.0` antes de la
    sonda. Si no, el deploy falló y `main` va por delante de producción.
 5. **Vigilar una o dos horas** (Logs Insights, `/ecs/facilitator-production`):
@@ -284,8 +309,9 @@ anuncie". La corre c0der, si quiere, después de A y B.
 
 Un rechazo por nonce deja la admisión `unknown` con los bytes guardados:
 
-- si fue `already known`, la transacción está en el mempool; la reconciliación la
-  confirma cuando mina;
+- si el nodo dice que ya los tiene (`already known`), sale como
+  `settlement_unconfirmed` con el hash (#102) y la reconciliación la confirma
+  cuando mina;
 - si fue `nonce too low`, esos bytes no pueden minar nunca y la admisión queda
   `unknown`;
 - `receipts release-abandoned` no la toca, porque sólo cierra admisiones sin nada
@@ -300,8 +326,10 @@ empieza a aparecer.
 
 ### 4. Volver atrás
 
-Revertir el merge es otro release, sin migración: el registro guardado no cambió
-de forma. Después de revertir, los settles de Base vuelven al camino de 2.39.5.
+Revertir el merge es otro release, sin migración (el registro guardado no cambió
+de forma), y revierte **los dos cambios**: los settles vuelven al camino de
+2.39.5, incluido lo de #102. Si sólo hay que sacar Base, basta un release que
+quite `Network::Base` de `supported()` y `capability()`.
 Las filas de recibos de Base que queden no vencen y nadie las lee. Un reenvío de
 una autorización admitida en 2.40.0 vuelve a correr como en 2.39:
 

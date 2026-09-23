@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.38.0] - 2026-09-23
+
+- Rater-signed ERC-8004 feedback on Arc mainnet: `POST /feedback/evm/prepare` and `/feedback/evm/submit` (and the response pair) serve `arc` through Execution Market's v4 `FeedbackDelegate` `0x955Cc9fB…84f1`. Read on two RPCs before it was added: 5857 bytes, `VERSION()` = 4, pinned to the mainnet reputation registry `0x8004BAa1…9b63`. `arc-testnet` still has no delegate and still answers 400 on these routes.
+- Base Sepolia moves to its v4 delegate `0x9551263b…F787` (deployed by Execution Market on 2026-08-25). The table still pointed at the v3 `0x1AaEA468…5b45`, so Base Sepolia served the EIP-191 digest instead of typed data, and the response rail answered `relay_response_needs_v4` there. A rater still delegated to the v3 is reported as `delegated: false` and signs a fresh authorization.
+- `/docs`: the relayed-feedback availability list names `arc`, and the `/feedback/evm/submit` example uses the Base Sepolia delegate that is actually served. `/erc8004` no longer says the rail is on `base-sepolia` alone, in English and Spanish. Tests now fail when either list, or the example, drifts from the delegate table.
+
 ## [2.37.1] - 2026-09-22
 
 - Link previews are network-agnostic again. The landing's `og:description` goes back to its text from before #70 (83ac6d07), without the chain-family count: "Gasless x402 verify and settle. No fee, no account, no API key." Every page (`/`, `/x402`, `/dx402`, `/erc8004`, `/bazaar`, `/networks`, `/mcp`, `/integrar`, `/stats`, `/events/live`) goes back to `og:image` = `logo.png`, and loses the Arc/Hedera card's `og:image:width`, `og:image:height` and `og:image:alt` and the `twitter:card`/`twitter:image` tags that #70 added.

@@ -1441,8 +1441,8 @@ address**, so the registry observes the rater as `msg.sender`.
   to put in it
 
 **Availability:** only where a `FeedbackDelegate` has actually been deployed and verified on-chain.
-Today that is `base`, `ethereum`, `polygon`, `arbitrum`, `optimism`, `celo`, `bsc`, `monad` and
-`base-sepolia`; other networks answer 400. The delegate takes its registry address through an
+Today that is `base`, `ethereum`, `polygon`, `arbitrum`, `optimism`, `celo`, `bsc`, `monad`, `arc`
+and `base-sepolia`; other networks answer 400. The delegate takes its registry address through an
 immutable constructor argument, so its address differs per chain and each one is verified
 (`eth_getCode`, a `REPUTATION_REGISTRY()` read back, and an ERC-165 probe) before it is served.
 
@@ -1511,7 +1511,7 @@ EIP-7702 `authorization`:
   "signature": "0x...",
   "authorization": {
     "chainId": 84532,
-    "address": "0x3A68085499B62286468A35b7D9Dfc237ef2d3768",
+    "address": "0x9551263b9B83b1A737D55fd5e67Fb6D60e4eF787",
     "nonce": 7,
     "yParity": 0,
     "r": "0x...",
@@ -3498,5 +3498,64 @@ mod tests {
             seen += 1;
         }
         assert!(seen > 0, "no `N{stated}` left to check; update this test");
+    }
+
+    /// The relayed-feedback availability list in `/docs` is exactly the set of
+    /// networks with a `FeedbackDelegate`, and the `/submit` example authorises
+    /// the delegate that network is actually served.
+    ///
+    /// Both are typed by hand and both had drifted: the list was missing a
+    /// network the day its delegate landed, and the example still carried a
+    /// base-sepolia delegate two deploys old, which `/submit` refuses with
+    /// `relay_authorization_wrong_delegate`.
+    #[test]
+    fn the_relay_prose_names_exactly_the_networks_with_a_delegate() {
+        use crate::network::Network;
+
+        let spec = ApiDoc::openapi();
+        let description = |path: &str| {
+            spec.paths.paths[path]
+                .post
+                .as_ref()
+                .unwrap_or_else(|| panic!("POST {path} must be documented"))
+                .description
+                .clone()
+                .unwrap_or_else(|| panic!("POST {path} must carry a description"))
+        };
+
+        let prepare = description("/feedback/evm/prepare");
+        let availability = prepare
+            .split_once("**Availability:**")
+            .map(|(_, rest)| rest.split("\n\n").next().unwrap_or(rest))
+            .expect("the prepare description must state its availability");
+        for network in Network::variants() {
+            let named = availability.contains(&format!("`{network}`"));
+            let served = crate::erc8004::relay::feedback_delegate(network).is_some();
+            assert_eq!(
+                named, served,
+                "`{network}`: relayed feedback served = {served}, named in /docs = {named}"
+            );
+        }
+
+        let submit = description("/feedback/evm/submit");
+        let example: serde_json::Value =
+            serde_json::from_str(&json_block_after(&submit, "EIP-7702 `authorization`"))
+                .expect("the submit example is JSON");
+        let network: Network = serde_json::from_value(example["network"].clone())
+            .expect("the submit example names a network");
+        let delegate = crate::erc8004::relay::feedback_delegate(&network)
+            .unwrap_or_else(|| panic!("the submit example uses {network}, which has no delegate"));
+        let documented: alloy::primitives::Address = example["authorization"]["address"]
+            .as_str()
+            .and_then(|a| a.parse().ok())
+            .expect("the submit example carries an authorization address");
+        assert_eq!(
+            documented, delegate,
+            "the /submit example authorises a delegate {network} does not serve"
+        );
+        let chain_id = crate::chain::evm::EvmChain::try_from(network)
+            .expect("the submit example is an EVM network")
+            .chain_id;
+        assert_eq!(example["authorization"]["chainId"], chain_id);
     }
 }

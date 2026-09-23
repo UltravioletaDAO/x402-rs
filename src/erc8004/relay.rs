@@ -92,31 +92,36 @@ pub const DEFAULT_RELAY_DEADLINE_SECS: u64 = 900;
 /// once produced fake-success settles.
 ///
 /// Every address below was read off the chain before it was written down, on two
-/// independent RPC endpoints each (**v3, 2026-08-24**): the address has code,
-/// its `REPUTATION_REGISTRY()` reads back that network's registry, the registry
-/// itself has code there, and `supportsInterface` answers -- which is what tells
-/// v3 apart from the version it replaced.
+/// independent RPC endpoints each: the address has code, its
+/// `REPUTATION_REGISTRY()` reads back that network's registry, the registry
+/// itself has code there, and the ERC-165 probe answers -- which is what tells
+/// one version apart from the next. All ten were re-read together on
+/// 2026-09-23, when arc joined and base-sepolia moved to v4:
 ///
-/// | network | delegate (v3) |
+/// | network | delegate (v4) |
 /// |---|---|
-/// | base | `0xa7ca33Ca...eBc6` |
-/// | ethereum | `0x8Bf13c5d...A868` |
-/// | polygon | `0x77BecfB2...Fe55` |
-/// | arbitrum | `0xCE9871Fd...34a3` |
-/// | bsc | `0x825E997F...2b82` |
-/// | optimism | `0xDe762cFc...F5Ba` |
-/// | monad | `0xDe762cFc...F5Ba` |
-/// | celo | `0x794C907F...31bA` |
-/// | base-sepolia | `0x1AaEA468...5b45` |
+/// | base | `0x260D3D02...6163` |
+/// | ethereum | `0x9577F05D...7A7b` |
+/// | polygon | `0x1dfc1A57...FaD5` |
+/// | arbitrum | `0xf670C69B...6A7f` |
+/// | bsc | `0xe25cF9B9...6B59` |
+/// | optimism | `0x794C907F...31bA` |
+/// | monad | `0x794C907F...31bA` |
+/// | celo | `0x0Dff14dF...9511` |
+/// | arc | `0x955Cc9fB...84f1` |
+/// | base-sepolia | `0x9551263b...F787` |
 ///
-/// The eight mainnets carry byte-identical runtime code (3216 bytes,
-/// sha256 `a3094693799a3f8d...`); base-sepolia differs, which is exactly what a
-/// different registry immutable predicts.
+/// All ten answer `VERSION()` = 4 and carry 5857 bytes of runtime code, and the
+/// executable part is byte-identical across them once the five inlined
+/// `REPUTATION_REGISTRY` immutables are neutralised (the trailing CBOR metadata
+/// is left out of that comparison). base-sepolia's immutable is the testnet
+/// registry, the other nine hold the mainnet one.
 ///
-/// **The digest did not change between versions, and that was measured rather
+/// **Between v1 and v3 the digest did not change, and that was measured rather
 /// than taken on trust**: `relayDigest()` on the deployed v3 on Base returns
 /// `0xe0e04e0b35b6a7c7...` for a fixed input, and `relay_digest()` in this file
-/// computes the same value. So this was an address swap, not a protocol change.
+/// computes the same value. v4 is the one protocol change: EIP-712 typed data,
+/// built in `relay_v4.rs` and chosen per chain by the version probe.
 ///
 /// # These addresses come from CREATE, not CREATE2
 ///
@@ -129,6 +134,10 @@ pub const DEFAULT_RELAY_DEADLINE_SECS: u64 = 900;
 ///
 /// Optimism and monad genuinely share an address: same deployer at the same
 /// nonce on both chains. Verified separately on each.
+///
+/// Arc's v4 address is also one of base-sepolia's superseded addresses, for the
+/// same reason: same deployer, same nonce. On arc it is the current delegate; on
+/// base-sepolia it is a pre-v3 version the probe would refuse.
 ///
 /// # Why the version matters, and not only the liveness
 ///
@@ -151,8 +160,8 @@ pub const DEFAULT_RELAY_DEADLINE_SECS: u64 = 900;
 /// delegate has been deployed on either (SKALE's EVM predates Shanghai, and
 /// Execution Market has since retired the chain entirely).
 ///
-/// Arc and Arc testnet serve ERC-8004 as well, and are absent only because no
-/// delegate has been deployed there yet.
+/// Arc testnet serves ERC-8004 as well, and is absent only because no delegate
+/// has been deployed there.
 fn delegate_address(network: &Network) -> Option<Address> {
     match network {
         // Mainnets -- Execution Market v4 deploys, verified on-chain 2026-08-25.
@@ -180,12 +189,20 @@ fn delegate_address(network: &Network) -> Option<Address> {
         Network::Celo => Some(alloy::primitives::address!(
             "0Dff14dFF648769cB8C3D5F5a150f32Ca2BB9511"
         )),
-        // Testnet. Still v3: Execution Market deployed v4 to the eight mainnets
-        // only. The version probe below reports it as v3 and the EIP-191 digest
-        // keeps being served there, which is exactly the point of detecting the
-        // version per chain instead of per release.
+        // v4, deployed by Execution Market on 2026-09-23 and verified on-chain
+        // the same day. Gas on Arc is USDC, so the type-4 transaction we send
+        // is paid in USDC.
+        Network::Arc => Some(alloy::primitives::address!(
+            "955Cc9fB9aB95FC0821ae74197D273dde5dA84f1"
+        )),
+        // Testnet, v4 as well. Execution Market deployed it on 2026-08-25, but
+        // this entry kept pointing at the v3 until 2026-09-23. Every check
+        // passed on the v3 -- it is live, pinned to the right registry and
+        // answers the probe -- so the only symptoms were the EIP-191 digest
+        // instead of typed data, and `relay_response_needs_v4` on the one
+        // testnet where the response rail could have been exercised.
         Network::BaseSepolia => Some(alloy::primitives::address!(
-            "1AaEA468fB156AABd2617A507771FC8fE5085b45"
+            "9551263b9B83b1A737D55fd5e67Fb6D60e4eF787"
         )),
         _ => None,
     }
@@ -705,25 +722,29 @@ mod tests {
 
     /// The address EM deployed and we verified on-chain. Pinned so a typo in a
     /// later edit is a failing test rather than a transaction to nowhere.
+    ///
+    /// The v4 (`VERSION()` = 4, pinned to the testnet registry), not the v3
+    /// this entry served until 2026-09-23. The v3 passes every liveness check,
+    /// so only a pinned address catches a copy-paste that brings it back.
     #[test]
     fn the_base_sepolia_delegate_is_the_verified_one() {
         assert_eq!(
             delegate().to_string().to_lowercase(),
-            "0x1aaea468fb156aabd2617a507771fc8fe5085b45"
+            "0x9551263b9b83b1a737d55fd5e67fb6d60e4ef787"
         );
     }
 
-    /// The eight mainnet **v3** addresses, each read off its own chain on two
-    /// independent RPCs before being written here (2026-08-24). Pinned so a
-    /// typo in a later edit is a failing test rather than a type-4 transaction
-    /// sent to an address with no delegate behind it.
+    /// The nine mainnet **v4** addresses, each read off its own chain on two
+    /// independent RPCs before being written here (the eight original ones on
+    /// 2026-08-25, arc on 2026-09-23). Pinned so a typo in a later edit is a
+    /// failing test rather than a type-4 transaction sent to an address with no
+    /// delegate behind it.
     ///
-    /// These replaced v1 the day after v1 shipped. v1 was live and correct by
+    /// v3 replaced v1 the day after v1 shipped. v1 was live and correct by
     /// every check we had -- it had code and the right registry -- but it broke
     /// the rater's wallet on delegation (NFT receives reverted, off-chain
-    /// signatures stopped being honoured, cancelling required gas). The address
-    /// is the ONLY thing that changed: the relay digest is byte-identical, and
-    /// that was measured against the deployed contract, not assumed.
+    /// signatures stopped being honoured, cancelling required gas). v4 then
+    /// moved the signature to EIP-712 typed data.
     #[test]
     fn the_mainnet_delegates_are_the_verified_ones() {
         let expected = [
@@ -747,6 +768,7 @@ mod tests {
             ),
             (Network::Monad, "0x794c907fdfc71bfaf0b86d0e463bbd6e949a31ba"),
             (Network::Celo, "0x0dff14dff648769cb8c3d5f5a150f32ca2bb9511"),
+            (Network::Arc, "0x955cc9fb9ab95fc0821ae74197d273dde5da84f1"),
         ];
         for (network, want) in expected {
             let got = feedback_delegate(&network)
@@ -811,6 +833,22 @@ mod tests {
             (Network::Monad, "0xde762cfc63551ad4d8c5be8f25ec0bcaa82df5ba"),
             (Network::Celo, "0xe25cf9b9f5a3b5faa7628c751466df0166d96b59"),
             (Network::Celo, "0x794c907fdfc71bfaf0b86d0e463bbd6e949a31ba"),
+            // base-sepolia had one more round than the mainnets: the first
+            // delegate (2026-08-14), then two pre-v4 redeploys, all three
+            // still live. The middle one's address is arc's live v4 (same
+            // deployer, same nonce), which is why this list is per network.
+            (
+                Network::BaseSepolia,
+                "0x3a68085499b62286468a35b7d9dfc237ef2d3768",
+            ),
+            (
+                Network::BaseSepolia,
+                "0x955cc9fb9ab95fc0821ae74197d273dde5da84f1",
+            ),
+            (
+                Network::BaseSepolia,
+                "0x1aaea468fb156aabd2617a507771fc8fe5085b45",
+            ),
         ];
         for (network, old) in superseded {
             let served = feedback_delegate(network)
@@ -857,6 +895,48 @@ mod tests {
                 .to_lowercase(),
             "0x794c907fdfc71bfaf0b86d0e463bbd6e949a31ba"
         );
+        // A superseded base-sepolia address is arc's v4 address.
+        assert_eq!(
+            feedback_delegate(&Network::Arc)
+                .unwrap()
+                .to_string()
+                .to_lowercase(),
+            "0x955cc9fb9ab95fc0821ae74197d273dde5da84f1"
+        );
+    }
+
+    /// Arc mainnet is relayed; Arc testnet is not, and must not quietly become
+    /// so by analogy.
+    ///
+    /// Execution Market deployed the delegate straight to mainnet, with no
+    /// testnet deploy. The arc entry is pinned to the address verified there,
+    /// and that delegate's immutable is the MAINNET registry -- the one
+    /// `get_contracts(arc)` names, which is what `assert_delegate_usable`
+    /// compares it against at request time.
+    #[test]
+    fn arc_is_relayed_and_arc_testnet_is_not() {
+        assert_eq!(
+            feedback_delegate(&Network::Arc)
+                .map(|a| a.to_string().to_lowercase())
+                .as_deref(),
+            Some("0x955cc9fb9ab95fc0821ae74197d273dde5da84f1")
+        );
+        assert_eq!(
+            crate::erc8004::get_contracts(&Network::Arc)
+                .expect("arc serves ERC-8004")
+                .reputation_registry,
+            alloy::primitives::address!("8004BAa17C55a88189AE136b182e5fdA19dE9b63"),
+            "arc's delegate is pinned to the mainnet registry"
+        );
+        assert!(
+            crate::erc8004::get_contracts(&Network::ArcTestnet).is_some(),
+            "arc-testnet serves ERC-8004 ..."
+        );
+        assert_eq!(
+            feedback_delegate(&Network::ArcTestnet),
+            None,
+            "... but no delegate was deployed there"
+        );
     }
 
     /// Avalanche must NEVER get an entry here, and this test is the guard.
@@ -870,8 +950,8 @@ mod tests {
     ///
     /// Scroll and SKALE Base serve ERC-8004 but have no delegate deployed
     /// (SKALE's EVM predates Shanghai, so 7702 cannot land there at all).
-    /// Arc serves ERC-8004 with no delegate deployed yet; the entry arrives
-    /// with the deploy, and this list loses Arc in the same change.
+    /// Arc testnet serves ERC-8004 with no delegate deployed; Arc mainnet left
+    /// this list when its delegate was deployed.
     #[test]
     fn the_chains_without_a_delegate_claim_none() {
         for network in [
@@ -879,7 +959,6 @@ mod tests {
             Network::AvalancheFuji,
             Network::Scroll,
             Network::SkaleBase,
-            Network::Arc,
             Network::ArcTestnet,
             Network::EthereumSepolia,
             Network::PolygonAmoy,
@@ -891,6 +970,38 @@ mod tests {
                 feedback_delegate(&network).is_none(),
                 "{network} must not claim a delegate that was never deployed"
             );
+        }
+    }
+
+    /// The `/erc8004` page names exactly the networks with a delegate, in the
+    /// markup and in both dictionaries.
+    ///
+    /// Typed by hand in three places, and it had drifted in all three: it said
+    /// "today base-sepolia alone" for a month after the eight mainnet
+    /// delegates were live.
+    #[test]
+    fn the_erc8004_page_names_exactly_the_networks_with_a_delegate() {
+        const PAGE: &str = include_str!("../../static/erc8004.html");
+        let mut sentences = Vec::new();
+        for (marker, end) in [
+            ("data-i18n=\"au.evmWhere\">", "</td>"),
+            ("\"au.evmWhere\": \"", "\","),
+        ] {
+            for (at, _) in PAGE.match_indices(marker) {
+                let rest = &PAGE[at + marker.len()..];
+                sentences.push(&rest[..rest.find(end).expect("terminated")]);
+            }
+        }
+        assert_eq!(sentences.len(), 3, "markup + en + es");
+        for sentence in sentences {
+            for network in Network::variants() {
+                let named = sentence.contains(&format!("<code>{network}</code>"));
+                let served = feedback_delegate(network).is_some();
+                assert_eq!(
+                    named, served,
+                    "`{network}`: served = {served}, named on /erc8004 = {named}: {sentence}"
+                );
+            }
         }
     }
 

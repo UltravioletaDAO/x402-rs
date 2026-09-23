@@ -169,7 +169,7 @@ fn assert_signature_scheme_supported(
                 concat!(
                     "EIP-6492 signatures are not supported on {}: ",
                     "the universal signature validator is not deployed there. ",
-                    "Use an EOA signature for this network and USDC domain."
+                    "Use an EOA signature on this network."
                 ),
                 network
             ),
@@ -4769,7 +4769,10 @@ mod arc_testnet_tests {
         );
         // And it is still the whole sentence, not a fragment that happens to
         // have no double space in it.
-        assert!(message.ends_with("USDC domain."), "{message:?}");
+        assert!(message.ends_with("on this network."), "{message:?}");
+        // Generic: the gate serves any chain without a validator, not only
+        // Arc, so the refusal names no token and no chain but the one asked.
+        assert!(!message.contains("USDC"), "{message:?}");
         assert!(
             message.contains("the universal signature validator"),
             "{message:?}"
@@ -5480,42 +5483,47 @@ mod arc_node_fixtures {
     /// carry the identical topic and the identical `from`/`to`. A reader that
     /// matched on the topic would see the 18-decimal figure as a transfer of
     /// ten billion USDC.
+    ///
+    /// Both Arc networks: mainnet and testnet share the token address and the
+    /// system emitter, so the rule has to hold on each of them.
     #[tokio::test]
     async fn the_native_system_event_is_not_read_as_the_payment() {
-        let payer = PrivateKeySigner::random();
-        let f = fixture(Receipt::Confirmed, Estimate::Ok, payer.address()).await;
-        let rpc = ProviderBuilder::new().connect(&f.url).await.expect("rpc");
+        for network in [Network::Arc, Network::ArcTestnet] {
+            let payer = PrivateKeySigner::random();
+            let f = fixture_for(network, Receipt::Confirmed, Estimate::Ok, payer.address()).await;
+            let rpc = ProviderBuilder::new().connect(&f.url).await.expect("rpc");
 
-        let proof = |amount: u128| {
-            ProofOfPayment::new(
-                TransactionHash::Evm(TX),
-                BLOCK,
-                Network::ArcTestnet,
-                MixedAddress::from(payer.address()),
-                MixedAddress::from(PAYEE),
-                TokenAmount::from(amount),
-                MixedAddress::from(arc_usdc()),
-                f.block_timestamp,
-            )
-        };
+            let proof = |amount: u128| {
+                ProofOfPayment::new(
+                    TransactionHash::Evm(TX),
+                    BLOCK,
+                    network,
+                    MixedAddress::from(payer.address()),
+                    MixedAddress::from(PAYEE),
+                    TokenAmount::from(amount),
+                    MixedAddress::from(arc_usdc()),
+                    f.block_timestamp,
+                )
+            };
 
-        // The ERC-20 amount, from the token's own log: accepted.
-        let facts = verify_payment_facts(&rpc, Network::ArcTestnet, &proof(AMOUNT as u128), 900)
-            .await
-            .expect("the token's own Transfer proves the payment");
-        assert_eq!(facts.payer, payer.address());
-        assert_eq!(facts.payee, PAYEE);
-        assert_eq!(facts.token, arc_usdc());
+            // The ERC-20 amount, from the token's own log: accepted.
+            let facts = verify_payment_facts(&rpc, network, &proof(AMOUNT as u128), 900)
+                .await
+                .unwrap_or_else(|e| panic!("{network}: the token's own Transfer proves it: {e:?}"));
+            assert_eq!(facts.payer, payer.address(), "{network}");
+            assert_eq!(facts.payee, PAYEE, "{network}");
+            assert_eq!(facts.token, arc_usdc(), "{network}");
 
-        // The native 18-decimal amount, which only the system emitter reports:
-        // refused, because that log is not the token's.
-        let rejection = verify_payment_facts(&rpc, Network::ArcTestnet, &proof(NATIVE_AMOUNT), 900)
-            .await
-            .expect_err("the system emitter's event is not the token's");
-        assert!(
-            matches!(rejection, ProofRejection::TransferNotFound),
-            "expected the native event to be ignored, got {rejection:?}"
-        );
+            // The native 18-decimal amount, which only the system emitter
+            // reports: refused, because that log is not the token's.
+            let rejection = verify_payment_facts(&rpc, network, &proof(NATIVE_AMOUNT), 900)
+                .await
+                .expect_err("the system emitter's event is not the token's");
+            assert!(
+                matches!(rejection, ProofRejection::TransferNotFound),
+                "{network}: expected the native event to be ignored, got {rejection:?}"
+            );
+        }
     }
     fn mainnet_body(payer: &PrivateKeySigner, signature: Vec<u8>) -> Value {
         let mut body = request_json(payer, PAYEE, signature);

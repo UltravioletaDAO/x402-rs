@@ -253,9 +253,10 @@
             box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
         }
 
-        /* A chain's health, read from GET /health/ready: nothing while it is ok,
-           a small blinking red dot in the card's lower-left corner while it is
-           degraded or down. Absolutely positioned, so no card moves or resizes. */
+        /* A chain's health, read from GET /health/ready: a small blinking red dot
+           in the card's lower-left corner while it is down, degraded for a reason
+           other than gas, or under 10 settles (`cardHealth` in x402.js). Nothing
+           otherwise. Absolutely positioned, so no card moves or resizes. */
         .network-status {
             position: absolute;
             left: 10px;
@@ -3504,10 +3505,11 @@
         })();
 
         // Chain health on each network card, from GET /health/ready, which
-        // lists every configured chain with its state and reason. A dot only
-        // for `degraded` or `down`; nothing for `ok`, for a chain the route does
-        // not probe, or when the answer cannot be read -- never a red dot for
-        // not knowing. A 503 still carries the per-chain list, so its body is
+        // lists every configured chain with its state and reason. A dot for
+        // `down`, for `degraded` by anything but gas, and for a signer under 10
+        // settles (`cardHealth`); nothing for `ok`, for `signer_gas_low` above
+        // that line, for a chain the route does not probe, or when the answer
+        // cannot be read -- never a red dot for not knowing. A 503 still carries the per-chain list, so its body is
         // read like a 200's. The route caches for 60 s, so polling at that
         // rate costs the chains nothing.
         (function loadNetworkStatus() {

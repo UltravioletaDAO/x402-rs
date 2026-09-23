@@ -95,21 +95,33 @@ test('landing shuffles each grid once on load without an opt-in URL', () => {
 // The status dot on each landing card reads GET /health/ready. It shows only
 // what the route measured: nothing for ok, unprobed or unreadable, a label
 // naming state and reason otherwise.
-test('card health: a dot only for degraded or down, labelled with the reason', () => {
+test('card health: a dot for down or non-gas degraded, or under 10 settles; none for signer_gas_low above it', () => {
+  const signers=(...n)=>n.map((settlesRemaining,index)=>({index,settlesRemaining}));
   context.body={status:'down',networks:[
-    {network:'base',caip2:'eip155:8453',status:'ok',rpc:'ok'},
-    {network:'ethereum',caip2:'eip155:1',status:'degraded',reason:'signer_gas_low'},
-    {network:'arc',caip2:'eip155:5042',status:'down',reason:'rpc_chain_id_mismatch'},
+    {network:'base',caip2:'eip155:8453',status:'ok',signers:signers(9070)},
+    // The owner's case: Ethereum mainnet with 24 settles left. No dot.
+    {network:'ethereum',caip2:'eip155:1',status:'degraded',reason:'signer_gas_low',signers:signers(24)},
+    {network:'arbitrum',caip2:'eip155:42161',status:'degraded',reason:'signer_gas_low'},
+    {network:'polygon',caip2:'eip155:137',status:'down',reason:'signer_gas_critical',signers:signers(9)},
+    {network:'arc',caip2:'eip155:5042',status:'down',reason:'rpc_chain_id_mismatch',signers:[]},
     {network:'hedera',caip2:'hedera:mainnet',status:'down',reason:'rpc_timeout'},
+    {network:'avalanche',caip2:'eip155:43114',status:'degraded',reason:'startup_probe_failed'},
     {network:'celo-sepolia',caip2:'eip155:11142220',status:'degraded'},
-    {network:'polygon',caip2:'eip155:137',status:'unknown-state',reason:'x'},
+    // A published reason of low gas, but one signer is under 10: the signer decides.
+    {network:'optimism',caip2:'eip155:10',status:'degraded',reason:'signer_gas_low',signers:signers(500,7)},
+    // Any `down` lights it, even with 10+ settles (HEALTH_READY_MIN_SETTLES raised to 20).
+    {network:'bsc',caip2:'eip155:56',status:'down',reason:'signer_gas_critical',signers:signers(15)},
+    {network:'scroll',caip2:'eip155:534352',status:'unknown-state',reason:'x'},
   ],unchecked:['solana']};
   const show=keys=>{context.keys=keys;return evaluate('keys.map(k=>cardHealth(readinessIndex(body),k))');};
-  assert.deepEqual(show(['base-mainnet','solana-mainnet','polygon-mainnet','sui-testnet']),[null,null,null,null]);
-  assert.deepEqual(show(['ethereum-mainnet','arc-mainnet','celo-testnet']),[
-    {status:'degraded',label:'degraded: signer_gas_low'},
+  assert.deepEqual(show(['base-mainnet','ethereum-mainnet','arbitrum-mainnet','solana-mainnet','scroll-mainnet','sui-testnet']),[null,null,null,null,null,null]);
+  assert.deepEqual(show(['polygon-mainnet','bsc-mainnet','arc-mainnet','avalanche-mainnet','celo-testnet','optimism-mainnet']),[
+    {status:'down',label:'down: signer_gas_critical'},
+    {status:'down',label:'down: signer_gas_critical'},
     {status:'down',label:'down: rpc_chain_id_mismatch'},
+    {status:'degraded',label:'degraded: startup_probe_failed'},
     {status:'degraded',label:'degraded'},
+    {status:'degraded',label:'degraded: signer_gas_low'},
   ]);
   // Native Hedera is only in /supported under its CAIP-2 id; the card finds it.
   assert.deepEqual(show(['hedera-mainnet']),[{status:'down',label:'down: rpc_timeout'}]);
@@ -138,7 +150,7 @@ test('landing: the dot sits in the lower-left corner, does not move the card and
 // health. This runs the landing's own status loader over every real card, through
 // a degraded and a down network, an unreadable answer (429 body) and a failed
 // fetch, and counts the cards each time. Only the dot may come and go.
-test('landing: health never removes or hides a card; the dot follows degraded/down only', async () => {
+test('landing: health never removes or hides a card; the dot follows the owner\'s rule', async () => {
   const html=fs.readFileSync(path.join(root,'static/index.html'),'utf8');
   const loader=html.slice(html.indexOf('(function loadNetworkStatus()'),html.indexOf('// Curated Bazaar counters.'));
   const keys=[...html.matchAll(/data-tokens="([^"]+)"/g)].map(m=>m[1]);
@@ -160,9 +172,12 @@ test('landing: health never removes or hides a card; the dot follows degraded/do
       el.remove=()=>el.parent.children.splice(el.parent.children.indexOf(el),1);
       return el;}};
   const ready={status:'down',networks:[
-    {network:'base',caip2:'eip155:8453',status:'ok'},
-    {network:'ethereum',caip2:'eip155:1',status:'degraded',reason:'signer_gas_low'},
-    {network:'hedera',caip2:'hedera:mainnet',status:'down',reason:'rpc_timeout'},
+    {network:'base',caip2:'eip155:8453',status:'ok',signers:[{index:0,settlesRemaining:9070}]},
+    // 24 settles: low for an operator, not a dot for a visitor.
+    {network:'ethereum',caip2:'eip155:1',status:'degraded',reason:'signer_gas_low',signers:[{index:0,settlesRemaining:24}]},
+    {network:'polygon',caip2:'eip155:137',status:'down',reason:'signer_gas_critical',signers:[{index:0,settlesRemaining:9}]},
+    {network:'avalanche',caip2:'eip155:43114',status:'degraded',reason:'startup_probe_failed',signers:[]},
+    {network:'hedera',caip2:'hedera:mainnet',status:'down',reason:'rpc_timeout',signers:[]},
   ]};
   const answers=[
     ()=>Promise.resolve({json:()=>Promise.resolve(ready)}),
@@ -187,7 +202,7 @@ test('landing: health never removes or hides a card; the dot follows degraded/do
   vm.runInNewContext(loader,sandbox);
   await settle();
   unchanged();
-  assert.deepEqual(dots(),{'ethereum-mainnet':['degraded: signer_gas_low'],'hedera-mainnet':['down: rpc_timeout']});
+  assert.deepEqual(dots(),{'polygon-mainnet':['down: signer_gas_critical'],'avalanche-mainnet':['degraded: startup_probe_failed'],'hedera-mainnet':['down: rpc_timeout']});
   const dot=grid.find(c=>c.key==='hedera-mainnet').children[0];
   assert.equal(dot.title,'down: rpc_timeout');
   assert.equal(dot.attrs.role,'img');
@@ -202,7 +217,7 @@ test('landing: health never removes or hides a card; the dot follows degraded/do
   sandbox.currentLang='es';
   sandbox.window.__repaintNetworkStatus();
   unchanged();
-  assert.deepEqual(dots(),{'ethereum-mainnet':['degradada: signer_gas_low'],'hedera-mainnet':['caída: rpc_timeout']});
+  assert.deepEqual(dots(),{'polygon-mainnet':['caída: signer_gas_critical'],'avalanche-mainnet':['degradada: startup_probe_failed'],'hedera-mainnet':['caída: rpc_timeout']});
   assert.equal(answers.length,0);
 });
 test('landing: the dot label is translated in both dictionaries', () => {

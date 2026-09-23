@@ -225,3 +225,69 @@ test('landing: the dot label is translated in both dictionaries', () => {
   for (const key of ['netstatus.degraded','netstatus.down']) assert.equal(html.split(`"${key}":`).length-1,2,key);
   assert(html.includes("window.__repaintNetworkStatus?.();"),'a language switch relabels the dots');
 });
+
+// Opaque share of a PNG: the side of its alpha bounding box over its width.
+// Decodes the two layouts the logos use (8-bit palette with tRNS, 8-bit RGBA),
+// so the check below measures the assets rather than trusting the CSS.
+function visibleShare(file) {
+  const zlib=require('node:zlib');
+  const buf=fs.readFileSync(file);
+  let pos=8, ihdr, trns, idat=[];
+  while (pos<buf.length) {
+    const len=buf.readUInt32BE(pos), type=buf.toString('latin1',pos+4,pos+8), data=buf.subarray(pos+8,pos+8+len);
+    if (type==='IHDR') ihdr={w:data.readUInt32BE(0),h:data.readUInt32BE(4),depth:data[8],ctype:data[9],interlace:data[12]};
+    else if (type==='tRNS') trns=data;
+    else if (type==='IDAT') idat.push(data);
+    pos+=12+len;
+  }
+  assert(ihdr.depth===8 && ihdr.interlace===0 && [3,6].includes(ihdr.ctype),`${file}: PNG layout this test does not decode`);
+  const bpp=ihdr.ctype===6?4:1, stride=ihdr.w*bpp, raw=zlib.inflateSync(Buffer.concat(idat)), px=Buffer.alloc(stride*ihdr.h);
+  for (let y=0;y<ihdr.h;y++) {
+    const filter=raw[y*(stride+1)], line=raw.subarray(y*(stride+1)+1,(y+1)*(stride+1));
+    const out=px.subarray(y*stride,(y+1)*stride), prev=y?px.subarray((y-1)*stride,y*stride):null;
+    for (let x=0;x<stride;x++) {
+      const a=x>=bpp?out[x-bpp]:0, b=prev?prev[x]:0, c=prev&&x>=bpp?prev[x-bpp]:0;
+      let v=line[x];
+      if (filter===1) v+=a; else if (filter===2) v+=b; else if (filter===3) v+=(a+b)>>1;
+      else if (filter===4) { const p=a+b-c, pa=Math.abs(p-a), pb=Math.abs(p-b), pc=Math.abs(p-c); v+=pa<=pb&&pa<=pc?a:pb<=pc?b:c; }
+      out[x]=v&255;
+    }
+  }
+  let x0=ihdr.w, y0=ihdr.h, x1=-1, y1=-1;
+  for (let y=0;y<ihdr.h;y++) for (let x=0;x<ihdr.w;x++) {
+    const i=px[y*stride+x*bpp];
+    const alpha=ihdr.ctype===6?px[y*stride+x*4+3]:(trns&&i<trns.length?trns[i]:255);
+    if (alpha>16) { x0=Math.min(x0,x); x1=Math.max(x1,x); y0=Math.min(y0,y); y1=Math.max(y1,y); }
+  }
+  return Math.max(x1-x0+1,y1-y0+1)/ihdr.w;
+}
+
+// The owner (2026-09-23): a chain's logo is at least as large as the
+// stablecoin icons on its card. jsdom lays nothing out, so this computes what
+// the page paints from the CSS and the measured PNGs: the network glyph is
+// `--glyph / --visible` of image times the asset's real opaque share, and a
+// stablecoin is its 32px logo plus the pill's padding and ring (38.8px).
+test('landing: every network logo shows a glyph at least as large as a stablecoin icon', () => {
+  const html=fs.readFileSync(path.join(root,'static/index.html'),'utf8');
+  const rule=sel=>{const i=html.indexOf(`${sel} {`); assert(i>=0,sel); return html.slice(i,html.indexOf('}',i));};
+  const num=(text,re)=>{const m=re.exec(text); assert(m,String(re)); return parseFloat(m[1]);};
+  const logo=rule('.network-logo');
+  const glyph=num(logo,/--glyph:\s*([\d.]+)px/), share=num(logo,/--visible:\s*([\d.]+);/);
+  for (const side of ['width','height']) assert.match(logo,new RegExp(`(^|[;{\\s])${side}:\\s*calc\\(var\\(--glyph\\)\\s*/\\s*var\\(--visible\\)\\)`),`.network-logo ${side} is not sized from --glyph / --visible`);
+  const inlineSize=[...html.matchAll(/<img[^>]*class="network-logo"[^>]*>/g)].map(m=>m[0]).filter(tag=>/style="(?:[^"]*[;\s])?(?:width|height)\s*:/.test(tag));
+  assert.deepEqual(inlineSize,[],'an inline width/height overrides .network-logo');
+  const overrides=Object.fromEntries([...html.matchAll(/\.network-logo\[src="\/([a-z0-9-]+)\.png"\] \{ --visible: ([\d.]+); \}/g)].map(m=>[m[1],+m[2]]));
+  const pillRule=rule('.token-pill');
+  const pill=num(rule('.token-logo'),/width:\s*([\d.]+)px/)+2*16*num(pillRule,/padding:\s*([\d.]+)rem/)+2*num(pillRule,/border:\s*([\d.]+)px/);
+  assert(pill>38 && pill<40,`stablecoin pill measured ${pill}px in the browser was 38.78px`);
+
+  const logos=[...html.matchAll(/<img src="\/([a-z0-9-]+)\.png" alt="[^"]*"\s+class="network-logo"/g)].map(m=>m[1]);
+  assert.equal(logos.length,html.split('data-tokens="').length-1,'every card with stablecoins has a sized network logo');
+  assert(!html.includes('style="width: 32px; height: 32px; object-fit: contain'),'a card logo is back at a fixed 32px box');
+  for (const net of new Set(logos)) {
+    const measured=visibleShare(path.join(root,'static',`${net}.png`)), declared=overrides[net]??share;
+    const painted=glyph/declared*measured;
+    assert(Math.abs(measured-declared)<0.01,`${net}.png is ${measured.toFixed(4)} opaque; the CSS assumes ${declared}`);
+    assert(painted>=pill,`${net}: ${painted.toFixed(1)}px glyph next to a ${pill.toFixed(1)}px stablecoin`);
+  }
+});

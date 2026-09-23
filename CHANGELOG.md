@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.39.5] - 2026-09-23
+
+- Landing: the chain logo next to each network name, in the Mainnets and Testnets grids, is at least as large as the stablecoin icons on the same card. The 96 px network images carry 12 px of transparent margin per side, so their 32 px box showed a 24 px glyph (28.9 px for Hedera) next to stablecoins drawn at 32 px, 38.8 px with their ring. Each logo is now sized so its visible glyph is 40 px, using each image's measured opaque share (Arc 100 %, Hedera 90.3 %, Stellar 81.3 %, Polygon 70.8 %, the rest 75 %), and negative margins keep the row's old 32 px height: no card grows, the name stays centred on the logo, and the stablecoin icons, type, colours, borders, grid order and the stablecoin filter bar do not change. The Zama FHE card's logo, the one network logo drawn as SVG, goes from a 30 px ring to 40 px the same way, without moving its card. Measured in a headless browser at 1440 px and 390 px.
+- A frontend test decodes every network image, measures its opaque share and fails if a card's painted logo glyph is smaller than a stablecoin pill, if the stylesheet's assumed share drifts from the image, if the logo's width or height stops coming from that computation, or if a card logo gets an inline width or height or returns to the fixed 32 px box.
+
 ## [2.39.4] - 2026-09-23
 
 - A configured network stays in `/supported`, and so on the landing, whatever its health. Through 2.39.3 a native Hedera ledger whose health check failed at startup was left out until the next deploy, with no retry: on 2026-09-23 both 2.39.3 tasks started while Hedera's consensus probe timed out (13:30:55Z and 13:31:28Z), and Hedera mainnet was absent from `/supported` (155 entries instead of 156) and from the landing's mainnet grid until a forced redeploy at 13:46Z. An Arc RPC answering for another chain likewise left Arc out. Both are now served, with the same alert as before.

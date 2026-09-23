@@ -253,6 +253,31 @@
             box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
         }
 
+        /* The chain logo beside each card's name. The 96px network PNGs carry the
+           same 12px transparent margins as the stablecoin ones, so a 32px box
+           showed a 24px glyph next to 32px stablecoins (38.8px with their ring).
+           The image is sized so its VISIBLE glyph is --glyph, never smaller than a
+           stablecoin pill, and negative margins keep its footprint at the glyph's
+           width and at the row's old 32px height: the name keeps its spacing and
+           stays centred on the logo, and no card grows. --visible is the asset's
+           opaque share, measured from the PNG; tests/frontend-capabilities.test.cjs
+           measures it again. */
+        .network-logo {
+            --glyph: 40px;
+            --row: 32px;
+            --visible: 0.75;
+            width: calc(var(--glyph) / var(--visible));
+            height: calc(var(--glyph) / var(--visible));
+            margin: calc((var(--row) - var(--glyph) / var(--visible)) / 2)
+                calc((var(--glyph) - var(--glyph) / var(--visible)) / 2);
+            flex: 0 0 auto;
+            object-fit: contain;
+        }
+        .network-logo[src="/arc.png"] { --visible: 1; }
+        .network-logo[src="/hedera.png"] { --visible: 0.9027; }
+        .network-logo[src="/stellar.png"] { --visible: 0.8125; }
+        .network-logo[src="/polygon.png"] { --visible: 0.7083; }
+
         /* A chain's health, read from GET /health/ready: a small blinking red dot
            in the card's lower-left corner while it is down, degraded for a reason
            other than gas, or under 10 settles (`cardHealth` in x402.js). Nothing
@@ -1294,7 +1319,7 @@
                             onclick="window.open('https://snowtrace.io/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
                                 <img src="/avalanche.png" alt="Avalanche"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
+                                    class="network-logo">
                                 <span style="font-weight: 700;">Avalanche C-Chain</span>
                             </div>
                             <div class="balance-amount" data-balance="avalanche-mainnet"
@@ -1308,7 +1333,7 @@
                             style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://basescan.org/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/base.png" alt="Base" style="width: 32px; height: 32px; object-fit: contain;">
+                                <img src="/base.png" alt="Base" class="network-logo">
                                 <span style="font-weight: 700;">Base</span>
                             </div>
                             <div class="balance-amount" data-balance="base-mainnet"
@@ -1322,7 +1347,7 @@
                             style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://celoscan.io/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/celo.png" alt="Celo" style="width: 32px; height: 32px; object-fit: contain;">
+                                <img src="/celo.png" alt="Celo" class="network-logo">
                                 <span style="font-weight: 700;">Celo</span>
                             </div>
                             <div class="balance-amount" data-balance="celo-mainnet"
@@ -1337,7 +1362,7 @@
                             onclick="window.open('https://hyperevmscan.io/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
                                 <img src="/hyperevm.png" alt="HyperEVM"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
+                                    class="network-logo">
                                 <span style="font-weight: 700;">HyperEVM</span>
                             </div>
                             <div class="balance-amount" data-balance="hyperevm-mainnet"
@@ -1352,7 +1377,7 @@
                             onclick="window.open('https://polygonscan.com/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
                                 <img src="/polygon.png" alt="Polygon"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
+                                    class="network-logo">
                                 <span style="font-weight: 700;">Polygon</span>
                             </div>
                             <div class="balance-amount" data-balance="polygon-mainnet"
@@ -1367,7 +1392,7 @@
                             onclick="window.open('https://solscan.io/account/F742C4VfFLQ9zRQyithoj5229ZgtX2WqKCSFKgH2EThq', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
                                 <img src="/solana.png" alt="Solana"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
+                                    class="network-logo">
                                 <span style="font-weight: 700;">Solana</span>
                             </div>
                             <div class="balance-amount" data-balance="solana-mainnet"
@@ -1382,7 +1407,7 @@
                             onclick="window.open('https://optimistic.etherscan.io/address/0x103040545ac5031a11e8c03dd11324c7333a13c7', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
                                 <img src="/optimism.png" alt="Optimism"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
+                                    class="network-logo">
                                 <span style="font-weight: 700;">Optimism</span>
                             </div>
                             <div class="balance-amount" data-balance="optimism-mainnet"
@@ -1397,7 +1422,7 @@
                             onclick="window.open('https://etherscan.io/address/0x103040545ac5031a11e8c03dd11324c7333a13c7', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
                                 <img src="/ethereum.png" alt="Ethereum"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
+                                    class="network-logo">
                                 <span style="font-weight: 700;">Ethereum</span>
                             </div>
                             <div class="balance-amount" data-balance="ethereum-mainnet"
@@ -1412,7 +1437,7 @@
                             onclick="window.open('https://arbiscan.io/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
                                 <img src="/arbitrum.png" alt="Arbitrum"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
+                                    class="network-logo">
                                 <span style="font-weight: 700;">Arbitrum</span>
                             </div>
                             <div class="balance-amount" data-balance="arbitrum-mainnet"
@@ -1427,7 +1452,7 @@
                             onclick="window.open('https://uniscan.xyz/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
                                 <img src="/unichain.png" alt="Unichain"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
+                                    class="network-logo">
                                 <span style="font-weight: 700;">Unichain</span>
                             </div>
                             <div class="balance-amount" data-balance="unichain-mainnet"
@@ -1442,7 +1467,7 @@
                             onclick="window.open('https://monadscan.com/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
                                 <img src="/monad.png" alt="Monad"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
+                                    class="network-logo">
                                 <span style="font-weight: 700;">Monad</span>
                             </div>
                             <div class="balance-amount" data-balance="monad-mainnet"
@@ -1456,7 +1481,7 @@
                             style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://nearblocks.io/address/uvd-facilitator.near', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/near.png" alt="NEAR" style="width: 32px; height: 32px; object-fit: contain;">
+                                <img src="/near.png" alt="NEAR" class="network-logo">
                                 <span style="font-weight: 700;">NEAR</span>
                             </div>
                             <div class="balance-amount" data-balance="near-mainnet"
@@ -1471,7 +1496,7 @@
                             onclick="window.open('https://stellar.expert/explorer/public/account/GCHPGXJT2WFFRFCA5TV4G4E3PMMXLNIDUH27PKDYA4QJ2XGYZWGFZNHB', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
                                 <img src="/stellar.png" alt="Stellar"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
+                                    class="network-logo">
                                 <span style="font-weight: 700;">Stellar</span>
                             </div>
                             <div class="balance-amount" data-balance="stellar-mainnet"
@@ -1486,7 +1511,7 @@
                             onclick="window.open('https://livenet.xrpl.org/accounts/rfADKkVXBNqK3z72tVSS3LVzAR3psYkonp', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
                                 <img src="/xrpl.png" alt="XRPL"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
+                                    class="network-logo">
                                 <span style="font-weight: 700;">XRPL</span>
                             </div>
                             <div class="balance-amount" data-balance="xrpl-mainnet"
@@ -1500,7 +1525,7 @@
                             style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://fogoscan.com/account/F742C4VfFLQ9zRQyithoj5229ZgtX2WqKCSFKgH2EThq', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/fogo.png" alt="Fogo" style="width: 32px; height: 32px; object-fit: contain;">
+                                <img src="/fogo.png" alt="Fogo" class="network-logo">
                                 <span style="font-weight: 700;">Fogo</span>
                             </div>
                             <div class="balance-amount" data-balance="fogo-mainnet"
@@ -1515,7 +1540,7 @@
                             style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://allo.info/account/KIMS5H6QLCUDL65L5UBTOXDPWLMTS7N3AAC3I6B2NCONEI5QIVK7LH2C2I', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/algorand.png" alt="Algorand" style="width: 32px; height: 32px; object-fit: contain;">
+                                <img src="/algorand.png" alt="Algorand" class="network-logo">
                                 <span style="font-weight: 700;">Algorand</span>
                             </div>
                             <div class="balance-amount" data-balance="algorand-mainnet"
@@ -1530,7 +1555,7 @@
                             style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://bscscan.com/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/bsc.png" alt="BSC" style="width: 32px; height: 32px; object-fit: contain;">
+                                <img src="/bsc.png" alt="BSC" class="network-logo">
                                 <span style="font-weight: 700;">BNB Chain</span>
                             </div>
                             <div class="balance-amount" data-balance="bsc-mainnet"
@@ -1544,7 +1569,7 @@
                             style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://suiscan.xyz/mainnet', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/sui.png" alt="Sui" style="width: 32px; height: 32px; object-fit: contain;">
+                                <img src="/sui.png" alt="Sui" class="network-logo">
                                 <span style="font-weight: 700;">Sui</span>
                             </div>
                             <div class="balance-amount" data-balance="sui-mainnet"
@@ -1558,7 +1583,7 @@
                             style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://skale-base-explorer.skalenodes.com/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/skale.png" alt="SKALE" style="width: 32px; height: 32px; object-fit: contain;">
+                                <img src="/skale.png" alt="SKALE" class="network-logo">
                                 <span style="font-weight: 700;">SKALE Base</span>
                             </div>
                             <div class="balance-amount" data-balance="skale-mainnet"
@@ -1572,7 +1597,7 @@
                             style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://scrollscan.com/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/scroll.png" alt="Scroll" style="width: 32px; height: 32px; object-fit: contain;">
+                                <img src="/scroll.png" alt="Scroll" class="network-logo">
                                 <span style="font-weight: 700;">Scroll</span>
                             </div>
                             <div class="balance-amount" data-balance="scroll-mainnet"
@@ -1586,7 +1611,7 @@
                             style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://robinhoodchain.blockscout.com/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/robinhood.png" alt="Robinhood Chain" style="width: 32px; height: 32px; object-fit: contain;">
+                                <img src="/robinhood.png" alt="Robinhood Chain" class="network-logo">
                                 <span style="font-weight: 700;">Robinhood Chain</span>
                             </div>
                             <div class="balance-amount" data-balance="robinhood-mainnet"
@@ -1599,7 +1624,7 @@
                         <div class="network-badge hedera" data-native-network="hedera:mainnet"
                             style="display: none; padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/hedera.png" alt="Hedera" style="width: 32px; height: 32px; object-fit: contain; border-radius: 50%;">
+                                <img src="/hedera.png" alt="Hedera" class="network-logo" style="border-radius: 50%;">
                                 <span style="font-weight: 700;">Hedera</span>
                             </div>
                             <div class="balance-amount" data-balance="hedera-mainnet"
@@ -1611,7 +1636,7 @@
                             style="display: none; padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://explorer.arc.io/address/0x103040545AC5031A11E8C03dd11324C7333a13C7', '_blank', 'noopener')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/arc.png" alt="Arc" style="width: 32px; height: 32px; object-fit: contain; border-radius: 50%;">
+                                <img src="/arc.png" alt="Arc" class="network-logo" style="border-radius: 50%;">
                                 <span style="font-weight: 700;">Arc</span>
                             </div>
                             <div class="balance-amount" data-balance="arc-mainnet"
@@ -1636,7 +1661,7 @@
                             onclick="window.open('https://testnet.snowtrace.io/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
                                 <img src="/avalanche.png" alt="Avalanche"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
+                                    class="network-logo">
                                 <span style="font-weight: 700;">Avalanche Fuji</span>
                             </div>
                             <div class="balance-amount" data-balance="avalanche-testnet"
@@ -1650,7 +1675,7 @@
                             style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://sepolia.basescan.org/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/base.png" alt="Base" style="width: 32px; height: 32px; object-fit: contain;">
+                                <img src="/base.png" alt="Base" class="network-logo">
                                 <span style="font-weight: 700;">Base Sepolia</span>
                             </div>
                             <div class="balance-amount" data-balance="base-testnet"
@@ -1664,7 +1689,7 @@
                             style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://sepolia.celoscan.io/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/celo.png" alt="Celo" style="width: 32px; height: 32px; object-fit: contain;">
+                                <img src="/celo.png" alt="Celo" class="network-logo">
                                 <span style="font-weight: 700;">Celo Sepolia</span>
                             </div>
                             <div class="balance-amount" data-balance="celo-testnet"
@@ -1679,7 +1704,7 @@
                             onclick="window.open('https://amoy.polygonscan.com/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
                                 <img src="/polygon.png" alt="Polygon"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
+                                    class="network-logo">
                                 <span style="font-weight: 700;">Polygon Amoy</span>
                             </div>
                             <div class="balance-amount" data-balance="polygon-testnet"
@@ -1694,7 +1719,7 @@
                             onclick="window.open('https://sepolia-optimism.etherscan.io/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
                                 <img src="/optimism.png" alt="Optimism"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
+                                    class="network-logo">
                                 <span style="font-weight: 700;">Optimism Sepolia</span>
                             </div>
                             <div class="balance-amount" data-balance="optimism-testnet"
@@ -1709,7 +1734,7 @@
                             onclick="window.open('https://sepolia.etherscan.io/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
                                 <img src="/ethereum.png" alt="Ethereum"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
+                                    class="network-logo">
                                 <span style="font-weight: 700;">Ethereum Sepolia</span>
                             </div>
                             <div class="balance-amount" data-balance="ethereum-testnet"
@@ -1724,7 +1749,7 @@
                             onclick="window.open('https://sepolia.arbiscan.io/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
                                 <img src="/arbitrum.png" alt="Arbitrum"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
+                                    class="network-logo">
                                 <span style="font-weight: 700;">Arbitrum Sepolia</span>
                             </div>
                             <div class="balance-amount" data-balance="arbitrum-testnet"
@@ -1739,7 +1764,7 @@
                             onclick="window.open('https://sepolia.uniscan.xyz/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
                                 <img src="/unichain.png" alt="Unichain"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
+                                    class="network-logo">
                                 <span style="font-weight: 700;">Unichain Sepolia</span>
                             </div>
                             <div class="balance-amount" data-balance="unichain-testnet"
@@ -1754,7 +1779,7 @@
                             onclick="window.open('https://testnet.purrsec.com/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
                                 <img src="/hyperevm.png" alt="HyperEVM"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
+                                    class="network-logo">
                                 <span style="font-weight: 700;">HyperEVM Testnet</span>
                             </div>
                             <div class="balance-amount" data-balance="hyperevm-testnet"
@@ -1768,7 +1793,7 @@
                             style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://testnet.nearblocks.io/address/uvd-facilitator.testnet', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/near.png" alt="NEAR" style="width: 32px; height: 32px; object-fit: contain;">
+                                <img src="/near.png" alt="NEAR" class="network-logo">
                                 <span style="font-weight: 700;">NEAR Testnet</span>
                             </div>
                             <div class="balance-amount" data-balance="near-testnet"
@@ -1783,7 +1808,7 @@
                             onclick="window.open('https://stellar.expert/explorer/testnet/account/GBBFZMLUJEZVI32EN4XA2KPP445XIBTMTRBLYWFIL556RDTHS2OWFQ2Z', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
                                 <img src="/stellar.png" alt="Stellar"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
+                                    class="network-logo">
                                 <span style="font-weight: 700;">Stellar Testnet</span>
                             </div>
                             <div class="balance-amount" data-balance="stellar-testnet"
@@ -1797,7 +1822,7 @@
                             style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://fogoscan.com/account/6xNPewUdKRbEZDReQdpyfNUdgNg8QRc8Mt263T5GZSRv?cluster=testnet', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/fogo.png" alt="Fogo" style="width: 32px; height: 32px; object-fit: contain;">
+                                <img src="/fogo.png" alt="Fogo" class="network-logo">
                                 <span style="font-weight: 700;">Fogo Testnet</span>
                             </div>
                             <div class="balance-amount" data-balance="fogo-testnet"
@@ -1811,7 +1836,7 @@
                             style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://testnet.explorer.perawallet.app/address/5DPPDQNYUPCTXRZWRYSF3WPYU6RKAUR25F3YG4EKXQRHV5AUAI62H5GXL4/', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/algorand.png" alt="Algorand" style="width: 32px; height: 32px; object-fit: contain;">
+                                <img src="/algorand.png" alt="Algorand" class="network-logo">
                                 <span style="font-weight: 700;">Algorand Testnet</span>
                             </div>
                             <div class="balance-amount" data-balance="algorand-testnet"
@@ -1825,7 +1850,7 @@
                             style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://solscan.io/account/6xNPewUdKRbEZDReQdpyfNUdgNg8QRc8Mt263T5GZSRv?cluster=devnet', '_blank'">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/solana.png" alt="Solana" style="width: 32px; height: 32px; object-fit: contain;">
+                                <img src="/solana.png" alt="Solana" class="network-logo">
                                 <span style="font-weight: 700;">Solana Devnet</span>
                             </div>
                             <div class="balance-amount" data-balance="solana-devnet"
@@ -1839,7 +1864,7 @@
                             style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://suiscan.xyz/testnet', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/sui.png" alt="Sui" style="width: 32px; height: 32px; object-fit: contain;">
+                                <img src="/sui.png" alt="Sui" class="network-logo">
                                 <span style="font-weight: 700;">Sui Testnet</span>
                             </div>
                             <div class="balance-amount" data-balance="sui-testnet"
@@ -1853,7 +1878,7 @@
                             style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://base-sepolia-testnet-explorer.skalenodes.com/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/skale.png" alt="SKALE" style="width: 32px; height: 32px; object-fit: contain;">
+                                <img src="/skale.png" alt="SKALE" class="network-logo">
                                 <span style="font-weight: 700;">SKALE Base Sepolia</span>
                             </div>
                             <div class="balance-amount" data-balance="skale-testnet"
@@ -1867,7 +1892,7 @@
                             style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://explorer.testnet.chain.robinhood.com/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/robinhood.png" alt="Robinhood Chain Testnet" style="width: 32px; height: 32px; object-fit: contain;">
+                                <img src="/robinhood.png" alt="Robinhood Chain Testnet" class="network-logo">
                                 <span style="font-weight: 700;">Robinhood Testnet</span>
                             </div>
                             <div class="balance-amount" data-balance="robinhood-testnet"
@@ -1881,7 +1906,7 @@
                             style="display: none; padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://explorer.testnet.arc.io/address/0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8', '_blank', 'noopener')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/arc.png" alt="Arc" style="width: 32px; height: 32px; object-fit: contain; border-radius: 50%;">
+                                <img src="/arc.png" alt="Arc" class="network-logo" style="border-radius: 50%;">
                                 <span style="font-weight: 700;">Arc Testnet</span>
                             </div>
                             <div class="balance-amount" data-balance="arc-testnet"
@@ -1894,7 +1919,7 @@
                             onclick="window.open('https://testnet.xrpl.org/accounts/rGhTioKAFHe75KgVnQtacRiKFuPv28Wbwk', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
                                 <img src="/xrpl.png" alt="XRPL"
-                                    style="width: 32px; height: 32px; object-fit: contain;">
+                                    class="network-logo">
                                 <span style="font-weight: 700;">XRPL</span>
                             </div>
                             <div class="balance-amount" data-balance="xrpl-testnet"
@@ -1907,7 +1932,7 @@
                         <div class="network-badge hedera" data-native-network="hedera:testnet"
                             style="display: none; padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <img src="/hedera.png" alt="Hedera" style="width: 32px; height: 32px; object-fit: contain; border-radius: 50%;">
+                                <img src="/hedera.png" alt="Hedera" class="network-logo" style="border-radius: 50%;">
                                 <span style="font-weight: 700;">Hedera Testnet</span>
                             </div>
                             <div class="balance-amount" data-balance="hedera-testnet"
@@ -1920,7 +1945,7 @@
                             style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
                             onclick="window.open('https://zama-facilitator.ultravioletadao.xyz', '_blank')">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <svg width="40" height="40" viewBox="1 1 30 30" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin: -4px 0; flex: 0 0 auto;">
                                     <circle cx="16" cy="16" r="14" stroke="#ffcc00" stroke-width="2" fill="none"/>
                                     <path d="M10 16L14 20L22 12" stroke="#ffcc00" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
                                     <circle cx="16" cy="16" r="6" stroke="#ffcc00" stroke-width="1.5" fill="none" opacity="0.5"/>

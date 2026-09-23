@@ -253,6 +253,39 @@
             box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
         }
 
+        /* A chain's health, read from GET /health/ready: nothing while it is ok,
+           a small blinking red dot in the card's lower-left corner while it is
+           degraded or down. Absolutely positioned, so no card moves or resizes. */
+        .network-status {
+            position: absolute;
+            left: 10px;
+            bottom: 10px;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #ef4444;
+            box-shadow: 0 0 6px rgba(239, 68, 68, 0.8);
+            z-index: 1;
+            animation: network-status-blink 1.2s ease-in-out infinite;
+        }
+
+        @keyframes network-status-blink {
+            0%,
+            100% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.25;
+            }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            .network-status {
+                animation: none;
+            }
+        }
+
         .network-badge.avalanche {
             border-color: var(--avalanche-red);
             box-shadow: 0 0 20px rgba(232, 65, 66, 0.2);
@@ -2986,7 +3019,7 @@
 </footer>
     </div>
 
-    <script src="/x402.js?v=20260917"></script>
+    <script src="/x402.js?v=20260923"></script>
     <script>
         const translations = {
             en: {
@@ -3463,6 +3496,42 @@
                 window.__catalogState = 'unavailable';
                 displayTokenSupport();
             });
+        })();
+
+        // Chain health on each network card, from GET /health/ready, which
+        // lists every configured chain with its state and reason. A dot only
+        // for `degraded` or `down`; nothing for `ok`, for a chain the route does
+        // not probe, or when the answer cannot be read -- never a red dot for
+        // not knowing. A 503 still carries the per-chain list, so its body is
+        // read like a 200's. The route caches for 60 s, so polling at that
+        // rate costs the chains nothing.
+        (function loadNetworkStatus() {
+            const paint = index => {
+                document.querySelectorAll('.network-badge [data-tokens]').forEach(container => {
+                    const card = container.closest('.network-badge');
+                    const health = index ? cardHealth(index, container.dataset.tokens) : null;
+                    let dot = card.querySelector(':scope > .network-status');
+                    if (!health) { dot?.remove(); return; }
+                    if (!dot) {
+                        dot = document.createElement('span');
+                        dot.className = 'network-status';
+                        dot.setAttribute('role', 'img');
+                        card.append(dot);
+                    }
+                    dot.title = health.label;
+                    dot.setAttribute('aria-label', health.label);
+                });
+            };
+            const refresh = () => {
+                if (document.hidden) return;
+                if (typeof readinessIndex !== 'function') return paint(null);
+                fetch('/health/ready', { cache: 'no-store' })
+                    .then(r => r.json())
+                    .then(body => paint(readinessIndex(body)))
+                    .catch(() => paint(null));
+            };
+            refresh();
+            setInterval(refresh, 60000);
         })();
 
         // Curated Bazaar counters. Served from the facilitator's own 60s-cached

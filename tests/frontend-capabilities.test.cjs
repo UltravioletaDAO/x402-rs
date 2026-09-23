@@ -91,3 +91,45 @@ test('landing shuffles each grid once on load without an opt-in URL', () => {
   assert.deepEqual(first.map(cards=>[...cards].sort()),original);
   assert.deepEqual(second.map(cards=>[...cards].sort()),original);
 });
+
+// The status dot on each landing card reads GET /health/ready. It shows only
+// what the route measured: nothing for ok, unprobed or unreadable, a label
+// naming state and reason otherwise.
+test('card health: a dot only for degraded or down, labelled with the reason', () => {
+  context.body={status:'down',networks:[
+    {network:'base',caip2:'eip155:8453',status:'ok',rpc:'ok'},
+    {network:'ethereum',caip2:'eip155:1',status:'degraded',reason:'signer_gas_low'},
+    {network:'arc',caip2:'eip155:5042',status:'down',reason:'rpc_chain_id_mismatch'},
+    {network:'hedera',caip2:'hedera:mainnet',status:'down',reason:'rpc_timeout'},
+    {network:'celo-sepolia',caip2:'eip155:11142220',status:'degraded'},
+    {network:'polygon',caip2:'eip155:137',status:'unknown-state',reason:'x'},
+  ],unchecked:['solana']};
+  const show=keys=>{context.keys=keys;return evaluate('keys.map(k=>cardHealth(readinessIndex(body),k))');};
+  assert.deepEqual(show(['base-mainnet','solana-mainnet','polygon-mainnet','sui-testnet']),[null,null,null,null]);
+  assert.deepEqual(show(['ethereum-mainnet','arc-mainnet','celo-testnet']),[
+    {status:'degraded',label:'degraded: signer_gas_low'},
+    {status:'down',label:'down: rpc_chain_id_mismatch'},
+    {status:'degraded',label:'degraded'},
+  ]);
+  // Native Hedera is only in /supported under its CAIP-2 id; the card finds it.
+  assert.deepEqual(show(['hedera-mainnet']),[{status:'down',label:'down: rpc_timeout'}]);
+});
+test('card health: an unreadable answer shows nothing, never a red dot for not knowing', () => {
+  for (const body of [null,'x',{status:'down',error:'probe_failed'},{error:'rate_limited'},{networks:'no'},{networks:[null,{network:'base'}]}]) {
+    context.body=body;
+    assert.equal(evaluate('JSON.stringify(cardHealth(readinessIndex(body),"base-mainnet"))'),'null',JSON.stringify(body));
+  }
+  assert.equal(evaluate('cardHealth(null,"base-mainnet")'),null);
+});
+test('landing: the dot sits in the lower-left corner, does not move the card and stops blinking on reduced motion', () => {
+  const html=fs.readFileSync(path.join(root,'static/index.html'),'utf8');
+  const rule=html.slice(html.indexOf('.network-status {'),html.indexOf('}',html.indexOf('.network-status {')));
+  for (const decl of ['position: absolute','left: 10px','bottom: 10px','animation: network-status-blink']) assert(rule.includes(decl),decl);
+  const reduced=html.slice(html.indexOf('@media (prefers-reduced-motion: reduce)'));
+  assert(/^@media \(prefers-reduced-motion: reduce\) \{\s*\.network-status \{\s*animation: none;/.test(reduced));
+  const loader=html.slice(html.indexOf('(function loadNetworkStatus()'),html.indexOf('// Curated Bazaar counters.'));
+  assert(loader.includes("fetch('/health/ready'"));
+  assert(loader.includes('.catch(() => paint(null))'),'a failed read clears the dots');
+  assert(loader.includes("setAttribute('aria-label', health.label)"));
+  assert(html.includes('<script src="/x402.js?v=20260923"></script>'),'a cached x402.js without cardHealth must not be served to this page');
+});

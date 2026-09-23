@@ -76,29 +76,82 @@ impl FromEnvByNetworkBuild for HederaProvider {
             mirror,
             store,
         };
-        // A failed health check at startup leaves this ledger out of /supported
-        // and alerts; it never fails the build. Through 2.39.1 it was `?`, and
-        // `ProviderCache::from_env` turned that into `exit(1)` for every network.
-        // Recovery still starts: it only finishes payments admitted before the
-        // restart, retries on its own, and admits nothing new.
-        if let Err(reason) = provider.health().await {
-            tracing::error!(
-                %network,
-                reason = %crate::redact::scrub_urls(&reason),
-                "[FAIL] hedera_health_failed_at_startup: {network} is not served; \
-                 recovery of admitted payments still runs"
-            );
-            provider.start_recovery();
-            return Ok(None);
-        }
+        // A configured ledger is served whatever its health check answers. The
+        // check runs in the background and alerts; `/health/ready` reports the
+        // ledger's state on every refresh. Through 2.39.1 a failed check was `?`,
+        // which `ProviderCache::from_env` turned into `exit(1)` for every
+        // network, and through 2.39.3 it left the ledger out of /supported
+        // until the next deploy: a consensus probe that timed out once at
+        // startup took Hedera mainnet off the landing on 2026-09-23.
         if let Ok(mut registry) = ASSET_DECIMALS.write() {
             for (asset, decimals) in &provider.config.assets {
                 registry.insert((network, asset.to_string()), *decimals);
             }
         }
         provider.start_recovery();
+        provider.watch_startup_health();
         Ok(Some(provider))
     }
+}
+
+/// Why a health check did not pass. `/health/ready` reports [`Self::reason`];
+/// the detail stays in the server log.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HealthFailure {
+    /// The consensus nodes did not answer the cost query in time.
+    ConsensusTimeout,
+    /// The consensus nodes or the Mirror Node could not be read.
+    Unreachable(String),
+    /// The settlement table could not be read.
+    StoreUnavailable(String),
+    /// The ledger says the sponsor account is controlled by another key, or by
+    /// one this facilitator cannot sign for alone.
+    SponsorKeyMismatch,
+}
+
+impl HealthFailure {
+    /// Bounded token for `/health/ready`.
+    pub fn reason(&self) -> &'static str {
+        match self {
+            Self::ConsensusTimeout => "rpc_timeout",
+            Self::Unreachable(_) => "rpc_unreachable",
+            Self::StoreUnavailable(_) => "store_unavailable",
+            Self::SponsorKeyMismatch => "signer_key_mismatch",
+        }
+    }
+}
+
+impl std::fmt::Display for HealthFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ConsensusTimeout => f.write_str("Hedera consensus probe timeout"),
+            Self::Unreachable(detail) | Self::StoreUnavailable(detail) => f.write_str(detail),
+            Self::SponsorKeyMismatch => f.write_str("sponsor account/key mismatch"),
+        }
+    }
+}
+
+/// The part of the health check the Mirror Node's account answer decides:
+/// settles the sponsor's HBAR still pays for, at one `max_fee` each (0 below
+/// one), or a key that is not ours.
+fn sponsor_settles(
+    account: &serde_json::Value,
+    key: &hiero_sdk::PrivateKey,
+    max_fee: u64,
+) -> std::result::Result<u64, HealthFailure> {
+    let ledger_key = mirror::account_key(account).map_err(HealthFailure::Unreachable)?;
+    let actual = match ledger_key.key {
+        Some(
+            hiero_sdk_proto::services::key::Key::Ed25519(k)
+            | hiero_sdk_proto::services::key::Key::EcdsaSecp256k1(k),
+        ) => k,
+        _ => return Err(HealthFailure::SponsorKeyMismatch),
+    };
+    if actual != key.public_key().to_bytes_raw() {
+        return Err(HealthFailure::SponsorKeyMismatch);
+    }
+    let balance = mirror::hbar_balance(account).map_err(HealthFailure::Unreachable)?;
+    Ok(balance / max_fee)
 }
 impl NetworkProviderOps for HederaProvider {
     fn signer_address(&self) -> MixedAddress {
@@ -373,7 +426,11 @@ impl HederaProvider {
         let _ = self.store.save(key, &record).await;
         Err(self.unconfirmed(&record.intent))
     }
-    pub async fn health(&self) -> Result<u64> {
+    /// Settles the sponsor's HBAR still pays for, once the settlement table,
+    /// the Mirror Node and the consensus nodes have all answered. A balance
+    /// below one `max_fee` is `Ok(0)`, which `/health/ready` grades
+    /// `signer_gas_critical`, not a failure to reach the ledger.
+    pub async fn health(&self) -> std::result::Result<u64, HealthFailure> {
         let consensus = async {
             // Consensus v0.77 removed cryptoGetBalance. Explicit node IDs also
             // avoid the old SDK's implicit balance-based ping. COST_ANSWER
@@ -382,32 +439,124 @@ impl HederaProvider {
             query
                 .account_id(hiero_sdk::AccountId::new(0, 0, 2))
                 .node_account_ids(self.client.network().values().copied());
-            tokio::time::timeout(Duration::from_secs(5), query.get_cost(&self.client))
-                .await
-                .map_err(|_| "Hedera consensus probe timeout")?
-                .map_err(|_| "Hedera consensus unavailable")
+            match tokio::time::timeout(Duration::from_secs(5), query.get_cost(&self.client)).await {
+                Err(_) => Err(HealthFailure::ConsensusTimeout),
+                Ok(Err(_)) => Err(HealthFailure::Unreachable(
+                    "Hedera consensus unavailable".into(),
+                )),
+                Ok(Ok(_)) => Ok(()),
+            }
         };
         let (_, account, _) = tokio::try_join!(
-            self.store.health(),
-            self.mirror.account(&self.config.account),
-            async { consensus.await.map_err(String::from) }
+            async {
+                self.store
+                    .health()
+                    .await
+                    .map_err(HealthFailure::StoreUnavailable)
+            },
+            async {
+                self.mirror
+                    .account(&self.config.account)
+                    .await
+                    .map_err(HealthFailure::Unreachable)
+            },
+            consensus
         )?;
-        let key = mirror::account_key(&account)?;
-        let actual = match key.key {
-            Some(
-                hiero_sdk_proto::services::key::Key::Ed25519(k)
-                | hiero_sdk_proto::services::key::Key::EcdsaSecp256k1(k),
-            ) => k,
-            _ => return Err("sponsor requires a simple key".into()),
+        sponsor_settles(&account, &self.config.key, self.config.max_fee)
+    }
+
+    /// Run the health check once, in the background, and again every 30-60 s
+    /// while it fails; log the first failure (the alert token) and the
+    /// recovery. It never decides whether the ledger is served.
+    fn watch_startup_health(&self) {
+        let provider = self.clone();
+        tokio::spawn(async move {
+            let network = provider.config.network;
+            let mut attempt = 0;
+            loop {
+                match provider.health().await {
+                    Ok(_) if attempt == 0 => return,
+                    Ok(_) => {
+                        tracing::info!(
+                            %network,
+                            attempt,
+                            "[OK] hedera_health_recovered: the ledger answers again"
+                        );
+                        return;
+                    }
+                    Err(failure) if attempt == 0 => tracing::error!(
+                        %network,
+                        reason = failure.reason(),
+                        detail = %crate::redact::scrub_urls(&failure.to_string()),
+                        "[FAIL] hedera_health_failed_at_startup: {network} stays served; \
+                         /health/ready reports it and the check runs again until it passes"
+                    ),
+                    Err(failure) => tracing::debug!(
+                        %network,
+                        attempt,
+                        reason = failure.reason(),
+                        "Hedera health check still failing"
+                    ),
+                }
+                tokio::time::sleep(crate::chain::reprobe_delay(attempt)).await;
+                attempt += 1;
+            }
+        });
+    }
+
+    /// A provider on `mirror` and `nodes` with a settlement table that always
+    /// answers, for tests that need a ledger whose health they control.
+    #[cfg(test)]
+    pub(crate) fn for_health_tests(
+        network: Network,
+        mirror: url::Url,
+        nodes: std::collections::HashMap<String, hiero_sdk::AccountId>,
+    ) -> Self {
+        struct HealthyTable;
+        #[async_trait::async_trait]
+        impl Store for HealthyTable {
+            async fn read(&self, _: &str) -> Result<Option<Record>> {
+                Ok(None)
+            }
+            async fn reserve(
+                &self,
+                _: &str,
+                _: &str,
+                _: &Intent,
+                _: &str,
+                _: u64,
+            ) -> Result<Record> {
+                Err("health tests reserve nothing".into())
+            }
+            async fn save(&self, _: &str, _: &Record) -> Result<()> {
+                Err("health tests save nothing".into())
+            }
+            async fn pending(&self, _: &str) -> Result<Vec<(String, Record)>> {
+                Ok(vec![])
+            }
+            async fn health(&self) -> Result<()> {
+                Ok(())
+            }
+        }
+        let config = Config {
+            network,
+            account: "0.0.3003".parse().expect("entity id"),
+            key: hiero_sdk::PrivateKey::from_bytes_ed25519(&[7; 32]).expect("key"),
+            mirror: mirror.clone(),
+            assets: Config::payment_assets(network, None).expect("assets"),
+            max_fee: DEFAULT_MAX_TRANSACTION_FEE_TINYBARS,
+            daily_budget: 10 * DEFAULT_MAX_TRANSACTION_FEE_TINYBARS,
+            settle_timeout: Duration::from_secs(5),
+            table: "unused".into(),
+            admissions: true,
         };
-        if actual != self.config.key.public_key().to_bytes_raw() {
-            return Err("sponsor account/key mismatch".into());
+        let client = hiero_sdk::Client::for_network(nodes).expect("client");
+        Self {
+            config,
+            client,
+            mirror: Mirror::new(mirror).expect("mirror"),
+            store: Arc::new(HealthyTable),
         }
-        let balance = mirror::hbar_balance(&account)?;
-        if balance < self.config.max_fee {
-            return Err("insufficient sponsor HBAR".into());
-        }
-        Ok(balance / self.config.max_fee)
     }
 }
 impl Facilitator for HederaProvider {

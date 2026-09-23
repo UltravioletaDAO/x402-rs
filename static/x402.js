@@ -153,3 +153,26 @@ function stablecoinsForCard(row) {
 function matchesStablecoinFilter(row, token) {
   return Boolean(row?.schemes.has('exact') && (!token || stablecoinsForCard(row)?.includes(token)));
 }
+
+// Chain health from GET /health/ready, keyed by both spellings of each chain:
+// native Hedera appears in /supported under its CAIP-2 id only. Null when the
+// body is not a readiness answer (a 429, `probe_failed`, garbage), because a
+// state nobody could read is shown as nothing, never as unhealthy.
+function readinessIndex(body) {
+  if (!body || !Array.isArray(body.networks)) return null;
+  const index = new Map();
+  body.networks.forEach(n => {
+    if (!n || typeof n.status !== 'string') return;
+    const entry = {status: n.status, reason: typeof n.reason === 'string' ? n.reason : ''};
+    [n.network, n.caip2].forEach(name => { if (typeof name === 'string') index.set(name, entry); });
+  });
+  return index;
+}
+
+// What a landing card shows for its chain: null while it is ok or unprobed,
+// otherwise the label of its dot ("degraded: signer_gas_low").
+function cardHealth(index, key) {
+  const entry = index?.get(landingNetworkName(key));
+  if (!entry || (entry.status !== 'degraded' && entry.status !== 'down')) return null;
+  return {status: entry.status, label: entry.reason ? `${entry.status}: ${entry.reason}` : entry.status};
+}

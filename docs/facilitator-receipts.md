@@ -2,8 +2,9 @@
 
 Arc exact USDC/EURC (mainnet and testnet, x402 v1/v2) and native Hedera USDC
 (mainnet and testnet, v2) return an additive `receipt` beside `/verify` and
-`/settle` results. Other networks keep their existing behavior. Discover runtime
-availability in `/supported.facilitatorReceipts` or `GET /receipts`.
+`/settle` results. Other networks keep their existing behavior. Networks are
+added one at a time; discover runtime availability in
+`/supported.facilitatorReceipts` or `GET /receipts`.
 
 The receipt contains `network` (CAIP-2), `asset`, atomic-string `amount`,
 `decimals`, `payTo`, `payer`, `requestHash`, `authorizationId`,
@@ -17,7 +18,7 @@ extension. A confirmed payment never proves delivery of the purchased resource.
 | State | Meaning | Buyer action |
 | --- | --- | --- |
 | verified | Read-only authorization check passed | Settle that authorization |
-| pending | Transaction identified/prepared, outcome not final | Poll or resend the same authorization |
+| pending | Transaction identified/prepared, outcome not final | Poll, or resend the same request with its context or Idempotency-Key |
 | confirmed | Provider returned successful chain settlement | Retrieve the merchant response; do not pay again |
 | rejected | Explicit validation rejection or failed chain settlement | Inspect refusalReason; do not silently create another purchase |
 | unknown | Missing outcome, including HTTP/RPC/storage uncertainty | Retain context and authorization; poll or replay exactly |
@@ -70,7 +71,8 @@ An authorized lookup returns HTTP 200 even when the payment is unknown or its
 original POST returned an error. Inspect the signed `status`; HTTP 200 here
 means the receipt was retrieved, not that the payment succeeded.
 Without context, receipts still protect authorization replay, but private lookup
-is unavailable: resend the original settlement request to retrieve its receipt.
+is unavailable: resend the original settlement request to learn its outcome (see
+"Replays of an admitted authorization").
 
 ## Hashing and proof
 
@@ -128,6 +130,33 @@ authorization, purchase capability and optional scoped Idempotency-Key together.
 Caller-supplied Idempotency-Key values beginning with `receipt:` are rejected
 across all networks, preventing legacy cache writes from replacing receipt rows.
 Signature verification happens before admission. Revision updates use CAS.
+
+### Replays of an admitted authorization
+
+The original answer goes back only to the binding that admitted the payment:
+the same `X-UVD-Purchase` capability, or the same `Idempotency-Key`. That
+request gets today's replay (the original status and body with
+`Idempotent-Replayed: true`, or `202 settlement_in_progress` while the payment
+is in flight), which is how a lost response is recovered. Possession of the
+signed payment alone is not a purchase binding:
+
+| Resend | `/settle` | `/verify` |
+| --- | --- | --- |
+| Same capability or same Idempotency-Key | Original answer replayed | Stored verdict and receipt |
+| No binding, payment `confirmed` | `409 authorization_already_settled` with the receipt | `isValid: false`, `invalidReason: authorization_already_settled` |
+| No binding, payment `pending` or `unknown` | `409 authorization_in_flight` with the receipt | `isValid: false`, `invalidReason: authorization_in_flight` |
+| No binding, payment `rejected` | Original rejection replayed | Stored rejection |
+| Another capability, or none for a payment made with one | `409 receipt_request_conflict`, no receipt | `isValid: false` with the reasons above, no receipt; a rejected payment is verified as before |
+
+These 409s never carry `success: true`, a top-level `transaction` or
+`Idempotent-Replayed`; the receipt inside proves the payment to whoever holds
+the payment itself. A receipt made under a purchase context is never returned
+without that context. `/verify` answers from the stored receipt and does not
+simulate the consumed authorization again. Recovery by reconciliation and
+rebroadcast of saved bytes is unchanged for every resend.
+Requests that `/settle` routes to their own settlement paths never enter
+admission, even when their inner requirements say `exact`: the `upto`,
+`escrow`/`commerce` and `fhe-transfer` schemes and the x402r `refund` extension.
 There is **no TTL on these rows**: legacy cache expiry cannot admit another
 payment. Existing legacy cache hits are replayed before checking a consumed
 nonce, preserving their original success/conflict semantics. They are not
@@ -150,10 +179,17 @@ without exposing that purchase's private receipt.
 
 ## Validation scope
 
-Shared offline signed vectors cover Arc USDC/EURC and Hedera USDC on both ledgers.
+Shared offline signed vectors cover Arc USDC/EURC and Hedera USDC on both ledgers,
+plus Base USDC/EURC ahead of Base's admission; a Rust test rebuilds every vector
+from its synthetic inputs. `GET /receipts` remains the list of admitted networks.
 Rust tests cover concurrent admission, restart, invalid signatures, conflicts,
-private lookup, storage outages and lost responses; an explicit local DynamoDB
-test exercises transaction/CAS behavior using two store clients. SDK tests cover
+private lookup, storage outages and lost responses; replays with and without the
+admitting binding (settled, in flight, uncertain, concurrent) run on every
+admitted network; an explicit local DynamoDB
+test exercises transaction/CAS behavior using two store clients. The tests also
+drive Base's exact path through admission (concurrency, EVM address
+normalization, requests that belong to other settlement paths, DynamoDB) while
+production keeps Base out of it. SDK tests cover
 signature tampering, request binding, restart without a new signature, and a
 confirmed receipt alongside a merchant HTTP 500. These fixtures are not payments.
 Live EURC acceptance was proven on Arc mainnet on 2026-09-22 with a `confirmed` x402 v2

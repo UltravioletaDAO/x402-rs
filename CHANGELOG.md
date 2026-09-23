@@ -3,7 +3,9 @@
 ## [2.37.1] - 2026-09-22
 
 - Link previews are network-agnostic again. The landing's `og:description` goes back to its text from before #70 (83ac6d07), without the chain-family count: "Gasless x402 verify and settle. No fee, no account, no API key." Every page (`/`, `/x402`, `/dx402`, `/erc8004`, `/bazaar`, `/networks`, `/mcp`, `/integrar`, `/stats`, `/events/live`) goes back to `og:image` = `logo.png`, and loses the Arc/Hedera card's `og:image:width`, `og:image:height` and `og:image:alt` and the `twitter:card`/`twitter:image` tags that #70 added.
-- The facilitator's own description no longer singles out Arc or Hedera: the A2A agent card (`/.well-known/agent-card.json` and `/.well-known/agent.json`), the opening of `/index.md` (and so of `/llms-full.txt`), `/mcp.md` and the "What it is" paragraph of `/mcp`, in English and Spanish. Network lists and per-network instructions are unchanged.
+- The facilitator's own description no longer singles out Arc or Hedera: the A2A agent card (`/.well-known/agent-card.json` and `/.well-known/agent.json`), the opening of `/index.md` (and so of `/llms-full.txt`), `/mcp.md` and the "What it is" paragraph of `/mcp`, in English and Spanish.
+- Network lists no longer single one out either: the family lists in `/index.md` and `/llms.txt` say `EVM` instead of `EVM (including Arc)`, and the family summary on `/networks` drops "including Arc and native Hedera" (English and Spanish).
+- `/index.md` opens with its general sections (API, agent resources, links). The "Arc and native Hedera" section moves after them, next to the receipts section, with its content unchanged. `/llms-full.txt` is regenerated. Per-network instructions are unchanged everywhere.
 - No page references `og-arc-hedera.png`/`.svg` any more. The files stay, and the `/og-arc-hedera.png` route still serves the PNG.
 
 ## [2.37.0] - 2026-09-22

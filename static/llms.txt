@@ -75,7 +75,7 @@ facilitator just did, and what it costs (nothing — the seller keeps the paymen
 
 ## Coverage
 
-- **Network families:** EVM (including Arc), SVM (Solana/Fogo), NEAR, Stellar,
+- **Network families:** EVM, SVM (Solana/Fogo), NEAR, Stellar,
   Sui, Algorand, XRPL and native Hedera. Query `/supported` for enabled networks.
 - **Arc:** `arc` / `eip155:5042`, `arc-testnet` / `eip155:5042002`; direct EOA
   USDC/EURC `exact`, v1/v2. EURC prices in euros (6 decimals, domain `EURC` / `2`); gas remains USDC. Live EURC acceptance: a funded 0.01 EURC x402 v2 payment was verified and settled on Arc mainnet on 2026-09-22 (tx 0xd9de3864e11698cf730664147ac383acb763279056ac091bab57cfd3bf536128); funded Arc testnet acceptance is still pending. USDC has 6 payment decimals and domain `USDC` / `2`.

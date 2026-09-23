@@ -64,14 +64,12 @@ por tarjeta. Los saldos se ven como `—` a propósito.
 |---|---|---|
 | Mainnets, oscuro | ![](assets/iconos-red-antes-mainnets-1440-oscuro.png) | ![](assets/iconos-red-despues-mainnets-1440-oscuro.png) |
 | Testnets, oscuro | ![](assets/iconos-red-antes-testnets-1440-oscuro.png) | ![](assets/iconos-red-despues-testnets-1440-oscuro.png) |
-| Mainnets, claro | ![](assets/iconos-red-antes-mainnets-1440-claro.png) | ![](assets/iconos-red-despues-mainnets-1440-claro.png) |
-| Testnets, claro | ![](assets/iconos-red-antes-testnets-1440-claro.png) | ![](assets/iconos-red-despues-testnets-1440-claro.png) |
 | Tarjeta de Ethereum (logo junto a 4 stablecoins) | ![](assets/iconos-red-antes-tarjeta-ethereum.png) | ![](assets/iconos-red-despues-tarjeta-ethereum.png) |
 
 **La portada no tiene tema claro**: no declara `prefers-color-scheme` ni `data-theme`. Con
 `prefers-color-scheme: light` emulado se pinta igual que en oscuro (brillo medio 25,8 contra
-25,9 sobre 255; lo que difiere son píxeles del fondo animado). Las capturas "claro" están
-porque se pidieron, y muestran exactamente eso.
+25,9 sobre 255; lo que difiere son píxeles del fondo animado). Por eso no hay capturas en claro:
+serían copias de las oscuras (se sacaron en la ronda 6).
 
 ## Test
 
@@ -88,6 +86,20 @@ a stablecoin icon») calcula lo que pinta la página:
   ≥ la píldora.
 
 Mutaciones, todas en rojo: `--glyph` a 32 px, quitar la excepción de Polygon, devolver una
-tarjeta a la caja fija de 32 px y quitarle la clase a una tarjeta.
+tarjeta a la caja fija de 32 px y quitarle la clase a una tarjeta. La ronda 6 cerró el hueco
+que encontró el refutador (ver abajo).
 
 La verificación local de cada job de CI está en el body del PR.
+
+## Ronda 6 (refutador de #103: MERGEABLE CON RONDA)
+
+El refutador midió la vara del dueño en 16 de 16 combinaciones (4 anchos × 2 temas × 2
+pestañas), con un mínimo de 1,013 en píxeles.
+
+| # | Hallazgo | Qué cambió | Verificación |
+|---|---|---|---|
+| P2-1 | El test no guardaba el tamaño: `width: 32px; height: 32px;` en la regla `.network-logo` (M3) o un `style="width:32px"` inline en una tarjeta (M4) seguían en verde | Las tres líneas exactas del informe, después de la línea 275 del test: `width` y `height` de `.network-logo` tienen que salir de `calc(var(--glyph) / var(--visible))`, y ningún `<img class="network-logo">` puede traer `width`/`height` inline | verde sobre la rama (14/14). Mutaciones, todas en **rojo**: M1 `index.html` de main, M2 `--glyph: 32px`, **M3** `width: 32px; height: 32px;` en la regla, **M4** `style="width:32px;height:32px;margin:0"` en la tarjeta de Base, M4b `style="border-radius: 50%; height: 32px"` en Arc, M5 Polygon `--visible: 0.75` |
+| P3-2 | Cuatro capturas "claro" (2,5 MB) de un tema que no existe, en un repo público | `git rm` de las cuatro y de sus filas; queda la frase que explica que no hay tema claro | — |
+| P3-3 | Zama FHE era el único logo de red chico de Testnets (SVG de 32 px, aro visible de 30) | `width="40" height="40"` con `viewBox="1 1 30 30"` (recortado al borde exterior del aro) y `margin: -4px 0`, así la fila sigue en 32 px | medido en Chrome headless, antes → después: aro visible 30 → **40 px**, fila 32 → 32, tarjeta 220,92 → 220,92 px a 1440 y 180,31 → 180,31 a 390, nombre centrado (≤ 0,01 px) |
+| P3-1 | Al pasar el mouse, la píldora crece a 44,6 px | **No se tocó**: comportamiento aprobado | — |
+

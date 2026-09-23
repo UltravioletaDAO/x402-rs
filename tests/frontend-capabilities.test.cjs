@@ -273,6 +273,9 @@ test('landing: every network logo shows a glyph at least as large as a stablecoi
   const num=(text,re)=>{const m=re.exec(text); assert(m,String(re)); return parseFloat(m[1]);};
   const logo=rule('.network-logo');
   const glyph=num(logo,/--glyph:\s*([\d.]+)px/), share=num(logo,/--visible:\s*([\d.]+);/);
+  for (const side of ['width','height']) assert.match(logo,new RegExp(`(^|[;{\\s])${side}:\\s*calc\\(var\\(--glyph\\)\\s*/\\s*var\\(--visible\\)\\)`),`.network-logo ${side} is not sized from --glyph / --visible`);
+  const inlineSize=[...html.matchAll(/<img[^>]*class="network-logo"[^>]*>/g)].map(m=>m[0]).filter(tag=>/style="(?:[^"]*[;\s])?(?:width|height)\s*:/.test(tag));
+  assert.deepEqual(inlineSize,[],'an inline width/height overrides .network-logo');
   const overrides=Object.fromEntries([...html.matchAll(/\.network-logo\[src="\/([a-z0-9-]+)\.png"\] \{ --visible: ([\d.]+); \}/g)].map(m=>[m[1],+m[2]]));
   const pillRule=rule('.token-pill');
   const pill=num(rule('.token-logo'),/width:\s*([\d.]+)px/)+2*16*num(pillRule,/padding:\s*([\d.]+)rem/)+2*num(pillRule,/border:\s*([\d.]+)px/);

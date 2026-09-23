@@ -842,6 +842,57 @@ async fn base_is_announced_and_admitted() {
     assert_eq!(sends.load(Ordering::SeqCst), 1);
 }
 
+/// Base's other admitted shapes: USDC in an x402 v2 body and EURC in a v1 body.
+/// Each is admitted once, replayed to its purchase, and its receipt attests
+/// the wire version, the lowercase asset and six decimals.
+#[tokio::test]
+async fn base_v2_usdc_and_v1_eurc_are_admitted() {
+    let v1: Value = serde_json::from_slice(&body_on("base", BASE_USDC, 41)).unwrap();
+    let r = &v1["paymentRequirements"];
+    let v2_usdc = Bytes::from(serde_json::to_vec(&json!({
+        "x402Version":2,
+        "paymentPayload":{"x402Version":2,"payload":v1["paymentPayload"]["payload"]},
+        "resource":{"url":r["resource"],"description":r["description"],"mimeType":r["mimeType"]},
+        "accepted":{"network":"eip155:8453","scheme":"exact","asset":r["asset"],
+            "amount":r["maxAmountRequired"],"payTo":r["payTo"],"maxTimeoutSeconds":180,"extra":r["extra"]}
+    })).unwrap());
+    let v1_eurc = body_on("base", BASE_EURC, 42);
+    for (label, body, version, asset) in [
+        ("v2 USDC", v2_usdc, 2, BASE_USDC),
+        ("v1 EURC", v1_eurc, 1, BASE_EURC),
+    ] {
+        let sends = AtomicUsize::new(0);
+        TEST_SERVICE
+            .scope(service_fixture(), async {
+                for attempt in 0..2 {
+                    let settled = settle(
+                        &MockFacilitator { invalid: false },
+                        &headers(),
+                        &body,
+                        async {
+                            sends.fetch_add(1, Ordering::SeqCst);
+                            success_on("base")
+                        },
+                    )
+                    .await;
+                    assert_eq!(
+                        settled.headers().contains_key("idempotent-replayed"),
+                        attempt == 1,
+                        "{label}"
+                    );
+                    let receipt = &value(settled).await["receipt"];
+                    assert_eq!(receipt["network"], "eip155:8453", "{label}");
+                    assert_eq!(receipt["x402Version"], version, "{label}");
+                    assert_eq!(receipt["asset"], asset.to_lowercase(), "{label}");
+                    assert_eq!(receipt["decimals"], 6, "{label}");
+                    assert_eq!(receipt["status"], "confirmed", "{label}");
+                }
+            })
+            .await;
+        assert_eq!(sends.load(Ordering::SeqCst), 1, "{label}");
+    }
+}
+
 /// The shared vectors are synthetic: fixed IDs, placeholder hashes and the
 /// test key. None of them describes a payment.
 fn synthetic_vector(network: &str, asset: &str, pay_to: &str, payer: &str) -> FacilitatorReceipt {

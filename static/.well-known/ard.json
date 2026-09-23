@@ -7,7 +7,7 @@
       "displayName": "x402 Payment Facilitator MCP server",
       "type": "application/mcp-server-card+json",
       "url": "https://facilitator.ultravioletadao.xyz/.well-known/mcp/server-card.json",
-      "description": "Verify and settle x402 gasless stablecoin payments across EVM, Solana, NEAR, Stellar, Algorand, Sui and XRPL. Streamable HTTP, stateless, no authentication and no fee: the payer's signature inside the payload is the only authority.",
+      "description": "Verify and settle x402 gasless stablecoin payments across EVM, Solana, NEAR, Stellar, Algorand, Sui, XRPL and Hedera. Streamable HTTP, stateless, no authentication and no fee: the payer's signature inside the payload is the only authority.",
       "tags": ["x402", "payments", "stablecoin", "settlement", "gasless", "mcp"],
       "capabilities": ["x402_supported", "x402_accepts", "x402_verify", "x402_settle"],
       "representativeQueries": [

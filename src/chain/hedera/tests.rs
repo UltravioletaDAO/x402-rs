@@ -420,3 +420,52 @@ async fn live_mirror_matches_persisted_signed_hash() {
         "another valid on-chain receipt cannot authenticate these bytes"
     );
 }
+
+/// A ledger that fails its health check at startup is left out of /supported:
+/// `Ok(None)` from the same call `ProviderCache::from_env` makes, never an
+/// `Err`, which that function turned into `exit(1)` for every network through
+/// 2.39.1. The Mirror Node here is a closed local port, so the check fails at
+/// once. Sets and clears process env, so it relies on the suite's
+/// `--test-threads=1`.
+#[tokio::test]
+async fn a_ledger_failing_its_startup_health_is_left_out_not_fatal() {
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let mirror = format!("https://127.0.0.1:{}/", closed.local_addr().unwrap().port());
+    drop(closed);
+    let key = hiero_sdk::PrivateKey::from_bytes_ed25519(&[9; 32]).unwrap();
+    let vars = [
+        ("HEDERA_ENABLED_TESTNET", "true".to_string()),
+        ("HEDERA_ACCOUNT_ID_TESTNET", "0.0.1234".to_string()),
+        ("HEDERA_PRIVATE_KEY_TESTNET", key.to_string()),
+        ("HEDERA_MIRROR_URL_TESTNET", mirror),
+        (
+            "HEDERA_DAILY_BUDGET_TINYBARS_TESTNET",
+            "1000000000".to_string(),
+        ),
+        (
+            "HEDERA_SETTLEMENT_TABLE_NAME",
+            "hedera-startup-health-test".to_string(),
+        ),
+    ];
+    let previous: Vec<_> = vars
+        .iter()
+        .map(|(name, _)| (*name, std::env::var(name).ok()))
+        .collect();
+    for (name, value) in &vars {
+        std::env::set_var(name, value);
+    }
+
+    let built = crate::chain::NetworkProvider::from_env(Network::HederaTestnet).await;
+
+    for (name, value) in previous {
+        match value {
+            Some(v) => std::env::set_var(name, v),
+            None => std::env::remove_var(name),
+        }
+    }
+    assert!(
+        matches!(built, Ok(None)),
+        "a failed startup health check must leave Hedera out, not fail the build: {:?}",
+        built.err()
+    );
+}

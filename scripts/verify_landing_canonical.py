@@ -8,9 +8,12 @@ sources and fails (exit 1) if the landing page drifts from them.
 
 Canonical sources
 -----------------
-  * Payment networks  -> GET /supported (the live facilitator)         [22 mainnets]
+  * Payment networks  -> GET /supported (the live facilitator)         [23 mainnets]
   * Escrow networks   -> src/payment_operator/addresses.rs             [9 mainnets]
-  * ERC-8004 networks -> src/erc8004/mod.rs (supported_networks)       [11 mainnets / 20 total]
+  * ERC-8004 networks -> src/erc8004/mod.rs (supported_networks)       [13 mainnets / 23 total]
+
+The bracketed figures are this script's own CANONICAL MAP output on 2026-09-23,
+not a target: run it for today's.
 
 The landing page is the CONSUMER; these three are the PRODUCERS. If they ever
 disagree, this script tells you exactly where.
@@ -79,7 +82,7 @@ def is_testnet(name: str) -> bool:
 # ---------------------------------------------------------------------------
 def load_supported(url: str | None, supported_file: str | None) -> dict:
     if supported_file:
-        return json.loads(Path(supported_file).read_text())
+        return json.loads(Path(supported_file).read_text(encoding="utf-8"))
     req = urllib.request.Request(
         url.rstrip("/") + "/supported",
         headers={"User-Agent": "verify-landing-canonical/1.0"},
@@ -131,7 +134,7 @@ def _slice_block(text: str, start_pat: str) -> str:
 
 def escrow_mainnets() -> set[str]:
     """Mainnet networks that have a PaymentOperator escrow deployment."""
-    src = (REPO / "src" / "payment_operator" / "addresses.rs").read_text()
+    src = (REPO / "src" / "payment_operator" / "addresses.rs").read_text(encoding="utf-8")
     # The supported list is the array of Network:: entries near the top of the
     # escrow-address resolver. Take every Network:: in the file's match/list and
     # drop testnets -- escrow deployment is keyed on these variants.
@@ -142,7 +145,7 @@ def escrow_mainnets() -> set[str]:
 
 def erc8004_networks() -> tuple[set[str], set[str]]:
     """(mainnet variants, all variants) with an ERC-8004 deployment."""
-    src = (REPO / "src" / "erc8004" / "mod.rs").read_text()
+    src = (REPO / "src" / "erc8004" / "mod.rs").read_text(encoding="utf-8")
     block = _slice_block(src, r"pub fn supported_networks\s*\(")
     variants = _network_variants(block)
     if not variants:  # fallback: the get_contracts match
@@ -233,7 +236,7 @@ def dict_value(block: str, key: str):
     return m.group(1) if m else None
 
 def landing_numbers() -> dict:
-    html = (REPO / "static" / "index.html").read_text()
+    html = (REPO / "static" / "index.html").read_text(encoding="utf-8")
     out: dict = {"raw": html}
 
     def first_int(pattern: str):
@@ -287,7 +290,7 @@ def landing_claims() -> dict:
     AND from both dictionaries, because the page is bilingual in one document
     and a claim fixed in English only is still wrong for half the readers.
     """
-    html = (REPO / "static" / "index.html").read_text()
+    html = (REPO / "static" / "index.html").read_text(encoding="utf-8")
     dicts = landing_dictionaries(html)
     hero = {"markup": None, "en": None, "es": None}
     marker = 'data-i18n-html="hero.baseUrl">'
@@ -306,8 +309,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--url", default=DEFAULT_URL, help="facilitator base URL")
     ap.add_argument("--supported-file", help="read /supported JSON from a file instead of HTTP")
-    ap.add_argument("--expect-mainnets", type=int, default=22,
-                    help="expected canonical mainnet payment-network count (default 22)")
+    ap.add_argument("--expect-mainnets", type=int, default=23,
+                    help="expected canonical mainnet payment-network count (default 23, measured 2026-09-23)")
     ap.add_argument("--offline", action="store_true",
                     help="skip GET /supported (the only producer that needs the network) "
                          "and check everything else, including the EN/ES cross-check")

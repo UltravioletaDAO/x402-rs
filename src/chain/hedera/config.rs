@@ -3,6 +3,11 @@ use crate::network::Network;
 use hiero_sdk::{Client, Hbar, PrivateKey};
 use std::{collections::BTreeMap, time::Duration};
 
+/// `HEDERA_MAX_TRANSACTION_FEE_TINYBARS` when unset: 1 HBAR. `/health/ready`
+/// counts one settle per `max_fee` of sponsor balance, and the low-balance
+/// alarm (`terraform/environments/production/alerts.tf`) is derived from it.
+pub const DEFAULT_MAX_TRANSACTION_FEE_TINYBARS: u64 = 100_000_000;
+
 #[derive(Clone)]
 pub struct Config {
     pub network: Network,
@@ -93,7 +98,10 @@ impl Config {
                 v.parse().map_err(|_| format!("invalid {name}"))
             })
         };
-        let max_fee = number("HEDERA_MAX_TRANSACTION_FEE_TINYBARS", 100_000_000)?;
+        let max_fee = number(
+            "HEDERA_MAX_TRANSACTION_FEE_TINYBARS",
+            DEFAULT_MAX_TRANSACTION_FEE_TINYBARS,
+        )?;
         let daily_budget = required(&format!("HEDERA_DAILY_BUDGET_TINYBARS_{suffix}"))?
             .parse::<u64>()
             .map_err(|_| "invalid Hedera daily budget")?;

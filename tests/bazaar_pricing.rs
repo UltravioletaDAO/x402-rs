@@ -29,15 +29,23 @@
 //! listing, which no public feed publishes yet and which is the case the old
 //! converter was most wrong about.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
+use x402_rs::caip2::Caip2NetworkId;
 use x402_rs::discovery_aggregator::{convert_resources, CoinbaseDiscoveryResponse};
 use x402_rs::discovery_price::{
-    normalize_declared_option, parse_atomic_amount, AmountReject, CatalogScheme,
-    DeclaredPaymentOption, OptionReject,
+    normalize_declared_option, parse_atomic_amount, settleability, AmountReject,
+    CatalogPaymentOption, CatalogScheme, DeclaredPaymentOption, OptionReject,
 };
+use x402_rs::network::Network;
 use x402_rs::types::{Scheme, TokenAmount};
 use x402_rs::types_v2::DiscoveryResource;
+
+/// Stand-in for the provider map `GET /supported` iterates: the networks the
+/// fixtures' settleable options are on.
+fn served() -> HashSet<Network> {
+    [Network::Base, Network::Bsc, Network::Solana].into()
+}
 
 const CDP_PAGE: &str = include_str!("fixtures/bazaar/cdp-pricing-page.json");
 const V1_PAGE: &str = include_str!("fixtures/bazaar/v1-pricing-page.json");
@@ -126,14 +134,70 @@ fn v1_unknown_scheme_survives_import_and_is_never_exact() {
 fn unknown_scheme_is_catalogable_but_not_settleable() {
     let (items, _) = import(V1_PAGE, "fixture");
     let mut option = by_url(&items, "/unknown-scheme").accepts[0].clone();
-    option.annotate();
+    option.annotate(&served());
     assert_eq!(option.settleable, Some(false));
     assert_eq!(option.unsupported_reason.as_deref(), Some("unknown-scheme"));
 
     let mut exact = by_url(&items, "/exact").accepts[0].clone();
-    exact.annotate();
+    exact.annotate(&served());
     assert_eq!(exact.settleable, Some(true));
     assert_eq!(exact.unsupported_reason, None);
+}
+
+/// A network the enum names is not a network this process serves. Sei
+/// (`eip155:1329`) and XDC (`eip155:50`) have `Network` variants and no
+/// provider in production, so neither is in `/supported`; through 2.39.1 an
+/// `exact` offer on either still read `settleable: true`.
+#[test]
+fn an_offer_on_a_network_nothing_serves_is_not_settleable() {
+    let exact_on = |chain_id: u64| {
+        CatalogPaymentOption::new(
+            CatalogScheme::from(Scheme::Exact),
+            Caip2NetworkId::eip155(chain_id),
+            serde_json::from_value(serde_json::json!(
+                "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+            ))
+            .unwrap(),
+            TokenAmount::from(10_000u64),
+            serde_json::from_value(serde_json::json!(
+                "0x52E29e0d2Aa49bfBfC548C0A9F2196F4aa51f3ea"
+            ))
+            .unwrap(),
+            300,
+        )
+    };
+    for (chain_id, network) in [(1329, Network::Sei), (50, Network::XdcMainnet)] {
+        // The premise: the id resolves to a variant, which is all the old
+        // check asked.
+        assert_eq!(
+            Network::from_caip2(&format!("eip155:{chain_id}")),
+            Some(network)
+        );
+        let mut option = exact_on(chain_id);
+        option.annotate(&served());
+        assert_eq!(option.settleable, Some(false), "{network}");
+        assert_eq!(
+            option.unsupported_reason.as_deref(),
+            Some("network-not-served"),
+            "{network}"
+        );
+    }
+
+    let mut base = exact_on(8453);
+    base.annotate(&served());
+    assert_eq!(base.settleable, Some(true));
+    assert_eq!(base.unsupported_reason, None);
+
+    // The provider map decides, not the enum: Base without a provider for it
+    // is not settleable either.
+    assert_eq!(
+        settleability(
+            &CatalogScheme::from(Scheme::Exact),
+            Some(Network::Base),
+            &HashSet::new()
+        ),
+        (false, Some("network-not-served"))
+    );
 }
 
 // ============================================================================
@@ -361,12 +425,12 @@ fn decimals_are_resolved_per_asset_and_network() {
     assert_eq!(r.accepts.len(), 2);
 
     let mut base = r.accepts[0].clone();
-    base.annotate();
+    base.annotate(&served());
     assert_eq!(base.asset_symbol.as_deref(), Some("USDC"));
     assert_eq!(base.asset_decimals, Some(6));
 
     let mut bsc = r.accepts[1].clone();
-    bsc.annotate();
+    bsc.annotate(&served());
     assert_eq!(bsc.asset_symbol.as_deref(), Some("USDC"));
     assert_eq!(
         bsc.asset_decimals,
@@ -389,7 +453,7 @@ fn an_unregistered_asset_reports_unknown_rather_than_guessing_dollars() {
         .find(|a| a.network.to_string().starts_with("solana:"))
         .expect("the Solana option must survive import")
         .clone();
-    solana.annotate();
+    solana.annotate(&served());
     assert_eq!(
         solana.asset_symbol.as_deref(),
         Some("USDC"),
@@ -401,7 +465,7 @@ fn an_unregistered_asset_reports_unknown_rather_than_guessing_dollars() {
         "So11111111111111111111111111111111111111112"
     ))
     .unwrap();
-    unregistered.annotate();
+    unregistered.annotate(&served());
     assert_eq!(unregistered.asset_symbol, None);
     assert_eq!(unregistered.asset_decimals, None);
 }
@@ -481,7 +545,7 @@ fn a_registrant_cannot_assert_our_own_capabilities() {
 
     // And the resolved answers overrule the attempt.
     let mut resolved = stored.accepts[0].clone();
-    resolved.annotate();
+    resolved.annotate(&served());
     assert_eq!(resolved.settleable, Some(false));
     assert_eq!(resolved.asset_symbol.as_deref(), Some("USDC"));
     assert_eq!(resolved.asset_decimals, Some(6));

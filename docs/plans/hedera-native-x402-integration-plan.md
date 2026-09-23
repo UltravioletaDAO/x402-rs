@@ -1,6 +1,4 @@
 ---
-
-> **Corrección de alcance, 2026-09-17:** se retira HBAR como activo de pago. El producto admite exclusivamente USDC nativo en Hedera mainnet/testnet; HBAR queda para comisiones. Las secciones HBAR/HTS de este plan describen el alcance histórico, no la política vigente. Véase [plan maestro de recibos](facilitator-receipts-master-plan.md).
 date: 2026-09-15
 tags:
   - type/backlog
@@ -8,6 +6,8 @@ tags:
   - priority/p0
 status: facilitator-and-sdks-mainnet-testnet-published-verified
 ---
+
+> **Corrección de alcance, 2026-09-17:** se retira HBAR como activo de pago. El producto admite exclusivamente USDC nativo en Hedera mainnet/testnet; HBAR queda para comisiones. Las secciones HBAR/HTS de este plan describen el alcance histórico, no la política vigente. Véase [plan maestro de recibos](facilitator-receipts-master-plan.md).
 
 # Hedera nativo en el facilitador: investigación y plan de ejecución
 

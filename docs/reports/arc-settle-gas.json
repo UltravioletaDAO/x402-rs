@@ -1,0 +1,135 @@
+{
+  "generated_by": "scripts/arc_settle_gas_report.py",
+  "generated_at_utc": "2026-09-23T08:57:58Z",
+  "note": "Gas each recorded Arc settle paid, read back from the chain. gas_usdc = gasUsed x effectiveGasPrice / 10^18 (native USDC, 18 decimals). The price follows the base fee, so a settle costs more when the base fee is above its 20 gwei minimum; latest_base_fee is the reading at generation time.",
+  "latest_base_fee": {
+    "arc": {
+      "block": 22322431,
+      "base_fee_gwei": "20"
+    },
+    "arc-testnet": {
+      "block": 63566759,
+      "base_fee_gwei": "20"
+    }
+  },
+  "summary": {
+    "arc": {
+      "settles": 4,
+      "min_gas_usdc": "0.001804750735987521",
+      "median_gas_usdc": "0.0022179161069318785",
+      "max_gas_usdc": "0.002252606134343883"
+    },
+    "arc-testnet": {
+      "settles": 4,
+      "min_gas_usdc": "0.002189575",
+      "median_gas_usdc": "0.002189925",
+      "max_gas_usdc": "0.002814575"
+    }
+  },
+  "settles": [
+    {
+      "source": "docs/reports/2026-09-16-arc-v1-candidate-canary.jsonl#L4",
+      "network": "arc",
+      "x402_version": 1,
+      "block": 21189780,
+      "transaction_index": 46,
+      "block_time_utc": "2026-09-16T17:03:17Z",
+      "status": 1,
+      "gas_used": 112591,
+      "effective_gas_price_gwei": "20.006982213",
+      "base_fee_gwei": "20.005982213",
+      "gas_usdc": "0.002252606134343883"
+    },
+    {
+      "source": "docs/reports/2026-09-16-arc-v2-candidate-canary.jsonl#L4",
+      "network": "arc",
+      "x402_version": 2,
+      "block": 21189905,
+      "transaction_index": 18,
+      "block_time_utc": "2026-09-16T17:04:21Z",
+      "status": 1,
+      "gas_used": 87591,
+      "effective_gas_price_gwei": "20.604294231",
+      "base_fee_gwei": "20.603294231",
+      "gas_usdc": "0.001804750735987521"
+    },
+    {
+      "source": "docs/reports/2026-09-16-arc-production-acceptance.json#$.canaries[2]",
+      "network": "arc",
+      "x402_version": 1,
+      "block": 21192209,
+      "transaction_index": 35,
+      "block_time_utc": "2026-09-16T17:23:48Z",
+      "status": 1,
+      "gas_used": 87571,
+      "effective_gas_price_gwei": "25.386101147",
+      "base_fee_gwei": "25.385101147",
+      "gas_usdc": "0.002223086263543937"
+    },
+    {
+      "source": "docs/reports/2026-09-16-arc-production-acceptance.json#$.canaries[3]",
+      "network": "arc",
+      "x402_version": 2,
+      "block": 21192230,
+      "transaction_index": 44,
+      "block_time_utc": "2026-09-16T17:23:58Z",
+      "status": 1,
+      "gas_used": 87603,
+      "effective_gas_price_gwei": "25.25879194",
+      "base_fee_gwei": "25.25779194",
+      "gas_usdc": "0.00221274595031982"
+    },
+    {
+      "source": "docs/reports/2026-09-16-arc-testnet-canary.jsonl#L4",
+      "network": "arc-testnet",
+      "x402_version": null,
+      "block": 62433437,
+      "transaction_index": 11,
+      "block_time_utc": "2026-09-16T16:50:04Z",
+      "status": 1,
+      "gas_used": 112583,
+      "effective_gas_price_gwei": "25",
+      "base_fee_gwei": "20",
+      "gas_usdc": "0.002814575"
+    },
+    {
+      "source": "docs/reports/2026-09-16-arc-testnet-v2-candidate-canary.jsonl#L4",
+      "network": "arc-testnet",
+      "x402_version": 2,
+      "block": 62434393,
+      "transaction_index": 17,
+      "block_time_utc": "2026-09-16T16:58:03Z",
+      "status": 1,
+      "gas_used": 87591,
+      "effective_gas_price_gwei": "25",
+      "base_fee_gwei": "20",
+      "gas_usdc": "0.002189775"
+    },
+    {
+      "source": "docs/reports/2026-09-16-arc-production-acceptance.json#$.canaries[0]",
+      "network": "arc-testnet",
+      "x402_version": 1,
+      "block": 62437434,
+      "transaction_index": 16,
+      "block_time_utc": "2026-09-16T17:23:26Z",
+      "status": 1,
+      "gas_used": 87583,
+      "effective_gas_price_gwei": "25",
+      "base_fee_gwei": "20",
+      "gas_usdc": "0.002189575"
+    },
+    {
+      "source": "docs/reports/2026-09-16-arc-production-acceptance.json#$.canaries[1]",
+      "network": "arc-testnet",
+      "x402_version": 2,
+      "block": 62437455,
+      "transaction_index": 8,
+      "block_time_utc": "2026-09-16T17:23:37Z",
+      "status": 1,
+      "gas_used": 87603,
+      "effective_gas_price_gwei": "25",
+      "base_fee_gwei": "20",
+      "gas_usdc": "0.002190075"
+    }
+  ]
+}

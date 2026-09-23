@@ -179,7 +179,7 @@ Because "mainnet + testnet" drops the word *enabled*, a footnote under the matri
 keeps the caveat explicit: each network still has its own activation switch, and
 `/supported` is what decides for any given instance.
 
-## Two gates, run locally## Two gates, run locally
+## Two gates, run locally
 
 - **`.github/workflows/no-account-id.yml`**, the gate that runs on every pull request,
   re-implemented against the five changed files: no ARN carrying an account, no ECR

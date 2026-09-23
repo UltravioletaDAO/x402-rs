@@ -169,7 +169,7 @@ fn assert_signature_scheme_supported(
                 concat!(
                     "EIP-6492 signatures are not supported on {}: ",
                     "the universal signature validator is not deployed there. ",
-                    "Use an EOA signature for this network and USDC domain."
+                    "Use an EOA signature on this network."
                 ),
                 network
             ),
@@ -645,25 +645,6 @@ impl EvmProvider {
             .filler(filler)
             .wallet(wallet)
             .connect_client(client);
-
-        // Arc's domain uses our configured chain ID, while the transaction filler
-        // queries the RPC. Refuse a swapped mainnet/testnet endpoint at startup.
-        // Bound the entire probe (including retry backoff) and do not leak a
-        // credential-bearing RPC URL through transport errors.
-        if matches!(network, Network::Arc | Network::ArcTestnet) {
-            let actual =
-                tokio::time::timeout(crate::chain::rpc_http_timeout(), inner.get_chain_id())
-                    .await
-                    .map_err(|_| format!("RPC chain identity probe timed out for {network}"))?
-                    .map_err(|_| format!("RPC chain identity probe failed for {network}"))?;
-            if actual != chain.chain_id {
-                return Err(format!(
-                    "RPC chain ID mismatch for {network}: expected {}, got {actual}",
-                    chain.chain_id
-                )
-                .into());
-            }
-        }
 
         tracing::info!(network=%network, rpc=%crate::redact::rpc_url(rpc_url), signers=?signer_addresses, "Initialized provider");
 
@@ -1504,6 +1485,16 @@ impl FromEnvByNetworkBuild for EvmProvider {
             Network::SuiTestnet => false, // Sui is not an EVM chain
         };
         let provider = EvmProvider::try_new(wallet, &rpc_url, is_eip1559, network).await?;
+        // Arc's domain uses our configured chain ID, while the transaction filler
+        // queries the RPC: a swapped mainnet/testnet endpoint leaves Arc out of
+        // /supported, and one that does not answer in time is served and
+        // alerted. Never an `Err`: through 2.39.1 both were, and ProviderCache
+        // turned that into `exit(1)` for every network.
+        if matches!(network, Network::Arc | Network::ArcTestnet) {
+            return Ok(
+                crate::chain_identity::admit(provider, crate::chain::rpc_http_timeout()).await,
+            );
+        }
         Ok(Some(provider))
     }
 }
@@ -4778,7 +4769,10 @@ mod arc_testnet_tests {
         );
         // And it is still the whole sentence, not a fragment that happens to
         // have no double space in it.
-        assert!(message.ends_with("USDC domain."), "{message:?}");
+        assert!(message.ends_with("on this network."), "{message:?}");
+        // Generic: the gate serves any chain without a validator, not only
+        // Arc, so the refusal names no token and no chain but the one asked.
+        assert!(!message.contains("USDC"), "{message:?}");
         assert!(
             message.contains("the universal signature validator"),
             "{message:?}"
@@ -5489,42 +5483,47 @@ mod arc_node_fixtures {
     /// carry the identical topic and the identical `from`/`to`. A reader that
     /// matched on the topic would see the 18-decimal figure as a transfer of
     /// ten billion USDC.
+    ///
+    /// Both Arc networks: mainnet and testnet share the token address and the
+    /// system emitter, so the rule has to hold on each of them.
     #[tokio::test]
     async fn the_native_system_event_is_not_read_as_the_payment() {
-        let payer = PrivateKeySigner::random();
-        let f = fixture(Receipt::Confirmed, Estimate::Ok, payer.address()).await;
-        let rpc = ProviderBuilder::new().connect(&f.url).await.expect("rpc");
+        for network in [Network::Arc, Network::ArcTestnet] {
+            let payer = PrivateKeySigner::random();
+            let f = fixture_for(network, Receipt::Confirmed, Estimate::Ok, payer.address()).await;
+            let rpc = ProviderBuilder::new().connect(&f.url).await.expect("rpc");
 
-        let proof = |amount: u128| {
-            ProofOfPayment::new(
-                TransactionHash::Evm(TX),
-                BLOCK,
-                Network::ArcTestnet,
-                MixedAddress::from(payer.address()),
-                MixedAddress::from(PAYEE),
-                TokenAmount::from(amount),
-                MixedAddress::from(arc_usdc()),
-                f.block_timestamp,
-            )
-        };
+            let proof = |amount: u128| {
+                ProofOfPayment::new(
+                    TransactionHash::Evm(TX),
+                    BLOCK,
+                    network,
+                    MixedAddress::from(payer.address()),
+                    MixedAddress::from(PAYEE),
+                    TokenAmount::from(amount),
+                    MixedAddress::from(arc_usdc()),
+                    f.block_timestamp,
+                )
+            };
 
-        // The ERC-20 amount, from the token's own log: accepted.
-        let facts = verify_payment_facts(&rpc, Network::ArcTestnet, &proof(AMOUNT as u128), 900)
-            .await
-            .expect("the token's own Transfer proves the payment");
-        assert_eq!(facts.payer, payer.address());
-        assert_eq!(facts.payee, PAYEE);
-        assert_eq!(facts.token, arc_usdc());
+            // The ERC-20 amount, from the token's own log: accepted.
+            let facts = verify_payment_facts(&rpc, network, &proof(AMOUNT as u128), 900)
+                .await
+                .unwrap_or_else(|e| panic!("{network}: the token's own Transfer proves it: {e:?}"));
+            assert_eq!(facts.payer, payer.address(), "{network}");
+            assert_eq!(facts.payee, PAYEE, "{network}");
+            assert_eq!(facts.token, arc_usdc(), "{network}");
 
-        // The native 18-decimal amount, which only the system emitter reports:
-        // refused, because that log is not the token's.
-        let rejection = verify_payment_facts(&rpc, Network::ArcTestnet, &proof(NATIVE_AMOUNT), 900)
-            .await
-            .expect_err("the system emitter's event is not the token's");
-        assert!(
-            matches!(rejection, ProofRejection::TransferNotFound),
-            "expected the native event to be ignored, got {rejection:?}"
-        );
+            // The native 18-decimal amount, which only the system emitter
+            // reports: refused, because that log is not the token's.
+            let rejection = verify_payment_facts(&rpc, network, &proof(NATIVE_AMOUNT), 900)
+                .await
+                .expect_err("the system emitter's event is not the token's");
+            assert!(
+                matches!(rejection, ProofRejection::TransferNotFound),
+                "{network}: expected the native event to be ignored, got {rejection:?}"
+            );
+        }
     }
     fn mainnet_body(payer: &PrivateKeySigner, signature: Vec<u8>) -> Value {
         let mut body = request_json(payer, PAYEE, signature);
@@ -5633,35 +5632,114 @@ mod arc_node_fixtures {
         assert_eq!(f.broadcasts.load(Ordering::SeqCst), 0);
     }
 
+    /// An RPC answering `chain_id`, for the admission tests below.
+    async fn node_answering(chain_id: u64) -> (String, Arc<AtomicUsize>) {
+        let broadcasts = Arc::new(AtomicUsize::new(0));
+        let url = spawn(ArcNode {
+            chain_id,
+            payer: Address::ZERO,
+            receipt: Receipt::Confirmed,
+            estimate: Estimate::Ok,
+            block_timestamp: unix_now_secs(),
+            broadcasts: broadcasts.clone(),
+        })
+        .await;
+        (url, broadcasts)
+    }
+
+    /// A swapped mainnet/testnet endpoint leaves that Arc network out of
+    /// /supported -- and only that network, and without an error: through
+    /// 2.39.1 this was an `Err`, which `ProviderCache::from_env` turned into
+    /// `exit(1)` for every network.
     #[tokio::test]
-    async fn arc_refuses_swapped_rpc_networks_before_building_a_provider() {
+    async fn a_swapped_arc_rpc_leaves_arc_out_and_stops_nothing() {
         for (network, wrong_id) in [(Network::Arc, 5042002), (Network::ArcTestnet, 5042)] {
-            let broadcasts = Arc::new(AtomicUsize::new(0));
-            let url = spawn(ArcNode {
-                chain_id: wrong_id,
-                payer: Address::ZERO,
-                receipt: Receipt::Confirmed,
-                estimate: Estimate::Ok,
-                block_timestamp: unix_now_secs(),
-                broadcasts: broadcasts.clone(),
-            })
-            .await;
-            let error = EvmProvider::try_new(
+            let (url, broadcasts) = node_answering(wrong_id).await;
+            let provider = EvmProvider::try_new(
                 EthereumWallet::from(PrivateKeySigner::random()),
                 &url,
                 true,
                 network,
             )
             .await
-            .err()
-            .expect("wrong chain ID must prevent startup");
+            .expect("building a provider asks the RPC nothing");
             assert!(
-                error.to_string().contains("RPC chain ID mismatch"),
-                "{error}"
+                crate::chain_identity::admit(provider, std::time::Duration::from_secs(5))
+                    .await
+                    .is_none(),
+                "{network}: an RPC answering {wrong_id} must not be served"
             );
-            assert!(error.to_string().contains(&wrong_id.to_string()), "{error}");
             assert_eq!(broadcasts.load(Ordering::SeqCst), 0);
         }
+    }
+
+    /// An Arc RPC that does not answer in time is served, and alerted; it does
+    /// not stop the process either.
+    #[tokio::test]
+    async fn an_arc_rpc_that_does_not_answer_is_served_not_fatal() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        drop(listener);
+        let provider = EvmProvider::try_new(
+            EthereumWallet::from(PrivateKeySigner::random()),
+            &url,
+            true,
+            Network::Arc,
+        )
+        .await
+        .expect("building a provider asks the RPC nothing");
+        assert!(
+            crate::chain_identity::admit(provider, std::time::Duration::from_secs(2))
+                .await
+                .is_some(),
+            "an unanswered probe serves Arc and alerts"
+        );
+    }
+
+    /// The whole startup path, as `ProviderCache::from_env` calls it: Arc on a
+    /// swapped RPC is `Ok(None)`, Base next to it is built, and neither is an
+    /// error. Sets and clears process env, so it relies on the suite's
+    /// `--test-threads=1`.
+    #[tokio::test]
+    async fn from_env_leaves_a_swapped_arc_out_and_the_rest_up() {
+        let (arc_url, _) = node_answering(5042002).await;
+        let (base_url, _) = node_answering(8453).await;
+        let key = format!(
+            "0x{}",
+            alloy::hex::encode(PrivateKeySigner::random().to_bytes())
+        );
+        let vars = [
+            ("SIGNER_TYPE", "private-key".to_string()),
+            ("EVM_PRIVATE_KEY_MAINNET", key),
+            ("RPC_URL_ARC", arc_url),
+            ("RPC_URL_BASE", base_url),
+        ];
+        let previous: Vec<_> = vars
+            .iter()
+            .map(|(name, _)| (*name, std::env::var(name).ok()))
+            .collect();
+        for (name, value) in &vars {
+            std::env::set_var(name, value);
+        }
+
+        let arc = EvmProvider::from_env(Network::Arc).await;
+        let base = EvmProvider::from_env(Network::Base).await;
+
+        for (name, value) in previous {
+            match value {
+                Some(v) => std::env::set_var(name, v),
+                None => std::env::remove_var(name),
+            }
+        }
+        assert!(
+            matches!(arc, Ok(None)),
+            "Arc on a swapped RPC is left out, not an error"
+        );
+        assert!(
+            matches!(base, Ok(Some(_))),
+            "the other networks come up: {:?}",
+            base.err()
+        );
     }
 
     #[tokio::test]
@@ -5681,7 +5759,7 @@ mod arc_node_fixtures {
             (Network::Arc, "https://rpc.mainnet.arc.io"),
             (Network::ArcTestnet, "https://rpc.testnet.arc.io"),
         ] {
-            EvmProvider::try_new(
+            let provider = EvmProvider::try_new(
                 EthereumWallet::from(PrivateKeySigner::random()),
                 url,
                 true,
@@ -5689,6 +5767,11 @@ mod arc_node_fixtures {
             )
             .await
             .unwrap_or_else(|e| panic!("{network}: {e}"));
+            assert_eq!(
+                crate::chain_identity::check(&provider, crate::chain::rpc_http_timeout()).await,
+                crate::chain_identity::Verdict::Matches,
+                "{network}: {url}"
+            );
         }
     }
 }
@@ -5950,6 +6033,26 @@ mod mislabeled_testnet_domain_tests {
                 format!("eip155:{}", chain.chain_id),
                 "{network}: EvmChain and to_caip2 disagree"
             );
+        }
+    }
+
+    /// Every network of the EVM family declares a chain id. `EvmChain::try_from`
+    /// is an exhaustive match, but an arm can still answer `UnsupportedNetwork`
+    /// for an EVM variant, and the test above skips those: a new EVM network
+    /// entered that way would have no id for its EIP-712 domain, and nothing for
+    /// the startup check (`chain_identity`) to compare its RPC with.
+    #[test]
+    fn every_evm_network_declares_a_chain_id() {
+        for &network in Network::variants() {
+            if matches!(
+                crate::network::NetworkFamily::from(network),
+                crate::network::NetworkFamily::Evm
+            ) {
+                assert!(
+                    EvmChain::try_from(network).is_ok(),
+                    "{network} is an EVM network and declares no chain id in EvmChain::try_from"
+                );
+            }
         }
     }
 

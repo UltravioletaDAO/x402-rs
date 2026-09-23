@@ -10,7 +10,9 @@
 ```
 
 [![Live](https://img.shields.io/badge/live-facilitator.ultravioletadao.xyz-00d4aa)](https://facilitator.ultravioletadao.xyz)
-[![Version](https://img.shields.io/badge/version-2.14.0-blue)](https://github.com/UltravioletaDAO/x402-rs)
+[![Version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Ffacilitator.ultravioletadao.xyz%2Fversion&query=%24.version&label=version&color=blue)](https://facilitator.ultravioletadao.xyz/version)
+[![Python SDK](https://img.shields.io/pypi/v/uvd-x402-sdk?label=python%20sdk)](https://pypi.org/project/uvd-x402-sdk/)
+[![TypeScript SDK](https://img.shields.io/npm/v/uvd-x402-sdk?label=typescript%20sdk)](https://www.npmjs.com/package/uvd-x402-sdk)
 [![Swagger](https://img.shields.io/badge/docs-Swagger_UI-85ea2d)](https://facilitator.ultravioletadao.xyz/docs/)
 [![Rust](https://img.shields.io/badge/rust-2021-orange)](https://www.rust-lang.org/)
 
@@ -48,8 +50,9 @@ Arc has separate RPC and deployment switches. A running instance serves a networ
 only when it appears in [`/supported`](https://facilitator.ultravioletadao.xyz/supported).
 Integrators start at [Arc: getting paid in USDC and EURC](docs/networks/arc.md); operators want
 [Arc operations, canaries and activation](docs/networks/arc-operations.md).
-Python SDK 0.84.0 and TypeScript SDK 2.92.0 include both Arc networks. USDC is also
-the gas token: native and ERC-20 amounts are two precisions of the same balance.
+The Python and TypeScript SDKs (`uvd-x402-sdk`; current versions on the badges above)
+include both Arc networks. USDC is also the gas token: native and ERC-20 amounts are
+two precisions of the same balance.
 Integrators start at [Hedera: getting paid in native USDC](docs/networks/hedera.md);
 operators want [native Hedera operations and public receipts](docs/guides/hedera-native.md).
 Both network tables include Arc and native Hedera; runtime availability remains `/supported`.

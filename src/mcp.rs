@@ -641,7 +641,7 @@ impl ServerHandler for FacilitatorMcp {
                 .with_title("x402 Payment Facilitator")
                 .with_description(
                     "Verify and settle x402 gasless stablecoin payments across EVM, Solana, NEAR, \
-             Stellar, Algorand, Sui and XRPL.",
+             Stellar, Algorand, Sui, XRPL and Hedera.",
                 )
                 .with_website_url("https://facilitator.ultravioletadao.xyz");
         info.instructions = Some(
@@ -2052,6 +2052,99 @@ mod tests {
             .unwrap_or_default()
             .to_string();
         assert!(ctype.starts_with("application/json"), "403 typed {ctype:?}");
+    }
+
+    /// Every published list of chain families names every family this build
+    /// settles. Native Hedera went live in September 2026, and through 2.39.1
+    /// the MCP description, its server card, the ARD entry and the landing's
+    /// meta description (both languages) still listed seven families.
+    ///
+    /// The `match` is exhaustive: a new family does not compile here until it
+    /// has a name, and then every list has to carry it.
+    #[test]
+    fn every_published_family_list_names_every_family() {
+        use crate::network::NetworkFamily;
+        fn name(family: NetworkFamily) -> &'static str {
+            match family {
+                NetworkFamily::Evm => "EVM",
+                NetworkFamily::Solana => "Solana",
+                NetworkFamily::Near => "NEAR",
+                NetworkFamily::Stellar => "Stellar",
+                #[cfg(feature = "hedera")]
+                NetworkFamily::Hedera => "Hedera",
+                #[cfg(feature = "xrpl")]
+                NetworkFamily::Xrpl => "XRPL",
+                #[cfg(feature = "algorand")]
+                NetworkFamily::Algorand => "Algorand",
+                #[cfg(feature = "sui")]
+                NetworkFamily::Sui => "Sui",
+            }
+        }
+        let quoted = |text: &str, key: &str| -> Vec<String> {
+            text.split(key)
+                .skip(1)
+                .filter_map(|rest| rest.split_once('"').map(|(value, _)| value.to_string()))
+                .collect()
+        };
+
+        let info = FacilitatorMcp {
+            rest: axum::Router::new(),
+        }
+        .get_info();
+        let card: Value =
+            serde_json::from_str(include_str!("../static/.well-known/mcp/server-card.json"))
+                .unwrap();
+        let ard: Value =
+            serde_json::from_str(include_str!("../static/.well-known/ard.json")).unwrap();
+        let landing = include_str!("../static/index.html");
+
+        let mut lists = vec![
+            (
+                "MCP serverInfo",
+                info.server_info.description.clone().unwrap_or_default(),
+            ),
+            (
+                "server-card.json",
+                card["serverInfo"]["description"]
+                    .as_str()
+                    .unwrap()
+                    .to_string(),
+            ),
+            (
+                "ard.json",
+                ard["entries"][0]["description"]
+                    .as_str()
+                    .unwrap()
+                    .to_string(),
+            ),
+        ];
+        let meta = quoted(
+            landing,
+            "<meta name=\"description\" data-i18n-content=\"meta.description\" content=\"",
+        );
+        let dictionaries = quoted(landing, "\"meta.description\": \"");
+        assert_eq!(meta.len(), 1, "index.html has one description tag");
+        assert_eq!(
+            dictionaries.len(),
+            2,
+            "index.html has an en and an es description"
+        );
+        lists.extend(meta.into_iter().map(|d| ("index.html meta", d)));
+        lists.extend(
+            dictionaries
+                .into_iter()
+                .map(|d| ("index.html meta.description", d)),
+        );
+
+        for &network in Network::variants() {
+            let family = name(NetworkFamily::from(network));
+            for (surface, list) in &lists {
+                assert!(
+                    list.contains(family),
+                    "{surface} does not name {family} ({network}): {list}"
+                );
+            }
+        }
     }
 
     /// The published server-card describes the server that actually answers.

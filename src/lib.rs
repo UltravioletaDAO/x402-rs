@@ -19,6 +19,7 @@
 pub mod blocklist;
 pub mod caip2;
 pub mod chain;
+pub mod chain_identity;
 pub mod client_ip;
 pub mod discovery;
 pub mod discovery_aggregator;

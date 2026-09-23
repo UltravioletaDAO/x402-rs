@@ -13,12 +13,12 @@ variable "arc_testnet_enabled" {
 }
 
 variable "arc_minimum_gas_usdc" {
-  description = "Low balance alert in native USDC, not wei or ETH. Tune after measuring real settles."
+  description = "Operator override of the Arc low-balance alert, in native USDC (not wei or ETH). Null derives it like every other EVM chain (alerts.tf)."
   type        = number
-  default     = 0.1
+  default     = null
 
   validation {
-    condition     = var.arc_minimum_gas_usdc > 0
+    condition     = var.arc_minimum_gas_usdc == null || coalesce(var.arc_minimum_gas_usdc, 1) > 0
     error_message = "Arc gas reserve must be positive."
   }
 }

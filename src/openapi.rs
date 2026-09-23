@@ -1762,6 +1762,8 @@ Queries the reputation summary for an AI agent from the ERC-8004 Reputation Regi
 
 **Client address filtering (EVM only):** The `clientAddresses` query parameter accepts comma-separated Ethereum addresses to filter reputation data by specific clients. If omitted, the endpoint auto-discovers all clients who have given feedback via the on-chain `getClients()` function.
 
+**When one read cannot cover every client (EVM):** the registry walks every feedback entry of every client inside one `getSummary` call, so one client with enough entries makes that call revert (Arc testnet agent 1, measured 2026-09-23: one of its 1,315 clients has 77,447 entries). The route then reads groups of 100 clients, at most 32 calls and 4 at a time, splits a refused group until the refusal is pinned to single clients, and adds a `coverage` object: `complete`, `clientsTotal`, `clientsRead`, `clientsUnreadable`, `clientsNotRead`, up to 20 `unreadableClients`, `calls` and the two limits. The summary is then combined from the groups' averages weighted by their counts, and can differ from a single read in its last digit. `feedback` is not returned in that case. That answer is cached for 60 s per agent and query, one such read runs per network at a time, and `coverage.readAtUnix` says when the registry was read. A node that cannot be reached still answers 500.
+
 **Examples:**
 - `/reputation/base/42` - EVM agent (all clients, auto-discovered)
 - `/reputation/solana/7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgHkv` - Solana agent (with ATOM stats)
@@ -2191,7 +2193,8 @@ own price is fresh and a stored record cannot keep claiming a freshness nobody r
 - `settleable` (bool) and `unsupportedReason` say whether **this facilitator** can settle the
   option, which is a narrower question than whether the offer is real. `false` with
   `unknown-scheme`, `network-not-served` or `upto-proxy-not-deployed` still describes a
-  genuine listing that some other facilitator may serve.
+  genuine listing that some other facilitator may serve. `network-not-served` means the
+  network is not in this facilitator's `/supported`, even when its name is a known chain.
 - `assetSymbol` and `assetDecimals` are resolved per **deployment**, and are absent when the
   asset is not one we have registered -- absent means unknown, which is not the same as six
   decimals and a dollar sign. USDC is 6 decimals on Base, 18 on BSC and 7 on Stellar.

@@ -51,13 +51,16 @@ the historical 2.30.0 changelog's mainnet availability note is superseded.
 Both switches default to false. Production values live in
 `terraform/environments/production/production.auto.tfvars`; the same switch
 supplies the ECS and balances Lambda RPC. Enabling mainnet also installs RPC
-and low-reserve alarms. The initial reserve threshold is 0.1 native USDC.
+and low-reserve alarms. The reserve threshold is derived like every EVM
+chain's, `SETTLE_GAS_BUDGET x fee cap x warnSettles` (`alerts.tf`), unless
+`arc_minimum_gas_usdc` sets it; production sets 5 native USDC.
 The landing page shows an Arc wallet only when `/supported` advertises it.
 
 Fund the wallet **on the selected Arc network**, initially with 1 USDC for
 mainnet (testnet funding comes from [Circle's faucet](https://faucet.circle.com)).
 Amounts on Ethereum, Base or Arc testnet do not fund Arc mainnet. The canary
-requires 0.1 USDC and refuses a gas quote above 50 gwei. Revisit the reserve
+requires 0.1 USDC and refuses a gas quote above 3x the base fee of the block
+it just read, and above 200 gwei whatever the base fee. Revisit the reserve
 against actual traffic; it is not a capacity guarantee.
 
 First run the read-only preflight, then an isolated candidate with the intended
@@ -105,15 +108,21 @@ Never use a full Terraform apply or `-refresh=false` to force activation.
 - Balance monitor tests cover independent switches, chain ID mismatch and one
   native balance. Terraform validation and landing canonical checks passed.
 - Isolated testnet canary: [confirmed transfer](https://explorer.testnet.arc.io/tx/0x0f6aa81bdc52669fe4bde349d26b68e6270c563c26ef2639b469c22127fc2e39),
-  one atomic USDC unit received, 0.002814575 USDC gas; replay HTTP 400, no second
-  debit. Raw public evidence: `docs/reports/2026-09-16-arc-testnet-canary.jsonl`.
+  one atomic USDC unit received; replay HTTP 400, no second debit. Raw public
+  evidence: `docs/reports/2026-09-16-arc-testnet-canary.jsonl`.
 - Isolated testnet v2/CAIP-2 canary also passed: [confirmed transfer](https://explorer.testnet.arc.io/tx/0x139489c10866a42139f82dd44f91fb25cca23715d4023d0b10164d77723d67f5),
-  gas 0.002189775 USDC; replay HTTP 400 without another debit.
+  replay HTTP 400 without another debit.
 - Mainnet signer funding confirmed by [receipt](https://explorer.arc.io/tx/0x4479f7ea0212c35b94389aca1f2cd790d309c22710098b4ed3528a31e6a4e31b).
 - Isolated mainnet v1 canary passed: [receipt](https://explorer.arc.io/tx/0x2246ad72a2a00a5ea19f54d32effff32ee8cea7a58c5e0cf0740244216dc92f4),
-  gas 0.002252606134343883 USDC; v2/CAIP-2 also passed: [receipt](https://explorer.arc.io/tx/0x5b66c97e80ca7773ba919a0052b79d4ec3db193419a1c355f33d0f5e4c62636d),
-  gas 0.001804750735987521 USDC. Each delivered one atomic USDC unit and
-  rejected replay without a second debit. Evidence is in `docs/reports/*candidate-canary.jsonl`.
+  v2/CAIP-2 also passed: transaction 18 of [block 21,189,905](https://explorer.arc.io/block/21189905).
+  Each delivered one atomic USDC unit and rejected replay without a second
+  debit. Evidence is in `docs/reports/*candidate-canary.jsonl`.
+- What each of these settles paid in gas is not copied here: it is in the
+  [settle gas report](../reports/arc-settle-gas.json), which
+  `python3 scripts/arc_settle_gas_report.py` rebuilds from the chain. The price
+  follows Arc's base fee, which is not constant (81.64 gwei at block 21,205,139,
+  2026-09-16 19:12:57Z, against its 20 gwei minimum; read 2026-09-23), so a
+  figure copied into prose goes stale.
 - Production rollout and public acceptance completed **2026-09-16 17:24 UTC**:
   version **2.31.0**, image `2.31.0-5a7acfc`, ECS task revision 434, two healthy
   tasks. Both Arc networks advertise `exact` under v1 names and v2 CAIP-2 IDs;

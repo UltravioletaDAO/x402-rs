@@ -1020,4 +1020,123 @@ mod tests {
             );
         }
     }
+
+    /// The derivation only RAISES a low-balance floor, never lowers one
+    /// (c0der, 2026-09-23): the alarm of each derived chain fires at
+    /// `max(derived, declared)`, and the declared floors are at least the
+    /// operator's floors of 2026-09-23, which may rise but not fall. Without
+    /// this, removing the `max` from `alerts.tf` left every test green while
+    /// Base's floor fell from 0.005 to 0.000143 ETH (refutation of PR #99).
+    ///
+    /// Also: every fee cap is above zero, because `alerts.tf` divides by it and
+    /// a zero would fail the Terraform plan after the merge.
+    #[test]
+    fn no_balance_floor_falls_below_the_operator_floor() {
+        // The thresholds production ran on 2026-09-23 (`describe-alarms`), in
+        // native units. Arc's comes from production.auto.tfvars.
+        const DECLARED: [(&str, f64); 9] = [
+            ("celo-mainnet", 12.0),
+            ("ethereum-mainnet", 0.0035),
+            ("arbitrum-mainnet", 0.0025),
+            ("polygon-mainnet", 20.0),
+            ("base-mainnet", 0.005),
+            ("optimism-mainnet", 0.005),
+            ("avalanche-mainnet", 0.2),
+            ("monad-mainnet", 6.0),
+            ("hedera-mainnet", 10.0),
+        ];
+        const HAND_SET: [(&str, f64); 6] = [
+            ("sui-mainnet", 1.0),
+            ("solana-mainnet", 0.02),
+            ("stellar-mainnet", 5.0),
+            ("near-mainnet", 1.0),
+            ("algorand-mainnet", 5.0),
+            ("xrpl-mainnet", 5.0),
+        ];
+        const ARC_OPERATOR_FLOOR: f64 = 5.0;
+
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/terraform/environments/production"
+        );
+        let alerts = std::fs::read_to_string(format!("{dir}/alerts.tf")).expect("alerts.tf");
+        // `"key" = number` entries of the block opened by `opening`.
+        let block = |opening: &str| -> Vec<(String, f64)> {
+            let start = alerts
+                .find(opening)
+                .unwrap_or_else(|| panic!("alerts.tf no longer declares `{opening}`"));
+            alerts[start + opening.len()..]
+                .lines()
+                .skip(1)
+                .map(str::trim)
+                .take_while(|line| !line.starts_with('}'))
+                .filter_map(|line| {
+                    let (key, rest) = line.split_once('=')?;
+                    let value = rest.split('#').next()?.trim().parse().ok()?;
+                    Some((key.trim().trim_matches('"').to_string(), value))
+                })
+                .collect()
+        };
+        let declared = block("declared_floors = merge({");
+        let hand_set = block("hand_set_floors = {");
+        let fee_caps = block("evm_fee_cap_gwei = {");
+
+        for (chain, floor) in DECLARED {
+            let now = declared
+                .iter()
+                .find(|(c, _)| c == chain)
+                .unwrap_or_else(|| panic!("{chain} lost its declared floor"))
+                .1;
+            assert!(
+                now >= floor,
+                "{chain}: declared floor {now} is below {floor}"
+            );
+        }
+        for (chain, floor) in HAND_SET {
+            let now = hand_set
+                .iter()
+                .find(|(c, _)| c == chain)
+                .unwrap_or_else(|| panic!("{chain} lost its hand-set floor"))
+                .1;
+            assert!(
+                now >= floor,
+                "{chain}: hand-set floor {now} is below {floor}"
+            );
+        }
+
+        // The declared floor has to reach the threshold: `min_native` is the
+        // max of the derived floor and the declared one.
+        let min_native = alerts
+            .lines()
+            .map(str::trim)
+            .find(|line| line.starts_with("min_native") && line.contains("price.cost"))
+            .expect("alerts.tf no longer derives min_native from the settle price");
+        assert!(
+            min_native.contains("max(")
+                && min_native.contains("price.cost * local.warn_settles")
+                && min_native.contains("local.declared_floors"),
+            "min_native must be max(derived, declared): {min_native}"
+        );
+
+        let tfvars = std::fs::read_to_string(format!("{dir}/production.auto.tfvars"))
+            .expect("production.auto.tfvars");
+        let arc: f64 = tfvars
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .find(|(key, _)| key.trim() == "arc_minimum_gas_usdc")
+            .and_then(|(_, value)| value.split('#').next()?.trim().parse().ok())
+            .expect("production.auto.tfvars no longer sets arc_minimum_gas_usdc");
+        assert!(
+            arc >= ARC_OPERATOR_FLOOR,
+            "Arc's floor {arc} is below 5 USDC"
+        );
+
+        assert_eq!(fee_caps.len(), 9, "one fee cap per alarmed EVM mainnet");
+        for (chain, gwei) in &fee_caps {
+            assert!(
+                *gwei > 0.0,
+                "{chain}: fee cap {gwei} gwei; alerts.tf divides by it"
+            );
+        }
+    }
 }

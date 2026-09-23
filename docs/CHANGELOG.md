@@ -17,7 +17,8 @@
 - Both networks enabled in deployment configuration after real one-micro-USDC
   v1 and v2 canaries passed against an isolated candidate. Each checks the
   receipt, exact recipient balance delta and replay without a second debit.
-  Mainnet gas measured 0.002252606134343883 / 0.001804750735987521 USDC (v1/v2).
+  Gas per settle is not copied here: `docs/reports/arc-settle-gas.json`, which
+  `scripts/arc_settle_gas_report.py` rebuilds from the chain, has it per receipt.
 
 
 ## [2.30.0] - 2026-09-16

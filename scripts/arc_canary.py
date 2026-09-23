@@ -19,6 +19,14 @@ from eth_account.messages import encode_typed_data
 from eth_utils import keccak
 
 USDC = "0x3600000000000000000000000000000000000000"
+# The gas guard moves with the chain: a quote may be up to this many times the
+# base fee of the block just read, and never above the absolute ceiling. A fixed
+# 50 gwei guard made the release check unrunnable during a real base-fee spike
+# (81.64 gwei at block 21,205,139, 2026-09-16 19:12:57Z) while nothing was
+# wrong. 200 gwei is ten times Arc's 20 gwei minimum and prices a settle's
+# ~130k gas at 0.026 USDC.
+GAS_BASE_FEE_MULTIPLE = 3
+GAS_PRICE_CEILING_WEI = 200 * 10**9
 NETWORKS = {
     "arc": (5042, "https://rpc.mainnet.arc.io", "evm_mainnets"),
     "arc-testnet": (5042002, "https://rpc.testnet.arc.io", "evm_testnets"),
@@ -48,6 +56,18 @@ def rpc(url, method, params):
 
 def balance(url, address):
     return int(rpc(url, "eth_call", [{"to": USDC, "data": "0x70a08231" + address[2:].zfill(64)}, "latest"]), 16)
+
+
+def gas_guard(gas_price, base_fee):
+    """None when `gas_price` may be spent, else why not. Pure: tested without an RPC."""
+    if base_fee is None or base_fee <= 0:
+        return "The latest block carries no baseFeePerGas; refusing to price the canary"
+    limit = min(GAS_BASE_FEE_MULTIPLE * base_fee, GAS_PRICE_CEILING_WEI)
+    if gas_price > limit:
+        return (f"Gas quote {gas_price / 1e9:g} gwei exceeds this canary's guard of {limit / 1e9:g} gwei "
+                f"({GAS_BASE_FEE_MULTIPLE}x the {base_fee / 1e9:g} gwei base fee, at most "
+                f"{GAS_PRICE_CEILING_WEI / 1e9:g}); review before retrying")
+    return None
 
 
 def domain_separator(chain_id):
@@ -132,8 +152,10 @@ def main():
         return
     if not served or native < 10**17:
         raise RuntimeError("Canary requires the served network and at least 0.1 USDC in its signer")
-    if int(rpc(url, "eth_gasPrice", []), 16) > 50_000_000_000:
-        raise RuntimeError("Gas quote exceeds this canary's 50 gwei guard; review before retrying")
+    refusal = gas_guard(int(rpc(url, "eth_gasPrice", []), 16),
+                        int(block["baseFeePerGas"], 16) if block.get("baseFeePerGas") else None)
+    if refusal:
+        raise RuntimeError(refusal)
     import boto3
     env = "mainnet" if args.network == "arc" else "testnet"
     raw = boto3.client("secretsmanager", region_name="us-east-2").get_secret_value(

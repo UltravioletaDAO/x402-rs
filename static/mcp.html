@@ -10,12 +10,7 @@
 <link rel="canonical" href="https://facilitator.ultravioletadao.xyz/mcp">
 <meta property="og:title" content="x402 facilitator · MCP server">
 <meta property="og:description" content="Four tools over one stateless Streamable HTTP endpoint. Same handlers as the REST routes, so a tool and a curl cannot disagree.">
-<meta property="og:image" content="https://facilitator.ultravioletadao.xyz/og-arc-hedera.png">
-<meta property="og:image:width" content="1200">
-<meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="Ultravioleta x402 payments — Arc and native Hedera, mainnet and testnet">
-<meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:image" content="https://facilitator.ultravioletadao.xyz/og-arc-hedera.png">
+<meta property="og:image" content="https://facilitator.ultravioletadao.xyz/logo.png">
 <link rel="icon" href="/favicon.ico">
 <link rel="stylesheet" href="/uv.css?v=20260909">
 </head>
@@ -94,7 +89,7 @@
 <p style="margin:0"><b data-i18n="transport.acceptTitle">Both Accept types, or 406.</b> <span data-i18n="transport.acceptText">The Streamable HTTP transport rejects a request whose <code>Accept</code> does not name <em>both</em> <code>application/json</code> and <code>text/event-stream</code> — even though this server never opens a stream and always answers JSON. It is the first wall an integrator writing a client by hand runs into, and the refusal is a 406 with no other explanation.</span></p>
 </div><p data-i18n="transport.hostText">A <code>Host</code> header outside the allowlist gets a <b>403</b> before anything else runs. That check is DNS-rebinding protection aimed at MCP servers on a developer's laptop; the production host is built into the default rather than left to configuration, because the library's own default is loopback only, which behind a load balancer rejects every real request while local testing looks perfect.</p><p data-i18n="transport.getText">A <code>GET</code> on this path is this page. A client that asks for <code>application/json</code> or <code>text/event-stream</code> still gets the <b>405</b> that tells it to POST, because a client that lands here with that <code>Accept</code> is an MCP client that used the wrong method and needs the machine answer, not a page written for a person. <code>Accept: text/markdown</code> returns the same guide as Markdown.</p></section>
 <section class="content-section" id="what"><h2 data-i18n="h.what">What the server does</h2>
-<p data-i18n="what.p1">This service verifies signed x402 payments and submits them on their native network, paying network fees. It includes USDC/EURC on Arc and native USDC on Hedera. The buyer signs the payment; the facilitator sponsors its submission. Discover the enabled capabilities before choosing an offer.</p><div class="note bad">
+<p data-i18n="what.p1">This service verifies signed x402 payments and submits them on their native network, paying network fees. The buyer signs the payment; the facilitator sponsors its submission. Discover the enabled capabilities before choosing an offer.</p><div class="note bad">
 <p style="margin-top:0"><b data-i18n="what.notTitle">Four things this server is not.</b></p>
 <ul>
 <li data-i18n="what.not1"><b>Not a wallet.</b> It holds no key of yours, signs nothing on your behalf and cannot move a coin you did not authorize. The signature inside the payload is the only authority there is, which is also why there is nothing to log in to.</li>
@@ -288,7 +283,7 @@ const I18N = {
     "fact.price": "Price",
     "fact.priceValue": "0% — this endpoint never answers 402",
     "h.what": "What the server does",
-    "what.p1": "This service verifies signed x402 payments and submits them on their native network, paying network fees. It includes USDC/EURC on Arc and native USDC on Hedera. The buyer signs the payment; the facilitator sponsors its submission. Discover the enabled capabilities before choosing an offer.",
+    "what.p1": "This service verifies signed x402 payments and submits them on their native network, paying network fees. The buyer signs the payment; the facilitator sponsors its submission. Discover the enabled capabilities before choosing an offer.",
     "what.notTitle": "Four things this server is not.",
     "what.not1": "<b>Not a wallet.</b> It holds no key of yours, signs nothing on your behalf and cannot move a coin you did not authorize. The signature inside the payload is the only authority there is, which is also why there is nothing to log in to.",
     "what.not2": "<b>Not a paid API.</b> The MCP endpoint charges nothing and never answers 402. The only money that moves is the buyer's payment going to the seller.",
@@ -390,7 +385,7 @@ const I18N = {
     "fact.price": "Precio",
     "fact.priceValue": "0% — este endpoint nunca contesta 402",
     "h.what": "Qué hace el servidor",
-    "what.p1": "Este servicio verifica pagos x402 firmados y los envía a su red nativa, pagando las comisiones. Incluye USDC/EURC en Arc y USDC nativo en Hedera. El comprador firma el pago y el facilitador patrocina su envío. Consulta las capacidades habilitadas antes de elegir una oferta.",
+    "what.p1": "Este servicio verifica pagos x402 firmados y los envía a su red nativa, pagando las comisiones. El comprador firma el pago y el facilitador patrocina su envío. Consulta las capacidades habilitadas antes de elegir una oferta.",
     "what.notTitle": "Cuatro cosas que este servidor no es.",
     "what.not1": "<b>No es una wallet.</b> No guarda ninguna clave tuya, no firma nada en tu nombre y no puede mover una moneda que no hayas autorizado. La firma que va adentro del payload es la única autoridad que existe, que es también por qué no hay nada a lo que iniciar sesión.",
     "what.not2": "<b>No es una API paga.</b> El endpoint MCP no cobra nada y nunca contesta 402. El único dinero que se mueve es el pago del comprador yendo al vendedor.",

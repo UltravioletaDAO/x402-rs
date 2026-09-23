@@ -26,9 +26,10 @@ Keep those capability lists separate and derived from their own sources.
 - `src/openapi.rs` for Swagger and its native request example.
 - `index.md`, `skill.md`, `llms.txt`, `mcp.md`, A2A agent card and README.
 - Regenerate `llms-full.txt` with `scripts/build_llms_full.sh`.
-- `og-arc-hedera.svg` is the editable social-card source; render it to the
-  1200x630 `og-arc-hedera.png`, inspect the image and serve its explicit Rust route.
-  Open Graph and Twitter metadata use the PNG route.
+- Link previews are network-agnostic: every page's `og:image` is `logo.png`, and a
+  preview never singles out one network, token or team (a list of all of them is
+  fine). No page references `og-arc-hedera.svg`/`.png` any more; its Rust route
+  still serves the PNG.
 - Run `scripts/verify_landing_canonical.py --offline` and the affected Rust checks,
   then verify the deployed version, live discovery, real UI filter clicks and links.
 

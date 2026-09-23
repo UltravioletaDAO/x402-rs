@@ -1,7 +1,7 @@
 {
   "name": "Ultravioleta DAO x402 Facilitator",
   "version": "1.0.0",
-  "description": "x402 payment facilitator operated by Ultravioleta DAO. Verifies and settles signed payments with sponsored network fees, including Arc USDC mainnet/testnet and native Hedera HBAR/USDC mainnet/testnet. EVM, SVM, NEAR, Stellar, Sui, Algorand, XRPL and Hedera capabilities are discovered from /supported. Hedera uses x402 v2/exact only; Arc uses direct EOA exact v1/v2. No facilitator fee. ERC-8004 identity/reputation and Bazaar discovery have their own network scopes.",
+  "description": "x402 payment facilitator operated by Ultravioleta DAO. Verifies and settles signed payments with sponsored network fees. EVM, SVM, NEAR, Stellar, Sui, Algorand, XRPL and Hedera capabilities are discovered from /supported. No facilitator fee. ERC-8004 identity/reputation and Bazaar discovery have their own network scopes.",
   "url": "https://facilitator.ultravioletadao.xyz/",
   "preferredTransport": "HTTP+JSON",
   "additionalInterfaces": [

@@ -948,4 +948,76 @@ mod tests {
         let (code, _, _) = get(&router, "/health/ready?network=not-a-chain").await;
         assert_eq!(code, StatusCode::BAD_REQUEST);
     }
+
+    /// The low-balance alarm is the page for the moment this route turns a
+    /// signer `degraded`, so `alerts.tf` derives its floor from the same
+    /// numbers: `SETTLE_GAS_BUDGET * fee_cap * warnSettles`. Terraform cannot
+    /// read Rust and carries copies; this fails when a copy drifts, or when the
+    /// deployment sets the warn level the copy assumes is the default.
+    ///
+    /// Until 2.39.2 every floor was typed by hand and its description promised
+    /// "roughly 100 settles": Arc's default bought about 19.
+    #[test]
+    fn the_low_balance_alarm_is_derived_from_these_thresholds() {
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/terraform/environments/production"
+        );
+        let alerts = std::fs::read_to_string(format!("{dir}/alerts.tf")).expect("alerts.tf");
+        let local = |name: &str| -> u128 {
+            alerts
+                .lines()
+                .map(str::trim)
+                .find_map(|line| {
+                    let (key, value) = line.split_once('=')?;
+                    (key.trim() == name).then(|| value.trim().parse().ok())?
+                })
+                .unwrap_or_else(|| panic!("alerts.tf no longer declares `{name} = <integer>`"))
+        };
+        assert_eq!(
+            local("settle_gas_budget"),
+            SETTLE_GAS_BUDGET,
+            "alerts.tf prices a settle differently from /health/ready"
+        );
+        assert_eq!(
+            local("warn_settles"),
+            u128::from(DEFAULT_WARN_SETTLES),
+            "alerts.tf pages at a different settle count than /health/ready warns at"
+        );
+
+        // A deployment override would move /health/ready and leave the alarm
+        // on the default. Carry it into alerts.tf instead of setting it here.
+        let overridden = [
+            "HEALTH_READY_WARN_SETTLES",
+            "HEDERA_MAX_TRANSACTION_FEE_TINYBARS",
+        ];
+        for entry in std::fs::read_dir(dir).expect("terraform directory") {
+            let path = entry.expect("directory entry").path();
+            if path.extension().is_some_and(|e| e == "tf" || e == "tfvars") {
+                let text = std::fs::read_to_string(&path).expect("terraform file");
+                for name in overridden {
+                    // Quoted: an ECS `environment` entry, not a comment naming it.
+                    assert!(
+                        !text.contains(&format!("\"{name}\"")),
+                        "{} sets {name}; alerts.tf derives its floors from the default",
+                        path.display()
+                    );
+                }
+            }
+        }
+
+        #[cfg(feature = "hedera")]
+        {
+            let cost: u64 = alerts
+                .split_once(r#""hedera-mainnet" = { cost = "#)
+                .and_then(|(_, rest)| rest.split(',').next())
+                .and_then(|value| value.trim().parse().ok())
+                .expect("alerts.tf prices a Hedera settle in whole HBAR");
+            assert_eq!(
+                cost * 100_000_000,
+                crate::chain::hedera::DEFAULT_MAX_TRANSACTION_FEE_TINYBARS,
+                "alerts.tf prices a Hedera settle differently from its max transaction fee"
+            );
+        }
+    }
 }

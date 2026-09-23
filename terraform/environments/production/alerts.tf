@@ -121,29 +121,115 @@ locals {
   # Chains whose health we alarm on. Mainnet only -- a broken testnet RPC is not
   # worth waking anyone, and testnet faucets run dry as a matter of course.
   #
-  # min_native is a FLOOR, not a target: roughly the cost of ~100 escrow
-  # settlements on that chain at the gas prices measured 2026-08-20. Celo's is
-  # the one that matters most -- it is the chain that actually ran dry.
-  monitored_chains = merge({
-    "celo-mainnet"      = { min_native = 12.0 }   # ~0.1134/settle at 202 gwei
-    "ethereum-mainnet"  = { min_native = 0.0035 } # L1; refill well before this
-    "arbitrum-mainnet"  = { min_native = 0.0025 } # L1 data fee not in gasPrice
-    "polygon-mainnet"   = { min_native = 20.0 }
-    "base-mainnet"      = { min_native = 0.005 }
-    "optimism-mainnet"  = { min_native = 0.005 }
-    "avalanche-mainnet" = { min_native = 0.2 }
-    "monad-mainnet"     = { min_native = 6.0 }
-    "sui-mainnet"       = { min_native = 1.0 }
-    "solana-mainnet"    = { min_native = 0.02 }
-    "stellar-mainnet"   = { min_native = 5.0 } # lowest of the non-EVM family
-    "near-mainnet"      = { min_native = 1.0 }
-    "algorand-mainnet"  = { min_native = 5.0 }
-    "xrpl-mainnet"      = { min_native = 5.0 }
-    }, var.arc_mainnet_enabled ? {
-    "arc-mainnet" = { min_native = var.arc_minimum_gas_usdc }
-    } : {}, var.hedera_enabled_mainnet ? {
-    "hedera-mainnet" = { min_native = 10.0 }
-  } : {})
+  # The low-balance floor is at least the DERIVED one, the way GET /health/ready
+  # grades a signer:
+  #
+  #   min_native = max(SETTLE_GAS_BUDGET * fee_cap * warnSettles, declared floor)
+  #
+  # Below the derived floor /health/ready already calls the signer `degraded`, so
+  # this alarm pages no later than that moment. Until 2.39.2 each floor was typed
+  # by hand, and the description promised "roughly 100 settles" that the numbers
+  # did not always buy: Arc's 0.1 USDC default bought about 19, Ethereum's 0.0035
+  # ETH about 5, Hedera's 10 HBAR 10.
+  #
+  # The derivation only RAISES a floor, never lowers one: where the declared
+  # floor is above it, the declared floor stays. At 100 uniform settles Base's
+  # floor would drop from 0.005 to 0.000143 ETH, hours of warning at its traffic
+  # instead of days -- this fixes alarms that arrived late, it must not make
+  # others arrive later. Per-chain lead time (warnSettles by chain, or by
+  # traffic) is the future lever, not a lower floor.
+  #
+  # settle_gas_budget and warn_settles mirror SETTLE_GAS_BUDGET and
+  # DEFAULT_WARN_SETTLES in src/readiness.rs, and a test there fails if they
+  # drift. When /health/ready turns a signer `down` (DEFAULT_MIN_SETTLES) is not
+  # decided here and does not change.
+  settle_gas_budget = 130000
+  warn_settles      = 100
+
+  # The fee cap quote_fee_cap would set on each chain (maxFeePerGas, in gwei),
+  # read from the chain by `python3 scripts/gas_reserve_floors.py --hcl` on
+  # 2026-09-23T08:52Z. It moves with the chain: this is a dated reading, and
+  # /health/ready?network=<name> is the live count. Re-run the script when a
+  # chain's fees move.
+  evm_fee_cap_gwei = {
+    "arbitrum-mainnet"  = 0.0411
+    "arc-mainnet"       = 40.1
+    "avalanche-mainnet" = 0.452
+    "base-mainnet"      = 0.011
+    "celo-mainnet"      = 403
+    "ethereum-mainnet"  = 5
+    "monad-mainnet"     = 202
+    "optimism-mainnet"  = 0.00101
+    "polygon-mainnet"   = 1000
+  }
+
+  # Native currency one settle reserves. Native Hedera reserves its max
+  # transaction fee, HEDERA_MAX_TRANSACTION_FEE_TINYBARS, default 10^8 tinybars
+  # = 1 HBAR (src/chain/hedera/config.rs); /health/ready divides by the same.
+  settle_price = merge(
+    {
+      for chain, gwei in local.evm_fee_cap_gwei : chain => {
+        cost   = local.settle_gas_budget * gwei / 1e9
+        priced = "the ${gwei} gwei fee cap measured on 2026-09-23"
+      }
+    },
+    { "hedera-mainnet" = { cost = 1, priced = "its 1 HBAR max transaction fee" } },
+  )
+
+  # Floors the operator declared before the derivation, kept as minimums, each
+  # with its reason. Unless noted: roughly the cost of ~100 ESCROW settles at the
+  # gas prices measured 2026-08-20 (an escrow settle costs more gas than the
+  # EIP-3009 one SETTLE_GAS_BUDGET prices).
+  declared_floors = merge({
+    "celo-mainnet"      = 12.0   # ~0.1134/escrow settle at 202 gwei; the chain that ran dry (2026-08-20)
+    "ethereum-mainnet"  = 0.0035 # L1; refill well before this
+    "arbitrum-mainnet"  = 0.0025 # L1 data fee not in gasPrice
+    "polygon-mainnet"   = 20.0
+    "base-mainnet"      = 0.005
+    "optimism-mainnet"  = 0.005
+    "avalanche-mainnet" = 0.2
+    "monad-mainnet"     = 6.0
+    "hedera-mainnet"    = 10.0 # set when native Hedera went live
+    },
+    # Arc's comes from production.auto.tfvars (5 USDC since 2.36.5: room to
+    # refill well before settles run short); unset, Arc is derived alone.
+    var.arc_minimum_gas_usdc == null ? {} : { "arc-mainnet" = var.arc_minimum_gas_usdc },
+  )
+
+  # Families /health/ready does not probe (it lists them as `unchecked`): there
+  # is no settle budget to derive a floor from, so these stay hand-set.
+  hand_set_floors = {
+    "sui-mainnet"      = 1.0
+    "solana-mainnet"   = 0.02
+    "stellar-mainnet"  = 5.0
+    "near-mainnet"     = 1.0
+    "algorand-mainnet" = 5.0
+    "xrpl-mainnet"     = 5.0
+  }
+
+  switched_off = concat(
+    var.arc_mainnet_enabled ? [] : ["arc-mainnet"],
+    var.hedera_enabled_mainnet ? [] : ["hedera-mainnet"],
+  )
+
+  monitored_chains = merge(
+    {
+      for chain, price in local.settle_price : chain => {
+        min_native = max(price.cost * local.warn_settles, lookup(local.declared_floors, chain, 0))
+        settles    = max(local.warn_settles, floor(lookup(local.declared_floors, chain, 0) / price.cost))
+        basis      = lookup(local.declared_floors, chain, 0) > price.cost * local.warn_settles ? "the operator floor, above the derived one" : "the derived floor"
+        priced     = price.priced
+      } if !contains(local.switched_off, chain)
+    },
+    {
+      for chain, native in local.hand_set_floors : chain => {
+        min_native = native
+        settles    = null
+        basis      = "a hand-set floor"
+        priced     = null
+      }
+    },
+  )
 }
 
 # A chain we cannot read at all. This is the alarm that would have caught Sui.
@@ -191,7 +277,10 @@ resource "aws_cloudwatch_metric_alarm" "chain_balance_low" {
   period              = 900
   statistic           = "Minimum"
   threshold           = each.value.min_native
-  alarm_description   = "Facilitator wallet on ${each.key} is below ${each.value.min_native} native -- roughly 100 settles left. Refill before it reaches zero and settlements start failing."
+  alarm_description = (each.value.settles == null
+    ? "Facilitator wallet on ${each.key} is below ${format("%.3g", each.value.min_native)} native, a hand-set floor: /health/ready does not estimate settles for this chain's family. Refill before it reaches zero and settlements start failing."
+    : "Facilitator wallet on ${each.key} is below ${format("%.3g", each.value.min_native)} native (${each.value.basis}): about ${each.value.settles} settles at ${each.value.priced}. /health/ready?network=${trimsuffix(each.key, "-mainnet")} has the live count, and calls the signer degraded below ${local.warn_settles}. Refill before settlements start failing."
+  )
 
   # Here missing data is genuinely ambiguous (we could not read the chain), and
   # chain_rpc_unreachable already covers that case. Do not double-page.

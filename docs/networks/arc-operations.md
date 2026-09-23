@@ -51,7 +51,9 @@ the historical 2.30.0 changelog's mainnet availability note is superseded.
 Both switches default to false. Production values live in
 `terraform/environments/production/production.auto.tfvars`; the same switch
 supplies the ECS and balances Lambda RPC. Enabling mainnet also installs RPC
-and low-reserve alarms. The initial reserve threshold is 0.1 native USDC.
+and low-reserve alarms. The reserve threshold is derived like every EVM
+chain's, `SETTLE_GAS_BUDGET x fee cap x warnSettles` (`alerts.tf`), unless
+`arc_minimum_gas_usdc` sets it; production sets 5 native USDC.
 The landing page shows an Arc wallet only when `/supported` advertises it.
 
 Fund the wallet **on the selected Arc network**, initially with 1 USDC for

@@ -2,6 +2,8 @@
 //! account sponsors only consensus fees. No EVM relay or EIP-3009 is involved.
 pub mod codec;
 mod config;
+#[cfg(test)]
+pub(crate) use config::DEFAULT_MAX_TRANSACTION_FEE_TINYBARS;
 pub mod id;
 mod mirror;
 mod store;

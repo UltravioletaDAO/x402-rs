@@ -43,6 +43,10 @@ Detalles de esos 409:
   contexto de compra nunca se devuelve sin ese contexto.
 - `/verify` contesta desde el recibo guardado y no vuelve a simular la
   autorización consumida.
+- Si el store falla mientras se resuelve el vínculo, `/verify` y `/settle`
+  responden `503 receipt_store_unavailable`: no hay veredicto.
+- El `Idempotency-Key` tiene que ser el mismo valor en `/verify` y en `/settle`.
+  Una key distinta por operación ata solo la llamada que admitió el pago.
 - La reconciliación y la retransmisión de los bytes guardados siguen igual.
 
 Cómo está hecho:
@@ -89,11 +93,16 @@ sumar una que sí los ofrezca. La función es `alternative_route`.
   - `an_uncertain_outcome_is_replayed_to_its_binding_and_refused_bare`
   - `concurrent_bare_resends_admit_one_payment_and_one_success`: 20 reenvíos
     pelados, un envío y un solo 200.
+  - `a_store_fault_while_resolving_the_binding_is_no_verdict`: un store que falla
+    solo en el alias `receipt:idem:v1:` da 503 en `/verify` y en `/settle`.
   - `every_network_in_supported_is_covered_by_the_replay_tests`: falla si una red
     entra a `supported()` sin estar en esos tests.
 - **Base y rieles:**
   - el test de concurrencia con contexto corre en `arc`, `arc-testnet` y `base`;
-  - `base_escrow_and_refund_requests_keep_their_own_settlement_path`;
+  - `base_escrow_and_refund_requests_keep_their_own_settlement_path`: cubre
+    `refund`, `scheme: "escrow"` en el primer nivel, y `paymentPayload.scheme`
+    `commerce`, `upto` y `fhe-transfer`. También un cuerpo v2 con
+    `paymentPayload.accepted.scheme = "escrow"`, cuyo control `exact` sí se admite;
   - `base_is_not_admitted_until_it_is_announced`;
   - `capability_lists_exactly_the_supported_networks`.
 - **Vectores:** `tests/fixtures/facilitator-receipts-v1.json` suma Base USDC y
@@ -128,6 +137,8 @@ sumar una que sí los ofrezca. La función es `alternative_route`.
 - **Mutaciones:**
   - si el settle vuelve a repetir el éxito a cualquier reenvío, fallan 5 tests;
   - si el verify vuelve a validar a cualquier reenvío, fallan 2;
+  - si un error del store al resolver el vínculo vuelve a leerse como "no atado",
+    falla el test del 503;
   - sin la guardia de rieles alternativos, falla su test;
   - con la normalización vieja (solo Arc), falla el de concurrencia en Base.
 - **USDC en Base**, leído en `mainnet.base.org` y `base-rpc.publicnode.com` (solo
@@ -143,7 +154,7 @@ Checkout con LF. Los pasos que lista `scripts/preci.py --base origin/main`
 | `node --test tests/frontend-capabilities.test.cjs` | 8/8 pass |
 | `python3 -m unittest discover -s tests/scripts -p 'test_*balances.py'` | 5 tests, OK |
 | `cargo build --locked --features solana,near,stellar,algorand,sui,xrpl,hedera` | exit 0, ningún warning en `src/receipts/` |
-| `cargo test --locked -p x402-rs --features <las mismas> -- --test-threads=1` | exit 0, **2582 passed, 0 failed**, 23 ignored (11 suites). Los 6 tests nuevos de replays corren en la lib y en el binario: +12 sobre la ronda anterior de esta rama, sin C, que dio 2570 |
+| `cargo test --locked -p x402-rs --features <las mismas> -- --test-threads=1` | exit 0, **2584 passed, 0 failed**, 23 ignored (11 suites). Los 7 tests nuevos de replays y del 503 corren en la lib y en el binario: +14 sobre la primera ronda de esta rama, sin C, que dio 2570 |
 | `cargo test --locked -p x402-axum -p x402-reqwest -p x402-compliance -- --test-threads=1` | exit 0, 109 passed, 0 failed, 9 ignored |
 | `DYNAMODB_LOCAL_URL=http://127.0.0.1:18000 cargo test ... local_dynamodb_atomic_admission_cas_and_no_ttl -- --ignored` contra `amazon/dynamodb-local` en Docker | 1 passed: un registro Arc y uno Base admitidos 1 vez de 20 cada uno, CAS, 6 filas, ninguna con TTL |
 | `no-account-id.yml` (sus tres expresiones, en Python, sobre los archivos del diff) | sin coincidencias en los 13 archivos; ninguna línea nueva con `0x` + 64 hex |
@@ -198,8 +209,8 @@ Para Base, cuando se anuncie:
 
 ### 3. Anunciar Base
 
-No es parte de este PR. El cambio está listo y probado aparte, sin commitear:
-`ACTIVAR-BASE.patch`, en la raíz de este worktree. Toca:
+No es parte de este PR. El cambio está preparado y probado aparte, y lo tiene
+c0der. Toca:
 
 - `supported()` y `capability()`;
 - la OpenAPI;
@@ -213,7 +224,3 @@ No es parte de este PR. El cambio está listo y probado aparte, sin commitear:
 Revertir el merge es otro release. No hay datos que migrar: el registro guardado no
 cambió de forma. Después de revertir, un reenvío pelado de una autorización admitida
 vuelve a recibir el replay 200 de 2.38.0.
-
-## Archivos fuera del repo (raíz de este worktree, sin commitear)
-
-`PREGUNTA-c0der.md`, `PARA-c0der-privado.md` y `ACTIVAR-BASE.patch`.

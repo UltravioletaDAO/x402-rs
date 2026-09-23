@@ -137,14 +137,16 @@ The original answer goes back only to the binding that admitted the payment:
 the same `X-UVD-Purchase` capability, or the same `Idempotency-Key`. That
 request gets today's replay (the original status and body with
 `Idempotent-Replayed: true`, or `202 settlement_in_progress` while the payment
-is in flight), which is how a lost response is recovered. Possession of the
+is in flight), which is how a lost response is recovered. The Idempotency-Key
+must be the same value on `/verify` and `/settle`; a key that differs per
+operation binds only the call that admitted the payment. Possession of the
 signed payment alone is not a purchase binding:
 
 | Resend | `/settle` | `/verify` |
 | --- | --- | --- |
 | Same capability or same Idempotency-Key | Original answer replayed | Stored verdict and receipt |
 | No binding, payment `confirmed` | `409 authorization_already_settled` with the receipt | `isValid: false`, `invalidReason: authorization_already_settled` |
-| No binding, payment `pending` or `unknown` | `409 authorization_in_flight` with the receipt | `isValid: false`, `invalidReason: authorization_in_flight` |
+| No binding, payment `pending` or `unknown` | `409 authorization_in_flight` with the receipt; a resend without the binding learns the final outcome by resending later | `isValid: false`, `invalidReason: authorization_in_flight` |
 | No binding, payment `rejected` | Original rejection replayed | Stored rejection |
 | Another capability, or none for a payment made with one | `409 receipt_request_conflict`, no receipt | `isValid: false` with the reasons above, no receipt; a rejected payment is verified as before |
 
@@ -152,8 +154,10 @@ These 409s never carry `success: true`, a top-level `transaction` or
 `Idempotent-Replayed`; the receipt inside proves the payment to whoever holds
 the payment itself. A receipt made under a purchase context is never returned
 without that context. `/verify` answers from the stored receipt and does not
-simulate the consumed authorization again. Recovery by reconciliation and
-rebroadcast of saved bytes is unchanged for every resend.
+simulate the consumed authorization again. If receipt storage fails while the
+binding is being resolved, both answer `503 receipt_store_unavailable`, never a
+verdict. Recovery by reconciliation and rebroadcast of saved bytes is unchanged
+for every resend.
 Requests that `/settle` routes to their own settlement paths never enter
 admission, even when their inner requirements say `exact`: the `upto`,
 `escrow`/`commerce` and `fhe-transfer` schemes and the x402r `refund` extension.

@@ -737,10 +737,31 @@ async fn base_escrow_and_refund_stay_out_of_admission() {
     escrow["scheme"] = json!("escrow");
     let mut commerce = exact.clone();
     commerce["paymentPayload"]["scheme"] = json!("commerce");
+    let mut upto = exact.clone();
+    upto["paymentPayload"]["scheme"] = json!("upto");
+    let mut fhe = exact.clone();
+    fhe["paymentPayload"]["scheme"] = json!("fhe-transfer");
+    // x402 v2 names the scheme inside paymentPayload.accepted.
+    let r = &exact["paymentRequirements"];
+    let accepted = json!({"network":"eip155:8453","scheme":"exact","asset":r["asset"],
+        "amount":r["maxAmountRequired"],"payTo":r["payTo"],"maxTimeoutSeconds":60,"extra":r["extra"]});
+    let v2 = |scheme: &str| {
+        let mut inner = accepted.clone();
+        inner["scheme"] = json!(scheme);
+        json!({"x402Version":2,
+            "paymentPayload":{"x402Version":2,"accepted":inner,"payload":exact["paymentPayload"]["payload"]},
+            "resource":{"url":r["resource"],"description":r["description"],"mimeType":r["mimeType"]},
+            "accepted":accepted})
+    };
+    let v2_exact = Bytes::from(serde_json::to_vec(&v2("exact")).unwrap());
+    assert!(parse_request(&HeaderMap::new(), &v2_exact).is_some());
     for (route, request) in [
         ("refund", refund),
         ("escrow", escrow),
         ("commerce", commerce),
+        ("upto", upto),
+        ("fhe-transfer", fhe),
+        ("v2 escrow", v2("escrow")),
     ] {
         let raw = Bytes::from(serde_json::to_vec(&request).unwrap());
         assert!(parse_request(&HeaderMap::new(), &raw).is_none(), "{route}");
@@ -1226,5 +1247,61 @@ async fn concurrent_bare_resends_admit_one_payment_and_one_success() {
         }
         assert_eq!(sends.load(Ordering::SeqCst), 1, "{network}");
         assert_eq!(successes, 1, "{network}");
+    }
+}
+
+/// The authorization row answers; only the Idempotency-Key alias is down.
+struct IdempotencyAliasOutage(store::MemoryStore);
+#[async_trait::async_trait]
+impl store::Store for IdempotencyAliasOutage {
+    async fn get(&self, key: &str) -> Result<Option<Record>> {
+        if key.starts_with("receipt:idem:v1:") {
+            return Err("offline".into());
+        }
+        self.0.get(key).await
+    }
+    async fn reserve(&self, record: &Record, aliases: &[String]) -> Result<bool> {
+        self.0.reserve(record, aliases).await
+    }
+    async fn save(&self, record: &Record, previous_revision: u64) -> Result<bool> {
+        self.0.save(record, previous_revision).await
+    }
+}
+
+#[tokio::test]
+async fn a_store_fault_while_resolving_the_binding_is_no_verdict() {
+    for (network, body) in admitted_networks() {
+        let service = Arc::new(Service {
+            store: Arc::new(IdempotencyAliasOutage(store::MemoryStore::default())),
+            signing_key: Some(SigningKey::from_bytes(&[7; 32])),
+        });
+        admitted(network, service, async {
+            let paid = settle(
+                &MockFacilitator { invalid: false },
+                &keyed("purchase-9"),
+                &body,
+                async { success_on(network) },
+            )
+            .await;
+            assert_eq!(paid.status(), StatusCode::OK, "{network}");
+            let verified = verify(&keyed("purchase-9"), &body, async {
+                panic!("an admitted authorization was simulated again")
+            })
+            .await;
+            assert_eq!(
+                verified.status(),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "{network}"
+            );
+            assert_eq!(value(verified).await["error"], "receipt_store_unavailable");
+            let settled = settle_again(&keyed("purchase-9"), &body).await;
+            assert_eq!(
+                settled.status(),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "{network}"
+            );
+            assert_eq!(value(settled).await["error"], "receipt_store_unavailable");
+        })
+        .await;
     }
 }

@@ -606,7 +606,18 @@ pub async fn verify<F: Future<Output = Response>>(
     {
         let same = same_request(&existing, &record);
         let rejected = existing.receipt.status == "rejected";
-        if same && (rejected || bound(&service, &existing, headers).await == Ok(true)) {
+        let is_bound = if same && !rejected {
+            match bound(&service, &existing, headers).await {
+                Ok(is_bound) => is_bound,
+                // A store fault is no verdict, exactly as on /settle.
+                Err(_) => {
+                    return failure("receipt_store_unavailable", StatusCode::SERVICE_UNAVAILABLE)
+                }
+            }
+        } else {
+            false
+        };
+        if same && (rejected || is_bound) {
             // The authorization was already verified before durable admission.
             // Do not reject its consumed nonce and invite a fresh signature.
             let mut body = json!({"isValid":!rejected,"payer":existing.receipt.payer,"receipt":existing.receipt});

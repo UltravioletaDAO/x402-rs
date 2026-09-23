@@ -199,7 +199,7 @@
       "network": "celo-sepolia",
       "networkAliases": [
         "celo-sepolia",
-        "eip155:44787"
+        "eip155:11142220"
       ],
       "extra": {
         "tokens": [
@@ -859,10 +859,10 @@
     {
       "x402Version": 2,
       "scheme": "exact",
-      "network": "eip155:44787",
+      "network": "eip155:11142220",
       "networkAliases": [
         "celo-sepolia",
-        "eip155:44787"
+        "eip155:11142220"
       ],
       "extra": {
         "tokens": [

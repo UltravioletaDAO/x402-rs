@@ -19,7 +19,7 @@ const ICONO_DE_RED = {
   "avalanche": "avalanche", "avalanche-fuji": "avalanche", "eip155:43113": "avalanche", "eip155:43114": "avalanche",
   "base": "base", "base-sepolia": "base", "eip155:8453": "base", "eip155:84532": "base",
   "bsc": "bsc", "eip155:56": "bsc",
-  "celo": "celo", "celo-sepolia": "celo", "eip155:42220": "celo", "eip155:44787": "celo",
+  "celo": "celo", "celo-sepolia": "celo", "eip155:42220": "celo", "eip155:11142220": "celo",
   "ethereum": "ethereum", "ethereum-sepolia": "ethereum", "eip155:1": "ethereum", "eip155:11155111": "ethereum",
   "fogo": "fogo", "fogo-testnet": "fogo", "fogo:mainnet": "fogo", "fogo:testnet": "fogo",
   "hyperevm": "hyperevm", "hyperevm-testnet": "hyperevm", "eip155:333": "hyperevm", "eip155:999": "hyperevm",

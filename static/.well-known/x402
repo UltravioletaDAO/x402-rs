@@ -410,7 +410,7 @@
       },
       {
         "name": "celo-sepolia",
-        "caip2": "eip155:44787"
+        "caip2": "eip155:11142220"
       },
       {
         "name": "ethereum-sepolia",

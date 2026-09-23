@@ -122,6 +122,13 @@ Branch on `code`, never on the prose in `error`. Codes in use include
 `rate_limited` and `rate_limit_key_unavailable`; endpoint-specific codes are
 documented on the operations that return them.
 
+`network_retired` (`400` on `/verify` and `/settle`) means the request named a
+chain by an identifier this facilitator used to publish and no longer serves.
+The body carries the identifier sent as `network` and the one to use instead as
+`replacement`. Today that is only `eip155:44787`, Celo Alfajores, which
+`celo-sepolia` was wrongly published as through 2.39.0; `celo-sepolia` is
+`eip155:11142220`.
+
 ## Rate limits
 
 Limits are per client IP and are reported on every rate-limited response, not

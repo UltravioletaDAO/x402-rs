@@ -835,11 +835,15 @@ pub fn resolve_catalog_network(raw: &str) -> Option<Caip2NetworkId> {
         "avalanche-mainnet" | "avalanche-c-chain" => Some("avalanche"),
         "fuji" => Some("avalanche-fuji"),
         "celo-mainnet" => Some("celo"),
-        // Celo's testnet moved from Alfajores to Sepolia; the old name still
-        // reaches us from feeds that have not caught up.
-        "celo-alfajores" | "alfajores" => Some("celo-sepolia"),
         _ => None,
     };
+    // Alfajores is its own chain (44787), not an old name for Celo Sepolia
+    // (11142220). A listing on it keeps its real id, which no network here
+    // serves, so it reads as unsettleable instead of being moved to a chain
+    // its signatures do not verify on.
+    if matches!(lower.as_str(), "celo-alfajores" | "alfajores") {
+        return Some(Caip2NetworkId::eip155(44787));
+    }
     if let Some(name) = aliased {
         if let Ok(network) = Network::from_str(name) {
             if let Ok(id) = Caip2NetworkId::parse(&network.to_caip2()) {

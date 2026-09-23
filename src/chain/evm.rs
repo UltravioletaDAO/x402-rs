@@ -312,7 +312,11 @@ impl TryFrom<Network> for EvmChain {
             Network::Optimism => Ok(EvmChain::new(value, 10)),
             Network::OptimismSepolia => Ok(EvmChain::new(value, 11155420)),
             Network::Celo => Ok(EvmChain::new(value, 42220)),
-            Network::CeloSepolia => Ok(EvmChain::new(value, 44787)),
+            // 11142220, not Alfajores' 44787: the RPCs answered 0xaa044c on
+            // 2026-09-23. Through 2.39.0 this said 44787 while the transaction
+            // filler asks the RPC, so transactions went to the right chain while
+            // the EIP-712 domain we build named the wrong one.
+            Network::CeloSepolia => Ok(EvmChain::new(value, 11142220)),
             Network::HyperEvm => Ok(EvmChain::new(value, 999)),
             Network::HyperEvmTestnet => Ok(EvmChain::new(value, 333)),
             Network::Sei => Ok(EvmChain::new(value, 1329)),
@@ -5701,6 +5705,259 @@ mod arc_node_fixtures {
 /// chain. The chain height is frozen below the payment's block, so the receipt
 /// watcher's heartbeat never asks for that block: every read of it the mock
 /// counts belongs to the proof.
+/// Celo Sepolia, pinned to what the chain answered on 2026-09-23.
+///
+/// Through 2.39.0 this network was built with Alfajores' chain id (44787) and
+/// the USDC name `"USD Coin"`. The contract at `0x01C5...C44E` on 11142220
+/// publishes neither: `name()` = `"USDC"`, `version()` = `"2"`, and a
+/// `DOMAIN_SEPARATOR()` that only (`"USDC"`, `"2"`, 11142220, the address)
+/// reproduces.
+///
+/// What that domain decides here is narrower than it looks. An EOA signature
+/// on a non-Arc chain is judged by simulating `transferWithAuthorization`, so
+/// the CONTRACT's domain decides it, not ours. Ours is the hash handed to the
+/// EIP-6492 validator for a counterfactual wallet and the digest DX402 recovers
+/// the payer's key from -- and in both, a wrong domain fails without saying so.
+#[cfg(test)]
+mod celo_sepolia_domain_tests {
+    use super::*;
+    use alloy::signers::local::PrivateKeySigner;
+    use alloy::signers::SignerSync;
+    use serde_json::{json, Value};
+
+    /// `DOMAIN_SEPARATOR()` of Celo Sepolia USDC, read on 2026-09-23 from
+    /// forno.celo-sepolia.celo-testnet.org and rpc.ankr.com/celo_sepolia.
+    const CELO_SEPOLIA_USDC_DOMAIN_SEPARATOR: [u8; 32] =
+        hex!("23f491197bb8c5ea4fe8dd4c2293b600f073553f9814015e7a5eb57724df9578");
+    /// The separator of the domain this facilitator shipped through 2.39.0.
+    const SHIPPED_DOMAIN_SEPARATOR: [u8; 32] =
+        hex!("9a13e188b45eb3a4e263921a9bc94ebddcb61a0074b8545c1618d5ae5927253d");
+    const PAYEE: Address = address!("0x2222222222222222222222222222222222222222");
+    const NONCE: [u8; 32] = [0x42; 32];
+
+    fn usdc() -> Address {
+        USDCDeployment::by_network(Network::CeloSepolia)
+            .expect("Celo Sepolia has a USDC deployment")
+            .address()
+            .try_into()
+            .expect("an EVM address")
+    }
+
+    /// The domain as the facilitator builds it: the static table plus the
+    /// chain id, exactly what `assert_domain` and DX402 read.
+    fn our_domain() -> Eip712Domain {
+        let (name, version) = find_known_eip712_metadata(Network::CeloSepolia, &usdc())
+            .expect("Celo Sepolia USDC is in the static EIP-712 table");
+        eip712_domain! {
+            name: name,
+            version: version,
+            chain_id: EvmChain::try_from(Network::CeloSepolia).unwrap().chain_id,
+            verifying_contract: usdc(),
+        }
+    }
+
+    /// The domain the contract publishes, written out by a client that read it
+    /// from the chain -- not from our table, or the vector would compare the
+    /// table with itself.
+    fn live_domain() -> Eip712Domain {
+        eip712_domain! {
+            name: "USDC",
+            version: "2",
+            chain_id: 11142220_u64,
+            verifying_contract: usdc(),
+        }
+    }
+
+    /// The domain a client got by trusting `/supported` through 2.39.0.
+    fn shipped_domain() -> Eip712Domain {
+        eip712_domain! {
+            name: "USD Coin",
+            version: "2",
+            chain_id: 44787_u64,
+            verifying_contract: usdc(),
+        }
+    }
+
+    /// A `/verify` body on celo-sepolia for `value`, signed by `payer` under
+    /// `domain`.
+    fn body(payer: &PrivateKeySigner, value: u64, domain: &Eip712Domain) -> Value {
+        let valid_before = crate::erc8004::proof::unix_now_secs() + 300;
+        let transfer = TransferWithAuthorization {
+            from: payer.address(),
+            to: PAYEE,
+            value: U256::from(value),
+            validAfter: U256::ZERO,
+            validBefore: U256::from(valid_before),
+            nonce: FixedBytes(NONCE),
+        };
+        let signature = payer
+            .sign_hash_sync(&transfer.eip712_signing_hash(domain))
+            .expect("signs");
+        json!({
+            "x402Version": 1,
+            "paymentPayload": {
+                "x402Version": 1,
+                "scheme": "exact",
+                "network": "celo-sepolia",
+                "payload": {
+                    "signature": format!("0x{}", hex::encode(signature.as_bytes())),
+                    "authorization": {
+                        "from": payer.address(),
+                        "to": PAYEE,
+                        "value": value.to_string(),
+                        "validAfter": "0",
+                        "validBefore": valid_before.to_string(),
+                        "nonce": format!("0x{}", hex::encode(NONCE)),
+                    }
+                }
+            },
+            "paymentRequirements": {
+                "scheme": "exact",
+                "network": "celo-sepolia",
+                "maxAmountRequired": value.to_string(),
+                "resource": "https://example.com/paid",
+                "description": "",
+                "mimeType": "application/json",
+                "payTo": PAYEE,
+                "maxTimeoutSeconds": 300,
+                "asset": usdc(),
+                "extra": {"name": "USDC", "version": "2"},
+            }
+        })
+    }
+
+    /// The payment `assert_valid_payment` would hand on, built from the wire.
+    fn payment(request: &VerifyRequest) -> ExactEvmPayment {
+        let ExactPaymentPayload::Evm(evm) = &request.payment_payload.payload else {
+            panic!("an EVM payload");
+        };
+        ExactEvmPayment {
+            chain: EvmChain::try_from(Network::CeloSepolia).unwrap(),
+            from: evm.authorization.from,
+            to: evm.authorization.to,
+            value: evm.authorization.value,
+            valid_after: evm.authorization.valid_after,
+            valid_before: evm.authorization.valid_before,
+            nonce: evm.authorization.nonce,
+            signature: evm.signature.clone(),
+        }
+    }
+
+    #[test]
+    fn celo_sepolia_is_chain_11142220() {
+        assert_eq!(
+            EvmChain::try_from(Network::CeloSepolia).unwrap().chain_id,
+            11142220
+        );
+    }
+
+    /// The four fields a signature commits to, checked against the one number
+    /// the contract publishes -- and the shipped domain checked against the
+    /// same number, so the assertion cannot be met by a chain id that is
+    /// ignored.
+    #[test]
+    fn our_domain_is_the_one_the_contract_publishes() {
+        assert_eq!(
+            our_domain().separator().0,
+            CELO_SEPOLIA_USDC_DOMAIN_SEPARATOR
+        );
+        assert_eq!(
+            live_domain().separator().0,
+            CELO_SEPOLIA_USDC_DOMAIN_SEPARATOR
+        );
+        assert_eq!(shipped_domain().separator().0, SHIPPED_DOMAIN_SEPARATOR);
+        assert_ne!(SHIPPED_DOMAIN_SEPARATOR, CELO_SEPOLIA_USDC_DOMAIN_SEPARATOR);
+    }
+
+    /// The vector. One payer signs the same authorization twice: under the
+    /// domain the contract publishes (11142220, `"USDC"`) and under the one
+    /// this facilitator shipped (44787, `"USD Coin"`). Hashed the way the
+    /// facilitator hashes it -- `SignedMessage::extract` under our domain --
+    /// the first recovers its payer and the second recovers somebody else.
+    #[test]
+    fn a_signature_for_the_live_domain_verifies_and_one_for_alfajores_does_not() {
+        let payer = PrivateKeySigner::random();
+        for (domain, label, verifies) in [
+            (live_domain(), "11142220/USDC", true),
+            (shipped_domain(), "44787/USD Coin", false),
+        ] {
+            let request: VerifyRequest =
+                serde_json::from_value(body(&payer, 10_000, &domain)).expect("parses");
+            let payment = payment(&request);
+            let signed = SignedMessage::extract(&payment, &our_domain()).expect("extracts");
+            let recovered = alloy::primitives::Signature::try_from(payment.signature.0.as_slice())
+                .expect("65 bytes")
+                .recover_address_from_prehash(&signed.hash)
+                .expect("recovers some address");
+            assert_eq!(
+                recovered == payer.address(),
+                verifies,
+                "a signature under {label} must {}verify under the domain we build",
+                if verifies { "" } else { "not " }
+            );
+        }
+    }
+
+    /// Every EVM chain id the facilitator signs for is the one its CAIP-2 id
+    /// names. The two are separate tables; celo-sepolia was consistent across
+    /// both and still wrong, which no test can see without the chain -- but a
+    /// table that drifts from the other is caught here.
+    #[test]
+    fn every_evm_chain_id_is_the_one_its_caip2_names() {
+        for &network in Network::variants() {
+            let Ok(chain) = EvmChain::try_from(network) else {
+                continue;
+            };
+            assert_eq!(
+                network.to_caip2(),
+                format!("eip155:{}", chain.chain_id),
+                "{network}: EvmChain and to_caip2 disagree"
+            );
+        }
+    }
+
+    /// The facilitator's own `verify`, against the chain itself. Read-only:
+    /// `verify` simulates with `eth_call` and never broadcasts. Value 0, so a
+    /// fresh random payer with no balance reaches the signature check.
+    #[tokio::test]
+    #[ignore = "Read-only live RPC check against Celo Sepolia; run explicitly"]
+    async fn celo_sepolia_live_verify_accepts_only_the_contracts_domain() {
+        let url = std::env::var("RPC_URL_CELO_SEPOLIA")
+            .unwrap_or_else(|_| "https://forno.celo-sepolia.celo-testnet.org".into());
+        let provider = EvmProvider::try_new(
+            EthereumWallet::from(PrivateKeySigner::random()),
+            &url,
+            true,
+            Network::CeloSepolia,
+        )
+        .await
+        .expect("provider");
+        assert_eq!(
+            provider.inner().get_chain_id().await.expect("eth_chainId"),
+            11142220,
+            "{url} is not Celo Sepolia"
+        );
+        let payer = PrivateKeySigner::random();
+
+        let live: VerifyRequest = serde_json::from_value(body(&payer, 0, &live_domain())).unwrap();
+        match provider.verify(&live).await {
+            Ok(VerifyResponse::Valid { payer: p }) => {
+                assert_eq!(p, MixedAddress::from(payer.address()))
+            }
+            other => panic!("11142220/USDC must verify on the chain: {other:?}"),
+        }
+
+        let shipped: VerifyRequest =
+            serde_json::from_value(body(&payer, 0, &shipped_domain())).unwrap();
+        match provider.verify(&shipped).await {
+            Ok(VerifyResponse::Valid { .. }) => {
+                panic!("44787/USD Coin must not verify on the chain")
+            }
+            refused => eprintln!("44787/USD Coin refused as expected: {refused:?}"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod proof_of_payment_tests {
     use super::*;

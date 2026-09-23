@@ -850,6 +850,202 @@ mod supported_advertisement_tests {
     }
 }
 
+/// `/supported` before and after celo-sepolia moved off Alfajores' chain id,
+/// compared entry by entry.
+#[cfg(test)]
+mod celo_sepolia_supported_diff_tests {
+    use super::*;
+    use crate::network::{exact_payment_tokens, NetworkFamily};
+    use alloy::primitives::Address;
+    use serde_json::Value;
+
+    /// `GET /supported` as production served it at 2026-09-23T07:19Z, running
+    /// 2.39.0 -- the last release that published celo-sepolia as
+    /// `eip155:44787`. Captured with `curl -s .../supported | jq .`, with one
+    /// edit: the four Sui 32-byte identifiers (two fee payers, two coin types)
+    /// are cut to `0xabcd...wxyz`, because this repository's pre-commit hook
+    /// refuses any `0x` + 64 hex, the shape of a private key. They live in
+    /// `extra`, which these tests carry as opaque, so nothing checked here
+    /// depends on them.
+    const SUPPORTED_BEFORE: &str =
+        include_str!("../tests/fixtures/supported-before-celo-sepolia.json");
+
+    fn before_json() -> Vec<Value> {
+        let response: Value = serde_json::from_str(SUPPORTED_BEFORE).expect("the fixture is JSON");
+        response["kinds"].as_array().expect("`kinds`").clone()
+    }
+
+    /// A stand-in `extra` that carries only its index into `extras`.
+    fn stand_in(index: usize) -> SupportedPaymentKindExtra {
+        let tag = EvmAddress(Address::left_padding_from(&(index as u64).to_be_bytes()));
+        SupportedPaymentKindExtra {
+            fee_payer: None,
+            tokens: None,
+            escrow: Some(EscrowSupportedInfo {
+                escrow_address: tag,
+                operator_address: tag,
+                token_collector: tag,
+            }),
+        }
+    }
+
+    /// Production's entries as the mirror takes them, plus every distinct
+    /// `extra` they carried.
+    ///
+    /// `extra` rides through the mirror untouched, but not every `extra`
+    /// production publishes reads back into the struct: an XRPL token is
+    /// published as `currency.issuer`, a spelling `MixedAddress` writes and
+    /// does not read. So each distinct `extra` travels as a numbered stand-in
+    /// -- distinct, because escrow entries on one chain differ in nothing else
+    /// and the mirror must not merge them -- and is put back by [`to_json`].
+    fn before() -> (Vec<SupportedPaymentKind>, Vec<Value>) {
+        let mut extras: Vec<Value> = Vec::new();
+        let kinds = before_json()
+            .into_iter()
+            .map(|k| {
+                let extra = match &k["extra"] {
+                    Value::Null => None,
+                    extra => {
+                        let index = extras.iter().position(|e| e == extra).unwrap_or_else(|| {
+                            extras.push(extra.clone());
+                            extras.len() - 1
+                        });
+                        Some(stand_in(index))
+                    }
+                };
+                SupportedPaymentKind {
+                    x402_version: serde_json::from_value(k["x402Version"].clone()).unwrap(),
+                    scheme: serde_json::from_value(k["scheme"].clone()).unwrap(),
+                    network: k["network"].as_str().unwrap().to_string(),
+                    network_aliases: serde_json::from_value(k["networkAliases"].clone()).unwrap(),
+                    extra,
+                }
+            })
+            .collect();
+        (kinds, extras)
+    }
+
+    /// An entry back as `/supported` would print it, its real `extra` restored.
+    fn to_json(kind: &SupportedPaymentKind, extras: &[Value]) -> Value {
+        let mut json = serde_json::to_value(kind).unwrap();
+        if let Some(escrow) = kind.extra.as_ref().and_then(|e| e.escrow.as_ref()) {
+            let tag = escrow.escrow_address.0;
+            let index = u64::from_be_bytes(tag.as_slice()[12..].try_into().unwrap());
+            json["extra"] = extras[index as usize].clone();
+        }
+        json
+    }
+
+    /// One comparable line per entry, sorted, so the order the providers
+    /// happen to be iterated in does not count as a change.
+    fn lines(kinds: &[Value]) -> Vec<String> {
+        let mut lines: Vec<String> = kinds.iter().map(Value::to_string).collect();
+        lines.sort();
+        lines
+    }
+
+    /// The same deployment, republished through today's code.
+    ///
+    /// Each chain goes in once, under the v1 name its provider pushes (or its
+    /// only name, for a chain with no v1 form), and the mirror derives the
+    /// rest -- the CAIP-2 ids and every `networkAliases` -- from `Network`.
+    /// The v1 name is the fixed point: it is what the providers push for
+    /// `exact`, and it did not change.
+    fn republished(before: &[SupportedPaymentKind]) -> Vec<SupportedPaymentKind> {
+        let seeds = before
+            .iter()
+            .filter(|k| match k.network_aliases.as_deref() {
+                Some([v1, _caip2]) => k.network == *v1,
+                _ => true,
+            })
+            .map(|k| SupportedPaymentKind {
+                network_aliases: None,
+                ..k.clone()
+            })
+            .collect();
+        advertise_under_both_network_forms(seeds)
+    }
+
+    /// The whole of `/supported`, before and after: the only difference is
+    /// celo-sepolia's CAIP-2 id, in its own entry and in the aliases of its
+    /// v1 entry. Every other chain, scheme, token, operator and alias comes
+    /// out exactly as production published it.
+    #[test]
+    fn moving_celo_sepolia_changes_no_other_entry_of_supported() {
+        let (kinds, extras) = before();
+        assert_eq!(kinds.len(), 156, "the fixture is the full list");
+        let before = before_json();
+        let after: Vec<Value> = republished(&kinds)
+            .iter()
+            .map(|k| to_json(k, &extras))
+            .collect();
+
+        let expected: Vec<Value> = before
+            .iter()
+            .map(|k| {
+                Value::from_str(
+                    &k.to_string()
+                        .replace("\"eip155:44787\"", "\"eip155:11142220\""),
+                )
+                .unwrap()
+            })
+            .collect();
+        assert_eq!(lines(&after), lines(&expected));
+
+        // And the entries that moved are exactly celo-sepolia's two.
+        let before_lines = lines(&before);
+        let after_lines = lines(&after);
+        let gone: Vec<&String> = before_lines
+            .iter()
+            .filter(|l| !after_lines.contains(l))
+            .collect();
+        let new: Vec<&String> = after_lines
+            .iter()
+            .filter(|l| !before_lines.contains(l))
+            .collect();
+        assert_eq!(
+            (gone.len(), new.len()),
+            (2, 2),
+            "gone: {gone:#?}\nnew: {new:#?}"
+        );
+        assert!(gone
+            .iter()
+            .chain(&new)
+            .all(|l| l.contains(r#""celo-sepolia""#)));
+        assert!(gone.iter().all(|l| l.contains("eip155:44787")));
+        assert!(new.iter().all(|l| l.contains("eip155:11142220")));
+        assert!(!after_lines.iter().any(|l| l.contains("44787")));
+    }
+
+    /// The token lists are not rebuilt by the mirror, so they are checked
+    /// against the table that builds them: every EVM `exact` entry production
+    /// published lists exactly the tokens `exact_payment_tokens` gives today.
+    /// celo-sepolia's USDC keeps its address and decimals; only its EIP-712
+    /// name changed, and `/supported` does not publish that.
+    #[test]
+    fn no_network_publishes_a_different_token() {
+        let mut checked = 0;
+        for kind in before_json() {
+            let Ok(network) = Network::from_str(kind["network"].as_str().unwrap()) else {
+                continue;
+            };
+            if kind["scheme"] != "exact"
+                || !matches!(NetworkFamily::from(network), NetworkFamily::Evm)
+            {
+                continue;
+            }
+            assert_eq!(
+                kind["extra"]["tokens"],
+                serde_json::to_value(exact_payment_tokens(network)).unwrap(),
+                "{network}: the token list changed"
+            );
+            checked += 1;
+        }
+        // Every EVM chain carrying `exact` in the fixture, celo-sepolia included.
+        assert_eq!(checked, 26, "EVM exact entries compared");
+    }
+}
+
 #[cfg(test)]
 mod network_alias_tests {
     use super::*;

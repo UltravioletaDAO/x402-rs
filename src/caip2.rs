@@ -553,7 +553,7 @@ mod tests {
             (43114, "Avalanche"),
             (43113, "Avalanche Fuji"),
             (42220, "Celo"),
-            (44787, "Celo Sepolia"),
+            (11142220, "Celo Sepolia"),
             (999, "HyperEVM"),
             (333, "HyperEVM Testnet"),
             (1329, "Sei"),

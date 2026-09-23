@@ -271,7 +271,7 @@ This is a Cargo workspace with multiple crates:
    - HyperEVM mainnet/testnet (Chain IDs: 999, 333)
    - Polygon mainnet/Amoy testnet (Chain IDs: 137, 80002)
    - Optimism mainnet/Sepolia testnet (Chain IDs: 10, 11155420)
-   - Celo mainnet/Sepolia testnet (Chain IDs: 42220, 44787)
+   - Celo mainnet/Sepolia testnet (Chain IDs: 42220, 11142220 -- NOT 44787, which is the dead Alfajores testnet; `eip155:44787` answers 400 `network_retired`)
    - Solana mainnet/devnet
    - Sui mainnet/testnet (requires `--features sui`)
    - **Merge strategy**: Preserve ALL custom networks when pulling upstream

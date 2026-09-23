@@ -118,7 +118,7 @@ durable-evidence and other unsupported extensions.
 | Optimism Sepolia | 11155420 | [faucet.circle.com](https://faucet.circle.com) |
 | Polygon Amoy | 80002 | [faucet.polygon.technology](https://faucet.polygon.technology) |
 | Avalanche Fuji | 43113 | [faucet.avax.network](https://faucet.avax.network) |
-| Celo Sepolia | 44787 (`celo-sepolia`) | [faucet.celo.org](https://faucet.celo.org) |
+| Celo Sepolia | 11142220 (`celo-sepolia`) | [faucet.celo.org](https://faucet.celo.org) |
 | HyperEVM Testnet | 333 | - |
 | Unichain Sepolia | 1301 | - |
 | SKALE Base Sepolia | 324705682 | [base-sepolia-faucet.skale.space](http://base-sepolia-faucet.skale.space) |

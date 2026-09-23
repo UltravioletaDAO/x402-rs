@@ -3725,6 +3725,10 @@ fn reject_reason(
             "malformed",
             "a requirement needs both `scheme` and `network` as strings".to_string(),
         )
+    } else if let Some(retired) = crate::network::retired_network_id(network) {
+        // Still `network_unknown`: the vocabulary is closed, and to this
+        // facilitator the chain is unknown. Only the advice is specific.
+        ("network_unknown", retired.explain())
     } else if crate::network::resolve_network(network).is_none() {
         (
             "network_unknown",
@@ -3939,6 +3943,12 @@ where
         }
     };
     let body_str = body_str.as_str();
+
+    // Before any scheme is routed, so v1, v2, the alternate schemes and the
+    // MCP tools all get the same answer.
+    if let Some(refusal) = retired_network_refusal(body_str) {
+        return refusal;
+    }
 
     // Check for special schemes BEFORE trying to parse as standard types
     // These schemes may have different payload structures that don't match standard x402 types
@@ -4328,6 +4338,67 @@ where
             error.into_response()
         }
     }
+}
+
+/// The `400` for a request that names its chain by an identifier this
+/// facilitator retired ([`crate::network::RETIRED_NETWORK_IDS`]), or `None`
+/// when it names none and the ordinary parse should run.
+///
+/// Every `network` field is read, at any depth, because the shapes put it in
+/// different places -- `paymentRequirements`, `paymentPayload.accepted`, the
+/// top-level escrow envelope -- and a body naming the retired id in any of them
+/// is aimed at that chain. Without this, a v2 body naming `eip155:44787` was
+/// told `Invalid CAIP-2 format`: the format is fine, it is the chain we no
+/// longer serve, and the caller was left with nothing to fix.
+///
+/// Every request goes through here, so a body that does not even contain a
+/// retired id as text is let through before it is parsed a second time.
+fn retired_network_refusal(body_str: &str) -> Option<Response> {
+    if !crate::network::RETIRED_NETWORK_IDS
+        .iter()
+        .any(|retired| body_str.contains(retired.id))
+    {
+        return None;
+    }
+    let body: serde_json::Value = serde_json::from_str(body_str).ok()?;
+    let mut pending = vec![&body];
+    let mut retired = None;
+    while let Some(value) = pending.pop() {
+        match value {
+            serde_json::Value::Object(fields) => {
+                for (key, field) in fields {
+                    if key == "network" {
+                        if let Some(found) =
+                            field.as_str().and_then(crate::network::retired_network_id)
+                        {
+                            retired = Some(found);
+                        }
+                    }
+                    pending.push(field);
+                }
+            }
+            serde_json::Value::Array(items) => pending.extend(items),
+            _ => {}
+        }
+    }
+    let retired = retired?;
+    let replacement = retired.replacement.to_caip2();
+    Some(
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": retired.explain(),
+                "code": "network_retired",
+                "hint": format!(
+                    "send `{replacement}` (or `{}`) and sign for that chain id",
+                    retired.replacement
+                ),
+                "network": retired.id,
+                "replacement": replacement,
+            })),
+        )
+            .into_response(),
+    )
 }
 
 /// The `x402Version` the body claims for itself, if it says anything readable.
@@ -4748,6 +4819,12 @@ where
         }
     };
     let body_str = body_str.as_str();
+
+    // Same guard as /verify, and before the idempotency cache: a request that
+    // names a retired chain never settled, so there is nothing to replay.
+    if let Some(refusal) = retired_network_refusal(body_str) {
+        return refusal;
+    }
 
     // F4: idempotency cache lookup against canonical body bytes. The hash
     // is sha256(body_str) which intentionally matches across v1 raw body
@@ -13689,6 +13766,140 @@ mod settle_idempotency_tests {
         guard
     }
 
+    /// A complete x402 v2 `/verify` body for celo-sepolia's USDC, naming its
+    /// chain `network` -- `eip155:44787` is what `/supported` published
+    /// through 2.39.0, `eip155:11142220` what it publishes now.
+    fn v2_body(network: &str) -> String {
+        let accepted = serde_json::json!({
+            "scheme": "exact",
+            "network": network,
+            "asset": "0x01C5C0122039549AD1493B8220cABEdD739BC44E",
+            "amount": "10000",
+            "payTo": "0x2222222222222222222222222222222222222222",
+            "maxTimeoutSeconds": 300,
+            "extra": {"name": "USDC", "version": "2"}
+        });
+        let resource = serde_json::json!({
+            "url": "https://example.com/paid",
+            "description": "",
+            "mimeType": "application/json"
+        });
+        serde_json::json!({
+            "x402Version": 2,
+            "paymentPayload": {
+                "x402Version": 2,
+                "resource": resource,
+                "accepted": accepted,
+                "payload": {
+                    "signature": format!("0x{}", "11".repeat(65)),
+                    "authorization": {
+                        "from": "0x1111111111111111111111111111111111111111",
+                        "to": "0x2222222222222222222222222222222222222222",
+                        "value": "10000",
+                        "validAfter": "0",
+                        "validBefore": "9999999999",
+                        "nonce": format!("0x{}", "42".repeat(32))
+                    }
+                }
+            },
+            "resource": resource,
+            "accepted": accepted
+        })
+        .to_string()
+    }
+
+    async fn verify(body: &str) -> (StatusCode, serde_json::Value) {
+        let response = router()
+            .await
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/verify")
+                    .header("content-type", "application/json")
+                    .header("x-forwarded-for", "203.0.113.7")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+        )
+    }
+
+    fn assert_retired(status: StatusCode, body: &serde_json::Value, what: &str) {
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{what}: {body}");
+        assert_eq!(body["code"], "network_retired", "{what}: {body}");
+        assert_eq!(body["network"], "eip155:44787", "{what}");
+        assert_eq!(body["replacement"], "eip155:11142220", "{what}");
+        let error = body["error"].as_str().unwrap_or_default();
+        assert!(error.contains("eip155:11142220"), "{what}: {error}");
+    }
+
+    /// A request naming `eip155:44787` gets a 400 that points at
+    /// `eip155:11142220`, on both routes and in both wire versions -- before
+    /// the facilitator, and before the idempotency cache.
+    ///
+    /// Before this, the v2 body got `Failed to process v2 request: Invalid
+    /// CAIP-2 format` (the format is fine; the chain is gone) and the v1 body a
+    /// bare "unknown network".
+    #[tokio::test]
+    async fn a_request_naming_a_retired_chain_is_told_what_replaced_it() {
+        let _g = arm();
+        let v1 = r#"{"x402Version":1,"paymentPayload":{"network":"eip155:44787"},"paymentRequirements":{"network":"eip155:44787"}}"#;
+        let v2 = v2_body("eip155:44787");
+        for (label, body) in [("v1", v1.to_string()), ("v2", v2)] {
+            let (status, json) = verify(&body).await;
+            assert_retired(status, &json, &format!("{label} /verify"));
+
+            let key = format!("retired-{label}");
+            let (status, _, json) = settle(Some(&key), &body).await;
+            assert_retired(status, &json, &format!("{label} /settle"));
+            assert!(
+                store().records.lock().unwrap().get(&key).is_none(),
+                "{label}: a refused request must leave nothing to replay"
+            );
+        }
+    }
+
+    /// The replacement is not refused. A v2 body naming `eip155:11142220` is
+    /// a celo-sepolia payment now -- through 2.39.0 the conversion refused it
+    /// as `Invalid CAIP-2 format`, so a v2 client naming the real chain could
+    /// not pay at all -- and it goes past the guard to the facilitator (which
+    /// here has no chain to offer). So does the unchanged v1 name.
+    #[tokio::test]
+    async fn the_replacement_is_not_refused() {
+        let _g = arm();
+        let envelope: VerifyRequestEnvelope =
+            serde_json::from_str(&v2_body("eip155:11142220")).expect("a v2 body");
+        assert_eq!(
+            envelope.to_v1().expect("converts").payment_payload.network,
+            Network::CeloSepolia
+        );
+        let old: VerifyRequestEnvelope =
+            serde_json::from_str(&v2_body("eip155:44787")).expect("a v2 body");
+        assert!(
+            old.to_v1().is_err(),
+            "44787 must not convert to any network"
+        );
+
+        for body in [
+            v2_body("eip155:11142220"),
+            r#"{"x402Version":1,"paymentPayload":{"network":"celo-sepolia"},"paymentRequirements":{"network":"celo-sepolia"}}"#.to_string(),
+        ] {
+            let (_, json) = verify(&body).await;
+            assert_ne!(json["code"], "network_retired", "{body}: {json}");
+            assert!(!json.to_string().contains("Invalid CAIP-2"), "{json}");
+        }
+        assert!(retired_network_refusal(&v2_body("eip155:11142220")).is_none());
+        assert!(retired_network_refusal("not json").is_none());
+    }
+
     /// A retry with the same key and body replays; nothing new settles.
     ///
     /// `NeverSettles` is what makes this discriminant: if the cache were
@@ -15790,6 +16001,58 @@ mod agentic_surface_tests {
             Some(0),
             "the facilitator does not charge for its own routes"
         );
+    }
+
+    /// Every chain the x402 document lists carries the CAIP-2 id the code
+    /// publishes for it, and the icon map knows that id.
+    ///
+    /// Both files are typed by hand. The document said `eip155:44787` for
+    /// celo-sepolia for as long as `to_caip2` did; tying them together means a
+    /// future correction in the code cannot leave a stale copy served from
+    /// `/.well-known/x402`, or a chain whose CAIP-2 entry on `/` and
+    /// `/networks` falls back to a monogram.
+    #[test]
+    fn the_static_surfaces_name_every_chain_by_its_published_caip2_id() {
+        let doc: serde_json::Value =
+            serde_json::from_str(include_str!("../static/.well-known/x402")).unwrap();
+        let mut listed = 0;
+        for key in ["networks", "testnets"] {
+            for entry in doc["x402"][key].as_array().expect("an array") {
+                let name = entry["name"].as_str().expect("a name");
+                let Some(network) = crate::network::resolve_network(name) else {
+                    // These three exist only when their feature is compiled in.
+                    assert!(
+                        ["algorand", "sui", "xrpl"]
+                            .iter()
+                            .any(|f| name.starts_with(f)),
+                        "`{name}` is not a known network"
+                    );
+                    continue;
+                };
+                assert_eq!(
+                    entry["caip2"].as_str(),
+                    Some(network.to_caip2().as_str()),
+                    "/.well-known/x402 gives `{name}` a CAIP-2 id the code does not publish"
+                );
+                listed += 1;
+            }
+        }
+        assert!(listed >= 30, "only {listed} chains listed");
+
+        for network in crate::network::Network::variants() {
+            let caip2 = network.to_caip2();
+            assert!(
+                X402_JS.contains(&format!("\"{caip2}\":")),
+                "static/x402.js has no icon entry for `{caip2}` ({network})"
+            );
+        }
+        for retired in crate::network::RETIRED_NETWORK_IDS {
+            assert!(
+                !X402_JS.contains(&format!("\"{}\":", retired.id)),
+                "static/x402.js still maps the retired `{}`",
+                retired.id
+            );
+        }
     }
 
     /// The SVM entries of the x402 document name exactly the tokens the
@@ -18037,6 +18300,23 @@ mod accepts_negotiation_tests {
         );
         assert_eq!(reason_for("", "base"), "malformed");
         assert_eq!(reason_for("exact", ""), "malformed");
+    }
+
+    /// `eip155:44787` is what `/supported` called celo-sepolia through 2.39.0.
+    /// The reason stays in the closed vocabulary -- to this facilitator the
+    /// chain is unknown -- but the advice names what replaced it, because a
+    /// seller who copied our old `/supported` did nothing wrong.
+    #[test]
+    fn a_retired_identifier_is_unknown_and_says_what_replaced_it() {
+        let (matched, rejected) =
+            negotiate_accepts(&[requirement("exact", "eip155:44787")], &served());
+        assert!(matched.is_empty());
+        assert_eq!(rejected[0]["reason"], "network_unknown");
+        let detail = rejected[0]["detail"].as_str().unwrap();
+        assert!(
+            detail.contains("eip155:11142220") && detail.contains("Alfajores"),
+            "the advice must name the replacement: {detail}"
+        );
     }
 
     /// When both halves are known but the pair is not served, the caller is

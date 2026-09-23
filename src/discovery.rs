@@ -517,6 +517,11 @@ pub struct DiscoveryRegistry {
     suppressed: Arc<RwLock<std::collections::HashSet<String>>>,
     /// Catalog writes waiting to be applied, in the order they were issued.
     writes: Arc<WriteQueue>,
+    /// Networks this process has a provider for, set once at startup from the
+    /// provider map (`GET /supported` iterates the same map). Until it is set
+    /// every option reads `network-not-served`: settleability is a claim about
+    /// this process, and it cannot be made without knowing what it serves.
+    served: Arc<std::sync::OnceLock<std::collections::HashSet<crate::network::Network>>>,
     /// Version of the stored catalog this cache was last built from.
     ///
     /// Only the replicas that do NOT own the discovery jobs read it: it is how
@@ -628,6 +633,7 @@ impl Clone for DiscoveryRegistry {
             stats_cache: Arc::clone(&self.stats_cache),
             suppressed: Arc::clone(&self.suppressed),
             writes: Arc::clone(&self.writes),
+            served: Arc::clone(&self.served),
             cached_version: Arc::clone(&self.cached_version),
         }
     }
@@ -657,7 +663,16 @@ impl DiscoveryRegistry {
             stats_cache: Arc::new(RwLock::new(None)),
             suppressed: Arc::new(RwLock::new(std::collections::HashSet::new())),
             writes: Arc::new(WriteQueue::default()),
+            served: Arc::new(std::sync::OnceLock::new()),
             cached_version: Arc::new(RwLock::new(Version::Absent)),
+        }
+    }
+
+    /// Record which networks this process serves, for `settleable` in listings.
+    /// Set once; a second call keeps the first set.
+    pub fn set_served_networks(&self, networks: impl IntoIterator<Item = crate::network::Network>) {
+        if self.served.set(networks.into_iter().collect()).is_err() {
+            warn!("served networks were already set; keeping the first set");
         }
     }
 
@@ -903,6 +918,7 @@ impl DiscoveryRegistry {
             stats_cache: Arc::new(RwLock::new(None)),
             suppressed: Arc::new(RwLock::new(std::collections::HashSet::new())),
             writes: Arc::new(WriteQueue::default()),
+            served: Arc::new(std::sync::OnceLock::new()),
             cached_version: Arc::new(RwLock::new(snapshot.version)),
         })
     }
@@ -1213,6 +1229,8 @@ impl DiscoveryRegistry {
 
         // Apply pagination, annotating each returned item with its health +
         // curation (response-only; the cached/persisted copy stays clean).
+        let unset = std::collections::HashSet::new();
+        let served = self.served.get().unwrap_or(&unset);
         let items: Vec<DiscoveryResource> = scored
             .into_iter()
             .skip(offset as usize)
@@ -1228,7 +1246,7 @@ impl DiscoveryRegistry {
                 // would let a listing keep claiming six decimals for an asset
                 // after we learned it has eighteen.
                 for option in c.accepts.iter_mut() {
-                    option.annotate();
+                    option.annotate(served);
                 }
                 // Freshness and provenance of the PRICE, which is a different
                 // question from `health` and is answered from a different
@@ -2732,6 +2750,7 @@ mod tests {
     #[tokio::test]
     async fn listing_resolves_price_semantics_without_persisting_them() {
         let registry = DiscoveryRegistry::new();
+        registry.set_served_networks([crate::network::Network::Base]);
         registry
             .register(create_test_resource("https://api.annotated.com/x", None))
             .await
@@ -2750,6 +2769,34 @@ mod tests {
         assert_eq!(held.accepts[0].settleable, None);
         assert_eq!(held.accepts[0].asset_symbol, None);
         assert_eq!(held.accepts[0].asset_decimals, None);
+    }
+
+    /// `settleable` is a claim about this process, so a listing makes it only
+    /// for a network the provider map serves -- and makes none before it knows.
+    #[tokio::test]
+    async fn a_listing_claims_settleable_only_where_this_process_serves() {
+        let registry = DiscoveryRegistry::new();
+        registry
+            .register(create_test_resource("https://api.served.example/x", None))
+            .await
+            .unwrap();
+
+        let listed = registry.list(10, 0, None).await;
+        let option = &listed.items[0].accepts[0];
+        assert_eq!(
+            option.settleable,
+            Some(false),
+            "told nothing, claims nothing"
+        );
+        assert_eq!(
+            option.unsupported_reason.as_deref(),
+            Some("network-not-served")
+        );
+
+        registry.set_served_networks([crate::network::Network::Base]);
+        let listed = registry.list(10, 0, None).await;
+        assert_eq!(listed.items[0].accepts[0].settleable, Some(true));
+        assert_eq!(listed.items[0].accepts[0].unsupported_reason, None);
     }
 
     // =======================================================================

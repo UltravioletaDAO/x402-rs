@@ -42,6 +42,7 @@
 //! - "Can we catalog it" and "can we settle it" are different questions.
 //!   [`CatalogPaymentOption::annotate`] answers the second one separately.
 
+use std::collections::HashSet;
 use std::str::FromStr;
 
 use serde::{Deserialize, Deserializer, Serialize};
@@ -405,9 +406,12 @@ impl CatalogPaymentOption {
 
     /// Fill the response-only fields. Idempotent, and it always *overwrites*, so
     /// a value that somehow reached the store can never survive a read.
-    pub fn annotate(&mut self) {
+    ///
+    /// `served` is the set of networks this process has a provider for -- the
+    /// same map `GET /supported` iterates. See [`settleability`].
+    pub fn annotate(&mut self, served: &HashSet<Network>) {
         let network = Network::from_caip2(&self.network.to_string());
-        let (settleable, reason) = settleability(&self.scheme, network);
+        let (settleable, reason) = settleability(&self.scheme, network, served);
         self.settleable = Some(settleable);
         self.unsupported_reason = reason.map(str::to_string);
 
@@ -567,14 +571,21 @@ impl TryFrom<&CatalogPaymentOption> for PaymentRequirementsV2 {
 /// Answers a narrower question than "is this a real offer". A `batch-settlement`
 /// listing on Base is perfectly real; we simply cannot pay it, and the catalog
 /// has to be able to say both things at once.
+///
+/// `served` is the set of networks this process has a provider for. Naming a
+/// [`Network`] variant is not the same as serving it: through 2.39.1 this asked
+/// only whether the CAIP-2 id resolved to a variant, so an offer on Sei
+/// (`eip155:1329`) or XDC (`eip155:50`) read as settleable although neither is
+/// in `/supported`.
 pub fn settleability(
     scheme: &CatalogScheme,
     network: Option<Network>,
+    served: &HashSet<Network>,
 ) -> (bool, Option<&'static str>) {
     let Some(known) = scheme.as_known() else {
         return (false, Some("unknown-scheme"));
     };
-    let Some(network) = network else {
+    let Some(network) = network.filter(|n| served.contains(n)) else {
         return (false, Some("network-not-served"));
     };
     // `upto` needs the Permit2 proxy deployed; the list is maintained by hand

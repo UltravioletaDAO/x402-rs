@@ -2191,7 +2191,8 @@ own price is fresh and a stored record cannot keep claiming a freshness nobody r
 - `settleable` (bool) and `unsupportedReason` say whether **this facilitator** can settle the
   option, which is a narrower question than whether the offer is real. `false` with
   `unknown-scheme`, `network-not-served` or `upto-proxy-not-deployed` still describes a
-  genuine listing that some other facilitator may serve.
+  genuine listing that some other facilitator may serve. `network-not-served` means the
+  network is not in this facilitator's `/supported`, even when its name is a known chain.
 - `assetSymbol` and `assetDecimals` are resolved per **deployment**, and are absent when the
   asset is not one we have registered -- absent means unknown, which is not the same as six
   decimals and a dollar sign. USDC is 6 decimals on Base, 18 on BSC and 7 on Stellar.

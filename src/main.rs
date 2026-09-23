@@ -43,10 +43,11 @@ use url::Url;
 /// needs more headroom — keep the floor at 16 KiB.
 const DEFAULT_MAX_REQUEST_BODY_BYTES: usize = 64 * 1024;
 
+use crate::chain::NetworkProviderOps;
 use crate::client_ip::ClientIpKeyExtractor;
 use crate::facilitator::Facilitator;
 use crate::facilitator_local::FacilitatorLocal;
-use crate::provider_cache::ProviderCache;
+use crate::provider_cache::{ProviderCache, ProviderMap};
 use crate::sig_down::SigDown;
 use crate::telemetry::Telemetry;
 use crate::types_v2::{DiscoveryMetadata, DiscoveryResource};
@@ -248,6 +249,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!("No DISCOVERY_S3_BUCKET configured, using in-memory registry");
         Arc::new(DiscoveryRegistry::new())
     };
+    // `settleable` in a listing is a claim about this process: the networks it
+    // has a provider for, which is the map `GET /supported` iterates.
+    discovery_registry.set_served_networks(provider_cache.values().map(|p| p.network()));
 
     // Self-registration: register this facilitator as a discoverable resource
     // Only if FACILITATOR_URL is set (indicates production deployment)

@@ -143,7 +143,7 @@ Added support for additional blockchain networks beyond upstream's default set.
 #### 3a. HyperEVM Mainnet
 ```rust
 Network::HyperEvm => {
-    chain_id: 998,
+    chain_id: 999, // eth_chainId 0x3e7 (2026-09-23); this sketch said 998
     rpc_url: "https://rpc.hyperliquid.xyz/evm",
     token_address: "USDC_ADDRESS_ON_HYPEREVM", // USDC native token
     gas_price: 25_000_000_000, // 25 gwei
@@ -156,7 +156,7 @@ Network::HyperEvm => {
 #### 3b. HyperEVM Testnet
 ```rust
 Network::HyperEvmTestnet => {
-    chain_id: 333,
+    chain_id: 998, // eth_chainId 0x3e6 (2026-09-23); 333 until 2.39.1
     rpc_url: "https://rpc.hyperliquid-testnet.xyz/evm",
     token_address: "USDC_ADDRESS_ON_HYPEREVM_TESTNET",
     gas_price: 10_000_000_000, // 10 gwei

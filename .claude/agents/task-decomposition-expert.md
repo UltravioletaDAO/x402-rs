@@ -104,7 +104,7 @@ SettleResponse { success, transaction, payer }
 
 ### EVM Networks (Chain ID)
 **Mainnets:** Ethereum (1), Base (8453), Arbitrum (42161), Optimism (10), Polygon (137), Avalanche (43114), Celo (42220), HyperEVM (999), Unichain (130), Monad (143)
-**Testnets:** Base Sepolia (84532), Optimism Sepolia (11155420), Polygon Amoy (80002), Avalanche Fuji (43113), Celo Sepolia (44787), HyperEVM Testnet (333), Arbitrum Sepolia (421614), Ethereum Sepolia (11155111)
+**Testnets:** Base Sepolia (84532), Optimism Sepolia (11155420), Polygon Amoy (80002), Avalanche Fuji (43113), Celo Sepolia (11142220), HyperEVM Testnet (998), Arbitrum Sepolia (421614), Ethereum Sepolia (11155111)
 
 ### Non-EVM Networks
 - **Solana:** mainnet, devnet

@@ -312,9 +312,15 @@ impl TryFrom<Network> for EvmChain {
             Network::Optimism => Ok(EvmChain::new(value, 10)),
             Network::OptimismSepolia => Ok(EvmChain::new(value, 11155420)),
             Network::Celo => Ok(EvmChain::new(value, 42220)),
-            Network::CeloSepolia => Ok(EvmChain::new(value, 44787)),
+            // 11142220, not Alfajores' 44787: the RPCs answered 0xaa044c on
+            // 2026-09-23. Through 2.39.0 this said 44787 while the transaction
+            // filler asks the RPC, so transactions went to the right chain while
+            // the EIP-712 domain we build named the wrong one.
+            Network::CeloSepolia => Ok(EvmChain::new(value, 11142220)),
             Network::HyperEvm => Ok(EvmChain::new(value, 999)),
-            Network::HyperEvmTestnet => Ok(EvmChain::new(value, 333)),
+            // 998, not 333: rpc.hyperliquid-testnet.xyz/evm answered 0x3e6 on
+            // 2026-09-23. Same defect as celo-sepolia above, through 2.39.0.
+            Network::HyperEvmTestnet => Ok(EvmChain::new(value, 998)),
             Network::Sei => Ok(EvmChain::new(value, 1329)),
             Network::SeiTestnet => Ok(EvmChain::new(value, 1328)),
             Network::Ethereum => Ok(EvmChain::new(value, 1)),
@@ -2392,7 +2398,7 @@ async fn assert_domain<P: Provider>(
 /// Public so DX402 can derive the same EIP-712 digest the payer signed without
 /// reimplementing domain resolution. Duplicating it would be a real hazard:
 /// the domain name differs per chain and even flips between a chain's mainnet
-/// and testnet (HyperEVM mainnet is `"USDC"`, its testnet is `"USD Coin"`), so a
+/// and testnet (Base mainnet is `"USD Coin"`, Base Sepolia is `"USDC"`), so a
 /// second copy would drift and silently recover the wrong public key.
 pub fn find_known_eip712_metadata(
     network: Network,
@@ -5683,6 +5689,311 @@ mod arc_node_fixtures {
             )
             .await
             .unwrap_or_else(|e| panic!("{network}: {e}"));
+        }
+    }
+}
+
+/// Celo Sepolia and HyperEVM testnet, pinned to what their chains answered on
+/// 2026-09-23.
+///
+/// Through 2.39.0 both were built with a chain id that is not theirs -- 44787
+/// (Celo Alfajores) and 333 -- and the USDC name `"USD Coin"`. Each contract
+/// publishes `name()` = `"USDC"`, `version()` = `"2"`, and a
+/// `DOMAIN_SEPARATOR()` that only (`"USDC"`, `"2"`, the real chain id, the
+/// address) reproduces.
+///
+/// What that domain decides here is narrower than it looks. An EOA signature
+/// on a non-Arc chain is judged by simulating `transferWithAuthorization`, so
+/// the CONTRACT's domain decides it, not ours. Ours is the hash handed to the
+/// EIP-6492 validator for a counterfactual wallet and the digest DX402 recovers
+/// the payer's key from -- and in both, a wrong domain fails without saying so.
+#[cfg(test)]
+mod mislabeled_testnet_domain_tests {
+    use super::*;
+    use alloy::signers::local::PrivateKeySigner;
+    use alloy::signers::SignerSync;
+    use serde_json::{json, Value};
+
+    const PAYEE: Address = address!("0x2222222222222222222222222222222222222222");
+    const NONCE: [u8; 32] = [0x42; 32];
+
+    /// A network whose chain id and USDC name were wrong through 2.39.0.
+    struct Case {
+        network: Network,
+        /// `eth_chainId` of the RPC production uses, read 2026-09-23.
+        chain_id: u64,
+        /// `DOMAIN_SEPARATOR()` of its USDC, read the same day.
+        separator: [u8; 32],
+        /// The chain id this facilitator shipped through 2.39.0.
+        shipped_chain_id: u64,
+        /// The separator of the shipped domain: `"USD Coin"`, `"2"`, that id.
+        shipped_separator: [u8; 32],
+        /// What the live test reads, unless this env var names another RPC.
+        rpc: &'static str,
+        rpc_env: &'static str,
+    }
+
+    const CASES: [Case; 2] = [
+        // forno.celo-sepolia and rpc.ankr.com/celo_sepolia.
+        Case {
+            network: Network::CeloSepolia,
+            chain_id: 11142220,
+            separator: hex!("23f491197bb8c5ea4fe8dd4c2293b600f073553f9814015e7a5eb57724df9578"),
+            shipped_chain_id: 44787,
+            shipped_separator: hex!(
+                "9a13e188b45eb3a4e263921a9bc94ebddcb61a0074b8545c1618d5ae5927253d"
+            ),
+            rpc: "https://forno.celo-sepolia.celo-testnet.org",
+            rpc_env: "RPC_URL_CELO_SEPOLIA",
+        },
+        // rpc.hyperliquid-testnet.xyz/evm and hyperliquid-testnet.drpc.org.
+        Case {
+            network: Network::HyperEvmTestnet,
+            chain_id: 998,
+            separator: hex!("f26c39ac3b2040472381fddbd35212755a23586ffb86e608e151af6caa1d465e"),
+            shipped_chain_id: 333,
+            shipped_separator: hex!(
+                "f0e75bc24ee373152600b44d7e91059bc582ba026b4822b27d75b9e01811ea09"
+            ),
+            rpc: "https://rpc.hyperliquid-testnet.xyz/evm",
+            rpc_env: "RPC_URL_HYPEREVM_TESTNET",
+        },
+    ];
+
+    fn usdc(case: &Case) -> Address {
+        USDCDeployment::by_network(case.network)
+            .expect("a USDC deployment")
+            .address()
+            .try_into()
+            .expect("an EVM address")
+    }
+
+    /// The domain as the facilitator builds it: the static table plus the
+    /// chain id, exactly what `assert_domain` and DX402 read.
+    fn our_domain(case: &Case) -> Eip712Domain {
+        let (name, version) = find_known_eip712_metadata(case.network, &usdc(case))
+            .expect("the USDC is in the static EIP-712 table");
+        eip712_domain! {
+            name: name,
+            version: version,
+            chain_id: EvmChain::try_from(case.network).unwrap().chain_id,
+            verifying_contract: usdc(case),
+        }
+    }
+
+    /// The domain the contract publishes, written out by a client that read it
+    /// from the chain -- not from our table, or the vector would compare the
+    /// table with itself.
+    fn live_domain(case: &Case) -> Eip712Domain {
+        eip712_domain! {
+            name: "USDC",
+            version: "2",
+            chain_id: case.chain_id,
+            verifying_contract: usdc(case),
+        }
+    }
+
+    /// The domain a client got by trusting `/supported` through 2.39.0.
+    fn shipped_domain(case: &Case) -> Eip712Domain {
+        eip712_domain! {
+            name: "USD Coin",
+            version: "2",
+            chain_id: case.shipped_chain_id,
+            verifying_contract: usdc(case),
+        }
+    }
+
+    /// A `/verify` body on `case`'s network for `value`, signed by `payer`
+    /// under `domain`.
+    fn body(case: &Case, payer: &PrivateKeySigner, value: u64, domain: &Eip712Domain) -> Value {
+        let valid_before = crate::erc8004::proof::unix_now_secs() + 300;
+        let transfer = TransferWithAuthorization {
+            from: payer.address(),
+            to: PAYEE,
+            value: U256::from(value),
+            validAfter: U256::ZERO,
+            validBefore: U256::from(valid_before),
+            nonce: FixedBytes(NONCE),
+        };
+        let signature = payer
+            .sign_hash_sync(&transfer.eip712_signing_hash(domain))
+            .expect("signs");
+        let network = case.network.to_string();
+        json!({
+            "x402Version": 1,
+            "paymentPayload": {
+                "x402Version": 1,
+                "scheme": "exact",
+                "network": network,
+                "payload": {
+                    "signature": format!("0x{}", hex::encode(signature.as_bytes())),
+                    "authorization": {
+                        "from": payer.address(),
+                        "to": PAYEE,
+                        "value": value.to_string(),
+                        "validAfter": "0",
+                        "validBefore": valid_before.to_string(),
+                        "nonce": format!("0x{}", hex::encode(NONCE)),
+                    }
+                }
+            },
+            "paymentRequirements": {
+                "scheme": "exact",
+                "network": network,
+                "maxAmountRequired": value.to_string(),
+                "resource": "https://example.com/paid",
+                "description": "",
+                "mimeType": "application/json",
+                "payTo": PAYEE,
+                "maxTimeoutSeconds": 300,
+                "asset": usdc(case),
+                "extra": {"name": "USDC", "version": "2"},
+            }
+        })
+    }
+
+    /// The payment `assert_valid_payment` would hand on, built from the wire.
+    fn payment(case: &Case, request: &VerifyRequest) -> ExactEvmPayment {
+        let ExactPaymentPayload::Evm(evm) = &request.payment_payload.payload else {
+            panic!("an EVM payload");
+        };
+        ExactEvmPayment {
+            chain: EvmChain::try_from(case.network).unwrap(),
+            from: evm.authorization.from,
+            to: evm.authorization.to,
+            value: evm.authorization.value,
+            valid_after: evm.authorization.valid_after,
+            valid_before: evm.authorization.valid_before,
+            nonce: evm.authorization.nonce,
+            signature: evm.signature.clone(),
+        }
+    }
+
+    #[test]
+    fn each_network_is_the_chain_its_rpc_answers_for() {
+        for case in &CASES {
+            assert_eq!(
+                EvmChain::try_from(case.network).unwrap().chain_id,
+                case.chain_id,
+                "{}",
+                case.network
+            );
+        }
+    }
+
+    /// The four fields a signature commits to, checked against the one number
+    /// each contract publishes -- and the shipped domain checked against the
+    /// same number, so the assertion cannot be met by a chain id that is
+    /// ignored.
+    #[test]
+    fn our_domain_is_the_one_the_contract_publishes() {
+        for case in &CASES {
+            let network = case.network;
+            assert_eq!(our_domain(case).separator().0, case.separator, "{network}");
+            assert_eq!(live_domain(case).separator().0, case.separator, "{network}");
+            assert_eq!(
+                shipped_domain(case).separator().0,
+                case.shipped_separator,
+                "{network}"
+            );
+            assert_ne!(case.shipped_separator, case.separator, "{network}");
+        }
+    }
+
+    /// The vector. One payer signs the same authorization twice: under the
+    /// domain the contract publishes (`"USDC"`, the real chain id) and under
+    /// the one this facilitator shipped (`"USD Coin"`, the wrong id). Hashed
+    /// the way the facilitator hashes it -- `SignedMessage::extract` under our
+    /// domain -- the first recovers its payer and the second recovers somebody
+    /// else.
+    #[test]
+    fn a_signature_for_the_live_domain_verifies_and_one_for_the_shipped_domain_does_not() {
+        let payer = PrivateKeySigner::random();
+        for case in &CASES {
+            for (domain, label, verifies) in [
+                (live_domain(case), "live", true),
+                (shipped_domain(case), "shipped", false),
+            ] {
+                let request: VerifyRequest =
+                    serde_json::from_value(body(case, &payer, 10_000, &domain)).expect("parses");
+                let payment = payment(case, &request);
+                let signed = SignedMessage::extract(&payment, &our_domain(case)).expect("extracts");
+                let recovered =
+                    alloy::primitives::Signature::try_from(payment.signature.0.as_slice())
+                        .expect("65 bytes")
+                        .recover_address_from_prehash(&signed.hash)
+                        .expect("recovers some address");
+                assert_eq!(
+                    recovered == payer.address(),
+                    verifies,
+                    "{}: a signature under the {label} domain must {}verify under ours",
+                    case.network,
+                    if verifies { "" } else { "not " }
+                );
+            }
+        }
+    }
+
+    /// Every EVM chain id the facilitator signs for is the one its CAIP-2 id
+    /// names. The two are separate tables; celo-sepolia and hyperevm-testnet
+    /// were consistent across both and still wrong, which no test can see
+    /// without the chain -- but a table that drifts from the other is caught
+    /// here.
+    #[test]
+    fn every_evm_chain_id_is_the_one_its_caip2_names() {
+        for &network in Network::variants() {
+            let Ok(chain) = EvmChain::try_from(network) else {
+                continue;
+            };
+            assert_eq!(
+                network.to_caip2(),
+                format!("eip155:{}", chain.chain_id),
+                "{network}: EvmChain and to_caip2 disagree"
+            );
+        }
+    }
+
+    /// The facilitator's own `verify`, against each chain itself. Read-only:
+    /// `verify` simulates with `eth_call` and never broadcasts. Value 0, so a
+    /// fresh random payer with no balance reaches the signature check.
+    #[tokio::test]
+    #[ignore = "Read-only live RPC check against the testnets; run explicitly"]
+    async fn live_verify_accepts_only_the_contracts_domain() {
+        for case in &CASES {
+            let network = case.network;
+            let url = std::env::var(case.rpc_env).unwrap_or_else(|_| case.rpc.into());
+            let provider = EvmProvider::try_new(
+                EthereumWallet::from(PrivateKeySigner::random()),
+                &url,
+                true,
+                network,
+            )
+            .await
+            .expect("provider");
+            assert_eq!(
+                provider.inner().get_chain_id().await.expect("eth_chainId"),
+                case.chain_id,
+                "{url} is not {network}"
+            );
+            let payer = PrivateKeySigner::random();
+
+            let live: VerifyRequest =
+                serde_json::from_value(body(case, &payer, 0, &live_domain(case))).unwrap();
+            match provider.verify(&live).await {
+                Ok(VerifyResponse::Valid { payer: p }) => {
+                    assert_eq!(p, MixedAddress::from(payer.address()))
+                }
+                other => panic!("{network}: the live domain must verify: {other:?}"),
+            }
+
+            let shipped: VerifyRequest =
+                serde_json::from_value(body(case, &payer, 0, &shipped_domain(case))).unwrap();
+            match provider.verify(&shipped).await {
+                Ok(VerifyResponse::Valid { .. }) => {
+                    panic!("{network}: the shipped domain must not verify")
+                }
+                refused => eprintln!("{network}: shipped domain refused as expected: {refused:?}"),
+            }
         }
     }
 }

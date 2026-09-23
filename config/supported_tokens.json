@@ -135,13 +135,13 @@
       "facilitatorWallet": "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8"
     },
     "celo-sepolia": {
-      "chainId": 44787,
+      "chainId": 11142220,
       "tokens": ["usdc"],
-      "explorer": "https://alfajores.celoscan.io",
+      "explorer": "https://sepolia.celoscan.io",
       "facilitatorWallet": "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8"
     },
     "hyperevm-testnet": {
-      "chainId": 333,
+      "chainId": 998,
       "tokens": ["usdc"],
       "explorer": "https://testnet.purrsec.com",
       "facilitatorWallet": "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8"

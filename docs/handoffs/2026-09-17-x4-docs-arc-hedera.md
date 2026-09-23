@@ -160,6 +160,16 @@ already edits, so they were corrected here rather than deferred.
 | `\| Celo Alfajores \| 44787 \|` | `\| Celo Sepolia \| 44787 (\`celo-sepolia\`) \|` | `/supported` serves the v1 name **`celo-sepolia`** with `networkAliases: ["celo-sepolia","eip155:44787"]` (2026-09-17 03:08Z). The chain id was always right; only the name was stale. This repository's own notes already record that `RPC_URL_CELO_ALFAJORES` does not exist |
 | `\| Arc (when enabled) \| Y \| …` | `\| Arc (mainnet + testnet) \| Y \| …` | Both `arc` / `eip155:5042` and `arc-testnet` / `eip155:5042002` are served (2026-09-17 03:08Z). "when enabled" read as though Arc were not live |
 
+> **Correction, 2026-09-23 (2.39.1).** "The chain id was always right" was wrong: only
+> the name was. 44787 is Celo Alfajores. Celo Sepolia is 11142220 -- `eth_chainId`
+> answered `0xaa044c` on 2026-09-23 from forno.celo-sepolia.celo-testnet.org,
+> celo-sepolia.drpc.org and rpc.ankr.com/celo_sepolia (the endpoint production uses),
+> while alfajores-forno.celo-testnet.org no longer resolves. The measurement above read
+> the id back from `/supported`, and `/supported` printed whatever `Network::to_caip2`
+> said, so it confirmed the error instead of catching it; the chain is the only source
+> that could have. The README row now says 11142220. Account of the fix:
+> `docs/handoffs/2026-09-23-celo-sepolia-chain-id.md`.
+
 The adjacent `Hedera (when enabled)` row was changed the same way and for the same
 reason — `hedera:mainnet` and `hedera:testnet` are both served as of 03:08Z. It was not
 named in the instruction that authorised the other two; it is called out here so it can

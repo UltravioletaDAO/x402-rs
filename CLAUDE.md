@@ -268,10 +268,10 @@ This is a Cargo workspace with multiple crates:
    - Never overwrite from upstream
 
 4. **src/network.rs** - Custom networks added beyond upstream
-   - HyperEVM mainnet/testnet (Chain IDs: 999, 333)
+   - HyperEVM mainnet/testnet (Chain IDs: 999, 998 -- NOT 333, which is registered to EthStorage Mainnet; `eip155:333` is simply unknown, no `network_retired` pointer)
    - Polygon mainnet/Amoy testnet (Chain IDs: 137, 80002)
    - Optimism mainnet/Sepolia testnet (Chain IDs: 10, 11155420)
-   - Celo mainnet/Sepolia testnet (Chain IDs: 42220, 44787)
+   - Celo mainnet/Sepolia testnet (Chain IDs: 42220, 11142220 -- NOT 44787, which is the dead Alfajores testnet; `eip155:44787` answers 400 `network_retired`)
    - Solana mainnet/devnet
    - Sui mainnet/testnet (requires `--features sui`)
    - **Merge strategy**: Preserve ALL custom networks when pulling upstream
@@ -510,7 +510,7 @@ Different chains use different domain names for the same stablecoin:
 | Token | Usual name | Exceptions |
 |-------|-----------|------------|
 | EURC | `"Euro Coin"` (Ethereum, Avalanche) | `"EURC"` on Base |
-| USDC | `"USD Coin"` - **including Base MAINNET** (`src/network.rs:733`) | `"USDC"` on Celo, HyperEVM, Unichain, Monad and most `-sepolia`/`-testnet` variants (Base Sepolia = `"USDC"`). The name FLIPS between a chain's mainnet and testnet (HyperEVM mainnet `"USDC"` vs testnet `"USD Coin"`). Bridged variants differ again: XDC `"Bridged USDC(XDC)"`, SKALE `"Bridged USDC (SKALE Bridge)"`. Never infer - grep `name:` in `src/network.rs`. |
+| USDC | `"USD Coin"` - **including Base MAINNET** (`src/network.rs:733`) | `"USDC"` on Celo, HyperEVM, Unichain, Monad and most `-sepolia`/`-testnet` variants (Base Sepolia = `"USDC"`). The name FLIPS between a chain's mainnet and testnet (Base mainnet `"USD Coin"` vs Base Sepolia `"USDC"`; HyperEVM testnet is `"USDC"` like its mainnet since 2.39.1). Bridged variants differ again: XDC `"Bridged USDC(XDC)"`, SKALE `"Bridged USDC (SKALE Bridge)"`. Never infer - grep `name:` in `src/network.rs`. |
 
 The facilitator resolves domains in this priority order (`assert_domain()`, `src/chain/evm.rs:1588`):
 1. Static lookup in `src/network.rs` (`find_known_eip712_metadata`) - for KNOWN deployments this WINS, and a differing client value is only logged as a warning

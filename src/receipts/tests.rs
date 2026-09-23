@@ -1164,12 +1164,13 @@ async fn the_binding_that_admitted_a_payment_recovers_its_lost_response() {
 }
 
 /// A nonce refusal of the stored transaction on Base, as the EVM provider ends
-/// it under an admission (`chain::evm`: no second transaction). The answer is
-/// the node's `502 upstream_nonce_or_mempool` with the receipt `unknown` and
-/// naming the stored transaction, never a success or a verdict that invites a
-/// new signature. The purchase that admitted it gets the same answer and the
-/// stored receipt back without anything being sent again; another request for
-/// the same authorization is refused without the receipt.
+/// it under an admission (`chain::evm`: no second transaction). It is a failure
+/// after the send: the node's `502 upstream_nonce_or_mempool` with
+/// `retryable: false`, the stored transaction and no `Retry-After`, and the
+/// receipt `unknown`; never a success or a verdict that invites a new
+/// signature. The purchase that admitted it gets the same answer and the stored
+/// receipt back without anything being sent again; another request for the
+/// same authorization is refused without the receipt.
 #[tokio::test]
 async fn a_nonce_refusal_under_admission_stays_unknown_and_is_resent_not_resigned() {
     let stored = format!("0x{}", "33".repeat(32));
@@ -1194,6 +1195,7 @@ async fn a_nonce_refusal_under_admission_stays_unknown_and_is_resent_not_resigne
             .await;
             assert_eq!(refused.status(), StatusCode::BAD_GATEWAY);
             assert!(refused.headers().get("idempotent-replayed").is_none());
+            assert!(refused.headers().get(RETRY_AFTER).is_none());
             let first = value(refused).await;
             assert!(
                 first["error"]
@@ -1202,6 +1204,9 @@ async fn a_nonce_refusal_under_admission_stays_unknown_and_is_resent_not_resigne
                 "{first}"
             );
             assert_ne!(first["success"], true);
+            assert_eq!(first["retryable"], false);
+            assert_eq!(first["transaction"], stored.as_str());
+            assert!(first["paymentId"].is_string(), "{first}");
             let receipt = &first["receipt"];
             assert_eq!(receipt["network"], "eip155:8453");
             assert_eq!(receipt["status"], "unknown");
@@ -1217,7 +1222,10 @@ async fn a_nonce_refusal_under_admission_stays_unknown_and_is_resent_not_resigne
             let again = settle_again(&headers(), &body).await;
             assert_eq!(again.status(), StatusCode::BAD_GATEWAY);
             assert_eq!(again.headers()["idempotent-replayed"], "true");
+            assert!(again.headers().get(RETRY_AFTER).is_none());
             let again = value(again).await;
+            assert_eq!(again["retryable"], false);
+            assert_eq!(again["transaction"], stored.as_str());
             assert_eq!(again["receipt"]["receiptId"], receipt["receiptId"]);
             assert_eq!(again["receipt"]["status"], "unknown");
 

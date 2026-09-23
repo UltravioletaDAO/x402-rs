@@ -4839,6 +4839,36 @@ mod settlement_unconfirmed_tests {
         assert!(refused.prepared.is_some(), "the stored transaction is kept");
     }
 
+    /// A node that says it already holds the stored bytes is not a refusal: the
+    /// transaction may be in its mempool. Under an admission that answer comes
+    /// out as `SettlementUnconfirmed` with the stored hash, ahead of the nonce
+    /// guard, never as the node's nonce error.
+    #[tokio::test]
+    async fn under_a_receipt_admission_already_known_is_unconfirmed_not_a_refusal() {
+        let (url, node) = spawn_node(NonceNode {
+            refusals: [("already known", 0)].into(),
+            ..Default::default()
+        })
+        .await;
+        let provider = base_provider(&url).await;
+
+        let held = crate::receipts::with_test_admission(async {
+            provider.send_transaction(meta_transaction()).await
+        })
+        .await;
+
+        let prepared = held.prepared.as_ref().expect("the bytes are stored first");
+        let stored = prepared["transactionHash"].as_str().unwrap().to_owned();
+        match &held.output {
+            Err(FacilitatorLocalError::SettlementUnconfirmed(tx, network)) => {
+                assert_eq!(tx.to_string(), stored);
+                assert_eq!(*network, Network::Base);
+            }
+            other => panic!("expected SettlementUnconfirmed with the stored hash, got {other:?}"),
+        }
+        assert_eq!(node.lock().unwrap().sent, [0]);
+    }
+
     /// After that refusal the signer's next settle, sent at once, carries the
     /// nonce the node expects: nothing is left allocated in between. One case
     /// per kind of refusal: the slot is taken (`too low`), and the node is

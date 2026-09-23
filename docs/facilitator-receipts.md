@@ -290,28 +290,30 @@ What a Base `exact` caller observes compared with 2.39:
 | New signature, same `X-UVD-Purchase` | `400 receipt_request_not_supported` | `409 receipt_request_conflict` once the first one was admitted |
 | New signature without key or purchase context | New payment | New payment (unchanged) |
 | Settlement ends before anything is sent (writer lease moved, a read or gas estimate failed, signing or storing the bytes failed) | That failure's own answer | `503` with `Retry-After` and `safeToRetry: true`; receipt `rejected` with `refusalReason: reservation_abandoned`; the same request is admitted again under the same receipt |
-| The node refuses the transaction on nonce grounds | Up to two more attempts, each with a new nonce and a new signed transaction | No second transaction: `502 upstream_nonce_or_mempool` with the receipt `unknown` naming the stored one; the purchase's resends get the same status and body (without `Retry-After`) and reconcile or rebroadcast it (see below) |
+| The node refuses the transaction on nonce grounds | Up to two more attempts, each with a new nonce and a new signed transaction | No second transaction. A failure after the send: `502 upstream_nonce_or_mempool` with `retryable: false`, the stored `transaction` and its `paymentId`, no `Retry-After`, and the receipt `unknown`; the purchase's resends get the same answer and reconcile or rebroadcast it (see below) |
 | Receipt storage unreachable | Settles without a key; `503 idempotency_store_unavailable` with one | `503 receipt_store_unavailable` with `Retry-After` and `safeToRetry: true`, with or without a key; nothing is sent |
 
 Idempotency-Key responses cached before the upgrade are still replayed for their
 remaining lifetime.
 
 **A nonce refusal under an admission.** The node refused the stored bytes: this
-send did not queue them, and nothing else is signed or sent for the admission.
-The rail cannot tell whether the same bytes are held elsewhere, so the answer is
-read like any failure after the send: the receipt, not the status code, decides.
-Resend the same request with the binding that admitted it, or poll the receipt;
-never sign a replacement. The signer is left with no nonce gap: its next
-settlement takes the nonce the node reports, at once.
+send did not queue them, and nothing else is signed or sent for the admission. A
+node that says it already holds them is answered `502 settlement_unconfirmed`
+with the hash instead. The rail cannot tell whether the same bytes are held
+elsewhere, so the refusal is answered as a failure after the send (see "Failures
+after the send"): the receipt, not the status code, decides. Resend the same
+request with the binding that admitted it, or poll the receipt; never sign a
+replacement. The signer is left with no nonce gap: its next settlement takes the
+nonce the node reports, at once.
 
 Measured with the published SDKs against local stand-ins (no network): Python
 0.90.1 (`FastAPIX402` error mapping, `fetch_with_receipt`) and TypeScript 2.98.0
-(`createPaymentMiddleware` on Express, `fetchWithReceipt`). The merchant answers
-`503` with `Retry-After` and the receipt in `PAYMENT-RESPONSE`, never `402`. The
+(`createPaymentMiddleware` on Express, `fetchWithReceipt`). With this answer both
+merchants answer `500` with the receipt in `PAYMENT-RESPONSE`, never `402`. The
 buyer ends in `unknown` with that receipt, and two resumes of the same purchase
-resend the same authorization: the facilitator saw one. A body that also carries
-`retryable: false` and the transaction makes both merchants answer `500` instead,
-with the same outcome for the buyer.
+resend the same authorization: the facilitator saw one. The same failure without
+`retryable: false` and with `Retry-After: 30`, as it read before 2.39.6, made both
+merchants answer `503` instead, with the same outcome for the buyer.
 
 ## Validation scope
 
@@ -334,7 +336,8 @@ address normalization, requests that belong to other settlement paths,
 DynamoDB), and a test fails if Base leaves `GET /receipts` or admission. EVM
 tests drive a nonce refusal under an admission: one broadcast, no second nonce,
 and the signer's next settlement takes the node's nonce for a taken slot and for
-a node behind the signer; a receipt test pins the answer and its resends. SDK tests cover
+a node behind the signer; a node that already holds the bytes comes out
+`settlement_unconfirmed` first; a receipt test pins the answer and its resends. SDK tests cover
 signature tampering, request binding, restart without a new signature, and a
 confirmed receipt alongside a merchant HTTP 500. These fixtures are not payments.
 Live EURC acceptance was proven on Arc mainnet on 2026-09-22 with a `confirmed` x402 v2

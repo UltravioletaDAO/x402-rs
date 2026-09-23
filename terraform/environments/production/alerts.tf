@@ -146,6 +146,10 @@ locals {
   settle_gas_budget = 130000
   warn_settles      = 100
 
+  # Every fee cap must be above zero: `settles` divides by it, and a zero here
+  # would fail the plan AFTER the merge. The divisor is guarded below, the
+  # script refuses to print a zero, and a test in src/readiness.rs fails first.
+  #
   # The fee cap quote_fee_cap would set on each chain (maxFeePerGas, in gwei),
   # read from the chain by `python3 scripts/gas_reserve_floors.py --hcl` on
   # 2026-09-23T08:52Z. It moves with the chain: this is a dated reading, and
@@ -216,7 +220,7 @@ locals {
     {
       for chain, price in local.settle_price : chain => {
         min_native = max(price.cost * local.warn_settles, lookup(local.declared_floors, chain, 0))
-        settles    = max(local.warn_settles, floor(lookup(local.declared_floors, chain, 0) / price.cost))
+        settles    = max(local.warn_settles, floor(lookup(local.declared_floors, chain, 0) / max(price.cost, 1e-18)))
         basis      = lookup(local.declared_floors, chain, 0) > price.cost * local.warn_settles ? "the operator floor, above the derived one" : "the derived floor"
         priced     = price.priced
       } if !contains(local.switched_off, chain)

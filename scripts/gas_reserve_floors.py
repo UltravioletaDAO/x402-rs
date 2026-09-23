@@ -86,11 +86,33 @@ def fee_cap(base_fee: int, rpc_priority: int | None, floor: tuple[int, int, int]
 
 
 def round_up(value: float, digits: int = 3) -> float:
-    """Round up to `digits` significant figures, so a floor never shrinks."""
+    """Round up to `digits` significant figures, so a floor never shrinks.
+
+    A value at or below zero is an error, not 0.0: alerts.tf divides by the fee
+    cap, and a zero pasted there fails the plan after the merge.
+    """
     if value <= 0:
-        return 0.0
+        raise ValueError(f"fee cap {value} is not above zero")
     scale = 10 ** (digits - 1 - math.floor(math.log10(value)))
     return math.ceil(value * scale) / scale
+
+
+def render_hcl(rows: list[dict], measured_at: str, missing: list[str]) -> str:
+    """The `evm_fee_cap_gwei` map for alerts.tf, or ValueError.
+
+    Refuses a partial map: pasting one that lacks a chain removes that chain's
+    alarms. Refuses a cap at or below zero for the division above.
+    """
+    if missing:
+        raise ValueError(f"not measured: {', '.join(missing)}; no map printed")
+    for row in rows:
+        if not row["fee_cap_gwei"] > 0:
+            raise ValueError(f"{row['chain']}: fee cap {row['fee_cap_gwei']} is not above zero")
+    width = max(len(r["chain"]) for r in rows) + 2
+    lines = [f"  # scripts/gas_reserve_floors.py --hcl, {measured_at}", "  evm_fee_cap_gwei = {"]
+    lines += [f"    {json.dumps(r['chain']).ljust(width)} = {r['fee_cap_gwei']:g}" for r in rows]
+    lines.append("  }")
+    return "\n".join(lines)
 
 
 def rpc(url: str, method: str, params: list) -> object:
@@ -136,7 +158,11 @@ def main() -> int:
         except Exception as error:  # noqa: BLE001 - one dead RPC must not hide the rest
             failed.append((key, type(error).__name__))
             continue
-        row["fee_cap_gwei"] = round_up(row["fee_cap_wei"] / GWEI)
+        try:
+            row["fee_cap_gwei"] = round_up(row["fee_cap_wei"] / GWEI)
+        except ValueError as error:
+            failed.append((key, str(error)))
+            continue
         per_settle = Decimal(budget) * Decimal(row["fee_cap_wei"]) / Decimal(10**18)
         row["per_settle_native"] = float(per_settle)
         row["floor_native"] = float(per_settle * warn)
@@ -148,12 +174,11 @@ def main() -> int:
                           "warn_settles": warn, "chains": rows,
                           "unreadable": [k for k, _ in failed]}, indent=2))
     elif args.hcl:
-        width = max(len(r["chain"]) for r in rows) + 2
-        print(f"  # scripts/gas_reserve_floors.py --hcl, {measured_at}")
-        print("  evm_fee_cap_gwei = {")
-        for r in rows:
-            print(f"    {json.dumps(r['chain']).ljust(width)} = {r['fee_cap_gwei']:g}")
-        print("  }")
+        try:
+            print(render_hcl(rows, measured_at, [k for k, _ in failed]))
+        except ValueError as error:
+            print(f"[FAIL] {error}", file=sys.stderr)
+            return 1
     else:
         print(f"measured {measured_at}; SETTLE_GAS_BUDGET={budget}, warnSettles={warn}")
         print(f"{'chain':<20} {'base gwei':>12} {'fee cap gwei':>13} {'per settle':>14} {'floor':>12}")

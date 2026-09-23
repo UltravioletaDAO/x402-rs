@@ -2,6 +2,9 @@
 //! A receipt attests payment state, never merchant delivery. Admission is
 //! atomically reserved before the provider can broadcast. Uncertainty is sticky:
 //! only chain evidence can turn it into confirmation, never a new authorization.
+//! An admission whose provider provably sent nothing is not uncertain: it is
+//! released in place and the same request is admitted again (`abandon`).
+pub mod admin;
 pub mod store;
 
 use crate::{
@@ -15,7 +18,7 @@ use crate::{
 use axum::{
     body::{to_bytes, Body, Bytes},
     extract::{Path, State},
-    http::{HeaderMap, HeaderValue, StatusCode},
+    http::{header::RETRY_AFTER, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
@@ -36,8 +39,13 @@ use std::{
 
 pub type Result<T> = std::result::Result<T, String>;
 const ISSUER: &str = "https://facilitator.ultravioletadao.xyz";
+/// `refusalReason` of an admission released before anything was sent. Only
+/// the request it admitted can be admitted again, under the same receipt.
+pub const RESERVATION_ABANDONED: &str = "reservation_abandoned";
+/// `Retry-After` on answers that sent nothing and invite the same request again.
+const RETRY_AFTER_SECS: u64 = 2;
 static SERVICE: OnceCell<Arc<Service>> = OnceCell::new();
-tokio::task_local! { static ACTIVE: Arc<tokio::sync::Mutex<Record>>; }
+tokio::task_local! { static ACTIVE: Arc<Admission>; }
 #[cfg(test)]
 tokio::task_local! { static TEST_SERVICE: Arc<Service>; }
 #[cfg(test)]
@@ -108,6 +116,43 @@ pub struct PurchaseContext {
 pub struct Service {
     pub store: Arc<dyn store::Store>,
     signing_key: Option<SigningKey>,
+}
+
+/// The admission a settle closure runs under: the record it updates, and what
+/// the provider has said about sending.
+struct Admission {
+    record: tokio::sync::Mutex<Record>,
+    sending: std::sync::Mutex<Sending>,
+}
+
+/// `unsent` names where the provider ended the settlement without sending
+/// anything. It is a statement about the past, so it only counts until
+/// `latched`: once a transaction may have left, nothing releases the admission.
+#[derive(Default)]
+struct Sending {
+    latched: bool,
+    unsent: Option<&'static str>,
+}
+
+impl Admission {
+    fn new(record: Record) -> Arc<Self> {
+        Arc::new(Self {
+            record: tokio::sync::Mutex::new(record),
+            sending: Default::default(),
+        })
+    }
+
+    fn sending(&self) -> std::sync::MutexGuard<'_, Sending> {
+        self.sending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Where the settlement ended without sending, if it never latched.
+    fn unsent(&self) -> Option<&'static str> {
+        let state = self.sending();
+        state.unsent.filter(|_| !state.latched)
+    }
 }
 
 pub fn hash(bytes: &[u8]) -> String {
@@ -374,20 +419,24 @@ impl Service {
     }
 }
 
-pub async fn init() -> Result<()> {
-    let Some(store) = store::DynamoStore::from_env().await else {
-        return Ok(());
-    };
-    let signing_key = match std::env::var("RECEIPT_SIGNING_KEY") {
+fn signing_key_from_env() -> Result<Option<SigningKey>> {
+    match std::env::var("RECEIPT_SIGNING_KEY") {
         Ok(secret) => {
             let decoded = hex::decode(secret.trim()).map_err(|_| "invalid_receipt_signing_key")?;
             let bytes: [u8; 32] = decoded
                 .try_into()
                 .map_err(|_| "invalid_receipt_signing_key")?;
-            Some(SigningKey::from_bytes(&bytes))
+            Ok(Some(SigningKey::from_bytes(&bytes)))
         }
-        Err(_) => None,
+        Err(_) => Ok(None),
+    }
+}
+
+pub async fn init() -> Result<()> {
+    let Some(store) = store::DynamoStore::from_env().await else {
+        return Ok(());
     };
+    let signing_key = signing_key_from_env()?;
     SERVICE
         .set(Arc::new(Service { store, signing_key }))
         .map_err(|_| "receipt_service_already_initialized".into())
@@ -432,6 +481,11 @@ pub fn document_api(api: &mut utoipa::openapi::OpenApi) {
         if path == "/settle" {
             operation["responses"]["202"] = json!({"description":"Reserved payment remains pending or unknown. Returned to the X-UVD-Purchase or Idempotency-Key that admitted it. Poll the private receipt or retry exactly the same request; no new payment is admitted."});
             operation["responses"]["409"] = json!({"description":"Purchase, authorization or idempotency key conflicts with the original request, or the authorization was already admitted and this request lacks the X-UVD-Purchase or Idempotency-Key that admitted it: `authorization_already_settled` or `authorization_in_flight`, with the receipt when the payment has no purchase context. No replacement payment is admitted and no success is repeated."});
+            let unavailable = operation["responses"]["503"]["description"]
+                .as_str()
+                .unwrap_or("")
+                .to_owned();
+            operation["responses"]["503"]["description"] = json!(format!("{unavailable}\n\nOn the receipt rail, a 503 with `safeToRetry: true` and `Retry-After` sent nothing: receipt storage or signing failed before admission (`receipt_store_unavailable`, `receipt_signing_unavailable`, `receipt_reservation_uncertain`), or the admission was released before any transaction existed (receipt `rejected` with `refusalReason: reservation_abandoned`). Resend the same request; it is admitted again under the same receipt. Never sign a replacement."));
         }
     }
     for (path, summary) in [
@@ -478,9 +532,64 @@ fn failure(code: &str, status: StatusCode) -> Response {
     (status, Json(json!({"success":false,"error":code,"retryable":status.is_server_error(),"safeToReplay":false}))).into_response()
 }
 
-async fn finish(service: &Service, record: &mut Record, raw: Response, durable: bool) -> Response {
+/// A 503 before this request sent anything: resending the same request is
+/// safe and cannot create a second payment.
+fn unavailable(code: &str) -> Response {
+    let mut response = (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(json!({"success":false,"error":code,"retryable":true,"safeToRetry":true,"safeToReplay":false})),
+    )
+        .into_response();
+    response
+        .headers_mut()
+        .insert(RETRY_AFTER, HeaderValue::from(RETRY_AFTER_SECS));
+    response
+}
+
+/// Closes an admission under which nothing was sent. The receipt says so, and
+/// the request it admitted is admitted again under it (`readmit`).
+fn abandon(record: &mut Record, diagnostic: &str, after: u64, mut body: Value) {
+    if !body.is_object() {
+        body = json!({ "error": diagnostic });
+    }
+    body["success"] = json!(false);
+    body["retryable"] = json!(true);
+    body["safeToRetry"] = json!(true);
+    body["safeToReplay"] = json!(false);
+    record.response = body;
+    record.http_status = StatusCode::SERVICE_UNAVAILABLE.as_u16();
+    record.receipt.status = "rejected".into();
+    record.receipt.refusal_reason = Some(RESERVATION_ABANDONED.into());
+    record.receipt.diagnostic_code = Some(diagnostic.into());
+    record.receipt.retry = json!({"action":"resend","afterSeconds":after});
+}
+
+/// Released before anything was sent: nothing prepared, nothing named.
+fn is_abandoned(record: &Record) -> bool {
+    record.receipt.status == "rejected"
+        && record.receipt.refusal_reason.as_deref() == Some(RESERVATION_ABANDONED)
+        && record.prepared.is_none()
+        && record.receipt.settlement.is_none()
+}
+
+/// An abandoned admission met outside `readmit`, in a race: resend.
+fn resend_later(record: &Record) -> Response {
+    let mut response = response(record, false);
+    response
+        .headers_mut()
+        .insert(RETRY_AFTER, HeaderValue::from(RETRY_AFTER_SECS));
+    response
+}
+
+async fn finish(
+    service: &Service,
+    record: &mut Record,
+    raw: Response,
+    durable: bool,
+    unsent: Option<&'static str>,
+) -> Response {
     let durable_before = record.clone();
-    let (parts, body) = raw.into_parts();
+    let (mut parts, body) = raw.into_parts();
     let bytes = match to_bytes(body, 65536).await {
         Ok(bytes) => bytes,
         Err(_) => return failure("receipt_response_unreadable", StatusCode::BAD_GATEWAY),
@@ -550,6 +659,32 @@ async fn finish(service: &Service, record: &mut Record, raw: Response, durable: 
             prepared.remove("signedTransaction");
         }
     }
+    // Nothing left this process: the provider ended the settlement before its
+    // send latch, no bytes were prepared and its answer names no transaction.
+    // That is not uncertainty, so the admission is not left `unknown` for
+    // ever: it is closed in place, the same request is admitted again, and the
+    // caller hears 503, resend this request, never sign another. The save
+    // below is a CAS on the owner's revision: bytes persisted by an ambiguous
+    // write, or any other writer, make it fail and nothing is released.
+    let provider_status = parts.status;
+    let released = durable
+        && record.receipt.status == "unknown"
+        && record.prepared.is_none()
+        && record.receipt.settlement.is_none();
+    let released = unsent.filter(|_| released);
+    if let Some(site) = released {
+        let after = parts
+            .headers
+            .get(RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .filter(|after| *after > 0)
+            .unwrap_or(RETRY_AFTER_SECS);
+        let diagnostic = value.get("error").and_then(Value::as_str).unwrap_or(site);
+        abandon(record, diagnostic, after, value.clone());
+        parts.status = StatusCode::SERVICE_UNAVAILABLE;
+        parts.headers.insert(RETRY_AFTER, HeaderValue::from(after));
+    }
     let saved = if durable {
         service.save(record).await
     } else {
@@ -563,10 +698,25 @@ async fn finish(service: &Service, record: &mut Record, raw: Response, durable: 
             .ok()
             .flatten()
             .unwrap_or(durable_before);
-        let mut body = record.response.clone();
+        if is_abandoned(&stable) {
+            // Released by another writer while this owner ran (`release_unrun`,
+            // the operator command): the revision it held could not store
+            // prepared bytes, so nothing was sent under it.
+            return resend_later(&stable);
+        }
+        // The provider's own answer: a release that was not stored did not happen.
+        let mut body = value;
         body["receipt"] = serde_json::to_value(stable.receipt).unwrap();
         body["receiptWarning"] = json!("receipt_persistence_unavailable");
-        return (parts.status, Json(body)).into_response();
+        return (provider_status, Json(body)).into_response();
+    }
+    if let Some(site) = released {
+        tracing::warn!(
+            receipt_id = %record.receipt.receipt_id,
+            network = %record.receipt.network,
+            site,
+            "receipt admission released: the settlement ended before anything was sent"
+        );
     }
     let mut result = response(record, false);
     for (key, val) in &parts.headers {
@@ -596,6 +746,7 @@ pub async fn verify<F: Future<Output = Response>>(
         Ok(r) => r,
         Err(_) => return call.await,
     };
+    // An abandoned admission sent nothing: verify as if it did not exist.
     if let Ok(Some(existing)) = service
         .store
         .get(&format!(
@@ -603,6 +754,7 @@ pub async fn verify<F: Future<Output = Response>>(
             record.receipt.authorization_id
         ))
         .await
+        .map(|found| found.filter(|existing| !is_abandoned(existing)))
     {
         let same = same_request(&existing, &record);
         let rejected = existing.receipt.status == "rejected";
@@ -610,9 +762,7 @@ pub async fn verify<F: Future<Output = Response>>(
             match bound(&service, &existing, headers).await {
                 Ok(is_bound) => is_bound,
                 // A store fault is no verdict, exactly as on /settle.
-                Err(_) => {
-                    return failure("receipt_store_unavailable", StatusCode::SERVICE_UNAVAILABLE)
-                }
+                Err(_) => return unavailable("receipt_store_unavailable"),
             }
         } else {
             false
@@ -636,7 +786,7 @@ pub async fn verify<F: Future<Output = Response>>(
             return (StatusCode::OK, Json(body)).into_response();
         }
     }
-    finish(&service, &mut record, call.await, false).await
+    finish(&service, &mut record, call.await, false, None).await
 }
 
 fn aliases(record: &Record, headers: &HeaderMap) -> Vec<String> {
@@ -712,6 +862,9 @@ async fn replay<A: HasProviderMap>(
 where
     A::Map: ProviderMap<Value = NetworkProvider>,
 {
+    if is_abandoned(&existing) {
+        return resend_later(&existing);
+    }
     reconcile(service, facilitator, &mut existing).await;
     rebroadcast_prepared(facilitator, &existing).await;
     if existing.receipt.status == "rejected" {
@@ -731,7 +884,7 @@ where
                 .insert("cache-control", HeaderValue::from_static("no-store"));
             response
         }
-        Err(_) => failure("receipt_store_unavailable", StatusCode::SERVICE_UNAVAILABLE),
+        Err(_) => unavailable("receipt_store_unavailable"),
     }
 }
 
@@ -793,7 +946,9 @@ async fn legacy_replay(headers: &HeaderMap, raw: &Bytes) -> Option<Response> {
 }
 
 /// The closure is invoked only by the owner of an atomic admission. Existing
-/// rows, including an abandoned reservation, NEVER invoke it again.
+/// rows never invoke it again, with one exception: an admission released
+/// before anything was sent (`abandon`), which the request it admitted takes
+/// back under the same receipt through a revision CAS (`readmit`).
 pub async fn settle<A, F>(facilitator: &A, headers: &HeaderMap, raw: &Bytes, call: F) -> Response
 where
     A: Facilitator + HasProviderMap + Sync,
@@ -812,7 +967,7 @@ where
     }
     let Some(service) = service() else {
         return if headers.contains_key("x-uvd-purchase") {
-            failure("receipt_store_unavailable", StatusCode::SERVICE_UNAVAILABLE)
+            unavailable("receipt_store_unavailable")
         } else {
             call.await
         };
@@ -845,16 +1000,19 @@ where
     // Check the authorization before re-verifying: a successful settlement has
     // consumed its nonce and would now fail an otherwise valid signature check.
     let auth_key = format!("receipt:auth:v1:{}", candidate.receipt.authorization_id);
-    match service.store.get(&auth_key).await {
+    let abandoned = match service.store.get(&auth_key).await {
         Ok(Some(existing)) => {
             if !same_request(&existing, &candidate) {
                 return failure("receipt_request_conflict", StatusCode::CONFLICT);
             }
-            return replay(&service, facilitator, existing, headers).await;
+            if !is_abandoned(&existing) {
+                return replay(&service, facilitator, existing, headers).await;
+            }
+            Some(existing)
         }
-        Err(_) => return failure("receipt_store_unavailable", StatusCode::SERVICE_UNAVAILABLE),
-        _ => {}
-    }
+        Ok(None) => None,
+        Err(_) => return unavailable("receipt_store_unavailable"),
+    };
     if let Some(replay) = legacy_replay(headers, raw).await {
         return replay;
     }
@@ -872,50 +1030,211 @@ where
         Err(error) => Some(error.into_response()),
     };
     if let Some(failure) = verification_failure {
-        return finish(&service, &mut candidate, failure, false).await;
+        return finish(&service, &mut candidate, failure, false, None).await;
     }
     let keys = aliases(&candidate, headers);
+    let admitted = match abandoned {
+        Some(abandoned) => {
+            readmit(&service, facilitator, abandoned, candidate, &keys, headers).await
+        }
+        None => admit(&service, facilitator, candidate, &keys, headers).await,
+    };
+    let record = match admitted {
+        Ok(record) => record,
+        Err(answer) => return *answer,
+    };
+    let admission = Admission::new(record);
+    let result = ACTIVE.scope(admission.clone(), call).await;
+    let unsent = admission.unsent();
+    let mut record = admission.record.lock().await;
+    finish(&service, &mut record, result, true, unsent).await
+}
+
+/// Reserves a new admission: the record and every alias atomically, or none.
+async fn admit<A>(
+    service: &Service,
+    facilitator: &A,
+    mut candidate: Record,
+    keys: &[String],
+    headers: &HeaderMap,
+) -> std::result::Result<Record, Box<Response>>
+where
+    A: HasProviderMap,
+    A::Map: ProviderMap<Value = NetworkProvider>,
+{
     if service.sign(&mut candidate.receipt).is_err() {
-        return failure(
-            "receipt_signing_unavailable",
-            StatusCode::SERVICE_UNAVAILABLE,
-        );
+        return Err(Box::new(unavailable("receipt_signing_unavailable")));
     }
-    match service.store.reserve(&candidate, &keys).await {
-        Ok(true) => {}
+    // One fresh token per write: see `store::Store::reserve`.
+    let token = uuid::Uuid::new_v4().to_string();
+    match service.store.reserve(&candidate, keys, &token).await {
+        Ok(true) => Ok(candidate),
         Ok(false) => {
-            for key in &keys {
+            for key in keys {
                 match service.store.get(key).await {
+                    // This request's own reservation, landed by a write the
+                    // store could not confirm. Nothing runs under it.
+                    Ok(Some(existing))
+                        if existing.receipt.receipt_id == candidate.receipt.receipt_id =>
+                    {
+                        release_unrun(service, &candidate).await;
+                        return Err(Box::new(unavailable("receipt_store_unavailable")));
+                    }
                     Ok(Some(existing)) => {
                         if !same_request(&existing, &candidate) {
-                            return failure("receipt_request_conflict", StatusCode::CONFLICT);
+                            return Err(Box::new(failure(
+                                "receipt_request_conflict",
+                                StatusCode::CONFLICT,
+                            )));
                         }
-                        return replay(&service, facilitator, existing, headers).await;
+                        return Err(Box::new(
+                            replay(service, facilitator, existing, headers).await,
+                        ));
                     }
-                    Err(_) => {
-                        return failure(
-                            "receipt_store_unavailable",
-                            StatusCode::SERVICE_UNAVAILABLE,
-                        )
+                    Err(_) => return Err(Box::new(unavailable("receipt_store_unavailable"))),
+                    Ok(None) => {}
+                }
+            }
+            Err(Box::new(unavailable("receipt_reservation_uncertain")))
+        }
+        Err(_) => {
+            release_unrun(service, &candidate).await;
+            Err(Box::new(unavailable("receipt_store_unavailable")))
+        }
+    }
+}
+
+/// Admits the same request again under the abandoned admission it matches:
+/// the same receipt at its next revision, plus any alias this request brings.
+/// The revision CAS picks one winner among concurrent resends and fences out
+/// anything still holding the abandoned revision: its prepared save fails, so
+/// it never sends.
+async fn readmit<A>(
+    service: &Service,
+    facilitator: &A,
+    abandoned: Record,
+    mut candidate: Record,
+    keys: &[String],
+    headers: &HeaderMap,
+) -> std::result::Result<Record, Box<Response>>
+where
+    A: HasProviderMap,
+    A::Map: ProviderMap<Value = NetworkProvider>,
+{
+    // Only an Idempotency-Key can be new: the authorization and the purchase
+    // capability are the abandoned admission's own (`same_request`).
+    let mut fresh = Vec::new();
+    for key in keys {
+        match service.store.get(key).await {
+            Ok(Some(found)) if found.receipt.receipt_id == abandoned.receipt.receipt_id => {}
+            Ok(Some(_)) => {
+                return Err(Box::new(failure(
+                    "receipt_request_conflict",
+                    StatusCode::CONFLICT,
+                )))
+            }
+            Ok(None) => fresh.push(key.clone()),
+            Err(_) => return Err(Box::new(unavailable("receipt_store_unavailable"))),
+        }
+    }
+    candidate.receipt.receipt_id = abandoned.receipt.receipt_id.clone();
+    candidate.receipt.revision = abandoned.receipt.revision + 1;
+    if service.sign(&mut candidate.receipt).is_err() {
+        return Err(Box::new(unavailable("receipt_signing_unavailable")));
+    }
+    let token = uuid::Uuid::new_v4().to_string();
+    match service
+        .store
+        .readmit(&candidate, abandoned.receipt.revision, &fresh, &token)
+        .await
+    {
+        Ok(true) => {
+            tracing::info!(
+                receipt_id = %candidate.receipt.receipt_id,
+                network = %candidate.receipt.network,
+                revision = candidate.receipt.revision,
+                "receipt admission taken back by the request it admitted"
+            );
+            Ok(candidate)
+        }
+        Ok(false) => {
+            let auth_key = format!("receipt:auth:v1:{}", candidate.receipt.authorization_id);
+            let current = match service.store.get(&auth_key).await {
+                Ok(Some(current)) => current,
+                _ => return Err(Box::new(unavailable("receipt_store_unavailable"))),
+            };
+            if !is_abandoned(&current) {
+                // Another resend won: this one is a replay of its admission.
+                return Err(Box::new(
+                    replay(service, facilitator, current, headers).await,
+                ));
+            }
+            for key in &fresh {
+                match service.store.get(key).await {
+                    Ok(Some(other)) if other.receipt.receipt_id != current.receipt.receipt_id => {
+                        return Err(Box::new(failure(
+                            "receipt_request_conflict",
+                            StatusCode::CONFLICT,
+                        )))
                     }
+                    Err(_) => return Err(Box::new(unavailable("receipt_store_unavailable"))),
                     _ => {}
                 }
             }
-            return failure(
-                "receipt_reservation_uncertain",
-                StatusCode::SERVICE_UNAVAILABLE,
-            );
+            Err(Box::new(resend_later(&current)))
         }
-        Err(_) => return failure("receipt_store_unavailable", StatusCode::SERVICE_UNAVAILABLE),
+        Err(_) => {
+            release_unrun(service, &candidate).await;
+            Err(Box::new(unavailable("receipt_store_unavailable")))
+        }
     }
-    let active = Arc::new(tokio::sync::Mutex::new(candidate));
-    let result = ACTIVE.scope(active.clone(), call).await;
-    let mut record = active.lock().await;
-    finish(&service, &mut record, result, true).await
+}
+
+/// Closes an admission this request wrote but never ran: a store write that
+/// failed ambiguously can still have landed. The CAS is on the revision this
+/// request wrote. In a race it can instead close another resend's re-admission
+/// at that revision; that one then cannot save prepared bytes, so it never
+/// sends, and its caller is told to resend.
+async fn release_unrun(service: &Service, record: &Record) {
+    let mut closed = record.clone();
+    abandon(
+        &mut closed,
+        "receipt_store_unavailable",
+        RETRY_AFTER_SECS,
+        json!({}),
+    );
+    if service.save(&mut closed).await.is_ok() {
+        tracing::warn!(
+            receipt_id = %closed.receipt.receipt_id,
+            network = %closed.receipt.network,
+            "receipt admission released after a store write that could not be confirmed"
+        );
+    }
 }
 
 pub fn active() -> bool {
     ACTIVE.try_with(|_| ()).is_ok()
+}
+
+/// The provider is ending this admission's settlement and no transaction left
+/// this process. Ignored once [`sending`] ran, and outside an admission.
+pub fn unsent(site: &'static str) {
+    let _ = ACTIVE.try_with(|admission| {
+        let mut state = admission.sending();
+        if !state.latched && state.unsent.is_none() {
+            state.unsent = Some(site);
+        }
+    });
+}
+
+/// Called immediately before a transaction may leave this process. From then
+/// on the admission ends only by chain evidence or reconciliation.
+pub fn sending() {
+    let _ = ACTIVE.try_with(|admission| {
+        let mut state = admission.sending();
+        state.latched = true;
+        state.unsent = None;
+    });
 }
 
 /// Called with the exact signed EVM bytes BEFORE broadcast. A storage failure
@@ -927,7 +1246,7 @@ pub async fn prepared_evm(hash: String, bytes: Vec<u8>) -> Result<()> {
     let Ok(active) = ACTIVE.try_with(Arc::clone) else {
         return Ok(());
     };
-    let mut record = active.lock().await;
+    let mut record = active.record.lock().await;
     if record.prepared.is_some() {
         return Err("receipt_multiple_transactions_not_supported".into());
     }
@@ -938,7 +1257,12 @@ pub async fn prepared_evm(hash: String, bytes: Vec<u8>) -> Result<()> {
         Some(json!({"id":hash,"idType":"evm-transaction-hash","paymentId":Value::Null}));
     next.receipt.status = "pending".into();
     next.receipt.diagnostic_code = Some("transaction_prepared".into());
-    service.save(&mut next).await?;
+    if let Err(error) = service.save(&mut next).await {
+        // Not confirmed stored, so never sent from here. If an ambiguous write
+        // did store them, the owner's closing CAS fails and nothing is released.
+        unsent("prepared_evm");
+        return Err(error);
+    }
     *record = next;
     Ok(())
 }
@@ -952,14 +1276,18 @@ pub async fn prepared_hedera(id: &str) -> Result<()> {
     let Ok(active) = ACTIVE.try_with(Arc::clone) else {
         return Ok(());
     };
-    let mut record = active.lock().await;
+    let mut record = active.record.lock().await;
     let mut next = record.clone();
     next.prepared = Some(json!({"transactionId":id}));
     next.receipt.settlement =
         Some(json!({"id":id,"idType":"hedera-transaction-id","paymentId":Value::Null}));
     next.receipt.status = "pending".into();
     next.receipt.diagnostic_code = Some("native_transaction_identified".into());
-    service.save(&mut next).await?;
+    if let Err(error) = service.save(&mut next).await {
+        // The Hedera settle stops here, before its own store or the network.
+        unsent("prepared_hedera");
+        return Err(error);
+    }
     *record = next;
     Ok(())
 }
@@ -1117,6 +1445,44 @@ where
     let mut found = response(&record, true);
     *found.status_mut() = StatusCode::OK;
     found
+}
+
+/// What a provider did under a test admission.
+#[cfg(test)]
+pub(crate) struct TestAdmission<T> {
+    pub output: T,
+    pub unsent: Option<&'static str>,
+    pub latched: bool,
+    pub prepared: Option<Value>,
+}
+
+/// Runs `f` as the owner of a reserved Arc testnet admission on an in-memory
+/// store, so provider code can be driven through its real receipt hooks.
+#[cfg(test)]
+pub(crate) async fn with_test_admission<F: Future>(f: F) -> TestAdmission<F::Output> {
+    let service = Arc::new(Service {
+        store: Arc::new(store::MemoryStore::default()),
+        signing_key: None,
+    });
+    let record = tests::fixture_record();
+    let auth = format!("receipt:auth:v1:{}", record.receipt.authorization_id);
+    assert!(service
+        .store
+        .reserve(&record, &[auth], "test")
+        .await
+        .unwrap());
+    let admission = Admission::new(record);
+    let output = TEST_SERVICE
+        .scope(service, ACTIVE.scope(admission.clone(), f))
+        .await;
+    let latched = admission.sending().latched;
+    let prepared = admission.record.lock().await.prepared.clone();
+    TestAdmission {
+        output,
+        unsent: admission.unsent(),
+        latched,
+        prepared,
+    }
 }
 
 #[cfg(test)]

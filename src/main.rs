@@ -124,6 +124,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load .env variables
     dotenv().ok();
 
+    // Operator commands run INSTEAD of the server, before anything else
+    // starts: no telemetry, no providers, no writer election, no listener.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|command| command == "receipts") {
+        std::process::exit(receipts::admin::run(&args[1..]).await);
+    }
+
     let telemetry = Telemetry::new()
         .with_name(env!("CARGO_PKG_NAME"))
         .with_version(version::facilitator_version())

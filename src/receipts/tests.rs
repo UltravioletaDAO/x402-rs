@@ -115,13 +115,13 @@ impl store::Store for UpdateOutage {
     async fn get(&self, key: &str) -> Result<Option<Record>> {
         self.0.get(key).await
     }
-    async fn reserve(&self, record: &Record, aliases: &[String]) -> Result<bool> {
-        self.0.reserve(record, aliases).await
+    async fn reserve(&self, record: &Record, aliases: &[String], token: &str) -> Result<bool> {
+        self.0.reserve(record, aliases, token).await
     }
     async fn save(&self, _: &Record, _: u64) -> Result<bool> {
         Err("offline".into())
     }
-    async fn readmit(&self, _: &Record, _: u64, _: &[String]) -> Result<bool> {
+    async fn readmit(&self, _: &Record, _: u64, _: &[String], _: &str) -> Result<bool> {
         Err("offline".into())
     }
     async fn records(&self) -> Result<Vec<Record>> {
@@ -698,13 +698,13 @@ impl store::Store for BrokenStore {
     async fn get(&self, _: &str) -> Result<Option<Record>> {
         Err("offline".into())
     }
-    async fn reserve(&self, _: &Record, _: &[String]) -> Result<bool> {
+    async fn reserve(&self, _: &Record, _: &[String], _: &str) -> Result<bool> {
         panic!("offline admission")
     }
     async fn save(&self, _: &Record, _: u64) -> Result<bool> {
         panic!("offline update")
     }
-    async fn readmit(&self, _: &Record, _: u64, _: &[String]) -> Result<bool> {
+    async fn readmit(&self, _: &Record, _: u64, _: &[String], _: &str) -> Result<bool> {
         panic!("offline readmission")
     }
     async fn records(&self) -> Result<Vec<Record>> {
@@ -1272,14 +1272,20 @@ impl store::Store for IdempotencyAliasOutage {
         }
         self.0.get(key).await
     }
-    async fn reserve(&self, record: &Record, aliases: &[String]) -> Result<bool> {
-        self.0.reserve(record, aliases).await
+    async fn reserve(&self, record: &Record, aliases: &[String], token: &str) -> Result<bool> {
+        self.0.reserve(record, aliases, token).await
     }
     async fn save(&self, record: &Record, previous_revision: u64) -> Result<bool> {
         self.0.save(record, previous_revision).await
     }
-    async fn readmit(&self, record: &Record, previous: u64, aliases: &[String]) -> Result<bool> {
-        self.0.readmit(record, previous, aliases).await
+    async fn readmit(
+        &self,
+        record: &Record,
+        previous: u64,
+        aliases: &[String],
+        token: &str,
+    ) -> Result<bool> {
+        self.0.readmit(record, previous, aliases, token).await
     }
     async fn records(&self) -> Result<Vec<Record>> {
         self.0.records().await
@@ -1581,10 +1587,63 @@ async fn nothing_is_released_once_a_transaction_may_have_left() {
     }
 }
 
-#[tokio::test]
+/// Holds each racer at its first read of the authorization until all of them
+/// have read it, so every one reaches `readmit` from the same abandoned
+/// revision and only the store's compare-and-set can pick a winner.
+struct RacingStart {
+    inner: store::MemoryStore,
+    authorization: String,
+    held: AtomicUsize,
+    start: tokio::sync::Barrier,
+}
+#[async_trait::async_trait]
+impl store::Store for RacingStart {
+    async fn get(&self, key: &str) -> Result<Option<Record>> {
+        let found = self.inner.get(key).await;
+        if key == self.authorization
+            && self
+                .held
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                .is_ok()
+        {
+            self.start.wait().await;
+        }
+        found
+    }
+    async fn reserve(&self, record: &Record, aliases: &[String], token: &str) -> Result<bool> {
+        self.inner.reserve(record, aliases, token).await
+    }
+    async fn save(&self, record: &Record, previous_revision: u64) -> Result<bool> {
+        self.inner.save(record, previous_revision).await
+    }
+    async fn readmit(
+        &self,
+        record: &Record,
+        previous: u64,
+        aliases: &[String],
+        token: &str,
+    ) -> Result<bool> {
+        self.inner.readmit(record, previous, aliases, token).await
+    }
+    async fn records(&self) -> Result<Vec<Record>> {
+        self.inner.records().await
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_release_racing_resends_of_the_same_authorization_admits_one_payment() {
+    const RACERS: usize = 20;
     for (network, body) in admitted_networks() {
-        let service = service_fixture();
+        let racing = Arc::new(RacingStart {
+            inner: store::MemoryStore::default(),
+            authorization: admitted(network, service_fixture(), async { auth_key(&body) }).await,
+            held: AtomicUsize::new(0),
+            start: tokio::sync::Barrier::new(RACERS),
+        });
+        let service = Arc::new(Service {
+            store: racing.clone(),
+            signing_key: Some(SigningKey::from_bytes(&[7; 32])),
+        });
         let (release, released) = tokio::sync::oneshot::channel::<()>();
         let owner = tokio::spawn({
             let (service, body) = (service.clone(), body.clone());
@@ -1611,9 +1670,11 @@ async fn a_release_racing_resends_of_the_same_authorization_admits_one_payment()
         .await;
         release.send(()).unwrap();
         assert_resend_safely(&owner.await.unwrap());
+        // Every racer reads the abandoned admission before any of them writes.
+        racing.held.store(RACERS, Ordering::SeqCst);
         let sends = Arc::new(AtomicUsize::new(0));
         let mut tasks = Vec::new();
-        for _ in 0..20 {
+        for _ in 0..RACERS {
             let (service, sends, body) = (service.clone(), sends.clone(), body.clone());
             tasks.push(tokio::spawn(admitted(network, service, async move {
                 settle(
@@ -1729,8 +1790,8 @@ impl store::Store for UnconfirmedReserve {
     async fn get(&self, key: &str) -> Result<Option<Record>> {
         self.inner.get(key).await
     }
-    async fn reserve(&self, record: &Record, aliases: &[String]) -> Result<bool> {
-        let landed = self.inner.reserve(record, aliases).await?;
+    async fn reserve(&self, record: &Record, aliases: &[String], token: &str) -> Result<bool> {
+        let landed = self.inner.reserve(record, aliases, token).await?;
         match self.answer {
             Some(answer) if landed => Ok(answer),
             None if landed => Err("receipt_store_timeout".into()),
@@ -1740,8 +1801,14 @@ impl store::Store for UnconfirmedReserve {
     async fn save(&self, record: &Record, previous_revision: u64) -> Result<bool> {
         self.inner.save(record, previous_revision).await
     }
-    async fn readmit(&self, record: &Record, previous: u64, aliases: &[String]) -> Result<bool> {
-        self.inner.readmit(record, previous, aliases).await
+    async fn readmit(
+        &self,
+        record: &Record,
+        previous: u64,
+        aliases: &[String],
+        token: &str,
+    ) -> Result<bool> {
+        self.inner.readmit(record, previous, aliases, token).await
     }
     async fn records(&self) -> Result<Vec<Record>> {
         self.inner.records().await
@@ -1841,6 +1908,90 @@ async fn failures_before_anything_is_sent_carry_retry_after_and_say_resending_is
                 assert_eq!(paid.status(), StatusCode::OK, "{answer:?}");
             })
             .await;
+    }
+}
+
+/// A write that lands and whose answer is lost, so it is sent again with the
+/// same token, as the AWS SDK retries it.
+struct LostAnswer {
+    inner: store::MemoryStore,
+    on: &'static str,
+}
+#[async_trait::async_trait]
+impl store::Store for LostAnswer {
+    async fn get(&self, key: &str) -> Result<Option<Record>> {
+        self.inner.get(key).await
+    }
+    async fn reserve(&self, record: &Record, aliases: &[String], token: &str) -> Result<bool> {
+        let first = self.inner.reserve(record, aliases, token).await?;
+        if self.on != "reserve" {
+            return Ok(first);
+        }
+        self.inner.reserve(record, aliases, token).await
+    }
+    async fn save(&self, record: &Record, previous_revision: u64) -> Result<bool> {
+        self.inner.save(record, previous_revision).await
+    }
+    async fn readmit(
+        &self,
+        record: &Record,
+        previous: u64,
+        aliases: &[String],
+        token: &str,
+    ) -> Result<bool> {
+        let first = self.inner.readmit(record, previous, aliases, token).await?;
+        if self.on != "readmit" {
+            return Ok(first);
+        }
+        self.inner.readmit(record, previous, aliases, token).await
+    }
+    async fn records(&self) -> Result<Vec<Record>> {
+        self.inner.records().await
+    }
+}
+
+/// A resent write keeps its success: the admission it made is run, never left
+/// in flight without an owner.
+#[tokio::test]
+async fn a_write_resent_after_its_answer_was_lost_keeps_its_success() {
+    for on in ["reserve", "readmit"] {
+        let service = Arc::new(Service {
+            store: Arc::new(LostAnswer {
+                inner: store::MemoryStore::default(),
+                on,
+            }),
+            signing_key: Some(SigningKey::from_bytes(&[7; 32])),
+        });
+        let sends = AtomicUsize::new(0);
+        TEST_SERVICE
+            .scope(service, async {
+                let lost = settle(
+                    &MockFacilitator { invalid: false },
+                    &HeaderMap::new(),
+                    &body(1),
+                    async { writer_lease_lost() },
+                )
+                .await;
+                let lost = value(lost).await;
+                assert_eq!(lost["error"], "writer_lease_unavailable", "{on}");
+                assert_eq!(lost["receipt"]["refusalReason"], RESERVATION_ABANDONED);
+                let paid = settle(
+                    &MockFacilitator { invalid: false },
+                    &HeaderMap::new(),
+                    &body(1),
+                    async {
+                        sends.fetch_add(1, Ordering::SeqCst);
+                        success()
+                    },
+                )
+                .await;
+                assert_eq!(paid.status(), StatusCode::OK, "{on}");
+                let paid = value(paid).await;
+                assert_eq!(paid["receipt"]["status"], "confirmed", "{on}");
+                assert_eq!(paid["receipt"]["receiptId"], lost["receipt"]["receiptId"]);
+            })
+            .await;
+        assert_eq!(sends.load(Ordering::SeqCst), 1, "{on}");
     }
 }
 

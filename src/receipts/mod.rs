@@ -1065,7 +1065,9 @@ where
     if service.sign(&mut candidate.receipt).is_err() {
         return Err(Box::new(unavailable("receipt_signing_unavailable")));
     }
-    match service.store.reserve(&candidate, keys).await {
+    // One fresh token per write: see `store::Store::reserve`.
+    let token = uuid::Uuid::new_v4().to_string();
+    match service.store.reserve(&candidate, keys, &token).await {
         Ok(true) => Ok(candidate),
         Ok(false) => {
             for key in keys {
@@ -1140,9 +1142,10 @@ where
     if service.sign(&mut candidate.receipt).is_err() {
         return Err(Box::new(unavailable("receipt_signing_unavailable")));
     }
+    let token = uuid::Uuid::new_v4().to_string();
     match service
         .store
-        .readmit(&candidate, abandoned.receipt.revision, &fresh)
+        .readmit(&candidate, abandoned.receipt.revision, &fresh, &token)
         .await
     {
         Ok(true) => {
@@ -1463,7 +1466,11 @@ pub(crate) async fn with_test_admission<F: Future>(f: F) -> TestAdmission<F::Out
     });
     let record = tests::fixture_record();
     let auth = format!("receipt:auth:v1:{}", record.receipt.authorization_id);
-    assert!(service.store.reserve(&record, &[auth]).await.unwrap());
+    assert!(service
+        .store
+        .reserve(&record, &[auth], "test")
+        .await
+        .unwrap());
     let admission = Admission::new(record);
     let output = TEST_SERVICE
         .scope(service, ACTIVE.scope(admission.clone(), f))

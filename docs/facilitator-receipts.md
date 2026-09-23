@@ -210,7 +210,9 @@ Failures before admission say the same: `receipt_store_unavailable`,
 `receipt_signing_unavailable` and `receipt_reservation_uncertain` are `503` with
 `Retry-After`, `retryable: true` and `safeToRetry: true`. A reservation whose
 store write could not be confirmed is never run; if it landed anyway it is
-released as above.
+released as above. Admission and re-admission writes carry a fresh idempotency
+token each, so a write the store client resends after losing its answer gets
+its original success back.
 
 ### Operator: admissions stranded by earlier releases
 
@@ -257,11 +259,13 @@ private lookup, storage outages and lost responses; replays with and without the
 admitting binding (settled, in flight, uncertain, concurrent) run on every
 admitted network, and so do released admissions: the same request taken back
 under the same receipt, only by its own binding, and one winner among
-concurrent resends. A test for each guard fails when a release follows prepared
+concurrent resends, which a store double holds at one revision so that only
+the compare-and-set can pick the winner. A test for each guard fails when a release follows prepared
 bytes, the send latch or a named transaction; an EVM test drives the real send
 path under an admission (lease lost: nothing sent or latched; sent: bytes stored
 first, then latched). Explicit local DynamoDB tests exercise transaction/CAS
-behavior, including readmission, using two store clients. The tests also
+behavior, including readmission and a write resent with its token, using two
+store clients. The tests also
 drive Base's exact path through admission (concurrency, EVM address
 normalization, requests that belong to other settlement paths, DynamoDB) while
 production keeps Base out of it. SDK tests cover

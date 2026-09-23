@@ -1,8 +1,9 @@
-# Recibos: una admisión que no envió nada se libera en su lugar, y la misma autorización se liquida (2.39.2)
+# Recibos: una admisión que no envió nada se libera en su lugar, y la misma autorización se liquida (2.39.3)
 
-> Encargo de c0der (task_94b55dcc193f), 2026-09-23. Rama `c0der/recibos-reserva-abandonada`
-> sobre `origin/main` @ `a7e818db` (2.39.1). Origen: auditoría de solo lectura de c0der
-> del mismo día (informe privado, puntos 1 y 4 del lado del facilitador).
+> Encargo de c0der (task_94b55dcc193f), 2026-09-23. Rama `c0der/recibos-reserva-abandonada`,
+> rebaseada en la ronda 2 sobre `origin/main` @ `0a237a90` (#99, 2.39.2); salió de
+> `a7e818db`. Origen: auditoría de solo lectura de c0der del mismo día (informe privado,
+> puntos 1 y 4 del lado del facilitador).
 
 ## Qué cambia
 
@@ -140,21 +141,46 @@ Mutaciones (hechas a mano y revertidas):
 - Cerrojo inerte (`sending()` no latchea) → rojo ese mismo test y
   `under_a_receipt_admission_only_a_send_that_never_started_can_be_released`.
 
-## Lo verificado (local, LF, nada contra producción)
+## Lo verificado (local, LF, nada contra producción; ronda 2, sobre `main` @ `0a237a90`)
 
 - `cargo build --locked --features solana,near,stellar,algorand,sui,xrpl,hedera`: OK.
-- `cargo test --locked -p x402-rs --features <las del CI> -- --test-threads=1`: 2642 passed,
-  0 failed, 27 ignored (lib 1262, bin 1315, integración 65).
+- `cargo test --locked -p x402-rs --features <las del CI> -- --test-threads=1`: 2688 passed,
+  0 failed, 31 ignored (lib 1284, bin 1338, integración 66).
 - `cargo test --locked -p x402-axum -p x402-reqwest -p x402-compliance -- --test-threads=1`:
   109 passed, 0 failed.
 - DynamoDB local (`amazon/dynamodb-local`, `DYNAMODB_LOCAL_URL=http://127.0.0.1:<port>`,
-  `--ignored receipts::store::integration`): 2 passed, 8 corridas seguidas verdes.
+  `--ignored receipts::store::integration`): 3 passed, 4 corridas seguidas verdes.
 - `cargo fmt`: `main` no está limpio; las líneas agregadas sí (rustfmt sobre el diff).
 - `cargo clippy --all-targets` con las features del CI: ningún aviso en líneas nuevas
   (los que quedan en `chain/mod.rs:82`, `receipts/mod.rs:297`, `evm.rs:1914/5773` son
   previos).
 - `verify_landing_canonical.py --offline`, `node --test tests/frontend-capabilities.test.cjs`,
   balances `unittest`: verdes. `llms-full.txt` regenerado y digest de `skill.md` al día.
+
+## Ronda 2 (refutación: MERGEABLE CON RONDA)
+
+- **Rebase** sobre `main` @ `0a237a90`: conflicto sólo en `CHANGELOG.md`; la sección de
+  este PR queda como 2.39.3 encima de la 2.39.2 de #99; `VERSION` 2.39.3.
+- **P2-2, la carrera no contendía.** El test de 20 reenvíos corría en `current_thread` y
+  la primera tarea re-admitía antes de que las otras leyeran nada: sacar el CAS de
+  `MemoryStore::readmit` lo dejaba verde. Ahora corre en `multi_thread` sobre un doble
+  (`RacingStart`) que retiene a cada corredor en su primera lectura de la autorización
+  hasta que los 20 la leyeron: todos llegan a `readmit` desde la misma revisión
+  abandonada. Con el CAS: 1 envío. Sin el CAS: **20 envíos, rojo**.
+- **P2-1, `client_request_token`.** `Store::reserve` y `Store::readmit` reciben un token
+  fresco por escritura lógica (`uuid` en `admit`/`readmit`, nunca derivado del registro:
+  dos reenvíos del mismo pago arman registros idénticos). `DynamoStore` lo manda en las
+  dos `TransactWriteItems`: si el SDK reenvía una escritura cuyo 2xx se perdió, DynamoDB
+  devuelve el éxito original (10 min) en vez de cancelarla contra su propia condición.
+  Antes, en `readmit`, eso daba `Ok(false)` y la re-admisión quedaba `unknown` sin dueño.
+  Pruebas: el doble `LostAnswer` reenvía la misma escritura con el mismo token (reserva y
+  re-admisión); `MemoryStore` modela la idempotencia. Sin el token en `MemoryStore`: rojo
+  (la re-admisión contesta 409 en vuelo, el síntoma exacto). Test unitario (corre en CI)
+  de que las dos transacciones llevan el token: sin él, rojo. DynamoDB local: la misma
+  reserva y la misma re-admisión reenviadas con su token devuelven éxito, con otro token
+  se rechazan; sin el token en `DynamoStore`, rojo.
+- Queda en el backlog de c0der, no acá: que los SDK lean `safeToRetry`; `/verify` de un
+  abandonado con OTRA request; Hedera después de `prepared_hedera`.
 
 ## Para c0der
 
@@ -200,7 +226,7 @@ después se re-admite; una autorización vencida simplemente no verifica.
 
 ### 2. Sonda de cierre
 
-1. `curl -s https://facilitator.ultravioletadao.xyz/version` → `2.39.2`.
+1. `curl -s https://facilitator.ultravioletadao.xyz/version` → `2.39.3`.
 2. `curl -s https://facilitator.ultravioletadao.xyz/api-docs/openapi.json | jq -r '.paths["/settle"].post.responses["503"].description' | grep -c reservation_abandoned` → `1`.
 3. `GET /receipts` → las mismas cuatro redes que antes (esto no anuncia Base).
 4. Tras escribir los ids del §1, repetir la lectura: ningún `would_release` de esos ids
@@ -209,10 +235,9 @@ después se re-admite; una autorización vencida simplemente no verifica.
    `fields @timestamp, @message | filter @message like /receipt admission released/ or @message like /taken back by the request/ | sort @timestamp desc`.
    Un "released" sin "taken back" posterior es un comprador que no reenvió (no es error).
 
-### 3. Coordinación de versión
+### 3. Versión
 
-El PR #99 (`c0der/residuos-2026-09-23`) también declara 2.39.2. Éste sale de `main` en
-2.39.1 como pide el encargo; el que se mergee segundo sube a 2.39.3 (VERSION y
+#99 se mergeó como 2.39.2; este PR se rebaseó encima y sale como 2.39.3 (VERSION y
 CHANGELOG; la doc no nombra la versión).
 
 ### 4. Fuera del alcance, anotado

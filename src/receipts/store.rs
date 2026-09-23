@@ -11,6 +11,17 @@ pub trait Store: Send + Sync {
     /// All aliases and the record are inserted atomically, or none are.
     async fn reserve(&self, record: &Record, aliases: &[String]) -> Result<bool>;
     async fn save(&self, record: &Record, previous_revision: u64) -> Result<bool>;
+    /// The record moves on from `previous_revision` and the new aliases are
+    /// inserted, atomically, or nothing is written. Only puts: aliases are
+    /// never deleted, so an admission keeps every binding it ever had.
+    async fn readmit(
+        &self,
+        record: &Record,
+        previous_revision: u64,
+        aliases: &[String],
+    ) -> Result<bool>;
+    /// Every receipt record. A full table scan, for the operator command only.
+    async fn records(&self) -> Result<Vec<Record>>;
 }
 
 pub struct DynamoStore {
@@ -26,9 +37,97 @@ mod integration {
         types::{AttributeDefinition, BillingMode, KeySchemaElement, KeyType, ScalarAttributeType},
     };
 
+    /// Readmission is one conditional transaction of puts: exactly one of many
+    /// concurrent resends wins the revision, only its new alias is written, a
+    /// stale revision or a taken alias writes nothing, and the operator scan
+    /// finds the receipt record and none of its aliases.
     #[tokio::test]
     #[ignore = "requires an explicitly configured local DynamoDB emulator"]
-    async fn local_dynamodb_atomic_admission_cas_and_no_ttl() {
+    async fn local_dynamodb_readmission_has_one_winner_and_the_scan_finds_receipts() {
+        let (client, table) = local_table().await;
+        let first = Arc::new(DynamoStore {
+            client: client.clone(),
+            table: table.clone(),
+        });
+        let second = Arc::new(DynamoStore {
+            client: client.clone(),
+            table: table.clone(),
+        });
+        let mut record = crate::receipts::tests::fixture_record();
+        let auth = "receipt:auth:v1:local-readmission".to_owned();
+        assert!(first
+            .reserve(&record, std::slice::from_ref(&auth))
+            .await
+            .unwrap());
+        record.receipt.revision = 2;
+        record.receipt.status = "rejected".into();
+        assert!(first.save(&record, 1).await.unwrap());
+        let mut tasks = vec![];
+        for n in 0..20 {
+            let store = if n % 2 == 0 {
+                first.clone()
+            } else {
+                second.clone()
+            };
+            let mut next = record.clone();
+            next.receipt.revision = 3;
+            next.receipt.status = "unknown".into();
+            let alias = format!("receipt:idem:v1:local-{n}");
+            tasks.push(tokio::spawn(async move {
+                let won = store
+                    .readmit(&next, 2, std::slice::from_ref(&alias))
+                    .await
+                    .unwrap();
+                (won, alias)
+            }));
+        }
+        let mut winners = vec![];
+        for task in tasks {
+            let (won, alias) = task.await.unwrap();
+            if won {
+                winners.push(alias);
+            }
+        }
+        assert_eq!(winners.len(), 1, "{winners:?}");
+        for n in 0..20 {
+            let alias = format!("receipt:idem:v1:local-{n}");
+            let found = second.get(&alias).await.unwrap();
+            assert_eq!(found.is_some(), alias == winners[0], "{alias}");
+        }
+        let stored = second.get(&auth).await.unwrap().unwrap();
+        assert_eq!(stored.receipt.revision, 3);
+        assert_eq!(stored.receipt.status, "unknown");
+        let mut stale = record.clone();
+        stale.receipt.revision = 3;
+        assert!(!first.readmit(&stale, 2, &[]).await.unwrap());
+        let mut next = stored.clone();
+        next.receipt.revision = 4;
+        assert!(!first
+            .readmit(&next, 3, std::slice::from_ref(&winners[0]))
+            .await
+            .unwrap());
+        assert_eq!(
+            second.get(&auth).await.unwrap().unwrap().receipt.revision,
+            3
+        );
+        let records = second.records().await.unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].receipt.receipt_id, record.receipt.receipt_id);
+        assert_eq!(records[0].receipt.revision, 3);
+        let rows = client.scan().table_name(&table).send().await.unwrap();
+        assert_eq!(rows.items().len(), 3, "record, authorization, one key");
+        for row in rows.items() {
+            assert!(!row.contains_key("ttl") && !row.contains_key("expires_at"));
+        }
+        client
+            .delete_table()
+            .table_name(&table)
+            .send()
+            .await
+            .unwrap();
+    }
+
+    async fn local_table() -> (aws_sdk_dynamodb::Client, String) {
         let endpoint = std::env::var("DYNAMODB_LOCAL_URL").expect("local emulator URL");
         assert!(
             endpoint.starts_with("http://127.0.0.1:")
@@ -63,6 +162,13 @@ mod integration {
             .send()
             .await
             .unwrap();
+        (client, table)
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an explicitly configured local DynamoDB emulator"]
+    async fn local_dynamodb_atomic_admission_cas_and_no_ttl() {
+        let (client, table) = local_table().await;
         let first = Arc::new(DynamoStore {
             client: client.clone(),
             table: table.clone(),
@@ -240,6 +346,86 @@ impl Store for DynamoStore {
             _ => Err("receipt_store_unavailable".into()),
         }
     }
+
+    async fn readmit(
+        &self,
+        record: &Record,
+        previous_revision: u64,
+        aliases: &[String],
+    ) -> Result<bool> {
+        let row = Put::builder()
+            .table_name(&self.table)
+            .set_item(Some(Self::item(record)?))
+            .condition_expression("revision = :previous")
+            .expression_attribute_values(":previous", A::N(previous_revision.to_string()))
+            .build()
+            .map_err(|_| "receipt_store_invalid_write")?;
+        let mut tx = self
+            .client
+            .transact_write_items()
+            .transact_items(TransactWriteItem::builder().put(row).build());
+        for key in aliases {
+            let alias = Put::builder()
+                .table_name(&self.table)
+                .set_item(Some(HashMap::from([
+                    ("idempotency_key".into(), A::S(key.clone())),
+                    (
+                        "receipt_ref".into(),
+                        A::S(record.receipt.receipt_id.clone()),
+                    ),
+                ])))
+                .condition_expression("attribute_not_exists(idempotency_key)")
+                .build()
+                .map_err(|_| "receipt_store_invalid_write")?;
+            tx = tx.transact_items(TransactWriteItem::builder().put(alias).build());
+        }
+        match tokio::time::timeout(Duration::from_secs(5), tx.send()).await {
+            Ok(Ok(_)) => Ok(true),
+            // A cancelled transaction wrote nothing: the revision moved on, an
+            // alias exists, or another transaction held one of the items.
+            Ok(Err(e))
+                if e.as_service_error()
+                    .is_some_and(|e| e.is_transaction_canceled_exception()) =>
+            {
+                Ok(false)
+            }
+            // Anything else may still have committed; the caller never runs
+            // under it and closes it again (`release_unrun`).
+            _ => Err("receipt_store_unavailable".into()),
+        }
+    }
+
+    async fn records(&self) -> Result<Vec<Record>> {
+        let mut records = Vec::new();
+        let mut start = None;
+        loop {
+            let page = tokio::time::timeout(
+                Duration::from_secs(30),
+                self.client
+                    .scan()
+                    .table_name(&self.table)
+                    .filter_expression("begins_with(idempotency_key, :prefix)")
+                    .expression_attribute_values(":prefix", A::S("receipt:v1:".into()))
+                    .consistent_read(true)
+                    .set_exclusive_start_key(start)
+                    .send(),
+            )
+            .await
+            .map_err(|_| "receipt_store_timeout")?
+            .map_err(|_| "receipt_store_unavailable")?;
+            for item in page.items() {
+                let data = item
+                    .get("data")
+                    .and_then(|v| v.as_s().ok())
+                    .ok_or("receipt_store_corrupt")?;
+                records.push(serde_json::from_str(data).map_err(|_| "receipt_store_corrupt")?);
+            }
+            start = page.last_evaluated_key().cloned();
+            if start.is_none() {
+                return Ok(records);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -281,5 +467,38 @@ impl Store for MemoryStore {
             }
         }
         Ok(true)
+    }
+    async fn readmit(
+        &self,
+        record: &Record,
+        previous_revision: u64,
+        aliases: &[String],
+    ) -> Result<bool> {
+        let mut rows = self.0.lock().await;
+        let key = format!("receipt:v1:{}", record.receipt.receipt_id);
+        if rows
+            .get(&key)
+            .is_none_or(|r| r.receipt.revision != previous_revision)
+            || aliases.iter().any(|a| rows.contains_key(a))
+        {
+            return Ok(false);
+        }
+        for row in rows.values_mut() {
+            if row.receipt.receipt_id == record.receipt.receipt_id {
+                *row = record.clone();
+            }
+        }
+        for alias in aliases {
+            rows.insert(alias.clone(), record.clone());
+        }
+        Ok(true)
+    }
+    async fn records(&self) -> Result<Vec<Record>> {
+        let rows = self.0.lock().await;
+        Ok(rows
+            .iter()
+            .filter(|(key, _)| key.starts_with("receipt:v1:"))
+            .map(|(_, record)| record.clone())
+            .collect())
     }
 }

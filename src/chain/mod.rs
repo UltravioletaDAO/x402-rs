@@ -205,7 +205,14 @@ impl Facilitator for NetworkProvider {
 
     async fn settle(&self, request: &SettleRequest) -> Result<SettleResponse, Self::Error> {
         match self {
-            NetworkProvider::Evm(provider) => provider.settle(request).await,
+            // Under a receipt admission, an EVM settlement that fails before
+            // `send_transaction_from` latched `receipts::sending` never left
+            // this process, and the admission can be released. After the latch
+            // this mark is ignored.
+            NetworkProvider::Evm(provider) => provider
+                .settle(request)
+                .await
+                .inspect_err(|_| crate::receipts::unsent("evm_settle")),
             NetworkProvider::Solana(provider) => provider.settle(request).await,
             NetworkProvider::Near(provider) => provider.settle(request).await,
             NetworkProvider::Stellar(provider) => provider.settle(request).await,

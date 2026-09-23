@@ -295,6 +295,9 @@ The original answer is replayed only with the `X-UVD-Purchase` or
 `Idempotency-Key` that admitted the payment; a resend without it answers
 `409 authorization_already_settled` or `409 authorization_in_flight` (verify:
 `isValid: false` with the same reason), never a repeated success.
+A `503` with `safeToRetry: true` and `Retry-After` sent nothing, and a receipt
+`rejected` with `refusalReason: reservation_abandoned` says the same: resend the
+same request after the delay; it is admitted again under the same receipt.
 Python `fetch_with_receipt` and TypeScript `fetchWithReceipt` return the original
 HTTP response plus receipt/payment state. Supply trusted issuer keys for offline
 signature verification. Live EURC acceptance was proven on Arc mainnet on
@@ -1218,6 +1221,9 @@ The original answer is replayed only with the `X-UVD-Purchase` or
 `Idempotency-Key` that admitted the payment; a resend without it answers
 `409 authorization_already_settled` or `409 authorization_in_flight` (verify:
 `isValid: false` with the same reason), never a repeated success.
+A `503` with `safeToRetry: true` and `Retry-After` sent nothing, and a receipt
+`rejected` with `refusalReason: reservation_abandoned` says the same: resend the
+same request after the delay; it is admitted again under the same receipt.
 Python `fetch_with_receipt` and TypeScript `fetchWithReceipt` return the original
 HTTP response plus receipt/payment state. Supply trusted issuer keys for offline
 signature verification. Live EURC acceptance was proven on Arc mainnet on

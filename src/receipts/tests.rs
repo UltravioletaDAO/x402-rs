@@ -121,6 +121,12 @@ impl store::Store for UpdateOutage {
     async fn save(&self, _: &Record, _: u64) -> Result<bool> {
         Err("offline".into())
     }
+    async fn readmit(&self, _: &Record, _: u64, _: &[String]) -> Result<bool> {
+        Err("offline".into())
+    }
+    async fn records(&self) -> Result<Vec<Record>> {
+        self.0.records().await
+    }
 }
 
 #[tokio::test]
@@ -142,7 +148,7 @@ async fn preparation_outage_blocks_broadcast_and_never_returns_an_unstored_revis
                             .is_err()
                     );
                     let current = ACTIVE.with(Arc::clone);
-                    assert!(current.lock().await.prepared.is_none());
+                    assert!(current.record.lock().await.prepared.is_none());
                     failure("preparation_unavailable", StatusCode::SERVICE_UNAVAILABLE)
                 },
             )
@@ -697,6 +703,12 @@ impl store::Store for BrokenStore {
     }
     async fn save(&self, _: &Record, _: u64) -> Result<bool> {
         panic!("offline update")
+    }
+    async fn readmit(&self, _: &Record, _: u64, _: &[String]) -> Result<bool> {
+        panic!("offline readmission")
+    }
+    async fn records(&self) -> Result<Vec<Record>> {
+        Err("offline".into())
     }
 }
 #[tokio::test]
@@ -1266,6 +1278,12 @@ impl store::Store for IdempotencyAliasOutage {
     async fn save(&self, record: &Record, previous_revision: u64) -> Result<bool> {
         self.0.save(record, previous_revision).await
     }
+    async fn readmit(&self, record: &Record, previous: u64, aliases: &[String]) -> Result<bool> {
+        self.0.readmit(record, previous, aliases).await
+    }
+    async fn records(&self) -> Result<Vec<Record>> {
+        self.0.records().await
+    }
 }
 
 #[tokio::test]
@@ -1304,4 +1322,699 @@ async fn a_store_fault_while_resolving_the_binding_is_no_verdict() {
         })
         .await;
     }
+}
+
+// --- Admissions that sent nothing ---------------------------------------------
+//
+// A settlement that ends after its reservation but before anything can leave
+// this process (writer lease handover, fill, signing, a prepared save) is not
+// uncertain. Its admission is released in place and the request it admitted
+// takes it back under the same receipt. Anything that may have sent stays
+// `unknown` and belongs to reconciliation.
+
+/// The EVM answer when this task lost its writer lease between routing and
+/// signing, after the provider said nothing was sent (`chain::NetworkProvider`).
+fn writer_lease_lost() -> Response {
+    unsent("evm_settle");
+    let mut lost = (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(json!({"error":"writer_lease_unavailable"})),
+    )
+        .into_response();
+    lost.headers_mut()
+        .insert(RETRY_AFTER, HeaderValue::from_static("5"));
+    lost
+}
+
+/// The same answer from a facilitator that did not know it had sent nothing.
+fn writer_lease_lost_unmarked() -> Response {
+    let mut lost = (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(json!({"error":"writer_lease_unavailable"})),
+    )
+        .into_response();
+    lost.headers_mut()
+        .insert(RETRY_AFTER, HeaderValue::from_static("5"));
+    lost
+}
+
+fn auth_key(body: &Bytes) -> String {
+    let request = parse_request(&HeaderMap::new(), body).unwrap();
+    let id = initial(&request, None, "settle")
+        .unwrap()
+        .receipt
+        .authorization_id;
+    format!("receipt:auth:v1:{id}")
+}
+
+async fn admission_reserved(service: &Service, body: &Bytes) {
+    let key = auth_key(body);
+    while service.store.get(&key).await.unwrap().is_none() {
+        tokio::task::yield_now().await;
+    }
+}
+
+fn assert_resend_safely(response: &Response) {
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert!(response.headers().contains_key("retry-after"));
+}
+
+#[tokio::test]
+async fn a_settlement_that_sent_nothing_releases_its_admission_and_the_same_request_settles() {
+    for (network, body) in admitted_networks() {
+        let sends = AtomicUsize::new(0);
+        admitted(network, service_fixture(), async {
+            let lost = settle(
+                &MockFacilitator { invalid: false },
+                &HeaderMap::new(),
+                &body,
+                async { writer_lease_lost() },
+            )
+            .await;
+            assert_resend_safely(&lost);
+            assert_eq!(lost.headers()["retry-after"], "5", "{network}");
+            assert!(!lost.headers().contains_key("idempotent-replayed"));
+            let lost = value(lost).await;
+            assert_eq!(lost["error"], "writer_lease_unavailable");
+            assert_eq!(lost["success"], false);
+            assert_eq!(lost["retryable"], true);
+            assert_eq!(lost["safeToRetry"], true);
+            assert!(lost.get("transaction").is_none());
+            let receipt = &lost["receipt"];
+            assert_eq!(receipt["status"], "rejected", "{network}");
+            assert_eq!(receipt["refusalReason"], RESERVATION_ABANDONED);
+            assert_eq!(receipt["diagnosticCode"], "writer_lease_unavailable");
+            assert_eq!(receipt["retry"], json!({"action":"resend","afterSeconds":5}));
+            assert!(receipt["settlement"].is_null());
+            // The authorization was never used: /verify simulates it again.
+            let verified = verify(&HeaderMap::new(), &body, async {
+                (
+                    StatusCode::OK,
+                    Json(json!({"isValid":true,"payer":"0x1111111111111111111111111111111111111111"})),
+                )
+                    .into_response()
+            })
+            .await;
+            assert_eq!(value(verified).await["isValid"], true, "{network}");
+            // The same bare request, resent, is admitted again and settles.
+            let paid = settle(
+                &MockFacilitator { invalid: false },
+                &HeaderMap::new(),
+                &body,
+                async {
+                    sends.fetch_add(1, Ordering::SeqCst);
+                    success_on(network)
+                },
+            )
+            .await;
+            assert_eq!(paid.status(), StatusCode::OK, "{network}");
+            let paid = value(paid).await;
+            assert_eq!(paid["receipt"]["status"], "confirmed", "{network}");
+            assert_eq!(paid["receipt"]["receiptId"], receipt["receiptId"]);
+            assert!(paid["receipt"]["revision"].as_u64() > receipt["revision"].as_u64());
+            let refused = settle_again(&HeaderMap::new(), &body).await;
+            assert_eq!(refused.status(), StatusCode::CONFLICT, "{network}");
+            assert_eq!(
+                value(refused).await["error"],
+                "authorization_already_settled"
+            );
+        })
+        .await;
+        assert_eq!(sends.load(Ordering::SeqCst), 1, "{network}");
+    }
+}
+
+#[tokio::test]
+async fn only_the_request_that_admitted_a_released_payment_takes_it_back() {
+    for (network, body) in admitted_networks() {
+        // X-UVD-Purchase. A resumed buyer SDK refuses a receipt with another
+        // id or a lower revision, so it must come back under the same one.
+        admitted(network, service_fixture(), async {
+            let lost = settle(
+                &MockFacilitator { invalid: false },
+                &headers(),
+                &body,
+                async { writer_lease_lost() },
+            )
+            .await;
+            assert_resend_safely(&lost);
+            let lost = value(lost).await;
+            for h in [HeaderMap::new(), purchase("cd")] {
+                let refused = settle_again(&h, &body).await;
+                assert_eq!(refused.status(), StatusCode::CONFLICT, "{network}");
+                let refused = value(refused).await;
+                assert_eq!(refused["error"], "receipt_request_conflict");
+                assert!(refused.get("receipt").is_none());
+            }
+            let paid = settle(
+                &MockFacilitator { invalid: false },
+                &headers(),
+                &body,
+                async { success_on(network) },
+            )
+            .await;
+            let paid = value(paid).await;
+            assert_eq!(paid["receipt"]["status"], "confirmed", "{network}");
+            assert_eq!(paid["receipt"]["receiptId"], lost["receipt"]["receiptId"]);
+            assert!(paid["receipt"]["revision"].as_u64() > lost["receipt"]["revision"].as_u64());
+            let replay = settle_again(&headers(), &body).await;
+            assert_eq!(replay.status(), StatusCode::OK, "{network}");
+            assert_eq!(value(replay).await, paid);
+        })
+        .await;
+        // Idempotency-Key. A resend under another key takes it back and binds
+        // that key as well; the key that admitted it first keeps its binding.
+        admitted(network, service_fixture(), async {
+            let lost = settle(
+                &MockFacilitator { invalid: false },
+                &keyed("first"),
+                &body,
+                async { writer_lease_lost() },
+            )
+            .await;
+            assert_resend_safely(&lost);
+            let paid = settle(
+                &MockFacilitator { invalid: false },
+                &keyed("second"),
+                &body,
+                async { success_on(network) },
+            )
+            .await;
+            assert_eq!(paid.status(), StatusCode::OK, "{network}");
+            let paid = value(paid).await;
+            for key in ["second", "first"] {
+                let replay = settle_again(&keyed(key), &body).await;
+                assert_eq!(replay.status(), StatusCode::OK, "{network} {key}");
+                assert_eq!(value(replay).await, paid, "{network} {key}");
+            }
+            let refused = settle_again(&HeaderMap::new(), &body).await;
+            assert_eq!(
+                value(refused).await["error"],
+                "authorization_already_settled"
+            );
+        })
+        .await;
+    }
+}
+
+/// Once a transaction may have left, no failure releases the admission. Each
+/// case below marks `unsent` too, as a provider bug would; it must not count.
+#[tokio::test]
+async fn nothing_is_released_once_a_transaction_may_have_left() {
+    let lost_response = || {
+        unsent("evm_settle");
+        (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({"error":"rpc_timeout"})),
+        )
+            .into_response()
+    };
+    for case in ["bytes prepared", "send latched", "transaction named"] {
+        let service = service_fixture();
+        TEST_SERVICE
+            .scope(service.clone(), async {
+                let answer = settle(
+                    &MockFacilitator { invalid: false },
+                    &HeaderMap::new(),
+                    &body(1),
+                    async {
+                        match case {
+                            "bytes prepared" => {
+                                prepared_evm(format!("0x{}", "22".repeat(32)), vec![1, 2, 3])
+                                    .await
+                                    .unwrap();
+                                lost_response()
+                            }
+                            "send latched" => {
+                                sending();
+                                lost_response()
+                            }
+                            _ => {
+                                unsent("evm_settle");
+                                (
+                                    StatusCode::BAD_GATEWAY,
+                                    Json(json!({"error":"settlement_unconfirmed",
+                                        "transaction":format!("0x{}", "33".repeat(32))})),
+                                )
+                                    .into_response()
+                            }
+                        }
+                    },
+                )
+                .await;
+                assert_eq!(answer.status(), StatusCode::BAD_GATEWAY, "{case}");
+                let answer = value(answer).await;
+                assert_ne!(answer["receipt"]["status"], "rejected", "{case}");
+                assert!(answer["receipt"]["refusalReason"].is_null(), "{case}");
+                assert!(answer.get("safeToRetry").is_none(), "{case}");
+                let refused = settle_again(&HeaderMap::new(), &body(1)).await;
+                assert_eq!(refused.status(), StatusCode::CONFLICT, "{case}");
+                assert_eq!(
+                    value(refused).await["error"],
+                    "authorization_in_flight",
+                    "{case}"
+                );
+                let stored = service.store.get(&auth_key(&body(1))).await.unwrap();
+                assert!(!is_abandoned(&stored.unwrap()), "{case}");
+            })
+            .await;
+    }
+}
+
+#[tokio::test]
+async fn a_release_racing_resends_of_the_same_authorization_admits_one_payment() {
+    for (network, body) in admitted_networks() {
+        let service = service_fixture();
+        let (release, released) = tokio::sync::oneshot::channel::<()>();
+        let owner = tokio::spawn({
+            let (service, body) = (service.clone(), body.clone());
+            admitted(network, service, async move {
+                settle(
+                    &MockFacilitator { invalid: false },
+                    &HeaderMap::new(),
+                    &body,
+                    async move {
+                        released.await.unwrap();
+                        writer_lease_lost()
+                    },
+                )
+                .await
+            })
+        });
+        admitted(network, service.clone(), async {
+            admission_reserved(&service, &body).await;
+            // Before the owner releases it, the authorization is in flight.
+            let refused = settle_again(&HeaderMap::new(), &body).await;
+            assert_eq!(refused.status(), StatusCode::CONFLICT, "{network}");
+            assert_eq!(value(refused).await["error"], "authorization_in_flight");
+        })
+        .await;
+        release.send(()).unwrap();
+        assert_resend_safely(&owner.await.unwrap());
+        let sends = Arc::new(AtomicUsize::new(0));
+        let mut tasks = Vec::new();
+        for _ in 0..20 {
+            let (service, sends, body) = (service.clone(), sends.clone(), body.clone());
+            tasks.push(tokio::spawn(admitted(network, service, async move {
+                settle(
+                    &MockFacilitator { invalid: false },
+                    &HeaderMap::new(),
+                    &body,
+                    async {
+                        sends.fetch_add(1, Ordering::SeqCst);
+                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                        success_on(network)
+                    },
+                )
+                .await
+            })));
+        }
+        let mut successes = 0;
+        for task in tasks {
+            let response = task.await.unwrap();
+            if response.status() == StatusCode::OK {
+                successes += 1;
+                continue;
+            }
+            assert_eq!(response.status(), StatusCode::CONFLICT, "{network}");
+            let error = value(response).await["error"].clone();
+            assert!(
+                error == "authorization_in_flight" || error == "authorization_already_settled",
+                "{network}: {error}"
+            );
+        }
+        assert_eq!(sends.load(Ordering::SeqCst), 1, "{network}");
+        assert_eq!(successes, 1, "{network}");
+    }
+}
+
+#[tokio::test]
+async fn the_operator_command_fences_a_settlement_still_holding_the_admission() {
+    let service = service_fixture();
+    let broadcasts = Arc::new(AtomicUsize::new(0));
+    let (release, released) = tokio::sync::oneshot::channel::<()>();
+    let owner = tokio::spawn(TEST_SERVICE.scope(service.clone(), {
+        let broadcasts = broadcasts.clone();
+        async move {
+            settle(
+                &MockFacilitator { invalid: false },
+                &HeaderMap::new(),
+                &body(1),
+                async move {
+                    released.await.unwrap();
+                    // The EVM order: store the signed bytes, only then send.
+                    if prepared_evm(format!("0x{}", "22".repeat(32)), vec![1, 2, 3])
+                        .await
+                        .is_err()
+                    {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(json!({"error":"contract_call_failed"})),
+                        )
+                            .into_response();
+                    }
+                    sending();
+                    broadcasts.fetch_add(1, Ordering::SeqCst);
+                    success()
+                },
+            )
+            .await
+        }
+    }));
+    admission_reserved(&service, &body(1)).await;
+    let options = admin::Options {
+        write: true,
+        receipt_ids: Vec::new(),
+        min_age_secs: 0,
+    };
+    let entries = admin::release_abandoned(&service, &options, now())
+        .await
+        .unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].action, "released");
+    release.send(()).unwrap();
+    let answer = owner.await.unwrap();
+    assert_eq!(
+        broadcasts.load(Ordering::SeqCst),
+        0,
+        "a fenced owner must not send"
+    );
+    assert_resend_safely(&answer);
+    let answer = value(answer).await;
+    assert_eq!(answer["receipt"]["refusalReason"], RESERVATION_ABANDONED);
+    TEST_SERVICE
+        .scope(service, async {
+            let paid = settle(
+                &MockFacilitator { invalid: false },
+                &HeaderMap::new(),
+                &body(1),
+                async { success() },
+            )
+            .await;
+            let paid = value(paid).await;
+            assert_eq!(paid["receipt"]["status"], "confirmed");
+            assert_eq!(paid["receipt"]["receiptId"], answer["receipt"]["receiptId"]);
+        })
+        .await;
+}
+
+/// A reservation the store reports as failed, although it landed: `Err`, or
+/// `Ok(false)` with the aliases visible, as `DynamoStore` does after a timeout.
+struct UnconfirmedReserve {
+    inner: store::MemoryStore,
+    answer: Option<bool>,
+}
+#[async_trait::async_trait]
+impl store::Store for UnconfirmedReserve {
+    async fn get(&self, key: &str) -> Result<Option<Record>> {
+        self.inner.get(key).await
+    }
+    async fn reserve(&self, record: &Record, aliases: &[String]) -> Result<bool> {
+        let landed = self.inner.reserve(record, aliases).await?;
+        match self.answer {
+            Some(answer) if landed => Ok(answer),
+            None if landed => Err("receipt_store_timeout".into()),
+            _ => Ok(false),
+        }
+    }
+    async fn save(&self, record: &Record, previous_revision: u64) -> Result<bool> {
+        self.inner.save(record, previous_revision).await
+    }
+    async fn readmit(&self, record: &Record, previous: u64, aliases: &[String]) -> Result<bool> {
+        self.inner.readmit(record, previous, aliases).await
+    }
+    async fn records(&self) -> Result<Vec<Record>> {
+        self.inner.records().await
+    }
+}
+
+#[tokio::test]
+async fn failures_before_anything_is_sent_carry_retry_after_and_say_resending_is_safe() {
+    async fn assert_safe(response: Response, code: &str) {
+        assert_resend_safely(&response);
+        assert_eq!(response.headers()["retry-after"], "2");
+        let body = value(response).await;
+        assert_eq!(body["error"], code);
+        assert_eq!(body["retryable"], true);
+        assert_eq!(body["safeToRetry"], true);
+        assert_eq!(body["success"], false);
+    }
+    // No receipt service on this instance, but a purchase context.
+    let answer = settle(
+        &MockFacilitator { invalid: false },
+        &headers(),
+        &body(1),
+        async { panic!("no receipt service must not send") },
+    )
+    .await;
+    assert_safe(answer, "receipt_store_unavailable").await;
+    // The store is down before admission.
+    let broken = Arc::new(Service {
+        store: Arc::new(BrokenStore),
+        signing_key: None,
+    });
+    TEST_SERVICE
+        .scope(broken, async {
+            let answer = settle(
+                &MockFacilitator { invalid: false },
+                &headers(),
+                &body(1),
+                async { panic!("storage outage allowed a send") },
+            )
+            .await;
+            assert_safe(answer, "receipt_store_unavailable").await;
+        })
+        .await;
+    // The store fails while resolving the binding of an admitted payment.
+    let aliases_down = Arc::new(Service {
+        store: Arc::new(IdempotencyAliasOutage(store::MemoryStore::default())),
+        signing_key: None,
+    });
+    TEST_SERVICE
+        .scope(aliases_down, async {
+            let paid = settle(
+                &MockFacilitator { invalid: false },
+                &keyed("purchase-9"),
+                &body(1),
+                async { success() },
+            )
+            .await;
+            assert_eq!(paid.status(), StatusCode::OK);
+            let verified = verify(&keyed("purchase-9"), &body(1), async {
+                panic!("an admitted authorization was simulated again")
+            })
+            .await;
+            assert_safe(verified, "receipt_store_unavailable").await;
+            let settled = settle_again(&keyed("purchase-9"), &body(1)).await;
+            assert_safe(settled, "receipt_store_unavailable").await;
+        })
+        .await;
+    // A reservation that landed although the store said otherwise never runs,
+    // and is released rather than left in flight: the resend settles.
+    for answer in [None, Some(false)] {
+        let service = Arc::new(Service {
+            store: Arc::new(UnconfirmedReserve {
+                inner: store::MemoryStore::default(),
+                answer,
+            }),
+            signing_key: Some(SigningKey::from_bytes(&[7; 32])),
+        });
+        TEST_SERVICE
+            .scope(service.clone(), async {
+                let unconfirmed = settle(
+                    &MockFacilitator { invalid: false },
+                    &HeaderMap::new(),
+                    &body(1),
+                    async { panic!("an unconfirmed reservation ran") },
+                )
+                .await;
+                assert_safe(unconfirmed, "receipt_store_unavailable").await;
+                let stored = service.store.get(&auth_key(&body(1))).await.unwrap();
+                assert!(is_abandoned(&stored.unwrap()), "{answer:?}");
+                let paid = settle(
+                    &MockFacilitator { invalid: false },
+                    &HeaderMap::new(),
+                    &body(1),
+                    async { success() },
+                )
+                .await;
+                assert_eq!(paid.status(), StatusCode::OK, "{answer:?}");
+            })
+            .await;
+    }
+}
+
+#[test]
+fn the_operator_command_reads_by_default_and_writes_only_when_asked() {
+    let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let id = "00000000-0000-4000-8000-000000000001";
+    assert_eq!(
+        admin::parse(&args(&["release-abandoned"])).unwrap(),
+        admin::Options {
+            write: false,
+            receipt_ids: vec![],
+            min_age_secs: 900
+        }
+    );
+    assert!(
+        !admin::parse(&args(&["release-abandoned", "--dry-run"]))
+            .unwrap()
+            .write
+    );
+    let written = admin::parse(&args(&[
+        "release-abandoned",
+        "--write",
+        "--receipt-id",
+        id,
+        "--min-age-secs",
+        "60",
+    ]))
+    .unwrap();
+    assert!(written.write);
+    assert_eq!(written.receipt_ids, vec![id.to_owned()]);
+    assert_eq!(written.min_age_secs, 60);
+    for bad in [
+        &["release-abandoned", "--dry-run", "--write"][..],
+        &["release-abandoned", "--receipt-id", "not-a-uuid"],
+        &["release-abandoned", "--receipt-id"],
+        &["release-abandoned", "--min-age-secs", "soon"],
+        &["release-abandoned", "--force"],
+        &["release"],
+        &[],
+    ] {
+        assert!(admin::parse(&args(bad)).is_err(), "{bad:?}");
+    }
+}
+
+#[tokio::test]
+async fn the_operator_command_releases_only_stranded_admissions_that_sent_nothing() {
+    let memory = Arc::new(store::MemoryStore::default());
+    let service = Arc::new(Service {
+        store: memory.clone(),
+        signing_key: Some(SigningKey::from_bytes(&[7; 32])),
+    });
+    let receipt_of = |answer: Value| answer["receipt"]["receiptId"].as_str().unwrap().to_owned();
+    let (stranded, prepared, settled, young, expired) = TEST_SERVICE
+        .scope(service.clone(), async {
+            // Stranded as facilitators before this release left them: the
+            // lease was lost after the reservation and nothing said so.
+            let mut ids = Vec::new();
+            for nonce in [1, 4, 5] {
+                let answer = settle(
+                    &MockFacilitator { invalid: false },
+                    &HeaderMap::new(),
+                    &body(nonce),
+                    async { writer_lease_lost_unmarked() },
+                )
+                .await;
+                let answer = value(answer).await;
+                assert_eq!(answer["receipt"]["status"], "unknown");
+                ids.push(receipt_of(answer));
+            }
+            let prepared = settle(
+                &MockFacilitator { invalid: false },
+                &HeaderMap::new(),
+                &body(2),
+                async {
+                    prepared_evm(format!("0x{}", "22".repeat(32)), vec![1, 2, 3])
+                        .await
+                        .unwrap();
+                    failure("response_lost", StatusCode::BAD_GATEWAY)
+                },
+            )
+            .await;
+            let settled = settle(
+                &MockFacilitator { invalid: false },
+                &HeaderMap::new(),
+                &body(3),
+                async { success() },
+            )
+            .await;
+            (
+                ids[0].clone(),
+                receipt_of(value(prepared).await),
+                receipt_of(value(settled).await),
+                ids[1].clone(),
+                ids[2].clone(),
+            )
+        })
+        .await;
+    let now = now();
+    for row in memory.0.lock().await.values_mut() {
+        if row.receipt.receipt_id == stranded {
+            row.receipt.issued_at = now - 3600;
+        }
+        if row.receipt.receipt_id == expired {
+            row.authorization_expires_at = now - 1;
+        }
+    }
+    let run = |write: bool| {
+        let service = service.clone();
+        async move {
+            let options = admin::Options {
+                write,
+                receipt_ids: Vec::new(),
+                min_age_secs: 900,
+            };
+            let entries = admin::release_abandoned(&service, &options, now)
+                .await
+                .unwrap();
+            entries
+                .into_iter()
+                .map(|e| (e.receipt_id, e.action))
+                .collect::<std::collections::HashMap<_, _>>()
+        }
+    };
+    let before = memory.0.lock().await.clone();
+    let dry = run(false).await;
+    assert_eq!(dry[&stranded], "would_release");
+    assert_eq!(dry[&expired], "would_release");
+    assert_eq!(dry[&young], "skip_too_recent");
+    assert_eq!(dry[&prepared], "skip_transaction_prepared");
+    assert_eq!(dry[&settled], "skip_not_unknown");
+    let after_dry_run = memory.0.lock().await.clone();
+    assert_eq!(
+        serde_json::to_value(before.values().collect::<Vec<_>>()).unwrap(),
+        serde_json::to_value(after_dry_run.values().collect::<Vec<_>>()).unwrap(),
+        "a dry run wrote"
+    );
+    let written = run(true).await;
+    assert_eq!(written[&stranded], "released");
+    assert_eq!(written[&expired], "released");
+    assert_eq!(written[&young], "skip_too_recent");
+    assert_eq!(written[&prepared], "skip_transaction_prepared");
+    assert_eq!(written[&settled], "skip_not_unknown");
+    assert_eq!(run(true).await[&stranded], "skip_not_unknown");
+    // Released: the same request settles, under the same receipt.
+    TEST_SERVICE
+        .scope(service.clone(), async {
+            let paid = settle(
+                &MockFacilitator { invalid: false },
+                &HeaderMap::new(),
+                &body(1),
+                async { success() },
+            )
+            .await;
+            let paid = value(paid).await;
+            assert_eq!(paid["receipt"]["status"], "confirmed");
+            assert_eq!(paid["receipt"]["receiptId"], stranded.as_str());
+        })
+        .await;
+    // Named records: a missing one is reported, and a record signed by
+    // another key is never re-signed with this one.
+    let other_key = Service {
+        store: memory.clone(),
+        signing_key: Some(SigningKey::from_bytes(&[9; 32])),
+    };
+    let options = admin::Options {
+        write: true,
+        receipt_ids: vec![young.clone(), "00000000-0000-4000-8000-000000000009".into()],
+        min_age_secs: 0,
+    };
+    let named = admin::release_abandoned(&other_key, &options, now)
+        .await
+        .unwrap();
+    assert_eq!(named[0].action, "skip_not_found");
+    assert_eq!(named[1].receipt_id, young);
+    assert_eq!(named[1].action, "skip_signing_key_mismatch");
 }

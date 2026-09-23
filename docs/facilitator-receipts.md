@@ -21,6 +21,7 @@ extension. A confirmed payment never proves delivery of the purchased resource.
 | pending | Transaction identified/prepared, outcome not final | Poll, or resend the same request with its context or Idempotency-Key |
 | confirmed | Provider returned successful chain settlement | Retrieve the merchant response; do not pay again |
 | rejected | Explicit validation rejection or failed chain settlement | Inspect refusalReason; do not silently create another purchase |
+| rejected, `refusalReason: reservation_abandoned` | The admission was released before any transaction existed; nothing was sent | Resend the same request after `retry.afterSeconds`; it is admitted again under the same receipt |
 | unknown | Missing outcome, including HTTP/RPC/storage uncertainty | Retain context and authorization; poll or replay exactly |
 
 `settlement.id` is an EVM transaction hash or native Hedera transaction ID.
@@ -148,6 +149,7 @@ signed payment alone is not a purchase binding:
 | No binding, payment `confirmed` | `409 authorization_already_settled` with the receipt | `isValid: false`, `invalidReason: authorization_already_settled` |
 | No binding, payment `pending` or `unknown` | `409 authorization_in_flight` with the receipt; a resend without the binding learns the final outcome by resending later | `isValid: false`, `invalidReason: authorization_in_flight` |
 | No binding, payment `rejected` | Original rejection replayed | Stored rejection |
+| Admission released, `reservation_abandoned` (any Idempotency-Key or none) | Admitted again under the same receipt; see "Admissions that sent nothing" | Verified as before, by simulation |
 | Another capability, or none for a payment made with one | `409 receipt_request_conflict`, no receipt | `isValid: false` with the reasons above, no receipt; a rejected payment is verified as before |
 
 These 409s never carry `success: true`, a top-level `transaction` or
@@ -173,13 +175,77 @@ native ID before its existing store can persist co-signed bytes and recover them
 Terminal receipt updates remove private EVM signed bytes. Native byte retention
 continues under the existing Hedera store policy.
 
-Known limits: an abandoned reservation before transaction preparation stays
-unknown and needs operator investigation; it does not automatically admit a
-replacement. Confirmed receipts reflect the provider's confirmation policy and
-are not a continuous reorg monitor. Receipt records have no automatic archival
-job yet. Key rotation requires retaining the previous public keys externally.
-An exact request conflicting with an existing purchase is refused with 409,
-without exposing that purchase's private receipt.
+### Admissions that sent nothing
+
+A settlement can end after its admission but before anything leaves the
+facilitator: the EVM writer lease moved between routing and signing, a read or
+gas estimate failed, the transaction could not be filled or signed, or its bytes
+could not be stored. That is not uncertainty, and it is no longer left
+`unknown`. The admission is released in place only when all of these hold:
+
+- the provider ended its settlement before its send latch (EVM: every failure of
+  the exact settle before `send_transaction_from` is about to broadcast; Hedera:
+  the save of the native transaction ID failed, before its own store or the
+  network). No failure after the latch can release anything;
+- no transaction bytes or ID were prepared, and the answer names no transaction;
+- the durable record is still at the revision this settlement admitted
+  (compare-and-set). Bytes stored by a write that looked failed, or any other
+  writer, make the close fail and the receipt stays as it was.
+
+The caller gets `503` with `Retry-After`, the provider's `error`, and
+`retryable: true`, `safeToRetry: true`, `success: false`. The receipt is
+`rejected` with `refusalReason: reservation_abandoned`, the provider's code in
+`diagnosticCode`, no `settlement`, and `retry: {"action": "resend",
+"afterSeconds": N}`. Resend the same request: it is verified again and admitted
+again under the SAME receipt at its next revision, so a client that stored the
+first receipt sees the same `receiptId` with a higher revision. Only the request
+that was admitted takes it back: the same purchase capability, or none if it
+had none; any Idempotency-Key it brings is bound as well, and the key that
+admitted it first keeps its binding. Another capability is still
+`409 receipt_request_conflict`. Concurrent resends race on the revision and
+exactly one is admitted; the rest are answered as resends of an admission in
+flight. Never sign a replacement for a released admission.
+
+Failures before admission say the same: `receipt_store_unavailable`,
+`receipt_signing_unavailable` and `receipt_reservation_uncertain` are `503` with
+`Retry-After`, `retryable: true` and `safeToRetry: true`. A reservation whose
+store write could not be confirmed is never run; if it landed anyway it is
+released as above.
+
+### Operator: admissions stranded by earlier releases
+
+Earlier releases left such admissions `unknown` with nothing prepared, and a
+process that dies between admission and send can still leave one. The
+facilitator binary closes them exactly as the settle path does, signed with the
+service key and with the same revision compare-and-set, so a settlement still
+holding the admission can no longer store bytes and never sends:
+
+```bash
+x402-rs receipts release-abandoned                 # read-only (also --dry-run)
+x402-rs receipts release-abandoned --write --receipt-id <uuid> [--receipt-id <uuid>]...
+```
+
+It selects settle records that are `unknown`, have no prepared bytes and no
+settlement, and are older than `--min-age-secs` (default 900) or whose
+authorization has expired. It prints one JSON line per record (`would_release`,
+`released`, or a `skip_*` reason) and a summary; nothing private. Without
+`--receipt-id` it scans the table (`dynamodb:Scan`, which the service role does
+not have): run the read-only pass with operator credentials, for example
+`IDEMPOTENCY_TABLE_NAME=idempotency_records AWS_REGION=us-east-2 cargo run --locked -- receipts release-abandoned`.
+Writing needs `RECEIPT_SIGNING_KEY` and refuses a record signed by another key,
+so run `--write` with the listed ids as a one-off task of the service's own task
+definition (container `facilitator`, `command` override
+`["receipts","release-abandoned","--write","--receipt-id","<uuid>"]`), where the
+key never leaves the task; its output goes to the service's log group. A
+released authorization that has expired simply fails verification when resent.
+
+Known limits: a process that dies between admission and send leaves its
+admission `unknown` until the operator command closes it. Confirmed receipts
+reflect the provider's confirmation policy and are not a continuous reorg
+monitor. Receipt records have no automatic archival job yet. Key rotation
+requires retaining the previous public keys externally. An exact request
+conflicting with an existing purchase is refused with 409, without exposing
+that purchase's private receipt.
 
 ## Validation scope
 
@@ -189,8 +255,13 @@ from its synthetic inputs. `GET /receipts` remains the list of admitted networks
 Rust tests cover concurrent admission, restart, invalid signatures, conflicts,
 private lookup, storage outages and lost responses; replays with and without the
 admitting binding (settled, in flight, uncertain, concurrent) run on every
-admitted network; an explicit local DynamoDB
-test exercises transaction/CAS behavior using two store clients. The tests also
+admitted network, and so do released admissions: the same request taken back
+under the same receipt, only by its own binding, and one winner among
+concurrent resends. A test for each guard fails when a release follows prepared
+bytes, the send latch or a named transaction; an EVM test drives the real send
+path under an admission (lease lost: nothing sent or latched; sent: bytes stored
+first, then latched). Explicit local DynamoDB tests exercise transaction/CAS
+behavior, including readmission, using two store clients. The tests also
 drive Base's exact path through admission (concurrency, EVM address
 normalization, requests that belong to other settlement paths, DynamoDB) while
 production keeps Base out of it. SDK tests cover

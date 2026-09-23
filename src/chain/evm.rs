@@ -1101,8 +1101,12 @@ impl EvmProvider {
                 let signed = envelope.encoded_2718();
                 let hash = alloy::primitives::keccak256(&signed).to_string();
                 crate::receipts::prepared_evm(hash, signed.clone()).await.map_err(FacilitatorLocalError::ContractCall)?;
+                // Latched BEFORE the send: from here no failure can release the
+                // receipt admission, whatever the node answers.
+                crate::receipts::sending();
                 self.inner.send_raw_transaction(&signed).await
             } else {
+                crate::receipts::sending();
                 self.inner.send_transaction(txr).await
             };
 
@@ -4422,8 +4426,14 @@ mod settlement_unconfirmed_tests {
         }
     }
 
+    /// Every `eth_sendRawTransaction` any mock of this module has answered.
+    static RAW_SENDS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
     async fn rpc(AxumJson(body): AxumJson<Value>) -> AxumJson<Value> {
         let one = |req: &Value| {
+            if req.get("method").and_then(Value::as_str) == Some("eth_sendRawTransaction") {
+                RAW_SENDS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
             json!({
                 "jsonrpc": "2.0",
                 "id": req.get("id").cloned().unwrap_or(json!(1)),
@@ -4497,6 +4507,113 @@ mod settlement_unconfirmed_tests {
              transport before the timeout ever ran, so the fixture is not exercising the \
              timeout path it claims to",
         );
+    }
+
+    fn meta_transaction() -> MetaTransaction {
+        MetaTransaction {
+            authorization_list: None,
+            to: address!("0000000000000000000000000000000000000001"),
+            calldata: Bytes::from_static(&[0u8; 4]),
+            confirmations: 1,
+        }
+    }
+
+    /// Under a receipt admission the send path says, through the real hooks,
+    /// whether anything left: a lost writer lease sends nothing and latches
+    /// nothing, so the admission can be released; a send stores its bytes
+    /// first and latches, after which no failure releases it.
+    #[tokio::test]
+    async fn under_a_receipt_admission_only_a_send_that_never_started_can_be_released() {
+        use std::sync::atomic::Ordering;
+        let url = spawn_rpc().await;
+        std::env::set_var("TX_RECEIPT_TIMEOUT_SECS", "1");
+        let provider = EvmProvider::try_new(
+            EthereumWallet::from(PrivateKeySigner::random()),
+            &url,
+            false,
+            Network::Base,
+        )
+        .await
+        .expect("provider");
+
+        let sends_before = RAW_SENDS.load(Ordering::SeqCst);
+        crate::writer_lease::set_writer_for_test(false);
+        let lost = crate::receipts::with_test_admission(async {
+            provider.send_transaction(meta_transaction()).await
+        })
+        .await;
+        crate::writer_lease::set_writer_for_test(true);
+        assert!(
+            matches!(
+                lost.output,
+                Err(FacilitatorLocalError::WriterLeaseUnavailable(_))
+            ),
+            "{:?}",
+            lost.output
+        );
+        assert_eq!(RAW_SENDS.load(Ordering::SeqCst), sends_before);
+        assert!(!lost.latched);
+        assert!(lost.prepared.is_none());
+
+        let sent = crate::receipts::with_test_admission(async {
+            let result = provider.send_transaction(meta_transaction()).await;
+            // What the dispatch does with any error: after the latch, ignored.
+            crate::receipts::unsent("evm_settle");
+            result
+        })
+        .await;
+        std::env::remove_var("TX_RECEIPT_TIMEOUT_SECS");
+        assert!(
+            matches!(
+                sent.output,
+                Err(FacilitatorLocalError::SettlementUnconfirmed(..))
+            ),
+            "{:?}",
+            sent.output
+        );
+        assert_eq!(RAW_SENDS.load(Ordering::SeqCst), sends_before + 1);
+        assert!(sent.latched);
+        assert!(sent.prepared.is_some(), "bytes are stored before the send");
+        assert_eq!(sent.unsent, None, "a mark after the latch released a send");
+    }
+
+    /// The production wiring: `NetworkProvider` marks any EVM settle error.
+    #[tokio::test]
+    async fn an_evm_settle_error_before_the_send_is_marked_unsent() {
+        use crate::facilitator::Facilitator as _;
+        let url = spawn_rpc().await;
+        let provider = EvmProvider::try_new(
+            EthereumWallet::from(PrivateKeySigner::random()),
+            &url,
+            false,
+            Network::Base,
+        )
+        .await
+        .expect("provider");
+        let request: SettleRequest = serde_json::from_value(json!({
+            "x402Version":1,
+            "paymentPayload":{"x402Version":1,"scheme":"exact","network":"base","payload":{
+                "signature":format!("0x{}", "11".repeat(65)),"authorization":{
+                    "from":"0x1111111111111111111111111111111111111111",
+                    "to":"0x2222222222222222222222222222222222222222",
+                    "value":"1000","validAfter":"0","validBefore":"2000000000",
+                    "nonce":format!("0x{}", "01".repeat(32))}}},
+            "paymentRequirements":{"scheme":"exact","network":"base","maxAmountRequired":"1000",
+                "resource":"https://merchant.example/data","description":"fixture",
+                "mimeType":"application/json","payTo":"0x2222222222222222222222222222222222222222",
+                "maxTimeoutSeconds":60,"asset":"0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+                "extra":{"name":"USD Coin","version":"2"}}
+        }))
+        .unwrap();
+        let settled = crate::receipts::with_test_admission(async {
+            crate::chain::NetworkProvider::Evm(provider)
+                .settle(&request)
+                .await
+        })
+        .await;
+        assert!(settled.output.is_err());
+        assert_eq!(settled.unsent, Some("evm_settle"));
+        assert!(!settled.latched);
     }
 }
 

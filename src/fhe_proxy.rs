@@ -121,14 +121,33 @@ pub enum FheProxyError {
     #[error("HTTP request failed: {0}")]
     HttpError(#[from] reqwest::Error),
 
-    #[error("FHE facilitator returned error: {0}")]
-    FacilitatorError(String),
+    #[error("FHE facilitator returned error: {body}")]
+    FacilitatorError { status: u16, body: String },
 
     #[error("Invalid response from FHE facilitator: {0}")]
     InvalidResponse(String),
 
     #[error("FHE facilitator unavailable")]
     Unavailable,
+}
+
+impl FheProxyError {
+    /// Whether a settle that failed with this error may still have been
+    /// settled by the FHE facilitator, which broadcasts on its own side.
+    ///
+    /// Only a request that never left (no connection, never built), a refusal
+    /// the facilitator answered with a 4xx, and a proxy that is not configured
+    /// prove it did not. A timeout, a dropped connection, a 5xx (a gateway
+    /// timing out while the facilitator keeps running) or a success that does
+    /// not parse all leave the settlement possibly done.
+    pub fn may_have_settled(&self) -> bool {
+        match self {
+            FheProxyError::HttpError(e) => !(e.is_connect() || e.is_builder()),
+            FheProxyError::FacilitatorError { status, .. } => *status >= 500,
+            FheProxyError::InvalidResponse(_) => true,
+            FheProxyError::Unavailable => false,
+        }
+    }
 }
 
 impl FheProxy {
@@ -205,7 +224,10 @@ impl FheProxy {
                 body = %response_text,
                 "FHE facilitator verify failed"
             );
-            Err(FheProxyError::FacilitatorError(response_text))
+            Err(FheProxyError::FacilitatorError {
+                status: status.as_u16(),
+                body: response_text,
+            })
         }
     }
 
@@ -241,7 +263,10 @@ impl FheProxy {
                 body = %response_text,
                 "FHE facilitator settle failed"
             );
-            Err(FheProxyError::FacilitatorError(response_text))
+            Err(FheProxyError::FacilitatorError {
+                status: status.as_u16(),
+                body: response_text,
+            })
         }
     }
 }

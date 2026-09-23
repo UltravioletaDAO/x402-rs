@@ -183,6 +183,9 @@ not on the failure.
   has either an argument here or no equivalent at all.
 - **An ambiguous settle is not a failed settle.** A timeout means the
   transaction may already be on its way. Retry with the same `idempotencyKey`.
+- **`retryable: false` means stop.** A settle failure whose body says
+  `"retryable": false` or names a `transaction` may already be on chain: do not
+  retry it and never sign a new authorization; look the transaction up.
 - **`isValid: false` is not always permanent.** A bad signature is; an
   unreachable RPC is not. Read `errorReason`.
 - **Do not hard-code a network count** from this document or any other.
@@ -219,6 +222,9 @@ The original answer is replayed only with the `X-UVD-Purchase` or
 A `503` with `safeToRetry: true` and `Retry-After` sent nothing, and a receipt
 `rejected` with `refusalReason: reservation_abandoned` says the same: resend the
 same request after the delay; it is admitted again under the same receipt.
+A failure after the send latched or its bytes were prepared is the opposite: it
+carries `retryable: false`, no `Retry-After`, the prepared `transaction` and its
+`paymentId`; poll the receipt, never sign a replacement.
 Python `fetch_with_receipt` and TypeScript `fetchWithReceipt` return the original
 HTTP response plus receipt/payment state. Supply trusted issuer keys for offline
 signature verification. Live EURC acceptance was proven on Arc mainnet on

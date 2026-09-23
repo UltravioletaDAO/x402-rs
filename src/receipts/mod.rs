@@ -153,6 +153,11 @@ impl Admission {
         let state = self.sending();
         state.unsent.filter(|_| !state.latched)
     }
+
+    /// Whether the provider reached the point where a transaction may leave.
+    fn latched(&self) -> bool {
+        self.sending().latched
+    }
 }
 
 pub fn hash(bytes: &[u8]) -> String {
@@ -486,6 +491,11 @@ pub fn document_api(api: &mut utoipa::openapi::OpenApi) {
                 .unwrap_or("")
                 .to_owned();
             operation["responses"]["503"]["description"] = json!(format!("{unavailable}\n\nOn the receipt rail, a 503 with `safeToRetry: true` and `Retry-After` sent nothing: receipt storage or signing failed before admission (`receipt_store_unavailable`, `receipt_signing_unavailable`, `receipt_reservation_uncertain`), or the admission was released before any transaction existed (receipt `rejected` with `refusalReason: reservation_abandoned`). Resend the same request; it is admitted again under the same receipt. Never sign a replacement."));
+            let gateway = operation["responses"]["502"]["description"]
+                .as_str()
+                .unwrap_or("")
+                .to_owned();
+            operation["responses"]["502"]["description"] = json!(format!("{gateway}\n\nOn the receipt rail, a failure answered after the send latched or its bytes were prepared, and `receipt_response_unreadable` once the settlement ran, carry `retryable: false`, no `Retry-After`, the prepared `transaction` with its `paymentId`, and the receipt (`status: unknown`). Poll the receipt or resend the same request with the binding that admitted it; never sign a replacement."));
         }
     }
     for (path, summary) in [
@@ -581,17 +591,64 @@ fn resend_later(record: &Record) -> Response {
     response
 }
 
+/// Whether a transaction may have left under this admission: the provider
+/// latched its send, bytes were prepared, or a transaction was named.
+fn may_have_sent(record: &Record, latched: bool) -> bool {
+    latched || record.prepared.is_some() || record.receipt.settlement.is_some()
+}
+
+/// Rewrites a failure answered after a transaction may have left, so that it
+/// says so: `retryable: false`, and the transaction and its `paymentId` when
+/// the admission knows them and the answer did not name them. A client reads a
+/// `5xx` that says neither as transient and resends; for a payment that did
+/// mine, that resend fails verification and the buyer signs a second one.
+fn not_retryable(body: &mut Value, record: &Record) {
+    if !body.is_object() {
+        *body = json!({"success": false, "error": "settlement_unconfirmed"});
+    }
+    body["retryable"] = json!(false);
+    let named = body
+        .get("transaction")
+        .and_then(Value::as_str)
+        .is_some_and(|tx| !tx.is_empty());
+    if named {
+        return;
+    }
+    let settlement = record.receipt.settlement.as_ref();
+    let Some(tx) = settlement.and_then(|s| s.get("id")).and_then(Value::as_str) else {
+        return;
+    };
+    body["transaction"] = json!(tx);
+    if let Some(network) = Network::from_caip2(&record.receipt.network) {
+        body["paymentId"] = json!(crate::dx402::payment_id(network, tx));
+    }
+}
+
 async fn finish(
     service: &Service,
     record: &mut Record,
     raw: Response,
     durable: bool,
     unsent: Option<&'static str>,
+    latched: bool,
 ) -> Response {
     let durable_before = record.clone();
     let (mut parts, body) = raw.into_parts();
     let bytes = match to_bytes(body, 65536).await {
         Ok(bytes) => bytes,
+        // The settlement ran and its answer is gone. When a transaction may
+        // have left, the caller is not invited to retry: it gets the receipt
+        // and the transaction, if one was prepared, to look up.
+        Err(_) if durable && may_have_sent(record, latched) => {
+            let mut body = json!({
+                "success": false,
+                "error": "receipt_response_unreadable",
+                "safeToReplay": false,
+            });
+            not_retryable(&mut body, record);
+            body["receipt"] = serde_json::to_value(&record.receipt).unwrap();
+            return (StatusCode::BAD_GATEWAY, Json(body)).into_response();
+        }
         Err(_) => return failure("receipt_response_unreadable", StatusCode::BAD_GATEWAY),
     };
     let value: Value = match serde_json::from_slice(&bytes) {
@@ -658,6 +715,20 @@ async fn finish(
         if let Some(prepared) = record.prepared.as_mut().and_then(Value::as_object_mut) {
             prepared.remove("signedTransaction");
         }
+    }
+    // A transaction may have left and the chain has given no verdict: the
+    // failure says so, whatever the provider's own body said, and carries no
+    // invitation to retry. The stored answer is the same one, so a bound
+    // resend is told the same thing.
+    let mut value = value;
+    if durable
+        && record.receipt.status == "unknown"
+        && !parts.status.is_success()
+        && may_have_sent(record, latched)
+    {
+        not_retryable(&mut value, record);
+        record.response = value.clone();
+        parts.headers.remove(RETRY_AFTER);
     }
     // Nothing left this process: the provider ended the settlement before its
     // send latch, no bytes were prepared and its answer names no transaction.
@@ -786,7 +857,7 @@ pub async fn verify<F: Future<Output = Response>>(
             return (StatusCode::OK, Json(body)).into_response();
         }
     }
-    finish(&service, &mut record, call.await, false, None).await
+    finish(&service, &mut record, call.await, false, None, false).await
 }
 
 fn aliases(record: &Record, headers: &HeaderMap) -> Vec<String> {
@@ -1030,7 +1101,7 @@ where
         Err(error) => Some(error.into_response()),
     };
     if let Some(failure) = verification_failure {
-        return finish(&service, &mut candidate, failure, false, None).await;
+        return finish(&service, &mut candidate, failure, false, None, false).await;
     }
     let keys = aliases(&candidate, headers);
     let admitted = match abandoned {
@@ -1046,8 +1117,9 @@ where
     let admission = Admission::new(record);
     let result = ACTIVE.scope(admission.clone(), call).await;
     let unsent = admission.unsent();
+    let latched = admission.latched();
     let mut record = admission.record.lock().await;
-    finish(&service, &mut record, result, true, unsent).await
+    finish(&service, &mut record, result, true, unsent, latched).await
 }
 
 /// Reserves a new admission: the record and every alias atomically, or none.

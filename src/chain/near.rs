@@ -781,12 +781,28 @@ impl NearProvider {
             "Submitting NEP-366 meta-transaction (relayer pays gas)"
         );
 
+        // The hash exists before the transaction leaves. A submission that
+        // fails without the node refusing it may still execute, and then the
+        // caller gets this hash to look up rather than a failure to retry.
+        let tx_hash = signed_tx.get_hash();
+
         // Submit the transaction
         let request = methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest {
             signed_transaction: signed_tx,
         };
 
         let response = self.rpc_client.call(request).await.map_err(|e| {
+            if submission_may_have_landed(&e) {
+                tracing::warn!(
+                    %tx_hash,
+                    error = %crate::redact::scrub_urls(&e.to_string()),
+                    "NEAR submission outcome unknown; the meta-transaction may still execute"
+                );
+                return FacilitatorLocalError::SettlementUnconfirmed(
+                    TransactionHash::Near(tx_hash.0),
+                    self.network(),
+                );
+            }
             FacilitatorLocalError::ContractCall(format!("Failed to submit meta-transaction: {e}"))
         })?;
 
@@ -804,6 +820,50 @@ impl NearProvider {
         );
 
         Ok(response.transaction.hash)
+    }
+}
+
+/// Whether a failed `broadcast_tx_commit` may still have executed.
+///
+/// The node refused it when it answered that the transaction is invalid, that
+/// it cannot judge it (`DoesNotTrackShard`) or that the request itself was
+/// malformed, and a provider that answered 401/429/400 never forwarded it. A
+/// request never serialized or never connected did not leave. Everything else
+/// -- the node's own timeout (the transaction is executing), a routed request,
+/// a node at its limits, a lost or unreadable answer, a gateway 5xx -- can end
+/// executed.
+fn submission_may_have_landed(
+    error: &near_jsonrpc_client::errors::JsonRpcError<
+        methods::broadcast_tx_commit::RpcTransactionError,
+    >,
+) -> bool {
+    use methods::broadcast_tx_commit::RpcTransactionError;
+    use near_jsonrpc_client::errors::{
+        JsonRpcError, JsonRpcServerError, JsonRpcServerResponseStatusError,
+        JsonRpcTransportSendError, RpcTransportError,
+    };
+    match error {
+        JsonRpcError::TransportError(RpcTransportError::SendError(send)) => match send {
+            JsonRpcTransportSendError::PayloadSerializeError(_) => false,
+            JsonRpcTransportSendError::PayloadSendError(e) => !(e.is_connect() || e.is_builder()),
+        },
+        JsonRpcError::TransportError(RpcTransportError::RecvError(_)) => true,
+        JsonRpcError::ServerError(server) => match server {
+            JsonRpcServerError::HandlerError(
+                RpcTransactionError::InvalidTransaction { .. }
+                | RpcTransactionError::DoesNotTrackShard,
+            ) => false,
+            JsonRpcServerError::HandlerError(_) => true,
+            JsonRpcServerError::RequestValidationError(_) => false,
+            JsonRpcServerError::ResponseStatusError(
+                JsonRpcServerResponseStatusError::Unauthorized
+                | JsonRpcServerResponseStatusError::TooManyRequests
+                | JsonRpcServerResponseStatusError::BadRequest,
+            ) => false,
+            JsonRpcServerError::ResponseStatusError(_)
+            | JsonRpcServerError::InternalError { .. }
+            | JsonRpcServerError::NonContextualError(_) => true,
+        },
     }
 }
 
@@ -883,6 +943,14 @@ impl Facilitator for NearProvider {
             .await
         {
             Ok(hash) => hash,
+            // Submitted with no verdict is not a failed settlement: reported as
+            // `success: false` with no transaction, it tells the caller the
+            // payment did not happen. It travels as an error so `IntoResponse`
+            // answers `502 settlement_unconfirmed` with the hash.
+            Err(e @ FacilitatorLocalError::SettlementUnconfirmed(..)) => {
+                tracing::error!(error = %e, "NEAR settle: meta-transaction submitted, no verdict");
+                return Err(e);
+            }
             Err(e) => {
                 tracing::error!(error = %e, "Failed to submit NEAR meta-transaction");
                 return Ok(SettleResponse {
@@ -1295,5 +1363,66 @@ mod replay_verify_bound_tests {
             matches!(&result, Err(FacilitatorLocalError::ContractCall(msg)) if msg.contains("timed out")),
             "got {result:?}"
         );
+    }
+}
+
+/// Which failed submissions may still execute. Only a refusal proves it did
+/// not; the node's own timeout means the transaction is executing.
+#[cfg(test)]
+mod submission_outcome_tests {
+    use super::*;
+    use methods::broadcast_tx_commit::RpcTransactionError;
+    use near_jsonrpc_client::errors::{
+        JsonRpcError, JsonRpcServerError, JsonRpcServerResponseStatusError,
+    };
+    use near_jsonrpc_primitives::errors::RpcRequestValidationErrorKind;
+
+    fn server(error: JsonRpcServerError<RpcTransactionError>) -> JsonRpcError<RpcTransactionError> {
+        JsonRpcError::ServerError(error)
+    }
+
+    #[test]
+    fn only_a_refusal_proves_a_submission_never_executed() {
+        let refused = [
+            server(JsonRpcServerError::HandlerError(
+                RpcTransactionError::InvalidTransaction {
+                    context: near_primitives::errors::InvalidTxError::Expired,
+                },
+            )),
+            server(JsonRpcServerError::HandlerError(
+                RpcTransactionError::DoesNotTrackShard,
+            )),
+            server(JsonRpcServerError::RequestValidationError(
+                RpcRequestValidationErrorKind::ParseError {
+                    error_message: "bad params".into(),
+                },
+            )),
+            server(JsonRpcServerError::ResponseStatusError(
+                JsonRpcServerResponseStatusError::TooManyRequests,
+            )),
+        ];
+        for error in &refused {
+            assert!(!submission_may_have_landed(error), "{error:?}");
+        }
+        let unknown = [
+            server(JsonRpcServerError::HandlerError(
+                RpcTransactionError::TimeoutError,
+            )),
+            server(JsonRpcServerError::HandlerError(
+                RpcTransactionError::InternalError {
+                    debug_info: "limits".into(),
+                },
+            )),
+            server(JsonRpcServerError::InternalError { info: None }),
+            server(JsonRpcServerError::ResponseStatusError(
+                JsonRpcServerResponseStatusError::ServiceUnavailable,
+            )),
+            server(JsonRpcServerError::ResponseStatusError(
+                JsonRpcServerResponseStatusError::TimeoutError,
+            )),
+        ];
+        for error in &unknown {
+            assert!(submission_may_have_landed(error), "{error:?}");
+        }
     }
 }

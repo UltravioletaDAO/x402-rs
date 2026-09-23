@@ -30,6 +30,11 @@ pub enum UptoError {
     #[error("Settlement failed: {0}")]
     SettlementFailed(String),
 
+    /// The settle transaction was broadcast and no verdict came back. It may
+    /// be mined, so the hash travels instead of being flattened into text.
+    #[error("Settlement unconfirmed: {0} on {1}")]
+    SettlementUnconfirmed(crate::types::TransactionHash, crate::network::Network),
+
     #[error("Contract call failed: {0}")]
     ContractCall(String),
 

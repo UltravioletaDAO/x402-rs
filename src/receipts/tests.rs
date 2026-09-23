@@ -2169,3 +2169,162 @@ async fn the_operator_command_releases_only_stranded_admissions_that_sent_nothin
     assert_eq!(named[1].receipt_id, young);
     assert_eq!(named[1].action, "skip_signing_key_mismatch");
 }
+
+/// The EVM hash `prepared_evm` stores in these fixtures, and its `paymentId` on
+/// Arc testnet, where `body(..)` settles.
+fn prepared_hash() -> String {
+    format!("0x{}", "44".repeat(32))
+}
+fn prepared_payment_id() -> String {
+    crate::dx402::payment_id(Network::ArcTestnet, &prepared_hash())
+}
+
+/// A settlement that ran and whose answer cannot be read: once bytes were
+/// prepared, the transaction may be mined, so the answer is not retryable and
+/// names the transaction and the receipt. Before, it was `retryable: true`.
+#[tokio::test]
+async fn an_unreadable_answer_after_a_prepared_send_is_not_retryable() {
+    TEST_SERVICE
+        .scope(service_fixture(), async {
+            let answer = settle(
+                &MockFacilitator { invalid: false },
+                &headers(),
+                &body(1),
+                async {
+                    prepared_evm(prepared_hash(), vec![1, 2, 3]).await.unwrap();
+                    sending();
+                    (StatusCode::OK, "x".repeat(70_000)).into_response()
+                },
+            )
+            .await;
+            assert_eq!(answer.status(), StatusCode::BAD_GATEWAY);
+            assert!(answer.headers().get(RETRY_AFTER).is_none());
+            let answer = value(answer).await;
+            assert_eq!(answer["error"], "receipt_response_unreadable");
+            assert_eq!(answer["retryable"], false);
+            assert_eq!(answer["transaction"], prepared_hash());
+            assert_eq!(answer["paymentId"], prepared_payment_id());
+            assert_eq!(answer["receipt"]["settlement"]["id"], prepared_hash());
+        })
+        .await;
+}
+
+/// The same unreadable answer when nothing was sent keeps its old shape: the
+/// class this change touches starts at the send.
+#[tokio::test]
+async fn an_unreadable_answer_when_nothing_was_sent_is_unchanged() {
+    TEST_SERVICE
+        .scope(service_fixture(), async {
+            let answer = settle(
+                &MockFacilitator { invalid: false },
+                &headers(),
+                &body(1),
+                async { (StatusCode::OK, "x".repeat(70_000)).into_response() },
+            )
+            .await;
+            assert_eq!(answer.status(), StatusCode::BAD_GATEWAY);
+            let answer = value(answer).await;
+            assert_eq!(answer["error"], "receipt_response_unreadable");
+            assert_eq!(answer["retryable"], true);
+            assert!(answer.get("transaction").is_none());
+        })
+        .await;
+}
+
+/// A provider failure answered after the send latched, in the shape the exact
+/// path gives a node that dropped the connection: `502`, `Retry-After`, no
+/// hash. Under an admission the transaction may be mined, so the answer, and
+/// the one stored for a bound resend, says `retryable: false` and names it.
+#[tokio::test]
+async fn a_retryable_failure_after_the_send_is_answered_as_not_retryable() {
+    let service = service_fixture();
+    TEST_SERVICE
+        .scope(service.clone(), async {
+            let answer = settle(
+                &MockFacilitator { invalid: false },
+                &headers(),
+                &body(1),
+                async {
+                    prepared_evm(prepared_hash(), vec![1, 2, 3]).await.unwrap();
+                    sending();
+                    let mut lost = (
+                        StatusCode::BAD_GATEWAY,
+                        Json(json!({"error":"upstream_rpc_unavailable (ref: x)"})),
+                    )
+                        .into_response();
+                    lost.headers_mut()
+                        .insert(RETRY_AFTER, HeaderValue::from_static("30"));
+                    lost
+                },
+            )
+            .await;
+            assert_eq!(answer.status(), StatusCode::BAD_GATEWAY);
+            assert!(answer.headers().get(RETRY_AFTER).is_none());
+            let answer = value(answer).await;
+            assert_eq!(answer["retryable"], false);
+            assert_eq!(answer["transaction"], prepared_hash());
+            assert_eq!(answer["paymentId"], prepared_payment_id());
+            assert_eq!(answer["receipt"]["status"], "unknown");
+
+            let id = answer["receipt"]["receiptId"].as_str().unwrap();
+            let stored = service
+                .store
+                .get(&format!("receipt:v1:{id}"))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(stored.response["retryable"], false);
+            assert_eq!(stored.response["transaction"], prepared_hash());
+        })
+        .await;
+}
+
+/// The answer a provider already gave with the hash is kept as it was, and a
+/// failure before the send keeps its retry.
+#[tokio::test]
+async fn a_named_transaction_is_kept_and_a_failure_before_the_send_keeps_its_retry() {
+    TEST_SERVICE
+        .scope(service_fixture(), async {
+            let named = format!("0x{}", "55".repeat(32));
+            let answer = settle(
+                &MockFacilitator { invalid: false },
+                &headers(),
+                &body(1),
+                async {
+                    prepared_evm(prepared_hash(), vec![1, 2, 3]).await.unwrap();
+                    sending();
+                    (
+                        StatusCode::BAD_GATEWAY,
+                        Json(json!({"error":"settlement_unconfirmed","transaction":named,
+                            "paymentId":"from-the-provider","retryable":false})),
+                    )
+                        .into_response()
+                },
+            )
+            .await;
+            let answer = value(answer).await;
+            assert_eq!(answer["transaction"], named);
+            assert_eq!(answer["paymentId"], "from-the-provider");
+
+            let before = settle(
+                &MockFacilitator { invalid: false },
+                &purchase("cd"),
+                &body(2),
+                async {
+                    let mut lost = (
+                        StatusCode::BAD_GATEWAY,
+                        Json(json!({"error":"upstream_rpc_unavailable (ref: x)"})),
+                    )
+                        .into_response();
+                    lost.headers_mut()
+                        .insert(RETRY_AFTER, HeaderValue::from_static("30"));
+                    lost
+                },
+            )
+            .await;
+            assert_eq!(before.headers()[RETRY_AFTER], "30");
+            let before = value(before).await;
+            assert!(before.get("retryable").is_none(), "{before}");
+        })
+        .await;
+}

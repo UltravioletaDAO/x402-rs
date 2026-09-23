@@ -413,7 +413,13 @@ impl HederaProvider {
                 .downcast()
                 .map_err(|_| error("persisted transaction is not a transfer"))?;
             record.state = State::Submitted;
-            self.store.save(key, &record).await.map_err(error)?;
+            // The signed bytes are durable and recovery sends them once the
+            // lease runs out, so a write that fails here is not a failure of
+            // the payment: it may still go out, under this id.
+            self.store
+                .save(key, &record)
+                .await
+                .map_err(|_| self.unconfirmed(&record.intent))?;
             // Errors, including DUPLICATE_TRANSACTION, do not establish the
             // outcome. Resolve the original ID through a consensus receipt.
             let _ = tokio::time::timeout(Duration::from_secs(10), tx.execute(&self.client)).await;
@@ -650,8 +656,14 @@ impl Facilitator for HederaProvider {
             let signed = decoded.cosign(&self.config.key).map_err(error)?;
             record.signed = Some(STANDARD.encode(signed));
             record.state = State::Prepared;
-            // Mandatory durable boundary BEFORE any call that can submit.
-            self.store.save(&key, &record).await.map_err(error)?;
+            // Mandatory durable boundary BEFORE any call that can submit. A
+            // write that fails may still have stored the co-signed bytes, which
+            // recovery would then send: reported under the id, never as a
+            // failure the caller would answer with a new signature.
+            self.store
+                .save(&key, &record)
+                .await
+                .map_err(|_| self.unconfirmed(&intent))?;
         }
         self.deliver_record(&key, record).await
     }

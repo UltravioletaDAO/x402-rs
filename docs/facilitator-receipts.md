@@ -214,6 +214,23 @@ released as above. Admission and re-admission writes carry a fresh idempotency
 token each, so a write the store client resends after losing its answer gets
 its original success back.
 
+### Failures after the send
+
+The opposite case. Once the provider latched its send, prepared bytes or named a
+transaction, a failure that reaches `finish` with no chain verdict is answered,
+and stored for a bound resend, with `retryable: false` and without
+`Retry-After`, whatever the provider's own body said; when the answer names no
+transaction, the admission's prepared one is added as `transaction` with its
+`paymentId`. The receipt stays `unknown` with `retry.action: poll`, as before.
+A settlement whose answer cannot be read at all (`502
+receipt_response_unreadable`) is answered the same way, with the receipt. Until
+2.39.6 both could carry `retryable: true`, and a `502` from the provider kept
+its `Retry-After: 30`, which clients read as "resend": after a payment that did
+mine, that resend is what ends with the buyer signing a second one.
+
+Poll the receipt, or resend the same request with the binding that admitted it;
+never sign a replacement. Failures before the send keep their answers.
+
 ### Operator: admissions stranded by earlier releases
 
 Earlier releases left such admissions `unknown` with nothing prepared, and a

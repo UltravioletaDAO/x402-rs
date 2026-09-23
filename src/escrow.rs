@@ -251,6 +251,11 @@ pub enum EscrowError {
     #[error("Contract call failed: {0}")]
     ContractCall(String),
 
+    /// The escrow transaction was broadcast and no verdict came back. It may be
+    /// mined, so the hash travels instead of being flattened into text.
+    #[error("Settlement unconfirmed: {0} on {1}")]
+    SettlementUnconfirmed(crate::types::TransactionHash, Network),
+
     #[error("JSON parsing error: {0}")]
     Json(#[from] serde_json::Error),
 
@@ -860,7 +865,12 @@ async fn execute_escrow_deposit(
     let receipt = provider
         .send_transaction(meta_tx)
         .await
-        .map_err(|e| EscrowError::ContractCall(crate::redact::scrub_urls(&format!("{e:?}"))))?;
+        .map_err(|e| match e {
+            FacilitatorLocalError::SettlementUnconfirmed(tx, network) => {
+                EscrowError::SettlementUnconfirmed(tx, network)
+            }
+            e => EscrowError::ContractCall(crate::redact::scrub_urls(&format!("{e:?}"))),
+        })?;
 
     Ok(receipt.transaction_hash)
 }

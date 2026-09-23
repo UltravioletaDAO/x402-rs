@@ -651,9 +651,12 @@ impl ServerHandler for FacilitatorMcp {
              broadcast it. x402_settle moves real funds and cannot be undone. This \
              facilitator charges no fee and authenticates no caller: the payer's \
              signature is the only authority, so an MCP client holds exactly the \
-             privilege an HTTP client holds and no more. If a settle fails in a way \
-             you cannot interpret, retry it with the SAME idempotencyKey: that is how \
-             you get exactly-once instead of paying twice."
+             privilege an HTTP client holds and no more. A settle failure whose body \
+             says \"retryable\": false, or names a transaction, may already be on chain: \
+             do not retry it and never sign a new authorization; look the transaction \
+             up. If a settle fails in any other way you cannot interpret, retry it with \
+             the SAME idempotencyKey: that is how you get exactly-once instead of paying \
+             twice."
                 .to_string(),
         );
         info

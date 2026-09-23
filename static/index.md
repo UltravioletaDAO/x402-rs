@@ -103,6 +103,9 @@ The original answer is replayed only with the `X-UVD-Purchase` or
 A `503` with `safeToRetry: true` and `Retry-After` sent nothing, and a receipt
 `rejected` with `refusalReason: reservation_abandoned` says the same: resend the
 same request after the delay; it is admitted again under the same receipt.
+A failure after the send latched or its bytes were prepared is the opposite: it
+carries `retryable: false`, no `Retry-After`, the prepared `transaction` and its
+`paymentId`; poll the receipt, never sign a replacement.
 Python `fetch_with_receipt` and TypeScript `fetchWithReceipt` return the original
 HTTP response plus receipt/payment state. Supply trusted issuer keys for offline
 signature verification. Live EURC acceptance was proven on Arc mainnet on

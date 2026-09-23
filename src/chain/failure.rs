@@ -186,6 +186,19 @@ impl ChainFailure {
         }
     }
 
+    /// Whether the transaction may already be on the wire.
+    ///
+    /// Not the same as `!retryable()`: a revert and an unclassified failure
+    /// are not retryable either, but they are verdicts reached before anything
+    /// was sent. These two are the ones whose answer must say so in the body
+    /// and name the transaction when it is known.
+    pub fn may_have_broadcast(&self) -> bool {
+        matches!(
+            self.reason,
+            Reason::BroadcastUncertain | Reason::ReceiptPending
+        )
+    }
+
     /// `Retry-After`, in seconds, or `None` when no retry is advised.
     ///
     /// `salt` spreads the gas-shortfall hint so a fleet of callers stalled on
@@ -323,10 +336,16 @@ impl ChainFailure {
 /// `FacilitatorLocalError` into a string, so the variant is all that survives),
 /// and the two prose forms the nonce-retry guard produces when it declines to
 /// retry.
+///
+/// `already known` is here too, ahead of the nonce phrasings it also belongs
+/// to: a node says it about the exact transaction it already holds in its
+/// pool (geth keys the check by hash), so it is the one refusal that proves the
+/// transaction queued rather than that it did not.
 fn is_unconfirmed_broadcast(lower: &str) -> bool {
     lower.contains("settlementunconfirmed")
         || lower.contains("settlement_unconfirmed")
         || lower.contains("may have been mined")
+        || lower.contains("already known")
 }
 
 /// Broadcast succeeded and the receipt has not arrived.
@@ -598,6 +617,27 @@ mod tests {
         assert_eq!(pending.stage, Stage::Confirmation);
         assert!(!pending.retryable());
         assert_eq!(pending.retry_after_secs(0), None);
+    }
+
+    /// `already known` is a nonce phrasing to `chain/evm.rs`, but what it says
+    /// is that the node already holds this exact transaction. Advising a retry
+    /// for it is advising a second payment.
+    #[test]
+    fn a_transaction_the_node_already_holds_is_not_retryable() {
+        for fixture in [
+            r#"ErrorResp(ErrorPayload { code: -32000, message: "already known", data: None })"#,
+            "transaction nonce already known",
+        ] {
+            assert!(crate::chain::evm::is_nonce_error(fixture), "{fixture}");
+            let f = classify(fixture);
+            assert_eq!(f.reason, Reason::BroadcastUncertain, "{fixture}");
+            assert!(!f.retryable(), "{fixture}");
+            assert_eq!(f.retry_after_secs(0), None, "{fixture}");
+        }
+        // The other nonce refusals never queued, and stay retryable.
+        let low = classify(r#"ErrorResp(ErrorPayload { code: -32000, message: "nonce too low" })"#);
+        assert_eq!(low.reason, Reason::NonceOrMempool);
+        assert!(low.retryable());
     }
 
     /// A gas shortfall provably never queued the transaction, which is what

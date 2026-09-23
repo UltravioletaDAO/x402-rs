@@ -496,7 +496,12 @@ async fn execute_settlement(
     let receipt = provider
         .send_transaction_from(from, meta_tx)
         .await
-        .map_err(|e| UptoError::SettlementFailed(crate::redact::scrub_urls(&format!("{e}"))))?;
+        .map_err(|e| match e {
+            crate::chain::FacilitatorLocalError::SettlementUnconfirmed(tx, network) => {
+                UptoError::SettlementUnconfirmed(tx, network)
+            }
+            e => UptoError::SettlementFailed(crate::redact::scrub_urls(&format!("{e}"))),
+        })?;
 
     if !receipt.status() {
         return Err(UptoError::SettlementFailed(format!(

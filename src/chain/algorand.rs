@@ -70,6 +70,37 @@ pub const MAX_ALGORAND_FEE_TX_MICROALGOS: u64 = 100_000;
 // Error Types
 // =============================================================================
 
+/// Whether a failed broadcast may still have put the group in algod's pool.
+///
+/// An HTTP 4xx is algod refusing the group, except `already in ledger`, which
+/// says it was committed. A 5xx, a timeout or a client error (a dropped
+/// connection, an answer that does not decode) leaves it possibly accepted. A
+/// bad URL, token or header, or a group that failed to encode, never left.
+fn broadcast_may_have_landed(error: &algonaut::error::ServiceError) -> bool {
+    use algonaut::error::{RequestErrorDetails, ServiceError};
+    match error {
+        ServiceError::Request(request) => match &request.details {
+            RequestErrorDetails::Http { status, message } => {
+                *status >= 500 || message.to_ascii_lowercase().contains("already in ledger")
+            }
+            RequestErrorDetails::Timeout | RequestErrorDetails::Client { .. } => true,
+        },
+        _ => false,
+    }
+}
+
+/// A failed broadcast of the group whose first transaction is `first_id`.
+fn broadcast_error(error: algonaut::error::ServiceError, first_id: String) -> AlgorandError {
+    if broadcast_may_have_landed(&error) {
+        AlgorandError::SubmissionUnconfirmed {
+            tx_id: first_id,
+            detail: error.to_string(),
+        }
+    } else {
+        AlgorandError::SubmissionFailed(error.to_string())
+    }
+}
+
 /// Algorand-specific errors
 #[derive(Debug, thiserror::Error)]
 pub enum AlgorandError {
@@ -104,6 +135,11 @@ pub enum AlgorandError {
     /// bare attempt count.
     #[error("Transaction {tx_id} not confirmed after {attempts} attempts")]
     TransactionNotConfirmed { tx_id: String, attempts: u32 },
+
+    /// The broadcast itself failed without algod refusing the group: its
+    /// answer was lost, so the group may have entered the pool.
+    #[error("Transaction {tx_id} submitted with no answer: {detail}")]
+    SubmissionUnconfirmed { tx_id: String, detail: String },
 
     #[error("ASA ID mismatch: expected {expected}, got {actual}")]
     AsaIdMismatch { expected: u64, actual: u64 },
@@ -763,12 +799,15 @@ impl AlgorandProvider {
             "Skipping simulation - algonaut broadcast handles encoding correctly"
         );
 
-        // Submit the atomic group
+        // Submit the atomic group. algod answers with the id of the group's
+        // first transaction, our fee transaction, which is known before the
+        // broadcast and is what an unanswered one is reported under.
+        let first_id = signed_group[0].transaction_id.clone();
         let pending_tx = self
             .algod
             .broadcast_signed_transactions(&signed_group)
             .await
-            .map_err(|e| AlgorandError::SubmissionFailed(e.to_string()))?;
+            .map_err(|e| broadcast_error(e, first_id))?;
 
         let tx_id = pending_tx.tx_id;
 
@@ -1077,6 +1116,17 @@ impl Facilitator for AlgorandProvider {
                             tx_id = %tx_id,
                             attempts = attempts,
                             "Algorand settle: transaction submitted, never confirmed"
+                        );
+                        return Err(FacilitatorLocalError::SettlementUnconfirmed(
+                            TransactionHash::Algorand(tx_id),
+                            self.network(),
+                        ));
+                    }
+                    Err(AlgorandError::SubmissionUnconfirmed { tx_id, detail }) => {
+                        tracing::error!(
+                            tx_id = %tx_id,
+                            error = %crate::redact::scrub_urls(&detail),
+                            "Algorand settle: broadcast answer lost, the group may be committed"
                         );
                         return Err(FacilitatorLocalError::SettlementUnconfirmed(
                             TransactionHash::Algorand(tx_id),
@@ -1421,5 +1471,63 @@ mod replay_verify_tests {
             matches!(&err, FacilitatorLocalError::Other(msg) if msg.contains("unavailable")),
             "got {err:?}"
         );
+    }
+}
+
+/// A broadcast whose answer was lost keeps the group's id; one algod refused
+/// stays a failed submission.
+#[cfg(test)]
+mod broadcast_outcome_tests {
+    use super::*;
+    use algonaut::error::{RequestError, RequestErrorDetails, ServiceError};
+
+    fn http(status: u16, message: &str) -> ServiceError {
+        ServiceError::Request(RequestError::new(
+            None,
+            RequestErrorDetails::Http {
+                status,
+                message: message.to_string(),
+            },
+        ))
+    }
+
+    #[test]
+    fn only_a_refusal_proves_the_group_never_entered_the_pool() {
+        let id = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_string();
+        for refused in [
+            http(
+                400,
+                "TransactionPool.Remember: transaction group had an invalid signature",
+            ),
+            http(401, "invalid API token"),
+            ServiceError::Msg("msgpack encoding failed".into()),
+        ] {
+            assert!(
+                matches!(
+                    broadcast_error(refused, id.clone()),
+                    AlgorandError::SubmissionFailed(_)
+                ),
+                "a refusal became unconfirmed"
+            );
+        }
+        for lost in [
+            http(502, ""),
+            http(
+                400,
+                "TransactionPool.Remember: transaction already in ledger: ABC",
+            ),
+            ServiceError::Request(RequestError::new(None, RequestErrorDetails::Timeout)),
+            ServiceError::Request(RequestError::new(
+                None,
+                RequestErrorDetails::Client {
+                    description: "error decoding response body".into(),
+                },
+            )),
+        ] {
+            match broadcast_error(lost, id.clone()) {
+                AlgorandError::SubmissionUnconfirmed { tx_id, .. } => assert_eq!(tx_id, id),
+                other => panic!("expected SubmissionUnconfirmed, got {other:?}"),
+            }
+        }
     }
 }

@@ -63,7 +63,11 @@ def recorded_settles() -> list[dict]:
 
     def walk(node: object, where: str, source: str) -> None:
         if isinstance(node, dict):
-            network = ALIASES.get(node.get("network"), node.get("network"))
+            # `network` is a name in the canary logs and an object in other
+            # evidence (the 2026-09-15 plan's `{"name": ..., "caip2": ...}`);
+            # only a name can name a settle.
+            raw = node.get("network")
+            network = ALIASES.get(raw, raw) if isinstance(raw, str) else None
             tx = node.get("transaction")
             if network in NETWORKS and isinstance(tx, str) and TX_HASH.match(tx) and tx.lower() not in seen:
                 seen.add(tx.lower())

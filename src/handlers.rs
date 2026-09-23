@@ -13900,6 +13900,33 @@ mod settle_idempotency_tests {
         assert!(retired_network_refusal("not json").is_none());
     }
 
+    /// hyperevm-testnet moved from `eip155:333` to `eip155:998`, but 333 is
+    /// registered to another chain (EthStorage Mainnet), so it gets no
+    /// `network_retired` pointer to HyperEVM: it is refused the way any chain
+    /// this facilitator does not know is refused.
+    #[tokio::test]
+    async fn eip155_333_is_unknown_not_retired() {
+        let _g = arm();
+        let now: VerifyRequestEnvelope =
+            serde_json::from_str(&v2_body("eip155:998")).expect("a v2 body");
+        assert_eq!(
+            now.to_v1().expect("converts").payment_payload.network,
+            Network::HyperEvmTestnet
+        );
+        let old: VerifyRequestEnvelope =
+            serde_json::from_str(&v2_body("eip155:333")).expect("a v2 body");
+        assert!(old.to_v1().is_err(), "333 must not convert to any network");
+
+        let (status, json) = verify(&v2_body("eip155:333")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+        assert_ne!(json["code"], "network_retired", "{json}");
+        assert!(
+            !json.to_string().to_lowercase().contains("hyperevm"),
+            "{json}"
+        );
+        assert!(retired_network_refusal(&v2_body("eip155:333")).is_none());
+    }
+
     /// A retry with the same key and body replays; nothing new settles.
     ///
     /// `NeverSettles` is what makes this discriminant: if the cache were

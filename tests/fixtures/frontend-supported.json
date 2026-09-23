@@ -215,7 +215,7 @@
       "network": "hyperevm-testnet",
       "networkAliases": [
         "hyperevm-testnet",
-        "eip155:333"
+        "eip155:998"
       ],
       "extra": {
         "tokens": [
@@ -875,10 +875,10 @@
     {
       "x402Version": 2,
       "scheme": "exact",
-      "network": "eip155:333",
+      "network": "eip155:998",
       "networkAliases": [
         "hyperevm-testnet",
-        "eip155:333"
+        "eip155:998"
       ],
       "extra": {
         "tokens": [

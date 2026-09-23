@@ -141,7 +141,7 @@
       "facilitatorWallet": "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8"
     },
     "hyperevm-testnet": {
-      "chainId": 333,
+      "chainId": 998,
       "tokens": ["usdc"],
       "explorer": "https://testnet.purrsec.com",
       "facilitatorWallet": "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8"

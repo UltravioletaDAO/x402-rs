@@ -61,7 +61,9 @@ pub enum Network {
     /// HyperEVM mainnet (chain ID 999).
     #[serde(rename = "hyperevm")]
     HyperEvm,
-    /// HyperEVM testnet (chain ID 333).
+    /// HyperEVM testnet (chain ID 998). Not 333, which is registered to
+    /// EthStorage Mainnet -- see [`RETIRED_NETWORK_IDS`] for why that id gets
+    /// no refusal of its own.
     #[serde(rename = "hyperevm-testnet")]
     HyperEvmTestnet,
     /// Sei mainnet (chain ID 1329).
@@ -670,7 +672,10 @@ impl Network {
             // forno.celo-sepolia, drpc and the ankr endpoint production uses.
             Network::CeloSepolia => "eip155:11142220".to_string(),
             Network::HyperEvm => "eip155:999".to_string(),
-            Network::HyperEvmTestnet => "eip155:333".to_string(),
+            // `eth_chainId` answered 0x3e6 = 998 on 2026-09-23 from
+            // rpc.hyperliquid-testnet.xyz/evm (the endpoint production uses) and
+            // hyperliquid-testnet.drpc.org.
+            Network::HyperEvmTestnet => "eip155:998".to_string(),
             Network::Sei => "eip155:1329".to_string(),
             Network::SeiTestnet => "eip155:1328".to_string(),
             Network::Unichain => "eip155:130".to_string(),
@@ -745,7 +750,7 @@ impl Network {
             "eip155:42220" => Some(Network::Celo),
             "eip155:11142220" => Some(Network::CeloSepolia),
             "eip155:999" => Some(Network::HyperEvm),
-            "eip155:333" => Some(Network::HyperEvmTestnet),
+            "eip155:998" => Some(Network::HyperEvmTestnet),
             "eip155:1329" => Some(Network::Sei),
             "eip155:1328" => Some(Network::SeiTestnet),
             "eip155:130" => Some(Network::Unichain),
@@ -819,14 +824,15 @@ pub fn resolve_network(identifier: &str) -> Option<Network> {
         .or_else(|| Network::from_caip2(identifier))
 }
 
-/// An identifier this facilitator used to publish for a chain it can no
-/// longer reach, and the network that replaced it.
+/// An identifier `/supported` published by mistake, and the network it
+/// should have named.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RetiredNetworkId {
     /// The identifier exactly as `/supported` used to publish it.
     pub id: &'static str,
-    /// What the identifier actually names.
-    pub chain: &'static str,
+    /// Why a caller might still send it: what `/supported` said, and what the
+    /// identifier really names.
+    pub history: &'static str,
     /// The network a caller who sent `id` almost certainly meant.
     pub replacement: Network,
 }
@@ -839,20 +845,18 @@ impl RetiredNetworkId {
         let replacement = self.replacement.to_caip2();
         let chain_id = replacement.strip_prefix("eip155:").unwrap_or(&replacement);
         format!(
-            "`{id}` is {chain}, which this facilitator no longer serves: its \
-             public RPC no longer answers. `{name}` is `{replacement}`. \
-             Name it that way (or by the v1 name `{name}`) and sign the EIP-712 \
-             domain with chainId {chain_id}. GET /supported lists every network \
-             served, in both spellings",
+            "`{id}` is not served; `{name}` is `{replacement}`. {history} \
+             Name it `{replacement}` (or by the v1 name `{name}`) and sign the \
+             EIP-712 domain with chainId {chain_id}. GET /supported lists every \
+             network served, in both spellings",
             id = self.id,
-            chain = self.chain,
+            history = self.history,
             name = self.replacement,
         )
     }
 }
 
-/// Identifiers `/supported` published and no longer does, because the chain
-/// behind them is no longer reachable.
+/// Identifiers `/supported` published by mistake and no longer does.
 ///
 /// # Why this is not an alias
 ///
@@ -868,9 +872,19 @@ impl RetiredNetworkId {
 /// Nothing in the stack sent it on 2026-09-23: neither SDK (source or the
 /// published npm 2.96.0 / PyPI 0.88.0) contains 44787, and the discovery
 /// catalog held no resource on it.
+///
+/// # Why `eip155:333` is not here
+///
+/// `hyperevm-testnet` was published as `eip155:333` through 2.39.0 and is
+/// chain 998. But 333 is registered to another project, EthStorage Mainnet
+/// (chainid.network, status "incubating"), whose RPC did not answer on
+/// 2026-09-23. A refusal that pointed a caller naming 333 at HyperEVM would be
+/// the wrong advice for anyone using that chain, so 333 is simply unknown, like
+/// any chain this facilitator does not serve.
 pub const RETIRED_NETWORK_IDS: &[RetiredNetworkId] = &[RetiredNetworkId {
     id: "eip155:44787",
-    chain: "Celo Alfajores (chain id 44787)",
+    history: "Through 2.39.0 `/supported` listed `celo-sepolia` under it by \
+              mistake; 44787 is the chain id of Celo Alfajores.",
     replacement: Network::CeloSepolia,
 }];
 
@@ -1117,8 +1131,11 @@ static USDC_CELO: Lazy<USDCDeployment> = Lazy::new(|| {
 /// endpoint production uses): 1,798 bytes of code, `name()` = `"USDC"`,
 /// `version()` = `"2"`, `decimals()` = 6, and `DOMAIN_SEPARATOR()` =
 /// `0x23f4...9578`, which is exactly keccak(`"USDC"`, `"2"`, 11142220, this
-/// address). Through 2.39.0 this said `"USD Coin"`, a domain that matches
-/// nothing on-chain, so no correct signature on celo-sepolia ever verified.
+/// address). Through 2.39.0 this said `"USD Coin"` (and the chain id 44787), a
+/// domain that matches nothing on-chain. An EOA signature made for the real
+/// domain still verified, because the simulation uses the contract's own
+/// domain; what could not verify were EIP-6492 signatures and DX402's payer-key
+/// recovery, which hash against this one.
 static USDC_CELO_SEPOLIA: Lazy<USDCDeployment> = Lazy::new(|| {
     USDCDeployment(TokenDeployment {
         asset: TokenAsset {
@@ -1149,6 +1166,14 @@ static USDC_HYPEREVM: Lazy<USDCDeployment> = Lazy::new(|| {
 });
 
 /// Lazily initialized known USDC deployment on HyperEVM testnet as [`USDCDeployment`].
+///
+/// Read on 2026-09-23 from chain 998 (rpc.hyperliquid-testnet.xyz/evm, the
+/// endpoint production uses): 1,798 bytes of code, `name()` = `"USDC"`,
+/// `version()` = `"2"`, `decimals()` = 6, and `DOMAIN_SEPARATOR()` =
+/// `0xf26c...465e`, which is exactly keccak(`"USDC"`, `"2"`, 998, this address).
+/// Through 2.39.0 this said `"USD Coin"` with chain id 333 -- the same defect
+/// as celo-sepolia, with the same reach: EOA signatures are judged by the
+/// contract, EIP-6492 and DX402 hash against this domain.
 static USDC_HYPEREVM_TESTNET: Lazy<USDCDeployment> = Lazy::new(|| {
     USDCDeployment(TokenDeployment {
         asset: TokenAsset {
@@ -1157,7 +1182,7 @@ static USDC_HYPEREVM_TESTNET: Lazy<USDCDeployment> = Lazy::new(|| {
         },
         decimals: 6,
         eip712: Some(TokenDeploymentEip712 {
-            name: "USD Coin".into(),
+            name: "USDC".into(),
             version: "2".into(),
         }),
     })
@@ -3223,9 +3248,6 @@ mod network_name_aliasing_tests {
         }
     }
 
-    /// Widening the field must not empty it. A chain we do not serve stays a
-    /// hard error, and the message names both spellings so the caller is not
-    /// left guessing which half it got wrong.
     /// The one identifier we know and still refuse: `eip155:44787`, which
     /// `/supported` published for celo-sepolia through 2.39.0 and which names
     /// Celo Alfajores. The refusal has to say what to send instead, or a
@@ -3247,6 +3269,9 @@ mod network_name_aliasing_tests {
         assert_eq!(parse("eip155:11142220").unwrap(), Network::CeloSepolia);
     }
 
+    /// Widening the field must not empty it. A chain we do not serve stays a
+    /// hard error, and the message names both spellings so the caller is not
+    /// left guessing which half it got wrong.
     #[test]
     fn an_unknown_name_is_still_an_error() {
         for unknown in ["cosmos:hub-4", "eip155:99999999", "not-a-network", ""] {
@@ -3345,6 +3370,77 @@ mod celo_sepolia_identity_tests {
         assert_eq!(
             usdc.address(),
             MixedAddress::from(address!("0x01C5C0122039549AD1493B8220cABEdD739BC44E"))
+        );
+        assert_eq!(usdc.decimals, 6);
+        let eip712 = usdc.eip712.as_ref().expect("a static domain");
+        assert_eq!(eip712.name, "USDC");
+        assert_eq!(eip712.version, "2");
+    }
+}
+
+/// HyperEVM testnet: the identity, pinned to what the chain answered on
+/// 2026-09-23 -- `eth_chainId` = `0x3e6` (998) on
+/// rpc.hyperliquid-testnet.xyz/evm, the endpoint production uses, and on
+/// hyperliquid-testnet.drpc.org. Through 2.39.0 it was published as
+/// `eip155:333`, which chainid.network assigns to EthStorage Mainnet.
+#[cfg(test)]
+mod hyperevm_testnet_identity_tests {
+    use super::*;
+
+    #[test]
+    fn hyperevm_testnet_is_chain_998_under_both_spellings() {
+        assert_eq!(Network::HyperEvmTestnet.to_caip2(), "eip155:998");
+        assert_eq!(
+            Network::from_caip2("eip155:998"),
+            Some(Network::HyperEvmTestnet)
+        );
+        assert_eq!(
+            resolve_network("eip155:998"),
+            Some(Network::HyperEvmTestnet)
+        );
+        assert_eq!(Network::HyperEvmTestnet.to_string(), "hyperevm-testnet");
+        assert_eq!(
+            resolve_network("hyperevm-testnet"),
+            Some(Network::HyperEvmTestnet)
+        );
+        assert!(Network::HyperEvmTestnet.is_testnet());
+        // Mainnet is untouched: 999, and the two are distinct.
+        assert_eq!(Network::HyperEvm.to_caip2(), "eip155:999");
+        assert_eq!(Network::from_caip2("eip155:999"), Some(Network::HyperEvm));
+    }
+
+    /// 333 belongs to another chain, so it gets no refusal of its own and no
+    /// pointer to HyperEVM: it is unknown, and says so the way any unknown
+    /// chain does.
+    #[test]
+    fn eip155_333_is_unknown_and_points_nowhere() {
+        assert_eq!(Network::from_caip2("eip155:333"), None);
+        assert_eq!(resolve_network("eip155:333"), None);
+        assert!(retired_network_id("eip155:333").is_none());
+
+        #[derive(Debug, Deserialize)]
+        struct Wrapper {
+            #[serde(deserialize_with = "deserialize_v1_or_caip2")]
+            #[allow(dead_code)]
+            network: Network,
+        }
+        let message =
+            serde_json::from_value::<Wrapper>(serde_json::json!({"network": "eip155:333"}))
+                .expect_err("eip155:333 must not resolve")
+                .to_string();
+        assert!(message.contains("/supported"), "{message}");
+        assert!(!message.to_lowercase().contains("hyperevm"), "{message}");
+    }
+
+    /// The deployment, as read from the contract on 998: `name()` = `"USDC"`,
+    /// `version()` = `"2"`, `decimals()` = 6. The domain separator these
+    /// reproduce is pinned in `chain::evm`.
+    #[test]
+    fn hyperevm_testnet_usdc_carries_the_contracts_own_name() {
+        let usdc = USDCDeployment::by_network(Network::HyperEvmTestnet).unwrap();
+        assert_eq!(
+            usdc.address(),
+            MixedAddress::from(address!("0x2B3370eE501B4a559b57D449569354196457D8Ab"))
         );
         assert_eq!(usdc.decimals, 6);
         let eip712 = usdc.eip712.as_ref().expect("a static domain");

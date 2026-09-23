@@ -505,8 +505,8 @@ wrong domain produces a signature that verifies against nothing.
 | USDC | `"USD Coin"` — including Base **mainnet** | `"USDC"` on Celo, HyperEVM, Unichain, Monad and most `-sepolia`/`-testnet` variants (Base Sepolia is `"USDC"`) |
 | EURC | `"Euro Coin"` (Ethereum, Avalanche) | `"EURC"` on Base and Arc |
 
-The name can **flip between a chain's mainnet and its testnet** (HyperEVM mainnet is
-`"USDC"`, HyperEVM testnet is `"USD Coin"`), and bridged variants differ again
+The name can **flip between a chain's mainnet and its testnet** (Base mainnet is
+`"USD Coin"`, Base Sepolia is `"USDC"`), and bridged variants differ again
 (`"Bridged USDC(XDC)"`, `"Bridged USDC (SKALE Bridge)"`). Never infer it.
 
 The facilitator resolves the domain in this order:

@@ -422,7 +422,7 @@
       },
       {
         "name": "hyperevm-testnet",
-        "caip2": "eip155:333"
+        "caip2": "eip155:998"
       },
       {
         "name": "near-testnet",

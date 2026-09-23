@@ -22,7 +22,7 @@ const ICONO_DE_RED = {
   "celo": "celo", "celo-sepolia": "celo", "eip155:42220": "celo", "eip155:11142220": "celo",
   "ethereum": "ethereum", "ethereum-sepolia": "ethereum", "eip155:1": "ethereum", "eip155:11155111": "ethereum",
   "fogo": "fogo", "fogo-testnet": "fogo", "fogo:mainnet": "fogo", "fogo:testnet": "fogo",
-  "hyperevm": "hyperevm", "hyperevm-testnet": "hyperevm", "eip155:333": "hyperevm", "eip155:999": "hyperevm",
+  "hyperevm": "hyperevm", "hyperevm-testnet": "hyperevm", "eip155:998": "hyperevm", "eip155:999": "hyperevm",
   "monad": "monad", "eip155:143": "monad",
   "near": "near", "near-testnet": "near", "near:mainnet": "near", "near:testnet": "near",
   "optimism": "optimism", "optimism-sepolia": "optimism", "eip155:10": "optimism", "eip155:11155420": "optimism",

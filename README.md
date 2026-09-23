@@ -119,7 +119,7 @@ durable-evidence and other unsupported extensions.
 | Polygon Amoy | 80002 | [faucet.polygon.technology](https://faucet.polygon.technology) |
 | Avalanche Fuji | 43113 | [faucet.avax.network](https://faucet.avax.network) |
 | Celo Sepolia | 11142220 (`celo-sepolia`) | [faucet.celo.org](https://faucet.celo.org) |
-| HyperEVM Testnet | 333 | - |
+| HyperEVM Testnet | 998 (`hyperevm-testnet`) | - |
 | Unichain Sepolia | 1301 | - |
 | SKALE Base Sepolia | 324705682 | [base-sepolia-faucet.skale.space](http://base-sepolia-faucet.skale.space) |
 | Solana Devnet | - | [solfaucet.com](https://solfaucet.com) |

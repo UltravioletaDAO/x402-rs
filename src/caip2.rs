@@ -555,7 +555,7 @@ mod tests {
             (42220, "Celo"),
             (11142220, "Celo Sepolia"),
             (999, "HyperEVM"),
-            (333, "HyperEVM Testnet"),
+            (998, "HyperEVM Testnet"),
             (1329, "Sei"),
             (1328, "Sei Testnet"),
             (130, "Unichain"),

@@ -850,10 +850,11 @@ mod supported_advertisement_tests {
     }
 }
 
-/// `/supported` before and after celo-sepolia moved off Alfajores' chain id,
+/// `/supported` before and after celo-sepolia (44787 -> 11142220) and
+/// hyperevm-testnet (333 -> 998) moved to the chain ids their RPCs answer for,
 /// compared entry by entry.
 #[cfg(test)]
-mod celo_sepolia_supported_diff_tests {
+mod testnet_chain_id_supported_diff_tests {
     use super::*;
     use crate::network::{exact_payment_tokens, NetworkFamily};
     use alloy::primitives::Address;
@@ -861,7 +862,8 @@ mod celo_sepolia_supported_diff_tests {
 
     /// `GET /supported` as production served it at 2026-09-23T07:19Z, running
     /// 2.39.0 -- the last release that published celo-sepolia as
-    /// `eip155:44787`. Captured with `curl -s .../supported | jq .`, with one
+    /// `eip155:44787` and hyperevm-testnet as `eip155:333`. Captured with
+    /// `curl -s .../supported | jq .`, with one
     /// edit: the four Sui 32-byte identifiers (two fee payers, two coin types)
     /// are cut to `0xabcd...wxyz`, because this repository's pre-commit hook
     /// refuses any `0x` + 64 hex, the shape of a private key. They live in
@@ -966,12 +968,12 @@ mod celo_sepolia_supported_diff_tests {
         advertise_under_both_network_forms(seeds)
     }
 
-    /// The whole of `/supported`, before and after: the only difference is
-    /// celo-sepolia's CAIP-2 id, in its own entry and in the aliases of its
-    /// v1 entry. Every other chain, scheme, token, operator and alias comes
-    /// out exactly as production published it.
+    /// The whole of `/supported`, before and after: the only differences are
+    /// the CAIP-2 ids of celo-sepolia and hyperevm-testnet, each in its own
+    /// entry and in the aliases of its v1 entry. Every other chain, scheme,
+    /// token, operator and alias comes out exactly as production published it.
     #[test]
-    fn moving_celo_sepolia_changes_no_other_entry_of_supported() {
+    fn moving_the_two_testnets_changes_no_other_entry_of_supported() {
         let (kinds, extras) = before();
         assert_eq!(kinds.len(), 156, "the fixture is the full list");
         let before = before_json();
@@ -985,14 +987,15 @@ mod celo_sepolia_supported_diff_tests {
             .map(|k| {
                 Value::from_str(
                     &k.to_string()
-                        .replace("\"eip155:44787\"", "\"eip155:11142220\""),
+                        .replace("\"eip155:44787\"", "\"eip155:11142220\"")
+                        .replace("\"eip155:333\"", "\"eip155:998\""),
                 )
                 .unwrap()
             })
             .collect();
         assert_eq!(lines(&after), lines(&expected));
 
-        // And the entries that moved are exactly celo-sepolia's two.
+        // And the entries that moved are exactly the two testnets' two each.
         let before_lines = lines(&before);
         let after_lines = lines(&after);
         let gone: Vec<&String> = before_lines
@@ -1005,23 +1008,29 @@ mod celo_sepolia_supported_diff_tests {
             .collect();
         assert_eq!(
             (gone.len(), new.len()),
-            (2, 2),
+            (4, 4),
             "gone: {gone:#?}\nnew: {new:#?}"
         );
-        assert!(gone
-            .iter()
-            .chain(&new)
-            .all(|l| l.contains(r#""celo-sepolia""#)));
-        assert!(gone.iter().all(|l| l.contains("eip155:44787")));
-        assert!(new.iter().all(|l| l.contains("eip155:11142220")));
-        assert!(!after_lines.iter().any(|l| l.contains("44787")));
+        for (name, old, current) in [
+            ("celo-sepolia", "eip155:44787", "eip155:11142220"),
+            ("hyperevm-testnet", "eip155:333", "eip155:998"),
+        ] {
+            let named = |l: &&&String| l.contains(&format!("\"{name}\""));
+            assert_eq!(gone.iter().filter(named).count(), 2, "{name}");
+            assert_eq!(new.iter().filter(named).count(), 2, "{name}");
+            assert!(gone.iter().filter(named).all(|l| l.contains(old)));
+            assert!(new.iter().filter(named).all(|l| l.contains(current)));
+            assert!(!after_lines
+                .iter()
+                .any(|l| l.contains(&format!("\"{old}\""))));
+        }
     }
 
     /// The token lists are not rebuilt by the mirror, so they are checked
     /// against the table that builds them: every EVM `exact` entry production
     /// published lists exactly the tokens `exact_payment_tokens` gives today.
-    /// celo-sepolia's USDC keeps its address and decimals; only its EIP-712
-    /// name changed, and `/supported` does not publish that.
+    /// The two testnets' USDC keep their address and decimals; only their
+    /// EIP-712 name changed, and `/supported` does not publish that.
     #[test]
     fn no_network_publishes_a_different_token() {
         let mut checked = 0;

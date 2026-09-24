@@ -100,7 +100,7 @@ fn kind_identity(kind: &SupportedPaymentKind) -> String {
 ///
 /// A kind whose network resolves to neither form is left exactly as it is:
 /// inventing an identifier would be worse than publishing only one.
-fn advertise_under_both_network_forms(
+pub(crate) fn advertise_under_both_network_forms(
     mut kinds: Vec<SupportedPaymentKind>,
 ) -> Vec<SupportedPaymentKind> {
     let mut seen: std::collections::HashSet<String> = kinds.iter().map(kind_identity).collect();

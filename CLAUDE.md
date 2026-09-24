@@ -332,7 +332,7 @@ Golden source is `terraform/environments/production/secrets.tf`. The naming is N
 - `facilitator-stellar-keypair-mainnet` / `facilitator-stellar-keypair-testnet` - Stellar
 - `facilitator-sui-keypair-mainnet` / `facilitator-sui-keypair-testnet` - Sui
 - `facilitator-algorand-mnemonic-mainnet` / `facilitator-algorand-mnemonic-testnet` - Algorand 25-word mnemonic
-- `facilitator-rpc-mainnet` - premium mainnet RPC URLs, one JSON key per network: `base`, `avalanche`, `polygon`, `optimism`, `celo`, `hyperevm`, `ethereum`, `arbitrum`, `unichain`, `solana`, `near` (there is NO `sui` key - Sui/BSC/Scroll/SKALE/Monad/Fogo/Robinhood use free public endpoints declared inline in main.tf)
+- `facilitator-rpc-mainnet` - premium mainnet RPC URLs, one JSON key per network: `base`, `avalanche`, `polygon`, `optimism`, `celo`, `hyperevm`, `ethereum`, `arbitrum`, `unichain`, `arc` (mapped only while `arc_mainnet_enabled`, `arc.tf`; Arc testnet and the balances Lambda stay on the public endpoints), `solana`, `near` (there is NO `sui` key - Sui/BSC/Scroll/SKALE/Monad/Fogo/Robinhood use free public endpoints declared inline in main.tf)
 - `facilitator-rpc-testnet` - JSON keys: `solana-devnet`, `arbitrum-sepolia`, `near` (no `sui-testnet`)
 
 **Legacy secrets** (deprecated, kept for backward compatibility):
@@ -667,7 +667,7 @@ The following networks exist as enum entries in `src/network.rs` but are **NOT s
 5. **Gas funds vs payment funds** - Facilitator wallet needs native tokens (ETH/AVAX/SOL) for gas, not payment tokens (USDC)
 6. **NEVER use emojis in Rust code** - No emojis in log messages, comments, or string literals. Use plain text like `[OK]`, `[FAIL]`, `[WARN]` instead of ✓, ✗, ⚠. Emojis cause encoding issues in CloudWatch logs and terminal output.
 7. **NEVER disable ENABLE_ESCROW** - `ENABLE_ESCROW=true` is set in `terraform/environments/production/main.tf:924` and must stay. It gates the x402r escrow/refund path only (`src/handlers.rs:2808`, reached when `paymentPayload.extensions.refund` is present); without it those requests get 400 `"Escrow settlement is disabled. Set ENABLE_ESCROW=true to enable."`. Plain `/settle` calls never touch the flag - so 'settlements are failing' is NOT evidence this flag moved.
-8. **ALWAYS update `config/supported_tokens.json`** when adding a new network or stablecoin. This file is the JSON source of truth for all supported chains, tokens, and facilitator wallet addresses. **NEVER type wallet addresses from memory** — always copy them from `lambda/balances/handler.py` (the authoritative source). Previous AI-generated addresses were hallucinated and caused data integrity issues.
+8. **ALWAYS update `config/supported_tokens.json`** when adding a new network or stablecoin. It is compiled into the binary and is the presentation half of `GET /networks.json`: `displayName`, `icon`, `explorer` + `explorerPaths`, and `tokens`, which must be exactly what `/supported` publishes for the network's `exact` scheme (`src/networks_json.rs` tests turn a missing network or a drifted token list red). **NEVER type wallet addresses from memory** — always copy them from `lambda/balances/handler.py` (the authoritative source). Previous AI-generated addresses were hallucinated and caused data integrity issues.
 9. **Facilitator wallet addresses are FIXED** — do not invent or guess them. Full mainnet / testnet pairs live in `lambda/balances/handler.py`:
    - EVM: `0x103040545AC5031A11E8C03dd11324C7333a13C7` / `0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8`
    - Solana + Fogo: `F742C4VfFLQ9zRQyithoj5229ZgtX2WqKCSFKgH2EThq` / `6xNPewUdKRbEZDReQdpyfNUdgNg8QRc8Mt263T5GZSRv`
@@ -683,6 +683,7 @@ The following networks exist as enum entries in `src/network.rs` but are **NOT s
 - `GET /health` - Liveness only: a constant `{"status":"healthy"}`, and the ALB target-group check. It never reports a chain problem, by design
 - `GET /health/ready` - Can this task settle, per EVM chain: RPC reachability + settles each signer's gas still admits (`src/readiness.rs`). 503 when a mainnet is `down`; `?network=base` scopes it. Cached per `HEALTH_READY_TTL_SECS` (60) and refreshed by its own background task, so a caller that hangs up never restarts the probe; same per-IP governor as the other on-chain reads. No URLs/addresses/literal balances in the body. **Never point a load balancer at it** - a chain outage would cycle healthy tasks
 - `GET /supported` - List supported networks/schemes (returns both v1 and v2 formats)
+- `GET /networks.json` - How to present each network `/supported` serves: `id`, `caip2`, `family`, `chainId`, `testnet`, `displayName`, `explorer {base, tx, address}` templates, `icon`, `schemes`, `tokens[{symbol, address, decimals, eip712, usdPegged, icon}]`. Rows are built from the `/supported` body (same identifiers, never more or fewer); only presentation comes from `config/supported_tokens.json`, compiled in (`src/networks_json.rs`). Not `/networks`, which is the HTML page. The landing, `/networks` and `/events/live` read their icons and explorers from it: none is typed in `static/`
 - `GET /verify` - Verification schema
 - `POST /verify` - Verify payment authorization (accepts both v1 and v2 request formats)
 - `GET /settle` - Settlement schema
@@ -1016,7 +1017,7 @@ This complete checklist covers:
 11b. **UPDATE `src/openapi.rs`** - it hardcodes network lists in prose (`:31`, `:34`, `:57`, `:523`, `:527`, `:959`, `:1018`). A new network is invisible in `/docs` until these are edited.
 12. **UPDATE README.md** - Update the network count and add the new network to the tables
 13. **VERIFY STABLECOIN MATRIX** - Run `python scripts/stablecoin_matrix.py` and update README stablecoin tables
-14. **UPDATE `config/supported_tokens.json`** - Add the new network with chainId, tokens, explorer, and facilitatorWallet. Copy wallet address from `lambda/balances/handler.py` — NEVER type from memory.
+14. **UPDATE `config/supported_tokens.json`** - Add the new network with chainId, displayName, icon, tokens, explorer + explorerPaths, and facilitatorWallet (this is what `/networks.json` and every page's icon and explorer link read). Copy wallet address from `lambda/balances/handler.py` — NEVER type from memory.
 15. **UPDATE `lambda/balances/handler.py`** - Add the new network to `get_network_configs()` with RPC and wallet address.
 
 **CRITICAL**: Always update these files when adding a new network OR stablecoin:

@@ -568,6 +568,45 @@ impl HederaProvider {
         }
     }
 }
+/// The assets a Hedera provider advertises in `/supported`, named.
+///
+/// Split out so `config/supported_tokens.json` is checked against the list
+/// `/supported` publishes (`crate::networks_json`), not against a copy.
+pub(crate) fn advertised_tokens(
+    network: Network,
+    assets: &std::collections::BTreeMap<EntityId, u8>,
+) -> Vec<SupportedTokenInfo> {
+    let usdc = if network.is_testnet() {
+        "0.0.429274"
+    } else {
+        "0.0.456858"
+    };
+    assets
+        .iter()
+        .map(|(id, decimals)| SupportedTokenInfo {
+            token: if id.is_hbar() {
+                TokenType::Hbar
+            } else if id.to_string() == usdc {
+                TokenType::Usdc
+            } else {
+                TokenType::Hts
+            },
+            address: MixedAddress::Hedera(id.clone()),
+            decimals: *decimals,
+        })
+        .collect()
+}
+
+/// The assets a Hedera provider for `network` pays in: what `/supported`
+/// lists for it, whatever else is configured (anything else is refused at
+/// startup, `Config::payment_assets`). For the drift tests in `networks_json`.
+#[cfg(test)]
+pub(crate) fn payment_tokens(network: Network) -> Vec<SupportedTokenInfo> {
+    Config::payment_assets(network, None)
+        .map(|assets| advertised_tokens(network, &assets))
+        .unwrap_or_default()
+}
+
 impl Facilitator for HederaProvider {
     type Error = FacilitatorLocalError;
     async fn verify(
@@ -671,27 +710,7 @@ impl Facilitator for HederaProvider {
         if !self.config.admissions {
             return Ok(SupportedPaymentKindsResponse { kinds: vec![] });
         }
-        let usdc = if self.config.network.is_testnet() {
-            "0.0.429274"
-        } else {
-            "0.0.456858"
-        };
-        let tokens = self
-            .config
-            .assets
-            .iter()
-            .map(|(id, decimals)| SupportedTokenInfo {
-                token: if id.is_hbar() {
-                    TokenType::Hbar
-                } else if id.to_string() == usdc {
-                    TokenType::Usdc
-                } else {
-                    TokenType::Hts
-                },
-                address: MixedAddress::Hedera(id.clone()),
-                decimals: *decimals,
-            })
-            .collect();
+        let tokens = advertised_tokens(self.config.network, &self.config.assets);
         Ok(SupportedPaymentKindsResponse {
             kinds: vec![SupportedPaymentKind {
                 x402_version: X402Version::V2,

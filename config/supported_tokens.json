@@ -1,173 +1,258 @@
 {
-  "_comment": "Source of truth for all supported networks, tokens, and facilitator wallet addresses. MUST be updated when adding new chains or stablecoins. Wallet addresses sourced from lambda/balances/handler.py.",
-  "_lastUpdated": "2026-09-17",
-  "_version": "1.52.0",
+  "_comment": "Presentation of every network the facilitator serves: displayName, icon (a PNG served at /<icon>.png), explorer + explorerPaths ({tx} / {address} templates), plus tokens and facilitator wallets. Compiled into the binary and published by GET /networks.json, which takes its ROWS from GET /supported and only presentation from here. Keyed by the identifier /supported uses (the CAIP-2 id for native Hedera, which has no v1 name). `tokens` is exactly what /supported publishes for the network's `exact` scheme; `exactServed: false` marks a network production serves without `exact`. src/networks_json.rs tests all of it against the code. Wallet addresses sourced from lambda/balances/handler.py.",
+  "_lastUpdated": "2026-09-24",
+  "_version": "2.41.0",
 
   "evm_mainnets": {
     "arc": {
+      "displayName": "Arc",
+      "icon": "arc",
       "chainId": 5042,
       "tokens": ["usdc", "eurc"],
       "explorer": "https://explorer.arc.io",
+      "explorerPaths": {"tx": "/tx/{tx}", "address": "/address/{address}"},
       "facilitatorWallet": "0x103040545AC5031A11E8C03dd11324C7333a13C7",
       "_note": "Configured only when RPC_URL_ARC is set. Check /supported for availability. USDC/EURC exact EOA payments, with 6 ERC-20 decimals and 18 native gas decimals over one balance. Mainnet and testnet signatures are not interchangeable."
     },
     "ethereum": {
+      "displayName": "Ethereum",
+      "icon": "ethereum",
       "chainId": 1,
       "tokens": ["usdc", "eurc", "ausd", "pyusd"],
       "explorer": "https://etherscan.io",
+      "explorerPaths": {"tx": "/tx/{tx}", "address": "/address/{address}"},
       "facilitatorWallet": "0x103040545AC5031A11E8C03dd11324C7333a13C7"
     },
     "base": {
+      "displayName": "Base",
+      "icon": "base",
       "chainId": 8453,
       "tokens": ["usdc", "eurc"],
       "explorer": "https://basescan.org",
+      "explorerPaths": {"tx": "/tx/{tx}", "address": "/address/{address}"},
       "facilitatorWallet": "0x103040545AC5031A11E8C03dd11324C7333a13C7"
     },
     "polygon": {
+      "displayName": "Polygon",
+      "icon": "polygon",
       "chainId": 137,
       "tokens": ["usdc", "ausd"],
       "explorer": "https://polygonscan.com",
+      "explorerPaths": {"tx": "/tx/{tx}", "address": "/address/{address}"},
       "facilitatorWallet": "0x103040545AC5031A11E8C03dd11324C7333a13C7"
     },
     "arbitrum": {
+      "displayName": "Arbitrum",
+      "icon": "arbitrum",
       "chainId": 42161,
       "tokens": ["usdc", "ausd", "usdt"],
       "explorer": "https://arbiscan.io",
+      "explorerPaths": {"tx": "/tx/{tx}", "address": "/address/{address}"},
       "facilitatorWallet": "0x103040545AC5031A11E8C03dd11324C7333a13C7"
     },
     "optimism": {
+      "displayName": "Optimism",
+      "icon": "optimism",
       "chainId": 10,
       "tokens": ["usdc", "usdt"],
       "explorer": "https://optimistic.etherscan.io",
+      "explorerPaths": {"tx": "/tx/{tx}", "address": "/address/{address}"},
       "facilitatorWallet": "0x103040545AC5031A11E8C03dd11324C7333a13C7"
     },
     "avalanche": {
+      "displayName": "Avalanche",
+      "icon": "avalanche",
       "chainId": 43114,
       "tokens": ["usdc", "eurc", "ausd"],
       "explorer": "https://snowtrace.io",
+      "explorerPaths": {"tx": "/tx/{tx}", "address": "/address/{address}"},
       "facilitatorWallet": "0x103040545AC5031A11E8C03dd11324C7333a13C7"
     },
     "celo": {
+      "displayName": "Celo",
+      "icon": "celo",
       "chainId": 42220,
       "tokens": ["usdc", "usdt"],
       "explorer": "https://celoscan.io",
+      "explorerPaths": {"tx": "/tx/{tx}", "address": "/address/{address}"},
       "facilitatorWallet": "0x103040545AC5031A11E8C03dd11324C7333a13C7"
     },
     "hyperevm": {
+      "displayName": "HyperEVM",
+      "icon": "hyperevm",
       "chainId": 999,
       "tokens": ["usdc"],
       "explorer": "https://hyperevmscan.io",
+      "explorerPaths": {"tx": "/tx/{tx}", "address": "/address/{address}"},
       "facilitatorWallet": "0x103040545AC5031A11E8C03dd11324C7333a13C7"
     },
     "unichain": {
+      "displayName": "Unichain",
+      "icon": "unichain",
       "chainId": 130,
       "tokens": ["usdc"],
       "explorer": "https://uniscan.xyz",
+      "explorerPaths": {"tx": "/tx/{tx}", "address": "/address/{address}"},
       "facilitatorWallet": "0x103040545AC5031A11E8C03dd11324C7333a13C7"
     },
     "monad": {
+      "displayName": "Monad",
+      "icon": "monad",
       "chainId": 143,
       "tokens": ["usdc", "ausd", "usdt"],
       "explorer": "https://monadscan.com",
+      "explorerPaths": {"tx": "/tx/{tx}", "address": "/address/{address}"},
       "facilitatorWallet": "0x103040545AC5031A11E8C03dd11324C7333a13C7"
     },
     "bsc": {
+      "displayName": "BNB Chain",
+      "icon": "bsc",
       "chainId": 56,
-      "tokens": ["usdc", "ausd"],
+      "tokens": ["ausd"],
       "explorer": "https://bscscan.com",
-      "facilitatorWallet": "0x103040545AC5031A11E8C03dd11324C7333a13C7"
+      "explorerPaths": {"tx": "/tx/{tx}", "address": "/address/{address}"},
+      "facilitatorWallet": "0x103040545AC5031A11E8C03dd11324C7333a13C7",
+      "_note": "USDC on BSC (Binance-Peg, 18 decimals) has no ERC-3009, so it is not a payment token; its deployment stays in src/network.rs for address and decimal lookups only."
     },
     "skale-base": {
+      "displayName": "SKALE Base",
+      "icon": "skale",
       "chainId": 1187947933,
       "tokens": ["usdc"],
       "explorer": "https://skale-base-explorer.skalenodes.com",
+      "explorerPaths": {"tx": "/tx/{tx}", "address": "/address/{address}"},
       "facilitatorWallet": "0x103040545AC5031A11E8C03dd11324C7333a13C7"
     },
     "scroll": {
+      "displayName": "Scroll",
+      "icon": "scroll",
       "chainId": 534352,
       "tokens": ["usdc"],
       "explorer": "https://scrollscan.com",
+      "explorerPaths": {"tx": "/tx/{tx}", "address": "/address/{address}"},
       "facilitatorWallet": "0x103040545AC5031A11E8C03dd11324C7333a13C7"
     },
     "robinhood": {
+      "displayName": "Robinhood Chain",
+      "icon": "robinhood",
       "chainId": 4663,
       "tokens": ["usdg"],
       "explorer": "https://robinhoodchain.blockscout.com",
+      "explorerPaths": {"tx": "/tx/{tx}", "address": "/address/{address}"},
       "facilitatorWallet": "0x103040545AC5031A11E8C03dd11324C7333a13C7"
     }
   },
 
   "evm_testnets": {
     "ethereum-sepolia": {
+      "displayName": "Ethereum Sepolia",
+      "icon": "ethereum",
       "chainId": 11155111,
-      "tokens": ["usdc"],
+      "tokens": [],
+      "exactServed": false,
       "explorer": "https://sepolia.etherscan.io",
-      "facilitatorWallet": "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8"
+      "explorerPaths": {"tx": "/tx/{tx}", "address": "/address/{address}"},
+      "facilitatorWallet": "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8",
+      "_note": "Production publishes no `exact` entry here: RPC_URL_ETHEREUM_SEPOLIA is not configured, so no EVM provider is built for it. /supported serves fhe-transfer (Zama), escrow and commerce on it instead. The USDC deployment stays in src/network.rs and would be served the moment the RPC is set; then flip exactServed and list [\"usdc\"]."
     },
     "base-sepolia": {
+      "displayName": "Base Sepolia",
+      "icon": "base",
       "chainId": 84532,
       "tokens": ["usdc"],
       "explorer": "https://sepolia.basescan.org",
+      "explorerPaths": {"tx": "/tx/{tx}", "address": "/address/{address}"},
       "facilitatorWallet": "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8"
     },
     "polygon-amoy": {
+      "displayName": "Polygon Amoy",
+      "icon": "polygon",
       "chainId": 80002,
       "tokens": ["usdc"],
       "explorer": "https://amoy.polygonscan.com",
+      "explorerPaths": {"tx": "/tx/{tx}", "address": "/address/{address}"},
       "facilitatorWallet": "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8"
     },
     "arbitrum-sepolia": {
+      "displayName": "Arbitrum Sepolia",
+      "icon": "arbitrum",
       "chainId": 421614,
       "tokens": ["usdc"],
       "explorer": "https://sepolia.arbiscan.io",
+      "explorerPaths": {"tx": "/tx/{tx}", "address": "/address/{address}"},
       "facilitatorWallet": "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8"
     },
     "optimism-sepolia": {
+      "displayName": "Optimism Sepolia",
+      "icon": "optimism",
       "chainId": 11155420,
       "tokens": ["usdc"],
       "explorer": "https://sepolia-optimism.etherscan.io",
+      "explorerPaths": {"tx": "/tx/{tx}", "address": "/address/{address}"},
       "facilitatorWallet": "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8"
     },
     "avalanche-fuji": {
+      "displayName": "Avalanche Fuji",
+      "icon": "avalanche",
       "chainId": 43113,
       "tokens": ["usdc"],
       "explorer": "https://testnet.snowtrace.io",
+      "explorerPaths": {"tx": "/tx/{tx}", "address": "/address/{address}"},
       "facilitatorWallet": "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8"
     },
     "celo-sepolia": {
+      "displayName": "Celo Sepolia",
+      "icon": "celo",
       "chainId": 11142220,
       "tokens": ["usdc"],
       "explorer": "https://sepolia.celoscan.io",
+      "explorerPaths": {"tx": "/tx/{tx}", "address": "/address/{address}"},
       "facilitatorWallet": "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8"
     },
     "hyperevm-testnet": {
+      "displayName": "HyperEVM Testnet",
+      "icon": "hyperevm",
       "chainId": 998,
       "tokens": ["usdc"],
-      "explorer": "https://testnet.purrsec.com",
-      "facilitatorWallet": "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8"
+      "explorer": "https://explore-testnet.hyperpc.app",
+      "explorerPaths": {"tx": "/tx/{tx}", "address": "/address/{address}"},
+      "facilitatorWallet": "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8",
+      "_note": "testnet.purrsec.com answers 404 even on / and testnet.hyperevmscan.io does not resolve (2026-09-24); chainlist lists no explorer for 998. This is a third-party Blockscout titled Hyperliquid EVM Testnet."
     },
     "unichain-sepolia": {
+      "displayName": "Unichain Sepolia",
+      "icon": "unichain",
       "chainId": 1301,
       "tokens": ["usdc"],
       "explorer": "https://sepolia.uniscan.xyz",
+      "explorerPaths": {"tx": "/tx/{tx}", "address": "/address/{address}"},
       "facilitatorWallet": "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8"
     },
     "skale-base-sepolia": {
+      "displayName": "SKALE Base Sepolia",
+      "icon": "skale",
       "chainId": 324705682,
       "tokens": ["usdc"],
       "explorer": "https://base-sepolia-testnet-explorer.skalenodes.com",
+      "explorerPaths": {"tx": "/tx/{tx}", "address": "/address/{address}"},
       "facilitatorWallet": "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8"
     },
     "robinhood-testnet": {
+      "displayName": "Robinhood Chain Testnet",
+      "icon": "robinhood",
       "chainId": 46630,
       "tokens": ["usdg"],
       "explorer": "https://explorer.testnet.chain.robinhood.com",
+      "explorerPaths": {"tx": "/tx/{tx}", "address": "/address/{address}"},
       "facilitatorWallet": "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8"
     },
     "arc-testnet": {
+      "displayName": "Arc Testnet",
+      "icon": "arc",
       "chainId": 5042002,
       "tokens": ["usdc", "eurc"],
       "explorer": "https://explorer.testnet.arc.io",
+      "explorerPaths": {"tx": "/tx/{tx}", "address": "/address/{address}"},
       "facilitatorWallet": "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8",
       "_note": "Configured only when RPC_URL_ARC_TESTNET is set. Check /supported for live availability. Direct USDC/EURC EIP-3009 with EOA signatures; no Gateway or EIP-6492. Native gas uses 18 decimals and ERC-20 payments use 6 over one shared balance. Do not sum them. EURC has its own six-decimal balance in euros; gas remains USDC."
     }
@@ -175,29 +260,41 @@
 
   "svm_networks": {
     "solana": {
+      "displayName": "Solana",
+      "icon": "solana",
       "tokens": ["usdc", "ausd", "pyusd"],
       "explorer": "https://solscan.io",
+      "explorerPaths": {"tx": "/tx/{tx}", "address": "/account/{address}"},
       "facilitatorWallet": "F742C4VfFLQ9zRQyithoj5229ZgtX2WqKCSFKgH2EThq",
       "usdcMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
       "ausdMint": "AUSD1jCcCyPLybk1YnvPWsHQSrZ46dxwoMniN4N2UEB9",
       "pyusdMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
     },
     "solana-devnet": {
+      "displayName": "Solana Devnet",
+      "icon": "solana",
       "tokens": ["usdc", "pyusd"],
       "explorer": "https://solscan.io",
+      "explorerPaths": {"tx": "/tx/{tx}?cluster=devnet", "address": "/account/{address}?cluster=devnet"},
       "facilitatorWallet": "6xNPewUdKRbEZDReQdpyfNUdgNg8QRc8Mt263T5GZSRv",
       "usdcMint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
       "pyusdMint": "CXk2AMBfi3TwaEL2468s6zP8xq9NxTXjp9gjMgzeUynM"
     },
     "fogo": {
+      "displayName": "Fogo",
+      "icon": "fogo",
       "tokens": ["usdc"],
       "explorer": "https://fogoscan.com",
+      "explorerPaths": {"tx": "/tx/{tx}", "address": "/account/{address}"},
       "facilitatorWallet": "F742C4VfFLQ9zRQyithoj5229ZgtX2WqKCSFKgH2EThq",
       "usdcMint": "uSd2czE61Evaf76RNbq4KPpXnkiL3irdzgLFUMe3NoG"
     },
     "fogo-testnet": {
+      "displayName": "Fogo Testnet",
+      "icon": "fogo",
       "tokens": ["usdc"],
       "explorer": "https://fogoscan.com",
+      "explorerPaths": {"tx": "/tx/{tx}?cluster=testnet", "address": "/account/{address}?cluster=testnet"},
       "facilitatorWallet": "6xNPewUdKRbEZDReQdpyfNUdgNg8QRc8Mt263T5GZSRv",
       "usdcMint": "uSd2czE61Evaf76RNbq4KPpXnkiL3irdzgLFUMe3NoG"
     }
@@ -205,15 +302,22 @@
 
   "sui_networks": {
     "sui": {
-      "tokens": ["usdc", "ausd"],
-      "explorer": "https://suiscan.xyz",
+      "displayName": "Sui",
+      "icon": "sui",
+      "tokens": ["usdc"],
+      "_note": "The Sui provider accepts USDC only (src/network.rs exact_payment_tokens); the AUSD coin type below is kept for reference, not served.",
+      "explorer": "https://suiscan.xyz/mainnet",
+      "explorerPaths": {"tx": "/tx/{tx}", "address": "/account/{address}"},
       "facilitatorWallet": "0xe7bbf2b13f7d72714760aa16e024fa1b35a978793f9893d0568a4fbf356a764a",
       "usdcCoinType": "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC",
       "ausdCoinType": "0x2053d08c1e2bd02791056171aab0fd12bd7cd7efad2ab8f6b9c8902f14df2ff2::ausd::AUSD"
     },
     "sui-testnet": {
+      "displayName": "Sui Testnet",
+      "icon": "sui",
       "tokens": ["usdc"],
-      "explorer": "https://suiscan.xyz",
+      "explorer": "https://suiscan.xyz/testnet",
+      "explorerPaths": {"tx": "/tx/{tx}", "address": "/account/{address}"},
       "facilitatorWallet": "0xabbd16a2fab2a502c9cfe835195a6fc7d70bfc27cffb40b8b286b52a97006e67",
       "usdcCoinType": "0xa1ec7fc00a6f40db9693ad1415d0c193ad3906494428cf252621037bd7117e29::usdc::USDC"
     }
@@ -221,14 +325,20 @@
 
   "near_networks": {
     "near": {
+      "displayName": "NEAR",
+      "icon": "near",
       "tokens": ["usdc"],
       "explorer": "https://nearblocks.io",
+      "explorerPaths": {"tx": "/txns/{tx}", "address": "/address/{address}"},
       "facilitatorWallet": "uvd-facilitator.near",
       "usdcContract": "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1"
     },
     "near-testnet": {
+      "displayName": "NEAR Testnet",
+      "icon": "near",
       "tokens": ["usdc"],
       "explorer": "https://testnet.nearblocks.io",
+      "explorerPaths": {"tx": "/txns/{tx}", "address": "/address/{address}"},
       "facilitatorWallet": "uvd-facilitator.testnet",
       "usdcContract": "usdc.fakes.testnet"
     }
@@ -236,14 +346,20 @@
 
   "stellar_networks": {
     "stellar": {
+      "displayName": "Stellar",
+      "icon": "stellar",
       "tokens": ["usdc"],
       "explorer": "https://stellar.expert/explorer/public",
+      "explorerPaths": {"tx": "/tx/{tx}", "address": "/account/{address}"},
       "facilitatorWallet": "GCHPGXJT2WFFRFCA5TV4G4E3PMMXLNIDUH27PKDYA4QJ2XGYZWGFZNHB",
       "usdcContract": "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75"
     },
     "stellar-testnet": {
+      "displayName": "Stellar Testnet",
+      "icon": "stellar",
       "tokens": ["usdc"],
       "explorer": "https://stellar.expert/explorer/testnet",
+      "explorerPaths": {"tx": "/tx/{tx}", "address": "/account/{address}"},
       "facilitatorWallet": "GBBFZMLUJEZVI32EN4XA2KPP445XIBTMTRBLYWFIL556RDTHS2OWFQ2Z",
       "usdcContract": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA"
     }
@@ -251,14 +367,20 @@
 
   "algorand_networks": {
     "algorand": {
+      "displayName": "Algorand",
+      "icon": "algorand",
       "tokens": ["usdc"],
       "explorer": "https://allo.info",
+      "explorerPaths": {"tx": "/tx/{tx}", "address": "/account/{address}"},
       "facilitatorWallet": "KIMS5H6QLCUDL65L5UBTOXDPWLMTS7N3AAC3I6B2NCONEI5QIVK7LH2C2I",
       "usdcAsaId": 31566704
     },
     "algorand-testnet": {
+      "displayName": "Algorand Testnet",
+      "icon": "algorand",
       "tokens": ["usdc"],
-      "explorer": "https://testnet.allo.info",
+      "explorer": "https://testnet.explorer.perawallet.app",
+      "explorerPaths": {"tx": "/tx/{tx}/", "address": "/address/{address}/"},
       "facilitatorWallet": "5DPPDQNYUPCTXRZWRYSF3WPYU6RKAUR25F3YG4EKXQRHV5AUAI62H5GXL4",
       "usdcAsaId": 10458941
     }
@@ -267,9 +389,12 @@
   "xrpl_networks": {
     "_comment": "XRPL native family (NOT the EVM sidechain xrpl-evm / eip155:1440000). Native XRPL uses CAIP-2 xrpl:0 (mainnet) / xrpl:1 (testnet). Issued tokens are {currency, issuer} pairs; currency codes >3 chars are the 40-char hex form on-chain. XRP is native (integer drops, 1 XRP = 1e6 drops, 6 decimals). Issued tokens (RLUSD/USDC) are sent as decimal strings (up to 15 sig digits) but advertised as decimals:6 for cross-chain display consistency.",
     "xrpl": {
+      "displayName": "XRP Ledger",
+      "icon": "xrpl",
       "caip2": "xrpl:0",
       "tokens": ["xrp", "rlusd", "usdc"],
       "explorer": "https://livenet.xrpl.org",
+      "explorerPaths": {"tx": "/transactions/{tx}", "address": "/accounts/{address}"},
       "facilitatorWallet": "rfADKkVXBNqK3z72tVSS3LVzAR3psYkonp",
       "xrpDecimals": 6,
       "rlusdCurrencyHex": "524C555344000000000000000000000000000000",
@@ -278,11 +403,39 @@
       "usdcIssuer": "rGm7WCVp9gb4jZHWTEtGUr4dd74z2XuWhE"
     },
     "xrpl-testnet": {
+      "displayName": "XRP Ledger Testnet",
+      "icon": "xrpl",
       "caip2": "xrpl:1",
-      "tokens": ["xrp"],
+      "tokens": ["xrp", "rlusd", "usdc"],
       "explorer": "https://testnet.xrpl.org",
+      "explorerPaths": {"tx": "/transactions/{tx}", "address": "/accounts/{address}"},
       "facilitatorWallet": "rGhTioKAFHe75KgVnQtacRiKFuPv28Wbwk",
-      "xrpDecimals": 6
+      "xrpDecimals": 6,
+      "_note": "Same three assets as mainnet (src/chain/xrpl.rs payment_tokens): the testnet RLUSD and USDC issuers are in src/network.rs."
+    }
+  },
+
+  "hedera_networks": {
+    "_comment": "Native Hedera (HTS), x402 v2 only: /supported names these by their CAIP-2 id, which is the key here. Payments are HTS USDC only; any other token is refused at startup (src/chain/hedera/config.rs). Served when HEDERA_ENABLED_<MAINNET|TESTNET>=true. The fee payer account is the feePayer /supported publishes for each ledger (the balances Lambda reads it from HEDERA_ACCOUNT_ID_*).",
+    "hedera:mainnet": {
+      "caip2": "hedera:mainnet",
+      "displayName": "Hedera",
+      "icon": "hedera",
+      "tokens": ["usdc"],
+      "explorer": "https://hashscan.io/mainnet",
+      "explorerPaths": {"tx": "/transaction/{tx}", "address": "/account/{address}"},
+      "facilitatorWallet": "0.0.10868300",
+      "usdcTokenId": "0.0.456858"
+    },
+    "hedera:testnet": {
+      "caip2": "hedera:testnet",
+      "displayName": "Hedera Testnet",
+      "icon": "hedera",
+      "tokens": ["usdc"],
+      "explorer": "https://hashscan.io/testnet",
+      "explorerPaths": {"tx": "/transaction/{tx}", "address": "/account/{address}"},
+      "facilitatorWallet": "0.0.10576385",
+      "usdcTokenId": "0.0.429274"
     }
   },
 
@@ -291,49 +444,65 @@
       "name": "USDC",
       "fullName": "USD Coin",
       "decimals": 6,
-      "issuer": "Circle"
+      "issuer": "Circle",
+      "usdPegged": true,
+      "icon": "usdc"
     },
     "eurc": {
       "name": "EURC",
       "fullName": "Euro Coin",
       "decimals": 6,
-      "issuer": "Circle"
+      "issuer": "Circle",
+      "usdPegged": false,
+      "icon": "eurc"
     },
     "ausd": {
       "name": "AUSD",
       "fullName": "Agora USD",
       "decimals": 6,
-      "issuer": "Agora Finance"
+      "issuer": "Agora Finance",
+      "usdPegged": true,
+      "icon": "ausd"
     },
     "pyusd": {
       "name": "PYUSD",
       "fullName": "PayPal USD",
       "decimals": 6,
-      "issuer": "PayPal/Paxos"
+      "issuer": "PayPal/Paxos",
+      "usdPegged": true,
+      "icon": "pyusd"
     },
     "usdt": {
       "name": "USDT",
       "fullName": "Tether USD / USDT0",
       "decimals": 6,
-      "issuer": "Tether/LayerZero OFT"
+      "issuer": "Tether/LayerZero OFT",
+      "usdPegged": true,
+      "icon": "usdt"
     },
     "usdg": {
       "name": "USDG",
       "fullName": "Global Dollar",
       "decimals": 6,
-      "issuer": "Paxos (Global Dollar Network)"
+      "issuer": "Paxos (Global Dollar Network)",
+      "usdPegged": true,
+      "icon": "usdg"
     },
     "xrp": {
       "name": "XRP",
       "fullName": "XRP (native)",
       "decimals": 6,
-      "issuer": "XRP Ledger (native)"
+      "issuer": "XRP Ledger (native)",
+      "usdPegged": false,
+      "icon": null
     },
     "rlusd": {
       "name": "RLUSD",
       "fullName": "Ripple USD",
       "decimals": 6,
-      "issuer": "Ripple"
+      "issuer": "Ripple",
+      "usdPegged": true,
+      "icon": "rlusd"
     }
   },
 
@@ -382,7 +551,7 @@
   },
 
   "summary": {
-    "total_networks": 41,
+    "total_networks": 43,
     "evm_mainnets": 15,
     "evm_testnets": 12,
     "svm_networks": 4,
@@ -391,6 +560,7 @@
     "stellar_networks": 2,
     "algorand_networks": 2,
     "xrpl_networks": 2,
+    "hedera_networks": 2,
     "total_stablecoins": 7
   }
 }

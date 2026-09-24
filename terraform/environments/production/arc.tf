@@ -24,9 +24,24 @@ variable "arc_minimum_gas_usdc" {
 }
 
 locals {
-  # Public endpoints only. A credential-bearing endpoint belongs in Secrets Manager.
-  arc_rpc_environment = concat(
-    var.arc_mainnet_enabled ? [{ name = "RPC_URL_ARC", value = "https://rpc.mainnet.arc.io" }] : [],
-    var.arc_testnet_enabled ? [{ name = "RPC_URL_ARC_TESTNET", value = "https://rpc.testnet.arc.io" }] : [],
+  # Arc mainnet settles through the `arc` key of facilitator-rpc-mainnet
+  # (secrets.tf): the public rpc.mainnet.arc.io limits by IP and answers 429
+  # without Retry-After, and this is the payment path. A URL that carries a key
+  # is a `secrets` entry of the task definition, never an `environment` one, and
+  # one variable cannot be both; `all_task_secrets` (secrets.tf) takes this.
+  arc_rpc_secrets = var.arc_mainnet_enabled ? [{
+    name      = "RPC_URL_ARC"
+    valueFrom = "${data.aws_secretsmanager_secret.rpc_mainnet.arn}:arc::"
+  }] : []
+
+  # Public endpoints only: Arc testnet has no premium endpoint.
+  arc_rpc_environment = var.arc_testnet_enabled ? [{ name = "RPC_URL_ARC_TESTNET", value = "https://rpc.testnet.arc.io" }] : []
+
+  # The balances Lambda only reads a balance on each chain, which the public
+  # endpoints serve, and a Lambda has no `secrets` block: giving it the premium
+  # URL would put the key in its plain environment. So it keeps the public ones.
+  arc_balance_rpc_environment = merge(
+    var.arc_mainnet_enabled ? { RPC_URL_ARC = "https://rpc.mainnet.arc.io" } : {},
+    var.arc_testnet_enabled ? { RPC_URL_ARC_TESTNET = "https://rpc.testnet.arc.io" } : {},
   )
 }

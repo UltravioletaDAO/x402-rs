@@ -89,6 +89,7 @@ mod lease;
 mod mcp;
 mod negotiate;
 mod network;
+mod networks_json;
 mod nonce_store;
 mod openapi;
 mod payment_operator;

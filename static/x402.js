@@ -1,47 +1,98 @@
 // ---------------------------------------------------------------------------
-// Iconografia de redes del facilitador x402. Bloque para static/x402.js.
-// UNICA declaracion del sitio: la consumen la pared de la portada, la primera
-// columna de /networks y el uso en linea dentro de la prosa.
+// Presentacion de redes del facilitador x402: nombre, icono y explorador.
+// La consumen la portada, /networks y el uso en linea dentro de la prosa.
 //
-// 84 claves = las 42 redes del enum Network por sus 2 grafias (v1 y CAIP-2).
-// Derivado de Z:/ultravioleta/dao/x402-rs/src/network.rs (#[serde(rename)] +
-// to_caip2()), medido 2026-09-03 contra /supported (78 vivas, subconjunto exacto).
+// Sale de GET /networks.json, que el facilitador arma con lo que /supported
+// sirve (src/networks_json.rs). En static/ no se tipea ningun icono ni
+// explorador -- lo revisa `static_types_no_explorer_and_no_icon` --, asi que
+// una red que el facilitador empieza a servir aparece aca sin tocar nada.
 //
-// null      = la red esta declarada y el PNG todavia no existe.
-// undefined = red que este mapa no conoce.
-// Los dos casos van al monograma. La diferencia es documental y la revisa un test.
+// loadNetworks() pide el documento una vez. Mientras no respondio, o si fallo,
+// networkIcon() da null y el chip sale con monograma: nunca un icono inventado.
 // ---------------------------------------------------------------------------
-const ICONO_DE_RED = {
-  "arc": "arc", "arc-testnet": "arc", "eip155:5042": "arc", "eip155:5042002": "arc",
-  "hedera:mainnet": "hedera", "hedera:testnet": "hedera",
-  "algorand": "algorand", "algorand-testnet": "algorand", "algorand:mainnet": "algorand", "algorand:testnet": "algorand",
-  "arbitrum": "arbitrum", "arbitrum-sepolia": "arbitrum", "eip155:42161": "arbitrum", "eip155:421614": "arbitrum",
-  "avalanche": "avalanche", "avalanche-fuji": "avalanche", "eip155:43113": "avalanche", "eip155:43114": "avalanche",
-  "base": "base", "base-sepolia": "base", "eip155:8453": "base", "eip155:84532": "base",
-  "bsc": "bsc", "eip155:56": "bsc",
-  "celo": "celo", "celo-sepolia": "celo", "eip155:42220": "celo", "eip155:11142220": "celo",
-  "ethereum": "ethereum", "ethereum-sepolia": "ethereum", "eip155:1": "ethereum", "eip155:11155111": "ethereum",
-  "fogo": "fogo", "fogo-testnet": "fogo", "fogo:mainnet": "fogo", "fogo:testnet": "fogo",
-  "hyperevm": "hyperevm", "hyperevm-testnet": "hyperevm", "eip155:998": "hyperevm", "eip155:999": "hyperevm",
-  "monad": "monad", "eip155:143": "monad",
-  "near": "near", "near-testnet": "near", "near:mainnet": "near", "near:testnet": "near",
-  "optimism": "optimism", "optimism-sepolia": "optimism", "eip155:10": "optimism", "eip155:11155420": "optimism",
-  "polygon": "polygon", "polygon-amoy": "polygon", "eip155:137": "polygon", "eip155:80002": "polygon",
-  "robinhood": "robinhood", "robinhood-testnet": "robinhood", "eip155:4663": "robinhood", "eip155:46630": "robinhood",
-  "scroll": "scroll", "eip155:534352": "scroll",
-  "skale-base": "skale", "skale-base-sepolia": "skale", "eip155:1187947933": "skale", "eip155:324705682": "skale",
-  "solana": "solana", "solana-devnet": "solana", "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp": "solana", "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1": "solana",
-  "stellar": "stellar", "stellar-testnet": "stellar", "stellar:pubnet": "stellar", "stellar:testnet": "stellar",
-  "sui": "sui", "sui-testnet": "sui", "sui:mainnet": "sui", "sui:testnet": "sui",
-  "unichain": "unichain", "unichain-sepolia": "unichain", "eip155:130": "unichain", "eip155:1301": "unichain",
-  "xrpl": "xrpl", "xrpl-testnet": "xrpl", "xrpl:0": "xrpl", "xrpl:1": "xrpl",
-  // Declaradas en src/network.rs y sin PNG todavia. Salen con monograma, a proposito.
-  "sei": null, "sei-testnet": null, "xdc": null,
-  "eip155:1329": null, "eip155:1328": null, "eip155:50": null
-};
+let REDES = null;        // Map: id y caip2 -> fila de /networks.json
+let ICONOS_TOKEN = null; // Map: simbolo en minuscula -> ruta del icono, o null
+let cargaDeRedes = null;
 
-// Familia -> monograma, para una red que el mapa todavia no conoce. La clave es el
-// namespace CAIP-2: es lo unico legible de un identificador desconocido sin adivinar.
+// Solo la ruta: la pagina carga el icono de su propio origen (localhost,
+// staging, produccion), sea cual sea el host que nombra /networks.json.
+function localPath(url) {
+  const m = typeof url === 'string' && /^(?:[a-z][a-z0-9+.-]*:\/\/[^/?#]*)?(\/[^?#]*)$/i.exec(url);
+  return m ? m[1] : null;
+}
+
+function indexNetworks(body) {
+  if (!body || !Array.isArray(body.networks)) throw new Error('Invalid networks catalog');
+  const redes = new Map(), tokens = new Map();
+  body.networks.forEach(row => {
+    if (!row || typeof row !== 'object') return;
+    [row.id, row.caip2].forEach(n => { if (typeof n === 'string') redes.set(n, row); });
+    (Array.isArray(row.tokens) ? row.tokens : []).forEach(t => {
+      const k = String(t?.symbol || '').toLowerCase();
+      if (k && !tokens.get(k)) tokens.set(k, localPath(t.icon));
+    });
+  });
+  REDES = redes;
+  ICONOS_TOKEN = tokens;
+  return redes;
+}
+
+// Una sola peticion por pagina; si falla, la proxima llamada reintenta.
+function loadNetworks() {
+  if (!cargaDeRedes) {
+    cargaDeRedes = fetch('/networks.json')
+      .then(r => { if (!r.ok) throw new Error('Networks catalog unavailable'); return r.json(); })
+      .then(indexNetworks)
+      .catch(e => { cargaDeRedes = null; throw e; });
+  }
+  return cargaDeRedes;
+}
+
+function networkOf(name) { return REDES?.get(String(name || '')) || null; }
+function networkIcon(name) { return localPath(networkOf(name)?.icon); }
+function tokenIcon(symbol) { return ICONOS_TOKEN?.get(String(symbol || '').toLowerCase()) || null; }
+
+// El enlace al explorador de una red, desde su plantilla. Null si la red o la
+// plantilla no se conocen: un enlace adivinado a un explorador muerto hace que
+// una transaccion real parezca inventada.
+function explorerUrl(name, kind, value) {
+  const template = networkOf(name)?.explorer?.[kind];
+  if (typeof template !== 'string' || value == null || String(value).trim() === '') return null;
+  return template.replace('{' + kind + '}', encodeURIComponent(String(value).trim()));
+}
+
+// Completa lo que en el HTML solo NOMBRA una red o un token:
+//   <img data-net-icon="base">                               -> src
+//   <img data-token-icon="usdc">                             -> src
+//   <a data-explorer="solana">F742...</a>                    -> href (la direccion es el texto)
+//   <div data-explorer="base" data-explorer-address="0x..."> -> el click abre el explorador
+// Sin direccion no hay enlace: `data-explorer-fee-payer` pide que la pagina la
+// complete con el feePayer que publica /supported antes de llamar esto.
+// El src se escribe como ruta ("/<icono>.png"), la forma que miden las reglas
+// `.network-logo[src=...]` de la portada.
+function hydrateNetworks(root) {
+  const scope = root || document;
+  scope.querySelectorAll('img[data-net-icon]').forEach(img => {
+    const src = networkIcon(img.dataset.netIcon);
+    if (src) img.setAttribute('src', src);
+  });
+  scope.querySelectorAll('img[data-token-icon]').forEach(img => {
+    const src = tokenIcon(img.dataset.tokenIcon);
+    if (src) img.setAttribute('src', src);
+  });
+  scope.querySelectorAll('[data-explorer]').forEach(el => {
+    // Only a link's own text is an address; a card's text is its whole face.
+    const address = el.dataset.explorerAddress || (el.tagName === 'A' ? el.textContent : '');
+    const url = explorerUrl(el.dataset.explorer, 'address', address);
+    if (!url) return;
+    if (el.tagName === 'A') { el.href = url; el.rel = 'noopener'; }
+    else el.onclick = () => window.open(url, '_blank', 'noopener');
+  });
+}
+
+// Familia -> monograma, para una red que /networks.json todavia no describe. La
+// clave es el namespace CAIP-2: es lo unico legible de un identificador
+// desconocido sin adivinar.
 const MONO_FAMILIA = {
   "eip155": "EV", "solana": "SO", "near": "NE", "stellar": "ST",
   "xrpl": "XR", "fogo": "FO", "algorand": "AL", "sui": "SU", "hedera": "HE"
@@ -69,31 +120,25 @@ const escHtml = s => String(s).replace(/[&<>"']/g, c =>
 // Content-Security-Policy, asi que el onerror en linea no estaba bloqueado.
 // No era ese el problema: se quita porque sobra.)
 //
+// `src` es la ruta del icono (networkIcon/tokenIcon), o null.
 // `extra` admite "chip-red--tabla" o "chip-red--linea".
-function chip(rotulo, ico, extra){
+function chip(rotulo, src, extra){
   const cls = "chip-red" + (extra ? " " + extra : "");
   const t   = escHtml(rotulo);
   return '<span class="' + cls + '" title="' + t + '">' +
          '<b>' + escHtml(monogramaDeRed(rotulo)) + '</b>' +
-         (ico ? '<img src="/' + escHtml(ico) + '.png" alt="" width="96" height="96">' : '') +
+         (src ? '<img src="' + escHtml(src) + '" alt="" width="96" height="96">' : '') +
          '</span>';
 }
 
-function chipRed(nombre, extra){ return chip(nombre, ICONO_DE_RED[nombre], extra); }
-
-// Token images actually served by the facilitator.
-const ICONO_DE_TOKEN = {
-  usdc: "usdc", usdt: "usdt", eurc: "eurc",
-  ausd: "ausd", pyusd: "pyusd", usdg: "usdg",
-  rlusd: "rlusd", xrp: null, hbar: null, hts: null
-};
+function chipRed(nombre, extra){ return chip(nombre, networkIcon(nombre), extra); }
 
 // Un token sin PNG NO saca monograma: "US" seria el mismo para usdc, usdt y
 // usdg. Devuelve cadena vacia y el simbolo en texto -- que siempre esta al
 // lado -- lo dice.
 function chipToken(sim, extra){
-  const k = String(sim || "").toLowerCase();
-  return ICONO_DE_TOKEN[k] ? chip(sim, ICONO_DE_TOKEN[k], extra) : "";
+  const src = tokenIcon(sim);
+  return src ? chip(sim, src, extra) : "";
 }
 
 // Merge only aliases the facilitator declares. This also retains v2-only
@@ -142,12 +187,15 @@ function landingNetworkName(key = '') {
   return names[key] || key.replace(/-mainnet$/, '');
 }
 
+// Null -- "unknown", never "none" -- while /networks.json has not been read: its
+// token images are what tells a stablecoin from XRP, and without them every
+// card would claim to take nothing.
 function stablecoinsForCard(row) {
-  if (!row) return null;
+  if (!row || !ICONOS_TOKEN) return null;
   const exact = row.kinds.filter(k => k.scheme === 'exact');
   if (!exact.some(k => Array.isArray(k.extra?.tokens))) return null;
   return [...new Set(exact.flatMap(k => Array.isArray(k.extra?.tokens) ? k.extra.tokens : [])
-    .map(t => String(t?.token).toLowerCase()).filter(t => Object.hasOwn(ICONO_DE_TOKEN, t) && ICONO_DE_TOKEN[t]))].sort();
+    .map(t => String(t?.token).toLowerCase()).filter(t => tokenIcon(t)))].sort();
 }
 
 function matchesStablecoinFilter(row, token) {

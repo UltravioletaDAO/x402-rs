@@ -866,10 +866,10 @@ const INTEGRAR_HTML: &str = include_str!("../static/integrar.html");
 /// 2026-09-03).
 const UV_CSS: &str = include_str!("../static/uv.css");
 
-/// `static/x402.js`: the network-name -> icon map, declared ONCE for the three
-/// surfaces that consume it (the wall on `/`, the first column of `/networks`,
-/// and inline use inside prose). A copy per page is exactly what the
-/// centralised-configuration rule forbids.
+/// `static/x402.js`: the one reader of `/networks.json` (icons, explorers) and
+/// the chip constructor, declared ONCE for the surfaces that consume them (the
+/// wall on `/`, `/networks`, and inline use inside prose). A copy per page is
+/// exactly what the centralised-configuration rule forbids.
 const X402_JS: &str = include_str!("../static/x402.js");
 
 /// The licence of the two fonts. OFL 1.1 clause 2 requires it to travel with
@@ -1120,6 +1120,8 @@ where
         .route("/health", get(get_health))
         .route("/version", get(get_version))
         .route("/supported", get(get_supported::<A>))
+        // Not `/networks`: that is the HTML page (human_page_routes).
+        .route("/networks.json", get(get_networks_json::<A>))
         .route("/accepts", post(post_accepts::<A>))
         // /blacklist lives in secondary_read_routes() so it can carry its own
         // rate limit -- see that function for why.
@@ -1134,6 +1136,18 @@ where
         .route("/fonts/v1/uv-sans.woff2", get(get_font_sans))
         .route("/fonts/v1/uv-mono.woff2", get(get_font_mono))
         .route("/fonts/v1/OFL.txt", get(get_font_license))
+        // Every network and token image, in a router of its own so the test
+        // that checks each icon `/networks.json` publishes is really served
+        // (`networks_json::tests::every_icon_is_served`) can build it alone.
+        .merge(image_routes())
+}
+
+/// `GET /<network or token>.png`: the images `/networks.json` points at.
+pub fn image_routes<S>() -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    Router::new()
         .route("/avalanche.png", get(get_avalanche_logo))
         .route("/base.png", get(get_base_logo))
         .route("/celo.png", get(get_celo_logo))
@@ -3175,7 +3189,7 @@ pub async fn get_uv_css() -> impl IntoResponse {
     )
 }
 
-/// `GET /x402.js`: the icon map and the chip constructor.
+/// `GET /x402.js`: the `/networks.json` reader and the chip constructor.
 ///
 /// Blocking, not decorative: without it `chipRed is not defined` and the
 /// 39-row table of `/networks` never draws.
@@ -3594,31 +3608,85 @@ where
     A::Error: IntoResponse,
 {
     match facilitator.supported().await {
+        Ok(supported) => (StatusCode::OK, Json(supported_body(supported))).into_response(),
+        Err(error) => error.into_response(),
+    }
+}
+
+/// The body `GET /supported` answers with. Its own function because
+/// `GET /networks.json` is built from this very body, not from the struct
+/// before it: whatever `/supported` publishes, and only that, gets a row.
+pub(crate) fn supported_body(
+    supported: crate::types::SupportedPaymentKindsResponse,
+) -> serde_json::Value {
+    // Convert v1 response to v2 with the extensions this deployment
+    // actually serves. `durable-evidence` is advertised only when DX402
+    // is configured -- announcing an extension whose routes 404 would
+    // make integrators build against a capability that is not there.
+    let mut extensions = vec!["bazaar".to_string()];
+    // `is_serviceable`, not `enabled`: the flag can be on while the
+    // bucket is missing, in which case the service is never built and
+    // every /dx402 route 404s. See `Dx402Config::is_serviceable`.
+    if crate::dx402::Dx402Config::from_env().is_serviceable() {
+        extensions.push(crate::dx402::EXTENSION_KEY.to_string());
+    }
+    // Native Hedera uses a separate fee payer on each network.
+    let mut signers: HashMap<String, Vec<String>> = HashMap::new();
+    for kind in &supported.kinds {
+        if kind.network.starts_with("hedera:") {
+            if let Some(payer) = kind.extra.as_ref().and_then(|e| e.fee_payer.as_ref()) {
+                signers
+                    .entry(kind.network.clone())
+                    .or_default()
+                    .push(payer.to_string());
+            }
+        }
+    }
+    let v2_response = supported.to_v2(extensions, signers);
+    let mut value = json!(v2_response);
+    value["facilitatorReceipts"] = crate::receipts::capability();
+    value
+}
+
+/// `GET /networks.json`: how to present each network `/supported` serves --
+/// its name, icon, explorer, testnet flag, schemes and tokens. See
+/// `networks_json` for where each field comes from.
+///
+/// Answers `/supported`'s own error when the facilitator cannot list what it
+/// supports, and a `500` only if the compiled `config/supported_tokens.json`
+/// does not parse (the tests keep that from shipping).
+#[instrument(skip_all)]
+pub async fn get_networks_json<A>(State(facilitator): State<A>) -> impl IntoResponse
+where
+    A: Facilitator,
+    A::Error: IntoResponse,
+{
+    let catalog = match crate::networks_json::CATALOG.as_ref() {
+        Ok(catalog) => catalog,
+        Err(reason) => {
+            error!(reason, "config/supported_tokens.json does not parse");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "network_catalog_unavailable" })),
+            )
+                .into_response();
+        }
+    };
+    match facilitator.supported().await {
         Ok(supported) => {
-            // Convert v1 response to v2 with the extensions this deployment
-            // actually serves. `durable-evidence` is advertised only when DX402
-            // is configured -- announcing an extension whose routes 404 would
-            // make integrators build against a capability that is not there.
-            let mut extensions = vec!["bazaar".to_string()];
-            // `is_serviceable`, not `enabled`: the flag can be on while the
-            // bucket is missing, in which case the service is never built and
-            // every /dx402 route 404s. See `Dx402Config::is_serviceable`.
-            if crate::dx402::Dx402Config::from_env().is_serviceable() {
-                extensions.push(crate::dx402::EXTENSION_KEY.to_string());
-            }
-            // Native Hedera uses a separate fee payer on each network.
-            let mut signers: HashMap<String, Vec<String>> = HashMap::new();
-            for kind in &supported.kinds {
-                if kind.network.starts_with("hedera:") {
-                    if let Some(payer) = kind.extra.as_ref().and_then(|e| e.fee_payer.as_ref()) {
-                        signers.entry(kind.network.clone()).or_default().push(payer.to_string());
-                    }
-                }
-            }
-            let v2_response = supported.to_v2(extensions, signers);
-            let mut value = json!(v2_response);
-            value["facilitatorReceipts"] = crate::receipts::capability();
-            (StatusCode::OK, Json(value)).into_response()
+            let doc = crate::networks_json::document(
+                &supported_body(supported),
+                catalog,
+                &crate::networks_json::public_url(),
+            );
+            (
+                StatusCode::OK,
+                // Changes with a deploy, never within one: five minutes of
+                // cache costs a new network nothing it would notice.
+                [(header::CACHE_CONTROL, "public, max-age=300")],
+                Json(doc),
+            )
+                .into_response()
         }
         Err(error) => error.into_response(),
     }
@@ -16525,7 +16593,8 @@ mod agentic_surface_tests {
     }
 
     /// Every chain the x402 document lists carries the CAIP-2 id the code
-    /// publishes for it, and the icon map knows that id.
+    /// publishes for it, and `static/x402.js` types none (its icons come from
+    /// `/networks.json`).
     ///
     /// Both files are typed by hand. The document said `eip155:44787` for
     /// celo-sepolia for as long as `to_caip2` did; tying them together means a
@@ -16560,17 +16629,21 @@ mod agentic_surface_tests {
         }
         assert!(listed >= 30, "only {listed} chains listed");
 
+        // The icons are no longer typed into static/x402.js: it reads them from
+        // /networks.json, whose every chain `networks_json` tests. So the file
+        // must name no chain at all -- a CAIP-2 id back in it is a hand-kept
+        // map coming back.
         for network in crate::network::Network::variants() {
             let caip2 = network.to_caip2();
             assert!(
-                X402_JS.contains(&format!("\"{caip2}\":")),
-                "static/x402.js has no icon entry for `{caip2}` ({network})"
+                !X402_JS.contains(&format!("\"{caip2}\"")),
+                "static/x402.js names `{caip2}` ({network}); icons come from /networks.json"
             );
         }
         for retired in crate::network::RETIRED_NETWORK_IDS {
             assert!(
-                !X402_JS.contains(&format!("\"{}\":", retired.id)),
-                "static/x402.js still maps the retired `{}`",
+                !X402_JS.contains(retired.id),
+                "static/x402.js names the retired `{}`",
                 retired.id
             );
         }

@@ -48,6 +48,7 @@ pub mod json_depth;
 pub mod lease;
 pub mod negotiate;
 pub mod network;
+pub mod networks_json;
 pub mod nonce_store;
 pub mod payment_operator;
 pub mod provider_cache;

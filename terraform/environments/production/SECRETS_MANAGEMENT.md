@@ -72,6 +72,7 @@ RPC secrets are JSON objects with network keys:
   "ethereum": "https://...",
   "arbitrum": "https://...",
   "unichain": "https://...",
+  "arc": "https://...",
   "solana": "https://...",
   "near": "https://..."
 }
@@ -102,7 +103,8 @@ RPC secrets are JSON objects with network keys:
 - `facilitator-evm-private-key` (legacy, JSON with `private_key` field)
 
 **RPC Secrets:**
-- Premium mainnet RPCs in `facilitator-rpc-mainnet` (base, avalanche, polygon, optimism, celo, hyperevm, ethereum, arbitrum, unichain)
+- Premium mainnet RPCs in `facilitator-rpc-mainnet` (base, avalanche, polygon, optimism, celo, hyperevm, ethereum, arbitrum, unichain, arc)
+- `arc` is mapped only while `arc_mainnet_enabled` (`local.arc_rpc_secrets`, `arc.tf`); Arc testnet stays on its public endpoint in `environment`, and the balances Lambda keeps the public endpoints for both (it has no `secrets` block)
 - Free testnet RPCs in task definition environment variables
 - `facilitator-rpc-testnet` only has arbitrum-sepolia currently
 

@@ -36,6 +36,9 @@ pub enum OperatorError {
     #[error("Invalid amount format: {0}")]
     InvalidAmount(String),
 
+    /// The call would go to one address and name another as
+    /// `paymentInfo.operator`. The escrow only takes calls from
+    /// `paymentInfo.operator` itself, so the two must be the same.
     #[error("Operator address mismatch: expected {expected}, got {actual}")]
     OperatorMismatch { expected: Address, actual: Address },
 
@@ -145,6 +148,12 @@ pub enum OperatorError {
     /// or captured. Typically the retry of a void that already went through.
     #[error("nothing to void: the capturable amount is 0; nothing was sent")]
     NothingToVoid,
+
+    /// The PaymentOperator a write would go to has no code on this network. A
+    /// call to such an address succeeds and does nothing, so it is refused
+    /// before anything is signed.
+    #[error("PaymentOperator {operator} has no code on {network}; nothing was sent")]
+    OperatorHasNoCode { operator: Address, network: String },
 }
 
 /// How a typed escrow failure answers over HTTP: status, the bounded token
@@ -188,6 +197,16 @@ impl OperatorError {
                 status: 503,
                 token: "operator_not_verified",
                 retry_after_secs: Some(60),
+            }),
+            OperatorError::OperatorMismatch { .. } => Some(HttpAnswer {
+                status: 400,
+                token: "operator_mismatch",
+                retry_after_secs: None,
+            }),
+            OperatorError::OperatorHasNoCode { .. } => Some(HttpAnswer {
+                status: 422,
+                token: "operator_has_no_code",
+                retry_after_secs: None,
             }),
             OperatorError::AuthorizationSignatureInvalid(_) => Some(HttpAnswer {
                 status: 400,

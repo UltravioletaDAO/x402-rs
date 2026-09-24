@@ -56,6 +56,8 @@ struct NodeState {
     calls: HashMap<(Address, [u8; 4]), CallAnswer>,
     /// Every `eth_call` answered, as `(to, selector)`.
     reads: Vec<(Address, [u8; 4])>,
+    /// Every `eth_getCode` answered, in order.
+    code_reads: Vec<Address>,
     code: HashMap<Address, Vec<u8>>,
     /// While set, every `eth_call` and `eth_getCode` fails as a rate limit.
     reads_fail: bool,
@@ -119,11 +121,17 @@ impl MockNode {
         self.state.lock().unwrap().reads.clone()
     }
 
+    /// Every address whose code was read, in order.
+    pub(crate) fn code_reads(&self) -> Vec<Address> {
+        self.state.lock().unwrap().code_reads.clone()
+    }
+
     /// Forget what was sent and read so far; the script stays.
     pub(crate) fn clear_log(&self) {
         let mut state = self.state.lock().unwrap();
         state.sent.clear();
         state.reads.clear();
+        state.code_reads.clear();
     }
 }
 
@@ -299,6 +307,7 @@ fn answer(state: &Mutex<NodeState>, req: &Value) -> Value {
                 .as_str()
                 .and_then(|a| a.parse().ok())
                 .expect("an address");
+            state.code_reads.push(address);
             let code = state.code.get(&address).cloned().unwrap_or_default();
             json!(format!("0x{}", hex::encode(code)))
         }

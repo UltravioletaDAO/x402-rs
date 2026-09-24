@@ -236,13 +236,14 @@ where
     // operator that passed its self-check -- the same two gates `authorize`
     // applies, answered here as a verdict rather than an HTTP error.
     if is_canonical_v1_network(network) {
-        let gate = match assert_eoa_authorization(network, &escrow_payload, &extra) {
-            Ok(()) => {
-                authorize_operator_gate(network, &escrow_payload, &extra, &addrs, evm_provider)
-                    .await
-            }
-            Err(e) => Err(e),
-        };
+        let target = extra.authorize_address.unwrap_or(extra.operator_address);
+        let gate = async {
+            assert_v3_target_is_operator(target, escrow_payload.payment_info.operator)?;
+            assert_eoa_authorization(network, &escrow_payload, &extra)?;
+            authorize_operator_gate(network, target, &addrs, evm_provider).await?;
+            assert_v3_target_has_code(evm_provider, network, target).await
+        }
+        .await;
         if let Err(e) = gate {
             let reason = match &e {
                 OperatorError::ChainReadUnavailable(_) => {
@@ -510,8 +511,11 @@ where
         .ok_or_else(|| OperatorError::unsupported_network(&network))?;
     let evm_provider = get_evm_provider(facilitator, network)?;
     if resolve_operator_abi(network, extra)? == OperatorAbi::V3 {
+        let target = extra.authorize_address.unwrap_or(extra.operator_address);
+        assert_v3_target_is_operator(target, payload.payment_info.operator)?;
         assert_eoa_authorization(network, payload, extra)?;
-        authorize_operator_gate(network, payload, extra, &addrs, evm_provider).await?;
+        authorize_operator_gate(network, target, &addrs, evm_provider).await?;
+        assert_v3_target_has_code(evm_provider, network, target).await?;
     }
     let tx_hash = execute_authorize(payload, extra, &addrs, evm_provider, network).await?;
 
@@ -864,6 +868,8 @@ async fn execute_release(
     // Legacy networks (Base, Ethereum, etc.) use old ABI without bytes data
     // Canonical v1 networks (Arc) have no release: capture(PaymentInfo, amount, data)
     if abi == OperatorAbi::V3 {
+        assert_v3_target_is_operator(target, payment_info.operator)?;
+        assert_v3_target_has_code(provider, network, target).await?;
         let call = OperatorV3Contract::captureCall {
             paymentInfo: payment_info.to_v3_abi_type(),
             amount,
@@ -951,6 +957,7 @@ async fn execute_refund_in_escrow(
             &payment_info,
             extra.escrow_address,
             provider,
+            network,
             target,
         )
         .await
@@ -987,6 +994,9 @@ async fn execute_refund_in_escrow(
 ///
 /// So the capturable amount is read first, and the request is held to it, in
 /// this order:
+/// - the call would not go to `paymentInfo.operator`, or that address has no
+///   code: [`OperatorError::OperatorMismatch`] / [`OperatorError::OperatorHasNoCode`]
+///   (see [`assert_v3_target_has_code`]);
 /// - the read fails: [`OperatorError::ChainReadUnavailable`], retryable;
 /// - nothing is capturable: [`OperatorError::NothingToVoid`] -- the retry of a
 ///   void that already went through, which `void` itself would revert on;
@@ -1003,8 +1013,11 @@ async fn void_whole_authorization(
     payment_info: &ContractPaymentInfo,
     escrow: Address,
     provider: &EvmProvider,
+    network: Network,
     target: Address,
 ) -> Result<B256, OperatorError> {
+    assert_v3_target_is_operator(target, payment_info.operator)?;
+    assert_v3_target_has_code(provider, network, target).await?;
     let (_, state) = read_payment_state(provider, escrow, payment_info.to_escrow_abi_type())
         .await
         .map_err(|e| OperatorError::ChainReadUnavailable(e.to_string()))?;
@@ -1028,43 +1041,108 @@ async fn void_whole_authorization(
     send_operator_tx(provider, target, &call, Some(provider.pinned_signer())).await
 }
 
-/// On a canonical v1 network, the operators a NEW authorization would name
-/// that this facilitator declares must have passed their self-check
+/// On a canonical v1 network, the operator a NEW authorization goes to, if
+/// this facilitator declares it, must have passed its self-check
 /// (`autoverify`). An operator the merchant brings is relayed as everywhere
-/// else. `release` and `refundInEscrow` never come through here.
+/// else, after [`assert_v3_target_has_code`]. `release` and `refundInEscrow`
+/// never come through here.
+///
+/// Called after [`assert_v3_target_is_operator`], so the address the call
+/// goes to and `paymentInfo.operator` are one and the same.
 async fn authorize_operator_gate(
     network: Network,
-    payload: &EscrowPayload,
-    extra: &EscrowExtra,
+    target: Address,
     addrs: &OperatorAddresses,
     provider: &EvmProvider,
 ) -> Result<(), OperatorError> {
-    let target = extra.authorize_address.unwrap_or(extra.operator_address);
-    let mut named = vec![target];
-    if payload.payment_info.operator != target {
-        named.push(payload.payment_info.operator);
+    if !addrs.payment_operators.contains(&target) {
+        return Ok(());
     }
-    for operator in named
-        .into_iter()
-        .filter(|o| addrs.payment_operators.contains(o))
-    {
-        match autoverify::verdict_for_new_authorization(provider, network, operator, addrs.escrow)
-            .await
-        {
-            autoverify::Verdict::Verified => {}
-            autoverify::Verdict::Mismatch(reason) => {
-                return Err(OperatorError::OperatorNotVerified {
-                    operator,
-                    network: network.to_string(),
-                    reason,
-                })
-            }
-            autoverify::Verdict::Unreachable(reason) => {
-                return Err(OperatorError::ChainReadUnavailable(reason))
-            }
+    match autoverify::verdict_for_new_authorization(provider, network, target, addrs.escrow).await {
+        autoverify::Verdict::Verified => Ok(()),
+        autoverify::Verdict::Mismatch(reason) => Err(OperatorError::OperatorNotVerified {
+            operator: target,
+            network: network.to_string(),
+            reason,
+        }),
+        autoverify::Verdict::Unreachable(reason) => {
+            Err(OperatorError::ChainReadUnavailable(reason))
         }
     }
+}
+
+/// A v3 write goes to `paymentInfo.operator` itself. The canonical escrow
+/// takes `authorize`, `capture` and `void` only from that address
+/// (`onlySender(paymentInfo.operator)`), so a call sent anywhere else can at
+/// best revert. Refused before anything is read or signed.
+fn assert_v3_target_is_operator(
+    target: Address,
+    payment_operator: Address,
+) -> Result<(), OperatorError> {
+    if target == payment_operator {
+        Ok(())
+    } else {
+        Err(OperatorError::OperatorMismatch {
+            expected: payment_operator,
+            actual: target,
+        })
+    }
+}
+
+type SeenWithCode = std::sync::Mutex<std::collections::HashSet<(Network, Address)>>;
+
+fn operators_with_code() -> &'static SeenWithCode {
+    static SEEN: std::sync::OnceLock<SeenWithCode> = std::sync::OnceLock::new();
+    SEEN.get_or_init(Default::default)
+}
+
+/// A v3 write goes to an address with code. A call to an address with none
+/// succeeds, moves nothing and comes back with a successful receipt -- which
+/// the caller would be told is a settled payment -- so it is refused before
+/// anything is signed: [`OperatorError::OperatorHasNoCode`], deterministic.
+/// A read that fails is [`OperatorError::ChainReadUnavailable`], retryable.
+///
+/// Code once seen is remembered for the process: a deployed operator does not
+/// lose it. An address without code is read again on the next request, so an
+/// operator deployed in between is used as soon as it exists.
+async fn assert_v3_target_has_code(
+    provider: &EvmProvider,
+    network: Network,
+    target: Address,
+) -> Result<(), OperatorError> {
+    let known = operators_with_code()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(&(network, target));
+    if known {
+        return Ok(());
+    }
+    let code = provider.inner().get_code_at(target).await.map_err(|e| {
+        OperatorError::ChainReadUnavailable(format!(
+            "eth_getCode({target}): {}",
+            crate::redact::scrub_urls(&e.to_string())
+        ))
+    })?;
+    if code.is_empty() {
+        return Err(OperatorError::OperatorHasNoCode {
+            operator: target,
+            network: network.to_string(),
+        });
+    }
+    operators_with_code()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert((network, target));
     Ok(())
+}
+
+/// Forget that `target` was seen with code. Tests only.
+#[cfg(test)]
+pub(super) fn forget_operator_code_for_test(network: Network, target: Address) {
+    operators_with_code()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&(network, target));
 }
 
 sol! {

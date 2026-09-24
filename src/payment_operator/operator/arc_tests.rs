@@ -93,6 +93,12 @@ fn deploy_v3_operator(node: &MockNode, operator: Address, escrow: Address) {
     );
 }
 
+/// The declared operator on `network`, deployed: v3 bytecode bound to the
+/// canonical escrow. A release or a refund needs code where it is sent.
+fn deployed(node: &MockNode, network: Network) {
+    deploy_v3_operator(node, operator(network), canonical_v1::ESCROW);
+}
+
 /// What `/settle` answers for `err`: status, JSON body, `Retry-After`.
 async fn http(err: &OperatorError) -> (u16, Value, Option<String>) {
     let (response, _) =
@@ -116,6 +122,8 @@ async fn http(err: &OperatorError) -> (u16, Value, Option<String>) {
 async fn arc_release_encodes_capture() {
     for network in [Network::Arc, Network::ArcTestnet] {
         let (node, providers) = arc(network).await;
+        deployed(&node, network);
+        super::forget_operator_code_for_test(network, operator(network));
         let pinned = test_rpc::evm(&providers, network).pinned_signer();
 
         settle(&release(network, ONE), &providers)
@@ -143,7 +151,9 @@ async fn arc_release_encodes_capture() {
             "{}",
             tx.max_fee_per_gas
         );
-        // Nothing read first: no self-check, no state read on a release.
+        // Read first: the operator's code, and nothing else -- no self-check,
+        // no state read on a release.
+        assert_eq!(node.code_reads(), vec![operator(network)]);
         assert!(node.reads().is_empty(), "{:?}", node.reads());
     }
 }
@@ -153,6 +163,7 @@ async fn arc_refund_encodes_void() {
     for network in [Network::Arc, Network::ArcTestnet] {
         let (node, providers) = arc(network).await;
         escrow_holds(&node, ONE);
+        deployed(&node, network);
         let pinned = test_rpc::evm(&providers, network).pinned_signer();
 
         // The request names the whole capturable amount: that is a void.
@@ -192,6 +203,7 @@ async fn arc_refund_encodes_void() {
 async fn arc_partial_refund_is_rejected_without_tx() {
     let (node, providers) = arc(Network::Arc).await;
     escrow_holds(&node, ONE);
+    deployed(&node, Network::Arc);
 
     for amount in [ONE / 2, ONE + 1] {
         node.clear_log();
@@ -220,6 +232,7 @@ async fn arc_partial_refund_is_rejected_without_tx() {
 async fn arc_zero_amount_refund_is_rejected_without_tx() {
     let (node, providers) = arc(Network::Arc).await;
     escrow_holds(&node, ONE);
+    deployed(&node, Network::Arc);
 
     // 0 is a missing amount, never "all of it": voiding the whole
     // authorization takes the caller naming the capturable amount.
@@ -251,6 +264,7 @@ async fn arc_zero_amount_refund_is_rejected_without_tx() {
 async fn arc_void_with_zero_capturable_is_not_labeled_partial() {
     let (node, providers) = arc(Network::Arc).await;
     escrow_holds(&node, 0);
+    deployed(&node, Network::Arc);
 
     // The retry of a void that already went through: the amount it names is
     // no longer capturable, and that is not a partial refund.
@@ -273,6 +287,7 @@ async fn arc_void_with_zero_capturable_is_not_labeled_partial() {
 async fn arc_transient_rpc_failure_on_refund_is_retryable_5xx() {
     let (node, providers) = arc(Network::Arc).await;
     escrow_holds(&node, ONE);
+    deployed(&node, Network::Arc);
 
     // A rate limit, and a node error that is not one: neither is a verdict.
     for failure in [None, Some((-32603i64, "internal error"))] {
@@ -317,6 +332,8 @@ async fn arc_autoverify_failure_does_not_block_release_or_refund() {
     let (node, providers) = arc(network).await;
     escrow_holds(&node, ONE);
     let op = operator(network);
+    // The operator exists; only the self-check's cached verdict says otherwise.
+    deployed(&node, network);
 
     for verdict in [
         Verdict::Mismatch("no code at the operator address".into()),
@@ -342,7 +359,8 @@ async fn arc_autoverify_failure_does_not_block_release_or_refund() {
             OperatorV3Contract::voidCall::SELECTOR
         );
 
-        // ... and neither read the operator: the self-check is not on their path.
+        // ... and neither called the operator: the self-check (`ESCROW()`) is
+        // not on their path.
         assert!(
             node.reads().iter().all(|(to, _)| *to != op),
             "{:?}",
@@ -350,6 +368,157 @@ async fn arc_autoverify_failure_does_not_block_release_or_refund() {
         );
     }
     autoverify::set_for_test(network, op, None);
+}
+
+// ---------------------------------------------------------------------------
+// A v3 write goes to paymentInfo.operator, and that address has code
+// ---------------------------------------------------------------------------
+
+/// An operator a merchant brings: not declared, never self-checked.
+const UNDECLARED: Address = address!("4444444444444444444444444444444444444444");
+
+/// The three v3 writes, all to `op`.
+fn v3_writes(
+    network: Network,
+    op: Address,
+    payer: &PrivateKeySigner,
+) -> [(&'static str, Value); 3] {
+    let lifecycle = |action| {
+        lifecycle_body(
+            action,
+            "1000000",
+            network,
+            canonical_v1::ESCROW,
+            op,
+            canonical_v1::TOKEN_COLLECTOR,
+        )
+    };
+    [
+        (
+            "authorize",
+            signed_authorize_to(network, op, network, payer, payer),
+        ),
+        ("release", lifecycle("release")),
+        ("refundInEscrow", lifecycle("refundInEscrow")),
+    ]
+}
+
+#[tokio::test]
+async fn arc_v3_writes_require_operator_code() {
+    let network = Network::Arc;
+    let (node, providers) = arc(network).await;
+    escrow_holds(&node, ONE);
+    let payer = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x66)).unwrap();
+
+    // The declared operator before it is deployed. A call to an address with
+    // no code is mined as a no-op with a successful receipt: release and refund
+    // to it must be refused, not reported as settled.
+    let declared = operator(network);
+    super::forget_operator_code_for_test(network, declared);
+    for body in [release(network, ONE), refund(network, ONE)] {
+        node.clear_log();
+        let err = settle(&body, &providers).await.expect_err("no code");
+        assert!(
+            matches!(err, OperatorError::OperatorHasNoCode { operator, .. } if operator == declared),
+            "{err:?}"
+        );
+        assert!(node.sent().is_empty(), "no transaction");
+        let (status, answer, retry_after) = http(&err).await;
+        assert_eq!(status, 422);
+        assert_eq!(answer["errorReason"], "operator_has_no_code");
+        assert_eq!(answer["retryable"], false);
+        assert_eq!(retry_after, None);
+    }
+
+    // An operator the merchant brings, for all three writes.
+    super::forget_operator_code_for_test(network, UNDECLARED);
+    for (action, body) in v3_writes(network, UNDECLARED, &payer) {
+        node.clear_log();
+        let err = settle(&body, &providers).await.expect_err(action);
+        assert!(
+            matches!(err, OperatorError::OperatorHasNoCode { .. }),
+            "{action}: {err:?}"
+        );
+        assert!(node.sent().is_empty(), "{action}: no transaction");
+        assert_eq!(node.code_reads(), vec![UNDECLARED], "{action}");
+    }
+
+    // The node cannot say: retryable 5xx, nothing sent.
+    node.fail_reads(true);
+    for (action, body) in v3_writes(network, UNDECLARED, &payer) {
+        node.clear_log();
+        let err = settle(&body, &providers).await.expect_err(action);
+        assert!(
+            matches!(err, OperatorError::ChainReadUnavailable(_)),
+            "{action}: {err:?}"
+        );
+        assert!(node.sent().is_empty(), "{action}: no transaction");
+        let (status, answer, retry_after) = http(&err).await;
+        assert!((500..600).contains(&status), "{action}: {status}");
+        assert_eq!(answer["retryable"], true);
+        assert!(retry_after.is_some());
+    }
+    node.fail_reads(false);
+
+    // With code there, each write goes out to it.
+    node.set_code(UNDECLARED, vec![0x60, 0x00]);
+    for (action, body) in v3_writes(network, UNDECLARED, &payer) {
+        node.clear_log();
+        settle(&body, &providers)
+            .await
+            .unwrap_or_else(|e| panic!("{action}: {e:?}"));
+        let sent = node.sent();
+        assert_eq!(sent.len(), 1, "{action}");
+        assert_eq!(sent[0].to, Some(UNDECLARED), "{action}");
+    }
+    // Code once seen is not read again.
+    node.clear_log();
+    settle(&release(network, ONE), &providers)
+        .await
+        .expect_err("the declared operator still has no code");
+    settle(&v3_writes(network, UNDECLARED, &payer)[1].1, &providers)
+        .await
+        .expect("release to the deployed operator");
+    assert_eq!(
+        node.code_reads(),
+        vec![declared],
+        "only the one never seen with code"
+    );
+    super::forget_operator_code_for_test(network, UNDECLARED);
+}
+
+#[tokio::test]
+async fn arc_v3_write_target_must_be_the_payment_operator() {
+    let network = Network::ArcTestnet;
+    let (node, providers) = arc(network).await;
+    escrow_holds(&node, ONE);
+    deployed(&node, network);
+    // Even a contract: the escrow only takes calls from paymentInfo.operator.
+    node.set_code(UNDECLARED, vec![0x60, 0x00]);
+    let payer = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x77)).unwrap();
+    let op = operator(network);
+
+    for (action, body) in v3_writes(network, op, &payer) {
+        for key in ["operatorAddress", "authorizeAddress"] {
+            let mut body = body.clone();
+            body["paymentRequirements"]["extra"][key] = json!(UNDECLARED);
+            node.clear_log();
+            let err = settle(&body, &providers).await.expect_err(action);
+            assert!(
+                matches!(err, OperatorError::OperatorMismatch { expected, actual }
+                    if expected == op && actual == UNDECLARED),
+                "{action} via {key}: {err:?}"
+            );
+            assert!(node.sent().is_empty(), "{action} via {key}: no transaction");
+            assert!(
+                node.reads().is_empty() && node.code_reads().is_empty(),
+                "{action} via {key}: refused before any read"
+            );
+            let (status, answer, _) = http(&err).await;
+            assert_eq!(status, 400);
+            assert_eq!(answer["errorReason"], "operator_mismatch");
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -595,10 +764,21 @@ fn signed_authorize(
     payer: &PrivateKeySigner,
     signer: &PrivateKeySigner,
 ) -> Value {
+    signed_authorize_to(network, operator(network), signed_for, payer, signer)
+}
+
+/// [`signed_authorize`] against the operator `op`.
+fn signed_authorize_to(
+    network: Network,
+    op: Address,
+    signed_for: Network,
+    payer: &PrivateKeySigner,
+    signer: &PrivateKeySigner,
+) -> Value {
     let mut body = authorize_body(
         network,
         canonical_v1::ESCROW,
-        operator(network),
+        op,
         canonical_v1::TOKEN_COLLECTOR,
     );
     let usdc = crate::network::USDCDeployment::by_network(network)
@@ -720,6 +900,21 @@ async fn arc_authorize_waits_for_a_verified_operator() {
         "{verdict}"
     );
 
+    // Deployed a moment later: inside RECHECK_FLOOR the standing verdict is
+    // not re-read, so a burst of requests costs no reads at all.
+    deploy_v3_operator(&node, op, canonical_v1::ESCROW);
+    node.clear_log();
+    let err = settle(&body, &providers)
+        .await
+        .expect_err("within the re-check floor");
+    assert!(
+        matches!(err, OperatorError::OperatorNotVerified { .. }),
+        "{err:?}"
+    );
+    assert!(node.reads().is_empty() && node.code_reads().is_empty());
+    assert!(node.sent().is_empty());
+    node.set_code(op, Vec::new());
+
     // The node cannot be read: retryable 5xx, nothing sent.
     autoverify::set_for_test(network, op, None);
     node.fail_reads(true);
@@ -744,6 +939,35 @@ async fn arc_authorize_waits_for_a_verified_operator() {
         matches!(err, OperatorError::OperatorNotVerified { .. }),
         "{err:?}"
     );
+
+    // Bound to the canonical escrow but without one of the v3 entry points:
+    // refused on the bytecode alone, without asking it for ESCROW().
+    autoverify::set_for_test(network, op, None);
+    deploy_v3_operator(&node, op, canonical_v1::ESCROW);
+    let mut no_capture = Vec::new();
+    for (name, selector) in autoverify::v3_selectors() {
+        if name != "capture" {
+            no_capture.push(0x63);
+            no_capture.extend_from_slice(&selector);
+        }
+    }
+    node.set_code(op, no_capture);
+    node.clear_log();
+    let err = settle(&body, &providers)
+        .await
+        .expect_err("no capture() in the bytecode");
+    assert!(
+        matches!(&err, OperatorError::OperatorNotVerified { reason, .. } if reason.contains("capture")),
+        "{err:?}"
+    );
+    assert!(
+        !node
+            .reads()
+            .contains(&(op, OperatorV3Contract::ESCROWCall::SELECTOR)),
+        "{:?}",
+        node.reads()
+    );
+    assert!(node.sent().is_empty());
 
     // Deployed as declared: verified on the next read, and authorize goes out.
     autoverify::set_for_test(network, op, None);

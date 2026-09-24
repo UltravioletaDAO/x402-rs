@@ -542,7 +542,10 @@ Escrow contracts deployed on 13 networks. See `/supported` for networks with act
 **Arc and Arc testnet** run the canonical commerce-payments v1.0.0 set -- AuthCaptureEscrow
 `0xBdEA0D1bcC5966192B070Fdf62aB4EF5b4420cff`, ERC-3009 collector `0x0E3dF9510de65469C4518D7843919c0b8C7A7757`,
 PaymentOperatorFactory v1.0.2 `0xc24153B7ED8DC03e551F29DDEeA5CadFe57e2716` -- and a request there must name
-that escrow and collector. Their operators have no `release` / `refundInEscrow`: `release` is sent as
+that escrow and collector. Every write there (`authorize`, `release`, `refundInEscrow`) goes to `paymentInfo.operator`
+itself, and only once that address has code: a request whose `operatorAddress` / `authorizeAddress` is another
+address answers `400 operator_mismatch`, and one whose operator has no code on the network answers
+`422 operator_has_no_code`; neither sends a transaction. Their operators have no `release` / `refundInEscrow`: `release` is sent as
 `capture(paymentInfo, amount, 0x)` and `refundInEscrow` as `void(paymentInfo, 0x)`, which returns the WHOLE
 capturable amount, so `refundInEscrow` must name exactly that amount. Nothing capturable left answers
 `409 nothing_to_void`; an `amount` of `0` answers `422 amount_required_on_generation` (it is never read as

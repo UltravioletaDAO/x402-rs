@@ -7,6 +7,31 @@ const root = path.resolve(__dirname, '..');
 const context = vm.createContext({});
 vm.runInContext(fs.readFileSync(path.join(root, 'static/x402.js'), 'utf8'), context);
 const evaluate = code => JSON.parse(JSON.stringify(vm.runInContext(code, context)));
+
+// GET /networks.json as the facilitator builds it from config/supported_tokens.json
+// (src/networks_json.rs): the presentation half, which is all x402.js reads.
+const CONFIG = JSON.parse(fs.readFileSync(path.join(root, 'config/supported_tokens.json'), 'utf8'));
+const ORIGIN = 'https://facilitator.ultravioletadao.xyz';
+function networksDocument() {
+  const networks = [];
+  for (const [group, entries] of Object.entries(CONFIG)) {
+    if (!/_(networks|mainnets|testnets)$/.test(group)) continue;
+    for (const [id, e] of Object.entries(entries)) {
+      if (id.startsWith('_')) continue;
+      networks.push({
+        id, caip2: e.caip2 || (e.chainId ? `eip155:${e.chainId}` : id), family: group.split('_')[0],
+        testnet: /testnet|sepolia|devnet|fuji|amoy/.test(id) || /_testnets$/.test(group), displayName: e.displayName,
+        icon: `${ORIGIN}/${e.icon}.png`,
+        explorer: {base: e.explorer, tx: e.explorer + e.explorerPaths.tx, address: e.explorer + e.explorerPaths.address},
+        tokens: e.tokens.map(t => ({symbol: CONFIG.token_info[t].name,
+          icon: CONFIG.token_info[t].icon ? `${ORIGIN}/${CONFIG.token_info[t].icon}.png` : null})),
+      });
+    }
+  }
+  return {networks};
+}
+context.networksFixture = networksDocument();
+vm.runInContext('indexNetworks(networksFixture)', context);
 const kind = (network, aliases, tokens, scheme = 'exact') => ({network, networkAliases:aliases, scheme, extra:tokens === undefined ? {} : {tokens:tokens.map(token => ({token}))}});
 function catalog(kinds) {
   context.fixture = {kinds};
@@ -57,10 +82,62 @@ test('all landing cards map to a distinct network, including XRPL testnet', () =
   for (const name of ['xrpl','xrpl-testnet','arc','arc-testnet','hedera:mainnet','hedera:testnet']) assert(names.includes(name));
   assert(!html.includes('const TOKEN_SUPPORT'));
 });
-test('every declared image exists and Arc/Hedera/RLUSD use their supplied images', () => {
-  const icons=evaluate('[...new Set([...Object.values(ICONO_DE_RED),...Object.values(ICONO_DE_TOKEN)].filter(Boolean))]');
-  icons.forEach(icon=>assert(fs.existsSync(path.join(root,`static/${icon}.png`)),icon));
-  assert.deepEqual(evaluate('[ICONO_DE_RED.arc,ICONO_DE_RED["hedera:mainnet"],ICONO_DE_TOKEN.rlusd]'),['arc','hedera','rlusd']);
+test('every image /networks.json names exists and Arc/Hedera/RLUSD use their supplied images', () => {
+  const icons=[...new Set(context.networksFixture.networks.flatMap(r=>[r.icon,...r.tokens.map(t=>t.icon)]).filter(Boolean))];
+  assert(icons.length>=29,String(icons.length));
+  icons.forEach(icon=>assert(fs.existsSync(path.join(root,'static',new URL(icon).pathname)),icon));
+  assert.deepEqual(evaluate('[networkIcon("arc"),networkIcon("eip155:5042"),networkIcon("hedera:mainnet"),networkIcon("skale-base"),tokenIcon("rlusd"),tokenIcon("RLUSD"),tokenIcon("xrp")]'),
+    ['/arc.png','/arc.png','/hedera.png','/skale.png','/rlusd.png','/rlusd.png',null]);
+  // A chain /networks.json does not describe keeps its monogram, never a guessed image.
+  assert.equal(evaluate('networkIcon("eip155:424242")'),null);
+  assert.equal(evaluate('chipRed("eip155:424242")'),'<span class="chip-red" title="eip155:424242"><b>EV</b></span>');
+  assert.match(evaluate('chipRed("base","chip-red--tabla")'),/<b>BA<\/b><img src="\/base\.png"/);
+});
+
+test('explorer links are built from the published templates, never guessed', () => {
+  assert.equal(evaluate('explorerUrl("base","address","0xabc")'),'https://basescan.org/address/0xabc');
+  assert.equal(evaluate('explorerUrl("eip155:8453","tx","0x1")'),'https://basescan.org/tx/0x1');
+  assert.equal(evaluate('explorerUrl("solana-devnet","address","6xN")'),'https://solscan.io/account/6xN?cluster=devnet');
+  assert.equal(evaluate('explorerUrl("hedera:testnet","address","0.0.10576385")'),'https://hashscan.io/testnet/account/0.0.10576385');
+  assert.equal(evaluate('explorerUrl("sui","address","0xab")'),'https://suiscan.xyz/mainnet/account/0xab');
+  assert.equal(evaluate('explorerUrl("base","address","a/b?c")'),'https://basescan.org/address/a%2Fb%3Fc');
+  for (const code of ['explorerUrl("not-a-chain","address","x")','explorerUrl("base","address","")','explorerUrl("base","address",null)'])
+    assert.equal(evaluate(code),null,code);
+});
+
+test('hydrateNetworks fills icons, token images, links and card clicks from the index', () => {
+  const el=(tag,dataset,text='')=>({tagName:tag,dataset,textContent:text,attrs:{},setAttribute(k,v){this.attrs[k]=v;}});
+  const img=el('IMG',{netIcon:'arc'}), tok=el('IMG',{tokenIcon:'usdc'}), unknown=el('IMG',{netIcon:'nope'});
+  const link=el('A',{explorer:'stellar'},' GCHP '), card=el('DIV',{explorer:'base',explorerAddress:'0x1030'}), bare=el('DIV',{explorer:'sui'},'Sui 0.1 SUI');
+  const opened=[];
+  context.document={querySelectorAll:sel=>({'img[data-net-icon]':[img,unknown],'img[data-token-icon]':[tok],'[data-explorer]':[link,card,bare]})[sel]||[]};
+  context.window={open:(...a)=>opened.push(a)};
+  vm.runInContext('hydrateNetworks()',context);
+  assert.equal(img.attrs.src,'/arc.png');
+  assert.equal(tok.attrs.src,'/usdc.png');
+  assert.equal(unknown.attrs.src,undefined);
+  assert.equal(link.href,'https://stellar.expert/explorer/public/account/GCHP');
+  card.onclick();
+  assert.deepEqual(opened,[['https://basescan.org/address/0x1030','_blank','noopener']]);
+  // A card is not an address: without one it gets no link rather than its own text.
+  assert.equal(bare.onclick,undefined);
+});
+
+test('static pages type no explorer and no icon: every reference names a network /networks.json describes', () => {
+  const ids=new Set(context.networksFixture.networks.flatMap(r=>[r.id,r.caip2]));
+  const tokens=new Set(Object.keys(CONFIG.token_info));
+  for (const file of ['static/index.html','static/networks.html']) {
+    const html=fs.readFileSync(path.join(root,file),'utf8');
+    assert(!/onclick="window\.open\('https:\/\/[^']*(scan|explorer|xrpl\.org|allo\.info|hashscan|nearblocks|stellar\.expert|blockscout)/.test(html),`${file}: a hand-typed explorer onclick`);
+    for (const [,net] of html.matchAll(/data-(?:net-icon|explorer)="([^"]+)"/g)) assert(ids.has(net),`${file}: ${net}`);
+    for (const [,tok] of html.matchAll(/data-token-icon="([^"]+)"/g)) assert(tokens.has(tok),`${file}: ${tok}`);
+  }
+  const html=fs.readFileSync(path.join(root,'static/index.html'),'utf8');
+  // Every card links its wallet: a typed address or the fee payer /supported publishes.
+  const cards=[...html.matchAll(/<div class="network-badge [a-z]+"([^>]*)>/g)].map(m=>m[1]).filter(a=>!a.includes('data-capability-network'));
+  assert.equal(cards.length,43);
+  for (const attrs of cards) assert(/data-explorer="[^"]+" (data-explorer-address="[^"]+"|data-explorer-fee-payer)/.test(attrs),attrs);
+  assert(html.includes('loadNetworks().then(() => hydrateNetworks())'));
 });
 
 test('single stablecoin filter follows exact capabilities and excludes absent networks', () => {
@@ -143,7 +220,7 @@ test('landing: the dot sits in the lower-left corner, does not move the card and
   assert(loader.includes("fetch('/health/ready'"));
   assert(loader.includes('.catch(() => paint(null))'),'a failed read clears the dots');
   assert(loader.includes("setAttribute('aria-label', health.label)"));
-  assert(html.includes('<script src="/x402.js?v=20260923"></script>'),'a cached x402.js without cardHealth must not be served to this page');
+  assert(html.includes('<script src="/x402.js?v=20260924"></script>'),'a cached x402.js without hydrateNetworks must not be served to this page');
 });
 
 // The owner's rule: a supported network never leaves the landing because of its
@@ -281,7 +358,10 @@ test('landing: every network logo shows a glyph at least as large as a stablecoi
   const pill=num(rule('.token-logo'),/width:\s*([\d.]+)px/)+2*16*num(pillRule,/padding:\s*([\d.]+)rem/)+2*num(pillRule,/border:\s*([\d.]+)px/);
   assert(pill>38 && pill<40,`stablecoin pill measured ${pill}px in the browser was 38.78px`);
 
-  const logos=[...html.matchAll(/<img src="\/([a-z0-9-]+)\.png" alt="[^"]*"\s+class="network-logo"/g)].map(m=>m[1]);
+  // Each card names its network; /networks.json gives the image it draws.
+  const iconOf=Object.fromEntries(context.networksFixture.networks.map(r=>[r.id,new URL(r.icon).pathname.slice(1,-4)]));
+  const logos=[...html.matchAll(/<img data-net-icon="([a-z0-9:-]+)" alt="[^"]*"\s+class="network-logo"/g)].map(m=>iconOf[m[1]]);
+  assert(logos.every(Boolean),'a card names a network /networks.json does not describe');
   assert.equal(logos.length,html.split('data-tokens="').length-1,'every card with stablecoins has a sized network logo');
   assert(!html.includes('style="width: 32px; height: 32px; object-fit: contain'),'a card logo is back at a fixed 32px box');
   for (const net of new Set(logos)) {

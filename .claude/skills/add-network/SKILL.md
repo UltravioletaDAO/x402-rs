@@ -595,11 +595,11 @@ disagrees with these.
   (`curl -s https://facilitator.ultravioletadao.xyz/ | grep -c 'class="network-badge'`
   -> 39). Adding a network means adding two cards there (mainnet + testnet).
 - `/networks` is NOT hand-written: `static/networks.html` builds its whole table
-  from `GET /supported`. Do not add a row there. What it DOES need is one entry
-  per name in `ICONO_DE_RED`, `static/x402.js:14` -- four keys per network (v1
-  mainnet, v1 testnet, CAIP-2 mainnet, CAIP-2 testnet). Without them the chip
-  falls back to a monogram, which is the deliberate behaviour for a network with
-  no PNG, so nothing warns you.
+  from `GET /supported`. Do not add a row there. Its icons, and every explorer
+  link on `/`, `/networks` and `/events/live`, come from `GET /networks.json`,
+  i.e. from the network's entry in `config/supported_tokens.json` (displayName,
+  icon, explorer + explorerPaths). There is no icon map in `static/x402.js` any
+  more; `static_types_no_explorer_and_no_icon` fails if one comes back.
 - If the network gains escrow or ERC-8004, update those grids AND their
   "Escrow Deployed on N Networks" / "Deployed on N Networks" headings + the
   ERC-8004 stat card (`id="ovr-erc8004-networks"`), EN + ES. These ARE typed and
@@ -878,12 +878,12 @@ Two files have joined the list since: `VERSION` (did not exist at `7dbe194e`;
 | 2 | `src/from_env.rs` | `ENV_RPC_*` consts + `rpc_env_name_from_network()` | yes (match) |
 | 3 | `src/chain/evm.rs` | `TryFrom<Network> for EvmChain` chain id, EIP-1559 flag; `eip1559_fee_floor` arm only if needed | chain id yes; fee floor NO (`_` arm) |
 | 4 | `src/chain/solana.rs` | `UnsupportedNetwork` exclusion arms | yes (match) |
-| 5 | `src/handlers.rs` | logo handler + `.route("/{network}.png", ...)` | no |
+| 5 | `src/handlers.rs` | logo handler + `.route("/{network}.png", ...)` in `image_routes()` | yes -- `every_icon_is_served` |
 | 6 | `src/openapi.rs` | network prose and lists -- find them with `grep -n 'Scroll\|scroll\|mainnets\|networks (' src/openapi.rs` | no |
 | 7 | `static/{network}.png` | logo, flat in `static/` (no `static/images/`) | build fails -- `include_bytes!` |
 | 8 | `static/index.html` | 2 cards (mainnet + testnet) + CSS + balance config | no |
-| 9 | `static/x402.js` | `ICONO_DE_RED` (`:14`), 4 keys: v1 mainnet, v1 testnet, both CAIP-2 | no -- falls back to a monogram, silently |
-| 10 | `config/supported_tokens.json` | chainId, tokens, explorer, facilitatorWallet | no |
+| 9 | `static/x402.js` | nothing: icons and explorers come from `GET /networks.json` | -- |
+| 10 | `config/supported_tokens.json` | displayName, icon, explorer + explorerPaths, tokens (exactly what `/supported` publishes), chainId, facilitatorWallet | yes -- `networks_json` tests |
 | 11 | `lambda/balances/handler.py` | `get_network_configs()`: RPC + wallet | no |
 | 12 | `terraform/environments/production/main.tf` | `RPC_URL_*` in the task definition `environment` | no -- **and this is what keeps it out of `/supported`** |
 | 13 | `scripts/verify_landing_canonical.py` | `--expect-mainnets` default (`:306`) + the docstring count (`:11`) | the guard itself, in CI |

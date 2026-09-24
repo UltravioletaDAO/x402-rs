@@ -386,7 +386,9 @@ def main() -> int:
                       f"but source has {len(erc_all)} total / {len(erc_main)} mainnet")
     html = (REPO / "static" / "index.html").read_text(encoding="utf-8")
     for network in ("hedera:mainnet", "hedera:testnet"):
-        if not re.search(r'data-native-network="' + re.escape(network) + r'"\s+style="display: none;', html):
+        # The card names its network for /networks.json (`data-explorer`, 2.41.0);
+        # its wallet link is the fee payer /supported publishes.
+        if not re.search(r'data-explorer="' + re.escape(network) + r'" data-explorer-fee-payer\s+style="display: none;', html):
             errors.append(f"{network} card must stay hidden until /supported enables it")
     if re.search(r'eip155:(295|296)(?:[^0-9]|$)', html):
         errors.append("Hedera must use native v2 identifiers, not EVM 295/296")

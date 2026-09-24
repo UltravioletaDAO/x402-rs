@@ -858,12 +858,12 @@ and `static/x402.js`.
 | 2 | `src/from_env.rs` | `ENV_RPC_*` consts + `rpc_env_name_from_network()` | yes |
 | 3 | `src/chain/evm.rs` | chain id in `TryFrom<Network>`, EIP-1559 flag; an `eip1559_fee_floor` arm only if the default is wrong for the chain | chain id yes; fee floor NO (`_` arm at `src/chain/evm.rs:329`) |
 | 4 | `src/chain/solana.rs` | `UnsupportedNetwork` exclusion arms | yes |
-| 5 | `src/handlers.rs` | logo handler + route | no |
+| 5 | `src/handlers.rs` | logo handler + route in `image_routes()` | yes — `every_icon_is_served` |
 | 6 | `src/openapi.rs` | network prose and lists — find them with `grep -n 'Scroll\|scroll\|mainnets\|networks (' src/openapi.rs` | no |
 | 7 | `static/newchain.png` | logo, flat in `static/` (there is no `static/images/`) | build fails — `include_bytes!` |
-| 8 | `static/index.html` | 2 balance cards + CSS + balance config | no |
-| 9 | `static/x402.js` | `ICONO_DE_RED` at `:14` — 4 keys: v1 mainnet, v1 testnet, both CAIP-2 ids | no — silently falls back to a monogram |
-| 10 | `config/supported_tokens.json` | chainId, tokens, explorer, facilitatorWallet | no |
+| 8 | `static/index.html` | 2 balance cards (`data-explorer` + `data-explorer-address`, `<img data-net-icon>`: no explorer URL, no `src`) + CSS + balance config | no |
+| 9 | `static/x402.js` | nothing: icons and explorers come from `GET /networks.json` | — |
+| 10 | `config/supported_tokens.json` | displayName, icon, explorer + explorerPaths, tokens (exactly what `/supported` publishes), chainId, facilitatorWallet | yes — `networks_json` tests: a missing entry or a token list that differs from `/supported` is red |
 | 11 | `lambda/balances/handler.py` | `get_network_configs()`: RPC + wallet | no |
 | 12 | `terraform/environments/production/main.tf` | `RPC_URL_*` in the task definition | no — **and this is what keeps it out of `/supported`** |
 | 13 | `scripts/verify_landing_canonical.py` | `--expect-mainnets` default (`:306`) and the docstring count (`:11`) | the guard itself, in CI |
@@ -950,7 +950,8 @@ canonical mainnet count.
 - [ ] The new network is in all four `variants()` copies, not just the first
 - [ ] `RPC_URL_*` for both networks reaches the container via Terraform
 - [ ] Logo accessible at `/{network}.png` with HTTP 200
-- [ ] `ICONO_DE_RED` in `static/x402.js` has all four keys, so `/networks` shows
+- [ ] `GET /networks.json` has a row for both networks with `explorer` and `icon`
+      (the entry in `config/supported_tokens.json`), so `/` and `/networks` show
       the logo instead of a monogram
 - [ ] Network cards display on the landing page with the correct styling
 - [ ] Balances load for both mainnet and testnet

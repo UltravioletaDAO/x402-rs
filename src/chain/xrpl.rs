@@ -1372,6 +1372,56 @@ impl NetworkProviderOps for XrplProvider {
     }
 }
 
+/// The payment assets an XRPL provider advertises in `/supported`.
+///
+/// A function of the network alone, so the one list `/supported` publishes is
+/// also what `config/supported_tokens.json` is checked against
+/// (`crate::networks_json`). A second hand-kept copy is how that JSON drifted.
+pub fn payment_tokens(network: Network) -> Vec<SupportedTokenInfo> {
+    // Advertise all three native XRPL payment assets: USDC (IOU), RLUSD (IOU),
+    // and native XRP.  Each is a distinct entry in extra.tokens identified by
+    // its TokenType and MixedAddress::Xrpl address string.
+    //
+    // USDC: sourced from USDCDeployment::by_network (XRPL-specific entry in
+    //       network.rs with currency/issuer hex notation).
+    // RLUSD: sourced from RLUSD_XRPL / RLUSD_XRPL_TESTNET statics in network.rs.
+    //        Issuer rMxCKbEDwqr76QuheSUMdEGf4B9xJ8m5De is VERIFIED via RippleX.
+    // XRP: native token, represented as MixedAddress::Xrpl("XRP"), 6 decimal
+    //      places (1 XRP = 1_000_000 drops).
+    let (rlusd_asset, xrp_asset) = match network {
+        Network::Xrpl => (&*RLUSD_XRPL, &*XRP_XRPL),
+        Network::XrplTestnet => (&*RLUSD_XRPL_TESTNET, &*XRP_XRPL_TESTNET),
+        _ => return Vec::new(),
+    };
+
+    let mut tokens: Vec<SupportedTokenInfo> = Vec::with_capacity(3);
+
+    // USDC (IOU on XRPL)
+    if let Some(usdc) = USDCDeployment::by_network(network) {
+        tokens.push(SupportedTokenInfo {
+            token: TokenType::Usdc,
+            address: usdc.0.asset.address.clone(),
+            decimals: usdc.0.decimals,
+        });
+    }
+
+    // RLUSD (IOU on XRPL)
+    tokens.push(SupportedTokenInfo {
+        token: TokenType::Rlusd,
+        address: rlusd_asset.address.clone(),
+        decimals: 6, // RLUSD uses 6 decimal places on XRPL
+    });
+
+    // Native XRP
+    tokens.push(SupportedTokenInfo {
+        token: TokenType::Xrp,
+        address: xrp_asset.address.clone(),
+        decimals: 6, // 1 XRP = 1_000_000 drops (6 decimal places)
+    });
+
+    tokens
+}
+
 impl Facilitator for XrplProvider {
     type Error = FacilitatorLocalError;
 
@@ -1393,46 +1443,7 @@ impl Facilitator for XrplProvider {
     }
 
     async fn supported(&self) -> Result<SupportedPaymentKindsResponse, Self::Error> {
-        // Advertise all three native XRPL payment assets: USDC (IOU), RLUSD (IOU),
-        // and native XRP.  Each is a distinct entry in extra.tokens identified by
-        // its TokenType and MixedAddress::Xrpl address string.
-        //
-        // USDC: sourced from USDCDeployment::by_network (XRPL-specific entry in
-        //       network.rs with currency/issuer hex notation).
-        // RLUSD: sourced from RLUSD_XRPL / RLUSD_XRPL_TESTNET statics in network.rs.
-        //        Issuer rMxCKbEDwqr76QuheSUMdEGf4B9xJ8m5De is VERIFIED via RippleX.
-        // XRP: native token, represented as MixedAddress::Xrpl("XRP"), 6 decimal
-        //      places (1 XRP = 1_000_000 drops).
-        let (rlusd_asset, xrp_asset) = match self.chain.network {
-            Network::Xrpl => (&*RLUSD_XRPL, &*XRP_XRPL),
-            Network::XrplTestnet => (&*RLUSD_XRPL_TESTNET, &*XRP_XRPL_TESTNET),
-            _ => unreachable!("XrplProvider only supports XRPL networks"),
-        };
-
-        let mut tokens: Vec<SupportedTokenInfo> = Vec::with_capacity(3);
-
-        // USDC (IOU on XRPL)
-        if let Some(usdc) = USDCDeployment::by_network(self.chain.network) {
-            tokens.push(SupportedTokenInfo {
-                token: TokenType::Usdc,
-                address: usdc.0.asset.address.clone(),
-                decimals: usdc.0.decimals,
-            });
-        }
-
-        // RLUSD (IOU on XRPL)
-        tokens.push(SupportedTokenInfo {
-            token: TokenType::Rlusd,
-            address: rlusd_asset.address.clone(),
-            decimals: 6, // RLUSD uses 6 decimal places on XRPL
-        });
-
-        // Native XRP
-        tokens.push(SupportedTokenInfo {
-            token: TokenType::Xrp,
-            address: xrp_asset.address.clone(),
-            decimals: 6, // 1 XRP = 1_000_000 drops (6 decimal places)
-        });
+        let tokens = payment_tokens(self.network());
 
         let kinds = vec![SupportedPaymentKind {
             network: self.network().to_string(),

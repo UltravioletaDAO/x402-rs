@@ -207,6 +207,7 @@ constraint rather than as grounds for a `406`.
         path_escrow_state,
         // Discovery endpoints
         path_supported,
+        path_networks_json,
         path_version,
         path_events,
         path_transactions,
@@ -992,6 +993,77 @@ The two entries for one chain are separate objects. `networkAliases` is what tie
     )
 )]
 async fn path_supported() {}
+
+#[utoipa::path(
+    get,
+    path = "/networks.json",
+    tag = "Discovery",
+    summary = "How to present each served network",
+    description = r#"
+One row per network `/supported` serves, with what a network picker needs and `/supported` does not carry: a name, an icon, an explorer and the testnet flag.
+
+**The rows are `/supported`.** The document is built from the `/supported` body itself, grouped by chain: a network has a row if and only if `/supported` names it, and `id` / `caip2` are the two identifiers `/supported` uses for it (native Hedera has no v1 name, so its `id` is its CAIP-2 id, as on `/supported`). Every `network` in `/supported` is some row's `id` or `caip2`. `schemes`, and each token's `address` and `decimals`, are read off the same entries.
+
+- `family`: `evm`, `svm`, `near`, `stellar`, `algorand`, `sui`, `xrpl` or `hedera`. `chainId` is the EVM chain id, `null` elsewhere.
+- `explorer`: `{base, tx, address}`, where `tx` and `address` are templates with a `{tx}` / `{address}` placeholder. Substitute a URL-encoded value.
+- `icon`: absolute URL of a PNG this facilitator serves.
+- `tokens[]`: `{symbol, address, decimals, eip712, usdPegged, icon}`. `eip712` is the `{name, version}` domain `/verify` resolves for that EVM deployment (`null` off EVM); `usdPegged` is false for EURC and XRP; `icon` is `null` where no image exists (XRP).
+
+Only the presentation (names, icons, explorers, `usdPegged`) comes from `config/supported_tokens.json` in the repository, compiled into the binary. A served network it does not describe still gets its row, with `explorer` and `icon` null, rather than disappearing. Cached for five minutes. `/supported` itself is unchanged: it is protocol, and this is not.
+"#,
+    responses(
+        (status = 200, description = "One row per served network", body = Object,
+            example = json!({
+                "networks": [
+                    {
+                        "id": "base",
+                        "caip2": "eip155:8453",
+                        "family": "evm",
+                        "chainId": 8453,
+                        "testnet": false,
+                        "displayName": "Base",
+                        "explorer": {
+                            "base": "https://basescan.org",
+                            "tx": "https://basescan.org/tx/{tx}",
+                            "address": "https://basescan.org/address/{address}"
+                        },
+                        "icon": "https://facilitator.ultravioletadao.xyz/base.png",
+                        "schemes": ["commerce", "escrow", "exact", "upto"],
+                        "tokens": [
+                            {
+                                "symbol": "USDC",
+                                "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+                                "decimals": 6,
+                                "eip712": {"name": "USD Coin", "version": "2"},
+                                "usdPegged": true,
+                                "icon": "https://facilitator.ultravioletadao.xyz/usdc.png"
+                            }
+                        ]
+                    },
+                    {
+                        "id": "hedera:mainnet",
+                        "caip2": "hedera:mainnet",
+                        "family": "hedera",
+                        "chainId": null,
+                        "testnet": false,
+                        "displayName": "Hedera",
+                        "explorer": {
+                            "base": "https://hashscan.io/mainnet",
+                            "tx": "https://hashscan.io/mainnet/transaction/{tx}",
+                            "address": "https://hashscan.io/mainnet/account/{address}"
+                        },
+                        "icon": "https://facilitator.ultravioletadao.xyz/hedera.png",
+                        "schemes": ["exact"],
+                        "tokens": [
+                            {"symbol": "USDC", "address": "0.0.456858", "decimals": 6, "eip712": null, "usdPegged": true, "icon": "https://facilitator.ultravioletadao.xyz/usdc.png"}
+                        ]
+                    }
+                ]
+            })
+        )
+    )
+)]
+async fn path_networks_json() {}
 
 #[utoipa::path(
     get,
@@ -3376,6 +3448,18 @@ mod tests {
                  invisible in /docs and to every client generated from it"
             );
         }
+    }
+
+    /// `/networks.json` is in the spec, next to the `/supported` it is built from.
+    #[test]
+    fn the_networks_document_is_documented() {
+        let spec = ApiDoc::openapi();
+        let get = spec.paths.paths["/networks.json"]
+            .get
+            .as_ref()
+            .expect("/networks.json is served but missing from the OpenAPI spec");
+        let description = get.description.as_deref().unwrap_or_default();
+        assert!(description.contains("`/supported`"), "{description}");
     }
 
     /// The version in the spec is the release, resolved at runtime.

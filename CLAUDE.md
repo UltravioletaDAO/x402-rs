@@ -332,7 +332,7 @@ Golden source is `terraform/environments/production/secrets.tf`. The naming is N
 - `facilitator-stellar-keypair-mainnet` / `facilitator-stellar-keypair-testnet` - Stellar
 - `facilitator-sui-keypair-mainnet` / `facilitator-sui-keypair-testnet` - Sui
 - `facilitator-algorand-mnemonic-mainnet` / `facilitator-algorand-mnemonic-testnet` - Algorand 25-word mnemonic
-- `facilitator-rpc-mainnet` - premium mainnet RPC URLs, one JSON key per network: `base`, `avalanche`, `polygon`, `optimism`, `celo`, `hyperevm`, `ethereum`, `arbitrum`, `unichain`, `solana`, `near` (there is NO `sui` key - Sui/BSC/Scroll/SKALE/Monad/Fogo/Robinhood use free public endpoints declared inline in main.tf)
+- `facilitator-rpc-mainnet` - premium mainnet RPC URLs, one JSON key per network: `base`, `avalanche`, `polygon`, `optimism`, `celo`, `hyperevm`, `ethereum`, `arbitrum`, `unichain`, `arc` (mapped only while `arc_mainnet_enabled`, `arc.tf`; Arc testnet and the balances Lambda stay on the public endpoints), `solana`, `near` (there is NO `sui` key - Sui/BSC/Scroll/SKALE/Monad/Fogo/Robinhood use free public endpoints declared inline in main.tf)
 - `facilitator-rpc-testnet` - JSON keys: `solana-devnet`, `arbitrum-sepolia`, `near` (no `sui-testnet`)
 
 **Legacy secrets** (deprecated, kept for backward compatibility):

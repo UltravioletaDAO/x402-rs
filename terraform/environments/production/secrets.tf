@@ -306,6 +306,7 @@ locals {
   # ----------------------------------------------------------------------------
   # Current networks with premium mainnet RPCs:
   # - base, avalanche, polygon, optimism, celo, hyperevm, ethereum, arbitrum, unichain, solana, near
+  # - arc, only while arc_mainnet_enabled: `local.arc_rpc_secrets` in arc.tf
   mainnet_rpc_secrets = [
     # EVM Networks
     {
@@ -408,6 +409,7 @@ locals {
     local.hedera_secrets,
     local.wallet_secrets,
     local.mainnet_rpc_secrets,
+    local.arc_rpc_secrets,
     local.testnet_rpc_secrets,
     local.admin_secrets
   )

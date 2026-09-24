@@ -110,7 +110,7 @@ NEAR_ACCOUNT_ID_TESTNET         → facilitator-near-testnet-keypair:account_id
 STELLAR_PRIVATE_KEY_MAINNET     → facilitator-stellar-keypair-mainnet (plain string)
 STELLAR_PRIVATE_KEY_TESTNET     → facilitator-stellar-keypair-testnet (plain string)
 
-# Mainnet RPC URLs (11 secrets)
+# Mainnet RPC URLs (12 secrets; RPC_URL_ARC only while arc_mainnet_enabled, arc.tf)
 RPC_URL_BASE                    → facilitator-rpc-mainnet:base
 RPC_URL_AVALANCHE               → facilitator-rpc-mainnet:avalanche
 RPC_URL_POLYGON                 → facilitator-rpc-mainnet:polygon
@@ -120,6 +120,7 @@ RPC_URL_HYPEREVM                → facilitator-rpc-mainnet:hyperevm
 RPC_URL_ETHEREUM                → facilitator-rpc-mainnet:ethereum
 RPC_URL_ARBITRUM                → facilitator-rpc-mainnet:arbitrum
 RPC_URL_UNICHAIN                → facilitator-rpc-mainnet:unichain
+RPC_URL_ARC                     → facilitator-rpc-mainnet:arc
 RPC_URL_SOLANA                  → facilitator-rpc-mainnet:solana
 RPC_URL_NEAR                    → facilitator-rpc-mainnet:near
 
@@ -129,7 +130,7 @@ RPC_URL_ARBITRUM_SEPOLIA        → facilitator-rpc-testnet:arbitrum-sepolia
 RPC_URL_NEAR_TESTNET            → facilitator-rpc-testnet:near
 ```
 
-**Total:** 24 environment variables from 12 Secrets Manager secrets
+**Total:** 25 environment variables from 12 Secrets Manager secrets
 
 ## Supported Networks
 

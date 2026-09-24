@@ -25,6 +25,11 @@ tower-http = { version = "0.6.8", features = ["trace", "cors", "limit"] }
 # compression-codecs, so declaring it adds no crate.
 flate2 = { version = "1.1" }
 tower_governor = { version = "0.8" }
+# Only to NAME `StateInformationMiddleware`, the limiter type `use_headers()`
+# produces, so `rate_limit::Bucket` can hold one shared config. The same
+# 0.10 with the same default features tower_governor already pulls in, so it
+# adds no crate and no build time.
+governor = { version = "0.10" }
 serde = { version = "1.0.228", features = ["derive"] }
 once_cell = { version = "1.21.3" }
 regex = { version = "1.11.1" }
@@ -143,6 +148,16 @@ rmcp = { version = "3.2.0", features = ["server", "transport-streamable-http-ser
 # adds no crate. Tests see it from here; a `[dev-dependencies]` copy would only
 # be a second place to bump.
 tower = { version = "0.5", features = ["util"] }
+
+[dev-dependencies]
+# JSON Schema draft 2020-12, to validate `/.well-known/uvd-stack.json` against
+# the vendored interop schema (tests/fixtures/interop/). Test-only: the release
+# binary never validates its own manifest, the test suite does. Without the
+# default features, which would pull reqwest and a TLS stack in to resolve
+# remote `$ref`s that the vendored schema does not have. 0.46 and not newer:
+# 0.50+ would raise regex-automata, num-bigint and zmij, which the release
+# binary shares, and a test-only crate must not move those.
+jsonschema = { version = "0.46", default-features = false }
 
 [features]
 telemetry = []

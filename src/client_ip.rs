@@ -281,13 +281,16 @@ mod tests {
         assert_eq!(second.as_u16(), 429, "the peer's bucket was not spent");
     }
 
-    /// Every governor in `src/` keys on [`ClientIpKeyExtractor`], and the
-    /// binary serves with `ConnectInfo` so the peer fallback exists.
+    /// Every governor in `src/` keys on [`ClientIpKeyExtractor`], every one is
+    /// built and mounted through `rate_limit::Bucket`, and the binary serves
+    /// with `ConnectInfo` so the peer fallback exists.
     ///
-    /// Read from source because the configs in `main()` are locals no test can
+    /// Read from source because the limiters in `main()` are locals no test can
     /// reach. A builder with no `.key_extractor(..)` at all is caught too: it
     /// would default to the TCP peer, which behind the ALB is one bucket for
-    /// everybody.
+    /// everybody. And a `GovernorLayer` mounted anywhere but
+    /// `Bucket::govern` would enforce a limit that neither `RateLimit-Policy`
+    /// nor `/.well-known/uvd-stack.json` announces.
     #[test]
     fn every_governor_keys_on_the_client_ip() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -296,7 +299,7 @@ mod tests {
             concat!("PeerIp", "KeyExtractor"),
             concat!("Global", "KeyExtractor"),
         ];
-        let mut builders = 0;
+        let mut builders = Vec::new();
         let mut stack = vec![root];
         while let Some(dir) = stack.pop() {
             for entry in std::fs::read_dir(&dir).unwrap() {
@@ -336,13 +339,31 @@ mod tests {
                         arg.trim()
                     );
                 }
-                builders += here;
+                let file = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or_default();
+                if file != "rate_limit.rs" {
+                    assert!(
+                        !src.contains("GovernorLayer::new("),
+                        "{shown} mounts a governor outside `rate_limit::Bucket::govern`: \
+                         its limit is neither stamped as RateLimit-Policy nor published \
+                         in /.well-known/uvd-stack.json"
+                    );
+                }
+                for _ in 0..here {
+                    builders.push(file.to_string());
+                }
             }
         }
-        // Six in `main()`, and two in `handlers`: `human_page_routes_governed`
-        // and `erc8004_write_governed`. A floor, not an exact count: adding a
-        // governor must not fail this.
-        assert!(builders >= 8, "found only {builders} governor builders");
+        // Exactly one, in `rate_limit::Bucket::new`: every limit in the service
+        // -- the six in `main()`, `human_page_routes_governed` and
+        // `erc8004_write_governed` -- is a `Bucket`.
+        assert_eq!(
+            builders,
+            vec!["rate_limit.rs".to_string()],
+            "a governor is built outside rate_limit::Bucket::new"
+        );
 
         let main = include_str!("main.rs");
         assert!(

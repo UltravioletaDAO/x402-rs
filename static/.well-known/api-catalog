@@ -18,6 +18,10 @@
         {
           "href": "https://facilitator.ultravioletadao.xyz/skill.md",
           "type": "text/markdown"
+        },
+        {
+          "href": "https://facilitator.ultravioletadao.xyz/.well-known/uvd-stack.json",
+          "type": "application/json"
         }
       ],
       "status": [

@@ -511,6 +511,7 @@ jobs:
           push: true
           build-args: |
             FACILITATOR_VERSION=${{ steps.tag.outputs.version }}
+            FACILITATOR_GIT_SHA=${{ github.sha }}
           tags: |
             ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_NAME }}:${{ steps.tag.outputs.image_tag }}
             ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_NAME }}:latest

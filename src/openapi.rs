@@ -138,10 +138,19 @@ just on the refusal:
 
 | Header | Present on | Meaning |
 |---|---|---|
+| `RateLimit-Policy` | `200` and `429` | the bucket this route draws on: `"<name>";q=<quota>;w=<window seconds>` |
+| `RateLimit` | `200` and `429` | what is left of it: `"<name>";r=<remaining>;t=<seconds>` |
 | `x-ratelimit-limit` | `200` and `429` | burst size of the bucket this route draws on |
 | `x-ratelimit-remaining` | `200` and `429` | tokens left in that bucket |
 | `retry-after` | `429` | seconds to wait before retrying |
 | `x-ratelimit-after` | `429` | the same value under tower_governor's own name |
+
+`RateLimit-Policy` and `RateLimit` follow draft-ietf-httpapi-ratelimit-headers
+(Structured Fields). A caller that sends at most `q` requests in any `w`
+seconds is never refused; `r` is what it may still spend within the next `t`
+seconds. Two routes that share a bucket share its name (`/mcp` answers with
+`"verify-settle"`). Every limit is also listed, before any request, in
+`rate_limits` of `/.well-known/uvd-stack.json`.
 
 Read `x-ratelimit-remaining` and slow down before it reaches zero. The buckets
 refill one token every N seconds rather than granting N per minute, so the
@@ -270,6 +279,7 @@ constraint rather than as grounds for a `406`.
         path_oauth_protected_resource,
         path_agent_skills_index,
         path_mcp_server_card,
+        path_uvd_stack,
         // MCP
         path_mcp_post,
         path_mcp_get,
@@ -3052,6 +3062,18 @@ async fn path_agent_skills_index() {}
 async fn path_mcp_server_card() {}
 
 #[utoipa::path(
+    get,
+    path = "/.well-known/uvd-stack.json",
+    tag = "Agentic",
+    summary = "Stack interop manifest (uvd.stack/1)",
+    description = "Who this service is (`app: \"facilitator\"`, the running `version` and `git_sha`), its two doors (`endpoints.api` and `endpoints.mcp`, both `auth: [\"none\"]`), that it charges nothing (`payments.charges: false`), where liveness (`/health`) and readiness (`/health/ready`) answer, links to the other agent documents, and `rate_limits`: every per-IP limit the router mounts, as `limit` requests per `window_s` seconds on the door it guards. Generated at runtime from the mounted limiters and the build, never written by hand, so it cannot disagree with the `RateLimit-Policy` header those same limiters send. The format is the `uvd.stack/1` manifest of the Ultravioleta DAO stack's interop specification.",
+    responses(
+        (status = 200, description = "uvd.stack/1 manifest", body = Object)
+    )
+)]
+async fn path_uvd_stack() {}
+
+#[utoipa::path(
     post,
     path = "/mcp",
     tag = "MCP",
@@ -3477,6 +3499,7 @@ mod tests {
             "/.well-known/api-catalog",
             "/.well-known/oauth-protected-resource",
             "/.well-known/agent-skills/index.json",
+            "/.well-known/uvd-stack.json",
         ] {
             assert!(
                 spec.paths.paths.contains_key(route),

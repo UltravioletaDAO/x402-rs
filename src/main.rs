@@ -26,8 +26,7 @@ use axum::{Extension, Router};
 use dotenvy::dotenv;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tower_governor::governor::GovernorConfigBuilder;
-use tower_governor::GovernorLayer;
+use std::time::Duration;
 use tower_http::cors;
 use tower_http::limit::RequestBodyLimitLayer;
 use url::Url;
@@ -44,10 +43,10 @@ use url::Url;
 const DEFAULT_MAX_REQUEST_BODY_BYTES: usize = 64 * 1024;
 
 use crate::chain::NetworkProviderOps;
-use crate::client_ip::ClientIpKeyExtractor;
 use crate::facilitator::Facilitator;
 use crate::facilitator_local::FacilitatorLocal;
 use crate::provider_cache::{ProviderCache, ProviderMap};
+use crate::rate_limit::{Bucket, Door, Policy};
 use crate::sig_down::SigDown;
 use crate::telemetry::Telemetry;
 use crate::types_v2::{DiscoveryMetadata, DiscoveryResource};
@@ -83,6 +82,7 @@ mod fhe_proxy;
 mod from_env;
 mod handlers;
 mod idempotency_store;
+mod interop;
 mod receipts;
 mod json_depth;
 mod lease;
@@ -93,6 +93,7 @@ mod nonce_store;
 mod openapi;
 mod payment_operator;
 mod provider_cache;
+mod rate_limit;
 mod readiness;
 mod redact;
 mod sig_down;
@@ -574,30 +575,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Each /verify or /settle call burns RPC quota against the configured chain
     // providers, which is why that one stays tight.
     //
-    // `use_headers()` on every config swaps tower_governor's NoOpMiddleware for
-    // its StateInformationMiddleware, which is what makes the budget legible to
-    // a caller instead of something they discover by hitting it: a 200 carries
-    // `x-ratelimit-limit` and `x-ratelimit-remaining`, and a 429 adds those to
-    // the `retry-after` and `x-ratelimit-after` it already sent. Both 2026-09-02
-    // scans reported no rate-limit headers at all, and they were right: without
-    // it the library emits them on the 429 only, which is one request too late
-    // to be useful. The numbers themselves do not change -- this is the same
-    // GCRA state, reported rather than hidden.
+    // Every limit is a `rate_limit::Bucket`, the one place a governor is built
+    // (src/rate_limit.rs). It makes the budget legible to a caller instead of
+    // something they discover by hitting it: a 200 carries `RateLimit-Policy`
+    // and `RateLimit` (draft-ietf-httpapi-ratelimit-headers) next to
+    // tower_governor's `x-ratelimit-limit` and `x-ratelimit-remaining`, a 429
+    // adds `retry-after`, and `/.well-known/uvd-stack.json` publishes every
+    // bucket `govern` mounted -- the same numbers, from the same `Policy`. Both
+    // 2026-09-02 scans reported no rate-limit headers at all, and they were
+    // right: without `use_headers()` the library emits them on the 429 only,
+    // which is one request too late to be useful.
     //
     // Every governor keys on `ClientIpKeyExtractor` (src/client_ip.rs): the
     // client address the ALB appends to X-Forwarded-For, and only without that
     // header the TCP peer, which is why the server below is built with
     // ConnectInfo. Behind the ALB the peer is always a load balancer node, so
     // keying on it alone would put every client in one bucket.
-    let verify_settle_config = Arc::new(
-        GovernorConfigBuilder::default()
-            .per_second(2)
-            .burst_size(30)
-            .key_extractor(ClientIpKeyExtractor)
-            .use_headers()
-            .finish()
-            .expect("verify/settle governor config must be valid"),
-    );
+    let verify_settle_limit = Bucket::new(Policy::new("verify-settle", Duration::from_secs(2), 30));
     // /discovery/register. The burst was 5, sized against a threat this endpoint
     // does not actually pose: the comment here used to claim registration
     // "triggers DNS + outbound fetches against attacker-supplied URLs". It does
@@ -623,15 +617,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // must come back down — and the comment above it must say what the code
     // does, not what someone intended it to do. That mismatch is the whole
     // reason this sat wrong for three days.
-    let discovery_register_config = Arc::new(
-        GovernorConfigBuilder::default()
-            .per_second(12)
-            .burst_size(250)
-            .key_extractor(ClientIpKeyExtractor)
-            .use_headers()
-            .finish()
-            .expect("discovery_register governor config must be valid"),
-    );
+    let discovery_register_limit = Bucket::new(Policy::new(
+        "discovery-register",
+        Duration::from_secs(12),
+        250,
+    ));
     // Bazaar read routes (/discovery/resources, /discovery/stats). These are
     // cheap in-memory reads (~100ms even with a `q=` scan), and the whole point
     // of a bazaar is that consumers page through it: a 21k-item catalog is ~212
@@ -640,30 +630,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // paginating client on /discovery/resources), so the budget is sized for
     // full-catalog pagination while still cutting off a hammering loop:
     // 1 token per 200ms = ~300 req/min sustained, burst 120.
-    let discovery_read_config = Arc::new(
-        GovernorConfigBuilder::default()
-            .per_millisecond(200)
-            .burst_size(120)
-            .key_extractor(ClientIpKeyExtractor)
-            .use_headers()
-            .finish()
-            .expect("discovery_read governor config must be valid"),
-    );
+    let discovery_read_limit = Bucket::new(Policy::new(
+        "discovery-read",
+        Duration::from_millis(200),
+        120,
+    ));
 
     // /events is a public, unauthenticated, long-lived connection on the same task that
     // settles payments. The concurrent-subscriber cap (X402_EVENTS_MAX_SUBSCRIBERS) bounds
     // how many can be held at once; this bounds how fast they can be opened, so a
     // reconnect loop cannot churn through admission slots. A browser EventSource
     // reconnects rarely, so 1 token every 2s with burst 10 is invisible to real clients.
-    let events_config = Arc::new(
-        GovernorConfigBuilder::default()
-            .per_second(2)
-            .burst_size(10)
-            .key_extractor(ClientIpKeyExtractor)
-            .use_headers()
-            .finish()
-            .expect("events governor config must be valid"),
-    );
+    let events_limit = Bucket::new(Policy::new("events", Duration::from_secs(2), 10));
 
     // /identity reads. Every cold `/identity/{network}/owner/{address}` costs a
     // `balanceOf`, a `totalSupply` and a Multicall3 scan against the shared RPC
@@ -677,22 +655,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         burst = identity_read_burst,
         "Identity read rate limit configured"
     );
-    let identity_read_config = Arc::new(
-        GovernorConfigBuilder::default()
-            .per_millisecond(identity_read_per_ms)
-            .burst_size(identity_read_burst)
-            .key_extractor(ClientIpKeyExtractor)
-            .use_headers()
-            .finish()
-            .expect("identity_read governor config must be valid"),
-    );
+    let identity_read_limit = Bucket::new(Policy::new(
+        "identity-read",
+        Duration::from_millis(identity_read_per_ms),
+        identity_read_burst,
+    ));
 
     // /reputation, /blacklist and POST /escrow/state -- the rest of the surface
     // that used to live in `handlers::routes()` with no governor at all. Each
     // costs at least one RPC/contract read; none were implicated in the
     // 2026-08-29 incident, so this is preventive rather than a response to
     // observed abuse. Its own config on purpose, not a share of
-    // `discovery_read_config`: that one is sized against bazaar pagination, and
+    // `discovery_read_limit`: that one is sized against bazaar pagination, and
     // folding these in would let a paginating bazaar client and a reputation
     // caller from the same IP compete for the same budget. See
     // `secondary_read_rate_limit` for the full reasoning.
@@ -702,15 +676,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         burst = secondary_read_burst,
         "Secondary read rate limit configured"
     );
-    let secondary_read_config = Arc::new(
-        GovernorConfigBuilder::default()
-            .per_millisecond(secondary_read_per_ms)
-            .burst_size(secondary_read_burst)
-            .key_extractor(ClientIpKeyExtractor)
-            .use_headers()
-            .finish()
-            .expect("secondary_read governor config must be valid"),
-    );
+    let secondary_read_limit = Bucket::new(Policy::new(
+        "secondary-read",
+        Duration::from_millis(secondary_read_per_ms),
+        secondary_read_burst,
+    ));
 
     // The HTML pages a person reads (/, /bazaar, /x402, ...). Built inside
     // `handlers::human_page_routes_governed` so its test fires at the same
@@ -723,35 +693,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Human page rate limit configured"
     );
 
-    let verify_settle = handlers::verify_settle_routes()
-        .with_state(axum_state.clone())
-        .layer(
-            GovernorLayer::new(Arc::clone(&verify_settle_config))
-                .error_handler(handlers::rate_limit_error),
-        );
-
-    // The MCP server. `Arc::clone` of the SAME config, not a second one built
-    // from the same numbers: `GovernorConfig` holds a `SharedRateLimiter`, so
-    // cloning the Arc shares the token bucket. An MCP `x402_settle` and a
-    // `POST /settle` from one IP therefore draw on one budget -- which is the
-    // point, because they cost the chain the same thing.
-    let mcp = mcp::mcp_routes(
-        axum_state.clone(),
-        Arc::clone(&discovery_registry),
-        Arc::clone(&event_bus),
-        Arc::clone(&transaction_store),
-    )
-    .layer(
-        GovernorLayer::new(Arc::clone(&verify_settle_config))
-            .error_handler(handlers::rate_limit_error),
+    let verify_settle = verify_settle_limit.govern(
+        handlers::verify_settle_routes().with_state(axum_state.clone()),
+        Door::Api,
     );
 
-    let discovery_register = handlers::discovery_register_routes()
-        .with_state(Arc::clone(&discovery_registry))
-        .layer(
-            GovernorLayer::new(Arc::clone(&discovery_register_config))
-                .error_handler(handlers::rate_limit_error),
-        );
+    // The MCP server, under the SAME bucket, not a second one built from the
+    // same numbers: a `Bucket` holds one `SharedRateLimiter`, so governing a
+    // second router with it shares the token bucket. An MCP `x402_settle` and a
+    // `POST /settle` from one IP therefore draw on one budget -- which is the
+    // point, because they cost the chain the same thing -- and both answer
+    // with the same `RateLimit-Policy` name, which is how a client learns it.
+    let mcp = verify_settle_limit.govern(
+        mcp::mcp_routes(
+            axum_state.clone(),
+            Arc::clone(&discovery_registry),
+            Arc::clone(&event_bus),
+            Arc::clone(&transaction_store),
+        ),
+        Door::Mcp,
+    );
+
+    let discovery_register = discovery_register_limit.govern(
+        handlers::discovery_register_routes().with_state(Arc::clone(&discovery_registry)),
+        Door::Api,
+    );
 
     // ERC-8004 write switch: ENABLE_ERC8004_WRITES=false leaves every ERC-8004 write route
     // (/register, /feedback and /feedback/*) unmounted. Defaults to ON. When ON, the writes sit
@@ -770,22 +736,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut http_endpoints = Router::new()
         .merge(verify_settle)
         .merge(mcp)
-        .merge(
-            handlers::identity_read_routes()
-                .with_state(axum_state.clone())
-                .layer(
-                    GovernorLayer::new(identity_read_config)
-                        .error_handler(handlers::rate_limit_error),
-                ),
-        )
-        .merge(
-            handlers::secondary_read_routes()
-                .with_state(axum_state.clone())
-                .layer(
-                    GovernorLayer::new(Arc::clone(&secondary_read_config))
-                        .error_handler(handlers::rate_limit_error),
-                ),
-        )
+        .merge(identity_read_limit.govern(
+            handlers::identity_read_routes().with_state(axum_state.clone()),
+            Door::Api,
+        ))
+        .merge(secondary_read_limit.govern(
+            handlers::secondary_read_routes().with_state(axum_state.clone()),
+            Door::Api,
+        ))
         .merge(handlers::routes().with_state(axum_state.clone()))
         // `/health/ready`: per-chain RPC reachability and signer gas, cached.
         // Its own state, because all it needs is the provider map. NOT for the
@@ -793,17 +751,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // have ECS cycle healthy tasks. Metered like the other on-chain reads:
         // the cache bounds the RPC traffic, the governor bounds who gets to
         // make the task wait for a probe.
-        .merge(
-            readiness::routes()
-                .with_state(Arc::new(readiness::ReadinessState::new(
-                    Arc::clone(&provider_cache),
-                    readiness::ReadinessConfig::from_env(),
-                )))
-                .layer(
-                    GovernorLayer::new(Arc::clone(&secondary_read_config))
-                        .error_handler(handlers::rate_limit_error),
-                ),
-        );
+        .merge(secondary_read_limit.govern(
+            readiness::routes().with_state(Arc::new(readiness::ReadinessState::new(
+                Arc::clone(&provider_cache),
+                readiness::ReadinessConfig::from_env(),
+            ))),
+            Door::Api,
+        ));
     if erc8004_writes_enabled {
         // Read the daily write limits now, so they are logged at startup
         // rather than on the first write.
@@ -813,32 +767,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // Admin curation routes share the strict register governor; they 404 unless
     // BAZAAR_ADMIN_TOKEN is configured.
-    let discovery_admin = handlers::discovery_admin_routes()
-        .with_state(Arc::clone(&discovery_registry))
-        .layer(
-            GovernorLayer::new(Arc::clone(&discovery_register_config))
-                .error_handler(handlers::rate_limit_error),
-        );
+    let discovery_admin = discovery_register_limit.govern(
+        handlers::discovery_admin_routes().with_state(Arc::clone(&discovery_registry)),
+        Door::Api,
+    );
 
     let http_endpoints = http_endpoints
         .merge(discovery_register)
         .merge(discovery_admin)
-        .merge(
-            handlers::discovery_routes()
-                .with_state(Arc::clone(&discovery_registry))
-                .layer(
-                    GovernorLayer::new(Arc::clone(&discovery_read_config))
-                        .error_handler(handlers::rate_limit_error),
-                ),
-        )
-        .merge(
-            handlers::transaction_routes()
-                .with_state(Arc::clone(&transaction_store))
-                .layer(
-                    GovernorLayer::new(Arc::clone(&discovery_read_config))
-                        .error_handler(handlers::rate_limit_error),
-                ),
-        )
+        .merge(discovery_read_limit.govern(
+            handlers::discovery_routes().with_state(Arc::clone(&discovery_registry)),
+            Door::Api,
+        ))
+        .merge(discovery_read_limit.govern(
+            handlers::transaction_routes().with_state(Arc::clone(&transaction_store)),
+            Door::Api,
+        ))
         // The agentic-discovery surfaces (/llms.txt, /.well-known/*, ...).
         // Stateless and unmetered: they are static documents, and a crawler
         // that gets 429 on /llms.txt reports the service as unreachable.
@@ -849,21 +793,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             human_page_burst,
         ))
         .merge(openapi::swagger_routes())
-        .merge(
-            handlers::events_routes()
-                .with_state(Arc::clone(&event_bus))
-                .layer(GovernorLayer::new(events_config).error_handler(handlers::rate_limit_error)),
-        );
+        .merge(events_limit.govern(
+            handlers::events_routes().with_state(Arc::clone(&event_bus)),
+            Door::Api,
+        ));
 
     // DX402 durable-evidence. Absent unless ENABLE_DX402=true and the store and
     // signing key are configured; `Dx402Service::from_env` logs precisely why it
     // stayed off rather than falling back to something that only looks durable.
     let http_endpoints = match dx402_service.clone() {
         Some(svc) => http_endpoints.merge(
-            dx402::handlers::dx402_routes().with_state(svc).layer(
-                GovernorLayer::new(Arc::clone(&discovery_read_config))
-                    .error_handler(handlers::rate_limit_error),
-            ),
+            discovery_read_limit.govern(dx402::handlers::dx402_routes().with_state(svc), Door::Api),
         ),
         None => http_endpoints,
     };
@@ -895,10 +835,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         //     the 404 a body. Reordering the merges above can no longer change
         //     this silently.
         .merge(
-            Router::new().fallback(handlers::agent_not_found).layer(
-                GovernorLayer::new(Arc::clone(&secondary_read_config))
-                    .error_handler(handlers::rate_limit_error),
-            ),
+            secondary_read_limit
+                .govern(Router::new().fallback(handlers::agent_not_found), Door::Api),
         )
         // The 405 for a path that exists under a different method. axum still
         // computes and attaches the `Allow` header itself.
@@ -922,7 +860,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .allow_origin(cors::Any)
                 .allow_methods([Method::GET, Method::POST])
                 .allow_headers(cors::Any)
-                .expose_headers(["idempotent-replayed", "payment-response", "x-payment-response"].map(axum::http::HeaderName::from_static)),
+                .expose_headers(
+                    [
+                        "idempotent-replayed",
+                        "payment-response",
+                        "x-payment-response",
+                        // A browser client can only pace itself on what it can read.
+                        "ratelimit-policy",
+                        "ratelimit",
+                        "retry-after",
+                    ]
+                    .map(axum::http::HeaderName::from_static),
+                ),
         )
         // Body limit MUST be the last layer applied so it wraps everything below.
         // 64 KiB ceiling on POST bodies — caps memory blow-up from oversized JSON.

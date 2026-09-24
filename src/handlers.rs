@@ -214,7 +214,7 @@ const ENV_SECONDARY_READS_BURST: &str = "SECONDARY_READS_RATE_BURST";
 /// against yet, only the same "one IP, many networks, in parallel" pattern
 /// that hit `/identity/owner`.
 ///
-/// Deliberately its OWN config, not a share of `discovery_read_config`: that
+/// Deliberately its OWN config, not a share of `discovery_read_limit`: that
 /// bucket (see its comment in `main.rs`) is sized against bazaar pagination --
 /// a 21k-item catalog at the 100/page cap is ~212 requests back to back.
 /// Folding these three routes into it would let a paginating bazaar client and
@@ -334,17 +334,12 @@ pub fn human_page_routes() -> Router {
 /// copy assembled in the test. One bucket per address for all nine pages: a
 /// loop that rotates paths spends the same budget as one that repeats a path.
 pub fn human_page_routes_governed(per_ms: u64, burst: u32) -> Router {
-    let config = Arc::new(
-        tower_governor::governor::GovernorConfigBuilder::default()
-            .per_millisecond(per_ms)
-            .burst_size(burst)
-            .key_extractor(crate::client_ip::ClientIpKeyExtractor)
-            .use_headers()
-            .finish()
-            .expect("human page governor config must be valid"),
-    );
-    human_page_routes()
-        .layer(tower_governor::GovernorLayer::new(config).error_handler(rate_limit_error))
+    crate::rate_limit::Bucket::new(crate::rate_limit::Policy::new(
+        "human-pages",
+        std::time::Duration::from_millis(per_ms),
+        burst,
+    ))
+    .govern(human_page_routes(), crate::rate_limit::Door::Api)
 }
 
 /// Below this many bytes a document is sent as it is: under ~1 KB gzip saves
@@ -523,6 +518,7 @@ pub fn agentic_routes() -> Router {
             get(get_mcp_server_card),
         )
         .route("/.well-known/ard.json", get(get_ard))
+        .route(crate::interop::MANIFEST_PATH, get(get_uvd_stack))
 }
 
 /// The 405 every route answers when the path exists but the method does not.
@@ -574,11 +570,12 @@ pub fn rate_limit_error(error: tower_governor::GovernorError) -> Response<axum::
         (
             "rate_limited",
             "Wait for the number of seconds in the `retry-after` header, then \
-             retry. `x-ratelimit-limit` and `x-ratelimit-remaining` report the \
-             budget on every successful response, so a client can pace itself \
-             instead of discovering the limit by hitting it. Limits are per \
-             client IP and documented at \
-             https://facilitator.ultravioletadao.xyz/skill.md",
+             retry. `RateLimit-Policy` and `RateLimit` report the quota and \
+             what is left of it on every successful response too, so a client \
+             can pace itself instead of discovering the limit by hitting it. \
+             Limits are per client IP; every one is listed in \
+             https://facilitator.ultravioletadao.xyz/.well-known/uvd-stack.json \
+             and explained at https://facilitator.ultravioletadao.xyz/skill.md",
         )
     } else {
         (
@@ -1074,6 +1071,17 @@ pub async fn get_agent_skills_index() -> impl IntoResponse {
 #[instrument(skip_all)]
 pub async fn get_mcp_server_card() -> impl IntoResponse {
     text_surface(mcp_server_card(), APPLICATION_JSON_UTF8)
+}
+
+/// `GET /.well-known/uvd-stack.json`: the stack interop manifest (`uvd.stack/1`).
+///
+/// Who this service is, its two doors and how they authenticate, that it does
+/// not charge, every rate limit the router mounted and where its liveness and
+/// readiness answer. Built by [`crate::interop`] on the first request, from
+/// the running build and the mounted limiters.
+#[instrument(skip_all)]
+pub async fn get_uvd_stack() -> impl IntoResponse {
+    text_surface(crate::interop::served_document(), APPLICATION_JSON_UTF8)
 }
 
 /// The served card: the static document with the running version stamped in.
@@ -2154,16 +2162,12 @@ fn erc8004_write_governed<S>(routes: Router<S>) -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
 {
-    let config = Arc::new(
-        tower_governor::governor::GovernorConfigBuilder::default()
-            .period(ERC8004_WRITE_PERIOD)
-            .burst_size(ERC8004_WRITE_BURST)
-            .key_extractor(crate::client_ip::ClientIpKeyExtractor)
-            .use_headers()
-            .finish()
-            .expect("ERC-8004 write governor config must be valid"),
-    );
-    routes.layer(tower_governor::GovernorLayer::new(config).error_handler(rate_limit_error))
+    crate::rate_limit::Bucket::new(crate::rate_limit::Policy::new(
+        "erc8004-writes",
+        ERC8004_WRITE_PERIOD,
+        ERC8004_WRITE_BURST,
+    ))
+    .govern(routes, crate::rate_limit::Door::Api)
 }
 
 pub fn erc8004_write_routes<A>() -> Router<A>
@@ -16366,6 +16370,7 @@ mod agentic_surface_tests {
         ("/.well-known/agent-skills/index.json", "application/json"),
         ("/.well-known/mcp/server-card.json", "application/json"),
         ("/.well-known/ard.json", "application/json"),
+        ("/.well-known/uvd-stack.json", "application/json"),
     ];
 
     async fn fetch(path: &str) -> (StatusCode, String, String) {
@@ -16971,6 +16976,9 @@ mod agentic_surface_tests {
             "/",
             "/docs",
             "/health",
+            // Readiness, mounted with its own state in main.rs; the interop
+            // manifest publishes it as `health.ready`.
+            "/health/ready",
             "/version",
             "/supported",
             "/verify",
@@ -19260,9 +19268,9 @@ mod erc8004_write_rate_tests {
     }
 
     /// `main.rs` mounts the governed write router, never the bare one, and the
-    /// bazar keeps its own budget: `discovery_register_config` still carries
+    /// bazar keeps its own budget: `discovery_register_limit` still carries
     /// 1 token every 12s with burst 250 and meters exactly the bazar's register
-    /// and admin routers. Read from source because those configs are locals of
+    /// and admin routers. Read from source because those limits are locals of
     /// `main()`.
     #[test]
     fn production_mounts_the_writes_and_the_bazar_on_separate_budgets() {
@@ -19284,22 +19292,27 @@ mod erc8004_write_rate_tests {
                 .next()
                 .unwrap()
         };
-        let bazar = statement_after("let discovery_register_config");
+        let bazar = statement_after("let discovery_register_limit");
         assert!(
-            bazar.contains(".per_second(12)") && bazar.contains(".burst_size(250)"),
+            bazar.contains("Duration::from_secs(12)") && bazar.contains("250"),
             "the bazar register budget changed: {bazar}"
         );
+        let statement_with = |needle: &str| -> &str {
+            main.split(';')
+                .find(|statement| statement.contains(needle))
+                .unwrap_or_else(|| panic!("`{needle}` must exist in main.rs"))
+        };
         for router in [
             "handlers::discovery_register_routes()",
             "handlers::discovery_admin_routes()",
         ] {
             assert!(
-                statement_after(router).contains("discovery_register_config"),
+                statement_with(router).contains("discovery_register_limit.govern("),
                 "{router} left the bazar budget"
             );
         }
         assert_eq!(
-            main.matches("&discovery_register_config").count(),
+            main.matches("discovery_register_limit.govern(").count(),
             2,
             "something other than the bazar's two routers draws on its budget"
         );

@@ -618,13 +618,18 @@ only on the refusal:
 
 | Header | On | Meaning |
 |---|---|---|
+| `RateLimit-Policy` | every rate-limited response, `200` included | the bucket this route draws on: `"verify-settle";q=30;w=60` is 30 requests in any 60 seconds |
+| `RateLimit` | every rate-limited response, `200` included | what is left: `"verify-settle";r=29;t=2` is 29 more within the next 2 seconds |
 | `x-ratelimit-limit` | every rate-limited response, `200` included | the burst size of the bucket this route draws on |
 | `x-ratelimit-remaining` | every rate-limited response, `200` included | tokens left in that bucket right now |
 | `retry-after` | `429` | seconds to wait before retrying |
 | `x-ratelimit-after` | `429` | the same number, under tower_governor's own name |
 
-Read `x-ratelimit-remaining` and slow down before it reaches zero; that is the
-whole reason it is on the `200`. The buckets are separate per surface, so
+Read `RateLimit` (or `x-ratelimit-remaining`) and slow down before it reaches
+zero; that is the whole reason it is on the `200`. `RateLimit-Policy` and
+`RateLimit` follow the IETF draft *RateLimit header fields for HTTP*, and every
+limit is also listed before your first request in `rate_limits` of
+https://facilitator.ultravioletadao.xyz/.well-known/uvd-stack.json. The buckets are separate per surface, so
 draining `/discovery/resources` does not cost you `/settle`, with one
 deliberate exception: **`POST /mcp` shares the `/verify` and `/settle` bucket**,
 because an `x402_settle` tool call costs the chain exactly what `POST /settle`

@@ -127,6 +127,13 @@ COPY --from=builder --chown=facilitator:facilitator /app/static /app/static
 
 USER facilitator:facilitator
 
+# The commit this image was built from, published as `git_sha` in
+# /.well-known/uvd-stack.json (src/version.rs). Declared here, after the last
+# RUN, and never in the builder stage: it changes on every commit, and there it
+# would key every compiled layer on it. Unset, the manifest says 0000000.
+ARG FACILITATOR_GIT_SHA=
+ENV FACILITATOR_GIT_SHA=${FACILITATOR_GIT_SHA}
+
 EXPOSE $PORT
 ENV RUST_LOG=info \
     HOME=/app

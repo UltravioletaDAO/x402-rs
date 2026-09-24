@@ -73,6 +73,8 @@ pub mod addresses;
 pub mod errors;
 pub mod lifecycle_auth;
 pub mod operator;
+#[cfg(test)]
+pub(crate) mod test_rpc;
 pub mod types;
 
 pub use errors::OperatorError;

@@ -1099,6 +1099,9 @@ fn encode_collector_data(signature: &Bytes) -> Bytes {
 // ============================================================================
 
 #[cfg(test)]
+mod snapshot_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

@@ -102,6 +102,59 @@ pub enum OperatorError {
         category: &'static str,
         detail: String,
     },
+
+    /// A chain read the request depends on failed -- an RPC error, a rate
+    /// limit, an answer that would not decode. Nothing was sent, so the same
+    /// request can be retried. Never a 4xx: a caller that treats every 4xx as
+    /// final would give up on a payment that only needed a second try.
+    #[error("could not read the chain ({0}); nothing was sent, retry later")]
+    ChainReadUnavailable(String),
+
+    /// A PaymentOperator this facilitator declares for the network has not
+    /// passed its self-check against the chain (see `autoverify`), so a NEW
+    /// authorization is not placed against it. Nothing was sent. The expected
+    /// case is an operator that is declared but not deployed yet: it turns
+    /// verified on its own once it is, which is why this is retryable.
+    #[error(
+        "PaymentOperator {operator} is not verified on {network} ({reason}); nothing was sent"
+    )]
+    OperatorNotVerified {
+        operator: Address,
+        network: String,
+        reason: String,
+    },
+
+    /// The escrow's signature over the authorization does not come from the
+    /// payer as a plain EOA under this network's token domain.
+    #[error("Escrow authorization signature rejected: {0}")]
+    AuthorizationSignatureInvalid(String),
+
+    /// `void` returns the whole capturable amount and takes no amount, so a
+    /// refund of any other non-zero amount cannot be honoured on this
+    /// operator generation. Nothing was sent.
+    #[error("refundInEscrow of {requested} cannot be honoured: this operator voids the whole capturable amount ({capturable}); nothing was sent")]
+    PartialRefundUnsupported { requested: u128, capturable: u128 },
+
+    /// A `refundInEscrow` of 0 on an operator that voids everything. A missing
+    /// or misparsed amount is never read as permission to void the whole
+    /// authorization: the caller names the capturable amount. Nothing was sent.
+    #[error("refundInEscrow needs the amount to void ({capturable} is capturable); 0 is not taken to mean all of it; nothing was sent")]
+    AmountRequired { capturable: u128 },
+
+    /// Nothing is capturable any more -- the authorization was already voided
+    /// or captured. Typically the retry of a void that already went through.
+    #[error("nothing to void: the capturable amount is 0; nothing was sent")]
+    NothingToVoid,
+}
+
+/// How a typed escrow failure answers over HTTP: status, the bounded token
+/// that goes in `errorReason`, and the `Retry-After` seconds when the same
+/// request may be retried.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HttpAnswer {
+    pub status: u16,
+    pub token: &'static str,
+    pub retry_after_secs: Option<u32>,
 }
 
 impl From<OperatorError> for FacilitatorLocalError {
@@ -114,5 +167,49 @@ impl From<OperatorError> for FacilitatorLocalError {
 impl OperatorError {
     pub fn unsupported_network(network: &Network) -> Self {
         OperatorError::UnsupportedNetwork(network.to_string())
+    }
+
+    /// The fixed answer of the failures that carry their own status. `None`
+    /// for every other variant, which keeps the classification it always had.
+    ///
+    /// No transaction exists behind any of these: each is decided before
+    /// anything is signed.
+    pub fn http_answer(&self) -> Option<HttpAnswer> {
+        match self {
+            OperatorError::ChainReadUnavailable(_) => Some(HttpAnswer {
+                status: 502,
+                token: "chain_read_unavailable",
+                retry_after_secs: Some(30),
+            }),
+            // Retryable: the verdict is re-read at most a minute later, and an
+            // operator that is declared but not yet deployed turns verified
+            // on its own once it is.
+            OperatorError::OperatorNotVerified { .. } => Some(HttpAnswer {
+                status: 503,
+                token: "operator_not_verified",
+                retry_after_secs: Some(60),
+            }),
+            OperatorError::AuthorizationSignatureInvalid(_) => Some(HttpAnswer {
+                status: 400,
+                token: "authorization_signature_invalid",
+                retry_after_secs: None,
+            }),
+            OperatorError::PartialRefundUnsupported { .. } => Some(HttpAnswer {
+                status: 422,
+                token: "partial_refund_unsupported_on_generation",
+                retry_after_secs: None,
+            }),
+            OperatorError::AmountRequired { .. } => Some(HttpAnswer {
+                status: 422,
+                token: "amount_required_on_generation",
+                retry_after_secs: None,
+            }),
+            OperatorError::NothingToVoid => Some(HttpAnswer {
+                status: 409,
+                token: "nothing_to_void",
+                retry_after_secs: None,
+            }),
+            _ => None,
+        }
     }
 }

@@ -53,7 +53,6 @@ pub(crate) struct SentTx {
 #[derive(Default)]
 struct NodeState {
     chain_id: u64,
-    methods: Vec<String>,
     calls: HashMap<(Address, [u8; 4]), CallAnswer>,
     /// Every `eth_call` answered, as `(to, selector)`.
     reads: Vec<(Address, [u8; 4])>,
@@ -120,17 +119,11 @@ impl MockNode {
         self.state.lock().unwrap().reads.clone()
     }
 
-    /// Every JSON-RPC method called, in order.
-    pub(crate) fn methods(&self) -> Vec<String> {
-        self.state.lock().unwrap().methods.clone()
-    }
-
     /// Forget what was sent and read so far; the script stays.
     pub(crate) fn clear_log(&self) {
         let mut state = self.state.lock().unwrap();
         state.sent.clear();
         state.reads.clear();
-        state.methods.clear();
     }
 }
 
@@ -265,7 +258,6 @@ fn answer(state: &Mutex<NodeState>, req: &Value) -> Value {
         .unwrap_or_default();
     let params = req.get("params").cloned().unwrap_or(Value::Null);
     let mut state = state.lock().unwrap();
-    state.methods.push(method.to_string());
     let result = match method {
         "eth_chainId" => hex_quantity(state.chain_id as u128),
         "eth_getTransactionCount" => json!("0x0"),

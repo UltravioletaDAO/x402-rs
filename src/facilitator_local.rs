@@ -83,6 +83,79 @@ fn kind_identity(kind: &SupportedPaymentKind) -> String {
     )
 }
 
+/// The `escrow` and `commerce` entries of `/supported`, one pass over
+/// `ESCROW_NETWORKS`.
+///
+/// - `escrow`: one entry per PaymentOperator the network declares, on the
+///   network's own escrow and collector.
+/// - `commerce`: the set a merchant deploys its own operator against -- the
+///   x402r CREATE3 addresses (interop with `@x402r/helpers`), except on the
+///   canonical v1 networks (Arc), where the CREATE3 set has no code and the
+///   entry names the canonical v1 escrow, factory and collector instead.
+///
+/// On the canonical v1 networks an operator is announced only while
+/// `operator_verified` says it passed its self-check (`autoverify`). Every
+/// other network is announced exactly as it always was.
+pub(crate) fn escrow_supported_kinds(
+    operator_verified: impl Fn(Network, alloy::primitives::Address) -> bool,
+) -> Vec<SupportedPaymentKind> {
+    use crate::payment_operator::addresses::{
+        canonical_v1, create3, is_canonical_v1_network, OperatorAddresses, ESCROW_NETWORKS,
+    };
+
+    let entry =
+        |scheme: Scheme, network: Network, escrow, operator, collector| SupportedPaymentKind {
+            x402_version: X402Version::V2,
+            scheme,
+            network: network.to_caip2(),
+            network_aliases: None,
+            extra: Some(SupportedPaymentKindExtra {
+                fee_payer: None,
+                tokens: None,
+                escrow: Some(EscrowSupportedInfo {
+                    escrow_address: EvmAddress(escrow),
+                    operator_address: EvmAddress(operator),
+                    token_collector: EvmAddress(collector),
+                }),
+            }),
+        };
+
+    let mut kinds = Vec::new();
+    for &network in ESCROW_NETWORKS {
+        let Some(addrs) = OperatorAddresses::for_network(network) else {
+            continue;
+        };
+        let canonical = is_canonical_v1_network(network);
+        for &operator in &addrs.payment_operators {
+            if canonical && !operator_verified(network, operator) {
+                continue;
+            }
+            kinds.push(entry(
+                Scheme::Escrow,
+                network,
+                addrs.escrow,
+                operator,
+                addrs.token_collector,
+            ));
+        }
+        let (escrow, factory, collector) = if canonical {
+            (
+                canonical_v1::ESCROW,
+                canonical_v1::FACTORY_PAYMENT_OPERATOR,
+                canonical_v1::TOKEN_COLLECTOR,
+            )
+        } else {
+            (
+                create3::ESCROW,
+                create3::FACTORY_PAYMENT_OPERATOR,
+                create3::TOKEN_COLLECTOR,
+            )
+        };
+        kinds.push(entry(Scheme::Commerce, network, escrow, factory, collector));
+    }
+    kinds
+}
+
 /// Advertise every kind under BOTH ways of naming its chain.
 ///
 /// `/supported` publishes each chain twice: by its v1 name (`base`) and by its
@@ -320,55 +393,10 @@ where
         // Add x402r escrow/commerce scheme support (PaymentOperator-based escrow)
         // Dynamically advertise all networks with deployed PaymentOperator contracts
         // Only if ENABLE_PAYMENT_OPERATOR=true
-        //
-        // "escrow" scheme: uses per-chain legacy addresses (backward compat with existing operators)
-        // "commerce" scheme: uses x402r CREATE3 canonical addresses (interop with @x402r/helpers)
         if crate::payment_operator::is_enabled() {
-            use crate::payment_operator::addresses::{create3, OperatorAddresses, ESCROW_NETWORKS};
-
-            for &network in ESCROW_NETWORKS {
-                if let Some(addrs) = OperatorAddresses::for_network(network) {
-                    // Escrow scheme: per-chain legacy addresses, one entry per deployed operator
-                    for &operator in &addrs.payment_operators {
-                        let escrow_extra = SupportedPaymentKindExtra {
-                            fee_payer: None,
-                            tokens: None,
-                            escrow: Some(EscrowSupportedInfo {
-                                escrow_address: EvmAddress(addrs.escrow),
-                                operator_address: EvmAddress(operator),
-                                token_collector: EvmAddress(addrs.token_collector),
-                            }),
-                        };
-
-                        kinds.push(SupportedPaymentKind {
-                            x402_version: X402Version::V2,
-                            scheme: Scheme::Escrow,
-                            network: network.to_caip2(),
-                            network_aliases: None,
-                            extra: Some(escrow_extra),
-                        });
-                    }
-
-                    // Commerce scheme: CREATE3 canonical addresses (no operator — merchant-specific)
-                    let commerce_extra = SupportedPaymentKindExtra {
-                        fee_payer: None,
-                        tokens: None,
-                        escrow: Some(EscrowSupportedInfo {
-                            escrow_address: EvmAddress(create3::ESCROW),
-                            operator_address: EvmAddress(create3::FACTORY_PAYMENT_OPERATOR),
-                            token_collector: EvmAddress(create3::TOKEN_COLLECTOR),
-                        }),
-                    };
-
-                    kinds.push(SupportedPaymentKind {
-                        x402_version: X402Version::V2,
-                        scheme: Scheme::Commerce,
-                        network: network.to_caip2(),
-                        network_aliases: None,
-                        extra: Some(commerce_extra),
-                    });
-                }
-            }
+            kinds.extend(escrow_supported_kinds(
+                crate::payment_operator::autoverify::is_verified,
+            ));
         }
 
         // Add upto scheme support (Permit2-based variable amount settlement)
@@ -1215,5 +1243,165 @@ mod network_alias_tests {
         // than showing up as null for a client to trip over.
         let json = serde_json::to_string(&published[0]).expect("serializes");
         assert!(!json.contains("networkAliases"), "got: {json}");
+    }
+}
+
+#[cfg(test)]
+mod escrow_supported_tests {
+    use super::*;
+    use crate::payment_operator::addresses::{
+        canonical_v1, create3, OperatorAddresses, ESCROW_NETWORKS,
+    };
+    use alloy::primitives::Address;
+    use serde_json::Value;
+
+    /// The escrow/commerce entries exactly as `supported()` built them through
+    /// 2.40.0, kept verbatim as the oracle for every network but Arc.
+    fn as_built_through_2_40(networks: &[Network]) -> Vec<SupportedPaymentKind> {
+        let mut kinds = Vec::new();
+        for &network in networks {
+            if let Some(addrs) = OperatorAddresses::for_network(network) {
+                // Escrow scheme: per-chain legacy addresses, one entry per deployed operator
+                for &operator in &addrs.payment_operators {
+                    let escrow_extra = SupportedPaymentKindExtra {
+                        fee_payer: None,
+                        tokens: None,
+                        escrow: Some(EscrowSupportedInfo {
+                            escrow_address: EvmAddress(addrs.escrow),
+                            operator_address: EvmAddress(operator),
+                            token_collector: EvmAddress(addrs.token_collector),
+                        }),
+                    };
+
+                    kinds.push(SupportedPaymentKind {
+                        x402_version: X402Version::V2,
+                        scheme: Scheme::Escrow,
+                        network: network.to_caip2(),
+                        network_aliases: None,
+                        extra: Some(escrow_extra),
+                    });
+                }
+
+                // Commerce scheme: CREATE3 canonical addresses (no operator — merchant-specific)
+                let commerce_extra = SupportedPaymentKindExtra {
+                    fee_payer: None,
+                    tokens: None,
+                    escrow: Some(EscrowSupportedInfo {
+                        escrow_address: EvmAddress(create3::ESCROW),
+                        operator_address: EvmAddress(create3::FACTORY_PAYMENT_OPERATOR),
+                        token_collector: EvmAddress(create3::TOKEN_COLLECTOR),
+                    }),
+                };
+
+                kinds.push(SupportedPaymentKind {
+                    x402_version: X402Version::V2,
+                    scheme: Scheme::Commerce,
+                    network: network.to_caip2(),
+                    network_aliases: None,
+                    extra: Some(commerce_extra),
+                });
+            }
+        }
+        kinds
+    }
+
+    fn json(kinds: &[SupportedPaymentKind]) -> Vec<Value> {
+        kinds
+            .iter()
+            .map(|k| serde_json::to_value(k).unwrap())
+            .collect()
+    }
+
+    fn on(kinds: &[SupportedPaymentKind], network: Network) -> Vec<SupportedPaymentKind> {
+        kinds
+            .iter()
+            .filter(|k| k.network == network.to_caip2())
+            .cloned()
+            .collect()
+    }
+
+    /// (scheme, escrow, operator, collector) of each entry.
+    fn addresses(kinds: &[SupportedPaymentKind]) -> Vec<(Scheme, Address, Address, Address)> {
+        kinds
+            .iter()
+            .map(|k| {
+                let e = k.extra.as_ref().unwrap().escrow.as_ref().unwrap();
+                (
+                    k.scheme,
+                    e.escrow_address.0,
+                    e.operator_address.0,
+                    e.token_collector.0,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn supported_arc_announces_generation_d_only() {
+        let others: Vec<Network> = ESCROW_NETWORKS
+            .iter()
+            .copied()
+            .filter(|n| !matches!(n, Network::Arc | Network::ArcTestnet))
+            .collect();
+        assert_eq!(others.len(), 11);
+
+        for verified in [false, true] {
+            let kinds = escrow_supported_kinds(|_, _| verified);
+
+            // Every other network: byte for byte what 2.40.0 published, and
+            // independent of the self-check.
+            let rest: Vec<SupportedPaymentKind> =
+                others.iter().flat_map(|&n| on(&kinds, n)).collect();
+            assert_eq!(json(&rest), json(&as_built_through_2_40(&others)));
+
+            for network in [Network::Arc, Network::ArcTestnet] {
+                let operator = OperatorAddresses::for_network(network)
+                    .unwrap()
+                    .payment_operators[0];
+                let mut expected = vec![];
+                // The operator's escrow entry exists only once it verified.
+                if verified {
+                    expected.push((
+                        Scheme::Escrow,
+                        canonical_v1::ESCROW,
+                        operator,
+                        canonical_v1::TOKEN_COLLECTOR,
+                    ));
+                }
+                // The commerce entry names the canonical v1 set, never CREATE3.
+                expected.push((
+                    Scheme::Commerce,
+                    canonical_v1::ESCROW,
+                    canonical_v1::FACTORY_PAYMENT_OPERATOR,
+                    canonical_v1::TOKEN_COLLECTOR,
+                ));
+                assert_eq!(addresses(&on(&kinds, network)), expected, "{network}");
+            }
+        }
+
+        // Per operator, not per network: the verdict of one does not announce
+        // another.
+        let only_mainnet = escrow_supported_kinds(|n, _| n == Network::Arc);
+        assert_eq!(
+            addresses(&on(&only_mainnet, Network::Arc)).len(),
+            2,
+            "escrow + commerce on Arc"
+        );
+        assert_eq!(
+            addresses(&on(&only_mainnet, Network::ArcTestnet)).len(),
+            1,
+            "commerce only on Arc testnet"
+        );
+
+        // Published under both names, like every other scheme.
+        let published = advertise_under_both_network_forms(escrow_supported_kinds(|_, _| true));
+        for name in ["arc", "eip155:5042", "arc-testnet", "eip155:5042002"] {
+            assert!(
+                published
+                    .iter()
+                    .any(|k| k.network == name && k.scheme == Scheme::Escrow),
+                "escrow under {name}"
+            );
+        }
     }
 }

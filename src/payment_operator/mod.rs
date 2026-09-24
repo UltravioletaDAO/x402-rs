@@ -66,12 +66,28 @@
 //! | TokenCollector | 0x48ADf6E37F9b31dC2AAD0462C5862B5422C736B8 |
 //! | ProtocolFeeConfig | 0x59314674BAbb1a24Eb2704468a9cCdD50668a1C6 |
 //!
+//! ## Arc (eip155:5042) and Arc testnet (eip155:5042002)
+//!
+//! The canonical commerce-payments v1.0.0 set (`addresses::canonical_v1`),
+//! whose operators `capture` and `void` instead of `release` and
+//! `refundInEscrow` (`operator::OperatorAbi::V3`).
+//!
+//! | Contract | Address |
+//! |----------|---------|
+//! | AuthCaptureEscrow | 0xBdEA0D1bcC5966192B070Fdf62aB4EF5b4420cff |
+//! | PaymentOperatorFactory v1.0.2 | 0xc24153B7ED8DC03e551F29DDEeA5CadFe57e2716 |
+//! | ERC3009TokenCollector | 0x0E3dF9510de65469C4518D7843919c0b8C7A7757 |
+//! | ProtocolFeeConfig | 0xBe2d24614F339a1eB103A399F93AA2a39Ca815Bc |
+//!
 //! # Reference Implementation
 //!
 //! Based on: https://github.com/BackTrackCo/x402r-scheme
 
 pub mod abi;
 pub mod addresses;
+#[cfg(test)]
+mod arc_chain_tests;
+pub mod autoverify;
 pub mod errors;
 pub mod lifecycle_auth;
 pub mod operator;

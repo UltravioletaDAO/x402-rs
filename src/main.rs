@@ -204,6 +204,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // no RPC.
     chain_identity::spawn(Arc::clone(&provider_cache));
 
+    // Self-check of the escrow operators declared on Arc: ESCROW() and the v3
+    // selectors, at startup and every ten minutes. It only decides what
+    // /supported announces and whether NEW authorizations are placed; a failed
+    // read never stops the process. Background, so startup waits on no RPC.
+    if payment_operator::is_enabled() {
+        payment_operator::autoverify::spawn(Arc::clone(&provider_cache));
+    }
+
     let facilitator = FacilitatorLocal::new(Arc::clone(&provider_cache), compliance_checker);
     let axum_state = Arc::new(facilitator);
 

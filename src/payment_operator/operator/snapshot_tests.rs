@@ -291,4 +291,30 @@ async fn generation_is_unchanged_for_every_existing_escrow_network() {
     );
     let observed = observe_generation().await;
     assert_matches_fixture("generation", observed);
+
+    // And the resolver the flows pick the ABI with agrees with every recorded
+    // row: the (network, escrow, collector) a request names never changes
+    // the answer on these networks.
+    let fixture: Value = serde_json::from_str(FIXTURE).unwrap();
+    let rows = fixture["generation"].as_array().unwrap();
+    assert_eq!(rows.len(), 22);
+    for row in rows {
+        let network: Network = row["network"].as_str().unwrap().parse().unwrap();
+        let extra: crate::payment_operator::types::EscrowExtra = serde_json::from_value(json!({
+            "escrowAddress": row["escrow"],
+            "operatorAddress": RECEIVER,
+            "tokenCollector": row["tokenCollector"],
+        }))
+        .unwrap();
+        let expected = match row["abi"].as_str().unwrap() {
+            "legacy" => super::OperatorAbi::Legacy,
+            "create3" => super::OperatorAbi::Create3,
+            other => panic!("unexpected recorded ABI {other}"),
+        };
+        assert_eq!(
+            super::resolve_operator_abi(network, &extra).unwrap(),
+            expected,
+            "{row}"
+        );
+    }
 }

@@ -49,7 +49,7 @@ Ethereum Sepolia, Base Sepolia, Polygon Amoy, Optimism Sepolia, Avalanche Fuji, 
 - **Sui**: Mainnet (`sui`) and Testnet (`sui-testnet`)
 - **Hedera**: Native mainnet (`hedera:mainnet`) and testnet (`hedera:testnet`), x402 v2/exact only. HBAR is used only for sponsor network fees. Payments accept native USDC `0.0.456858` mainnet / `0.0.429274` testnet (6 decimals). Discover the network-specific `extra.feePayer` from `/supported`. Current sponsor IDs: mainnet `0.0.10868300`, testnet `0.0.10576385`. Native account/token IDs are not EVM chain IDs 295/296.
 
-Arc uses USDC `0x3600000000000000000000000000000000000000` with 6 payment decimals and EIP-712 domain `USDC` / `2`. Its gas view uses 18 decimals of the same balance. EURC is also supported: mainnet `0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1`, testnet `0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a`, 6 decimals, EIP-712 `EURC` / `2`. EURC amounts are euros, without automatic USD conversion. Gas remains USDC. EURC live payment acceptance was proven on Arc mainnet on 2026-09-22; Arc testnet is still pending. Arc and native Hedera additions enable exact payments only; they do not add escrow, upto or Gateway support. ERC-8004 identity and reputation are served on both Arc networks (not on Hedera). Native Hedera also rejects durable-evidence and unsupported extensions.
+Arc uses USDC `0x3600000000000000000000000000000000000000` with 6 payment decimals and EIP-712 domain `USDC` / `2`. Its gas view uses 18 decimals of the same balance. EURC is also supported: mainnet `0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1`, testnet `0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a`, 6 decimals, EIP-712 `EURC` / `2`. EURC amounts are euros, without automatic USD conversion. Gas remains USDC. EURC live payment acceptance was proven on Arc mainnet on 2026-09-22; Arc testnet is still pending. Arc also serves the x402r `escrow` and `commerce` schemes, on the canonical commerce-payments v1.0.0 contracts (see the escrow section of `POST /settle`). Neither Arc nor native Hedera adds upto or Gateway support, and native Hedera adds no escrow. ERC-8004 identity and reputation are served on both Arc networks (not on Hedera). Native Hedera also rejects durable-evidence and unsupported extensions.
 
 ## Core Endpoints
 
@@ -537,14 +537,27 @@ The `action` field controls the operation:
 | `release` | Send escrowed funds to receiver | EIP-712 lifecycle order by the payer or the operator owner (`payload.lifecycleAuth`) |
 | `refundInEscrow` | Return escrowed funds to payer | EIP-712 lifecycle order by the receiver, the operator owner, or the payer once `authorizationExpiry` has passed |
 
-Escrow contracts deployed on 11 networks. See `/supported` for networks with active PaymentOperator deployments.
+Escrow contracts deployed on 13 networks. See `/supported` for networks with active PaymentOperator deployments.
+
+**Arc and Arc testnet** run the canonical commerce-payments v1.0.0 set -- AuthCaptureEscrow
+`0xBdEA0D1bcC5966192B070Fdf62aB4EF5b4420cff`, ERC-3009 collector `0x0E3dF9510de65469C4518D7843919c0b8C7A7757`,
+PaymentOperatorFactory v1.0.2 `0xc24153B7ED8DC03e551F29DDEeA5CadFe57e2716` -- and a request there must name
+that escrow and collector. Their operators have no `release` / `refundInEscrow`: `release` is sent as
+`capture(paymentInfo, amount, 0x)` and `refundInEscrow` as `void(paymentInfo, 0x)`, which returns the WHOLE
+capturable amount, so `refundInEscrow` must name exactly that amount. Nothing capturable left answers
+`409 nothing_to_void`; an `amount` of `0` answers `422 amount_required_on_generation` (it is never read as
+"all of it"); any other amount answers `422 partial_refund_unsupported_on_generation`; and a chain read that
+fails answers `502 chain_read_unavailable` with `retryable: true`. None of them sends a transaction.
+`authorize` on Arc takes EOA signatures only, and is placed against a listed PaymentOperator only once that
+operator has passed its on-chain self-check: until then it answers `503 operator_not_verified`, retryable --
+the expected case being an operator that is declared but not deployed yet.
 
 **Lifecycle orders.** `release` and `refundInEscrow` carry no ERC-3009 signature (the funds are
 already escrowed) but they do move money, so they carry `payload.lifecycleAuth`: an EIP-712
 signature over `LifecycleOrder(string action, uint256 amount, uint256 deadline, bytes32 nonce, PaymentInfo paymentInfo)`
 with domain `{ name: "x402 escrow lifecycle", version: "1", chainId }` and `PaymentInfo` the
-AuthCaptureEscrow type verbatim. The "operator owner" is the operator's `FEE_RECIPIENT()`, read
-on chain. Whether the order is required is governed by `ESCROW_LIFECYCLE_AUTH` (`off` | `log` |
+AuthCaptureEscrow type verbatim. The "operator owner" is the operator's `FEE_RECIPIENT()`
+(`FEE_RECEIVER()` on Arc), read on chain. Whether the order is required is governed by `ESCROW_LIFECYCLE_AUTH` (`off` | `log` |
 `enforce`); `GET /settle` publishes the effective mode. Under `enforce` a missing or invalid order
 is 403 with a bounded `errorReason` (`missing`, `bad_signature`, `expired`, `deadline_too_far`,
 `replayed`, `unauthorized_role`); `owner_unverifiable` is 502 and retryable.
@@ -936,8 +949,8 @@ Until 2026-09-03 `escrow`, `commerce` and `upto` appeared **only** under CAIP-2 
 
 `upto` is **not** available on every EVM network that supports `exact`. The proxy address is identical on all chains because it is deployed with CREATE2, but the deployment still has to be replayed per chain, and on Avalanche, Celo, Scroll, Unichain and Optimism Sepolia it never was — the address has no code there. Query `/supported` rather than assuming: it now lists `upto` only where settlement can actually succeed.
 
-**Escrow networks (9 total):** Base, Ethereum, Polygon, Arbitrum, Celo, Monad, Avalanche, Base Sepolia, Ethereum Sepolia.
-Only networks with a deployed PaymentOperator appear in the response.
+**Escrow networks (13):** `base`, `ethereum`, `polygon`, `arbitrum`, `celo`, `monad`, `avalanche`, `optimism`, `skale-base`, `arc`, `base-sepolia`, `ethereum-sepolia`, `arc-testnet`.
+Each lists `commerce`, and `escrow` once per PaymentOperator the facilitator declares for it; on `arc` and `arc-testnet` an operator is listed only once it has passed its on-chain self-check.
 
 **Extensions:** the `extensions` array lists what this deployment actually serves — `bazaar`, and `durable-evidence` **only when DX402 is serviceable** (enabled *and* its store and index are configured), so no client builds against `/dx402/*` routes that would 404.
 
@@ -3494,6 +3507,49 @@ mod tests {
     /// while `scroll`, `skale-base` and `skale-base-sepolia` were served.
     /// Derived from `supported_networks()`, so a network added there without
     /// touching this prose fails here.
+    /// The escrow network list under `GET /supported` is the one the code
+    /// serves. It read "9 total" while 11 were served, and named neither
+    /// Optimism nor SKALE Base; derived from `ESCROW_NETWORKS`, so a network
+    /// added there without touching the prose fails here. And the description
+    /// may not deny escrow on Arc again.
+    #[test]
+    fn the_escrow_prose_names_every_escrow_network() {
+        use crate::payment_operator::addresses::ESCROW_NETWORKS;
+        let spec = ApiDoc::openapi();
+        let supported = spec.paths.paths["/supported"]
+            .get
+            .as_ref()
+            .unwrap()
+            .description
+            .as_deref()
+            .unwrap();
+        let line = supported
+            .lines()
+            .find(|l| l.starts_with("**Escrow networks ("))
+            .expect("the /supported description lists the escrow networks");
+        assert!(
+            line.starts_with(&format!("**Escrow networks ({}):**", ESCROW_NETWORKS.len())),
+            "{line}"
+        );
+        for network in ESCROW_NETWORKS {
+            assert!(
+                line.contains(&format!("`{network}`")),
+                "`{network}` serves escrow but the /supported prose does not name it"
+            );
+        }
+        assert_eq!(
+            line.matches('`').count(),
+            2 * ESCROW_NETWORKS.len(),
+            "{line}"
+        );
+
+        // Until 2.40.0 the Arc paragraph said the Arc additions "do not add
+        // escrow". It has to say the opposite now, and the denial must be gone.
+        let description = spec.info.description.as_deref().unwrap();
+        assert!(description.contains("Arc also serves the x402r `escrow` and `commerce` schemes"));
+        assert!(!description.contains("do not add escrow"));
+    }
+
     #[test]
     fn the_erc8004_prose_names_every_supported_network() {
         let spec = ApiDoc::openapi();

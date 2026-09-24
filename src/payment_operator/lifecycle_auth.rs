@@ -12,7 +12,7 @@
 //!
 //! | action           | accepted signers                                              |
 //! |------------------|---------------------------------------------------------------|
-//! | `release`        | `paymentInfo.payer`; the operator owner (`FEE_RECIPIENT()`)   |
+//! | `release`        | `paymentInfo.payer`; the operator owner (`FEE_RECIPIENT()`, or `FEE_RECEIVER()` on v3 operators) |
 //! | `refundInEscrow` | `paymentInfo.receiver`; the operator owner; the payer, but only once `authorizationExpiry` has passed (the chain already lets them `reclaim()`) |
 //!
 //! The receiver may never release (self-payment is what escrow exists to stop)
@@ -47,8 +47,9 @@ use tracing::{info, warn};
 use crate::chain::evm::{EvmChain, EvmProvider};
 use crate::network::Network;
 
-use super::abi::OperatorContract;
+use super::abi::{OperatorContract, OperatorV3Contract};
 use super::errors::OperatorError;
+use super::operator::OperatorAbi;
 use super::types::{ContractPaymentInfo, EscrowLifecyclePayload};
 
 /// `off` | `log` | `enforce`. Anything else is `off` with a warning.
@@ -508,12 +509,15 @@ fn owner_cache() -> &'static Mutex<HashMap<(u64, Address), Address>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// `FEE_RECIPIENT()` of the operator: immutable on every deployed operator,
-/// so it is read once per (chain, operator) and cached for the process.
-async fn read_operator_owner(
+/// The owner of the operator: `FEE_RECIPIENT()` on the legacy and CREATE3
+/// operators, `FEE_RECEIVER()` on v3 ones (which have no `FEE_RECIPIENT()`).
+/// Immutable on every deployed operator, so it is read once per
+/// (chain, operator) and cached for the process.
+pub(super) async fn read_operator_owner(
     provider: &EvmProvider,
     chain_id: u64,
     operator: Address,
+    abi: OperatorAbi,
 ) -> Result<Address, String> {
     if let Some(a) = owner_cache()
         .lock()
@@ -522,12 +526,24 @@ async fn read_operator_owner(
     {
         return Ok(*a);
     }
-    let call = OperatorContract::FEE_RECIPIENTCall {};
-    let raw = super::operator::eth_call(provider, operator, &call)
-        .await
-        .map_err(|e| e.to_string())?;
-    let owner: Address = OperatorContract::FEE_RECIPIENTCall::abi_decode_returns(&raw)
-        .map_err(|e| format!("decode FEE_RECIPIENT: {e}"))?;
+    let owner: Address = match abi {
+        OperatorAbi::V3 => {
+            let call = OperatorV3Contract::FEE_RECEIVERCall {};
+            let raw = super::operator::eth_call(provider, operator, &call)
+                .await
+                .map_err(|e| e.to_string())?;
+            OperatorV3Contract::FEE_RECEIVERCall::abi_decode_returns(&raw)
+                .map_err(|e| format!("decode FEE_RECEIVER: {e}"))?
+        }
+        OperatorAbi::Legacy | OperatorAbi::Create3 => {
+            let call = OperatorContract::FEE_RECIPIENTCall {};
+            let raw = super::operator::eth_call(provider, operator, &call)
+                .await
+                .map_err(|e| e.to_string())?;
+            OperatorContract::FEE_RECIPIENTCall::abi_decode_returns(&raw)
+                .map_err(|e| format!("decode FEE_RECIPIENT: {e}"))?
+        }
+    };
     owner_cache()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -548,13 +564,28 @@ fn unix_now() -> u64 {
 
 /// Check the order on a `release` / `refundInEscrow` request under the
 /// configured mode. Returns before touching anything when the mode is `off`.
+/// `abi` is the operator generation the request resolved to; it decides which
+/// getter names the operator owner.
 pub async fn gate(
     action: LifecycleAction,
     lifecycle: &EscrowLifecyclePayload,
     network: Network,
     provider: &EvmProvider,
+    abi: OperatorAbi,
 ) -> Result<(), OperatorError> {
-    let mode = mode();
+    gate_with_mode(mode(), action, lifecycle, network, provider, abi).await
+}
+
+/// [`gate`] under an explicit mode, so the chain half can be tested without
+/// touching the process environment.
+pub(super) async fn gate_with_mode(
+    mode: Mode,
+    action: LifecycleAction,
+    lifecycle: &EscrowLifecyclePayload,
+    network: Network,
+    provider: &EvmProvider,
+    abi: OperatorAbi,
+) -> Result<(), OperatorError> {
     if mode == Mode::Off {
         return Ok(());
     }
@@ -573,7 +604,7 @@ pub async fn gate(
     let verdict = match pre_evaluate(lifecycle.lifecycle_auth.as_ref(), &ctx, replay_guard()) {
         Step::Verdict(v) => v,
         Step::NeedsOwner { signer } => {
-            let owner = read_operator_owner(provider, chain_id, payment_info.operator).await;
+            let owner = read_operator_owner(provider, chain_id, payment_info.operator, abi).await;
             finish_with_owner(signer, owner)
         }
     };
@@ -1097,5 +1128,137 @@ mod tests {
         fn is_ok_verdict(&self) -> bool {
             matches!(self, Step::Verdict(v) if v.is_ok())
         }
+    }
+
+    // ---- the owner getter follows the operator generation -----------------
+
+    /// A release order signed by `owner` -- neither payer nor receiver, so only
+    /// the operator-owner rule can admit it and the chain has to be read.
+    fn owner_order(
+        owner: &PrivateKeySigner,
+        operator: Address,
+        network: Network,
+    ) -> EscrowLifecyclePayload {
+        use crate::payment_operator::types::EscrowPaymentInfo;
+        let now = unix_now();
+        let mut lifecycle = EscrowLifecyclePayload {
+            payment_info: EscrowPaymentInfo {
+                operator,
+                receiver: address!("2222222222222222222222222222222222222222"),
+                token: address!("3600000000000000000000000000000000000000"),
+                max_amount: 1_000_000,
+                pre_approval_expiry: now + 3600,
+                authorization_expiry: now + 7200,
+                refund_expiry: now + 86400,
+                min_fee_bps: 0,
+                max_fee_bps: 1300,
+                fee_receiver: operator,
+                salt: B256::repeat_byte(0x39),
+            },
+            payer: address!("1111111111111111111111111111111111111111"),
+            amount: 1_000_000,
+            lifecycle_auth: None,
+        };
+        let chain_id = EvmChain::try_from(network).unwrap().chain_id;
+        let deadline = now + 120;
+        // Unique per operator, and every scenario below uses its own.
+        let nonce = alloy::primitives::keccak256(operator.as_slice());
+        let digest = signing_hash(
+            LifecycleAction::Release,
+            lifecycle.amount,
+            deadline,
+            nonce,
+            &ContractPaymentInfo::from_lifecycle_payload(&lifecycle),
+            chain_id,
+        );
+        lifecycle.lifecycle_auth = Some(LifecycleAuth {
+            signer: owner.address(),
+            deadline,
+            nonce,
+            signature: Bytes::from(owner.sign_hash_sync(&digest).unwrap().as_bytes().to_vec()),
+        });
+        lifecycle
+    }
+
+    #[tokio::test]
+    async fn lifecycle_owner_reads_fee_receiver_on_v3() {
+        use crate::payment_operator::test_rpc::{self, CallAnswer, MockNode};
+        let owner = PrivateKeySigner::random();
+
+        // v3 (Arc): FEE_RECEIVER() names the owner; FEE_RECIPIENT() does not
+        // exist there, so the node reverts it.
+        let node = MockNode::start(Network::Arc).await;
+        let provider = test_rpc::provider(Network::Arc, &node, true).await;
+        let operator = PrivateKeySigner::random().address();
+        node.on_call(
+            operator,
+            OperatorV3Contract::FEE_RECEIVERCall::SELECTOR,
+            CallAnswer::Return(alloy::sol_types::SolValue::abi_encode(&owner.address())),
+        );
+        let order = owner_order(&owner, operator, Network::Arc);
+        gate_with_mode(
+            Mode::Enforce,
+            LifecycleAction::Release,
+            &order,
+            Network::Arc,
+            &provider,
+            OperatorAbi::V3,
+        )
+        .await
+        .expect("the owner, read through FEE_RECEIVER(), may release");
+        assert_eq!(
+            node.reads(),
+            vec![(operator, OperatorV3Contract::FEE_RECEIVERCall::SELECTOR)]
+        );
+
+        // A v3 owner read that fails is retryable (502 upstream_rpc_unavailable
+        // in /settle), never a refusal of the owner.
+        let unreadable = PrivateKeySigner::random().address();
+        node.fail_reads(true);
+        let err = gate_with_mode(
+            Mode::Enforce,
+            LifecycleAction::Release,
+            &owner_order(&owner, unreadable, Network::Arc),
+            Network::Arc,
+            &provider,
+            OperatorAbi::V3,
+        )
+        .await
+        .expect_err("no verdict");
+        assert!(
+            matches!(
+                err,
+                OperatorError::LifecycleAuthRejected {
+                    category: "owner_unverifiable",
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
+        node.fail_reads(false);
+
+        // The other generations keep FEE_RECIPIENT(), unchanged.
+        let base = MockNode::start(Network::Base).await;
+        let base_provider = test_rpc::provider(Network::Base, &base, true).await;
+        let legacy = PrivateKeySigner::random().address();
+        base.on_call(
+            legacy,
+            OperatorContract::FEE_RECIPIENTCall::SELECTOR,
+            CallAnswer::Return(alloy::sol_types::SolValue::abi_encode(&owner.address())),
+        );
+        gate_with_mode(
+            Mode::Enforce,
+            LifecycleAction::Release,
+            &owner_order(&owner, legacy, Network::Base),
+            Network::Base,
+            &base_provider,
+            OperatorAbi::Legacy,
+        )
+        .await
+        .expect("legacy owner through FEE_RECIPIENT()");
+        assert_eq!(
+            base.reads(),
+            vec![(legacy, OperatorContract::FEE_RECIPIENTCall::SELECTOR)]
+        );
     }
 }

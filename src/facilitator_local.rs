@@ -1254,6 +1254,7 @@ mod escrow_supported_tests {
     };
     use alloy::primitives::Address;
     use serde_json::Value;
+    use std::collections::HashMap;
 
     /// The escrow/commerce entries exactly as `supported()` built them through
     /// 2.40.0, kept verbatim as the oracle for every network but Arc.
@@ -1402,6 +1403,103 @@ mod escrow_supported_tests {
                     .any(|k| k.network == name && k.scheme == Scheme::Escrow),
                 "escrow under {name}"
             );
+        }
+    }
+
+    /// A compliance checker `supported()` never consults.
+    struct NoScreening;
+
+    #[async_trait::async_trait]
+    impl ComplianceChecker for NoScreening {
+        async fn screen_payment(
+            &self,
+            _payer: &str,
+            _payee: &str,
+            _context: &TransactionContext,
+        ) -> x402_compliance::Result<x402_compliance::ScreeningResult> {
+            unreachable!("supported() screens nothing")
+        }
+        async fn screen_address(
+            &self,
+            _address: &str,
+        ) -> x402_compliance::Result<ScreeningDecision> {
+            unreachable!("supported() screens nothing")
+        }
+        fn is_list_enabled(&self, _list_name: &str) -> bool {
+            false
+        }
+        fn list_metadata(&self) -> HashMap<String, x402_compliance::checker::ListMetadata> {
+            HashMap::new()
+        }
+        async fn reload_lists(&mut self) -> x402_compliance::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// The wiring, not only the builder: `supported()` itself, with escrow
+    /// switched on, announces a declared Arc operator only once its
+    /// self-check verified it -- and the commerce entry either way.
+    #[tokio::test]
+    async fn supported_announces_an_arc_operator_only_once_it_verified() {
+        use crate::payment_operator::autoverify::{self, Verdict};
+        let facilitator = FacilitatorLocal::new(
+            crate::payment_operator::test_rpc::Providers(HashMap::new()),
+            Arc::new(Box::new(NoScreening) as Box<dyn ComplianceChecker>),
+        );
+        let previous = std::env::var("ENABLE_PAYMENT_OPERATOR").ok();
+        std::env::set_var("ENABLE_PAYMENT_OPERATOR", "true");
+        let arc_operator = |network| {
+            OperatorAddresses::for_network(network)
+                .unwrap()
+                .payment_operators[0]
+        };
+        let announced = |kinds: &[SupportedPaymentKind], name: &str, scheme: Scheme| {
+            kinds
+                .iter()
+                .filter(|k| k.network == name && k.scheme == scheme)
+                .count()
+        };
+
+        for network in [Network::Arc, Network::ArcTestnet] {
+            autoverify::set_for_test(network, arc_operator(network), None);
+        }
+        let kinds = facilitator.supported().await.unwrap().kinds;
+        for name in ["arc", "eip155:5042", "arc-testnet", "eip155:5042002"] {
+            assert_eq!(
+                announced(&kinds, name, Scheme::Escrow),
+                0,
+                "{name}: nothing verified yet"
+            );
+            assert_eq!(announced(&kinds, name, Scheme::Commerce), 1, "{name}");
+        }
+        // Every other escrow network is announced regardless.
+        assert!(announced(&kinds, "base", Scheme::Escrow) > 0);
+
+        autoverify::set_for_test(
+            Network::Arc,
+            arc_operator(Network::Arc),
+            Some(Verdict::Verified),
+        );
+        let kinds = facilitator.supported().await.unwrap().kinds;
+        for name in ["arc", "eip155:5042"] {
+            assert_eq!(
+                announced(&kinds, name, Scheme::Escrow),
+                1,
+                "{name}: verified"
+            );
+        }
+        for name in ["arc-testnet", "eip155:5042002"] {
+            assert_eq!(
+                announced(&kinds, name, Scheme::Escrow),
+                0,
+                "{name}: still unverified"
+            );
+        }
+
+        autoverify::set_for_test(Network::Arc, arc_operator(Network::Arc), None);
+        match previous {
+            Some(v) => std::env::set_var("ENABLE_PAYMENT_OPERATOR", v),
+            None => std::env::remove_var("ENABLE_PAYMENT_OPERATOR"),
         }
     }
 }

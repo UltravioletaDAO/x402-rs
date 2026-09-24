@@ -271,3 +271,49 @@ pub fn set_for_test(network: Network, operator: Address, verdict: Option<Verdict
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::sol_types::SolValue;
+
+    const ESCROW: Address = alloy::primitives::address!("BdEA0D1bcC5966192B070Fdf62aB4EF5b4420cff");
+
+    fn bytecode(names: &[&str]) -> Vec<u8> {
+        let mut code = Vec::new();
+        for (name, selector) in v3_selectors() {
+            if names.contains(&name) {
+                code.push(0x63);
+                code.extend_from_slice(&selector);
+            }
+        }
+        code
+    }
+
+    /// Every selector and the declared escrow, and nothing less, is verified:
+    /// a missing selector is a mismatch even when `ESCROW()` answers right.
+    #[test]
+    fn judge_needs_every_v3_selector_and_the_declared_escrow() {
+        let all = ["authorize", "capture", "void", "FEE_RECEIVER"];
+        let bound = ESCROW.abi_encode();
+        assert_eq!(
+            judge(&bytecode(&all), Some(&bound), ESCROW),
+            Verdict::Verified
+        );
+        for missing in all {
+            let some: Vec<&str> = all.iter().copied().filter(|n| *n != missing).collect();
+            let code = bytecode(&some);
+            assert!(!code_passes(&code), "{missing}");
+            assert_eq!(
+                judge(&code, Some(&bound), ESCROW),
+                Verdict::Mismatch(format!("bytecode has no {missing}()")),
+            );
+        }
+        let elsewhere = Address::repeat_byte(0x42).abi_encode();
+        assert!(matches!(
+            judge(&bytecode(&all), Some(&elsewhere), ESCROW),
+            Verdict::Mismatch(_)
+        ));
+        assert!(matches!(judge(&[], None, ESCROW), Verdict::Mismatch(_)));
+    }
+}

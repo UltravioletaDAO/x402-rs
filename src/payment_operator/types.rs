@@ -309,6 +309,26 @@ impl ContractPaymentInfo {
         }
     }
 
+    /// Convert to Alloy ABI struct for OperatorV3Contract calls (capture, void)
+    pub fn to_v3_abi_type(&self) -> super::abi::OperatorV3PaymentInfo {
+        use alloy::primitives::Uint;
+
+        super::abi::OperatorV3PaymentInfo {
+            operator: self.operator,
+            payer: self.payer,
+            receiver: self.receiver,
+            token: self.token,
+            maxAmount: Uint::from(self.max_amount),
+            preApprovalExpiry: Uint::from(self.pre_approval_expiry),
+            authorizationExpiry: Uint::from(self.authorization_expiry),
+            refundExpiry: Uint::from(self.refund_expiry),
+            minFeeBps: self.min_fee_bps,
+            maxFeeBps: self.max_fee_bps,
+            feeReceiver: self.fee_receiver,
+            salt: self.salt,
+        }
+    }
+
     /// Convert to Alloy ABI struct for EscrowContract calls (getHash, paymentState)
     ///
     /// EscrowContract's PaymentInfo is a separate Rust type from OperatorContract's,

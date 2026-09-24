@@ -4018,7 +4018,10 @@
                 button.disabled = Boolean(token && (window.__catalogState !== 'ready' || !available.has(token)));
             });
             const heading = document.querySelector('[data-stablecoin-count]');
-            heading.textContent = window.__catalogState === 'ready' ? tr('hero.stablecoins').replace(/\d+/, available.size) : tr(window.__catalogState ? 'tokens.unavailable' : 'tokens.loading');
+            // Without /networks.json no card can name its stablecoins (null, not
+            // none): the count says unavailable instead of 0.
+            const counted = window.__catalogState === 'ready' && (window.__supportedCatalog || []).some(r => stablecoinsForCard(r) !== null);
+            heading.textContent = counted ? tr('hero.stablecoins').replace(/\d+/, available.size) : tr(window.__catalogState ? 'tokens.unavailable' : 'tokens.loading');
             const status = document.getElementById('stablecoin-filter-status');
             if (!window.__stablecoinFilter || window.__catalogState !== 'ready') { status.textContent = ''; return; }
             const cards = [...document.querySelectorAll('.tab-content.active .network-badge')].filter(card => card.querySelector('[data-tokens]'));

@@ -52,10 +52,12 @@ más el agregado del RPC de Arc (commit aparte, sección final).
      ERC-8004 y escrow, y los íconos de stablecoins. Sui y Hedera toman la dirección del
      `feePayer` de `/supported` (`data-explorer-fee-payer`). La tarjeta de Solana Devnet vuelve
      a abrir su explorador: su `onclick` tenía un error de sintaxis (faltaba el `)`).
-   - `static/networks.html`: íconos y familia desde `/networks.json` (se fue la regex que
-     mandaba a EVM lo que no reconocía); la tabla de wallets sale del `feePayer` de
-     `/supported` para toda red que lo publica; quedan tipeadas solo EVM (DeBank, que no es
-     el explorador de una red) y XRPL (en modo relay no publica fee payer).
+   - `static/networks.html` (ronda 2: se ve como en `origin/main`): íconos desde
+     `/networks.json`; la tabla de wallets conserva filas, orden y rótulos, y cada fila solo
+     nombra su red (`data-net-icon`, `data-explorer`); las direcciones de Sui salen del
+     `feePayer` de `/supported` (una dirección Sui tipeada la rechaza el hook anti-llaves) y
+     las filas de Hedera se agregan como antes, con el enlace de `/networks.json`. EVM sigue
+     enlazando a DeBank, que no es el explorador de una red.
    - `static/events-viewer.html`: plantillas `tx` de `/networks.json` (antes 14 exploradores a
      mano; ahora enlaza toda red descrita). Hedera: `/events` la nombra `hedera`, y su id de
      transacción `0.0.X@S.N` se escribe `0.0.X-S-N` en la URL, como antes.
@@ -139,6 +141,19 @@ solscan, nearblocks, perawallet testnet. SPA que no se puede distinguir por curl
 todo): stellar.expert, xrpl.org, suiscan, allo, el Blockscout de HyperEVM testnet.
 **Hashscan (Hedera) quedó sin verificar**: sirve 404 a curl para toda ruta, incluso `/mainnet`
 (bucket de GCS sin reescritura); se mantuvo la forma que ya usaban la portada y el visor.
+
+## Ronda 2 (refutador, 2026-09-24 20:3xZ)
+
+| Hallazgo | Arreglo | Test / mutación |
+|---|---|---|
+| H2: sin `/networks.json` la portada decía «No stablecoins advertised» y el hero 0 | `stablecoinsForCard` devuelve `null` (desconocido) mientras el índice no cargó; las tarjetas muestran `tokens.unavailable` y el hero también, en vez de 0. Con el índice, igual que antes (XRP sigue fuera: no tiene ícono) | «without /networks.json a card says its stablecoins are unknown, never none»; volver a devolver `[]` → rojo (medido) |
+| H3: en `/networks` la columna «Chain family» mostraba `displayName` y el orden cambió | `static/networks.html` reconstruido desde `origin/main`: mismas 16 filas en el mismo orden con sus rótulos (Solana / Devnet, Fogo…), Hedera agregada al final como antes, tabla por familia con su regex original: sin cambios visibles. `FAMILY_LABEL` ya no hace falta y se fue: con él las filas de Fogo dirían «Solana / SVM», no «Fogo» | «/networks keeps the wallet table origin/main shows: family, environment, order» |
+
+Navegador (mismo servidor local): las 18 filas en el orden de `origin/main`, todas enlazadas;
+sin `/networks.json` el hero dice «Assets unavailable», las tarjetas también, y los filtros
+quedan deshabilitados; con él, «7 Stablecoins Supported» y los 7 filtros, como antes.
+`node --test`: 19/19; `verify_landing_canonical.py --offline`: OK; tests de `networks_json`:
+10/10 (lib y bin) más el de superficies.
 
 ## El RPC de Arc (commit `2deb2c3e`, agregado de c0der)
 

@@ -94,6 +94,30 @@ test('every image /networks.json names exists and Arc/Hedera/RLUSD use their sup
   assert.match(evaluate('chipRed("base","chip-red--tabla")'),/<b>BA<\/b><img src="\/base\.png"/);
 });
 
+test('without /networks.json a card says its stablecoins are unknown, never none', () => {
+  // A page whose /networks.json did not load: x402.js without indexNetworks.
+  const bare = vm.createContext({});
+  vm.runInContext(fs.readFileSync(path.join(root, 'static/x402.js'), 'utf8'), bare);
+  bare.fixture = {kinds:[kind('xrpl',['xrpl','xrpl:0'],['usdc','rlusd','xrp']),kind('bsc',['bsc'],['ausd'])]};
+  const rows = code => JSON.parse(JSON.stringify(vm.runInContext(code, bare)));
+  assert.deepEqual(rows('supportedCatalog(fixture).map(stablecoinsForCard)'),[null,null]);
+  assert.deepEqual(rows('supportedCatalog(fixture).map(r=>matchesStablecoinFilter(r,"usdc"))'),[false,false]);
+  // With the index loaded nothing changes: XRP still has no image, so it is not a stablecoin.
+  context.fixture = bare.fixture;
+  assert.deepEqual(evaluate('supportedCatalog(fixture).map(stablecoinsForCard)'),[['ausd'],['rlusd','usdc']]);
+  const html=fs.readFileSync(path.join(root,'static/index.html'),'utf8');
+  assert(html.includes("const counted = window.__catalogState === 'ready' && (window.__supportedCatalog || []).some(r => stablecoinsForCard(r) !== null);"),'the hero count must not say 0 when no card could be read');
+});
+
+test('/networks keeps the wallet table origin/main shows: family, environment, order', () => {
+  const html=fs.readFileSync(path.join(root,'static/networks.html'),'utf8');
+  const body=html.slice(html.indexOf('<tbody>',html.indexOf('id="wallets"')),html.indexOf('</tbody>',html.indexOf('id="wallets"')));
+  const rows=[...body.matchAll(/<tr>\n<td>.*?<\/span>([A-Za-z]+)<\/span><\/td>\n<td>([A-Za-z]+)<\/td>/g)].map(m=>`${m[1]} ${m[2]}`);
+  assert.deepEqual(rows,['EVM Mainnet','EVM Testnet','Solana Mainnet','Solana Devnet','Fogo Mainnet','Fogo Testnet','NEAR Mainnet','NEAR Testnet',
+    'Stellar Mainnet','Stellar Testnet','XRPL Mainnet','XRPL Testnet','Algorand Mainnet','Algorand Testnet','Sui Mainnet','Sui Testnet']);
+  assert(html.includes("row.innerHTML = `<td>Hedera</td><td>${testnet ? 'Testnet' : 'Mainnet'}</td>"),'Hedera rows are appended as before');
+});
+
 test('explorer links are built from the published templates, never guessed', () => {
   assert.equal(evaluate('explorerUrl("base","address","0xabc")'),'https://basescan.org/address/0xabc');
   assert.equal(evaluate('explorerUrl("eip155:8453","tx","0x1")'),'https://basescan.org/tx/0x1');

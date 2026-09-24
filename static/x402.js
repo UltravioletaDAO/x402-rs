@@ -187,8 +187,11 @@ function landingNetworkName(key = '') {
   return names[key] || key.replace(/-mainnet$/, '');
 }
 
+// Null -- "unknown", never "none" -- while /networks.json has not been read: its
+// token images are what tells a stablecoin from XRP, and without them every
+// card would claim to take nothing.
 function stablecoinsForCard(row) {
-  if (!row) return null;
+  if (!row || !ICONOS_TOKEN) return null;
   const exact = row.kinds.filter(k => k.scheme === 'exact');
   if (!exact.some(k => Array.isArray(k.extra?.tokens))) return null;
   return [...new Set(exact.flatMap(k => Array.isArray(k.extra?.tokens) ? k.extra.tokens : [])

@@ -376,6 +376,7 @@ impl std::fmt::Debug for StackIdentities {
 
 impl StackIdentities {
     /// Nobody is exempt.
+    #[cfg(test)]
     pub fn none() -> Self {
         Self {
             services: Vec::new(),
@@ -505,7 +506,7 @@ impl StackIdentities {
             Some(service) => Some(Arc::clone(&service.name)),
             None => {
                 let rejected = self.rejected.fetch_add(1, Ordering::Relaxed) + 1;
-                if rejected == 1 || rejected % REJECTED_LOG_EVERY == 0 {
+                if rejected == 1 || rejected.is_multiple_of(REJECTED_LOG_EVERY) {
                     warn!(
                         rejected,
                         "X-UVD-Stack-Key presented but not recognized: the caller is \
@@ -590,6 +591,7 @@ impl RatePolicy {
     }
 
     /// Nobody is exempt: every caller is charged to its address.
+    #[cfg(test)]
     pub fn none() -> Self {
         Self::new(StackIdentities::none())
     }
@@ -1149,9 +1151,9 @@ mod tests {
             ("not a key", vec![b"not-a-key".to_vec()]),
             (
                 "no prefix",
-                vec![kk[STACK_KEY_PREFIX.len()..].as_bytes().to_vec()],
+                vec![kk.as_bytes()[STACK_KEY_PREFIX.len()..].to_vec()],
             ),
-            ("too short", vec![kk[..kk.len() - 1].as_bytes().to_vec()]),
+            ("too short", vec![kk.as_bytes()[..kk.len() - 1].to_vec()]),
             ("a suffix", vec![format!("{kk}A").into_bytes()]),
             (
                 "a prefix of it plus padding",

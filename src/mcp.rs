@@ -1815,10 +1815,17 @@ mod tests {
     }
 
     /// Same, with arbitrary header lines on the outer request.
+    ///
+    /// Serialised: the writer lease and its holder endpoint are process-wide,
+    /// so two of these running at once point each other's settle at the wrong
+    /// holder. CI runs single-threaded; this keeps a local parallel run honest.
     async fn settle_through_a_recording_holder_with(
         outer: &[(&str, &str)],
     ) -> (String, HeaderMap, Value) {
         use std::sync::Mutex;
+
+        static HOLDER_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        let _serial = HOLDER_TESTS.lock().await;
 
         // A stand-in for the task that holds the lease: records what it got.
         let seen: Arc<Mutex<Option<(String, HeaderMap)>>> = Arc::new(Mutex::new(None));

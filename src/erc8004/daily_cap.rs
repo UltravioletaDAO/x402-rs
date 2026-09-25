@@ -148,6 +148,14 @@ impl DailyWriteCap {
             .unwrap_or(self.default_limit)
     }
 
+    /// The default and every network's own limit, sorted by network name --
+    /// what `GET /config` publishes. Read-only: nothing here changes a count.
+    pub fn configured(&self) -> (u32, Vec<(Network, u32)>) {
+        let mut limits: Vec<(Network, u32)> = self.limits.iter().map(|(n, l)| (*n, *l)).collect();
+        limits.sort_by_key(|(n, _)| n.to_string());
+        (self.default_limit, limits)
+    }
+
     /// Writes counted for `network` today, reserved ones included.
     #[cfg(test)]
     pub fn used_today(&self, network: &Network) -> u32 {

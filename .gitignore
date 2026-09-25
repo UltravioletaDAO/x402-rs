@@ -97,6 +97,7 @@ docs/_build/
 **/credentials.json
 **/*secret*.json
 **/*private*.json
+**/*stack-key*.json
 
 # Solidity contracts (local reference copy, too large for git)
 contracts/

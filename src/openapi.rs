@@ -156,6 +156,16 @@ and the `/feedback/*` submits) are also limited per network per UTC day. Past
 that limit they answer `429` with code `erc8004_daily_write_limit` and a
 `retry-after` that runs to 00:00 UTC; other networks are not affected.
 
+Separately from any bucket, each task has a ceiling of concurrent requests.
+Past it a request answers `503` with code `overloaded` and `retry-after: 1`
+before anything is done, whoever sent it; resend it as it was. `/health` is
+never shed.
+
+Ultravioleta DAO's own services present an `X-UVD-Stack-Key` and are not
+charged to their address (the response carries `x-ratelimit-exempt`); the
+daily write limit and the ceiling of concurrent requests still apply to them.
+Every value in force is published at `GET /config`.
+
 ## Content negotiation
 
 `GET /` answers `text/html` by default and `text/markdown` -- the bytes of
@@ -253,6 +263,7 @@ constraint rather than as grounds for a `406`.
         // Health
         path_health,
         path_health_ready,
+        path_config,
         // Agentic discovery surfaces
         path_llms_txt,
         path_llms_full_txt,
@@ -2908,6 +2919,62 @@ warning and keeps the default.",
     )
 )]
 async fn path_health_ready() {}
+
+#[utoipa::path(
+    get,
+    path = "/config",
+    tag = "Health",
+    summary = "The rate policy in force",
+    description = "What this task enforces, as it was configured at startup: every per-IP \
+budget (`rateLimits.budgets`: its routes, the period of one token, the burst, the defaults and \
+the two variables that override them), the stack identities that skip those budgets (by service \
+name, with how many credentials each holds -- never a key or a digest), the ceiling of concurrent \
+requests behind the `503 overloaded`, and the ERC-8004 daily write limit per network.
+
+**What skips what.** A request carrying a recognized `X-UVD-Stack-Key` is not charged to its \
+address by any budget and is answered with `x-ratelimit-exempt: <service>`; an absent, malformed, \
+unknown or revoked key is charged like any other caller. Neither the ceiling of concurrent requests \
+(`503`, every caller) nor the daily write limit (`429 erc8004_daily_write_limit`, it protects the gas \
+the facilitator pays) is skipped.
+
+Rate limited per IP like the other cheap reads.",
+    responses(
+        (status = 200, description = "The effective policy", body = Object,
+            example = json!({
+                "rateLimits": {
+                    "keyedOn": "client IP: the last X-Forwarded-For entry, else the TCP peer",
+                    "refusal": { "status": 429, "code": "rate_limited" },
+                    "budgets": [{
+                        "name": "verify_settle",
+                        "routes": "/verify, /settle, /receipts/*, /.well-known/receipt-keys.json, POST /mcp",
+                        "periodMs": 2000, "burst": 30,
+                        "default": { "periodMs": 2000, "burst": 30 },
+                        "env": ["VERIFY_SETTLE_RATE_PER_MS", "VERIFY_SETTLE_RATE_BURST"]
+                    }]
+                },
+                "stackIdentities": {
+                    "header": "X-UVD-Stack-Key", "active": 1,
+                    "services": [
+                        { "name": "execution-market", "active": true, "credentials": 1 },
+                        { "name": "karmakadabra", "active": false, "credentials": 0 }
+                    ],
+                    "notExemptFrom": ["overload", "erc8004DailyWriteCap", "the RPC provider throttle"]
+                },
+                "overload": {
+                    "maxInflightRequests": 512, "env": "MAX_INFLIGHT_REQUESTS",
+                    "refusal": { "status": 503, "code": "overloaded", "retryAfterSecs": 1 },
+                    "neverShed": ["/health"]
+                },
+                "erc8004DailyWriteCap": {
+                    "mounted": true, "defaultPerNetwork": 1000,
+                    "perNetwork": { "ethereum": 100, "solana": 150 }
+                }
+            })
+        ),
+        (status = 429, description = "Rate limited: same per-IP governor as the other cheap reads")
+    )
+)]
+async fn path_config() {}
 
 // ============================================================================
 // Agentic Discovery Surfaces

@@ -15875,6 +15875,7 @@ dependencies = [
  "dotenvy",
  "ed25519-dalek 2.2.0",
  "flate2",
+ "governor 0.10.4",
  "hex",
  "hiero-sdk",
  "hiero-sdk-proto",

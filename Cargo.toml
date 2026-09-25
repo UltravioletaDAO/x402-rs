@@ -25,7 +25,11 @@ tower-http = { version = "0.6.8", features = ["trace", "cors", "limit"] }
 # compression-codecs, so declaring it adds no crate.
 flate2 = { version = "1.1" }
 tower_governor = { version = "0.8" }
-serde = { version = "1.0.228", features = ["derive"] }
+# Only to NAME `StateInformationMiddleware` in the one governor config type
+# (src/rate_policy.rs); tower_governor does not re-export it. Already in the
+# lock through tower_governor, same version and features, so this adds no crate.
+governor = { version = "0.10" }
+serde ={ version = "1.0.228", features = ["derive"] }
 once_cell = { version = "1.21.3" }
 regex = { version = "1.11.1" }
 url = { version = "2.5.8", features = ["serde"] }

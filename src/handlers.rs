@@ -19194,6 +19194,116 @@ mod erc8004_write_rate_tests {
         assert_eq!(other.status(), StatusCode::OK);
     }
 
+    /// A stack key the tests below configure; well-formed, and nothing else.
+    const STACK_KEY: &str = "uvdsk_ExecutionMarketWritesKeyForTheseTestsOnly00";
+
+    fn stack_policy() -> crate::rate_policy::RatePolicy {
+        crate::rate_policy::RatePolicy::for_tests(&[("execution-market", STACK_KEY)])
+    }
+
+    async fn post_as(
+        router: &Router,
+        path: &str,
+        ip: &str,
+        key: Option<&str>,
+        body: &str,
+    ) -> Response {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri(path)
+            .header("x-forwarded-for", ip)
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(key) = key {
+            builder = builder.header(crate::rate_policy::STACK_KEY_HEADER, key);
+        }
+        let request = builder.body(Body::from(body.to_string())).unwrap();
+        router.clone().oneshot(request).await.unwrap()
+    }
+
+    /// The ratings path of the ticket (EM relaying KarmaKadabra's
+    /// `/feedback/evm/prepare` and `/submit`) through the SAME layer production
+    /// mounts: the stack goes past the burst of 30 on every write route with
+    /// no 429, while a third party at the same cadence gets one on the 31st.
+    #[tokio::test]
+    async fn the_erc8004_writes_exempt_the_stack() {
+        let paths = write_paths();
+        let mut routes = Router::new();
+        for path in &paths {
+            routes = routes.route(path, post(|| async { "written" }));
+        }
+        let router = erc8004_write_governed(&stack_policy(), routes);
+        let burst = crate::rate_policy::ERC8004_WRITES.limit().burst as usize;
+
+        for n in 0..burst + 5 {
+            let path = &paths[n % paths.len()];
+            let response = post_as(&router, path, "203.0.113.90", Some(STACK_KEY), "{}").await;
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "stack write {n} to {path}"
+            );
+            assert_eq!(response.headers()["x-ratelimit-exempt"], "execution-market");
+        }
+        for n in 0..burst {
+            let response = post_as(&router, "/feedback", "203.0.113.91", None, "{}").await;
+            assert_eq!(response.status(), StatusCode::OK, "third-party write {n}");
+        }
+        let refused = post_as(&router, "/feedback", "203.0.113.91", None, "{}").await;
+        assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    /// The gas cap is NOT policy: a stack identity that skips the write budget
+    /// still spends the per-network daily limit, and is refused past it.
+    #[tokio::test]
+    async fn a_stack_identity_still_spends_the_daily_gas_cap() {
+        use crate::erc8004::daily_cap::{self, DailyWriteCap};
+        let cap = Arc::new(DailyWriteCap::new(
+            1000,
+            std::collections::HashMap::from([(crate::network::Network::Base, 1)]),
+            Box::new(|| 0),
+        ));
+        let sends = Router::new()
+            .route(
+                "/feedback/evm/submit",
+                post(|| async {
+                    daily_cap::mark_sent();
+                    "sent"
+                }),
+            )
+            .layer(axum::middleware::from_fn_with_state(
+                cap,
+                daily_cap::enforce_with,
+            ));
+        let router = erc8004_write_governed(&stack_policy(), sends);
+        let body = r#"{"network":"base"}"#;
+
+        let first = post_as(
+            &router,
+            "/feedback/evm/submit",
+            "203.0.113.92",
+            Some(STACK_KEY),
+            body,
+        )
+        .await;
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(first.headers()["x-ratelimit-exempt"], "execution-market");
+
+        let second = post_as(
+            &router,
+            "/feedback/evm/submit",
+            "203.0.113.92",
+            Some(STACK_KEY),
+            body,
+        )
+        .await;
+        assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
+        let bytes = axum::body::to_bytes(second.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let refusal: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(refusal["code"], "erc8004_daily_write_limit");
+    }
+
     /// `main.rs` mounts the governed write router, never the bare one, and the
     /// bazar keeps its own budget: `discovery_register_config` still carries
     /// 1 token every 12s with burst 250 and meters exactly the bazar's register

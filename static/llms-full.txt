@@ -911,6 +911,8 @@ self-feedback.
 | `503` + `"retryable": true` | the lookup reached **no verdict** | retry; never persist this as "not registered" |
 | `503` on `/events` | subscriber cap reached | honour `Retry-After` |
 | `503` + `"code": "overloaded"` | the task is at its ceiling of concurrent requests, for every caller; nothing was done | honour `Retry-After` (1 s) and resend the same request |
+| `429` + `"code": "too_many_concurrent_requests"` | your address already has its maximum of requests in flight; nothing was done | wait for a response, then resend the same request |
+| `408` + `"code": "request_timeout"` | the whole body did not arrive within the deadline after the headers; nothing was done | send the body with the headers and resend |
 | `429` | per-IP rate limit (about 30 req/min on verify/settle) | back off; do not re-sign |
 | `502` + `"error": "settlement_unconfirmed"` | we sent the tx, or may have, and never got a verdict | look up the `transaction` on chain; **never** retry (`retryable: false`) |
 | any `5xx` + `"retryable": false` | the tx may already be on chain (`broadcast_uncertain`, `receipt_pending`, `forward_unconfirmed`, the alternative schemes, the receipt rail) | **never** sign again; look up `transaction` if present, else the payer's transfer |
@@ -955,9 +957,9 @@ one token every 2 seconds — not 30 tokens handed out each minute. A few routes
 that spend no chain quota (`/health`, `/supported`, `/llms.txt` and the other
 discovery documents) carry no limit at all and therefore no headers.
 
-The values in force -- every bucket's period and burst, the ceiling of
-concurrent requests behind the `503 overloaded`, and the ERC-8004 daily write
-limit -- are published at `GET /config`.
+The values in force -- every bucket's period and burst, the per-address and
+per-task ceilings of concurrent requests, the body deadline, and the ERC-8004
+daily write limit -- are published at `GET /config`.
 
 ---
 

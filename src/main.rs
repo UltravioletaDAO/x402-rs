@@ -578,13 +578,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ConnectInfo. Every governor is mounted through `policy.layer(..)`, which
     // a recognized stack identity (`X-UVD-Stack-Key`) goes around: our own
     // services are never refused by a per-IP budget. What they ARE refused by
-    // is the in-flight ceiling (`admission`, 503, everybody) and the ERC-8004
-    // daily write cap (gas, everybody).
+    // is the global in-flight ceiling (`admission`, 503, everybody), the body
+    // deadline (408, everybody) and the ERC-8004 daily write cap (gas,
+    // everybody). The per-address in-flight ceiling (429) is policy: the stack
+    // skips it too.
     //
     // `use_headers()` on every config makes the budget legible: a 200 carries
     // `x-ratelimit-limit` and `x-ratelimit-remaining`, not just the 429.
     let policy = rate_policy::RatePolicy::from_env();
-    let admission = rate_policy::Admission::from_env();
+    let admission = rate_policy::Admission::from_env(&policy);
     for budget in rate_policy::BUDGETS {
         let limit = budget.limit();
         tracing::info!(
@@ -779,12 +781,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // ...and the event bus, so post_settle can publish after a settle resolves
         .layer(Extension(event_bus))
         .layer(Extension(transaction_store))
-        // The machine's ceiling: requests in flight in this task, for every
-        // caller, stack identities included -- a 503 with `Retry-After` past
-        // it, never a 429. Inside the tracing layer so a shed request is
-        // logged with its status, outside everything else so nothing below
-        // runs for it. It also marks `X-UVD-Stack-Key` sensitive before any
-        // other layer sees the request.
+        // Admission (`rate_policy::Admission`): the per-address ceiling (429,
+        // third parties), the whole body within its deadline (408, everybody),
+        // then the machine's ceiling (503, everybody, stack included) -- taken
+        // only once the body is in, so an upload that never finishes holds no
+        // slot. Inside the tracing layer so a refusal is logged with its
+        // status, outside everything else so nothing below runs for it. It
+        // also marks `X-UVD-Stack-Key` sensitive before any other layer sees
+        // the request.
         .layer(axum::middleware::from_fn_with_state(
             admission,
             rate_policy::admit,

@@ -15880,6 +15880,7 @@ dependencies = [
  "hiero-sdk",
  "hiero-sdk-proto",
  "hkdf",
+ "http-body-util",
  "k256 0.13.4",
  "near-chain-configs",
  "near-crypto",

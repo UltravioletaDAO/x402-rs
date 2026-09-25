@@ -13,12 +13,21 @@
   El tope diario de gas ERC-8004 **no** cambia de comportamiento ni se exime (solo gana un accesor de lectura,
   `DailyWriteCap::configured`, para publicarlo en `/config`). 17 tests nuevos de `rate_policy` + 1 de MCP,
   mutaciones corridas (tabla abajo), suite de CI local en verde.
+- **Ronda 1 (REF-X4-STACK-429, firmada por c0der) — hecha.**
+  - **P1-1:** `admit` toma el cupo global recién cuando el cuerpo llegó entero, con un plazo **total** de 5 s (`408
+    request_timeout` y cierre), y suma un techo de 32 requests en vuelo por dirección (`429
+    too_many_concurrent_requests`) que el stack con clave válida saltea (decisión de c0der); el tope global sigue
+    para todos. Hay un test sobre TCP real.
+  - **P2-1:** el tope de gas queda atado por un test de comportamiento y uno de fuente.
+  - **P2-2:** M12, M14 y M15 ya no compilan (tipo opaco `Bucket` y constructores privados), y M13 y la variante de
+    M15 que sí compila en tests dan rojo.
+  - **P3:** los cinco van.
+  - Las tablas de la ronda están en §9 y §10.
 - **Falta (no es mío hacer):** crear los cuatro secretos, cablearlos en terraform, desplegar; cambio en el SDK
   (py y ts) y en los clientes. **Decisión pendiente del dueño:** si el stack tiene un tope diario de gas propio
   más alto (números abajo). Sin esa decisión el relleno de KK choca con el tope de Ethereum (100/día).
-- **Próximo paso:** c0der refuta el worktree; si pasa, un único CI + deploy del facilitador con la lista vacía
-  (no cambia nada para nadie salvo el tope de 512 en vuelo y `/config`), y después el orden de la sección
-  "Orden del deploy".
+- **Próximo paso:** c0der refuta la ronda 1; si pasa, un único CI + deploy del facilitador con la lista vacía
+  (para terceros solo cambian la admisión de §3 y `/config`), y después el orden de la sección "Orden del deploy".
 
 ## 1. Lo medido en `origin/main`
 
@@ -70,20 +79,39 @@ Detalles que el refutador puede verificar en `src/rate_policy.rs`:
   `subtle::ConstantTimeEq`, sin salida temprana. Dos líneas del header, espacios, prefijos, sufijos, mayúsculas,
   no-UTF-8 o el digest en vez de la clave: tercero (test `a_malformed_or_false_key_is_a_third_party_not_a_500`).
 - Con cero identidades configuradas no se hashea nada y nadie es exento (el primer deploy).
-- Una clave rechazada se loguea la primera vez y después cada 100, **sin valor**.
+- Una clave rechazada se loguea la primera vez y después cada 100, con `client_ip` y `path` y **sin valor**
+  (lo loguea `admit`, una vez por request; `authenticate` no loguea).
 - La respuesta a un exento lleva `x-ratelimit-exempt: <servicio>` (la base de la sonda). Nunca la clave.
 
 ## 3. El mecanismo: una sola capa para todos los governors
 
 Un `KeyExtractor` solo elige cubeta; no puede saltar el governor (una cubeta propia seguiría cortando al stack
 en su burst). Por eso `PolicyLayer` envuelve al `GovernorLayer`: guarda el servicio gobernado y el desnudo y elige
-por request. `RatePolicy::layer(&config)` es la **única** forma de montar un governor:
+por request. `RatePolicy::layer(&bucket)` es la **única** forma de montar un governor, y lo sostienen los tipos
+(ronda 1, P2-2):
 
+- `rate_policy::config(limit)` devuelve un `Bucket` opaco (campo privado; el tipo de config de `tower_governor`
+  es privado del módulo). Un `GovernorLayer` hecho con él no compila (M12).
+- `RatePolicy::new` y `StackIdentities::from_lookup` son privados: fuera del módulo solo hay
+  `RatePolicy::from_env()`, así que montar un governor con **otra** política que no exime a nadie no compila en
+  `cargo build` (M14, M15, M16). Para tests fuera del módulo hay `RatePolicy::none()` y `RatePolicy::for_tests(..)`,
+  los dos `#[cfg(test)]`: no existen en el binario.
 - `rate_policy::config(limit)` es el único `GovernorConfigBuilder` de `src/` (`client_ip::every_governor_keys_on_the_client_ip`
   lo exige: exactamente uno, en `rate_policy.rs`, con `ClientIpKeyExtractor`).
-- `rate_policy::every_governor_goes_through_the_policy` falla si aparece `GovernorLayer::` fuera de
-  `rate_policy.rs`, si un presupuesto no está montado, si `main.rs` dimensiona un governor con algo que no sea
-  `rate_policy::<PRESUPUESTO>.limit()`, o si el tope global no queda dentro del layer de tracing.
+
+Lo que el tipo no ve, lo ve `rate_policy::every_governor_goes_through_the_policy`, que lee la fuente:
+
+- En las líneas de código (fuera de `rate_policy.rs` y `client_ip.rs`) no aparece `GovernorLayer`,
+  `GovernorConfig`, `tower_governor::governor`, `tower_governor::key_extractor`, `tower_governor as`, ni un
+  `use tower_governor…` que no sea `…::GovernorError` (así se atajan también los alias).
+- Cada presupuesto está usado (`rate_policy::<PRESUPUESTO>.limit()`), y cada `let <x> = rate_policy::config(…)` de
+  `main.rs` se dimensiona con uno de ellos **y está montado** al menos una vez como `policy.layer(&<x>)` (M13).
+  Ojo: el test ve que el bucket se monta, no **qué** rutas monta.
+- `admit` queda dentro del layer de tracing y `/config` está montado.
+
+Y dos tests de comportamiento sobre los routers que arma `handlers` con la política de verdad:
+`the_human_pages_exempt_the_stack_too` y `erc8004_write_rate_tests::the_erc8004_writes_exempt_the_stack` (el camino
+de los ratings de KK: 35 POST del stack sin 429 y un tercero con 429 en el 31; M15b).
 - Los dos saltos entre tasks conservan la identidad: `forward_to_writer` copia todos los headers (la exención se
   repite en el holder) y la request sintética de MCP ahora copia `X-UVD-Stack-Key` además de `X-Forwarded-For`
   (`mcp::a_forwarded_settle_carries_the_stack_key_to_the_lease_holder`).
@@ -91,15 +119,40 @@ por request. `RatePolicy::layer(&config)` es la **única** forma de montar un go
 | | tercero | stack con clave válida |
 |---|---|---|
 | presupuestos por IP (8) | `429 rate_limited` al pasar el burst | **nunca** |
-| tope en vuelo (`MAX_INFLIGHT_REQUESTS`, 512) | `503 overloaded`, `Retry-After: 1` | **igual** |
-| tope diario ERC-8004 (gas) | `429 erc8004_daily_write_limit` | **igual** |
+| techo en vuelo por dirección (`MAX_INFLIGHT_PER_CLIENT`, 32) | `429 too_many_concurrent_requests`, `Retry-After: 1` | **nunca** (es política) |
+| plazo del cuerpo (`REQUEST_BODY_DEADLINE_MS`, 5000) | `408 request_timeout` y cierre | **igual** |
+| tope global en vuelo (`MAX_INFLIGHT_REQUESTS`, 512) | `503 overloaded`, `Retry-After: 1` | **igual** (es hardware) |
+| tope diario ERC-8004 (gas) | `429 erc8004_daily_write_limit` | **igual** (es plata) |
 | throttle de RPC (`RPC_MAX_CU_PER_SECOND`) | sin cambios | sin cambios |
 
-**El tope en vuelo es comportamiento nuevo para todos.** 512 por task: 1 vCPU / 2 GB (tfvars), cuerpos de 64 KiB
-como máximo (32 MiB a 512), y la carga medida está dos órdenes por debajo (216 settles en 4 h, 2026-08-20). Un
-request retiene el cupo hasta producir la respuesta, no mientras un stream escribe (un `/events` abierto no lo
-ocupa). `/health` nunca se descarta: si el ALB viera 503 en una task ocupada, ECS la reemplazaría y se llevaría su
-capacidad. Vive dentro del layer de tracing, así que un descarte se loguea como `status=503`.
+**La admisión es comportamiento nuevo para todos**, en este orden (`rate_policy::Admission`, `admit`), antes de
+que corra ninguna ruta y con `/health` siempre afuera:
+
+1. **Techo por dirección, 32.** Para que una IP no pueda llenar el tope global (hacen falta 16). Terceros sí, stack
+   no: todo el stack sale por las IPs de EM y un límite por IP es política (decisión de c0der). Por encima del
+   burst de todos los presupuestos salvo el del bazar, así que un integrador normal no lo ve.
+2. **El cuerpo entero, con plazo total de 5 s.** Para todos. **Total**, no entre frames: un
+   `RequestBodyTimeoutLayer` de tower-http se reinicia en cada frame, y un goteo de un byte cada pocos segundos lo
+   mantiene vivo para siempre. Por eso no uso la feature `timeout` (y no toca el lock por eso). Pasado el plazo:
+   `408` + `Connection: close`. Mientras tanto no se retiene nada global. Un cuerpo cortado por el límite de 64 KiB
+   pasa a ser un `413 payload_too_large` en JSON (`a_body_past_the_limit_is_a_json_413`).
+3. **Tope global, 512.** Para todos. El cupo se toma **recién ahora**, con el cuerpo ya adentro, y se retiene hasta
+   producir la respuesta (no mientras un stream escribe: un `/events` abierto no lo ocupa). 1 vCPU / 2 GB
+   (tfvars), cuerpos de 64 KiB como máximo (32 MiB a 512), y la carga medida está dos órdenes por debajo (216
+   settles en 4 h, 2026-08-20).
+
+El ataque de P1-1 (subidas con headers y sin cuerpo) ya no toca el tope global: esas subidas esperan el cuerpo
+**antes** de pedir cupo y mueren a los 5 s con `408`. Lo que les queda es el techo de su propia dirección
+(`over_real_tcp_an_upload_that_never_arrives_holds_no_slot`, sobre `axum::serve` real). `/health` nunca se
+rechaza: si el ALB viera 503 en una task ocupada, ECS la reemplazaría y se llevaría su capacidad. `admit` vive
+dentro del layer de tracing, así que cada rechazo se loguea con su `status=`.
+
+**P1-1 d), el ALB (HIPÓTESIS, no medida):** no pude medir si el ALB bufferiza el cuerpo antes de pasarlo al target:
+haría falta un ALB que no sea el de producción, y el encargo prohíbe AWS. Con este diseño la respuesta ya no decide
+si el tope global se puede secuestrar (no se puede: el cupo se toma después del cuerpo). Solo decide si una subida
+lenta llega a la task: si el ALB bufferiza, no llega; si reenvía en streaming, llega y muere a los 5 s con `408`.
+La medición barata, cuando haya un ALB de prueba, es mandar headers con `Content-Length` sin cuerpo y ver en el
+log del target si aparece la request antes del idle timeout del ALB.
 
 ## 4. Configuración, en un solo lugar (`src/rate_policy.rs`)
 
@@ -114,13 +167,15 @@ capacidad. Vive dentro del layer de tracing, así que un descarte se loguea como
 | `HUMAN_PAGES_RATE_PER_MS` / `_BURST` | 500 / 60 | **mismos nombres que antes** |
 | `ERC8004_WRITES_RATE_PER_MS` / `_BURST` | 12000 / 30 | nuevas |
 | `MAX_INFLIGHT_REQUESTS` | 512 | tope global; inválido → default con warning |
+| `MAX_INFLIGHT_PER_CLIENT` | 32 | techo por dirección (terceros); inválido → default con warning |
+| `REQUEST_BODY_DEADLINE_MS` | 5000 | plazo total del cuerpo; inválido → default con warning |
 | `UVD_STACK_SERVICES` | `execution-market,karmakadabra,describe-net,meshrelay` | lista de servicios |
 | `UVD_STACK_KEY_SHA256_<SERVICIO>` | vacío (inactivo) | digests SHA-256 hex, separados por coma (dos durante una rotación) |
 
 Ningún default cambió. Un override que no parsea a entero positivo se ignora (misma semántica de antes).
 `GET /config` (gobernado como las lecturas baratas) publica: cada presupuesto con su valor efectivo, su default y
 sus variables; `stackIdentities` (`active`, y por servicio `name`, `active`, `credentials` = cuántos digests);
-`overload`; y el tope diario por red. Nunca una clave ni un digest (test `the_key_never_reaches_a_log_or_a_response`).
+`overload` (el tope global, `perClient`, `bodyDeadlineMs` y qué saltea el stack); y el tope diario por red. Nunca una clave ni un digest (test `the_key_never_reaches_a_log_or_a_response`).
 
 ## 5. Tope diario de gas ERC-8004 — medido, **no** eximido
 
@@ -130,6 +185,13 @@ sus variables; `stackIdentities` (`active`, y por servicio `name`, `active`, `cr
 - **Qué cuenta:** transacciones enviadas, no requests (`prepare` no cuenta; un `submit` = una tx). Vive **dentro**
   del writer lease (`handlers.rs`, `erc8004_write_routes`: `daily_cap::enforce` bajo `require_writer_lease`), así
   que en operación normal es un contador por servicio (el del holder), no por task.
+- **Lo ata un test (ronda 1 P2-1)**, no solo la construcción:
+  - `handlers::erc8004_write_rate_tests::a_stack_identity_still_spends_the_daily_gas_cap` monta envíos con
+    `enforce_with` y un tope de 1 para `base` bajo `erc8004_write_governed` con la política del stack. El primer
+    POST del stack da `200` con `x-ratelimit-exempt` y el segundo `429 erc8004_daily_write_limit`.
+  - `rate_policy::the_gas_cap_knows_nothing_of_the_stack` exige que `daily_cap.rs` no nombre el header, ni
+    `STACK_KEY_HEADER`, ni `rate_policy`.
+  - M08 y M09 dan rojo.
 - **Costo de una escritura (MEDIDO):** el único `/feedback/evm/submit` con hash en el repo
   (`docs/handoffs/2026-08-25-calificar-cambia-la-cuenta-y-el-sdk-ts.md:31`, hash completo ahí), tx
   `0x6e7cbe77…c0021e142482` en Base, bloque 50442319: `gasUsed` 246.452,
@@ -167,30 +229,31 @@ código); (2) un tope propio del stack más alto, que exigiría pasar la identid
 
 ## 6. Secretos a crear (sin valores)
 
-Uno por servicio. Nombres siguiendo el patrón de `secrets.tf`:
+**Dos por servicio (receta por defecto, ronda 1 P3):** uno del facilitador con **solo** el digest y uno del
+cliente con **solo** la clave. Con un solo secreto con los dos campos, el execution role del facilitador (que
+necesita `GetSecretValue` sobre él) podría leer las cuatro claves en claro, aunque ECS inyecte solo `sha256`.
 
-- `facilitator-stack-key-execution-market`
-- `facilitator-stack-key-karmakadabra`
-- `facilitator-stack-key-describe-net`
-- `facilitator-stack-key-meshrelay`
+`python3 scripts/stack_key.py generate --service <s> --out-dir <dir>` escribe los dos cuerpos, en modo 0600, sin
+sobrescribir, y sin imprimir la clave (imprime el digest y la variable). `**/*stack-key*.json` está en
+`.gitignore`.
 
-Forma (JSON), exactamente lo que escribe `python3 scripts/stack_key.py generate --service <s> --out <archivo>`
-(modo 0600, no sobrescribe, no imprime la clave; `**/*stack-key*.json` quedó en `.gitignore`):
+| Secreto | Dónde | Cuerpo (JSON) | Quién lo lee |
+|---|---|---|---|
+| `facilitator-stack-key-sha256-execution-market` | Secrets Manager del facilitador | `{"sha256": "<64 hex>"}` (`<s>-stack-key.facilitator.json`) | execution role del facilitador → `UVD_STACK_KEY_SHA256_EXECUTION_MARKET` |
+| `facilitator-stack-key-sha256-karmakadabra` | ídem | ídem | → `UVD_STACK_KEY_SHA256_KARMAKADABRA` |
+| `facilitator-stack-key-sha256-describe-net` | ídem | ídem | → `UVD_STACK_KEY_SHA256_DESCRIBE_NET` |
+| `facilitator-stack-key-sha256-meshrelay` | ídem | ídem | → `UVD_STACK_KEY_SHA256_MESHRELAY` |
+| `<servicio>/uvd-stack-key` (nombre según la convención de cada repo) | el almacén de secretos **del cliente** | `{"key": "uvdsk_<43 base64url>"}` (`<s>-stack-key.client.json`) | el cliente → `UVD_STACK_KEY` |
 
-```json
-{"service": "karmakadabra", "key": "uvdsk_<43 base64url>", "sha256": "<64 hex>"}
-```
-
-- **El facilitador** mapea **solo** el campo `sha256`, en `secrets` (no `environment`), como `ERC8004_ADMIN_TOKEN`:
-  `UVD_STACK_KEY_SHA256_KARMAKADABRA` ← `${data.aws_secretsmanager_secret.stack_key_karmakadabra.arn}:sha256::`
-  (un `data "aws_secretsmanager_secret"` por servicio, sumarlo a `local.all_secret_arns` para el
-  `GetSecretValue` del execution role y a `local.all_task_secrets`). Placeholders de ARN: `<AWS_ACCOUNT_ID>`, `<nombre>-<SUFIJO>`.
-- **El cliente** lee el campo `key` (del mismo secreto, o copiado al almacén de secretos del cliente). Si el rol
-  del facilitador no debe poder leer la clave, la variante es un secreto con solo `sha256` para el facilitador y la
-  clave en el almacén del cliente; cuesta un secreto más por servicio.
+- **El facilitador** mapea el campo `sha256` en `secrets` (no `environment`), como `ERC8004_ADMIN_TOKEN`:
+  `UVD_STACK_KEY_SHA256_KARMAKADABRA` ← `${data.aws_secretsmanager_secret.stack_key_sha256_karmakadabra.arn}:sha256::`.
+  Hace falta un `data "aws_secretsmanager_secret"` por servicio, sumado a `local.all_secret_arns` (para el
+  `GetSecretValue` del execution role) y a `local.all_task_secrets`. Placeholders de ARN: `<AWS_ACCOUNT_ID>` y
+  `<nombre>-<SUFIJO>`. El execution role del facilitador **no** recibe acceso a los secretos de los clientes.
 - Revocar: poner `"sha256": ""` (no borrar el campo: ECS no arranca si falta la clave JSON) y
-  `aws ecs update-service --force-new-deployment` del facilitador. Rotar: `"sha256": "<nuevo>,<viejo>"`, reiniciar
-  el facilitador, cambiar el cliente a la clave nueva, dejar solo `<nuevo>`, reiniciar.
+  `aws ecs update-service --force-new-deployment` del facilitador; ningún otro servicio se toca. Rotar:
+  `"sha256": "<nuevo>,<viejo>"`, reiniciar el facilitador, cambiar el secreto del cliente a la clave nueva y
+  reiniciarlo, dejar solo `<nuevo>`, reiniciar el facilitador.
 
 ## 7. Cómo presenta cada cliente, y qué cambia en el SDK (upstream-first)
 
@@ -204,7 +267,20 @@ nada). El valor viene de `UVD_STACK_KEY` en el entorno del cliente.
 - **uvd-x402-sdk-typescript:** `FacilitatorClientOptions.stackKey?: string` mezclado en los headers de
   `verify()`/`settle()` (`backend/index.ts:733,798`); `Erc8004Client` ya tiene un `writeJson(url, body, extraHeaders)`
   privado (`:4040-4054`) donde entra.
-- Tests en ambos: el header está si se configuró, no está si no, y nunca aparece en un error ni en un log.
+- **Una clave mal leída no puede romper un pago (ronda 1 P3).** Una `UVD_STACK_KEY` leída de un archivo con
+  `\r` o `\n` es un valor de header inválido: `requests` levanta `InvalidHeader` y axios/undici tiran antes de
+  enviar, así que CADA `/verify` y `/settle` del cliente fallaría. El SDK hace `strip()`, valida
+  `^uvdsk_[A-Za-z0-9_-]{43,128}$` (el mismo formato que exige el facilitador) y, si no valida, **no manda el
+  header** y avisa una vez **sin el valor**: el cliente cae a tercero, nunca rompe el pago.
+- Tests en ambos: el header está si se configuró bien; no está si no se configuró; con `\r\n` al final se manda
+  la clave recortada; con una clave inválida no se manda y el aviso no contiene el valor; nunca aparece en un error
+  ni en un log.
+- **La exención hereda la superficie pública de cada servicio** (nota del refutador). Si EM o describe.net mandan
+  la clave en TODO `/verify` y `/settle` que hacen por cuenta de cualquier comprador, ese tráfico queda sin
+  presupuesto por IP en el facilitador (le quedan el tope global, el plazo del cuerpo y el throttle de RPC). Es lo
+  que pidió el dueño; lo que cambia es **dónde** vive el control por cliente: en cada servicio. Antes de cablear la
+  clave en uno, que ese servicio tenga su propio límite por cliente, o que la clave vaya solo en los caminos de
+  tráfico propio (el relay de ratings de KK).
 - **EM** (`mcp_server/integrations/erc8004/facilitator_client.py` y `integrations/x402/sdk_client.py`): configura
   su clave en el SDK. **Es la que importa para KK:** los ratings de KK salen por EM, así que la clave de EM los cubre.
   De paso, que EM propague un 429 como 429 (hoy lo vuelve 503).
@@ -218,9 +294,12 @@ Los números de línea del SDK son de ramas de trabajo (py `cfdd2709`, ts `6d707
 ## 8. Orden del deploy
 
 1. **Facilitador con este cambio y ninguna variable `UVD_STACK_*`.** Nadie es exento; los presupuestos son los
-   mismos números. Lo nuevo para todos: `GET /config` y el tope de 512 en vuelo. Sonda:
-   `curl -s https://facilitator.ultravioletadao.xyz/config | jq '.stackIdentities.active, [.rateLimits.budgets[]|{name,periodMs,burst}]'`
-   → `0` y los ocho presupuestos de la tabla de la sección 1.
+   mismos números. Lo nuevo para todos es la admisión de §3 (32 en vuelo por dirección, cuerpo entero en 5 s,
+   512 en vuelo por task) y `GET /config`. Sonda:
+   `curl -s https://facilitator.ultravioletadao.xyz/config | jq '.stackIdentities.active, [.rateLimits.budgets[]|{name,periodMs,burst}], .overload|{maxInflightRequests,perClient,bodyDeadlineMs}'`
+   → `0`, los ocho presupuestos de la tabla de la sección 1 y 512 / 32 / 5000. Durante los primeros días,
+   `status=408`, `status=429` con `too_many_concurrent_requests` y `status=503` en el log dicen si la admisión le
+   está cortando a alguien legítimo.
 2. **Claves:** `scripts/stack_key.py generate` por servicio, cargar los secretos, cablear `sha256` en terraform
    (sección 6), desplegar el facilitador. Sonda: `.stackIdentities.active` = N con los nombres esperados. Ningún
    cliente cambió todavía, así que el tráfico sigue igual.
@@ -278,6 +357,51 @@ sino los dos tests en paralelo pisándose el writer lease global (CI corre `--te
 mutex local en `settle_through_a_recording_holder_with`: cuatro corridas en paralelo en verde, y M6 repetida da rojo
 solo en el test de la clave.
 
+### Ronda 1 (REF-X4-STACK-429)
+
+Tests nuevos, todos con la red cerrada (`HTTPS_PROXY=http://127.0.0.1:9 HTTP_PROXY=http://127.0.0.1:9
+NO_PROXY=127.0.0.1,localhost`; el único socket es el de `127.0.0.1`):
+
+| Pedido | Test |
+|---|---|
+| P1-1 c) TCP real: N sockets con headers y sin cuerpo no dejan en 503 al stack; la subida colgada recibe 408 | `rate_policy::over_real_tcp_an_upload_that_never_arrives_holds_no_slot`: `axum::serve` en 127.0.0.1 con tope global 2 y 4 subidas colgadas. El stack da `200` **mientras** cuelgan, cada subida recibe `HTTP/1.1 408` + `request_timeout` y se cierra al plazo, y después el stack y una subida completa dan `200` |
+| P1-1 b) techo por dirección, de los dos lados | `one_address_cannot_fill_the_ceiling_and_the_stack_skips_its_limit`: con techo 2 y dos subidas colgadas de una IP, la tercera de esa IP da `429 too_many_concurrent_requests` + `retry-after: 1`, otra IP da `200`, el stack desde la misma IP da `200`, y el cupo vuelve al terminar una |
+| 413 en JSON ahora que la admisión lee el cuerpo | `a_body_past_the_limit_is_a_json_413` |
+| P2-1 comportamiento | `handlers::erc8004_write_rate_tests::a_stack_identity_still_spends_the_daily_gas_cap` |
+| P2-1 fuente | `rate_policy::the_gas_cap_knows_nothing_of_the_stack` |
+| P2-2 M15 comportamiento | `handlers::erc8004_write_rate_tests::the_erc8004_writes_exempt_the_stack` (35 POST del stack sin 429 sobre todas las rutas de escritura; un tercero da 429 en el 31) |
+| P2-2 M13 fuente | `every_governor_goes_through_the_policy`, ahora con "cada bucket construido está montado" y la prohibición de alias |
+| P3 clave corta | `a_short_key_never_authenticates_whatever_its_digest` (`uvdsk_` + 10 caracteres, con su digest configurado) |
+| P3 log con dirección y ruta | `the_key_never_reaches_a_log_or_a_response` ahora pasa por `admit` y exige `client_ip=` y `path=` en el log de rechazo |
+
+Mutaciones de la ronda: cada una se aplica sobre el working tree, se corren los tests de `rate_policy`,
+`client_ip`, `erc8004_write_rate_tests`, `daily_cap`, `human_surface_tests` y `owner_scan` (o `cargo build` del
+binario en las que el tipo tiene que impedir) y se restaura el archivo. Al final se verificó la restauración byte a
+byte.
+
+| # | Mutación | Resultado | Qué la mata |
+|---|---|---|---|
+| P1a | el cupo global se toma antes del cuerpo (el orden refutado) | **rojo** | `over_real_tcp_an_upload_that_never_arrives_holds_no_slot` |
+| P1b | sin plazo del cuerpo (3600 s) | **rojo** | `over_real_tcp_an_upload_that_never_arrives_holds_no_slot` |
+| P1c | sin techo por dirección | **rojo** | `one_address_cannot_fill_the_ceiling_and_the_stack_skips_its_limit` |
+| P1d | el stack sujeto al techo por dirección | **rojo** | el mismo |
+| M06 | el tope global saltea al stack | **rojo** | `the_ceiling_sheds_the_stack_too`, `the_key_never_reaches_a_log_or_a_response` |
+| M07 | el cupo global se suelta al tomarlo | **rojo** | `the_ceiling_sheds_the_stack_too` |
+| M08 | `daily_cap::enforce` saltea al que trae el header | **rojo** | `the_gas_cap_knows_nothing_of_the_stack` |
+| M09 | `daily_cap::enforce_with` saltea al que trae el header | **rojo** | `a_stack_identity_still_spends_the_daily_gas_cap`, `the_gas_cap_knows_nothing_of_the_stack` |
+| M10b | la clave rechazada se loguea por valor (en `admit`) | **rojo** | `the_key_never_reaches_a_log_or_a_response` |
+| M12 | governor crudo en `main.rs` con alias (`use … GovernorLayer as RawGov`) | **no compila** (`cargo build`: `E0308 mismatched types`, el `Bucket` no es un `GovernorConfig`) | el tipo |
+| M13 | bucket construido y no montado (`/events` sin governor) | **rojo** | `every_governor_goes_through_the_policy` |
+| M14 | `main.rs` monta con OTRA política (`RatePolicy::new(StackIdentities::from_lookup(..))`) | **no compila** (`E0624`: `new` y `from_lookup` son privados) | el tipo |
+| M15 | escrituras ERC-8004 con OTRA política (la misma forma) | **no compila** (`E0624`) | el tipo |
+| M15b | escrituras ERC-8004 con `RatePolicy::none()` (solo existe con `cfg(test)`) | **rojo** en tests; **no compila** en `cargo build` (`E0599`) | `the_erc8004_writes_exempt_the_stack`, `a_stack_identity_still_spends_the_daily_gas_cap` |
+| M16 | páginas humanas con OTRA política | **no compila** (`E0624`) | el tipo |
+| M17 | formato débil: 1 carácter de secreto alcanza | **rojo** | `a_short_key_never_authenticates_whatever_its_digest` |
+
+M01 (`==` en vez de `ct_eq`) y M02 (salida temprana) siguen sobreviviendo, y está bien. Lo que se compara es el
+SHA-256 de la entrada del atacante contra digests configurados: una fuga por tiempo revelaría bytes de un digest, y
+un digest no autentica. Es la lectura del refutador (P3-8) y la comparto.
+
 ## 10. Pre-CI local
 
 Disco antes de compilar: 163 GB libres (`df -h /System/Volumes/Data`); 120 GB al final. `ci.yaml` no corre
@@ -297,6 +421,21 @@ las líneas de este cambio. Los pasos de `ci.yaml` que el diff dispara, sobre el
 | `cargo clippy --locked -p x402-rs --all-targets --features …`, filtrado a líneas agregadas | 1: `path_config is never used`, el mismo aviso que los 68 `path_*` de utoipa |
 | `rate_policy` en paralelo (sin `--test-threads=1`) | 17/17, cinco corridas |
 
+### Pre-CI de la ronda 1
+
+Con la red cerrada (`HTTPS_PROXY=http://127.0.0.1:9 HTTP_PROXY=http://127.0.0.1:9 NO_PROXY=127.0.0.1,localhost`)
+y en un checkout LF. Disco antes de compilar: 100 GB libres.
+
+| Paso | Resultado |
+|---|---|
+| `cargo build --locked --features solana,near,stellar,algorand,sui,xrpl,hedera` | exit 0 |
+| `cargo test --locked -p x402-rs --features … -- --test-threads=1` | exit 0: lib 1371 ok, bin 1427 ok, integración y doctests ok |
+| `cargo test --locked -p x402-axum -p x402-reqwest -p x402-compliance -- --test-threads=1` (el lock cambió) | exit 0 |
+| `rustfmt --check src/rate_policy.rs` | limpio |
+| rustfmt sobre las líneas agregadas del resto | 0 cambios pendientes |
+| `cargo clippy --locked -p x402-rs --all-targets --features …`, filtrado a las líneas agregadas contra `origin/main` | 1: `path_config is never used`, la clase de los otros 68 `path_*` de utoipa. Un `concat!` innecesario en un test se corrigió, y después `rate_policy` (lib 22/22) y los tests de política del binario (74/74) volvieron a pasar |
+| `verify_landing_canonical.py --offline`, `frontend-capabilities`, `test_*balances.py` | `[OK]`, 19/19, 5/5 |
+
 ## Notas para el refutador
 
 - Tests de fuente existentes que cambiaron, y por qué: `client_ip::every_governor_keys_on_the_client_ip` (antes
@@ -307,8 +446,16 @@ las líneas de este cambio. Los pasos de `ci.yaml` que el diff dispara, sobre el
   `human_page_routes_governed(60_000, n)` de los tests pasaron a `(&RatePolicy::none(), Limit::every_ms(60_000, n))`.
 - Las razones de cada número (los comentarios largos de `main.rs` y `handlers.rs`) se mudaron a la doc de cada
   `Budget` en `rate_policy.rs`.
-- `Cargo.toml` suma `governor = "0.10"` solo para nombrar `StateInformationMiddleware`; ya estaba en el lock por
-  `tower_governor` (misma versión y features): `Cargo.lock` cambia en una línea.
+- `Cargo.toml` suma `governor = "0.10"` solo para nombrar `StateInformationMiddleware`, y en la ronda 1
+  `http-body-util = "0.1"` solo para reconocer `LengthLimitError` por tipo. Los dos ya estaban en el lock, con la
+  misma versión y features, así que `Cargo.lock` suma una línea por cada uno y ningún crate nuevo. La feature
+  `timeout` de tower-http **no** se usa (ver §3). La línea de `serde`, que el primer commit había tocado sin querer
+  (`serde ={`), volvió a como estaba en `origin/main`.
+- `scripts/stack_key.py generate` pasó de `--out` (un JSON con clave y digest) a `--out-dir` (dos archivos, uno por
+  secreto; §6).
+- **CRLF (P3-6 del refutador, entorno, no del diff):** en un checkout con `core.autocrlf=true`,
+  `erc8004::daily_cap::tests::every_send_is_counted_and_every_sending_route_is_capped` parte la fuente por `"\n}\n"`
+  y falla. Este worktree está en LF (memoria del repo: re-checkout con `core.autocrlf=false`), y así pasa.
 - `static/skill.md` suma el `503 overloaded` y `/config`; `static/llms-full.txt` regenerado con
   `scripts/build_llms_full.sh`; el digest de `static/.well-known/agent-skills/index.json` actualizado.
 - Recarga en caliente de identidades: no. Revocar exige reiniciar el facilitador (misma imagen). Suficiente para

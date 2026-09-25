@@ -1,13 +1,19 @@
 //! The service's rate policy, in one place.
 //!
-//! Three limits live on this host and they protect three different things, so
-//! they answer differently and exempt differently:
+//! Four limits live on this host and they protect different things, so they
+//! answer differently and exempt differently:
 //!
 //! | Limit | Protects | Answer | Applies to |
 //! |---|---|---|---|
 //! | the per-IP budgets ([`BUDGETS`]) | a rule we chose: how much one third party may ask | `429` | third parties only |
-//! | the in-flight ceiling ([`Admission`]) | the machine: requests this task is handling at once | `503` | every caller |
+//! | the per-address in-flight ceiling ([`Admission`]) | a rule we chose: one address cannot fill the machine's ceiling | `429` | third parties only |
+//! | the global in-flight ceiling ([`Admission`]) | the machine: requests this task is handling at once | `503` | every caller |
 //! | the ERC-8004 daily write cap (`erc8004::daily_cap`) | the gas the facilitator wallet pays | `429` | every caller |
+//!
+//! A request takes its global slot only once its body has arrived, and a body
+//! has [`DEFAULT_BODY_DEADLINE_MS`] in total to arrive (`408` past it): an
+//! upload that never finishes holds no slot, so it cannot turn the machine's
+//! ceiling into a refusal for everybody while the CPU sits idle.
 //!
 //! The RPC provider throttle (`RPC_MAX_CU_PER_SECOND`, `chain::evm`) is a
 //! fourth, client-side one: it paces our calls to the provider and answers
@@ -25,8 +31,12 @@
 //! `X-UVD-Stack-Key` skips every per-IP budget, and nothing else.
 //!
 //! The same [`PolicyLayer`] wraps every governor on the service; no route has
-//! an exemption of its own. `every_governor_goes_through_the_policy` reads the
-//! source tree and fails if a `GovernorLayer` is built anywhere but here.
+//! an exemption of its own. The types hold it: [`config`] returns a [`Bucket`]
+//! that only [`RatePolicy::layer`] can mount, and outside this module a
+//! [`RatePolicy`] only comes from the environment ([`RatePolicy::from_env`]),
+//! so a second policy that exempts nobody does not compile.
+//! `every_governor_goes_through_the_policy` covers what a type cannot: a
+//! budget built in `main.rs` and never mounted.
 //!
 //! # The credential
 //!
@@ -42,13 +52,16 @@
 //! `UVD_STACK_SERVICES` replaces it.
 //!
 //! A key that is absent, malformed, unknown or revoked makes the caller a third
-//! party: charged to its address like anybody else, never a `500`.
+//! party: charged to its address like anybody else, never a `500`. A rejected
+//! key is logged with the caller's address and path, never its value.
 
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::future::Future;
+use std::net::IpAddr;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -66,6 +79,7 @@ use subtle::ConstantTimeEq;
 use tokio::sync::Semaphore;
 use tower::{Layer, Service, ServiceExt};
 use tower_governor::governor::{Governor, GovernorConfig, GovernorConfigBuilder};
+use tower_governor::key_extractor::KeyExtractor;
 use tower_governor::GovernorLayer;
 use tracing::{info, warn};
 
@@ -285,18 +299,25 @@ pub const BUDGETS: [&Budget; 8] = [
     &ERC8004_WRITES,
 ];
 
-/// The one governor configuration type on the service.
-pub type PolicyConfig = GovernorConfig<ClientIpKeyExtractor, StateInformationMiddleware>;
+/// The one governor configuration type on the service. Private: nothing
+/// outside this module can name it, so nothing outside can mount one.
+type PolicyConfig = GovernorConfig<ClientIpKeyExtractor, StateInformationMiddleware>;
+
+/// A per-address bucket, sized by a budget, that only [`RatePolicy::layer`] can
+/// mount. Opaque on purpose: it is not a `GovernorConfig`, so a
+/// `GovernorLayer` built from it -- a governor the stack does not skip -- does
+/// not compile. Clone it to share the bucket between routers.
+#[derive(Clone)]
+pub struct Bucket(Arc<PolicyConfig>);
 
 /// A bucket per client address for `limit`. The only `GovernorConfigBuilder`
 /// on the service.
 ///
 /// Keyed on [`ClientIpKeyExtractor`], so a third party is the address the load
 /// balancer appended. `use_headers()` makes the budget legible: a `200` carries
-/// `x-ratelimit-limit` and `x-ratelimit-remaining`, not just the `429`. Share the
-/// returned `Arc` between routers to share the bucket.
-pub fn config(limit: Limit) -> Arc<PolicyConfig> {
-    Arc::new(
+/// `x-ratelimit-limit` and `x-ratelimit-remaining`, not just the `429`.
+pub fn config(limit: Limit) -> Bucket {
+    Bucket(Arc::new(
         GovernorConfigBuilder::default()
             .period(limit.period)
             .burst_size(limit.burst)
@@ -304,7 +325,7 @@ pub fn config(limit: Limit) -> Arc<PolicyConfig> {
             .use_headers()
             .finish()
             .expect("a policy budget has a non-zero period and burst"),
-    )
+    ))
 }
 
 // ============================================================================
@@ -390,10 +411,14 @@ impl StackIdentities {
 
     /// Read the service list and each service's digests through `lookup`.
     ///
+    /// Private: production reads the environment ([`Self::from_env`]), and a
+    /// second set of identities built elsewhere is how a governor ends up
+    /// exempting nobody. Tests in this module call it directly.
+    ///
     /// Every problem is logged by service and variable name, never by value: a
     /// digest is not a key, but a raw key pasted into the wrong variable is,
     /// and it must not reach a log line on its way to being rejected.
-    pub fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Self {
+    fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Self {
         let names: Vec<String> = match lookup(ENV_STACK_SERVICES) {
             Some(raw) => raw
                 .split(',')
@@ -479,12 +504,22 @@ impl StackIdentities {
     /// `None` -- a third party -- unless there is exactly one header line, it
     /// is a well-formed key, and the SHA-256 of its exact bytes equals a
     /// configured digest. Every configured digest is compared, in constant
-    /// time, whatever matches first.
+    /// time, whatever matches first. Logs nothing: [`admit`] logs rejections,
+    /// once per request, with the caller's address.
     pub fn authenticate(&self, headers: &HeaderMap) -> Option<Arc<str>> {
+        match self.presented(headers) {
+            Presented::Recognized(service) => Some(service),
+            Presented::Absent | Presented::Rejected => None,
+        }
+    }
+
+    fn presented(&self, headers: &HeaderMap) -> Presented {
         let mut lines = headers.get_all(STACK_KEY_HEADER).iter();
-        let presented = lines.next()?;
+        let Some(presented) = lines.next() else {
+            return Presented::Absent;
+        };
         if self.active() == 0 {
-            return None;
+            return Presented::Absent;
         }
         let one_line = lines.next().is_none();
         let key = presented.as_bytes();
@@ -503,18 +538,24 @@ impl StackIdentities {
             None
         };
         match found {
-            Some(service) => Some(Arc::clone(&service.name)),
-            None => {
-                let rejected = self.rejected.fetch_add(1, Ordering::Relaxed) + 1;
-                if rejected == 1 || rejected.is_multiple_of(REJECTED_LOG_EVERY) {
-                    warn!(
-                        rejected,
-                        "X-UVD-Stack-Key presented but not recognized: the caller is \
-                         charged as a third party"
-                    );
-                }
-                None
-            }
+            Some(service) => Presented::Recognized(Arc::clone(&service.name)),
+            None => Presented::Rejected,
+        }
+    }
+
+    /// Log a rejected key by who sent it and where -- the first one, then one in
+    /// every [`REJECTED_LOG_EVERY`] -- never by its value.
+    fn note_rejected(&self, client: Option<IpAddr>, path: &str) {
+        let rejected = self.rejected.fetch_add(1, Ordering::Relaxed) + 1;
+        if rejected == 1 || rejected.is_multiple_of(REJECTED_LOG_EVERY) {
+            let client = client.map_or_else(|| "unknown".to_string(), |ip| ip.to_string());
+            warn!(
+                rejected,
+                client_ip = %client,
+                path = %path,
+                "X-UVD-Stack-Key presented but not recognized: the caller is \
+                 charged as a third party"
+            );
         }
     }
 
@@ -533,8 +574,13 @@ impl StackIdentities {
                     "credentials": s.digests.len(),
                 }))
                 .collect::<Vec<_>>(),
-            "exemptFrom": "every budget under rateLimits",
-            "notExemptFrom": ["overload", "erc8004DailyWriteCap", "the RPC provider throttle"],
+            "exemptFrom": ["every budget under rateLimits", "overload.perClient"],
+            "notExemptFrom": [
+                "overload (the global ceiling)",
+                "overload.bodyDeadlineMs",
+                "erc8004DailyWriteCap",
+                "the RPC provider throttle",
+            ],
             "configuration": format!(
                 "{ENV_STACK_SERVICES} (service names, default {}) and \
                  {ENV_STACK_KEY_SHA256_PREFIX}<SERVICE> (comma-separated SHA-256 hex digests \
@@ -543,6 +589,15 @@ impl StackIdentities {
             ),
         })
     }
+}
+
+/// What a request's `X-UVD-Stack-Key` turned out to be.
+enum Presented {
+    /// No header, or no identity configured: an ordinary caller.
+    Absent,
+    Recognized(Arc<str>),
+    /// A header that authenticates nobody: charged as a third party, and logged.
+    Rejected,
 }
 
 fn valid_service_name(name: &str) -> bool {
@@ -584,7 +639,10 @@ pub struct RatePolicy {
 }
 
 impl RatePolicy {
-    pub fn new(stack: StackIdentities) -> Self {
+    /// Private for the same reason as [`StackIdentities::from_lookup`]: outside
+    /// this module the only policy is the one read from the environment, so a
+    /// governor mounted with a second, empty one does not compile.
+    fn new(stack: StackIdentities) -> Self {
         Self {
             stack: Arc::new(stack),
         }
@@ -596,6 +654,20 @@ impl RatePolicy {
         Self::new(StackIdentities::none())
     }
 
+    /// A policy whose `(service, key)` pairs are recognized, for tests outside
+    /// this module that need the stack on a production router.
+    #[cfg(test)]
+    pub fn for_tests(keys: &[(&str, &str)]) -> Self {
+        let vars: HashMap<String, String> = keys
+            .iter()
+            .map(|(service, key)| {
+                let digest = hex::encode(Sha256::digest(key.as_bytes()));
+                (env_var_for(service), digest)
+            })
+            .collect();
+        Self::new(StackIdentities::from_lookup(|var| vars.get(var).cloned()))
+    }
+
     pub fn from_env() -> Self {
         Self::new(StackIdentities::from_env())
     }
@@ -604,11 +676,11 @@ impl RatePolicy {
         &self.stack
     }
 
-    /// The governor for `config`, which a recognized stack identity skips.
+    /// The governor for `bucket`, which a recognized stack identity skips.
     /// Built with the service's JSON `429` (`handlers::rate_limit_error`).
-    pub fn layer(&self, config: &Arc<PolicyConfig>) -> PolicyLayer {
+    pub fn layer(&self, bucket: &Bucket) -> PolicyLayer {
         PolicyLayer {
-            governor: GovernorLayer::new(Arc::clone(config))
+            governor: GovernorLayer::new(Arc::clone(&bucket.0))
                 .error_handler(crate::handlers::rate_limit_error),
             stack: Arc::clone(&self.stack),
         }
@@ -688,7 +760,7 @@ where
 }
 
 // ============================================================================
-// The machine's ceiling, which nobody skips
+// Admission: the per-address ceiling, the body deadline, the machine's ceiling
 // ============================================================================
 
 pub const ENV_MAX_INFLIGHT_REQUESTS: &str = "MAX_INFLIGHT_REQUESTS";
@@ -701,68 +773,171 @@ pub const ENV_MAX_INFLIGHT_REQUESTS: &str = "MAX_INFLIGHT_REQUESTS";
 /// in 32 MiB, so the ceiling is reached by a flood, never by a busy day.
 pub const DEFAULT_MAX_INFLIGHT_REQUESTS: usize = 512;
 
-/// What a shed request is told to wait. One second: the ceiling clears as fast
-/// as the requests in flight finish.
+pub const ENV_MAX_INFLIGHT_PER_CLIENT: &str = "MAX_INFLIGHT_PER_CLIENT";
+
+/// Requests one client address may have in flight at once before it is
+/// answered `429`.
+///
+/// So that one address cannot fill the machine's ceiling for everybody: at 32,
+/// sixteen addresses are needed to reach 512. A person, an integrator or a NAT
+/// with this many requests open at once is already past every budget's burst
+/// save the bazaar's. A recognized stack identity skips it: Execution Market
+/// relays the whole stack from a handful of addresses, and a per-address limit
+/// is a rule we chose, not the machine's capacity.
+pub const DEFAULT_MAX_INFLIGHT_PER_CLIENT: usize = 32;
+
+pub const ENV_REQUEST_BODY_DEADLINE_MS: &str = "REQUEST_BODY_DEADLINE_MS";
+
+/// The time a request body has, in total, to arrive once its headers have.
+///
+/// A TOTAL deadline, not an idle timeout between frames: one reset on every
+/// frame is held open indefinitely by a body sent one byte at a time. Every
+/// body this service accepts is a JSON document under 64 KiB that a client
+/// writes in one go, so five seconds is generous; past it the request is
+/// answered `408` and its connection closed.
+pub const DEFAULT_BODY_DEADLINE_MS: u64 = 5_000;
+
+/// What a shed or throttled request is told to wait. One second: slots clear
+/// as fast as the requests in flight finish.
 pub const OVERLOAD_RETRY_AFTER_SECS: u64 = 1;
 
-/// Paths the ceiling never sheds. `/health` is the load balancer's liveness
+/// Paths admission never refuses. `/health` is the load balancer's liveness
 /// probe: failing it on a busy task would have ECS replace a task that is
 /// working, and take its capacity with it.
 const ADMISSION_EXEMPT_PATHS: [&str; 1] = ["/health"];
 
-/// The global in-flight ceiling: one counter for every caller, stack included.
+/// Admission to the task, before any route runs, in this order:
 ///
-/// A request holds its slot until its response is produced -- not while a
-/// streamed body is still being written, so an open `/events` stream does not
-/// hold one (its own cap is `X402_EVENTS_MAX_SUBSCRIBERS`).
+/// 1. **Per address** ([`DEFAULT_MAX_INFLIGHT_PER_CLIENT`], `429
+///    too_many_concurrent_requests`): third parties only; a recognized stack
+///    identity skips it.
+/// 2. **The body**, read whole within [`DEFAULT_BODY_DEADLINE_MS`] (`408
+///    request_timeout`), for every caller. Nothing global is held meanwhile.
+/// 3. **The machine** ([`DEFAULT_MAX_INFLIGHT_REQUESTS`], `503 overloaded`): one
+///    counter for every caller, stack included. The slot is taken only now, so
+///    an upload that never finishes holds none, and it is held until the
+///    response is produced -- not while a streamed body is written, so an open
+///    `/events` stream holds none either (its own cap is
+///    `X402_EVENTS_MAX_SUBSCRIBERS`).
 #[derive(Clone)]
 pub struct Admission {
     permits: Arc<Semaphore>,
     max: usize,
+    per_client: Arc<Mutex<HashMap<IpAddr, usize>>>,
+    max_per_client: usize,
+    body_deadline: Duration,
+    stack: Arc<StackIdentities>,
 }
 
 impl Admission {
-    pub fn new(max: usize) -> Self {
+    /// Every limit is at least 1 and the deadline at least 1 ms.
+    pub fn new(
+        policy: &RatePolicy,
+        max: usize,
+        max_per_client: usize,
+        body_deadline: Duration,
+    ) -> Self {
         let max = max.max(1);
         Self {
             permits: Arc::new(Semaphore::new(max)),
             max,
+            per_client: Arc::new(Mutex::new(HashMap::new())),
+            max_per_client: max_per_client.max(1),
+            body_deadline: body_deadline.max(Duration::from_millis(1)),
+            stack: Arc::clone(&policy.stack),
         }
     }
 
-    pub fn from_env() -> Self {
-        let max = match std::env::var(ENV_MAX_INFLIGHT_REQUESTS) {
-            Ok(raw) => match raw.trim().parse::<usize>() {
-                Ok(n) if n > 0 => n,
-                _ => {
-                    warn!(
-                        variable = ENV_MAX_INFLIGHT_REQUESTS,
-                        default = DEFAULT_MAX_INFLIGHT_REQUESTS,
-                        "not a positive integer; the default ceiling applies"
-                    );
-                    DEFAULT_MAX_INFLIGHT_REQUESTS
-                }
-            },
-            Err(_) => DEFAULT_MAX_INFLIGHT_REQUESTS,
-        };
+    pub fn from_env(policy: &RatePolicy) -> Self {
+        let max = positive_env(ENV_MAX_INFLIGHT_REQUESTS, DEFAULT_MAX_INFLIGHT_REQUESTS);
+        let max_per_client =
+            positive_env(ENV_MAX_INFLIGHT_PER_CLIENT, DEFAULT_MAX_INFLIGHT_PER_CLIENT);
+        let body_deadline_ms = positive_env(ENV_REQUEST_BODY_DEADLINE_MS, DEFAULT_BODY_DEADLINE_MS);
         info!(
             max_inflight_requests = max,
-            "global in-flight ceiling configured"
+            max_inflight_per_client = max_per_client,
+            body_deadline_ms,
+            "admission configured: per-address ceiling, body deadline, global ceiling"
         );
-        Self::new(max)
+        Self::new(
+            policy,
+            max,
+            max_per_client,
+            Duration::from_millis(body_deadline_ms),
+        )
     }
 
     pub fn max(&self) -> usize {
         self.max
     }
+
+    pub fn max_per_client(&self) -> usize {
+        self.max_per_client
+    }
+
+    pub fn body_deadline(&self) -> Duration {
+        self.body_deadline
+    }
+
+    /// A slot for `client`, or `None` when it already has its maximum in flight.
+    fn enter(&self, client: IpAddr) -> Option<ClientSlot> {
+        let mut counts = self.per_client.lock().unwrap_or_else(|e| e.into_inner());
+        let count = counts.entry(client).or_insert(0);
+        if *count >= self.max_per_client {
+            return None;
+        }
+        *count += 1;
+        Some(ClientSlot {
+            counts: Arc::clone(&self.per_client),
+            client,
+        })
+    }
 }
 
-/// The outermost policy middleware, mounted inside the tracing layer so a shed
-/// request is logged with its `status=503`.
+/// One request in flight for one address; given back when dropped, however
+/// the request ends (answered, refused, or its connection gone).
+struct ClientSlot {
+    counts: Arc<Mutex<HashMap<IpAddr, usize>>>,
+    client: IpAddr,
+}
+
+impl Drop for ClientSlot {
+    fn drop(&mut self) {
+        let mut counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(count) = counts.get_mut(&self.client) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                counts.remove(&self.client);
+            }
+        }
+    }
+}
+
+/// A positive integer from `var`, or `default` (with a warning if it was set).
+fn positive_env<T>(var: &str, default: T) -> T
+where
+    T: std::str::FromStr + PartialOrd + Default + std::fmt::Display + Copy,
+{
+    match std::env::var(var) {
+        Ok(raw) => match raw.trim().parse::<T>() {
+            Ok(n) if n > T::default() => n,
+            _ => {
+                warn!(variable = var, default = %default, "not a positive integer; the default applies");
+                default
+            }
+        },
+        Err(_) => default,
+    }
+}
+
+/// The outermost policy middleware; see [`Admission`] for what it enforces and
+/// in which order. Mounted inside the tracing layer so a refusal is logged with
+/// its status.
 ///
 /// It also marks `X-UVD-Stack-Key` sensitive before anything else sees the
 /// request, so a `Debug` of the headers anywhere below prints `Sensitive`
-/// instead of the key.
+/// instead of the key, and it is where a rejected key is logged -- once per
+/// request, with the caller's address and path, never the value.
 pub async fn admit(
     State(admission): State<Admission>,
     mut request: Request,
@@ -772,6 +947,29 @@ pub async fn admit(
     if ADMISSION_EXEMPT_PATHS.contains(&request.uri().path()) {
         return next.run(request).await;
     }
+
+    let client = ClientIpKeyExtractor.extract(&request).ok();
+    let presented = admission.stack.presented(request.headers());
+    if matches!(presented, Presented::Rejected) {
+        admission.stack.note_rejected(client, request.uri().path());
+    }
+    let _client_slot = match (&presented, client) {
+        (Presented::Recognized(_), _) | (_, None) => None,
+        (_, Some(ip)) => match admission.enter(ip) {
+            Some(slot) => Some(slot),
+            None => return too_many_concurrent(),
+        },
+    };
+
+    let (parts, body) = request.into_parts();
+    let whole = axum::body::to_bytes(body, usize::MAX);
+    let bytes = match tokio::time::timeout(admission.body_deadline, whole).await {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(error)) => return unreadable_body(&error),
+        Err(_) => return body_timeout(admission.body_deadline),
+    };
+    let request = Request::from_parts(parts, Body::from(bytes));
+
     let Ok(_slot) = Arc::clone(&admission.permits).try_acquire_owned() else {
         return overloaded();
     };
@@ -786,20 +984,76 @@ fn mark_stack_key_sensitive(headers: &mut HeaderMap) {
     }
 }
 
-fn overloaded() -> axum::response::Response {
-    let body = json!({
-        "error": "The facilitator is at its ceiling of concurrent requests",
-        "code": "overloaded",
-        "hint": "Retry after the number of seconds in the `retry-after` header. This \
-                 ceiling is the machine's capacity, shared by every caller; no \
-                 credential exempts it.",
-    });
-    let mut response = (StatusCode::SERVICE_UNAVAILABLE, Json(body)).into_response();
+fn refusal(status: StatusCode, body: Value) -> axum::response::Response {
+    let mut response = (status, Json(body)).into_response();
     response.headers_mut().insert(
         header::RETRY_AFTER,
         HeaderValue::from(OVERLOAD_RETRY_AFTER_SECS),
     );
     response
+}
+
+fn overloaded() -> axum::response::Response {
+    refusal(
+        StatusCode::SERVICE_UNAVAILABLE,
+        json!({
+            "error": "The facilitator is at its ceiling of concurrent requests",
+            "code": "overloaded",
+            "hint": "Retry after the number of seconds in the `retry-after` header. This \
+                     ceiling is the machine's capacity, shared by every caller; no \
+                     credential exempts it.",
+        }),
+    )
+}
+
+fn too_many_concurrent() -> axum::response::Response {
+    refusal(
+        StatusCode::TOO_MANY_REQUESTS,
+        json!({
+            "error": "Too many requests in flight from this address",
+            "code": "too_many_concurrent_requests",
+            "hint": "Wait for a response before sending more, or retry after the number of \
+                     seconds in the `retry-after` header. The limit is per client IP; \
+                     GET /config publishes it.",
+        }),
+    )
+}
+
+fn body_timeout(deadline: Duration) -> axum::response::Response {
+    let body = json!({
+        "error": format!(
+            "The request body did not arrive within {} ms",
+            deadline.as_millis()
+        ),
+        "code": "request_timeout",
+        "hint": "Send the whole body with the headers and resend the request; nothing was done.",
+    });
+    let mut response = (StatusCode::REQUEST_TIMEOUT, Json(body)).into_response();
+    response
+        .headers_mut()
+        .insert(header::CONNECTION, HeaderValue::from_static("close"));
+    response
+}
+
+fn unreadable_body(error: &axum::Error) -> axum::response::Response {
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(current) = source {
+        if current.is::<http_body_util::LengthLimitError>() {
+            let body = json!({
+                "error": "The request body is larger than this service accepts",
+                "code": "payload_too_large",
+                "hint": "Request bodies are JSON documents of at most 64 KiB.",
+            });
+            return (StatusCode::PAYLOAD_TOO_LARGE, Json(body)).into_response();
+        }
+        source = current.source();
+    }
+    let body = json!({
+        "error": "The request body could not be read",
+        "code": "invalid_request_body",
+        "hint": "Resend the request with the whole body.",
+    });
+    (StatusCode::BAD_REQUEST, Json(body)).into_response()
 }
 
 // ============================================================================
@@ -862,8 +1116,20 @@ pub fn document(
             "maxInflightRequests": admission.max(),
             "env": ENV_MAX_INFLIGHT_REQUESTS,
             "refusal": { "status": 503, "code": "overloaded", "retryAfterSecs": OVERLOAD_RETRY_AFTER_SECS },
-            "appliesTo": "every caller, stack identities included",
+            "appliesTo": "every caller, stack identities included: it is the machine's capacity",
+            "slotTakenAfterTheBody": true,
             "neverShed": ADMISSION_EXEMPT_PATHS,
+            "perClient": {
+                "maxInflightRequests": admission.max_per_client(),
+                "env": ENV_MAX_INFLIGHT_PER_CLIENT,
+                "keyedOn": "client IP: the last X-Forwarded-For entry, else the TCP peer",
+                "refusal": { "status": 429, "code": "too_many_concurrent_requests", "retryAfterSecs": OVERLOAD_RETRY_AFTER_SECS },
+                "appliesTo": "third parties; a recognized stack identity skips it (a per-address limit is policy, not hardware)",
+            },
+            "bodyDeadlineMs": admission.body_deadline().as_millis() as u64,
+            "bodyDeadlineEnv": ENV_REQUEST_BODY_DEADLINE_MS,
+            "bodyRefusal": { "status": 408, "code": "request_timeout" },
+            "bodyDeadlineAppliesTo": "every caller, stack identities included: the whole body, not the gap between two bytes",
         },
         "erc8004DailyWriteCap": daily,
     })
@@ -934,6 +1200,14 @@ mod tests {
         Router::new()
             .route("/probe", any(|| async { "ok" }))
             .layer(policy.layer(&config(limit)))
+    }
+
+    /// `router` behind admission, as `main.rs` mounts it.
+    fn admitted(router: Router, admission: &Admission) -> Router {
+        router.layer(axum::middleware::from_fn_with_state(
+            admission.clone(),
+            admit,
+        ))
     }
 
     /// Production's burst, a period long enough that no token comes back
@@ -1333,7 +1607,7 @@ mod tests {
             .layer(policy.layer(&config(Limit::every_ms(3_600_000, 100))))
             .route("/health", get(|| async { "healthy" }))
             .layer(axum::middleware::from_fn_with_state(
-                Admission::new(1),
+                Admission::new(&policy, 1, 100, Duration::from_secs(5)),
                 admit,
             ));
         let send = |path: &'static str| {
@@ -1381,8 +1655,17 @@ mod tests {
 
     #[test]
     fn the_ceiling_is_never_zero() {
-        assert_eq!(Admission::new(0).max(), 1);
-        assert_eq!(Admission::new(7).max(), 7);
+        let none = RatePolicy::none();
+        let floor = Admission::new(&none, 0, 0, Duration::ZERO);
+        assert_eq!(
+            (floor.max(), floor.max_per_client(), floor.body_deadline()),
+            (1, 1, Duration::from_millis(1))
+        );
+        let set = Admission::new(&none, 7, 3, Duration::from_secs(2));
+        assert_eq!(
+            (set.max(), set.max_per_client(), set.body_deadline()),
+            (7, 3, Duration::from_secs(2))
+        );
     }
 
     fn config_document(policy: &RatePolicy) -> Value {
@@ -1391,7 +1674,8 @@ mod tests {
             HashMap::from([(crate::network::Network::Ethereum, 100)]),
             Box::new(|| 0),
         );
-        document(policy, &Admission::new(512), Some(&cap))
+        let admission = Admission::new(policy, 512, 32, Duration::from_millis(5_000));
+        document(policy, &admission, Some(&cap))
     }
 
     /// `GET /config` names the identities and every budget, and says what is
@@ -1510,7 +1794,8 @@ mod tests {
         ];
 
         let mut seen = Vec::new();
-        let router = governed(&policy, Limit::every_ms(3_600_000, 1));
+        let admission = Admission::new(&policy, 64, 64, Duration::from_secs(5));
+        let router = admitted(governed(&policy, Limit::every_ms(3_600_000, 1)), &admission);
         seen.push(text(hit(&router, "203.0.113.50", &[kk.as_bytes()]).await).await);
         // A rejected key: logged as rejected, never by value.
         let false_key = key("RejectedKey");
@@ -1518,8 +1803,11 @@ mod tests {
         seen.push(text(hit(&router, "203.0.113.51", &[false_key.as_bytes()]).await).await);
         assert_eq!(seen[2].0, StatusCode::TOO_MANY_REQUESTS);
 
-        let config_router = config_routes(config_document(&policy))
-            .layer(policy.layer(&config(Limit::every_ms(3_600_000, 5))));
+        let config_router = admitted(
+            config_routes(config_document(&policy))
+                .layer(policy.layer(&config(Limit::every_ms(3_600_000, 5)))),
+            &admission,
+        );
         let request = HttpRequest::builder()
             .uri("/config")
             .header("x-forwarded-for", "203.0.113.52")
@@ -1534,6 +1822,12 @@ mod tests {
         assert!(
             logs.contains("not recognized") && logs.contains("digest skipped"),
             "the capture saw nothing, so it proves nothing: {logs}"
+        );
+        // A rejection says who and where, so a misconfigured client is
+        // diagnosable from the log alone.
+        assert!(
+            logs.contains("client_ip=203.0.113.51") && logs.contains("path=/probe"),
+            "the rejection does not name its caller: {logs}"
         );
         for secret in &secrets {
             assert!(
@@ -1562,7 +1856,7 @@ mod tests {
                 get(|request: Request| async move { format!("{:?}", request.headers()) }),
             )
             .layer(axum::middleware::from_fn_with_state(
-                Admission::new(4),
+                Admission::new(&RatePolicy::none(), 4, 4, Duration::from_secs(5)),
                 admit,
             ));
         let kk = kk_key();
@@ -1577,13 +1871,269 @@ mod tests {
         assert!(!body.contains(&kk), "{body}");
     }
 
-    /// Every governor on the service is built here and mounted through
-    /// [`RatePolicy::layer`]; none can skip the exemption or bypass the policy.
-    /// Read from source because the configs in `main()` are locals.
+    /// P1-1 of REF-X4-STACK-429, over a real socket: uploads that send their
+    /// headers and never their body -- twice the machine's ceiling of them --
+    /// hold no slot, so the stack is served while they hang; each is answered
+    /// `408` at its deadline and closed; and the ceiling is whole afterwards.
+    #[tokio::test]
+    async fn over_real_tcp_an_upload_that_never_arrives_holds_no_slot() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let policy = stack_policy();
+        let deadline = Duration::from_millis(400);
+        let router = admitted(
+            Router::new()
+                .route(
+                    "/upload",
+                    axum::routing::post(
+                        |body: axum::body::Bytes| async move { body.len().to_string() },
+                    ),
+                )
+                .route("/probe", get(|| async { "ok" }))
+                .layer(policy.layer(&config(Limit::every_ms(3_600_000, 100)))),
+            &Admission::new(&policy, 2, 100, deadline),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await
+        });
+
+        let mut stalled = Vec::new();
+        for n in 0..4 {
+            let mut socket = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let head = format!(
+                "POST /upload HTTP/1.1\r\nHost: {addr}\r\nX-Forwarded-For: 198.51.100.{n}\r\n\
+                 Content-Type: application/octet-stream\r\nContent-Length: 100\r\n\r\n"
+            );
+            socket.write_all(head.as_bytes()).await.unwrap();
+            stalled.push(socket);
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let probe = |ip: &'static str| {
+            client
+                .get(format!("http://{addr}/probe"))
+                .header(STACK_KEY_HEADER, em_key())
+                .header("x-forwarded-for", ip)
+                .send()
+        };
+        let during = probe("203.0.113.60").await.unwrap();
+        assert_eq!(
+            during.status().as_u16(),
+            200,
+            "uploads with no body hold the ceiling: the stack was shed"
+        );
+        assert_eq!(during.headers()[EXEMPT_HEADER], "execution-market");
+
+        for (n, mut socket) in stalled.into_iter().enumerate() {
+            let mut answer = Vec::new();
+            let read =
+                tokio::time::timeout(Duration::from_secs(5), socket.read_to_end(&mut answer)).await;
+            assert!(read.is_ok(), "upload {n} was never answered nor closed");
+            let answer = String::from_utf8_lossy(&answer);
+            assert!(
+                answer.starts_with("HTTP/1.1 408"),
+                "upload {n} was answered {answer}"
+            );
+            assert!(answer.contains("request_timeout"), "{answer}");
+        }
+
+        let after = probe("203.0.113.61").await.unwrap();
+        assert_eq!(after.status().as_u16(), 200);
+        let upload = client
+            .post(format!("http://{addr}/upload"))
+            .header("x-forwarded-for", "198.51.100.9")
+            .body(vec![0u8; 100])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(upload.status().as_u16(), 200);
+        assert_eq!(upload.text().await.unwrap(), "100");
+        server.abort();
+    }
+
+    /// An upload whose body never comes, held in flight from `ip`.
+    fn stall(router: &Router, ip: &'static str) -> tokio::task::JoinHandle<()> {
+        let router = router.clone();
+        tokio::spawn(async move {
+            let body = Body::from_stream(tokio_stream::pending::<
+                Result<axum::body::Bytes, std::io::Error>,
+            >());
+            let request = HttpRequest::builder()
+                .method("POST")
+                .uri("/upload")
+                .header("x-forwarded-for", ip)
+                .body(body)
+                .unwrap();
+            let _ = router.oneshot(request).await;
+        })
+    }
+
+    async fn in_flight(admission: &Admission, ip: &str, expected: usize) {
+        let ip: IpAddr = ip.parse().unwrap();
+        for _ in 0..100 {
+            let now = admission
+                .per_client
+                .lock()
+                .unwrap()
+                .get(&ip)
+                .copied()
+                .unwrap_or(0);
+            if now == expected {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("{ip} never reached {expected} in flight");
+    }
+
+    /// One address cannot fill the machine's ceiling: past its own ceiling a
+    /// third party is answered `429`, another address is not, and a stack
+    /// identity behind the same address skips it (c0der's decision: the
+    /// per-address ceiling is policy). The slot comes back when a request ends.
+    #[tokio::test]
+    async fn one_address_cannot_fill_the_ceiling_and_the_stack_skips_its_limit() {
+        let policy = stack_policy();
+        let admission = Admission::new(&policy, 100, 2, Duration::from_secs(30));
+        let router = admitted(
+            Router::new()
+                .route(
+                    "/upload",
+                    axum::routing::post(
+                        |body: axum::body::Bytes| async move { body.len().to_string() },
+                    ),
+                )
+                .route("/probe", get(|| async { "ok" })),
+            &admission,
+        );
+        let probe = |ip: &'static str, key: Option<String>| {
+            let router = router.clone();
+            async move {
+                let mut builder = HttpRequest::builder()
+                    .uri("/probe")
+                    .header("x-forwarded-for", ip);
+                if let Some(key) = key {
+                    builder = builder.header(STACK_KEY_HEADER, key);
+                }
+                router
+                    .oneshot(builder.body(Body::empty()).unwrap())
+                    .await
+                    .unwrap()
+            }
+        };
+
+        let first = stall(&router, "203.0.113.70");
+        let _second = stall(&router, "203.0.113.70");
+        in_flight(&admission, "203.0.113.70", 2).await;
+
+        let refused = probe("203.0.113.70", None).await;
+        assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(refused.headers()[header::RETRY_AFTER], "1");
+        let (_, _, body) = text(refused).await;
+        assert!(body.contains("too_many_concurrent_requests"), "{body}");
+
+        assert_eq!(probe("203.0.113.71", None).await.status(), StatusCode::OK);
+        assert_eq!(
+            probe("203.0.113.70", Some(em_key())).await.status(),
+            StatusCode::OK,
+            "the stack is held to a per-address limit"
+        );
+
+        first.abort();
+        in_flight(&admission, "203.0.113.70", 1).await;
+        assert_eq!(probe("203.0.113.70", None).await.status(), StatusCode::OK);
+    }
+
+    /// A body cut short by the service's body limit is a JSON `413`, not a
+    /// generic `400`, now that admission is what reads it.
+    #[tokio::test]
+    async fn a_body_past_the_limit_is_a_json_413() {
+        let router = admitted(
+            Router::new().route(
+                "/upload",
+                axum::routing::post(
+                    |body: axum::body::Bytes| async move { body.len().to_string() },
+                ),
+            ),
+            &Admission::new(&RatePolicy::none(), 4, 4, Duration::from_secs(5)),
+        )
+        .layer(tower_http::limit::RequestBodyLimitLayer::new(16));
+        let chunked = Body::from_stream(tokio_stream::iter(vec![Ok::<_, std::io::Error>(
+            axum::body::Bytes::from(vec![b'a'; 32]),
+        )]));
+        let request = HttpRequest::builder()
+            .method("POST")
+            .uri("/upload")
+            .header("x-forwarded-for", "203.0.113.72")
+            .body(chunked)
+            .unwrap();
+        let (status, _, body) = text(router.oneshot(request).await.unwrap()).await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{body}");
+        assert!(body.contains("payload_too_large"), "{body}");
+    }
+
+    /// A short key never authenticates, even with its exact digest configured:
+    /// the format is what makes a weak key useless, not the operator's care.
+    #[test]
+    fn a_short_key_never_authenticates_whatever_its_digest() {
+        let short = format!("{STACK_KEY_PREFIX}abcdefghij");
+        let identities = identities(&[("UVD_STACK_KEY_SHA256_KARMAKADABRA", digest_hex(&short))]);
+        assert_eq!(identities.active(), 1);
+        let mut headers = HeaderMap::new();
+        headers.insert(STACK_KEY_HEADER, short.parse().unwrap());
+        assert_eq!(identities.authenticate(&headers), None);
+    }
+
+    /// The gas cap cannot learn of the stack: `daily_cap` names neither the
+    /// header nor this module, so nothing in it can let an identity past it.
+    /// The behavior half is `handlers::erc8004_write_rate_tests::
+    /// a_stack_identity_still_spends_the_daily_gas_cap`.
+    #[test]
+    fn the_gas_cap_knows_nothing_of_the_stack() {
+        let src = include_str!("erc8004/daily_cap.rs").to_ascii_lowercase();
+        for needle in [
+            "x-uvd-stack-key",
+            "stack_key_header",
+            "rate_policy",
+            "stackidentit",
+        ] {
+            assert!(
+                !src.contains(needle),
+                "src/erc8004/daily_cap.rs mentions `{needle}`: the gas cap must not know the stack"
+            );
+        }
+    }
+
+    /// What the types do not hold, read from source because the buckets in
+    /// `main()` are locals:
+    ///
+    /// * no code outside this module and `client_ip.rs` touches `tower_governor`
+    ///   beyond `GovernorError` -- no `GovernorLayer`, no `GovernorConfig`, no
+    ///   `use tower_governor` under another name. (A `GovernorLayer` over a
+    ///   [`Bucket`] does not compile; this catches one over a config built some
+    ///   other way.)
+    /// * every budget is drawn on, and every bucket `main.rs` builds is sized by
+    ///   one of [`BUDGETS`] and MOUNTED -- `policy.layer(&<bucket>)` at least
+    ///   once. A bucket built and never mounted is a route with no limit.
+    /// * admission sits inside the tracing layer, and `/config` is mounted.
     #[test]
     fn every_governor_goes_through_the_policy() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let raw_layer = concat!("Governor", "Layer::");
+        let forbidden = [
+            concat!("Governor", "Layer"),
+            concat!("Governor", "Config"),
+            concat!("tower_governor", "::governor"),
+            concat!("tower_governor", "::key_extractor"),
+            concat!("extern crate ", "tower_governor"),
+            concat!("tower_governor", " as "),
+        ];
+        let allowed_use = concat!("use tower_governor", "::GovernorError;");
         let mut stack = vec![root];
         while let Some(dir) = stack.pop() {
             for entry in std::fs::read_dir(&dir).unwrap() {
@@ -1592,17 +2142,28 @@ mod tests {
                     stack.push(path);
                     continue;
                 }
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                 if path.extension().and_then(|e| e.to_str()) != Some("rs")
-                    || path.file_name().and_then(|n| n.to_str()) == Some("rate_policy.rs")
+                    || name == "rate_policy.rs"
+                    || name == "client_ip.rs"
                 {
                     continue;
                 }
                 let src = std::fs::read_to_string(&path).unwrap();
-                assert!(
-                    !src.contains(raw_layer),
-                    "{} builds a governor outside the rate policy",
-                    path.display()
-                );
+                for (n, line) in src.lines().enumerate() {
+                    let code = line.split("//").next().unwrap_or_default().trim();
+                    let shown = format!("{}:{}", path.display(), n + 1);
+                    for needle in forbidden {
+                        assert!(
+                            !code.contains(needle),
+                            "{shown} builds or names a governor outside the rate policy: {code}"
+                        );
+                    }
+                    assert!(
+                        !code.starts_with("use tower_governor") || code == allowed_use,
+                        "{shown} imports tower_governor outside the rate policy: {code}"
+                    );
+                }
             }
         }
 
@@ -1641,6 +2202,22 @@ mod tests {
             );
         }
         assert!(main.matches(built).count() >= 6);
+        // Every bucket built is mounted through the policy at least once.
+        let lets: Vec<&str> = main
+            .split("let ")
+            .skip(1)
+            .filter_map(|rest| {
+                let (name, value) = rest.split_once(" = ")?;
+                value.trim_start().starts_with(built).then_some(name.trim())
+            })
+            .collect();
+        assert_eq!(lets.len(), main.matches(built).count(), "{lets:?}");
+        for bucket in &lets {
+            assert!(
+                main.contains(&format!("policy.layer(&{bucket})")),
+                "main.rs builds `{bucket}` and never mounts it: its routes have no limit"
+            );
+        }
 
         let admit_at = main
             .find("rate_policy::admit")

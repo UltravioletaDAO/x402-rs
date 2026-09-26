@@ -229,6 +229,9 @@ código); (2) un tope propio del stack más alto, que exigiría pasar la identid
 
 ## 6. Secretos a crear (sin valores)
 
+**Estado, 2026-09-26:** los 8 secretos creados por c0der; el facilitador lee los 4 digests desde este PR
+(`[X4-CLAVES-TF]`, `docs/handoffs/X4-CLAVES-TF.md`).
+
 **Dos por servicio (receta por defecto, ronda 1 P3):** uno del facilitador con **solo** el digest y uno del
 cliente con **solo** la clave. Con un solo secreto con los dos campos, el execution role del facilitador (que
 necesita `GetSecretValue` sobre él) podría leer las cuatro claves en claro, aunque ECS inyecte solo `sha256`.

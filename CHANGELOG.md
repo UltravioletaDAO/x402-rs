@@ -1,6 +1,8 @@
 # Changelog
 
-## [2.42.0] - 2026-09-25
+## [2.43.0] - 2026-09-26
+
+### Stack identities and admission
 
 - Stack identities: a request carrying a recognized `X-UVD-Stack-Key` is not charged to its address by any per-IP rate limit, and the response names the service in `x-ratelimit-exempt`. One key per service (`execution-market`, `karmakadabra`, `describe-net`, `meshrelay` by default, `UVD_STACK_SERVICES` to change the list); the facilitator holds only the SHA-256 of each (`UVD_STACK_KEY_SHA256_<SERVICE>`, comma-separated during a rotation, empty to revoke) and compares it in constant time. An absent, malformed, unknown or revoked key is charged like any other caller, never answered `500`. It is logged with the caller's address and path, never its value. The key is marked sensitive on arrival and appears in no log line, response or `/config`. `scripts/stack_key.py` writes a key and its digest as two separate secret bodies, one for the client and one for the facilitator. Nobody is exempt until a digest is configured.
 - Admission, checked before any route runs, with `/health` never refused. In order:
@@ -10,6 +12,19 @@
 - `GET /config`: every per-IP budget in force (routes, period, burst, default, override variables), the stack identities by service name and how many credentials each holds, the admission limits above, and the ERC-8004 daily write limit per network.
 - The eight per-IP budgets, their defaults and their overrides now live in `src/rate_policy.rs`, the one place every governor is built and mounted. No default changed. New overrides: `VERIFY_SETTLE_RATE_PER_MS`/`_BURST`, `DISCOVERY_REGISTER_RATE_PER_MS`/`_BURST`, `DISCOVERY_READ_RATE_PER_MS`/`_BURST`, `EVENTS_RATE_PER_MS`/`_BURST`, `ERC8004_WRITES_RATE_PER_MS`/`_BURST`; the identity, secondary-read and human-page variables keep their names.
 - Unchanged, and not skipped by a stack identity: the ERC-8004 daily write limit (it protects the gas the facilitator pays) and the RPC provider throttle (`RPC_MAX_CU_PER_SECOND`). An MCP settle forwarded to the writer-lease holder carries `X-UVD-Stack-Key` along with `X-Forwarded-For`.
+
+### Escrow on Arc
+
+- Arc and Arc testnet join the escrow networks on the canonical commerce-payments v1.0.0 contracts, through the PaymentOperator v3 interface: `release` is a `capture` and `refundInEscrow` voids what is still capturable. A refund of nothing capturable answers `409 nothing_to_void`, an amount of 0 `422 amount_required_on_generation`, any other amount than the capturable one `422 partial_refund_unsupported_on_generation`, and a failed chain read `502 chain_read_unavailable`, retryable; none of them sends a transaction. `authorize` on Arc checks the payer's signature over `ReceiveWithAuthorization` under the token's domain before anything is sent.
+- `/supported` announces an Arc escrow entry only once the declared operator has verified itself on that network: its `ESCROW()` is the declared escrow and its bytecode carries the v3 selectors, read at startup and every 10 minutes. Until then a new authorization answers `503 operator_not_verified`; `release`, `refundInEscrow` and `/escrow/state` never wait on it, and a failed read never stops the process. The Arc `commerce` entry names the canonical v1 contracts.
+- Every v3 write on Arc (authorize, capture, void) checks, before signing, that it goes to `paymentInfo.operator` (else `400 operator_mismatch`) and that the address has code (else `422 operator_has_no_code`; a failed read is `502 chain_read_unavailable`, retryable). Every other escrow network keeps exactly the calls it made before.
+- The landing's escrow grid and `/docs` list the escrow networks the code serves, Arc included; Arc's icon there comes from `/networks.json`, like every other.
+
+### Interop manifest and RateLimit headers
+
+- `GET /.well-known/uvd-stack.json`: the service's `uvd.stack/1` interop manifest, generated at runtime: `app`, `version` and `git_sha` of the running build (`FACILITATOR_GIT_SHA`, passed as a build argument; `0000000` without it), the `api` and `mcp` doors with `auth: ["none"]`, `service_signer: null`, `charges: false`, liveness and readiness URLs, links to the other agent documents, and `rate_limits`: every per-IP bucket the router mounts, as `limit` per `window_s` on the door it guards. Those are the budgets `GET /config` publishes, with the same numbers. Linked from the API catalog, `/llms.txt`, `/index.md`, `/skill.md`, `/auth.md` and the OpenAPI document.
+- `RateLimit-Policy` and `RateLimit` (draft-ietf-httpapi-ratelimit-headers-11) on every response charged to a per-IP budget, `429` included: `"verify-settle";q=30;w=60` and `"verify-settle";r=29;t=2`. A caller that sends at most `q` requests in any `w` seconds is never refused. The name is the one `GET /config` gives the budget (its budget names are now `verify-settle`, `discovery-register`, `discovery-read`, `events`, `identity-read`, `secondary-read`, `human-pages` and `erc8004-writes`); `/mcp` and `/settle` share `"verify-settle"`. A recognized stack identity is charged to no budget and gets `x-ratelimit-exempt` and neither header. CORS exposes `ratelimit-policy`, `ratelimit` and `retry-after`. No limit changed.
+- MCP: each tool declares its class in `_meta["uvd/clase"]` (`x402_supported` a read, `x402_accepts` and `x402_verify` the payment rail, `x402_settle` moves money); `x402_supported` publishes an `outputSchema` and returns the same document in `structuredContent`.
 
 ## [2.41.0] - 2026-09-24
 

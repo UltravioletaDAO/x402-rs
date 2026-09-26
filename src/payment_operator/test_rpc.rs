@@ -61,6 +61,8 @@ struct NodeState {
     code: HashMap<Address, Vec<u8>>,
     /// While set, every `eth_call` and `eth_getCode` fails as a rate limit.
     reads_fail: bool,
+    /// While set, every receipt reports a reverted transaction.
+    receipts_revert: bool,
     sent: Vec<SentTx>,
 }
 
@@ -109,6 +111,11 @@ impl MockNode {
     /// Make every contract read fail (or succeed again).
     pub(crate) fn fail_reads(&self, fail: bool) {
         self.state.lock().unwrap().reads_fail = fail;
+    }
+
+    /// Make every receipt report a revert (or a success again).
+    pub(crate) fn revert_receipts(&self, revert: bool) {
+        self.state.lock().unwrap().receipts_revert = revert;
     }
 
     /// Every transaction handed to the node, in order.
@@ -192,7 +199,7 @@ fn hex_quantity(n: u128) -> Value {
     json!(format!("{n:#x}"))
 }
 
-fn receipt_json(hash: &str) -> Value {
+fn receipt_json(hash: &str, reverted: bool) -> Value {
     let zero32 = format!("0x{}", hex::encode([0u8; 32]));
     json!({
         "transactionHash": hash,
@@ -205,7 +212,7 @@ fn receipt_json(hash: &str) -> Value {
         "gasUsed": "0x5208",
         "contractAddress": null,
         "logsBloom": format!("0x{}", "0".repeat(512)),
-        "status": "0x1",
+        "status": if reverted { "0x0" } else { "0x1" },
         "type": "0x0",
         "effectiveGasPrice": "0x3b9aca00",
         "logs": []
@@ -285,7 +292,10 @@ fn answer(state: &Mutex<NodeState>, req: &Value) -> Value {
                 .unwrap_or(TIP);
             block_json(number)
         }
-        "eth_getTransactionReceipt" => receipt_json(params[0].as_str().unwrap_or_default()),
+        "eth_getTransactionReceipt" => receipt_json(
+            params[0].as_str().unwrap_or_default(),
+            state.receipts_revert,
+        ),
         "eth_sendRawTransaction" => {
             let raw = params[0].as_str().unwrap_or_default();
             let raw = hex::decode(raw.trim_start_matches("0x")).expect("raw tx hex");

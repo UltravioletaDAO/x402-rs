@@ -403,6 +403,16 @@ sol!(
     }
 );
 
+sol!(
+    #[sol(rpc)]
+    /// The hook `safeTransferFrom` calls on a recipient that has code. It must
+    /// answer its own selector, or the transfer reverts and the identity stays
+    /// with whoever sent it.
+    interface IERC721Receiver {
+        function onERC721Received(address operator, address from, uint256 tokenId, bytes calldata data) external returns (bytes4);
+    }
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;

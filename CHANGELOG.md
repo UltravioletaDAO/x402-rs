@@ -1,5 +1,25 @@
 # Changelog
 
+## [2.44.0] - 2026-09-26
+
+### `POST /register` no longer mints what it should not
+
+- `agentUri` must be `https://` on a public DNS name, or `ipfs://<cid>`, and at most 2048 bytes. Refused with `400` and an `errorCode` before anything is locked, read from the chain or sent: `agent_uri_missing`, `agent_uri_too_long`, `agent_uri_malformed` (whitespace, control characters or a `\` anywhere, no host, a host no URL parser accepts, an `ipfs://` authority that is not a bare content id), `agent_uri_scheme` (`http://`, `data:` and anything else), `agent_uri_credentials` (a user or password before the host), `agent_uri_ip_literal` (an IP in any form a URL parser reads as one: dotted, decimal, hex, percent-encoded, IPv6), `agent_uri_non_public_host` (`localhost`, `.localdomain`, `.local`, `.internal`, `.lan`, `.home`, `.corp`, `home.arpa`, `.test`, `.invalid`, `.example`, `.onion`, a single label), `agent_uri_embedded_ip` (four octets inside the name, dash- or dot-separated, on any domain; and the wildcard-DNS services `sslip.io`, `nip.io`, `xip.io` and others) and `agent_uri_tunnel` (`ngrok`, `trycloudflare`, `cfargotunnel`, `loca.lt`, `serveo`, `localhost.run`, `pinggy`, Tailscale `ts.net`, Codespaces `app.github.dev` and others). The domain lists are `config/erc8004_agent_uri_rules.json`, compiled in. Every URI the stack's own callers build (`https://execution.market/{workers,publishers,agents}/<address>`) passes.
+- `recipient` is required: `400 recipient_required`. The facilitator used to keep the identity when it was omitted. Naming one of the facilitator's own signers is `400 recipient_is_facilitator`, and the zero address `400 recipient_invalid`. On EVM a recipient with code must answer `onERC721Received` (simulated with `eth_call` from the registry, as `safeTransferFrom` will call it): otherwise the transfer would revert after the mint and leave the identity with the facilitator, so it is `400 recipient_cannot_receive`, and a code read that fails is `503 recipient_check_unavailable`, `retryable: true`. A recipient balance that cannot be read (the duplicate-identity check) is now `503` with no mint attempted instead of being skipped.
+- The recipient is screened against the compliance lists `/verify` and `/settle` use (OFAC and the custom blacklist) before any path that delivers an identity. A blocked recipient gets `403 recipient_blocked` and nothing is minted or handed over; lists that cannot be read give `503 recipient_screening_unavailable`, `retryable: true`.
+- Refusals keep the usual body (`success: false`, `error`, `network`), add `errorCode`, and on Solana carry `mint.status = not_minted`. `GET /register`, `/docs` and the `/erc8004` page say `recipient` is required and what `agentUri` may be.
+
+### Retiring identities the facilitator holds
+
+- `POST /erc8004/admin/retire-identity` (`{network, agentId, dryRun?}`): points the `agentURI` of an EVM identity one of the facilitator's signers owns at `https://facilitator.ultravioletadao.xyz/erc8004/retired`, through the running service: behind the `ERC8004_ADMIN_TOKEN` gate (404 when unset) and the writer lease, sent with `setAgentURI` from the owning signer through the provider's own nonce manager. It reads the owner and the current URI first: somebody else's identity is `409 not_held_by_facilitator` and nothing is sent; `dryRun` answers `would_retire` with the current URI and the `/register` rules it breaks; an identity already retired answers `already_retired` and sends nothing. A send whose receipt does not come back in time is `504 unconfirmed` with the transaction; repeating the call is safe.
+- `GET /erc8004/retired`: the ERC-8004 registration file those identities point at, `active: false`.
+- `scripts/erc8004_custodied_identities.py` (read-only): lists every identity the facilitator's wallet still holds on a network, found through the ERC-721 `Transfer`s into it and confirmed with `ownerOf`, with each `tokenURI` judged by the same rules as `/register` (tested against the same corpus as the Rust guard, `tests/fixtures/erc8004_agent_uri_cases.json`). Suspicious URIs are printed defanged; `balanceOf` is checked against the count.
+
+### Infra and CI
+
+- Terraform: `ERC8004_DAILY_WRITE_CAP_ETHEREUM=300` in the task definition, temporarily, while KarmaCadabra backfills its pending Ethereum ratings; the entry is deleted, and the built-in 100 applies again, once that backfill is done.
+- The drift gate goes red when the deploy's targeted plan changes an `aws_iam_*` resource the CI user may not write (every role policy but the task role's is explicitly denied to it, on purpose), with the `terraform apply -target=...` to run by hand on 1.9.8 before merging. Until now such a change planned clean, merged green, and failed the deploy half-way. `scripts/drift_gate_iam.py` evaluates each change against the CI policy as it is live in the plan's state and never prints an account ID or an ARN.
+
 ## [2.43.0] - 2026-09-26
 
 ### Stack identities and admission

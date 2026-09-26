@@ -62,6 +62,9 @@ on:
       - 'lambda/**'              # the balances-Lambda step applies it when it changes
       # Read by the test job:
       - 'scripts/verify_landing_canonical.py'
+      - 'scripts/erc8004_custodied_identities.py'
+      # Read by the drift gate (and tested by the test job):
+      - 'scripts/drift_gate_iam.py'
       # This file. The drift gate greps it for `-target=` flags, and a pipeline
       # change has to exercise the pipeline.
       - '.github/workflows/ci.yaml'
@@ -96,6 +99,9 @@ on:
       - 'lambda/**'              # the balances-Lambda step applies it when it changes
       # Read by the test job:
       - 'scripts/verify_landing_canonical.py'
+      - 'scripts/erc8004_custodied_identities.py'
+      # Read by the drift gate (and tested by the test job):
+      - 'scripts/drift_gate_iam.py'
       # This file. The drift gate greps it for `-target=` flags, and a pipeline
       # change has to exercise the pipeline.
       - '.github/workflows/ci.yaml'
@@ -153,6 +159,12 @@ jobs:
         run: |
           python3 -m pip install boto3
           python3 -m unittest discover -s tests/scripts -p 'test_*balances.py'
+      # Offline: the custodied-identity audit (its rules against the same
+      # corpus as the Rust /register guard) and the drift gate's IAM half.
+      - name: ERC-8004 audit and IAM drift-gate script tests
+        run: |
+          python3 -m unittest discover -s tests/scripts -p 'test_erc8004_*.py'
+          python3 -m unittest discover -s tests/scripts -p 'test_drift_gate_*.py'
       - name: Build (all production features)
         run: cargo build --locked --features ${{ env.CARGO_FEATURES }}
       # --test-threads=1: tests are fast (compile dominates), and running them
@@ -339,7 +351,7 @@ jobs:
             echo
             pending=$(comm -12 full.addrs covered.addrs)
             if [ -n "$pending" ]; then
-              echo "### Pending, but a deploy applies these - not a failure"
+              echo "### Pending, and inside a deploy's reach - not a failure by itself (IAM rows: see the IAM section below)"
               echo
               echo "| Action | Resource | Declared in | Attributes |"
               echo "|---|---|---|---|"
@@ -379,6 +391,42 @@ jobs:
             exit 1
           fi
           echo "No unapplied infrastructure."
+
+      # ---------------------------------------------------------------------
+      # IAM the deploy would try to apply and CI is not allowed to write
+      # ---------------------------------------------------------------------
+      #
+      # "Inside a deploy's reach" above means the deploy's -target list covers
+      # it, not that the deploy user may write it. Three IAM role policies are
+      # in that list, and cicd-iam-policy.tf lets CI write the inline policies
+      # of ONE role, the task role; every other IAM write is denied, on
+      # purpose. So a PR that changes, say, the execution role's secrets_access
+      # plans clean and merges green, and the deploy then fails half-way: new
+      # task definition registered, service moved, policy refused. That
+      # happened on 2026-09-26, and the tasks it started could not read their
+      # secrets until the policy was applied by hand.
+      #
+      # This step evaluates every aws_iam_* change in the TARGETED plan against
+      # the CI policy as it is live (read out of the plan's refreshed state,
+      # never guessed) and goes red with the exact command to apply it by hand,
+      # on 1.9.8, before the merge. `!cancelled()`: a red uncovered-drift row
+      # above must not hide this answer.
+      - name: IAM changes the deploy cannot apply
+        if: '!cancelled()'
+        working-directory: terraform/environments/production
+        run: |
+          if [ ! -f targeted.tfplan ]; then
+            echo "::warning title=IAM gate skipped::No targeted plan; the Plan step did not get that far, and it already failed the job."
+            exit 0
+          fi
+          terraform show -json targeted.tfplan > targeted-iam.json
+          full=()
+          if [ -f full.tfplan ]; then
+            terraform show -json full.tfplan > full-iam.json
+            full=(--full full-iam.json)
+          fi
+          python3 "$GITHUB_WORKSPACE/scripts/drift_gate_iam.py" --targeted targeted-iam.json "${full[@]}" \
+            --summary "$GITHUB_STEP_SUMMARY"
 
       # ---------------------------------------------------------------------
       # The catalog bucket must stay versioned

@@ -1,0 +1,310 @@
+[
+ {
+  "nombre": "M5-uri-esquema",
+  "archivo": "src/erc8004/agent_uri.rs",
+  "viejo": "    if !RULES.schemes.iter().any(|s| s == scheme) {",
+  "nuevo": "    if false && !RULES.schemes.iter().any(|s| s == scheme) {",
+  "test": "cargo test --offline --locked -p x402-rs --lib --features solana,near,stellar,algorand,sui,xrpl,hedera erc8004::agent_uri -- --test-threads=1"
+ },
+ {
+  "nombre": "M5-uri-espacios-y-control",
+  "archivo": "src/erc8004/agent_uri.rs",
+  "viejo": "        .any(|c| c.is_whitespace() || c.is_control() || c == '\\\\')",
+  "nuevo": "        .any(|c| false && (c.is_whitespace() || c.is_control() || c == '\\\\'))",
+  "test": "cargo test --offline --locked -p x402-rs --lib --features solana,near,stellar,algorand,sui,xrpl,hedera erc8004::agent_uri -- --test-threads=1"
+ },
+ {
+  "nombre": "M5-uri-ip-literal",
+  "archivo": "src/erc8004/agent_uri.rs",
+  "viejo": "        url::Host::Ipv4(_) | url::Host::Ipv6(_) => found.push(Violation::IpLiteral),",
+  "nuevo": "        url::Host::Ipv4(_) | url::Host::Ipv6(_) => {}",
+  "test": "cargo test --offline --locked -p x402-rs --lib --features solana,near,stellar,algorand,sui,xrpl,hedera erc8004::agent_uri -- --test-threads=1"
+ },
+ {
+  "nombre": "M5-uri-ip-embebida-patron",
+  "archivo": "src/erc8004/agent_uri.rs",
+  "viejo": "            if embeds_ipv4(&domain) || matches_any(&domain, &RULES.wildcard_dns_domains) {",
+  "nuevo": "            if matches_any(&domain, &RULES.wildcard_dns_domains) {",
+  "test": "cargo test --offline --locked -p x402-rs --lib --features solana,near,stellar,algorand,sui,xrpl,hedera erc8004::agent_uri -- --test-threads=1"
+ },
+ {
+  "nombre": "M5-uri-dns-comodin-lista",
+  "archivo": "src/erc8004/agent_uri.rs",
+  "viejo": "            if embeds_ipv4(&domain) || matches_any(&domain, &RULES.wildcard_dns_domains) {",
+  "nuevo": "            if embeds_ipv4(&domain) {",
+  "test": "cargo test --offline --locked -p x402-rs --lib --features solana,near,stellar,algorand,sui,xrpl,hedera erc8004::agent_uri -- --test-threads=1"
+ },
+ {
+  "nombre": "M5-uri-sslip-fuera-del-config",
+  "archivo": "config/erc8004_agent_uri_rules.json",
+  "viejo": "    \"sslip.io\",\n",
+  "nuevo": "",
+  "test": "cargo test --offline --locked -p x402-rs --lib --features solana,near,stellar,algorand,sui,xrpl,hedera erc8004::agent_uri -- --test-threads=1"
+ },
+ {
+  "nombre": "M5-uri-tuneles",
+  "archivo": "src/erc8004/agent_uri.rs",
+  "viejo": "            if matches_any(&domain, &RULES.tunnel_domains) {",
+  "nuevo": "            if false {",
+  "test": "cargo test --offline --locked -p x402-rs --lib --features solana,near,stellar,algorand,sui,xrpl,hedera erc8004::agent_uri -- --test-threads=1"
+ },
+ {
+  "nombre": "M5-uri-credenciales",
+  "archivo": "src/erc8004/agent_uri.rs",
+  "viejo": "    if !url.username().is_empty() || url.password().is_some() {",
+  "nuevo": "    if false {",
+  "test": "cargo test --offline --locked -p x402-rs --lib --features solana,near,stellar,algorand,sui,xrpl,hedera erc8004::agent_uri -- --test-threads=1"
+ },
+ {
+  "nombre": "M5-uri-host-no-publico",
+  "archivo": "src/erc8004/agent_uri.rs",
+  "viejo": "            if !domain.contains('.') || matches_any(&domain, &RULES.non_public_suffixes) {",
+  "nuevo": "            if false {",
+  "test": "cargo test --offline --locked -p x402-rs --lib --features solana,near,stellar,algorand,sui,xrpl,hedera erc8004::agent_uri -- --test-threads=1"
+ },
+ {
+  "nombre": "M5-uri-largo",
+  "archivo": "src/erc8004/agent_uri.rs",
+  "viejo": "    if uri.len() > RULES.max_bytes {",
+  "nuevo": "    if false {",
+  "test": "cargo test --offline --locked -p x402-rs --lib --features solana,near,stellar,algorand,sui,xrpl,hedera erc8004::agent_uri -- --test-threads=1"
+ },
+ {
+  "nombre": "M5-uri-cid-ipfs",
+  "archivo": "src/erc8004/agent_uri.rs",
+  "viejo": "                .is_some_and(|h| !h.is_empty() && h.chars().all(|c| c.is_ascii_alphanumeric()));",
+  "nuevo": "                .is_some();",
+  "test": "cargo test --offline --locked -p x402-rs --lib --features solana,near,stellar,algorand,sui,xrpl,hedera erc8004::agent_uri -- --test-threads=1"
+ },
+ {
+  "nombre": "M5-gate-sin-chequeo-de-uri",
+  "archivo": "src/handlers.rs",
+  "viejo": "    if let Err(violation) = crate::erc8004::agent_uri::check(&request.agent_uri) {",
+  "nuevo": "    if let Err(violation) = crate::erc8004::agent_uri::check(\"https://example.com/agent.json\") {",
+  "test": "cargo test --offline --locked -p x402-rs --lib --features solana,near,stellar,algorand,sui,xrpl,hedera erc8004_register_gate -- --test-threads=1"
+ },
+ {
+  "nombre": "M5-gate-sin-recipient-pasa",
+  "archivo": "src/handlers.rs",
+  "viejo": "    let Some(recipient) = &request.recipient else {\n        return refuse(",
+  "nuevo": "    let Some(recipient) = &request.recipient else {\n        return None;\n        return refuse(",
+  "test": "cargo test --offline --locked -p x402-rs --lib --features solana,near,stellar,algorand,sui,xrpl,hedera erc8004_register_gate -- --test-threads=1"
+ },
+ {
+  "nombre": "M5-gate-facilitador-como-recipient",
+  "archivo": "src/handlers.rs",
+  "viejo": "    if recipient_is_facilitator(provider, recipient) {",
+  "nuevo": "    if false && recipient_is_facilitator(provider, recipient) {",
+  "test": "cargo test --offline --locked -p x402-rs --lib --features solana,near,stellar,algorand,sui,xrpl,hedera erc8004_register_gate -- --test-threads=1"
+ },
+ {
+  "nombre": "M5-gate-bloqueada-pasa",
+  "archivo": "src/handlers.rs",
+  "viejo": "    match facilitator.screen_recipient(recipient).await {",
+  "nuevo": "    match facilitator.screen_recipient(recipient).await.map(|_| None::<String>) {",
+  "test": "cargo test --offline --locked -p x402-rs --lib --features solana,near,stellar,algorand,sui,xrpl,hedera erc8004_register_gate -- --test-threads=1"
+ },
+ {
+  "nombre": "M5-gate-listas-ilegibles-pasan",
+  "archivo": "src/handlers.rs",
+  "viejo": "        Err(e) => {\n            warn!(network = %network, error = %e, \"ERC-8004 registration recipient could not be screened\");",
+  "nuevo": "        Err(e) => {\n            if true { return None; }\n            warn!(network = %network, error = %e, \"ERC-8004 registration recipient could not be screened\");",
+  "test": "cargo test --offline --locked -p x402-rs --lib --features solana,near,stellar,algorand,sui,xrpl,hedera erc8004_register_gate -- --test-threads=1"
+ },
+ {
+  "nombre": "M5-gate-no-montado",
+  "archivo": "src/handlers.rs",
+  "viejo": "    if let Some(refusal) = refuse_registration(&facilitator, provider, network, &request).await {",
+  "nuevo": "    if let Some(refusal) = None::<Response> {",
+  "test": "cargo test --offline --locked -p x402-rs --lib --features solana,near,stellar,algorand,sui,xrpl,hedera erc8004_register_gate -- --test-threads=1"
+ },
+ {
+  "nombre": "M5-screening-real-no-bloquea",
+  "archivo": "src/facilitator_local.rs",
+  "viejo": "            Ok(ScreeningDecision::Block { reason }) | Ok(ScreeningDecision::Review { reason }) => {\n                Ok(Some(reason))\n            }",
+  "nuevo": "            Ok(ScreeningDecision::Block { reason }) | Ok(ScreeningDecision::Review { reason }) => {\n                let _ = reason;\n                Ok(None)\n            }",
+  "test": "cargo test --offline --locked -p x402-rs --lib --features solana,near,stellar,algorand,sui,xrpl,hedera screen_recipient_tests -- --test-threads=1"
+ },
+ {
+  "nombre": "L4-retiro-identidad-ajena",
+  "archivo": "src/erc8004/retire.rs",
+  "viejo": "    if !provider.controls_signer(owner) {",
+  "nuevo": "    if false && !provider.controls_signer(owner) {",
+  "test": "cargo test --offline --locked -p x402-rs --lib --features solana,near,stellar,algorand,sui,xrpl,hedera erc8004::retire -- --test-threads=1"
+ },
+ {
+  "nombre": "L4-retiro-dry-run-envia",
+  "archivo": "src/erc8004/retire.rs",
+  "viejo": "    if dry_run {",
+  "nuevo": "    if false && dry_run {",
+  "test": "cargo test --offline --locked -p x402-rs --lib --features solana,near,stellar,algorand,sui,xrpl,hedera erc8004::retire -- --test-threads=1"
+ },
+ {
+  "nombre": "L4-retiro-no-idempotente",
+  "archivo": "src/erc8004/retire.rs",
+  "viejo": "    if previous_uri == RETIRED_URI {",
+  "nuevo": "    if false && previous_uri == RETIRED_URI {",
+  "test": "cargo test --offline --locked -p x402-rs --lib --features solana,near,stellar,algorand,sui,xrpl,hedera erc8004::retire -- --test-threads=1"
+ },
+ {
+  "nombre": "L4-retiro-desde-otro-firmante",
+  "archivo": "src/erc8004/retire.rs",
+  "viejo": "        .setAgentURI(agent_id, RETIRED_URI.to_string())\n        .from(owner);",
+  "nuevo": "        .setAgentURI(agent_id, RETIRED_URI.to_string());",
+  "test": "cargo test --offline --locked -p x402-rs --lib --features solana,near,stellar,algorand,sui,xrpl,hedera erc8004::retire -- --test-threads=1"
+ },
+ {
+  "nombre": "L4-retiro-revert-como-exito",
+  "archivo": "src/erc8004/retire.rs",
+  "viejo": "    if !receipt.status() {",
+  "nuevo": "    if false {",
+  "test": "cargo test --offline --locked -p x402-rs --lib --features solana,near,stellar,algorand,sui,xrpl,hedera erc8004::retire -- --test-threads=1"
+ },
+ {
+  "nombre": "L4-ruta-sin-token-admin",
+  "archivo": "src/handlers.rs",
+  "viejo": "            post(post_retire_identity::<A>),\n        )\n        .layer(axum::middleware::from_fn(require_writer_lease))\n        .layer(axum::middleware::from_fn(require_erc8004_admin));",
+  "nuevo": "            post(post_retire_identity::<A>),\n        )\n        .layer(axum::middleware::from_fn(require_writer_lease));",
+  "test": "cargo test --offline --locked -p x402-rs --lib --features solana,near,stellar,algorand,sui,xrpl,hedera erc8004_admin_gate_tests -- --test-threads=1"
+ },
+ {
+  "nombre": "L4-ruta-no-montada",
+  "archivo": "src/handlers.rs",
+  "viejo": "        .merge(revoke)\n        .merge(retire)\n",
+  "nuevo": "        .merge(revoke)\n",
+  "test": "cargo test --offline --locked -p x402-rs --lib --features solana,near,stellar,algorand,sui,xrpl,hedera erc8004_admin_gate_tests -- --test-threads=1"
+ },
+ {
+  "nombre": "L4-documento-de-retiro-no-servido",
+  "archivo": "src/handlers.rs",
+  "viejo": "        .route(\"/erc8004/retired\", get(get_erc8004_retired))\n",
+  "nuevo": "",
+  "test": "cargo test --offline --locked -p x402-rs --lib --features solana,near,stellar,algorand,sui,xrpl,hedera erc8004_admin_gate_tests -- --test-threads=1"
+ },
+ {
+  "nombre": "L4-script-escribe",
+  "archivo": "scripts/erc8004_custodied_identities.py",
+  "viejo": "        if method not in self.READ_METHODS:",
+  "nuevo": "        if False:",
+  "test": "python3 -m unittest discover -s tests/scripts -p 'test_erc8004_*.py'"
+ },
+ {
+  "nombre": "L4-script-cuenta-las-que-salieron",
+  "archivo": "scripts/erc8004_custodied_identities.py",
+  "viejo": "        if _address_word(owner[-40:]) != _address_word(holder):",
+  "nuevo": "        if False:",
+  "test": "python3 -m unittest discover -s tests/scripts -p 'test_erc8004_*.py'"
+ },
+ {
+  "nombre": "L4-script-reglas-divergen",
+  "archivo": "scripts/erc8004_custodied_identities.py",
+  "viejo": "    if _embeds_ipv4(domain) or _matches_any(domain, RULES[\"wildcardDnsDomains\"]):",
+  "nuevo": "    if _matches_any(domain, RULES[\"wildcardDnsDomains\"]):",
+  "test": "python3 -m unittest discover -s tests/scripts -p 'test_erc8004_*.py'"
+ },
+ {
+  "nombre": "L4-script-sin-desactivar",
+  "archivo": "scripts/erc8004_custodied_identities.py",
+  "viejo": "        uri = r[\"tokenUri\"] if (raw or not flagged) else defang(r[\"tokenUri\"])",
+  "nuevo": "        uri = r[\"tokenUri\"]",
+  "test": "python3 -m unittest discover -s tests/scripts -p 'test_erc8004_*.py'"
+ },
+ {
+  "nombre": "L4-script-salta-rangos-rechazados",
+  "archivo": "scripts/erc8004_custodied_identities.py",
+  "viejo": "            log(f\"  node refused {block}..{upper} ({e}); retrying with {chunk} blocks\")\n            continue",
+  "nuevo": "            block = upper + 1\n            continue",
+  "test": "python3 -m unittest discover -s tests/scripts -p 'test_erc8004_*.py'"
+ },
+ {
+  "nombre": "O37-deny-ignorado",
+  "archivo": "scripts/drift_gate_iam.py",
+  "viejo": "        if effect == \"Deny\":\n            return \"explicit_deny\"",
+  "nuevo": "        if False:\n            return \"explicit_deny\"",
+  "test": "python3 -m unittest discover -s tests/scripts -p 'test_drift_gate_*.py'"
+ },
+ {
+  "nombre": "O37-nunca-rojo",
+  "archivo": "scripts/drift_gate_iam.py",
+  "viejo": "    return 1 if blocked else 0",
+  "nuevo": "    return 0",
+  "test": "python3 -m unittest discover -s tests/scripts -p 'test_drift_gate_*.py'"
+ },
+ {
+  "nombre": "O37-tipo-iam-desconocido-pasa",
+  "archivo": "scripts/drift_gate_iam.py",
+  "viejo": "outcome, why = \"unmapped\", \"an IAM resource type this gate does not classify\"",
+  "nuevo": "outcome, why = \"allow\", \"\"",
+  "test": "python3 -m unittest discover -s tests/scripts -p 'test_drift_gate_*.py'"
+ },
+ {
+  "nombre": "O37-sin-politica-pasa",
+  "archivo": "scripts/drift_gate_iam.py",
+  "viejo": "outcome, why = \"unknown\", f\"{CI_POLICY_ADDRESS} is not in the plan, so nothing says CI may\"",
+  "nuevo": "outcome, why = \"allow\", \"\"",
+  "test": "python3 -m unittest discover -s tests/scripts -p 'test_drift_gate_*.py'"
+ },
+ {
+  "nombre": "O37-imprime-la-cuenta",
+  "archivo": "scripts/drift_gate_iam.py",
+  "viejo": "return (f\"arn:aws:iam::{account}:role/{role}\" if account else None), f\"role {role}\"",
+  "nuevo": "return (f\"arn:aws:iam::{account}:role/{role}\" if account else None), f\"role {role} ({account})\"",
+  "test": "python3 -m unittest discover -s tests/scripts -p 'test_drift_gate_*.py'"
+ },
+ {
+  "nombre": "O37-paso-se-salta-tras-rojo",
+  "archivo": ".github/workflows/ci.yaml",
+  "viejo": "      - name: IAM changes the deploy cannot apply\n        if: '!cancelled()'\n",
+  "nuevo": "      - name: IAM changes the deploy cannot apply\n",
+  "test": "python3 -m unittest discover -s tests/scripts -p 'test_drift_gate_*.py'"
+ },
+ {
+  "nombre": "M5-uri-contrabarra",
+  "archivo": "src/erc8004/agent_uri.rs",
+  "viejo": "        .any(|c| c.is_whitespace() || c.is_control() || c == '\\\\')",
+  "nuevo": "        .any(|c| c.is_whitespace() || c.is_control())",
+  "test": "cargo test --offline --locked -p x402-rs --lib --features solana,near,stellar,algorand,sui,xrpl,hedera erc8004::agent_uri -- --test-threads=1"
+ },
+ {
+  "nombre": "M5-uri-ipfs-con-usuario-o-puerto",
+  "archivo": "src/erc8004/agent_uri.rs",
+  "viejo": "        let cid_ok = url.username().is_empty()\n            && url.password().is_none()\n            && url.port().is_none()\n            && uri",
+  "nuevo": "        let cid_ok = uri",
+  "test": "cargo test --offline --locked -p x402-rs --lib --features solana,near,stellar,algorand,sui,xrpl,hedera erc8004::agent_uri -- --test-threads=1"
+ },
+ {
+  "nombre": "M5-gate-direccion-cero",
+  "archivo": "src/handlers.rs",
+  "viejo": "    if zero {",
+  "nuevo": "    if false && zero {",
+  "test": "cargo test --offline --locked -p x402-rs --lib --features solana,near,stellar,algorand,sui,xrpl,hedera erc8004_register_gate -- --test-threads=1"
+ },
+ {
+  "nombre": "M5-gate-sin-chequeo-de-receptor",
+  "archivo": "src/handlers.rs",
+  "viejo": "        match evm_recipient_can_receive(p, contracts.identity_registry, address.0).await {",
+  "nuevo": "        match Receivable::Yes {",
+  "test": "cargo test --offline --locked -p x402-rs --lib --features solana,near,stellar,algorand,sui,xrpl,hedera erc8004_register_gate -- --test-threads=1"
+ },
+ {
+  "nombre": "M5-gate-contrato-sin-hook-pasa",
+  "archivo": "src/handlers.rs",
+  "viejo": "        Err(_) => {\n            Receivable::No(\"it is a contract that does not accept ERC-721 transfers\".to_string())",
+  "nuevo": "        Err(_) => {\n            Receivable::Yes",
+  "test": "cargo test --offline --locked -p x402-rs --lib --features solana,near,stellar,algorand,sui,xrpl,hedera erc8004_register_gate -- --test-threads=1"
+ },
+ {
+  "nombre": "M5-gate-codigo-ilegible-pasa",
+  "archivo": "src/handlers.rs",
+  "viejo": "        Err(e) => return Receivable::Unknown(format!(\"eth_getCode: {e}\")),",
+  "nuevo": "        Err(_) => return Receivable::Yes,",
+  "test": "cargo test --offline --locked -p x402-rs --lib --features solana,near,stellar,algorand,sui,xrpl,hedera erc8004_register_gate -- --test-threads=1"
+ },
+ {
+  "nombre": "M5-balance-ilegible-acuna",
+  "archivo": "src/handlers.rs",
+  "viejo": "        if let Err(e) = &balance {",
+  "nuevo": "        if let (true, Err(e)) = (false, &balance) {",
+  "test": "cargo test --offline --locked -p x402-rs --lib --features solana,near,stellar,algorand,sui,xrpl,hedera erc8004_register_gate -- --test-threads=1"
+ }
+]

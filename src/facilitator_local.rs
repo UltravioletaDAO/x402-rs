@@ -445,6 +445,26 @@ where
         Ok(SupportedPaymentKindsResponse { kinds })
     }
 
+    async fn screen_recipient(
+        &self,
+        address: &crate::types::MixedAddress,
+    ) -> Result<Option<String>, Self::Error> {
+        // The same lists `verify` and `settle` screen payers and payees against.
+        match self
+            .compliance_checker
+            .screen_address(&address.to_string())
+            .await
+        {
+            Ok(ScreeningDecision::Clear) => Ok(None),
+            Ok(ScreeningDecision::Block { reason }) | Ok(ScreeningDecision::Review { reason }) => {
+                Ok(Some(reason))
+            }
+            Err(e) => Err(FacilitatorLocalError::Other(format!(
+                "Compliance screening failed: {e}"
+            ))),
+        }
+    }
+
     async fn blacklist_info(&self) -> Result<serde_json::Value, Self::Error> {
         // Get compliance checker metadata
         let metadata = self.compliance_checker.list_metadata();
@@ -1501,5 +1521,57 @@ mod escrow_supported_tests {
             Some(v) => std::env::set_var("ENABLE_PAYMENT_OPERATOR", v),
             None => std::env::remove_var("ENABLE_PAYMENT_OPERATOR"),
         }
+    }
+}
+
+/// `screen_recipient` consults the lists `verify` and `settle` use: what
+/// `POST /register` relies on to never deliver an identity to a blocked wallet.
+#[cfg(test)]
+mod screen_recipient_tests {
+    use super::*;
+    use crate::types::{EvmAddress, MixedAddress};
+    use std::collections::HashMap;
+
+    const BLOCKED: &str = "0x5555555555555555555555555555555555555555";
+    const CLEAN: &str = "0x6666666666666666666666666666666666666666";
+
+    async fn with_blacklist(
+        entries: &str,
+    ) -> FacilitatorLocal<crate::payment_operator::test_rpc::Providers> {
+        let path = std::env::temp_dir().join(format!(
+            "x402-screen-recipient-{}-{}.json",
+            std::process::id(),
+            entries.len()
+        ));
+        std::fs::write(&path, entries).unwrap();
+        let checker = x402_compliance::ComplianceCheckerBuilder::new()
+            .with_ofac(false)
+            .with_blacklist(&path)
+            .build()
+            .await
+            .unwrap();
+        let _ = std::fs::remove_file(&path);
+        FacilitatorLocal::new(
+            crate::payment_operator::test_rpc::Providers(HashMap::new()),
+            Arc::new(checker),
+        )
+    }
+
+    fn evm(address: &str) -> MixedAddress {
+        MixedAddress::Evm(EvmAddress(address.parse().unwrap()))
+    }
+
+    #[tokio::test]
+    async fn a_blacklisted_wallet_is_blocked_and_a_clean_one_is_not() {
+        let facilitator = with_blacklist(&format!(
+            r#"[{{"account_type": "evm", "wallet": "{BLOCKED}", "reason": "test"}}]"#
+        ))
+        .await;
+        let verdict = facilitator.screen_recipient(&evm(BLOCKED)).await.unwrap();
+        assert!(verdict.is_some(), "a blacklisted wallet was cleared");
+        assert_eq!(
+            facilitator.screen_recipient(&evm(CLEAN)).await.unwrap(),
+            None
+        );
     }
 }

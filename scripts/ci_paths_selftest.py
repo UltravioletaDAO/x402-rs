@@ -153,6 +153,9 @@ CASES: list[tuple[str, list[str], dict[str, bool]]] = [
     ("an alarm file", ["terraform/environments/production/alerts-solana-mint.tf"], {CI: True}),
     ("the balances Lambda", ["lambda/balances/handler.py"], {CI: True}),
     ("the landing checker the test job runs", ["scripts/verify_landing_canonical.py"], {CI: True}),
+    ("the custodied-identity audit the test job tests",
+     ["scripts/erc8004_custodied_identities.py"], {CI: True}),
+    ("the drift gate's IAM script", ["scripts/drift_gate_iam.py"], {CI: True}),
     ("this pipeline", [".github/workflows/ci.yaml"], {CI: True}),
 
     # -- mixed: one build input anywhere in the push is enough --------------

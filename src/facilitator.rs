@@ -4,7 +4,8 @@
 //! against specified requirements [`Facilitator::verify`] and executing on-chain transfers [`Facilitator::settle`].
 
 use crate::types::{
-    SettleRequest, SettleResponse, SupportedPaymentKindsResponse, VerifyRequest, VerifyResponse,
+    MixedAddress, SettleRequest, SettleResponse, SupportedPaymentKindsResponse, VerifyRequest,
+    VerifyResponse,
 };
 use std::fmt::{Debug, Display};
 use std::future::Future;
@@ -80,6 +81,21 @@ pub trait Facilitator {
             }))
         }
     }
+
+    /// Whether the facilitator may hand something over to `address`.
+    ///
+    /// `Ok(Some(reason))` when a compliance list (the sanctions lists or the
+    /// custom blacklist) blocks it, `Err` when the lists could not be consulted.
+    /// `POST /register` gives away an identity NFT and asks this before it
+    /// mints one or reclaims a stranded one for a recipient: neither may ever
+    /// reach a blocked wallet. The default screens nothing.
+    fn screen_recipient(
+        &self,
+        address: &MixedAddress,
+    ) -> impl Future<Output = Result<Option<String>, Self::Error>> + Send {
+        let _ = address;
+        async { Ok(None) }
+    }
 }
 
 impl<T: Facilitator> Facilitator for Arc<T> {
@@ -109,5 +125,12 @@ impl<T: Facilitator> Facilitator for Arc<T> {
         &self,
     ) -> impl Future<Output = Result<serde_json::Value, Self::Error>> + Send {
         self.as_ref().blacklist_info()
+    }
+
+    fn screen_recipient(
+        &self,
+        address: &MixedAddress,
+    ) -> impl Future<Output = Result<Option<String>, Self::Error>> + Send {
+        self.as_ref().screen_recipient(address)
     }
 }

@@ -1,0 +1,53 @@
+{
+  "_comment": [
+    "What POST /register accepts as an agentUri before the facilitator pays to write it on-chain.",
+    "Compiled into the binary (src/erc8004/agent_uri.rs) and read by scripts/erc8004_custodied_identities.py,",
+    "so the guard and the audit of the identities the facilitator already holds apply the same lists.",
+    "Both are tested against tests/fixtures/erc8004_agent_uri_cases.json.",
+    "Suffix match: a host matches an entry when it IS the entry or ends with '.' + entry.",
+    "wildcardDnsDomains resolve a name that embeds an IP to that IP. The embedded-IP rule in the code",
+    "already catches most of their names on any domain; the list catches the forms it cannot (hex, IPv6)."
+  ],
+  "schemes": ["https", "ipfs"],
+  "maxBytes": 2048,
+  "nonPublicSuffixes": ["localhost", "local", "internal", "lan", "home.arpa"],
+  "wildcardDnsDomains": [
+    "sslip.io",
+    "nip.io",
+    "xip.io",
+    "xip.name",
+    "traefik.me",
+    "localtest.me",
+    "lvh.me",
+    "vcap.me",
+    "backname.io"
+  ],
+  "tunnelDomains": [
+    "ngrok.io",
+    "ngrok.app",
+    "ngrok.dev",
+    "ngrok-free.app",
+    "ngrok-free.dev",
+    "ngrok.pizza",
+    "trycloudflare.com",
+    "loca.lt",
+    "localtunnel.me",
+    "serveo.net",
+    "serveousercontent.com",
+    "localhost.run",
+    "lhr.life",
+    "lhr.rocks",
+    "pinggy.io",
+    "pinggy.link",
+    "pinggy.online",
+    "bore.pub",
+    "tunnelmole.net",
+    "devtunnels.ms",
+    "loclx.io",
+    "telebit.io",
+    "localto.net",
+    "localtonet.com",
+    "share.zrok.io",
+    "sharedwithexpose.com"
+  ]
+}

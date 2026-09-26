@@ -72,6 +72,8 @@ The facilitator supports [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) for
 - `GET /register/status/{job_id}` - Poll an async registration until `agentId` is ready
 - `POST /feedback` - Submit on-chain reputation feedback (EVM only)
 - `POST /feedback/revoke` - Revoke previously submitted feedback (EVM only). **Admin only**: requires `Authorization: Bearer <ERC8004_ADMIN_TOKEN>` and returns 404 when no token is configured
+- `POST /erc8004/admin/retire-identity` - Retire an identity the facilitator holds by pointing its `agentURI` at the retirement document (EVM only). **Admin only**, same token and same 404
+- `GET /erc8004/retired` - The registration file a retired identity points at
 - `POST /feedback/evm/prepare` - Build the digest the RATER signs, for an EIP-7702 relayed rating (EVM)
 - `POST /feedback/evm/submit` - Relay a rater-authored rating as a type-4 transaction, paying the gas (EVM)
 - `POST /feedback/solana/prepare` - Build a feedback transaction for the RATER to sign (Solana)
@@ -251,6 +253,8 @@ constraint rather than as grounds for a `406`.
         path_feedback_solana_prepare,
         path_feedback_solana_submit,
         path_feedback_revoke,
+        path_erc8004_retire_identity,
+        path_erc8004_retired,
         path_feedback_response,
         path_reputation,
         path_identity,
@@ -1333,6 +1337,26 @@ async fn path_register_get() {}
     description = r#"
 Registers a new ERC-8004 agent on-chain. The facilitator pays all gas fees.
 
+**`recipient` and `agentUri` are required (v2.44.0).** The facilitator does not keep the
+identities it mints: a request without `recipient`, or naming the facilitator itself, is
+refused. `agentUri` must be `https://` on a public DNS name, or `ipfs://<cid>`. Refused,
+each with its own `errorCode`, before anything is sent:
+
+| `errorCode` | Status | Why |
+|---|---|---|
+| `agent_uri_missing`, `agent_uri_too_long` (over 2048 bytes), `agent_uri_malformed` | 400 | No usable URI |
+| `agent_uri_scheme` | 400 | Not `https://` or `ipfs://` (`http://`, `data:` ...) |
+| `agent_uri_credentials` | 400 | A user or password before the host |
+| `agent_uri_ip_literal` | 400 | The host is an IP address, in any form a URL parser reads as one |
+| `agent_uri_non_public_host` | 400 | `localhost`, `.local`, `.internal`, a single label |
+| `agent_uri_embedded_ip` | 400 | A host that embeds an IP (`198-51-100-7.example.com`) or a wildcard-DNS service (`sslip.io`, `nip.io`, ...) |
+| `agent_uri_tunnel` | 400 | A tunnelling service (`ngrok`, `trycloudflare`, ...) |
+| `recipient_required`, `recipient_is_facilitator` | 400 | See above |
+| `recipient_blocked` | 403 | The recipient is on a compliance list; nothing is minted or handed over |
+| `recipient_screening_unavailable` | 503 | The lists could not be read; retryable |
+
+The domain lists are `config/erc8004_agent_uri_rules.json` in the repository.
+
 **Supported networks:** 23 networks (EVM + Solana). EVM chains use ERC-721 NFTs, Solana uses Metaplex Core NFTs.
 
 **EVM request:**
@@ -1438,10 +1462,11 @@ re-minted — the async path returns the existing job, the sync path returns
     responses(
         (status = 200, description = "Registration result (sync)", body = Object),
         (status = 202, description = "Async registration accepted; poll /register/status/{jobId}", body = Object),
-        (status = 400, description = "Registration failed", body = Object),
+        (status = 400, description = "Registration failed, or refused before the chain: `errorCode` says which rule (`agent_uri_*`, `recipient_required`, `recipient_is_facilitator`)", body = Object),
+        (status = 403, description = "`recipient_blocked`: the recipient is on a compliance list", body = Object),
         (status = 409, description = "A registration for this agent is already in progress", body = Object),
         (status = 500, description = "Solana: the identity exists but is still held by the facilitator (`mint.status` is `pending_stats` or `pending_transfer`). Repeat the request to finish it", body = Object),
-        (status = 503, description = "Solana: refused before touching the chain -- the fee payer cannot cover the mint, or the facilitator could not tell whether this agent already has a half-minted identity", body = Object)
+        (status = 503, description = "Refused before touching the chain: the recipient could not be screened (`recipient_screening_unavailable`), or on Solana the fee payer cannot cover the mint, or the facilitator could not tell whether this agent already has a half-minted identity", body = Object)
     )
 )]
 async fn path_register_post() {}
@@ -1852,6 +1877,61 @@ program's SEAL v1 layout) and takes precedence over `originalFeedback`.
     )
 )]
 async fn path_feedback_revoke() {}
+
+#[utoipa::path(
+    post,
+    path = "/erc8004/admin/retire-identity",
+    tag = "ERC-8004",
+    summary = "Retire an identity the facilitator holds (admin only)",
+    description = r#"
+Points the `agentURI` of an EVM identity the facilitator's wallet holds at
+`https://facilitator.ultravioletadao.xyz/erc8004/retired`, a registration file that says
+the identity represents no agent. A maintenance call for identities minted before v2.44.0,
+when `POST /register` without a `recipient` left them in the facilitator's wallet with
+whatever URI the caller chose.
+
+**Requires `Authorization: Bearer <ERC8004_ADMIN_TOKEN>`; 404 when no token is configured.**
+It sends from inside the service, behind the writer lease, so the transaction takes its
+nonce from the same nonce manager as every other write from that wallet.
+
+```json
+{ "network": "base", "agentId": "42", "dryRun": true }
+```
+
+`dryRun` reads the owner and the current URI and sends nothing. The answer carries
+`status` (`would_retire`, `already_retired`, `retired`), `previousUri`,
+`previousUriViolations` (the `POST /register` rules the old URI breaks), `retiredUri` and,
+once sent, `transaction`. Repeating a call that already landed answers `already_retired`
+and sends nothing.
+"#,
+    request_body(content = Object, description = "{network, agentId, dryRun?}"),
+    params(
+        ("Authorization" = String, Header, description = "Bearer <ERC8004_ADMIN_TOKEN>")
+    ),
+    responses(
+        (status = 200, description = "Retired, already retired, or (dry run) would retire", body = Object),
+        (status = 400, description = "`invalid_request`, `invalid_agent_id`, or `unsupported_network` (EVM only)", body = Object),
+        (status = 401, description = "Missing or invalid bearer token", body = Object),
+        (status = 404, description = "Admin surface disabled (no ERC8004_ADMIN_TOKEN configured)", body = Object),
+        (status = 409, description = "`not_held_by_facilitator`: only the owner can change an identity", body = Object),
+        (status = 502, description = "`not_sent`: refused at estimation or by the node; nothing landed", body = Object),
+        (status = 503, description = "`read_failed` or `no_provider`; nothing was sent. Retryable", body = Object),
+        (status = 504, description = "`unconfirmed`: sent, receipt not back yet. Repeating is safe", body = Object)
+    )
+)]
+async fn path_erc8004_retire_identity() {}
+
+#[utoipa::path(
+    get,
+    path = "/erc8004/retired",
+    tag = "ERC-8004",
+    summary = "Registration file of a retired identity",
+    description = "What the `agentURI` of every identity retired by `POST /erc8004/admin/retire-identity` points at: an ERC-8004 registration file with `active: false` that says the identity represents no agent.",
+    responses(
+        (status = 200, description = "The retirement document", body = Object)
+    )
+)]
+async fn path_erc8004_retired() {}
 
 #[utoipa::path(
     post,

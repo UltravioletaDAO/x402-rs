@@ -988,6 +988,9 @@ where
         // main router (not the strict write-governor) so frequent polling is
         // not rate-limited.
         .route("/register/status/{job_id}", get(get_register_status))
+        // What a retired identity's agentURI points at (`erc8004::retire`).
+        // Static, so unmetered like the GET info routes around it.
+        .route("/erc8004/retired", get(get_erc8004_retired))
         // ERC-8004 Reputation endpoints (GET info only; the actual reputation
         // lookup lives in secondary_read_routes() so it can carry its own rate
         // limit -- see that function for why).
@@ -2035,6 +2038,9 @@ async fn forward_with(
 ///
 /// Fail-closed: with no `ERC8004_ADMIN_TOKEN` configured the route answers 404,
 /// so deploying this turns revoke OFF until someone sets the secret on purpose.
+///
+/// Also guards `POST /erc8004/admin/retire-identity`, which signs with the same
+/// wallet.
 async fn require_erc8004_admin(
     request: axum::extract::Request,
     next: axum::middleware::Next,
@@ -2042,7 +2048,7 @@ async fn require_erc8004_admin(
     if let Some(rejection) = admin_reject(admin_auth(request.headers(), ERC8004_ADMIN_TOKEN_VAR)) {
         warn!(
             path = %request.uri().path(),
-            "rejecting ERC-8004 revoke: missing or invalid admin credentials"
+            "rejecting ERC-8004 admin call: missing or invalid admin credentials"
         );
         return rejection;
     }
@@ -2103,6 +2109,18 @@ where
         .layer(axum::middleware::from_fn(require_writer_lease))
         .layer(axum::middleware::from_fn(require_erc8004_admin));
 
+    // Maintenance: retire an identity the facilitator holds (`erc8004::retire`).
+    // Same two gates as revoke, in the same order, and for the same reasons:
+    // it signs with our wallet, and the lease holder is the task whose nonce
+    // manager owns that wallet's nonces.
+    let retire = Router::new()
+        .route(
+            "/erc8004/admin/retire-identity",
+            post(post_retire_identity::<A>),
+        )
+        .layer(axum::middleware::from_fn(require_writer_lease))
+        .layer(axum::middleware::from_fn(require_erc8004_admin));
+
     // The writes that send a transaction, under the per-network daily limit
     // (`erc8004::daily_cap`). Inside the writer-lease gate, so only the task
     // that sends counts: a forwarded write is counted once, by the holder.
@@ -2149,6 +2167,7 @@ where
         // revoke router keeps its own stack instead of being wrapped twice.
         .layer(axum::middleware::from_fn(require_writer_lease))
         .merge(revoke)
+        .merge(retire)
 }
 
 /// Discovery API routes for the Bazaar feature.
@@ -10754,9 +10773,14 @@ pub async fn get_register_info() -> impl IntoResponse {
         "body": {
             "x402Version": "string - protocol version (1)",
             "network": "string - target network (e.g., 'base-mainnet', 'ethereum')",
-            "agentUri": "string - URI pointing to agent registration file (IPFS, HTTPS)",
+            "agentUri": "string (required) - URI of the agent registration file: https:// on a public DNS name, or ipfs://. Refused: IP hosts, hosts that embed an IP or use a wildcard-DNS service (sslip.io, nip.io, ...), tunnels (ngrok, trycloudflare, ...), non-public names and credentials in the URI",
             "metadata": "array (optional) - key-value metadata entries [{key, value}]",
-            "recipient": "string (optional) - address to receive the agent NFT. If omitted, the facilitator retains ownership."
+            "recipient": "string (required) - address that receives the agent NFT. The facilitator does not keep the identities it mints"
+        },
+        "refusals": {
+            "400": "errorCode agent_uri_missing | agent_uri_too_long | agent_uri_malformed | agent_uri_scheme | agent_uri_credentials | agent_uri_ip_literal | agent_uri_non_public_host | agent_uri_embedded_ip | agent_uri_tunnel | recipient_required | recipient_is_facilitator",
+            "403": "errorCode recipient_blocked - the recipient is on a compliance list",
+            "503": "errorCode recipient_screening_unavailable - retryable, nothing was minted"
         },
         "response": {
             "success": "boolean",
@@ -10842,15 +10866,23 @@ where
             .into_response();
     }
 
+    // Get the provider for this network
+    let provider_map = facilitator.provider_map();
+    let provider = provider_map.by_network(&network);
+
+    // What the facilitator will not pay to mint, decided before anything is
+    // locked, read from the chain or sent. Covers both families and both the
+    // sync and async paths, which all start below this line.
+    if let Some(refusal) = refuse_registration(&facilitator, provider, network, &request).await {
+        return refusal;
+    }
+
     info!(
         network = %network,
         agent_uri = %request.agent_uri,
         has_recipient = request.recipient.is_some(),
         "Processing ERC-8004 agent registration"
     );
-
-    // Get the provider for this network
-    let provider_map = facilitator.provider_map();
 
     // ── Solana registration: one transaction, resumable, balance-gated ──
     //
@@ -10861,7 +10893,7 @@ where
     // longest URI the program accepts, against a 1232-byte packet, and 600,000
     // compute units against the 200,000 each instruction gets today running
     // alone. See `erc8004::solana_mint`.
-    if let Some(NetworkProvider::Solana(p)) = provider_map.by_network(&network) {
+    if let Some(NetworkProvider::Solana(p)) = provider {
         let (status, resp) = run_solana_registration(p, network, &request).await;
         return (status, Json(resp)).into_response();
     }
@@ -10937,6 +10969,134 @@ where
     .await;
     register_jobs::finalize_from_response(&job_id, &resp);
     (status, Json(resp)).into_response()
+}
+
+/// Why `POST /register` will not mint this request, or `None` when it may.
+///
+/// Four refusals, in this order, none of which touches the chain:
+///
+/// 1. **The `agentUri`** must be `https://` on a public name or `ipfs://`
+///    ([`crate::erc8004::agent_uri`]). An identity is minted with our gas and
+///    signed by our wallet; its URI is what the world reads it as.
+/// 2. **A `recipient` is required.** Without one the facilitator used to keep
+///    the identity, and an identity held by us with somebody else's URI is one
+///    we answer for and nobody can use. It also left the NFT where a later
+///    retry could have it handed out.
+/// 3. **The recipient cannot be the facilitator itself**, which would be
+///    keeping it by another name.
+/// 4. **The recipient must clear compliance screening**: the same lists that
+///    screen payers and payees. This is the only place both paths that deliver
+///    an identity -- a fresh mint and the reclaim of a stranded one (FAC-1 #2,
+///    or the Solana resume) -- have in common, so it is where a blocked wallet
+///    is stopped. An unreadable list refuses too: no verdict is not a clear.
+async fn refuse_registration<A>(
+    facilitator: &A,
+    provider: Option<&NetworkProvider>,
+    network: crate::network::Network,
+    request: &RegisterAgentRequest,
+) -> Option<Response>
+where
+    A: Facilitator,
+{
+    let refuse = |status: StatusCode, code: &'static str, message: String| {
+        warn!(
+            network = %network,
+            error_code = code,
+            agent_uri = ?request.agent_uri.chars().take(256).collect::<String>(),
+            recipient = ?request.recipient.as_ref().map(|r| r.to_string()),
+            "Refusing ERC-8004 registration"
+        );
+        Some(register_refusal(network, provider, status, code, message))
+    };
+
+    if let Err(violation) = crate::erc8004::agent_uri::check(&request.agent_uri) {
+        return refuse(
+            StatusCode::BAD_REQUEST,
+            violation.code(),
+            violation.explain(),
+        );
+    }
+    let Some(recipient) = &request.recipient else {
+        return refuse(
+            StatusCode::BAD_REQUEST,
+            "recipient_required",
+            "recipient is required: the facilitator does not keep the identities it mints. \
+             Pass the address that should own the agent"
+                .to_string(),
+        );
+    };
+    if recipient_is_facilitator(provider, recipient) {
+        return refuse(
+            StatusCode::BAD_REQUEST,
+            "recipient_is_facilitator",
+            "recipient must be the agent's owner, not the facilitator".to_string(),
+        );
+    }
+    match facilitator.screen_recipient(recipient).await {
+        Ok(None) => None,
+        Ok(Some(reason)) => {
+            warn!(network = %network, %reason, "ERC-8004 registration recipient is blocked");
+            refuse(
+                StatusCode::FORBIDDEN,
+                "recipient_blocked",
+                "recipient is blocked by the facilitator's compliance screening".to_string(),
+            )
+        }
+        Err(e) => {
+            warn!(network = %network, error = %e, "ERC-8004 registration recipient could not be screened");
+            refuse(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "recipient_screening_unavailable",
+                "the recipient could not be screened; nothing was minted (retryable)".to_string(),
+            )
+        }
+    }
+}
+
+/// Whether `recipient` is an address this facilitator signs with on `network`.
+fn recipient_is_facilitator(provider: Option<&NetworkProvider>, recipient: &MixedAddress) -> bool {
+    match (provider, recipient) {
+        (Some(NetworkProvider::Evm(p)), MixedAddress::Evm(address)) => p.controls_signer(address.0),
+        (Some(NetworkProvider::Solana(p)), MixedAddress::Solana(pubkey)) => {
+            *pubkey == p.keypair().pubkey()
+        }
+        _ => false,
+    }
+}
+
+/// A `POST /register` refusal: the usual body with `success: false`, plus a
+/// stable `errorCode`. On Solana it also carries `mint.status = not_minted`,
+/// which is what the Solana contract tells callers to read.
+fn register_refusal(
+    network: crate::network::Network,
+    provider: Option<&NetworkProvider>,
+    status: StatusCode,
+    code: &'static str,
+    message: String,
+) -> Response {
+    let mint = match provider {
+        Some(NetworkProvider::Solana(p)) => Some(
+            crate::erc8004::solana_mint::refusal(p.keypair().pubkey(), code, message.clone(), None)
+                .report(),
+        ),
+        _ => None,
+    };
+    let body = RegisterAgentResponse {
+        success: false,
+        agent_id: None,
+        transaction: None,
+        transfer_transaction: None,
+        owner: None,
+        error: Some(message),
+        network,
+        mint,
+    };
+    let mut body = serde_json::to_value(&body).unwrap_or_else(|_| json!({ "success": false }));
+    body["errorCode"] = json!(code);
+    if status == StatusCode::SERVICE_UNAVAILABLE {
+        body["retryable"] = json!(true);
+    }
+    (status, Json(body)).into_response()
 }
 
 /// Solana ERC-8004 registration: mint an identity, or finish one that was left
@@ -12316,6 +12476,147 @@ fn accepted_response(job_id: &str) -> Response {
         Json(body),
     )
         .into_response()
+}
+
+/// `GET /erc8004/retired`: the registration file every retired identity's
+/// `agentURI` points at ([`crate::erc8004::retire::RETIRED_URI`]).
+pub async fn get_erc8004_retired() -> Response {
+    (
+        [(axum::http::header::CACHE_CONTROL, "public, max-age=86400")],
+        Json(crate::erc8004::retire::retired_document()),
+    )
+        .into_response()
+}
+
+/// Body of `POST /erc8004/admin/retire-identity`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RetireIdentityRequest {
+    network: crate::network::Network,
+    /// A number or a numeric string, like every other `agentId`.
+    agent_id: serde_json::Value,
+    /// Report what would happen and send nothing.
+    #[serde(default)]
+    dry_run: bool,
+}
+
+/// `POST /erc8004/admin/retire-identity`: point an EVM identity the
+/// facilitator holds at the retirement document, through the running service.
+///
+/// Admin only (`ERC8004_ADMIN_TOKEN`, 404 when unset) and behind the writer
+/// lease; both gates are layers in [`erc8004_write_routes`], so nothing here
+/// runs for an unauthenticated caller. See [`crate::erc8004::retire`] for why
+/// this exists and why it is not done by hand.
+pub async fn post_retire_identity<A>(State(facilitator): State<A>, raw_body: Bytes) -> Response
+where
+    A: HasProviderMap,
+    A::Map: ProviderMap<Value = NetworkProvider> + Sync,
+{
+    use crate::erc8004::retire::{retire_identity, RetireError};
+
+    let refuse = |status: StatusCode, code: &str, message: String| -> Response {
+        let mut body = json!({ "success": false, "errorCode": code, "error": message });
+        if matches!(
+            status,
+            StatusCode::SERVICE_UNAVAILABLE | StatusCode::GATEWAY_TIMEOUT
+        ) {
+            body["retryable"] = json!(true);
+        }
+        (status, Json(body)).into_response()
+    };
+
+    let request: RetireIdentityRequest = match serde_json::from_slice(&raw_body) {
+        Ok(r) => r,
+        Err(e) => {
+            return refuse(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                format!("expected {{network, agentId, dryRun?}}: {e}"),
+            )
+        }
+    };
+    let Some(agent_id) = parse_agent_id_value(&request.agent_id)
+        .and_then(|s| alloy::primitives::U256::from_str_radix(&s, 10).ok())
+    else {
+        return refuse(
+            StatusCode::BAD_REQUEST,
+            "invalid_agent_id",
+            "agentId must be a decimal token id".to_string(),
+        );
+    };
+    let network = request.network;
+    let Some(contracts) = get_contracts(&network) else {
+        return refuse(
+            StatusCode::BAD_REQUEST,
+            "unsupported_network",
+            format!("{network} has no EVM ERC-8004 Identity Registry; retiring is EVM only"),
+        );
+    };
+    let Some(NetworkProvider::Evm(provider)) = facilitator.provider_map().by_network(&network)
+    else {
+        return refuse(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no_provider",
+            format!("no EVM provider for {network} on this task"),
+        );
+    };
+
+    match retire_identity(
+        provider,
+        contracts.identity_registry,
+        agent_id,
+        network,
+        request.dry_run,
+        evm_receipt_timeout(&network),
+    )
+    .await
+    {
+        Ok(retirement) => {
+            info!(
+                network = %network,
+                agent_id = %agent_id,
+                status = ?retirement.status,
+                previous_uri = ?retirement.previous_uri,
+                transaction = ?retirement.transaction,
+                "ERC-8004 identity retirement"
+            );
+            let mut body = serde_json::to_value(&retirement).unwrap_or_default();
+            body["success"] = json!(true);
+            body["network"] = json!(network);
+            body["agentId"] = json!(agent_id.to_string());
+            (StatusCode::OK, Json(body)).into_response()
+        }
+        Err(RetireError::NotHeld { owner }) => refuse(
+            StatusCode::CONFLICT,
+            "not_held_by_facilitator",
+            format!(
+                "agent {agent_id} on {network} is owned by {owner}; only its owner can change it"
+            ),
+        ),
+        Err(RetireError::Unreadable(e)) => refuse(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "read_failed",
+            format!("nothing was sent: {e}"),
+        ),
+        Err(RetireError::NotSent(e)) => refuse(
+            StatusCode::BAD_GATEWAY,
+            "not_sent",
+            format!("setAgentURI was not sent: {e}"),
+        ),
+        Err(RetireError::Unconfirmed { transaction, error }) => {
+            warn!(network = %network, agent_id = %agent_id, tx = %transaction, %error, "Retirement sent but unconfirmed");
+            refuse(
+                StatusCode::GATEWAY_TIMEOUT,
+                "unconfirmed",
+                format!("sent as {transaction} but not confirmed yet ({error}); repeating the call is safe"),
+            )
+        }
+        Err(RetireError::Reverted { transaction }) => refuse(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "reverted",
+            format!("setAgentURI reverted in {transaction}"),
+        ),
+    }
 }
 
 /// `GET /register/status/{job_id}`: poll an async ERC-8004 registration (P1).
@@ -15176,6 +15477,219 @@ mod erc8004_admin_gate_tests {
         // wedged as a non-writer for every later test.
         crate::writer_lease::set_writer_for_test(true);
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    /// A facilitator with no chain, for mounting the REAL write router.
+    #[derive(Clone)]
+    struct NoChain(Arc<crate::payment_operator::test_rpc::Providers>);
+
+    impl HasProviderMap for NoChain {
+        type Map = crate::payment_operator::test_rpc::Providers;
+        fn provider_map(&self) -> &Self::Map {
+            &self.0
+        }
+    }
+
+    impl Facilitator for NoChain {
+        type Error = FacilitatorLocalError;
+        async fn verify(
+            &self,
+            _r: &crate::types::VerifyRequest,
+        ) -> Result<VerifyResponse, Self::Error> {
+            Err(FacilitatorLocalError::ContractCall("no chain here".into()))
+        }
+        async fn settle(&self, _r: &SettleRequest) -> Result<SettleResponse, Self::Error> {
+            Err(FacilitatorLocalError::ContractCall("no chain here".into()))
+        }
+        async fn supported(
+            &self,
+        ) -> Result<crate::types::SupportedPaymentKindsResponse, Self::Error> {
+            Ok(crate::types::SupportedPaymentKindsResponse { kinds: vec![] })
+        }
+    }
+
+    /// `POST /erc8004/admin/retire-identity` sits behind the same gate, in the
+    /// router production mounts: absent without a token, 401 with a wrong
+    /// one, and its body is not read before either answer.
+    #[tokio::test]
+    async fn the_retire_route_is_behind_the_admin_gate() {
+        let _guard = ADMIN_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let call = |bearer: Option<&str>, body: &str| {
+            let router = erc8004_write_routes::<NoChain>().with_state(NoChain(Arc::new(
+                crate::payment_operator::test_rpc::Providers(std::collections::HashMap::new()),
+            )));
+            let mut builder = Request::builder()
+                .method("POST")
+                .uri("/erc8004/admin/retire-identity")
+                .header(axum::http::header::CONTENT_TYPE, "application/json");
+            if let Some(token) = bearer {
+                builder =
+                    builder.header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"));
+            }
+            let request = builder.body(Body::from(body.to_string())).unwrap();
+            async move { router.oneshot(request).await.unwrap().status() }
+        };
+        let valid = r#"{"network":"base","agentId":"95531","dryRun":true}"#;
+
+        std::env::remove_var(ERC8004_ADMIN_TOKEN_VAR);
+        let unset_valid = call(None, valid).await;
+        let unset_guess = call(Some(GOOD_TOKEN), valid).await;
+        let unset_garbage = call(None, "not json").await;
+
+        std::env::set_var(ERC8004_ADMIN_TOKEN_VAR, GOOD_TOKEN);
+        let wrong = call(Some("not-the-token"), valid).await;
+        let missing = call(None, "not json").await;
+        std::env::remove_var(ERC8004_ADMIN_TOKEN_VAR);
+
+        assert_eq!(unset_valid, StatusCode::NOT_FOUND);
+        assert_eq!(unset_guess, StatusCode::NOT_FOUND);
+        assert_eq!(unset_garbage, StatusCode::NOT_FOUND);
+        assert_eq!(wrong, StatusCode::UNAUTHORIZED);
+        assert_eq!(missing, StatusCode::UNAUTHORIZED);
+    }
+
+    /// The URI a retired identity keeps on-chain resolves to the document, on
+    /// the public router production mounts.
+    #[tokio::test]
+    async fn the_retired_document_is_served_where_the_uri_points() {
+        let path = crate::erc8004::retire::RETIRED_URI
+            .strip_prefix("https://facilitator.ultravioletadao.xyz")
+            .expect("the retired URI is on the facilitator's own host");
+        let router = routes::<NoChain>().with_state(NoChain(Arc::new(
+            crate::payment_operator::test_rpc::Providers(std::collections::HashMap::new()),
+        )));
+        let response = router
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let doc: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(doc, crate::erc8004::retire::retired_document());
+    }
+}
+
+/// `POST /erc8004/admin/retire-identity` past its gates: what each outcome of
+/// `erc8004::retire` answers.
+#[cfg(test)]
+mod erc8004_retire_handler_tests {
+    use super::*;
+    use crate::network::Network;
+    use crate::payment_operator::test_rpc::{self, CallAnswer, MockNode, Providers};
+    use alloy::sol_types::{SolCall, SolValue};
+
+    async fn node_with(owner: alloy::primitives::Address) -> (MockNode, Providers) {
+        let node = MockNode::start(Network::Base).await;
+        let registry = get_contracts(&Network::Base).unwrap().identity_registry;
+        node.on_call(
+            registry,
+            IIdentityRegistry::ownerOfCall::SELECTOR,
+            CallAnswer::Return(owner.abi_encode()),
+        );
+        node.on_call(
+            registry,
+            IIdentityRegistry::tokenURICall::SELECTOR,
+            CallAnswer::Return(
+                ("http://198-51-100-7.sslip.io/agent.json".to_string(),).abi_encode_params(),
+            ),
+        );
+        let provider = test_rpc::provider(Network::Base, &node, true).await;
+        (node, Providers::one(Network::Base, provider))
+    }
+
+    async fn call(
+        providers: Providers,
+        body: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        let response =
+            post_retire_identity(State(Arc::new(providers)), Bytes::from(body.to_string())).await;
+        let status = response.status();
+        let doc = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        (status, doc)
+    }
+
+    fn ours() -> alloy::primitives::Address {
+        test_rpc::fixed_wallet().default_signer().address()
+    }
+
+    #[tokio::test]
+    async fn a_dry_run_answers_what_it_would_do() {
+        let (node, providers) = node_with(ours()).await;
+        let (status, doc) = call(
+            providers,
+            json!({"network": "base", "agentId": 95531, "dryRun": true}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{doc}");
+        assert_eq!(doc["status"], "would_retire");
+        assert_eq!(doc["agentId"], "95531");
+        assert_eq!(doc["network"], "base");
+        assert_eq!(doc["retiredUri"], crate::erc8004::retire::RETIRED_URI);
+        assert_eq!(
+            doc["previousUriViolations"],
+            json!(["agent_uri_scheme", "agent_uri_embedded_ip"])
+        );
+        assert!(node.sent().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_real_run_answers_the_transaction() {
+        let (node, providers) = node_with(ours()).await;
+        let (status, doc) = call(providers, json!({"network": "base", "agentId": "95531"})).await;
+        assert_eq!(status, StatusCode::OK, "{doc}");
+        assert_eq!(doc["status"], "retired");
+        assert!(doc["transaction"]
+            .as_str()
+            .is_some_and(|t| t.starts_with("0x")));
+        assert_eq!(node.sent().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn somebody_elses_identity_is_a_conflict() {
+        let (node, providers) = node_with(alloy::primitives::Address::repeat_byte(0x77)).await;
+        let (status, doc) = call(providers, json!({"network": "base", "agentId": "95531"})).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{doc}");
+        assert_eq!(doc["errorCode"], "not_held_by_facilitator");
+        assert!(node.sent().is_empty());
+    }
+
+    #[tokio::test]
+    async fn bad_requests_are_refused_before_any_read() {
+        for (body, code, want) in [
+            (
+                json!({"network": "solana", "agentId": "1"}),
+                "unsupported_network",
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                json!({"network": "base", "agentId": "abc"}),
+                "invalid_agent_id",
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                json!({"agentId": "1"}),
+                "invalid_request",
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                json!({"network": "ethereum", "agentId": "1"}),
+                "no_provider",
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+        ] {
+            let (node, providers) = node_with(ours()).await;
+            let (status, doc) = call(providers, body.clone()).await;
+            assert_eq!(status, want, "{body} -> {doc}");
+            assert_eq!(doc["errorCode"], code, "{body} -> {doc}");
+            assert!(node.reads().is_empty() && node.sent().is_empty(), "{body}");
+        }
     }
 }
 
@@ -19538,5 +20052,357 @@ mod erc8004_register_recipient_tests {
             1,
             "the EVM registration path was entered"
         );
+    }
+}
+
+/// What `POST /register` refuses to mint (2.44.0): the `agentUri` rules, a
+/// missing recipient, the facilitator as recipient, and a blocked recipient --
+/// every one decided before the chain, the in-flight lock or a reclaim.
+#[cfg(test)]
+mod erc8004_register_gate_tests {
+    use super::*;
+    use crate::network::Network;
+    use std::borrow::Borrow;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// One optional provider, and a count of every lookup. The handler looks
+    /// once, before the gate; the EVM mint path looks a second time, so a count
+    /// of one after a response means the mint was never entered.
+    struct Providers {
+        lookups: AtomicUsize,
+        evm: Option<NetworkProvider>,
+    }
+
+    impl ProviderMap for Providers {
+        type Value = NetworkProvider;
+        fn by_network<N: Borrow<Network>>(&self, _network: N) -> Option<&Self::Value> {
+            self.lookups.fetch_add(1, Ordering::SeqCst);
+            self.evm.as_ref()
+        }
+        fn values(&self) -> impl Iterator<Item = &Self::Value> + Send {
+            self.evm.iter()
+        }
+    }
+
+    /// What the compliance lists answer.
+    #[derive(Clone, Copy)]
+    enum Lists {
+        Clear,
+        Block,
+        Unreachable,
+    }
+
+    #[derive(Clone)]
+    struct Gate {
+        providers: Arc<Providers>,
+        lists: Lists,
+        screened: Arc<AtomicUsize>,
+    }
+
+    impl Gate {
+        fn new(lists: Lists) -> Self {
+            Self {
+                providers: Arc::new(Providers {
+                    lookups: AtomicUsize::new(0),
+                    evm: None,
+                }),
+                lists,
+                screened: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+
+        fn lookups(&self) -> usize {
+            self.providers.lookups.load(Ordering::SeqCst)
+        }
+    }
+
+    impl HasProviderMap for Gate {
+        type Map = Providers;
+        fn provider_map(&self) -> &Self::Map {
+            &self.providers
+        }
+    }
+
+    impl Facilitator for Gate {
+        type Error = FacilitatorLocalError;
+        async fn verify(
+            &self,
+            _r: &crate::types::VerifyRequest,
+        ) -> Result<VerifyResponse, Self::Error> {
+            Err(FacilitatorLocalError::ContractCall("no chain here".into()))
+        }
+        async fn settle(&self, _r: &SettleRequest) -> Result<SettleResponse, Self::Error> {
+            Err(FacilitatorLocalError::ContractCall("no chain here".into()))
+        }
+        async fn supported(
+            &self,
+        ) -> Result<crate::types::SupportedPaymentKindsResponse, Self::Error> {
+            Ok(crate::types::SupportedPaymentKindsResponse { kinds: vec![] })
+        }
+        async fn screen_recipient(
+            &self,
+            _address: &MixedAddress,
+        ) -> Result<Option<String>, Self::Error> {
+            self.screened.fetch_add(1, Ordering::SeqCst);
+            match self.lists {
+                Lists::Clear => Ok(None),
+                Lists::Block => Ok(Some("Address is blacklisted".into())),
+                Lists::Unreachable => Err(FacilitatorLocalError::Other("lists down".into())),
+            }
+        }
+    }
+
+    const OWNER: &str = "0x4444444444444444444444444444444444444444";
+    const GOOD_URI: &str =
+        "https://execution.market/agents/0x4444444444444444444444444444444444444444";
+
+    async fn register(gate: &Gate, body: serde_json::Value) -> (StatusCode, serde_json::Value) {
+        let response = post_register(
+            State(gate.clone()),
+            HeaderMap::new(),
+            Bytes::from(body.to_string()),
+        )
+        .await
+        .into_response();
+        let status = response.status();
+        let doc = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        (status, doc)
+    }
+
+    fn body(network: &str, uri: &str, recipient: Option<&str>) -> serde_json::Value {
+        let mut body = serde_json::json!({
+            "x402Version": 1,
+            "network": network,
+            "agentUri": uri,
+        });
+        if let Some(r) = recipient {
+            body["recipient"] = serde_json::json!(r);
+        }
+        body
+    }
+
+    /// A refusal names its code, says nothing was minted, and never entered
+    /// the mint path.
+    fn assert_refused(
+        gate: &Gate,
+        status: StatusCode,
+        doc: &serde_json::Value,
+        want: StatusCode,
+        code: &str,
+    ) {
+        assert_eq!(status, want, "{doc}");
+        assert_eq!(doc["errorCode"], code, "{doc}");
+        assert_eq!(doc["success"], false, "{doc}");
+        assert!(
+            doc["agentId"].is_null() && doc["transaction"].is_null(),
+            "{doc}"
+        );
+        assert!(
+            doc["error"].as_str().is_some_and(|e| !e.is_empty()),
+            "{doc}"
+        );
+        assert_eq!(gate.lookups(), 1, "the mint path was entered: {doc}");
+    }
+
+    /// The positive control: a clean request goes through the gate and into
+    /// the EVM path, which then fails only because there is no chain here.
+    #[tokio::test]
+    async fn a_clean_request_passes_the_gate() {
+        let gate = Gate::new(Lists::Clear);
+        let (status, doc) = register(&gate, body("base", GOOD_URI, Some(OWNER))).await;
+        assert!(doc["errorCode"].is_null(), "{doc}");
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{doc}");
+        assert!(
+            doc["error"].as_str().unwrap().contains("No EVM provider"),
+            "{doc}"
+        );
+        assert_eq!(gate.lookups(), 2, "the gate stopped a clean request");
+        assert_eq!(gate.screened.load(Ordering::SeqCst), 1);
+    }
+
+    /// Every URI the shared corpus refuses is refused here, with the first
+    /// rule it breaks, whatever the network family.
+    #[tokio::test]
+    async fn every_uri_the_corpus_refuses_is_refused_before_the_mint() {
+        let corpus: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/erc8004_agent_uri_cases.json"
+        ))
+        .unwrap();
+        let mut refused = 0;
+        for case in corpus["cases"].as_array().unwrap() {
+            let uri = case["uri"].as_str().unwrap();
+            let Some(first) = case["violations"].as_array().unwrap().first() else {
+                continue;
+            };
+            for network in ["base", "solana"] {
+                let gate = Gate::new(Lists::Clear);
+                let recipient = if network == "base" {
+                    OWNER.to_string()
+                } else {
+                    solana_sdk::pubkey::Pubkey::new_unique().to_string()
+                };
+                let (status, doc) = register(&gate, body(network, uri, Some(&recipient))).await;
+                assert_refused(
+                    &gate,
+                    status,
+                    &doc,
+                    StatusCode::BAD_REQUEST,
+                    first.as_str().unwrap(),
+                );
+                assert_eq!(gate.screened.load(Ordering::SeqCst), 0, "{uri:?}");
+                refused += 1;
+            }
+        }
+        assert!(refused >= 60, "only {refused} refusals exercised");
+    }
+
+    /// The URI of the September 2026 identity, with its host moved to a
+    /// documentation range: refused on the exact shape it had.
+    #[tokio::test]
+    async fn the_incident_shape_is_refused() {
+        let gate = Gate::new(Lists::Clear);
+        let (status, doc) = register(
+            &gate,
+            body(
+                "base",
+                "http://198-51-100-7.sslip.io/agent.json",
+                Some(OWNER),
+            ),
+        )
+        .await;
+        assert_refused(
+            &gate,
+            status,
+            &doc,
+            StatusCode::BAD_REQUEST,
+            "agent_uri_scheme",
+        );
+        let gate = Gate::new(Lists::Clear);
+        let (status, doc) = register(
+            &gate,
+            body(
+                "base",
+                "https://198-51-100-7.sslip.io/agent.json",
+                Some(OWNER),
+            ),
+        )
+        .await;
+        assert_refused(
+            &gate,
+            status,
+            &doc,
+            StatusCode::BAD_REQUEST,
+            "agent_uri_embedded_ip",
+        );
+    }
+
+    /// Without a recipient the facilitator used to keep the identity.
+    #[tokio::test]
+    async fn a_request_without_a_recipient_is_refused() {
+        for network in ["base", "solana"] {
+            let gate = Gate::new(Lists::Clear);
+            let (status, doc) = register(&gate, body(network, GOOD_URI, None)).await;
+            assert_refused(
+                &gate,
+                status,
+                &doc,
+                StatusCode::BAD_REQUEST,
+                "recipient_required",
+            );
+        }
+    }
+
+    /// Naming the facilitator as the recipient is keeping it by another name.
+    #[tokio::test]
+    async fn the_facilitator_cannot_be_the_recipient() {
+        let provider = crate::chain::evm::EvmProvider::try_new(
+            crate::payment_operator::test_rpc::fixed_wallet(),
+            "http://127.0.0.1:9/",
+            true,
+            Network::Base,
+        )
+        .await
+        .unwrap();
+        let ours = provider.signer_addresses().to_vec();
+        let gate = Gate {
+            providers: Arc::new(Providers {
+                lookups: AtomicUsize::new(0),
+                evm: Some(NetworkProvider::Evm(provider)),
+            }),
+            lists: Lists::Clear,
+            screened: Arc::new(AtomicUsize::new(0)),
+        };
+        for signer in ours {
+            gate.providers.lookups.store(0, Ordering::SeqCst);
+            let (status, doc) =
+                register(&gate, body("base", GOOD_URI, Some(&signer.to_string()))).await;
+            assert_refused(
+                &gate,
+                status,
+                &doc,
+                StatusCode::BAD_REQUEST,
+                "recipient_is_facilitator",
+            );
+        }
+    }
+
+    /// A blocked wallet gets nothing: not a fresh mint, and not the stranded
+    /// identity a reclaim would hand it. The stranded record is still there
+    /// afterwards, so the reclaim was never attempted.
+    #[tokio::test]
+    async fn a_blocked_recipient_gets_neither_a_mint_nor_a_reclaim() {
+        let uri = "https://execution.market/agents/gate-test-blocked-recipient";
+        let recipient: MixedAddress = serde_json::from_value(serde_json::json!(OWNER)).unwrap();
+        let key = register_jobs::inflight_key(&Network::Base, uri, &Some(recipient))
+            .expect("an EVM recipient and a URI make a reclaim key");
+        register_jobs::record_stranded(key.clone(), 424_242, None);
+
+        let gate = Gate::new(Lists::Block);
+        let (status, doc) = register(&gate, body("base", uri, Some(OWNER))).await;
+        assert_refused(
+            &gate,
+            status,
+            &doc,
+            StatusCode::FORBIDDEN,
+            "recipient_blocked",
+        );
+        assert_eq!(
+            register_jobs::get_stranded(&key).map(|s| s.agent_id),
+            Some(424_242),
+            "the stranded record was touched, so the reclaim path ran"
+        );
+        register_jobs::clear_stranded(&key);
+
+        let gate = Gate::new(Lists::Block);
+        let solana_recipient = solana_sdk::pubkey::Pubkey::new_unique().to_string();
+        let (status, doc) =
+            register(&gate, body("solana", GOOD_URI, Some(&solana_recipient))).await;
+        assert_refused(
+            &gate,
+            status,
+            &doc,
+            StatusCode::FORBIDDEN,
+            "recipient_blocked",
+        );
+    }
+
+    /// Lists that cannot answer are not a clear.
+    #[tokio::test]
+    async fn unreadable_lists_refuse_and_say_retry() {
+        let gate = Gate::new(Lists::Unreachable);
+        let (status, doc) = register(&gate, body("base", GOOD_URI, Some(OWNER))).await;
+        assert_refused(
+            &gate,
+            status,
+            &doc,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "recipient_screening_unavailable",
+        );
+        assert_eq!(doc["retryable"], true, "{doc}");
     }
 }

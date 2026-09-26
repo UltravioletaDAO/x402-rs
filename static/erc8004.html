@@ -105,7 +105,7 @@
 <tr>
 <td><code>POST</code></td>
 <td><code>/register</code></td>
-<td data-i18n-html="endpoints.registerAgent">Register a new ERC-8004 agent on-chain. Facilitator pays gas. Supports optional <code style="color: var(--accent); background: rgba(0,212,255,0.1); padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.8rem;">recipient</code> field to mint the NFT and transfer it to a user address</td>
+<td data-i18n-html="endpoints.registerAgent">Register a new ERC-8004 agent on-chain. Facilitator pays gas. The <code style="color: var(--accent); background: rgba(0,212,255,0.1); padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.8rem;">recipient</code> field is required: the NFT is minted and transferred to that address, never kept by the facilitator. The agent URI must be https:// on a public host or ipfs://</td>
 <td data-i18n="money.gas">no, but we pay gas</td>
 </tr>
 <tr>
@@ -226,7 +226,7 @@ const I18N = {
     "endpoints.identity": "Get agent identity from Identity Registry",
     "endpoints.identityMetadata": "Read a specific metadata key from the agent's on-chain profile (returns hex + UTF-8)",
     "endpoints.identityTotalSupply": "Get total number of registered agents on a network",
-    "endpoints.registerAgent": "Register a new ERC-8004 agent on-chain. Facilitator pays gas. Supports optional <code style='color: var(--accent); background: rgba(0,212,255,0.1); padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.8rem;'>recipient</code> field to mint the NFT and transfer it to a user address",
+    "endpoints.registerAgent": "Register a new ERC-8004 agent on-chain. Facilitator pays gas. The <code style='color: var(--accent); background: rgba(0,212,255,0.1); padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.8rem;'>recipient</code> field is required: the NFT is minted and transferred to that address, never kept by the facilitator. The agent URI must be https:// on a public host or ipfs://",
     "endpoints.registerInfo": "Registration endpoint schema, supported networks, and request format",
     "endpoints.registerNote": "<strong style='color: #8b5cf6;'>Gasless registration:</strong> The facilitator wallet pays all gas fees. Without <code style='color: var(--accent); font-size: 0.75rem;'>recipient</code>, the NFT stays with the facilitator. With <code style='color: var(--accent); font-size: 0.75rem;'>recipient</code>, the NFT is minted then transferred via ERC-721 <code style='color: var(--accent); font-size: 0.75rem;'>safeTransferFrom</code> (2 transactions, both paid by facilitator). Note: <code style='color: var(--accent); font-size: 0.75rem;'>agentWallet</code> is cleared on transfer and must be re-set by the new owner.",
     "endpoints.reputation": "Query reputation summary for an agent",
@@ -323,7 +323,7 @@ const I18N = {
     "endpoints.identity": "Obtener identidad del agente del Identity Registry",
     "endpoints.identityMetadata": "Lee una clave de metadatos del perfil on-chain del agente (devuelve hex + UTF-8)",
     "endpoints.identityTotalSupply": "Total de agentes registrados en una red",
-    "endpoints.registerAgent": "Registra un nuevo agente ERC-8004 on-chain. El facilitador paga el gas. Admite el campo opcional <code style='color: var(--accent); background: rgba(0,212,255,0.1); padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.8rem;'>recipient</code> para acuñar el NFT y transferirlo a la dirección de un usuario",
+    "endpoints.registerAgent": "Registra un nuevo agente ERC-8004 on-chain. El facilitador paga el gas. El campo <code style='color: var(--accent); background: rgba(0,212,255,0.1); padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.8rem;'>recipient</code> es obligatorio: el NFT se acuña y se transfiere a esa dirección, y el facilitador nunca se lo queda. La URI del agente tiene que ser https:// en un host público o ipfs://",
     "endpoints.registerInfo": "Esquema del endpoint de registro, redes soportadas y formato de la petición",
     "endpoints.registerNote": "<strong style='color: #8b5cf6;'>Registro sin gas:</strong> La wallet del facilitador paga todo el gas. Sin <code style='color: var(--accent); font-size: 0.75rem;'>recipient</code>, el NFT se queda con el facilitador. Con <code style='color: var(--accent); font-size: 0.75rem;'>recipient</code>, el NFT se acuña y luego se transfiere vía ERC-721 <code style='color: var(--accent); font-size: 0.75rem;'>safeTransferFrom</code> (2 transacciones, ambas pagadas por el facilitador). Nota: <code style='color: var(--accent); font-size: 0.75rem;'>agentWallet</code> se borra al transferir y el nuevo dueño debe volver a fijarlo.",
     "endpoints.reputation": "Consultar resumen de reputacion de un agente",

@@ -1131,6 +1131,17 @@ resource "aws_ecs_task_definition" "facilitator" {
           name  = "ERC8004_RELAY_DEADLINE_SECS"
           value = "900"
         },
+        # TEMPORARY (owner's decision, 2026-09-26): 300 ERC-8004 writes per
+        # UTC day on Ethereum instead of the built-in 100
+        # (BUILT_IN_DAILY_WRITE_CAPS in src/erc8004/daily_cap.rs), while
+        # KarmaCadabra backfills its pending Ethereum ratings (~142 writes,
+        # about one day at this limit). Goes back to 100 when that backfill
+        # is done: delete this entry, and the built-in applies again, in the
+        # next release after it.
+        {
+          name  = "ERC8004_DAILY_WRITE_CAP_ETHEREUM"
+          value = "300"
+        },
         # ============================================================
         # Live traffic stream (GET /events, SSE) — EXPOSURE DIAL
         # ============================================================

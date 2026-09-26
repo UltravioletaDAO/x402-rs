@@ -56,11 +56,13 @@
 //! - x402 Extension: `8004-reputation`
 
 mod abi;
+pub mod agent_uri;
 pub mod daily_cap;
 pub mod proof;
 pub mod register_jobs;
 pub mod relay;
 pub mod relay_v4;
+pub mod retire;
 pub mod solana;
 pub mod solana_mint;
 pub mod summary;

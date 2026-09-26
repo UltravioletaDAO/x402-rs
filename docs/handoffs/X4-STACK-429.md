@@ -239,14 +239,14 @@ sobrescribir, y sin imprimir la clave (imprime el digest y la variable). `**/*st
 
 | Secreto | Dónde | Cuerpo (JSON) | Quién lo lee |
 |---|---|---|---|
-| `facilitator-stack-key-sha256-execution-market` | Secrets Manager del facilitador | `{"sha256": "<64 hex>"}` (`<s>-stack-key.facilitator.json`) | execution role del facilitador → `UVD_STACK_KEY_SHA256_EXECUTION_MARKET` |
-| `facilitator-stack-key-sha256-karmakadabra` | ídem | ídem | → `UVD_STACK_KEY_SHA256_KARMAKADABRA` |
-| `facilitator-stack-key-sha256-describe-net` | ídem | ídem | → `UVD_STACK_KEY_SHA256_DESCRIBE_NET` |
-| `facilitator-stack-key-sha256-meshrelay` | ídem | ídem | → `UVD_STACK_KEY_SHA256_MESHRELAY` |
+| `facilitator-stack-key-digest-execution-market` | Secrets Manager del facilitador | `{"sha256": "<64 hex>"}` (`<s>-stack-key.facilitator.json`) | execution role del facilitador → `UVD_STACK_KEY_SHA256_EXECUTION_MARKET` |
+| `facilitator-stack-key-digest-karmakadabra` | ídem | ídem | → `UVD_STACK_KEY_SHA256_KARMAKADABRA` |
+| `facilitator-stack-key-digest-describe-net` | ídem | ídem | → `UVD_STACK_KEY_SHA256_DESCRIBE_NET` |
+| `facilitator-stack-key-digest-meshrelay` | ídem | ídem | → `UVD_STACK_KEY_SHA256_MESHRELAY` |
 | `<servicio>/uvd-stack-key` (nombre según la convención de cada repo) | el almacén de secretos **del cliente** | `{"key": "uvdsk_<43 base64url>"}` (`<s>-stack-key.client.json`) | el cliente → `UVD_STACK_KEY` |
 
 - **El facilitador** mapea el campo `sha256` en `secrets` (no `environment`), como `ERC8004_ADMIN_TOKEN`:
-  `UVD_STACK_KEY_SHA256_KARMAKADABRA` ← `${data.aws_secretsmanager_secret.stack_key_sha256_karmakadabra.arn}:sha256::`.
+  `UVD_STACK_KEY_SHA256_KARMAKADABRA` ← `${data.aws_secretsmanager_secret.stack_key_digest_karmakadabra.arn}:sha256::`.
   Hace falta un `data "aws_secretsmanager_secret"` por servicio, sumado a `local.all_secret_arns` (para el
   `GetSecretValue` del execution role) y a `local.all_task_secrets`. Placeholders de ARN: `<AWS_ACCOUNT_ID>` y
   `<nombre>-<SUFIJO>`. El execution role del facilitador **no** recibe acceso a los secretos de los clientes.

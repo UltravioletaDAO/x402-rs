@@ -572,6 +572,12 @@ dicen si la admisión de X4 le corta a alguien legítimo (§8 de X4).
 - **INT-27b** re-declara la misma fila que dijo la refutación de INT-09: `facilitador / x402_supported`, huella
   `sha256:dda236c3056f7ead65ebdd99efb5f7c23b8958781446836f041aee0d92948db4`. X4 no toca las tools, así que la unión
   no la mueve.
+- **Los secretos del facilitador para las claves del stack** se llaman `facilitator-stack-key-digest-<servicio>`,
+  que es el nombre que tiene ahora §6 de X4. Antes llevaba `sha256` en lugar de `digest`, y el gate `No AWS
+  account ID in the repo` (`no-account-id.yml`, regla 3) leía ese segmento como el sufijo aleatorio de Secrets
+  Manager: la PR daba rojo.
+  Los secretos todavía no existen, así que se crean con el nombre nuevo. No cambian ni la variable
+  `UVD_STACK_KEY_SHA256_<SERVICIO>` ni el campo `sha256` del JSON.
 - **Un exento no ve `RateLimit`.** La frase "every response carries RateLimit-Policy" de `mcp.md` vale para
   terceros. OpenAPI ya lo dice. `mcp.md` no nombra el stack, igual que en X4.
 

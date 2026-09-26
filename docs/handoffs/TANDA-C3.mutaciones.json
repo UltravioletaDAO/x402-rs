@@ -133,5 +133,56 @@
   "viejo": "<img data-net-icon=\"arc\" alt=\"\" style=\"width: 20px; height: 20px; border-radius: 50%;\"",
   "nuevo": "<img src=\"/arc.png\" alt=\"\" style=\"width: 20px; height: 20px; border-radius: 50%;\"",
   "test": "cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl,hedera --lib networks_json::tests::static_types_no_explorer_and_no_icon -- --exact --test-threads=1"
+ },
+ {
+  "nombre": "C3R-01 main.rs: /mcp en una SEGUNDA cubeta verify-settle (sombra de verify_settle_config)",
+  "archivo": "src/main.rs",
+  "viejo": "    let mcp = mcp::mcp_routes(\n",
+  "nuevo": "    let verify_settle_config = rate_policy::config(rate_policy::VERIFY_SETTLE.limit());\n    let mcp = mcp::mcp_routes(\n",
+  "test": "cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl,hedera --lib -- --test-threads=1"
+ },
+ {
+  "nombre": "C3R-02 main.rs: /mcp gobernado dos veces (verify-settle adentro, discovery-read afuera)",
+  "archivo": "src/main.rs",
+  "viejo": "    .layer(policy.layer_on(&verify_settle_config, rate_policy::Door::Mcp));",
+  "nuevo": "    .layer(policy.layer_on(&verify_settle_config, rate_policy::Door::Mcp))\n    .layer(policy.layer(&discovery_read_config));",
+  "test": "cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl,hedera --lib -- --test-threads=1"
+ },
+ {
+  "nombre": "C3R-03 main.rs: segunda fuente de numeros por los campos pub de Limit (human-pages burst 10)",
+  "archivo": "src/main.rs",
+  "viejo": "            rate_policy::HUMAN_PAGES.limit(),\n",
+  "nuevo": "            {\n                let mut limit = rate_policy::HUMAN_PAGES.limit();\n                limit.burst = 10;\n                limit\n            },\n",
+  "test": "cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl,hedera --bin x402-rs -- --test-threads=1",
+  "espera": "no_compila",
+  "error": "E0616"
+ },
+ {
+  "nombre": "C3R-04 main.rs: /verify y /settle gobernados dos veces (secondary-read afuera)",
+  "archivo": "src/main.rs",
+  "viejo": "        .merge(verify_settle)\n",
+  "nuevo": "        .merge(verify_settle.layer(policy.layer(&secondary_read_config)))\n",
+  "test": "cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl,hedera --lib -- --test-threads=1"
+ },
+ {
+  "nombre": "C3R-05 rate_policy.rs: /config publica el default aunque haya override",
+  "archivo": "src/rate_policy.rs",
+  "viejo": "            let effective = budget.limit_from(&lookup);\n",
+  "nuevo": "            let effective = budget.default_limit();\n",
+  "test": "cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl,hedera --lib -- --test-threads=1"
+ },
+ {
+  "nombre": "C3R-06 interop.rs: el manifiesto servido no publica ningun limite",
+  "archivo": "src/interop.rs",
+  "viejo": "            &crate::rate_policy::mounted(),\n",
+  "nuevo": "            &[],\n",
+  "test": "cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl,hedera --lib -- --test-threads=1"
+ },
+ {
+  "nombre": "C3R-07 mcp.rs: segunda cubeta verify-settle DENTRO de MCP (cada tool call cobra dos fichas)",
+  "archivo": "src/mcp.rs",
+  "viejo": "        .layer(Extension(transaction_store));\n\n    let hosts = allowed_hosts();",
+  "nuevo": "        .layer(Extension(transaction_store))\n        .layer(crate::rate_policy::RatePolicy::from_env().layer(&crate::rate_policy::config(crate::rate_policy::VERIFY_SETTLE.limit())));\n\n    let hosts = allowed_hosts();",
+  "test": "cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl,hedera --bin x402-rs mcp::tests::the_mcp_router_has_no_bucket_of_its_own -- --exact --test-threads=1"
  }
 ]

@@ -13,6 +13,11 @@
 - **Versión:** `2.43.0`, una sola para la tanda, con una entrada por pieza en `CHANGELOG.md` (§7).
 - **No verde, y ya no lo estaba en `main`:** `cargo fmt --check` y `cargo clippy -D warnings`. La tanda no agrega
   ningún hunk de fmt y solo agrega dos avisos de clippy, de la misma clase que los de `main` (§5).
+- **Ronda 1 de REF-TANDA-C3 — hecha** (§8). Son guardas y tests, sin tocar la lógica de la política: una sola
+  cubeta para `/mcp` y `/settle`, exactamente 13 governors en `main.rs` más la marca `Charged` contra un doble
+  montaje, `Limit` con campos privados, `/config` con override, el manifiesto servido atado a `mounted()` y la
+  admisión sin `RateLimit*`. Las 7 C3R dan rojo o no compilan y las 19 T3 siguen rojas (26 de 26). Para que el
+  runner pueda medir C3R-03, C3R-05 y C3R-07 hubo que ajustar su JSON (§8.3).
 - **Falta (no es mío):** que c0der corra las mutaciones, pushee y siga el orden de deploy de §6.
 
 | Commit | Qué |
@@ -21,7 +26,9 @@
 | `e8215685` | merge de X-1 (`70d7bc83`), sin conflictos, más la línea de la fila del backlog en `static/index.html` |
 | `0a8236d0` | merge de INT-09 (`24cf6d88`), con la resolución de §2 |
 | `446181aa` | `VERSION` 2.43.0 y `CHANGELOG.md` |
-| este commit | este handoff y `TANDA-C3.mutaciones.json` |
+| `bfda4095` | este handoff y `TANDA-C3.mutaciones.json` (19 T3) |
+| `a106d3a1` | ronda 1 de REF-TANDA-C3: guardas y tests (§8) |
+| el siguiente | handoff y `TANDA-C3.mutaciones.json` con la ronda (26: 19 T3 + 7 C3R) |
 
 ## 1. Qué entró
 
@@ -212,7 +219,8 @@ ninguno falla. El único `ignored` es `every_announced_arc_address_has_code_live
 ## 4. Mutaciones
 
 Una o más por conflicto resuelto; cada una deshace la resolución (o la decisión que la sostiene) y tiene que dar
-rojo. El JSON está también en `docs/handoffs/TANDA-C3.mutaciones.json`, listo para el runner:
+rojo. El JSON está también en `docs/handoffs/TANDA-C3.mutaciones.json`, listo para el runner. Desde la ronda 1
+trae 26: las 19 T3 de abajo y las 7 C3R del refutador, con los ajustes de §8.3.
 
 ```bash
 python3 scripts/verificar_ronda.py --repo <clon> --sha <punta de 0xultravioleta/tanda-c3> \
@@ -384,6 +392,57 @@ error.
   "viejo": "<img data-net-icon=\"arc\" alt=\"\" style=\"width: 20px; height: 20px; border-radius: 50%;\"",
   "nuevo": "<img src=\"/arc.png\" alt=\"\" style=\"width: 20px; height: 20px; border-radius: 50%;\"",
   "test": "cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl,hedera --lib networks_json::tests::static_types_no_explorer_and_no_icon -- --exact --test-threads=1"
+ },
+ {
+  "nombre": "C3R-01 main.rs: /mcp en una SEGUNDA cubeta verify-settle (sombra de verify_settle_config)",
+  "archivo": "src/main.rs",
+  "viejo": "    let mcp = mcp::mcp_routes(\n",
+  "nuevo": "    let verify_settle_config = rate_policy::config(rate_policy::VERIFY_SETTLE.limit());\n    let mcp = mcp::mcp_routes(\n",
+  "test": "cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl,hedera --lib -- --test-threads=1"
+ },
+ {
+  "nombre": "C3R-02 main.rs: /mcp gobernado dos veces (verify-settle adentro, discovery-read afuera)",
+  "archivo": "src/main.rs",
+  "viejo": "    .layer(policy.layer_on(&verify_settle_config, rate_policy::Door::Mcp));",
+  "nuevo": "    .layer(policy.layer_on(&verify_settle_config, rate_policy::Door::Mcp))\n    .layer(policy.layer(&discovery_read_config));",
+  "test": "cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl,hedera --lib -- --test-threads=1"
+ },
+ {
+  "nombre": "C3R-03 main.rs: segunda fuente de numeros por los campos pub de Limit (human-pages burst 10)",
+  "archivo": "src/main.rs",
+  "viejo": "            rate_policy::HUMAN_PAGES.limit(),\n",
+  "nuevo": "            {\n                let mut limit = rate_policy::HUMAN_PAGES.limit();\n                limit.burst = 10;\n                limit\n            },\n",
+  "test": "cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl,hedera --bin x402-rs -- --test-threads=1",
+  "espera": "no_compila",
+  "error": "E0616"
+ },
+ {
+  "nombre": "C3R-04 main.rs: /verify y /settle gobernados dos veces (secondary-read afuera)",
+  "archivo": "src/main.rs",
+  "viejo": "        .merge(verify_settle)\n",
+  "nuevo": "        .merge(verify_settle.layer(policy.layer(&secondary_read_config)))\n",
+  "test": "cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl,hedera --lib -- --test-threads=1"
+ },
+ {
+  "nombre": "C3R-05 rate_policy.rs: /config publica el default aunque haya override",
+  "archivo": "src/rate_policy.rs",
+  "viejo": "            let effective = budget.limit_from(&lookup);\n",
+  "nuevo": "            let effective = budget.default_limit();\n",
+  "test": "cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl,hedera --lib -- --test-threads=1"
+ },
+ {
+  "nombre": "C3R-06 interop.rs: el manifiesto servido no publica ningun limite",
+  "archivo": "src/interop.rs",
+  "viejo": "            &crate::rate_policy::mounted(),\n",
+  "nuevo": "            &[],\n",
+  "test": "cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl,hedera --lib -- --test-threads=1"
+ },
+ {
+  "nombre": "C3R-07 mcp.rs: segunda cubeta verify-settle DENTRO de MCP (cada tool call cobra dos fichas)",
+  "archivo": "src/mcp.rs",
+  "viejo": "        .layer(Extension(transaction_store));\n\n    let hosts = allowed_hosts();",
+  "nuevo": "        .layer(Extension(transaction_store))\n        .layer(crate::rate_policy::RatePolicy::from_env().layer(&crate::rate_policy::config(crate::rate_policy::VERIFY_SETTLE.limit())));\n\n    let hosts = allowed_hosts();",
+  "test": "cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl,hedera --bin x402-rs mcp::tests::the_mcp_router_has_no_bucket_of_its_own -- --exact --test-threads=1"
  }
 ]
 ```
@@ -531,3 +590,128 @@ dicen si la admisión de X4 le corta a alguien legítimo (§8 de X4).
   siguen igual. La ronda 2 de X-1 decía "C-3 no sale antes de C-2"; el encargo de esta tanda dice que sí puede
   (plan de Arc, línea 200), y así queda: el anuncio aparece solo.
 - **Red.** Nada de esto llamó a producción: todas las cifras de §5 son locales.
+
+## 8. Ronda 1 (REF-TANDA-C3, firmada por c0der 2026-09-26T01:13Z)
+
+Informe del refutador: MERGEABLE CON RONDA, sin defecto de producción. Lo que sostenía una sola cubeta por ruta en
+producción eran strings de `main.rs`, porque ningún test arma el router de `main()`. La ronda son guardas y tests;
+la lógica de la política no cambió. Commit `a106d3a1`.
+
+### 8.1 Qué se hizo, punto por punto
+
+| Punto | Qué | Dónde |
+|---|---|---|
+| 1 (P2-1) | `every_governor_goes_through_the_policy`: los nombres de los `let <x> = rate_policy::config(..)` de `main.rs` no se repiten (una sombra de `verify_settle_config` da rojo) | `rate_policy::tests` |
+| 1 (P2-1) | `the_mcp_door_draws_on_the_verify_settle_bucket`: además del literal, `main.matches("&verify_settle_config").count() == 2`, el idioma del test del bazar | `rate_policy::tests` |
+| 1 (P2-1) | `the_mcp_router_has_no_bucket_of_its_own`: 40 `x402_supported` por `mcp_routes(..)` sin capa externa y con el mismo `X-Forwarded-For` (el que usaría un governor): ningún `429` ni `isError` | `mcp::tests` (solo bin) |
+| 2 (P2-2) | `main_mounts_thirteen_governors_and_no_more`: `.layer(policy.layer(` + `.layer(policy.layer_on(` en `main.rs` = 13 (hoy 12 + 1). Cambiar el número es una decisión | `rate_policy::tests` |
+| 2 (P2-2) | `PolicyService::call` marca la request con `Charged(nombre)`, cobrada o eximida. Si ya venía marcada: `tracing::error!` con los dos nombres y, **solo con `debug_assertions`**, `panic!`. En release sigue sirviendo: una guarda nunca tumba el facilitador. La marca va antes del `match`, así que los brazos que mutan T3-01..03 no cambiaron | `rate_policy.rs` (`Charged`, `charge`) |
+| 2 (P2-2) | `a_governor_mounted_twice_is_caught_by_the_second_layer` (`should_panic` con los dos nombres, en orden: afuera y después adentro) y `one_layer_marks_the_request_with_its_budget` (con una sola capa no salta nada, y el handler ve la marca del tercero y del exento) | `rate_policy::tests` |
+| 3 (P3-1) | `Limit::period` y `Limit::burst` privados, con `period()` y `burst()`. Se actualizaron `main.rs` (el log de arranque) y tres tests de `handlers.rs` (`identity_read_limit_leaves_headroom_over_measured_traffic`, `every_erc8004_write_draws_on_one_bucket_of_thirty` y `the_erc8004_writes_exempt_the_stack`). Fuera del módulo, un `Limit` ya no se puede cambiar | `rate_policy.rs`, `main.rs`, `handlers.rs` |
+| 4 (P3-2) | `document_from(policy, admission, cap, lookup)` con la lookup de `Budget::limit_from`; `document()` la llama con `std::env::var`. Test `the_config_document_publishes_an_override_in_force`: con `VERIFY_SETTLE_RATE_BURST=45` inyectado, `/config` dice 45 (default 30), igual que `VERIFY_SETTLE.limit_from(lookup)`, y su `policy_field()` es `"verify-settle";q=45;w=90`, lo mismo que se reconstruye con los números de `/config`. El manifiesto armado con ese `Limit` dice 45/90 y los otros siete presupuestos siguen en su default | `rate_policy.rs` |
+| 5 (P3-3) | `the_served_manifest_publishes_the_mounted_buckets`: el `served_document()` tiene `rate_limits` no vacío y cada entrada es la (puerta, `q`, `w`) de un bucket de `mounted()` | `interop::tests` |
+| 6 (P3-4) | En `the_ceiling_sheds_the_stack_too` (503), `over_real_tcp_an_upload_that_never_arrives_holds_no_slot` (408, leído del socket) y `one_address_cannot_fill_the_ceiling_and_the_stack_skips_its_limit` (429 `too_many_concurrent_requests`): ni `ratelimit-policy`, ni `ratelimit`, ni `x-ratelimit-limit`, ni `x-ratelimit-remaining`. Para que el assert no sea vacío, el rechazado es siempre un tercero sobre una ruta gobernada, y el mismo test comprueba que ese tercero, cuando lo sirven, sí recibe `RateLimit-Policy`. Por eso el 503 suma un tercero (antes solo iba el stack, que es exento) y el test del 429 pone sus rutas bajo un bucket de 100 (antes no tenían governor). Lo que prueba el test no cambió | `rate_policy::tests` |
+
+### 8.2 Tests de la ronda
+
+Nuevos: `a_governor_mounted_twice_is_caught_by_the_second_layer`, `one_layer_marks_the_request_with_its_budget`,
+`the_config_document_publishes_an_override_in_force`, `main_mounts_thirteen_governors_and_no_more`
+(`rate_policy::tests`), `the_served_manifest_publishes_the_mounted_buckets` (`interop::tests`) y
+`the_mcp_router_has_no_bucket_of_its_own` (`mcp::tests`). Ampliados: `every_governor_goes_through_the_policy`,
+`the_mcp_door_draws_on_the_verify_settle_bucket`, `the_ceiling_sheds_the_stack_too`,
+`over_real_tcp_an_upload_that_never_arrives_holds_no_slot` y
+`one_address_cannot_fill_the_ceiling_and_the_stack_skips_its_limit`. Ningún test de las piezas desapareció.
+
+### 8.3 Las 7 C3R: el JSON del informe tal cual, y el ajustado
+
+El JSON del informe corre las siete con `--lib`. Tres de ellas, así, no pueden dar rojo, y no por la ronda:
+
+- **C3R-03** muta `main.rs` y **C3R-07** muta `mcp.rs`. Ninguno de los dos se compila en el target `--lib`: `main.rs`
+  es el binario, y `mcp` no está en `lib.rs`. Con `--lib` la mutación no llega a compilarse. En el JSON ajustado van
+  con `--bin x402-rs`. C3R-03 pasa a `espera: no_compila`, `error: E0616` (el campo `burst` es privado). C3R-07 corre
+  **solo** `mcp::tests::the_mcp_router_has_no_bucket_of_its_own`, así que el rojo es de la guarda y no de los tests de
+  MCP sin `X-Forwarded-For`.
+- **C3R-05** muta `let effective = budget.limit();`, que el punto 4 reemplaza por `budget.limit_from(&lookup)`: el
+  texto ya no existe y el runner dice NO APLICA. En el JSON ajustado muta `budget.limit_from(&lookup)` →
+  `budget.default_limit()`, que es la misma rotura en la línea nueva.
+- Las otras cuatro (C3R-01, 02, 04 y 06) van igual que en el informe.
+
+Corrida del JSON **del informe, sin tocar**, sobre `a106d3a1`:
+
+```
+$ python3 scripts/verificar_ronda.py --repo <este clon> --sha a106d3a1 --suite '<la suite del CI>' --mutaciones <el JSON del informe>
+suite: rc=0 (143s)    Doc-tests x402_rs
+C3R-01 main.rs: /mcp en una SEGUNDA cubeta verify-settle (sombra de verify_settle_config): ROJO (atrapada) rc=101 (38s) error: test failed, to rerun pass `-p x402-rs --lib`
+C3R-02 main.rs: /mcp gobernado dos veces (verify-settle adentro, discovery-read afuera): ROJO (atrapada) rc=101 (38s) error: test failed, to rerun pass `-p x402-rs --lib`
+C3R-03 main.rs: segunda fuente de numeros por los campos pub de Limit (human-pages burst 10): VERDE (SOBREVIVE) rc=0 (38s)      Running unittests src/lib.rs (<target>/debug/deps/x402_rs-…)
+C3R-04 main.rs: /verify y /settle gobernados dos veces (secondary-read afuera): ROJO (atrapada) rc=101 (38s) error: test failed, to rerun pass `-p x402-rs --lib`
+C3R-05 rate_policy.rs: /config publica el default aunque haya override: NO APLICA (el texto aparece 0 veces)
+C3R-06 interop.rs: el manifiesto servido no publica ningun limite: ROJO (atrapada) rc=101 (42s) error: test failed, to rerun pass `-p x402-rs --lib`
+C3R-07 mcp.rs: segunda cubeta verify-settle DENTRO de MCP (cada tool call cobra dos fichas): VERDE (SOBREVIVE) rc=0 (42s)      Running unittests src/lib.rs (<target>/debug/deps/x402_rs-…)
+arbol limpio al final: True
+VEREDICTO: algo NO cumple: mirar arriba
+exit=1
+```
+
+C3R-01, 02, 04 y 06 dan rojo. C3R-03 y C3R-07 salen verdes porque el target `--lib` no compila el archivo
+mutado: lo único que corre es `src/lib.rs`, como muestra la línea `Running unittests src/lib.rs`. C3R-05 no aplica. Con
+los ajustes de §8.3, las tres quedan atrapadas (§8.4).
+
+### 8.4 Corrida de las 26 (19 T3 + 7 C3R ajustadas) sobre `a106d3a1`
+
+`docs/handoffs/TANDA-C3.mutaciones.json` tiene ahora las 26. §4 describe las T3; las C3R son las del informe con los
+tres ajustes de §8.3.
+
+```
+$ python3 scripts/verificar_ronda.py --repo <este clon> --sha a106d3a1 --suite '<la suite del CI>' --mutaciones docs/handoffs/TANDA-C3.mutaciones.json
+suite: rc=0 (144s)    Doc-tests x402_rs
+T3-01 el exento recibe RateLimit (decision b): ROJO (atrapada) rc=101 (22s) error: test failed, to rerun pass `-p x402-rs --lib`
+T3-02 la capa deja de poner las cabeceras al tercero (decision a): ROJO (atrapada) rc=101 (25s) error: test failed, to rerun pass `-p x402-rs --lib`
+T3-03 cabeceras solo en el 200: el 429 del governor sale sin RateLimit-Policy (decision a): ROJO (atrapada) rc=101 (25s) error: test failed, to rerun pass `-p x402-rs --lib`
+T3-04 las cabeceras salen de otra fuente que el bucket (decision a): ROJO (atrapada) rc=101 (24s) error: test failed, to rerun pass `-p x402-rs --lib`
+T3-05 /config publica otro nombre que RateLimit-Policy (decision c): ROJO (atrapada) rc=101 (20s) error: test failed, to rerun pass `-p x402-rs --lib`
+T3-06 el manifiesto calcula la ventana distinto que /config (decision c): ROJO (atrapada) rc=101 (15s) error: test failed, to rerun pass `-p x402-rs --lib`
+T3-07 w redondeado hacia abajo (R2 de INT-09, ahora en rate_policy): ROJO (atrapada) rc=101 (21s) error: test failed, to rerun pass `-p x402-rs --lib`
+T3-08 main.rs: /mcp fuera de la puerta mcp (conflicto de main.rs): ROJO (atrapada) rc=101 (20s) error: test failed, to rerun pass `-p x402-rs --lib`
+T3-09 main.rs: CORS deja de exponer ratelimit-policy (conflicto de main.rs): ROJO (atrapada) rc=101 (15s) error: test failed, to rerun pass `-p x402-rs --lib`
+T3-10 main.rs: un numero duplicado, al estilo de INT-09 (conflicto de main.rs): ROJO (atrapada) rc=101 (15s) error: test failed, to rerun pass `-p x402-rs --lib`
+T3-11 client_ip.rs: el lado de INT-09 (el governor vive en rate_limit.rs): ROJO (atrapada) rc=101 (15s) error: test failed, to rerun pass `-p x402-rs --lib`
+T3-12 handlers.rs: escrituras ERC-8004 con un bucket que no exime al stack (lado de INT-09): ROJO (atrapada) rc=101 (16s) error: test failed, to rerun pass `-p x402-rs --lib`
+T3-13 handlers.rs: paginas humanas con otro presupuesto que el que les pasa main: ROJO (atrapada) rc=101 (16s) error: test failed, to rerun pass `-p x402-rs --lib`
+T3-14 handlers.rs: el test del bazar con los nombres de INT-09: ROJO (atrapada) rc=101 (16s) error: test failed, to rerun pass `-p x402-rs --lib`
+T3-15 Cargo.toml: el lado de INT-09 (sin http-body-util): ROJO (atrapada) rc=101 (0s) help: to generate the lock file without accessing the network, remove the --locked flag and use --offline instead.
+T3-16 Cargo.lock: el lado de X4 (sin jsonschema): ROJO (atrapada) rc=101 (0s) help: to generate the lock file without accessing the network, remove the --locked flag and use --offline instead.
+T3-17 lib.rs: el lado de INT-09 (pub mod rate_limit): NO COMPILA (atrapada por el tipo) rc=NO-COMPILA (23s) error[E0583]: file not found for module `rate_limit` [codigos: E0432,E0433,E0583]
+T3-18 agent-skills/index.json: el digest de X4: ROJO (atrapada) rc=101 (20s) error: test failed, to rerun pass `-p x402-rs --lib`
+T3-19 static/index.html: el icono de Arc tipeado a mano (la linea de la fila del backlog): ROJO (atrapada) rc=101 (19s) error: test failed, to rerun pass `-p x402-rs --lib`
+C3R-01 main.rs: /mcp en una SEGUNDA cubeta verify-settle (sombra de verify_settle_config): ROJO (atrapada) rc=101 (40s) error: test failed, to rerun pass `-p x402-rs --lib`
+C3R-02 main.rs: /mcp gobernado dos veces (verify-settle adentro, discovery-read afuera): ROJO (atrapada) rc=101 (38s) error: test failed, to rerun pass `-p x402-rs --lib`
+C3R-03 main.rs: segunda fuente de numeros por los campos pub de Limit (human-pages burst 10): NO COMPILA (atrapada por el tipo) rc=NO-COMPILA (17s) error[E0616]: field `burst` of struct `rate_policy::Limit` is private [codigos: E0616]
+C3R-04 main.rs: /verify y /settle gobernados dos veces (secondary-read afuera): ROJO (atrapada) rc=101 (40s) error: test failed, to rerun pass `-p x402-rs --lib`
+C3R-05 rate_policy.rs: /config publica el default aunque haya override: ROJO (atrapada) rc=101 (41s) error: test failed, to rerun pass `-p x402-rs --lib`
+C3R-06 interop.rs: el manifiesto servido no publica ningun limite: ROJO (atrapada) rc=101 (43s) error: test failed, to rerun pass `-p x402-rs --lib`
+C3R-07 mcp.rs: segunda cubeta verify-settle DENTRO de MCP (cada tool call cobra dos fichas): ROJO (atrapada) rc=101 (33s) error: test failed, to rerun pass `-p x402-rs --bin x402-rs`
+arbol limpio al final: True
+VEREDICTO: todo como pide la ronda
+exit=0
+```
+
+### 8.5 Pre-CI de la ronda
+
+Con la red cerrada, en LF y con las features de `ci.yaml`, sobre el árbol de `a106d3a1`:
+
+| Paso | Resultado |
+|---|---|
+| `cargo test --locked -p x402-rs --features … -- --test-threads=1` | **exit 0**: lib 1420 passed / 0 failed / 11 ignored (5 más que antes de la ronda), bin 1485 / 0 / 11 (6 más: el de MCP es solo bin), integración y doctests igual que en §5 |
+| lo mismo, como `--suite` del runner, en su worktree | `rc=0` en las dos corridas (§8.3 y §8.4) |
+| `cargo test --locked -p x402-axum -p x402-reqwest -p x402-compliance -- --test-threads=1` | **exit 0**: 31, 1, 3, 14, 43, 7, 5 (+7 ignored), 0 (+2 ignored), 5; 0 failed. `x402-axum` y `x402-reqwest` dependen del crate raíz |
+| `rustfmt --check` de `rate_policy.rs`, `interop.rs` y `mcp.rs` | limpios. `cargo fmt --all -- --check`: 82 bloques, los mismos de antes de la ronda |
+| `cargo clippy --locked -p x402-rs --all-targets --features …` (JSON) | 328 avisos en `src/`, igual que antes; **0** en líneas que agregó la ronda (contra `bfda4095`). Contra `f3786f3e` siguen siendo solo `path_config` y `path_uvd_stack` |
+
+### 8.6 Disco
+
+Antes de la primera compilación de la ronda **no medí el disco, y debí hacerlo**. El `df` que acompañó esa compilación
+dio 23 GiB libres, bajo el umbral de ~40 GB del encargo. Había otro runner de c0der compilando a la vez, en su propio
+directorio. Paré, borré mi `target/debug/incremental` (10 GB, que es solo caché) y esperé a que ese runner
+terminara. Con 52 GiB libres volví a compilar. Durante las mutaciones corrió un vigía con umbral de 25 GiB.
+Después de las dos corridas quedaron 39 GiB libres, y ahí dejé de compilar. En el scratchpad quedaron los directorios de trabajo vacíos de los runners, sin `target`: usaron el mío.

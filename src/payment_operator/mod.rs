@@ -46,23 +46,38 @@
 //!
 //! # Deployed Contracts
 //!
+//! `addresses` is the source; these tables repeat two of its entries.
+//!
 //! ## Base Sepolia (eip155:84532)
 //!
 //! | Contract | Address |
 //! |----------|---------|
-//! | AuthCaptureEscrow | 0xb9488351E48b23D798f24e8174514F28B741Eb4f |
-//! | PaymentOperatorFactory | 0xFa8C4Cb156053b867Ae7489220A29b5939E3Df70 |
-//! | ERC3009TokenCollector | 0x0E3dF9510de65469C4518D7843919c0b8C7A7757 |
-//! | ProtocolFeeConfig | 0x1e52a74cE6b69F04a506eF815743E1052A1BD28F |
+//! | AuthCaptureEscrow | 0x29025c0E9D4239d438e169570818dB9FE0A80873 |
+//! | PaymentOperatorFactory | 0x97d53e63A9CB97556c00BeFd325AF810c9b267B2 |
+//! | TokenCollector | 0x5cA789000070DF15b4663DB64a50AeF5D49c5Ee0 |
+//! | ProtocolFeeConfig | 0x8F96C493bAC365E41f0315cf45830069EBbDCaCe |
 //!
 //! ## Base Mainnet (eip155:8453)
 //!
 //! | Contract | Address |
 //! |----------|---------|
-//! | AuthCaptureEscrow | 0x320a3c35F131E5D2Fb36af56345726B298936037 |
-//! | PaymentOperatorFactory | 0xD979dBfBdA5f4b16AAF60Eaab32A44f352076838 |
-//! | TokenCollector | 0x32d6AC59BCe8DFB3026F10BcaDB8D00AB218f5b6 |
-//! | ProtocolFeeConfig | 0x230fd3A171750FA45db2976121376b7F47Cba308 |
+//! | AuthCaptureEscrow | 0xb9488351E48b23D798f24e8174514F28B741Eb4f |
+//! | PaymentOperatorFactory | 0x3D0837fF8Ea36F417261577b9BA568400A840260 |
+//! | TokenCollector | 0x48ADf6E37F9b31dC2AAD0462C5862B5422C736B8 |
+//! | ProtocolFeeConfig | 0x59314674BAbb1a24Eb2704468a9cCdD50668a1C6 |
+//!
+//! ## Arc (eip155:5042) and Arc testnet (eip155:5042002)
+//!
+//! The canonical commerce-payments v1.0.0 set (`addresses::canonical_v1`),
+//! whose operators `capture` and `void` instead of `release` and
+//! `refundInEscrow` (`operator::OperatorAbi::V3`).
+//!
+//! | Contract | Address |
+//! |----------|---------|
+//! | AuthCaptureEscrow | 0xBdEA0D1bcC5966192B070Fdf62aB4EF5b4420cff |
+//! | PaymentOperatorFactory v1.0.2 | 0xc24153B7ED8DC03e551F29DDEeA5CadFe57e2716 |
+//! | ERC3009TokenCollector | 0x0E3dF9510de65469C4518D7843919c0b8C7A7757 |
+//! | ProtocolFeeConfig | 0xBe2d24614F339a1eB103A399F93AA2a39Ca815Bc |
 //!
 //! # Reference Implementation
 //!
@@ -70,9 +85,14 @@
 
 pub mod abi;
 pub mod addresses;
+#[cfg(test)]
+mod arc_chain_tests;
+pub mod autoverify;
 pub mod errors;
 pub mod lifecycle_auth;
 pub mod operator;
+#[cfg(test)]
+pub(crate) mod test_rpc;
 pub mod types;
 
 pub use errors::OperatorError;

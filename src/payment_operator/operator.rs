@@ -26,8 +26,9 @@ use crate::network::Network;
 use crate::provider_cache::{HasProviderMap, ProviderMap};
 use crate::types::{EvmAddress, MixedAddress, SettleResponse, TransactionHash};
 
-use super::abi::{EscrowContract, OperatorContract};
-use super::addresses::OperatorAddresses;
+use super::abi::{EscrowContract, OperatorContract, OperatorV3Contract};
+use super::addresses::{canonical_v1, is_canonical_v1_network, OperatorAddresses};
+use super::autoverify;
 use super::errors::OperatorError;
 use super::lifecycle_auth::{self, LifecycleAction};
 use super::types::{
@@ -150,7 +151,18 @@ where
     if !super::is_enabled() {
         return Err(OperatorError::FeatureDisabled);
     }
+    verify_escrow_enabled(body, facilitator).await
+}
 
+/// [`verify_escrow`] past its feature-flag check.
+async fn verify_escrow_enabled<F>(
+    body: &str,
+    facilitator: &F,
+) -> Result<serde_json::Value, OperatorError>
+where
+    F: HasProviderMap,
+    F::Map: ProviderMap<Value = NetworkProvider>,
+{
     let json_value: serde_json::Value = serde_json::from_str(body)?;
 
     // Extract payload (could be top-level or nested in paymentPayload)
@@ -197,7 +209,7 @@ where
         }
     };
 
-    if let Err(e) = validate_addresses(&extra, &addrs, false) {
+    if let Err(e) = validate_addresses(network, &extra, &addrs, false) {
         warn!(error = %e, "Escrow verify address validation failed");
         return Ok(serde_json::json!({
             "isValid": false,
@@ -218,8 +230,38 @@ where
         }));
     }
 
-    // Check payer token balance
     let evm_provider = get_evm_provider(facilitator, network)?;
+
+    // Canonical v1 networks (Arc): the payer's own EOA signature, and an
+    // operator that passed its self-check -- the same two gates `authorize`
+    // applies, answered here as a verdict rather than an HTTP error.
+    if is_canonical_v1_network(network) {
+        let target = extra.authorize_address.unwrap_or(extra.operator_address);
+        let gate = async {
+            assert_v3_target_is_operator(target, escrow_payload.payment_info.operator)?;
+            assert_eoa_authorization(network, &escrow_payload, &extra)?;
+            authorize_operator_gate(network, target, &addrs, evm_provider).await?;
+            assert_v3_target_has_code(evm_provider, network, target).await
+        }
+        .await;
+        if let Err(e) = gate {
+            let reason = match &e {
+                OperatorError::ChainReadUnavailable(_) => {
+                    let correlation_id = uuid::Uuid::new_v4();
+                    warn!(%correlation_id, error = %e, "Escrow verify: operator check could not read the chain");
+                    format!("verification_unavailable (ref: {correlation_id})")
+                }
+                other => format!("{other}"),
+            };
+            return Ok(serde_json::json!({
+                "isValid": false,
+                "invalidReason": reason,
+                "payer": format!("{}", payer)
+            }));
+        }
+    }
+
+    // Check payer token balance
     let token_address = escrow_payload.payment_info.token;
     let required_amount = U256::from(escrow_payload.authorization.value);
 
@@ -345,7 +387,18 @@ where
     if !super::is_enabled() {
         return Err(OperatorError::FeatureDisabled);
     }
+    query_escrow_state_enabled(body, facilitator).await
+}
 
+/// [`query_escrow_state`] past its feature-flag check.
+async fn query_escrow_state_enabled<F>(
+    body: &str,
+    facilitator: &F,
+) -> Result<EscrowStateResponse, OperatorError>
+where
+    F: HasProviderMap,
+    F::Map: ProviderMap<Value = NetworkProvider>,
+{
     let query: EscrowStateQuery = serde_json::from_str(body)
         .map_err(|e| OperatorError::InvalidExtensionFormat(e.to_string()))?;
 
@@ -356,7 +409,7 @@ where
         .ok_or_else(|| OperatorError::unsupported_network(&network))?;
 
     // Validate addresses (read-only query, lenient on operator)
-    validate_addresses(&query.extra, &addrs, false)?;
+    validate_addresses(network, &query.extra, &addrs, false)?;
 
     // Get EVM provider
     let evm_provider = get_evm_provider(facilitator, network)?;
@@ -372,25 +425,21 @@ where
     // Use escrow ABI type for EscrowContract calls (different Rust type from OperatorContract's)
     let escrow_payment_info = payment_info.to_escrow_abi_type();
 
-    // Use merchant-provided escrow address (validated as legacy OR CREATE3)
+    // Use merchant-provided escrow address (validated as legacy OR CREATE3,
+    // or as the canonical v1 escrow on Arc)
     let escrow_address = query.extra.escrow_address;
 
-    // Call getHash(paymentInfo) on the escrow contract
-    let get_hash_call = EscrowContract::getHashCall {
-        paymentInfo: escrow_payment_info,
-    };
-    let hash_result = eth_call(evm_provider, escrow_address, &get_hash_call).await?;
-    let payment_info_hash: FixedBytes<32> =
-        EscrowContract::getHashCall::abi_decode_returns(&hash_result)
-            .map_err(|e| OperatorError::EscrowStateQuery(format!("decode getHash: {}", e)))?;
-
-    // Call paymentState(hash) on the escrow contract
-    let state_call = EscrowContract::paymentStateCall {
-        paymentInfoHash: payment_info_hash,
-    };
-    let state_result = eth_call(evm_provider, escrow_address, &state_call).await?;
-    let state = EscrowContract::paymentStateCall::abi_decode_returns(&state_result)
-        .map_err(|e| OperatorError::EscrowStateQuery(format!("decode paymentState: {}", e)))?;
+    let (payment_info_hash, state) =
+        match read_payment_state(evm_provider, escrow_address, escrow_payment_info).await {
+            Ok(read) => read,
+            // On Arc a failed read is retryable, never a verdict on the query:
+            // Execution Market's reconciler reads this endpoint and must not
+            // take an outage for an answer.
+            Err(e) if is_canonical_v1_network(network) => {
+                return Err(OperatorError::ChainReadUnavailable(e.to_string()))
+            }
+            Err(e) => return Err(e),
+        };
 
     info!(
         hash = ?payment_info_hash,
@@ -407,6 +456,32 @@ where
         payment_info_hash: format!("0x{}", hex::encode(payment_info_hash)),
         network: query.network,
     })
+}
+
+/// `getHash(paymentInfo)` then `paymentState(hash)` on `escrow`. The errors are
+/// the ones `/escrow/state` has always returned.
+async fn read_payment_state(
+    provider: &EvmProvider,
+    escrow: Address,
+    payment_info: super::abi::EscrowPaymentInfo,
+) -> Result<(FixedBytes<32>, EscrowContract::paymentStateReturn), OperatorError> {
+    // Call getHash(paymentInfo) on the escrow contract
+    let get_hash_call = EscrowContract::getHashCall {
+        paymentInfo: payment_info,
+    };
+    let hash_result = eth_call(provider, escrow, &get_hash_call).await?;
+    let payment_info_hash: FixedBytes<32> =
+        EscrowContract::getHashCall::abi_decode_returns(&hash_result)
+            .map_err(|e| OperatorError::EscrowStateQuery(format!("decode getHash: {}", e)))?;
+
+    // Call paymentState(hash) on the escrow contract
+    let state_call = EscrowContract::paymentStateCall {
+        paymentInfoHash: payment_info_hash,
+    };
+    let state_result = eth_call(provider, escrow, &state_call).await?;
+    let state = EscrowContract::paymentStateCall::abi_decode_returns(&state_result)
+        .map_err(|e| OperatorError::EscrowStateQuery(format!("decode paymentState: {}", e)))?;
+    Ok((payment_info_hash, state))
 }
 
 // ============================================================================
@@ -435,7 +510,14 @@ where
     let addrs = OperatorAddresses::for_network(network)
         .ok_or_else(|| OperatorError::unsupported_network(&network))?;
     let evm_provider = get_evm_provider(facilitator, network)?;
-    let tx_hash = execute_authorize(payload, extra, &addrs, evm_provider).await?;
+    if resolve_operator_abi(network, extra)? == OperatorAbi::V3 {
+        let target = extra.authorize_address.unwrap_or(extra.operator_address);
+        assert_v3_target_is_operator(target, payload.payment_info.operator)?;
+        assert_eoa_authorization(network, payload, extra)?;
+        authorize_operator_gate(network, target, &addrs, evm_provider).await?;
+        assert_v3_target_has_code(evm_provider, network, target).await?;
+    }
+    let tx_hash = execute_authorize(payload, extra, &addrs, evm_provider, network).await?;
 
     info!(tx_hash = ?tx_hash, "Escrow authorize transaction submitted");
 
@@ -473,8 +555,16 @@ where
     let addrs = OperatorAddresses::for_network(network)
         .ok_or_else(|| OperatorError::unsupported_network(&network))?;
     let evm_provider = get_evm_provider(facilitator, network)?;
-    lifecycle_auth::gate(LifecycleAction::Release, lifecycle, network, evm_provider).await?;
-    let tx_hash = execute_release(lifecycle, extra, &addrs, evm_provider, network).await?;
+    let abi = resolve_operator_abi(network, extra)?;
+    lifecycle_auth::gate(
+        LifecycleAction::Release,
+        lifecycle,
+        network,
+        evm_provider,
+        abi,
+    )
+    .await?;
+    let tx_hash = execute_release(lifecycle, extra, &addrs, evm_provider, network, abi).await?;
 
     info!(tx_hash = ?tx_hash, "Escrow release transaction submitted");
 
@@ -512,14 +602,17 @@ where
     let addrs = OperatorAddresses::for_network(network)
         .ok_or_else(|| OperatorError::unsupported_network(&network))?;
     let evm_provider = get_evm_provider(facilitator, network)?;
+    let abi = resolve_operator_abi(network, extra)?;
     lifecycle_auth::gate(
         LifecycleAction::RefundInEscrow,
         lifecycle,
         network,
         evm_provider,
+        abi,
     )
     .await?;
-    let tx_hash = execute_refund_in_escrow(lifecycle, extra, &addrs, evm_provider, network).await?;
+    let tx_hash =
+        execute_refund_in_escrow(lifecycle, extra, &addrs, evm_provider, network, abi).await?;
 
     info!(tx_hash = ?tx_hash, "Escrow refundInEscrow transaction submitted");
 
@@ -703,8 +796,9 @@ async fn execute_authorize(
     extra: &EscrowExtra,
     addrs: &OperatorAddresses,
     provider: &EvmProvider,
+    network: Network,
 ) -> Result<B256, OperatorError> {
-    validate_addresses(extra, addrs, false)?;
+    validate_addresses(network, extra, addrs, false)?;
 
     let payment_info = ContractPaymentInfo::from_escrow_payload(escrow_payload);
     let payment_info_abi = payment_info.to_abi_type();
@@ -750,8 +844,9 @@ async fn execute_release(
     addrs: &OperatorAddresses,
     provider: &EvmProvider,
     network: Network,
+    abi: OperatorAbi,
 ) -> Result<B256, OperatorError> {
-    validate_addresses(extra, addrs, false)?;
+    validate_addresses(network, extra, addrs, false)?;
 
     let payment_info = ContractPaymentInfo::from_lifecycle_payload(lifecycle);
     let payment_info_abi = payment_info.to_abi_type();
@@ -771,7 +866,17 @@ async fn execute_release(
 
     // CREATE3 networks (SKALE) use new ABI with bytes data param
     // Legacy networks (Base, Ethereum, etc.) use old ABI without bytes data
-    if is_create3_network(network) {
+    // Canonical v1 networks (Arc) have no release: capture(PaymentInfo, amount, data)
+    if abi == OperatorAbi::V3 {
+        assert_v3_target_is_operator(target, payment_info.operator)?;
+        assert_v3_target_has_code(provider, network, target).await?;
+        let call = OperatorV3Contract::captureCall {
+            paymentInfo: payment_info.to_v3_abi_type(),
+            amount,
+            data: Bytes::new(),
+        };
+        send_operator_tx(provider, target, &call, Some(provider.pinned_signer())).await
+    } else if abi == OperatorAbi::Create3 {
         let call = OperatorContract::releaseCall {
             paymentInfo: payment_info_abi,
             amount,
@@ -812,8 +917,9 @@ async fn execute_refund_in_escrow(
     addrs: &OperatorAddresses,
     provider: &EvmProvider,
     network: Network,
+    abi: OperatorAbi,
 ) -> Result<B256, OperatorError> {
-    validate_addresses(extra, addrs, false)?;
+    validate_addresses(network, extra, addrs, false)?;
 
     // Bounds check: refundInEscrow takes uint120 (max ~1.3*10^36)
     const UINT120_MAX: u128 = (1u128 << 120) - 1;
@@ -844,7 +950,18 @@ async fn execute_refund_in_escrow(
 
     // CREATE3 networks (SKALE) use new ABI with bytes data param
     // Legacy networks (Base, Ethereum, etc.) use old ABI without bytes data
-    if is_create3_network(network) {
+    // Canonical v1 networks (Arc) have no refundInEscrow: void(PaymentInfo, data)
+    if abi == OperatorAbi::V3 {
+        void_whole_authorization(
+            lifecycle,
+            &payment_info,
+            extra.escrow_address,
+            provider,
+            network,
+            target,
+        )
+        .await
+    } else if abi == OperatorAbi::Create3 {
         let call = OperatorContract::refundInEscrowCall {
             paymentInfo: payment_info_abi,
             amount,
@@ -870,6 +987,261 @@ async fn execute_refund_in_escrow(
             .map_err(send_failure)?;
         Ok(receipt.transaction_hash)
     }
+}
+
+/// `void` on a v3 operator: the whole capturable amount goes back to the payer,
+/// and the call carries no amount.
+///
+/// So the capturable amount is read first, and the request is held to it, in
+/// this order:
+/// - the call would not go to `paymentInfo.operator`, or that address has no
+///   code: [`OperatorError::OperatorMismatch`] / [`OperatorError::OperatorHasNoCode`]
+///   (see [`assert_v3_target_has_code`]);
+/// - the read fails: [`OperatorError::ChainReadUnavailable`], retryable;
+/// - nothing is capturable: [`OperatorError::NothingToVoid`] -- the retry of a
+///   void that already went through, which `void` itself would revert on;
+/// - an amount of 0: [`OperatorError::AmountRequired`]. A missing amount is
+///   never permission to void everything;
+/// - a non-zero amount that is not the capturable one:
+///   [`OperatorError::PartialRefundUnsupported`].
+///
+/// Only an amount equal to the capturable one is voided. None of the refusals
+/// sends anything. The call goes out from the pinned
+/// signer, like every lifecycle write.
+async fn void_whole_authorization(
+    lifecycle: &EscrowLifecyclePayload,
+    payment_info: &ContractPaymentInfo,
+    escrow: Address,
+    provider: &EvmProvider,
+    network: Network,
+    target: Address,
+) -> Result<B256, OperatorError> {
+    assert_v3_target_is_operator(target, payment_info.operator)?;
+    assert_v3_target_has_code(provider, network, target).await?;
+    let (_, state) = read_payment_state(provider, escrow, payment_info.to_escrow_abi_type())
+        .await
+        .map_err(|e| OperatorError::ChainReadUnavailable(e.to_string()))?;
+    let capturable: u128 = state.capturableAmount.to::<u128>();
+    if capturable == 0 {
+        return Err(OperatorError::NothingToVoid);
+    }
+    if lifecycle.amount == 0 {
+        return Err(OperatorError::AmountRequired { capturable });
+    }
+    if lifecycle.amount != capturable {
+        return Err(OperatorError::PartialRefundUnsupported {
+            requested: lifecycle.amount,
+            capturable,
+        });
+    }
+    let call = OperatorV3Contract::voidCall {
+        paymentInfo: payment_info.to_v3_abi_type(),
+        data: Bytes::new(),
+    };
+    send_operator_tx(provider, target, &call, Some(provider.pinned_signer())).await
+}
+
+/// On a canonical v1 network, the operator a NEW authorization goes to, if
+/// this facilitator declares it, must have passed its self-check
+/// (`autoverify`). An operator the merchant brings is relayed as everywhere
+/// else, after [`assert_v3_target_has_code`]. `release` and `refundInEscrow`
+/// never come through here.
+///
+/// Called after [`assert_v3_target_is_operator`], so the address the call
+/// goes to and `paymentInfo.operator` are one and the same.
+async fn authorize_operator_gate(
+    network: Network,
+    target: Address,
+    addrs: &OperatorAddresses,
+    provider: &EvmProvider,
+) -> Result<(), OperatorError> {
+    if !addrs.payment_operators.contains(&target) {
+        return Ok(());
+    }
+    match autoverify::verdict_for_new_authorization(provider, network, target, addrs.escrow).await {
+        autoverify::Verdict::Verified => Ok(()),
+        autoverify::Verdict::Mismatch(reason) => Err(OperatorError::OperatorNotVerified {
+            operator: target,
+            network: network.to_string(),
+            reason,
+        }),
+        autoverify::Verdict::Unreachable(reason) => {
+            Err(OperatorError::ChainReadUnavailable(reason))
+        }
+    }
+}
+
+/// A v3 write goes to `paymentInfo.operator` itself. The canonical escrow
+/// takes `authorize`, `capture` and `void` only from that address
+/// (`onlySender(paymentInfo.operator)`), so a call sent anywhere else can at
+/// best revert. Refused before anything is read or signed.
+fn assert_v3_target_is_operator(
+    target: Address,
+    payment_operator: Address,
+) -> Result<(), OperatorError> {
+    if target == payment_operator {
+        Ok(())
+    } else {
+        Err(OperatorError::OperatorMismatch {
+            expected: payment_operator,
+            actual: target,
+        })
+    }
+}
+
+type SeenWithCode = std::sync::Mutex<std::collections::HashSet<(Network, Address)>>;
+
+fn operators_with_code() -> &'static SeenWithCode {
+    static SEEN: std::sync::OnceLock<SeenWithCode> = std::sync::OnceLock::new();
+    SEEN.get_or_init(Default::default)
+}
+
+/// A v3 write goes to an address with code. A call to an address with none
+/// succeeds, moves nothing and comes back with a successful receipt -- which
+/// the caller would be told is a settled payment -- so it is refused before
+/// anything is signed: [`OperatorError::OperatorHasNoCode`], deterministic.
+/// A read that fails is [`OperatorError::ChainReadUnavailable`], retryable.
+///
+/// Code once seen is remembered for the process: a deployed operator does not
+/// lose it. An address without code is read again on the next request, so an
+/// operator deployed in between is used as soon as it exists.
+async fn assert_v3_target_has_code(
+    provider: &EvmProvider,
+    network: Network,
+    target: Address,
+) -> Result<(), OperatorError> {
+    let known = operators_with_code()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(&(network, target));
+    if known {
+        return Ok(());
+    }
+    let code = provider.inner().get_code_at(target).await.map_err(|e| {
+        OperatorError::ChainReadUnavailable(format!(
+            "eth_getCode({target}): {}",
+            crate::redact::scrub_urls(&e.to_string())
+        ))
+    })?;
+    if code.is_empty() {
+        return Err(OperatorError::OperatorHasNoCode {
+            operator: target,
+            network: network.to_string(),
+        });
+    }
+    operators_with_code()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert((network, target));
+    Ok(())
+}
+
+/// Forget that `target` was seen with code. Tests only.
+#[cfg(test)]
+pub(super) fn forget_operator_code_for_test(network: Network, target: Address) {
+    operators_with_code()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&(network, target));
+}
+
+sol! {
+    /// ERC-3009 `ReceiveWithAuthorization`: what the canonical
+    /// ERC3009PaymentCollector has the payer sign.
+    #[derive(Debug)]
+    struct ReceiveWithAuthorization {
+        address from;
+        address to;
+        uint256 value;
+        uint256 validAfter;
+        uint256 validBefore;
+        bytes32 nonce;
+    }
+}
+
+/// `AuthCaptureEscrow.PAYMENT_INFO_TYPEHASH` preimage. The same on every
+/// generation.
+pub(crate) const PAYMENT_INFO_TYPE: &str = "PaymentInfo(address operator,address payer,\
+address receiver,address token,uint120 maxAmount,uint48 preApprovalExpiry,\
+uint48 authorizationExpiry,uint48 refundExpiry,uint16 minFeeBps,uint16 maxFeeBps,\
+address feeReceiver,uint256 salt)";
+
+/// `AuthCaptureEscrow.getHash` of `payment_info` with the payer zeroed: the
+/// ERC-3009 nonce the canonical collector derives
+/// (`TokenCollector._getHashPayerAgnostic`), computed here the way the escrow
+/// does -- `keccak256(abi.encode(chainid, escrow, keccak256(abi.encode(
+/// PAYMENT_INFO_TYPEHASH, paymentInfo))))`.
+pub(crate) fn payer_agnostic_hash(
+    chain_id: u64,
+    escrow: Address,
+    payment_info: &ContractPaymentInfo,
+) -> B256 {
+    use alloy::primitives::keccak256;
+    use alloy::sol_types::SolValue;
+    let mut agnostic = payment_info.clone();
+    agnostic.payer = Address::ZERO;
+    let typehash = keccak256(PAYMENT_INFO_TYPE);
+    let mut encoded = typehash.to_vec();
+    encoded.extend_from_slice(&agnostic.to_escrow_abi_type().abi_encode());
+    let struct_hash = keccak256(&encoded);
+    keccak256((U256::from(chain_id), escrow, struct_hash).abi_encode())
+}
+
+/// Arc takes EOA authorizations only, and checks them before anything is sent
+/// -- the rule `exact` already applies on these networks (`chain::evm`). The
+/// escrow path forwards the signature to the collector instead of verifying
+/// it, so without this a signature made for the OTHER Arc network would reach
+/// a node, and a misconfigured RPC could mine it.
+///
+/// Recovered over what the collector will actually verify, derived from
+/// `paymentInfo` rather than from the caller's `authorization` fields:
+/// `ReceiveWithAuthorization(payer, collector, maxAmount, 0,
+/// preApprovalExpiry, payer-agnostic hash)` under the token's EIP-712 domain
+/// on this chain.
+fn assert_eoa_authorization(
+    network: Network,
+    payload: &EscrowPayload,
+    extra: &EscrowExtra,
+) -> Result<(), OperatorError> {
+    use alloy::sol_types::{eip712_domain, SolStruct};
+    let chain_id = crate::chain::evm::EvmChain::try_from(network)
+        .map_err(|_| OperatorError::NonEvmNetwork)?
+        .chain_id;
+    let payment_info = ContractPaymentInfo::from_escrow_payload(payload);
+    let token = payment_info.token;
+    let (name, version) = crate::chain::evm::find_known_eip712_metadata(network, &token)
+        .or_else(|| extra.name.clone().zip(extra.version.clone()))
+        .ok_or_else(|| {
+            OperatorError::AuthorizationSignatureInvalid(format!(
+                "no EIP-712 domain known for token {token} on {network}; \
+                 send paymentRequirements.extra.name and extra.version"
+            ))
+        })?;
+    let domain = eip712_domain! {
+        name: name,
+        version: version,
+        chain_id: chain_id,
+        verifying_contract: token,
+    };
+    let message = ReceiveWithAuthorization {
+        from: payment_info.payer,
+        to: extra.token_collector,
+        value: U256::from(payment_info.max_amount),
+        validAfter: U256::ZERO,
+        validBefore: U256::from(payment_info.pre_approval_expiry),
+        nonce: payer_agnostic_hash(chain_id, extra.escrow_address, &payment_info),
+    };
+    let digest = message.eip712_signing_hash(&domain);
+    let recovered = alloy::primitives::Signature::try_from(payload.signature.as_ref())
+        .ok()
+        .and_then(|sig| sig.recover_address_from_prehash(&digest).ok());
+    if recovered != Some(payment_info.payer) {
+        return Err(OperatorError::AuthorizationSignatureInvalid(format!(
+            "{network} requires the payer's EOA signature over ReceiveWithAuthorization \
+             for this network's token domain"
+        )));
+    }
+    Ok(())
 }
 
 /// An operator write that failed, keeping the hash of one that may be mined.
@@ -915,6 +1287,61 @@ fn is_create3_network(network: Network) -> bool {
     // Currently only SKALE uses CREATE3 deployment with new ABI
     // When other networks migrate to CREATE3, add them here
     matches!(network, Network::SkaleBase)
+}
+
+/// The PaymentOperator ABI a lifecycle call speaks.
+///
+/// `authorize` is the same call on every generation; what differs is how
+/// escrowed funds are released and returned, and how the owner is read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperatorAbi {
+    /// `release(PaymentInfo,uint256)` / `refundInEscrow(PaymentInfo,uint120)`,
+    /// owner `FEE_RECIPIENT()`. The per-chain legacy deployments.
+    Legacy,
+    /// `release(PaymentInfo,uint256,bytes)` / `refundInEscrow(PaymentInfo,uint120,bytes)`,
+    /// owner `FEE_RECIPIENT()`. SKALE.
+    Create3,
+    /// `capture(PaymentInfo,uint256,bytes)` / `void(PaymentInfo,bytes)`, owner
+    /// `FEE_RECEIVER()`. Operators of the canonical v1.0.2 factory: Arc.
+    V3,
+}
+
+/// Resolve a request to the ABI of the deployment it names.
+///
+/// On a canonical v1 network the request must name the declared
+/// `(network, escrow, collector)` triple, and that triple is what makes it
+/// [`OperatorAbi::V3`]; anything else is refused before any read or write. On
+/// every other network the answer is exactly what it always was -- decided by
+/// the network alone, whichever of the addresses `validate_addresses` accepts
+/// the request names.
+pub(crate) fn resolve_operator_abi(
+    network: Network,
+    extra: &EscrowExtra,
+) -> Result<OperatorAbi, OperatorError> {
+    if is_canonical_v1_network(network) {
+        if extra.escrow_address == canonical_v1::ESCROW
+            && extra.token_collector == canonical_v1::TOKEN_COLLECTOR
+        {
+            return Ok(OperatorAbi::V3);
+        }
+        return Err(canonical_v1_mismatch(network, extra));
+    }
+    Ok(if is_create3_network(network) {
+        OperatorAbi::Create3
+    } else {
+        OperatorAbi::Legacy
+    })
+}
+
+fn canonical_v1_mismatch(network: Network, extra: &EscrowExtra) -> OperatorError {
+    OperatorError::PaymentInfoInvalid(format!(
+        "escrow/token_collector mismatch on {network}: client=({:?}, {:?}), expected the \
+         canonical v1 set ({:?}, {:?}); legacy and CREATE3 addresses are not deployed here",
+        extra.escrow_address,
+        extra.token_collector,
+        canonical_v1::ESCROW,
+        canonical_v1::TOKEN_COLLECTOR
+    ))
 }
 
 /// Send a transaction to the PaymentOperator contract.
@@ -1041,6 +1468,7 @@ pub(super) async fn eth_call(
 /// gas on transactions that revert if the operator contract rejects them.
 /// This is an accepted tradeoff for protocol openness.
 fn validate_addresses(
+    network: Network,
     extra: &EscrowExtra,
     addrs: &OperatorAddresses,
     strict_operator: bool,
@@ -1063,6 +1491,17 @@ fn validate_addresses(
         }
     }
     // Operator address is not validated — merchants specify their own operator.
+
+    // Canonical v1 networks (Arc): the canonical v1 escrow and collector, and
+    // nothing else. The CREATE3 set below has no code there.
+    if is_canonical_v1_network(network) {
+        if extra.escrow_address == canonical_v1::ESCROW
+            && extra.token_collector == canonical_v1::TOKEN_COLLECTOR
+        {
+            return Ok(());
+        }
+        return Err(canonical_v1_mismatch(network, extra));
+    }
 
     // Validate token collector (accept per-chain legacy OR CREATE3 canonical)
     if extra.token_collector != addrs.token_collector
@@ -1097,6 +1536,12 @@ fn encode_collector_data(signature: &Bytes) -> Bytes {
 // ============================================================================
 // Tests
 // ============================================================================
+
+#[cfg(test)]
+mod snapshot_tests;
+
+#[cfg(test)]
+mod arc_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1658,7 +2103,7 @@ mod tests {
             alloy::primitives::address!("7D092ec506B3D43EB87846F9c9739303785D7B2f"),
             base_sepolia::TOKEN_COLLECTOR,
         );
-        assert!(validate_addresses(&extra, &addrs, false).is_ok());
+        assert!(validate_addresses(Network::BaseSepolia, &extra, &addrs, false).is_ok());
     }
 
     #[test]
@@ -1672,7 +2117,7 @@ mod tests {
             alloy::primitives::address!("7D092ec506B3D43EB87846F9c9739303785D7B2f"),
             create3::TOKEN_COLLECTOR,
         );
-        assert!(validate_addresses(&extra, &addrs, false).is_ok());
+        assert!(validate_addresses(Network::BaseSepolia, &extra, &addrs, false).is_ok());
     }
 
     #[test]
@@ -1685,6 +2130,6 @@ mod tests {
             alloy::primitives::address!("7D092ec506B3D43EB87846F9c9739303785D7B2f"),
             alloy::primitives::address!("cafebabecafebabecafebabecafebabecafebabe"),
         );
-        assert!(validate_addresses(&extra, &addrs, false).is_err());
+        assert!(validate_addresses(Network::BaseSepolia, &extra, &addrs, false).is_err());
     }
 }

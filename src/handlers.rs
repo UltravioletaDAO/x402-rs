@@ -1241,6 +1241,45 @@ fn alt_scheme_unconfirmed(
     Some((unconfirmed_alt_settlement(failure, typed), category))
 }
 
+/// Status, `errorReason` token, detail and `Retry-After` of an escrow failure
+/// that carries its own answer (`OperatorError::http_answer`): the canonical v1
+/// (Arc) paths, where a failed chain read is retryable and never a 4xx, and the
+/// two deterministic refusals of `void`. `None` for every other failure, which
+/// keeps the classification it had.
+fn typed_escrow_parts(
+    e: &crate::payment_operator::OperatorError,
+) -> Option<(StatusCode, &'static str, String, Option<HeaderValue>)> {
+    let answer = e.http_answer()?;
+    let status = StatusCode::from_u16(answer.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let retry_after = answer
+        .retry_after_secs
+        .and_then(|secs| HeaderValue::from_str(&secs.to_string()).ok());
+    Some((status, answer.token, e.to_string(), retry_after))
+}
+
+/// The `/settle` answer for [`typed_escrow_parts`], and its event category.
+/// No transaction exists behind any of these, so `retryable` says only whether
+/// the same request can succeed later.
+pub(crate) fn escrow_settle_typed_response(
+    e: &crate::payment_operator::OperatorError,
+) -> Option<(Response, &'static str)> {
+    let (status, token, detail, retry_after) = typed_escrow_parts(e)?;
+    let mut resp = (
+        status,
+        Json(json!({
+            "success": false,
+            "errorReason": token,
+            "detail": detail,
+            "retryable": retry_after.is_some(),
+        })),
+    )
+        .into_response();
+    if let Some(value) = retry_after {
+        resp.headers_mut().insert(header::RETRY_AFTER, value);
+    }
+    Some((resp, token))
+}
+
 /// Log a classified chain-write failure with the figures an operator needs.
 ///
 /// For a gas shortfall that means the USABLE margin, not the balance. The
@@ -5168,6 +5207,12 @@ where
                             detail: detail(false, escrow_scheme, Some(category)),
                         });
                     }
+                    if let Some((response, category)) = escrow_settle_typed_response(&e) {
+                        return Some(AltSchemeOutcome {
+                            response,
+                            detail: detail(false, escrow_scheme, Some(category)),
+                        });
+                    }
                     let salt = failure_salt();
                     // A refused lifecycle order is neither a bad payload nor an
                     // outage: it is "you are not entitled to this". 403, so a
@@ -6042,6 +6087,21 @@ where
         }
         Err(e) => {
             error!(error = %e, "Escrow state query failed");
+            if let Some((status, token, detail, retry_after)) = typed_escrow_parts(&e) {
+                let mut resp = (
+                    status,
+                    Json(json!({
+                        "error": token,
+                        "detail": detail,
+                        "retryable": retry_after.is_some(),
+                    })),
+                )
+                    .into_response();
+                if let Some(value) = retry_after {
+                    resp.headers_mut().insert(header::RETRY_AFTER, value);
+                }
+                return resp;
+            }
             // Same classification as the settle path: a node that cannot answer
             // is not a malformed query. This branch was missed when the settle
             // branches were fixed — 9 of the RPC failures observed over 48h came

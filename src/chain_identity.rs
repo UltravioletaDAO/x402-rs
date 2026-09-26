@@ -22,8 +22,9 @@
 //! That includes Arc. Through 2.39.3 an Arc RPC answering for another chain
 //! left Arc out of `/supported` until the next deploy. Arc still recovers every
 //! signature locally under its configured chain id before anything is
-//! estimated or sent (`chain/evm.rs`), so a signature for the other Arc network
-//! is refused whatever the RPC answers, and a signature for this one fails the
+//! estimated or sent (`chain/evm.rs` for `exact`, `payment_operator/operator.rs`
+//! for the escrow `authorize`), so a signature for the other Arc network is
+//! refused whatever the RPC answers, and a signature for this one fails the
 //! other chain's own domain check.
 //!
 //! The check runs in the background ([`spawn`]), so a slow RPC delays nothing.

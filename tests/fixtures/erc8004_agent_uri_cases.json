@@ -39,6 +39,7 @@
     {"uri": "javascript:alert(1)", "violations": ["agent_uri_scheme"]},
 
     {"uri": "https://user:pass@example.com/agent.json", "violations": ["agent_uri_credentials"]},
+    {"uri": "https://:secret@example.com/agent.json", "violations": ["agent_uri_credentials"]},
     {"uri": "https://execution.market@198.51.100.7/agent.json", "violations": ["agent_uri_credentials", "agent_uri_ip_literal"]},
 
     {"uri": "https://198.51.100.7/agent.json", "violations": ["agent_uri_ip_literal"]},
@@ -67,6 +68,7 @@
     {"uri": "https://abc123.ngrok-free.app/agent.json", "violations": ["agent_uri_tunnel"]},
     {"uri": "https://some-words-here.trycloudflare.com/agent.json", "violations": ["agent_uri_tunnel"]},
     {"uri": "https://quiet-cat.loca.lt/agent.json", "violations": ["agent_uri_tunnel"]},
+    {"uri": "https://quiet-cat.loca.lt./agent.json", "violations": ["agent_uri_tunnel"]},
     {"uri": "https://box.tail0a1b2.ts.net/agent.json", "violations": ["agent_uri_tunnel"]},
     {"uri": "https://fuzzy-pancake-8080.app.github.dev/agent.json", "violations": ["agent_uri_tunnel"]}
   ],

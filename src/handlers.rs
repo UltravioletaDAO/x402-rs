@@ -10985,10 +10985,8 @@ where
 /// 3. **The recipient cannot be the facilitator itself**, which would be
 ///    keeping it by another name.
 /// 4. **The recipient must clear compliance screening**: the same lists that
-///    screen payers and payees. This is the only place both paths that deliver
-///    an identity -- a fresh mint and the reclaim of a stranded one (FAC-1 #2,
-///    or the Solana resume) -- have in common, so it is where a blocked wallet
-///    is stopped. An unreadable list refuses too: no verdict is not a clear.
+///    screen payers and payees, before any path that delivers an identity. An
+///    unreadable list refuses too: no verdict is not a clear.
 /// 5. (Before 3.) **Not the zero address**, which no transfer can reach.
 /// 6. **On EVM, the recipient must be able to take the NFT.** The mint lands in
 ///    our wallet and `safeTransferFrom` follows; a contract that does not
@@ -15707,6 +15705,45 @@ mod erc8004_admin_gate_tests {
         assert_eq!(missing, StatusCode::UNAUTHORIZED);
     }
 
+    /// On a task that does NOT hold the writer lease, the retire route still
+    /// answers as the admin gate says -- 404 unconfigured, 401 with a wrong or
+    /// missing token -- and never the lease's 503, which would tell an
+    /// anonymous caller the route is live.
+    #[tokio::test]
+    async fn the_retire_route_authenticates_before_the_writer_lease() {
+        let _env = ADMIN_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let _flag = super::writer_lease_gate_tests::WRITER_FLAG
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let call = || async {
+            erc8004_write_routes::<NoChain>()
+                .with_state(NoChain(Arc::new(
+                    crate::payment_operator::test_rpc::Providers(std::collections::HashMap::new()),
+                )))
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/erc8004/admin/retire-identity")
+                        .header(axum::http::header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(r#"{"network":"base","agentId":"1"}"#))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+                .status()
+        };
+        crate::writer_lease::set_writer_for_test(false);
+        std::env::remove_var(ERC8004_ADMIN_TOKEN_VAR);
+        let unconfigured = call().await;
+        std::env::set_var(ERC8004_ADMIN_TOKEN_VAR, GOOD_TOKEN);
+        let configured = call().await;
+        std::env::remove_var(ERC8004_ADMIN_TOKEN_VAR);
+        // Restored before the asserts, as in `auth_runs_before_the_writer_lease`.
+        crate::writer_lease::set_writer_for_test(true);
+        assert_eq!(unconfigured, StatusCode::NOT_FOUND);
+        assert_eq!(configured, StatusCode::UNAUTHORIZED);
+    }
+
     /// The URI a retired identity keeps on-chain resolves to the document, on
     /// the public router production mounts.
     #[tokio::test]
@@ -20229,17 +20266,17 @@ mod erc8004_register_gate_tests {
     /// of one after a response means the mint was never entered.
     struct Providers {
         lookups: AtomicUsize,
-        evm: Option<NetworkProvider>,
+        provider: Option<NetworkProvider>,
     }
 
     impl ProviderMap for Providers {
         type Value = NetworkProvider;
         fn by_network<N: Borrow<Network>>(&self, _network: N) -> Option<&Self::Value> {
             self.lookups.fetch_add(1, Ordering::SeqCst);
-            self.evm.as_ref()
+            self.provider.as_ref()
         }
         fn values(&self) -> impl Iterator<Item = &Self::Value> + Send {
-            self.evm.iter()
+            self.provider.iter()
         }
     }
 
@@ -20263,7 +20300,7 @@ mod erc8004_register_gate_tests {
             Self {
                 providers: Arc::new(Providers {
                     lookups: AtomicUsize::new(0),
-                    evm: None,
+                    provider: None,
                 }),
                 lists,
                 screened: Arc::new(AtomicUsize::new(0)),
@@ -20491,7 +20528,7 @@ mod erc8004_register_gate_tests {
         let gate = Gate {
             providers: Arc::new(Providers {
                 lookups: AtomicUsize::new(0),
-                evm: Some(NetworkProvider::Evm(provider)),
+                provider: Some(NetworkProvider::Evm(provider)),
             }),
             lists: Lists::Clear,
             screened: Arc::new(AtomicUsize::new(0)),
@@ -20593,7 +20630,7 @@ mod erc8004_register_gate_tests {
         let gate = Gate {
             providers: Arc::new(Providers {
                 lookups: AtomicUsize::new(0),
-                evm: Some(NetworkProvider::Evm(provider)),
+                provider: Some(NetworkProvider::Evm(provider)),
             }),
             lists: Lists::Clear,
             screened: Arc::new(AtomicUsize::new(0)),
@@ -20629,6 +20666,176 @@ mod erc8004_register_gate_tests {
             "recipient_cannot_receive",
         );
         assert!(node.sent().is_empty());
+    }
+
+    /// A contract that answers the hook with anything but its selector is
+    /// refused too: `safeTransferFrom` checks the exact value.
+    #[tokio::test]
+    async fn a_receiver_answering_the_wrong_selector_is_refused() {
+        use alloy::sol_types::SolValue;
+        let (gate, node) = gate_on_node().await;
+        let contract: alloy::primitives::Address = OWNER.parse().unwrap();
+        node.set_code(contract, vec![0x60, 0x00]);
+        node.on_call(
+            contract,
+            <crate::erc8004::IERC721Receiver::onERC721ReceivedCall as alloy::sol_types::SolCall>::SELECTOR,
+            crate::payment_operator::test_rpc::CallAnswer::Return(
+                alloy::primitives::FixedBytes::<4>([0xde, 0xad, 0xbe, 0xef]).abi_encode(),
+            ),
+        );
+        let (status, doc) = register(
+            &gate,
+            body(
+                "base",
+                "https://execution.market/agents/gate-test-wrong-selector",
+                Some(OWNER),
+            ),
+        )
+        .await;
+        assert_refused(
+            &gate,
+            status,
+            &doc,
+            StatusCode::BAD_REQUEST,
+            "recipient_cannot_receive",
+        );
+        assert!(node.sent().is_empty());
+    }
+
+    /// The async path (`Prefer: respond-async`) meets the same gate: a
+    /// refused request is a 400 with its code, never a 202, and leaves no job.
+    #[tokio::test]
+    async fn the_gate_also_guards_the_async_path() {
+        let uri = "https://198-51-100-7.sslip.io/gate-test-async.json";
+        let gate = Gate::new(Lists::Clear);
+        let mut headers = HeaderMap::new();
+        headers.insert("prefer", "respond-async".parse().unwrap());
+        let response = post_register(
+            State(gate.clone()),
+            headers,
+            Bytes::from(body("base", uri, Some(OWNER)).to_string()),
+        )
+        .await
+        .into_response();
+        let status = response.status();
+        assert!(response
+            .headers()
+            .get(axum::http::header::LOCATION)
+            .is_none());
+        let doc: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_refused(
+            &gate,
+            status,
+            &doc,
+            StatusCode::BAD_REQUEST,
+            "agent_uri_embedded_ip",
+        );
+        assert!(doc["jobId"].is_null(), "{doc}");
+        // Nothing was registered as in flight for this key: a fresh begin starts.
+        let recipient: MixedAddress = serde_json::from_value(serde_json::json!(OWNER)).unwrap();
+        let key = register_jobs::inflight_key(&Network::Base, uri, &Some(recipient));
+        match register_jobs::begin(Network::Base, key) {
+            register_jobs::BeginOutcome::Started(id) => {
+                register_jobs::finalize_from_response(
+                    &id,
+                    &RegisterAgentResponse {
+                        success: false,
+                        agent_id: None,
+                        transaction: None,
+                        transfer_transaction: None,
+                        owner: None,
+                        error: Some("test probe".into()),
+                        network: Network::Base,
+                        mint: None,
+                    },
+                );
+            }
+            register_jobs::BeginOutcome::AlreadyInflight(job) => {
+                panic!("the refused request left job {} in flight", job.job_id)
+            }
+        }
+    }
+
+    /// A Solana provider whose RPC is a local listener that counts every
+    /// connection, so a test can prove the gate answered without one.
+    async fn gate_on_solana() -> (Gate, Arc<AtomicUsize>, String) {
+        let connections = Arc::new(AtomicUsize::new(0));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        let seen = Arc::clone(&connections);
+        tokio::spawn(async move {
+            while let Ok((_socket, _)) = listener.accept().await {
+                seen.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+        let keypair = solana_sdk::signature::Keypair::new();
+        let fee_payer = solana_sdk::signer::Signer::pubkey(&keypair).to_string();
+        let provider = crate::chain::solana::SolanaProvider::try_new(
+            keypair,
+            url,
+            Network::Solana,
+            200_000,
+            1_000_000,
+        )
+        .unwrap();
+        let gate = Gate {
+            providers: Arc::new(Providers {
+                lookups: AtomicUsize::new(0),
+                provider: Some(NetworkProvider::Solana(provider)),
+            }),
+            lists: Lists::Clear,
+            screened: Arc::new(AtomicUsize::new(0)),
+        };
+        (gate, connections, fee_payer)
+    }
+
+    /// With a real Solana provider behind it -- the path that mints on Solana --
+    /// a refused URI and the fee payer as recipient are both
+    /// answered by the gate, with the Solana `mint` contract, and no RPC call.
+    #[tokio::test]
+    async fn the_gate_answers_for_solana_without_touching_its_rpc() {
+        let (gate, connections, fee_payer) = gate_on_solana().await;
+        let stranger = solana_sdk::pubkey::Pubkey::new_unique().to_string();
+        let (status, doc) = register(
+            &gate,
+            body(
+                "solana",
+                "http://198-51-100-7.sslip.io/a.json",
+                Some(&stranger),
+            ),
+        )
+        .await;
+        assert_refused(
+            &gate,
+            status,
+            &doc,
+            StatusCode::BAD_REQUEST,
+            "agent_uri_scheme",
+        );
+        assert_eq!(doc["mint"]["status"], "not_minted", "{doc}");
+
+        gate.providers.lookups.store(0, Ordering::SeqCst);
+        let (status, doc) = register(&gate, body("solana", GOOD_URI, Some(&fee_payer))).await;
+        assert_refused(
+            &gate,
+            status,
+            &doc,
+            StatusCode::BAD_REQUEST,
+            "recipient_is_facilitator",
+        );
+        assert_eq!(doc["mint"]["status"], "not_minted", "{doc}");
+
+        tokio::task::yield_now().await;
+        assert_eq!(
+            connections.load(Ordering::SeqCst),
+            0,
+            "the gate called the Solana RPC"
+        );
     }
 
     /// No answer about the recipient's code is not a yes.

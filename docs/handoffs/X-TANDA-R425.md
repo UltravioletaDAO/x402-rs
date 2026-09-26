@@ -34,8 +34,8 @@ dos caminos (sync y `Prefer: respond-async`). Seis rechazos, en este orden (sól
 4. **Screening del `recipient`** contra las mismas listas que `/verify` y `/settle` (OFAC + blacklist propia),
    vía un método nuevo del trait `Facilitator::screen_recipient` (default: no filtra; `FacilitatorLocal` usa el
    `ComplianceChecker`). Bloqueada → `403 recipient_blocked`, sin acuñar **ni reclamar**; listas ilegibles →
-   `503 recipient_screening_unavailable`, `retryable`. Es el único punto común a los dos caminos que entregan una
-   identidad: el mint nuevo y el *reclaim* de una varada (el registro FAC-1 #2 en EVM y el *resume* de Solana).
+   `503 recipient_screening_unavailable`, `retryable`. Va antes de cualquier camino que entregue una
+   identidad.
 5. **En EVM, el `recipient` tiene que poder recibir el NFT** (`400 recipient_cannot_receive`): el mint cae en
    nuestra wallet y el `safeTransferFrom` viene después; un contrato sin `onERC721Received` lo hace revertir y la
    identidad **se queda con nosotros** (y cada reintento acuñaba otra). Se simula el hook con `eth_call` desde el
@@ -117,9 +117,6 @@ el cuerpo), la URI que escribe es la constante, `controls_signer(ownerOf)` antes
 con varios firmantes (el `PendingNonceManager` lleva nonces por dirección), el gate corre antes del split async, del
 lock y de los dos *reclaim*, el screening falla cerrado, los logs escapan y cortan la URI, el script de auditoría no
 puede enviar nada, y `drift_gate_iam.py` no imprime cuentas ni ARNs.
-
-Además, un hallazgo ALTA anterior a esta tanda y una decisión sobre el bloqueo de wallets: en el informe privado de
-c0der (con otra decisión de endurecimiento de `/register` que salió de la misma revisión).
 
 ## 6. Riesgos
 
@@ -208,6 +205,25 @@ Corrida sobre `9623d53d` con `c0der/scripts/verificar_ronda.py` (worktree propio
 | 43 | `M5-gate-codigo-ilegible-pasa` | `src/handlers.rs` | código ilegible = puede recibir | `erc8004_register_gate` | **ROJO** (rc=101, 21 s) |
 | 44 | `M5-balance-ilegible-acuna` | `src/handlers.rs` | `balanceOf` ilegible sigue y acuña | `erc8004_register_gate` | **ROJO** (rc=101, 23 s) |
 
+### Ronda 2 (refutador REF-X-TANDA-R425: MERGEABLE CON RONDA, sin cambio de comportamiento)
+
+Tests nuevos, cada uno contra una mutación del refutador que antes sobrevivía:
+- `/register` con `Prefer: respond-async` y una URI rechazada: 400 con su código, nunca 202, y ningún job en vuelo.
+- Con un `SolanaProvider` real detrás (RPC en un listener local que cuenta conexiones): una URI rechazada da 400 y
+  `mint.status = not_minted`, y el fee payer como `recipient` da `recipient_is_facilitator`. Cero conexiones al RPC.
+- Un receptor que contesta `onERC721Received` con otro `bytes4`: `recipient_cannot_receive`.
+- El screening: una decisión `Review` bloquea igual que `Block`.
+- El corpus suma un túnel con punto final y una contraseña sin usuario (Rust y Python dan lo mismo).
+- La ruta de retiro, en una tarea **sin** writer lease: 404 sin token y 401 con token, nunca 503.
+- El drift gate: la política viva gana sobre la declarada, un Allow con `Condition` no concede, y un ARN sin cuenta
+  no concede.
+
+Texto: se sacaron del CHANGELOG, de este handoff, del comentario de `refuse_registration` y del texto de `/erc8004`
+la enumeración de los caminos que entregan una identidad y la frase "sin recipient, el NFT se queda con el
+facilitador" (el `recipient` es obligatorio desde 2.44.0).
+
+Mutaciones de esta ronda: las 44 de arriba más 23 del refutador. c0der registra su corrida sobre este commit.
+
 ## 8. Para c0der
 
 1. **Merge y deploy** (un CI y un deploy): el plan dirigido de este PR sólo cambia `aws_ecs_task_definition` (una
@@ -242,4 +258,3 @@ Corrida sobre `9623d53d` con `c0der/scripts/verificar_ronda.py` (worktree propio
    tanda siguiente.
 7. **Mitad EM de M5** (fuera de este repo): la validación equivalente del lado de execution-market (este repo expone
    la lista en `config/erc8004_agent_uri_rules.json` y el corpus en `tests/fixtures/erc8004_agent_uri_cases.json`).
-8. Un hallazgo ALTA anterior a esta tanda y una decisión sobre el bloqueo de wallets: en el informe privado de c0der.

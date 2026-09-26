@@ -42,16 +42,20 @@ def declared_ci_policy() -> dict:
     return json.loads(body.replace("${data.aws_caller_identity.current.account_id}", ACCOUNT))
 
 
-def policy_resource(document: dict) -> dict:
-    return {
-        "address": gate.CI_POLICY_ADDRESS,
-        "type": "aws_iam_policy",
-        "values": {
-            "arn": "arn:aws:iam::" + ACCOUNT + ":policy/facilitator-cicd-infra",
-            "name": "facilitator-cicd-infra",
-            "policy": json.dumps(document),
-        },
-    }
+def policy_resource(document: dict, with_arn: bool = True) -> dict:
+    values = {"name": "facilitator-cicd-infra", "policy": json.dumps(document)}
+    if with_arn:
+        values["arn"] = "arn:aws:iam::" + ACCOUNT + ":policy/facilitator-cicd-infra"
+    return {"address": gate.CI_POLICY_ADDRESS, "type": "aws_iam_policy", "values": values}
+
+
+def allow_put_role_policy_on(role: str, condition: dict | None = None) -> dict:
+    """A policy that grants PutRolePolicy on one role and nothing else, optionally under a Condition."""
+    statement = {"Effect": "Allow", "Action": "iam:PutRolePolicy",
+                 "Resource": "arn:aws:iam::" + ACCOUNT + ":role/" + role}
+    if condition is not None:
+        statement["Condition"] = condition
+    return {"Version": "2012-10-17", "Statement": [statement]}
 
 
 def role_policy_change(address: str, role: str, actions=("update",), unknown_role=False) -> dict:
@@ -197,6 +201,43 @@ class TheGate(unittest.TestCase):
         code, _, summary = run(plan([role_policy_change(HEDERA, TASK_ROLE)], where="planned_values"))
         self.assertEqual(code, 0)
         self.assertIn("declared, not yet in state", summary)
+
+    def test_the_live_policy_wins_over_the_declared_one(self):
+        # Live (state) still denies the execution role; the PR declares a policy that would allow it. The deploy
+        # runs against the LIVE one, so this is red until the new policy is applied by hand.
+        targeted = {
+            "resource_changes": [role_policy_change(SECRETS, EXECUTION_ROLE)],
+            "prior_state": {"values": {"root_module": {"resources": [policy_resource(declared_ci_policy())]}}},
+            "planned_values": {"root_module": {"resources": [
+                policy_resource(allow_put_role_policy_on(EXECUTION_ROLE))]}},
+        }
+        code, _, summary = run(targeted)
+        self.assertEqual(code, 1, summary)
+        self.assertIn("(live)", summary)
+
+    def test_an_allow_under_a_condition_does_not_grant(self):
+        doc = allow_put_role_policy_on(EXECUTION_ROLE, condition={"Bool": {"aws:MultiFactorAuthPresent": "true"}})
+        targeted = {"resource_changes": [role_policy_change(SECRETS, EXECUTION_ROLE)],
+                    "prior_state": {"values": {"root_module": {"resources": [policy_resource(doc)]}}}}
+        code, _, summary = run(targeted)
+        self.assertEqual(code, 1, summary)
+        self.assertIn("no statement grants CI", summary)
+        # The same Allow without the Condition does grant: the Condition is what refused it.
+        plain = {"resource_changes": [role_policy_change(SECRETS, EXECUTION_ROLE)],
+                 "prior_state": {"values": {"root_module": {"resources": [
+                     policy_resource(allow_put_role_policy_on(EXECUTION_ROLE))]}}}}
+        self.assertEqual(run(plain)[0], 0)
+
+    def test_an_arn_without_an_account_is_never_granted(self):
+        # The CI policy's own ARN is what tells the gate the account. Without it the role ARN is unknown, and even
+        # a wildcard Allow must not grant a change on it.
+        wildcard = {"Version": "2012-10-17",
+                    "Statement": [{"Effect": "Allow", "Action": "iam:PutRolePolicy", "Resource": "*"}]}
+        targeted = {"resource_changes": [role_policy_change(HEDERA, TASK_ROLE)],
+                    "prior_state": {"values": {"root_module": {"resources": [
+                        policy_resource(wildcard, with_arn=False)]}}}}
+        code, _, summary = run(targeted)
+        self.assertEqual(code, 1, summary)
 
     def test_no_account_id_or_arn_is_ever_printed(self):
         _, out, summary = run(plan([role_policy_change(SECRETS, EXECUTION_ROLE),

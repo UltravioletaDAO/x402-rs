@@ -1574,4 +1574,48 @@ mod screen_recipient_tests {
             None
         );
     }
+
+    /// A list that answers "needs review" for every address.
+    struct ReviewEverything;
+
+    #[async_trait::async_trait]
+    impl ComplianceChecker for ReviewEverything {
+        async fn screen_payment(
+            &self,
+            _payer: &str,
+            _payee: &str,
+            _context: &TransactionContext,
+        ) -> x402_compliance::Result<x402_compliance::ScreeningResult> {
+            unreachable!("only screen_address is under test")
+        }
+        async fn screen_address(
+            &self,
+            _address: &str,
+        ) -> x402_compliance::Result<ScreeningDecision> {
+            Ok(ScreeningDecision::Review {
+                reason: "manual review".to_string(),
+            })
+        }
+        fn is_list_enabled(&self, _list_name: &str) -> bool {
+            false
+        }
+        fn list_metadata(&self) -> HashMap<String, x402_compliance::checker::ListMetadata> {
+            HashMap::new()
+        }
+        async fn reload_lists(&mut self) -> x402_compliance::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// "Review" is not "clear": nothing is handed to a wallet a human still
+    /// has to look at, the same rule `verify` and `settle` apply.
+    #[tokio::test]
+    async fn a_review_verdict_blocks_like_a_block() {
+        let facilitator = FacilitatorLocal::new(
+            crate::payment_operator::test_rpc::Providers(HashMap::new()),
+            Arc::new(Box::new(ReviewEverything) as Box<dyn ComplianceChecker>),
+        );
+        let verdict = facilitator.screen_recipient(&evm(CLEAN)).await.unwrap();
+        assert_eq!(verdict.as_deref(), Some("manual review"));
+    }
 }

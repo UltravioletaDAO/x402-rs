@@ -149,6 +149,38 @@ data "aws_secretsmanager_secret" "dx402_pinata" {
 }
 
 # ----------------------------------------------------------------------------
+# Stack identities (X-UVD-Stack-Key, src/rate_policy.rs)
+# ----------------------------------------------------------------------------
+
+# One secret per stack service, holding ONLY the SHA-256 of that service's key:
+# {"sha256": "<64 hex>"}. A caller presenting the key skips the per-IP budgets.
+#
+# The key itself lives in a separate secret in the CLIENT's own store, and this
+# execution role is never granted it: with one secret carrying both fields, the
+# GetSecretValue this role needs would read every key in the clear, whatever
+# field ECS injects. A digest that leaks authenticates nobody.
+#
+# Revoke by setting "sha256" to "" -- never delete the field: ECS refuses to
+# start a task whose valueFrom names a JSON key that is missing. Rotate with
+# "<new>,<old>" for one restart. Generate both halves with scripts/stack_key.py;
+# the full procedure is docs/handoffs/X4-STACK-429.md section 6.
+data "aws_secretsmanager_secret" "stack_key_digest_execution_market" {
+  name = "facilitator-stack-key-digest-execution-market"
+}
+
+data "aws_secretsmanager_secret" "stack_key_digest_karmakadabra" {
+  name = "facilitator-stack-key-digest-karmakadabra"
+}
+
+data "aws_secretsmanager_secret" "stack_key_digest_describe_net" {
+  name = "facilitator-stack-key-digest-describe-net"
+}
+
+data "aws_secretsmanager_secret" "stack_key_digest_meshrelay" {
+  name = "facilitator-stack-key-digest-meshrelay"
+}
+
+# ----------------------------------------------------------------------------
 # RPC URL Secrets (Premium Endpoints)
 # ----------------------------------------------------------------------------
 
@@ -202,11 +234,21 @@ locals {
     data.aws_secretsmanager_secret.rpc_testnet.arn,
   ]
 
+  # Stack key digests. Only the facilitator's half: the clients' key secrets
+  # stay out of this list, so this role can never read a key.
+  stack_key_digest_arns = [
+    data.aws_secretsmanager_secret.stack_key_digest_execution_market.arn,
+    data.aws_secretsmanager_secret.stack_key_digest_karmakadabra.arn,
+    data.aws_secretsmanager_secret.stack_key_digest_describe_net.arn,
+    data.aws_secretsmanager_secret.stack_key_digest_meshrelay.arn,
+  ]
+
   # Combined list for IAM policy
   all_secret_arns = concat(
     local.wallet_secret_arns,
     local.rpc_secret_arns,
-    local.admin_secret_arns
+    local.admin_secret_arns,
+    local.stack_key_digest_arns
   )
 }
 
@@ -403,6 +445,32 @@ locals {
     },
   ] : [])
 
+  # ----------------------------------------------------------------------------
+  # Stack key digests
+  # ----------------------------------------------------------------------------
+  # The names are what src/rate_policy.rs reads: ENV_STACK_KEY_SHA256_PREFIX
+  # followed by the service name upper-cased, '-' as '_' (env_var_for), one per
+  # entry of DEFAULT_STACK_SERVICES. A name that drifts from that rule is never
+  # read, and the service stays a third party with no error anywhere.
+  stack_key_digest_secrets = [
+    {
+      name      = "UVD_STACK_KEY_SHA256_EXECUTION_MARKET"
+      valueFrom = "${data.aws_secretsmanager_secret.stack_key_digest_execution_market.arn}:sha256::"
+    },
+    {
+      name      = "UVD_STACK_KEY_SHA256_KARMAKADABRA"
+      valueFrom = "${data.aws_secretsmanager_secret.stack_key_digest_karmakadabra.arn}:sha256::"
+    },
+    {
+      name      = "UVD_STACK_KEY_SHA256_DESCRIBE_NET"
+      valueFrom = "${data.aws_secretsmanager_secret.stack_key_digest_describe_net.arn}:sha256::"
+    },
+    {
+      name      = "UVD_STACK_KEY_SHA256_MESHRELAY"
+      valueFrom = "${data.aws_secretsmanager_secret.stack_key_digest_meshrelay.arn}:sha256::"
+    },
+  ]
+
   # Combined secrets array for task definition
   all_task_secrets = concat(
     local.receipt_secrets,
@@ -411,6 +479,7 @@ locals {
     local.mainnet_rpc_secrets,
     local.arc_rpc_secrets,
     local.testnet_rpc_secrets,
-    local.admin_secrets
+    local.admin_secrets,
+    local.stack_key_digest_secrets
   )
 }

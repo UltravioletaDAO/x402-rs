@@ -10778,9 +10778,9 @@ pub async fn get_register_info() -> impl IntoResponse {
             "recipient": "string (required) - address that receives the agent NFT. The facilitator does not keep the identities it mints"
         },
         "refusals": {
-            "400": "errorCode agent_uri_missing | agent_uri_too_long | agent_uri_malformed | agent_uri_scheme | agent_uri_credentials | agent_uri_ip_literal | agent_uri_non_public_host | agent_uri_embedded_ip | agent_uri_tunnel | recipient_required | recipient_is_facilitator",
+            "400": "errorCode agent_uri_missing | agent_uri_too_long | agent_uri_malformed | agent_uri_scheme | agent_uri_credentials | agent_uri_ip_literal | agent_uri_non_public_host | agent_uri_embedded_ip | agent_uri_tunnel | recipient_required | recipient_invalid | recipient_is_facilitator | recipient_cannot_receive (EVM: a contract without onERC721Received)",
             "403": "errorCode recipient_blocked - the recipient is on a compliance list",
-            "503": "errorCode recipient_screening_unavailable - retryable, nothing was minted"
+            "503": "errorCode recipient_screening_unavailable | recipient_check_unavailable - retryable, nothing was minted"
         },
         "response": {
             "success": "boolean",
@@ -10973,7 +10973,7 @@ where
 
 /// Why `POST /register` will not mint this request, or `None` when it may.
 ///
-/// Four refusals, in this order, none of which touches the chain:
+/// Six refusals, in this order; only the last reads the chain:
 ///
 /// 1. **The `agentUri`** must be `https://` on a public name or `ipfs://`
 ///    ([`crate::erc8004::agent_uri`]). An identity is minted with our gas and
@@ -10989,6 +10989,12 @@ where
 ///    an identity -- a fresh mint and the reclaim of a stranded one (FAC-1 #2,
 ///    or the Solana resume) -- have in common, so it is where a blocked wallet
 ///    is stopped. An unreadable list refuses too: no verdict is not a clear.
+/// 5. (Before 3.) **Not the zero address**, which no transfer can reach.
+/// 6. **On EVM, the recipient must be able to take the NFT.** The mint lands in
+///    our wallet and `safeTransferFrom` follows; a contract that does not
+///    answer `onERC721Received` makes the transfer revert and the identity stay
+///    with us, and every retry would mint another. An address without code
+///    always can. A code read that fails refuses: no verdict is not a yes.
 async fn refuse_registration<A>(
     facilitator: &A,
     provider: Option<&NetworkProvider>,
@@ -11025,6 +11031,18 @@ where
                 .to_string(),
         );
     };
+    let zero = match recipient {
+        MixedAddress::Evm(address) => address.0 == alloy::primitives::Address::ZERO,
+        MixedAddress::Solana(pubkey) => pubkey.to_bytes() == [0u8; 32],
+        _ => false,
+    };
+    if zero {
+        return refuse(
+            StatusCode::BAD_REQUEST,
+            "recipient_invalid",
+            "recipient cannot be the zero address".to_string(),
+        );
+    }
     if recipient_is_facilitator(provider, recipient) {
         return refuse(
             StatusCode::BAD_REQUEST,
@@ -11033,22 +11051,107 @@ where
         );
     }
     match facilitator.screen_recipient(recipient).await {
-        Ok(None) => None,
+        Ok(None) => {}
         Ok(Some(reason)) => {
             warn!(network = %network, %reason, "ERC-8004 registration recipient is blocked");
-            refuse(
+            return refuse(
                 StatusCode::FORBIDDEN,
                 "recipient_blocked",
                 "recipient is blocked by the facilitator's compliance screening".to_string(),
-            )
+            );
         }
         Err(e) => {
             warn!(network = %network, error = %e, "ERC-8004 registration recipient could not be screened");
-            refuse(
+            return refuse(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "recipient_screening_unavailable",
                 "the recipient could not be screened; nothing was minted (retryable)".to_string(),
-            )
+            );
+        }
+    }
+    if let (Some(NetworkProvider::Evm(p)), MixedAddress::Evm(address), Some(contracts)) =
+        (provider, recipient, get_contracts(&network))
+    {
+        match evm_recipient_can_receive(p, contracts.identity_registry, address.0).await {
+            Receivable::Yes => {}
+            Receivable::No(why) => {
+                return refuse(
+                    StatusCode::BAD_REQUEST,
+                    "recipient_cannot_receive",
+                    format!(
+                        "recipient cannot receive the identity NFT ({why}); the transfer would \
+                         revert and leave it with the facilitator"
+                    ),
+                );
+            }
+            Receivable::Unknown(e) => {
+                warn!(network = %network, error = %e, "Could not tell whether the recipient can receive an ERC-721");
+                return refuse(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "recipient_check_unavailable",
+                    "could not tell whether the recipient can receive the NFT; nothing was minted \
+                     (retryable)"
+                        .to_string(),
+                );
+            }
+        }
+    }
+    None
+}
+
+/// Whether an EVM address can take an ERC-721 through `safeTransferFrom`.
+enum Receivable {
+    Yes,
+    No(String),
+    Unknown(String),
+}
+
+/// Ask the recipient what `safeTransferFrom` will ask it: an address without
+/// code always receives; a contract must answer `onERC721Received` with its
+/// own selector when called by the registry. Simulated with `eth_call`, from
+/// the registry, with the operator and sender the transfer would carry.
+async fn evm_recipient_can_receive(
+    provider: &crate::chain::evm::EvmProvider,
+    registry: alloy::primitives::Address,
+    recipient: alloy::primitives::Address,
+) -> Receivable {
+    use crate::chain::evm::MetaEvmProvider;
+    use alloy::providers::Provider;
+    use alloy::sol_types::SolCall;
+
+    let code = match provider.inner().get_code_at(recipient).await {
+        Ok(code) => code,
+        Err(e) => return Receivable::Unknown(format!("eth_getCode: {e}")),
+    };
+    if code.is_empty() {
+        return Receivable::Yes;
+    }
+    let sender = provider.pinned_signer();
+    let receiver = crate::erc8004::IERC721Receiver::new(recipient, provider.inner().clone());
+    match receiver
+        .onERC721Received(
+            sender,
+            sender,
+            alloy::primitives::U256::ZERO,
+            alloy::primitives::Bytes::new(),
+        )
+        .from(registry)
+        .call()
+        .await
+    {
+        Ok(answer)
+            if answer.0 == crate::erc8004::IERC721Receiver::onERC721ReceivedCall::SELECTOR =>
+        {
+            Receivable::Yes
+        }
+        Ok(_) => Receivable::No("it answers onERC721Received with the wrong value".to_string()),
+        Err(alloy::contract::Error::TransportError(e))
+            if !is_execution_revert(&format!("{e:?}")) =>
+        {
+            Receivable::Unknown(format!("onERC721Received: {e}"))
+        }
+        Err(_) => {
+            Receivable::No("it is a contract that does not accept ERC-721 transfers".to_string())
         }
     }
 }
@@ -11744,7 +11847,29 @@ where
         _ => None,
     };
     if let Some(target_owner) = check_owner {
-        if let Ok(balance) = identity_registry.balanceOf(target_owner).call().await {
+        // An unreadable balance is no verdict, and minting past it is how a
+        // retry becomes a second identity (the same rule as the scan below).
+        let balance = identity_registry.balanceOf(target_owner).call().await;
+        if let Err(e) = &balance {
+            warn!(network = %network, owner = %target_owner, error = %e, "Register aborted: recipient balance unreadable");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                RegisterAgentResponse {
+                    success: false,
+                    agent_id: None,
+                    transaction: None,
+                    transfer_transaction: None,
+                    owner: None,
+                    error: Some(format!(
+                        "Could not read whether {target_owner} already holds an agent \
+                         (retryable, no mint attempted): {e}"
+                    )),
+                    network,
+                    mint: None,
+                },
+            );
+        }
+        if let Ok(balance) = balance {
             if balance > alloy::primitives::U256::ZERO {
                 match resolve_first_token_by_owner(
                     provider.inner(),
@@ -15539,7 +15664,41 @@ mod erc8004_admin_gate_tests {
         std::env::set_var(ERC8004_ADMIN_TOKEN_VAR, GOOD_TOKEN);
         let wrong = call(Some("not-the-token"), valid).await;
         let missing = call(None, "not json").await;
+        // The right token reaches the handler itself: only it answers
+        // `unsupported_network`. An unmounted route would fall through to the
+        // router's fallback (which the revoke router's admin layer also
+        // wraps) and answer 404 here.
+        let _flag = super::writer_lease_gate_tests::WRITER_FLAG
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::writer_lease::set_writer_for_test(true);
+        let reached = erc8004_write_routes::<NoChain>()
+            .with_state(NoChain(Arc::new(
+                crate::payment_operator::test_rpc::Providers(std::collections::HashMap::new()),
+            )))
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/erc8004/admin/retire-identity")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .header(
+                        axum::http::header::AUTHORIZATION,
+                        format!("Bearer {GOOD_TOKEN}"),
+                    )
+                    .body(Body::from(r#"{"network":"solana","agentId":"1"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         std::env::remove_var(ERC8004_ADMIN_TOKEN_VAR);
+        assert_eq!(reached.status(), StatusCode::BAD_REQUEST);
+        let reached: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(reached.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(reached["errorCode"], "unsupported_network", "{reached}");
 
         assert_eq!(unset_valid, StatusCode::NOT_FOUND);
         assert_eq!(unset_guess, StatusCode::NOT_FOUND);
@@ -20389,6 +20548,174 @@ mod erc8004_register_gate_tests {
             StatusCode::FORBIDDEN,
             "recipient_blocked",
         );
+    }
+
+    /// The zero address can never hold the NFT, so it would stay with us.
+    #[tokio::test]
+    async fn the_zero_address_is_refused() {
+        let gate = Gate::new(Lists::Clear);
+        let (status, doc) = register(
+            &gate,
+            body(
+                "base",
+                GOOD_URI,
+                Some("0x0000000000000000000000000000000000000000"),
+            ),
+        )
+        .await;
+        assert_refused(
+            &gate,
+            status,
+            &doc,
+            StatusCode::BAD_REQUEST,
+            "recipient_invalid",
+        );
+        let gate = Gate::new(Lists::Clear);
+        let (status, doc) = register(
+            &gate,
+            body("solana", GOOD_URI, Some("11111111111111111111111111111111")),
+        )
+        .await;
+        assert_refused(
+            &gate,
+            status,
+            &doc,
+            StatusCode::BAD_REQUEST,
+            "recipient_invalid",
+        );
+    }
+
+    /// A gate over a JSON-RPC node the test scripts, on Base.
+    async fn gate_on_node() -> (Gate, crate::payment_operator::test_rpc::MockNode) {
+        let node = crate::payment_operator::test_rpc::MockNode::start(Network::Base).await;
+        let provider =
+            crate::payment_operator::test_rpc::provider(Network::Base, &node, true).await;
+        let gate = Gate {
+            providers: Arc::new(Providers {
+                lookups: AtomicUsize::new(0),
+                evm: Some(NetworkProvider::Evm(provider)),
+            }),
+            lists: Lists::Clear,
+            screened: Arc::new(AtomicUsize::new(0)),
+        };
+        (gate, node)
+    }
+
+    fn registry() -> alloy::primitives::Address {
+        get_contracts(&Network::Base).unwrap().identity_registry
+    }
+
+    /// A contract that does not answer `onERC721Received` would make the
+    /// transfer revert after the mint, leaving the identity with us.
+    #[tokio::test]
+    async fn a_contract_that_cannot_receive_is_refused_before_the_mint() {
+        let (gate, node) = gate_on_node().await;
+        let contract: alloy::primitives::Address = OWNER.parse().unwrap();
+        node.set_code(contract, vec![0x60, 0x00, 0x60, 0x00, 0xfd]);
+        let (status, doc) = register(
+            &gate,
+            body(
+                "base",
+                "https://execution.market/agents/gate-test-no-receiver",
+                Some(OWNER),
+            ),
+        )
+        .await;
+        assert_refused(
+            &gate,
+            status,
+            &doc,
+            StatusCode::BAD_REQUEST,
+            "recipient_cannot_receive",
+        );
+        assert!(node.sent().is_empty());
+    }
+
+    /// No answer about the recipient's code is not a yes.
+    #[tokio::test]
+    async fn an_unreadable_recipient_code_refuses_and_says_retry() {
+        let (gate, node) = gate_on_node().await;
+        node.fail_reads(true);
+        let (status, doc) = register(
+            &gate,
+            body(
+                "base",
+                "https://execution.market/agents/gate-test-code-unreadable",
+                Some(OWNER),
+            ),
+        )
+        .await;
+        assert_refused(
+            &gate,
+            status,
+            &doc,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "recipient_check_unavailable",
+        );
+        assert_eq!(doc["retryable"], true);
+        assert!(node.sent().is_empty());
+    }
+
+    /// Positive controls: a contract that answers the hook, and a plain
+    /// address, both go through to the mint.
+    #[tokio::test]
+    async fn receivers_and_plain_addresses_reach_the_mint() {
+        use alloy::sol_types::{SolCall, SolValue};
+        for (uri, contract) in [
+            ("https://execution.market/agents/gate-test-receiver", true),
+            ("https://execution.market/agents/gate-test-eoa", false),
+        ] {
+            let (gate, node) = gate_on_node().await;
+            let recipient: alloy::primitives::Address = OWNER.parse().unwrap();
+            if contract {
+                node.set_code(recipient, vec![0x60, 0x00]);
+                node.on_call(
+                    recipient,
+                    crate::erc8004::IERC721Receiver::onERC721ReceivedCall::SELECTOR,
+                    crate::payment_operator::test_rpc::CallAnswer::Return(
+                        alloy::primitives::FixedBytes::<4>(
+                            crate::erc8004::IERC721Receiver::onERC721ReceivedCall::SELECTOR,
+                        )
+                        .abi_encode(),
+                    ),
+                );
+            }
+            node.on_call(
+                registry(),
+                IIdentityRegistry::balanceOfCall::SELECTOR,
+                crate::payment_operator::test_rpc::CallAnswer::Return(
+                    alloy::primitives::U256::ZERO.abi_encode(),
+                ),
+            );
+            let (_, doc) = register(&gate, body("base", uri, Some(OWNER))).await;
+            assert!(doc["errorCode"].is_null(), "{uri}: {doc}");
+            assert_eq!(node.sent().len(), 1, "{uri}: the mint was not sent: {doc}");
+            assert_eq!(node.sent()[0].to, Some(registry()));
+        }
+    }
+
+    /// A recipient balance that cannot be read is no verdict: minting past it
+    /// is how a retry becomes a second identity.
+    #[tokio::test]
+    async fn an_unreadable_recipient_balance_does_not_mint() {
+        let (gate, node) = gate_on_node().await;
+        // No code, so the gate lets it through; balanceOf is not scripted and
+        // comes back as a revert.
+        let (status, doc) = register(
+            &gate,
+            body(
+                "base",
+                "https://execution.market/agents/gate-test-balance",
+                Some(OWNER),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{doc}");
+        assert!(
+            doc["error"].as_str().unwrap().contains("no mint attempted"),
+            "{doc}"
+        );
+        assert!(node.sent().is_empty());
     }
 
     /// Lists that cannot answer are not a clear.

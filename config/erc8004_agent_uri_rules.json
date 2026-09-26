@@ -10,7 +10,10 @@
   ],
   "schemes": ["https", "ipfs"],
   "maxBytes": 2048,
-  "nonPublicSuffixes": ["localhost", "local", "internal", "lan", "home.arpa"],
+  "nonPublicSuffixes": [
+    "localhost", "localdomain", "local", "internal", "lan", "home", "corp", "home.arpa",
+    "test", "invalid", "example", "onion"
+  ],
   "wildcardDnsDomains": [
     "sslip.io",
     "nip.io",
@@ -48,6 +51,9 @@
     "localto.net",
     "localtonet.com",
     "share.zrok.io",
-    "sharedwithexpose.com"
+    "sharedwithexpose.com",
+    "ts.net",
+    "app.github.dev",
+    "cfargotunnel.com"
   ]
 }

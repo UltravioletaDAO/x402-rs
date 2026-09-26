@@ -17,8 +17,9 @@
 //!   plus the wildcard-DNS services that resolve such names;
 //! - tunnels (`*.ngrok-free.app`, `*.trycloudflare.com`, ...), which put a
 //!   laptop behind a name that looks like a service;
-//! - names that do not resolve publicly (`localhost`, `*.local`, one label);
-//! - credentials in the URI, which is how `https://trusted@<ip>/` reads as trusted.
+//! - names that do not resolve publicly (`localhost`, `*.local`, `*.onion`, one label);
+//! - credentials in the URI, which is how `https://trusted@<ip>/` reads as trusted,
+//!   and a `\` anywhere, which two URL parsers split into two different hosts.
 //!
 //! The domain lists live in `config/erc8004_agent_uri_rules.json`, shared with
 //! `scripts/erc8004_custodied_identities.py`, and both are tested against the
@@ -91,7 +92,7 @@ impl Violation {
             Violation::Missing => "agentUri is required".to_string(),
             Violation::TooLong => format!("agentUri is longer than {} bytes", RULES.max_bytes),
             Violation::Malformed => {
-                "agentUri is not a well-formed URI (no spaces or control characters, and a host)"
+                "agentUri is not a well-formed URI (a host, and no spaces, control characters or \\)"
                     .to_string()
             }
             Violation::Scheme => "agentUri must start with https:// or ipfs://".to_string(),
@@ -132,8 +133,13 @@ pub fn violations(uri: &str) -> Vec<Violation> {
     }
     // A URL parser strips tabs and newlines and trims spaces, so the string it
     // judged would not be the string written on-chain. Refuse the difference
-    // instead of reasoning about it.
-    if uri.chars().any(|c| c.is_whitespace() || c.is_control()) {
+    // instead of reasoning about it. Same for `\`: a WHATWG parser ends the
+    // host at it (`https://good\@198.51.100.7/` is `good`), while other URL
+    // parsers, Python's among them, read the host after the `@`.
+    if uri
+        .chars()
+        .any(|c| c.is_whitespace() || c.is_control() || c == '\\')
+    {
         found.push(Violation::Malformed);
         return found;
     }
@@ -149,10 +155,14 @@ pub fn violations(uri: &str) -> Vec<Violation> {
         found.push(Violation::Scheme);
     }
     if scheme == "ipfs" {
-        // `ipfs://<cid>[/path]`: the authority is the content id.
-        let cid_ok = uri
-            .get(.."ipfs://".len())
-            .is_some_and(|p| p.eq_ignore_ascii_case("ipfs://"))
+        // `ipfs://<cid>[/path]`: the authority is the content id, and nothing
+        // else -- no user, no port.
+        let cid_ok = url.username().is_empty()
+            && url.password().is_none()
+            && url.port().is_none()
+            && uri
+                .get(.."ipfs://".len())
+                .is_some_and(|p| p.eq_ignore_ascii_case("ipfs://"))
             && url
                 .host_str()
                 .is_some_and(|h| !h.is_empty() && h.chars().all(|c| c.is_ascii_alphanumeric()));

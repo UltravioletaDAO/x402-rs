@@ -1344,16 +1344,17 @@ each with its own `errorCode`, before anything is sent:
 
 | `errorCode` | Status | Why |
 |---|---|---|
-| `agent_uri_missing`, `agent_uri_too_long` (over 2048 bytes), `agent_uri_malformed` | 400 | No usable URI |
+| `agent_uri_missing`, `agent_uri_too_long` (over 2048 bytes), `agent_uri_malformed` (spaces, control characters or a `\`) | 400 | No usable URI |
 | `agent_uri_scheme` | 400 | Not `https://` or `ipfs://` (`http://`, `data:` ...) |
 | `agent_uri_credentials` | 400 | A user or password before the host |
 | `agent_uri_ip_literal` | 400 | The host is an IP address, in any form a URL parser reads as one |
 | `agent_uri_non_public_host` | 400 | `localhost`, `.local`, `.internal`, a single label |
 | `agent_uri_embedded_ip` | 400 | A host that embeds an IP (`198-51-100-7.example.com`) or a wildcard-DNS service (`sslip.io`, `nip.io`, ...) |
 | `agent_uri_tunnel` | 400 | A tunnelling service (`ngrok`, `trycloudflare`, ...) |
-| `recipient_required`, `recipient_is_facilitator` | 400 | See above |
+| `recipient_required`, `recipient_is_facilitator`, `recipient_invalid` (the zero address) | 400 | See above |
+| `recipient_cannot_receive` | 400 | EVM: a contract that does not answer `onERC721Received`; the transfer would revert and leave the identity with the facilitator |
 | `recipient_blocked` | 403 | The recipient is on a compliance list; nothing is minted or handed over |
-| `recipient_screening_unavailable` | 503 | The lists could not be read; retryable |
+| `recipient_screening_unavailable`, `recipient_check_unavailable` | 503 | The lists, or the recipient's code, could not be read; retryable |
 
 The domain lists are `config/erc8004_agent_uri_rules.json` in the repository.
 
@@ -1462,11 +1463,11 @@ re-minted — the async path returns the existing job, the sync path returns
     responses(
         (status = 200, description = "Registration result (sync)", body = Object),
         (status = 202, description = "Async registration accepted; poll /register/status/{jobId}", body = Object),
-        (status = 400, description = "Registration failed, or refused before the chain: `errorCode` says which rule (`agent_uri_*`, `recipient_required`, `recipient_is_facilitator`)", body = Object),
+        (status = 400, description = "Registration failed, or refused before the chain: `errorCode` says which rule (`agent_uri_*`, `recipient_required`, `recipient_is_facilitator`, `recipient_invalid`, `recipient_cannot_receive`)", body = Object),
         (status = 403, description = "`recipient_blocked`: the recipient is on a compliance list", body = Object),
         (status = 409, description = "A registration for this agent is already in progress", body = Object),
         (status = 500, description = "Solana: the identity exists but is still held by the facilitator (`mint.status` is `pending_stats` or `pending_transfer`). Repeat the request to finish it", body = Object),
-        (status = 503, description = "Refused before touching the chain: the recipient could not be screened (`recipient_screening_unavailable`), or on Solana the fee payer cannot cover the mint, or the facilitator could not tell whether this agent already has a half-minted identity", body = Object)
+        (status = 503, description = "Refused before minting: the recipient could not be screened (`recipient_screening_unavailable`), its code or its balance could not be read (`recipient_check_unavailable`), or on Solana the fee payer cannot cover the mint, or the facilitator could not tell whether this agent already has a half-minted identity", body = Object)
     )
 )]
 async fn path_register_post() {}

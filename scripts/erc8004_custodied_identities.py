@@ -124,7 +124,7 @@ def violations(uri: str) -> list[str]:
     found: list[str] = []
     if len(uri.encode("utf-8")) > RULES["maxBytes"]:
         found.append(TOO_LONG)
-    if any(c.isspace() or unicodedata.category(c) == "Cc" for c in uri):
+    if any(c.isspace() or unicodedata.category(c) == "Cc" or c == "\\" for c in uri):
         found.append(MALFORMED)
         return found
     m = re.match(r"([A-Za-z][A-Za-z0-9+.\-]*):(.*)\Z", uri, re.S)

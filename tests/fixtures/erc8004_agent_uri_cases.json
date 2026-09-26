@@ -27,6 +27,11 @@
     {"uri": "ipfs://", "violations": ["agent_uri_malformed"]},
     {"uri": "ipfs:QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG", "violations": ["agent_uri_malformed"]},
     {"uri": "https://198.51.100.7.5/agent.json", "violations": ["agent_uri_malformed"]},
+    {"uri": "https://execution.market\\@198.51.100.7/agent.json", "violations": ["agent_uri_malformed"]},
+    {"uri": "https://example.com\\agent.json", "violations": ["agent_uri_malformed"]},
+    {"uri": "ipfs://Qm_not-a-cid/agent.json", "violations": ["agent_uri_malformed"]},
+    {"uri": "ipfs://user@QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG/agent.json", "violations": ["agent_uri_malformed"]},
+    {"uri": "ipfs://QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG:8080/agent.json", "violations": ["agent_uri_malformed"]},
 
     {"uri": "http://example.com/agent.json", "violations": ["agent_uri_scheme"]},
     {"uri": "ftp://example.com/agent.json", "violations": ["agent_uri_scheme"]},
@@ -45,6 +50,10 @@
     {"uri": "https://localhost/agent.json", "violations": ["agent_uri_non_public_host"]},
     {"uri": "https://printer.local/agent.json", "violations": ["agent_uri_non_public_host"]},
     {"uri": "https://intranet/agent.json", "violations": ["agent_uri_non_public_host"]},
+    {"uri": "https://localhost.localdomain/agent.json", "violations": ["agent_uri_non_public_host"]},
+    {"uri": "https://svc.test/agent.json", "violations": ["agent_uri_non_public_host"]},
+    {"uri": "https://printer.home.arpa/agent.json", "violations": ["agent_uri_non_public_host"]},
+    {"uri": "https://abcdefghijklmnop.onion/agent.json", "violations": ["agent_uri_non_public_host"]},
     {"uri": "http://localhost:8080/agent.json", "violations": ["agent_uri_scheme", "agent_uri_non_public_host"]},
 
     {"uri": "https://198-51-100-7.sslip.io/agent.json", "violations": ["agent_uri_embedded_ip"]},
@@ -57,7 +66,9 @@
 
     {"uri": "https://abc123.ngrok-free.app/agent.json", "violations": ["agent_uri_tunnel"]},
     {"uri": "https://some-words-here.trycloudflare.com/agent.json", "violations": ["agent_uri_tunnel"]},
-    {"uri": "https://quiet-cat.loca.lt/agent.json", "violations": ["agent_uri_tunnel"]}
+    {"uri": "https://quiet-cat.loca.lt/agent.json", "violations": ["agent_uri_tunnel"]},
+    {"uri": "https://box.tail0a1b2.ts.net/agent.json", "violations": ["agent_uri_tunnel"]},
+    {"uri": "https://fuzzy-pancake-8080.app.github.dev/agent.json", "violations": ["agent_uri_tunnel"]}
   ],
   "tooLong": {"prefix": "https://example.com/", "fill": "a", "totalBytes": 2049, "violations": ["agent_uri_too_long"]}
 }

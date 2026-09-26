@@ -43,6 +43,7 @@ Full contract: `/openapi.json` (Swagger UI at `/docs`).
 - A2A agent card: `/.well-known/agent-card.json` (legacy path `/.well-known/agent.json`)
 - x402 discovery: `/.well-known/x402`
 - API catalog (RFC 9727): `/.well-known/api-catalog`
+- Stack interop manifest (`uvd.stack/1`: doors, health, every rate limit): `/.well-known/uvd-stack.json`
 - Agent skills index: `/.well-known/agent-skills/index.json`
 - MCP server card: `/.well-known/mcp/server-card.json` (endpoint: `POST /mcp`)
 - MCP guide: `/mcp`

@@ -54,6 +54,47 @@
 //! A key that is absent, malformed, unknown or revoked makes the caller a third
 //! party: charged to its address like anybody else, never a `500`. A rejected
 //! key is logged with the caller's address and path, never its value.
+//!
+//! # The limits a third party is told
+//!
+//! A limit a client can only learn by hitting it is the failure the headers
+//! exist to remove. Every budget is announced three ways, from the numbers of
+//! [`BUDGETS`] and never from a copy of them: the headers and the manifest from
+//! the [`Limit`] the bucket itself was built with, `/config` from the budget:
+//!
+//! - `RateLimit-Policy` on every response [`PolicyLayer`] charges to a budget,
+//!   `200` included, and `RateLimit` next to it with what is left in the
+//!   caller's bucket;
+//! - `rate_limits` in `/.well-known/uvd-stack.json` (`crate::interop`), built
+//!   from the buckets [`RatePolicy::layer`] actually mounted ([`mounted`]);
+//! - `GET /config` ([`document`]), which publishes every budget under the same
+//!   name the header carries.
+//!
+//! A recognized stack identity is charged to no budget, so it is told none: its
+//! response carries `x-ratelimit-exempt` and no `RateLimit` header.
+//!
+//! The header format is `draft-ietf-httpapi-ratelimit-headers-11` (Structured
+//! Fields, RFC 9651), the one the stack's interop specification names for R7.3:
+//!
+//! ```text
+//! RateLimit-Policy: "verify-settle";q=30;w=60
+//! RateLimit: "verify-settle";r=29;t=2
+//! ```
+//!
+//! tower_governor's GCRA refills ONE token every `period` and holds at most
+//! `burst`. That is published as `q = burst` per `w = burst * period`, and the
+//! translation is exact, not an approximation: a caller that never sends more
+//! than `q` requests inside ANY window of `w` seconds is never refused, because
+//! a GCRA bucket admits every sequence with at most `burst + t / period`
+//! requests in any interval of `t` seconds. The same pair is the sustained rate
+//! (`q / w = 1 / period`) and the burst (`q` at once).
+//!
+//! `t` on `RateLimit` is one `period`, rounded up: within that many seconds the
+//! caller can spend no more than the `r` it was told, because at most one
+//! token arrives in the meantime and it arrives at the end. It is deliberately
+//! not "seconds until the bucket is full", which on the registration bucket
+//! would tell a client to wait fifty minutes for a token that is twelve seconds
+//! away.
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -91,25 +132,125 @@ use crate::client_ip::ClientIpKeyExtractor;
 
 /// A per-IP budget as `tower_governor` applies it: ONE token every `period`,
 /// at most `burst` banked. `period` is a replenish period, not a rate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// It carries the name of the [`Budget`] it came from, which is what
+/// `RateLimit-Policy` calls it. The name is private, and outside tests a
+/// `Limit` only comes from a budget ([`Budget::limit`],
+/// [`Budget::default_limit`]): every bucket the service mounts is named after
+/// one of [`BUDGETS`], and the headers and the manifest publish the numbers of
+/// the bucket itself, never a copy (`every_governor_goes_through_the_policy`
+/// checks that `main.rs` sizes each bucket with its budget's `limit()`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Limit {
     pub period: Duration,
     pub burst: u32,
+    /// The name `RateLimit-Policy` and `RateLimit` give this budget. Two routes
+    /// that share a bucket share the name, which is how a client learns that
+    /// draining one drains the other (`/mcp` and `/settle`).
+    name: &'static str,
 }
 
 impl Limit {
-    pub const fn every_ms(period_ms: u64, burst: u32) -> Self {
+    const fn of(name: &'static str, period_ms: u64, burst: u32) -> Self {
         Self {
             period: Duration::from_millis(period_ms),
             burst,
+            name,
+        }
+    }
+
+    /// A limit no budget sized, for tests; its headers call it `test`.
+    #[cfg(test)]
+    pub const fn every_ms(period_ms: u64, burst: u32) -> Self {
+        Self::of("test", period_ms, burst)
+    }
+
+    /// A limit no budget sized, under `name`, for tests of the headers.
+    #[cfg(test)]
+    pub const fn named(name: &'static str, period_ms: u64, burst: u32) -> Self {
+        Self::of(name, period_ms, burst)
+    }
+
+    /// `q`: the quota of one window, which is the burst.
+    pub fn quota(&self) -> u64 {
+        u64::from(self.burst)
+    }
+
+    /// `w`: the window over which `q` holds, `burst * period` rounded UP to a
+    /// whole second (a longer window with the same quota is stricter, so the
+    /// rounding never promises more than the bucket grants). At least 1.
+    pub fn window_s(&self) -> u64 {
+        ceil_secs(self.period.saturating_mul(self.burst))
+    }
+
+    /// `t`: one period, rounded up. See the module docs for why.
+    pub fn reset_s(&self) -> u64 {
+        ceil_secs(self.period)
+    }
+
+    /// The `RateLimit-Policy` value: `"<name>";q=<burst>;w=<window>`.
+    pub fn policy_field(&self) -> HeaderValue {
+        HeaderValue::from_str(&format!(
+            "\"{}\";q={};w={}",
+            self.name,
+            self.quota(),
+            self.window_s()
+        ))
+        .expect("budget names are plain ASCII")
+    }
+
+    /// The `RateLimit` value for a caller with `remaining` tokens:
+    /// `"<name>";r=<remaining>;t=<period>`.
+    pub fn limit_field(&self, remaining: u64) -> HeaderValue {
+        HeaderValue::from_str(&format!(
+            "\"{}\";r={};t={}",
+            self.name,
+            remaining,
+            self.reset_s()
+        ))
+        .expect("budget names are plain ASCII")
+    }
+
+    /// Add `RateLimit-Policy`, and `RateLimit` when the bucket reported what is
+    /// left (`x-ratelimit-remaining`, on the `200` and the `429` alike). A
+    /// response the bucket could not key (no client address) carries only the
+    /// policy: there is no bucket to report on.
+    fn stamp(&self, headers: &mut HeaderMap) {
+        let remaining = headers
+            .get(GOVERNOR_REMAINING)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.trim().parse::<u64>().ok());
+        headers.insert(RATELIMIT_POLICY, self.policy_field());
+        if let Some(remaining) = remaining {
+            headers.insert(RATELIMIT, self.limit_field(remaining));
         }
     }
 }
 
+/// Seconds, rounded up, never zero: `w` and `t` are non-zero integers in the
+/// draft, and a sub-second period still means "wait before the next one".
+fn ceil_secs(duration: Duration) -> u64 {
+    let nanos = duration.as_nanos();
+    let secs = nanos.div_ceil(1_000_000_000);
+    u64::try_from(secs).unwrap_or(u64::MAX).max(1)
+}
+
+/// `RateLimit-Policy`: the quota a response is governed by.
+pub const RATELIMIT_POLICY: HeaderName = HeaderName::from_static("ratelimit-policy");
+
+/// `RateLimit`: what is left of that quota for this caller.
+pub const RATELIMIT: HeaderName = HeaderName::from_static("ratelimit");
+
+/// What tower_governor reports the caller's remaining tokens under, on the
+/// `200` and on the `429` alike (`use_headers()`).
+const GOVERNOR_REMAINING: &str = "x-ratelimit-remaining";
+
 /// One per-IP budget: its default, and the two variables that override it.
 #[derive(Debug)]
 pub struct Budget {
-    /// The name `GET /config` publishes it under.
+    /// The name `GET /config` publishes it under, and `RateLimit-Policy` and
+    /// `RateLimit` name it by: lowercase ASCII, digits and `-`, written
+    /// unescaped into a Structured Field string.
     pub name: &'static str,
     /// What draws on it, in words, for `GET /config`.
     pub routes: &'static str,
@@ -121,7 +262,7 @@ pub struct Budget {
 
 impl Budget {
     pub const fn default_limit(&self) -> Limit {
-        Limit::every_ms(self.default_period_ms, self.default_burst)
+        Limit::of(self.name, self.default_period_ms, self.default_burst)
     }
 
     /// The effective limit: each override that parses to a positive integer
@@ -139,7 +280,7 @@ impl Budget {
             .and_then(|v| v.trim().parse::<u32>().ok())
             .filter(|n| *n > 0)
             .unwrap_or(self.default_burst);
-        Limit::every_ms(period_ms, burst)
+        Limit::of(self.name, period_ms, burst)
     }
 }
 
@@ -150,7 +291,7 @@ impl Budget {
 /// `Arc`), because an `x402_settle` tool call costs the chain what
 /// `POST /settle` does.
 pub const VERIFY_SETTLE: Budget = Budget {
-    name: "verify_settle",
+    name: "verify-settle",
     routes: "/verify, /settle, /receipts/*, /.well-known/receipt-keys.json, POST /mcp",
     default_period_ms: 2_000,
     default_burst: 30,
@@ -174,7 +315,7 @@ pub const VERIFY_SETTLE: Budget = Budget {
 /// first minute. If outbound validation is ever added to the register path,
 /// this number must come back down.
 pub const DISCOVERY_REGISTER: Budget = Budget {
-    name: "discovery_register",
+    name: "discovery-register",
     routes: "POST /discovery/register, /discovery/admin/*, POST /discovery/refresh",
     default_period_ms: 12_000,
     default_burst: 250,
@@ -191,7 +332,7 @@ pub const DISCOVERY_REGISTER: Budget = Budget {
 /// a paginating client), so the budget covers a full-catalog walk while still
 /// cutting off a hammering loop.
 pub const DISCOVERY_READ: Budget = Budget {
-    name: "discovery_read",
+    name: "discovery-read",
     routes: "/discovery/resources, /discovery/stats, /discovery/attestation/*, /discovery/config, /transactions, /api/stats/*, /dx402/*",
     default_period_ms: 200,
     default_burst: 120,
@@ -223,7 +364,7 @@ pub const EVENTS: Budget = Budget {
 /// sweep ran ~21 req/min aggregated, so 120/min does not touch legitimate
 /// traffic and only cuts off a runaway loop.
 pub const IDENTITY_READ: Budget = Budget {
-    name: "identity_read",
+    name: "identity-read",
     routes: "/identity/*",
     default_period_ms: 500,
     default_burst: 60,
@@ -242,7 +383,7 @@ pub const IDENTITY_READ: Budget = Budget {
 /// paginating bazaar client and a reputation caller from one IP should not
 /// draw down the same budget.
 pub const SECONDARY_READ: Budget = Budget {
-    name: "secondary_read",
+    name: "secondary-read",
     routes:
         "/reputation/*, /blacklist, POST /escrow/state, /health/ready, /config, unknown paths (404)",
     default_period_ms: 300,
@@ -260,7 +401,7 @@ pub const SECONDARY_READ: Budget = Budget {
 /// near 60 is an office or a carrier NAT putting many readers behind one
 /// address. The ceiling is sized against a loop, not against a reader.
 pub const HUMAN_PAGES: Budget = Budget {
-    name: "human_pages",
+    name: "human-pages",
     routes: "/, /bazaar, /networks, /x402, /dx402, /erc8004, /integrar, /events/live, /stats",
     default_period_ms: 500,
     default_burst: 60,
@@ -277,7 +418,7 @@ pub const HUMAN_PAGES: Budget = Budget {
 /// The writes that send a transaction are ALSO under the per-network daily cap
 /// (`erc8004::daily_cap`), which protects gas and which no identity skips.
 pub const ERC8004_WRITES: Budget = Budget {
-    name: "erc8004_writes",
+    name: "erc8004-writes",
     routes: "POST /register, POST /feedback, POST /feedback/*",
     default_period_ms: 12_000,
     default_burst: 30,
@@ -307,8 +448,14 @@ type PolicyConfig = GovernorConfig<ClientIpKeyExtractor, StateInformationMiddlew
 /// mount. Opaque on purpose: it is not a `GovernorConfig`, so a
 /// `GovernorLayer` built from it -- a governor the stack does not skip -- does
 /// not compile. Clone it to share the bucket between routers.
+///
+/// It keeps the [`Limit`] it was built with, so the headers a response carries
+/// are the numbers that bucket enforces, never a restatement of them.
 #[derive(Clone)]
-pub struct Bucket(Arc<PolicyConfig>);
+pub struct Bucket {
+    config: Arc<PolicyConfig>,
+    limit: Limit,
+}
 
 /// A bucket per client address for `limit`. The only `GovernorConfigBuilder`
 /// on the service.
@@ -317,15 +464,72 @@ pub struct Bucket(Arc<PolicyConfig>);
 /// balancer appended. `use_headers()` makes the budget legible: a `200` carries
 /// `x-ratelimit-limit` and `x-ratelimit-remaining`, not just the `429`.
 pub fn config(limit: Limit) -> Bucket {
-    Bucket(Arc::new(
-        GovernorConfigBuilder::default()
-            .period(limit.period)
-            .burst_size(limit.burst)
-            .key_extractor(ClientIpKeyExtractor)
-            .use_headers()
-            .finish()
-            .expect("a policy budget has a non-zero period and burst"),
-    ))
+    Bucket {
+        config: Arc::new(
+            GovernorConfigBuilder::default()
+                .period(limit.period)
+                .burst_size(limit.burst)
+                .key_extractor(ClientIpKeyExtractor)
+                .use_headers()
+                .finish()
+                .expect("a policy budget has a non-zero period and burst"),
+        ),
+        limit,
+    }
+}
+
+/// Which public door of the service a bucket guards: the two doors the
+/// interop manifest names for this service (`endpoints.api`, `endpoints.mcp`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Door {
+    /// Every HTTP route of the facilitator.
+    Api,
+    /// `POST /mcp`.
+    Mcp,
+}
+
+impl Door {
+    /// The manifest's name for this door (`rate_limits[].applies_to`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Door::Api => "api",
+            Door::Mcp => "mcp",
+        }
+    }
+}
+
+/// A bucket mounted on one door. What the interop manifest publishes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Mount {
+    pub limit: Limit,
+    pub door: Door,
+}
+
+/// Every bucket [`RatePolicy::layer_on`] mounted in this process, in mount
+/// order.
+///
+/// Written while `main` assembles the router, before the first request is
+/// served, and read by the manifest. A process-wide list rather than a value
+/// threaded through `main`, because two of the buckets are mounted inside
+/// `handlers` (`human_page_routes_governed`, `erc8004_write_governed`) and a
+/// list `main` kept would have to be told about them by hand.
+static MOUNTED: Mutex<Vec<Mount>> = Mutex::new(Vec::new());
+
+/// The buckets mounted so far, each (limit, door) once, in mount order.
+pub fn mounted() -> Vec<Mount> {
+    MOUNTED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+}
+
+fn record(mount: Mount) {
+    let mut all = MOUNTED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if !all.contains(&mount) {
+        all.push(mount);
+    }
 }
 
 // ============================================================================
@@ -676,13 +880,26 @@ impl RatePolicy {
         &self.stack
     }
 
-    /// The governor for `bucket`, which a recognized stack identity skips.
-    /// Built with the service's JSON `429` (`handlers::rate_limit_error`).
+    /// The governor for `bucket` on the API door, which a recognized stack
+    /// identity skips. Built with the service's JSON `429`
+    /// (`handlers::rate_limit_error`).
     pub fn layer(&self, bucket: &Bucket) -> PolicyLayer {
+        self.layer_on(bucket, Door::Api)
+    }
+
+    /// The governor for `bucket` on `door`. Records the mount for the interop
+    /// manifest; every response it charges to the bucket names it in
+    /// `RateLimit-Policy`.
+    pub fn layer_on(&self, bucket: &Bucket, door: Door) -> PolicyLayer {
+        record(Mount {
+            limit: bucket.limit,
+            door,
+        });
         PolicyLayer {
-            governor: GovernorLayer::new(Arc::clone(&bucket.0))
+            governor: GovernorLayer::new(Arc::clone(&bucket.config))
                 .error_handler(crate::handlers::rate_limit_error),
             stack: Arc::clone(&self.stack),
+            limit: bucket.limit,
         }
     }
 
@@ -701,10 +918,16 @@ impl RatePolicy {
 /// choose a bucket, and a bucket of its own would still refuse the stack past
 /// its burst. This keeps both services -- the governed one and the bare one it
 /// wraps -- and picks per request.
+///
+/// A response charged to the bucket is stamped with `RateLimit-Policy` and
+/// `RateLimit` here, OUTSIDE the governor, so the governor's own `429` carries
+/// them too. A stack identity's response is charged to nothing and is stamped
+/// `x-ratelimit-exempt` instead.
 #[derive(Clone)]
 pub struct PolicyLayer {
     governor: GovernorLayer<ClientIpKeyExtractor, StateInformationMiddleware, Body>,
     stack: Arc<StackIdentities>,
+    limit: Limit,
 }
 
 impl<S: Clone> Layer<S> for PolicyLayer {
@@ -715,6 +938,7 @@ impl<S: Clone> Layer<S> for PolicyLayer {
             governed: self.governor.layer(inner.clone()),
             bare: inner,
             stack: Arc::clone(&self.stack),
+            limit: self.limit,
         }
     }
 }
@@ -724,6 +948,7 @@ pub struct PolicyService<S> {
     governed: Governor<ClientIpKeyExtractor, StateInformationMiddleware, S, Body>,
     bare: S,
     stack: Arc<StackIdentities>,
+    limit: Limit,
 }
 
 impl<S> Service<Request> for PolicyService<S>
@@ -754,7 +979,15 @@ where
                     Ok(response)
                 })
             }
-            None => Box::pin(self.governed.clone().oneshot(request)),
+            None => {
+                let governed = self.governed.clone();
+                let limit = self.limit;
+                Box::pin(async move {
+                    let mut response = governed.oneshot(request).await?;
+                    limit.stamp(response.headers_mut());
+                    Ok(response)
+                })
+            }
         }
     }
 }
@@ -1215,7 +1448,7 @@ mod tests {
     fn frozen(budget: &Budget) -> Limit {
         Limit {
             period: Duration::from_secs(3600),
-            burst: budget.limit().burst,
+            ..budget.limit()
         }
     }
 
@@ -1554,8 +1787,11 @@ mod tests {
             ("EVENTS_RATE_BURST", "40"),
         ]);
         let lookup = |var: &str| vars.get(var).map(|v| v.to_string());
-        assert_eq!(VERIFY_SETTLE.limit_from(lookup), Limit::every_ms(500, 30));
-        assert_eq!(EVENTS.limit_from(lookup), Limit::every_ms(2_000, 40));
+        assert_eq!(
+            VERIFY_SETTLE.limit_from(lookup),
+            Limit::named("verify-settle", 500, 30)
+        );
+        assert_eq!(EVENTS.limit_from(lookup), Limit::named("events", 2_000, 40));
         assert_eq!(
             IDENTITY_READ.limit_from(lookup),
             IDENTITY_READ.default_limit()
@@ -2214,7 +2450,8 @@ mod tests {
         assert_eq!(lets.len(), main.matches(built).count(), "{lets:?}");
         for bucket in &lets {
             assert!(
-                main.contains(&format!("policy.layer(&{bucket})")),
+                main.contains(&format!("policy.layer(&{bucket})"))
+                    || main.contains(&format!("policy.layer_on(&{bucket},")),
                 "main.rs builds `{bucket}` and never mounts it: its routes have no limit"
             );
         }
@@ -2230,5 +2467,353 @@ mod tests {
             "the ceiling must sit inside the tracing layer so a shed request is logged"
         );
         assert!(main.contains("rate_policy::config_routes("));
+    }
+
+    // ------------------------------------------------------------------------
+    // The RateLimit headers and the interop manifest
+    // ------------------------------------------------------------------------
+
+    /// `path` from `ip`, with `stack_key` if any, through `router`.
+    async fn get_as(
+        router: &Router,
+        path: &'static str,
+        ip: &str,
+        stack_key: Option<&str>,
+    ) -> Response<Body> {
+        let mut request = HttpRequest::builder()
+            .uri(path)
+            .header("x-forwarded-for", ip)
+            .body(Body::empty())
+            .unwrap();
+        if let Some(key) = stack_key {
+            request
+                .headers_mut()
+                .insert(STACK_KEY_HEADER, HeaderValue::from_str(key).unwrap());
+        }
+        router.clone().oneshot(request).await.unwrap()
+    }
+
+    #[test]
+    fn a_token_bucket_publishes_its_burst_over_the_time_it_takes_to_refill() {
+        // /verify and /settle: one token every 2s, burst 30.
+        let p = VERIFY_SETTLE.default_limit();
+        assert_eq!((p.quota(), p.window_s(), p.reset_s()), (30, 60, 2));
+        assert_eq!(p.policy_field(), "\"verify-settle\";q=30;w=60");
+        assert_eq!(p.limit_field(7), "\"verify-settle\";r=7;t=2");
+    }
+
+    #[test]
+    fn sub_second_periods_round_up_and_never_to_zero() {
+        // The bazaar reads: one token every 200ms, burst 120 -> 120 per 24s.
+        let p = DISCOVERY_READ.default_limit();
+        assert_eq!((p.window_s(), p.reset_s()), (24, 1));
+        // A window that is not a whole number of seconds rounds UP: 7 * 300ms
+        // is 2.1s, and promising 7 per 2s would be more than the bucket gives.
+        assert_eq!(Limit::every_ms(300, 7).window_s(), 3);
+        assert_eq!(Limit::every_ms(1, 1).window_s(), 1);
+        assert_eq!(Limit::every_ms(1, 1).reset_s(), 1);
+    }
+
+    /// The publication is only worth anything if it is a limit the bucket
+    /// never breaks: a caller spending exactly `q` per `w` must never see a
+    /// 429, and one request more inside the same window must.
+    #[tokio::test]
+    async fn a_caller_that_keeps_to_the_published_quota_is_never_refused() {
+        let router = Router::new()
+            .route("/probe", any(|| async { "ok" }))
+            .layer(RatePolicy::none().layer(&config(Limit::named("probe", 1_000, 3))));
+        for expected_remaining in (0..3).rev() {
+            let response = get_as(&router, "/probe", "203.0.113.9", None).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                response.headers()[RATELIMIT_POLICY],
+                "\"probe\";q=3;w=3",
+                "the 200 must carry the policy"
+            );
+            assert_eq!(
+                response.headers()[RATELIMIT],
+                format!("\"probe\";r={expected_remaining};t=1").as_str()
+            );
+        }
+        let refused = get_as(&router, "/probe", "203.0.113.9", None).await;
+        assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(refused.headers()[RATELIMIT_POLICY], "\"probe\";q=3;w=3");
+        assert_eq!(refused.headers()[RATELIMIT], "\"probe\";r=0;t=1");
+        assert!(
+            refused.headers().contains_key("retry-after"),
+            "a 429 carries Retry-After (R7.3)"
+        );
+        assert!(
+            refused.headers()["content-type"]
+                .to_str()
+                .unwrap()
+                .starts_with("application/json"),
+            "the refusal is still the typed JSON one"
+        );
+    }
+
+    /// Two routers under one bucket share the caller's tokens -- the `/mcp`
+    /// and `/settle` arrangement -- and say so with one policy name.
+    #[tokio::test]
+    async fn one_bucket_on_two_doors_is_one_budget_under_one_name() {
+        let policy = RatePolicy::none();
+        let bucket = config(Limit::named("shared-probe", 60_000, 2));
+        let a = Router::new()
+            .route("/a", any(|| async { "a" }))
+            .layer(policy.layer_on(&bucket, Door::Api));
+        let b = Router::new()
+            .route("/b", any(|| async { "b" }))
+            .layer(policy.layer_on(&bucket, Door::Mcp));
+        assert_eq!(
+            get_as(&a, "/a", "198.51.100.4", None).await.status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            get_as(&b, "/b", "198.51.100.4", None).await.status(),
+            StatusCode::OK
+        );
+        let third = get_as(&a, "/a", "198.51.100.4", None).await;
+        assert_eq!(third.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            third.headers()[RATELIMIT_POLICY],
+            "\"shared-probe\";q=2;w=120"
+        );
+
+        let doors: Vec<Door> = mounted()
+            .into_iter()
+            .filter(|m| m.limit.name == "shared-probe")
+            .map(|m| m.door)
+            .collect();
+        assert_eq!(doors, vec![Door::Api, Door::Mcp]);
+    }
+
+    /// A route the bucket cannot key (no X-Forwarded-For, no peer address)
+    /// still names its policy, and does not invent a remaining count.
+    #[tokio::test]
+    async fn an_unkeyed_request_names_the_policy_and_reports_no_remaining() {
+        let router = Router::new()
+            .route("/u", any(|| async { "u" }))
+            .layer(RatePolicy::none().layer(&config(Limit::named("unkeyed-probe", 1_000, 5))));
+        let response = router
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/u")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            response.headers()[RATELIMIT_POLICY],
+            "\"unkeyed-probe\";q=5;w=5"
+        );
+        assert!(!response.headers().contains_key(RATELIMIT));
+    }
+
+    #[test]
+    fn a_mount_is_recorded_once_however_often_it_is_governed() {
+        let policy = RatePolicy::none();
+        let bucket = config(Limit::named("recorded-once", 1_000, 1));
+        for _ in 0..3 {
+            let _ = Router::<()>::new().layer(policy.layer(&bucket));
+        }
+        let count = mounted()
+            .iter()
+            .filter(|m| m.limit.name == "recorded-once")
+            .count();
+        assert_eq!(count, 1);
+    }
+
+    /// Every budget's name goes into a Structured Field string unescaped, and
+    /// is the name `GET /config` publishes it under.
+    #[test]
+    fn every_budget_name_is_a_plain_structured_field_string() {
+        for budget in BUDGETS {
+            assert!(
+                !budget.name.is_empty()
+                    && budget
+                        .name
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'),
+                "{:?} cannot be written unescaped into RateLimit-Policy",
+                budget.name
+            );
+            assert_eq!(budget.limit().name, budget.name);
+            assert_eq!(budget.default_limit().name, budget.name);
+        }
+    }
+
+    /// A third party is told the budget it is charged to, with that budget's
+    /// own numbers, on the `200` and on the `429`. A stack identity is charged
+    /// to nothing and is told nothing but `x-ratelimit-exempt`: a `RateLimit`
+    /// header on its response would describe a bucket it does not draw on.
+    #[tokio::test]
+    async fn a_stack_identity_is_told_no_budget_and_a_third_party_its_own() {
+        let policy = stack_policy();
+        for (n, budget) in BUDGETS.iter().enumerate() {
+            let limit = frozen(budget);
+            let router = governed(&policy, limit);
+            let third_party = format!("192.0.2.{}", 10 + n);
+            let stack_ip = format!("192.0.2.{}", 110 + n);
+
+            let first = get_as(&router, "/probe", &third_party, None).await;
+            assert_eq!(first.status(), StatusCode::OK, "{}", budget.name);
+            let expected_policy = format!(
+                "\"{}\";q={};w={}",
+                budget.name,
+                limit.burst,
+                u64::from(limit.burst) * 3600
+            );
+            assert_eq!(first.headers()[RATELIMIT_POLICY], expected_policy.as_str());
+            assert_eq!(
+                first.headers()[RATELIMIT],
+                format!("\"{}\";r={};t=3600", budget.name, limit.burst - 1).as_str()
+            );
+            assert!(!first.headers().contains_key(EXEMPT_HEADER));
+
+            for _ in 1..limit.burst {
+                get_as(&router, "/probe", &third_party, None).await;
+            }
+            let refused = get_as(&router, "/probe", &third_party, None).await;
+            assert_eq!(
+                refused.status(),
+                StatusCode::TOO_MANY_REQUESTS,
+                "{}",
+                budget.name
+            );
+            assert_eq!(
+                refused.headers()[RATELIMIT_POLICY],
+                expected_policy.as_str()
+            );
+
+            for _ in 0..=limit.burst {
+                let exempt = get_as(&router, "/probe", &stack_ip, Some(&em_key())).await;
+                assert_eq!(exempt.status(), StatusCode::OK, "{}", budget.name);
+                assert_eq!(exempt.headers()[EXEMPT_HEADER], "execution-market");
+                for told in [
+                    RATELIMIT_POLICY.as_str(),
+                    RATELIMIT.as_str(),
+                    "x-ratelimit-limit",
+                    "x-ratelimit-remaining",
+                ] {
+                    assert!(
+                        !exempt.headers().contains_key(told),
+                        "{}: an exempt response carries {told}",
+                        budget.name
+                    );
+                }
+            }
+        }
+    }
+
+    /// `GET /config` and `/.well-known/uvd-stack.json` publish the same
+    /// budgets: every bucket `main.rs` mounts is one of `BUDGETS`, `/config`
+    /// lists each under the name its `RateLimit-Policy` carries, and the
+    /// manifest's `rate_limits` is exactly `/config`'s numbers as `q` per `w`,
+    /// with `/mcp` on the verify/settle bucket. Neither carries a key or a
+    /// digest.
+    #[test]
+    fn the_config_document_and_the_interop_manifest_publish_the_same_budgets() {
+        let policy = stack_policy();
+        let config = config_document(&policy);
+        let mut mounts: Vec<Mount> = BUDGETS
+            .iter()
+            .map(|budget| Mount {
+                limit: budget.limit(),
+                door: Door::Api,
+            })
+            .collect();
+        mounts.push(Mount {
+            limit: VERIFY_SETTLE.limit(),
+            door: Door::Mcp,
+        });
+        let manifest =
+            crate::interop::manifest(&mounts, "0.0.0", "0000000", "2026-09-26T00:00:00Z");
+
+        let window = |budget: &Value| {
+            let burst = budget["burst"].as_u64().unwrap();
+            (budget["periodMs"].as_u64().unwrap() * burst)
+                .div_ceil(1000)
+                .max(1)
+        };
+        let budgets = config["rateLimits"]["budgets"].as_array().unwrap();
+        let mut from_config = std::collections::BTreeSet::new();
+        for budget in budgets {
+            let name = budget["name"].as_str().unwrap();
+            let limit = BUDGETS
+                .iter()
+                .find(|b| b.name == name)
+                .unwrap_or_else(|| panic!("/config publishes {name}, which is no budget"))
+                .limit();
+            assert_eq!(limit.name, name, "the header names it differently");
+            assert_eq!(
+                limit.policy_field(),
+                format!("\"{name}\";q={};w={}", budget["burst"], window(budget)).as_str()
+            );
+            let entry = (
+                "api".to_string(),
+                budget["burst"].as_u64().unwrap(),
+                window(budget),
+            );
+            from_config.insert(entry.clone());
+            if name == VERIFY_SETTLE.name {
+                from_config.insert(("mcp".to_string(), entry.1, entry.2));
+            }
+        }
+        assert_eq!(budgets.len(), BUDGETS.len());
+        let published: std::collections::BTreeSet<(String, u64, u64)> = manifest["rate_limits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| {
+                (
+                    l["applies_to"].as_str().unwrap().to_string(),
+                    l["limit"].as_u64().unwrap(),
+                    l["window_s"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(published, from_config);
+
+        for doc in [config.to_string(), manifest.to_string()] {
+            for secret in [
+                em_key(),
+                kk_key(),
+                digest_hex(&em_key()),
+                digest_hex(&kk_key()),
+            ] {
+                assert!(!doc.contains(&secret), "a key or a digest was published");
+            }
+        }
+    }
+
+    /// The MCP door is mounted on the verify/settle bucket, and says so: the
+    /// manifest publishes the limit on `mcp` because `main.rs` mounts it there.
+    #[test]
+    fn the_mcp_door_draws_on_the_verify_settle_bucket() {
+        let main = include_str!("main.rs");
+        let mcp = main
+            .split(';')
+            .find(|statement| statement.contains("let mcp = mcp::mcp_routes("))
+            .expect("main.rs mounts the MCP server");
+        assert!(
+            mcp.contains("policy.layer_on(&verify_settle_config, rate_policy::Door::Mcp)"),
+            "/mcp left the verify/settle bucket or the mcp door: {mcp}"
+        );
+    }
+
+    /// A browser client can only pace itself on what CORS lets it read.
+    #[test]
+    fn a_browser_can_read_the_ratelimit_headers() {
+        let main = include_str!("main.rs");
+        let exposed = main
+            .split(".expose_headers(")
+            .nth(1)
+            .and_then(|rest| rest.split(".map(").next())
+            .expect("main.rs exposes headers to browsers");
+        for header in ["\"ratelimit-policy\"", "\"ratelimit\"", "\"retry-after\""] {
+            assert!(exposed.contains(header), "CORS does not expose {header}");
+        }
     }
 }

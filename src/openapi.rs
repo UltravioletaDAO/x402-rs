@@ -138,10 +138,19 @@ just on the refusal:
 
 | Header | Present on | Meaning |
 |---|---|---|
+| `RateLimit-Policy` | `200` and `429` | the bucket this route draws on: `"<name>";q=<quota>;w=<window seconds>` |
+| `RateLimit` | `200` and `429` | what is left of it: `"<name>";r=<remaining>;t=<seconds>` |
 | `x-ratelimit-limit` | `200` and `429` | burst size of the bucket this route draws on |
 | `x-ratelimit-remaining` | `200` and `429` | tokens left in that bucket |
 | `retry-after` | `429` | seconds to wait before retrying |
 | `x-ratelimit-after` | `429` | the same value under tower_governor's own name |
+
+`RateLimit-Policy` and `RateLimit` follow draft-ietf-httpapi-ratelimit-headers
+(Structured Fields). A caller that sends at most `q` requests in any `w`
+seconds is never refused; `r` is what it may still spend within the next `t`
+seconds. Two routes that share a bucket share its name (`/mcp` answers with
+`"verify-settle"`). Every limit is also listed, before any request, in
+`rate_limits` of `/.well-known/uvd-stack.json`.
 
 Read `x-ratelimit-remaining` and slow down before it reaches zero. The buckets
 refill one token every N seconds rather than granting N per minute, so the
@@ -170,9 +179,10 @@ task's ceiling only once its body is in. `/health` is never refused.
 
 Ultravioleta DAO's own services present an `X-UVD-Stack-Key` and are not
 charged to their address by any bucket or by the per-address ceiling (the
-response carries `x-ratelimit-exempt`); the body deadline, the task's ceiling
-and the daily write limit still apply to them. Every value in force is
-published at `GET /config`.
+response carries `x-ratelimit-exempt` instead of the rate-limit headers above:
+there is no bucket to report on); the body deadline, the task's ceiling and the
+daily write limit still apply to them. Every value in force is published at
+`GET /config`, each bucket under the name its `RateLimit-Policy` carries.
 
 ## Content negotiation
 
@@ -290,6 +300,7 @@ constraint rather than as grounds for a `406`.
         path_oauth_protected_resource,
         path_agent_skills_index,
         path_mcp_server_card,
+        path_uvd_stack,
         // MCP
         path_mcp_post,
         path_mcp_get,
@@ -2951,14 +2962,17 @@ async fn path_health_ready() {}
     summary = "The rate policy in force",
     description = "What this task enforces, as it was configured at startup: every per-IP \
 budget (`rateLimits.budgets`: its routes, the period of one token, the burst, the defaults and \
-the two variables that override them), the stack identities that skip those budgets (by service \
+the two variables that override them; `name` is the one its `RateLimit-Policy` header carries, and \
+the same budgets are `rate_limits` of `/.well-known/uvd-stack.json`), the stack identities that skip \
+those budgets (by service \
 name, with how many credentials each holds -- never a key or a digest), admission (the per-address \
 ceiling behind `429 too_many_concurrent_requests`, the body deadline behind `408 request_timeout`, \
 the task's ceiling behind `503 overloaded`), and the ERC-8004 daily write limit per network.
 
 **What skips what.** A request carrying a recognized `X-UVD-Stack-Key` is not charged to its \
 address by any budget nor by the per-address ceiling, and is answered with \
-`x-ratelimit-exempt: <service>`; an absent, malformed, unknown or revoked key is charged like any \
+`x-ratelimit-exempt: <service>` and no `RateLimit-Policy` or `RateLimit`; an absent, malformed, \
+unknown or revoked key is charged like any \
 other caller. Neither the body deadline, nor the task's ceiling of concurrent requests (`503`, every \
 caller), nor the daily write limit (`429 erc8004_daily_write_limit`, it protects the gas the \
 facilitator pays) is skipped.
@@ -2971,7 +2985,7 @@ Rate limited per IP like the other cheap reads.",
                     "keyedOn": "client IP: the last X-Forwarded-For entry, else the TCP peer",
                     "refusal": { "status": 429, "code": "rate_limited" },
                     "budgets": [{
-                        "name": "verify_settle",
+                        "name": "verify-settle",
                         "routes": "/verify, /settle, /receipts/*, /.well-known/receipt-keys.json, POST /mcp",
                         "periodMs": 2000, "burst": 30,
                         "default": { "periodMs": 2000, "burst": 30 },
@@ -3223,6 +3237,18 @@ async fn path_agent_skills_index() {}
     )
 )]
 async fn path_mcp_server_card() {}
+
+#[utoipa::path(
+    get,
+    path = "/.well-known/uvd-stack.json",
+    tag = "Agentic",
+    summary = "Stack interop manifest (uvd.stack/1)",
+    description = "Who this service is (`app: \"facilitator\"`, the running `version` and `git_sha`), its two doors (`endpoints.api` and `endpoints.mcp`, both `auth: [\"none\"]`), that it charges nothing (`payments.charges: false`), where liveness (`/health`) and readiness (`/health/ready`) answer, links to the other agent documents, and `rate_limits`: every per-IP limit the router mounts, as `limit` requests per `window_s` seconds on the door it guards. Generated at runtime from the mounted limiters and the build, never written by hand, so it cannot disagree with the `RateLimit-Policy` header those same limiters send. The format is the `uvd.stack/1` manifest of the Ultravioleta DAO stack's interop specification.",
+    responses(
+        (status = 200, description = "uvd.stack/1 manifest", body = Object)
+    )
+)]
+async fn path_uvd_stack() {}
 
 #[utoipa::path(
     post,
@@ -3662,6 +3688,7 @@ mod tests {
             "/.well-known/api-catalog",
             "/.well-known/oauth-protected-resource",
             "/.well-known/agent-skills/index.json",
+            "/.well-known/uvd-stack.json",
         ] {
             assert!(
                 spec.paths.paths.contains_key(route),

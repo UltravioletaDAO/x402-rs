@@ -80,6 +80,7 @@ mod fhe_proxy;
 mod from_env;
 mod handlers;
 mod idempotency_store;
+mod interop;
 mod receipts;
 mod json_depth;
 mod lease;
@@ -591,8 +592,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // everybody). The per-address in-flight ceiling (429) is policy: the stack
     // skips it too.
     //
-    // `use_headers()` on every config makes the budget legible: a 200 carries
-    // `x-ratelimit-limit` and `x-ratelimit-remaining`, not just the 429.
+    // The budget is legible before it is hit, from the same numbers that
+    // enforce it: a third party's 200 and 429 carry `RateLimit-Policy` and
+    // `RateLimit` (draft-ietf-httpapi-ratelimit-headers) next to
+    // tower_governor's `x-ratelimit-limit` and `x-ratelimit-remaining`, and
+    // `/.well-known/uvd-stack.json` lists every bucket `policy.layer` mounted.
+    // A recognized stack identity gets `x-ratelimit-exempt` instead.
     let policy = rate_policy::RatePolicy::from_env();
     let admission = rate_policy::Admission::from_env(&policy);
     for budget in rate_policy::BUDGETS {
@@ -622,18 +627,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_state(axum_state.clone())
         .layer(policy.layer(&verify_settle_config));
 
-    // The MCP server. `Arc::clone` of the SAME config, not a second one built
-    // from the same numbers: `GovernorConfig` holds a `SharedRateLimiter`, so
-    // cloning the Arc shares the token bucket. An MCP `x402_settle` and a
-    // `POST /settle` from one IP therefore draw on one budget -- which is the
-    // point, because they cost the chain the same thing.
+    // The MCP server, under the SAME bucket, not a second one built from the
+    // same numbers: a `Bucket` holds one `SharedRateLimiter`, so mounting it
+    // twice shares the token bucket. An MCP `x402_settle` and a `POST /settle`
+    // from one IP therefore draw on one budget -- which is the point, because
+    // they cost the chain the same thing -- and both answer with the same
+    // `RateLimit-Policy` name, which is how a client learns it. Mounted on the
+    // `mcp` door, so the interop manifest publishes the limit there too.
     let mcp = mcp::mcp_routes(
         axum_state.clone(),
         Arc::clone(&discovery_registry),
         Arc::clone(&event_bus),
         Arc::clone(&transaction_store),
     )
-    .layer(policy.layer(&verify_settle_config));
+    .layer(policy.layer_on(&verify_settle_config, rate_policy::Door::Mcp));
 
     let discovery_register = handlers::discovery_register_routes()
         .with_state(Arc::clone(&discovery_registry))
@@ -815,7 +822,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .allow_origin(cors::Any)
                 .allow_methods([Method::GET, Method::POST])
                 .allow_headers(cors::Any)
-                .expose_headers(["idempotent-replayed", "payment-response", "x-payment-response"].map(axum::http::HeaderName::from_static)),
+                .expose_headers(
+                    [
+                        "idempotent-replayed",
+                        "payment-response",
+                        "x-payment-response",
+                        // A browser client can only pace itself on what it can read.
+                        "ratelimit-policy",
+                        "ratelimit",
+                        "retry-after",
+                    ]
+                    .map(axum::http::HeaderName::from_static),
+                ),
         )
         // Body limit MUST be the last layer applied so it wraps everything below.
         // 64 KiB ceiling on POST bodies — caps memory blow-up from oversized JSON.

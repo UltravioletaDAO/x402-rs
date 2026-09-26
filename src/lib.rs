@@ -43,6 +43,7 @@ pub mod fhe_proxy;
 pub mod from_env;
 pub mod handlers;
 pub mod idempotency_store;
+pub mod interop;
 pub mod receipts;
 pub mod json_depth;
 pub mod lease;

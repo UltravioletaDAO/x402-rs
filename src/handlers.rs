@@ -387,6 +387,7 @@ pub fn agentic_routes() -> Router {
             get(get_mcp_server_card),
         )
         .route("/.well-known/ard.json", get(get_ard))
+        .route(crate::interop::MANIFEST_PATH, get(get_uvd_stack))
 }
 
 /// The 405 every route answers when the path exists but the method does not.
@@ -438,11 +439,12 @@ pub fn rate_limit_error(error: tower_governor::GovernorError) -> Response<axum::
         (
             "rate_limited",
             "Wait for the number of seconds in the `retry-after` header, then \
-             retry. `x-ratelimit-limit` and `x-ratelimit-remaining` report the \
-             budget on every successful response, so a client can pace itself \
-             instead of discovering the limit by hitting it. Limits are per \
-             client IP and documented at \
-             https://facilitator.ultravioletadao.xyz/skill.md",
+             retry. `RateLimit-Policy` and `RateLimit` report the quota and \
+             what is left of it on every successful response too, so a client \
+             can pace itself instead of discovering the limit by hitting it. \
+             Limits are per client IP; every one is listed in \
+             https://facilitator.ultravioletadao.xyz/.well-known/uvd-stack.json \
+             and explained at https://facilitator.ultravioletadao.xyz/skill.md",
         )
     } else {
         (
@@ -938,6 +940,17 @@ pub async fn get_agent_skills_index() -> impl IntoResponse {
 #[instrument(skip_all)]
 pub async fn get_mcp_server_card() -> impl IntoResponse {
     text_surface(mcp_server_card(), APPLICATION_JSON_UTF8)
+}
+
+/// `GET /.well-known/uvd-stack.json`: the stack interop manifest (`uvd.stack/1`).
+///
+/// Who this service is, its two doors and how they authenticate, that it does
+/// not charge, every rate limit the router mounted and where its liveness and
+/// readiness answer. Built by [`crate::interop`] on the first request, from
+/// the running build and the mounted limiters.
+#[instrument(skip_all)]
+pub async fn get_uvd_stack() -> impl IntoResponse {
+    text_surface(crate::interop::served_document(), APPLICATION_JSON_UTF8)
 }
 
 /// The served card: the static document with the running version stamped in.
@@ -16346,6 +16359,7 @@ mod agentic_surface_tests {
         ("/.well-known/agent-skills/index.json", "application/json"),
         ("/.well-known/mcp/server-card.json", "application/json"),
         ("/.well-known/ard.json", "application/json"),
+        ("/.well-known/uvd-stack.json", "application/json"),
     ];
 
     async fn fetch(path: &str) -> (StatusCode, String, String) {
@@ -16956,6 +16970,9 @@ mod agentic_surface_tests {
             "/",
             "/docs",
             "/health",
+            // Readiness, mounted with its own state in main.rs; the interop
+            // manifest publishes it as `health.ready`.
+            "/health/ready",
             "/version",
             "/supported",
             "/verify",
@@ -19214,7 +19231,10 @@ mod erc8004_write_rate_tests {
     #[tokio::test]
     async fn every_erc8004_write_draws_on_one_bucket_of_thirty() {
         let budget = crate::rate_policy::ERC8004_WRITES.default_limit();
-        assert_eq!(budget, crate::rate_policy::Limit::every_ms(12_000, 30));
+        assert_eq!(
+            budget,
+            crate::rate_policy::Limit::named("erc8004-writes", 12_000, 30)
+        );
         let paths = write_paths();
         for expected in ["/register", "/feedback", "/feedback/revoke"] {
             assert!(
@@ -19396,7 +19416,7 @@ mod erc8004_write_rate_tests {
         );
         assert_eq!(
             crate::rate_policy::DISCOVERY_REGISTER.default_limit(),
-            crate::rate_policy::Limit::every_ms(12_000, 250),
+            crate::rate_policy::Limit::named("discovery-register", 12_000, 250),
             "the bazar register budget changed"
         );
         for router in [

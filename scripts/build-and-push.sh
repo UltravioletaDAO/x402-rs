@@ -13,7 +13,7 @@ echo "🐳 Building facilitator Docker image..."
 echo "   Tag: ${IMAGE_TAG}"
 
 # Build image with version information
-docker build --build-arg FACILITATOR_VERSION=${IMAGE_TAG} -t ${ECR_REPOSITORY}:${IMAGE_TAG} .
+docker build --build-arg FACILITATOR_VERSION=${IMAGE_TAG} --build-arg FACILITATOR_GIT_SHA=$(git rev-parse HEAD) -t ${ECR_REPOSITORY}:${IMAGE_TAG} .
 
 # Tag for ECR
 docker tag ${ECR_REPOSITORY}:${IMAGE_TAG} \

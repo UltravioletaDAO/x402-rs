@@ -50,7 +50,8 @@ Do **not** reach for it when:
   allowed to block a payment. The chain is the ledger.
 
 How to call it: no authentication, JSON in and JSON out, per-IP rate limits
-reported on every response in `x-ratelimit-remaining`. Every error is
+reported on every limited response in `RateLimit-Policy` and `RateLimit` (and
+`x-ratelimit-remaining`), and listed up front in the stack manifest. Every error is
 `{"error", "code", "hint"}` — branch on `code`. Start at
 https://facilitator.ultravioletadao.xyz/skill.md, which is the full manual.
 
@@ -101,6 +102,9 @@ facilitator just did, and what it costs (nothing — the seller keeps the paymen
 - **A2A agent card (legacy path)**: https://facilitator.ultravioletadao.xyz/.well-known/agent.json
 - **x402 discovery**: https://facilitator.ultravioletadao.xyz/.well-known/x402
 - **API catalog (RFC 9727)**: https://facilitator.ultravioletadao.xyz/.well-known/api-catalog
+- **Stack interop manifest** (`uvd.stack/1`): https://facilitator.ultravioletadao.xyz/.well-known/uvd-stack.json —
+  who this service is, its API and MCP doors, its liveness and readiness URLs, and
+  every per-IP rate limit it enforces
 - **Agent skills index**: https://facilitator.ultravioletadao.xyz/.well-known/agent-skills/index.json
 - **Agentic Resource Discovery catalog (ARD v0.91)**: https://facilitator.ultravioletadao.xyz/.well-known/ard.json
 - **MCP server card**: https://facilitator.ultravioletadao.xyz/.well-known/mcp/server-card.json

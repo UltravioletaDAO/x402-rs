@@ -290,15 +290,20 @@ mod tests {
         assert_eq!(second.as_u16(), 429, "the peer's bucket was not spent");
     }
 
-    /// Every governor in `src/` keys on [`ClientIpKeyExtractor`], and the
-    /// binary serves with `ConnectInfo` so the peer fallback exists.
+    /// Every governor in `src/` keys on [`ClientIpKeyExtractor`], every one is
+    /// built and mounted through `rate_policy` (`config` and
+    /// `RatePolicy::layer`), and the binary serves with `ConnectInfo` so the
+    /// peer fallback exists.
     ///
     /// Read from source because the configs in `main()` are locals no test can
     /// reach. Every budget is built by `rate_policy::config`, so `src/` holds
     /// exactly ONE `GovernorConfigBuilder`, in `rate_policy.rs`; a second one
     /// anywhere else is a governor that bypassed the policy. A builder with no
     /// `.key_extractor(..)` at all is caught too: it would default to the TCP
-    /// peer, which behind the ALB is one bucket for everybody.
+    /// peer, which behind the ALB is one bucket for everybody. And a
+    /// `GovernorLayer` mounted anywhere but `RatePolicy::layer` would enforce a
+    /// limit that neither `RateLimit-Policy` nor `/.well-known/uvd-stack.json`
+    /// announces, and that a stack identity could not skip.
     #[test]
     fn every_governor_keys_on_the_client_ip() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -347,8 +352,20 @@ mod tests {
                         arg.trim()
                     );
                 }
+                let file = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or_default();
+                if file != "rate_policy.rs" {
+                    assert!(
+                        !src.contains("GovernorLayer::new("),
+                        "{shown} mounts a governor outside `rate_policy::RatePolicy::layer`: \
+                         its limit is neither stamped as RateLimit-Policy nor published \
+                         in /.well-known/uvd-stack.json, and the stack cannot skip it"
+                    );
+                }
                 for _ in 0..here {
-                    builders.push(path.file_name().unwrap().to_string_lossy().into_owned());
+                    builders.push(file.to_string());
                 }
             }
         }

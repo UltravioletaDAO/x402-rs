@@ -73,6 +73,13 @@ Exceeding it returns **429**, never 401 or 403.
 | ERC-8004 writes (`POST /register`, `POST /feedback`, `POST /feedback/*`) | 1 token every 12s | 30 |
 | Bazaar reads (`/discovery/resources`, `/discovery/stats`) | 1 token every 200ms | 120 |
 
+Every limit, including the ones this table leaves out (identity and reputation
+reads, `/events`, the human pages), is published as `limit` requests per
+`window_s` seconds in `rate_limits` of
+https://facilitator.ultravioletadao.xyz/.well-known/uvd-stack.json, and each
+limited response names its bucket in `RateLimit-Policy` and what is left in
+`RateLimit`.
+
 ERC-8004 writes that send a transaction are also limited per network per UTC day.
 Past that limit they return **429** with code `erc8004_daily_write_limit` and a
 `Retry-After` that runs to 00:00 UTC; other networks are not affected.

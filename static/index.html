@@ -2445,7 +2445,7 @@
                     </div>
                     <h3 class="section-title" style="background: linear-gradient(135deg, #f59e0b, #ef4444); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;" data-i18n="x402r.title">Trustless Escrow & Refunds</h3>
                     <p class="section-description" data-i18n="x402r.description">
-                        On-chain escrow with authorize/capture/release/refund flows. Funds are held in smart contracts until conditions are met, enabling trustless refunds for HTTP 402 payments across 9 networks.
+                        On-chain escrow with authorize/capture/release/refund flows. Funds are held in smart contracts until conditions are met, enabling trustless refunds for HTTP 402 payments across 10 networks.
                     </p>
                 </div>
 
@@ -2476,7 +2476,7 @@
 
                 <!-- Supported Networks Grid -->
                 <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 2rem;">
-                    <h4 style="font-size: 0.9rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 1.25rem; text-align: center;" data-i18n="x402r.networksTitle">Escrow Deployed on 9 Networks</h4>
+                    <h4 style="font-size: 0.9rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 1.25rem; text-align: center;" data-i18n="x402r.networksTitle">Escrow Deployed on 10 Networks</h4>
                     <div style="display: flex; flex-wrap: wrap; gap: 0.75rem; justify-content: center;">
                         <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(139, 92, 246, 0.08); border: 1px solid rgba(139, 92, 246, 0.2); border-radius: 8px;">
                             <img data-net-icon="ethereum" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
@@ -2514,6 +2514,10 @@
                             <img data-net-icon="skale-base" alt="" style="width: 20px; height: 20px;" onerror="this.style.display='none'">
                             <span style="font-size: 0.85rem; font-weight: 500;">SKALE</span>
                         </div>
+                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: rgba(133, 147, 176, 0.08); border: 1px solid rgba(133, 147, 176, 0.2); border-radius: 8px;">
+                            <img data-net-icon="arc" alt="" style="width: 20px; height: 20px; border-radius: 50%;" onerror="this.style.display='none'">
+                            <span style="font-size: 0.85rem; font-weight: 500;">Arc</span>
+                        </div>
                     </div>
                     <div style="display: flex; align-items: center; justify-content: center; gap: 1rem; margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid var(--border);">
                         <span style="font-size: 0.75rem; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;" data-i18n="x402r.stablecoinsLabel">Supported Stablecoins</span>
@@ -2526,7 +2530,7 @@
                             <img data-token-icon="usdg" alt="USDG" title="USDG" class="stablecoin-icon">
                         </div>
                     </div>
-                    <p style="text-align: center; color: var(--text-muted); font-size: 0.75rem; margin-top: 1rem;" data-i18n="x402r.create2Note">+ 2 testnets (Base Sepolia, Ethereum Sepolia). Each network has its own deployed contract set.</p>
+                    <p style="text-align: center; color: var(--text-muted); font-size: 0.75rem; margin-top: 1rem;" data-i18n="x402r.create2Note">+ 3 testnets (Base Sepolia, Ethereum Sepolia, Arc Testnet). Each network has its own deployed contract set.</p>
                     <div style="display: flex; gap: 0.75rem; justify-content: center; margin-top: 1.25rem;">
                         <a href="https://github.com/BackTrackCo/x402r-contracts" target="_blank"
                            style="font-size: 0.8rem; color: #f59e0b; text-decoration: none; padding: 0.4rem 1rem; border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 6px; transition: all 0.2s; font-weight: 500;"
@@ -3163,16 +3167,16 @@
                 "upto.contractsLabel": "Smart Contract (CREATE2, same on all EVM chains)",
                 "x402r.badge": "x402r Protocol",
                 "x402r.title": "Trustless Escrow & Refunds",
-                "x402r.description": "On-chain escrow with authorize/capture/release/refund flows. Funds are held in smart contracts until conditions are met, enabling trustless refunds for HTTP 402 payments across 9 networks.",
+                "x402r.description": "On-chain escrow with authorize/capture/release/refund flows. Funds are held in smart contracts until conditions are met, enabling trustless refunds for HTTP 402 payments across 10 networks.",
                 "x402r.escrow.title": "Escrow Settlement",
                 "x402r.escrow.desc": "Payments are authorized and held in on-chain escrow contracts. Funds remain locked until the seller captures or the buyer requests a refund.",
                 "x402r.refund.title": "Trustless Refunds",
                 "x402r.refund.desc": "Buyers can request refunds within a configurable time window. No intermediary needed — the smart contract enforces the refund policy on-chain.",
                 "x402r.capture.title": "Authorize & Capture",
                 "x402r.capture.desc": "Two-phase settlement: authorize first, capture later. Sellers can charge partial or full amounts, and release remaining funds back to the buyer.",
-                "x402r.networksTitle": "Escrow Deployed on 9 Networks",
+                "x402r.networksTitle": "Escrow Deployed on 10 Networks",
                 "x402r.stablecoinsLabel": "Supported Stablecoins",
-                "x402r.create2Note": "+ 2 testnets (Base Sepolia, Ethereum Sepolia). Each network has its own deployed contract set.",
+                "x402r.create2Note": "+ 3 testnets (Base Sepolia, Ethereum Sepolia, Arc Testnet). Each network has its own deployed contract set.",
                 "what.title": "What is x402?",
                 "what.description": "x402 is a protocol for stateless, per-request payments over HTTP. Clients attach a signed payment payload to each request. The facilitator verifies it, executes the on-chain transfer, and grants access to protected resources—all without accounts, wallets, or user registration.",
                 "endpoints.title": "API Endpoints",
@@ -3346,16 +3350,16 @@
                 "upto.contractsLabel": "Contrato Inteligente (CREATE2, mismo en todas las cadenas EVM)",
                 "x402r.badge": "Protocolo x402r",
                 "x402r.title": "Escrow y Reembolsos Sin Confianza",
-                "x402r.description": "Escrow on-chain con flujos de autorizar/capturar/liberar/reembolsar. Los fondos se mantienen en contratos inteligentes hasta que se cumplan las condiciones, habilitando reembolsos sin confianza para pagos HTTP 402 en 9 redes.",
+                "x402r.description": "Escrow on-chain con flujos de autorizar/capturar/liberar/reembolsar. Los fondos se mantienen en contratos inteligentes hasta que se cumplan las condiciones, habilitando reembolsos sin confianza para pagos HTTP 402 en 10 redes.",
                 "x402r.escrow.title": "Liquidaci\u00f3n en Escrow",
                 "x402r.escrow.desc": "Los pagos se autorizan y retienen en contratos escrow on-chain. Los fondos permanecen bloqueados hasta que el vendedor capture o el comprador solicite un reembolso.",
                 "x402r.refund.title": "Reembolsos Sin Confianza",
                 "x402r.refund.desc": "Los compradores pueden solicitar reembolsos dentro de una ventana de tiempo configurable. Sin intermediarios \u2014 el contrato inteligente aplica la pol\u00edtica de reembolso on-chain.",
                 "x402r.capture.title": "Autorizar y Capturar",
                 "x402r.capture.desc": "Liquidaci\u00f3n en dos fases: autorizar primero, capturar despu\u00e9s. Los vendedores pueden cobrar montos parciales o totales, y liberar los fondos restantes al comprador.",
-                "x402r.networksTitle": "Escrow Desplegado en 9 Redes",
+                "x402r.networksTitle": "Escrow Desplegado en 10 Redes",
                 "x402r.stablecoinsLabel": "Stablecoins Soportadas",
-                "x402r.create2Note": "+ 2 testnets (Base Sepolia, Ethereum Sepolia). Cada red tiene su propio conjunto de contratos desplegados.",
+                "x402r.create2Note": "+ 3 testnets (Base Sepolia, Ethereum Sepolia, Arc Testnet). Cada red tiene su propio conjunto de contratos desplegados.",
                 "what.title": "¿Qué es x402?",
                 "what.description": "x402 es un protocolo para pagos sin estado por solicitud sobre HTTP. Los clientes adjuntan una carga de pago firmada a cada solicitud. El facilitador la verifica, ejecuta la transferencia en cadena y otorga acceso a recursos protegidos—todo sin cuentas, billeteras o registro de usuarios.",
                 "endpoints.title": "Endpoints de la API",

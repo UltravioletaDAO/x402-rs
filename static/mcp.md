@@ -123,6 +123,12 @@ The arguments of each tool *are* the JSON body of the request it stands for, and
 the result is that request's response body verbatim, in a single text content
 block. Everything `/skill.md` says about `/verify` and `/settle` is true here.
 
+`x402_supported` is the one read, and it also answers in `structuredContent`
+with the same document, described by the `outputSchema` it publishes in
+`tools/list`. Every tool names its class in `_meta["uvd/clase"]`:
+`x402_supported` is `lectura`, `x402_accepts` and `x402_verify` are
+`riel_de_pago`, and `x402_settle` is `mueve_dinero`.
+
 ```bash
 curl -sS https://facilitator.ultravioletadao.xyz/mcp \
   -H 'content-type: application/json' \
@@ -171,9 +177,11 @@ reached a tool:
 
 This endpoint has no budget of its own: it draws on the *same* per-IP bucket as
 `POST /verify` and `POST /settle`, because it is the same handlers being called.
-Every response carries `x-ratelimit-limit` and `x-ratelimit-remaining`; a
-refusal is a `429` with `retry-after` and a JSON body. Throttle on the headers,
-not on the failure.
+Every response carries `RateLimit-Policy: "verify-settle";q=30;w=60` — the
+same name `/verify` and `/settle` answer with, which is how a client can tell
+it is one bucket — plus `RateLimit` and `x-ratelimit-remaining` with what is
+left; a refusal is a `429` with `retry-after` and a JSON body. Throttle on the
+headers, not on the failure.
 
 ## Measured traps
 

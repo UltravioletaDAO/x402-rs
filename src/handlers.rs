@@ -126,43 +126,6 @@ where
         .merge(settle)
 }
 
-/// Env overrides for the identity-read rate limit. Declared here, next to the
-/// routes they protect, so the numbers live in exactly one place and `main.rs`
-/// reads them rather than restating them.
-const ENV_IDENTITY_READ_PER_MS: &str = "IDENTITY_READ_RATE_PER_MS";
-const ENV_IDENTITY_READ_BURST: &str = "IDENTITY_READ_RATE_BURST";
-
-/// One token every 500ms = ~120 req/min sustained, burst 60.
-///
-/// Deliberately GENEROUS. The governor buckets by client IP, and a
-/// single integrator sending every one of its requests from one host lands
-/// entirely in one bucket -- a tight limit throttles that whole integrator at
-/// once. The observed sweep that motivated this (2026-08-29) ran ~21 req/min
-/// aggregated across nine networks, so 120/min does not touch legitimate
-/// traffic and only cuts off a runaway loop. A limit sized against imagined
-/// abuse instead of measured traffic is how every 429 in the last bazaar
-/// incident turned out to be a legitimate paginating client (2026-07-24).
-const DEFAULT_IDENTITY_READ_PER_MS: u64 = 500;
-const DEFAULT_IDENTITY_READ_BURST: u32 = 60;
-
-/// Rate limit for [`identity_read_routes`], as `(per_millisecond, burst_size)`.
-///
-/// Note `tower_governor`'s GCRA replenishes ONE token every `per_millisecond`
-/// milliseconds -- it is a period, not a rate.
-pub fn identity_read_rate_limit() -> (u64, u32) {
-    let per_ms = std::env::var(ENV_IDENTITY_READ_PER_MS)
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .filter(|n| *n > 0)
-        .unwrap_or(DEFAULT_IDENTITY_READ_PER_MS);
-    let burst = std::env::var(ENV_IDENTITY_READ_BURST)
-        .ok()
-        .and_then(|v| v.trim().parse::<u32>().ok())
-        .filter(|n| *n > 0)
-        .unwrap_or(DEFAULT_IDENTITY_READ_BURST);
-    (per_ms, burst)
-}
-
 /// ERC-8004 identity READ routes.
 ///
 /// Split out of [`routes`] so `main.rs` can wrap these (and only these) in a
@@ -195,58 +158,12 @@ where
         )
 }
 
-/// Env overrides for the secondary-reads rate limit. Same reasoning as
-/// [`identity_read_rate_limit`]: declared once, here, so `main.rs` reads the
-/// numbers instead of restating them.
-const ENV_SECONDARY_READS_PER_MS: &str = "SECONDARY_READS_RATE_PER_MS";
-const ENV_SECONDARY_READS_BURST: &str = "SECONDARY_READS_RATE_BURST";
-
-/// One token every 300ms = ~200 req/min sustained, burst 100.
-///
-/// `/reputation/{network}/{agent_id}` and `POST /escrow/state` each cost at
-/// least one RPC/contract read against the shared provider budget; `/blacklist`
-/// is a local read today, but the whole point of this governor is to stop
-/// relying on "cheap today" -- that was exactly the assumption that failed for
-/// `/identity/owner` (2026-08-29, see [`identity_read_rate_limit`]). None of
-/// these three showed up in the facilitator's latency around that incident, so
-/// this is preventive, not a response to observed abuse -- which argues FOR
-/// staying generous, not tight: there is no measured attack shape to size
-/// against yet, only the same "one IP, many networks, in parallel" pattern
-/// that hit `/identity/owner`.
-///
-/// Deliberately its OWN config, not a share of `discovery_read_config`: that
-/// bucket (see its comment in `main.rs`) is sized against bazaar pagination --
-/// a 21k-item catalog at the 100/page cap is ~212 requests back to back.
-/// Folding these three routes into it would let a paginating bazaar client and
-/// a reputation caller from the same IP draw down the same budget, which is
-/// not a tradeoff either surface asked for.
-const DEFAULT_SECONDARY_READS_PER_MS: u64 = 300;
-const DEFAULT_SECONDARY_READS_BURST: u32 = 100;
-
-/// Rate limit for [`secondary_read_routes`], as `(per_millisecond, burst_size)`.
-///
-/// Same GCRA semantics as [`identity_read_rate_limit`]: `per_millisecond` is a
-/// replenish PERIOD, not a rate.
-pub fn secondary_read_rate_limit() -> (u64, u32) {
-    let per_ms = std::env::var(ENV_SECONDARY_READS_PER_MS)
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .filter(|n| *n > 0)
-        .unwrap_or(DEFAULT_SECONDARY_READS_PER_MS);
-    let burst = std::env::var(ENV_SECONDARY_READS_BURST)
-        .ok()
-        .and_then(|v| v.trim().parse::<u32>().ok())
-        .filter(|n| *n > 0)
-        .unwrap_or(DEFAULT_SECONDARY_READS_BURST);
-    (per_ms, burst)
-}
-
 /// Reputation, blacklist and escrow-state routes that used to live in
 /// [`routes`] with no governor at all.
 ///
 /// Split out for the same reason as [`identity_read_routes`]: so `main.rs` can
-/// wrap exactly these in their own `GovernorLayer`, sized by
-/// [`secondary_read_rate_limit`]. `POST /escrow/state` is a query, not a
+/// wrap exactly these in their own governor, sized by
+/// [`crate::rate_policy::SECONDARY_READ`]. `POST /escrow/state` is a query, not a
 /// write -- it never spends gas -- but it reads on-chain escrow state, so it
 /// belongs here rather than with the free static routes in [`routes`].
 pub fn secondary_read_routes<A>() -> Router<A>
@@ -259,53 +176,6 @@ where
         .route("/reputation/{network}/{agent_id}", get(get_reputation::<A>))
         .route("/blacklist", get(get_blacklist::<A>))
         .route("/escrow/state", post(post_escrow_state::<A>))
-}
-
-/// Env overrides for [`human_page_rate_limit`].
-const ENV_HUMAN_PAGES_PER_MS: &str = "HUMAN_PAGES_RATE_PER_MS";
-const ENV_HUMAN_PAGES_BURST: &str = "HUMAN_PAGES_RATE_BURST";
-
-/// Default budget for [`human_page_routes`]: one token every 500 ms (~120 pages
-/// a minute sustained), burst 60.
-///
-/// WHY THE PAGES ARE METERED AT ALL
-///     They were the last unmetered HTML on this host, and `/` alone is ~245 KB
-///     served from the same task that settles payments. An unmetered 404 was
-///     already ruled a free amplification surface (see [`agent_not_found`]); a
-///     245 KB page is a bigger one.
-///
-/// WHY THE NUMBER IS GENEROUS
-///     A reader fetches one document per navigation -- the logos, the sheet and
-///     the fonts are separate routes and are NOT in this bucket -- so no person
-///     gets near 60 pages in a burst or 120 a minute. What does get near it is
-///     an office or a carrier NAT putting many readers behind one address, and
-///     that is exactly who a tight number would lock out. The ceiling is sized
-///     against a loop, not against a reader.
-///
-/// WHAT IS NOT IN THIS BUCKET
-///     The agentic documents (`/llms.txt`, `/.well-known/*`, ...) stay
-///     unmetered on purpose -- see [`agentic_routes`]. `/verify`, `/settle` and
-///     `/supported` keep the budgets they had. `GET /mcp` is not here either: it
-///     is an MCP route first and already sits under the verify/settle governor.
-const DEFAULT_HUMAN_PAGES_PER_MS: u64 = 500;
-const DEFAULT_HUMAN_PAGES_BURST: u32 = 60;
-
-/// Rate limit for [`human_page_routes`], as `(per_millisecond, burst_size)`.
-///
-/// Same GCRA semantics as [`identity_read_rate_limit`]: `per_millisecond` is a
-/// replenish PERIOD, not a rate.
-pub fn human_page_rate_limit() -> (u64, u32) {
-    let per_ms = std::env::var(ENV_HUMAN_PAGES_PER_MS)
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .filter(|n| *n > 0)
-        .unwrap_or(DEFAULT_HUMAN_PAGES_PER_MS);
-    let burst = std::env::var(ENV_HUMAN_PAGES_BURST)
-        .ok()
-        .and_then(|v| v.trim().parse::<u32>().ok())
-        .filter(|n| *n > 0)
-        .unwrap_or(DEFAULT_HUMAN_PAGES_BURST);
-    (per_ms, burst)
 }
 
 /// The HTML pages a person reads, split out of [`routes`] so they can carry a
@@ -327,24 +197,18 @@ pub fn human_page_routes() -> Router {
         .route("/stats", get(get_stats_page))
 }
 
-/// [`human_page_routes`] under a per-IP governor of `(per_ms, burst)`.
+/// [`human_page_routes`] under `policy`, with a per-IP bucket of `limit`
+/// ([`crate::rate_policy::HUMAN_PAGES`] in production).
 ///
-/// The config is built HERE rather than beside the others in `main.rs` so that
-/// the test firing a burst at it exercises the router production mounts, not a
-/// copy assembled in the test. One bucket per address for all nine pages: a
-/// loop that rotates paths spends the same budget as one that repeats a path.
-pub fn human_page_routes_governed(per_ms: u64, burst: u32) -> Router {
-    let config = Arc::new(
-        tower_governor::governor::GovernorConfigBuilder::default()
-            .per_millisecond(per_ms)
-            .burst_size(burst)
-            .key_extractor(crate::client_ip::ClientIpKeyExtractor)
-            .use_headers()
-            .finish()
-            .expect("human page governor config must be valid"),
-    );
-    human_page_routes()
-        .layer(tower_governor::GovernorLayer::new(config).error_handler(rate_limit_error))
+/// Built HERE rather than beside the others in `main.rs` so that the test
+/// firing a burst at it exercises the router production mounts, not a copy
+/// assembled in the test. One bucket per address for all nine pages: a loop
+/// that rotates paths spends the same budget as one that repeats a path.
+pub fn human_page_routes_governed(
+    policy: &crate::rate_policy::RatePolicy,
+    limit: crate::rate_policy::Limit,
+) -> Router {
+    policy.govern(human_page_routes(), limit)
 }
 
 /// Below this many bytes a document is sent as it is: under ~1 KB gzip saves
@@ -523,6 +387,7 @@ pub fn agentic_routes() -> Router {
             get(get_mcp_server_card),
         )
         .route("/.well-known/ard.json", get(get_ard))
+        .route(crate::interop::MANIFEST_PATH, get(get_uvd_stack))
 }
 
 /// The 405 every route answers when the path exists but the method does not.
@@ -574,11 +439,12 @@ pub fn rate_limit_error(error: tower_governor::GovernorError) -> Response<axum::
         (
             "rate_limited",
             "Wait for the number of seconds in the `retry-after` header, then \
-             retry. `x-ratelimit-limit` and `x-ratelimit-remaining` report the \
-             budget on every successful response, so a client can pace itself \
-             instead of discovering the limit by hitting it. Limits are per \
-             client IP and documented at \
-             https://facilitator.ultravioletadao.xyz/skill.md",
+             retry. `RateLimit-Policy` and `RateLimit` report the quota and \
+             what is left of it on every successful response too, so a client \
+             can pace itself instead of discovering the limit by hitting it. \
+             Limits are per client IP; every one is listed in \
+             https://facilitator.ultravioletadao.xyz/.well-known/uvd-stack.json \
+             and explained at https://facilitator.ultravioletadao.xyz/skill.md",
         )
     } else {
         (
@@ -1076,6 +942,17 @@ pub async fn get_mcp_server_card() -> impl IntoResponse {
     text_surface(mcp_server_card(), APPLICATION_JSON_UTF8)
 }
 
+/// `GET /.well-known/uvd-stack.json`: the stack interop manifest (`uvd.stack/1`).
+///
+/// Who this service is, its two doors and how they authenticate, that it does
+/// not charge, every rate limit the router mounted and where its liveness and
+/// readiness answer. Built by [`crate::interop`] on the first request, from
+/// the running build and the mounted limiters.
+#[instrument(skip_all)]
+pub async fn get_uvd_stack() -> impl IntoResponse {
+    text_surface(crate::interop::served_document(), APPLICATION_JSON_UTF8)
+}
+
 /// The served card: the static document with the running version stamped in.
 ///
 /// Resolved once per process. Everything else about the card -- the endpoint,
@@ -1101,7 +978,7 @@ where
 {
     Router::new()
         // The HTML pages moved to human_page_routes() so they can carry their
-        // own rate limit -- see human_page_rate_limit for why.
+        // own rate limit -- see rate_policy::HUMAN_PAGES for why.
         // Escrow state query lives in secondary_read_routes() so it can carry
         // its own rate limit -- see that function for why.
         // ERC-8004 Registration endpoints (GET info only; gas-spending POST writes are
@@ -1375,6 +1252,45 @@ fn alt_scheme_unconfirmed(
         None => failure.category(),
     };
     Some((unconfirmed_alt_settlement(failure, typed), category))
+}
+
+/// Status, `errorReason` token, detail and `Retry-After` of an escrow failure
+/// that carries its own answer (`OperatorError::http_answer`): the canonical v1
+/// (Arc) paths, where a failed chain read is retryable and never a 4xx, and the
+/// two deterministic refusals of `void`. `None` for every other failure, which
+/// keeps the classification it had.
+fn typed_escrow_parts(
+    e: &crate::payment_operator::OperatorError,
+) -> Option<(StatusCode, &'static str, String, Option<HeaderValue>)> {
+    let answer = e.http_answer()?;
+    let status = StatusCode::from_u16(answer.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let retry_after = answer
+        .retry_after_secs
+        .and_then(|secs| HeaderValue::from_str(&secs.to_string()).ok());
+    Some((status, answer.token, e.to_string(), retry_after))
+}
+
+/// The `/settle` answer for [`typed_escrow_parts`], and its event category.
+/// No transaction exists behind any of these, so `retryable` says only whether
+/// the same request can succeed later.
+pub(crate) fn escrow_settle_typed_response(
+    e: &crate::payment_operator::OperatorError,
+) -> Option<(Response, &'static str)> {
+    let (status, token, detail, retry_after) = typed_escrow_parts(e)?;
+    let mut resp = (
+        status,
+        Json(json!({
+            "success": false,
+            "errorReason": token,
+            "detail": detail,
+            "retryable": retry_after.is_some(),
+        })),
+    )
+        .into_response();
+    if let Some(value) = retry_after {
+        resp.headers_mut().insert(header::RETRY_AFTER, value);
+    }
+    Some((resp, token))
 }
 
 /// Log a classified chain-write failure with the figures an operator needs.
@@ -2133,30 +2049,23 @@ async fn require_erc8004_admin(
     next.run(request).await
 }
 
-/// The ERC-8004 write budget: one token every 12s, burst 30, per client IP.
+/// [`erc8004_write_routes`] under their per-IP governor, the budget
+/// [`crate::rate_policy::ERC8004_WRITES`]. `main.rs` mounts this, never the bare
+/// router.
 ///
-/// Its own bucket, no longer a share of `/discovery/register`'s. That one's
-/// burst of 250 is sized for the bazar's daily batch of registrations; the
-/// writes never needed it. Sized against thirty days of production write
-/// traffic, counted as if every write came from one address: at this burst the
-/// batches that succeeded are served in full save a single request, which its
-/// 429's `retry-after` covers. Bursts of 20 and 25 refused more of them.
-///
-/// One bucket per address for every route in [`erc8004_write_routes`]: a write
-/// that reaches a task without the writer lease is forwarded to the holder with
-/// its `X-Forwarded-For` intact, and is charged there too.
-const ERC8004_WRITE_PERIOD: std::time::Duration = std::time::Duration::from_secs(12);
-const ERC8004_WRITE_BURST: u32 = 30;
-
-/// [`erc8004_write_routes`] under their per-IP governor. `main.rs` mounts this,
-/// never the bare router.
-pub fn erc8004_write_routes_governed<A>() -> Router<A>
+/// Its own bucket, no longer a share of `/discovery/register`'s: that one's
+/// burst of 250 is sized for the bazar's daily batch of registrations. One
+/// bucket per address for every write route: a write that reaches a task
+/// without the writer lease is forwarded to the holder with its
+/// `X-Forwarded-For` -- and its `X-UVD-Stack-Key` -- intact, and is charged
+/// (or exempted) there the same way.
+pub fn erc8004_write_routes_governed<A>(policy: &crate::rate_policy::RatePolicy) -> Router<A>
 where
     A: Facilitator + HasProviderMap + Clone + Send + Sync + 'static,
     A::Error: IntoResponse,
     A::Map: ProviderMap<Value = NetworkProvider> + Sync,
 {
-    erc8004_write_governed(erc8004_write_routes::<A>())
+    erc8004_write_governed(policy, erc8004_write_routes::<A>())
 }
 
 /// `routes` under the ERC-8004 write budget.
@@ -2164,20 +2073,14 @@ where
 /// Split from [`erc8004_write_routes_governed`] so a test can fire at the same
 /// layer over the same paths without a facilitator behind them: building a
 /// `Router<FacilitatorLocal>` needs a provider cache read from the environment.
-fn erc8004_write_governed<S>(routes: Router<S>) -> Router<S>
+fn erc8004_write_governed<S>(
+    policy: &crate::rate_policy::RatePolicy,
+    routes: Router<S>,
+) -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
 {
-    let config = Arc::new(
-        tower_governor::governor::GovernorConfigBuilder::default()
-            .period(ERC8004_WRITE_PERIOD)
-            .burst_size(ERC8004_WRITE_BURST)
-            .key_extractor(crate::client_ip::ClientIpKeyExtractor)
-            .use_headers()
-            .finish()
-            .expect("ERC-8004 write governor config must be valid"),
-    );
-    routes.layer(tower_governor::GovernorLayer::new(config).error_handler(rate_limit_error))
+    policy.govern(routes, crate::rate_policy::ERC8004_WRITES.limit())
 }
 
 pub fn erc8004_write_routes<A>() -> Router<A>
@@ -5317,6 +5220,12 @@ where
                             detail: detail(false, escrow_scheme, Some(category)),
                         });
                     }
+                    if let Some((response, category)) = escrow_settle_typed_response(&e) {
+                        return Some(AltSchemeOutcome {
+                            response,
+                            detail: detail(false, escrow_scheme, Some(category)),
+                        });
+                    }
                     let salt = failure_salt();
                     // A refused lifecycle order is neither a bad payload nor an
                     // outage: it is "you are not entitled to this". 403, so a
@@ -6191,6 +6100,21 @@ where
         }
         Err(e) => {
             error!(error = %e, "Escrow state query failed");
+            if let Some((status, token, detail, retry_after)) = typed_escrow_parts(&e) {
+                let mut resp = (
+                    status,
+                    Json(json!({
+                        "error": token,
+                        "detail": detail,
+                        "retryable": retry_after.is_some(),
+                    })),
+                )
+                    .into_response();
+                if let Some(value) = retry_after {
+                    resp.headers_mut().insert(header::RETRY_AFTER, value);
+                }
+                return resp;
+            }
             // Same classification as the settle path: a node that cannot answer
             // is not a malformed query. This branch was missed when the settle
             // branches were fixed — 9 of the RPC failures observed over 48h came
@@ -13696,7 +13620,8 @@ mod owner_scan_tests {
 
     #[test]
     fn identity_read_limit_leaves_headroom_over_measured_traffic() {
-        let (per_ms, burst) = identity_read_rate_limit();
+        let limit = crate::rate_policy::IDENTITY_READ.limit();
+        let (per_ms, burst) = (limit.period().as_millis() as u64, limit.burst());
         let sustained_per_min = 60_000 / per_ms;
         assert!(
             sustained_per_min >= 100,
@@ -16434,6 +16359,7 @@ mod agentic_surface_tests {
         ("/.well-known/agent-skills/index.json", "application/json"),
         ("/.well-known/mcp/server-card.json", "application/json"),
         ("/.well-known/ard.json", "application/json"),
+        ("/.well-known/uvd-stack.json", "application/json"),
     ];
 
     async fn fetch(path: &str) -> (StatusCode, String, String) {
@@ -17044,6 +16970,9 @@ mod agentic_surface_tests {
             "/",
             "/docs",
             "/health",
+            // Readiness, mounted with its own state in main.rs; the interop
+            // manifest publishes it as `health.ready`.
+            "/health/ready",
             "/version",
             "/supported",
             "/verify",
@@ -17566,7 +17495,10 @@ mod human_surface_tests {
     /// `Accept-Encoding` a browser actually sends.
     #[tokio::test]
     async fn the_landing_is_gzipped_through_the_governed_page_router() {
-        let router = with_compression(human_page_routes_governed(60_000, 10));
+        let router = with_compression(human_page_routes_governed(
+            &crate::rate_policy::RatePolicy::none(),
+            crate::rate_policy::Limit::every_ms(60_000, 10),
+        ));
         let response = send(
             router,
             "/",
@@ -17668,7 +17600,10 @@ mod human_surface_tests {
     /// charged for the first one's loop.
     #[tokio::test]
     async fn a_burst_at_a_human_page_gets_429_for_that_address_only() {
-        let router = human_page_routes_governed(60_000, 3);
+        let router = human_page_routes_governed(
+            &crate::rate_policy::RatePolicy::none(),
+            crate::rate_policy::Limit::every_ms(60_000, 3),
+        );
         let loop_ip = [("x-forwarded-for", "203.0.113.20")];
         for n in 1..=3 {
             let response = send(router.clone(), "/stats", &loop_ip).await;
@@ -17693,7 +17628,10 @@ mod human_surface_tests {
     /// loop nothing, and every page answers under the governor.
     #[tokio::test]
     async fn every_human_page_spends_the_same_bucket() {
-        let router = human_page_routes_governed(60_000, PAGES.len() as u32);
+        let router = human_page_routes_governed(
+            &crate::rate_policy::RatePolicy::none(),
+            crate::rate_policy::Limit::every_ms(60_000, PAGES.len() as u32),
+        );
         let ip = [("x-forwarded-for", "203.0.113.30")];
         for path in PAGES {
             let response = send(router.clone(), path, &ip).await;
@@ -19275,7 +19213,7 @@ mod erc8004_write_rate_tests {
         for path in paths {
             router = router.route(path, post(|| async { "written" }));
         }
-        erc8004_write_governed(router)
+        erc8004_write_governed(&crate::rate_policy::RatePolicy::none(), router)
     }
 
     async fn post_from(router: &Router, path: &str, ip: &str) -> Response {
@@ -19292,7 +19230,11 @@ mod erc8004_write_rate_tests {
     /// write is refused on each of them, and another address is untouched.
     #[tokio::test]
     async fn every_erc8004_write_draws_on_one_bucket_of_thirty() {
-        assert_eq!(ERC8004_WRITE_PERIOD, std::time::Duration::from_secs(12));
+        let budget = crate::rate_policy::ERC8004_WRITES.default_limit();
+        assert_eq!(
+            budget,
+            crate::rate_policy::Limit::named("erc8004-writes", 12_000, 30)
+        );
         let paths = write_paths();
         for expected in ["/register", "/feedback", "/feedback/revoke"] {
             assert!(
@@ -19306,7 +19248,7 @@ mod erc8004_write_rate_tests {
         );
 
         let router = governed_writes(&paths);
-        for n in 0..ERC8004_WRITE_BURST as usize {
+        for n in 0..budget.burst() as usize {
             let path = &paths[n % paths.len()];
             let response = post_from(&router, path, "203.0.113.50").await;
             assert_eq!(response.status(), StatusCode::OK, "write {n} to {path}");
@@ -19332,6 +19274,116 @@ mod erc8004_write_rate_tests {
         assert_eq!(other.status(), StatusCode::OK);
     }
 
+    /// A stack key the tests below configure; well-formed, and nothing else.
+    const STACK_KEY: &str = "uvdsk_ExecutionMarketWritesKeyForTheseTestsOnly00";
+
+    fn stack_policy() -> crate::rate_policy::RatePolicy {
+        crate::rate_policy::RatePolicy::for_tests(&[("execution-market", STACK_KEY)])
+    }
+
+    async fn post_as(
+        router: &Router,
+        path: &str,
+        ip: &str,
+        key: Option<&str>,
+        body: &str,
+    ) -> Response {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri(path)
+            .header("x-forwarded-for", ip)
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(key) = key {
+            builder = builder.header(crate::rate_policy::STACK_KEY_HEADER, key);
+        }
+        let request = builder.body(Body::from(body.to_string())).unwrap();
+        router.clone().oneshot(request).await.unwrap()
+    }
+
+    /// The ratings path of the ticket (EM relaying KarmaKadabra's
+    /// `/feedback/evm/prepare` and `/submit`) through the SAME layer production
+    /// mounts: the stack goes past the burst of 30 on every write route with
+    /// no 429, while a third party at the same cadence gets one on the 31st.
+    #[tokio::test]
+    async fn the_erc8004_writes_exempt_the_stack() {
+        let paths = write_paths();
+        let mut routes = Router::new();
+        for path in &paths {
+            routes = routes.route(path, post(|| async { "written" }));
+        }
+        let router = erc8004_write_governed(&stack_policy(), routes);
+        let burst = crate::rate_policy::ERC8004_WRITES.limit().burst() as usize;
+
+        for n in 0..burst + 5 {
+            let path = &paths[n % paths.len()];
+            let response = post_as(&router, path, "203.0.113.90", Some(STACK_KEY), "{}").await;
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "stack write {n} to {path}"
+            );
+            assert_eq!(response.headers()["x-ratelimit-exempt"], "execution-market");
+        }
+        for n in 0..burst {
+            let response = post_as(&router, "/feedback", "203.0.113.91", None, "{}").await;
+            assert_eq!(response.status(), StatusCode::OK, "third-party write {n}");
+        }
+        let refused = post_as(&router, "/feedback", "203.0.113.91", None, "{}").await;
+        assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    /// The gas cap is NOT policy: a stack identity that skips the write budget
+    /// still spends the per-network daily limit, and is refused past it.
+    #[tokio::test]
+    async fn a_stack_identity_still_spends_the_daily_gas_cap() {
+        use crate::erc8004::daily_cap::{self, DailyWriteCap};
+        let cap = Arc::new(DailyWriteCap::new(
+            1000,
+            std::collections::HashMap::from([(crate::network::Network::Base, 1)]),
+            Box::new(|| 0),
+        ));
+        let sends = Router::new()
+            .route(
+                "/feedback/evm/submit",
+                post(|| async {
+                    daily_cap::mark_sent();
+                    "sent"
+                }),
+            )
+            .layer(axum::middleware::from_fn_with_state(
+                cap,
+                daily_cap::enforce_with,
+            ));
+        let router = erc8004_write_governed(&stack_policy(), sends);
+        let body = r#"{"network":"base"}"#;
+
+        let first = post_as(
+            &router,
+            "/feedback/evm/submit",
+            "203.0.113.92",
+            Some(STACK_KEY),
+            body,
+        )
+        .await;
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(first.headers()["x-ratelimit-exempt"], "execution-market");
+
+        let second = post_as(
+            &router,
+            "/feedback/evm/submit",
+            "203.0.113.92",
+            Some(STACK_KEY),
+            body,
+        )
+        .await;
+        assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
+        let bytes = axum::body::to_bytes(second.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let refusal: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(refusal["code"], "erc8004_daily_write_limit");
+    }
+
     /// `main.rs` mounts the governed write router, never the bare one, and the
     /// bazar keeps its own budget: `discovery_register_config` still carries
     /// 1 token every 12s with burst 250 and meters exactly the bazar's register
@@ -19341,7 +19393,7 @@ mod erc8004_write_rate_tests {
     fn production_mounts_the_writes_and_the_bazar_on_separate_budgets() {
         let main = include_str!("main.rs");
         assert!(
-            main.contains("handlers::erc8004_write_routes_governed()"),
+            main.contains("handlers::erc8004_write_routes_governed(&policy)"),
             "main.rs does not mount the governed ERC-8004 write router"
         );
         assert!(
@@ -19359,8 +19411,13 @@ mod erc8004_write_rate_tests {
         };
         let bazar = statement_after("let discovery_register_config");
         assert!(
-            bazar.contains(".per_second(12)") && bazar.contains(".burst_size(250)"),
+            bazar.contains("rate_policy::DISCOVERY_REGISTER.limit()"),
             "the bazar register budget changed: {bazar}"
+        );
+        assert_eq!(
+            crate::rate_policy::DISCOVERY_REGISTER.default_limit(),
+            crate::rate_policy::Limit::named("discovery-register", 12_000, 250),
+            "the bazar register budget changed"
         );
         for router in [
             "handlers::discovery_register_routes()",

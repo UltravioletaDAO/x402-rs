@@ -51,8 +51,8 @@ use axum::{Json, Router};
 use once_cell::sync::Lazy;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorCode,
-    Implementation, InitializeResult, JsonObject, ListToolsResult, PaginatedRequestParams,
-    ProtocolVersion, ServerCapabilities, ServerInfo, Tool, ToolAnnotations,
+    Implementation, InitializeResult, JsonObject, ListToolsResult, MetaObject,
+    PaginatedRequestParams, ProtocolVersion, ServerCapabilities, ServerInfo, Tool, ToolAnnotations,
 };
 use rmcp::service::RequestContext;
 use rmcp::transport::streamable_http_server::session::never::NeverSessionManager;
@@ -79,6 +79,61 @@ pub const TOOL_NAMES: [&str; 4] = [
     "x402_verify",
     "x402_settle",
 ];
+
+/// The `_meta` key under which each tool declares its house class.
+///
+/// The stack's interop specification (`09-mcp.md`, R9.4) puts the class in
+/// the tool's `_meta`, NOT in `annotations`: a catalog that fingerprints a
+/// tool by its annotations would see every tool as changed the day a class
+/// was added to them.
+pub const CLASS_META_KEY: &str = "uvd/clase";
+
+/// The closed vocabulary of house classes (R9.4). A class outside it is a
+/// change to the specification, not to this file.
+pub const HOUSE_CLASSES: [&str; 7] = [
+    "lectura",
+    "escribe",
+    "mueve_dinero",
+    "riel_de_pago",
+    "cobra_por_llamada",
+    "pide_credencial",
+    "sin_clasificar",
+];
+
+/// Each tool's house class, as this surface declares it.
+///
+/// - `x402_supported` is `lectura`: it reads what the facilitator settles,
+///   charges nothing and asks for no credential. As a read it also publishes
+///   an `outputSchema` and answers in `structuredContent` (R9.5).
+/// - `x402_accepts` is `riel_de_pago` although it writes nothing: its output
+///   is the signable requirements of one concrete purchase.
+/// - `x402_verify` is `riel_de_pago`: its input is a signed authorization.
+/// - `x402_settle` is `mueve_dinero`: it broadcasts the transfer.
+///
+/// `annotations` are deliberately NOT touched by the class: they keep saying
+/// what the MCP hints say (read-only, destructive, idempotent, open world).
+pub const TOOL_CLASSES: [(&str, &str); 4] = [
+    ("x402_supported", "lectura"),
+    ("x402_accepts", "riel_de_pago"),
+    ("x402_verify", "riel_de_pago"),
+    ("x402_settle", "mueve_dinero"),
+];
+
+/// `_meta` for `tool`: `{"uvd/clase": <class>}`.
+fn class_meta(tool: &str) -> MetaObject {
+    let class = TOOL_CLASSES
+        .iter()
+        .find(|(name, _)| *name == tool)
+        .map(|(_, class)| *class)
+        .unwrap_or_else(|| unreachable!("every tool has a class in TOOL_CLASSES: {tool}"));
+    debug_assert!(
+        HOUSE_CLASSES.contains(&class),
+        "{class} is not a house class"
+    );
+    let mut meta = JsonObject::new();
+    meta.insert(CLASS_META_KEY.to_string(), Value::String(class.to_string()));
+    MetaObject(meta)
+}
 
 /// `MCP_ALLOWED_HOSTS`: comma-separated `Host` allowlist for `/mcp`.
 const ENV_MCP_ALLOWED_HOSTS: &str = "MCP_ALLOWED_HOSTS";
@@ -435,6 +490,111 @@ fn settle_input_schema() -> Value {
     doc
 }
 
+/// `outputSchema` of `x402_supported`: the body of `GET /supported`.
+///
+/// Open on purpose (`additionalProperties` is never `false`): a new field in
+/// `extra`, a new scheme or a new extension is additive for `/supported`, and
+/// a client that validates `structuredContent` against this schema must not
+/// start failing when one ships. What it pins is the shape a caller crosses
+/// fields on -- `kinds[].network`, `kinds[].scheme`, the token list and the
+/// fee payer. A test validates a production `/supported` snapshot against it.
+fn supported_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "description": "The body of GET /supported, unchanged: every (x402Version, \
+                        scheme, network) this facilitator settles, the protocol \
+                        extensions it serves, the fee payer per network where it \
+                        differs, and what its facilitator receipts cover.",
+        "required": ["kinds"],
+        "properties": {
+            "kinds": {
+                "type": "array",
+                "description": "One entry per settleable (x402Version, scheme, network). \
+                                Every chain appears twice, under its x402 v1 name \
+                                (\"base\") and under its CAIP-2 id (\"eip155:8453\"); \
+                                `networkAliases` lists both on each entry.",
+                "items": {
+                    "type": "object",
+                    "required": ["x402Version", "scheme", "network"],
+                    "properties": {
+                        "x402Version": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "The x402 protocol version this entry is for."
+                        },
+                        "scheme": {
+                            "type": "string",
+                            "description": "Payment scheme: exact, upto, escrow, commerce or fhe-transfer."
+                        },
+                        "network": {
+                            "type": "string",
+                            "description": "The network, as the x402 version of this entry spells it."
+                        },
+                        "networkAliases": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Every identifier of the same chain, this one included."
+                        },
+                        "extra": {
+                            "type": "object",
+                            "description": "Network-specific settlement details.",
+                            "properties": {
+                                "feePayer": {
+                                    "type": "string",
+                                    "description": "The account that pays the network fee."
+                                },
+                                "tokens": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "required": ["token", "address", "decimals"],
+                                        "properties": {
+                                            "token": { "type": "string" },
+                                            "address": { "type": "string" },
+                                            "decimals": { "type": "integer", "minimum": 0 }
+                                        }
+                                    }
+                                },
+                                "escrowAddress": { "type": "string" },
+                                "operatorAddress": { "type": "string" },
+                                "tokenCollector": { "type": "string" }
+                            }
+                        }
+                    }
+                }
+            },
+            "extensions": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Protocol extensions this deployment serves."
+            },
+            "signers": {
+                "type": "object",
+                "additionalProperties": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                },
+                "description": "Fee payer accounts by network, where they differ per network."
+            },
+            "facilitatorReceipts": {
+                "type": "object",
+                "description": "The facilitator receipt capability; see GET /receipts."
+            }
+        }
+    })
+}
+
+/// Tools whose REST body is also returned as `structuredContent`: those that
+/// declare an `outputSchema`, read off the declarations so the two cannot
+/// disagree.
+static STRUCTURED_TOOLS: Lazy<Vec<String>> = Lazy::new(|| {
+    tools()
+        .into_iter()
+        .filter(|t| t.output_schema.is_some())
+        .map(|t| t.name.to_string())
+        .collect()
+});
+
 /// The four tool definitions.
 pub fn tools() -> Vec<Tool> {
     vec![
@@ -456,7 +616,9 @@ pub fn tools() -> Vec<Tool> {
                 .read_only(true)
                 .idempotent(true)
                 .open_world(false),
-        ),
+        )
+        .with_raw_output_schema(schema(supported_output_schema()))
+        .with_meta(class_meta(TOOL_NAMES[0])),
         Tool::new(
             TOOL_NAMES[1],
             "Negotiate payment requirements: send the `accepts` array from a 402 \
@@ -496,7 +658,8 @@ pub fn tools() -> Vec<Tool> {
             ToolAnnotations::with_title("Negotiate payment requirements")
                 .read_only(true)
                 .open_world(false),
-        ),
+        )
+        .with_meta(class_meta(TOOL_NAMES[1])),
         Tool::new(
             TOOL_NAMES[2],
             "Check whether a signed payment authorization would settle: signature, \
@@ -509,7 +672,8 @@ pub fn tools() -> Vec<Tool> {
             ToolAnnotations::with_title("Verify a payment authorization")
                 .read_only(true)
                 .open_world(true),
-        ),
+        )
+        .with_meta(class_meta(TOOL_NAMES[2])),
         Tool::new(
             TOOL_NAMES[3],
             "SETTLE A PAYMENT ON-CHAIN. This MOVES REAL FUNDS and is IRREVERSIBLE: it \
@@ -528,7 +692,8 @@ pub fn tools() -> Vec<Tool> {
                 .destructive(true)
                 .idempotent(false)
                 .open_world(true),
-        ),
+        )
+        .with_meta(class_meta(TOOL_NAMES[3])),
     ]
 }
 
@@ -579,9 +744,14 @@ impl FacilitatorMcp {
         // would. Every line of it, not the first: the holder keys on the
         // shape of the header, and several lines are keyed differently from
         // one.
+        //
+        // `X-UVD-Stack-Key` for the same reason: the outer `/mcp` governor
+        // already let a recognized stack identity through, and without its key
+        // the holder would charge that caller as a third party.
         for name in [
             header::HeaderName::from_static("x-forwarded-for"),
             header::HeaderName::from_static("x-uvd-purchase"),
+            header::HeaderName::from_static(crate::rate_policy::STACK_KEY_HEADER),
         ] {
             for value in outer.into_iter().flat_map(|h| h.get_all(&name)) {
                 builder = builder.header(&name, value.clone());
@@ -728,12 +898,32 @@ impl ServerHandler for FacilitatorMcp {
         // caller can read, carrying the facilitator's own message verbatim --
         // NOT an `Err(McpError)`, which most clients render opaquely and would
         // hide "invalid signature" behind "internal error".
-        let content = vec![ContentBlock::text(body)];
-        let result = if status.is_success() {
-            CallToolResult::success(content)
+        if !status.is_success() {
+            return Ok(CallToolResult::error(vec![ContentBlock::text(body)]).into());
+        }
+        // A tool that declares an `outputSchema` MUST answer in
+        // `structuredContent` too (MCP), and clients validate it there. The
+        // text block stays, byte for byte the REST body, for the clients that
+        // read only text.
+        let structured = if STRUCTURED_TOOLS.iter().any(|t| t == name.as_ref()) {
+            match serde_json::from_str::<Value>(&body) {
+                Ok(doc @ Value::Object(_)) => Some(doc),
+                // Cannot happen for `/supported`, whose body is always a JSON
+                // object. If it ever does, a result that breaks the declared
+                // schema is worse than an error that says why.
+                _ => {
+                    return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
+                        "{path} answered {status} with a body that is not the JSON \
+                         object this tool's outputSchema declares: {body}"
+                    ))])
+                    .into());
+                }
+            }
         } else {
-            CallToolResult::error(content)
+            None
         };
+        let mut result = CallToolResult::success(vec![ContentBlock::text(body)]);
+        result.structured_content = structured;
         Ok(result.into())
     }
 }
@@ -994,14 +1184,24 @@ mod tests {
         body: Value,
         xff: &[&str],
     ) -> (StatusCode, String, Value) {
+        let lines: Vec<(&str, &str)> = xff.iter().map(|line| ("x-forwarded-for", *line)).collect();
+        rpc_with_headers(mcp, body, &lines).await
+    }
+
+    /// Same, with one header line per `(name, value)` of `extra`.
+    async fn rpc_with_headers(
+        mcp: &Router,
+        body: Value,
+        extra: &[(&str, &str)],
+    ) -> (StatusCode, String, Value) {
         let mut builder = HttpRequest::builder()
             .method(Method::POST)
             .uri("/mcp")
             .header(header::HOST, "127.0.0.1")
             .header(header::CONTENT_TYPE, "application/json")
             .header(header::ACCEPT, "application/json, text/event-stream");
-        for line in xff {
-            builder = builder.header("x-forwarded-for", *line);
+        for (name, value) in extra {
+            builder = builder.header(*name, *value);
         }
         let request = builder
             .body(Body::from(serde_json::to_vec(&body).unwrap()))
@@ -1192,6 +1392,260 @@ mod tests {
         // And it is the real document, not an empty envelope.
         let parsed: Value = serde_json::from_str(&over_rest).unwrap();
         assert!(parsed["kinds"].as_array().is_some_and(|k| !k.is_empty()));
+    }
+
+    /// `tools/list` as a client receives it.
+    async fn listed_tools(mcp: &Router) -> Vec<Value> {
+        let (_, _, doc) = rpc(
+            mcp,
+            json!({ "jsonrpc": "2.0", "id": 20, "method": "tools/list" }),
+        )
+        .await;
+        doc["result"]["tools"].as_array().unwrap().clone()
+    }
+
+    fn validator_for(schema: &Value) -> jsonschema::Validator {
+        jsonschema::validator_for(schema).expect("an output schema is a valid JSON Schema")
+    }
+
+    /// Every tool declares one house class, from the closed vocabulary, in
+    /// `_meta["uvd/clase"]` -- and never inside `annotations`, where a catalog
+    /// fingerprinting the tool would read it as a change to the tool (R9.4).
+    #[tokio::test]
+    async fn every_tool_declares_its_house_class_in_meta() {
+        let (mcp, _) = routers().await;
+        let tools = listed_tools(&mcp).await;
+        assert_eq!(tools.len(), TOOL_CLASSES.len());
+        for (name, class) in TOOL_CLASSES {
+            let tool = tools
+                .iter()
+                .find(|t| t["name"] == name)
+                .unwrap_or_else(|| panic!("{name} is not listed"));
+            assert_eq!(tool["_meta"][CLASS_META_KEY], class, "{name}");
+            assert!(
+                HOUSE_CLASSES.contains(&class),
+                "{name}: {class} is not a house class"
+            );
+            assert!(
+                tool["annotations"].get(CLASS_META_KEY).is_none(),
+                "{name} carries the class inside annotations"
+            );
+        }
+    }
+
+    /// The class never contradicts the MCP hints the same tool publishes: a
+    /// read is read-only and not destructive, the one that moves money says
+    /// it is destructive, and nothing is left `sin_clasificar`.
+    #[tokio::test]
+    async fn the_class_agrees_with_the_annotations() {
+        let (mcp, _) = routers().await;
+        for tool in listed_tools(&mcp).await {
+            let name = tool["name"].as_str().unwrap();
+            let class = tool["_meta"][CLASS_META_KEY].as_str().unwrap();
+            let hints = &tool["annotations"];
+            assert_ne!(class, "sin_clasificar", "{name}");
+            match class {
+                "lectura" => {
+                    assert_eq!(hints["readOnlyHint"], true, "{name}");
+                    assert_ne!(hints["destructiveHint"], true, "{name}");
+                }
+                "mueve_dinero" => {
+                    assert_eq!(hints["readOnlyHint"], false, "{name}");
+                    assert_eq!(hints["destructiveHint"], true, "{name}");
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// A read publishes an object `outputSchema` (R9.5); only the read does,
+    /// so the tools whose contract did not change keep their exact shape.
+    #[tokio::test]
+    async fn only_the_read_tool_publishes_an_output_schema() {
+        let (mcp, _) = routers().await;
+        for tool in listed_tools(&mcp).await {
+            let name = tool["name"].as_str().unwrap();
+            let is_read = tool["_meta"][CLASS_META_KEY] == "lectura";
+            assert_eq!(
+                tool.get("outputSchema").is_some(),
+                is_read,
+                "{name}: outputSchema present = read"
+            );
+            if is_read {
+                assert_eq!(tool["outputSchema"]["type"], "object", "{name}");
+            }
+        }
+    }
+
+    /// `x402_supported` answers in `structuredContent` with the same document
+    /// its text block carries, and that document validates against the
+    /// `outputSchema` the tool declared -- the check an MCP client runs.
+    #[tokio::test]
+    async fn supported_returns_structured_content_that_matches_its_output_schema() {
+        let (mcp, _) = routers().await;
+        let tools = listed_tools(&mcp).await;
+        let declared = &tools
+            .iter()
+            .find(|t| t["name"] == "x402_supported")
+            .unwrap()["outputSchema"];
+        let (_, _, doc) = rpc(
+            &mcp,
+            json!({
+                "jsonrpc": "2.0", "id": 21, "method": "tools/call",
+                "params": { "name": "x402_supported", "arguments": {} }
+            }),
+        )
+        .await;
+        let structured = &doc["result"]["structuredContent"];
+        let text: Value = serde_json::from_str(&tool_text(&doc)).unwrap();
+        assert_eq!(
+            structured, &text,
+            "structuredContent is not the text block's document"
+        );
+        let validator = validator_for(declared);
+        let errors: Vec<String> = validator
+            .iter_errors(structured)
+            .map(|e| e.to_string())
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "structuredContent breaks the outputSchema: {errors:#?}"
+        );
+    }
+
+    /// The tools that declare no `outputSchema` keep answering in text only.
+    #[tokio::test]
+    async fn a_tool_without_an_output_schema_answers_without_structured_content() {
+        let (mcp, _) = routers().await;
+        let (_, _, doc) = rpc(
+            &mcp,
+            json!({
+                "jsonrpc": "2.0", "id": 22, "method": "tools/call",
+                "params": { "name": "x402_accepts", "arguments": { "accepts": [] } }
+            }),
+        )
+        .await;
+        assert_ne!(doc["result"]["isError"], true, "{doc}");
+        assert!(doc["result"].get("structuredContent").is_none(), "{doc}");
+    }
+
+    /// The schema describes what production serves, not what a stub serves:
+    /// a real `/supported` body (156 kinds: v1 and CAIP-2 entries, tokens,
+    /// escrow addresses, Hedera fee payers, extensions, signers, receipts)
+    /// validates, and so does one with every optional field the type can
+    /// carry. And it is not a schema that accepts anything: a body without
+    /// `kinds`, or with a version written as a string, is refused.
+    #[test]
+    fn the_supported_output_schema_describes_a_production_body() {
+        let validator = validator_for(&supported_output_schema());
+        let snapshot: Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/supported-before-celo-sepolia.json"
+        ))
+        .unwrap();
+        assert!(snapshot["kinds"].as_array().is_some_and(|k| k.len() > 100));
+        let errors: Vec<String> = validator
+            .iter_errors(&snapshot)
+            .map(|e| e.to_string())
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "a production /supported breaks the schema: {errors:#?}"
+        );
+
+        let mut broken = snapshot.clone();
+        broken.as_object_mut().unwrap().remove("kinds");
+        assert!(
+            !validator.is_valid(&broken),
+            "a body without kinds validates"
+        );
+        let mut broken = snapshot.clone();
+        broken["kinds"][0]["x402Version"] = json!("1");
+        assert!(!validator.is_valid(&broken), "a string version validates");
+        let mut broken = snapshot;
+        broken["kinds"][0]["extra"] = json!({ "tokens": [{ "token": "usdc" }] });
+        assert!(
+            !validator.is_valid(&broken),
+            "a token without an address validates"
+        );
+    }
+
+    /// Every URL `/.well-known/uvd-stack.json` publishes is a path the real
+    /// routers serve. axum will not list its routes, so the manifest's paths
+    /// are walked through the same router builders `main.rs` mounts; a route
+    /// renamed without the manifest following fails here, not in a client.
+    #[tokio::test]
+    async fn every_url_the_interop_manifest_publishes_is_served() {
+        let (mcp, _) = routers().await;
+        let state = StubFacilitator::new();
+        let readiness = crate::readiness::ReadinessState::new(
+            Arc::new(NoProviders),
+            crate::readiness::ReadinessConfig::from_env(),
+        );
+        let app = Router::new()
+            .merge(crate::handlers::agentic_routes())
+            .merge(crate::openapi::swagger_routes())
+            .merge(crate::handlers::routes::<StubFacilitator>().with_state(state))
+            .merge(crate::readiness::routes::<NoProviders>().with_state(Arc::new(readiness)))
+            .merge(
+                crate::handlers::events_routes()
+                    .with_state(Arc::new(crate::events::EventBus::from_env())),
+            )
+            .merge(mcp);
+        let manifest: Value = serde_json::from_str(crate::interop::served_document()).unwrap();
+        assert!(!crate::interop::published_paths().is_empty());
+        for path in crate::interop::published_paths() {
+            let response = app
+                .clone()
+                .oneshot(
+                    HttpRequest::builder()
+                        .uri(path)
+                        .header(header::HOST, "127.0.0.1")
+                        .header("x-forwarded-for", "192.0.2.1")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_ne!(
+                response.status(),
+                StatusCode::NOT_FOUND,
+                "the manifest publishes {path}, which no route serves"
+            );
+            assert!(
+                manifest
+                    .to_string()
+                    .contains(&format!("{}{path}", crate::interop::PUBLIC_URL))
+                    || path == crate::interop::MANIFEST_PATH,
+                "{path} is walked but not published"
+            );
+        }
+    }
+
+    /// The MCP router has no bucket of its own. `main.rs` mounts `/mcp` under
+    /// the verify/settle bucket; a second one INSIDE `mcp_routes` would charge
+    /// every tool call twice and refuse at half the published quota. Forty calls
+    /// from one address -- past verify/settle's burst -- through `mcp_routes`
+    /// alone, with the `X-Forwarded-For` a governor would key on: none is
+    /// refused and none is a tool error.
+    #[tokio::test]
+    async fn the_mcp_router_has_no_bucket_of_its_own() {
+        let (mcp, _) = routers().await;
+        let calls = 40;
+        assert!(calls > crate::rate_policy::VERIFY_SETTLE.limit().burst());
+        for n in 0..calls {
+            let (status, _, doc) = rpc_from(
+                &mcp,
+                json!({
+                    "jsonrpc": "2.0", "id": n, "method": "tools/call",
+                    "params": { "name": "x402_supported", "arguments": {} }
+                }),
+                Some("203.0.113.88"),
+            )
+            .await;
+            assert_ne!(status, StatusCode::TOO_MANY_REQUESTS, "call {n}: {doc}");
+            assert_eq!(status, StatusCode::OK, "call {n}: {doc}");
+            assert_ne!(doc["result"]["isError"], true, "call {n}: {doc}");
+        }
     }
 
     /// An invalid `/verify` body reaches the caller as `isError`, carrying the
@@ -1771,11 +2225,46 @@ mod tests {
         assert_eq!(seen, lines);
     }
 
+    /// A stack identity's key reaches the lease holder too. The outer `/mcp`
+    /// governor let the caller through on it; without it the holder's `/settle`
+    /// governor would charge the same caller as a third party.
+    #[tokio::test]
+    async fn a_forwarded_settle_carries_the_stack_key_to_the_lease_holder() {
+        let key = "uvdsk_mcpForwardedKeyAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        let (path, headers, _) = settle_through_a_recording_holder_with(&[
+            ("x-forwarded-for", "203.0.113.42"),
+            (crate::rate_policy::STACK_KEY_HEADER, key),
+        ])
+        .await;
+        assert_eq!(path, "/settle");
+        let seen: Vec<&str> = headers
+            .get_all(crate::rate_policy::STACK_KEY_HEADER)
+            .iter()
+            .map(|v| v.to_str().unwrap())
+            .collect();
+        assert_eq!(seen, [key], "the stack key did not reach the lease holder");
+    }
+
     /// Runs an `x402_settle` whose outer request carries `xff`, on a task that
     /// does not hold the writer lease, against a local stand-in for the holder,
     /// and returns the path and headers the holder received plus the answer.
     async fn settle_through_a_recording_holder(xff: &[&str]) -> (String, HeaderMap, Value) {
+        let lines: Vec<(&str, &str)> = xff.iter().map(|line| ("x-forwarded-for", *line)).collect();
+        settle_through_a_recording_holder_with(&lines).await
+    }
+
+    /// Same, with arbitrary header lines on the outer request.
+    ///
+    /// Serialised: the writer lease and its holder endpoint are process-wide,
+    /// so two of these running at once point each other's settle at the wrong
+    /// holder. CI runs single-threaded; this keeps a local parallel run honest.
+    async fn settle_through_a_recording_holder_with(
+        outer: &[(&str, &str)],
+    ) -> (String, HeaderMap, Value) {
         use std::sync::Mutex;
+
+        static HOLDER_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        let _serial = HOLDER_TESTS.lock().await;
 
         // A stand-in for the task that holds the lease: records what it got.
         let seen: Arc<Mutex<Option<(String, HeaderMap)>>> = Arc::new(Mutex::new(None));
@@ -1799,7 +2288,7 @@ mod tests {
         crate::writer_lease::set_writer_for_test(false);
         crate::writer_lease::set_holder_endpoint_for_test(Some(&format!("http://{addr}")));
 
-        let (_, _, answer) = rpc_from_lines(
+        let (_, _, answer) = rpc_with_headers(
             &mcp,
             json!({
                 "jsonrpc": "2.0", "id": 9, "method": "tools/call",
@@ -1809,7 +2298,7 @@ mod tests {
                     "paymentRequirements": { "network": "base" }
                 }}
             }),
-            xff,
+            outer,
         )
         .await;
 

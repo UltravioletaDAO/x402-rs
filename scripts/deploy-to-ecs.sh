@@ -55,6 +55,7 @@ echo ""
 docker build \
   --platform linux/amd64 \
   --build-arg FACILITATOR_VERSION=${VERSION} \
+  --build-arg FACILITATOR_GIT_SHA=$(git rev-parse HEAD) \
   -t ${ECR_REPOSITORY}:${IMAGE_TAG} \
   .
 

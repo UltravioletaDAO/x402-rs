@@ -592,6 +592,9 @@ self-feedback.
 | `404` from `/identity/.../owner/...` | that address owns no agent | a real negative answer |
 | `503` + `"retryable": true` | the lookup reached **no verdict** | retry; never persist this as "not registered" |
 | `503` on `/events` | subscriber cap reached | honour `Retry-After` |
+| `503` + `"code": "overloaded"` | the task is at its ceiling of concurrent requests, for every caller; nothing was done | honour `Retry-After` (1 s) and resend the same request |
+| `429` + `"code": "too_many_concurrent_requests"` | your address already has its maximum of requests in flight; nothing was done | wait for a response, then resend the same request |
+| `408` + `"code": "request_timeout"` | the whole body did not arrive within the deadline after the headers; nothing was done | send the body with the headers and resend |
 | `429` | per-IP rate limit (about 30 req/min on verify/settle) | back off; do not re-sign |
 | `502` + `"error": "settlement_unconfirmed"` | we sent the tx, or may have, and never got a verdict | look up the `transaction` on chain; **never** retry (`retryable: false`) |
 | any `5xx` + `"retryable": false` | the tx may already be on chain (`broadcast_uncertain`, `receipt_pending`, `forward_unconfirmed`, the alternative schemes, the receipt rail) | **never** sign again; look up `transaction` if present, else the payer's transfer |
@@ -618,13 +621,18 @@ only on the refusal:
 
 | Header | On | Meaning |
 |---|---|---|
+| `RateLimit-Policy` | every rate-limited response, `200` included | the bucket this route draws on: `"verify-settle";q=30;w=60` is 30 requests in any 60 seconds |
+| `RateLimit` | every rate-limited response, `200` included | what is left: `"verify-settle";r=29;t=2` is 29 more within the next 2 seconds |
 | `x-ratelimit-limit` | every rate-limited response, `200` included | the burst size of the bucket this route draws on |
 | `x-ratelimit-remaining` | every rate-limited response, `200` included | tokens left in that bucket right now |
 | `retry-after` | `429` | seconds to wait before retrying |
 | `x-ratelimit-after` | `429` | the same number, under tower_governor's own name |
 
-Read `x-ratelimit-remaining` and slow down before it reaches zero; that is the
-whole reason it is on the `200`. The buckets are separate per surface, so
+Read `RateLimit` (or `x-ratelimit-remaining`) and slow down before it reaches
+zero; that is the whole reason it is on the `200`. `RateLimit-Policy` and
+`RateLimit` follow the IETF draft *RateLimit header fields for HTTP*, and every
+limit is also listed before your first request in `rate_limits` of
+https://facilitator.ultravioletadao.xyz/.well-known/uvd-stack.json. The buckets are separate per surface, so
 draining `/discovery/resources` does not cost you `/settle`, with one
 deliberate exception: **`POST /mcp` shares the `/verify` and `/settle` bucket**,
 because an `x402_settle` tool call costs the chain exactly what `POST /settle`
@@ -635,6 +643,11 @@ token every N seconds, so "30 req/min on verify/settle" is a burst of 30 plus
 one token every 2 seconds — not 30 tokens handed out each minute. A few routes
 that spend no chain quota (`/health`, `/supported`, `/llms.txt` and the other
 discovery documents) carry no limit at all and therefore no headers.
+
+The values in force -- every bucket's period and burst, the per-address and
+per-task ceilings of concurrent requests, the body deadline, and the ERC-8004
+daily write limit -- are published at `GET /config`, each bucket under the name
+its `RateLimit-Policy` carries.
 
 ---
 

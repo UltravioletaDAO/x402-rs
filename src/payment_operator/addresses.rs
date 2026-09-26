@@ -1,13 +1,15 @@
 //! Contract addresses for x402r Escrow Scheme
 //!
-//! Hybrid address model:
+//! Three address models, one per operator generation:
 //! - Existing networks (Base, Ethereum, etc.) use LEGACY per-chain addresses because
 //!   their deployed PaymentOperators reference the old infrastructure contracts.
-//! - New networks (SKALE, future) use CREATE3 unified addresses.
+//! - SKALE uses the CREATE3 unified addresses (`create3`).
+//! - Arc and Arc testnet use the canonical commerce-payments v1.0.0 set
+//!   (`canonical_v1`), whose operators speak their own ABI (`capture` / `void`).
 //!
 //! Source: https://github.com/BackTrackCo/x402r-sdk/blob/main/packages/core/src/config/index.ts
 //!
-//! Supported networks (11 total):
+//! Supported networks (13 total):
 //! - Base Sepolia (testnet)
 //! - Ethereum Sepolia (testnet)
 //! - Base Mainnet
@@ -19,6 +21,8 @@
 //! - Avalanche C-Chain
 //! - Optimism
 //! - SKALE Base (gasless L3, CREDIT gas token)
+//! - Arc (mainnet)
+//! - Arc testnet
 
 use alloy::primitives::{address, Address};
 
@@ -72,6 +76,68 @@ pub mod create3 {
     pub const CONDITION_RECEIVER: Address = address!("B82697792e5Fcd644bDEAB23aa4e4511d9024C17");
     pub const CONDITION_ALWAYS_TRUE: Address = address!("A367323189f20706488A1D83430eda82a2eA5320");
 }
+
+// ============================================================================
+// Canonical commerce-payments v1.0.0 set (Arc, Arc testnet)
+// ============================================================================
+
+/// The canonical `commerce-payments` v1.0.0 AuthCaptureEscrow and the x402r
+/// contracts bound to it (salt namespaces `x402r-canonical-v1.0.1` and, for the
+/// PaymentOperatorFactory, `x402r-canonical-v1.0.2`). Same address on every
+/// chain that carries it; used here on Arc and Arc testnet only.
+///
+/// Not the [`create3`] set: that one has no code on Arc. Operators this
+/// factory deploys have no `release` / `refundInEscrow`; they `capture` and
+/// `void` (see `operator::OperatorAbi::V3`).
+///
+/// Sources: BackTrackCo/x402r-sdk `packages/core/src/config/index.ts` @ bbfec12c;
+/// BackTrackCo/x402r-contracts `deployments/canonical-v1.0.1.json` and
+/// `canonical-v1.0.2.json` @ c5223eaa. The code at each address on both Arc
+/// networks is recorded in `tests/fixtures/escrow/arc-generation-d-chain.json`.
+pub mod canonical_v1 {
+    use super::*;
+
+    pub const ESCROW: Address = address!("BdEA0D1bcC5966192B070Fdf62aB4EF5b4420cff");
+    /// ERC3009PaymentCollector(escrow, multicall3).
+    pub const TOKEN_COLLECTOR: Address = address!("0E3dF9510de65469C4518D7843919c0b8C7A7757");
+    pub const PROTOCOL_FEE_CONFIG: Address = address!("Be2d24614F339a1eB103A399F93AA2a39Ca815Bc");
+    /// PaymentOperatorFactory v1.0.2.
+    pub const FACTORY_PAYMENT_OPERATOR: Address =
+        address!("c24153B7ED8DC03e551F29DDEeA5CadFe57e2716");
+    /// RefundRequestFactory v1.0.1.
+    pub const FACTORY_REFUND_REQUEST: Address =
+        address!("e971C674fD5c3462023f3F891dF6289DFbC9CEFC");
+}
+
+/// Networks on the [`canonical_v1`] set. On these, and only these, the
+/// facilitator accepts neither the legacy nor the CREATE3 addresses.
+pub const CANONICAL_V1_NETWORKS: &[Network] = &[Network::Arc, Network::ArcTestnet];
+
+/// Whether `network` runs the [`canonical_v1`] set.
+pub fn is_canonical_v1_network(network: Network) -> bool {
+    CANONICAL_V1_NETWORKS.contains(&network)
+}
+
+/// The `PaymentOperatorFactory.computeAddress` argument the Execution Market
+/// operator listed for Arc and Arc testnet in [`OperatorAddresses::for_network`]
+/// is derived from (one CREATE2 address, the same on both networks).
+/// Configuration data only: read by the tests and by
+/// `scripts/record_arc_escrow_fixture.py`, never at runtime.
+#[allow(dead_code)]
+pub const ARC_EM_OPERATOR_CONFIG: [Address; 12] = [
+    address!("aE07cEB6b395BC685a776a0b4c489E8d9cE9A6ad"),
+    address!("25cA273d6f5508f06ed186680D305DC32a997461"),
+    Address::ZERO,
+    Address::ZERO,
+    address!("f50fD76d66c80AEb216c0C5879376C980a2B62eF"),
+    Address::ZERO,
+    address!("d8023a72f29Bb1AB782c69744893Dea2836cb69C"),
+    Address::ZERO,
+    address!("402ef720D202cb4BCbfb3Ee6577b204cA06786B9"),
+    Address::ZERO,
+    Address::ZERO,
+    Address::ZERO,
+];
 
 // ============================================================================
 // Legacy Per-Chain Addresses (for existing networks with deployed operators)
@@ -194,6 +260,8 @@ pub const ESCROW_NETWORKS: &[Network] = &[
     Network::Avalanche,
     Network::Optimism,
     Network::SkaleBase,
+    Network::Arc,
+    Network::ArcTestnet,
 ];
 
 // ============================================================================
@@ -214,6 +282,7 @@ pub fn escrow_for_network(network: Network) -> Option<Address> {
         Network::Avalanche => Some(avalanche::ESCROW),
         Network::Optimism => Some(optimism::ESCROW),
         Network::SkaleBase => Some(create3::ESCROW),
+        Network::Arc | Network::ArcTestnet => Some(canonical_v1::ESCROW),
         _ => None,
     }
 }
@@ -232,6 +301,7 @@ pub fn factory_for_network(network: Network) -> Option<Address> {
         Network::Avalanche => Some(avalanche::FACTORY),
         Network::Optimism => Some(optimism::FACTORY),
         Network::SkaleBase => Some(create3::FACTORY_PAYMENT_OPERATOR),
+        Network::Arc | Network::ArcTestnet => Some(canonical_v1::FACTORY_PAYMENT_OPERATOR),
         _ => None,
     }
 }
@@ -250,6 +320,7 @@ pub fn token_collector_for_network(network: Network) -> Option<Address> {
         Network::Avalanche => Some(avalanche::TOKEN_COLLECTOR),
         Network::Optimism => Some(optimism::TOKEN_COLLECTOR),
         Network::SkaleBase => Some(create3::TOKEN_COLLECTOR),
+        Network::Arc | Network::ArcTestnet => Some(canonical_v1::TOKEN_COLLECTOR),
         _ => None,
     }
 }
@@ -268,6 +339,7 @@ pub fn protocol_fee_config_for_network(network: Network) -> Option<Address> {
         Network::Avalanche => Some(avalanche::PROTOCOL_FEE_CONFIG),
         Network::Optimism => Some(optimism::PROTOCOL_FEE_CONFIG),
         Network::SkaleBase => Some(create3::PROTOCOL_FEE_CONFIG),
+        Network::Arc | Network::ArcTestnet => Some(canonical_v1::PROTOCOL_FEE_CONFIG),
         _ => None,
     }
 }
@@ -286,6 +358,7 @@ pub fn refund_request_for_network(network: Network) -> Option<Address> {
         Network::Avalanche => Some(avalanche::REFUND_REQUEST),
         Network::Optimism => Some(optimism::REFUND_REQUEST),
         Network::SkaleBase => Some(create3::FACTORY_REFUND_REQUEST),
+        Network::Arc | Network::ArcTestnet => Some(canonical_v1::FACTORY_REFUND_REQUEST),
         _ => None,
     }
 }
@@ -313,8 +386,8 @@ pub struct OperatorAddresses {
 impl OperatorAddresses {
     /// Get addresses for a network.
     ///
-    /// Legacy networks use per-chain infrastructure addresses.
-    /// New networks (SKALE) use CREATE3 unified addresses.
+    /// Legacy networks use per-chain infrastructure addresses, SKALE the
+    /// CREATE3 unified ones, Arc and Arc testnet the canonical v1 set.
     pub fn for_network(network: Network) -> Option<Self> {
         match network {
             // Testnets (legacy)
@@ -418,6 +491,16 @@ impl OperatorAddresses {
                 refund_request: create3::FACTORY_REFUND_REQUEST,
             }),
 
+            // Canonical commerce-payments v1.0.0 set
+            Network::Arc | Network::ArcTestnet => Some(Self {
+                escrow: canonical_v1::ESCROW,
+                factory: canonical_v1::FACTORY_PAYMENT_OPERATOR,
+                payment_operators: vec![address!("0258472A1410Ac3Ad720f1BC83f22B3c0af1Fd9D")],
+                token_collector: canonical_v1::TOKEN_COLLECTOR,
+                protocol_fee_config: canonical_v1::PROTOCOL_FEE_CONFIG,
+                refund_request: canonical_v1::FACTORY_REFUND_REQUEST,
+            }),
+
             _ => None,
         }
     }
@@ -449,7 +532,7 @@ mod tests {
 
     #[test]
     fn test_escrow_networks_count() {
-        assert_eq!(ESCROW_NETWORKS.len(), 11);
+        assert_eq!(ESCROW_NETWORKS.len(), 13);
     }
 
     #[test]

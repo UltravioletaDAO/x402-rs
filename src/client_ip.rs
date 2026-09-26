@@ -205,8 +205,17 @@ mod tests {
 
     // The same three properties through a governor production mounts, so the
     // extractor is exercised the way the service uses it and not only in
-    // isolation. `human_page_routes_governed` is the one governed router built
+    // isolation. `human_page_routes_governed` is a governed router built
     // outside `main()`; the source check below covers the ones built inside.
+
+    /// The human pages under a bucket of `burst` that does not refill during a
+    /// test, and a policy that exempts nobody.
+    fn pages(burst: u32) -> axum::Router {
+        crate::handlers::human_page_routes_governed(
+            &crate::rate_policy::RatePolicy::none(),
+            crate::rate_policy::Limit::every_ms(60_000, burst),
+        )
+    }
 
     async fn send(router: &axum::Router, xff: Option<&str>, peer: &str) -> StatusCode {
         let mut builder = Request::builder().uri("/stats");
@@ -222,7 +231,7 @@ mod tests {
     /// One client with fifty different leading entries spends ONE bucket.
     #[tokio::test]
     async fn fifty_leading_entries_spend_one_bucket() {
-        let router = crate::handlers::human_page_routes_governed(60_000, 3);
+        let router = pages(3);
         let mut served = 0;
         for n in 0..50 {
             let xff = format!("198.51.100.{n}, 203.0.113.7");
@@ -235,7 +244,7 @@ mod tests {
 
     #[tokio::test]
     async fn two_clients_do_not_share_a_bucket() {
-        let router = crate::handlers::human_page_routes_governed(60_000, 3);
+        let router = pages(3);
         for _ in 0..3 {
             let first = send(&router, Some("198.51.100.1, 203.0.113.7"), ALB_NODE).await;
             assert_eq!(first, StatusCode::OK);
@@ -248,7 +257,7 @@ mod tests {
 
     #[tokio::test]
     async fn without_the_header_each_peer_is_a_bucket() {
-        let router = crate::handlers::human_page_routes_governed(60_000, 3);
+        let router = pages(3);
         for _ in 0..3 {
             assert_eq!(send(&router, None, "192.0.2.10:1000").await, StatusCode::OK);
         }
@@ -262,7 +271,7 @@ mod tests {
     /// `ConnectInfo` the first request would be a 500 instead of a 200.
     #[tokio::test]
     async fn a_real_connection_without_the_header_is_keyed_on_its_peer() {
-        let router = crate::handlers::human_page_routes_governed(60_000, 1);
+        let router = pages(1);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
@@ -281,13 +290,20 @@ mod tests {
         assert_eq!(second.as_u16(), 429, "the peer's bucket was not spent");
     }
 
-    /// Every governor in `src/` keys on [`ClientIpKeyExtractor`], and the
-    /// binary serves with `ConnectInfo` so the peer fallback exists.
+    /// Every governor in `src/` keys on [`ClientIpKeyExtractor`], every one is
+    /// built and mounted through `rate_policy` (`config` and
+    /// `RatePolicy::layer`), and the binary serves with `ConnectInfo` so the
+    /// peer fallback exists.
     ///
     /// Read from source because the configs in `main()` are locals no test can
-    /// reach. A builder with no `.key_extractor(..)` at all is caught too: it
-    /// would default to the TCP peer, which behind the ALB is one bucket for
-    /// everybody.
+    /// reach. Every budget is built by `rate_policy::config`, so `src/` holds
+    /// exactly ONE `GovernorConfigBuilder`, in `rate_policy.rs`; a second one
+    /// anywhere else is a governor that bypassed the policy. A builder with no
+    /// `.key_extractor(..)` at all is caught too: it would default to the TCP
+    /// peer, which behind the ALB is one bucket for everybody. And a
+    /// `GovernorLayer` mounted anywhere but `RatePolicy::layer` would enforce a
+    /// limit that neither `RateLimit-Policy` nor `/.well-known/uvd-stack.json`
+    /// announces, and that a stack identity could not skip.
     #[test]
     fn every_governor_keys_on_the_client_ip() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -296,7 +312,7 @@ mod tests {
             concat!("PeerIp", "KeyExtractor"),
             concat!("Global", "KeyExtractor"),
         ];
-        let mut builders = 0;
+        let mut builders = Vec::new();
         let mut stack = vec![root];
         while let Some(dir) = stack.pop() {
             for entry in std::fs::read_dir(&dir).unwrap() {
@@ -336,13 +352,28 @@ mod tests {
                         arg.trim()
                     );
                 }
-                builders += here;
+                let file = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or_default();
+                if file != "rate_policy.rs" {
+                    assert!(
+                        !src.contains("GovernorLayer::new("),
+                        "{shown} mounts a governor outside `rate_policy::RatePolicy::layer`: \
+                         its limit is neither stamped as RateLimit-Policy nor published \
+                         in /.well-known/uvd-stack.json, and the stack cannot skip it"
+                    );
+                }
+                for _ in 0..here {
+                    builders.push(file.to_string());
+                }
             }
         }
-        // Six in `main()`, and two in `handlers`: `human_page_routes_governed`
-        // and `erc8004_write_governed`. A floor, not an exact count: adding a
-        // governor must not fail this.
-        assert!(builders >= 8, "found only {builders} governor builders");
+        assert_eq!(
+            builders,
+            ["rate_policy.rs"],
+            "every budget must be built by rate_policy::config, and only there"
+        );
 
         let main = include_str!("main.rs");
         assert!(

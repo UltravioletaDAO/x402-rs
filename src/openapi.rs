@@ -49,7 +49,7 @@ Ethereum Sepolia, Base Sepolia, Polygon Amoy, Optimism Sepolia, Avalanche Fuji, 
 - **Sui**: Mainnet (`sui`) and Testnet (`sui-testnet`)
 - **Hedera**: Native mainnet (`hedera:mainnet`) and testnet (`hedera:testnet`), x402 v2/exact only. HBAR is used only for sponsor network fees. Payments accept native USDC `0.0.456858` mainnet / `0.0.429274` testnet (6 decimals). Discover the network-specific `extra.feePayer` from `/supported`. Current sponsor IDs: mainnet `0.0.10868300`, testnet `0.0.10576385`. Native account/token IDs are not EVM chain IDs 295/296.
 
-Arc uses USDC `0x3600000000000000000000000000000000000000` with 6 payment decimals and EIP-712 domain `USDC` / `2`. Its gas view uses 18 decimals of the same balance. EURC is also supported: mainnet `0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1`, testnet `0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a`, 6 decimals, EIP-712 `EURC` / `2`. EURC amounts are euros, without automatic USD conversion. Gas remains USDC. EURC live payment acceptance was proven on Arc mainnet on 2026-09-22; Arc testnet is still pending. Arc and native Hedera additions enable exact payments only; they do not add escrow, upto or Gateway support. ERC-8004 identity and reputation are served on both Arc networks (not on Hedera). Native Hedera also rejects durable-evidence and unsupported extensions.
+Arc uses USDC `0x3600000000000000000000000000000000000000` with 6 payment decimals and EIP-712 domain `USDC` / `2`. Its gas view uses 18 decimals of the same balance. EURC is also supported: mainnet `0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1`, testnet `0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a`, 6 decimals, EIP-712 `EURC` / `2`. EURC amounts are euros, without automatic USD conversion. Gas remains USDC. EURC live payment acceptance was proven on Arc mainnet on 2026-09-22; Arc testnet is still pending. Arc also serves the x402r `escrow` and `commerce` schemes, on the canonical commerce-payments v1.0.0 contracts (see the escrow section of `POST /settle`). Neither Arc nor native Hedera adds upto or Gateway support, and native Hedera adds no escrow. ERC-8004 identity and reputation are served on both Arc networks (not on Hedera). Native Hedera also rejects durable-evidence and unsupported extensions.
 
 ## Core Endpoints
 
@@ -138,10 +138,19 @@ just on the refusal:
 
 | Header | Present on | Meaning |
 |---|---|---|
+| `RateLimit-Policy` | `200` and `429` | the bucket this route draws on: `"<name>";q=<quota>;w=<window seconds>` |
+| `RateLimit` | `200` and `429` | what is left of it: `"<name>";r=<remaining>;t=<seconds>` |
 | `x-ratelimit-limit` | `200` and `429` | burst size of the bucket this route draws on |
 | `x-ratelimit-remaining` | `200` and `429` | tokens left in that bucket |
 | `retry-after` | `429` | seconds to wait before retrying |
 | `x-ratelimit-after` | `429` | the same value under tower_governor's own name |
+
+`RateLimit-Policy` and `RateLimit` follow draft-ietf-httpapi-ratelimit-headers
+(Structured Fields). A caller that sends at most `q` requests in any `w`
+seconds is never refused; `r` is what it may still spend within the next `t`
+seconds. Two routes that share a bucket share its name (`/mcp` answers with
+`"verify-settle"`). Every limit is also listed, before any request, in
+`rate_limits` of `/.well-known/uvd-stack.json`.
 
 Read `x-ratelimit-remaining` and slow down before it reaches zero. The buckets
 refill one token every N seconds rather than granting N per minute, so the
@@ -155,6 +164,25 @@ The ERC-8004 writes that send a transaction (`POST /register`, `POST /feedback`
 and the `/feedback/*` submits) are also limited per network per UTC day. Past
 that limit they answer `429` with code `erc8004_daily_write_limit` and a
 `retry-after` that runs to 00:00 UTC; other networks are not affected.
+
+Separately from any bucket, admission to each task is checked before any
+route runs, and a refusal means nothing was done; resend the same request:
+
+| Status | `code` | When |
+|---|---|---|
+| `429` | `too_many_concurrent_requests` | this client IP already has its maximum of requests in flight |
+| `408` | `request_timeout` | the whole body did not arrive within the deadline after the headers |
+| `503` | `overloaded` | the task is at its ceiling of concurrent requests, whoever sent this one |
+
+The `429` and `503` carry `retry-after: 1`. A request counts against the
+task's ceiling only once its body is in. `/health` is never refused.
+
+Ultravioleta DAO's own services present an `X-UVD-Stack-Key` and are not
+charged to their address by any bucket or by the per-address ceiling (the
+response carries `x-ratelimit-exempt` instead of the rate-limit headers above:
+there is no bucket to report on); the body deadline, the task's ceiling and the
+daily write limit still apply to them. Every value in force is published at
+`GET /config`, each bucket under the name its `RateLimit-Policy` carries.
 
 ## Content negotiation
 
@@ -253,6 +281,7 @@ constraint rather than as grounds for a `406`.
         // Health
         path_health,
         path_health_ready,
+        path_config,
         // Agentic discovery surfaces
         path_llms_txt,
         path_llms_full_txt,
@@ -271,6 +300,7 @@ constraint rather than as grounds for a `406`.
         path_oauth_protected_resource,
         path_agent_skills_index,
         path_mcp_server_card,
+        path_uvd_stack,
         // MCP
         path_mcp_post,
         path_mcp_get,
@@ -538,14 +568,30 @@ The `action` field controls the operation:
 | `release` | Send escrowed funds to receiver | EIP-712 lifecycle order by the payer or the operator owner (`payload.lifecycleAuth`) |
 | `refundInEscrow` | Return escrowed funds to payer | EIP-712 lifecycle order by the receiver, the operator owner, or the payer once `authorizationExpiry` has passed |
 
-Escrow contracts deployed on 11 networks. See `/supported` for networks with active PaymentOperator deployments.
+Escrow contracts deployed on 13 networks. See `/supported` for networks with active PaymentOperator deployments.
+
+**Arc and Arc testnet** run the canonical commerce-payments v1.0.0 set -- AuthCaptureEscrow
+`0xBdEA0D1bcC5966192B070Fdf62aB4EF5b4420cff`, ERC-3009 collector `0x0E3dF9510de65469C4518D7843919c0b8C7A7757`,
+PaymentOperatorFactory v1.0.2 `0xc24153B7ED8DC03e551F29DDEeA5CadFe57e2716` -- and a request there must name
+that escrow and collector. Every write there (`authorize`, `release`, `refundInEscrow`) goes to `paymentInfo.operator`
+itself, and only once that address has code: a request whose `operatorAddress` / `authorizeAddress` is another
+address answers `400 operator_mismatch`, and one whose operator has no code on the network answers
+`422 operator_has_no_code`; neither sends a transaction. Their operators have no `release` / `refundInEscrow`: `release` is sent as
+`capture(paymentInfo, amount, 0x)` and `refundInEscrow` as `void(paymentInfo, 0x)`, which returns the WHOLE
+capturable amount, so `refundInEscrow` must name exactly that amount. Nothing capturable left answers
+`409 nothing_to_void`; an `amount` of `0` answers `422 amount_required_on_generation` (it is never read as
+"all of it"); any other amount answers `422 partial_refund_unsupported_on_generation`; and a chain read that
+fails answers `502 chain_read_unavailable` with `retryable: true`. None of them sends a transaction.
+`authorize` on Arc takes EOA signatures only, and is placed against a listed PaymentOperator only once that
+operator has passed its on-chain self-check: until then it answers `503 operator_not_verified`, retryable --
+the expected case being an operator that is declared but not deployed yet.
 
 **Lifecycle orders.** `release` and `refundInEscrow` carry no ERC-3009 signature (the funds are
 already escrowed) but they do move money, so they carry `payload.lifecycleAuth`: an EIP-712
 signature over `LifecycleOrder(string action, uint256 amount, uint256 deadline, bytes32 nonce, PaymentInfo paymentInfo)`
 with domain `{ name: "x402 escrow lifecycle", version: "1", chainId }` and `PaymentInfo` the
-AuthCaptureEscrow type verbatim. The "operator owner" is the operator's `FEE_RECIPIENT()`, read
-on chain. Whether the order is required is governed by `ESCROW_LIFECYCLE_AUTH` (`off` | `log` |
+AuthCaptureEscrow type verbatim. The "operator owner" is the operator's `FEE_RECIPIENT()`
+(`FEE_RECEIVER()` on Arc), read on chain. Whether the order is required is governed by `ESCROW_LIFECYCLE_AUTH` (`off` | `log` |
 `enforce`); `GET /settle` publishes the effective mode. Under `enforce` a missing or invalid order
 is 403 with a bounded `errorReason` (`missing`, `bad_signature`, `expired`, `deadline_too_far`,
 `replayed`, `unauthorized_role`); `owner_unverifiable` is 502 and retryable.
@@ -937,8 +983,8 @@ Until 2026-09-03 `escrow`, `commerce` and `upto` appeared **only** under CAIP-2 
 
 `upto` is **not** available on every EVM network that supports `exact`. The proxy address is identical on all chains because it is deployed with CREATE2, but the deployment still has to be replayed per chain, and on Avalanche, Celo, Scroll, Unichain and Optimism Sepolia it never was — the address has no code there. Query `/supported` rather than assuming: it now lists `upto` only where settlement can actually succeed.
 
-**Escrow networks (9 total):** Base, Ethereum, Polygon, Arbitrum, Celo, Monad, Avalanche, Base Sepolia, Ethereum Sepolia.
-Only networks with a deployed PaymentOperator appear in the response.
+**Escrow networks (13):** `base`, `ethereum`, `polygon`, `arbitrum`, `celo`, `monad`, `avalanche`, `optimism`, `skale-base`, `arc`, `base-sepolia`, `ethereum-sepolia`, `arc-testnet`.
+Each lists `commerce`, and `escrow` once per PaymentOperator the facilitator declares for it; on `arc` and `arc-testnet` an operator is listed only once it has passed its on-chain self-check.
 
 **Extensions:** the `extensions` array lists what this deployment actually serves — `bazaar`, and `durable-evidence` **only when DX402 is serviceable** (enabled *and* its store and index are configured), so no client builds against `/dx402/*` routes that would 404.
 
@@ -2909,6 +2955,75 @@ warning and keeps the default.",
 )]
 async fn path_health_ready() {}
 
+#[utoipa::path(
+    get,
+    path = "/config",
+    tag = "Health",
+    summary = "The rate policy in force",
+    description = "What this task enforces, as it was configured at startup: every per-IP \
+budget (`rateLimits.budgets`: its routes, the period of one token, the burst, the defaults and \
+the two variables that override them; `name` is the one its `RateLimit-Policy` header carries, and \
+the same budgets are `rate_limits` of `/.well-known/uvd-stack.json`), the stack identities that skip \
+those budgets (by service \
+name, with how many credentials each holds -- never a key or a digest), admission (the per-address \
+ceiling behind `429 too_many_concurrent_requests`, the body deadline behind `408 request_timeout`, \
+the task's ceiling behind `503 overloaded`), and the ERC-8004 daily write limit per network.
+
+**What skips what.** A request carrying a recognized `X-UVD-Stack-Key` is not charged to its \
+address by any budget nor by the per-address ceiling, and is answered with \
+`x-ratelimit-exempt: <service>` and no `RateLimit-Policy` or `RateLimit`; an absent, malformed, \
+unknown or revoked key is charged like any \
+other caller. Neither the body deadline, nor the task's ceiling of concurrent requests (`503`, every \
+caller), nor the daily write limit (`429 erc8004_daily_write_limit`, it protects the gas the \
+facilitator pays) is skipped.
+
+Rate limited per IP like the other cheap reads.",
+    responses(
+        (status = 200, description = "The effective policy", body = Object,
+            example = json!({
+                "rateLimits": {
+                    "keyedOn": "client IP: the last X-Forwarded-For entry, else the TCP peer",
+                    "refusal": { "status": 429, "code": "rate_limited" },
+                    "budgets": [{
+                        "name": "verify-settle",
+                        "routes": "/verify, /settle, /receipts/*, /.well-known/receipt-keys.json, POST /mcp",
+                        "periodMs": 2000, "burst": 30,
+                        "default": { "periodMs": 2000, "burst": 30 },
+                        "env": ["VERIFY_SETTLE_RATE_PER_MS", "VERIFY_SETTLE_RATE_BURST"]
+                    }]
+                },
+                "stackIdentities": {
+                    "header": "X-UVD-Stack-Key", "active": 1,
+                    "services": [
+                        { "name": "execution-market", "active": true, "credentials": 1 },
+                        { "name": "karmakadabra", "active": false, "credentials": 0 }
+                    ],
+                    "exemptFrom": ["every budget under rateLimits", "overload.perClient"],
+                    "notExemptFrom": ["overload (the global ceiling)", "overload.bodyDeadlineMs", "erc8004DailyWriteCap", "the RPC provider throttle"]
+                },
+                "overload": {
+                    "maxInflightRequests": 512, "env": "MAX_INFLIGHT_REQUESTS",
+                    "refusal": { "status": 503, "code": "overloaded", "retryAfterSecs": 1 },
+                    "slotTakenAfterTheBody": true,
+                    "neverShed": ["/health"],
+                    "perClient": {
+                        "maxInflightRequests": 32, "env": "MAX_INFLIGHT_PER_CLIENT",
+                        "refusal": { "status": 429, "code": "too_many_concurrent_requests", "retryAfterSecs": 1 }
+                    },
+                    "bodyDeadlineMs": 5000, "bodyDeadlineEnv": "REQUEST_BODY_DEADLINE_MS",
+                    "bodyRefusal": { "status": 408, "code": "request_timeout" }
+                },
+                "erc8004DailyWriteCap": {
+                    "mounted": true, "defaultPerNetwork": 1000,
+                    "perNetwork": { "ethereum": 100, "solana": 150 }
+                }
+            })
+        ),
+        (status = 429, description = "Rate limited: same per-IP governor as the other cheap reads")
+    )
+)]
+async fn path_config() {}
+
 // ============================================================================
 // Agentic Discovery Surfaces
 //
@@ -3122,6 +3237,18 @@ async fn path_agent_skills_index() {}
     )
 )]
 async fn path_mcp_server_card() {}
+
+#[utoipa::path(
+    get,
+    path = "/.well-known/uvd-stack.json",
+    tag = "Agentic",
+    summary = "Stack interop manifest (uvd.stack/1)",
+    description = "Who this service is (`app: \"facilitator\"`, the running `version` and `git_sha`), its two doors (`endpoints.api` and `endpoints.mcp`, both `auth: [\"none\"]`), that it charges nothing (`payments.charges: false`), where liveness (`/health`) and readiness (`/health/ready`) answer, links to the other agent documents, and `rate_limits`: every per-IP limit the router mounts, as `limit` requests per `window_s` seconds on the door it guards. Generated at runtime from the mounted limiters and the build, never written by hand, so it cannot disagree with the `RateLimit-Policy` header those same limiters send. The format is the `uvd.stack/1` manifest of the Ultravioleta DAO stack's interop specification.",
+    responses(
+        (status = 200, description = "uvd.stack/1 manifest", body = Object)
+    )
+)]
+async fn path_uvd_stack() {}
 
 #[utoipa::path(
     post,
@@ -3561,6 +3688,7 @@ mod tests {
             "/.well-known/api-catalog",
             "/.well-known/oauth-protected-resource",
             "/.well-known/agent-skills/index.json",
+            "/.well-known/uvd-stack.json",
         ] {
             assert!(
                 spec.paths.paths.contains_key(route),
@@ -3578,6 +3706,49 @@ mod tests {
     /// while `scroll`, `skale-base` and `skale-base-sepolia` were served.
     /// Derived from `supported_networks()`, so a network added there without
     /// touching this prose fails here.
+    /// The escrow network list under `GET /supported` is the one the code
+    /// serves. It read "9 total" while 11 were served, and named neither
+    /// Optimism nor SKALE Base; derived from `ESCROW_NETWORKS`, so a network
+    /// added there without touching the prose fails here. And the description
+    /// may not deny escrow on Arc again.
+    #[test]
+    fn the_escrow_prose_names_every_escrow_network() {
+        use crate::payment_operator::addresses::ESCROW_NETWORKS;
+        let spec = ApiDoc::openapi();
+        let supported = spec.paths.paths["/supported"]
+            .get
+            .as_ref()
+            .unwrap()
+            .description
+            .as_deref()
+            .unwrap();
+        let line = supported
+            .lines()
+            .find(|l| l.starts_with("**Escrow networks ("))
+            .expect("the /supported description lists the escrow networks");
+        assert!(
+            line.starts_with(&format!("**Escrow networks ({}):**", ESCROW_NETWORKS.len())),
+            "{line}"
+        );
+        for network in ESCROW_NETWORKS {
+            assert!(
+                line.contains(&format!("`{network}`")),
+                "`{network}` serves escrow but the /supported prose does not name it"
+            );
+        }
+        assert_eq!(
+            line.matches('`').count(),
+            2 * ESCROW_NETWORKS.len(),
+            "{line}"
+        );
+
+        // Until 2.40.0 the Arc paragraph said the Arc additions "do not add
+        // escrow". It has to say the opposite now, and the denial must be gone.
+        let description = spec.info.description.as_deref().unwrap();
+        assert!(description.contains("Arc also serves the x402r `escrow` and `commerce` schemes"));
+        assert!(!description.contains("do not add escrow"));
+    }
+
     #[test]
     fn the_erc8004_prose_names_every_supported_network() {
         let spec = ApiDoc::openapi();

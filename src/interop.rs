@@ -568,4 +568,45 @@ mod tests {
         assert_eq!(doc["version"], crate::version::facilitator_version());
         assert_eq!(doc["git_sha"], crate::version::facilitator_git_sha());
     }
+
+    /// The SERVED manifest publishes what the router mounted: at least one
+    /// limit, and every entry is the (door, q, w) of a bucket in
+    /// [`crate::rate_policy::mounted`]. The schema accepts `rate_limits: []`,
+    /// so validating the served document alone would pass a manifest that
+    /// dropped every limit.
+    #[test]
+    fn the_served_manifest_publishes_the_mounted_buckets() {
+        use crate::rate_policy::{config, RatePolicy};
+        // At least one bucket is mounted in this process before the manifest
+        // is first built, as `main` mounts every one before it serves.
+        let _ = axum::Router::<()>::new()
+            .layer(RatePolicy::none().layer(&config(VERIFY_SETTLE.limit())));
+        let doc: Value = serde_json::from_str(served_document()).unwrap();
+        let published = doc["rate_limits"].as_array().unwrap();
+        assert!(
+            !published.is_empty(),
+            "the served manifest publishes no limit"
+        );
+        let mounted: Vec<(String, u64, u64)> = crate::rate_policy::mounted()
+            .iter()
+            .map(|m| {
+                (
+                    m.door.as_str().to_string(),
+                    m.limit.quota(),
+                    m.limit.window_s(),
+                )
+            })
+            .collect();
+        for entry in published {
+            let key = (
+                entry["applies_to"].as_str().unwrap().to_string(),
+                entry["limit"].as_u64().unwrap(),
+                entry["window_s"].as_u64().unwrap(),
+            );
+            assert!(
+                mounted.contains(&key),
+                "the served manifest publishes {key:?}, which no mounted bucket is"
+            );
+        }
+    }
 }

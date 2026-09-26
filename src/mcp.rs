@@ -1621,6 +1621,33 @@ mod tests {
         }
     }
 
+    /// The MCP router has no bucket of its own. `main.rs` mounts `/mcp` under
+    /// the verify/settle bucket; a second one INSIDE `mcp_routes` would charge
+    /// every tool call twice and refuse at half the published quota. Forty calls
+    /// from one address -- past verify/settle's burst -- through `mcp_routes`
+    /// alone, with the `X-Forwarded-For` a governor would key on: none is
+    /// refused and none is a tool error.
+    #[tokio::test]
+    async fn the_mcp_router_has_no_bucket_of_its_own() {
+        let (mcp, _) = routers().await;
+        let calls = 40;
+        assert!(calls > crate::rate_policy::VERIFY_SETTLE.limit().burst());
+        for n in 0..calls {
+            let (status, _, doc) = rpc_from(
+                &mcp,
+                json!({
+                    "jsonrpc": "2.0", "id": n, "method": "tools/call",
+                    "params": { "name": "x402_supported", "arguments": {} }
+                }),
+                Some("203.0.113.88"),
+            )
+            .await;
+            assert_ne!(status, StatusCode::TOO_MANY_REQUESTS, "call {n}: {doc}");
+            assert_eq!(status, StatusCode::OK, "call {n}: {doc}");
+            assert_ne!(doc["result"]["isError"], true, "call {n}: {doc}");
+        }
+    }
+
     /// An invalid `/verify` body reaches the caller as `isError`, carrying the
     /// facilitator's own message -- not a panic, and not a JSON-RPC error.
     ///

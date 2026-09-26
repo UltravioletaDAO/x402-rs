@@ -604,8 +604,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let limit = budget.limit();
         tracing::info!(
             budget = budget.name,
-            period_ms = limit.period.as_millis() as u64,
-            burst = limit.burst,
+            period_ms = limit.period().as_millis() as u64,
+            burst = limit.burst(),
             "Rate limit configured"
         );
     }

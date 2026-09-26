@@ -13621,7 +13621,7 @@ mod owner_scan_tests {
     #[test]
     fn identity_read_limit_leaves_headroom_over_measured_traffic() {
         let limit = crate::rate_policy::IDENTITY_READ.limit();
-        let (per_ms, burst) = (limit.period.as_millis() as u64, limit.burst);
+        let (per_ms, burst) = (limit.period().as_millis() as u64, limit.burst());
         let sustained_per_min = 60_000 / per_ms;
         assert!(
             sustained_per_min >= 100,
@@ -19248,7 +19248,7 @@ mod erc8004_write_rate_tests {
         );
 
         let router = governed_writes(&paths);
-        for n in 0..budget.burst as usize {
+        for n in 0..budget.burst() as usize {
             let path = &paths[n % paths.len()];
             let response = post_from(&router, path, "203.0.113.50").await;
             assert_eq!(response.status(), StatusCode::OK, "write {n} to {path}");
@@ -19312,7 +19312,7 @@ mod erc8004_write_rate_tests {
             routes = routes.route(path, post(|| async { "written" }));
         }
         let router = erc8004_write_governed(&stack_policy(), routes);
-        let burst = crate::rate_policy::ERC8004_WRITES.limit().burst as usize;
+        let burst = crate::rate_policy::ERC8004_WRITES.limit().burst() as usize;
 
         for n in 0..burst + 5 {
             let path = &paths[n % paths.len()];

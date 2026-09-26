@@ -12,6 +12,7 @@
 - `GET /config`: every per-IP budget in force (routes, period, burst, default, override variables), the stack identities by service name and how many credentials each holds, the admission limits above, and the ERC-8004 daily write limit per network.
 - The eight per-IP budgets, their defaults and their overrides now live in `src/rate_policy.rs`, the one place every governor is built and mounted. No default changed. New overrides: `VERIFY_SETTLE_RATE_PER_MS`/`_BURST`, `DISCOVERY_REGISTER_RATE_PER_MS`/`_BURST`, `DISCOVERY_READ_RATE_PER_MS`/`_BURST`, `EVENTS_RATE_PER_MS`/`_BURST`, `ERC8004_WRITES_RATE_PER_MS`/`_BURST`; the identity, secondary-read and human-page variables keep their names.
 - Unchanged, and not skipped by a stack identity: the ERC-8004 daily write limit (it protects the gas the facilitator pays) and the RPC provider throttle (`RPC_MAX_CU_PER_SECOND`). An MCP settle forwarded to the writer-lease holder carries `X-UVD-Stack-Key` along with `X-Forwarded-For`.
+- Infra (2026-09-26, same 2.43.0 binary, no version change): the task definition maps `UVD_STACK_KEY_SHA256_EXECUTION_MARKET`, `_KARMAKADABRA`, `_DESCRIBE_NET` and `_MESHRELAY` from the `sha256` field of their own Secrets Manager secrets (`facilitator-stack-key-digest-<service>`) through `secrets`, never `environment`, and the execution role may read those four and none of the clients' key secrets. `GET /config` then reports `stackIdentities.active` = 4.
 
 ### Escrow on Arc
 

@@ -1,0 +1,137 @@
+[
+ {
+  "nombre": "T3-01 el exento recibe RateLimit (decision b)",
+  "archivo": "src/rate_policy.rs",
+  "viejo": "                let bare = self.bare.clone();\n                Box::pin(async move {\n                    let mut response = bare.oneshot(request).await?;\n",
+  "nuevo": "                let bare = self.bare.clone();\n                let limit = self.limit;\n                Box::pin(async move {\n                    let mut response = bare.oneshot(request).await?;\n                    limit.stamp(response.headers_mut());\n",
+  "test": "cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl,hedera --lib rate_policy::tests::a_stack_identity_is_told_no_budget_and_a_third_party_its_own -- --exact --test-threads=1"
+ },
+ {
+  "nombre": "T3-02 la capa deja de poner las cabeceras al tercero (decision a)",
+  "archivo": "src/rate_policy.rs",
+  "viejo": "                    let mut response = governed.oneshot(request).await?;\n                    limit.stamp(response.headers_mut());\n",
+  "nuevo": "                    let mut response = governed.oneshot(request).await?;\n                    let _ = limit;\n",
+  "test": "cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl,hedera --lib rate_policy::tests::a_caller_that_keeps_to_the_published_quota_is_never_refused -- --exact --test-threads=1"
+ },
+ {
+  "nombre": "T3-03 cabeceras solo en el 200: el 429 del governor sale sin RateLimit-Policy (decision a)",
+  "archivo": "src/rate_policy.rs",
+  "viejo": "                    limit.stamp(response.headers_mut());\n                    Ok(response)",
+  "nuevo": "                    if response.status().is_success() {\n                        limit.stamp(response.headers_mut());\n                    }\n                    Ok(response)",
+  "test": "cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl,hedera --lib rate_policy::tests::a_caller_that_keeps_to_the_published_quota_is_never_refused -- --exact --test-threads=1"
+ },
+ {
+  "nombre": "T3-04 las cabeceras salen de otra fuente que el bucket (decision a)",
+  "archivo": "src/rate_policy.rs",
+  "viejo": "            limit: bucket.limit,\n        }\n",
+  "nuevo": "            limit: VERIFY_SETTLE.default_limit(),\n        }\n",
+  "test": "cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl,hedera --lib rate_policy::tests::a_stack_identity_is_told_no_budget_and_a_third_party_its_own -- --exact --test-threads=1"
+ },
+ {
+  "nombre": "T3-05 /config publica otro nombre que RateLimit-Policy (decision c)",
+  "archivo": "src/rate_policy.rs",
+  "viejo": "                \"name\": budget.name,\n",
+  "nuevo": "                \"name\": budget.env_period_ms,\n",
+  "test": "cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl,hedera --lib rate_policy::tests::the_config_document_and_the_interop_manifest_publish_the_same_budgets -- --exact --test-threads=1"
+ },
+ {
+  "nombre": "T3-06 el manifiesto calcula la ventana distinto que /config (decision c)",
+  "archivo": "src/interop.rs",
+  "viejo": "mount.limit.window_s());",
+  "nuevo": "mount.limit.reset_s());",
+  "test": "cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl,hedera --lib rate_policy::tests::the_config_document_and_the_interop_manifest_publish_the_same_budgets -- --exact --test-threads=1"
+ },
+ {
+  "nombre": "T3-07 w redondeado hacia abajo (R2 de INT-09, ahora en rate_policy)",
+  "archivo": "src/rate_policy.rs",
+  "viejo": "    let secs = nanos.div_ceil(1_000_000_000);\n",
+  "nuevo": "    let secs = nanos / 1_000_000_000;\n",
+  "test": "cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl,hedera --lib rate_policy::tests::sub_second_periods_round_up_and_never_to_zero -- --exact --test-threads=1"
+ },
+ {
+  "nombre": "T3-08 main.rs: /mcp fuera de la puerta mcp (conflicto de main.rs)",
+  "archivo": "src/main.rs",
+  "viejo": "    .layer(policy.layer_on(&verify_settle_config, rate_policy::Door::Mcp));",
+  "nuevo": "    .layer(policy.layer(&verify_settle_config));",
+  "test": "cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl,hedera --lib rate_policy::tests::the_mcp_door_draws_on_the_verify_settle_bucket -- --exact --test-threads=1"
+ },
+ {
+  "nombre": "T3-09 main.rs: CORS deja de exponer ratelimit-policy (conflicto de main.rs)",
+  "archivo": "src/main.rs",
+  "viejo": "                        \"ratelimit-policy\",\n",
+  "nuevo": "",
+  "test": "cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl,hedera --lib rate_policy::tests::a_browser_can_read_the_ratelimit_headers -- --exact --test-threads=1"
+ },
+ {
+  "nombre": "T3-10 main.rs: un numero duplicado, al estilo de INT-09 (conflicto de main.rs)",
+  "archivo": "src/main.rs",
+  "viejo": "rate_policy::config(rate_policy::VERIFY_SETTLE.limit())",
+  "nuevo": "rate_policy::config(rate_policy::Limit::every_ms(2_000, 30))",
+  "test": "cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl,hedera --lib rate_policy::tests::every_governor_goes_through_the_policy -- --exact --test-threads=1"
+ },
+ {
+  "nombre": "T3-11 client_ip.rs: el lado de INT-09 (el governor vive en rate_limit.rs)",
+  "archivo": "src/client_ip.rs",
+  "viejo": "                if file != \"rate_policy.rs\" {",
+  "nuevo": "                if file != \"rate_limit.rs\" {",
+  "test": "cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl,hedera --lib client_ip::tests::every_governor_keys_on_the_client_ip -- --exact --test-threads=1"
+ },
+ {
+  "nombre": "T3-12 handlers.rs: escrituras ERC-8004 con un bucket que no exime al stack (lado de INT-09)",
+  "archivo": "src/handlers.rs",
+  "viejo": "    policy.govern(routes, crate::rate_policy::ERC8004_WRITES.limit())",
+  "nuevo": "    crate::rate_policy::RatePolicy::none().govern(routes, crate::rate_policy::ERC8004_WRITES.limit())",
+  "test": "cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl,hedera --lib handlers::erc8004_write_rate_tests::the_erc8004_writes_exempt_the_stack -- --exact --test-threads=1"
+ },
+ {
+  "nombre": "T3-13 handlers.rs: paginas humanas con otro presupuesto que el que les pasa main",
+  "archivo": "src/handlers.rs",
+  "viejo": "    policy.govern(human_page_routes(), limit)",
+  "nuevo": "    policy.govern(human_page_routes(), crate::rate_policy::IDENTITY_READ.limit())",
+  "test": "cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl,hedera --lib rate_policy::tests::the_human_pages_exempt_the_stack_too -- --exact --test-threads=1"
+ },
+ {
+  "nombre": "T3-14 handlers.rs: el test del bazar con los nombres de INT-09",
+  "archivo": "src/handlers.rs",
+  "viejo": "statement_after(\"let discovery_register_config\")",
+  "nuevo": "statement_after(\"let discovery_register_limit\")",
+  "test": "cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl,hedera --lib handlers::erc8004_write_rate_tests::production_mounts_the_writes_and_the_bazar_on_separate_budgets -- --exact --test-threads=1"
+ },
+ {
+  "nombre": "T3-15 Cargo.toml: el lado de INT-09 (sin http-body-util)",
+  "archivo": "Cargo.toml",
+  "viejo": "http-body-util = { version = \"0.1\" }\n",
+  "nuevo": "",
+  "test": "cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl,hedera --lib rate_policy::tests::a_body_past_the_limit_is_a_json_413 -- --exact --test-threads=1"
+ },
+ {
+  "nombre": "T3-16 Cargo.lock: el lado de X4 (sin jsonschema)",
+  "archivo": "Cargo.lock",
+  "viejo": " \"http-body-util\",\n \"jsonschema\",\n",
+  "nuevo": " \"http-body-util\",\n",
+  "test": "cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl,hedera --lib interop::tests::the_manifest_validates_against_the_vendored_schema -- --exact --test-threads=1"
+ },
+ {
+  "nombre": "T3-17 lib.rs: el lado de INT-09 (pub mod rate_limit)",
+  "archivo": "src/lib.rs",
+  "viejo": "pub mod rate_policy;\n",
+  "nuevo": "pub mod rate_limit;\n",
+  "test": "cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl,hedera --lib rate_policy::tests::every_governor_goes_through_the_policy -- --exact --test-threads=1",
+  "espera": "no_compila",
+  "error": "E0583"
+ },
+ {
+  "nombre": "T3-18 agent-skills/index.json: el digest de X4",
+  "archivo": "static/.well-known/agent-skills/index.json",
+  "viejo": "sha256:680f2afca60c91fd55f1f566a3939878a559ad559f8f2cfbe8a734ea09d92553",
+  "nuevo": "sha256:ce60879b7f35cf390de82e7eb5ee3e5e6f366c2e6d90f6a9367c5ea43a51839f",
+  "test": "cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl,hedera --lib handlers::agentic_surface_tests::the_skills_index_digest_matches_skill_md -- --exact --test-threads=1"
+ },
+ {
+  "nombre": "T3-19 static/index.html: el icono de Arc tipeado a mano (la linea de la fila del backlog)",
+  "archivo": "static/index.html",
+  "viejo": "<img data-net-icon=\"arc\" alt=\"\" style=\"width: 20px; height: 20px; border-radius: 50%;\"",
+  "nuevo": "<img src=\"/arc.png\" alt=\"\" style=\"width: 20px; height: 20px; border-radius: 50%;\"",
+  "test": "cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl,hedera --lib networks_json::tests::static_types_no_explorer_and_no_icon -- --exact --test-threads=1"
+ }
+]
